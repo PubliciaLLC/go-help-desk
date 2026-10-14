@@ -36,6 +36,57 @@ func TestStaffOverrides_Allows(t *testing.T) {
 	}
 }
 
+func ids(rs []notification.StaffRecipient) []uuid.UUID {
+	var out []uuid.UUID
+	for _, r := range rs {
+		out = append(out, r.UserID)
+	}
+	return out
+}
+
+// The reason a person is mailed decides the wording of their email: somebody
+// who holds the ticket directly is told it is theirs, a group member that it is
+// their group's. Holding it directly wins when both apply.
+func TestStaffRecipients_ReportsWhyEachPersonIsMailed(t *testing.T) {
+	a, b := uuid.New(), uuid.New()
+	got := notification.StaffRecipients([]notification.StaffCandidate{
+		{UserID: a, Prefs: allOn, Reason: notification.SwitchAssigned},
+		{UserID: a, Prefs: allOn, Reason: notification.SwitchGroup},
+		{UserID: b, Prefs: allOn, Reason: notification.SwitchGroup},
+	}, nil, notification.StaffOverrides{})
+	require.Equal(t, []notification.StaffRecipient{
+		{UserID: a, Reason: notification.SwitchAssigned},
+		{UserID: b, Reason: notification.SwitchGroup},
+	}, got)
+}
+
+// A reason that fails its switch does not stop a later one that passes.
+func TestStaffRecipients_TheReasonIsTheOneThatPassed(t *testing.T) {
+	a := uuid.New()
+	got := notification.StaffRecipients([]notification.StaffCandidate{
+		{UserID: a, Prefs: notification.StaffPrefs{Group: true}, Reason: notification.SwitchAssigned},
+		{UserID: a, Prefs: notification.StaffPrefs{Group: true}, Reason: notification.SwitchGroup},
+	}, nil, notification.StaffOverrides{})
+	require.Equal(t, []notification.StaffRecipient{{UserID: a, Reason: notification.SwitchGroup}}, got)
+}
+
+// A follower (PR-D of #464) answers to the activity switch and its override.
+func TestStaffOverrides_FollowUsesTheActivitySwitch(t *testing.T) {
+	require.True(t, notification.StaffOverrides{}.Allows(notification.SwitchFollow, allOn))
+	require.False(t, notification.StaffOverrides{}.Allows(notification.SwitchFollow, notification.StaffPrefs{Assigned: true, Group: true}))
+	require.False(t, notification.StaffOverrides{Activity: notification.OverrideOff}.Allows(notification.SwitchFollow, allOn))
+	require.True(t, notification.StaffOverrides{Activity: notification.OverrideOn}.Allows(notification.SwitchFollow, notification.StaffPrefs{}))
+}
+
+func TestStaffOverrides_Forced(t *testing.T) {
+	ov := notification.StaffOverrides{Assigned: notification.OverrideOn, Activity: notification.OverrideOff, Group: notification.OverrideUser}
+	require.True(t, ov.Forced(notification.SwitchAssigned))
+	require.True(t, ov.Forced(notification.SwitchActivity))
+	require.False(t, ov.Forced(notification.SwitchGroup))
+	require.False(t, notification.StaffOverrides{}.Forced(notification.SwitchAssigned))
+	require.False(t, notification.StaffOverrides{Assigned: "bogus"}.Forced(notification.SwitchAssigned))
+}
+
 func TestStaffRecipients(t *testing.T) {
 	a, b, c := uuid.New(), uuid.New(), uuid.New()
 	cand := func(id uuid.UUID, sw notification.StaffSwitch, p notification.StaffPrefs) notification.StaffCandidate {
@@ -83,7 +134,7 @@ func TestStaffRecipients(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, notification.StaffRecipients(tc.cands, tc.actor, tc.ov))
+			require.Equal(t, tc.want, ids(notification.StaffRecipients(tc.cands, tc.actor, tc.ov)))
 		})
 	}
 }

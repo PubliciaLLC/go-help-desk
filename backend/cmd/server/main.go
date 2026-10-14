@@ -440,7 +440,7 @@ func run() error {
 	// shutdown stay queued and are sent after the next start.
 	outboxSenders := outboxSenderMap(
 		// A staff row gets its address here, at send time (#441).
-		notify.NewStaffMailDispatcher(notify.NewGuestLinkDispatcher(emailDisp, srv.PrepareGuestLink), userSvc),
+		notify.NewStaffMailDispatcher(notify.NewGuestLinkDispatcher(emailDisp, srv.PrepareGuestLink), userSvc, srv),
 		webhookDisp,
 		notify.NewVerificationDispatcher(registrationSvc.SendVerification),
 	)

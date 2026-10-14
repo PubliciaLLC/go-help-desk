@@ -2032,7 +2032,7 @@ paths:
         - email_notify_group: a ticket is assigned to a group I belong to, or a requester replied on a group
           ticket that nobody personally holds.
         An administrator can force any of these on or off for everyone with the staff_email_*_override
-        settings; that wins over what is saved here. Nobody is emailed about their own action whatever the
+        settings; that wins over what is saved here. The answer's email_notifications says which are forced. Nobody is emailed about their own action whatever the
         switches say. A requester account is never sent staff mail, and an API key or OAuth client has no inbox
         of its own, so both are refused. Answers with the account as saved.
       tags: ['Account']
@@ -8606,6 +8606,25 @@ components:
         email_notify_assigned: {type: boolean, description: 'Email me when a ticket is assigned to me. Staff email switch, on by default.'}
         email_notify_activity: {type: boolean, description: 'Email me when a requester replies on a ticket assigned to me. On by default.'}
         email_notify_group: {type: boolean, description: "Email me about my groups' tickets. On by default."}
+        email_notifications:
+          type: object
+          description: |
+            What the three email switches amount to for this person, which is not always what they chose: an
+            administrator can force a switch on or off for everyone (the staff_email_*_override settings).
+            enabled is whether they get that mail; forced is true when the administrator decided it, so their
+            own email_notify_* value is not what applies. Present only on GET /me and PATCH /me/email-preferences,
+            and only for staff and administrators.
+          required: [assigned, activity, group]
+          properties:
+            assigned: {$ref: '#/components/schemas/EmailSwitchState'}
+            activity: {$ref: '#/components/schemas/EmailSwitchState'}
+            group: {$ref: '#/components/schemas/EmailSwitchState'}
+    EmailSwitchState:
+      type: object
+      required: [enabled, forced]
+      properties:
+        enabled: {type: boolean}
+        forced: {type: boolean}
     Category:
       description: A top-level category of the Category / Type / Item tree. active is false once the category is archived.
       type: object

@@ -49,6 +49,19 @@ func (f fakeStaffGroups) ListMembers(_ context.Context, id uuid.UUID) ([]uuid.UU
 	return f[id], nil
 }
 
+// fakeStaffAccess stands in for the send-time check that the person is still
+// entitled to hear about the ticket.
+type fakeStaffAccess struct {
+	ok   bool
+	err  error
+	seen []notification.StaffSwitch
+}
+
+func (f *fakeStaffAccess) StillEntitled(_ context.Context, _ user.User, _ uuid.UUID, reason notification.StaffSwitch) (bool, error) {
+	f.seen = append(f.seen, reason)
+	return f.ok, f.err
+}
+
 func staffUser(name string) user.User {
 	return user.User{
 		ID: uuid.New(), Email: name + "@example.com", DisplayName: name, Role: user.RoleStaff,
@@ -120,6 +133,26 @@ func TestStaffFanout_AssignmentMailsTheAssigneeAndTheGroup(t *testing.T) {
 		require.Equal(t, "GHD-2026-000007", got.TrackingNumber)
 		require.Empty(t, got.Recipient, "the address is read at send time, not queued")
 	}
+}
+
+// The reason decides the wording of the email, and what is checked again at
+// send time: a group member is told it is their group's ticket.
+func TestStaffFanout_EachRowSaysWhyThePersonIsBeingMailed(t *testing.T) {
+	assignee, member := staffUser("assignee"), staffUser("member")
+	g := uuid.New()
+	next := &recorder{}
+	f := newFanout(next, newFakeStaffUsers(assignee, member), fakeStaffGroups{g: {assignee.ID, member.ID}})
+
+	require.NoError(t, f.Dispatch(context.Background(), assignedEvent(nil, &assignee.ID, &g)))
+
+	reasons := map[uuid.UUID]notification.StaffSwitch{}
+	for _, ev := range next.got[1:] {
+		reasons[*ev.StaffUserID] = ev.StaffReason
+	}
+	require.Equal(t, map[uuid.UUID]notification.StaffSwitch{
+		assignee.ID: notification.SwitchAssigned, // holding it directly wins over being in the group
+		member.ID:   notification.SwitchGroup,
+	}, reasons)
 }
 
 func TestStaffFanout_OneEmailPerPersonEvenInTwoRoles(t *testing.T) {
@@ -315,7 +348,7 @@ func staffEvent(id uuid.UUID) notification.Event {
 func TestStaffMailDispatcher_ReadsTheAddressAtSendTime(t *testing.T) {
 	u := staffUser("u")
 	next := &recorder{}
-	d := NewStaffMailDispatcher(next, newFakeStaffUsers(u))
+	d := NewStaffMailDispatcher(next, newFakeStaffUsers(u), &fakeStaffAccess{ok: true})
 
 	require.NoError(t, d.Dispatch(context.Background(), staffEvent(u.ID)))
 
@@ -330,7 +363,7 @@ func TestStaffMailDispatcher_SkipsAnAccountThatCannotReceiveItAnymore(t *testing
 	disabled.Disabled = true
 	requester.Role = user.RoleUser
 	next := &recorder{}
-	d := NewStaffMailDispatcher(next, newFakeStaffUsers(disabled, requester))
+	d := NewStaffMailDispatcher(next, newFakeStaffUsers(disabled, requester), &fakeStaffAccess{ok: true})
 
 	for _, id := range []uuid.UUID{disabled.ID, requester.ID, uuid.New()} {
 		require.NoError(t, d.Dispatch(context.Background(), staffEvent(id)))
@@ -343,14 +376,39 @@ func TestStaffMailDispatcher_ALookupFailureIsRetried(t *testing.T) {
 	u := staffUser("u")
 	users := newFakeStaffUsers(u)
 	users.err = errors.New("database down")
-	require.Error(t, NewStaffMailDispatcher(&recorder{}, users).Dispatch(context.Background(), staffEvent(u.ID)))
+	require.Error(t, NewStaffMailDispatcher(&recorder{}, users, &fakeStaffAccess{ok: true}).Dispatch(context.Background(), staffEvent(u.ID)))
+}
+
+// Mail queued for somebody who has since lost the ticket (reassigned, taken
+// out of the group, or no longer able to see it) is dropped, not sent.
+func TestStaffMailDispatcher_SkipsAPersonWhoIsNoLongerEntitled(t *testing.T) {
+	u := staffUser("u")
+	next := &recorder{}
+	access := &fakeStaffAccess{ok: false}
+	d := NewStaffMailDispatcher(next, newFakeStaffUsers(u), access)
+
+	ev := staffEvent(u.ID)
+	ev.StaffReason = notification.SwitchGroup
+	require.NoError(t, d.Dispatch(context.Background(), ev))
+
+	require.Empty(t, next.got)
+	require.Equal(t, []notification.StaffSwitch{notification.SwitchGroup}, access.seen, "the check is told why the mail was queued")
+}
+
+// A check that cannot be made is retried, not treated as a no.
+func TestStaffMailDispatcher_AFailedEntitlementCheckIsRetried(t *testing.T) {
+	u := staffUser("u")
+	next := &recorder{}
+	d := NewStaffMailDispatcher(next, newFakeStaffUsers(u), &fakeStaffAccess{err: errors.New("database down")})
+	require.Error(t, d.Dispatch(context.Background(), staffEvent(u.ID)))
+	require.Empty(t, next.got)
 }
 
 // Everything else is the requester's mail or a webhook and is not touched.
 func TestStaffMailDispatcher_PassesOtherEventsStraightThrough(t *testing.T) {
 	next := &recorder{}
 	ev := sampleEvent()
-	require.NoError(t, NewStaffMailDispatcher(next, newFakeStaffUsers()).Dispatch(context.Background(), ev))
+	require.NoError(t, NewStaffMailDispatcher(next, newFakeStaffUsers(), &fakeStaffAccess{ok: true}).Dispatch(context.Background(), ev))
 	require.Equal(t, []notification.Event{ev}, next.got)
 }
 
@@ -386,11 +444,35 @@ func TestEventToEmail_StaffMailCarriesOnlyTheTrackingNumberAndALink(t *testing.T
 	}
 }
 
+// Somebody mailed because of their group is told it is their group's ticket,
+// not that it was assigned to them.
+func TestEventToEmail_GroupMembersAreToldItIsTheirGroupsTicket(t *testing.T) {
+	d := &EmailDispatcher{cfg: &config.Config{BaseURL: "https://help.example.com"}}
+	for _, tc := range []struct {
+		typ      notification.EventType
+		template string
+		subject  string
+	}{
+		{notification.EventStaffAssigned, "staff_assigned_group.tmpl", "A ticket is assigned to your group: [GHD-2026-000007]"},
+		{notification.EventStaffRequesterReplied, "staff_requester_replied_group.tmpl", "The requester replied on a ticket assigned to your group: [GHD-2026-000007]"},
+	} {
+		t.Run(string(tc.typ), func(t *testing.T) {
+			name, subject, _, _, ok := d.eventToEmail(notification.Event{
+				Type: tc.typ, TicketID: uuid.New(), TrackingNumber: "GHD-2026-000007",
+				Recipient: "staff@example.com", StaffReason: notification.SwitchGroup,
+			})
+			require.True(t, ok)
+			require.Equal(t, tc.template, name)
+			require.Equal(t, tc.subject, subject)
+		})
+	}
+}
+
 // Both templates parse and render with the view the dispatcher builds.
 func TestStaffTemplates_Render(t *testing.T) {
 	d, err := NewEmailDispatcher(&config.Config{SMTPHost: "smtp.example.com", SMTPFrom: "desk@example.com", BaseURL: "https://help.example.com"})
 	require.NoError(t, err)
-	for _, name := range []string{"staff_assigned.tmpl", "staff_requester_replied.tmpl"} {
+	for _, name := range []string{"staff_assigned.tmpl", "staff_requester_replied.tmpl", "staff_assigned_group.tmpl", "staff_requester_replied_group.tmpl"} {
 		var b strings.Builder
 		require.NoError(t, d.templates.ExecuteTemplate(&b, name, map[string]string{
 			"TrackingNumber": "GHD-2026-000007", "TicketURL": "https://help.example.com/tickets/x",
@@ -413,7 +495,7 @@ func TestOutboxRecord_RoundTripsTheStaffFields(t *testing.T) {
 	staff, a, g := uuid.New(), uuid.New(), uuid.New()
 	ev := notification.Event{
 		Type: notification.EventStaffRequesterReplied, TicketID: uuid.New(), OccurredAt: time.Now().UTC().Truncate(time.Microsecond),
-		StaffUserID: &staff, AssigneeUserID: &a, AssigneeGroupID: &g, FromRequester: true,
+		StaffUserID: &staff, AssigneeUserID: &a, AssigneeGroupID: &g, FromRequester: true, StaffReason: notification.SwitchGroup,
 	}
 	b, err := encodeEvent(ev)
 	require.NoError(t, err)
@@ -423,4 +505,5 @@ func TestOutboxRecord_RoundTripsTheStaffFields(t *testing.T) {
 	require.Equal(t, &a, got.AssigneeUserID)
 	require.Equal(t, &g, got.AssigneeGroupID)
 	require.True(t, got.FromRequester)
+	require.Equal(t, notification.SwitchGroup, got.StaffReason)
 }

@@ -94,6 +94,12 @@ type Event struct {
 	// instead of mailed.
 	StaffUserID *uuid.UUID `json:"-"`
 
+	// StaffReason is why StaffUserID is being mailed: SwitchAssigned for the
+	// person who holds the ticket, SwitchGroup for a member of the group that
+	// does. It words the email, and it is what the send-time check confirms
+	// is still true.
+	StaffReason StaffSwitch `json:"-"`
+
 	// Subject and StatusName exist for the webhook chat/ITSM renderers
 	// (internal/server/notify), which need a human-readable line for events
 	// whose Payload carries only ids — ticket.status_changed's Payload is

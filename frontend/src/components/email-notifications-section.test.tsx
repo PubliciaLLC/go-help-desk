@@ -100,6 +100,81 @@ describe('the email switches', () => {
   })
 })
 
+// An administrator can force a switch on or off for everyone (#441). The
+// person sees what applies to them, locked, and who decided.
+describe('a switch the administrator has forced', () => {
+  const state = (enabled: boolean, forced: boolean) => ({ enabled, forced })
+  const forcedProfile = () =>
+    staff({
+      email_notify_assigned: false, // their own choice: off
+      email_notify_group: true, // their own choice: on
+      email_notifications: {
+        assigned: state(true, true), // forced on over their off
+        activity: state(true, false),
+        group: state(false, true), // forced off over their on
+      },
+    })
+
+  it('shows what applies, not what they chose, and cannot be changed', () => {
+    useAuthStore.setState({ user: forcedProfile() })
+    renderWithQuery(<EmailNotificationsSection />)
+
+    const assigned = screen.getByRole('checkbox', ASSIGNED) as HTMLInputElement
+    expect(assigned.checked).toBe(true)
+    expect(assigned.disabled).toBe(true)
+    const group = screen.getByRole('checkbox', GROUP) as HTMLInputElement
+    expect(group.checked).toBe(false)
+    expect(group.disabled).toBe(true)
+  })
+
+  it('says it was set by the administrator, on that switch only', () => {
+    useAuthStore.setState({ user: forcedProfile() })
+    renderWithQuery(<EmailNotificationsSection />)
+
+    expect(screen.getAllByText('Set by your administrator')).toHaveLength(2)
+    const activity = screen.getByRole('checkbox', ACTIVITY) as HTMLInputElement
+    expect(activity.disabled).toBe(false)
+    expect(activity.closest('li')?.textContent).not.toMatch(/Set by your administrator/)
+  })
+
+  it('does not send anything when a locked switch is clicked', async () => {
+    useAuthStore.setState({ user: forcedProfile() })
+    const patch = vi.spyOn(api, 'patch').mockResolvedValue({ data: forcedProfile() })
+    renderWithQuery(<EmailNotificationsSection />)
+
+    await userEvent.click(screen.getByRole('checkbox', ASSIGNED))
+
+    expect(patch).not.toHaveBeenCalled()
+  })
+
+  it('still saves a switch that is not forced', async () => {
+    useAuthStore.setState({ user: forcedProfile() })
+    const patch = vi.spyOn(api, 'patch').mockResolvedValue({ data: forcedProfile() })
+    renderWithQuery(<EmailNotificationsSection />)
+
+    await userEvent.click(screen.getByRole('checkbox', ACTIVITY))
+
+    await waitFor(() => expect(patch).toHaveBeenCalledWith('/me/email-preferences', { email_notify_activity: false }))
+  })
+
+  it('shows the state the server reports after a save', async () => {
+    useAuthStore.setState({ user: staff() })
+    vi.spyOn(api, 'patch').mockResolvedValue({
+      data: staff({
+        email_notify_group: false,
+        email_notifications: { assigned: state(true, false), activity: state(true, false), group: state(true, true) },
+      }),
+    })
+    renderWithQuery(<EmailNotificationsSection />)
+
+    await userEvent.click(screen.getByRole('checkbox', GROUP))
+
+    // They turned it off, and the administrator has it forced on.
+    await waitFor(() => expect(screen.getByText('Set by your administrator')).toBeTruthy())
+    expect((screen.getByRole('checkbox', GROUP) as HTMLInputElement).checked).toBe(true)
+  })
+})
+
 describe('who sees it', () => {
   it('is for staff and administrators', () => {
     for (const role of ['staff', 'admin'] as const) {

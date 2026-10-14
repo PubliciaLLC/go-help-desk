@@ -57,6 +57,9 @@ func TestAssign_UnassigningLeavesTheEventEmpty(t *testing.T) {
 	require.Nil(t, ev.AssigneeGroupID)
 }
 
+// The requester is whoever filed the ticket, not whoever has the user role
+// (#441): a staff member who files a ticket and then replies on it is the
+// requester replying, and a staff member replying on somebody else's is not.
 func TestReply_FromRequesterFlag(t *testing.T) {
 	ctx := context.Background()
 	staffID := uuid.New()
@@ -76,13 +79,28 @@ func TestReply_FromRequesterFlag(t *testing.T) {
 			_, err := h.svc.AddGuestReply(ctx, tk.ID, "hi", 30, h.newStatus.ID)
 			return err
 		}, true},
-		{"a staff reply", func(h *harness) error {
+		{"a staff member replying on a ticket they filed", func(h *harness) error {
+			tk := h.seedOpenTicket(staffID)
+			_, err := h.svc.AddReply(ctx, tk.ID, "hi", false, false, "", ticket.Actor{UserID: &staffID, Role: user.RoleStaff}, 30, h.newStatus.ID)
+			return err
+		}, true},
+		{"an administrator replying on a ticket they filed", func(h *harness) error {
+			tk := h.seedOpenTicket(staffID)
+			_, err := h.svc.AddReply(ctx, tk.ID, "hi", false, false, "", ticket.Actor{UserID: &staffID, Role: user.RoleAdmin}, 30, h.newStatus.ID)
+			return err
+		}, true},
+		{"a staff reply on somebody else's ticket", func(h *harness) error {
 			tk := h.seedOpen()
 			_, err := h.svc.AddReply(ctx, tk.ID, "hi", false, false, "", ticket.Actor{UserID: &staffID, Role: user.RoleStaff}, 30, h.newStatus.ID)
 			return err
 		}, false},
-		{"a staff internal note", func(h *harness) error {
+		{"a staff internal note on somebody else's ticket", func(h *harness) error {
 			tk := h.seedOpen()
+			_, err := h.svc.AddReply(ctx, tk.ID, "hi", true, false, "", ticket.Actor{UserID: &staffID, Role: user.RoleStaff}, 30, h.newStatus.ID)
+			return err
+		}, false},
+		{"an internal note by the staff member who filed the ticket", func(h *harness) error {
+			tk := h.seedOpenTicket(staffID)
 			_, err := h.svc.AddReply(ctx, tk.ID, "hi", true, false, "", ticket.Actor{UserID: &staffID, Role: user.RoleStaff}, 30, h.newStatus.ID)
 			return err
 		}, false},
@@ -91,8 +109,13 @@ func TestReply_FromRequesterFlag(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			require.NoError(t, tc.reply(h))
-			ev := firstEvent(t, h.dispatcher.events, notification.EventTicketReplied)
-			require.Equal(t, tc.want, ev.FromRequester)
+			// Any event, not only ticket.replied: an internal note may be its
+			// own event type (#469), and must still never be a requester's.
+			got := false
+			for _, ev := range h.dispatcher.events {
+				got = got || ev.FromRequester
+			}
+			require.Equal(t, tc.want, got)
 		})
 	}
 }

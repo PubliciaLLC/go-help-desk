@@ -48,6 +48,8 @@ type outboxRecord struct {
 	AssigneeUserID  *uuid.UUID `json:"assignee_user_id,omitempty"`
 	AssigneeGroupID *uuid.UUID `json:"assignee_group_id,omitempty"`
 	FromRequester   bool       `json:"from_requester,omitempty"`
+
+	StaffReason notification.StaffSwitch `json:"staff_reason,omitempty"`
 }
 
 func encodeEvent(ev notification.Event) ([]byte, error) {
@@ -60,6 +62,7 @@ func encodeEvent(ev notification.Event) ([]byte, error) {
 		Subject: ev.Subject, StatusName: ev.StatusName, GuestLink: ev.GuestLink,
 		StaffUserID: ev.StaffUserID, AssigneeUserID: ev.AssigneeUserID,
 		AssigneeGroupID: ev.AssigneeGroupID, FromRequester: ev.FromRequester,
+		StaffReason: ev.StaffReason,
 	})
 }
 
@@ -74,6 +77,7 @@ func decodeEvent(b []byte) (notification.Event, error) {
 		Subject: r.Subject, StatusName: r.StatusName, GuestLink: r.GuestLink,
 		StaffUserID: r.StaffUserID, AssigneeUserID: r.AssigneeUserID,
 		AssigneeGroupID: r.AssigneeGroupID, FromRequester: r.FromRequester,
+		StaffReason: r.StaffReason,
 	}, nil
 }
 

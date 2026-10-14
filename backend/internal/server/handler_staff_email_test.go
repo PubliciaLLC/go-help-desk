@@ -36,7 +36,7 @@ func wireStaffMail(t *testing.T, h *harness) *staffMail {
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	sent := &recordingChannel{}
 	w := notify.NewWorker(store, map[string]notification.Dispatcher{
-		"email": notify.NewStaffMailDispatcher(sent, h.userSvc),
+		"email": notify.NewStaffMailDispatcher(sent, h.userSvc, h.srv),
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return &staffMail{h: h, worker: w, sent: sent}
 }

@@ -72,10 +72,11 @@ func (f *StaffFanout) Dispatch(ctx context.Context, ev notification.Event) error
 		}
 		return err
 	}
-	for _, id := range ids {
+	for _, r := range ids {
 		staff := notification.Event{
 			Type: staffType, TicketID: ev.TicketID, ActorID: ev.ActorID,
-			TrackingNumber: ev.TrackingNumber, OccurredAt: ev.OccurredAt, StaffUserID: &id,
+			TrackingNumber: ev.TrackingNumber, OccurredAt: ev.OccurredAt,
+			StaffUserID: &r.UserID, StaffReason: r.Reason,
 		}
 		if derr := f.next.Dispatch(ctx, staff); derr != nil && err == nil {
 			err = derr
@@ -140,7 +141,7 @@ func (f *StaffFanout) groupMembers(ctx context.Context, ev notification.Event, r
 }
 
 // recipients reads the candidates' accounts and applies the rule.
-func (f *StaffFanout) recipients(ctx context.Context, ev notification.Event, cands []candidate) ([]uuid.UUID, error) {
+func (f *StaffFanout) recipients(ctx context.Context, ev notification.Event, cands []candidate) ([]notification.StaffRecipient, error) {
 	if len(cands) == 0 {
 		return nil, nil
 	}
@@ -170,16 +171,28 @@ func (f *StaffFanout) recipients(ctx context.Context, ev notification.Event, can
 	return notification.StaffRecipients(eligible, ev.ActorID, f.overrides(ctx)), nil
 }
 
+// StaffAccess is the send-time check that a person should still hear about a
+// ticket. Mail can wait in the queue and be retried for an hour, and the
+// ticket moves meanwhile.
+type StaffAccess interface {
+	// StillEntitled reports whether u still holds the ticket (or is still in
+	// the group that does), or, for a follower, can still see it under the
+	// ticket-scope rule (#391). A ticket that no longer exists is not an error:
+	// there is nothing to tell anyone about.
+	StillEntitled(ctx context.Context, u user.User, ticketID uuid.UUID, reason notification.StaffSwitch) (bool, error)
+}
+
 // StaffMailDispatcher is the send-time half, wrapped around the email channel.
 type StaffMailDispatcher struct {
-	next  notification.Dispatcher
-	users StaffUsers
+	next   notification.Dispatcher
+	users  StaffUsers
+	access StaffAccess
 }
 
 // NewStaffMailDispatcher fills in a staff.* event's recipient from the account
 // as it is when the mail is sent, then hands it to next.
-func NewStaffMailDispatcher(next notification.Dispatcher, users StaffUsers) *StaffMailDispatcher {
-	return &StaffMailDispatcher{next: next, users: users}
+func NewStaffMailDispatcher(next notification.Dispatcher, users StaffUsers, access StaffAccess) *StaffMailDispatcher {
+	return &StaffMailDispatcher{next: next, users: users, access: access}
 }
 
 func (d *StaffMailDispatcher) Dispatch(ctx context.Context, ev notification.Event) error {
@@ -195,6 +208,15 @@ func (d *StaffMailDispatcher) Dispatch(ctx context.Context, ev notification.Even
 	// would not change that. Mail already queued also stops the moment the
 	// account does, which is what disabling someone should mean.
 	if len(us) != 1 || !us[0].CanReceiveStaffMail() {
+		return nil
+	}
+	// And mail for a ticket the person no longer holds or can no longer see:
+	// reassigned, taken out of the group, or moved out of their scope since.
+	ok, err := d.access.StillEntitled(ctx, us[0], ev.TicketID, ev.StaffReason)
+	if err != nil {
+		return fmt.Errorf("checking access to the ticket: %w", err) // retried by the worker
+	}
+	if !ok {
 		return nil
 	}
 	ev.Recipient = us[0].Email

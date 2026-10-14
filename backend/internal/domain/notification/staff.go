@@ -23,6 +23,10 @@ const (
 	SwitchActivity StaffSwitch = "activity"
 	// SwitchGroup: a ticket assigned to a group I belong to.
 	SwitchGroup StaffSwitch = "group"
+	// SwitchFollow: a ticket I follow. Nothing builds this candidate until
+	// following exists (PR-D of #464); it is here so the switch rule and the
+	// send-time check are settled first. It answers to the activity switch.
+	SwitchFollow StaffSwitch = "follow"
 )
 
 // OverrideMode is an administrator's decision about one switch for everyone.
@@ -65,7 +69,7 @@ func (o StaffOverrides) Allows(sw StaffSwitch, p StaffPrefs) bool {
 	switch sw {
 	case SwitchAssigned:
 		mode, own = o.Assigned, p.Assigned
-	case SwitchActivity:
+	case SwitchActivity, SwitchFollow:
 		mode, own = o.Activity, p.Activity
 	case SwitchGroup:
 		mode, own = o.Group, p.Group
@@ -79,12 +83,34 @@ func (o StaffOverrides) Allows(sw StaffSwitch, p StaffPrefs) bool {
 	return own
 }
 
+// Forced reports whether the administrator has decided the switch for
+// everyone, so a person's own choice is not what applies.
+func (o StaffOverrides) Forced(sw StaffSwitch) bool {
+	var mode OverrideMode
+	switch sw {
+	case SwitchAssigned:
+		mode = o.Assigned
+	case SwitchActivity, SwitchFollow:
+		mode = o.Activity
+	case SwitchGroup:
+		mode = o.Group
+	}
+	return mode == OverrideOn || mode == OverrideOff
+}
+
 // StaffCandidate is a person with a reason to hear about an event. Callers
 // pass only people who can receive staff mail (active, staff or admin, not a
 // service account); this file does not know what a user is.
 type StaffCandidate struct {
 	UserID uuid.UUID
 	Prefs  StaffPrefs
+	Reason StaffSwitch
+}
+
+// StaffRecipient is one person to mail and the reason that let them through:
+// the first of their reasons whose switch was on.
+type StaffRecipient struct {
+	UserID uuid.UUID
 	Reason StaffSwitch
 }
 
@@ -95,8 +121,8 @@ type StaffCandidate struct {
 // switches so that an administrator forcing a switch on cannot mail someone
 // about what they just did themselves. actor is nil for an event with no staff
 // member behind it (a guest's reply, the auto-close scheduler).
-func StaffRecipients(cands []StaffCandidate, actor *uuid.UUID, ov StaffOverrides) []uuid.UUID {
-	var out []uuid.UUID
+func StaffRecipients(cands []StaffCandidate, actor *uuid.UUID, ov StaffOverrides) []StaffRecipient {
+	var out []StaffRecipient
 	seen := make(map[uuid.UUID]bool, len(cands))
 	for _, c := range cands {
 		if seen[c.UserID] {
@@ -109,7 +135,7 @@ func StaffRecipients(cands []StaffCandidate, actor *uuid.UUID, ov StaffOverrides
 			continue
 		}
 		seen[c.UserID] = true
-		out = append(out, c.UserID)
+		out = append(out, StaffRecipient{UserID: c.UserID, Reason: c.Reason})
 	}
 	return out
 }

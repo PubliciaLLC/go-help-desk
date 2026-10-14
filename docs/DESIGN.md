@@ -2207,8 +2207,9 @@ on the existing webhook feature instead of as plugins.
 - **Staff email** ([#441](https://github.com/PubliciaLLC/go-help-desk/issues/441),
   part C of #464). Staff are emailed about their own work, not just
   requesters about theirs. Two events: a ticket is **assigned**, and the
-  **requester replies** (an account holder's or a guest's public reply; a
-  staff reply or an internal note is not one). A reopen by a requester's reply
+  **requester replies** (the public reply of whoever filed the ticket: an
+  account holder, a guest, or a staff member replying on a ticket they filed
+  themselves; any other staff reply, or an internal note, is not one). A reopen by a requester's reply
   and ticket followers are not part of this yet.
 
   Three per-user switches, all **on by default** (columns on `users`, set
@@ -2222,7 +2223,9 @@ on the existing webhook feature instead of as plugins.
 
   A requester's reply on a ticket that has both an assignee and a group goes
   to the assignee only: the group's members would otherwise get mail for every
-  reply on work a colleague already holds. Ticket followers will join the
+  reply on work a colleague already holds. Assignment mails both. Group
+  members are told it is their group's ticket ("assigned to your group"), not
+  that it is theirs. Ticket followers will join the
   second switch when following exists.
 
   An administrator can **override each switch for everyone**
@@ -2230,6 +2233,9 @@ on the existing webhook feature instead of as plugins.
   `staff_email_activity_override`, `staff_email_group_override`): `user`
   leaves it to each person (the default), `on` and `off` ignore what people
   chose. An unrecognised stored value reads as `user`, never as a forced one.
+  `GET /me` reports, for each switch, whether it applies to the person and
+  whether an override forces it, and the account page shows a forced switch
+  locked with "Set by your administrator".
 
   The rules that hold whatever the switches say:
   - **Nobody is mailed about their own action.** The person who made the
@@ -2247,7 +2253,11 @@ on the existing webhook feature instead of as plugins.
   channel, so one person's failing mail never resends anyone else's and none
   of it touches the requester's own mail. The row names the person, not an
   address: the address is read when the mail is sent, and mail queued for an
-  account that was disabled or deleted in the meantime is dropped. Rows are
+  account that was disabled or deleted in the meantime is dropped. The ticket
+  is checked again too: mail is dropped if the person no longer holds the
+  ticket, is no longer in the group that does, or (for a follower) can no
+  longer see it under the ticket-scope rule (#391), because a queued row can
+  wait up to an hour of retries while the ticket moves. Rows are
   made at the moment the request queues its events (`notify.StaffFanout`), and
   are never webhook events.
 - Email is a notification, not a copy of the ticket. A message says what
