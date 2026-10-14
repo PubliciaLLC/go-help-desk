@@ -2092,6 +2092,51 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  /api/v1/me/email-preferences:
+    patch:
+      operationId: updateEmailPreferences
+      summary: Change which staff emails the caller gets.
+      description: |
+        Staff and administrators only, in a signed-in session (second factor required).
+        Sets the caller's three staff-email switches. Each is optional and only the ones sent change, so two
+        browser tabs cannot undo each other. All three are on for a new account and for every account that
+        existed before they were added.
+        - email_notify_assigned: a ticket is assigned to me.
+        - email_notify_activity: a requester replied on a ticket assigned to me.
+        - email_notify_group: a ticket is assigned to a group I belong to, or a requester replied on a group
+          ticket that nobody personally holds.
+        An administrator can force any of these on or off for everyone with the staff_email_*_override
+        settings; that wins over what is saved here. The answer's email_notifications says which are forced. Nobody is emailed about their own action whatever the
+        switches say. A requester account is never sent staff mail, and an API key or OAuth client has no inbox
+        of its own, so both are refused. Answers with the account as saved.
+      tags: ['Account']
+      x-ghd-handler: handleUpdateEmailPreferences
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin, staff]
+      x-ghd-mfa: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email_notify_assigned: {type: boolean}
+                email_notify_activity: {type: boolean}
+                email_notify_group: {type: boolean}
+      responses:
+        '200':
+          description: The caller's account, with the switches as saved.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/User'}
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /api/v1/me/mfa/enroll:
     post:
       operationId: mfaEnrollStart
@@ -4388,6 +4433,9 @@ paths:
           invalid_infected_handling, invalid_mismatch_handling,
           invalid_reputation_refresh). Before v1.3.0, null and a non-string were
           refused with bad_request for some of these.
+        - staff_email_assigned_override, staff_email_activity_override and
+          staff_email_group_override take user, on or off; a string outside the list
+          is refused with invalid_staff_email_override, as are null and a non-string.
         - ticket_prefix is 1 to 8 uppercase letters or digits (invalid_ticket_prefix).
         - audit_retention_days must be an integer of at most 36525. Zero or less
           keeps entries forever.
@@ -4487,7 +4535,7 @@ paths:
             invalid_scan_policy, invalid_infected_handling,
             invalid_mismatch_handling, invalid_reputation_refresh,
             invalid_ticket_prefix, invalid_scanner_address, invalid_allowed_types,
-            invalid_reputation_config.
+            invalid_reputation_config, invalid_staff_email_override.
           content:
             application/json:
               schema:
@@ -9055,7 +9103,7 @@ components:
     User:
       description: An account. The password hash, the TOTP secret, single sign-on subjects and the deletion time are never returned. mfa_enabled is the TOTP flag only.
       type: object
-      required: [id, email, display_name, role, mfa_enabled, disabled, must_change_password, created_at, updated_at]
+      required: [id, email, display_name, role, mfa_enabled, disabled, must_change_password, created_at, updated_at, email_notify_assigned, email_notify_activity, email_notify_group]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
         email: {type: string}
@@ -9066,6 +9114,28 @@ components:
         must_change_password: {type: boolean, description: "Set by /app/server unlock on the server console; cleared when the account holder changes the password."}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
+        email_notify_assigned: {type: boolean, description: 'Email me when a ticket is assigned to me. Staff email switch, on by default.'}
+        email_notify_activity: {type: boolean, description: 'Email me when a requester replies on a ticket assigned to me. On by default.'}
+        email_notify_group: {type: boolean, description: "Email me about my groups' tickets. On by default."}
+        email_notifications:
+          type: object
+          description: |
+            What the three email switches amount to for this person, which is not always what they chose: an
+            administrator can force a switch on or off for everyone (the staff_email_*_override settings).
+            enabled is whether they get that mail; forced is true when the administrator decided it, so their
+            own email_notify_* value is not what applies. Present only on GET /me and PATCH /me/email-preferences,
+            and only for staff and administrators.
+          required: [assigned, activity, group]
+          properties:
+            assigned: {$ref: '#/components/schemas/EmailSwitchState'}
+            activity: {$ref: '#/components/schemas/EmailSwitchState'}
+            group: {$ref: '#/components/schemas/EmailSwitchState'}
+    EmailSwitchState:
+      type: object
+      required: [enabled, forced]
+      properties:
+        enabled: {type: boolean}
+        forced: {type: boolean}
     Category:
       description: A top-level category of the Category / Type / Item tree. active is false once the category is archived.
       type: object
@@ -9739,6 +9809,18 @@ components:
           type: string
           enum: [refuse, wrap]
           description: What happens to a file whose content contradicts its name, when its type is not allowed. Anything unrecognised reads as refuse. Session only.
+        staff_email_assigned_override:
+          type: string
+          enum: [user, 'on', 'off']
+          description: Whether every staff member is emailed when a ticket is assigned to them, whatever they chose on their profile. user (the default) leaves it to each person. Anything unrecognised reads as user.
+        staff_email_activity_override:
+          type: string
+          enum: [user, 'on', 'off']
+          description: The same for a requester's reply on a ticket assigned to them.
+        staff_email_group_override:
+          type: string
+          enum: [user, 'on', 'off']
+          description: The same for a group's tickets, for every member of the group.
         audit_retention_days:
           type: integer
           maximum: 36525

@@ -378,6 +378,15 @@ func (s *Server) meRouter() *chi.Mux {
 		})
 
 		r.With(authmw.RequireMFAOrPasswordChange).Patch("/password", s.handleChangePassword)
+
+		r.Group(func(r chi.Router) {
+			r.Use(authmw.RequireMFA)
+			// Staff only: a requester account is never sent staff mail. Refused
+			// to machine credentials with the rest of this group; a key has no
+			// inbox of its own to choose for.
+			r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff)).
+				Patch("/email-preferences", s.handleUpdateEmailPreferences)
+		})
 	})
 
 	// Reading your own identity is left to machine credentials: an integration

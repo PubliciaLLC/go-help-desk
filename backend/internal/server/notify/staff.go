@@ -1,0 +1,225 @@
+package notify
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+
+	"github.com/google/uuid"
+
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+)
+
+// Staff email (#441), in two halves around the outbox.
+//
+//   - StaffFanout runs when a request queues an event. It turns "this ticket
+//     was assigned" or "the requester replied" into one staff.* event per
+//     person to be mailed, applying the three switches, the administrator's
+//     override, and the rule that nobody is mailed about their own action.
+//   - StaffMailDispatcher runs when the worker sends one of those rows. It
+//     looks the person up again and fills in their address.
+//
+// Each person gets their own outbox row, so one person's failing mail never
+// resends anyone else's, and none of it touches the requester's mail, which
+// still travels on the original event.
+
+// StaffUsers is the part of the user service staff mail reads.
+type StaffUsers interface {
+	GetByIDs(ctx context.Context, ids []uuid.UUID) ([]user.User, error)
+}
+
+// StaffGroups is the part of the group service staff mail reads.
+type StaffGroups interface {
+	// ListMailableMembers, not ListMembers: the people staff email can go to.
+	ListMailableMembers(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID, error)
+}
+
+// StaffFanout wraps the dispatcher requests use.
+type StaffFanout struct {
+	next      notification.Dispatcher
+	users     StaffUsers
+	groups    StaffGroups
+	overrides func(context.Context) notification.StaffOverrides
+	log       *slog.Logger
+}
+
+// NewStaffFanout returns a Dispatcher that forwards every event to next and
+// then queues staff mail for the events that call for it. overrides is read on
+// every event, so a change applies to the next email.
+func NewStaffFanout(next notification.Dispatcher, users StaffUsers, groups StaffGroups,
+	overrides func(context.Context) notification.StaffOverrides, log *slog.Logger) *StaffFanout {
+	return &StaffFanout{next: next, users: users, groups: groups, overrides: overrides, log: log}
+}
+
+func (f *StaffFanout) Dispatch(ctx context.Context, ev notification.Event) error {
+	// The original event first and unchanged: the webhook channel and the
+	// requester's own mail depend on it, and a problem finding staff to mail
+	// must not cost them anything.
+	err := f.next.Dispatch(ctx, ev)
+
+	staffType, cands, ok := f.candidates(ctx, ev)
+	if !ok {
+		return err
+	}
+	ids, lerr := f.recipients(ctx, ev, cands)
+	if lerr != nil {
+		// Callers discard this; the log is how "why did nobody get the email"
+		// gets an answer.
+		f.log.ErrorContext(ctx, "staff email: could not work out who to notify",
+			"event", ev.Type, "ticket_id", ev.TicketID, "error", lerr)
+		if err == nil {
+			err = lerr
+		}
+		return err
+	}
+	for _, r := range ids {
+		staff := notification.Event{
+			Type: staffType, TicketID: ev.TicketID, ActorID: ev.ActorID,
+			TrackingNumber: ev.TrackingNumber, OccurredAt: ev.OccurredAt,
+			StaffUserID: &r.UserID, StaffReason: r.Reason,
+		}
+		if derr := f.next.Dispatch(ctx, staff); derr != nil && err == nil {
+			err = derr
+		}
+	}
+	return err
+}
+
+// candidate is a person with a reason to hear about an event, before their
+// account is read.
+type candidate struct {
+	id     uuid.UUID
+	reason notification.StaffSwitch
+}
+
+// candidates says which staff mail an event calls for and who might get it.
+// ok is false for an event that calls for none; an empty slice with ok true
+// means it calls for some but nobody holds the ticket.
+func (f *StaffFanout) candidates(ctx context.Context, ev notification.Event) (notification.EventType, []candidate, bool) {
+	switch {
+	case ev.Type == notification.EventTicketAssigned:
+		cands := []candidate{}
+		if ev.AssigneeUserID != nil {
+			cands = append(cands, candidate{*ev.AssigneeUserID, notification.SwitchAssigned})
+		}
+		cands = append(cands, f.groupMembers(ctx, ev, notification.SwitchGroup)...)
+		return notification.EventStaffAssigned, cands, true
+
+	case ev.Type == notification.EventTicketReplied && ev.FromRequester:
+		// The assignee hears about it. A group hears about it only while
+		// nobody personally holds the ticket: a group member whose colleague
+		// has the ticket would otherwise get mail for every reply on work
+		// that is not theirs.
+		//
+		// Ticket followers (PR-D of #464) join here, under SwitchActivity.
+		cands := []candidate{}
+		if ev.AssigneeUserID != nil {
+			cands = append(cands, candidate{*ev.AssigneeUserID, notification.SwitchActivity})
+		} else {
+			cands = append(cands, f.groupMembers(ctx, ev, notification.SwitchGroup)...)
+		}
+		return notification.EventStaffRequesterReplied, cands, true
+	}
+	return "", nil, false
+}
+
+func (f *StaffFanout) groupMembers(ctx context.Context, ev notification.Event, reason notification.StaffSwitch) []candidate {
+	if ev.AssigneeGroupID == nil {
+		return nil
+	}
+	members, err := f.groups.ListMailableMembers(ctx, *ev.AssigneeGroupID)
+	if err != nil {
+		f.log.ErrorContext(ctx, "staff email: could not list the group's members",
+			"event", ev.Type, "ticket_id", ev.TicketID, "error", err)
+		return nil
+	}
+	out := make([]candidate, len(members))
+	for i, m := range members {
+		out[i] = candidate{m, reason}
+	}
+	return out
+}
+
+// recipients reads the candidates' accounts and applies the rule.
+func (f *StaffFanout) recipients(ctx context.Context, ev notification.Event, cands []candidate) ([]notification.StaffRecipient, error) {
+	if len(cands) == 0 {
+		return nil, nil
+	}
+	ids := make([]uuid.UUID, len(cands))
+	for i, c := range cands {
+		ids[i] = c.id
+	}
+	users, err := f.users.GetByIDs(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("reading staff accounts: %w", err)
+	}
+	byID := make(map[uuid.UUID]user.User, len(users))
+	for _, u := range users {
+		byID[u.ID] = u
+	}
+	var eligible []notification.StaffCandidate
+	for _, c := range cands {
+		u, ok := byID[c.id]
+		if !ok || !u.CanReceiveStaffMail() {
+			continue
+		}
+		eligible = append(eligible, notification.StaffCandidate{
+			UserID: u.ID, Reason: c.reason,
+			Prefs: notification.StaffPrefs{Assigned: u.EmailNotifyAssigned, Activity: u.EmailNotifyActivity, Group: u.EmailNotifyGroup},
+		})
+	}
+	return notification.StaffRecipients(eligible, ev.ActorID, f.overrides(ctx)), nil
+}
+
+// StaffAccess is the send-time check that a person should still hear about a
+// ticket. Mail can wait in the queue and be retried for an hour, and the
+// ticket moves meanwhile.
+type StaffAccess interface {
+	// StillEntitled reports whether u still holds the ticket (or is still in
+	// the group that does), or, for a follower, can still see it under the
+	// ticket-scope rule (#391). A ticket that no longer exists is not an error:
+	// there is nothing to tell anyone about.
+	StillEntitled(ctx context.Context, u user.User, ticketID uuid.UUID, reason notification.StaffSwitch) (bool, error)
+}
+
+// StaffMailDispatcher is the send-time half, wrapped around the email channel.
+type StaffMailDispatcher struct {
+	next   notification.Dispatcher
+	users  StaffUsers
+	access StaffAccess
+}
+
+// NewStaffMailDispatcher fills in a staff.* event's recipient from the account
+// as it is when the mail is sent, then hands it to next.
+func NewStaffMailDispatcher(next notification.Dispatcher, users StaffUsers, access StaffAccess) *StaffMailDispatcher {
+	return &StaffMailDispatcher{next: next, users: users, access: access}
+}
+
+func (d *StaffMailDispatcher) Dispatch(ctx context.Context, ev notification.Event) error {
+	if ev.StaffUserID == nil {
+		return d.next.Dispatch(ctx, ev)
+	}
+	us, err := d.users.GetByIDs(ctx, []uuid.UUID{*ev.StaffUserID})
+	if err != nil {
+		return fmt.Errorf("reading staff account: %w", err) // retried by the worker
+	}
+	// Queued mail for an account that has since been disabled, deleted or
+	// made a requester is dropped: there is nobody to send it to, and retrying
+	// would not change that. Mail already queued also stops the moment the
+	// account does, which is what disabling someone should mean.
+	if len(us) != 1 || !us[0].CanReceiveStaffMail() {
+		return nil
+	}
+	// And mail for a ticket the person no longer holds or can no longer see:
+	// reassigned, taken out of the group, or moved out of their scope since.
+	ok, err := d.access.StillEntitled(ctx, us[0], ev.TicketID, ev.StaffReason)
+	if err != nil {
+		return fmt.Errorf("checking access to the ticket: %w", err) // retried by the worker
+	}
+	if !ok {
+		return nil
+	}
+	ev.Recipient = us[0].Email
+	return d.next.Dispatch(ctx, ev)
+}

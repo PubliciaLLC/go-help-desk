@@ -620,6 +620,12 @@ type Querier interface {
 	ListGroupsForUser(ctx context.Context, userID uuid.UUID) ([]Group, error)
 	ListGroupsInScope(ctx context.Context, arg ListGroupsInScopeParams) ([]Group, error)
 	ListItems(ctx context.Context, arg ListItemsParams) ([]Item, error)
+	// The members of a group that staff email can go to (#441): active staff and
+	// administrators, never a service account (#490), a disabled or deleted
+	// account, or somebody moved to a requester role. The mail path checks each
+	// person again in Go (User.CanReceiveStaffMail); this keeps them from being
+	// offered as candidates in the first place.
+	ListMailableGroupMembers(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID, error)
 	// Every client's groups in one query, for the client list: a client's groups
 	// are its service user's, and asking per row would be a query per client.
 	ListOAuthClientGroups(ctx context.Context) ([]ListOAuthClientGroupsRow, error)
@@ -849,6 +855,11 @@ type Querier interface {
 	// of two.
 	SetSLAResolvedAndFirstResponse(ctx context.Context, arg SetSLAResolvedAndFirstResponseParams) error
 	SetSetting(ctx context.Context, arg SetSettingParams) error
+	// The person's staff-email switches (#441), each changed only when given.
+	// Narrow for the reason UpdateUserProfile is: UpdateUser writes a whole row
+	// from an earlier read, and must not be the way a choice made a moment ago is
+	// put back. updated_at is left alone; the account itself did not change.
+	SetUserEmailPreferences(ctx context.Context, arg SetUserEmailPreferencesParams) error
 	// Writes only the TOTP secret and whether it is enabled. Same reason: the
 	// enrolment confirmation read the whole row, checked a code, and wrote every
 	// column back over whatever had happened in between.

@@ -10,6 +10,7 @@ import (
 	qrcode "github.com/skip2/go-qrcode"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
@@ -44,7 +45,78 @@ func (s *Server) handleGetMe(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, u)
+	JSON(w, http.StatusOK, s.meView(r.Context(), u))
+}
+
+// meUser is the signed-in account as /me reports it: the user itself, plus for
+// staff and administrators what their email switches actually amount to.
+type meUser struct {
+	user.User
+	EmailNotifications *emailNotifications `json:"email_notifications,omitempty"`
+}
+
+// switchState is one email switch as it applies to this person: whether they
+// get that mail, and whether an administrator decided that for everyone (so
+// their own choice is not what applies).
+type switchState struct {
+	Enabled bool `json:"enabled"`
+	Forced  bool `json:"forced"`
+}
+
+type emailNotifications struct {
+	Assigned switchState `json:"assigned"`
+	Activity switchState `json:"activity"`
+	Group    switchState `json:"group"`
+}
+
+// meView adds the effective email state (#441). A requester is never sent
+// staff mail, so has none to report.
+func (s *Server) meView(ctx context.Context, u user.User) meUser {
+	v := meUser{User: u}
+	if u.Role == user.RoleUser {
+		return v
+	}
+	ov := s.adminSvc.StaffEmailOverrides(ctx)
+	prefs := notification.StaffPrefs{Assigned: u.EmailNotifyAssigned, Activity: u.EmailNotifyActivity, Group: u.EmailNotifyGroup}
+	state := func(sw notification.StaffSwitch) switchState {
+		return switchState{Enabled: ov.Allows(sw, prefs), Forced: ov.Forced(sw)}
+	}
+	v.EmailNotifications = &emailNotifications{
+		Assigned: state(notification.SwitchAssigned),
+		Activity: state(notification.SwitchActivity),
+		Group:    state(notification.SwitchGroup),
+	}
+	return v
+}
+
+// PATCH /api/v1/me/email-preferences
+//
+// The caller's own staff-email switches (#441). Each is optional; only the ones
+// sent change. An administrator's override can still force a switch on or off
+// for everyone, whatever is saved here.
+func (s *Server) handleUpdateEmailPreferences(w http.ResponseWriter, r *http.Request) {
+	a := authmw.GetActor(r)
+	var body struct {
+		Assigned *bool `json:"email_notify_assigned"`
+		Activity *bool `json:"email_notify_activity"`
+		Group    *bool `json:"email_notify_group"`
+	}
+	if err := DecodeJSON(r, &body); err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "the email switches must be true or false")
+		return
+	}
+	if err := s.users.SetEmailPreferences(r.Context(), a.UserID, user.EmailPreferencesPatch{
+		Assigned: body.Assigned, Activity: body.Activity, Group: body.Group,
+	}); err != nil {
+		handleError(w, err)
+		return
+	}
+	u, err := s.users.GetByID(r.Context(), a.UserID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, s.meView(r.Context(), u))
 }
 
 // PATCH /api/v1/me/password

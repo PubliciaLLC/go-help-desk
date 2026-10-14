@@ -261,6 +261,26 @@ func (f *fakeUserStore) UpdateProfile(_ context.Context, id uuid.UUID, email, di
 	return nil
 }
 
+// SetEmailPreferences writes only the switches named in the patch.
+func (f *fakeUserStore) SetEmailPreferences(_ context.Context, id uuid.UUID, p user.EmailPreferencesPatch) error {
+	u, ok := f.byID[id]
+	if !ok {
+		return errFakeNotFound
+	}
+	if p.Assigned != nil {
+		u.EmailNotifyAssigned = *p.Assigned
+	}
+	if p.Activity != nil {
+		u.EmailNotifyActivity = *p.Activity
+	}
+	if p.Group != nil {
+		u.EmailNotifyGroup = *p.Group
+	}
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	return nil
+}
+
 // RehashPassword mirrors the real statement: it applies only while the stored
 // hash is still the one the caller read.
 func (f *fakeUserStore) RehashPassword(ctx context.Context, id uuid.UUID, oldHash, newHash string) (bool, error) {

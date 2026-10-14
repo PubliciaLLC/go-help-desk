@@ -474,6 +474,24 @@ func (s *Store) EnableMFAIfStillEnrolled(ctx context.Context, id uuid.UUID) (boo
 	return false, fmt.Errorf("enabling MFA: %w", err)
 }
 
+// nullBool is NULL for an unset switch, which the statement reads as "leave it".
+func nullBool(b *bool) sql.NullBool {
+	if b == nil {
+		return sql.NullBool{}
+	}
+	return sql.NullBool{Bool: *b, Valid: true}
+}
+
+// SetEmailPreferences writes only the switches the patch names.
+func (s *Store) SetEmailPreferences(ctx context.Context, id uuid.UUID, p user.EmailPreferencesPatch) error {
+	if err := s.q.SetUserEmailPreferences(ctx, dbgen.SetUserEmailPreferencesParams{
+		ID: id, Assigned: nullBool(p.Assigned), Activity: nullBool(p.Activity), Grp: nullBool(p.Group),
+	}); err != nil {
+		return fmt.Errorf("setting email preferences: %w", err)
+	}
+	return nil
+}
+
 // UpdateProfile writes only the address and the name.
 func (s *Store) UpdateProfile(ctx context.Context, id uuid.UUID, email, displayName string) error {
 	n, err := s.q.UpdateUserProfile(ctx, dbgen.UpdateUserProfileParams{
@@ -550,6 +568,10 @@ func fromRow(r dbgen.User) user.User {
 		CreatedAt:          r.CreatedAt,
 		UpdatedAt:          r.UpdatedAt,
 		DeletedAt:          database.TimePtr(r.DeletedAt),
+
+		EmailNotifyAssigned: r.EmailNotifyAssigned,
+		EmailNotifyActivity: r.EmailNotifyActivity,
+		EmailNotifyGroup:    r.EmailNotifyGroup,
 	}
 }
 

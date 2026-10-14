@@ -13,6 +13,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/antivirus"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
@@ -701,5 +702,24 @@ func (s *Service) ReputationRefreshInterval(ctx context.Context) time.Duration {
 		return 0
 	default:
 		return 14 * day
+	}
+}
+
+// StaffEmailOverrides reads the administrator's override of each staff-email
+// switch (#441). Read on every call, never cached, so a change applies to the
+// next email. Unset, unreadable or unrecognised is "user": the person's own
+// switch, never a forced one.
+func (s *Service) StaffEmailOverrides(ctx context.Context) notification.StaffOverrides {
+	mode := func(key string) notification.OverrideMode {
+		v, err := s.GetString(ctx, key)
+		if err != nil || !notification.ValidOverrideMode(v) {
+			return notification.OverrideUser
+		}
+		return notification.OverrideMode(v)
+	}
+	return notification.StaffOverrides{
+		Assigned: mode(KeyStaffEmailAssignedOverride),
+		Activity: mode(KeyStaffEmailActivityOverride),
+		Group:    mode(KeyStaffEmailGroupOverride),
 	}
 }
