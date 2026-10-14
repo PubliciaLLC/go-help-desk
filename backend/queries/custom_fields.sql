@@ -49,7 +49,7 @@ UPDATE custom_field_assignments
 SET sort_order = $2, visible_on_new = $3, required_on_new = $4
 WHERE id = $1;
 
--- name: DeleteCustomFieldAssignment :exec
+-- name: DeleteCustomFieldAssignment :execrows
 DELETE FROM custom_field_assignments WHERE id = $1;
 
 -- ── Values ────────────────────────────────────────────────────────────────────

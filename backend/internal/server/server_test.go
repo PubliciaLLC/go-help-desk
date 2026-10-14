@@ -130,6 +130,13 @@ func newHarnessWithThrottle(t *testing.T, authRateLimit int, delay time.Duration
 // whole difference between reporting scanner health and reporting settings.
 func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harness, func()) {
 	t.Helper()
+	return newHarnessCfg(t, authRateLimit, clamAVAddr, nil)
+}
+
+// newHarnessCfg is newHarnessWith with a hook to adjust the config before the
+// server is built, for tests about what the configuration itself produces.
+func newHarnessCfg(t *testing.T, authRateLimit int, clamAVAddr string, mutate func(*config.Config)) (*harness, func()) {
+	t.Helper()
 	db, closeDB := testutil.NewDB(t)
 	q, tx, rollback := testutil.TxQueriesTx(t, db)
 
@@ -283,6 +290,9 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 		// over-budget login proving that time passes.
 		// TestLoginTarpit_SlowsAnOverBudgetAccount sets a measurable one.
 		AuthThrottleDelay: time.Millisecond,
+	}
+	if mutate != nil {
+		mutate(cfg)
 	}
 	// Derived exactly as main.go does, so tests exercise the real store rather
 	// than a shape production never uses.

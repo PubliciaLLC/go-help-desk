@@ -93,13 +93,16 @@ func (q *Queries) CreateCustomFieldDef(ctx context.Context, arg CreateCustomFiel
 	return i, err
 }
 
-const deleteCustomFieldAssignment = `-- name: DeleteCustomFieldAssignment :exec
+const deleteCustomFieldAssignment = `-- name: DeleteCustomFieldAssignment :execrows
 DELETE FROM custom_field_assignments WHERE id = $1
 `
 
-func (q *Queries) DeleteCustomFieldAssignment(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.ExecContext(ctx, deleteCustomFieldAssignment, id)
-	return err
+func (q *Queries) DeleteCustomFieldAssignment(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteCustomFieldAssignment, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const deleteCustomFieldValue = `-- name: DeleteCustomFieldValue :exec

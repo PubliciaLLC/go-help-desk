@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
 
@@ -27,9 +26,10 @@ func TestListEndpointsReturnEmptyArrayNotNull(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	// A random UUID: these are scoped to a parent that does not exist, which is
-	// exactly the empty case worth checking.
-	orphan := uuid.New().String()
+	// An existing group with no members and no scopes: the empty case worth
+	// checking. It used to be a random UUID, but an unknown group now answers
+	// 404 on these two routes (#418), so the parent has to exist.
+	orphan := mkGroup(t, h, "Empty").String()
 
 	paths := []string{
 		"/api/v1/admin/groups",

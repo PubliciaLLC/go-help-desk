@@ -353,15 +353,17 @@ func TestGuestFollowUp_EveryRefusalIsTheGenericNotFound(t *testing.T) {
 func TestGuestFollowUp_NeedsGuestSubmissionOn(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
+	ctx := context.Background()
 	tk, token := seedGuestTicket(t, h)
 	closeGuestTicket(t, h, tk)
-	require.False(t, h.adminSvc.GuestSubmissionEnabled(context.Background()), "precondition")
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, false))
+	require.False(t, h.adminSvc.GuestSubmissionEnabled(ctx), "precondition")
 
 	res := h.doGuest(t, http.MethodPost, "/api/v1/guest/follow-up", token, nil)
 	body := readBody(t, res)
 	require.Equal(t, http.StatusNotFound, res.StatusCode)
 	require.Equal(t, `{"error":{"code":"not_found","message":"not found"}}`+"\n", body)
-	links, _ := h.ticketSvc.ListLinks(context.Background(), tk.ID)
+	links, _ := h.ticketSvc.ListLinks(ctx, tk.ID)
 	require.Empty(t, links)
 }
 
