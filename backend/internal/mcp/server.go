@@ -561,7 +561,7 @@ func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) 
 	notifyRequester := !isInternal
 	var reporterEmail string
 	if notifyRequester {
-		reporterEmail = s.tickets.ReplyRecipient(ctx, t, authorID)
+		reporterEmail = s.tickets.ReplyRecipient(ctx, t, actor)
 	}
 
 	// reopenTargetStatusID is only consulted when a RoleUser replies to a

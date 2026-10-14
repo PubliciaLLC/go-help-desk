@@ -137,6 +137,26 @@ func TestReplyRecipient_MCPQueuesWhatRESTQueues(t *testing.T) {
 	}
 }
 
+// Erik's narrowing: only staff and admins skip the copy of their own reply. An
+// ordinary requester replying on their own ticket is mailed, as before. (MCP
+// add_reply is staff-only, so this door is REST only.)
+func TestReplyRecipient_ARequesterRepliesOnTheirOwnTicketAndIsStillMailed(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	h.dispatcher.record = true
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+		Subject: "Printer jammed", Description: "again", CategoryID: h.catID, ReporterUserID: &h.userID,
+	})
+	require.NoError(t, err)
+
+	h.dispatcher.queued = nil
+	res := h.doAsUser(t, http.MethodPost, "/api/v1/tickets/"+tk.ID.String()+"/replies",
+		map[string]any{"body": "still broken"})
+	res.Body.Close()
+	require.Equal(t, http.StatusCreated, res.StatusCode)
+	require.Equal(t, "user@test.local", replyEvent(t, h).Recipient)
+}
+
 func TestReplyRecipient_AnMCPInternalNoteMailsNobody(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()

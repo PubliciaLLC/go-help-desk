@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 func TestReplyRecipient(t *testing.T) {
@@ -16,32 +17,35 @@ func TestReplyRecipient(t *testing.T) {
 	empty := ""
 	acct := uuid.New()
 	gone := uuid.New()
-	staff := uuid.New()
+	other := uuid.New()
 	lookup := func(_ context.Context, id uuid.UUID) (string, error) {
-		if id == acct || id == staff {
+		if id == acct {
 			return "acct@example.com", nil
 		}
 		return "", errors.New("not found")
 	}
+	as := func(id uuid.UUID, role user.Role) ticket.Actor { return ticket.Actor{UserID: &id, Role: role} }
 
 	tests := []struct {
 		name   string
 		tk     ticket.Ticket
-		author uuid.UUID
+		author ticket.Actor
 		lookup func(context.Context, uuid.UUID) (string, error)
 		want   string
 	}{
-		{"guest address", ticket.Ticket{GuestEmail: &guest}, staff, lookup, guest},
-		{"guest wins over a reporter", ticket.Ticket{GuestEmail: &guest, ReporterUserID: &acct}, staff, lookup, guest},
-		{"account address", ticket.Ticket{ReporterUserID: &acct}, staff, lookup, "acct@example.com"},
-		{"account gone", ticket.Ticket{ReporterUserID: &gone}, staff, lookup, ""},
-		{"no lookup wired", ticket.Ticket{ReporterUserID: &acct}, staff, nil, ""},
-		{"nobody on record", ticket.Ticket{}, staff, lookup, ""},
+		{"guest address", ticket.Ticket{GuestEmail: &guest}, as(other, user.RoleStaff), lookup, guest},
+		{"guest wins over a reporter", ticket.Ticket{GuestEmail: &guest, ReporterUserID: &acct}, as(other, user.RoleStaff), lookup, guest},
+		{"account address", ticket.Ticket{ReporterUserID: &acct}, as(other, user.RoleStaff), lookup, "acct@example.com"},
+		{"account gone", ticket.Ticket{ReporterUserID: &gone}, as(other, user.RoleStaff), lookup, ""},
+		{"no lookup wired", ticket.Ticket{ReporterUserID: &acct}, as(other, user.RoleStaff), nil, ""},
+		{"nobody on record", ticket.Ticket{}, as(other, user.RoleStaff), lookup, ""},
 		// A present but empty guest address is returned as is; the dispatcher skips it.
-		{"empty guest address", ticket.Ticket{GuestEmail: &empty}, staff, lookup, ""},
-		// Erik's decision: nobody is mailed about their own reply, even as the requester.
-		{"the author is the requester", ticket.Ticket{ReporterUserID: &staff}, staff, lookup, ""},
-		{"a different author does not exclude", ticket.Ticket{ReporterUserID: &staff}, acct, lookup, "acct@example.com"},
+		{"empty guest address", ticket.Ticket{GuestEmail: &empty}, as(other, user.RoleStaff), lookup, ""},
+		// Erik's decision: staff and admins are not mailed a copy of their own reply...
+		{"staff author is the requester", ticket.Ticket{ReporterUserID: &acct}, as(acct, user.RoleStaff), lookup, ""},
+		{"admin author is the requester", ticket.Ticket{ReporterUserID: &acct}, as(acct, user.RoleAdmin), lookup, ""},
+		// ...but an ordinary requester still is, as before.
+		{"requester replying on their own ticket", ticket.Ticket{ReporterUserID: &acct}, as(acct, user.RoleUser), lookup, "acct@example.com"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
