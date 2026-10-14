@@ -141,6 +141,9 @@ var (
 	// ErrWebhookFilterExcludes: the hook's ticket filter, as it is now, does not
 	// admit the ticket the delivery was about (#413).
 	ErrWebhookFilterExcludes = errors.New("webhook filter does not admit this ticket")
+	// ErrWebhookFilterUnverifiable: the hook has a ticket filter and the ticket
+	// cannot be read (it was deleted), so the filter cannot be checked (#499).
+	ErrWebhookFilterUnverifiable = errors.New("webhook filter cannot be checked: the ticket cannot be read")
 )
 
 // WebhookDispatcher sends HTTP POST payloads to configured webhook URLs.
@@ -476,16 +479,23 @@ func (d *WebhookDispatcher) Redeliver(ctx context.Context, hookID, deliveryID uu
 	}
 	// The ticket as it is now, when something needs it: the filter, for its
 	// attributes (the kept copy has none by design), and a chat or ITSM message,
-	// for its content. A raw hook with no filter reads nothing. A ticket that
-	// cannot be read (gone, or no source wired) leaves the filter nothing to
-	// judge, and the replay is sent, like a queued row without attributes
-	// (admits logs it).
+	// for its content. A raw hook with no filter reads nothing. A hook with a
+	// filter whose ticket cannot be read (gone, or no source wired) is refused:
+	// the filter cannot be checked, and a replay is something an administrator
+	// asked for just now, so it is told why (#499). A ticket that is read but
+	// carries no attributes (a source that cannot say) still fails open in
+	// admits, like a queued row without them; the production source always
+	// fills them. An unfiltered hook is replayed whether or not the ticket
+	// exists.
 	var facts TicketFacts
 	var found bool
 	if (!hook.Filter.IsEmpty() || !isRaw(hook)) && d.queue.Source != nil {
 		if facts, found, err = d.queue.Source.TicketFacts(ctx, ev.TicketID); err != nil {
 			return fmt.Errorf("reading ticket for redelivery: %w", err)
 		}
+	}
+	if !found && !hook.Filter.IsEmpty() {
+		return ErrWebhookFilterUnverifiable
 	}
 	if found {
 		ev.Attrs = facts.Attrs // also what the queued row is re-checked with
