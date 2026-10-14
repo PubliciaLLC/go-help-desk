@@ -3705,8 +3705,11 @@ paths:
         trimming. notify_customer defaults to true, and is forced to false for an
         internal note. Internal notes are for staff and administrators only.
         When notify_customer is true and the reporter has an address, the reporter
-        is sent the update. A failure to look up that address does not fail the
-        reply.
+        is sent the update, except when the author is a staff member or
+        administrator replying on a ticket they filed themselves: they are not
+        sent a copy of their own reply. A reporting user replying on their own
+        ticket is still sent one. A failure to look up that address does not fail
+        the reply.
         A reporting user's reply to a Resolved ticket inside the reopen window
         reopens the ticket to the reopen target status. A reporting user cannot
         reply to a Closed ticket (409 ticket_closed), or to a Resolved ticket

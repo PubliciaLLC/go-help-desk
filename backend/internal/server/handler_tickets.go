@@ -661,13 +661,7 @@ func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 	var reporterEmail string
 	if notifyCustomer {
 		if t, err := s.tickets.GetByID(r.Context(), id); err == nil {
-			if t.GuestEmail != nil {
-				reporterEmail = *t.GuestEmail
-			} else if t.ReporterUserID != nil {
-				if u, err := s.users.GetByID(r.Context(), *t.ReporterUserID); err == nil {
-					reporterEmail = u.Email
-				}
-			}
+			reporterEmail = s.tickets.ReplyRecipient(r.Context(), t, ticket.Actor{UserID: &a.UserID, Role: a.Role})
 		}
 	}
 

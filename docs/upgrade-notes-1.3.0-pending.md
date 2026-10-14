@@ -159,3 +159,13 @@ Port 465 now connects with TLS from the first byte. Before, it hung until the ti
 ### How you will see it
 
 Failed sends are retried for about an hour (a template error is not retried) and then marked failed. While any email message is retrying or failed within the last day, `GET /api/v1/admin/security-warnings` returns `email.failing: true` with the newest error text (addresses replaced by `[address]`). It also lists which of `SMTP_HOST` and `SMTP_FROM` is unset, and whether signup or guest submission is on with email off. The server log says once at startup whether email is enabled, and warns when only one of `SMTP_HOST` and `SMTP_FROM` is set.
+
+## MCP `add_reply`: Public Replies Now Email the Requester
+
+**Behaviour change.** Until now a public reply posted through the MCP `add_reply` tool was saved but never emailed to the requester, although DESIGN.md says it is and the REST reply does it. From 1.3.0 it is: the guest's address (with a guest link) or the reporting account's address, the same as a REST reply.
+
+- Anything you have connected over MCP, including AI agents, can now send mail to your customers. Review which credentials have `tickets:write` before upgrading.
+- Internal notes (`internal: true`) still send nothing.
+- MCP has no `notify_customer` switch; a public reply always notifies. Use an internal note for anything that should not reach the requester.
+- **REST change, staff and administrators only:** a staff member or administrator who replies publicly on a ticket they filed themselves is no longer emailed a copy of their own reply. Before, they were. This applies over REST and MCP. Webhook subscribers see it too: the reply event's `reporter_email` is empty in that case.
+- **Unchanged for requesters:** an ordinary user replying on their own ticket still gets the email copy, as before. Replies on other people's tickets are unchanged.
