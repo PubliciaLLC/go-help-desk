@@ -645,6 +645,27 @@ export interface SecurityWarnings {
    * a server that predates the field read as healthy.
    */
   attachment_storage?: { writable: boolean; problem: string }
+
+  /**
+   * Whether email can be sent and is being delivered (#455, #456). Optional so
+   * older fixtures and a server that predates it read as healthy.
+   */
+  email?: EmailWarning
+}
+
+export interface EmailWarning {
+  /** False until both SMTP_HOST and SMTP_FROM are set. */
+  enabled: boolean
+  /** Which of SMTP_HOST and SMTP_FROM is unset. */
+  missing: string[]
+  /** A feature that emails the person is on although email is off. */
+  signup_without_email: boolean
+  guest_submission_without_email: boolean
+  /** Email is retrying after an error, or failed within the last day. */
+  failing: boolean
+  failing_count: number
+  /** Newest error, email addresses already replaced by [address]. */
+  last_error: string
 }
 
 export interface AttachmentScanningWarning {

@@ -30,3 +30,19 @@ type Outbox interface {
 	Fail(ctx context.Context, id uuid.UUID, lastErr string) error
 	DeleteFailedBefore(ctx context.Context, cutoff time.Time) (int64, error)
 }
+
+// EmailHealth is what the outbox says about email delivery right now.
+type EmailHealth struct {
+	// Failing counts email rows that are retrying after an error or gave up
+	// within the last day. Zero when mail is flowing.
+	Failing int
+	// LastError is the newest of their error texts, address-redacted by the
+	// worker before it was stored. Empty when Failing is zero.
+	LastError string
+}
+
+// HealthReader reports email delivery health for the admin warning (#456).
+// Separate from Outbox so the worker's contract does not grow.
+type HealthReader interface {
+	EmailHealth(ctx context.Context) (EmailHealth, error)
+}

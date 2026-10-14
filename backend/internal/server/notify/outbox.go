@@ -350,7 +350,10 @@ func (w *Worker) deliver(ctx context.Context, row notification.OutboxRow) {
 	}
 	// fail redacts the raw error itself, so it is redacted exactly once on
 	// either path (redaction is not idempotent; see TestWorker_RedactsTheRawErrorExactlyOnce).
-	if row.Attempts >= w.MaxAttempts {
+	//
+	// A permanent error (a template that will not render) gets no retries:
+	// the eighth attempt would fail exactly as the first did, an hour later.
+	if errors.Is(err, ErrPermanent) || row.Attempts >= w.MaxAttempts {
 		w.fail(settle, row, err.Error())
 		return
 	}

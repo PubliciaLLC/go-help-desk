@@ -137,6 +137,29 @@ Admin, Webhooks has a History button per hook: its last 25 deliveries with the o
 
 This adds a database table through a migration that runs at start-up.
 
+## Email: SMTP Encryption and Honesty (Breaking, Read First)
+
+Email (SMTP) now fails loudly instead of quietly. Several setups that used to "work" now fail, and the failure shows in the admin panel. Check these before upgrading. Nothing needs changing if your mail server offers STARTTLS (or you use port 465) and, when `SMTP_USER` is set, offers AUTH.
+
+There is no new setting. The rule depends on the port and on whether `SMTP_PASSWORD` is set:
+
+- **Password set:** TLS is required. Port 465 uses TLS from the first byte; every other port must offer STARTTLS. A password is never sent unencrypted, even to a private address.
+- **No password:** plain SMTP is allowed only when the server's address is loopback, private (10/8, 172.16/12, 192.168/16) or IPv6 fc00::/7. A public address still needs TLS.
+
+### What breaks
+
+1. **A localhost relay that took a password without TLS now fails.** Before, the password went out in the clear to localhost when the relay did not offer STARTTLS (Go already refused to send a password in the clear to any other non-localhost relay). Now the send fails with `SMTP server does not offer STARTTLS, and SMTP_PASSWORD is set: refusing to send the password unencrypted`. Fix: turn on STARTTLS (or TLS on port 465) on the relay, or drop the password if the relay does not need one for this network.
+2. **Unauthenticated mail to a public server without STARTTLS now fails.** Before, mail went out in the clear. Now: `SMTP server does not offer STARTTLS and is not on a private address: refusing to send mail unencrypted`. Fix: use a server that offers STARTTLS or port 465.
+3. **`SMTP_USER` set but the server offers no AUTH now fails the send.** Before, the server was used anonymously and the mail went out (or was rejected later). Now: `SMTP server does not offer AUTH but SMTP_USER is set`. Fix: point at a server that offers AUTH, or remove `SMTP_USER` and `SMTP_PASSWORD` if the relay accepts your mail without a login.
+4. **Turning on signup or guest submission is refused while email is off.** `PATCH /admin/settings` answers `400 email_required` when `self_signup_enabled` or `guest_submission_enabled` goes from off to on and `SMTP_HOST` or `SMTP_FROM` is unset. Installs that already have either on are not switched off and are not refused when they save other settings; they get a warning in the admin panel instead.
+5. **A broken email template now fails the message at once.** Before, the message was dropped and nothing said so. Now the row is marked failed with no retries and the error appears in the admin email warning. (The shipped templates render; this only matters for a damaged build.)
+
+Port 465 now connects with TLS from the first byte. Before, it hung until the timeout, so no working setup changes.
+
+### How you will see it
+
+Failed sends are retried for about an hour (a template error is not retried) and then marked failed. While any email message is retrying or failed within the last day, `GET /api/v1/admin/security-warnings` returns `email.failing: true` with the newest error text (addresses replaced by `[address]`). It also lists which of `SMTP_HOST` and `SMTP_FROM` is unset, and whether signup or guest submission is on with email off. The server log says once at startup whether email is enabled, and warns when only one of `SMTP_HOST` and `SMTP_FROM` is set.
+
 ## Webhooks: a ticket filter (#413)
 
 A hook can now be limited to tickets in chosen categories, priorities or assigned groups (Admin, Webhooks, Ticket filter), or inverted to send for every ticket that does not match. A hook with no filter, which is every hook after the upgrade, behaves exactly as before. The raw payload is not changed by a filter.

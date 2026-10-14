@@ -308,6 +308,38 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Signup and guest submission both end in an email: the verification link,
+	// the guest's ticket link. With email off they look like they work and
+	// deliver nothing, so turning either ON is refused (#456).
+	//
+	// Compared against the stored value, not just the incoming one: the
+	// settings page PATCHes the whole object, so an install that already has
+	// either on with email off would otherwise get a 400 on every unrelated
+	// save. Those installs are warned (security-warnings), not switched off.
+	if !s.cfg.EmailEnabled() {
+		for _, key := range []string{admin.KeySelfSignupEnabled, admin.KeyGuestSubmissionEnabled} {
+			raw, ok := body[key]
+			if !ok {
+				continue
+			}
+			// Anything that is not a boolean is not "turning it on"; it keeps
+			// whatever treatment it had before (guest_submission_enabled is
+			// already refused above, self_signup_enabled is stored as sent).
+			var want bool
+			if json.Unmarshal(raw, &want) != nil {
+				continue
+			}
+			if want {
+				if already, _ := s.adminSvc.GetBool(r.Context(), key); !already {
+					Error(w, http.StatusBadRequest, "email_required",
+						key+" cannot be turned on while email is not configured: "+
+							"it sends an email the person needs. Set SMTP_HOST and SMTP_FROM first")
+					return
+				}
+			}
+		}
+	}
+
 	// Validate before writing anything. ticket.go documents the prefix as
 	// "enforced where the setting is saved rather than where a ticket is
 	// created" — nothing enforced it, so an invalid prefix was accepted with a
@@ -748,6 +780,29 @@ type securityWarnings struct {
 	// each read, not remembered from startup, so it clears the moment the
 	// directory is fixed.
 	AttachmentStorage storageStatus `json:"attachment_storage"`
+
+	// Email says whether mail can be sent and whether it is being delivered
+	// (#455, #456). Additive.
+	Email emailStatus `json:"email"`
+}
+
+// emailStatus never carries a credential or an address: names of unset
+// variables, two flags, and the worker's already-redacted error text.
+type emailStatus struct {
+	// Enabled is false until both SMTP_HOST and SMTP_FROM are set.
+	Enabled bool `json:"enabled"`
+	// Missing names the unset variables while Enabled is false.
+	Missing []string `json:"missing"`
+	// SignupWithoutEmail and GuestSubmissionWithoutEmail say a feature that
+	// sends email is on although email is not configured. Refused when
+	// turning it on; reported for installs that already had it on.
+	SignupWithoutEmail          bool `json:"signup_without_email"`
+	GuestSubmissionWithoutEmail bool `json:"guest_submission_without_email"`
+	// Failing is true while email rows are retrying after an error or gave up
+	// in the last day; LastError is the newest error text.
+	Failing      bool   `json:"failing"`
+	FailingCount int    `json:"failing_count"`
+	LastError    string `json:"last_error"`
 }
 
 type storageStatus struct {
@@ -797,7 +852,30 @@ func (s *Server) handleGetSecurityWarnings(w http.ResponseWriter, r *http.Reques
 		InsecureSecrets:    s.cfg.InsecureSecrets(),
 		AttachmentScanning: s.scanStatus(r.Context()),
 		AttachmentStorage:  storageStatus{Writable: problem == "", Problem: problem},
+		Email:              s.emailStatus(r.Context()),
 	})
+}
+
+func (s *Server) emailStatus(ctx context.Context) emailStatus {
+	st := emailStatus{Enabled: s.cfg.EmailEnabled(), Missing: []string{}}
+	if s.cfg.SMTPHost == "" {
+		st.Missing = append(st.Missing, "SMTP_HOST")
+	}
+	if s.cfg.SMTPFrom == "" {
+		st.Missing = append(st.Missing, "SMTP_FROM")
+	}
+	if !st.Enabled {
+		st.SignupWithoutEmail = s.adminSvc.SelfSignupEnabled(ctx)
+		st.GuestSubmissionWithoutEmail = s.adminSvc.GuestSubmissionEnabled(ctx)
+	}
+	if s.emailHealth != nil {
+		// A failed read reports nothing wrong: a warning that fires on a
+		// database hiccup is worse than one that stays quiet.
+		if h, err := s.emailHealth.EmailHealth(ctx); err == nil && h.Failing > 0 {
+			st.Failing, st.FailingCount, st.LastError = true, h.Failing, h.LastError
+		}
+	}
+	return st
 }
 
 // scanStatus pings the scanner rather than reporting what the settings say.
