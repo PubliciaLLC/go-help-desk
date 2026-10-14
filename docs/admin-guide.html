@@ -824,7 +824,15 @@ function verifySignature(secret, body, header) {
 
 <p><code>GET /api/v1/admin/security-warnings</code> reports what scanning is <em>doing</em>, including a live reachability check rather than a restatement of the configuration — because an instance whose scanner container has died has an address configured and no protection, and those two facts must not look alike. It returns the effective policy, whether an address is configured, whether the scanner answers, and a sentence saying what that combination means.</p>
 
-<p>Administrators see the same check as a banner. When the scan policy is not <code>off</code> and the live check fails, an <em>Attachment scanner unreachable</em> banner appears at the top of every page, with that sentence. Scanning that is switched off on purpose is not bannered; the setting shows it.</p>
+<p>The same check is on the page. At the top of <em>Admin → Settings → Attachments → Malware scanning</em>, a status block shows the policy, whether a scanner address is configured, whether the scanner answers, and that sentence.</p>
+
+<p>Administrators also see it as a banner. When the scan policy is not <code>off</code> and the live check fails, an <em>Attachment scanner unreachable</em> banner appears at the top of every page, with that sentence.</p>
+
+<p>A second banner, <em>Attachments are not being scanned</em>, is for an install that never chose. It appears when all three of these hold: no scan policy has ever been saved, no scanner address is set (in Settings or in <code>CLAMAV_ADDR</code>), and the instance already holds at least one attachment. That is what a Docker Compose install looks like after it upgrades from 1.2, which started the bundled ClamAV by itself. The banner says what to do: add <code>COMPOSE_PROFILES=antivirus</code> and <code>CLAMAV_ADDR=tcp://clamav:3310</code> to <code>docker/.env</code>, run <code>docker compose up -d</code>, then confirm the scanner address under <em>Admin → Settings → Attachments</em>. It goes away when a scanner address is set, or when you choose a scan policy under <em>Malware scanning</em>, including <em>Do not scan</em>. Scanning that is switched off on purpose that way is not bannered; the setting shows it.</p>
+
+<h3>When uploads are disabled</h3>
+
+<p>At startup, and again on every upload, the server checks that <code>ATTACHMENT_DIR</code> exists and can be written. When it cannot, administrators see a red <em>Attachment uploads are disabled</em> banner with the reason the operating system gave, and every upload, from staff, requesters and guests, is refused with <code>503 attachments_unavailable</code>. Everything else keeps working, and attachments already stored can still be downloaded while the directory is readable. Fix the directory's permissions or mount and the next upload works; no restart is needed. The logo upload also writes under that directory and is not blocked by this check, so a failure there still answers with a storage error.</p>
 
 <h3>Reputation lookup</h3>
 
