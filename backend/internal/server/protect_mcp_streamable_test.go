@@ -339,19 +339,27 @@ func TestMCPStreamable_HiddenTicketAnswersLikeSSE(t *testing.T) {
 		toolText(t, openStream(t, h, h.userKey).call(t, "get_ticket", map[string]any{"id": missing})))
 }
 
-// Pins the reasons docs/DESIGN.md gives for not checking Origin on /mcp. The
-// MCP specification asks servers to validate it against DNS rebinding; this one
-// does not, because every request is authenticated and a cross-site page has no
-// way to make a browser send one that runs a tool:
+// Pins the cross-site surface of /mcp (docs/DESIGN.md, "MCP Interface" ->
+// Origin). The MCP specification asks servers to validate Origin against DNS
+// rebinding, and ProtectMCP does: a request to /mcp or /mcp/ whose Origin is
+// not BASE_URL's gets 403 before authentication (protect_mcp_origin_test.go
+// tests that check in full).
+//
+// That check is the first of several independent reasons a cross-site page
+// cannot make a browser run a tool, and the rest are pinned here so that none
+// of them quietly becomes the only one:
 //
 //   - the session cookie is SameSite=Lax, so it is not sent on a cross-site
 //     POST (internal/database/sessionstore/cookie_attributes_test.go);
 //   - a non-JSON POST, the only kind a page can send without a preflight, is
 //     refused before anything runs;
-//   - a JSON POST needs a CORS preflight, and /mcp never grants one;
+//   - a JSON POST needs a CORS preflight, and /mcp never grants one: with the
+//     Origin check out of the way (the right Origin) it still sends no CORS
+//     headers;
 //   - GET is 405, so there is no stream a navigation could hold open.
 //
-// If one of these stops being true, add the Origin check.
+// If one of these stops being true, the Origin check is what is left; do not
+// remove it.
 func TestMCPStreamable_NoCrossSiteSurface(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
@@ -372,6 +380,14 @@ func TestMCPStreamable_NoCrossSiteSurface(t *testing.T) {
 		require.Equal(t, before+1, after, "only the probe may have taken a ticket number")
 	})
 
+	t.Run("a non-JSON POST from another origin runs nothing either", func(t *testing.T) {
+		before := latestTicketNumber(t, h)
+		body := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_ticket","arguments":{"subject":"cross-site","category_id":"` + h.catID.String() + `"}}}`)
+		cross := withOrigin(&streamConn{base: c.base, url: c.url, header: c.header.Clone()}, foreignOrigin)
+		requireOriginRefused(t, cross.send(t, http.MethodPost, c.url, "text/plain", body))
+		require.Equal(t, before+1, latestTicketNumber(t, h), "only the probe may have taken a ticket number")
+	})
+
 	t.Run("no CORS preflight is granted", func(t *testing.T) {
 		c.header.Set("Origin", "https://evil.example")
 		c.header.Set("Access-Control-Request-Method", "POST")
@@ -382,6 +398,21 @@ func TestMCPStreamable_NoCrossSiteSurface(t *testing.T) {
 			c.header.Del("Access-Control-Request-Headers")
 		}()
 		resp := c.send(t, http.MethodOptions, c.url, "", nil)
+		require.Equal(t, http.StatusForbidden, resp.StatusCode, "the Origin check answers a foreign preflight")
+		require.Empty(t, resp.Header.Get("Access-Control-Allow-Origin"))
+		require.Empty(t, resp.Header.Get("Access-Control-Allow-Methods"))
+		require.Empty(t, resp.Header.Get("Access-Control-Allow-Headers"))
+	})
+
+	t.Run("the endpoint itself grants no CORS even to the right origin", func(t *testing.T) {
+		// What stops a same-site sibling page, or anything that gets past the
+		// Origin check, from sending a JSON POST: the preflight is never
+		// answered with permission.
+		own := withOrigin(&streamConn{base: c.base, url: c.url, header: c.header.Clone()}, baseOrigin)
+		own.header.Set("Access-Control-Request-Method", "POST")
+		own.header.Set("Access-Control-Request-Headers", "authorization,content-type")
+		resp := own.send(t, http.MethodOptions, c.url, "", nil)
+		require.Equal(t, http.StatusNotFound, resp.StatusCode)
 		require.Empty(t, resp.Header.Get("Access-Control-Allow-Origin"))
 		require.Empty(t, resp.Header.Get("Access-Control-Allow-Methods"))
 		require.Empty(t, resp.Header.Get("Access-Control-Allow-Headers"))
@@ -396,5 +427,10 @@ func TestMCPStreamable_NoCrossSiteSurface(t *testing.T) {
 		resp, _ := c.rpc(t, "initialize", initializeParams)
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 		require.Empty(t, resp.Header.Get("Access-Control-Allow-Origin"))
+
+		own := withOrigin(&streamConn{base: c.base, url: c.url, header: c.header.Clone()}, baseOrigin)
+		resp, _ = own.rpc(t, "initialize", initializeParams)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		require.Empty(t, resp.Header.Get("Access-Control-Allow-Origin"), "not even for the instance's own origin")
 	})
 }
