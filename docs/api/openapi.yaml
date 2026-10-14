@@ -298,8 +298,9 @@ paths:
         both non-empty, counting stored values the request does not clear, is
         refused with saml_metadata_conflict. metadata_xml is parsed before
         anything is saved, with the same parser a fetched URL goes through. A
-        document that is not SAML metadata or has no IDPSSODescriptor is refused
-        with invalid_saml_metadata, and one over 262144 bytes with
+        document that is not SAML metadata, has no IDPSSODescriptor, or has no
+        signing certificate that parses as X.509 is refused with
+        invalid_saml_metadata, and one over 262144 bytes with
         saml_metadata_too_large. With metadata_xml nothing is fetched. The
         identity provider's metadata is then loaded once (fetched, for a URL),
         from the candidate settings, before anything is saved. If no active administrator could sign
@@ -361,7 +362,8 @@ paths:
             private key are invalid or do not match. saml_metadata_conflict: the
             save would leave both metadata_url and metadata_xml set.
             invalid_saml_metadata: metadata_xml does not parse, is not SAML
-            metadata, or has no IDPSSODescriptor. saml_metadata_too_large:
+            metadata, has no IDPSSODescriptor, or has no signing certificate
+            that parses as X.509. saml_metadata_too_large:
             metadata_xml is over 262144 bytes.
           content:
             application/json:

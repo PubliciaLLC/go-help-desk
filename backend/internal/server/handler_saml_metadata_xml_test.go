@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -64,6 +65,8 @@ func TestSaveSAMLConfig_MetadataXML(t *testing.T) {
 		require.NoError(t, h.adminSvc.SetSAMLConfig(context.Background(), storedURL, validSAMLCert, validSAMLKey))
 	}
 	over := samlIDPMetadataXML + "<!--" + strings.Repeat("x", auth.MaxIdPMetadataXMLBytes) + "-->"
+	notX509 := regexp.MustCompile(`(?s)(<ds:X509Certificate>).*?(</ds:X509Certificate>)`).
+		ReplaceAllString(samlIDPMetadataXML, "${1}bm90IGEgY2VydA==${2}")
 
 	cases := []struct {
 		name       string
@@ -111,6 +114,17 @@ func TestSaveSAMLConfig_MetadataXML(t *testing.T) {
 			name: "SP metadata pasted",
 			body: map[string]any{
 				"metadata_url": "", "metadata_xml": samlSPMetadataLiteral,
+				"cert_pem": validSAMLCert, "key_pem": validSAMLKey,
+			},
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "invalid_saml_metadata",
+		},
+		{
+			// Loads, but no assertion could ever be verified against it, so a
+			// SAML-only administrator would be stranded behind a 204.
+			name: "signing certificate is not X.509",
+			body: map[string]any{
+				"metadata_url": "", "metadata_xml": notX509,
 				"cert_pem": validSAMLCert, "key_pem": validSAMLKey,
 			},
 			wantStatus: http.StatusBadRequest,

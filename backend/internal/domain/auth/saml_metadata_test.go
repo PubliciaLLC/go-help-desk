@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -15,6 +16,11 @@ import (
 // serves at /api/v1/auth/saml/metadata and shows on the same settings page, so
 // the most likely thing to be pasted by mistake.
 const samlSPMetadataXML = `<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://hd/api/v1/auth/saml/metadata"><SPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol"><AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="https://hd/acs" index="1"/></SPSSODescriptor></EntityDescriptor>`
+
+var (
+	samlCertRE          = regexp.MustCompile(`(?s)(<ds:X509Certificate>).*?(</ds:X509Certificate>)`)
+	samlKeyDescriptorRE = regexp.MustCompile(`(?s)<KeyDescriptor>.*?</KeyDescriptor>`)
+)
 
 func TestParseIdPMetadataXML(t *testing.T) {
 	const entityID = "https://idp.testshib.org/idp/shibboleth"
@@ -38,6 +44,17 @@ func TestParseIdPMetadataXML(t *testing.T) {
 		{name: "not XML", input: []byte("hello"), wantErr: auth.ErrIdPMetadataInvalid},
 		{name: "an HTML page", input: []byte("<html><body>sign in</body></html>"), wantErr: auth.ErrIdPMetadataInvalid},
 		{name: "SP metadata pasted by mistake", input: []byte(samlSPMetadataXML), wantErr: auth.ErrIdPMetadataInvalid},
+		// The SP verifies every assertion against the metadata's signing
+		// certificates (crewjam's getIDPSigningCerts), and refuses the
+		// sign-in when there is none or one does not parse. Metadata like
+		// this loads, so without the check it saves cleanly, counts as
+		// reachable for the lockout guard, and then refuses every sign-in.
+		{name: "signing key marked use=signing", input: []byte(strings.Replace(fixture, "<KeyDescriptor>", `<KeyDescriptor use="signing">`, 1)), wantEntityID: entityID},
+		{name: "signing certificate is not X.509", input: []byte(samlCertRE.ReplaceAllString(fixture, "${1}bm90IGEgY2VydA==${2}")), wantErr: auth.ErrIdPMetadataInvalid},
+		{name: "signing certificate is not base64", input: []byte(samlCertRE.ReplaceAllString(fixture, "${1}!!!${2}")), wantErr: auth.ErrIdPMetadataInvalid},
+		{name: "signing certificate is empty", input: []byte(samlCertRE.ReplaceAllString(fixture, "${1}${2}")), wantErr: auth.ErrIdPMetadataInvalid},
+		{name: "only an encryption key", input: []byte(strings.Replace(fixture, "<KeyDescriptor>", `<KeyDescriptor use="encryption">`, 1)), wantErr: auth.ErrIdPMetadataInvalid},
+		{name: "no KeyDescriptor", input: []byte(samlKeyDescriptorRE.ReplaceAllString(fixture, "")), wantErr: auth.ErrIdPMetadataInvalid},
 		{
 			name:    "over the cap",
 			input:   []byte(fixture + "<!--" + strings.Repeat("x", auth.MaxIdPMetadataXMLBytes) + "-->"),

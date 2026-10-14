@@ -1,8 +1,11 @@
 package auth
 
 import (
+	"crypto/x509"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"regexp"
 
 	"github.com/crewjam/saml"
 	"github.com/crewjam/saml/samlsp"
@@ -41,5 +44,43 @@ func ParseIdPMetadataXML(data []byte) (*saml.EntityDescriptor, error) {
 	if len(ed.IDPSSODescriptors) == 0 {
 		return nil, fmt.Errorf("%w: it has no IDPSSODescriptor; this looks like a service provider's metadata, not the identity provider's", ErrIdPMetadataInvalid)
 	}
+	if err := checkIdPSigningCerts(ed); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrIdPMetadataInvalid, err)
+	}
 	return ed, nil
 }
+
+// checkIdPSigningCerts makes the same certificate selection the SP makes when
+// it verifies an assertion (crewjam's ServiceProvider.getIDPSigningCerts: every
+// KeyDescriptor whose use is "signing" or unset), and fails where that fails:
+// no certificate, or one that is not base64 DER X.509. Metadata like that
+// loads, so without this it would save cleanly, count as reachable for the
+// lockout guard (#300), and then refuse every sign-in. Expiry is not checked:
+// a certificate expires in place whatever its source.
+func checkIdPSigningCerts(ed *saml.EntityDescriptor) error {
+	n := 0
+	for _, d := range ed.IDPSSODescriptors {
+		for _, kd := range d.KeyDescriptors {
+			if kd.Use != "" && kd.Use != "signing" {
+				continue
+			}
+			for _, c := range kd.KeyInfo.X509Data.X509Certificates {
+				der, err := base64.StdEncoding.DecodeString(certWhitespace.ReplaceAllString(c.Data, ""))
+				if err != nil {
+					return fmt.Errorf("its signing certificate is not base64: %v", err)
+				}
+				if _, err := x509.ParseCertificate(der); err != nil {
+					return fmt.Errorf("its signing certificate is not an X.509 certificate: %v", err)
+				}
+				n++
+			}
+		}
+	}
+	if n == 0 {
+		return errors.New("it has no signing certificate (a KeyDescriptor with use=\"signing\" or no use), so no sign-in could be verified")
+	}
+	return nil
+}
+
+// certWhitespace is the whitespace crewjam strips before decoding (`\s+`).
+var certWhitespace = regexp.MustCompile(`\s+`)
