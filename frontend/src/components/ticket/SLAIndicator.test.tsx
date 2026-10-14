@@ -111,7 +111,9 @@ describe('SLAIndicator', () => {
       const badge = container.querySelector('[data-testid="sla-restarted"]')
       expect(badge).not.toBeNull()
       expect(badge?.textContent).toBe('SLA restarted')
-      expect(badge?.getAttribute('title')).toMatch(/earlier record/i)
+      expect(badge?.getAttribute('title')).toBe(
+        'The SLA clock restarted when this ticket was reopened. The earlier record is kept; select to see it.',
+      )
     })
 
     it('opens a panel with the earlier record\'s facts, and closes it again', () => {
@@ -130,6 +132,37 @@ describe('SLAIndicator', () => {
 
       fireEvent.click(badge)
       expect(container.querySelector('[data-testid="sla-earlier"]')).toBeNull()
+    })
+
+    it('closes the panel on Escape and returns focus to the badge', () => {
+      const { container } = render(<SLAIndicator sla={sla({ earlier })} />)
+      const badge = container.querySelector('[data-testid="sla-restarted"]') as HTMLElement
+      fireEvent.click(badge)
+      expect(container.querySelector('[data-testid="sla-earlier"]')).not.toBeNull()
+
+      fireEvent.keyDown(document.body, { key: 'Escape' })
+      expect(container.querySelector('[data-testid="sla-earlier"]')).toBeNull()
+      expect(badge.getAttribute('aria-expanded')).toBe('false')
+      expect(document.activeElement).toBe(badge)
+    })
+
+    it('ignores other keys, and Escape while the panel is closed does not take focus', () => {
+      const { container } = render(<SLAIndicator sla={sla({ earlier })} />)
+      const badge = container.querySelector('[data-testid="sla-restarted"]') as HTMLElement
+
+      fireEvent.keyDown(document.body, { key: 'Escape' })
+      expect(document.activeElement).not.toBe(badge)
+
+      fireEvent.click(badge)
+      fireEvent.keyDown(document.body, { key: 'Enter' })
+      expect(container.querySelector('[data-testid="sla-earlier"]')).not.toBeNull()
+    })
+
+    it('stops listening for Escape once it is unmounted', () => {
+      const { container, unmount } = render(<SLAIndicator sla={sla({ earlier })} />)
+      fireEvent.click(container.querySelector('[data-testid="sla-restarted"]') as HTMLElement)
+      unmount()
+      expect(() => fireEvent.keyDown(document.body, { key: 'Escape' })).not.toThrow()
     })
 
     it('shows a met outcome as met', () => {

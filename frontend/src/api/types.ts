@@ -620,8 +620,9 @@ export interface SLATargetStatus {
   met_at: string | null // set: the numbers above are frozen and color is final
 }
 
-// The SLA record a priority change replaced after the SLA had been met or
-// breached (#443). Sent on the one-ticket read only.
+// The SLA record a restart replaced (#443): the clock restarted when the ticket
+// was reopened, and this is the record it replaced. Never sent after a staff or
+// admin priority change, which keeps the clock. One-ticket read only.
 export interface SLAEarlierRecord {
   policy_id: string
   policy_name: string

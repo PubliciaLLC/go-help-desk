@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import type { SLAColor, SLAEarlierRecord, SLATargetStatus, TicketSLA } from '@/api/types'
 import { slaTargetText } from '@/lib/format'
@@ -30,18 +30,34 @@ export function SLAIndicator({
   )
 }
 
-// "SLA restarted" (#443): a priority change replaced an SLA record that had
-// already been met or breached, and a new one started. The badge opens a small
-// panel with the earlier record's facts; the record itself stays on the server.
+// "SLA restarted" (#443): the SLA clock really restarted, which only a reopen
+// does (a staff priority change keeps the clock and never shows this). The
+// badge opens a small panel with the earlier record's facts; the record itself
+// stays on the server. Escape closes the panel and gives focus back to the
+// badge.
 function SLARestarted({ earlier }: { earlier: SLAEarlierRecord }) {
   const [open, setOpen] = useState(false)
+  const badge = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      setOpen(false)
+      badge.current?.focus()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [open])
+
   return (
     <span className="relative inline-block">
       <button
+        ref={badge}
         type="button"
         data-testid="sla-restarted"
         aria-expanded={open}
-        title="A new SLA record started when the priority changed. The earlier record is kept; select to see it."
+        title="The SLA clock restarted when this ticket was reopened. The earlier record is kept; select to see it."
         onClick={() => setOpen((o) => !o)}
         className="inline-flex items-center rounded-full border border-gray-300 px-2 py-0.5 text-xs font-medium text-gray-700 underline decoration-dotted underline-offset-2 hover:bg-gray-50"
       >
