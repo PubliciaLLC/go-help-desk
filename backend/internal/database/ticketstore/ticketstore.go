@@ -457,6 +457,20 @@ func (s *Store) CTIIsCoherent(ctx context.Context, categoryID uuid.UUID, typeID,
 	return ok.Bool, nil
 }
 
+// ArchivedCTINode names the first archived level among the ids given
+// ("category", "type" or "item"), or "" when none is. A nil id is not checked.
+func (s *Store) ArchivedCTINode(ctx context.Context, categoryID, typeID, itemID *uuid.UUID) (string, error) {
+	level, err := s.q.ArchivedCTINode(ctx, dbgen.ArchivedCTINodeParams{
+		CategoryID: database.NullUUID(categoryID),
+		TypeID:     database.NullUUID(typeID),
+		ItemID:     database.NullUUID(itemID),
+	})
+	if err != nil {
+		return "", fmt.Errorf("checking for archived classification: %w", err)
+	}
+	return level, nil
+}
+
 // CategoryExists reports whether a category id is real.
 func (s *Store) CategoryExists(ctx context.Context, categoryID uuid.UUID) (bool, error) {
 	ok, err := s.q.CategoryExists(ctx, categoryID)

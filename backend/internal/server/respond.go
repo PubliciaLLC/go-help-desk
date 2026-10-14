@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"time"
@@ -215,10 +216,13 @@ func handleError(w http.ResponseWriter, err error) {
 // budget was spent, or how much remains, tells an attacker whether an account
 // exists and how close they are.
 func tooManyAttempts(w http.ResponseWriter, retryAfter time.Duration) {
-	// The header has to match the limit that actually refused: the login
-	// budget is a minute, the MFA lock is fifteen, and telling a locked-out
-	// user to come back in sixty seconds is simply wrong.
-	w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
+	// The header has to match the limit that actually refused: for the shared
+	// window it is the time left in it (RateLimiter.Remaining), for the MFA
+	// lock the lock's length, and telling a locked-out user to come back in
+	// sixty seconds is simply wrong. Whole seconds, rounded up so waiting that
+	// long is enough, and never 0, which a client reads as "retry now".
+	secs := max(1, int(math.Ceil(retryAfter.Seconds())))
+	w.Header().Set("Retry-After", strconv.Itoa(secs))
 	Error(w, http.StatusTooManyRequests, "rate_limited",
 		"too many attempts; please wait and try again")
 }
