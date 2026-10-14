@@ -2355,6 +2355,8 @@ Guests are shown no custom fields at all. The guest endpoint accepts none — a 
 
 Admins can manage which groups handle each CTI node directly from the CTI editor (**Admin → Categories**), without navigating to the Groups page.
 
+The same editor archives and restores a category, type or item (#446): an archive button on each row sends `active: false`, after a confirmation that says the entry is hidden from requesters and that nobody can file new tickets under it; a restore button sends `active: true` with no confirmation. Archived rows are greyed and labelled **Archived**. Deleting an entry that tickets use is refused with `409` (`category_in_use`, `type_in_use`, `item_in_use`), and the dialog then suggests archiving instead.
+
 - Each expanded **Category** row shows a **Groups** subsection listing groups assigned at the category level (type_id = NULL in `group_scopes`).
 - Each expanded **Type** row shows a **Groups** subsection listing groups assigned to that specific category + type pair.
 - **Items do not have a group management section** — items do not factor into scope per the scope model.
