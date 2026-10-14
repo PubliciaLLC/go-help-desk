@@ -135,7 +135,7 @@
   <tbody>
     <tr>
       <td><strong>Session cookie</strong></td>
-      <td>POST to <code>/api/v1/auth/local/login</code>. The server sets an <code>HttpOnly</code> <code>ghd_session</code> cookie, and browsers send it on later requests. SAML and OIDC sign-in create the same kind of session. A session that has passed the password but not its second factor (a TOTP code or a passkey) is refused with <code>403 mfa_required</code> on routes that need one. That session lasts 5 minutes from the password step, or 15 minutes when the user still has to set up a second factor. After that it is gone and requests are refused with <code>401</code>.</td>
+      <td>POST to <code>/api/v1/auth/local/login</code>. The server sets an <code>HttpOnly</code> <code>ghd_session</code> cookie, and browsers send it on later requests. SAML and OIDC sign-in create the same kind of session. A session that has passed the password but not its second factor (a TOTP code or a passkey) is refused with <code>403 mfa_required</code> on routes that need one. That session lasts 5 minutes from the password step, or 15 minutes when the user still has to set up a second factor (for a new self-registered account, counted from email verification). After that it is gone and requests are refused with <code>401</code>.</td>
       <td>The built-in React SPA</td>
     </tr>
     <tr>
