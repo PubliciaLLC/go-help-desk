@@ -896,13 +896,16 @@ func (s *Service) Assign(ctx context.Context, ticketID uuid.UUID, assigneeUserID
 // commit together or not at all. See changePriorityInTx.
 func (s *Service) ChangePriority(ctx context.Context, ticketID uuid.UUID, p Priority, actor Actor) (Ticket, error) {
 	var out Ticket
-	now := time.Now()
 
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
 		t, err := st.GetByIDForUpdate(ctx, ticketID)
 		if err != nil {
 			return err
 		}
+		// Taken under the row lock, not before it: a change that waited behind
+		// another one must not stamp the record it supersedes with a time from
+		// before that record existed. superseded_at orders a ticket's history.
+		now := time.Now()
 		if actor.Role != user.RoleStaff && actor.Role != user.RoleAdmin {
 			return ErrForbidden
 		}
