@@ -394,6 +394,24 @@ jobs:
           # the mux answers 307 here, ahead of the auth chain.
           check /mcp             401 "Streamable HTTP MCP must reject unauthenticated callers"
 
+          # The Origin check on /mcp, against the BASE_URL this container was
+          # given: Go tests build their own Config, so this is the only place
+          # the shipped binary's BASE_URL meets the check. Its own origin gets
+          # as far as authentication (401); another page's is refused (403)
+          # before it, whatever credential it carries.
+          check_origin() { # path, Origin, expected status, description
+            actual="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Origin: $2" "http://127.0.0.1:8088$1")"
+            if [ "$actual" != "$3" ]; then
+              echo "::error::$4: GET $1 with Origin $2 returned $actual, expected $3"
+              docker logs ghd-ci-app
+              exit 1
+            fi
+            echo "ok  $1 Origin $2 -> $actual  ($4)"
+          }
+          check_origin /mcp  "http://localhost:8088" 401 "BASE_URL's own origin reaches authentication"
+          check_origin /mcp  "https://evil.example"  403 "a foreign Origin is refused on /mcp"
+          check_origin /mcp/ "https://evil.example"  403 "a foreign Origin is refused on /mcp/"
+
           # The embedded SPA must be the real build, not the placeholder that
           # exists so //go:embed resolves in a fresh checkout.
           #
