@@ -20,7 +20,7 @@ import {
   updateCategoryAssignment, updateTypeAssignment, updateItemAssignment,
   deleteCategoryAssignment, deleteTypeAssignment, deleteItemAssignment,
 } from '@/api/admin'
-import { extractError } from '@/api/client'
+import { extractError, extractErrorCode } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -29,6 +29,7 @@ import { Spinner } from '@/components/ui/spinner'
 import {
   ChevronRightIcon, ChevronDownIcon, PlusIcon, TrashIcon,
   GripVerticalIcon, PencilIcon, CheckIcon, XIcon, UsersRoundIcon, SlidersIcon,
+  ArchiveIcon, ArchiveRestoreIcon,
 } from 'lucide-react'
 import type { Category, TicketType, TicketItem, Group, Assignment } from '@/api/types'
 
@@ -103,13 +104,91 @@ function InlineName({
       <span>{value}</span>
       <button
         onClick={(e) => { e.stopPropagation(); setDraft(value); setEditing(true) }}
-        className="invisible text-gray-300 hover:text-gray-600 group-hover/name:visible"
+        className="opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 hover:text-gray-600 group-hover/name:visible"
         title="Rename"
       >
         <PencilIcon className="h-3 w-3" />
       </button>
     </span>
   )
+}
+
+// ── Archive / restore ─────────────────────────────────────────────────────────
+
+type CtiKind = 'category' | 'type' | 'item'
+
+const IN_USE_CODES = new Set(['category_in_use', 'type_in_use', 'item_in_use'])
+
+// A delete refused because tickets use the entry (409) points at the way out.
+function deleteErrorText(err: unknown): string {
+  const message = extractError(err)
+  if (!IN_USE_CODES.has(extractErrorCode(err))) return message
+  return `${message.replace(/[.\s]+$/, '')}. Archive it instead to keep the tickets and hide it from new ones.`
+}
+
+// Archiving asks first because it changes what requesters see; restoring only
+// undoes it, so it does not.
+function ArchiveControl({
+  kind, name, archived, setActive, onChanged, iconClass,
+}: {
+  kind: CtiKind
+  name: string
+  archived: boolean
+  setActive: (active: boolean) => Promise<unknown>
+  onChanged: () => void
+  iconClass: string
+}) {
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const mutation = useMutation({
+    mutationFn: (active: boolean) => setActive(active),
+    onSuccess: () => {
+      onChanged()
+      setConfirmOpen(false)
+    },
+  })
+
+  if (archived) {
+    return (
+      <>
+        {mutation.isError && <span role="alert" className="text-xs text-red-600">{extractError(mutation.error)}</span>}
+      <button
+        onClick={() => mutation.mutate(true)}
+        disabled={mutation.isPending}
+        className="opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 hover:text-green-600"
+        title={`Restore ${kind}`}
+      >
+        <ArchiveRestoreIcon className={iconClass} />
+      </button>
+      </>
+    )
+  }
+
+  return (
+    <>
+      <button
+        onClick={() => setConfirmOpen(true)}
+        className="opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 hover:text-amber-600"
+        title={`Archive ${kind}`}
+      >
+        <ArchiveIcon className={iconClass} />
+      </button>
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={(open) => { setConfirmOpen(open); if (!open) mutation.reset() }}
+        error={mutation.isError ? extractError(mutation.error) : undefined}
+        title={`Archive ${kind} "${name}"?`}
+        description="Requesters will no longer see it or be able to file new tickets under it. Tickets already filed keep it. You can restore it at any time."
+        confirmLabel={`Archive ${kind}`}
+        destructive={false}
+        isPending={mutation.isPending}
+        onConfirm={() => mutation.mutate(false)}
+      />
+    </>
+  )
+}
+
+function ArchivedBadge() {
+  return <span className="rounded bg-gray-200 px-1.5 py-0.5 text-xs text-gray-800">Archived</span>
 }
 
 // ── Groups subsection ─────────────────────────────────────────────────────────
@@ -352,7 +431,7 @@ function FieldsSubsection({ scope }: { scope: FieldsScope }) {
             </label>
             <button
               onClick={() => removeMutation.mutate(a.id)}
-              className="invisible text-gray-300 hover:text-red-500 group-hover:visible"
+              className="opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 hover:text-red-500"
               title="Remove assignment"
             >
               <XIcon className="h-3.5 w-3.5" />
@@ -436,7 +515,7 @@ function SortableItemRow({
 
   return (
     <div ref={setNodeRef} style={style} className={isDragging ? 'opacity-50' : ''}>
-      <div className="group flex items-center gap-2 py-2 pl-3 pr-3 hover:bg-gray-50">
+      <div data-archived={!item.active} className={`group flex items-center gap-2 py-2 pl-3 pr-3 hover:bg-gray-50`}>
         <button
           {...attributes}
           {...listeners}
@@ -447,6 +526,7 @@ function SortableItemRow({
         </button>
         <button
           onClick={() => setExpanded((v) => !v)}
+          aria-label={expanded ? 'Collapse' : 'Expand'}
           className="flex h-4 w-4 shrink-0 items-center justify-center text-gray-400 hover:text-gray-600"
         >
           {expanded ? <ChevronDownIcon className="h-3.5 w-3.5" /> : <ChevronRightIcon className="h-3.5 w-3.5" />}
@@ -455,12 +535,21 @@ function SortableItemRow({
         <InlineName
           value={item.name}
           onSave={(name) => renameMutation.mutateAsync(name)}
-          className="text-sm text-gray-700"
+          className={`text-sm text-gray-700 ${item.active ? '' : 'opacity-60'}`}
+        />
+        {!item.active && <ArchivedBadge />}
+        <ArchiveControl
+          kind="item"
+          name={item.name}
+          archived={!item.active}
+          setActive={(active) => updateItem(categoryId, typeId, item.id, { active })}
+          onChanged={() => qc.invalidateQueries({ queryKey: ['admin', 'items', categoryId, typeId] })}
+          iconClass="h-3.5 w-3.5"
         />
         <button
           onClick={() => setConfirmOpen(true)}
           disabled={deleteMutation.isPending}
-          className="invisible text-gray-300 hover:text-red-500 group-hover:visible"
+          className="opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 hover:text-red-500"
           title="Delete item"
         >
           <TrashIcon className="h-3.5 w-3.5" />
@@ -474,7 +563,7 @@ function SortableItemRow({
       <ConfirmDialog
         open={confirmOpen}
         onOpenChange={(open) => { setConfirmOpen(open); if (!open) deleteMutation.reset() }}
-        error={deleteMutation.isError ? extractError(deleteMutation.error) : undefined}
+        error={deleteMutation.isError ? deleteErrorText(deleteMutation.error) : undefined}
         title={`Delete item "${item.name}"?`}
         description="Tickets already classified with this item keep their classification but it can no longer be selected for new tickets."
         confirmLabel="Delete item"
@@ -551,7 +640,7 @@ function SortableTypeRow({
 
   return (
     <div ref={setNodeRef} style={style} className={isDragging ? 'opacity-50' : ''}>
-      <div className="group flex items-center gap-2 py-2.5 pl-2 pr-3 hover:bg-gray-50">
+      <div data-archived={!type.active} className={`group flex items-center gap-2 py-2.5 pl-2 pr-3 hover:bg-gray-50`}>
         <button
           {...attributes}
           {...listeners}
@@ -562,6 +651,7 @@ function SortableTypeRow({
         </button>
         <button
           onClick={() => setExpanded((v) => !v)}
+          aria-label={expanded ? 'Collapse' : 'Expand'}
           className="flex h-5 w-5 shrink-0 items-center justify-center text-gray-400 hover:text-gray-600"
         >
           {expanded ? <ChevronDownIcon className="h-4 w-4" /> : <ChevronRightIcon className="h-4 w-4" />}
@@ -569,12 +659,21 @@ function SortableTypeRow({
         <InlineName
           value={type.name}
           onSave={(name) => renameMutation.mutateAsync(name)}
-          className="text-sm font-medium text-gray-800"
+          className={`text-sm font-medium text-gray-800 ${type.active ? '' : 'opacity-60'}`}
+        />
+        {!type.active && <ArchivedBadge />}
+        <ArchiveControl
+          kind="type"
+          name={type.name}
+          archived={!type.active}
+          setActive={(active) => updateType(categoryId, type.id, { active })}
+          onChanged={() => qc.invalidateQueries({ queryKey: ['admin', 'types', categoryId] })}
+          iconClass="h-3.5 w-3.5"
         />
         <button
           onClick={() => setConfirmOpen(true)}
           disabled={deleteMutation.isPending}
-          className="invisible text-gray-300 hover:text-red-500 group-hover:visible"
+          className="opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 hover:text-red-500"
           title="Delete type"
         >
           <TrashIcon className="h-3.5 w-3.5" />
@@ -583,7 +682,7 @@ function SortableTypeRow({
       <ConfirmDialog
         open={confirmOpen}
         onOpenChange={(open) => { setConfirmOpen(open); if (!open) deleteMutation.reset() }}
-        error={deleteMutation.isError ? extractError(deleteMutation.error) : undefined}
+        error={deleteMutation.isError ? deleteErrorText(deleteMutation.error) : undefined}
         title={`Delete type "${type.name}"?`}
         description="All items under this type will also be removed. Tickets already classified under them keep their classification."
         confirmLabel="Delete type"
@@ -698,7 +797,7 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
 
   return (
     <div ref={setNodeRef} style={style} className={`border-b last:border-b-0 ${isDragging ? 'opacity-50' : ''}`}>
-      <div className="group flex items-center gap-2 px-4 py-3 hover:bg-gray-50">
+      <div data-archived={!cat.active} className={`group flex items-center gap-2 px-4 py-3 hover:bg-gray-50`}>
         <button
           {...attributes}
           {...listeners}
@@ -709,6 +808,7 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
         </button>
         <button
           onClick={() => setExpanded((v) => !v)}
+          aria-label={expanded ? 'Collapse' : 'Expand'}
           className="flex h-5 w-5 shrink-0 items-center justify-center text-gray-500 hover:text-gray-700"
         >
           {expanded ? <ChevronDownIcon className="h-4 w-4" /> : <ChevronRightIcon className="h-4 w-4" />}
@@ -716,15 +816,21 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
         <InlineName
           value={cat.name}
           onSave={(name) => renameMutation.mutateAsync(name)}
-          className="text-sm font-semibold text-gray-900"
+          className={`text-sm font-semibold text-gray-900 ${cat.active ? '' : 'opacity-60'}`}
         />
-        {!cat.active && (
-          <span className="rounded bg-yellow-100 px-1.5 py-0.5 text-xs text-yellow-700">inactive</span>
-        )}
+        {!cat.active && <ArchivedBadge />}
+        <ArchiveControl
+          kind="category"
+          name={cat.name}
+          archived={!cat.active}
+          setActive={(active) => updateCategory(cat.id, { active })}
+          onChanged={() => qc.invalidateQueries({ queryKey: ['admin', 'categories'] })}
+          iconClass="h-4 w-4"
+        />
         <button
           onClick={() => setConfirmOpen(true)}
           disabled={deleteMutation.isPending}
-          className="invisible text-gray-300 hover:text-red-500 group-hover:visible"
+          className="opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 hover:text-red-500"
           title="Delete category"
         >
           <TrashIcon className="h-4 w-4" />
@@ -733,7 +839,7 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
       <ConfirmDialog
         open={confirmOpen}
         onOpenChange={(open) => { setConfirmOpen(open); if (!open) deleteMutation.reset() }}
-        error={deleteMutation.isError ? extractError(deleteMutation.error) : undefined}
+        error={deleteMutation.isError ? deleteErrorText(deleteMutation.error) : undefined}
         title={`Delete category "${cat.name}"?`}
         description="All types and items under this category will also be removed. Tickets already classified keep their classification."
         confirmLabel="Delete category"

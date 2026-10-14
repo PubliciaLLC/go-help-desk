@@ -425,6 +425,16 @@ func (s *Service) rehashIfBelowTarget(ctx context.Context, u User, plain string)
 // be enforced.
 var ErrMFAAlreadyEnrolled = errors.New("MFA is already enabled for this account")
 
+// The two things a person can get wrong when confirming an enrolment (#421).
+// Anything else ConfirmMFAEnrollmentWith returns is a fault, not a mistake.
+// The message text is what the API has always sent in the 400.
+var (
+	// ErrMFANotStarted: no secret was staged, so there is nothing to confirm.
+	ErrMFANotStarted = errors.New("MFA enrollment not started")
+	// ErrMFAInvalidCode: the code does not match the staged secret.
+	ErrMFAInvalidCode = errors.New("invalid TOTP code")
+)
+
 // EnrollMFA generates a new TOTP secret for a user and stores it.
 //
 // allowReenroll must be true to re-enrol an account that already has MFA
@@ -455,10 +465,10 @@ var ErrMFAAlreadyEnrolled = errors.New("MFA is already enabled for this account"
 // rotation and overwrite the winner.
 func (s *Service) ConfirmMFAEnrollmentWith(ctx context.Context, userID uuid.UUID, pendingSecret, code string, allowReplace bool) error {
 	if pendingSecret == "" {
-		return fmt.Errorf("MFA enrollment not started")
+		return ErrMFANotStarted
 	}
 	if !totp.Validate(code, pendingSecret) {
-		return fmt.Errorf("invalid TOTP code")
+		return ErrMFAInvalidCode
 	}
 	if _, err := s.store.GetByID(ctx, userID); err != nil {
 		return err
