@@ -245,13 +245,13 @@ Cache-Control: private, max-age=3600</code></pre>
   <li><code>GET /guest/ticket</code>, <code>POST /guest/replies</code>, <code>POST /guest/attachments</code> and <code>POST /guest/follow-up</code> take the guest token and act on the one ticket it names.</li>
 </ul>
 
-<p>Turning <code>guest_submission_enabled</code> off makes the submit, resend and follow-up routes answer <code>404</code>. The read, reply and upload routes check the token only, not the setting, so a link already sent keeps working on those routes.</p>
+<p>Turning <code>guest_submission_enabled</code> off makes every guest route answer <code>404</code>: submit and resend, and also the routes that take a token (read, reply, upload and follow-up). The body is the same as for a wrong token, so a client cannot tell the two apart. Links already sent are suspended, not revoked: they work again, if they have not expired, once the setting is switched back on. This is a change in 1.3.0: before it, the read, reply and upload routes checked the token only. See <a href="upgrading-1.3.0.html#guest-links-off">Upgrading to 1.3.0</a>.</p>
 
 <h3>Notes that matter to a client</h3>
 <ul>
   <li><strong>There is no ticket ID in any guest URL.</strong> The token names exactly one ticket, so there is nothing to enumerate.</li>
   <li><strong>The scheme is <code>Guest</code>, not <code>Bearer</code>.</strong> A guest token is not an API credential and is not accepted where one is required.</li>
-  <li><strong>Every refusal about the link is the same <code>404 not_found</code>.</strong> A wrong token, an unknown link, a closed ticket on a write route and a switched-off instance (for the routes that check it) cannot be told apart from outside. A good link still gets other answers: <code>400</code> for an invalid body, <code>429</code> past the rate limit, and <code>409 reopen_window_closed</code> for a reply or upload to a Resolved ticket after its reopen window.</li>
+  <li><strong>Every refusal about the link is the same <code>404 not_found</code>.</strong> A wrong token, an unknown link, a closed ticket on a write route and a switched-off instance cannot be told apart from outside. A good link still gets other answers: <code>400</code> for an invalid body, <code>429</code> past the rate limit, and <code>409 reopen_window_closed</code> for a reply or upload to a Resolved ticket after its reopen window.</li>
   <li><code>category_id</code> must be an <strong>active</strong> category, checked before anything is written. <code>type_id</code>, <code>item_id</code> and custom fields are not read, and the priority is always Medium.</li>
   <li><code>guest_email</code> must be a single bare address with no display name. It is stored lower-case.</li>
   <li>The read returns a narrow view: tracking number, subject, description, status name, timestamps and the replies the guest may see. Replies carry <code>from_you</code> and no author. Assignee, group, reporter and internal-note data are never included, and the read has no attachment list.</li>

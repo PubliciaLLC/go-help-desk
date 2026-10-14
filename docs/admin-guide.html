@@ -134,7 +134,7 @@
     <li><a href="#admin-statuses">Closed is terminal</a> by default. <a href="#admin-closed-reopen">Reopening closed tickets</a> is an opt-in setting, and a reopen window of 0 closes a Resolved ticket on the next sweep.</li>
     <li><a href="#admin-sla">SLA tracking</a> works end to end: timers pause while a ticket is Pending.</li>
     <li><a href="#admin-users">Account recovery</a>: an identity-provider lockout guard, and a <code>reset-factors</code> command for an account that has lost every second factor. MFA reset also clears passkeys.</li>
-    <li><a href="tickets.html#tickets-create">Guest submission</a> works. <code>guest_submission_enabled</code> needs a signed-in administrator.</li>
+    <li><a href="tickets.html#tickets-create">Guest submission</a> works. <code>guest_submission_enabled</code> needs a signed-in administrator, and switching it off also suspends every existing guest link until it is switched on again.</li>
     <li><a href="#admin-attachments">Attachment security</a>: content detection, malware scanning and reputation lookup, all configured under <em>Admin → Settings → Attachments</em>.</li>
     <li>Administration is desktop-only by design. Staff triage and reporting work on a phone.</li>
   </ul>
