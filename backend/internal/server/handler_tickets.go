@@ -525,7 +525,7 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		TypeID        *uuid.UUID `json:"type_id"`
 		ItemID        *uuid.UUID `json:"item_id"`
 		// Priority is staff and admin only, and re-matches the ticket's SLA
-		// from the moment of the change (#443). A string, not ticket.Priority,
+		// policy, keeping its clock (#443). A string, not ticket.Priority,
 		// so a value that is not a priority reaches the service and answers
 		// 400 there instead of being dropped.
 		Priority *string `json:"priority"`
