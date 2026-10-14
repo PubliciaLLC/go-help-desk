@@ -745,6 +745,11 @@ type Querier interface {
 	// of two.
 	SetSLAResolvedAndFirstResponse(ctx context.Context, arg SetSLAResolvedAndFirstResponseParams) error
 	SetSetting(ctx context.Context, arg SetSettingParams) error
+	// The person's staff-email switches (#441), each changed only when given.
+	// Narrow for the reason UpdateUserProfile is: UpdateUser writes a whole row
+	// from an earlier read, and must not be the way a choice made a moment ago is
+	// put back. updated_at is left alone; the account itself did not change.
+	SetUserEmailPreferences(ctx context.Context, arg SetUserEmailPreferencesParams) error
 	// Writes only the TOTP secret and whether it is enabled. Same reason: the
 	// enrolment confirmation read the whole row, checked a code, and wrote every
 	// column back over whatever had happened in between.

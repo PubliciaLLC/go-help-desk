@@ -34,6 +34,9 @@ type Store interface {
 	// silently revert a role, a password or an MFA enrolment that changed
 	// while the request was in flight.
 	UpdateProfile(ctx context.Context, id uuid.UUID, email, displayName string) error
+	// SetEmailPreferences writes only the switches the patch names, for the
+	// same reason UpdateProfile is narrow (#441).
+	SetEmailPreferences(ctx context.Context, id uuid.UUID, p EmailPreferencesPatch) error
 	// SetPasswordHash, SetMFA and SyncFederated each write the one thing they
 	// name. The whole-row Update below carries a copy of every column, so a
 	// caller that reads, thinks, and then writes puts back whatever changed

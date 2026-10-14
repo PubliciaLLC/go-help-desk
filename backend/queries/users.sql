@@ -132,6 +132,17 @@ UPDATE users
 SET email = $2, display_name = $3, updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL;
 
+-- name: SetUserEmailPreferences :exec
+-- The person's staff-email switches (#441), each changed only when given.
+-- Narrow for the reason UpdateUserProfile is: UpdateUser writes a whole row
+-- from an earlier read, and must not be the way a choice made a moment ago is
+-- put back. updated_at is left alone; the account itself did not change.
+UPDATE users
+SET email_notify_assigned = COALESCE(sqlc.narg('assigned'), email_notify_assigned),
+    email_notify_activity = COALESCE(sqlc.narg('activity'), email_notify_activity),
+    email_notify_group    = COALESCE(sqlc.narg('grp'), email_notify_group)
+WHERE id = sqlc.arg('id') AND deleted_at IS NULL;
+
 -- name: ListAssignableStaff :many
 -- The people work can be given to: active staff and administrators, name and
 -- id only.

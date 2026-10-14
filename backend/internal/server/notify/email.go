@@ -109,7 +109,10 @@ func (d *EmailDispatcher) eventToEmail(event notification.Event) (templateName, 
 	// The SPA reads location.hash and clears it. The server never learns it
 	// except as an Authorization header on the API calls that need it.
 	path := "/tickets/" + event.TicketID.String()
-	if event.GuestToken != "" {
+	// Staff sign in; a guest credential has no place in their mail, whatever
+	// the event carries.
+	isStaffMail := event.Type == notification.EventStaffAssigned || event.Type == notification.EventStaffRequesterReplied
+	if event.GuestToken != "" && !isStaffMail {
 		path = "/g#" + event.GuestToken
 	}
 	view := map[string]string{
@@ -144,6 +147,12 @@ func (d *EmailDispatcher) eventToEmail(event notification.Event) (templateName, 
 		return "ticket_resolved.tmpl", "We have resolved " + ref, event.Recipient, view, true
 	case notification.EventTicketReopened:
 		return "ticket_reopened.tmpl", "We have reopened " + ref, event.Recipient, view, true
+	// Staff mail (#441). The same no-content rule: the tracking number and a
+	// link to the ticket behind the sign-in, nothing a requester wrote.
+	case notification.EventStaffAssigned:
+		return "staff_assigned.tmpl", "A ticket is assigned to you: " + ref, event.Recipient, view, true
+	case notification.EventStaffRequesterReplied:
+		return "staff_requester_replied.tmpl", "The requester replied on " + ref, event.Recipient, view, true
 	case notification.EventGuestLinkResent:
 		return "guest_link.tmpl", "Your link to " + ref, event.Recipient, view, true
 	}

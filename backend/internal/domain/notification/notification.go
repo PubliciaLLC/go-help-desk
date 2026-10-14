@@ -31,6 +31,14 @@ const (
 	// read from the pending registration when the email is sent. Never a
 	// webhook event, and no ticket.
 	EventRegistrationVerify EventType = "registration.verify"
+
+	// EventStaffAssigned and EventStaffRequesterReplied are the email a staff
+	// member gets about a ticket (#441). They are made from EventTicketAssigned
+	// and a requester's EventTicketReplied, one per person to be mailed, by
+	// notify.StaffFanout, and never dispatched by domain code. Not webhook
+	// events: a webhook subscriber already has the events they derive from.
+	EventStaffAssigned         EventType = "staff.assigned"
+	EventStaffRequesterReplied EventType = "staff.requester_replied"
 )
 
 // Event carries the data for a single lifecycle event on a ticket.
@@ -67,6 +75,24 @@ type Event struct {
 	// IssueGuestLink, so the raw token is never stored in the outbox (#164).
 	// Excluded from JSON like GuestToken: a webhook has no use for it.
 	GuestLink bool `json:"-"`
+
+	// AssigneeUserID and AssigneeGroupID are who holds the ticket as of this
+	// event. They are set on ticket.assigned and ticket.replied so staff mail
+	// can be addressed without a second read of a ticket that may have moved
+	// on. Excluded from JSON: the webhook body is unchanged.
+	AssigneeUserID  *uuid.UUID `json:"-"`
+	AssigneeGroupID *uuid.UUID `json:"-"`
+
+	// FromRequester marks a ticket.replied that the requester wrote (an
+	// account holder with the user role, or a guest) and that is not an
+	// internal note. It is what makes a reply a reason to mail staff.
+	FromRequester bool `json:"-"`
+
+	// StaffUserID is the one staff member a staff.* event is for. Their
+	// address is read at send time rather than copied here, so the outbox
+	// holds no address for them and a deleted or disabled account is skipped
+	// instead of mailed.
+	StaffUserID *uuid.UUID `json:"-"`
 
 	// Subject and StatusName exist for the webhook chat/ITSM renderers
 	// (internal/server/notify), which need a human-readable line for events

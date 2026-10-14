@@ -15,6 +15,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/reputation"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
@@ -112,11 +113,21 @@ var choiceSettings = map[string]choiceSetting{
 	admin.KeyAttachmentMismatchHandling: {admin.ValidMismatchHandling, admin.MismatchHandlingRefuse,
 		"invalid_mismatch_handling", "mismatched attachment handling must be one of: refuse, wrap",
 		false, "mismatched attachment handling must be a string"},
+	// Anything else reads as "user": the person's own switch decides (#441). Decoded bare, as above.
+	admin.KeyStaffEmailAssignedOverride: staffEmailOverrideSetting,
+	admin.KeyStaffEmailActivityOverride: staffEmailOverrideSetting,
+	admin.KeyStaffEmailGroupOverride:    staffEmailOverrideSetting,
 	// Anything else reads as biweekly, never "never". Decoded bare for compatibility, as above.
 	admin.KeyAttachmentReputationRefresh: {admin.ValidReputationRefresh, admin.ReputationRefreshBiweekly,
 		"invalid_reputation_refresh", "reputation refresh must be one of: weekly, biweekly, monthly, quarterly, never",
 		false, "reputation refresh must be a string"},
 }
+
+// staffEmailOverrideSetting is shared by the three staff-email overrides: same
+// values, same refusal, same reader fallback.
+var staffEmailOverrideSetting = choiceSetting{notification.ValidOverrideMode, string(notification.OverrideUser),
+	"invalid_staff_email_override", "a staff email override must be one of: user, on, off",
+	false, "a staff email override must be a string"}
 
 // refuseChoice writes the 400 for a choice-list key in body that the setting
 // refuses, and reports whether it did. It is called at the position each
@@ -418,6 +429,15 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	// fortnight old — and in both cases the page looks exactly as it should.
 	if refuseChoice(w, body, admin.KeyAttachmentReputationRefresh) {
 		return
+	}
+
+	// The staff-email overrides (#441). A typo would be read as "leave it to
+	// the user", so an administrator who meant to force a switch off would
+	// believe they had; refused by name instead.
+	for _, key := range []string{admin.KeyStaffEmailAssignedOverride, admin.KeyStaffEmailActivityOverride, admin.KeyStaffEmailGroupOverride} {
+		if refuseChoice(w, body, key) {
+			return
+		}
 	}
 
 	// What this instance accepts as an attachment. Same reasoning again, and

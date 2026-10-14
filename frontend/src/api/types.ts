@@ -10,7 +10,16 @@ export interface User {
   mfa_enabled: boolean
   created_at: string
   updated_at: string
+  /** Staff-email switches (#441). Optional so a profile from before they
+   *  existed reads as on, which is also what the server defaults them to. */
+  email_notify_assigned?: boolean
+  email_notify_activity?: boolean
+  email_notify_group?: boolean
 }
+
+export type EmailPreferencesPatch = Partial<
+  Pick<User, 'email_notify_assigned' | 'email_notify_activity' | 'email_notify_group'>
+>
 
 export type AuthType = 'local' | 'saml' | 'both'
 

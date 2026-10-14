@@ -43,6 +43,36 @@ func (s *Server) handleGetMe(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, u)
 }
 
+// PATCH /api/v1/me/email-preferences
+//
+// The caller's own staff-email switches (#441). Each is optional; only the ones
+// sent change. An administrator's override can still force a switch on or off
+// for everyone, whatever is saved here.
+func (s *Server) handleUpdateEmailPreferences(w http.ResponseWriter, r *http.Request) {
+	a := authmw.GetActor(r)
+	var body struct {
+		Assigned *bool `json:"email_notify_assigned"`
+		Activity *bool `json:"email_notify_activity"`
+		Group    *bool `json:"email_notify_group"`
+	}
+	if err := DecodeJSON(r, &body); err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "the email switches must be true or false")
+		return
+	}
+	if err := s.users.SetEmailPreferences(r.Context(), a.UserID, user.EmailPreferencesPatch{
+		Assigned: body.Assigned, Activity: body.Activity, Group: body.Group,
+	}); err != nil {
+		handleError(w, err)
+		return
+	}
+	u, err := s.users.GetByID(r.Context(), a.UserID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, u)
+}
+
 // PATCH /api/v1/me/password
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)

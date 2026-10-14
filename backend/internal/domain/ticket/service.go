@@ -863,6 +863,10 @@ func (s *Service) Assign(ctx context.Context, ticketID uuid.UUID, assigneeUserID
 		OccurredAt:     time.Now(),
 		TrackingNumber: string(t.TrackingNumber),
 		Subject:        t.Subject,
+		// Who holds it now, for staff mail (#441). Both nil when the ticket
+		// was unassigned, which leaves nobody to mail.
+		AssigneeUserID:  t.AssigneeUserID,
+		AssigneeGroupID: t.AssigneeGroupID,
 	})
 
 	return t, nil
@@ -1175,6 +1179,12 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 		Recipient:      reporterEmail,
 		GuestLink:      guestLink,
 		Subject:        t.Subject,
+		// A public reply by the requester (an account holder or a guest) is
+		// what staff mail is for (#441). An internal note is staff talking to
+		// staff, and a requester cannot write one.
+		FromRequester:   actor.Role == user.RoleUser && !internal,
+		AssigneeUserID:  t.AssigneeUserID,
+		AssigneeGroupID: t.AssigneeGroupID,
 		Payload: func() map[string]any {
 			p := map[string]any{
 				"reporter_email": reporterEmail, // used by dispatcher to set To address

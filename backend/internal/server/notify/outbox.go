@@ -41,6 +41,13 @@ type outboxRecord struct {
 	Subject        string                 `json:"subject,omitempty"`
 	StatusName     string                 `json:"status_name,omitempty"`
 	GuestLink      bool                   `json:"guest_link,omitempty"`
+
+	// Staff mail (#441). StaffUserID is the one person a staff.* row is for;
+	// their address is read when it is sent, never stored here.
+	StaffUserID     *uuid.UUID `json:"staff_user_id,omitempty"`
+	AssigneeUserID  *uuid.UUID `json:"assignee_user_id,omitempty"`
+	AssigneeGroupID *uuid.UUID `json:"assignee_group_id,omitempty"`
+	FromRequester   bool       `json:"from_requester,omitempty"`
 }
 
 func encodeEvent(ev notification.Event) ([]byte, error) {
@@ -51,6 +58,8 @@ func encodeEvent(ev notification.Event) ([]byte, error) {
 		Type: ev.Type, TicketID: ev.TicketID, ActorID: ev.ActorID, Payload: ev.Payload,
 		OccurredAt: ev.OccurredAt, TrackingNumber: ev.TrackingNumber, Recipient: ev.Recipient,
 		Subject: ev.Subject, StatusName: ev.StatusName, GuestLink: ev.GuestLink,
+		StaffUserID: ev.StaffUserID, AssigneeUserID: ev.AssigneeUserID,
+		AssigneeGroupID: ev.AssigneeGroupID, FromRequester: ev.FromRequester,
 	})
 }
 
@@ -63,6 +72,8 @@ func decodeEvent(b []byte) (notification.Event, error) {
 		Type: r.Type, TicketID: r.TicketID, ActorID: r.ActorID, Payload: r.Payload,
 		OccurredAt: r.OccurredAt, TrackingNumber: r.TrackingNumber, Recipient: r.Recipient,
 		Subject: r.Subject, StatusName: r.StatusName, GuestLink: r.GuestLink,
+		StaffUserID: r.StaffUserID, AssigneeUserID: r.AssigneeUserID,
+		AssigneeGroupID: r.AssigneeGroupID, FromRequester: r.FromRequester,
 	}, nil
 }
 
@@ -108,7 +119,8 @@ func carries(channel string, ev notification.Event) bool {
 	case "email":
 		// An account holder's status change has nobody to mail. A guest-link
 		// event may have no recipient yet: the send-time step fills it in.
-		return ev.Recipient != "" || ev.GuestLink
+		// So does a staff event, whose address is read when it is sent.
+		return ev.Recipient != "" || ev.GuestLink || ev.StaffUserID != nil
 	case "verification":
 		return ev.Type == notification.EventRegistrationVerify
 	}

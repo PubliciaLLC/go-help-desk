@@ -321,6 +321,11 @@ func (s *Service) UpdateProfile(ctx context.Context, id uuid.UUID, email, displa
 	return s.store.UpdateProfile(ctx, id, addr, name)
 }
 
+// SetEmailPreferences changes the caller's own staff-email switches (#441).
+func (s *Service) SetEmailPreferences(ctx context.Context, id uuid.UUID, p EmailPreferencesPatch) error {
+	return s.store.SetEmailPreferences(ctx, id, p)
+}
+
 // ListAssignableStaff returns the people work can be given to.
 func (s *Service) ListAssignableStaff(ctx context.Context) ([]AssignableStaff, error) {
 	return s.store.ListAssignableStaff(ctx)
