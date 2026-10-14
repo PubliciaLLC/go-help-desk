@@ -107,8 +107,9 @@ func TestReplyRecipient_MCPQueuesWhatRESTQueues(t *testing.T) {
 			wantTo: "",
 		},
 		{
-			// Changed by Erik's decision: REST used to mail the replier when
-			// they were also the requester. Nobody is mailed about their own reply.
+			// Changed by Erik's decision: REST used to mail a staff member or
+			// administrator who replied on a ticket they filed. They no longer
+			// are; an ordinary requester still is (next test).
 			name: "staff replying on a ticket they filed is not mailed about it",
 			seed: func(t *testing.T, h *harness) ticket.Ticket {
 				return newTicket(t, h, ticket.CreateInput{ReporterUserID: &h.staffID})
@@ -155,6 +156,24 @@ func TestReplyRecipient_ARequesterRepliesOnTheirOwnTicketAndIsStillMailed(t *tes
 	res.Body.Close()
 	require.Equal(t, http.StatusCreated, res.StatusCode)
 	require.Equal(t, "user@test.local", replyEvent(t, h).Recipient)
+}
+
+// An administrator is held to the same rule as staff.
+func TestReplyRecipient_AnAdminReplyingOnTheirOwnTicketIsNotMailed(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	h.dispatcher.record = true
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+		Subject: "Printer jammed", Description: "again", CategoryID: h.catID, ReporterUserID: &h.adminID,
+	})
+	require.NoError(t, err)
+
+	h.dispatcher.queued = nil
+	res := h.doAsAdmin(t, http.MethodPost, "/api/v1/tickets/"+tk.ID.String()+"/replies",
+		map[string]any{"body": "noted"})
+	res.Body.Close()
+	require.Equal(t, http.StatusCreated, res.StatusCode)
+	require.Empty(t, replyEvent(t, h).Recipient)
 }
 
 func TestReplyRecipient_AnMCPInternalNoteMailsNobody(t *testing.T) {
