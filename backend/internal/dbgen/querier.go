@@ -423,6 +423,10 @@ type Querier interface {
 	// load. This costs no extra round trip, since the session lookup already
 	// queries the database on every authenticated request.
 	//
+	// A service user (an OAuth client's identity, #420) never signs in, so no
+	// session for one loads either. Nothing writes such a session; this keeps the
+	// guarantee from depending on that.
+	//
 	// LEFT JOIN, and user_id IS NULL passes: the OIDC flow writes state (nonce,
 	// PKCE verifier) into a session before anybody has authenticated, and an inner
 	// join would drop those and break the login it is protecting.
@@ -490,6 +494,13 @@ type Querier interface {
 	// a read-only link beside the existing ones rather than rotating them.
 	GetTicketIDByTrackingAndGuestEmail(ctx context.Context, arg GetTicketIDByTrackingAndGuestEmailParams) (uuid.UUID, error)
 	GetType(ctx context.Context, id uuid.UUID) (Type, error)
+	// This is the lookup behind password login, OIDC adoption by address and
+	// password reset, so it is where a service account (an OAuth client's
+	// identity, #420) is kept from ever signing in: it simply is not found. A miss
+	// already spends the dummy bcrypt hash, so there is no timing difference to
+	// tell it from an unknown address. The two subject lookups below carry the
+	// same filter; the database already refuses a service account a subject, so
+	// that one is belt and braces.
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByIDAdmin(ctx context.Context, id uuid.UUID) (User, error)

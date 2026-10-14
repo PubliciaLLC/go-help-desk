@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/webauthn"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
@@ -31,6 +32,12 @@ func (s *Server) accountFor(r *http.Request, id uuid.UUID) (webauthn.Account, er
 	u, err := s.users.GetByID(r.Context(), id)
 	if err != nil {
 		return webauthn.Account{}, err
+	}
+	// A service account never signs in, so it never holds a passkey (#420).
+	// No session for one can exist; this keeps that from being the only
+	// thing between it and a registration.
+	if u.ServiceAccount {
+		return webauthn.Account{}, user.ErrServiceAccount
 	}
 	creds, err := s.passkeyStore.ListByUser(r.Context(), id)
 	if err != nil {

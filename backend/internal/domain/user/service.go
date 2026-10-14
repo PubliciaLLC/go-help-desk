@@ -208,8 +208,12 @@ func (s *Service) SetPassword(ctx context.Context, userID uuid.UUID, plain strin
 	if err := ValidatePassword(plain); err != nil {
 		return fmt.Errorf("%w: %w", ErrValidation, err)
 	}
-	if _, err := s.store.GetByID(ctx, userID); err != nil {
+	u, err := s.store.GetByID(ctx, userID)
+	if err != nil {
 		return err
+	}
+	if u.ServiceAccount {
+		return ErrServiceAccount
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(plain), s.hashCost)
 	if err != nil {
@@ -485,6 +489,9 @@ func (s *Service) GenerateMFASecret(ctx context.Context, userID uuid.UUID, issue
 	if err != nil {
 		return "", "", err
 	}
+	if u.ServiceAccount {
+		return "", "", ErrServiceAccount
+	}
 	if u.MFAEnabled && !allowReenroll {
 		return "", "", ErrMFAAlreadyEnrolled
 	}
@@ -504,6 +511,9 @@ func (s *Service) EnrollMFA(ctx context.Context, userID uuid.UUID, issuer string
 	u, err := s.store.GetByID(ctx, userID)
 	if err != nil {
 		return "", "", err
+	}
+	if u.ServiceAccount {
+		return "", "", ErrServiceAccount
 	}
 	if u.MFAEnabled && !allowReenroll {
 		return "", "", ErrMFAAlreadyEnrolled
@@ -529,6 +539,9 @@ func (s *Service) ConfirmMFAEnrollment(ctx context.Context, userID uuid.UUID, co
 	u, err := s.store.GetByID(ctx, userID)
 	if err != nil {
 		return err
+	}
+	if u.ServiceAccount {
+		return ErrServiceAccount
 	}
 	if u.MFASecret == "" {
 		return fmt.Errorf("MFA enrollment not started")
@@ -783,6 +796,8 @@ func (s *Service) UpsertOIDCUser(
 // unprivileged account that is not already federated.
 func canAdoptByEmail(u User, oidcSubject string) error {
 	switch {
+	case u.ServiceAccount:
+		return fmt.Errorf("%w: the account is a service account", ErrAccountLinkRefused)
 	case !u.IsActive():
 		return ErrUserDisabled
 	case u.Role == RoleAdmin:
@@ -999,6 +1014,9 @@ func (s *Service) ResetMFA(ctx context.Context, id uuid.UUID, actorID *uuid.UUID
 	// separately, answers the caller 500 for a reset that already happened.
 	// Same shape as handler_passkeys.go's detached Touch call.
 	ctx = context.WithoutCancel(ctx)
+	if err := s.refuseServiceAccount(ctx, id); err != nil {
+		return err
+	}
 	passkeys, err := s.store.ClearFactors(ctx, id)
 	if err != nil {
 		return err
@@ -1017,6 +1035,21 @@ func (s *Service) ResetMFA(ctx context.Context, id uuid.UUID, actorID *uuid.UUID
 	return nil
 }
 
+// refuseServiceAccount answers ErrServiceAccount when id is a service account,
+// before an administrator's reset does any work for it. The database would
+// refuse the password write anyway (users_service_account_inert); this is so
+// the caller gets a reason, and a reset of nothing is not recorded as done.
+//
+// A failed lookup is not this check's to report: the write that follows reports
+// a missing row or an outage in its own words, and a lookup that fails here
+// would have failed there.
+func (s *Service) refuseServiceAccount(ctx context.Context, id uuid.UUID) error {
+	if u, err := s.store.GetByIDAdmin(ctx, id); err == nil && u.ServiceAccount {
+		return ErrServiceAccount
+	}
+	return nil
+}
+
 // AdminSetPassword hashes and stores a new password without requiring the
 // old one, and records who did it. See ResetMFA on actorID.
 func (s *Service) AdminSetPassword(ctx context.Context, id uuid.UUID, plain string, actorID *uuid.UUID) error {
@@ -1025,6 +1058,9 @@ func (s *Service) AdminSetPassword(ctx context.Context, id uuid.UUID, plain stri
 	// 500. Validation and hashing below don't touch I/O, so detaching this
 	// early costs nothing.
 	ctx = context.WithoutCancel(ctx)
+	if err := s.refuseServiceAccount(ctx, id); err != nil {
+		return err
+	}
 	if strings.TrimSpace(plain) == "" {
 		return fmt.Errorf("%w: password is required", ErrValidation)
 	}

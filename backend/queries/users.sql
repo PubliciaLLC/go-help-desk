@@ -21,7 +21,14 @@ SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL;
 SELECT * FROM users WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL;
 
 -- name: GetUserByEmail :one
-SELECT * FROM users WHERE email = $1 AND deleted_at IS NULL;
+-- This is the lookup behind password login, OIDC adoption by address and
+-- password reset, so it is where a service account (an OAuth client's
+-- identity, #420) is kept from ever signing in: it simply is not found. A miss
+-- already spends the dummy bcrypt hash, so there is no timing difference to
+-- tell it from an unknown address. The two subject lookups below carry the
+-- same filter; the database already refuses a service account a subject, so
+-- that one is belt and braces.
+SELECT * FROM users WHERE email = $1 AND deleted_at IS NULL AND NOT service_account;
 
 -- name: EmailIsTaken :one
 -- Whether any row holds this address, INCLUDING a deleted one.
@@ -35,11 +42,11 @@ SELECT * FROM users WHERE email = $1 AND deleted_at IS NULL;
 SELECT EXISTS (SELECT 1 FROM users WHERE email = $1);
 
 -- name: GetUserBySAMLSubject :one
-SELECT * FROM users WHERE saml_subject = $1 AND saml_subject != '' AND deleted_at IS NULL;
+SELECT * FROM users WHERE saml_subject = $1 AND saml_subject != '' AND deleted_at IS NULL AND NOT service_account;
 
 -- name: GetUserByOIDCSubject :one
 
-SELECT * FROM users WHERE oidc_subject = $1 AND oidc_subject != '' AND deleted_at IS NULL;
+SELECT * FROM users WHERE oidc_subject = $1 AND oidc_subject != '' AND deleted_at IS NULL AND NOT service_account;
 
 -- name: UpdateUser :exec
 UPDATE users
@@ -458,6 +465,7 @@ WHERE id = sqlc.arg('id')
   AND deleted_at IS NULL
   AND disabled = FALSE
   AND role <> 'admin'
+  AND NOT service_account
   AND saml_subject = ''
   AND oidc_subject IN ('', sqlc.arg('oidc_subject'))
 RETURNING id;

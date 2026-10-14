@@ -16,6 +16,12 @@ import (
 // was answered with 500 "an internal error occurred" and logged as one.
 var ErrValidation = errors.New("invalid input")
 
+// ErrServiceAccount marks a refusal to give a service account a way to sign
+// in: a password, a second factor, an SSO identity, or the admin role. The
+// database refuses the same writes (users_service_account_inert); this is the
+// answer a caller can act on.
+var ErrServiceAccount = errors.New("a service account cannot sign in, hold a password or second factor, or be an administrator")
+
 // Role names the three access tiers. Order matters: do not change values.
 type Role string
 

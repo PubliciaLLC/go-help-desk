@@ -68,6 +68,13 @@ func handleError(w http.ResponseWriter, err error) {
 		Error(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
+	// 409: the account's nature refuses the change, whoever asks. A service
+	// account (an OAuth client's identity) has no password, no second factor
+	// and no admin role, ever (#420).
+	if errors.Is(err, user.ErrServiceAccount) {
+		Error(w, http.StatusConflict, "service_account", err.Error())
+		return
+	}
 	// The caller sent a value that is not one. Not a server fault, and it
 	// used to fall through to 500 "an internal error occurred" — which
 	// tells somebody their own ordinary mistake is a bug here.

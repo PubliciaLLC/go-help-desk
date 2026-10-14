@@ -42,6 +42,7 @@ WHERE id = $3
   AND deleted_at IS NULL
   AND disabled = FALSE
   AND role <> 'admin'
+  AND NOT service_account
   AND saml_subject = ''
   AND oidc_subject IN ('', $1)
 RETURNING id
@@ -472,9 +473,16 @@ func (q *Queries) GetMFALock(ctx context.Context, id uuid.UUID) (GetMFALockRow, 
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account FROM users WHERE email = $1 AND deleted_at IS NULL
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account FROM users WHERE email = $1 AND deleted_at IS NULL AND NOT service_account
 `
 
+// This is the lookup behind password login, OIDC adoption by address and
+// password reset, so it is where a service account (an OAuth client's
+// identity, #420) is kept from ever signing in: it simply is not found. A miss
+// already spends the dummy bcrypt hash, so there is no timing difference to
+// tell it from an unknown address. The two subject lookups below carry the
+// same filter; the database already refuses a service account a subject, so
+// that one is belt and braces.
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
 	row := q.db.QueryRowContext(ctx, getUserByEmail, email)
 	var i User
@@ -557,7 +565,7 @@ func (q *Queries) GetUserByIDAdmin(ctx context.Context, id uuid.UUID) (User, err
 
 const getUserByOIDCSubject = `-- name: GetUserByOIDCSubject :one
 
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account FROM users WHERE oidc_subject = $1 AND oidc_subject != '' AND deleted_at IS NULL
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account FROM users WHERE oidc_subject = $1 AND oidc_subject != '' AND deleted_at IS NULL AND NOT service_account
 `
 
 func (q *Queries) GetUserByOIDCSubject(ctx context.Context, oidcSubject string) (User, error) {
@@ -585,7 +593,7 @@ func (q *Queries) GetUserByOIDCSubject(ctx context.Context, oidcSubject string) 
 }
 
 const getUserBySAMLSubject = `-- name: GetUserBySAMLSubject :one
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account FROM users WHERE saml_subject = $1 AND saml_subject != '' AND deleted_at IS NULL
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account FROM users WHERE saml_subject = $1 AND saml_subject != '' AND deleted_at IS NULL AND NOT service_account
 `
 
 func (q *Queries) GetUserBySAMLSubject(ctx context.Context, samlSubject string) (User, error) {

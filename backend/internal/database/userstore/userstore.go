@@ -86,7 +86,7 @@ func (s *Store) GetByOIDCSubject(ctx context.Context, subject string) (user.User
 }
 
 func (s *Store) Update(ctx context.Context, u user.User) error {
-	return s.q.UpdateUser(ctx, dbgen.UpdateUserParams{
+	err := s.q.UpdateUser(ctx, dbgen.UpdateUserParams{
 		ID:           u.ID,
 		Email:        u.Email,
 		DisplayName:  u.DisplayName,
@@ -98,6 +98,18 @@ func (s *Store) Update(ctx context.Context, u user.User) error {
 		OidcSubject:  u.OIDCSubject,
 		UpdatedAt:    time.Now(),
 	})
+	return inertViolation(err)
+}
+
+// inertViolation turns the database's refusal to give a service account a way
+// to sign in (users_service_account_inert) into user.ErrServiceAccount, so a
+// caller can answer it. Any other error, and nil, come back unchanged.
+func inertViolation(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == "users_service_account_inert" {
+		return user.ErrServiceAccount
+	}
+	return err
 }
 
 func (s *Store) GetByIDAdmin(ctx context.Context, id uuid.UUID) (user.User, error) {
@@ -200,7 +212,7 @@ func (s *Store) GetMFALock(ctx context.Context, id uuid.UUID) (int, *time.Time, 
 func (s *Store) AdminSetPassword(ctx context.Context, id uuid.UUID, hash string) error {
 	n, err := s.q.AdminSetPassword(ctx, dbgen.AdminSetPasswordParams{ID: id, PasswordHash: hash})
 	if err != nil {
-		return fmt.Errorf("setting password for user %s: %w", id, err)
+		return fmt.Errorf("setting password for user %s: %w", id, inertViolation(err))
 	}
 	if n == 0 {
 		return fmt.Errorf("%w: user %s", ErrNotFound, id)
@@ -293,7 +305,7 @@ func (s *Store) guardedWrite(write func() (uuid.UUID, error)) (bool, error) {
 	case errors.Is(err, sql.ErrNoRows):
 		return false, nil
 	}
-	return false, fmt.Errorf("guarded write: %w", err)
+	return false, fmt.Errorf("guarded write: %w", inertViolation(err))
 }
 
 // isDeadlock reports whether Postgres killed this statement to break a lock
@@ -337,7 +349,7 @@ func (s *Store) EmailIsTaken(ctx context.Context, email string) (bool, error) {
 // name, so a slow caller cannot write a stale copy of everything else back.
 func (s *Store) SetPasswordHash(ctx context.Context, id uuid.UUID, hash string) error {
 	if err := s.q.SetUserPasswordHash(ctx, dbgen.SetUserPasswordHashParams{ID: id, PasswordHash: hash}); err != nil {
-		return fmt.Errorf("setting password: %w", err)
+		return fmt.Errorf("setting password: %w", inertViolation(err))
 	}
 	return nil
 }
@@ -354,7 +366,7 @@ func (s *Store) RehashPassword(ctx context.Context, id uuid.UUID, oldHash, newHa
 
 func (s *Store) SetMFA(ctx context.Context, id uuid.UUID, secret string, enabled bool) error {
 	if err := s.q.SetUserMFA(ctx, dbgen.SetUserMFAParams{ID: id, MfaSecret: secret, MfaEnabled: enabled}); err != nil {
-		return fmt.Errorf("setting MFA: %w", err)
+		return fmt.Errorf("setting MFA: %w", inertViolation(err))
 	}
 	return nil
 }
@@ -362,7 +374,7 @@ func (s *Store) SetMFA(ctx context.Context, id uuid.UUID, secret string, enabled
 func (s *Store) SetFirstMFA(ctx context.Context, id uuid.UUID, secret string) (bool, error) {
 	n, err := s.q.SetFirstUserMFA(ctx, dbgen.SetFirstUserMFAParams{ID: id, MfaSecret: secret})
 	if err != nil {
-		return false, fmt.Errorf("setting first MFA: %w", err)
+		return false, fmt.Errorf("setting first MFA: %w", inertViolation(err))
 	}
 	return n == 1, nil
 }
