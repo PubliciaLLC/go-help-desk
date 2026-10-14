@@ -21,14 +21,16 @@ info:
       served as text/plain; charset=utf-8.
     - Any operation may answer 500 internal_error ("an internal error
       occurred"); it is listed only where a handler has a 5xx of its own. A
-      handler that panics is answered 500 with an empty body, not the
-      envelope.
+      handler that panics is answered the same way (the panic is logged, never
+      sent), unless the response had already begun.
     - An unknown path is 404 with the plain-text body "404 page not found",
       and a known path with the wrong method is 405, but only for a caller
       that the enclosing group of routes admits. Under /api/v1/admin,
       /api/v1/tickets, /api/v1/me and /api/v1/groups the group's own checks
       run first, so a caller it does not admit gets that group's 401 or 403
-      instead.
+      instead. A 405 names the methods the path does offer in its Allow header,
+      one line per method (a client must read every Allow line, not just the
+      first: DELETE /api/v1/tickets answers two lines, GET and POST).
     - Paths are documented without a trailing slash. Routes mounted at a
       sub-router root (for example /api/v1/tickets) also answer with one.
 
@@ -135,7 +137,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [enabled, issuer_url, client_id, client_secret, redirect_url, configured]
+                required: [enabled, issuer_url, client_id, client_secret, redirect_url, configured, live]
                 properties:
                   enabled: {type: boolean}
                   issuer_url: {type: string}
@@ -155,6 +157,13 @@ paths:
                       True when an issuer URL, a client ID and a client secret are all stored.
                       It does not say whether OIDC is enabled or whether the identity provider
                       could be reached.
+                  live:
+                    type: boolean
+                    description: >-
+                      True when the OIDC provider is loaded in the running server, so a sign-in
+                      can start now. False when nothing is saved, OIDC is off, or the identity
+                      provider did not answer when the settings were last loaded or saved.
+                      "configured" true with "live" false is "saved, not working".
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -257,7 +266,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [configured, metadata_url, cert_pem, sp_metadata_url]
+                required: [configured, live, metadata_url, cert_pem, sp_metadata_url]
                 properties:
                   configured:
                     type: boolean
@@ -265,6 +274,12 @@ paths:
                       True when a metadata URL, a certificate and a private key are all stored.
                       It does not say whether SAML sign-in is in use or whether the identity
                       provider's metadata could be loaded.
+                  live:
+                    type: boolean
+                    description: >-
+                      True when the SAML middleware is loaded in the running server, so a sign-in
+                      can start now. False when its metadata could not be loaded. "configured"
+                      true with "live" false is "saved, not working".
                   metadata_url:
                     type: string
                     description: The identity provider's metadata URL. Empty when unset.
@@ -357,7 +372,8 @@ paths:
         count against the per-email-address budget, and a correct password is always
         accepted, even when the budget is spent. The budget is one minute: when it
         is spent, the request is delayed before the password is checked and a
-        refused attempt answers 429 with Retry-After: 60. The response says what
+        refused attempt answers 429 with Retry-After set to the seconds left in
+        that minute (at most 60). The response says what
         the person must do next: mfa_needed means a TOTP code is owed
         (POST /auth/local/mfa/verify), passkey_needed means a passkey is owed
         (POST /auth/local/passkey/start), and mfa_enrollment_needed means the
@@ -494,9 +510,11 @@ paths:
         A challenge expires five minutes after it was issued. The sign count is
         recorded but not enforced. Reachable with a session only (403
         session_required for an API key or OAuth client). The body is read by
-        the WebAuthn library, not by the server's JSON decoder, so the 1 MiB cap
-        does not apply, and a body that is not JSON is not a 400: once a
-        challenge is in progress it answers 401 assertion_refused.
+        the WebAuthn library, not by the server's JSON decoder, and is capped at
+        64 KiB (413 too_large above that, before the challenge is touched). A body
+        that is not JSON is not a 400: once a challenge is in progress it answers
+        401 assertion_refused. A fault writing the session is 500 internal_error,
+        not no_challenge.
       tags: ['Authentication']
       x-ghd-handler: handlePasskeyLoginFinish
       security:
@@ -534,6 +552,11 @@ paths:
               schema: {$ref: '#/components/schemas/Error'}
         '403':
           $ref: '#/components/responses/Forbidden'
+        '413':
+          description: The body is over 64 KiB (too_large). Sent as application/json.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/auth/local/passkey/start:
     post:
       operationId: passkeyLoginStart
@@ -712,15 +735,16 @@ paths:
       operationId: authProviders
       summary: List the sign-in methods this server offers.
       description: >-
-        Lists the sign-in methods and whether each is switched on. local is
-        always true, even when the saml_enabled setting limits password sign-in
-        to administrators. saml is true when the saml_enabled setting is on and a
-        metadata URL, certificate and private key are stored; GET
-        /auth/saml/login works whenever SAML loaded, whatever this says. oidc
-        reflects only the oidc_enabled setting, so it can be true while GET
-        /auth/oidc/login answers 503 because the identity provider could not be
-        loaded. The body is JSON but is sent without a Content-Type header, so it
-        is served as text/plain; charset=utf-8. Parse it as JSON regardless.
+        Lists the sign-in methods and whether each can be used right now. local
+        is always true, even when the saml_enabled setting limits password
+        sign-in to administrators; local_admin_only says so (true exactly when
+        saml_enabled is on, which is the test local login applies). saml is true
+        when the SAML middleware is loaded, whatever saml_enabled says, because
+        GET /auth/saml/login works whenever it loaded. oidc is true when the OIDC
+        provider is loaded, so it is false when the identity provider could not
+        be reached, where GET /auth/oidc/login would answer 503. Before 1.3.0
+        the body was sent without a Content-Type header and oidc echoed the
+        oidc_enabled setting.
       tags: ['Authentication']
       x-ghd-handler: handleAuthProviders
       security: []
@@ -728,10 +752,10 @@ paths:
         '200':
           description: The sign-in methods.
           content:
-            text/plain:
+            application/json:
               schema:
                 type: object
-                required: [providers]
+                required: [providers, local_admin_only]
                 properties:
                   providers:
                     type: array
@@ -743,6 +767,11 @@ paths:
                           type: string
                           enum: [local, saml, oidc]
                         enabled: {type: boolean}
+                  local_admin_only:
+                    type: boolean
+                    description: >-
+                      True when password sign-in is limited to administrators
+                      (saml_enabled is on). Non-administrators then get 403 saml_required.
   /api/v1/auth/saml/acs:
     post:
       operationId: samlAcs
@@ -982,7 +1011,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [enabled, open_registration, saml_enabled]
+                required: [enabled, open_registration, restricted_by_domain_list, saml_enabled]
                 properties:
                   enabled:
                     type: boolean
@@ -990,9 +1019,15 @@ paths:
                   open_registration:
                     type: boolean
                     description: >-
-                      Any email domain may sign up. Applies only while no allowed email domains
-                      are listed; a non-empty list always limits signup to those domains,
-                      whatever this says.
+                      Any email domain may sign up, as in force: the open_registration_enabled
+                      setting AND no allowed email domains listed. A non-empty list always
+                      limits signup to those domains, so this is false then, whatever the
+                      setting says (before 1.3.0 it echoed the setting).
+                  restricted_by_domain_list:
+                    type: boolean
+                    description: >-
+                      True when a non-empty allowed email domain list limits signup to those
+                      domains. It is why open_registration can be false while the setting is on.
                   saml_enabled:
                     type: boolean
                     description: >-
@@ -1007,9 +1042,10 @@ paths:
         token. The token is consumed only by POST /auth/verify-email. A missing,
         malformed, unknown or already used token is refused with 422
         token_invalid, and an expired one with 422 token_expired. An address that
-        has gained an account since the link was sent is not detected here: this
-        answers 200, and POST /auth/verify-email then refuses the token with 422
-        token_invalid. Public.
+        has gained an account since the link was sent is refused with 422
+        token_invalid, the same answer POST /auth/verify-email gives (before
+        1.3.0 this answered 200). A fault while checking the address is a 500, not
+        a 422. Public.
       tags: ['Signup']
       x-ghd-handler: handleLookupVerification
       security: []
@@ -1847,7 +1883,7 @@ paths:
       summary: Ask for a fresh guest link by email.
       description: |
         Asks for a new link to a ticket, given its tracking number and the address it was submitted with.
-        While guest submission is on, any JSON body within the request budget answers 202 with an empty body,
+        While guest submission is on, an empty body or any JSON body within the request budget answers 202 with an empty body,
         whether or not anything matched, so the answer does not reveal whether a tracking number or an address exists. Matching
         happens later, when the email is prepared. Both fields are needed for any work to be queued.
         On an open ticket the new link replaces the previous one. On a closed ticket it is added beside the
@@ -1857,8 +1893,8 @@ paths:
       x-ghd-handler: handleGuestResend
       security: []
       requestBody:
-        required: true
-        description: A JSON object. An empty body is refused with 400 bad_request; send {} at least.
+        required: false
+        description: A JSON object, or no body at all, which counts as {}. Text that is not JSON is refused with 400 bad_request.
         content:
           application/json:
             schema:
@@ -2099,8 +2135,8 @@ paths:
         '400':
           description: |
             bad_request when the body is not JSON. invalid_code when the code is wrong or no enrolment is
-            staged in this session, and the message says which; a storage failure while saving the factor is
-            also reported as invalid_code.
+            staged in this session, and the message says which. A storage failure while saving the factor is
+            not one of these: it is 500 internal_error (before 1.3.0 it was reported as invalid_code).
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -2157,8 +2193,10 @@ paths:
         The name query parameter labels the key. A name longer than 128 bytes is cut short on a character
         boundary, not refused. Session only. If the account already has a second factor, the session must
         have proved one, or the answer is 403 mfa_required.
-        The body is read by the WebAuthn library, not by the server's JSON decoder, so the 1 MiB cap does
-        not apply. A body that is not JSON answers 400 registration_refused once a challenge is in progress.
+        The body is read by the WebAuthn library, not by the server's JSON decoder, and is capped at 64 KiB:
+        413 too_large above that, before the challenge is touched. A body that is not JSON answers 400
+        registration_refused once a challenge is in progress. A fault writing the session is 500
+        internal_error, not no_challenge.
       tags: ['Account']
       x-ghd-handler: handlePasskeyRegisterFinish
       security:
@@ -2209,6 +2247,11 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           description: That authenticator is already registered (credential_exists).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '413':
+          description: The body is over 64 KiB (too_large). Sent as application/json.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -2662,6 +2705,11 @@ paths:
         - A reporting user has item_id and priority ignored (priority becomes
           medium), must file into an active category, and must use an active
           type when type_id is sent.
+        - Nobody, staff and administrators included, may file into an archived
+          category, type or item (400 bad_request, for example "item_id is not
+          an active item"). Staff could before; that exception is gone. A
+          reporting user's item_id is dropped before this check, so the item
+          refusal is only ever seen by staff and administrators.
         subject is required after trimming. description is optional. subject is
         limited to 500 bytes and description to 50,000 bytes. type_id must belong
         to category_id, and for staff an item_id must belong to type_id.
@@ -2719,9 +2767,11 @@ paths:
         '400':
           description: |
             `bad_request`, with a message naming the field. Covers invalid JSON,
-            subject is required, category_id is required, a category or type
-            that is not active for a reporting user (category_id is not an active
-            category; type_id is not an active type), type_id does not belong to
+            subject is required, category_id is required, a category, type or
+            item that is archived, for staff, administrators and reporting users
+            alike (category_id is not an active category; type_id is not an active
+            type; item_id is not an active item, which a reporting user never
+            sees because their item_id is dropped first), type_id does not belong to
             category_id, and the domain's own checks (for example priority must
             be one of critical, high, medium, low, or subject is too long).
           content:
@@ -2865,6 +2915,14 @@ paths:
         category_id replaces the whole classification: type_id and item_id are
         written as sent, so an absent one clears that level. type_id and item_id
         have no effect unless category_id is sent too.
+        Reclassifying never moves a ticket INTO an archived category, type or item:
+        a level that is archived and different from the ticket's current one answers
+        400 bad_request ("type_id is not an active type"), for staff and
+        administrators too. A level that is unchanged is not checked, so a ticket
+        already in an archived node keeps it through any edit that repeats or leaves
+        alone that level. The classification is validated before anything else in
+        the request is applied, so a refused classification (400) leaves the status
+        and the assignee unchanged too.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -2919,8 +2977,9 @@ paths:
             `bad_request`: invalid JSON; an assignee that is not a user on this
             help desk, deleted, disabled or a reporting user; or a classification
             the domain refuses (category_id is not a category on this help desk,
-            or type_id and item_id do not belong to the category and to each
-            other).
+            type_id and item_id do not belong to the category and to each
+            other, or a newly chosen category_id, type_id or item_id is archived:
+            "... is not an active ...").
           content:
             application/json:
               schema:
@@ -3731,8 +3790,9 @@ paths:
         Sets the ticket to Resolved, stores the optional notes as its resolution
         notes, and answers 200 with the bare Ticket. Staff and administrators
         only: a reporting user gets 403 forbidden.
-        The body is optional. A body that is not valid JSON is not refused: it is
-        ignored, and the notes are empty. Resolving a Closed ticket is a way out
+        The body is optional: an empty body resolves with no notes. A body that is
+        present but not valid JSON is refused with 400 bad_request and the ticket
+        is left as it was. Resolving a Closed ticket is a way out
         of Closed, so it answers 409 ticket_closed unless closed_reopen_policy
         allows the caller's role. The path id is a UUID or a tracking number. An OAuth client
         acting without a person behind it is refused with 403
@@ -3768,6 +3828,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Ticket'
+        '400':
+          description: "`bad_request`: the body is present but is not valid JSON."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -4137,13 +4203,16 @@ paths:
         is written as sent, and the writes happen one key at a time, not in one
         transaction, so a store failure partway through leaves the keys already
         written in place and answers 500.
-        Names are not checked against a list. Any name is stored, and GET returns
-        it again. A name ending in _set is refused with 400
+        Names are checked against the settings this server knows (those in
+        SettingsValues). A name that is not one of them refuses the whole body
+        with 400 unknown_setting, the message names the first such name (sorted),
+        and nothing is written, not even the valid names beside it. Before 1.3.0
+        any name was stored. A name ending in _set is refused with 400
         readonly_setting, because that suffix belongs to the presence flags GET
         returns.
         These keys are validated. If one of them is wrong, the whole write is
-        refused and nothing in the body is stored. Keys not listed here are stored
-        as sent, without a type check:
+        refused and nothing in the body is stored. Known keys not listed here are
+        stored as sent, without a type check:
         - closed_reopen_policy, audit_mask_requester_names, attachment_scan_policy,
           attachment_infected_handling, attachment_mismatch_handling and
           attachment_reputation_refresh take only the listed values. Every
@@ -4229,7 +4298,7 @@ paths:
             The body is not a JSON object, a value is of the wrong type or outside
             its list, or the write would strand every administrator. Codes:
             bad_request (invalid JSON, a wrong type, an audit retention above the
-            maximum, or a refusal from the SSO guard), readonly_setting,
+            maximum, or a refusal from the SSO guard), readonly_setting, unknown_setting,
             invalid_closed_reopen_policy, invalid_audit_mask_requester_names,
             invalid_scan_policy, invalid_infected_handling,
             invalid_mismatch_handling, invalid_reputation_refresh,
@@ -8434,9 +8503,10 @@ components:
   headers:
     RetryAfter:
       description: >-
-        Seconds to wait before trying again. On a 429 rate_limited it is the
-        length of the budget window, an upper bound, since the window can reset
-        sooner. On a 429 checked_recently it is the time until the earliest
+        Seconds to wait before trying again. On a 429 rate_limited from the
+        one-minute budget window it is the time left in that window, rounded up
+        and at least 1 (at most 60); before 1.3.0 it was always 60. The MFA lock
+        keeps its fixed length. On a 429 checked_recently it is the time until the earliest
         provider's seven-day floor clears. On a 503 it is a fixed 60, a
         suggestion rather than a promise.
       schema:
@@ -9065,8 +9135,8 @@ components:
     SettingsValues:
       description: |
         The setting names this instance reads, with the type each reader expects.
-        PATCH /admin/settings also accepts names that are not listed here and stores
-        them, and GET returns them. writeOnly marks the seven secrets. They are accepted
+        PATCH /admin/settings refuses a name that is not listed here (400
+        unknown_setting). writeOnly marks the seven secrets. They are accepted
         on PATCH and never returned by GET, which reports only their <name>_set flag.
         Every key marked Session only is refused to an API key or OAuth client. See
         updateSettings for the list.

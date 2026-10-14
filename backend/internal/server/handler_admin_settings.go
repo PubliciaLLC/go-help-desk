@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -261,6 +262,27 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 					"send the key itself to change it")
 			return
 		}
+	}
+
+	// A key that is not a setting is refused, and with it the whole body (#421).
+	// It used to be stored: "mfa_enabld": true answered 204, wrote a row nothing
+	// reads and left the real setting as it was, so the operator believed a
+	// control had changed. The body is refused whole rather than the known
+	// keys written, because half a settings change is a state nobody asked
+	// for, and this runs before any validation below can write anything.
+	//
+	// Sorted, so the key named is always the same one for the same body.
+	var unknown []string
+	for k := range body {
+		if !admin.IsKnownKey(k) {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) > 0 {
+		slices.Sort(unknown)
+		Error(w, http.StatusBadRequest, "unknown_setting",
+			fmt.Sprintf("%q is not a setting; nothing was changed", unknown[0]))
+		return
 	}
 
 	// guest_submission_enabled decides whether anonymous people on the

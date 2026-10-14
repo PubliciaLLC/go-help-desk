@@ -51,9 +51,10 @@ func settingsDump(t *testing.T, sess *session) map[string]json.RawMessage {
 //
 // Since #420 every refusal of a choice-list setting carries that setting's own
 // code, whatever was wrong with the value: null, a wrong type, an empty string
-// and an unknown value all answer invalid_<setting>. Before, null and a wrong
-// type answered bad_request for four of the six, and null answered the
-// setting's code for the other four, so a client could not branch on one code.
+// and an unknown value all answer invalid_<setting>. Before, a wrong
+// type answered bad_request for all six, and null did for two (the other four
+// answered the setting's code for null), so a client could not branch on one
+// code.
 // The messages are unchanged: two keys decode through unmarshalSetting (null
 // and wrong type say "invalid input: ..."), the other four say "... must be a
 // string" for a wrong type and name the allowed values for null.
