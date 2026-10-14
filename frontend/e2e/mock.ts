@@ -26,6 +26,16 @@ export const ME_REPORTER = {
   updated_at: '2026-01-01T00:00:00Z',
 }
 
+export const ME_ADMIN = {
+  id: 'u-admin',
+  email: 'ada.admin@example.com',
+  display_name: 'Ada Admin',
+  role: 'admin',
+  mfa_enabled: false,
+  created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-01-01T00:00:00Z',
+}
+
 export const STATUSES = [
   { id: 'st-new', name: 'New', kind: 'system', sort_order: 1, color: '#3b82f6', active: true, ticket_count: 3 },
   { id: 'st-resolved', name: 'Resolved', kind: 'system', sort_order: 2, color: '#22c55e', active: true, ticket_count: 0 },
@@ -43,6 +53,21 @@ export const CATEGORIES = [
 // never have caught, since nothing on the document itself ever overflowed.
 const LONG_TOKEN =
   'https://example.com/a/very/long/path/segment/that/keeps/going/and/going/without/any/spaces/or/hyphens/to/break/on/1234567890'
+
+// #426: ordinary prose long enough to wrap over several lines at 390px, with
+// no hyphens (a hyphen is a legitimate break point, which would muddy the
+// "no word split mid-word" check), and an unbroken 300-character URL that
+// must still wrap rather than widen the page.
+const longUrl = (path: string) => `https://example.com/${path}/`.padEnd(300, '0123456789abcdef')
+export const DESCRIPTION_PROSE =
+  'My laptop will not connect to the docking station since this morning. ' +
+  'The display panel is dark and the keyboard does not respond at all. ' +
+  'I need it working before the board meeting at three this afternoon.'
+export const DESCRIPTION_URL = longUrl('vendor')
+export const REPLY_PROSE =
+  'Facilities logged the same fault last month on the third floor. Replacing the docking ' +
+  'station fixed it then, so I have ordered a new one for you this morning.'
+export const REPLY_URL = longUrl('courier')
 
 export const TICKETS = [
   {
@@ -109,7 +134,7 @@ export const TICKET_DETAIL = {
   id: 'tk-1',
   tracking_number: 'GHD-2026-000001',
   subject: `Printer on fire, second floor — see ${LONG_TOKEN}`,
-  description: `Smoke coming from the tray. Vendor thread: ${LONG_TOKEN}`,
+  description: `${DESCRIPTION_PROSE}\n\nVendor thread: ${DESCRIPTION_URL}`,
   category_id: 'cat-1',
   priority: 'critical',
   status_id: 'st-new',
@@ -148,7 +173,7 @@ export const REPLIES = [
     ticket_id: TICKET_DETAIL.id,
     author_id: 'u-staff',
     author_name: 'Sam Staff',
-    body: `Facilities logged the same fault last month, see ${LONG_TOKEN}`,
+    body: `${REPLY_PROSE} Tracking: ${REPLY_URL}`,
     internal: false,
     notify_customer: true,
     created_at: '2026-09-20T11:00:00Z',
