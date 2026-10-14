@@ -294,6 +294,8 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.Post("/", s.handleCreateWebhook)
 		r.Patch("/{id}", s.handleUpdateWebhook)
 		r.Delete("/{id}", s.handleDeleteWebhook)
+		r.Get("/{id}/deliveries", s.handleListWebhookDeliveries)
+		r.Post("/{id}/deliveries/{delivery}/redeliver", s.handleRedeliverWebhook)
 	})
 
 	r.Route("/tags", func(r chi.Router) {

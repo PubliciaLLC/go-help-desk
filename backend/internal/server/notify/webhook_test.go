@@ -381,11 +381,13 @@ func TestDispatch_MarshalFailureIsLogged(t *testing.T) {
 	}
 	disp := &WebhookDispatcher{store: store, log: logger}
 
-	// A channel value in Payload cannot be marshalled to JSON.
+	// A channel value in Payload cannot be marshalled to JSON. The key is one
+	// the raw body carries (rawPayloadKeys): anything else is dropped before
+	// marshalling, so it could not fail.
 	ev := notification.Event{
 		Type:           notification.EventTicketReplied,
 		TicketID:       fixtureTicketID,
-		Payload:        map[string]any{"bad": make(chan int)},
+		Payload:        map[string]any{"new_status_id": make(chan int)},
 		OccurredAt:     fixtureOccurred,
 		TrackingNumber: "GHD-2026-000001",
 		Subject:        "Printer jammed",

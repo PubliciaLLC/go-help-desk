@@ -51,9 +51,14 @@ info:
     An operation open to some roles only says so in the first sentence of its
     description.
 
-    The MCP server at /mcp/ (GET /mcp/sse, POST /mcp/message) is JSON-RPC over
-    Server-Sent Events, authenticated by the same chain as /api/; see
-    docs/DESIGN.md, "MCP Interface". It is not described here.
+    The MCP server is JSON-RPC authenticated by the same chain as /api/: the
+    Streamable HTTP transport at /mcp (POST; /mcp/ answers the same), and the
+    older HTTP+SSE transport at GET /mcp/sse and POST /mcp/message. Every
+    MCP route (/mcp, /mcp/, /mcp/sse, /mcp/message and any unknown path
+    under /mcp/) answers 403 (code origin_not_allowed) to a request whose
+    Origin header is present and is not the origin of BASE_URL; a request
+    with no Origin header is not affected. See docs/DESIGN.md, "MCP
+    Interface". It is not described here.
   license:
     name: GNU Affero General Public License v3.0
     url: https://github.com/PubliciaLLC/go-help-desk/blob/main/LICENSE
@@ -6648,8 +6653,18 @@ paths:
         WebhookEvent schema, and "*" subscribes to every ticket event. The checks run
         in this order: the body, then events, then the url, which must use http or
         https, name a host, and resolve to an address that is not internal, then
-        payload_format. Deliveries are not retried. A failed attempt is recorded on the
-        hook and not repeated. The secret is write-only. When it is set, each delivery
+        payload_format. A failed delivery is retried: connection errors, DNS, TLS,
+        timeouts, 5xx and 429 are tried again, 30 seconds doubling to an hour, 8 attempts
+        in all (a Retry-After from the receiver delays the next one, up to an hour), so a
+        receiver can see the same event more than once. A refused internal address and any
+        other status are never retried. Each result is recorded on the hook
+        (last_delivery) and in its history
+        (GET /api/v1/admin/webhooks/{id}/deliveries). Every request a receiver gets carries
+        X-GHD-Delivery, a UUID that is the same on every retry of one delivery, so it can
+        drop a repeat, and X-GHD-Event, the event name (for example ticket.replied). The
+        raw body is ids only: Type (the event name), TicketID, ActorID, OccurredAt and,
+        where the event has them, a Payload of new_status_id and target_id, and nothing
+        else The secret is write-only. When it is set, each delivery
         carries sha256=<hex HMAC-SHA256 of the body> in the X-GHD-Signature header, and the
         same value in X-OHD-Signature for older consumers. An empty secret means deliveries
         are not signed. enabled defaults to true.
@@ -6799,7 +6814,7 @@ paths:
       summary: Delete a webhook.
       description: >-
         Administrators only (second factor required).
-        Deletes the subscription and its last_delivery. A delivery already in flight
+        Deletes the subscription, its last_delivery and its delivery history. A delivery already in flight
         finishes, but its result is discarded because the record is gone. An unknown id
         answers 404 not_found.
       tags: ['Admin: Webhooks']
@@ -6826,6 +6841,123 @@ paths:
         '404':
           description: >-
             not_found, for an id that names no webhook.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/admin/webhooks/{id}/deliveries:
+    get:
+      operationId: listWebhookDeliveries
+      summary: List a webhook's recent deliveries.
+      description: >-
+        Administrators only (second factor required).
+        Returns the last 25 deliveries to this hook, newest first. A delivery is one
+        event sent to one hook; its retries update the same entry. Each entry has the
+        outcome only: no payload, no response body and no error text, because a URL can
+        carry a token. Changing the hook's url clears the history.
+      tags: ['Admin: Webhooks']
+      x-ghd-handler: handleListWebhookDeliveries
+      security:
+        - sessionCookie: []
+        - apiKey: ['webhooks:read']
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/Uuid'}
+      responses:
+        '200':
+          description: The deliveries, newest first. An empty array when there are none.
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 25
+                items:
+                  $ref: '#/components/schemas/WebhookDeliveryRecord'
+        '400':
+          description: bad_request, message "invalid ID", when the path id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: not_found, when no webhook has this id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/admin/webhooks/{id}/deliveries/{delivery}/redeliver:
+    post:
+      operationId: redeliverWebhook
+      summary: Send an earlier delivery's event to the hook again.
+      description: >-
+        Administrators only (second factor required).
+        Queues the stored event of one of the hook's recent deliveries as a new delivery,
+        with a new X-GHD-Delivery id, so a receiver that de-duplicates by id does not
+        drop it. It is sent by the background worker, not during this request, and
+        retried like any delivery. It appears in the history once it has been
+        attempted. Only ids are kept from the original, so a raw hook gets the same body as
+        the original. A Slack, Teams, Discord or JIRA hook gets its message rebuilt from
+        the ticket as it is now: current subject, tracking number and status name, and a
+        reply's text only if that reply still exists and is public (never a note's). If
+        the ticket is gone, the headline only.
+      tags: ['Admin: Webhooks']
+      x-ghd-handler: handleRedeliverWebhook
+      security:
+        - sessionCookie: []
+        - apiKey: ['webhooks:write']
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/Uuid'}
+        - name: delivery
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/Uuid'}
+      responses:
+        '202':
+          description: Queued. No body.
+        '400':
+          description: >-
+            bad_request, message "invalid ID" or "invalid delivery ID", when a path id is
+            not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: >-
+            not_found, when the webhook does not exist, or has no such delivery in its
+            history (a delivery of another hook counts as not found).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: >-
+            webhook_disabled, when the webhook is disabled (enable it first); or
+            webhook_not_subscribed, when the webhook no longer lists the delivery's event
+            (add it to the webhook's events first).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: unavailable, when the server was started without a delivery queue.
           content:
             application/json:
               schema:
@@ -9464,14 +9596,17 @@ components:
     WebhookEvent:
       description: >-
         An event name a webhook can subscribe to. The wildcard "*" subscribes to all
-        eight. guest.link_resent is never sent to a webhook.
+        nine. guest.link_resent is never sent to a webhook.
+        ticket.replied is a customer-visible reply only; a staff-only note is ticket.note_added.
       type: string
-      enum: ['*', ticket.created, ticket.assigned, ticket.status_changed, ticket.replied, ticket.resolved, ticket.closed, ticket.reopened, ticket.linked]
+      enum: ['*', ticket.created, ticket.assigned, ticket.status_changed, ticket.replied, ticket.note_added, ticket.resolved, ticket.closed, ticket.reopened, ticket.linked]
     WebhookPayloadFormat:
       description: >-
         The body shape a delivery uses.
-        raw sends the event as JSON. The other four are chat or ITSM shapes. An omitted or
-        empty payload_format is stored as raw.
+        raw sends the event as ids-only JSON (no subject, tracking number, address or
+        text; see createWebhook). The other four are chat or ITSM shapes and keep their
+        subject, tracking number, status and public reply text. An omitted or empty
+        payload_format is stored as raw.
       type: string
       enum: [raw, slack, teams, discord, jira]
     Webhook:
@@ -9497,7 +9632,8 @@ components:
           description: >-
             The latest delivery attempt, identified by when it started. Null until a
             delivery has been attempted since the hook was created or its url last
-            changed. Only the latest attempt is kept, and there is no history.
+            changed. Only the latest attempt is kept here; the last 25 deliveries are at
+            GET /api/v1/admin/webhooks/{id}/deliveries.
           anyOf:
             - $ref: '#/components/schemas/WebhookDelivery'
             - type: 'null'
@@ -9528,6 +9664,48 @@ components:
             failed. blocked_address: the target is an internal address, refused by the
             guarded dialer. connection: refused, reset, or closed without a response. other:
             anything else.
+    WebhookDeliveryRecord:
+      description: >-
+        One delivery of one event to one hook, as the history shows it. The id is the
+        X-GHD-Delivery header the receiver saw, and is the same on every retry. No
+        payload, response body or error text is stored.
+      type: object
+      required: [id, event, started_at, last_attempt_at, status, result, attempts, retrying]
+      properties:
+        id: {$ref: '#/components/schemas/Uuid'}
+        event:
+          type: string
+          description: The event name, as sent in X-GHD-Event.
+        started_at:
+          type: string
+          format: date-time
+          description: When the first attempt started, in UTC.
+        last_attempt_at:
+          type: string
+          format: date-time
+          description: When the latest attempt started, in UTC.
+        status:
+          type: integer
+          minimum: 0
+          maximum: 999
+          description: The HTTP status of the latest attempt. 0 when no response came back.
+        result:
+          type: string
+          enum: [ok, http_status, timeout, dns, tls, blocked_address, connection, other]
+          description: >-
+            The latest attempt's outcome: ok, or a failure class as in WebhookDelivery.error.
+        attempts:
+          type: integer
+          minimum: 1
+          description: How many attempts have been made. At most 8.
+        retrying:
+          type: boolean
+          description: >-
+            True while the latest attempt failed in a way that will be tried again.
+            Connection errors, DNS, TLS, timeouts, 5xx and 429 are retried, 30 seconds
+            doubling to an hour, 8 attempts in all; a Retry-After from the receiver
+            delays the next attempt, up to an hour. blocked_address and other statuses
+            are never retried.
     Plugin:
       description: >-
         An installed plugin. The WASM file path is never returned. In v1 no plugin is registered, so no instance of this schema is

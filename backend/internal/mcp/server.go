@@ -1,6 +1,9 @@
 // Package mcp exposes help desk operations as an MCP (Model Context Protocol)
 // server for AI tool integration, on top of the existing service layer.
 //
+// It serves two transports from one handler: Streamable HTTP at /mcp and
+// HTTP+SSE at /mcp/sse and /mcp/message.
+//
 // This package does NOT authenticate anything itself. The handler it returns
 // must be wrapped by Server.ProtectMCP in internal/server, which applies the
 // same middleware chain as /api/. Mounting Handler() bare leaves every tool
@@ -276,23 +279,65 @@ func New(
 	return s
 }
 
-// Handler returns the SSE HTTP handler for MCP clients.
+// requestActor copies the actor ProtectMCP authenticated onto the context the
+// tools read it from. Both transports run it for every POST, so each tool call
+// sees the actor of the request that made it.
+func requestActor(ctx context.Context, r *http.Request) context.Context {
+	if a := authmw.GetActor(r); a != nil {
+		return context.WithValue(ctx, actorCtxKey{}, a)
+	}
+	return ctx
+}
+
+// noSessions is mcp-go's stateless session manager (no id issued, any id
+// accepted and ignored) that also refuses to terminate a session, so DELETE
+// /mcp answers 405. There is nothing to terminate, and terminating is not a
+// no-op: mcp-go unregisters the given id from the MCP server both transports
+// share, so any signed-in caller could unregister an SSE stream that is not
+// theirs (the stream stays open but stops receiving server notifications).
+type noSessions struct {
+	mcpserver.StatelessSessionIdManager
+}
+
+func (*noSessions) Terminate(string) (isNotAllowed bool, err error) { return true, nil }
+
+// Handler returns the MCP HTTP handler: Streamable HTTP at /mcp (and /mcp/,
+// the URL the 1.2 documentation gave), HTTP+SSE at /mcp/sse and /mcp/message.
 //
 // Must be wrapped by Server.ProtectMCP; see the package comment.
 //
-// The context func runs in the message handler, not only at SSE connect, so
-// each tool call sees the actor of the request that made it rather than the
-// actor that happened to open the stream.
-func (s *Server) Handler() *mcpserver.SSEServer {
-	return mcpserver.NewSSEServer(s.mcp,
+// The context func runs on every POST of both transports, not only when a
+// stream opens, so each tool call sees the actor of the request that made it
+// rather than the actor that happened to open the stream or initialize.
+//
+// Streamable HTTP is stateless with its GET stream disabled. Every POST is one
+// complete JSON-RPC exchange answered with application/json, no Mcp-Session-Id
+// is issued, and GET and DELETE answer 405 (see noSessions). Nothing here
+// needs a session: the tools are request/response and the server sends
+// nothing unprompted. mcp-go's session-issuing mode keeps every initialized
+// session in memory until the client deletes it, so a caller looping on
+// initialize would grow the heap without bound; and in its stateless mode an
+// enabled GET stream shares one session between every caller. Do not add WithSessionIdleTTL or
+// WithHeartbeatInterval either: the first starts a goroutine nothing stops,
+// the second applies to the GET stream that is off.
+func (s *Server) Handler() http.Handler {
+	sse := mcpserver.NewSSEServer(s.mcp,
 		mcpserver.WithStaticBasePath("/mcp"),
-		mcpserver.WithSSEContextFunc(func(ctx context.Context, r *http.Request) context.Context {
-			if a := authmw.GetActor(r); a != nil {
-				return context.WithValue(ctx, actorCtxKey{}, a)
-			}
-			return ctx
-		}),
+		mcpserver.WithSSEContextFunc(requestActor),
 	)
+	streamable := mcpserver.NewStreamableHTTPServer(s.mcp,
+		mcpserver.WithSessionIdManager(&noSessions{}),
+		mcpserver.WithDisableStreaming(true),
+		mcpserver.WithHTTPContextFunc(requestActor),
+	)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/mcp", "/mcp/":
+			streamable.ServeHTTP(w, r)
+		default:
+			sse.ServeHTTP(w, r)
+		}
+	})
 }
 
 // maxListLimit bounds list_tickets. The documented ceiling is 100; requests
