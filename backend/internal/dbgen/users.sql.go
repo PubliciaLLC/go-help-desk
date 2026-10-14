@@ -496,7 +496,7 @@ func (q *Queries) GetMFALock(ctx context.Context, id uuid.UUID) (GetMFALockRow, 
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account FROM users WHERE email = $1 AND deleted_at IS NULL AND NOT service_account
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account, email_notify_assigned, email_notify_activity, email_notify_group FROM users WHERE email = $1 AND deleted_at IS NULL AND NOT service_account
 `
 
 // This is the lookup behind password login, OIDC adoption by address and
@@ -526,12 +526,15 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 		&i.MfaFailedAttempts,
 		&i.MfaLockedUntil,
 		&i.ServiceAccount,
+		&i.EmailNotifyAssigned,
+		&i.EmailNotifyActivity,
+		&i.EmailNotifyGroup,
 	)
 	return i, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account FROM users WHERE id = $1 AND deleted_at IS NULL
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account, email_notify_assigned, email_notify_activity, email_notify_group FROM users WHERE id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
@@ -554,12 +557,15 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 		&i.MfaFailedAttempts,
 		&i.MfaLockedUntil,
 		&i.ServiceAccount,
+		&i.EmailNotifyAssigned,
+		&i.EmailNotifyActivity,
+		&i.EmailNotifyGroup,
 	)
 	return i, err
 }
 
 const getUserByIDAdmin = `-- name: GetUserByIDAdmin :one
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account FROM users WHERE id = $1
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account, email_notify_assigned, email_notify_activity, email_notify_group FROM users WHERE id = $1
 `
 
 func (q *Queries) GetUserByIDAdmin(ctx context.Context, id uuid.UUID) (User, error) {
@@ -582,13 +588,16 @@ func (q *Queries) GetUserByIDAdmin(ctx context.Context, id uuid.UUID) (User, err
 		&i.MfaFailedAttempts,
 		&i.MfaLockedUntil,
 		&i.ServiceAccount,
+		&i.EmailNotifyAssigned,
+		&i.EmailNotifyActivity,
+		&i.EmailNotifyGroup,
 	)
 	return i, err
 }
 
 const getUserByOIDCSubject = `-- name: GetUserByOIDCSubject :one
 
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account FROM users WHERE oidc_subject = $1 AND oidc_subject != '' AND deleted_at IS NULL AND NOT service_account
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account, email_notify_assigned, email_notify_activity, email_notify_group FROM users WHERE oidc_subject = $1 AND oidc_subject != '' AND deleted_at IS NULL AND NOT service_account
 `
 
 func (q *Queries) GetUserByOIDCSubject(ctx context.Context, oidcSubject string) (User, error) {
@@ -611,12 +620,15 @@ func (q *Queries) GetUserByOIDCSubject(ctx context.Context, oidcSubject string) 
 		&i.MfaFailedAttempts,
 		&i.MfaLockedUntil,
 		&i.ServiceAccount,
+		&i.EmailNotifyAssigned,
+		&i.EmailNotifyActivity,
+		&i.EmailNotifyGroup,
 	)
 	return i, err
 }
 
 const getUserBySAMLSubject = `-- name: GetUserBySAMLSubject :one
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account FROM users WHERE saml_subject = $1 AND saml_subject != '' AND deleted_at IS NULL AND NOT service_account
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account, email_notify_assigned, email_notify_activity, email_notify_group FROM users WHERE saml_subject = $1 AND saml_subject != '' AND deleted_at IS NULL AND NOT service_account
 `
 
 func (q *Queries) GetUserBySAMLSubject(ctx context.Context, samlSubject string) (User, error) {
@@ -639,12 +651,15 @@ func (q *Queries) GetUserBySAMLSubject(ctx context.Context, samlSubject string) 
 		&i.MfaFailedAttempts,
 		&i.MfaLockedUntil,
 		&i.ServiceAccount,
+		&i.EmailNotifyAssigned,
+		&i.EmailNotifyActivity,
+		&i.EmailNotifyGroup,
 	)
 	return i, err
 }
 
 const getUsersByIDs = `-- name: GetUsersByIDs :many
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account FROM users WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account, email_notify_assigned, email_notify_activity, email_notify_group FROM users WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL
 `
 
 func (q *Queries) GetUsersByIDs(ctx context.Context, dollar_1 []uuid.UUID) ([]User, error) {
@@ -673,6 +688,9 @@ func (q *Queries) GetUsersByIDs(ctx context.Context, dollar_1 []uuid.UUID) ([]Us
 			&i.MfaFailedAttempts,
 			&i.MfaLockedUntil,
 			&i.ServiceAccount,
+			&i.EmailNotifyAssigned,
+			&i.EmailNotifyActivity,
+			&i.EmailNotifyGroup,
 		); err != nil {
 			return nil, err
 		}
@@ -688,7 +706,7 @@ func (q *Queries) GetUsersByIDs(ctx context.Context, dollar_1 []uuid.UUID) ([]Us
 }
 
 const listActiveAdmins = `-- name: ListActiveAdmins :many
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account FROM users
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account, email_notify_assigned, email_notify_activity, email_notify_group FROM users
 WHERE role = 'admin'
   AND deleted_at IS NULL
   AND disabled = FALSE
@@ -723,6 +741,9 @@ func (q *Queries) ListActiveAdmins(ctx context.Context) ([]User, error) {
 			&i.MfaFailedAttempts,
 			&i.MfaLockedUntil,
 			&i.ServiceAccount,
+			&i.EmailNotifyAssigned,
+			&i.EmailNotifyActivity,
+			&i.EmailNotifyGroup,
 		); err != nil {
 			return nil, err
 		}
@@ -798,7 +819,7 @@ func (q *Queries) ListAssignableStaff(ctx context.Context) ([]ListAssignableStaf
 }
 
 const listUsers = `-- name: ListUsers :many
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account FROM users WHERE deleted_at IS NULL AND disabled = FALSE AND NOT service_account ORDER BY created_at DESC LIMIT $1 OFFSET $2
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account, email_notify_assigned, email_notify_activity, email_notify_group FROM users WHERE deleted_at IS NULL AND disabled = FALSE AND NOT service_account ORDER BY created_at DESC LIMIT $1 OFFSET $2
 `
 
 type ListUsersParams struct {
@@ -832,6 +853,9 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]User, e
 			&i.MfaFailedAttempts,
 			&i.MfaLockedUntil,
 			&i.ServiceAccount,
+			&i.EmailNotifyAssigned,
+			&i.EmailNotifyActivity,
+			&i.EmailNotifyGroup,
 		); err != nil {
 			return nil, err
 		}
@@ -847,7 +871,7 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]User, e
 }
 
 const listUsersAdmin = `-- name: ListUsersAdmin :many
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account FROM users WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT $1 OFFSET $2
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account, email_notify_assigned, email_notify_activity, email_notify_group FROM users WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT $1 OFFSET $2
 `
 
 type ListUsersAdminParams struct {
@@ -881,6 +905,9 @@ func (q *Queries) ListUsersAdmin(ctx context.Context, arg ListUsersAdminParams) 
 			&i.MfaFailedAttempts,
 			&i.MfaLockedUntil,
 			&i.ServiceAccount,
+			&i.EmailNotifyAssigned,
+			&i.EmailNotifyActivity,
+			&i.EmailNotifyGroup,
 		); err != nil {
 			return nil, err
 		}
@@ -967,7 +994,7 @@ func (q *Queries) RestoreUser(ctx context.Context, id uuid.UUID) error {
 }
 
 const searchUsersAdmin = `-- name: SearchUsersAdmin :many
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account FROM users
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account, email_notify_assigned, email_notify_activity, email_notify_group FROM users
 WHERE deleted_at IS NULL
   AND ($1::text = '' OR role = $1::text)
   AND ($2::boolean IS NULL OR service_account = $2::boolean)
@@ -1023,6 +1050,9 @@ func (q *Queries) SearchUsersAdmin(ctx context.Context, arg SearchUsersAdminPara
 			&i.MfaFailedAttempts,
 			&i.MfaLockedUntil,
 			&i.ServiceAccount,
+			&i.EmailNotifyAssigned,
+			&i.EmailNotifyActivity,
+			&i.EmailNotifyGroup,
 		); err != nil {
 			return nil, err
 		}
@@ -1062,6 +1092,35 @@ func (q *Queries) SetFirstUserMFA(ctx context.Context, arg SetFirstUserMFAParams
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const setUserEmailPreferences = `-- name: SetUserEmailPreferences :exec
+UPDATE users
+SET email_notify_assigned = COALESCE($1, email_notify_assigned),
+    email_notify_activity = COALESCE($2, email_notify_activity),
+    email_notify_group    = COALESCE($3, email_notify_group)
+WHERE id = $4 AND deleted_at IS NULL
+`
+
+type SetUserEmailPreferencesParams struct {
+	Assigned sql.NullBool `json:"assigned"`
+	Activity sql.NullBool `json:"activity"`
+	Grp      sql.NullBool `json:"grp"`
+	ID       uuid.UUID    `json:"id"`
+}
+
+// The person's staff-email switches (#441), each changed only when given.
+// Narrow for the reason UpdateUserProfile is: UpdateUser writes a whole row
+// from an earlier read, and must not be the way a choice made a moment ago is
+// put back. updated_at is left alone; the account itself did not change.
+func (q *Queries) SetUserEmailPreferences(ctx context.Context, arg SetUserEmailPreferencesParams) error {
+	_, err := q.db.ExecContext(ctx, setUserEmailPreferences,
+		arg.Assigned,
+		arg.Activity,
+		arg.Grp,
+		arg.ID,
+	)
+	return err
 }
 
 const setUserMFA = `-- name: SetUserMFA :exec

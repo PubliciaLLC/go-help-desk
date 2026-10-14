@@ -333,7 +333,11 @@ func run() error {
 	// txRunner groups each composite ticket write — the ticket row, its status
 	// history, its audit entry — into a single transaction.
 	txRunner := txrunner.New(sqlDB)
-	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, txRunner, slaSvc)
+	// Staff email (#441) is queued beside the events that call for it, so the
+	// ticket service dispatches through the fan-out. The registration service
+	// above has no use for it and keeps the plain dispatcher.
+	ticketDispatcher := notify.NewStaffFanout(dispatcher, userSvc, groupSvc, adminSvc.StaffEmailOverrides, slog.Default())
+	ticketSvc := ticket.NewService(tStore, tStore, ticketDispatcher, auStore, txRunner, slaSvc)
 	// The SLA re-match a priority change makes is gated on the same live
 	// toggle as AttachPolicy (#443).
 	ticketSvc.SetSLAEnabled(slaToggle(adminSvc, slog.Default()))
@@ -464,7 +468,8 @@ func run() error {
 	// it gets the send-time step that creates them. Rows still queued at
 	// shutdown stay queued and are sent after the next start.
 	outboxSenders := outboxSenderMap(
-		notify.NewGuestLinkDispatcher(emailDisp, srv.PrepareGuestLink),
+		// A staff row gets its address here, at send time (#441).
+		notify.NewStaffMailDispatcher(notify.NewGuestLinkDispatcher(emailDisp, srv.PrepareGuestLink), userSvc, srv),
 		webhookDisp,
 		notify.NewVerificationDispatcher(registrationSvc.SendVerification),
 	)

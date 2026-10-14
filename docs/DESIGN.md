@@ -2377,6 +2377,63 @@ on the existing webhook feature instead of as plugins.
   the acknowledgement, and a note on each status change, resolution and reopen,
   because each of those replaces the link they hold and the mail is how the
   replacement reaches them.
+- **Staff email** ([#441](https://github.com/PubliciaLLC/go-help-desk/issues/441),
+  part C of #464). Staff are emailed about their own work, not just
+  requesters about theirs. Two events: a ticket is **assigned**, and the
+  **requester replies** (the public reply of whoever filed the ticket: an
+  account holder, a guest, or a staff member replying on a ticket they filed
+  themselves; any other staff reply, or an internal note, is not one). A reopen by a requester's reply
+  and ticket followers are not part of this yet.
+
+  Three per-user switches, all **on by default** (columns on `users`, set
+  from **Your account → Email about tickets**, `PATCH /me/email-preferences`):
+
+  | Switch | Mailed when |
+  | --- | --- |
+  | Tickets assigned to me | a ticket is assigned to me |
+  | Activity on my tickets | a requester replies on a ticket assigned to me |
+  | My groups' tickets | a ticket is assigned to a group I belong to, and a requester replies on a group ticket that **nobody personally holds** |
+
+  A requester's reply on a ticket that has both an assignee and a group goes
+  to the assignee only: the group's members would otherwise get mail for every
+  reply on work a colleague already holds. Assignment mails both. Group
+  members are told it is their group's ticket ("assigned to your group"), not
+  that it is theirs. Ticket followers will join the
+  second switch when following exists.
+
+  An administrator can **override each switch for everyone**
+  (**Admin → Settings → Email**; the settings `staff_email_assigned_override`,
+  `staff_email_activity_override`, `staff_email_group_override`): `user`
+  leaves it to each person (the default), `on` and `off` ignore what people
+  chose. An unrecognised stored value reads as `user`, never as a forced one.
+  `GET /me` reports, for each switch, whether it applies to the person and
+  whether an override forces it, and the account page shows a forced switch
+  locked with "Set by your administrator".
+
+  The rules that hold whatever the switches say:
+  - **Nobody is mailed about their own action.** The person who made the
+    assignment is skipped even when an override forces the switch on.
+  - **One email per person per event.** Someone who is both the assignee and
+    a member of the assigned group gets one, if either switch lets it through.
+  - **Only people who can receive it**: an active staff member or
+    administrator with an address. A requester account is never sent staff
+    mail. Service accounts (the identity an OAuth client acts as, #490) never
+    are: `user.User.CanReceiveStaffMail` refuses them, and the query that lists a
+    group's mailable members leaves them out too.
+
+  Staff mail uses the same no-content templates as requester mail (the
+  tracking number and a link to the ticket behind the sign-in, nothing a
+  requester wrote). Each person gets their own outbox row on the `email`
+  channel, so one person's failing mail never resends anyone else's and none
+  of it touches the requester's own mail. The row names the person, not an
+  address: the address is read when the mail is sent, and mail queued for an
+  account that was disabled or deleted in the meantime is dropped. The ticket
+  is checked again too: mail is dropped if the person no longer holds the
+  ticket, is no longer in the group that does, or (for a follower) can no
+  longer see it under the ticket-scope rule (#391), because a queued row can
+  wait up to an hour of retries while the ticket moves. Rows are
+  made at the moment the request queues its events (`notify.StaffFanout`), and
+  are never webhook events.
 - Email is a notification, not a copy of the ticket. A message says what
   happened, names the ticket by its tracking number, and links to it. It does
   not carry the ticket subject or the reply text, and the recipient's own

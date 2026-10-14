@@ -64,6 +64,9 @@ func (f *fakeGroupStore) RemoveMember(_ context.Context, groupID, userID uuid.UU
 func (f *fakeGroupStore) ListMembers(_ context.Context, groupID uuid.UUID) ([]uuid.UUID, error) {
 	return f.members[groupID], nil
 }
+func (f *fakeGroupStore) ListMailableMembers(_ context.Context, groupID uuid.UUID) ([]uuid.UUID, error) {
+	return f.members[groupID], nil
+}
 func (f *fakeGroupStore) ListGroupsForUser(_ context.Context, userID uuid.UUID) ([]group.Group, error) {
 	var out []group.Group
 	for gid, members := range f.members {

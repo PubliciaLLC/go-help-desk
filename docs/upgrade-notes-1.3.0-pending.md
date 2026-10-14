@@ -104,6 +104,18 @@ At startup the server checks that `ATTACHMENT_DIR` (default `/data/attachments`,
 
 Before this, an unwritable directory showed up as a failed upload partway through.
 
+## Staff Email About Tickets (#441)
+
+Staff are now emailed about their tickets, which 1.2 never did. **Once email is configured (`SMTP_HOST` and `SMTP_FROM`), every existing staff member and administrator starts receiving it, because all three switches are on by default.** Nothing is sent while email is not configured.
+
+- **When:** a ticket is assigned to you, a ticket is assigned to a group you belong to, and a requester (an account holder or a guest) replies on a ticket assigned to you. A requester's reply on a group ticket that nobody personally holds goes to the group's members.
+- **Not when:** you did it yourself, a colleague replies, or someone adds an internal note. A staff member who filed a ticket and replies on it counts as the requester. Reopening by a requester's reply and ticket followers come later in 1.3.0.
+- **Your choice:** three switches under **Your account → Email about tickets**: *Tickets assigned to me*, *Activity on my tickets* and *My groups' tickets*.
+- **Administrators can force a switch on or off for everyone** under **Settings → Email** (`staff_email_assigned_override`, `staff_email_activity_override`, `staff_email_group_override`: `user`, `on` or `off`, `user` by default). To keep your staff's inboxes as they were, set all three to **Off for everyone** before turning email on.
+- OAuth clients' service users are never emailed, even when they are members of a group.
+- The emails carry only the ticket's tracking number and a link, like every other email from the help desk.
+- Database migration `000042` adds three columns to `users`. It is safe to apply on a running instance.
+
 ## Admin API: data left behind, half-applied edits and path checks (#419)
 
 Scripts and API keys that call the admin API can see these changes. Nothing needs doing in the admin UI.

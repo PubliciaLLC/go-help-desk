@@ -102,6 +102,12 @@ func (s *Store) ListMembers(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID
 	return s.q.ListGroupMembers(ctx, groupID)
 }
 
+// ListMailableMembers is ListMembers without the accounts staff email must
+// never go to: service accounts, disabled or deleted accounts, requesters.
+func (s *Store) ListMailableMembers(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID, error) {
+	return s.q.ListMailableGroupMembers(ctx, groupID)
+}
+
 func (s *Store) ListGroupsForUser(ctx context.Context, userID uuid.UUID) ([]group.Group, error) {
 	rows, err := s.q.ListGroupsForUser(ctx, userID)
 	if err != nil {
