@@ -615,6 +615,12 @@ export interface SecurityWarnings {
    * a server that predates the field read as healthy.
    */
   attachment_storage?: { writable: boolean; problem: string }
+
+  /**
+   * The configured reopen target status has been deactivated, so reopened
+   * tickets go to New instead. Optional so an older server reads as healthy.
+   */
+  reopen_target?: { inactive: boolean; name?: string }
 }
 
 export interface AttachmentScanningWarning {

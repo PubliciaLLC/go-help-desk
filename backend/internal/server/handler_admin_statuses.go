@@ -187,6 +187,20 @@ func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	// Deactivating the status reopened tickets are sent to leaves them going
+	// to New. Say so now, while the administrator is looking at it.
+	reopen, err := s.reopenTargetInactive(r.Context())
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	if reopen.Inactive && reopen.Name == saved.Name {
+		JSON(w, http.StatusOK, struct {
+			ticket.Status
+			Warning string `json:"warning"`
+		}{saved, reopenTargetWarning(saved.Name)})
+		return
+	}
 	JSON(w, http.StatusOK, saved)
 }
 

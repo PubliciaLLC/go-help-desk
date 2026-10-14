@@ -499,11 +499,17 @@ func TestAPIKeys_SignedInAdminRevokesAnotherUsersKey(t *testing.T) {
 	require.Empty(t, keyIDsOf(t, h, h.staffID))
 }
 
-func TestAPIKeys_AKeyListsOnlyItsOwnersKeys(t *testing.T) {
+// An API key sees and revokes only itself (Erik, 2026-10-13, tightened): not its
+// owner's other keys, and not anyone else's.
+func TestAPIKeys_AKeyListsOnlyItself(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	other := keyIDsOf(t, h, h.staffID)[0]
 	mine := keyIDsOf(t, h, h.adminID)[0]
+	// A second key of the same owner: still not the calling key.
+	sibling := auth.APIKey{ID: uuid.New(), Name: "sibling", HashedToken: auth.HashToken("s" + uuid.NewString()),
+		UserID: h.adminID, Scopes: allScopes(), CreatedAt: time.Now()}
+	require.NoError(t, h.authStore.CreateAPIKey(context.Background(), sibling))
 
 	res := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/api-keys", nil)
 	require.Equal(t, http.StatusOK, res.StatusCode)
@@ -511,27 +517,32 @@ func TestAPIKeys_AKeyListsOnlyItsOwnersKeys(t *testing.T) {
 	for _, r := range respList(t, res) {
 		ids = append(ids, r["id"].(string))
 	}
-	require.Contains(t, ids, mine.String())
-	require.NotContains(t, ids, other.String(), "an API key must not see another user's keys")
+	require.Equal(t, []string{mine.String()}, ids, "the calling key and nothing else")
+	require.NotContains(t, ids, other.String())
+	require.NotContains(t, ids, sibling.ID.String())
 }
 
-func TestAPIKeys_AKeyRevokesOnlyItsOwnersKeys(t *testing.T) {
+func TestAPIKeys_AKeyRevokesOnlyItself(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	other := keyIDsOf(t, h, h.staffID)[0]
-
-	res := h.doAsAdmin(t, http.MethodDelete, "/api/v1/admin/api-keys/"+other.String(), nil)
-	res.Body.Close()
-	require.Equal(t, http.StatusNotFound, res.StatusCode, "not found, not forbidden: it says nothing about whose key it is")
-	require.Contains(t, keyIDsOf(t, h, h.staffID), other, "the other user's key must still work")
-
-	// Its owner's other keys are its own.
-	second := auth.APIKey{ID: uuid.New(), Name: "second", HashedToken: auth.HashToken("x" + uuid.NewString()),
+	mine := keyIDsOf(t, h, h.adminID)[0]
+	sibling := auth.APIKey{ID: uuid.New(), Name: "sibling", HashedToken: auth.HashToken("s" + uuid.NewString()),
 		UserID: h.adminID, Scopes: allScopes(), CreatedAt: time.Now()}
-	require.NoError(t, h.authStore.CreateAPIKey(context.Background(), second))
-	res = h.doAsAdmin(t, http.MethodDelete, "/api/v1/admin/api-keys/"+second.ID.String(), nil)
+	require.NoError(t, h.authStore.CreateAPIKey(context.Background(), sibling))
+
+	for name, id := range map[string]uuid.UUID{"another user's key": other, "its owner's other key": sibling.ID} {
+		res := h.doAsAdmin(t, http.MethodDelete, "/api/v1/admin/api-keys/"+id.String(), nil)
+		res.Body.Close()
+		require.Equal(t, http.StatusNotFound, res.StatusCode, name+": not found, not forbidden, so it says nothing about whose key it is")
+	}
+	require.Contains(t, keyIDsOf(t, h, h.staffID), other)
+	require.Contains(t, keyIDsOf(t, h, h.adminID), sibling.ID)
+
+	res := h.doAsAdmin(t, http.MethodDelete, "/api/v1/admin/api-keys/"+mine.String(), nil)
 	res.Body.Close()
-	require.Equal(t, http.StatusNoContent, res.StatusCode)
+	require.Equal(t, http.StatusNoContent, res.StatusCode, "a key may revoke itself")
+	require.NotContains(t, keyIDsOf(t, h, h.adminID), mine)
 }
 
 // ── Inactive statuses are retired for everyone ───────────────────────────────

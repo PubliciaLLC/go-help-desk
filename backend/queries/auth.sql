@@ -14,20 +14,13 @@ DELETE FROM api_keys WHERE id = $1;
 -- name: ListAPIKeysByUser :many
 SELECT * FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC;
 
--- name: DeleteAPIKeyForUser :execrows
--- Scoped to the owner: a credential that is not an administrator signed in
--- through the browser may revoke only its own owner's keys. A key that exists
--- but belongs to someone else deletes nothing, which the caller reports as not
--- found.
-DELETE FROM api_keys WHERE id = $1 AND user_id = $2;
-
 -- name: ListAPIKeysWithOwner :many
--- user_id NULL lists every key; a value lists that user's. The owner comes
+-- key_id NULL lists every key; a value lists that one key. The owner comes
 -- from the same row set so the admin page can show whose each key is.
 SELECT k.*, u.email AS owner_email, u.display_name AS owner_name
 FROM api_keys k
 JOIN users u ON u.id = k.user_id
-WHERE (sqlc.narg(user_id)::uuid IS NULL OR k.user_id = sqlc.narg(user_id)::uuid)
+WHERE (sqlc.narg(key_id)::uuid IS NULL OR k.id = sqlc.narg(key_id)::uuid)
 ORDER BY k.created_at DESC;
 
 -- name: CreateOAuthClient :exec

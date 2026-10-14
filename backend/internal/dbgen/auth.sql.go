@@ -108,27 +108,6 @@ func (q *Queries) DeleteAPIKey(ctx context.Context, id uuid.UUID) (int64, error)
 	return result.RowsAffected()
 }
 
-const deleteAPIKeyForUser = `-- name: DeleteAPIKeyForUser :execrows
-DELETE FROM api_keys WHERE id = $1 AND user_id = $2
-`
-
-type DeleteAPIKeyForUserParams struct {
-	ID     uuid.UUID `json:"id"`
-	UserID uuid.UUID `json:"user_id"`
-}
-
-// Scoped to the owner: a credential that is not an administrator signed in
-// through the browser may revoke only its own owner's keys. A key that exists
-// but belongs to someone else deletes nothing, which the caller reports as not
-// found.
-func (q *Queries) DeleteAPIKeyForUser(ctx context.Context, arg DeleteAPIKeyForUserParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, deleteAPIKeyForUser, arg.ID, arg.UserID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
 const deleteOAuthClient = `-- name: DeleteOAuthClient :execrows
 DELETE FROM oauth_clients WHERE id = $1
 `
@@ -253,7 +232,7 @@ const listAPIKeysWithOwner = `-- name: ListAPIKeysWithOwner :many
 SELECT k.id, k.name, k.hashed_token, k.user_id, k.scopes, k.last_used_at, k.expires_at, k.created_at, u.email AS owner_email, u.display_name AS owner_name
 FROM api_keys k
 JOIN users u ON u.id = k.user_id
-WHERE ($1::uuid IS NULL OR k.user_id = $1::uuid)
+WHERE ($1::uuid IS NULL OR k.id = $1::uuid)
 ORDER BY k.created_at DESC
 `
 
@@ -270,10 +249,10 @@ type ListAPIKeysWithOwnerRow struct {
 	OwnerName   string       `json:"owner_name"`
 }
 
-// user_id NULL lists every key; a value lists that user's. The owner comes
+// key_id NULL lists every key; a value lists that one key. The owner comes
 // from the same row set so the admin page can show whose each key is.
-func (q *Queries) ListAPIKeysWithOwner(ctx context.Context, userID uuid.NullUUID) ([]ListAPIKeysWithOwnerRow, error) {
-	rows, err := q.db.QueryContext(ctx, listAPIKeysWithOwner, userID)
+func (q *Queries) ListAPIKeysWithOwner(ctx context.Context, keyID uuid.NullUUID) ([]ListAPIKeysWithOwnerRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAPIKeysWithOwner, keyID)
 	if err != nil {
 		return nil, err
 	}

@@ -136,8 +136,7 @@ type OAuthClientLookup interface {
 type AuthStoreIface interface {
 	CreateAPIKey(ctx context.Context, k auth.APIKey) error
 	Delete(ctx context.Context, id uuid.UUID) error
-	DeleteForUser(ctx context.Context, id, userID uuid.UUID) error
-	ListWithOwner(ctx context.Context, userID *uuid.UUID) ([]auth.APIKeyWithOwner, error)
+	ListWithOwner(ctx context.Context, keyID *uuid.UUID) ([]auth.APIKeyWithOwner, error)
 	CreateOAuthClient(ctx context.Context, c auth.OAuthClient) error
 	DeleteOAuthClient(ctx context.Context, id uuid.UUID) error
 	ListOAuthClients(ctx context.Context) ([]auth.OAuthClient, error)

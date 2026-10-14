@@ -1154,9 +1154,20 @@ func (s *Server) reopenTargetStatusID(ctx context.Context) (uuid.UUID, error) {
 	}
 	want := s.adminSvc.ReopenTargetStatusName(ctx)
 	for _, st := range statuses {
-		if st.Name == want {
-			return st.ID, nil
+		if st.Name != want {
+			continue
 		}
+		// A deactivated status is retired for everyone, so nothing is reopened
+		// into it. The target is chosen by name from active statuses and can
+		// be deactivated afterwards; reopening then goes to New, like an
+		// unresolvable name, until an administrator picks another. The admin
+		// security warnings say so.
+		if !st.Active {
+			slog.WarnContext(ctx, "configured reopen target status is inactive; falling back to New",
+				"configured", want)
+			break
+		}
+		return st.ID, nil
 	}
 	for _, st := range statuses {
 		if st.Name == ticket.StatusNameNew {

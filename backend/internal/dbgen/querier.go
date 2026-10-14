@@ -236,11 +236,6 @@ type Querier interface {
 	CreateWebAuthnCredential(ctx context.Context, arg CreateWebAuthnCredentialParams) error
 	CreateWebhookConfig(ctx context.Context, arg CreateWebhookConfigParams) error
 	DeleteAPIKey(ctx context.Context, id uuid.UUID) (int64, error)
-	// Scoped to the owner: a credential that is not an administrator signed in
-	// through the browser may revoke only its own owner's keys. A key that exists
-	// but belongs to someone else deletes nothing, which the caller reports as not
-	// found.
-	DeleteAPIKeyForUser(ctx context.Context, arg DeleteAPIKeyForUserParams) (int64, error)
 	DeleteAttachment(ctx context.Context, id uuid.UUID) error
 	// The retention sweep's hard delete. No archive table — see audit.Store's
 	// own comment on DeleteOlderThan for why.
@@ -518,9 +513,9 @@ type Querier interface {
 	// delete wait for this transaction instead.
 	IsAssignableUser(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
 	ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]ApiKey, error)
-	// user_id NULL lists every key; a value lists that user's. The owner comes
+	// key_id NULL lists every key; a value lists that one key. The owner comes
 	// from the same row set so the admin page can show whose each key is.
-	ListAPIKeysWithOwner(ctx context.Context, userID uuid.NullUUID) ([]ListAPIKeysWithOwnerRow, error)
+	ListAPIKeysWithOwner(ctx context.Context, keyID uuid.NullUUID) ([]ListAPIKeysWithOwnerRow, error)
 	// Every active administrator, in full — not a count, because #300's guard has
 	// to know WHICH of them still has a way to authenticate after an SSO
 	// settings change, not just how many there are. See handler_admin_sso_guard.go.

@@ -50,7 +50,10 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
   const storage = data?.attachment_storage
   const storageBroken = !!storage && !storage.writable
 
-  if (insecure.length === 0 && !scannerDegraded && !staleOff && !storageBroken) return null
+  const reopenTarget = data?.reopen_target
+  const reopenInactive = !!reopenTarget?.inactive
+
+  if (insecure.length === 0 && !scannerDegraded && !staleOff && !storageBroken && !reopenInactive) return null
 
   return (
     <>
@@ -82,6 +85,15 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
             The server cannot write to its attachment directory ({storage.problem}). Uploads are refused until{' '}
             <code className="rounded bg-red-800/60 px-1 py-0.5 font-mono text-xs">ATTACHMENT_DIR</code> exists and the
             server can write to it. Existing attachments can still be downloaded. No restart is needed once it is fixed.
+          </p>
+        </div>
+      )}
+      {reopenInactive && (
+        <div role="alert" className="border-b border-amber-700 bg-amber-500 px-4 py-3 text-amber-950">
+          <p className="text-sm font-semibold">The reopen target status is inactive</p>
+          <p className="mt-1 text-sm">
+            &quot;{reopenTarget?.name}&quot; has been deactivated, so reopened tickets are going to &quot;New&quot;
+            instead. Pick an active status under Settings → Ticket lifecycle → Reopen target status.
           </p>
         </div>
       )}

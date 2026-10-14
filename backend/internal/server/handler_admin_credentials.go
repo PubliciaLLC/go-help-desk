@@ -22,19 +22,20 @@ import (
 
 // ── API Keys ─────────────────────────────────────────────────────────────────
 
-// Who may see and revoke which keys (Erik, 2026-10-13, see #466): an
-// administrator signed in through the browser sees and revokes every key,
-// with its owner shown. An API key sees and revokes only its owner's keys.
-// The distinction is the credential, not the role: a key held by an
-// administrator is still a key, and a leaked one must not be able to revoke
-// the keys that would let the owner recover.
+// Who may see and revoke which keys (Erik, 2026-10-13, see #466, and narrowed
+// the same day): an administrator signed in through the browser sees and
+// revokes every key, with its owner shown. An API key sees and revokes only
+// itself: not its owner's other keys, and not anyone else's. The distinction
+// is the credential, not the role: a key held by an administrator is still a
+// key, and a leaked one must not be able to revoke the owner's other keys,
+// which are what would let them recover.
 func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
-	var owner *uuid.UUID
+	var only *uuid.UUID
 	if a.Machine {
-		owner = &a.UserID
+		only = &a.APIKeyID
 	}
-	keys, err := s.authStore.ListWithOwner(r.Context(), owner)
+	keys, err := s.authStore.ListWithOwner(r.Context(), only)
 	if err != nil {
 		handleError(w, err)
 		return
@@ -146,14 +147,12 @@ func (s *Server) handleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 	// Not found rather than forbidden for a key that is someone else's: the
 	// answer must not say which ids exist.
-	var delErr error
-	if a := authmw.GetActor(r); a.Machine {
-		delErr = s.authStore.DeleteForUser(r.Context(), id, a.UserID)
-	} else {
-		delErr = s.authStore.Delete(r.Context(), id)
+	if a := authmw.GetActor(r); a.Machine && id != a.APIKeyID {
+		handleError(w, fmt.Errorf("API key %s: %w", id, auth.ErrNotFound))
+		return
 	}
-	if delErr != nil {
-		handleError(w, delErr)
+	if err := s.authStore.Delete(r.Context(), id); err != nil {
+		handleError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

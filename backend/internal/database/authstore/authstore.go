@@ -90,23 +90,10 @@ func (s *Store) ListByUser(ctx context.Context, userID uuid.UUID) ([]auth.APIKey
 	return out, nil
 }
 
-// DeleteForUser deletes a key only if userID owns it. A key that exists but
-// belongs to someone else is reported exactly like one that does not exist.
-func (s *Store) DeleteForUser(ctx context.Context, id, userID uuid.UUID) error {
-	n, err := s.q.DeleteAPIKeyForUser(ctx, dbgen.DeleteAPIKeyForUserParams{ID: id, UserID: userID})
-	if err != nil {
-		return fmt.Errorf("deleting API key %s: %w", id, err)
-	}
-	if n == 0 {
-		return fmt.Errorf("API key %s: %w", id, auth.ErrNotFound)
-	}
-	return nil
-}
-
-// ListWithOwner lists every key when userID is nil, or one user's keys,
-// newest first, each with its owner's address and name.
-func (s *Store) ListWithOwner(ctx context.Context, userID *uuid.UUID) ([]auth.APIKeyWithOwner, error) {
-	rows, err := s.q.ListAPIKeysWithOwner(ctx, database.NullUUID(userID))
+// ListWithOwner lists every key when keyID is nil, or just that key, newest
+// first, each with its owner's address and name.
+func (s *Store) ListWithOwner(ctx context.Context, keyID *uuid.UUID) ([]auth.APIKeyWithOwner, error) {
+	rows, err := s.q.ListAPIKeysWithOwner(ctx, database.NullUUID(keyID))
 	if err != nil {
 		return nil, fmt.Errorf("listing API keys with owners: %w", err)
 	}

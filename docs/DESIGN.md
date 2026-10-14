@@ -133,7 +133,7 @@ admins, or staff and admins, to force-reopen; requesters never can.
 
 - **Resolved**: ticket is answered/fixed. Starts the configurable reopen window.
 - **Reopen window**: admin setting (`reopen_window_days`, shown as **Reopen window and auto-close**) — "Users can reopen tickets for X days after resolution." Requesters can add a reply to reopen during this window. **It is also when the ticket closes** (#349): the auto-close sweep closes a Resolved ticket once the window has passed, and a Closed ticket is read-only and a requester can never reopen it. **0 means no reopening, and the ticket is closed and read-only on the next sweep, about five minutes after it is resolved** — not "off". One window, for every kind of requester (guest and account holder alike).
-- **Reopen target status**: the status a ticket is moved to when it is reopened. Configured from **Admin → Settings → General → Ticket lifecycle → Reopen target status** (a picker limited to active, non-system statuses). Defaults to the status named "New" when unset, not to the first active custom status.
+- **Reopen target status**: the status a ticket is moved to when it is reopened. Configured from **Admin → Settings → General → Ticket lifecycle → Reopen target status** (a picker limited to active, non-system statuses). Defaults to the status named "New" when unset, not to the first active custom status. It is stored by name, so it can be deactivated after it was picked. An inactive status is retired, so every reopen (forced reopen, a requester's reply on a Resolved ticket, a guest's reply) goes to New instead, administrators see a banner from `GET /admin/security-warnings` (`reopen_target`) asking for an active status, and the `PATCH /admin/statuses/{id}` that deactivates the target carries a `warning` in its response.
 - **Closed reopen policy**: admin setting (`closed_reopen_policy`, shown as **Reopening closed tickets** under Admin → Settings → Ticket lifecycle; session-gated like the other settings that widen who may do what). `off` (the default) | `admin` | `staff_admin`. **Closed is terminal by default; an instance setting can allow forced reopen by admins only, or by staff and admins; requesters never.** Unset, unreadable or unrecognised reads as `off`, never as a permissive value; an unrecognised value is refused (`400 invalid_closed_reopen_policy`) when saved. Read on every request, never cached, so a change applies to the very next request.
 - **Closed**: automatic transition after the reopen window expires, or an administrator closing the ticket. **Archived read-only, and terminal by default** — see [Closed is terminal](#closed-is-terminal-and-read-only) below. Unless the policy above lets their role, staff and admin cannot reopen it either; they open a linked follow-up.
 
@@ -377,8 +377,8 @@ ticket's own guest columns, and `follow_up_of` says what it continues.
   picker does not list it, and the server refuses a move into it with
   `409 status_inactive`, whoever asks (staff, administrators and API keys alike).
   A ticket already in an inactive status stays there and can be moved out. The
-  reopen target status (see Ticket Lifecycle) is chosen from active statuses but is stored by
-  name, and is not re-checked if that status is deactivated later. They can only be **deleted** when no ticket is in that
+  reopen target status (see Ticket Lifecycle) is no exception: if it is deactivated,
+  reopened tickets go to New and administrators are warned. They can only be **deleted** when no ticket is in that
   status and no status-history entry references it; otherwise deactivate
   it. System statuses can never be renamed, deactivated or deleted.
 - Every status transition is recorded in a **status history** timeline and displayed on the ticket detail page interleaved with replies, in chronological order. Events include: the old and new status names (with colors), who made the change (user display name or "System" for auto-close), and the timestamp. The initial status assignment at ticket creation is also recorded.
@@ -2108,10 +2108,11 @@ picker from it so the two cannot drift.
 **Who lists and revokes which API keys** ([#419](https://github.com/PubliciaLLC/go-help-desk/issues/419),
 [#466](https://github.com/PubliciaLLC/go-help-desk/pull/466)). An administrator
 signed in through the browser lists and revokes every key, with its owner
-shown (`owner_name`, `owner_email`). An API key lists and revokes only the keys
-of its own owner; a key that belongs to someone else answers `404`, as if it did
-not exist. The rule follows the credential, not the role, so a leaked key held
-by an administrator cannot revoke the keys that would let the owner recover.
+shown (`owner_name`, `owner_email`). An API key lists and revokes only
+itself: not its owner's other keys, and not anyone else's (any other id answers
+`404`, as if it did not exist). The rule follows the credential, not the role,
+so a leaked key held by an administrator cannot revoke the owner's other keys,
+which are what would let the owner recover.
 Before 1.3, revoking ignored the owner while listing did not, so any admin
 credential that knew a key id could revoke another administrator's key.
 
@@ -2499,8 +2500,8 @@ accumulates across possibly several Pending intervals, not a single flag:
   status is called. Deactivating it stops tickets entering it: the
   server refuses a move into an inactive status for every role and the
   ticket-detail status picker no longer lists it. A ticket already in it stays
-  paused until it leaves, and a ticket reopened to it by the reopen-target
-  setting still enters it. Deleting it removes the only way to pause. Whatever
+  paused until it leaves. A reopen cannot enter it either: an inactive reopen
+  target falls back to New. Deleting it removes the only way to pause. Whatever
   status is later named `Pending`, renamed back or newly created, becomes the
   pause status.
 - Each time a ticket enters Pending, that timestamp is recorded as the start

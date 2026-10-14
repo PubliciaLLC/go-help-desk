@@ -3578,7 +3578,8 @@ paths:
       summary: Force-reopen a Closed ticket.
       description: |
         Moves a Closed ticket back to the reopen target status. That is the
-        configured status, falling back to New when it does not resolve. Answers
+        configured status, falling back to New when it does not resolve or is
+        inactive. Answers
         200 with the bare Ticket.
         This is off by default. Under the default closed_reopen_policy every
         caller gets 409 ticket_closed, with the reason in the message. The setting
@@ -3697,7 +3698,8 @@ paths:
         is sent the update. A failure to look up that address does not fail the
         reply.
         A reporting user's reply to a Resolved ticket inside the reopen window
-        reopens the ticket to the reopen target status. A reporting user cannot
+        reopens the ticket to the reopen target status (New when that status is
+        inactive). A reporting user cannot
         reply to a Closed ticket (409 ticket_closed), or to a Resolved ticket
         after the reopen window (409 reopen_window_closed). Staff and
         administrators can still post to a Closed ticket.
@@ -4059,8 +4061,24 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [insecure_secrets, attachment_scanning, attachment_storage]
+                required: [insecure_secrets, attachment_scanning, attachment_storage, reopen_target]
                 properties:
+                  reopen_target:
+                    type: object
+                    required: [inactive]
+                    description: |
+                      Whether the configured reopen target status has been
+                      deactivated. While it is, every reopen (a forced reopen, and
+                      a requester's or guest's reply to a Resolved ticket) goes to
+                      New instead. The admin UI shows a banner asking for an
+                      active status.
+                    properties:
+                      inactive:
+                        type: boolean
+                        description: True when the setting names an existing status that is inactive.
+                      name:
+                        type: string
+                        description: The configured status name. Present only when inactive is true.
                   insecure_secrets:
                     type: [array, 'null']
                     description: |
@@ -4974,8 +4992,8 @@ paths:
       description: >-
         Administrators only (second factor required).
         An administrator signed in through the browser gets every API key, newest
-        first, each with its owner (owner_name, owner_email). An API key gets only the
-        keys of its own owner. The token and its hash are never returned, so a key's
+        first, each with its owner (owner_name, owner_email). An API key gets only
+        itself: not its owner's other keys, and not anyone else's. The token and its hash are never returned, so a key's
         secret cannot be read back after creation. Before 1.3 a signed-in administrator
         was shown only their own keys.
       tags: ['Admin: Credentials']
@@ -5106,8 +5124,8 @@ paths:
       description: >-
         Administrators only (second factor required).
         An administrator signed in through the browser deletes any key, whoever owns
-        it. An API key deletes only keys of its own owner; a key that belongs to
-        someone else answers 404 not_found, the same as an id that does not exist.
+        it. An API key can delete only itself; any other id, its owner's other keys
+        included, answers 404 not_found, the same as an id that does not exist.
         Either way the deleted key stops working on the next request. Before 1.3 an
         API key could delete another administrator's key if it knew the id.
       tags: ['Admin: Credentials']
@@ -5133,7 +5151,7 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           description: >-
-            not_found, for an id that names no API key the caller may delete.
+            not_found, for an id that names no API key the caller may delete (an API key may delete only itself).
           content:
             application/json:
               schema:
@@ -8438,7 +8456,10 @@ paths:
                     false; null is treated as absent.
       responses:
         '200':
-          description: The status as stored after the update.
+          description: >-
+            The status as stored after the update. When the status is inactive and is the
+            configured reopen target, the body also carries warning, a sentence saying
+            reopened tickets are going to New until an active status is picked.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Status'}
@@ -9276,7 +9297,7 @@ components:
           description: Days after resolution during which a reporter may still reply to a Resolved ticket.
         reopen_target_status_name:
           type: string
-          description: Name of the status a reopened ticket is moved to.
+          description: Name of the status a reopened ticket is moved to. If that status is inactive, reopened tickets go to New instead and GET /admin/security-warnings says so.
         closed_reopen_policy:
           type: string
           enum: [off, admin, staff_admin]
