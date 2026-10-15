@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AxiosError } from 'axios'
+import { useQuery } from '@tanstack/react-query'
 import { renderWithQuery } from '@/test/render'
 import { PriorityControl } from './PriorityControl'
 import * as ticketsApi from '@/api/tickets'
@@ -74,5 +75,68 @@ describe('PriorityControl', () => {
     expect(screen.getByText(/priority cannot be changed on a resolved or closed ticket/i)).toBeDefined()
     await userEvent.selectOptions(select, 'low').catch(() => {})
     expect(update).not.toHaveBeenCalled()
+  })
+})
+
+// The page feeds the control from the ticket query. After a successful change
+// the select must keep the chosen value on screen until that query has
+// reloaded; it used to fall back to the old value for the length of the
+// refetch, which read as the change having failed.
+function Harness() {
+  const { data } = useQuery({ queryKey: ['ticket', 't1'], queryFn: () => ticketsApi.getTicket('t1') })
+  if (!data) return null
+  return <PriorityControl ticketId="t1" priority={data.priority} />
+}
+
+const select = () => screen.getByLabelText('Ticket priority') as HTMLSelectElement
+
+describe('PriorityControl while the ticket reloads', () => {
+  it('keeps the chosen value on screen until the refetch finishes', async () => {
+    let finishRefetch: (t: Ticket) => void = () => {}
+    vi.spyOn(ticketsApi, 'getTicket')
+      .mockResolvedValueOnce({ id: 't1', priority: 'high' } as Ticket)
+      .mockImplementationOnce(() => new Promise<Ticket>((resolve) => { finishRefetch = resolve }))
+    vi.spyOn(ticketsApi, 'updateTicket').mockResolvedValue({} as Ticket)
+    renderWithQuery(<Harness />)
+    await screen.findByLabelText('Ticket priority')
+
+    await userEvent.selectOptions(select(), 'critical')
+
+    // The refetch has started and has not answered: the old value must not be back.
+    await waitFor(() => expect(ticketsApi.getTicket).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(ticketsApi.updateTicket).toHaveBeenCalledTimes(1))
+    expect(select().value).toBe('critical')
+
+    finishRefetch({ id: 't1', priority: 'critical' } as Ticket)
+    await waitFor(() => expect(select().value).toBe('critical'))
+    // And it is the server's value now, so a later change from elsewhere shows.
+    await waitFor(() => expect(select().disabled).toBe(false))
+  })
+
+  it('shows what the server says if the reload disagrees with the change', async () => {
+    vi.spyOn(ticketsApi, 'getTicket')
+      .mockResolvedValueOnce({ id: 't1', priority: 'high' } as Ticket)
+      .mockResolvedValue({ id: 't1', priority: 'low' } as Ticket)
+    vi.spyOn(ticketsApi, 'updateTicket').mockResolvedValue({} as Ticket)
+    renderWithQuery(<Harness />)
+    await screen.findByLabelText('Ticket priority')
+
+    await userEvent.selectOptions(select(), 'critical')
+
+    await waitFor(() => expect(select().value).toBe('low'))
+  })
+
+  it('goes back to the old value and shows the message when the change is refused', async () => {
+    vi.spyOn(ticketsApi, 'getTicket').mockResolvedValue({ id: 't1', priority: 'high' } as Ticket)
+    vi.spyOn(ticketsApi, 'updateTicket').mockRejectedValue(
+      refusal(409, 'ticket_closed', 'a resolved or closed ticket\'s priority cannot be changed'),
+    )
+    renderWithQuery(<Harness />)
+    await screen.findByLabelText('Ticket priority')
+
+    await userEvent.selectOptions(select(), 'low')
+
+    expect((await screen.findByRole('alert')).textContent).toContain('cannot be changed')
+    expect(select().value).toBe('high')
   })
 })
