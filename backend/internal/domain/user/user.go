@@ -53,10 +53,13 @@ type User struct {
 	// ServiceAccount marks the identity an OAuth client acts as. It can never
 	// sign in: the database refuses a password, a second factor, an SSO
 	// identity or the admin role on such a row.
-	ServiceAccount bool       `json:"service_account"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
-	DeletedAt      *time.Time `json:"-"`
+	ServiceAccount bool `json:"service_account"`
+	// MustChangePassword is set by the server console's unlock command and
+	// cleared when the account holder sets a password of their own (#497).
+	MustChangePassword bool       `json:"must_change_password"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	DeletedAt          *time.Time `json:"-"`
 
 	// The person's own staff-email switches (#441); see
 	// notification.StaffPrefs for what each means and how an administrator's

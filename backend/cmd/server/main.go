@@ -70,6 +70,17 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "unlock" {
+		var email string
+		if len(os.Args) > 2 {
+			email = os.Args[2]
+		}
+		if err := unlock(context.Background(), email, os.Stdout); err != nil {
+			slog.Error("unlock", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		// Not log.Fatalf. run() installs a slog JSON handler as the default,
 		// which also routes the stdlib log package — and Go's stdlib-log
@@ -221,11 +232,13 @@ func run() error {
 	// ── Domain services ───────────────────────────────────────────────────────
 	tagStore := tagstore.New(q)
 
-	userSvc := user.NewService(uStore, user.WithAuditStore(auStore))
+	// adminSvc supplies the deadline after which an old password hash is
+	// refused at sign-in (#453).
+	adminSvc := admin.NewService(aStore)
+	userSvc := user.NewService(uStore, user.WithAuditStore(auStore), user.WithPasswordExpiry(adminSvc))
 	categorySvc := category.NewService(cStore)
 	groupSvc := group.NewService(gStore)
 	tagSvc := tag.NewService(tagStore)
-	adminSvc := admin.NewService(aStore)
 
 	// Say so when attachments are not being scanned.
 	//

@@ -67,6 +67,17 @@ func (s *Store) GetByEmail(ctx context.Context, email string) (user.User, error)
 	return fromRow(row), nil
 }
 
+// ServiceAccountName returns the display name (the OAuth client's name) of the
+// service account with this address, or ErrNotFound. GetByEmail never finds one;
+// this exists so go-help-desk unlock can refuse it by name (#497).
+func (s *Store) ServiceAccountName(ctx context.Context, email string) (string, error) {
+	name, err := s.q.GetServiceAccountNameByEmail(ctx, email)
+	if err != nil {
+		return "", wrapNotFound(err, "service account by email", email)
+	}
+	return name, nil
+}
+
 func (s *Store) GetBySAMLSubject(ctx context.Context, subject string) (user.User, error) {
 	row, err := s.q.GetUserBySAMLSubject(ctx, subject)
 	if err != nil {
@@ -525,22 +536,38 @@ func (s *Store) CountAll(ctx context.Context) (int64, error) {
 func FromRow(r dbgen.User) user.User { return fromRow(r) }
 
 // fromRow converts a dbgen.User to domain user.User.
+// Unlock re-enables the account, clears its MFA lockout and installs hash as
+// its password, marked to be changed at the next sign-in. It is the account
+// half of /app/server unlock (#497); factors and sessions are ClearFactors'.
+// Deliberately not on user.Store: only the console command calls it.
+func (s *Store) Unlock(ctx context.Context, id uuid.UUID, hash string) error {
+	n, err := s.q.UnlockUser(ctx, dbgen.UnlockUserParams{ID: id, PasswordHash: hash})
+	if err != nil {
+		return fmt.Errorf("unlocking user %s: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("%w: user %s", ErrNotFound, id)
+	}
+	return nil
+}
+
 func fromRow(r dbgen.User) user.User {
 	return user.User{
-		ID:             r.ID,
-		Email:          r.Email,
-		DisplayName:    r.DisplayName,
-		Role:           user.Role(r.Role),
-		PasswordHash:   r.PasswordHash,
-		MFASecret:      r.MfaSecret,
-		MFAEnabled:     r.MfaEnabled,
-		SAMLSubject:    r.SamlSubject,
-		OIDCSubject:    r.OidcSubject,
-		Disabled:       r.Disabled,
-		ServiceAccount: r.ServiceAccount,
-		CreatedAt:      r.CreatedAt,
-		UpdatedAt:      r.UpdatedAt,
-		DeletedAt:      database.TimePtr(r.DeletedAt),
+		ID:                 r.ID,
+		Email:              r.Email,
+		DisplayName:        r.DisplayName,
+		Role:               user.Role(r.Role),
+		PasswordHash:       r.PasswordHash,
+		MFASecret:          r.MfaSecret,
+		MFAEnabled:         r.MfaEnabled,
+		SAMLSubject:        r.SamlSubject,
+		OIDCSubject:        r.OidcSubject,
+		Disabled:           r.Disabled,
+		ServiceAccount:     r.ServiceAccount,
+		MustChangePassword: r.MustChangePassword,
+		CreatedAt:          r.CreatedAt,
+		UpdatedAt:          r.UpdatedAt,
+		DeletedAt:          database.TimePtr(r.DeletedAt),
 
 		EmailNotifyAssigned: r.EmailNotifyAssigned,
 		EmailNotifyActivity: r.EmailNotifyActivity,

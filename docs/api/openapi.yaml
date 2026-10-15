@@ -17,7 +17,7 @@ info:
     - Every error from a handler is the envelope in components.schemas.Error,
       served as application/json. Refusals produced by the authentication
       middleware (401 unauthorized, 403 forbidden / mfa_required /
-      insufficient_scope / session_required) carry the same envelope but are
+      password_change_required / insufficient_scope / session_required) carry the same envelope but are
       served as text/plain; charset=utf-8.
     - Any operation may answer 500 internal_error ("an internal error
       occurred"); it is listed only where a handler has a 5xx of its own. A
@@ -379,12 +379,19 @@ paths:
         accepted, even when the budget is spent. The budget is one minute: when it
         is spent, the request is delayed before the password is checked and a
         refused attempt answers 429 with Retry-After set to the seconds left in
-        that minute (at most 60). The response says what
+        that minute (at most 60). A correct password on a hash made below cost 12
+        is upgraded at this sign-in. From password_rehash_grace_days after 1.3.0
+        first ran, it is refused instead (403 password_reset_required).
+        The response says what
         the person must do next: mfa_needed means a TOTP code is owed
         (POST /auth/local/mfa/verify), passkey_needed means a passkey is owed
         (POST /auth/local/passkey/start), and mfa_enrollment_needed means the
-        role must enrol a second factor before it is fully signed in. Until that
-        step is done the session is only half signed in, and it expires: after
+        role must enrol a second factor before it is fully signed in.
+        password_change_required means the account was unlocked from the server
+        console (/app/server unlock) and still holds the password it was handed:
+        the session may only change the password (PATCH /me/password) and every
+        other route answers 403 password_change_required until it has. Until the
+        second-factor step is done the session is only half signed in, and it expires: after
         5 minutes when a code or passkey is owed, after 15 minutes when the
         person must enrol. After that, every route answers 401 as if there were
         no session (the session is deleted), and the person signs in again with
@@ -414,9 +421,12 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [user, mfa_needed, passkey_needed, mfa_enrollment_needed]
+                required: [user, mfa_needed, passkey_needed, mfa_enrollment_needed, password_change_required]
                 properties:
                   user: {$ref: '#/components/schemas/User'}
+                  password_change_required:
+                    type: boolean
+                    description: True when the password must be changed before anything else is allowed (see the operation description).
                   mfa_needed:
                     type: boolean
                     description: True when a TOTP code is owed. Answer with POST /auth/local/mfa/verify.
@@ -436,11 +446,17 @@ paths:
         '403':
           description: >-
             Local sign-in is disabled for this account because SAML is enabled
-            (saml_required), or the account's only second factor is a passkey
-            and passkeys are unavailable on this instance (passkey_unavailable;
-            an administrator's MFA reset clears it). No session is created and
-            the refusal does not count as a failed attempt. Applies to every
-            such account, administrators included. Sent as application/json.
+            (saml_required, checked first), or the account's only second factor
+            is a passkey and passkeys are unavailable on this instance
+            (passkey_unavailable; an administrator's MFA reset clears it), or
+            the password was right but is still stored in the older, weaker form
+            (cost below 12) after the grace period (password_reset_required).
+            No session is created and none of these counts as a failed attempt.
+            passkey_unavailable applies to every such account, administrators
+            included. password_reset_required is only given for a correct
+            password (a wrong one still answers 401 invalid_credentials and takes
+            as long to refuse), leaves the hash as it is, and does not apply to
+            administrators. Sent as application/json.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -2433,7 +2449,12 @@ paths:
       description: |
         Changes the password after checking the current one. The new password must be 8 to 72 bytes long.
         Every other session for the account ends, and this request's session is re-issued with a new cookie,
-        so this browser stays signed in. Session only, and the second factor must have passed.
+        so this browser stays signed in. Session only, and the second factor must have passed,
+        except for a session that owed no second factor when its password was checked and owes this very
+        change (login answered password_change_required with neither mfa_needed nor passkey_needed): that
+        one may make it without MFA. A flagged account that has since enrolled a factor gets 403 mfa_required
+        and must verify the factor first. Any other route refuses a flagged session with 403
+        password_change_required until the password is changed. The change clears the requirement.
         A wrong current_password answers 401 invalid_credentials as application/json, which is distinct
         from the text/plain 401 unauthorized sent when there is no session. The old field name password is still read when new_password is absent. current_password is
         required in either case.
@@ -4618,6 +4639,10 @@ paths:
         - ticket_prefix is 1 to 8 uppercase letters or digits (invalid_ticket_prefix).
         - audit_retention_days must be an integer of at most 36525. Zero or less
           keeps entries forever.
+        - password_rehash_grace_days must be an integer from 1 to 365 (default 30).
+          Zero, negative, larger, null and non-integers are refused with bad_request.
+          password_rehash_started_at is recorded by the server when 1.3.0 first
+          runs and is refused with 400 readonly_setting; it is left out of GET.
         - guest_submission_enabled, staff_can_view_ticket_change_history and
           staff_can_view_follow_audit must be JSON booleans. null is refused.
         - guest_submission_enabled and self_signup_enabled cannot be turned from
@@ -4667,7 +4692,8 @@ paths:
         attachment_scan_address, attachment_scan_policy, attachment_allowed_types,
         attachment_infected_handling, attachment_mismatch_handling,
         audit_retention_days, staff_can_view_ticket_change_history,
-        staff_can_view_follow_audit, attachment_vt_lookup, attachment_vt_api_key, attachment_reputation_provider,
+        staff_can_view_follow_audit, password_rehash_grace_days, password_rehash_started_at,
+        attachment_vt_lookup, attachment_vt_api_key, attachment_reputation_provider,
         attachment_reputation_api_key, attachment_reputation_virustotal_enabled,
         attachment_reputation_virustotal_key, attachment_reputation_metadefender_enabled,
         attachment_reputation_metadefender_key, attachment_reputation_polyswarm_enabled,
@@ -9282,7 +9308,7 @@ components:
     User:
       description: An account. The password hash, the TOTP secret, single sign-on subjects and the deletion time are never returned. mfa_enabled is the TOTP flag only.
       type: object
-      required: [id, email, display_name, role, mfa_enabled, disabled, created_at, updated_at, email_notify_assigned, email_notify_activity, email_notify_group]
+      required: [id, email, display_name, role, mfa_enabled, disabled, must_change_password, created_at, updated_at, email_notify_assigned, email_notify_activity, email_notify_group]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
         email: {type: string}
@@ -9290,6 +9316,7 @@ components:
         role: {$ref: '#/components/schemas/Role'}
         mfa_enabled: {type: boolean}
         disabled: {type: boolean}
+        must_change_password: {type: boolean, description: "Set by /app/server unlock on the server console; cleared when the account holder changes the password."}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
         email_notify_assigned: {type: boolean, description: 'Email me when a ticket is assigned to me. Staff email switch, on by default.'}
@@ -10060,6 +10087,14 @@ components:
             ticket's audit trail and in the admin-wide audit view.
             Administrators always can and requesters never can. Off by default.
             Session only.
+        password_rehash_grace_days:
+          type: integer
+          minimum: 1
+          maximum: 365
+          description: >-
+            Days after 1.3.0 first ran before an account still on a password hash
+            made below bcrypt cost 12 must reset its password to sign in. Unset reads
+            as 30. Administrators are exempt. Session only.
         site_name:
           type: string
           description: The site name shown in the interface.
