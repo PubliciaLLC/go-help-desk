@@ -61,7 +61,11 @@ func (r fieldRules) scan(t *testing.T, label string, v any) (sawTicket bool) {
 	case map[string]any:
 		_, isTicket := x["tracking_number"]
 		for k, child := range x {
-			require.False(t, r.never[k], "%s: key %q must never reach this viewer", label, k)
+			// updated_at and closed_at are ordinary names (a user has an updated_at
+			// too), so they are checked inside a ticket-shaped object only.
+			if r.never[k] && (isTicket || (k != "updated_at" && k != "closed_at")) {
+				require.Fail(t, "key must never reach this viewer", "%s: key %q", label, k)
+			}
 			if isTicket {
 				require.True(t, r.allowed[k], "%s: ticket carries %q, which is not on the allowed list", label, k)
 			}
@@ -157,6 +161,23 @@ func TestRequesterResponses_NoRouteLeaksAFieldOutsideTheAllowedList(t *testing.T
 		res := h.doAsUser(t, rt.Method, path, body)
 		b, _ := io.ReadAll(res.Body)
 		res.Body.Close()
+		if rt.Method == http.MethodGet && rt.Pattern == "/api/v1/tickets/{id}/" {
+			// The one ticket a requester reads is exactly the allowed list plus the
+			// wrapper keys: nothing on it is missing (assignee_user_id is kept) and
+			// nothing else is there (no closed_at, no updated_at).
+			var got map[string]any
+			require.NoError(t, json.Unmarshal(b, &got))
+			keys := []string{}
+			for k := range got {
+				keys = append(keys, k)
+			}
+			// Spelled out, not read from the list under test.
+			require.ElementsMatch(t, []string{
+				"assignee_user_id", "category_id", "created_at", "description", "id", "item_id", "priority",
+				"resolution_notes", "resolved_at", "status_id", "subject", "tracking_number", "type_id",
+				"sla", "can_reopen",
+			}, keys)
+		}
 		called++
 		if rules.scanBody(t, rt.Method+" "+rt.Pattern, b) {
 			sawTickets++
@@ -223,7 +244,7 @@ func TestGuestResponses_NoRouteLeaksAFieldOutsideTheGuestList(t *testing.T) {
 	for k := range got {
 		keys = append(keys, k)
 	}
-	require.ElementsMatch(t, []string{"tracking_number", "subject", "description", "status", "created_at", "updated_at", "replies"}, keys)
+	require.ElementsMatch(t, []string{"tracking_number", "subject", "description", "status", "created_at", "replies"}, keys)
 	_ = tk
 
 	for _, rt := range routes {

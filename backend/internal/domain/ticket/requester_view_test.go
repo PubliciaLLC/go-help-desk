@@ -105,12 +105,12 @@ func TestRequesterKeys_EveryTicketKeyIsClassified(t *testing.T) {
 	}
 	// Spelled out so a change to either list is a visible diff in review.
 	require.Equal(t, []string{
-		"category_id", "closed_at", "created_at", "description", "id", "item_id", "priority",
-		"resolution_notes", "resolved_at", "status_id", "subject", "tracking_number", "type_id", "updated_at",
+		"assignee_user_id", "category_id", "created_at", "description", "id", "item_id", "priority",
+		"resolution_notes", "resolved_at", "status_id", "subject", "tracking_number", "type_id",
 	}, sorted(allowed))
 	require.Equal(t, []string{
-		"assignee_group_id", "assignee_user_id", "guest_email", "guest_name", "guest_phone",
-		"pending_since", "reopen_count", "reporter_user_id", "sla_paused_seconds",
+		"assignee_group_id", "closed_at", "guest_email", "guest_name", "guest_phone",
+		"pending_since", "reopen_count", "reporter_user_id", "sla_paused_seconds", "updated_at",
 	}, sorted(never))
 }
 
@@ -207,6 +207,7 @@ func TestFilterForGuest_IsASubsetOfTheRequesterList(t *testing.T) {
 	for _, k := range ticket.GuestTicketKeys() {
 		require.True(t, requester[k], "guest key %q is not on the requester list", k)
 	}
+	require.Less(t, len(ticket.GuestTicketKeys()), len(requester), "a strict subset")
 	in := map[string]any{
 		"tracking_number": "T-1", "subject": "s", "description": "d", "status": "New",
 		"created_at": "c", "updated_at": "u", "replies": []any{},
@@ -215,6 +216,8 @@ func TestFilterForGuest_IsASubsetOfTheRequesterList(t *testing.T) {
 	got, err := ticket.FilterForGuest(in)
 	require.NoError(t, err)
 	keys := keysOf(t, got)
-	require.Equal(t, []string{"created_at", "description", "replies", "status", "subject", "tracking_number", "updated_at"}, sorted(keys))
+	// No updated_at: a guest's list is a strict subset of the requester's, which
+	// has none either.
+	require.Equal(t, []string{"created_at", "description", "replies", "status", "subject", "tracking_number"}, sorted(keys))
 	_ = strings.TrimSpace
 }

@@ -419,7 +419,7 @@ ticket's own guest columns, and `follow_up_of` says what it continues.
 
 ### What a requester sees of a ticket
 
-(Erik, 2026-10-15.) A requester sees the **current state** of their ticket and its conversation, not its history and not the staff's working data. This is an **allowed list**, applied to the response on its way out (`ticket.FilterForViewer` in `internal/domain/ticket/requester_view.go`), not a list of fields to remove: a field added to a ticket is hidden from requesters until it is added to the list on purpose. Staff and administrators get every response as built.
+(Erik, 2026-10-15; the list below was approved by Erik on 2026-10-15.) A requester sees the **current state** of their ticket and its conversation, not its history and not the staff's working data. This is an **allowed list**, applied to the response on its way out (`ticket.FilterForViewer` in `internal/domain/ticket/requester_view.go`), not a list of fields to remove: a field added to a ticket is hidden from requesters until it is added to the list on purpose. Staff and administrators get every response as built.
 
 A requester is any account that is not staff or an administrator, including a role the code does not recognise. Every response that carries a ticket goes through the filter: `GET`, list, `POST`, `PATCH` and the other ticket routes, the follow-up, and every MCP tool that returns a ticket (`get_ticket`, `list_tickets`, `create_ticket`, `assign_ticket`, `update_ticket_status`, `create_follow_up`). Inside each ticket object, whatever the shape (one ticket, a list, a ticket wrapped with extra fields), only these keys are kept:
 
@@ -428,15 +428,15 @@ A requester is any account that is not staff or an administrator, including a ro
 | `id`, `tracking_number`, `subject`, `description` | the ticket itself |
 | `status_id`, `priority` | its current state, both shown on the ticket page |
 | `category_id`, `type_id`, `item_id` | its classification, shown in the page's Classification panel |
-| `created_at`, `updated_at` | when it was opened and last changed |
-| `resolved_at`, `closed_at` | when it reached those states (the page shows Resolved) |
+| `created_at`, `resolved_at` | when it was opened and when it was resolved (the page shows both) |
+| `assignee_user_id` | who holds it, as an id only; a requester has no route that turns the id into a name (the staff list and the user routes are staff-only), though a public reply by that person carries their name as it always has |
 | `resolution_notes` | sent to requesters before the list existed; their visibility is unchanged |
 
 The wrapper keys a response may add around a ticket are kept as they are: `sla` (already null for a requester), `can_reopen` (always false for a requester), `replies` (already without internal notes) and `links` (ticket ids and a link type). Any other wrapper key is dropped.
 
-**Never sent to a requester**: `assignee_user_id` and `assignee_group_id` (who works the ticket), `reporter_user_id` (their own id; the page never reads it), `guest_email`, `guest_name` and `guest_phone`, `pending_since` and `sla_paused_seconds` (when and for how long the ticket waited: audit information, not state), and `reopen_count` (staff information). The conversation, the audit feed and the status timeline are separate: the conversation stays (public replies only), the other two are staff-only routes.
+**Never sent to a requester**: `assignee_group_id` (which team holds it), `reporter_user_id` (their own id; the page never reads it), `guest_email`, `guest_name` and `guest_phone`, `closed_at` and `updated_at` (history-like timestamps: when it was archived, when anything last touched it), `pending_since` and `sla_paused_seconds` (when and for how long the ticket waited: audit information, not state), and `reopen_count` (staff information). The conversation, the audit feed and the status timeline are separate: the conversation stays (public replies only), the other two are staff-only routes.
 
-**Guests** (the `/guest` routes) are shown less: a subset of the same list, `tracking_number`, `subject`, `description`, `created_at` and `updated_at`, plus the status's *name* and the replies. The guest ticket response goes through `ticket.FilterForGuest`, so there is still one definition.
+**Guests** (the `/guest` routes) are shown less: a strict subset of the same list, `tracking_number`, `subject`, `description` and `created_at`, plus the status's *name* and the replies. (A guest used to receive `updated_at`; it is gone, because a requester does not receive it and the guest list stays a subset.) The guest ticket response goes through `ticket.FilterForGuest`, so there is still one definition.
 
 **Tests.** `TestRequesterKeys_EveryTicketKeyIsClassified` fails when a ticket field is on neither the allowed list nor the never list. `TestRequesterResponses_*` and `TestGuestResponses_*` call every route the router serves as a requester (and every guest route as a guest) against a ticket with every field filled, and fail if a never-listed key appears in any body or a ticket-shaped object carries a key off the list; the MCP tools are driven by name, and a tool that is not classified in `internal/mcp` fails its own test. Emails are not JSON and carry only the tracking number and a link to the ticket.
 

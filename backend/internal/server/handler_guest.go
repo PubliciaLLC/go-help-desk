@@ -190,7 +190,6 @@ func (s *Server) handleGuestGetTicket(w http.ResponseWriter, r *http.Request) {
 		"description":     t.Description,
 		"status":          statusName,
 		"created_at":      t.CreatedAt,
-		"updated_at":      t.UpdatedAt,
 		"replies":         guestReplyView(ticket.VisibleReplies(replies, user.RoleUser)),
 	}))
 }

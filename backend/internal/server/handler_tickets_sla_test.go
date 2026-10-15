@@ -282,7 +282,11 @@ func TestTicketSLA_UserRoleNeverSeesSLA(t *testing.T) {
 	require.Contains(t, staffView, "reporter_user_id")
 	require.NotContains(t, userView, "reporter_user_id")
 	delete(staffView, "reporter_user_id")
-	require.Equal(t, staffView, userView, "every field other than sla, sla_paused_seconds and reporter_user_id must be identical between the two views")
+	// And when the ticket was last touched, also left out (2026-10-15).
+	require.Contains(t, staffView, "updated_at")
+	require.NotContains(t, userView, "updated_at")
+	delete(staffView, "updated_at")
+	require.Equal(t, staffView, userView, "every field other than sla, sla_paused_seconds, reporter_user_id and updated_at must be identical between the two views")
 
 	// The list endpoint must apply the same rule.
 	listResp := h.doAsUser(t, http.MethodGet, "/api/v1/tickets", nil)

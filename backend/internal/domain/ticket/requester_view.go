@@ -8,7 +8,8 @@ import (
 )
 
 // What a requester sees of a ticket (Erik, 2026-10-15): the current state and
-// the conversation, not the history or the staff's working data.
+// the conversation, not the history or the staff's working data. The list below
+// was approved by Erik on 2026-10-15.
 //
 // This is an ALLOWED LIST applied to the response on its way out, not a list of
 // things to remove. A field added to Ticket is hidden from requesters until it
@@ -21,14 +22,15 @@ import (
 //	id, tracking_number, subject, description   the ticket itself
 //	status_id, priority                         its current state, both shown on the page
 //	category_id, type_id, item_id               its classification (the page's Classification panel)
-//	created_at, updated_at                      when it was opened and last touched
-//	resolved_at, closed_at                      when it reached those states (the page shows Resolved)
+//	created_at, resolved_at                     when it was opened and resolved (the page shows both)
+//	assignee_user_id                            who holds it, as an id only: a requester has no route that turns it into a name
 //	resolution_notes                            sent to requesters before this list existed; their visibility is unchanged
 var requesterTicketKeys = []string{
 	"id", "tracking_number", "subject", "description",
 	"status_id", "priority",
 	"category_id", "type_id", "item_id",
-	"created_at", "updated_at", "resolved_at", "closed_at",
+	"created_at", "resolved_at",
+	"assignee_user_id",
 	"resolution_notes",
 }
 
@@ -36,14 +38,16 @@ var requesterTicketKeys = []string{
 // receive, so that the test over Ticket's fields can tell "left out on purpose"
 // from "nobody has decided yet".
 //
-//	assignee_user_id, assignee_group_id   who works the ticket: staff routing, not the requester's business
+//	assignee_group_id                     which team holds it: staff routing
 //	reporter_user_id                      the requester's own id; the page never reads it
 //	guest_email, guest_name, guest_phone  a guest's contact details; a requester's own tickets carry none
+//	closed_at, updated_at                 history-like timestamps (Erik): when it was archived, when anything last touched it
 //	pending_since, sla_paused_seconds     when and for how long the ticket waited: audit information, not state
 //	reopen_count                          staff information (the Reopened badge is staff-only)
 var requesterNeverTicketKeys = []string{
-	"assignee_user_id", "assignee_group_id", "reporter_user_id",
+	"assignee_group_id", "reporter_user_id",
 	"guest_email", "guest_name", "guest_phone",
+	"closed_at", "updated_at",
 	"pending_since", "sla_paused_seconds",
 	"reopen_count",
 }
@@ -62,7 +66,7 @@ var requesterWrapperKeys = []string{"sla", "can_reopen", "replies", "links"}
 // requester's, since a guest has no account and needs only to read their own
 // ticket by its tracking number. Plus guestWrapperKeys, which are not Ticket
 // fields: the status's name (derived) and the conversation.
-var guestTicketKeys = []string{"tracking_number", "subject", "description", "created_at", "updated_at"}
+var guestTicketKeys = []string{"tracking_number", "subject", "description", "created_at"}
 var guestWrapperKeys = []string{"status", "replies"}
 
 // RequesterTicketKeys returns a copy of the allowed list.

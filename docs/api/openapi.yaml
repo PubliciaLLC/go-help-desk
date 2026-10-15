@@ -1988,7 +1988,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [tracking_number, subject, description, status, created_at, updated_at, replies]
+                required: [tracking_number, subject, description, status, created_at, replies]
                 properties:
                   tracking_number: {type: string}
                   subject: {type: string}
@@ -1997,7 +1997,6 @@ paths:
                     type: string
                     description: The name of the ticket's current status. Empty if the status cannot be found.
                   created_at: {type: string, format: date-time}
-                  updated_at: {type: string, format: date-time}
                   replies:
                     type: array
                     items: {$ref: '#/components/schemas/AccountGuestReply'}
@@ -9455,14 +9454,14 @@ components:
         keys are absent when unset, never null.
         A reporting user (any role other than staff or administrator) receives
         only these keys: id, tracking_number, subject, description, status_id,
-        priority, category_id, type_id, item_id, created_at, updated_at,
-        resolved_at, closed_at and resolution_notes. Everything else here
-        (assignee_user_id, assignee_group_id, reporter_user_id, guest_email,
-        guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count)
-        is for staff and administrators only. The same list applies to every
+        priority, category_id, type_id, item_id, created_at, resolved_at,
+        assignee_user_id and resolution_notes. Everything else here
+        (assignee_group_id, reporter_user_id, guest_email, guest_name,
+        guest_phone, closed_at, updated_at, pending_since, sla_paused_seconds,
+        reopen_count) is for staff and administrators only. The same list applies to every
         response that carries a ticket, MCP included.
       type: object
-      required: [id, tracking_number, subject, description, category_id, priority, status_id, created_at, updated_at]
+      required: [id, tracking_number, subject, description, category_id, priority, status_id, created_at]
       properties:
         id:
           $ref: '#/components/schemas/Uuid'
