@@ -783,13 +783,10 @@ export function TicketDetailPage() {
             {/* Staff always see who follows (#441); the API refuses a requester. */}
             {isStaffOrAdmin && <FollowersPanel ticketId={id} />}
 
-            {/* Staff-only display, not the only guard: the API gates on the
-                ticket's own visibility (#129), same as /history, but also
-                withholds the actor on assigned/unassigned entries from a
-                RoleUser caller specifically (assignment is staff/admin-only,
-                and nothing else discloses that identity to a reporter). This
-                hides the whole feed from that role anyway, since none of it
-                is this page's job to show them. */}
+            {/* Staff-only display and a staff-only route: the API refuses the
+                audit feed (and /history) to a requester with 403, since
+                requesters see the ticket's current state and conversation,
+                not its history. This keeps the page from asking. */}
             {isStaffOrAdmin && <AuditFeed ticketId={id} />}
 
             {attachments.length > 0 && (

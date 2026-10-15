@@ -2,6 +2,7 @@ package ticket_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -633,4 +634,33 @@ func TestReopen_EveryDoorStampsTheRestartPoint(t *testing.T) {
 			require.Equal(t, int64(100), got.PausedSecondsAtLastReopen)
 		})
 	}
+}
+
+// ForRole is the one rule for what a viewer is shown (Erik, 2026-10-15): staff
+// and administrators get the reopen count and the pause fields; anyone else, an
+// unknown role included, gets none of them, and the keys are gone from the JSON.
+func TestTicketForRole(t *testing.T) {
+	now := time.Now()
+	tk := ticket.Ticket{ID: uuid.New(), Subject: "x", ReopenCount: 2, SLAPausedSeconds: 90, PendingSince: &now}
+	keys := func(v ticket.Ticket) map[string]any {
+		b, err := json.Marshal(v)
+		require.NoError(t, err)
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(b, &m))
+		return m
+	}
+	for _, role := range []user.Role{user.RoleStaff, user.RoleAdmin} {
+		m := keys(tk.ForRole(role))
+		require.EqualValues(t, 2, m["reopen_count"], role)
+		require.EqualValues(t, 90, m["sla_paused_seconds"], role)
+		require.Contains(t, m, "pending_since", role)
+	}
+	for _, role := range []user.Role{user.RoleUser, user.Role("auditor"), user.Role("")} {
+		m := keys(tk.ForRole(role))
+		require.NotContains(t, m, "reopen_count", role)
+		require.NotContains(t, m, "sla_paused_seconds", role)
+		require.NotContains(t, m, "pending_since", role)
+		require.Equal(t, "x", m["subject"], "the rest of the ticket is untouched")
+	}
+	require.Equal(t, 90, int(tk.SLAPausedSeconds), "ForRole returns a copy")
 }

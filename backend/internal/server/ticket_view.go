@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -39,6 +40,28 @@ func forViewer(t ticket.Ticket, actor *authmw.Actor) ticket.Ticket {
 		return t.ForRole("")
 	}
 	return t.ForRole(actor.Role)
+}
+
+// MarshalJSON writes the ticket through ticket.Ticket's own marshaller (which
+// leaves staff-only keys out for a requester) and adds the view's fields. Without
+// it the embedded method would be promoted and the view would lose sla and
+// can_reopen.
+func (v ticketView) MarshalJSON() ([]byte, error) {
+	base, err := json.Marshal(v.Ticket)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(base, &m); err != nil {
+		return nil, err
+	}
+	if m["sla"], err = json.Marshal(v.SLA); err != nil {
+		return nil, err
+	}
+	if m["can_reopen"], err = json.Marshal(v.CanReopen); err != nil {
+		return nil, err
+	}
+	return json.Marshal(m)
 }
 
 // ticketViews attaches each ticket's live SLA status via one batch call

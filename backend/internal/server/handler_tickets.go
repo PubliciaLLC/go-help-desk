@@ -1056,17 +1056,18 @@ type ticketAuditEntryView struct {
 
 // GET /api/v1/tickets/{id}/audit
 //
-// #129: a per-ticket activity feed next to the status timeline. Relies on
-// requireTicketAccess like every other route in this subtree — a ticket's
-// audit trail is ticket content, not a separate permission — with one
-// exception: assigned/unassigned entries name a staff or admin actor
-// (assignment is staff/admin-only, see ticket.CanAssign), and nothing else
-// on a ticket discloses that actor's identity to a reporting user — the
-// ticket's own assignee_user_id is a bare UUID, and /api/v1/staff, the only
-// place that resolves one to a name, is itself staff/admin-gated. A
-// reporting user would otherwise learn a staff member's name from this feed
-// alone, so those two actions withhold actor identity for RoleUser viewers,
-// the same way VisibleReplies withholds internal-note authorship.
+// #129: a per-ticket activity feed next to the status timeline. Staff and
+// admin only (the route sits behind RequireRole in routes.go, after the
+// ticket-access check, so a ticket out of reach is a 404 first): since
+// 2026-10-15 a requester sees the ticket's current state and its
+// conversation, not its history or audit trail, and is refused with 403.
+//
+// The RoleUser branch below, which withholds the actor of assigned/unassigned
+// entries, is therefore unreachable today. It is kept as a second safeguard
+// (assignment is staff/admin-only, see ticket.CanAssign, and nothing else on a
+// ticket discloses that actor's identity to a reporting user), so that loosening
+// the route gate by mistake does not start naming staff to requesters; the
+// same way VisibleReplies withholds internal-note authorship.
 //
 // The field-level before/after diff is a second, independent gate, settled
 // by the admin-wide view's own design round: admin always sees it; staff

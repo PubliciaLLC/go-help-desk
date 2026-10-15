@@ -445,6 +445,31 @@ type ticketWithReplies struct {
 	Links   []ticket.TicketLink `json:"links,omitempty"`
 }
 
+// MarshalJSON writes the ticket through ticket.Ticket's own marshaller and adds
+// the replies and links; the embedded method would otherwise be promoted and
+// drop them.
+func (t ticketWithReplies) MarshalJSON() ([]byte, error) {
+	base, err := json.Marshal(t.Ticket)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(base, &m); err != nil {
+		return nil, err
+	}
+	if len(t.Replies) > 0 {
+		if m["replies"], err = json.Marshal(t.Replies); err != nil {
+			return nil, err
+		}
+	}
+	if len(t.Links) > 0 {
+		if m["links"], err = json.Marshal(t.Links); err != nil {
+			return nil, err
+		}
+	}
+	return json.Marshal(m)
+}
+
 func (s *Server) handleGetTicket(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	caller := actorFrom(ctx)
 	if caller == nil {

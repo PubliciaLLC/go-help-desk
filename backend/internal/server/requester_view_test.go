@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -108,6 +109,83 @@ func TestRequester_MCPHasNoReopenCount(t *testing.T) {
 			got = req.call(t, "list_tickets", map[string]any{})
 			require.Contains(t, got, "Printer", "list_tickets: %s", got)
 			require.NotContains(t, got, "reopen_count", "list_tickets")
+		})
+	}
+}
+
+// When a ticket went Pending and how long it has been paused are audit
+// information, not state (Erik, 2026-10-15): staff and administrators only, in
+// every response, MCP included.
+func TestRequester_GetsNoPauseFields(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	tk := reopenedTicketOf(t, h)
+	cur, err := h.ticketStore.GetByID(ctx, tk.ID)
+	require.NoError(t, err)
+	now := time.Now()
+	cur.PendingSince, cur.SLAPausedSeconds = &now, 120
+	require.NoError(t, h.ticketStore.Update(ctx, cur))
+	path := "/api/v1/tickets/" + tk.ID.String()
+
+	decode := func(res *http.Response) map[string]any {
+		b, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", b)
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(b, &m))
+		return m
+	}
+	decodeList := func(res *http.Response) []map[string]any {
+		b, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", b)
+		var m []map[string]any
+		require.NoError(t, json.Unmarshal(b, &m))
+		return m
+	}
+
+	t.Run("HTTP: a requester gets neither key", func(t *testing.T) {
+		m := decode(h.doAsUser(t, http.MethodGet, path, nil))
+		require.NotContains(t, m, "sla_paused_seconds", "GET")
+		require.NotContains(t, m, "pending_since", "GET")
+		for _, row := range decodeList(h.doAsUser(t, http.MethodGet, "/api/v1/tickets", nil)) {
+			require.NotContains(t, row, "sla_paused_seconds", "list")
+			require.NotContains(t, row, "pending_since", "list")
+		}
+		m = decode(h.doAsUser(t, http.MethodPatch, path, map[string]any{}))
+		require.NotContains(t, m, "sla_paused_seconds", "PATCH")
+		require.NotContains(t, m, "pending_since", "PATCH")
+	})
+
+	t.Run("HTTP: staff and administrators still do", func(t *testing.T) {
+		for name, do := range map[string]func(*testing.T, string, string, any) *http.Response{"staff": h.do, "admin": h.doAsAdmin} {
+			m := decode(do(t, http.MethodGet, path, nil))
+			require.EqualValues(t, 120, m["sla_paused_seconds"], name)
+			require.Contains(t, m, "pending_since", name)
+		}
+		var found bool
+		for _, row := range decodeList(h.doAsAdmin(t, http.MethodGet, "/api/v1/tickets?reporter_id="+h.userID.String(), nil)) {
+			if row["id"] == tk.ID.String() {
+				found = true
+				require.EqualValues(t, 120, row["sla_paused_seconds"])
+				require.Contains(t, row, "pending_since")
+			}
+		}
+		require.True(t, found)
+	})
+
+	for _, tr := range mcpTransports {
+		t.Run("MCP "+tr.name, func(t *testing.T) {
+			req := tr.open(t, h, h.userKey)
+			got := req.call(t, "get_ticket", map[string]any{"id": tk.ID.String()})
+			require.Contains(t, got, "Printer", got)
+			require.NotContains(t, got, "sla_paused_seconds", "get_ticket")
+			require.NotContains(t, got, "pending_since", "get_ticket")
+			got = req.call(t, "list_tickets", map[string]any{})
+			require.Contains(t, got, "Printer", got)
+			require.NotContains(t, got, "sla_paused_seconds", "list_tickets")
+			require.NotContains(t, got, "pending_since", "list_tickets")
 		})
 	}
 }

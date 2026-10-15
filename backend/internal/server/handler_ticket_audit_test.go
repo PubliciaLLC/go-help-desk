@@ -169,9 +169,9 @@ func TestListTicketAudit_WithholdsUnassignedTooButNotOtherActions(t *testing.T) 
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
 
 	// Resolving is a non-assignment, staff/admin-only action with no
-	// disclosure restriction — a reporting user must still see who did it,
-	// same as /history already shows them. This is what "withhold too much"
-	// would break.
+	// disclosure restriction: the administrator below must still see who did it
+	// (a requester gets no feed at all since 2026-10-15). This is what
+	// "withhold too much" would break.
 	resp = h.do(t, http.MethodPost, "/api/v1/tickets/"+created.ID+"/resolve", map[string]any{})
 	resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
