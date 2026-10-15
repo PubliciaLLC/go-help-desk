@@ -430,6 +430,10 @@ type Querier interface {
 	GetGroup(ctx context.Context, id uuid.UUID) (Group, error)
 	GetInstanceSecret(ctx context.Context, name string) ([]byte, error)
 	GetItem(ctx context.Context, id uuid.UUID) (Item, error)
+	// The record a ticket most recently stopped having. Read, in the same
+	// transaction that holds the ticket's row lock, when a ticket with no current
+	// record gets one back, so the new clock resumes where the last one ran.
+	GetLatestSupersededSLARecord(ctx context.Context, ticketID uuid.UUID) (SlaRecord, error)
 	GetMFALock(ctx context.Context, id uuid.UUID) (GetMFALockRow, error)
 	GetOAuthClientByClientID(ctx context.Context, clientID string) (OauthClient, error)
 	// The client a service user belongs to, for the message that says to delete

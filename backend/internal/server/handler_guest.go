@@ -145,9 +145,9 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 	// the token goes by email, so possession of the mailbox is the credential.
 	// Answering with it here would hand access to whoever sent the request,
 	// which is not necessarily whoever owns the address.
-	JSON(w, http.StatusCreated, map[string]string{
+	JSON(w, http.StatusCreated, guestJSON(map[string]string{
 		"tracking_number": string(t.TrackingNumber),
-	})
+	}))
 }
 
 // GET /api/v1/guest/ticket
@@ -184,15 +184,26 @@ func (s *Server) handleGuestGetTicket(w http.ResponseWriter, r *http.Request) {
 	// Marshalling ticket.Ticket would ship assignee ids, group ids, the
 	// reporter id and the resolution notes to someone with no account, and
 	// would keep doing so as fields are added.
-	JSON(w, http.StatusOK, map[string]any{
+	JSON(w, http.StatusOK, guestJSON(map[string]any{
 		"tracking_number": t.TrackingNumber,
 		"subject":         t.Subject,
 		"description":     t.Description,
 		"status":          statusName,
 		"created_at":      t.CreatedAt,
-		"updated_at":      t.UpdatedAt,
 		"replies":         guestReplyView(ticket.VisibleReplies(replies, user.RoleUser)),
-	})
+	}))
+}
+
+// guestJSON runs a guest's ticket response through the guest allowed list, the
+// subset of the requester's (ticket.FilterForGuest): there is one definition of
+// what a requester or guest may see of a ticket, and a key added to a map above
+// is hidden until it is added there on purpose.
+func guestJSON(v any) any {
+	out, err := ticket.FilterForGuest(v)
+	if err != nil {
+		return map[string]string{} // never the unfiltered value
+	}
+	return out
 }
 
 // guestReplyView strips a reply to what a guest may see. RoleUser has already
@@ -366,9 +377,9 @@ func (s *Server) handleGuestFollowUp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.autoAssign(ctx, created)
-	JSON(w, http.StatusCreated, map[string]string{
+	JSON(w, http.StatusCreated, guestJSON(map[string]string{
 		"tracking_number": string(created.TrackingNumber),
-	})
+	}))
 }
 
 // POST /api/v1/guest/resend

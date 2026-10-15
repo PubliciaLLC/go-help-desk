@@ -37,6 +37,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import type { Group, StatusHistoryEntry, TicketFieldValue } from '@/api/types'
 import { priorityVariant } from '@/lib/format'
+import { ReopenedBadge } from '@/components/ticket/ReopenedBadge'
 import { SLAIndicator } from '@/components/ticket/SLAIndicator'
 
 function formatDate(iso: string) {
@@ -385,7 +386,9 @@ export function TicketDetailPage() {
   const { data: statusHistory = [] } = useQuery({
     queryKey: ['statusHistory', id],
     queryFn: () => listStatusHistory(id),
-    enabled: !!ticket,
+    // History is for staff (Erik, 2026-10-15): the API refuses a requester, and
+    // the thread shows them the conversation only.
+    enabled: !!ticket && (user?.role === 'staff' || user?.role === 'admin'),
   })
 
   type TimelineItem =
@@ -557,6 +560,7 @@ export function TicketDetailPage() {
               <Badge variant={priorityVariant(ticket.priority) as never}>
                 {ticket.priority}
               </Badge>
+              {isStaffOrAdmin && <ReopenedBadge reopenCount={ticket.reopen_count} statusName={statuses.find((s) => s.id === ticket.status_id)?.name} />}
               <SLAIndicator sla={ticket.sla} />
             </div>
           </div>
@@ -810,13 +814,10 @@ export function TicketDetailPage() {
             {/* Staff always see who follows (#441); the API refuses a requester. */}
             {isStaffOrAdmin && <FollowersPanel ticketId={id} />}
 
-            {/* Staff-only display, not the only guard: the API gates on the
-                ticket's own visibility (#129), same as /history, but also
-                withholds the actor on assigned/unassigned entries from a
-                RoleUser caller specifically (assignment is staff/admin-only,
-                and nothing else discloses that identity to a reporter). This
-                hides the whole feed from that role anyway, since none of it
-                is this page's job to show them. */}
+            {/* Staff-only display and a staff-only route: the API refuses the
+                audit feed (and /history) to a requester with 403, since
+                requesters see the ticket's current state and conversation,
+                not its history. This keeps the page from asking. */}
             {isStaffOrAdmin && <AuditFeed ticketId={id} />}
 
             {attachments.length > 0 && (

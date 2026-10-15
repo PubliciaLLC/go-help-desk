@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -82,4 +84,18 @@ func (s *Server) FailReopenTargetCheckForTest() {
 	s.reopenTargetCheck = func(context.Context) (reopenTargetStatus, error) {
 		return reopenTargetStatus{}, errors.New("injected status list failure")
 	}
+}
+
+// RouteForTest is one registered route: its method and full path pattern.
+type RouteForTest struct{ Method, Pattern string }
+
+// RoutesForTest lists every route the router serves, so a test can drive them
+// all instead of a hand-kept list that a new route would skip.
+func (s *Server) RoutesForTest() []RouteForTest {
+	var out []RouteForTest
+	_ = chi.Walk(s.router, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		out = append(out, RouteForTest{Method: method, Pattern: route})
+		return nil
+	})
+	return out
 }

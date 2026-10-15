@@ -177,6 +177,34 @@ func (q *Queries) GetCurrentSLARecordForUpdate(ctx context.Context, ticketID uui
 	return i, err
 }
 
+const getLatestSupersededSLARecord = `-- name: GetLatestSupersededSLARecord :one
+SELECT ticket_id, policy_id, first_response_at, resolved_at, response_breached_at, resolution_breached_at, response_elapsed_at_met_seconds, resolution_elapsed_at_met_seconds, id, started_at, paused_seconds_at_start, superseded_at FROM sla_records WHERE ticket_id = $1 AND superseded_at IS NOT NULL
+ORDER BY superseded_at DESC, id DESC LIMIT 1
+`
+
+// The record a ticket most recently stopped having. Read, in the same
+// transaction that holds the ticket's row lock, when a ticket with no current
+// record gets one back, so the new clock resumes where the last one ran.
+func (q *Queries) GetLatestSupersededSLARecord(ctx context.Context, ticketID uuid.UUID) (SlaRecord, error) {
+	row := q.db.QueryRowContext(ctx, getLatestSupersededSLARecord, ticketID)
+	var i SlaRecord
+	err := row.Scan(
+		&i.TicketID,
+		&i.PolicyID,
+		&i.FirstResponseAt,
+		&i.ResolvedAt,
+		&i.ResponseBreachedAt,
+		&i.ResolutionBreachedAt,
+		&i.ResponseElapsedAtMetSeconds,
+		&i.ResolutionElapsedAtMetSeconds,
+		&i.ID,
+		&i.StartedAt,
+		&i.PausedSecondsAtStart,
+		&i.SupersededAt,
+	)
+	return i, err
+}
+
 const getSLAPolicy = `-- name: GetSLAPolicy :one
 SELECT id, name, priority, category_id, response_target_min, resolution_target_min FROM sla_policies WHERE id = $1
 `

@@ -52,7 +52,7 @@ SELECT t.id, t.tracking_number, t.subject, t.description, t.category_id, t.type_
        t.item_id, t.priority, t.status_id, t.assignee_user_id, t.assignee_group_id,
        t.reporter_user_id, t.guest_email, t.resolution_notes, t.resolved_at,
        t.closed_at, t.created_at, t.updated_at, t.guest_name, t.guest_phone,
-       t.pending_since, t.sla_paused_seconds
+       t.pending_since, t.sla_paused_seconds, t.reopen_count, t.last_reopened_at, t.paused_seconds_at_last_reopen
 FROM guest_access_tokens g
 JOIN tickets t ON t.id = g.ticket_id
 WHERE g.token_hash = $1
@@ -60,28 +60,31 @@ WHERE g.token_hash = $1
 `
 
 type GetTicketByGuestTokenRow struct {
-	ID               uuid.UUID      `json:"id"`
-	TrackingNumber   string         `json:"tracking_number"`
-	Subject          string         `json:"subject"`
-	Description      string         `json:"description"`
-	CategoryID       uuid.UUID      `json:"category_id"`
-	TypeID           uuid.NullUUID  `json:"type_id"`
-	ItemID           uuid.NullUUID  `json:"item_id"`
-	Priority         string         `json:"priority"`
-	StatusID         uuid.UUID      `json:"status_id"`
-	AssigneeUserID   uuid.NullUUID  `json:"assignee_user_id"`
-	AssigneeGroupID  uuid.NullUUID  `json:"assignee_group_id"`
-	ReporterUserID   uuid.NullUUID  `json:"reporter_user_id"`
-	GuestEmail       sql.NullString `json:"guest_email"`
-	ResolutionNotes  sql.NullString `json:"resolution_notes"`
-	ResolvedAt       sql.NullTime   `json:"resolved_at"`
-	ClosedAt         sql.NullTime   `json:"closed_at"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	GuestName        string         `json:"guest_name"`
-	GuestPhone       string         `json:"guest_phone"`
-	PendingSince     sql.NullTime   `json:"pending_since"`
-	SlaPausedSeconds int64          `json:"sla_paused_seconds"`
+	ID                        uuid.UUID      `json:"id"`
+	TrackingNumber            string         `json:"tracking_number"`
+	Subject                   string         `json:"subject"`
+	Description               string         `json:"description"`
+	CategoryID                uuid.UUID      `json:"category_id"`
+	TypeID                    uuid.NullUUID  `json:"type_id"`
+	ItemID                    uuid.NullUUID  `json:"item_id"`
+	Priority                  string         `json:"priority"`
+	StatusID                  uuid.UUID      `json:"status_id"`
+	AssigneeUserID            uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID           uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID            uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail                sql.NullString `json:"guest_email"`
+	ResolutionNotes           sql.NullString `json:"resolution_notes"`
+	ResolvedAt                sql.NullTime   `json:"resolved_at"`
+	ClosedAt                  sql.NullTime   `json:"closed_at"`
+	CreatedAt                 time.Time      `json:"created_at"`
+	UpdatedAt                 time.Time      `json:"updated_at"`
+	GuestName                 string         `json:"guest_name"`
+	GuestPhone                string         `json:"guest_phone"`
+	PendingSince              sql.NullTime   `json:"pending_since"`
+	SlaPausedSeconds          int64          `json:"sla_paused_seconds"`
+	ReopenCount               int32          `json:"reopen_count"`
+	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
+	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
 }
 
 // Resolves a raw token's hash to the ticket it names, in one round trip.
@@ -126,6 +129,9 @@ func (q *Queries) GetTicketByGuestToken(ctx context.Context, tokenHash string) (
 		&i.GuestPhone,
 		&i.PendingSince,
 		&i.SlaPausedSeconds,
+		&i.ReopenCount,
+		&i.LastReopenedAt,
+		&i.PausedSecondsAtLastReopen,
 	)
 	return i, err
 }

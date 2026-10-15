@@ -30,6 +30,24 @@ type ticketView struct {
 	CanReopen bool `json:"can_reopen"`
 }
 
+// viewerJSON is the exit point for any response that carries tickets: staff and
+// administrators get it as built, everyone else gets only what the requester
+// allowed list permits (ticket.FilterForViewer). A nil actor is treated as a
+// requester, so a missed check fails closed.
+func viewerJSON(actor *authmw.Actor, v any) any {
+	role := user.Role("")
+	if actor != nil {
+		role = actor.Role
+	}
+	out, err := ticket.FilterForViewer(role, v)
+	if err != nil {
+		// Encoding a value this package just built does not fail; if it ever does,
+		// send nothing rather than the unfiltered ticket.
+		return map[string]string{}
+	}
+	return out
+}
+
 // ticketViews attaches each ticket's live SLA status via one batch call
 // (sla.Service.StatusesFor), so the cost is two extra queries per response
 // regardless of how many tickets are on the page. Callers pass the page
@@ -39,11 +57,11 @@ type ticketView struct {
 //
 // SLA visibility is staff/admin only: a reporting user must not see the
 // indicator, the policy name, the targets, or the breach/late status on their
-// own ticket, so actor == RoleUser gets "sla": null unconditionally — the same
-// null a client already treats as "no indicator" when there is no matching
-// policy, per #183. actor is nil only defensively (every route that reaches
-// here requires an authenticated actor); treated the same as RoleUser so a
-// missed check fails closed rather than leaking the field.
+// own ticket, so any actor that is not staff or an administrator gets
+// "sla": null unconditionally — the same null a client already treats as "no
+// indicator" when there is no matching policy, per #183. actor is nil only
+// defensively (every route that reaches here requires an authenticated actor);
+// treated the same so a missed check fails closed rather than leaking the field.
 //
 // When SLA tracking is off, or the actor cannot see it at all, every SLA
 // field is nil and the store is never called: an instance with the feature
@@ -53,7 +71,9 @@ func (s *Server) ticketViews(ctx context.Context, ts []ticket.Ticket, actor *aut
 	for i, t := range ts {
 		views[i] = ticketView{Ticket: t}
 	}
-	if actor == nil || actor.Role == user.RoleUser {
+	// Only staff and administrators get the SLA status and can_reopen. Any other
+	// role, one this code does not recognise included, gets neither.
+	if actor == nil || (actor.Role != user.RoleStaff && actor.Role != user.RoleAdmin) {
 		return views, nil
 	}
 	// Read once per response, and only when a closed ticket is in it.
@@ -100,5 +120,5 @@ func (s *Server) writeTickets(w http.ResponseWriter, r *http.Request, tickets []
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, views)
+	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), views))
 }

@@ -467,7 +467,7 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	if fresh, err := s.tickets.GetByID(r.Context(), t.ID); err == nil {
 		t = fresh
 	}
-	JSON(w, http.StatusCreated, t)
+	JSON(w, http.StatusCreated, viewerJSON(authmw.GetActor(r), t))
 }
 
 // GET /api/v1/tickets/{id}
@@ -509,8 +509,8 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The record a restart replaced, for the page's "SLA restarted" badge: the
-	// one-ticket read only, so a list never pays for it. Nothing restarts a
-	// clock on this build (#464 adds the reopen), so it is absent for now.
+	// one-ticket read only, so a list never pays for it. Only a reopen restarts
+	// a clock (#464), so it is absent on a ticket that was never reopened.
 	if views[0].SLA != nil {
 		earlier, err := s.slaPolicies.Earlier(r.Context(), t)
 		if err != nil {
@@ -519,7 +519,7 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 		}
 		views[0].SLA.Earlier = earlier
 	}
-	JSON(w, http.StatusOK, views[0])
+	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), views[0]))
 }
 
 // PATCH /api/v1/tickets/{id}
@@ -683,7 +683,7 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, t)
+	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), t))
 }
 
 // POST /api/v1/tickets/{id}/replies
@@ -793,7 +793,7 @@ func (s *Server) handleResolveTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, t)
+	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), t))
 }
 
 // POST /api/v1/tickets/{id}/reopen
@@ -824,7 +824,7 @@ func (s *Server) handleReopenTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, t)
+	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), t))
 }
 
 // POST /api/v1/tickets/{id}/follow-up
@@ -871,7 +871,7 @@ func (s *Server) handleCreateFollowUp(w http.ResponseWriter, r *http.Request) {
 	if fresh, err := s.tickets.GetByID(r.Context(), t.ID); err == nil {
 		t = fresh
 	}
-	JSON(w, http.StatusCreated, t)
+	JSON(w, http.StatusCreated, viewerJSON(authmw.GetActor(r), t))
 }
 
 // POST /api/v1/tickets/{id}/close
@@ -896,7 +896,7 @@ func (s *Server) handleCloseTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, t)
+	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), t))
 }
 
 // POST /api/v1/tickets/{id}/links
@@ -946,7 +946,7 @@ func (s *Server) handleAddLink(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
-		JSON(w, http.StatusOK, t)
+		JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), t))
 		return
 	}
 
@@ -1056,17 +1056,18 @@ type ticketAuditEntryView struct {
 
 // GET /api/v1/tickets/{id}/audit
 //
-// #129: a per-ticket activity feed next to the status timeline. Relies on
-// requireTicketAccess like every other route in this subtree — a ticket's
-// audit trail is ticket content, not a separate permission — with one
-// exception: assigned/unassigned entries name a staff or admin actor
-// (assignment is staff/admin-only, see ticket.CanAssign), and nothing else
-// on a ticket discloses that actor's identity to a reporting user — the
-// ticket's own assignee_user_id is a bare UUID, and /api/v1/staff, the only
-// place that resolves one to a name, is itself staff/admin-gated. A
-// reporting user would otherwise learn a staff member's name from this feed
-// alone, so those two actions withhold actor identity for RoleUser viewers,
-// the same way VisibleReplies withholds internal-note authorship.
+// #129: a per-ticket activity feed next to the status timeline. Staff and
+// admin only (the route sits behind RequireRole in routes.go, after the
+// ticket-access check, so a ticket out of reach is a 404 first): since
+// 2026-10-15 a requester sees the ticket's current state and its
+// conversation, not its history or audit trail, and is refused with 403.
+//
+// The RoleUser branch below, which withholds the actor of assigned/unassigned
+// entries, is therefore unreachable today. It is kept as a second safeguard
+// (assignment is staff/admin-only, see ticket.CanAssign, and nothing else on a
+// ticket discloses that actor's identity to a reporting user), so that loosening
+// the route gate by mistake does not start naming staff to requesters; the
+// same way VisibleReplies withholds internal-note authorship.
 //
 // The field-level before/after diff is a second, independent gate, settled
 // by the admin-wide view's own design round: admin always sees it; staff

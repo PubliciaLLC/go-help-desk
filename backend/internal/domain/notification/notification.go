@@ -36,13 +36,15 @@ const (
 	// webhook event, and no ticket.
 	EventRegistrationVerify EventType = "registration.verify"
 
-	// EventStaffAssigned and EventStaffRequesterReplied are the email a staff
-	// member gets about a ticket (#441). They are made from EventTicketAssigned
-	// and a requester's EventTicketReplied, one per person to be mailed, by
+	// EventStaffAssigned, EventStaffRequesterReplied and EventStaffReopened are
+	// the email a staff member gets about a ticket (#441, #464). They are made
+	// from EventTicketAssigned, a requester's EventTicketReplied and
+	// EventTicketReopened, one per person to be mailed, by
 	// notify.StaffFanout, and never dispatched by domain code. Not webhook
 	// events: a webhook subscriber already has the events they derive from.
 	EventStaffAssigned         EventType = "staff.assigned"
 	EventStaffRequesterReplied EventType = "staff.requester_replied"
+	EventStaffReopened         EventType = "staff.reopened"
 )
 
 // Event carries the data for a single lifecycle event on a ticket.
