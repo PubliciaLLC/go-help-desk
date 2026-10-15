@@ -68,6 +68,29 @@ func keysOf(t *testing.T, raw any) map[string]bool {
 	return out
 }
 
+// jsonKeysOfType is every key a struct can put on the wire, read from its json
+// tags, not from a marshalled value: a field of any type, omitempty or not,
+// counts whether or not a value would make it appear. A tag of "-" is never on
+// the wire.
+func jsonKeysOfType(typ reflect.Type) map[string]bool {
+	out := map[string]bool{}
+	for i := 0; i < typ.NumField(); i++ {
+		f := typ.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		if name == "-" {
+			continue
+		}
+		if name == "" {
+			name = f.Name
+		}
+		out[name] = true
+	}
+	return out
+}
+
 func sorted(m map[string]bool) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
@@ -92,7 +115,7 @@ func TestRequesterKeys_EveryTicketKeyIsClassified(t *testing.T) {
 	for k := range allowed {
 		require.False(t, never[k], "%q is on both lists", k)
 	}
-	produced := keysOf(t, filledTicket(t))
+	produced := jsonKeysOfType(reflect.TypeOf(ticket.Ticket{}))
 	for k := range produced {
 		require.True(t, allowed[k] || never[k],
 			"Ticket produces the JSON key %q, which is on neither the requester allowed list nor the never list: decide which (requester_view.go)", k)
@@ -163,9 +186,7 @@ func TestFilterForViewer_RequesterGetsOnlyTheAllowedList(t *testing.T) {
 				require.True(t, keys[k], "allowed key %q missing", k)
 			}
 			for _, k := range ticket.RequesterWrapperKeys() {
-				if k == "sla" || k == "can_reopen" || k == "replies" || k == "links" {
-					require.True(t, keys[k], "wrapper key %q is kept when present", k)
-				}
+				require.True(t, keys[k], "wrapper key %q is kept when present", k)
 			}
 			require.NotContains(t, keys, "surprise", "an unknown wrapper field is hidden until added on purpose")
 		})
@@ -219,5 +240,27 @@ func TestFilterForGuest_IsASubsetOfTheRequesterList(t *testing.T) {
 	// No updated_at: a guest's list is a strict subset of the requester's, which
 	// has none either.
 	require.Equal(t, []string{"created_at", "description", "replies", "status", "subject", "tracking_number"}, sorted(keys))
-	_ = strings.TrimSpace
+}
+
+// Numbers inside a response pass through the filter exactly. Decoding into
+// float64 rounds an integer above 2^53, which would silently corrupt a value
+// nested in a kept key (a reply, say); the filter decodes with UseNumber.
+func TestFilterForViewer_BigIntegersSurviveUnchanged(t *testing.T) {
+	const big = int64(9007199254740993) // 2^53 + 1: not representable as a float64
+	in := map[string]any{
+		"id":      "x",
+		"replies": []any{map[string]any{"n": big}},
+		"nested":  "dropped",
+	}
+	got, err := ticket.FilterForViewer(user.RoleUser, in)
+	require.NoError(t, err)
+	b, err := json.Marshal(got)
+	require.NoError(t, err)
+	require.Contains(t, string(b), "9007199254740993")
+	require.NotContains(t, string(b), "nested")
+
+	got, err = ticket.FilterForGuest(map[string]any{"subject": "s", "replies": []any{map[string]any{"n": big}}})
+	require.NoError(t, err)
+	b, _ = json.Marshal(got)
+	require.Contains(t, string(b), "9007199254740993")
 }

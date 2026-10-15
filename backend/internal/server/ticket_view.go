@@ -57,11 +57,11 @@ func viewerJSON(actor *authmw.Actor, v any) any {
 //
 // SLA visibility is staff/admin only: a reporting user must not see the
 // indicator, the policy name, the targets, or the breach/late status on their
-// own ticket, so actor == RoleUser gets "sla": null unconditionally — the same
-// null a client already treats as "no indicator" when there is no matching
-// policy, per #183. actor is nil only defensively (every route that reaches
-// here requires an authenticated actor); treated the same as RoleUser so a
-// missed check fails closed rather than leaking the field.
+// own ticket, so any actor that is not staff or an administrator gets
+// "sla": null unconditionally — the same null a client already treats as "no
+// indicator" when there is no matching policy, per #183. actor is nil only
+// defensively (every route that reaches here requires an authenticated actor);
+// treated the same so a missed check fails closed rather than leaking the field.
 //
 // When SLA tracking is off, or the actor cannot see it at all, every SLA
 // field is nil and the store is never called: an instance with the feature
@@ -71,7 +71,9 @@ func (s *Server) ticketViews(ctx context.Context, ts []ticket.Ticket, actor *aut
 	for i, t := range ts {
 		views[i] = ticketView{Ticket: t}
 	}
-	if actor == nil || actor.Role == user.RoleUser {
+	// Only staff and administrators get the SLA status and can_reopen. Any other
+	// role, one this code does not recognise included, gets neither.
+	if actor == nil || (actor.Role != user.RoleStaff && actor.Role != user.RoleAdmin) {
 		return views, nil
 	}
 	// Read once per response, and only when a closed ticket is in it.

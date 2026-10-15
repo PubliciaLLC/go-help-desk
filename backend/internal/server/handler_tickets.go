@@ -1148,7 +1148,7 @@ func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
 			views[i].Names = resolved.forEntry(views[i].Before, views[i].After)
 		}
 	}
-	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), views))
+	JSON(w, http.StatusOK, views)
 }
 
 // GET /api/v1/tickets/{id}/links

@@ -12,12 +12,12 @@ import (
 // and is driven as a requester by TestRequesterResponses_* in internal/server.
 // A new tool fails here until it is classified, so it cannot skip that check.
 func TestEveryToolIsClassifiedForRequesterTicketFields(t *testing.T) {
-	returnsTickets := map[string]bool{
-		"get_ticket": true, "list_tickets": true, "create_ticket": true,
-		"assign_ticket": true, "update_ticket_status": true, "create_follow_up": true,
+	returnsTickets, noTickets := map[string]bool{}, map[string]bool{}
+	for _, n := range TicketTools() {
+		returnsTickets[n] = true
 	}
-	noTickets := map[string]bool{
-		"add_reply": true, "list_categories": true, "list_statuses": true,
+	for _, n := range NonTicketTools() {
+		noTickets[n] = true
 	}
 
 	s := New(nil, nil, nil, nil)

@@ -14,6 +14,7 @@ import (
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	"github.com/publiciallc/go-help-desk/backend/internal/mcp"
 )
 
 // One definition of what a requester or a guest may see of a ticket
@@ -270,17 +271,27 @@ func TestRequesterResponses_MCP(t *testing.T) {
 	rules := requesterRules()
 	id := tk.ID.String()
 
-	calls := []struct {
+	// Arguments for each tool that can return a ticket. The tools themselves come
+	// from mcp.TicketTools, so a tool added there without arguments here fails.
+	args := map[string]map[string]any{
+		"get_ticket":           {"id": id},
+		"list_tickets":         {},
+		"create_ticket":        {"subject": "x", "category_id": h.catID.String()},
+		"assign_ticket":        {"ticket_id": id, "assignee_user_id": uuid.NewString()},
+		"update_ticket_status": {"ticket_id": id, "status_id": uuid.NewString()},
+		"create_follow_up":     {"ticket_id": id},
+	}
+	type toolCall struct {
 		tool string
 		args map[string]any
-	}{
-		{"get_ticket", map[string]any{"id": id}},
-		{"list_tickets", map[string]any{}},
-		{"create_ticket", map[string]any{"subject": "x", "category_id": h.catID.String()}},
-		{"assign_ticket", map[string]any{"ticket_id": id, "assignee_user_id": uuid.NewString()}},
-		{"update_ticket_status", map[string]any{"ticket_id": id, "status_id": uuid.NewString()}},
-		{"create_follow_up", map[string]any{"ticket_id": id}},
 	}
+	var calls []toolCall
+	for _, tool := range mcp.TicketTools() {
+		a, ok := args[tool]
+		require.True(t, ok, "mcp.TicketTools lists %q but this test has no arguments for it", tool)
+		calls = append(calls, toolCall{tool, a})
+	}
+	require.Len(t, args, len(calls), "this test has arguments for a tool mcp.TicketTools no longer lists")
 	for _, tr := range mcpTransports {
 		t.Run(tr.name, func(t *testing.T) {
 			c := tr.open(t, h, h.userKey)

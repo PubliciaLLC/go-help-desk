@@ -167,8 +167,8 @@ type Ticket struct {
 	// ReopenCount is how many times the ticket has been moved from Resolved or
 	// Closed back to an open status (#464). It is never reset: the badge reads
 	// "> 0 and open", and the priority bump applies only when it was 0.
-	// Omitted when 0, and zeroed for a requester's view: the count is staff
-	// information (see requester_view.go).
+	// Omitted when 0. A requester never receives it: the count is staff
+	// information, and requester_view.go's allowed list leaves it out.
 	ReopenCount int `json:"reopen_count,omitempty"`
 
 	// LastReopenedAt and PausedSecondsAtLastReopen are the instant of the most

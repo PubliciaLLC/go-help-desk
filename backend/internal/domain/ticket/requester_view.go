@@ -1,6 +1,7 @@
 package ticket
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 
@@ -110,8 +111,11 @@ func keepKeys(v any, keep []string) (any, error) {
 	for _, k := range keep {
 		allowed[k] = true
 	}
+	// UseNumber: a float64 would round an integer above 2^53 on the way through.
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
 	var top any
-	if err := json.Unmarshal(b, &top); err != nil {
+	if err := dec.Decode(&top); err != nil {
 		return nil, fmt.Errorf("decoding response: %w", err)
 	}
 	filter := func(o map[string]any) {
