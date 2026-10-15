@@ -105,14 +105,14 @@ func TestUpdateTicket_Priority_HTTP(t *testing.T) {
 	})
 
 	t.Run("200: the same priority again is accepted and writes nothing more", func(t *testing.T) {
-		before, err := h.ticketSvc.ListAuditEntries(ctx, tk.ID)
+		before, err := h.ticketSvc.ListAuditFeed(ctx, tk.ID, true)
 		require.NoError(t, err)
 
 		res := h.do(t, http.MethodPatch, path, map[string]any{"priority": "high"})
 		res.Body.Close()
 		require.Equal(t, http.StatusOK, res.StatusCode)
 
-		after, err := h.ticketSvc.ListAuditEntries(ctx, tk.ID)
+		after, err := h.ticketSvc.ListAuditFeed(ctx, tk.ID, true)
 		require.NoError(t, err)
 		require.Len(t, after, len(before))
 	})

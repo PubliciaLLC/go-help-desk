@@ -54,7 +54,7 @@ func TestUpdateTicket_ReporterPriorityRequestChangesNothing_HTTP(t *testing.T) {
 	for _, tc := range cases {
 		t.Run("reporter: "+tc.name, func(t *testing.T) {
 			tk := mk()
-			before, err := h.ticketSvc.ListAuditEntries(ctx, tk.ID)
+			before, err := h.ticketSvc.ListAuditFeed(ctx, tk.ID, true)
 			require.NoError(t, err)
 
 			res := h.doAsUser(t, http.MethodPatch, "/api/v1/tickets/"+tk.ID.String(), tc.body)
@@ -70,7 +70,7 @@ func TestUpdateTicket_ReporterPriorityRequestChangesNothing_HTTP(t *testing.T) {
 			require.Equal(t, tk.CategoryID, got.CategoryID)
 			require.Equal(t, ticket.PriorityMedium, got.Priority)
 
-			after, err := h.ticketSvc.ListAuditEntries(ctx, tk.ID)
+			after, err := h.ticketSvc.ListAuditFeed(ctx, tk.ID, true)
 			require.NoError(t, err)
 			require.Len(t, after, len(before), "a refused request writes no audit row")
 		})
@@ -139,7 +139,7 @@ func TestUpdateTicket_PriorityOnFinishedTicketChangesNothing_HTTP(t *testing.T) 
 
 	refused := func(t *testing.T, do func(*testing.T, string, string, any) *http.Response, tk ticket.Ticket, body map[string]any) {
 		t.Helper()
-		before, err := h.ticketSvc.ListAuditEntries(ctx, tk.ID)
+		before, err := h.ticketSvc.ListAuditFeed(ctx, tk.ID, true)
 		require.NoError(t, err)
 
 		res := do(t, http.MethodPatch, "/api/v1/tickets/"+tk.ID.String(), body)
@@ -153,7 +153,7 @@ func TestUpdateTicket_PriorityOnFinishedTicketChangesNothing_HTTP(t *testing.T) 
 		require.Equal(t, tk.StatusID, got.StatusID, "status")
 		require.Equal(t, tk.AssigneeUserID, got.AssigneeUserID, "assignee")
 		require.Equal(t, tk.Priority, got.Priority, "priority")
-		after, err := h.ticketSvc.ListAuditEntries(ctx, tk.ID)
+		after, err := h.ticketSvc.ListAuditFeed(ctx, tk.ID, true)
 		require.NoError(t, err)
 		require.Len(t, after, len(before), "a refused request writes no audit row")
 	}
