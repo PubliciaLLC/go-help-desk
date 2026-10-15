@@ -132,6 +132,25 @@ func (f *fakeStore) CurrentSLARecordForUpdate(_ context.Context, ticketID uuid.U
 	return nil, nil
 }
 
+func (f *fakeStore) LatestSupersededSLARecord(_ context.Context, ticketID uuid.UUID) (*ticket.SLARecordState, error) {
+	var best *fakeSLARecord
+	for i, r := range f.slaRecords {
+		if r.ticketID != ticketID || r.supersededAt == nil {
+			continue
+		}
+		if best == nil || !r.supersededAt.Before(*best.supersededAt) {
+			best = &f.slaRecords[i]
+		}
+	}
+	if best == nil {
+		return nil, nil
+	}
+	return &ticket.SLARecordState{
+		ID: best.id, PolicyID: best.policyID, StartedAt: best.startedAt,
+		PausedSecondsAtStart: best.pausedBase, Facts: best.facts,
+	}, nil
+}
+
 func (f *fakeStore) MatchSLAPolicy(_ context.Context, p ticket.Priority, _ uuid.UUID) (*uuid.UUID, error) {
 	if id, ok := f.slaPolicies[p]; ok {
 		return &id, nil

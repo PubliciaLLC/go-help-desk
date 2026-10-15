@@ -11,6 +11,7 @@ import { Badge } from '@/components/ui/badge'
 import { Spinner } from '@/components/ui/spinner'
 import { PlusIcon, SearchIcon } from 'lucide-react'
 import { priorityVariant } from '@/lib/format'
+import { ReopenedBadge } from '@/components/ticket/ReopenedBadge'
 import { SLAIndicator } from '@/components/ticket/SLAIndicator'
 import { apiRefusal, extractError } from '@/api/client'
 
@@ -438,9 +439,12 @@ export function TicketListPage() {
                           ) : '—'}
                         </td>
                         <td className="px-4 py-2">
-                          <Badge variant={priorityVariant(t.priority) as never}>
-                            {t.priority}
-                          </Badge>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <Badge variant={priorityVariant(t.priority) as never}>
+                              {t.priority}
+                            </Badge>
+                            {isStaffOrAdmin && <ReopenedBadge reopenCount={t.reopen_count} statusName={status?.name} />}
+                          </div>
                         </td>
                         {showSLAColumn && (
                           <td className="px-4 py-2">
@@ -488,6 +492,7 @@ export function TicketListPage() {
                         <Badge variant={priorityVariant(t.priority) as never}>
                           {t.priority}
                         </Badge>
+                        {isStaffOrAdmin && <ReopenedBadge reopenCount={t.reopen_count} statusName={status?.name} />}
                         {showSLAColumn && <SLAIndicator sla={t.sla} compact />}
                       </div>
                     </Link>

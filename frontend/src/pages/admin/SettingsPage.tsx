@@ -1685,12 +1685,12 @@ const STAFF_EMAIL_SWITCHES: { key: string; name: string; help: string }[] = [
   {
     key: 'staff_email_activity_override',
     name: "Activity on tickets I'm assigned to or follow",
-    help: 'A requester replies on a ticket assigned to a person, or a ticket a person follows is assigned or gets a reply.',
+    help: 'A requester replies on a ticket assigned to a person, or it is reopened; or a ticket a person follows is assigned, gets a reply or is reopened.',
   },
   {
     key: 'staff_email_group_override',
     name: "My groups' tickets",
-    help: 'A ticket is assigned to a group, and a requester replies on a group ticket nobody has taken yet. Goes to every member of the group.',
+    help: 'A ticket is assigned to a group, a requester replies on a group ticket nobody has taken yet, or a group ticket nobody has taken yet is reopened. Goes to every member of the group.',
   },
 ]
 

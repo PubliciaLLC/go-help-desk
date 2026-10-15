@@ -72,7 +72,12 @@ func TestRequesterFollowUp_AnAccountHolderOpensOneFromTheirClosedTicket(t *testi
 	require.NotEqual(t, orig.ID, got.ID)
 	require.Equal(t, orig.Subject, got.Subject)
 	require.Equal(t, orig.Description, got.Description)
-	require.Equal(t, &h.userID, got.ReporterUserID, "owned by them: a normal requester-created ticket")
+	// Read from the store: the response a requester gets no longer carries
+	// reporter_user_id (not on the requester allowed list, 2026-10-15).
+	stored, err := h.ticketSvc.GetByID(ctx, got.ID)
+	require.NoError(t, err)
+	require.Equal(t, &h.userID, stored.ReporterUserID, "owned by them: a normal requester-created ticket")
+	require.Nil(t, got.ReporterUserID, "and the response does not say so")
 	require.Equal(t, ticket.PriorityMedium, got.Priority,
 		"the critical priority staff gave the original is not theirs to carry over")
 	require.Equal(t, "New", statusOf(t, h, got.ID))

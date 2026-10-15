@@ -123,7 +123,8 @@ func (d *EmailDispatcher) eventToEmail(event notification.Event) (templateName, 
 	path := "/tickets/" + event.TicketID.String()
 	// Staff sign in; a guest credential has no place in their mail, whatever
 	// the event carries.
-	isStaffMail := event.Type == notification.EventStaffAssigned || event.Type == notification.EventStaffRequesterReplied
+	isStaffMail := event.Type == notification.EventStaffAssigned || event.Type == notification.EventStaffRequesterReplied ||
+		event.Type == notification.EventStaffReopened
 	if event.GuestToken != "" && !isStaffMail {
 		path = "/g#" + event.GuestToken
 	}
@@ -181,6 +182,14 @@ func (d *EmailDispatcher) eventToEmail(event notification.Event) (templateName, 
 			return "staff_requester_replied_follow.tmpl", "The requester replied on a ticket you follow: " + ref, event.Recipient, view, true
 		}
 		return "staff_requester_replied.tmpl", "The requester replied on " + ref, event.Recipient, view, true
+	case notification.EventStaffReopened:
+		if event.StaffReason == notification.SwitchGroup {
+			return "staff_reopened_group.tmpl", "A ticket assigned to your group was reopened: " + ref, event.Recipient, view, true
+		}
+		if event.StaffReason == notification.SwitchFollow {
+			return "staff_reopened_follow.tmpl", "A ticket you follow was reopened: " + ref, event.Recipient, view, true
+		}
+		return "staff_reopened.tmpl", "A ticket assigned to you was reopened: " + ref, event.Recipient, view, true
 	case notification.EventGuestLinkResent:
 		return "guest_link.tmpl", "Your link to " + ref, event.Recipient, view, true
 	}

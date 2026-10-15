@@ -13,7 +13,7 @@ type PriorityChangeReason string
 
 const (
 	PriorityChangeManual   PriorityChangeReason = "manual"   // REST PATCH (and any later caller acting for a person)
-	PriorityChangeReopened PriorityChangeReason = "reopened" // #464's first-reopen bump: restarts both clocks
+	PriorityChangeReopened PriorityChangeReason = "reopened" // #464: every reopen (the first also raises the priority); restarts both clocks
 )
 
 // SLAOutcome is what a priority change did to the ticket's SLA. It is recorded
@@ -24,7 +24,7 @@ const (
 	SLAOff       SLAOutcome = "sla_off"   // feature switched off: nothing re-matched
 	SLANone      SLAOutcome = "none"      // no record and no policy matches
 	SLAUnchanged SLAOutcome = "unchanged" // the new priority matches the record's own policy
-	SLAAttached  SLAOutcome = "attached"  // no record before; one starts (a staff change: from ticket creation; a reopen: from now)
+	SLAAttached  SLAOutcome = "attached"  // no current record; one starts (a staff change: resumes the last record's clock, or ticket creation if none; a reopen: from now)
 	SLARematched SLAOutcome = "rematched" // record superseded; the new one keeps its clock and its met targets
 	SLARestarted SLAOutcome = "restarted" // reopen only: record superseded, both clocks start over from now
 	SLARemoved   SLAOutcome = "removed"   // record superseded, no policy matches the new priority
@@ -74,7 +74,10 @@ type SLARecordStart struct {
 // already met stays met; only the policy changes. A ticket with no record
 // whose new priority matches a policy gets one whose clock started at the
 // ticket's creation (a nil StartedAt, read exactly as every legacy record is),
-// not at the change: it may be breached at once.
+// not at the change: it may be breached at once. changePriorityInTx then
+// replaces that start when the ticket had a record before, so the clock
+// resumes from the last one (Erik, 2026-10-14); this function only knows the
+// ticket has no current record.
 //
 // Resolved and Closed tickets never get here: ChangePriority refuses them.
 func planSLARematch(enabled bool, cur *SLARecordState, matched *uuid.UUID, t Ticket, now time.Time) (SLAOutcome, *SLARecordStart) {

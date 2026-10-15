@@ -9,8 +9,8 @@ import (
 
 // ChangePriorityInTx exposes changePriorityInTx to the external test package.
 // It is unexported because its only production callers are ChangePriority and
-// #464's reopen path, both inside this package; a test has to run it inside a
-// caller's transaction the way the reopen path does.
+// the reopen paths (finishReopenInTx), all inside this package; a test has to run
+// it inside a caller's transaction the way a reopen does.
 func (s *Service) ChangePriorityInTx(ctx context.Context, st Store, au audit.Store, t Ticket,
 	p Priority, reason PriorityChangeReason, actor Actor, now time.Time) (Ticket, error) {
 	return s.changePriorityInTx(ctx, st, au, t, p, reason, actor, now)

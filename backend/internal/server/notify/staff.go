@@ -135,6 +135,22 @@ func (f *StaffFanout) candidates(ctx context.Context, ev notification.Event) (no
 		// The group is mailed only while nobody holds the ticket.
 		cands = append(cands, f.followerCandidates(ctx, ev, ev.AssigneeUserID == nil)...)
 		return notification.EventStaffRequesterReplied, cands, true
+
+	case ev.Type == notification.EventTicketReopened:
+		// The reply rule (Erik, 2026-10-14): the assignee hears about a reopen,
+		// and the group only while nobody personally holds the ticket. The
+		// assignee's mail answers to the same switch as a requester's reply
+		// ("requester replied on my tickets"). Followers hear about it whoever
+		// holds the ticket; a group member who follows is mailed as a follower
+		// only when the group itself is not mailed.
+		cands := []candidate{}
+		if ev.AssigneeUserID != nil {
+			cands = append(cands, candidate{*ev.AssigneeUserID, notification.SwitchActivity})
+		} else {
+			cands = append(cands, f.groupMembers(ctx, ev, notification.SwitchGroup)...)
+		}
+		cands = append(cands, f.followerCandidates(ctx, ev, ev.AssigneeUserID == nil)...)
+		return notification.EventStaffReopened, cands, true
 	}
 	return "", nil, false
 }

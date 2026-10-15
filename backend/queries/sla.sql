@@ -253,6 +253,13 @@ ORDER BY COALESCE(r.started_at, t.created_at) DESC, r.superseded_at DESC NULLS F
 -- The ticket's current record, locked for the duration of a re-match.
 SELECT * FROM sla_records WHERE ticket_id = $1 AND superseded_at IS NULL FOR UPDATE;
 
+-- name: GetLatestSupersededSLARecord :one
+-- The record a ticket most recently stopped having. Read, in the same
+-- transaction that holds the ticket's row lock, when a ticket with no current
+-- record gets one back, so the new clock resumes where the last one ran.
+SELECT * FROM sla_records WHERE ticket_id = $1 AND superseded_at IS NOT NULL
+ORDER BY superseded_at DESC, id DESC LIMIT 1;
+
 -- name: SupersedeSLARecord :execrows
 -- The only write a re-match ever makes to an existing record. Every fact on
 -- the row stays as it was; the row simply stops being current.

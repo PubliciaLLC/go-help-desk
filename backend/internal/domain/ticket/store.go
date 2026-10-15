@@ -164,6 +164,11 @@ type Store interface {
 	// CurrentSLARecordForUpdate returns the ticket's current record, locked
 	// until the transaction ends. nil, nil means the ticket has none.
 	CurrentSLARecordForUpdate(ctx context.Context, ticketID uuid.UUID) (*SLARecordState, error)
+	// LatestSupersededSLARecord returns the record the ticket most recently
+	// stopped having (the newest superseded_at). nil, nil means it never had
+	// one. Read when a ticket with no current record gets one back, so the
+	// clock resumes where the last one ran instead of at the ticket's creation.
+	LatestSupersededSLARecord(ctx context.Context, ticketID uuid.UUID) (*SLARecordState, error)
 	// MatchSLAPolicy returns the policy that governs a ticket with this
 	// priority and category. nil, nil means none does.
 	MatchSLAPolicy(ctx context.Context, p Priority, categoryID uuid.UUID) (*uuid.UUID, error)

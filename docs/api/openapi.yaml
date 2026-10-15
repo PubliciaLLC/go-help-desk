@@ -1988,7 +1988,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [tracking_number, subject, description, status, created_at, updated_at, replies]
+                required: [tracking_number, subject, description, status, created_at, replies]
                 properties:
                   tracking_number: {type: string}
                   subject: {type: string}
@@ -1997,7 +1997,6 @@ paths:
                     type: string
                     description: The name of the ticket's current status. Empty if the status cannot be found.
                   created_at: {type: string, format: date-time}
-                  updated_at: {type: string, format: date-time}
                   replies:
                     type: array
                     items: {$ref: '#/components/schemas/AccountGuestReply'}
@@ -2111,9 +2110,10 @@ paths:
         browser tabs cannot undo each other. All three are on for a new account and for every account that
         existed before they were added.
         - email_notify_assigned: a ticket is assigned to me.
-        - email_notify_activity: a requester replied on a ticket assigned to me.
-        - email_notify_group: a ticket is assigned to a group I belong to, or a requester replied on a group
-          ticket that nobody personally holds.
+        - email_notify_activity: a requester replied on a ticket assigned to me, or a ticket assigned to me
+          was reopened; and, for a ticket I follow, it was assigned, replied to or reopened.
+        - email_notify_group: a ticket is assigned to a group I belong to, a requester replied on a group
+          ticket that nobody personally holds, or a group ticket that nobody personally holds was reopened.
         An administrator can force any of these on or off for everyone with the staff_email_*_override
         settings; that wins over what is saved here. The answer's email_notifications says which are forced. Nobody is emailed about their own action whatever the
         switches say. A requester account is never sent staff mail, and an API key or OAuth client has no inbox
@@ -3056,6 +3056,13 @@ paths:
           anyone else).
         - Leaving Closed needs closed_reopen_policy to allow the caller's role.
           Otherwise the answer is 409 ticket_closed.
+        - A status_id that moves a Resolved or Closed ticket to an open status
+          is a reopen: the ticket's reopen_count goes up by one, the first
+          reopen raises the priority one level (critical stays critical), the
+          SLA starts over, and the audit log gets reopened (beside
+          status_changed), priority_changed and sla_restarted. All of it is
+          written with the status change or not at all. A priority sent in the
+          same request is applied after the reopen and wins.
         - An assignee must be an account that exists, is not deleted or disabled,
           and is staff or an administrator (400 bad_request otherwise). A group
           must exist (400 bad_request).
@@ -3197,13 +3204,15 @@ paths:
       operationId: listTicketAudit
       summary: List a ticket's audit trail.
       description: |
-        The per-ticket activity feed: every audit entry recorded against
+        Staff and administrators only (second factor required). The per-ticket
+        activity feed: every audit entry recorded against
         the ticket, oldest first, capped at the newest 500 entries. Each entry has
         the action, the actor and the time.
+        A reporting user is refused with 403
+        forbidden on a ticket they can see (and 404 on one they cannot): requesters
+        see the ticket's current state and its conversation, not its history or
+        audit trail. Guests have no such route.
         Who sees what:
-        - A reporting user gets no actor for assigned and unassigned entries.
-          actor_id is null there, and the actor's name is not sent. Staff and
-          administrators are named.
         - before and after (the field-level diff, redacted) go only to
           administrators, and to staff when the staff change-history setting is
           on. Everyone else gets neither.
@@ -3233,7 +3242,7 @@ paths:
         - sessionCookie: []
         - apiKey: ['tickets:read']
         - oauthClient: ['tickets:read']
-      x-ghd-roles: [admin, staff, user]
+      x-ghd-roles: [admin, staff]
       x-ghd-mfa: true
       responses:
         '200':
@@ -3651,7 +3660,9 @@ paths:
       operationId: listStatusHistory
       summary: List a ticket's status changes.
       description: |
-        Every status transition on the ticket, oldest first. Status names and
+        Staff and administrators only (second factor required). Every status
+        transition on the ticket, oldest first. A reporting user is refused with
+        403 forbidden, as for the audit feed. Status names and
         colours are read from the statuses table when the request is served. The
         id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
@@ -3666,7 +3677,7 @@ paths:
         - sessionCookie: []
         - apiKey: ['tickets:read']
         - oauthClient: ['tickets:read']
-      x-ghd-roles: [admin, staff, user]
+      x-ghd-roles: [admin, staff]
       x-ghd-mfa: true
       responses:
         '200':
@@ -3906,7 +3917,9 @@ paths:
         caller gets 409 ticket_closed, with the reason in the message. The setting
         can allow administrators only, or staff and administrators. A reporting
         user is always refused with 403 forbidden. The ticket must be Closed,
-        otherwise the answer is 409 ticket_not_closed. The path id is a UUID or a tracking number.
+        otherwise the answer is 409 ticket_not_closed. A reopen increments
+        reopen_count, raises the priority one level on the first reopen, and
+        starts the SLA over, in the same transaction. The path id is a UUID or a tracking number.
         An OAuth client reopens as its service user, which needs the role this
         route allows.
         A ticket the caller may not see answers 404 not_found, the same answer as a
@@ -4017,7 +4030,8 @@ paths:
         the reply.
         A reporting user's reply to a Resolved ticket inside the reopen window
         reopens the ticket to the reopen target status (New when that status is
-        inactive). A reporting user cannot
+        inactive). That is a reopen: reopen_count goes up by one, the first reopen
+        raises the priority one level, and the SLA starts over. A reporting user cannot
         reply to a Closed ticket (409 ticket_closed), or to a Resolved ticket
         after the reopen window (409 reopen_window_closed). Staff and
         administrators can still post to a Closed ticket.
@@ -9309,7 +9323,7 @@ components:
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
         email_notify_assigned: {type: boolean, description: 'Email me when a ticket is assigned to me. Staff email switch, on by default.'}
-        email_notify_activity: {type: boolean, description: 'Email me when a requester replies on a ticket assigned to me. On by default.'}
+        email_notify_activity: {type: boolean, description: 'Email me when a requester replies on a ticket assigned to me, or it is reopened. On by default.'}
         email_notify_group: {type: boolean, description: "Email me about my groups' tickets. On by default."}
         email_notifications:
           type: object
@@ -9438,8 +9452,16 @@ components:
         The bare ticket, as POST
         /tickets, PATCH, reopen, resolve, close and follow-up answer it. Optional
         keys are absent when unset, never null.
+        A reporting user (any role other than staff or administrator) receives
+        only these keys: id, tracking_number, subject, description, status_id,
+        priority, category_id, type_id, item_id, created_at, resolved_at,
+        assignee_user_id and resolution_notes. Everything else here
+        (assignee_group_id, reporter_user_id, guest_email, guest_name,
+        guest_phone, closed_at, updated_at, pending_since, sla_paused_seconds,
+        reopen_count) is for staff and administrators only. The same list applies to every
+        response that carries a ticket, MCP included.
       type: object
-      required: [id, tracking_number, subject, description, category_id, priority, status_id, sla_paused_seconds, created_at, updated_at]
+      required: [id, tracking_number, subject, description, category_id, priority, status_id, created_at]
       properties:
         id:
           $ref: '#/components/schemas/Uuid'
@@ -9484,11 +9506,14 @@ components:
         pending_since:
           type: string
           format: date-time
-          description: When the ticket entered its current Pending interval. Present only while the ticket is Pending.
+          description: When the ticket entered its current Pending interval. Present only while the ticket is Pending, and only for staff and administrators; a requester never receives the key.
         sla_paused_seconds:
           type: integer
           format: int64
-          description: Total seconds the ticket has spent Pending, which SLA timing excludes.
+          description: Total seconds the ticket has spent Pending, which SLA timing excludes. Staff and administrators only (always present for them, 0 included); a requester never receives the key (Pending times are audit information, not state).
+        reopen_count:
+          type: integer
+          description: How many times the ticket has been moved from Resolved or Closed back to an open status (#464). Never reset. Staff and administrators only, and omitted when 0; a requester never receives the key (see Ticket). The Reopened badge shows while this is above 0 and the ticket is open. 0 for a ticket reopened before 1.3.0.
         created_at:
           type: string
           format: date-time
@@ -9536,8 +9561,7 @@ components:
         SLA and keep its clock, and never produce this. It is the record the "SLA
         restarted" badge on the ticket page links to. Absent when the clock never
         restarted, and when the replaced record had nothing met or breached (no
-        outcome to report). Not reachable on this build: the reopen that restarts
-        the clock arrives with #464, so no ticket has one yet. The outcome reads
+        outcome to report). Every reopen restarts the clock (#464). The outcome reads
         the record's stored stamps, so a breach the sweep has not stamped yet is
         not reported.
       type: object
@@ -9685,7 +9709,7 @@ components:
           $ref: '#/components/schemas/Uuid'
         action:
           type: string
-          description: The action name, for example created, assigned, unassigned, priority_changed, sla_restarted (written when a reopen restarts the SLA clocks; nothing writes it until #464) or closed.
+          description: The action name, for example created, assigned, unassigned, priority_changed, reopened, sla_restarted (written by a reopen that restarts the SLA clocks) or closed.
         actor_id:
           description: The actor's account, or null when there is none (or when a reporting user is shown an assignment).
           anyOf:
