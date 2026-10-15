@@ -9453,6 +9453,14 @@ components:
         The bare ticket, as POST
         /tickets, PATCH, reopen, resolve, close and follow-up answer it. Optional
         keys are absent when unset, never null.
+        A reporting user (any role other than staff or administrator) receives
+        only these keys: id, tracking_number, subject, description, status_id,
+        priority, category_id, type_id, item_id, created_at, updated_at,
+        resolved_at, closed_at and resolution_notes. Everything else here
+        (assignee_user_id, assignee_group_id, reporter_user_id, guest_email,
+        guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count)
+        is for staff and administrators only. The same list applies to every
+        response that carries a ticket, MCP included.
       type: object
       required: [id, tracking_number, subject, description, category_id, priority, status_id, created_at, updated_at]
       properties:
@@ -9506,7 +9514,7 @@ components:
           description: Total seconds the ticket has spent Pending, which SLA timing excludes. Staff and administrators only (always present for them, 0 included); a requester never receives the key (Pending times are audit information, not state).
         reopen_count:
           type: integer
-          description: How many times the ticket has been moved from Resolved or Closed back to an open status (#464). Never reset. Staff and administrators only, and omitted when 0; a requester never receives the key. The Reopened badge shows while this is above 0 and the ticket is open. 0 for a ticket reopened before 1.3.0.
+          description: How many times the ticket has been moved from Resolved or Closed back to an open status (#464). Never reset. Staff and administrators only, and omitted when 0; a requester never receives the key (see Ticket). The Reopened badge shows while this is above 0 and the ticket is open. 0 for a ticket reopened before 1.3.0.
         created_at:
           type: string
           format: date-time

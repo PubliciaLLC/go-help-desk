@@ -1,7 +1,6 @@
 package ticket
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -30,37 +29,6 @@ func (p Priority) Valid() bool {
 		return true
 	}
 	return false
-}
-
-// ForRole is the ticket as a viewer of that role may be shown it. A requester
-// (and any role this does not know) gets the current state without what only
-// staff see (Erik, 2026-10-15): reopen_count, and pending_since and
-// sla_paused_seconds, which are audit information about the ticket, not its
-// state. All three are omitted from the JSON when zero or nil, so zeroing them
-// takes the keys out. Every place that writes a ticket to a requester goes
-// through it: the HTTP views and MCP.
-func (t Ticket) ForRole(role user.Role) Ticket {
-	if role != user.RoleStaff && role != user.RoleAdmin {
-		t.ReopenCount = 0
-		t.PendingSince = nil
-		t.forRequester = true
-	}
-	return t
-}
-
-// MarshalJSON writes the ticket as the struct tags say, except that a ticket
-// made by ForRole for a requester has no sla_paused_seconds key at all. Types
-// that embed a Ticket (the HTTP ticketView, MCP's get_ticket) must write it
-// through this method too, and do.
-func (t Ticket) MarshalJSON() ([]byte, error) {
-	type plain Ticket
-	if !t.forRequester {
-		return json.Marshal(plain(t))
-	}
-	return json.Marshal(struct {
-		plain
-		SLAPausedSeconds *int64 `json:"sla_paused_seconds,omitempty"` // shadows the embedded field; nil is omitted
-	}{plain: plain(t)})
 }
 
 // Raised is the next level up, and the highest level raised is itself. Used by
@@ -192,7 +160,7 @@ type Ticket struct {
 	// when it is not Pending. SLAPausedSeconds is the sum of every Pending
 	// interval that has already closed. Both are maintained by
 	// applyStatusTimestamps and read by sla.Elapsed; nothing else writes them.
-	// Staff and administrators only on the wire (Ticket.ForRole).
+	// Staff and administrators only on the wire (see requester_view.go).
 	PendingSince     *time.Time `json:"pending_since,omitempty"`
 	SLAPausedSeconds int64      `json:"sla_paused_seconds"`
 
@@ -200,7 +168,7 @@ type Ticket struct {
 	// Closed back to an open status (#464). It is never reset: the badge reads
 	// "> 0 and open", and the priority bump applies only when it was 0.
 	// Omitted when 0, and zeroed for a requester's view: the count is staff
-	// information (Ticket.ForRole).
+	// information (see requester_view.go).
 	ReopenCount int `json:"reopen_count,omitempty"`
 
 	// LastReopenedAt and PausedSecondsAtLastReopen are the instant of the most
@@ -210,11 +178,6 @@ type Ticket struct {
 	// the wire.
 	LastReopenedAt            *time.Time `json:"-"`
 	PausedSecondsAtLastReopen int64      `json:"-"`
-
-	// forRequester is set by ForRole for a viewer who is not staff. It only
-	// changes how the ticket marshals (MarshalJSON): sla_paused_seconds is always
-	// present for staff, even when 0, so it cannot simply be omitempty.
-	forRequester bool
 }
 
 // Reply is a message on a ticket thread, from either a staff member or the

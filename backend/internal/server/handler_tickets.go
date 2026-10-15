@@ -467,7 +467,7 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	if fresh, err := s.tickets.GetByID(r.Context(), t.ID); err == nil {
 		t = fresh
 	}
-	JSON(w, http.StatusCreated, forViewer(t, authmw.GetActor(r)))
+	JSON(w, http.StatusCreated, viewerJSON(authmw.GetActor(r), t))
 }
 
 // GET /api/v1/tickets/{id}
@@ -519,7 +519,7 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 		}
 		views[0].SLA.Earlier = earlier
 	}
-	JSON(w, http.StatusOK, views[0])
+	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), views[0]))
 }
 
 // PATCH /api/v1/tickets/{id}
@@ -683,7 +683,7 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, forViewer(t, authmw.GetActor(r)))
+	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), t))
 }
 
 // POST /api/v1/tickets/{id}/replies
@@ -793,7 +793,7 @@ func (s *Server) handleResolveTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, forViewer(t, authmw.GetActor(r)))
+	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), t))
 }
 
 // POST /api/v1/tickets/{id}/reopen
@@ -824,7 +824,7 @@ func (s *Server) handleReopenTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, forViewer(t, authmw.GetActor(r)))
+	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), t))
 }
 
 // POST /api/v1/tickets/{id}/follow-up
@@ -871,7 +871,7 @@ func (s *Server) handleCreateFollowUp(w http.ResponseWriter, r *http.Request) {
 	if fresh, err := s.tickets.GetByID(r.Context(), t.ID); err == nil {
 		t = fresh
 	}
-	JSON(w, http.StatusCreated, forViewer(t, authmw.GetActor(r)))
+	JSON(w, http.StatusCreated, viewerJSON(authmw.GetActor(r), t))
 }
 
 // POST /api/v1/tickets/{id}/close
@@ -896,7 +896,7 @@ func (s *Server) handleCloseTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, forViewer(t, authmw.GetActor(r)))
+	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), t))
 }
 
 // POST /api/v1/tickets/{id}/links
@@ -946,7 +946,7 @@ func (s *Server) handleAddLink(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
-		JSON(w, http.StatusOK, forViewer(t, authmw.GetActor(r)))
+		JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), t))
 		return
 	}
 
@@ -1148,7 +1148,7 @@ func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
 			views[i].Names = resolved.forEntry(views[i].Before, views[i].After)
 		}
 	}
-	JSON(w, http.StatusOK, views)
+	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), views))
 }
 
 // GET /api/v1/tickets/{id}/links

@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -31,37 +30,22 @@ type ticketView struct {
 	CanReopen bool `json:"can_reopen"`
 }
 
-// forViewer removes what only staff are shown from a ticket before it is
-// written to a requester: reopen_count (Erik, 2026-10-14). The field is omitted
-// from the JSON when 0, so zeroing it takes the key out. A nil actor is treated
-// as a requester, so a missed check fails closed.
-func forViewer(t ticket.Ticket, actor *authmw.Actor) ticket.Ticket {
-	if actor == nil {
-		return t.ForRole("")
+// viewerJSON is the exit point for any response that carries tickets: staff and
+// administrators get it as built, everyone else gets only what the requester
+// allowed list permits (ticket.FilterForViewer). A nil actor is treated as a
+// requester, so a missed check fails closed.
+func viewerJSON(actor *authmw.Actor, v any) any {
+	role := user.Role("")
+	if actor != nil {
+		role = actor.Role
 	}
-	return t.ForRole(actor.Role)
-}
-
-// MarshalJSON writes the ticket through ticket.Ticket's own marshaller (which
-// leaves staff-only keys out for a requester) and adds the view's fields. Without
-// it the embedded method would be promoted and the view would lose sla and
-// can_reopen.
-func (v ticketView) MarshalJSON() ([]byte, error) {
-	base, err := json.Marshal(v.Ticket)
+	out, err := ticket.FilterForViewer(role, v)
 	if err != nil {
-		return nil, err
+		// Encoding a value this package just built does not fail; if it ever does,
+		// send nothing rather than the unfiltered ticket.
+		return map[string]string{}
 	}
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(base, &m); err != nil {
-		return nil, err
-	}
-	if m["sla"], err = json.Marshal(v.SLA); err != nil {
-		return nil, err
-	}
-	if m["can_reopen"], err = json.Marshal(v.CanReopen); err != nil {
-		return nil, err
-	}
-	return json.Marshal(m)
+	return out
 }
 
 // ticketViews attaches each ticket's live SLA status via one batch call
@@ -85,7 +69,7 @@ func (v ticketView) MarshalJSON() ([]byte, error) {
 func (s *Server) ticketViews(ctx context.Context, ts []ticket.Ticket, actor *authmw.Actor) ([]ticketView, error) {
 	views := make([]ticketView, len(ts))
 	for i, t := range ts {
-		views[i] = ticketView{Ticket: forViewer(t, actor)}
+		views[i] = ticketView{Ticket: t}
 	}
 	if actor == nil || actor.Role == user.RoleUser {
 		return views, nil
@@ -134,5 +118,5 @@ func (s *Server) writeTickets(w http.ResponseWriter, r *http.Request, tickets []
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, views)
+	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), views))
 }

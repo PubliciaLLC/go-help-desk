@@ -445,31 +445,6 @@ type ticketWithReplies struct {
 	Links   []ticket.TicketLink `json:"links,omitempty"`
 }
 
-// MarshalJSON writes the ticket through ticket.Ticket's own marshaller and adds
-// the replies and links; the embedded method would otherwise be promoted and
-// drop them.
-func (t ticketWithReplies) MarshalJSON() ([]byte, error) {
-	base, err := json.Marshal(t.Ticket)
-	if err != nil {
-		return nil, err
-	}
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(base, &m); err != nil {
-		return nil, err
-	}
-	if len(t.Replies) > 0 {
-		if m["replies"], err = json.Marshal(t.Replies); err != nil {
-			return nil, err
-		}
-	}
-	if len(t.Links) > 0 {
-		if m["links"], err = json.Marshal(t.Links); err != nil {
-			return nil, err
-		}
-	}
-	return json.Marshal(m)
-}
-
 func (s *Server) handleGetTicket(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	caller := actorFrom(ctx)
 	if caller == nil {
@@ -496,7 +471,7 @@ func (s *Server) handleGetTicket(ctx context.Context, req mcpgo.CallToolRequest)
 		return errResult(notFoundFor(ident))
 	}
 
-	out := ticketWithReplies{Ticket: t.ForRole(caller.Role)}
+	out := ticketWithReplies{Ticket: t}
 	includeReplies := true
 	if v, ok := args["include_replies"].(bool); ok {
 		includeReplies = v
@@ -518,7 +493,7 @@ func (s *Server) handleGetTicket(ctx context.Context, req mcpgo.CallToolRequest)
 		}
 		out.Links = links
 	}
-	return jsonResult(out)
+	return ticketResult(caller.Role, out)
 }
 
 func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -593,7 +568,7 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 	if err != nil {
 		return storeErr(ctx, "create ticket", err)
 	}
-	return jsonResult(t.ForRole(actor.Role))
+	return ticketResult(actor.Role, t)
 }
 
 func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -728,10 +703,7 @@ func (s *Server) handleListTickets(ctx context.Context, req mcpgo.CallToolReques
 	if err != nil {
 		return storeErr(ctx, "list tickets", err)
 	}
-	for i := range tickets {
-		tickets[i] = tickets[i].ForRole(caller.Role)
-	}
-	return jsonResult(tickets)
+	return ticketResult(caller.Role, tickets)
 }
 
 func (s *Server) handleAssignTicket(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -805,7 +777,7 @@ func (s *Server) handleAssignTicket(ctx context.Context, req mcpgo.CallToolReque
 	if err != nil {
 		return storeErr(ctx, "assign ticket", err)
 	}
-	return jsonResult(t.ForRole(caller.Role))
+	return ticketResult(caller.Role, t)
 }
 
 func (s *Server) handleUpdateTicketStatus(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -844,7 +816,7 @@ func (s *Server) handleUpdateTicketStatus(ctx context.Context, req mcpgo.CallToo
 	if err != nil {
 		return storeErr(ctx, "update ticket status", err)
 	}
-	return jsonResult(t.ForRole(caller.Role))
+	return ticketResult(caller.Role, t)
 }
 
 // handleCreateFollowUp is create_follow_up (#349). The rule — staff and admin
@@ -878,7 +850,7 @@ func (s *Server) handleCreateFollowUp(ctx context.Context, req mcpgo.CallToolReq
 	if err != nil {
 		return storeErr(ctx, "create follow-up", err)
 	}
-	return jsonResult(t.ForRole(caller.Role))
+	return ticketResult(caller.Role, t)
 }
 
 // catalogCategory is the Category/Type/Item tree as list_categories returns it.
@@ -942,6 +914,17 @@ func (s *Server) handleListStatuses(ctx context.Context, _ mcpgo.CallToolRequest
 func str(args map[string]any, key string) string {
 	v, _ := args[key].(string)
 	return v
+}
+
+// ticketResult is the exit point for every tool that returns tickets: the same
+// allowed list as the HTTP views (ticket.FilterForViewer), so a requester over
+// MCP is shown what a requester over HTTP is shown.
+func ticketResult(role user.Role, v any) (*mcpgo.CallToolResult, error) {
+	filtered, err := ticket.FilterForViewer(role, v)
+	if err != nil {
+		return errResult("could not encode the ticket")
+	}
+	return jsonResult(filtered)
 }
 
 func jsonResult(v any) (*mcpgo.CallToolResult, error) {
