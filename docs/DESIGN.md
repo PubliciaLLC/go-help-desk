@@ -2533,8 +2533,9 @@ on the existing webhook feature instead of as plugins.
   staff-only note), `ticket.resolved`, `ticket.closed`, `ticket.reopened` (every reopen: a requester's reply, a status change out of Resolved or Closed, and `POST /reopen`) and
   `ticket.linked`.
   *Changes under #506:* a hook will match a change when any of the change's
-  kinds is in its list, and fire once. The raw body does not change. See
-  Ticket Events: One Change, One Event.
+  kinds is in its list, and fire once. The raw body gains one key,
+  `TrackingNumber`, and nothing else. See Ticket Events: One Change, One
+  Event.
   **What the raw format carries** ([#448](https://github.com/PubliciaLLC/go-help-desk/issues/448)).
   The raw body is **ids only**: the event name (`Type`), `TicketID`, `ActorID`
   (null for a system event), `OccurredAt` and a `Payload` holding only the ids
@@ -2542,7 +2543,8 @@ on the existing webhook feature instead of as plugins.
   has them. Every other event has no payload. Whether an event is a reply or a
   note is its name, so there is no `internal` flag, and no link type is sent.
   No address, subject, tracking number, priority, status name or reply text is
-  sent, and none is stored with it. The keys are an allow list, so a key added
+  sent (*changes under #506:* the tracking number is added back; see Ticket
+  Events: One Change, One Event), and none is stored with it. The keys are an allow list, so a key added
   to an event later stays off the wire until someone decides a receiver should
   have it. A receiver that needs the ticket reads it through the REST API using
   `TicketID`. **This changed from earlier 1.3 betas**, which also sent
@@ -3028,8 +3030,9 @@ holds it:
 }
 ```
 
-The internal fields stay as they are today. They are never sent to a
-webhook: recipient, guest-link flag, tracking number, subject and status name.
+The internal fields stay as they are today. Recipient, guest-link flag,
+subject and status name are never sent to a raw webhook. The tracking number
+is sent to a raw webhook (ruling 7).
 
 #### 2. How "one change" is bounded: one transaction
 
@@ -3155,20 +3158,45 @@ to. For `*` it is simply the first kind. This is worked out again at each
 attempt, from the subscription at that moment, in the same way as the filter.
 So a hook subscribed only to `ticket.status_changed` gets
 `"Type": "ticket.status_changed"` for the reopen example above, exactly as
-today. Its body is exactly today's body. The history's `event_type` column
-stores the `Type` that was sent.
+today. Its body is today's body plus `TrackingNumber`. The history's
+`event_type` column stores the `Type` that was sent.
 
-**Raw body: unchanged (Erik, 2026-10-15).** `Kinds`, `Changes` and `Ticket`
-live on the event inside the server, so that the matching and the filter can
-use them. They are not sent. The raw body is still `Type`, `TicketID`,
-`ActorID`, `OccurredAt` and the allow-listed `Payload` ids (`new_status_id`,
-`target_id`). No priority or category id is sent, including for the two new
-names: a `ticket.priority_changed` or `ticket.classified` delivery has no
-`Payload`, and the receiver reads the ticket through the API by `TicketID`.
-There is no version flag. (Erik's ruling describes the body as "ids and
-tracking number only, as today". Today's raw body has no tracking number:
-#448 removed it. This design keeps the body exactly as it is, without a
-tracking number, unless Erik says otherwise.)
+**Raw body: today's body plus the tracking number (Erik, 2026-10-15).**
+`Kinds`, `Changes` and `Ticket` live on the event inside the server, so that
+the matching and the filter can use them. They are not sent. The raw body is
+`Type`, `TicketID`, `ActorID`, `OccurredAt`, the allow-listed `Payload` ids
+(`new_status_id`, `target_id`) and one added key, **`TrackingNumber`**: the
+ticket's number as committed, for example `GHD-2026-000123`. No priority or
+category id is sent, including for the two new names: a
+`ticket.priority_changed` or `ticket.classified` delivery has no `Payload`,
+and the receiver reads the ticket through the API by `TicketID` (which also
+accepts the tracking number). There is no version flag. Adding a key does
+not break a JSON receiver.
+
+*Why the tracking number goes back in, given #448 took it out.* #448's
+decision (Erik, 2026-10-13, on PR #469) was "the raw webhook format becomes
+**truly ids-only** … Keep `TrackingNumber` out, as it is today". The reason
+recorded there is about content and addresses: `guest_email`,
+`reporter_email`, `ReplyBody` and `Subject` were going to any hook, including
+one registered with a credential that cannot read tickets. Nothing in #448
+calls the tracking number a secret. It is not a credential: guest access is a
+token, and a guest who asks for a fresh link with a tracking number and an
+address can only cause mail to that address (Guest Submission). It is
+sequential (`PREFIX-YEAR-SEQUENCE`), so it says nothing that the ticket id and
+the order of events do not already say. A holder of a `webhooks:write`
+credential without `tickets:read` gains the pairing of ticket id and tracking
+number, and nothing else.
+
+*What it is for.* The chat and ITSM formats already put the tracking number
+in their messages, and JIRA's body sends it as `tracking_number`. Those
+formats do not change. The raw body gains it so that a receiver can show or
+match the number people quote, without an API call for every delivery.
+
+*Where it comes from.* The event's internal `TrackingNumber` field. That
+field is filled from the committed ticket row, as it is today for email. The
+copy kept for Redeliver keeps it too, as an identifier, alongside the ids.
+A history entry or a queued row written before the upgrade has none. For
+those, the key is left out of the body rather than sent empty.
 
 **Chat and ITSM formats.** The headline comes from the hook's `Type`, as
 today. Below the headline, the message adds one line naming the other kinds
@@ -3227,14 +3255,17 @@ because she no longer holds the ticket.
 - **A hook subscribed to `ticket.status_changed`, for a change that also
   reopened the ticket**, receives one delivery with
   `Type: ticket.status_changed` and the same `Payload.new_status_id` as
-  today. The body is byte-for-byte today's shape.
+  today. The body is today's shape plus `TrackingNumber`.
 - **What does change for receivers** (for the upgrade notes):
   - A `*` hook, or a hook with several names, gets one delivery where it got
     two or three. A receiver that switches on `Type` and handles only, say,
     `ticket.replied` will not see the reply in a reply that reopened a
     ticket, because `Type` is `ticket.reopened`, and the body does not list
-    the other kinds. **Still open:** see open question A. Hooks subscribed to
-    a single name are not affected.
+    the other kinds. **Accepted (Erik, 2026-10-15, ruling 6).** The upgrade
+    notes tell such receivers to read the ticket through the API when they
+    need more than the label. Hooks subscribed to a single name are not
+    affected.
+  - Every raw body gains `TrackingNumber` (ruling 7).
   - Hooks fire where they did not before, because the status kinds are now
     consistent: `ticket.status_changed` on the Resolve button and on a close,
     `ticket.resolved` and `ticket.closed` on a `PATCH`, and
@@ -3308,8 +3339,10 @@ the outbox and transaction tests use real Postgres.
   returns, before any worker runs.
 - **Webhooks:** fires at most once when several kinds match. `Type` is the
   first subscribed kind. A retry recomputes `Type` and the match after the
-  subscription changes. The raw body is byte-for-byte today's shape for
-  every kind, and the two new names send no `Payload`. The existing filter,
+  subscription changes. The raw body is today's shape plus
+  `TrackingNumber` for every kind, and nothing else. The two new names send
+  no `Payload`. A row or history entry from before the upgrade sends no
+  `TrackingNumber` key. The existing filter,
   Redeliver and 409 tests pass unchanged.
 - **Email:** template precedence for each combination, and one requester mail
   per change. Every existing staff-mail test (`staff_test.go`,
@@ -3337,7 +3370,7 @@ tests. It splits cleanly into three commits that can be reviewed in order:
 3. **Consumers** (`notify/webhook.go`, `webhook_body.go`, `format*.go`,
    `email.go`, `staff.go` moved to the worker, `outbox.go`;
    `cmd/server/main.go` wiring), plus DESIGN.md, `docs/api/openapi.yaml`
-   (the `WebhookEvent` enum gains two names; the body schema is unchanged),
+   (the `WebhookEvent` enum gains two names; the body gains `TrackingNumber`),
    and the upgrade notes.
 
 The risk is in the staff-mail move and in the `PATCH` consolidation. Both
@@ -3360,25 +3393,20 @@ are covered by existing tests that must keep passing.
    subscriptions and filters can match on them. The body sent does not gain
    them. There is no version flag.
 5. **Auto-assignment moves into the create transaction.** Yes.
+6. **A hook subscribed to several names, or to `*`, gets one delivery per
+   change, labelled with one name: accepted** (option b of three). A
+   requester's reply that also reopened the ticket arrives as
+   `ticket.reopened` only. The body does not list the other kinds. The
+   upgrade notes tell such receivers to read the ticket through the API
+   when they need more than the label. Rejected: (a) a list of names in the
+   body; (c) one delivery per subscribed name, which brings back the
+   duplicates.
+7. **The raw body gets the tracking number back**, as `TrackingNumber`, an
+   added key (section 5). It was checked against #448 first; see "Why the
+   tracking number goes back in".
 
 **Still open:**
 
-- **A. A hook subscribed to several names, or to `*`, gets one delivery per
-  change, labelled with one name.** A requester's reply that also reopened
-  the ticket arrives as `ticket.reopened` only, and the body does not say it
-  was also a reply. Options:
-  - (a) Add only a list of event names to the body, for example
-    `"Kinds": ["ticket.reopened", "ticket.status_changed", "ticket.replied"]`.
-    Names, no values. This adds one key to the body.
-  - (b) Accept it. A receiver that needs the full picture reads the ticket
-    through the API. Document it in the upgrade notes.
-  - (c) Send one delivery per subscribed name for the same change. This keeps
-    today's behaviour for such hooks, but it is the opposite of "fire at most
-    once".
-
-  *Recommended: (a).* It is the smallest change that loses nothing, and it
-  carries no content. (c) brings back the duplicates this issue exists to
-  remove.
 - **B. Is it right to send one event per ticket when one change touches two
   tickets?** (A follow-up gives one event for the new ticket and one `linked`
   event for the original.) *Recommended: yes*, because "on the work order"
