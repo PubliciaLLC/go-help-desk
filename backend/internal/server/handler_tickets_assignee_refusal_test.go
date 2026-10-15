@@ -55,7 +55,7 @@ func TestUpdateTicket_RefusedAssignmentChangesNothing_HTTP(t *testing.T) {
 		for rn, rest := range alongside {
 			t.Run(an+" with "+rn, func(t *testing.T) {
 				tk := mk()
-				before, err := h.ticketSvc.ListAuditEntries(ctx, tk.ID)
+				before, err := h.ticketSvc.ListAuditFeed(ctx, tk.ID, true)
 				require.NoError(t, err)
 
 				body := map[string]any{}
@@ -77,7 +77,7 @@ func TestUpdateTicket_RefusedAssignmentChangesNothing_HTTP(t *testing.T) {
 				require.Equal(t, tk.AssigneeGroupID, got.AssigneeGroupID, "group")
 				require.Equal(t, tk.CategoryID, got.CategoryID, "category")
 				require.Equal(t, ticket.PriorityMedium, got.Priority, "priority")
-				after, err := h.ticketSvc.ListAuditEntries(ctx, tk.ID)
+				after, err := h.ticketSvc.ListAuditFeed(ctx, tk.ID, true)
 				require.NoError(t, err)
 				require.Len(t, after, len(before), "a refused request writes no audit row")
 			})

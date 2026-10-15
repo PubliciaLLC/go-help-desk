@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { Ticket, Reply, TicketLink, LinkType, Tag, Attachment, Category, TicketType, TicketItem, StatusHistoryEntry, TicketAuditEntry, Assignment, TicketFieldValue, CannedResponse } from './types'
+import type { Ticket, Reply, TicketLink, LinkType, Tag, Attachment, Category, TicketType, TicketItem, StatusHistoryEntry, TicketAuditEntry, TicketFollower, Assignment, TicketFieldValue, CannedResponse } from './types'
 
 export interface CreateTicketInput {
   subject: string
@@ -91,6 +91,20 @@ export async function listReplies(ticketId: string): Promise<Reply[]> {
 export async function listStatusHistory(ticketId: string): Promise<StatusHistoryEntry[]> {
   const res = await api.get<StatusHistoryEntry[]>(`/tickets/${ticketId}/history`)
   return res.data
+}
+
+export async function listTicketFollowers(ticketId: string): Promise<TicketFollower[]> {
+  const res = await api.get<TicketFollower[]>(`/tickets/${ticketId}/followers`)
+  return res.data ?? []
+}
+
+// Both are idempotent and answer 204 (#441).
+export async function followTicket(ticketId: string): Promise<void> {
+  await api.put(`/tickets/${ticketId}/follow`)
+}
+
+export async function unfollowTicket(ticketId: string): Promise<void> {
+  await api.delete(`/tickets/${ticketId}/follow`)
 }
 
 export async function listTicketAudit(ticketId: string): Promise<TicketAuditEntry[]> {

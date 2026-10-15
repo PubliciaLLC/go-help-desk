@@ -26,8 +26,8 @@ const SWITCHES: { key: Key; state: 'assigned' | 'activity' | 'group'; label: str
   {
     key: 'email_notify_activity',
     state: 'activity',
-    label: 'Activity on my tickets',
-    help: 'Email me when a requester replies on a ticket that is assigned to me.',
+    label: "Activity on tickets I'm assigned to or follow",
+    help: 'Email me when a requester replies on a ticket that is assigned to me, and when a ticket I follow is assigned or its requester replies.',
   },
   {
     key: 'email_notify_group',

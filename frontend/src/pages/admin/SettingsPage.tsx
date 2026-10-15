@@ -569,6 +569,16 @@ function GeneralPanel({
           />
         </SettingRow>
         <SettingRow
+          label="Staff can view follow history"
+          description="When on, staff also see the entries recording who started and stopped following a ticket, on its Activity feed and in the admin-wide audit view. Admins always see them; reporters never do. Staff always see the current list of followers on a ticket, whatever this is set to. Off by default."
+        >
+          <Toggle
+            label="Staff can view follow history"
+            checked={bool('staff_can_view_follow_audit')}
+            onChange={(v) => setBool('staff_can_view_follow_audit', v)}
+          />
+        </SettingRow>
+        <SettingRow
           label="Retention"
           description="How many days an audit entry is kept before it is permanently deleted. Zero keeps everything forever, which is the default and what every release before 1.3.0 did. Applies to every entry system-wide — ticket changes, account changes, everything the audit log records."
         >
@@ -1674,8 +1684,8 @@ const STAFF_EMAIL_SWITCHES: { key: string; name: string; help: string }[] = [
   },
   {
     key: 'staff_email_activity_override',
-    name: 'Activity on my tickets',
-    help: 'A requester replies on a ticket assigned to a person.',
+    name: "Activity on tickets I'm assigned to or follow",
+    help: 'A requester replies on a ticket assigned to a person, or a ticket a person follows is assigned or gets a reply.',
   },
   {
     key: 'staff_email_group_override',

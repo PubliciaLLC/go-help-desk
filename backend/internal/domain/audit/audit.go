@@ -27,6 +27,10 @@ type Store interface {
 	Create(ctx context.Context, e Entry) error
 	ListByEntity(ctx context.Context, entityType string, entityID uuid.UUID, limit, offset int) ([]Entry, error)
 
+	// ListByEntityActions is ListByEntity narrowed by action, newest first. The
+	// narrowing is in the query, so entries left out never count toward limit.
+	ListByEntityActions(ctx context.Context, entityType string, entityID uuid.UUID, f ActionFilter, limit, offset int) ([]Entry, error)
+
 	// Search answers the admin-wide audit view (#129): every field on Filter
 	// is optional and narrows the result, newest first, ties broken by id.
 	// Returns the matching page and what a pager needs, see Page. The count
@@ -46,6 +50,12 @@ type Store interface {
 	// has set a retention window — the default keeps everything. There is
 	// no soft-delete or archive table: an expired entry is gone.
 	DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
+// ActionFilter narrows a ListByEntityActions call. Only, when non-empty, keeps
+// just those actions; Exclude drops these. The zero value narrows nothing.
+type ActionFilter struct {
+	Only, Exclude []string
 }
 
 // TotalCap is the most Search will count. A table nobody prunes (retention is
@@ -87,6 +97,13 @@ type Filter struct {
 	From       *time.Time // inclusive
 	To         *time.Time // inclusive
 	Q          string     // case-insensitive substring against entity_type and action
+
+	// ExcludeActions leaves out every entry whose action is listed, in the
+	// page and in the count alike. It is how a view withholds a kind of entry
+	// from a viewer (follow and unfollow, from staff, #441) without filtering
+	// the page afterwards, which would leave the count and the offset
+	// describing a different sequence from the one the caller reads.
+	ExcludeActions []string
 
 	// ScopedTo, when set, restricts the result to ticket entries on tickets
 	// that staff member may see under the DESIGN.md staff scope: tickets they

@@ -33,6 +33,10 @@ func (f *fakeAuditStore) ListByEntity(context.Context, string, uuid.UUID, int, i
 	return nil, nil
 }
 
+func (f *fakeAuditStore) ListByEntityActions(context.Context, string, uuid.UUID, audit.ActionFilter, int, int) ([]audit.Entry, error) {
+	return nil, nil
+}
+
 func (f *fakeAuditStore) Search(context.Context, audit.Filter, int, int) (audit.Page, error) {
 	return audit.Page{}, nil
 }

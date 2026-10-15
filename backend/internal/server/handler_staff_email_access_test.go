@@ -75,6 +75,9 @@ func TestStillEntitled_AFollowerCanStillSeeTheTicket(t *testing.T) {
 	staff, err := h.userSvc.GetByID(ctx, h.staffID)
 	require.NoError(t, err)
 	tk := newStaffTicket(t, h) // in the harness category, held by nobody
+	// A follower is entitled only while the follow row exists (#441).
+	_, err = h.ticketStore.AddFollower(ctx, tk.ID, h.staffID)
+	require.NoError(t, err)
 
 	follows := func() bool {
 		ok, err := h.srv.StillEntitled(ctx, staff, tk.ID, notification.SwitchFollow)

@@ -103,6 +103,16 @@ func (s *Server) ticketRouter() *chi.Mux {
 			r.Delete("/tags/{tagId}", s.handleRemoveTicketTag)
 		})
 
+		// Followers (#441). Staff and admin only. Following is a person's own
+		// choice, so a machine credential may read the list but not change
+		// whether somebody follows.
+		r.Group(func(r chi.Router) {
+			r.Use(authmw.RequireRole(user.RoleAdmin, user.RoleStaff))
+			r.Get("/followers", s.handleListFollowers)
+			r.With(authmw.DenyMachineCredentials).Put("/follow", s.handleFollowTicket)
+			r.With(authmw.DenyMachineCredentials).Delete("/follow", s.handleUnfollowTicket)
+		})
+
 		// Canned responses are for staff/admin composing replies, not the
 		// reporting user.
 		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff)).

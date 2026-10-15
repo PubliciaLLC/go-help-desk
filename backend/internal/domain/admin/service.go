@@ -235,6 +235,14 @@ func (s *Service) StaffCanViewTicketChangeHistory(ctx context.Context) bool {
 	return v
 }
 
+// StaffCanViewFollowAudit returns whether staff may see the entries recording
+// who followed and unfollowed a ticket (#441). Off by default; administrators
+// always see them and requesters never do.
+func (s *Service) StaffCanViewFollowAudit(ctx context.Context) bool {
+	v, _ := s.GetBool(ctx, KeyStaffCanViewFollowAudit)
+	return v
+}
+
 // AuditRetentionDays returns the audit-log retention window in days, or
 // AuditRetentionForever when entries are kept indefinitely.
 //

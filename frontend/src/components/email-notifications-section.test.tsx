@@ -28,7 +28,7 @@ function staff(over: Partial<User> = {}): User {
 }
 
 const ASSIGNED = { name: /tickets assigned to me/i }
-const ACTIVITY = { name: /activity on my tickets/i }
+const ACTIVITY = { name: /activity on tickets I'm assigned to or follow/i }
 const GROUP = { name: /my groups' tickets/i }
 
 beforeEach(() => {
