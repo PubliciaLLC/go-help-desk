@@ -219,3 +219,144 @@ describe('Resolve all children: the loop', () => {
     expect(resolve).toHaveBeenCalledTimes(1)
   })
 })
+
+// Like the server's GET /tickets/{id}/links: the links that involve the ticket.
+function serveByTicket(links: TicketLink[], tickets: Ticket[], opts: { noLinks?: string[] } = {}) {
+  vi.spyOn(ticketsApi, 'listLinks').mockImplementation(async (id: string) => {
+    if (opts.noLinks?.includes(id)) throw refusal(403, 'forbidden', 'not yours')
+    return links.filter((l) => l.source_id === id || l.target_id === id)
+  })
+  vi.spyOn(ticketsApi, 'getTicket').mockImplementation(async (id: string) => {
+    const t = tickets.find((x) => x.id === id)
+    if (!t) throw refusal(404, 'not_found', 'ticket not found')
+    return t
+  })
+}
+
+describe('Resolve all children: the button counts only the open children', () => {
+  it('counts the children that are not Resolved or Closed, and says how many are skipped', async () => {
+    serveByTicket(
+      [link(PARENT, 'c1'), link(PARENT, 'c2'), link(PARENT, 'c3'), link(PARENT, 'c4')],
+      [ticket('c1', 'st-new'), ticket('c2', 'st-resolved'), ticket('c3', 'st-closed'), ticket('c4', 'st-new')],
+    )
+    renderWithQuery(<LinkedTicketsPanel ticketId={PARENT} />)
+
+    await openForm()
+
+    // 4 children, 2 of them already done: "Resolve 4 children" would be wrong.
+    expect(await screen.findByRole('button', { name: 'Resolve 2 children' })).toBeDefined()
+    expect(screen.getByText(/2 open children will be resolved \(2 already resolved or closed are skipped\)/)).toBeDefined()
+  })
+
+  it('uses the singular for one open child', async () => {
+    serveByTicket([link(PARENT, 'c1'), link(PARENT, 'c2')], [ticket('c1', 'st-new'), ticket('c2', 'st-closed')])
+    renderWithQuery(<LinkedTicketsPanel ticketId={PARENT} />)
+
+    await openForm()
+
+    expect(await screen.findByRole('button', { name: 'Resolve 1 child' })).toBeDefined()
+  })
+
+  it('is disabled, with the reason, when every child is already Resolved or Closed', async () => {
+    serveByTicket([link(PARENT, 'c1'), link(PARENT, 'c2')], [ticket('c1', 'st-resolved'), ticket('c2', 'st-closed')])
+    const resolve = vi.spyOn(ticketsApi, 'resolveTicket').mockResolvedValue(ticket('c1', 'st-resolved'))
+    renderWithQuery(<LinkedTicketsPanel ticketId={PARENT} />)
+
+    await openForm('notes that would be sent')
+
+    expect(await screen.findByText('All children are already resolved.')).toBeDefined()
+    await waitFor(() => {
+      expect((screen.getByRole('button', { name: 'Resolve 0 children' }) as HTMLButtonElement).disabled).toBe(true)
+    })
+    expect(resolve).not.toHaveBeenCalled()
+  })
+})
+
+describe('Resolve all children: children that have children of their own', () => {
+  const grandchildLinks = [link(PARENT, 'c1'), link(PARENT, 'c2'), link(PARENT, 'c3'), link('c1', 'g1'), link('c3', 'g2')]
+  const tickets = () => ['c1', 'c2', 'c3', 'g1', 'g2'].map((id) => ticket(id, 'st-new'))
+  const linkReads = () => vi.mocked(ticketsApi.listLinks).mock.calls.map((c) => c[0]).filter((id) => id !== PARENT)
+
+  it('says how many have children, and which, once the form is open; nothing below them is resolved', async () => {
+    serveByTicket(grandchildLinks, tickets())
+    const resolve = vi.spyOn(ticketsApi, 'resolveTicket').mockResolvedValue(ticket('c1', 'st-resolved'))
+    renderWithQuery(<LinkedTicketsPanel ticketId={PARENT} />)
+
+    await openForm('done')
+
+    const notice = await screen.findByText(/2 of these children have children of their own/)
+    expect(notice.textContent).toContain('GHD-c1')
+    expect(notice.textContent).toContain('GHD-c3')
+    expect(notice.textContent).not.toContain('GHD-c2')
+    expect(notice.textContent).toMatch(/resolve those from their own ticket/)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Resolve 3 children' }))
+    await waitFor(() => expect(resolve).toHaveBeenCalledTimes(3))
+    expect(resolve.mock.calls.map((c) => c[0]).sort()).toEqual(['c1', 'c2', 'c3'])
+  })
+
+  it('is not shown when none of the children has children', async () => {
+    serveByTicket([link(PARENT, 'c1'), link(PARENT, 'c2')], [ticket('c1', 'st-new'), ticket('c2', 'st-new')])
+    renderWithQuery(<LinkedTicketsPanel ticketId={PARENT} />)
+
+    await openForm()
+    await screen.findByRole('button', { name: 'Resolve 2 children' })
+    await waitFor(() => expect(linkReads().sort()).toEqual(['c1', 'c2']))
+
+    expect(screen.queryByText(/children of their own/)).toBeNull()
+  })
+
+  it('does not count a child that is only a parent through a related_to or a link pointing up', async () => {
+    serveByTicket(
+      [link(PARENT, 'c1'), link('c1', 'x', 'related_to'), link('y', 'c1')],
+      [ticket('c1', 'st-new'), ticket('x', 'st-new'), ticket('y', 'st-new')],
+    )
+    renderWithQuery(<LinkedTicketsPanel ticketId={PARENT} />)
+
+    await openForm()
+    await waitFor(() => expect(linkReads()).toEqual(['c1']))
+
+    expect(screen.queryByText(/children of their own/)).toBeNull()
+  })
+
+  it('reads nothing about the children\'s own links until the form is opened, and one read per child at most', async () => {
+    serveByTicket(grandchildLinks, tickets())
+    renderWithQuery(<LinkedTicketsPanel ticketId={PARENT} />)
+
+    await screen.findByRole('button', { name: 'Resolve all children' })
+    expect(linkReads()).toEqual([])
+
+    await userEvent.click(screen.getByRole('button', { name: 'Resolve all children' }))
+    await screen.findByText(/2 of these children have children of their own/)
+    expect(linkReads().sort()).toEqual(['c1', 'c2', 'c3'])
+  })
+
+  it('names the tickets only up to five, otherwise just the count', async () => {
+    const ids = ['c1', 'c2', 'c3', 'c4', 'c5', 'c6']
+    serveByTicket(
+      [...ids.map((id) => link(PARENT, id)), ...ids.map((id) => link(id, `g-${id}`))],
+      ids.map((id) => ticket(id, 'st-new')),
+    )
+    renderWithQuery(<LinkedTicketsPanel ticketId={PARENT} />)
+
+    await openForm()
+
+    const notice = await screen.findByText(/6 of these children have children of their own/)
+    expect(notice.textContent).not.toContain('GHD-c1')
+  })
+
+  it('does not break when a child\'s links cannot be read: no notice for that child, the rest works', async () => {
+    serveByTicket(grandchildLinks, tickets(), { noLinks: ['c1'] })
+    const resolve = vi.spyOn(ticketsApi, 'resolveTicket').mockResolvedValue(ticket('c1', 'st-resolved'))
+    renderWithQuery(<LinkedTicketsPanel ticketId={PARENT} />)
+
+    await openForm('done')
+
+    // c1 is unknown, so it is not named; c3 still is.
+    const notice = await screen.findByText(/1 of these children has children of their own/)
+    expect(notice.textContent).toContain('GHD-c3')
+    expect(notice.textContent).not.toContain('GHD-c1')
+    await userEvent.click(screen.getByRole('button', { name: 'Resolve 3 children' }))
+    await waitFor(() => expect(resolve).toHaveBeenCalledTimes(3))
+  })
+})

@@ -161,6 +161,40 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
     .filter(l => l.link_type === 'parent_child' && l.source_id === ticketId)
     .map(l => l.target_id)
 
+  // How many of them are still open, for the confirm button: "Resolve 3
+  // children" when two would be skipped would be a lie. Read from what the
+  // panel has already loaded (each child's ticket and the status list); a child
+  // that has not loaded or cannot be read counts as open, because the loop will
+  // try it and report the refusal.
+  const { data: statuses = [] } = useQuery({ queryKey: ['statuses'], queryFn: listStatuses })
+  const doneStatusIds = new Set(statuses.filter(s => s.name === 'Resolved' || s.name === 'Closed').map(s => s.id))
+  const openChildCount = childIds.filter(id => {
+    const other = otherTicketMap.get(id)
+    return !(other && 'ticket' in other && doneStatusIds.has(other.ticket.status_id))
+  }).length
+
+  // Which of the children have children of their own. Only direct children are
+  // resolved; this is read, and only once the form is open, so the notice can
+  // say what is being left alone. One read of GET /tickets/{id}/links per
+  // direct child (the same query the child's own page uses, so it is shared
+  // with the cache), nothing below the children. A child whose links cannot be
+  // read gets no notice: the page cannot say what it does not know.
+  const childLinkQueries = useQueries({
+    queries: childIds.map(id => ({
+      queryKey: ['links', id],
+      queryFn: () => listLinks(id),
+      enabled: showResolveChildren,
+      retry: false,
+    })),
+  })
+  const parentChildIds = childIds.filter((id, i) =>
+    childLinkQueries[i]?.data?.some(l => l.link_type === 'parent_child' && l.source_id === id),
+  )
+  const parentChildLabels = parentChildIds.map(id => {
+    const other = otherTicketMap.get(id)
+    return other && 'ticket' in other ? other.ticket.tracking_number : id
+  })
+
   // One child at a time through the ordinary Resolve, so the closed-ticket
   // rules, the per-ticket audit, notifications and SLA all apply; there is no
   // bulk endpoint. Each child is read fresh first: a child that is already
@@ -352,16 +386,33 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
               placeholder="Notes recorded on every child that is not already resolved"
               className="w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-xs text-gray-800 placeholder-gray-400 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
             />
+            {openChildCount === 0 ? (
+              <p className="text-xs text-gray-500">All children are already resolved.</p>
+            ) : (
+              <p className="text-xs text-gray-500">
+                {`${openChildCount} open ${openChildCount === 1 ? 'child' : 'children'} will be resolved`}
+                {childIds.length > openChildCount &&
+                  ` (${childIds.length - openChildCount} already resolved or closed ${childIds.length - openChildCount === 1 ? 'is' : 'are'} skipped)`}
+                .
+              </p>
+            )}
+            {parentChildIds.length > 0 && (
+              <p className="text-xs text-amber-700">
+                {`${parentChildIds.length} of these children ${parentChildIds.length === 1 ? 'has' : 'have'} children of their own`}
+                {parentChildIds.length <= 5 && ` (${parentChildLabels.join(', ')})`}
+                {'; resolve those from their own ticket.'}
+              </p>
+            )}
             <div className="flex gap-2">
               <Button
                 size="sm"
                 className="h-7 text-xs"
                 onClick={() => resolveChildrenMutation.mutate(childNotes.trim())}
-                disabled={!childNotes.trim() || resolveChildrenMutation.isPending}
+                disabled={!childNotes.trim() || openChildCount === 0 || resolveChildrenMutation.isPending}
               >
                 {resolveChildrenMutation.isPending
                   ? 'Resolving…'
-                  : `Resolve ${childIds.length} ${childIds.length === 1 ? 'child' : 'children'}`}
+                  : `Resolve ${openChildCount} ${openChildCount === 1 ? 'child' : 'children'}`}
               </Button>
               <Button
                 size="sm"
