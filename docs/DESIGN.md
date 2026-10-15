@@ -557,6 +557,20 @@ failure, so a retry is one click and only touches the children still open. A
 ticket that is only a child, or has only related, caused-by or duplicate-of
 links, does not show the button.
 
+**Direct children only** (decided on #505, 2026-10-15). The button resolves the
+parent's *direct* children and nothing below them. Its count is the number of
+direct children that are **not** Resolved or Closed: with four children of which
+two are done it reads "Resolve 2 children" and says the other two are skipped,
+and when none is open it is disabled with "All children are already resolved."
+Each child is read again right before its own resolve, since its state can
+change while the form is open. Once the form is open the panel reads each direct
+child's links (one `GET /tickets/{id}/links` per child, nothing before the form
+opens and nothing below the children) and, when some of them are themselves the
+source of a `parent_child` link, says so: "2 of these children have children of
+their own (tracking numbers, listed up to five); resolve those from their own
+ticket." A child whose links cannot be read gets no notice, because the page
+cannot say what it does not know.
+
 ### OAuth Clients and Service Users
 
 Decided on [#434](https://github.com/PubliciaLLC/go-help-desk/pull/434) for
