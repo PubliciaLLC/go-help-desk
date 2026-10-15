@@ -16,6 +16,9 @@ import (
 type Querier interface {
 	AddGroupMember(ctx context.Context, arg AddGroupMemberParams) error
 	AddGroupScope(ctx context.Context, arg AddGroupScopeParams) error
+	// Rows affected is 1 for a new follower and 0 for one already following, which
+	// is how the service tells a change worth an audit entry from a repeat.
+	AddTicketFollower(ctx context.Context, arg AddTicketFollowerParams) (int64, error)
 	AddTicketTag(ctx context.Context, arg AddTicketTagParams) error
 	// :execrows, for the same reason as ClearMFA above: a nonexistent id
 	// reported success (204, no error) and still wrote an audit entry.
@@ -448,6 +451,10 @@ type Querier interface {
 	// as "the ticket's SLA". Every statement below that addresses a ticket's
 	// record carries the same filter.
 	GetSLARecord(ctx context.Context, ticketID uuid.UUID) (SlaRecord, error)
+	// Only for go-help-desk unlock (#497), which must say WHY it refuses a service
+	// account rather than report "no such account" (GetUserByEmail below hides
+	// them on purpose). Returns the display name, which is the OAuth client's.
+	GetServiceAccountNameByEmail(ctx context.Context, email string) (string, error)
 	// Only unexpired rows: an expired session must behave exactly like a missing
 	// one, so a stale row cannot authenticate anybody between sweeps.
 	//
@@ -613,6 +620,11 @@ type Querier interface {
 	ListAssignmentsForScope(ctx context.Context, arg ListAssignmentsForScopeParams) ([]ListAssignmentsForScopeRow, error)
 	ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]Attachment, error)
 	ListAuditByEntity(ctx context.Context, arg ListAuditByEntityParams) ([]AuditLog, error)
+	// ListAuditByEntity narrowed by action: only_actions keeps just those actions,
+	// exclude_actions drops them. Either may be NULL for "no narrowing". It is how
+	// a ticket's feed keeps follow and unfollow entries (#441) from counting
+	// toward its cap, so a flood of them cannot push real history off the feed.
+	ListAuditByEntityActions(ctx context.Context, arg ListAuditByEntityActionsParams) ([]AuditLog, error)
 	ListCannedResponses(ctx context.Context) ([]CannedResponse, error)
 	ListCategories(ctx context.Context, dollar_1 bool) ([]Category, error)
 	ListCustomFieldDefs(ctx context.Context) ([]CustomFieldDef, error)
@@ -632,6 +644,11 @@ type Querier interface {
 	// person again in Go (User.CanReceiveStaffMail); this keeps them from being
 	// offered as candidates in the first place.
 	ListMailableGroupMembers(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID, error)
+	// Followers staff email can go to (#441): active staff and administrators,
+	// never a service account, a disabled or deleted account, or somebody moved
+	// to a requester role. Whether they can still SEE the ticket is not a
+	// question for SQL; the send-time check asks it (Server.StillEntitled).
+	ListMailableTicketFollowers(ctx context.Context, ticketID uuid.UUID) ([]uuid.UUID, error)
 	// Every client's groups in one query, for the client list: a client's groups
 	// are its service user's, and asking per row would be a query per client.
 	ListOAuthClientGroups(ctx context.Context) ([]ListOAuthClientGroupsRow, error)
@@ -693,6 +710,10 @@ type Querier interface {
 	ListSLARecordsForTicket(ctx context.Context, ticketID uuid.UUID) ([]SlaRecord, error)
 	ListSettings(ctx context.Context) ([]Setting, error)
 	ListStatuses(ctx context.Context) ([]Status, error)
+	// The list staff see on the ticket. Soft-deleted accounts are left out: there
+	// is nobody to show. A disabled account is shown, because the row is still
+	// there and following resumes if it is re-enabled.
+	ListTicketFollowers(ctx context.Context, ticketID uuid.UUID) ([]ListTicketFollowersRow, error)
 	ListTicketLinks(ctx context.Context, sourceTicketID uuid.UUID) ([]TicketLink, error)
 	ListTicketStatusHistory(ctx context.Context, ticketID uuid.UUID) ([]ListTicketStatusHistoryRow, error)
 	ListTicketTags(ctx context.Context, ticketID uuid.UUID) ([]Tag, error)
@@ -764,6 +785,7 @@ type Querier interface {
 	RehashUserPassword(ctx context.Context, arg RehashUserPasswordParams) (int64, error)
 	RemoveGroupMember(ctx context.Context, arg RemoveGroupMemberParams) (int64, error)
 	RemoveGroupScope(ctx context.Context, arg RemoveGroupScopeParams) (int64, error)
+	RemoveTicketFollower(ctx context.Context, arg RemoveTicketFollowerParams) (int64, error)
 	RemoveTicketTag(ctx context.Context, arg RemoveTicketTagParams) error
 	RestoreTag(ctx context.Context, id uuid.UUID) error
 	RestoreUser(ctx context.Context, id uuid.UUID) error
@@ -891,6 +913,9 @@ type Querier interface {
 	//
 	// AdminSetPassword has always been a narrow statement. This is the same thing
 	// for the self-service path, which is the one an attacker can drive.
+	//
+	// Also clears must_change_password (#497): this is the account holder choosing
+	// a password, which is what that flag is waiting for.
 	SetUserPasswordHash(ctx context.Context, arg SetUserPasswordHashParams) error
 	// The same guard for a role change. See DisableUserUnlessLastAdmin.
 	//
@@ -956,6 +981,12 @@ type Querier interface {
 	// ticket assigned to somebody who has left is history, and history should
 	// record who actually handled it.
 	UnassignTicketsForUser(ctx context.Context, assigneeUserID uuid.NullUUID) ([]uuid.UUID, error)
+	// The account half of /app/server unlock (#497), run in the same transaction
+	// as ClearFactors: re-enable, clear the TOTP lockout, install the generated
+	// password and require it to be changed. Not for a deleted account. The
+	// in-memory sign-in throttle is another process's memory and only ever delays,
+	// never refuses, so there is nothing of it to clear here.
+	UnlockUser(ctx context.Context, arg UnlockUserParams) (int64, error)
 	UpdateAPIKeyLastUsed(ctx context.Context, arg UpdateAPIKeyLastUsedParams) error
 	UpdateCannedResponse(ctx context.Context, arg UpdateCannedResponseParams) error
 	UpdateCategory(ctx context.Context, arg UpdateCategoryParams) error

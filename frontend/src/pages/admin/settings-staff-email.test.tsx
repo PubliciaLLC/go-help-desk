@@ -53,7 +53,7 @@ async function openEmailTab() {
   await userEvent.click(screen.getByRole('button', { name: 'Email' }))
 }
 
-const NAMES = ['Tickets assigned to me', 'Activity on my tickets', "My groups' tickets"]
+const NAMES = ['Tickets assigned to me', "Activity on tickets I'm assigned to or follow", "My groups' tickets"]
 
 function overrideSelect(name: string) {
   return screen.getByRole('combobox', { name: `${name}: administrator override` }) as HTMLSelectElement

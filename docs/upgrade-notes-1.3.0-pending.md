@@ -13,6 +13,14 @@ Previously the server let staff and administrators create tickets under, and rec
 
 What to check: scripts or integrations that file or reclassify tickets as staff or admin into an archived node will start getting 400. Unarchive the node (Admin → Categories) or file into an active one.
 
+## New: `unlock <email>` on the Server Console (#497)
+
+`docker compose exec app /app/server unlock <email>` is the way back for a locked-out account, and it works when the web path cannot: a lost authenticator or passkey, a disabled account (the sole administrator included), a spent MFA lockout, or a federated administrator with no usable password. In one transaction it clears every second factor, re-enables the account, clears the MFA lockout, sets a new random password and prints it once, and ends all sessions. The password must be changed at the next sign-in.
+
+- New migration `000045_must_change_password` adds `users.must_change_password` (default false). Nothing changes for existing accounts.
+- `POST /api/v1/auth/local/login` gains `password_change_required` and `User` gains `must_change_password`. A session in that state is answered `403 password_change_required` everywhere except `PATCH /api/v1/me/password`.
+- `reset-factors` is unchanged.
+
 ## An IP or Single-Label `BASE_URL` Disables Passkeys (#494)
 
 Passkeys are bound to a domain name, so they work only when the host in `BASE_URL` is a domain name (`help.example.com`) or `localhost`. **If `BASE_URL` is an IP address (`http://192.168.1.10:8080`, `http://[::1]:8080`), a single-label host (`http://helpdesk:8080`) or contains non-ASCII characters, passkeys are disabled.** The server still starts. It logs `passkeys unavailable` once at startup, and administrators see a warning banner explaining that `BASE_URL` must be a domain name.
@@ -109,12 +117,25 @@ Before this, an unwritable directory showed up as a failed upload partway throug
 Staff are now emailed about their tickets, which 1.2 never did. **Once email is configured (`SMTP_HOST` and `SMTP_FROM`), every existing staff member and administrator starts receiving it, because all three switches are on by default.** Nothing is sent while email is not configured.
 
 - **When:** a ticket is assigned to you, a ticket is assigned to a group you belong to, and a requester (an account holder or a guest) replies on a ticket assigned to you. A requester's reply on a group ticket that nobody personally holds goes to the group's members.
-- **Not when:** you did it yourself, a colleague replies, or someone adds an internal note. A staff member who filed a ticket and replies on it counts as the requester. Reopening by a requester's reply and ticket followers come later in 1.3.0.
-- **Your choice:** three switches under **Your account → Email about tickets**: *Tickets assigned to me*, *Activity on my tickets* and *My groups' tickets*.
+- **Not when:** you did it yourself, a colleague replies, or someone adds an internal note. A staff member who filed a ticket and replies on it counts as the requester. Reopening by a requester's reply comes later in 1.3.0.
+- **Your choice:** three switches under **Your account → Email about tickets**: *Tickets assigned to me*, *Activity on tickets I'm assigned to or follow* and *My groups' tickets*. The middle switch was called *Activity on my tickets* before followers existed; it is the same setting (`email_notify_activity`) with a new label.
 - **Administrators can force a switch on or off for everyone** under **Settings → Email** (`staff_email_assigned_override`, `staff_email_activity_override`, `staff_email_group_override`: `user`, `on` or `off`, `user` by default). To keep your staff's inboxes as they were, set all three to **Off for everyone** before turning email on.
 - OAuth clients' service users are never emailed, even when they are members of a group.
 - The emails carry only the ticket's tracking number and a link, like every other email from the help desk.
 - Database migration `000042` adds three columns to `users`. It is safe to apply on a running instance.
+
+## Ticket Followers (#441)
+
+Staff and administrators can now **follow a ticket** (a Follow button on the ticket page, or `PUT` and `DELETE /api/v1/tickets/{id}/follow`) and are emailed about its activity: a ticket they follow being assigned, and its requester replying. This is new behaviour, not a change to anything that existed.
+
+- **Followers are emailed under the *Activity on tickets I'm assigned to or follow* switch**, and the administrator's override of it (`staff_email_activity_override`) applies to them. Nobody is emailed about their own change, and nobody is emailed twice for one event whatever mix of assignee, group member and follower they are.
+- **People only.** An API key, an OAuth client or a service user cannot follow or unfollow: `403 session_required`. Reading the list, `GET /api/v1/tickets/{id}/followers`, works for staff and administrators, and for a key with `tickets:read`.
+- **Staff always see who follows a ticket.** There is no setting to hide the list.
+- **Following is audited** (`followed`, `unfollowed`). Administrators see those entries on the ticket's Activity feed and in the admin-wide audit view. **Staff do not, until an administrator turns on the new setting `staff_can_view_follow_audit`** (Settings → General → Audit log: *Staff can view follow history*; off by default, session only). Requesters never see them.
+- A follower who can no longer see the ticket (ticket scope was turned on, or their groups changed) is skipped when the mail is sent, and **keeps following**, so they are mailed again if they can see it again.
+- **Reassigning a ticket ends the old assignee's follow.** If you followed a ticket you were assigned, and it is then assigned to someone else or to nobody (or your account is deleted, for tickets that are still open), your follow is removed and recorded as `unfollowed` with whoever moved the ticket as the actor. Click Follow again to keep the mail. Moving a ticket between groups does not touch anyone's follow.
+- **The assignee is not mailed as a follower, and neither are the members of the assigned group when the group itself is mailed.** The group is mailed for an assignment, and for a requester's reply on a ticket nobody holds. For those, their own switches ("Tickets assigned to me", the group switch) decide, and following changes nothing. If somebody in the group holds the ticket, the group is not mailed for a reply, so a member who follows it is mailed as a follower.
+- Database migration `000046` adds the `ticket_followers` table. It is safe to apply on a running instance. Migrations `000043` to `000045` belong to other changes in the same release. Upgrading from 1.2 straight to the final 1.3.0 applies all of them in number order. A database that ran a 1.3.0 beta build containing `000046` before those were merged is a different case: the migration tool only moves forward from the version the database is at, so it would skip `000043` to `000045`. Do not run such a beta database on the final release without checking that those migrations were applied.
 
 ## Admin API: data left behind, half-applied edits and path checks (#419)
 

@@ -275,6 +275,12 @@ type TicketCustomFieldValue struct {
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
+type TicketFollower struct {
+	TicketID  uuid.UUID `json:"ticket_id"`
+	UserID    uuid.UUID `json:"user_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type TicketLink struct {
 	SourceTicketID uuid.UUID `json:"source_ticket_id"`
 	TargetTicketID uuid.UUID `json:"target_ticket_id"`
@@ -333,6 +339,7 @@ type User struct {
 	EmailNotifyAssigned bool         `json:"email_notify_assigned"`
 	EmailNotifyActivity bool         `json:"email_notify_activity"`
 	EmailNotifyGroup    bool         `json:"email_notify_group"`
+	MustChangePassword  bool         `json:"must_change_password"`
 }
 
 type WebauthnCredential struct {

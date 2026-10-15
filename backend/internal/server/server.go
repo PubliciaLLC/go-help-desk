@@ -619,7 +619,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // half of an operator's structure is not something to hand it.
 func catalogueIsFullyVisible(r *http.Request) bool {
 	a := authmw.GetActor(r)
-	return a != nil && a.MFAPassed && (a.Role == user.RoleAdmin || a.Role == user.RoleStaff)
+	return a != nil && a.MFAPassed && !a.MustChangePassword && (a.Role == user.RoleAdmin || a.Role == user.RoleStaff)
 }
 
 // handleListPublicCategories returns only active categories.

@@ -17,7 +17,7 @@ info:
     - Every error from a handler is the envelope in components.schemas.Error,
       served as application/json. Refusals produced by the authentication
       middleware (401 unauthorized, 403 forbidden / mfa_required /
-      insufficient_scope / session_required) carry the same envelope but are
+      password_change_required / insufficient_scope / session_required) carry the same envelope but are
       served as text/plain; charset=utf-8.
     - Any operation may answer 500 internal_error ("an internal error
       occurred"); it is listed only where a handler has a 5xx of its own. A
@@ -386,8 +386,12 @@ paths:
         the person must do next: mfa_needed means a TOTP code is owed
         (POST /auth/local/mfa/verify), passkey_needed means a passkey is owed
         (POST /auth/local/passkey/start), and mfa_enrollment_needed means the
-        role must enrol a second factor before it is fully signed in. Until that
-        step is done the session is only half signed in, and it expires: after
+        role must enrol a second factor before it is fully signed in.
+        password_change_required means the account was unlocked from the server
+        console (/app/server unlock) and still holds the password it was handed:
+        the session may only change the password (PATCH /me/password) and every
+        other route answers 403 password_change_required until it has. Until the
+        second-factor step is done the session is only half signed in, and it expires: after
         5 minutes when a code or passkey is owed, after 15 minutes when the
         person must enrol. After that, every route answers 401 as if there were
         no session (the session is deleted), and the person signs in again with
@@ -417,9 +421,12 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [user, mfa_needed, passkey_needed, mfa_enrollment_needed]
+                required: [user, mfa_needed, passkey_needed, mfa_enrollment_needed, password_change_required]
                 properties:
                   user: {$ref: '#/components/schemas/User'}
+                  password_change_required:
+                    type: boolean
+                    description: True when the password must be changed before anything else is allowed (see the operation description).
                   mfa_needed:
                     type: boolean
                     description: True when a TOTP code is owed. Answer with POST /auth/local/mfa/verify.
@@ -2441,7 +2448,12 @@ paths:
       description: |
         Changes the password after checking the current one. The new password must be 8 to 72 bytes long.
         Every other session for the account ends, and this request's session is re-issued with a new cookie,
-        so this browser stays signed in. Session only, and the second factor must have passed.
+        so this browser stays signed in. Session only, and the second factor must have passed,
+        except for a session that owed no second factor when its password was checked and owes this very
+        change (login answered password_change_required with neither mfa_needed nor passkey_needed): that
+        one may make it without MFA. A flagged account that has since enrolled a factor gets 403 mfa_required
+        and must verify the factor first. Any other route refuses a flagged session with 403
+        password_change_required until the password is changed. The change clears the requirement.
         A wrong current_password answers 401 invalid_credentials as application/json, which is distinct
         from the text/plain 401 unauthorized sent when there is no session. The old field name password is still read when new_password is absent. current_password is
         required in either case.
@@ -2613,6 +2625,10 @@ paths:
         tickets inside the caller's scope are returned. The page, the offset and
         the total all come from the same filtered sequence. Administrators see
         every entity.
+        Staff do not get followed and unfollowed entries unless the staff
+        follow-history setting (staff_can_view_follow_audit) is on; they are left
+        out of the page and the total, and asking for them by action returns
+        nothing.
         The field-level before and after diff is returned to administrators
         always, and to staff only when the staff change-history setting is on.
         It is redacted by the same rule as the per-ticket feed. Every other
@@ -3196,6 +3212,14 @@ paths:
           applies, a requester is the label Requester there too.
         - Where requester-name masking applies, actor_name is the label
           Requester and actor_masked is true.
+        - followed and unfollowed entries (someone started or stopped following
+          the ticket) go to administrators, and to staff when the staff
+          follow-history setting (staff_can_view_follow_audit) is on. A reporting
+          user never gets them. A viewer who gets them also gets their before and
+          after (redacted), whether or not they get the diff of other entries:
+          an unfollowed entry written by a reassignment has the reassigning actor
+          as its actor and carries the assignee whose follow ended in
+          before.assignee_user_id (named in names).
         The id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
@@ -3220,6 +3244,123 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/TicketAuditEntry'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/TicketNotFound'
+  /api/v1/tickets/{id}/follow:
+    parameters:
+      - $ref: '#/components/parameters/TicketRef'
+    put:
+      operationId: followTicket
+      summary: Follow a ticket.
+      description: |
+        Staff and administrators only, in a signed-in session (second factor required). The caller
+        starts following the ticket and is emailed about its activity, the same
+        email the assignee gets, under their "activity on tickets I'm assigned
+        to or follow" switch and the administrator's override of it. The person
+        who made a change is never emailed about it.
+
+        People only: a signed-in session. An API key or OAuth client is refused
+        with 403 session_required, because following is a personal choice and a
+        script acting for someone is not them. A service user cannot follow
+        either.
+
+        Following a ticket already followed answers 204 and changes nothing. A
+        first follow is audited as followed. The caller must be able to see the
+        ticket. Whether they still can is checked again each time an email is
+        sent; one they can no longer see is skipped and the follow is kept.
+        The id is a UUID or a tracking number.
+        A ticket the caller may not see answers 404 not_found, the same answer as a
+        ticket that does not exist, and never 403, so tracking numbers cannot be
+        probed. A 403 from the handler (application/json) means the ticket is
+        visible but the action is refused. Of the text/plain 403s from the auth
+        middleware, mfa_required and insufficient_scope are decided before the
+        ticket is looked up and say nothing about it; the role refusal
+        (forbidden) is decided after it.
+      tags: ['Tickets']
+      x-ghd-handler: handleFollowTicket
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin, staff]
+      x-ghd-mfa: true
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/TicketNotFound'
+    delete:
+      operationId: unfollowTicket
+      summary: Stop following a ticket.
+      description: |
+        Staff and administrators only, in a signed-in session (second factor required).
+        As for following, an API key or OAuth client is refused. Answers 204 whether or
+        not the caller was following. Stopping is audited as unfollowed when it changed
+        something. The id is a UUID or a tracking number.
+        A ticket the caller may not see answers 404 not_found, the same answer as a
+        ticket that does not exist, and never 403, so tracking numbers cannot be
+        probed. A 403 from the handler (application/json) means the ticket is
+        visible but the action is refused. Of the text/plain 403s from the auth
+        middleware, mfa_required and insufficient_scope are decided before the
+        ticket is looked up and say nothing about it; the role refusal
+        (forbidden) is decided after it.
+      tags: ['Tickets']
+      x-ghd-handler: handleUnfollowTicket
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin, staff]
+      x-ghd-mfa: true
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/TicketNotFound'
+  /api/v1/tickets/{id}/followers:
+    parameters:
+      - $ref: '#/components/parameters/TicketRef'
+    get:
+      operationId: listTicketFollowers
+      summary: List who follows a ticket.
+      description: |
+        Staff and administrators only (second factor required). Staff always
+        see the current followers of a ticket they can see; no setting hides
+        them. Oldest follow first. An account that has been deleted is left
+        out. A reporting user gets 403 forbidden on a ticket they can see, and
+        404 on one they cannot. The id is a UUID or a tracking number.
+        A ticket the caller may not see answers 404 not_found, the same answer as a
+        ticket that does not exist, and never 403, so tracking numbers cannot be
+        probed. A 403 from the handler (application/json) means the ticket is
+        visible but the action is refused. Of the text/plain 403s from the auth
+        middleware, mfa_required and insufficient_scope are decided before the
+        ticket is looked up and say nothing about it; the role refusal
+        (forbidden) is decided after it.
+      tags: ['Tickets']
+      x-ghd-handler: handleListFollowers
+      security:
+        - sessionCookie: []
+        - apiKey: ['tickets:read']
+        - oauthClient: ['tickets:read']
+      x-ghd-roles: [admin, staff]
+      x-ghd-mfa: true
+      responses:
+        '200':
+          description: The followers, as a bare array (never null).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TicketFollower'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -4491,8 +4632,8 @@ paths:
           Zero, negative, larger, null and non-integers are refused with bad_request.
           password_rehash_started_at is recorded by the server when 1.3.0 first
           runs and is refused with 400 readonly_setting; it is left out of GET.
-        - guest_submission_enabled and staff_can_view_ticket_change_history must be
-          JSON booleans. null is refused.
+        - guest_submission_enabled, staff_can_view_ticket_change_history and
+          staff_can_view_follow_audit must be JSON booleans. null is refused.
         - guest_submission_enabled and self_signup_enabled cannot be turned from
           off to on while email is not configured (SMTP_HOST and SMTP_FROM): 400
           email_required, and nothing in the body is stored. Both send an email
@@ -4540,7 +4681,7 @@ paths:
         attachment_scan_address, attachment_scan_policy, attachment_allowed_types,
         attachment_infected_handling, attachment_mismatch_handling,
         audit_retention_days, staff_can_view_ticket_change_history,
-        password_rehash_grace_days, password_rehash_started_at,
+        staff_can_view_follow_audit, password_rehash_grace_days, password_rehash_started_at,
         attachment_vt_lookup, attachment_vt_api_key, attachment_reputation_provider,
         attachment_reputation_api_key, attachment_reputation_virustotal_enabled,
         attachment_reputation_virustotal_key, attachment_reputation_metadefender_enabled,
@@ -9156,7 +9297,7 @@ components:
     User:
       description: An account. The password hash, the TOTP secret, single sign-on subjects and the deletion time are never returned. mfa_enabled is the TOTP flag only.
       type: object
-      required: [id, email, display_name, role, mfa_enabled, disabled, created_at, updated_at, email_notify_assigned, email_notify_activity, email_notify_group]
+      required: [id, email, display_name, role, mfa_enabled, disabled, must_change_password, created_at, updated_at, email_notify_assigned, email_notify_activity, email_notify_group]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
         email: {type: string}
@@ -9164,6 +9305,7 @@ components:
         role: {$ref: '#/components/schemas/Role'}
         mfa_enabled: {type: boolean}
         disabled: {type: boolean}
+        must_change_password: {type: boolean, description: "Set by /app/server unlock on the server console; cleared when the account holder changes the password."}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
         email_notify_assigned: {type: boolean, description: 'Email me when a ticket is assigned to me. Staff email switch, on by default.'}
@@ -9519,6 +9661,19 @@ components:
         created_at:
           type: string
           format: date-time
+    TicketFollower:
+      description: Someone following a ticket.
+      type: object
+      required: [user_id, display_name, created_at]
+      properties:
+        user_id:
+          $ref: '#/components/schemas/Uuid'
+        display_name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+          description: When they started following.
     TicketAuditEntry:
       description: |
         One row of
@@ -9912,6 +10067,13 @@ components:
         staff_can_view_ticket_change_history:
           type: boolean
           description: Whether staff may see the field-level change history of tickets. Session only.
+        staff_can_view_follow_audit:
+          type: boolean
+          description: >-
+            Whether staff may see the followed and unfollowed entries in a
+            ticket's audit trail and in the admin-wide audit view.
+            Administrators always can and requesters never can. Off by default.
+            Session only.
         password_rehash_grace_days:
           type: integer
           minimum: 1

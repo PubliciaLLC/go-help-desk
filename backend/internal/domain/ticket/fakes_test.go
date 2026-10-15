@@ -43,6 +43,11 @@ type fakeStore struct {
 	// already had in hand.
 	onRead func(ticket.Ticket) ticket.Ticket
 
+	// followers[ticket][user]; notPeople are accounts IsAssignableUser refuses
+	// (a service account, a requester). See followers_test.go.
+	followers map[uuid.UUID]map[uuid.UUID]time.Time
+	notPeople map[uuid.UUID]bool
+
 	tickets map[uuid.UUID]ticket.Ticket
 	replies map[uuid.UUID][]ticket.Reply
 	history []ticket.StatusHistoryEntry
@@ -303,8 +308,8 @@ func (f *fakeStore) ListUnassigned(context.Context, int, int) ([]ticket.Ticket, 
 // IsAssignableUser and IsAssignableGroup: this fake has no user table, so
 // everything it is asked about is assignable. The real rule lives in SQL and
 // is exercised against a real database.
-func (f *fakeStore) IsAssignableUser(context.Context, uuid.UUID) (bool, error) {
-	return true, nil
+func (f *fakeStore) IsAssignableUser(_ context.Context, id uuid.UUID) (bool, error) {
+	return !f.notPeople[id], nil
 }
 
 func (f *fakeStore) CTIIsCoherent(context.Context, uuid.UUID, *uuid.UUID, *uuid.UUID) (bool, error) {

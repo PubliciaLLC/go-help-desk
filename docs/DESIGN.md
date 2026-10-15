@@ -411,11 +411,24 @@ ticket's own guest columns, and `follow_up_of` says what it continues.
   it. System statuses can never be renamed, deactivated or deleted.
 - Every status transition is recorded in a **status history** timeline and displayed on the ticket detail page interleaved with replies, in chronological order. Events include: the old and new status names (with colors), who made the change (user display name or "System" for auto-close), and the timestamp. The initial status assignment at ticket creation is also recorded.
 
+### Ticket Followers
+
+([#441](https://github.com/PubliciaLLC/go-help-desk/issues/441), part D of #464.)
+Staff and administrators can **follow** a ticket to hear about its activity without holding it. A follower is emailed under the staff-email rules (Notifications below), and the ticket shows everyone who follows it.
+
+- **Who can follow: people only.** A staff member or administrator, signed in. An API key, an OAuth client and a service user cannot follow or unfollow: following is a personal choice, and a script acting for someone is not them (#490). The routes answer `403 session_required` to a machine credential, and `ticket.Service.Follow` independently refuses any account that is not an active, non-service staff or admin account, so a second caller (MCP, an importer) cannot get round the route. A requester cannot follow and has no route to the list.
+- **A follower must be able to see the ticket** when following: the routes sit behind `requireTicketAccess` like everything under `/tickets/{id}`, so a ticket out of scope (#391) is a 404, and a tracking number works as well as a UUID. At send time the person is checked again (`Server.StillEntitled`, `CanViewTicket`): mail for a ticket they can no longer see is skipped, and **the row is kept**, so following works again if their scope returns. A deleted or disabled account, a service account and a requester are never mailed (`ListMailableTicketFollowers`).
+- **API.** `PUT` and `DELETE /api/v1/tickets/{id}/follow` follow and unfollow for the caller; both are idempotent and answer 204. `GET /api/v1/tickets/{id}/followers` lists them, oldest first, for staff and administrators (a machine credential with `tickets:read` may read it).
+- **Staff always see the current list of followers** on the ticket page, with a Follow / Unfollow button. No setting hides it.
+- **Following is audited.** A follow and an unfollow each write a `followed` / `unfollowed` entry with the person as actor, in the same transaction as the change (`ticket.Atomic`); repeating either writes nothing. The entries are visible to **administrators**. A staff member sees them only when the administrator turns on **`staff_can_view_follow_audit`** (off by default; a disclosure-widening toggle, so session-only like `staff_can_view_ticket_change_history`). A requester never sees them. Both views leave them out in the query (`audit.Filter.ExcludeActions` for the admin-wide view, in the page and the total alike, so asking for them there by `action` returns nothing for staff; `audit.ActionFilter` for the per-ticket feed). The per-ticket feed also keeps them out of its 500-entry cap: they are fetched on their own, with a cap of their own, only for viewers who may see them, and merged by time, so toggling follow can never push a ticket's real history off its feed. A viewer who may see follow entries always gets their `before` and `after` (redacted like any diff), even without the change-history setting, so a removal on reassignment can say whose follow it was.
+- **Reassigning takes the old assignee's follow with it** (Erik, 2026-10-14: the assignee follows the ticket by being assigned, so a follow on top is dropped when they lose it). When a ticket is assigned away from someone, or unassigned, or its assignee's account is deleted (open tickets only, as account deletion only unassigns those), their follow row is removed in the same transaction (`dropAssigneeFollow`, from `Service.Assign` and `Service.UnassignForUser`, which every route reaches: PATCH, auto-assign, MCP `assign_ticket`, account deletion; there is no bulk assign). It writes an `unfollowed` entry with the reassigning actor as the actor, after the `assigned` / `unassigned` entry; its before and after carry `assignee_user_id` (whose follow went, and who holds it now), and the feed labels it "Follow removed on reassignment (name)". No follow row, no entry. The same person again changes nothing. Only the assignee loses a follow: moving the ticket between groups, with the assignee kept or not, leaves group members' follows alone. They click Follow again to keep the mail. A per-user preference for this is not built.
+- **Data.** `ticket_followers (ticket_id, user_id, created_at)`, primary key `(ticket_id, user_id)`, both columns cascading on a hard delete (users are soft-deleted, so the send-time check does the real work), migration `000046`.
+
 ### Ticket Activity Feed
 
 `GET /api/v1/tickets/{id}/audit` (#129) answers "who changed this ticket, and when" from the audit log the domain layer already writes, without database access. Shown on the ticket detail page next to the status timeline, staff and admin only — a UI choice, not a new permission: the route inherits `requireTicketAccess` like every other route under `/tickets/{id}`.
 
-This route only *reads* the audit log; it does not change what the domain layer writes to it. What gets written is narrower than "every mutation": `created`, `status_changed`, `assigned`, `unassigned` (an assignment cleared, or a departing user's tickets returned to the queue, #326), `resolved`, `closed` and `reopened` (a requester's reply that reopens a Resolved ticket, and `POST /reopen`, which is a force-reopen allowed only by `closed_reopen_policy` (#349) and says so with `forced_reopen` and the policy in its "after"), `priority_changed` (#443: the "after" says why the priority changed, `manual` or `reopened`, what happened to the ticket's SLA, and the ids of the SLA policy and record in force before and after) and `sla_restarted` (#443: written when a reopen starts the SLA clocks over, with the id of the record it replaced; a staff priority change never writes it. Nothing writes it on this build: the reopen that does arrives with #464). CTI reclassification and custom-field edits are not recorded. Those are gaps in what `ticket.Service` writes, not something this route introduces.
+This route only *reads* the audit log; it does not change what the domain layer writes to it. What gets written is narrower than "every mutation": `created`, `status_changed`, `assigned`, `unassigned` (an assignment cleared, or a departing user's tickets returned to the queue, #326), `resolved`, `closed`, `followed` and `unfollowed` (Ticket Followers above; withheld from staff unless `staff_can_view_follow_audit` is on, and from requesters always), `reopened` (a requester's reply that reopens a Resolved ticket, and `POST /reopen`, which is a force-reopen allowed only by `closed_reopen_policy` (#349) and says so with `forced_reopen` and the policy in its "after"), `priority_changed` (#443: the "after" says why the priority changed, `manual` or `reopened`, what happened to the ticket's SLA, and the ids of the SLA policy and record in force before and after) and `sla_restarted` (#443: written when a reopen starts the SLA clocks over, with the id of the record it replaced; a staff priority change never writes it. Nothing writes it on this build: the reopen that does arrives with #464). CTI reclassification and custom-field edits are not recorded. Those are gaps in what `ticket.Service` writes, not something this route introduces.
 
 That inherited gate is enough for the entry itself (status, priority, subject, assignee are already visible on the ticket to anyone who can view it), but not for the *actor* on `assigned`/`unassigned` entries specifically: assignment is staff/admin-only, and unlike every other action here, nothing else on the ticket discloses that actor's identity to a reporting user — the ticket's own `assignee_user_id` is a bare UUID, and `GET /api/v1/staff`, the only place that resolves one to a name, is itself staff/admin-gated. So the API withholds `actor_id`/`actor_name` on those two actions when the caller is a plain reporting user, the same way `ticket.VisibleReplies` withholds internal-note authorship from that same viewer. Every other action's actor is fine to show as-is, subject to requester-name masking below (see `StatusHistoryEntry.ChangedByName`, which already does, via `/history`).
 
@@ -431,7 +444,7 @@ The field-level before/after diff is a second, independent gate on top of the fe
 
 **Actor names.** Staff and admin actors are always shown by name: the audit trail exists to say which employee did what. A requester (a student, a patient, a customer) is shown as **"Requester"** instead of by name in the views the setting `audit_mask_requester_names` names (Admin → Settings → General → Privacy, "Mask requester names in Audit Trail"): `admin_log` (the admin-wide log only), `ticket_log` (each ticket's Activity feed only) or `everywhere`, **the default**. Unset or unrecognised reads as `everywhere`, and the settings dump reports a stored value it does not recognise as `everywhere` too (see REST API → Settings dump and choice-list settings; [#366](https://github.com/PubliciaLLC/go-help-desk/issues/366)). A masked entry keeps its `actor_id`, so it stays attributable for an investigation, and carries `actor_masked: true` beside `actor_name: "Requester"`, so an account whose display name is "Requester" is not mistaken for a masked requester; the UI shows a masked actor as *Requester (name hidden)* with an eye-off icon, which a display name cannot reproduce. Whether an actor is a requester is read from their role **when the entry is viewed**, not when it was written: a staff member later changed to the user role has their earlier entries shown as "Requester", and a requester promoted to staff has theirs shown by name. **The mask is display-only.** It keeps requester names off the audit list and whatever is copied or captured from it; it does not stop identification. Anyone who can see an entry may still be able to find out who the requester is. When the masked actor is the ticket's own requester, the usual case, the ticket its `entity_id` names shows them on its page. An administrator can look up any masked actor from its `actor_id` (`GET /admin/users/{id}`). It is not an access control. The setting is auth-critical: loosening it shows requester names, so a machine credential cannot change it. The ticket page itself still shows the requester's name.
 
-Staff are narrowed twice, independently. `entity_type` is forced to `ticket` whatever the query string asks for: every other entity type is admin-only. And with ticket scope enforcement on, only entries on tickets the staff member may see are returned.
+Staff are narrowed twice, independently. `entity_type` is forced to `ticket` whatever the query string asks for: every other entity type is admin-only. And with ticket scope enforcement on, only entries on tickets the staff member may see are returned. A third, smaller narrowing: `followed` and `unfollowed` entries (#441) are left out for staff unless `staff_can_view_follow_audit` is on, by the query itself (`ExcludeActions`) so the page, the offset and the total still describe one sequence.
 
 **Scope is part of the query, not applied to its result.** The scoped page statement carries the filters (`entity_type`, `action`, `actor_id`, `from`/`to`, `q`) and the scope together, checked against `tickets`, and the scoped count behind `total` applies the same filters and the same scope predicate. The page, the offset and the total therefore describe one sequence: `total` is the number of entries the viewer can page through and says nothing about the ones they cannot see. Counting before scope was applied in Go told a staff member how many entries existed on tickets they could not see, and with the actor, action and date filters a count plus bisection dates activity on those tickets.
 
@@ -810,7 +823,7 @@ re-enrolment for a TOTP-protected account since the re-enrolment fix.
 a second factor required up front:
 
 ```
-go-help-desk reset-factors <email>
+/app/server reset-factors <email>
 ```
 
 It clears the account's TOTP enrolment, removes its registered passkeys and ends
@@ -818,13 +831,62 @@ its sessions (one statement), so the next sign-in reaches enrolment and the
 person starts again. It is the answer for every cause of lockout, and for the
 sole administrator the only one, since the web path must keep refusing (a
 password alone being enough to replace somebody's second factor is the bypass
-the guards exist to prevent). It takes an email address only and cannot set a
-password (see the identity provider guard below). It grants nothing new: anyone
+the guards exist to prevent). It takes an email address only and does not touch
+the password (`unlock`, below, does). It grants nothing new: anyone
 able to run it already has the filesystem and the database credentials, so it
 widens no web-facing surface, which a recovery code (another secret at rest,
 worth stealing, the property passkeys exist to remove) would.
 
-**It writes an audit entry** naming the account and the operating-system user
+**`unlock` is the complete version** (#497):
+
+```
+/app/server unlock <email>
+```
+
+(In the published image the binary is `/app/server`:
+`docker compose exec app /app/server unlock <email>`.) In ONE transaction it
+does what `reset-factors` does (`ClearFactors`: every second factor and every
+session), and also re-enables the account if it was disabled, clears the TOTP
+failure count and lock, and sets a **new random password** (24 characters from
+`crypto/rand`, hashed at the current bcrypt cost) that it prints **once** to
+standard output after the commit, never to the log and never into the audit
+entry. It refuses an unknown or deleted address, and if any step fails
+(the audit write included) nothing changes and nothing is printed. It does not
+touch the in-memory sign-in throttle, which lives in the server process and
+only delays a login, never refuses the right password.
+It refuses an OAuth client's service account (#490), which has no password to unlock, naming the client.
+
+**The password it prints must be changed at the next sign-in.** It sets
+`users.must_change_password` (migration 000045). While the flag is set the
+session a correct password opens may do exactly one thing, change the password
+(`PATCH /me/password`, which asks for the current password as ever); the
+login answer carries `password_change_required` and the login page shows the
+change step first. Every other route answers `403 password_change_required`:
+`RequireMFA` refuses it for all the routes behind it, and `RequirePasswordCurrent`
+for the enrolment routes outside it, the way the MFA-pending gate holds a
+half-signed-in session. Changing the password (`SetUserPasswordHash`) clears the
+flag. **The flag must never stop an account signing in**, which is the
+last-administrator rule applied to a new gate: it gates nothing at login, and
+the password change is reachable without having passed MFA. Otherwise an
+administrator whose role must enrol MFA would be held at "enrol first" by
+`RequireMFA` and at "change the password first" by the flag, with a way out of
+neither. That exemption is for a session that owed no factor when the password was
+checked (the login decides, into `PasswordChangeNeedsNoFactor`), never for the raw
+flag: the flag outlives the cleared factors, and a single sign-on session, which
+ignores it, can enrol a new one, after which a password alone must not be enough
+to change the password (`TestMustChangePassword_DoesNotLetAPasswordOnlySessionSkipAnEnrolledFactor`).
+An account with a factor verifies it first and then changes the password
+(`TestMustChangePassword_DoesNotLockOutAnAccountThatOwesEnrolment` covers the
+other case).
+Single sign-on and passkey sign-ins do not read the flag; it is about the
+password, and a federated administrator who never uses it simply keeps it set.
+
+**Its audit entry** (`action: "account_unlock"`, `actor: "server console"`, with
+the operating-system user and host and no actor id) is written in the same
+transaction, unlike `reset-factors`' best-effort write below: this command
+hands out a credential, so an unlock with no record is refused.
+
+**`reset-factors` writes an audit entry** naming the account and the operating-system user
 and host that ran it, with no actor id: nobody signed in, and inventing one
 would record a claim rather than a fact. The shape (`entity_type: "user"`,
 `action: "mfa_reset"`) is the one the user page's Reset MFA writes, and an
@@ -1072,10 +1134,10 @@ infrequent action from the settings page, not a path an unauthenticated attacker
 can drive, and closing it would need a transaction spanning the users and
 settings tables.
 
-**Not built:** extending `reset-factors` to also set a password, so a locked-out
-federated administrator has a complete way back and not just a warning that
-would have stopped them getting here (#300's option 4). `reset-factors` exists
-(see Passkeys) and clears factors only.
+**The complete way back is `/app/server unlock <email>`** (#497, #300's option
+4), so a locked-out federated administrator has more than a warning that would
+have stopped them getting here: it sets a password. See Passkeys, "The way back
+in", for what it does. `reset-factors` remains and clears factors only.
 
 ---
 
@@ -2420,12 +2482,12 @@ on the existing webhook feature instead of as plugins.
   because each of those replaces the link they hold and the mail is how the
   replacement reaches them.
 - **Staff email** ([#441](https://github.com/PubliciaLLC/go-help-desk/issues/441),
-  part C of #464). Staff are emailed about their own work, not just
+  parts C and D of #464). Staff are emailed about their own work, not just
   requesters about theirs. Two events: a ticket is **assigned**, and the
   **requester replies** (the public reply of whoever filed the ticket: an
   account holder, a guest, or a staff member replying on a ticket they filed
   themselves; any other staff reply, or an internal note, is not one). A reopen by a requester's reply
-  and ticket followers are not part of this yet.
+  is not part of this yet.
 
   Three per-user switches, all **on by default** (columns on `users`, set
   from **Your account → Email about tickets**, `PATCH /me/email-preferences`):
@@ -2433,15 +2495,27 @@ on the existing webhook feature instead of as plugins.
   | Switch | Mailed when |
   | --- | --- |
   | Tickets assigned to me | a ticket is assigned to me |
-  | Activity on my tickets | a requester replies on a ticket assigned to me |
+  | Activity on tickets I'm assigned to or follow | a requester replies on a ticket assigned to me, and a ticket I **follow** is assigned or gets a requester's reply |
   | My groups' tickets | a ticket is assigned to a group I belong to, and a requester replies on a group ticket that **nobody personally holds** |
 
   A requester's reply on a ticket that has both an assignee and a group goes
   to the assignee only: the group's members would otherwise get mail for every
   reply on work a colleague already holds. Assignment mails both. Group
   members are told it is their group's ticket ("assigned to your group"), not
-  that it is theirs. Ticket followers will join the
-  second switch when following exists.
+  that it is theirs. **Followers** (Ticket Followers, above) are mailed for both
+  events under the second switch and its override, and are told it is a ticket
+  they follow. **Followers who are the assignee, or members of the assigned
+  group when the group itself is mailed for that event, get no follower mail**
+  (Erik, 2026-10-14: they follow the ticket from a practical point of view).
+  The group is mailed for an assignment, and for a reply on a ticket nobody
+  holds; for those events a member's own group switch decides, and following
+  on top does not bring back mail they turned off. The assignee is always left
+  out of follower mail, and their own switches decide. For a reply on a ticket
+  somebody holds, the group is not mailed, so a member who follows it is
+  mailed as a follower. This is decided when the mail is queued. At send time
+  only the follow row (and visibility) is checked, so unfollowing stops mail
+  already queued, and mail queued to a follower is not lost if they are then
+  assigned the ticket.
 
   An administrator can **override each switch for everyone**
   (**Admin → Settings → Email**; the settings `staff_email_assigned_override`,
@@ -2457,6 +2531,7 @@ on the existing webhook feature instead of as plugins.
     assignment is skipped even when an override forces the switch on.
   - **One email per person per event.** Someone who is both the assignee and
     a member of the assigned group gets one, if either switch lets it through.
+    A follower who is neither is mailed as a follower.
   - **Only people who can receive it**: an active staff member or
     administrator with an address. A requester account is never sent staff
     mail. Service accounts (the identity an OAuth client acts as, #490) never

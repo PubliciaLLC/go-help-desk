@@ -35,11 +35,21 @@ type StaffGroups interface {
 	ListMailableMembers(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID, error)
 }
 
+// StaffFollowers is the part of the ticket service staff mail reads to find a
+// ticket's followers (#441).
+type StaffFollowers interface {
+	// ListMailableFollowerIDs: followers who are active staff or admin and not
+	// a service account. Whether each can still see the ticket is the
+	// send-time check's question (StaffAccess), not this one's.
+	ListMailableFollowerIDs(ctx context.Context, ticketID uuid.UUID) ([]uuid.UUID, error)
+}
+
 // StaffFanout wraps the dispatcher requests use.
 type StaffFanout struct {
 	next      notification.Dispatcher
 	users     StaffUsers
 	groups    StaffGroups
+	followers StaffFollowers
 	overrides func(context.Context) notification.StaffOverrides
 	log       *slog.Logger
 }
@@ -47,9 +57,9 @@ type StaffFanout struct {
 // NewStaffFanout returns a Dispatcher that forwards every event to next and
 // then queues staff mail for the events that call for it. overrides is read on
 // every event, so a change applies to the next email.
-func NewStaffFanout(next notification.Dispatcher, users StaffUsers, groups StaffGroups,
+func NewStaffFanout(next notification.Dispatcher, users StaffUsers, groups StaffGroups, followers StaffFollowers,
 	overrides func(context.Context) notification.StaffOverrides, log *slog.Logger) *StaffFanout {
-	return &StaffFanout{next: next, users: users, groups: groups, overrides: overrides, log: log}
+	return &StaffFanout{next: next, users: users, groups: groups, followers: followers, overrides: overrides, log: log}
 }
 
 func (f *StaffFanout) Dispatch(ctx context.Context, ev notification.Event) error {
@@ -104,6 +114,9 @@ func (f *StaffFanout) candidates(ctx context.Context, ev notification.Event) (no
 			cands = append(cands, candidate{*ev.AssigneeUserID, notification.SwitchAssigned})
 		}
 		cands = append(cands, f.groupMembers(ctx, ev, notification.SwitchGroup)...)
+		// An assignment mails the assigned group, so its members are left out
+		// of follower mail.
+		cands = append(cands, f.followerCandidates(ctx, ev, true)...)
 		return notification.EventStaffAssigned, cands, true
 
 	case ev.Type == notification.EventTicketReplied && ev.FromRequester:
@@ -112,16 +125,52 @@ func (f *StaffFanout) candidates(ctx context.Context, ev notification.Event) (no
 		// has the ticket would otherwise get mail for every reply on work
 		// that is not theirs.
 		//
-		// Ticket followers (PR-D of #464) join here, under SwitchActivity.
+		// Followers hear about every reply, whoever holds the ticket.
 		cands := []candidate{}
 		if ev.AssigneeUserID != nil {
 			cands = append(cands, candidate{*ev.AssigneeUserID, notification.SwitchActivity})
 		} else {
 			cands = append(cands, f.groupMembers(ctx, ev, notification.SwitchGroup)...)
 		}
+		// The group is mailed only while nobody holds the ticket.
+		cands = append(cands, f.followerCandidates(ctx, ev, ev.AssigneeUserID == nil)...)
 		return notification.EventStaffRequesterReplied, cands, true
 	}
 	return "", nil, false
+}
+
+// followerCandidates are the ticket's followers, except the assignee always,
+// and the assigned group's members when the group itself is mailed for this
+// event (groupMailed: an assignment, or a reply on a ticket nobody holds).
+// Those people are told through their own switches (Erik, 2026-10-14), and
+// following on top must not bring back mail they turned off. When the group is
+// not mailed (a reply while somebody holds the ticket) a member's follow
+// counts, so a member who follows hears about it. A lookup that fails costs
+// the followers their mail and nothing else: the people already found are
+// still mailed.
+func (f *StaffFanout) followerCandidates(ctx context.Context, ev notification.Event, groupMailed bool) []candidate {
+	ids, err := f.followers.ListMailableFollowerIDs(ctx, ev.TicketID)
+	if err != nil {
+		f.log.ErrorContext(ctx, "staff email: could not list the ticket's followers",
+			"event", ev.Type, "ticket_id", ev.TicketID, "error", err)
+		return nil
+	}
+	left := map[uuid.UUID]bool{}
+	if ev.AssigneeUserID != nil {
+		left[*ev.AssigneeUserID] = true
+	}
+	if groupMailed {
+		for _, m := range f.groupMembers(ctx, ev, notification.SwitchGroup) {
+			left[m.id] = true
+		}
+	}
+	out := make([]candidate, 0, len(ids))
+	for _, id := range ids {
+		if !left[id] {
+			out = append(out, candidate{id, notification.SwitchFollow})
+		}
+	}
+	return out
 }
 
 func (f *StaffFanout) groupMembers(ctx context.Context, ev notification.Event, reason notification.StaffSwitch) []candidate {

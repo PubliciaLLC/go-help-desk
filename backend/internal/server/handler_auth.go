@@ -162,6 +162,10 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		UserID:    u.ID,
 		Role:      u.Role,
 		MFAPassed: mfaPassed,
+
+		MustChangePassword: u.MustChangePassword,
+		// Not the raw flag: see auth.SessionData.PasswordChangeNeedsNoFactor.
+		PasswordChangeNeedsNoFactor: u.MustChangePassword && !mfaNeeded && !passkeyNeeded,
 	}
 	// The limit is chosen here, where we know which factor is owed: five
 	// minutes to type a code, fifteen to install an app and enrol.
@@ -175,10 +179,11 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	JSON(w, http.StatusOK, map[string]any{
-		"user":                  u,
-		"mfa_needed":            mfaNeeded,
-		"passkey_needed":        passkeyNeeded,
-		"mfa_enrollment_needed": mfaEnrollmentNeeded,
+		"user":                     u,
+		"mfa_needed":               mfaNeeded,
+		"passkey_needed":           passkeyNeeded,
+		"mfa_enrollment_needed":    mfaEnrollmentNeeded,
+		"password_change_required": u.MustChangePassword,
 	})
 }
 
@@ -268,6 +273,8 @@ func (s *Server) handleMFAVerify(w http.ResponseWriter, r *http.Request) {
 		Role:           a.Role,
 		MFAPassed:      true,
 		FactorVerified: true,
+
+		MustChangePassword: a.MustChangePassword,
 	}); err != nil {
 		handleError(w, err)
 		return

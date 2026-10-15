@@ -9,6 +9,7 @@ import { Select } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { AuditDiff } from '@/components/AuditDiff'
+import { followRemovalLabel, isFollowAction } from '@/lib/followAudit'
 import { EyeOffIcon } from 'lucide-react'
 import type { AdminAuditEntry } from '@/api/types'
 
@@ -196,8 +197,9 @@ export function AdminAuditPage() {
                         <span className="font-mono text-xs">{e.entity_type}</span>
                       </td>
                       <td className="px-4 py-3">
-                        <span className="font-medium text-gray-900">{labelFor(e.action)}</span>
-                        <AuditDiff before={e.before} after={e.after} names={e.names} />
+                        <span className="font-medium text-gray-900">{followRemovalLabel(e) ?? labelFor(e.action)}</span>
+                        {/* A follow entry's diff only repeats what its label says. */}
+                        {!isFollowAction(e.action) && <AuditDiff before={e.before} after={e.after} names={e.names} />}
                       </td>
                       <td className="px-4 py-3 text-gray-600">
                         {e.actor_masked

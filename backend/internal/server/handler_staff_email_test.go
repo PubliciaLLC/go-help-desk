@@ -32,7 +32,7 @@ func wireStaffMail(t *testing.T, h *harness) *staffMail {
 	t.Helper()
 	store := outboxstore.New(h.q)
 	queue := notify.NewOutboxDispatcher(store, []string{"email"}, nil)
-	h.dispatcher.outbox = notify.NewStaffFanout(queue, h.userSvc, h.groupSvc, h.adminSvc.StaffEmailOverrides,
+	h.dispatcher.outbox = notify.NewStaffFanout(queue, h.userSvc, h.groupSvc, h.ticketStore, h.adminSvc.StaffEmailOverrides,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	sent := &recordingChannel{}
 	w := notify.NewWorker(store, map[string]notification.Dispatcher{

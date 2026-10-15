@@ -115,6 +115,13 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Follow and unfollow entries (#441) are an administrator's to see unless
+	// the setting lets staff. Left out by the query itself, so the page, the
+	// offset and the total describe one sequence.
+	if role == user.RoleStaff && !s.adminSvc.StaffCanViewFollowAudit(ctx) {
+		f.ExcludeActions = ticket.FollowAuditActions()
+	}
+
 	page, err := s.auditStore.Search(ctx, f, limit, offset)
 	if err != nil {
 		handleError(w, err)
@@ -125,6 +132,12 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 	showDiff := role == user.RoleAdmin ||
 		(role == user.RoleStaff && s.adminSvc.StaffCanViewTicketChangeHistory(ctx))
 
+	// As in the per-ticket feed: a viewer who may see follow entries always
+	// gets their before and after (redacted), so a removal on reassignment
+	// can say whose follow it was rather than read as its actor stopping.
+	showFollow := role == user.RoleAdmin ||
+		(role == user.RoleStaff && s.adminSvc.StaffCanViewFollowAudit(ctx))
+
 	maskRequesters := s.masksRequestersIn(ctx, admin.MaskRequesterNamesAdminLog)
 	views := make([]adminAuditEntryView, len(entries))
 	names := make(map[uuid.UUID]auditActor)
@@ -134,7 +147,7 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 			ID: e.ID, EntityType: e.EntityType, EntityID: e.EntityID,
 			Action: e.Action, ActorID: e.ActorID, CreatedAt: e.CreatedAt,
 		}
-		if showDiff {
+		if showDiff || (showFollow && ticket.IsFollowAuditAction(e.Action)) {
 			v.Before, v.After = audit.Redact(e.Before, e.After)
 			diffs = append(diffs, v.Before, v.After)
 		}
@@ -160,7 +173,7 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 
 	// Names come from the diffs as sent, so what the diff gate and audit.Redact
 	// withheld is never resolved. One batch for the page.
-	if showDiff {
+	if len(diffs) > 0 {
 		resolved := s.resolveAuditNames(ctx, maskRequesters, diffs...)
 		for i := range views {
 			views[i].Names = resolved.forEntry(views[i].Before, views[i].After)

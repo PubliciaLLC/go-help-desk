@@ -144,6 +144,15 @@ func (s *Server) StillEntitled(ctx context.Context, u user.User, ticketID uuid.U
 		}
 		return slices.Contains(members, u.ID), nil
 	case notification.SwitchFollow:
+		// Unfollowing after the mail was queued stops it: the row must still be
+		// there.
+		ids, err := s.tickets.ListMailableFollowerIDs(ctx, ticketID)
+		if err != nil {
+			return false, fmt.Errorf("listing followers: %w", err)
+		}
+		if !slices.Contains(ids, u.ID) {
+			return false, nil
+		}
 		return s.CanViewTicket(ctx, &authmw.Actor{UserID: u.ID, Role: u.Role}, t)
 	}
 	return false, nil
