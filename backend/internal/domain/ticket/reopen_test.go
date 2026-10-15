@@ -593,3 +593,44 @@ func TestReopenWithNoPolicy_SLARestartedIsWrittenOnlyWhenARecordWasReplaced(t *t
 		require.NotNil(t, got.LastReopenedAt, "but the reopen is still a restart point")
 	})
 }
+
+// A reopen that starts a FIRST clock on a ticket that had no record replaces
+// nothing, so it writes no sla_restarted (Erik, 2026-10-15). The record itself
+// starts, and priority_changed still says so.
+func TestReopen_StartingAFirstClockWritesNoSLARestarted(t *testing.T) {
+	h := newPrioHarness(t)
+	tk := h.seedFinished("resolved", ticket.PriorityMedium)
+	h.store.slaRecords = nil // the ticket never had a record
+
+	_, err := h.svc.UpdateStatus(context.Background(), tk.ID, h.inProgressStatus.ID, reopenStaff)
+	require.NoError(t, err)
+
+	cur := onlyCurrent(h, tk.ID)
+	require.NotNil(t, cur, "high has a policy: a clock starts")
+	require.NotNil(t, cur.startedAt)
+	require.Zero(t, actionsOf(h, "sla_restarted"), "nothing was replaced, so nothing restarted")
+	pc := onlyEntry(t, h.auditStore.entries, "priority_changed")
+	require.Equal(t, ticket.SLAAttached, pc.After["sla_outcome"])
+}
+
+// Every door stamps the restart point, not only UpdateStatus: the instant, and
+// the Pending total at that instant.
+func TestReopen_EveryDoorStampsTheRestartPoint(t *testing.T) {
+	for _, d := range reopenDoors() {
+		t.Run(d.name, func(t *testing.T) {
+			h := newPrioHarness(t)
+			tk := h.seedFinished(d.from, ticket.PriorityMedium)
+			tk.SLAPausedSeconds = 100
+			h.store.seed(tk)
+			before := time.Now()
+
+			_, err := d.do(h, tk)
+			require.NoError(t, err)
+
+			got, _ := h.store.GetByID(context.Background(), tk.ID)
+			require.NotNil(t, got.LastReopenedAt)
+			require.False(t, got.LastReopenedAt.Before(before))
+			require.Equal(t, int64(100), got.PausedSecondsAtLastReopen)
+		})
+	}
+}

@@ -88,8 +88,16 @@ func (s *Server) ticketRouter() *chi.Mux {
 		r.Delete("/links/{targetId}/{linkType}", s.handleRemoveLink)
 		r.Get("/links", s.handleListLinks)
 
-		r.Get("/history", s.handleListStatusHistory)
-		r.Get("/audit", s.handleListTicketAudit)
+		// The status timeline and the audit feed are history, which a requester
+		// does not get (Erik, 2026-10-15: requesters see the current state of
+		// the ticket and its conversation, not its history). Staff and
+		// administrators only, like tags and followers; the ticket-access check
+		// above still answers first, so a ticket out of reach is a 404.
+		r.Group(func(r chi.Router) {
+			r.Use(authmw.RequireRole(user.RoleAdmin, user.RoleStaff))
+			r.Get("/history", s.handleListStatusHistory)
+			r.Get("/audit", s.handleListTicketAudit)
+		})
 
 		// Tags are how staff mark a ticket for other staff — "fraud-suspect",
 		// "legal-hold", "difficult-customer". DESIGN.md gives them to Staff and

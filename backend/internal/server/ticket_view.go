@@ -35,10 +35,10 @@ type ticketView struct {
 // from the JSON when 0, so zeroing it takes the key out. A nil actor is treated
 // as a requester, so a missed check fails closed.
 func forViewer(t ticket.Ticket, actor *authmw.Actor) ticket.Ticket {
-	if actor == nil || actor.Role == user.RoleUser {
-		t.ReopenCount = 0
+	if actor == nil {
+		return t.ForRole("")
 	}
-	return t
+	return t.ForRole(actor.Role)
 }
 
 // ticketViews attaches each ticket's live SLA status via one batch call

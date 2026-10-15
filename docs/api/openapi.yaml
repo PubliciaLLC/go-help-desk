@@ -3205,13 +3205,15 @@ paths:
       operationId: listTicketAudit
       summary: List a ticket's audit trail.
       description: |
-        The per-ticket activity feed: every audit entry recorded against
+        Staff and administrators only (second factor required). The per-ticket
+        activity feed: every audit entry recorded against
         the ticket, oldest first, capped at the newest 500 entries. Each entry has
         the action, the actor and the time.
+        A reporting user is refused with 403
+        forbidden on a ticket they can see (and 404 on one they cannot): requesters
+        see the ticket's current state and its conversation, not its history or
+        audit trail. Guests have no such route.
         Who sees what:
-        - A reporting user gets no actor for assigned and unassigned entries.
-          actor_id is null there, and the actor's name is not sent. Staff and
-          administrators are named.
         - before and after (the field-level diff, redacted) go only to
           administrators, and to staff when the staff change-history setting is
           on. Everyone else gets neither.
@@ -3241,7 +3243,7 @@ paths:
         - sessionCookie: []
         - apiKey: ['tickets:read']
         - oauthClient: ['tickets:read']
-      x-ghd-roles: [admin, staff, user]
+      x-ghd-roles: [admin, staff]
       x-ghd-mfa: true
       responses:
         '200':
@@ -3659,7 +3661,9 @@ paths:
       operationId: listStatusHistory
       summary: List a ticket's status changes.
       description: |
-        Every status transition on the ticket, oldest first. Status names and
+        Staff and administrators only (second factor required). Every status
+        transition on the ticket, oldest first. A reporting user is refused with
+        403 forbidden, as for the audit feed. Status names and
         colours are read from the statuses table when the request is served. The
         id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
@@ -3674,7 +3678,7 @@ paths:
         - sessionCookie: []
         - apiKey: ['tickets:read']
         - oauthClient: ['tickets:read']
-      x-ghd-roles: [admin, staff, user]
+      x-ghd-roles: [admin, staff]
       x-ghd-mfa: true
       responses:
         '200':

@@ -149,6 +149,9 @@ A reopen is any move from Resolved or Closed back to an open status: a requester
 
 - **A priority change can no longer undo a restart.** If a ticket's priority is moved to one with no SLA policy and later to one with a policy, the new SLA record resumes from the clock it left, or from the ticket's last reopen if that is later (it used to start from the ticket's creation, which could erase a restart). A reopen is remembered as a restart point even when it lands on a priority with no policy. The older record's met and breach marks are not copied. A ticket that never had an SLA record still starts from creation.
 
+- **Requesters no longer see the activity history.** `GET /tickets/{id}/audit` and `GET /tickets/{id}/history` now answer a reporting user `403`; before, a requester could read the audit feed (with assignment actors withheld) and the status timeline of their own ticket. The ticket page no longer shows them status-change events in the conversation either. Requesters see the ticket's current state and its public replies, as before. Staff and administrators are unchanged, and guests never had either route. A script that signs in as a requester and reads those two routes will now get `403`.
+- **`reopen_count` is staff-only**, in every ticket response including MCP.
+
 Database migration `000047` adds `tickets.reopen_count` (an integer, default 0), `last_reopened_at` and `paused_seconds_at_last_reopen`. It is safe to apply on a running instance.
 
 ## Admin API: data left behind, half-applied edits and path checks (#419)

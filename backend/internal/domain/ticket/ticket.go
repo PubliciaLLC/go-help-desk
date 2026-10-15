@@ -31,6 +31,17 @@ func (p Priority) Valid() bool {
 	return false
 }
 
+// ForRole is the ticket as a viewer of that role may be shown it. A requester
+// (and any role this does not know) gets the current state without what only
+// staff see: today that is reopen_count (Erik, 2026-10-15). Every place that
+// writes a ticket to a requester goes through it: the HTTP views and MCP.
+func (t Ticket) ForRole(role user.Role) Ticket {
+	if role != user.RoleStaff && role != user.RoleAdmin {
+		t.ReopenCount = 0
+	}
+	return t
+}
+
 // Raised is the next level up, and the highest level raised is itself. Used by
 // the first-reopen bump (#464).
 func (p Priority) Raised() Priority {

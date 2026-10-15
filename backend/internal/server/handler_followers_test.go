@@ -283,12 +283,19 @@ func TestFollowAudit_IsWrittenAndVisibleByRole(t *testing.T) {
 
 	// Staff do not, by default: off until an administrator turns it on.
 	require.Empty(t, onlyFollow(ticketAuditActions(t, h, staff, tk.ID)))
-	// A requester never does, on or off.
-	require.Empty(t, onlyFollow(ticketAuditActions(t, h, reporter, tk.ID)))
+	// A requester gets no audit feed at all (403, since 2026-10-15), on or off.
+	requireAuditRefused(t, h, reporter, tk.ID)
 
 	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyStaffCanViewFollowAudit, true))
 	require.Equal(t, []string{"followed", "unfollowed"}, onlyFollow(ticketAuditActions(t, h, staff, tk.ID)))
-	require.Empty(t, onlyFollow(ticketAuditActions(t, h, reporter, tk.ID)), "the setting is for staff, not requesters")
+	requireAuditRefused(t, h, reporter, tk.ID) // the setting is for staff, not requesters
+}
+
+func requireAuditRefused(t *testing.T, h *harness, cookie string, id uuid.UUID) {
+	t.Helper()
+	res := h.doSession(t, cookie, http.MethodGet, fmt.Sprintf("/api/v1/tickets/%s/audit", id), nil)
+	defer res.Body.Close()
+	require.Equal(t, http.StatusForbidden, res.StatusCode)
 }
 
 func onlyFollow(actions []string) []string {

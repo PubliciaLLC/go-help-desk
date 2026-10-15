@@ -471,7 +471,7 @@ func (s *Server) handleGetTicket(ctx context.Context, req mcpgo.CallToolRequest)
 		return errResult(notFoundFor(ident))
 	}
 
-	out := ticketWithReplies{Ticket: t}
+	out := ticketWithReplies{Ticket: t.ForRole(caller.Role)}
 	includeReplies := true
 	if v, ok := args["include_replies"].(bool); ok {
 		includeReplies = v
@@ -568,7 +568,7 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 	if err != nil {
 		return storeErr(ctx, "create ticket", err)
 	}
-	return jsonResult(t)
+	return jsonResult(t.ForRole(actor.Role))
 }
 
 func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -703,6 +703,9 @@ func (s *Server) handleListTickets(ctx context.Context, req mcpgo.CallToolReques
 	if err != nil {
 		return storeErr(ctx, "list tickets", err)
 	}
+	for i := range tickets {
+		tickets[i] = tickets[i].ForRole(caller.Role)
+	}
 	return jsonResult(tickets)
 }
 
@@ -777,7 +780,7 @@ func (s *Server) handleAssignTicket(ctx context.Context, req mcpgo.CallToolReque
 	if err != nil {
 		return storeErr(ctx, "assign ticket", err)
 	}
-	return jsonResult(t)
+	return jsonResult(t.ForRole(caller.Role))
 }
 
 func (s *Server) handleUpdateTicketStatus(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -816,7 +819,7 @@ func (s *Server) handleUpdateTicketStatus(ctx context.Context, req mcpgo.CallToo
 	if err != nil {
 		return storeErr(ctx, "update ticket status", err)
 	}
-	return jsonResult(t)
+	return jsonResult(t.ForRole(caller.Role))
 }
 
 // handleCreateFollowUp is create_follow_up (#349). The rule — staff and admin
@@ -850,7 +853,7 @@ func (s *Server) handleCreateFollowUp(ctx context.Context, req mcpgo.CallToolReq
 	if err != nil {
 		return storeErr(ctx, "create follow-up", err)
 	}
-	return jsonResult(t)
+	return jsonResult(t.ForRole(caller.Role))
 }
 
 // catalogCategory is the Category/Type/Item tree as list_categories returns it.

@@ -357,7 +357,9 @@ export function TicketDetailPage() {
   const { data: statusHistory = [] } = useQuery({
     queryKey: ['statusHistory', id],
     queryFn: () => listStatusHistory(id),
-    enabled: !!ticket,
+    // History is for staff (Erik, 2026-10-15): the API refuses a requester, and
+    // the thread shows them the conversation only.
+    enabled: !!ticket && (user?.role === 'staff' || user?.role === 'admin'),
   })
 
   type TimelineItem =

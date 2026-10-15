@@ -1240,16 +1240,16 @@ func (s *Service) changePriorityInTx(ctx context.Context, st Store, au audit.Sto
 		}
 	}
 
-	// A reopen that started the clocks over says so in an entry of its own, so
-	// the audit view's action filter finds the moments a clock started again,
-	// and so a restart at an unchanged priority is not silent.
-	if reopen && (start != nil || outcome == SLARemoved) {
-		var prev, next map[string]any
-		next = map[string]any{}
-		if cur != nil {
-			prev = map[string]any{"sla_record_id": cur.ID, "sla_policy_id": cur.PolicyID}
-			next["previous_sla_record_id"] = cur.ID
-		}
+	// A reopen that replaced a clock says so in an entry of its own, so the
+	// audit view's action filter finds the moments a clock started again, and so
+	// a restart at an unchanged priority is not silent. Only when a record was
+	// superseded (Erik, 2026-10-15): a reopen that starts a first clock on a
+	// ticket with none replaced nothing, and a priority with no policy still
+	// supersedes the old record (and starts none). With the SLA off nothing was
+	// superseded either.
+	if reopen && (outcome == SLARestarted || outcome == SLARemoved) {
+		prev := map[string]any{"sla_record_id": cur.ID, "sla_policy_id": cur.PolicyID}
+		next := map[string]any{"previous_sla_record_id": cur.ID}
 		if start != nil {
 			next["sla_record_id"] = start.ID
 			next["sla_policy_id"] = start.PolicyID

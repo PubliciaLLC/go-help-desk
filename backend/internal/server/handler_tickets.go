@@ -793,7 +793,7 @@ func (s *Server) handleResolveTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, t)
+	JSON(w, http.StatusOK, forViewer(t, authmw.GetActor(r)))
 }
 
 // POST /api/v1/tickets/{id}/reopen
@@ -824,7 +824,7 @@ func (s *Server) handleReopenTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, t)
+	JSON(w, http.StatusOK, forViewer(t, authmw.GetActor(r)))
 }
 
 // POST /api/v1/tickets/{id}/follow-up
@@ -896,7 +896,7 @@ func (s *Server) handleCloseTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, t)
+	JSON(w, http.StatusOK, forViewer(t, authmw.GetActor(r)))
 }
 
 // POST /api/v1/tickets/{id}/links
@@ -946,7 +946,7 @@ func (s *Server) handleAddLink(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
-		JSON(w, http.StatusOK, t)
+		JSON(w, http.StatusOK, forViewer(t, authmw.GetActor(r)))
 		return
 	}
 

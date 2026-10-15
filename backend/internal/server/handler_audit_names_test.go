@@ -254,7 +254,12 @@ func TestAuditNames_StaffDiffSettingStillGatesThem(t *testing.T) {
 	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyStaffCanViewTicketChangeHistory, true))
 	own := createTicketVia(t, h, h.doAsUser)
 	plantEntry(t, h, own, "planted_status", map[string]any{"status_id": newID}, nil)
-	body, _ := namesView(t, h, h.doAsUser, "ticket", own)
+	// (Refused outright since 2026-10-15: a requester gets no audit feed.)
+	res := h.doAsUser(t, http.MethodGet, "/api/v1/tickets/"+own+"/audit", nil)
+	body, err := readAllBody(res)
+	require.NoError(t, err)
+	res.Body.Close()
+	require.Equal(t, http.StatusForbidden, res.StatusCode)
 	require.NotContains(t, body, `"names"`)
 	require.NotContains(t, body, newID)
 
