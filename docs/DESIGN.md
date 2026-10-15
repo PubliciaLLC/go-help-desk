@@ -2533,8 +2533,8 @@ on the existing webhook feature instead of as plugins.
   staff-only note), `ticket.resolved`, `ticket.closed`, `ticket.reopened` (every reopen: a requester's reply, a status change out of Resolved or Closed, and `POST /reopen`) and
   `ticket.linked`.
   *Changes under #506:* a hook will match a change when any of the change's
-  kinds is in its list, and fire once; the raw body gains `Kinds`, `Changes`
-  and `Ticket`. See Ticket Events: One Change, One Event.
+  kinds is in its list, and fire once. The raw body does not change. See
+  Ticket Events: One Change, One Event.
   **What the raw format carries** ([#448](https://github.com/PubliciaLLC/go-help-desk/issues/448)).
   The raw body is **ids only**: the event name (`Type`), `TicketID`, `ActorID`
   (null for a system event), `OccurredAt` and a `Payload` holding only the ids
@@ -2807,7 +2807,8 @@ on the existing webhook feature instead of as plugins.
 
 ## Ticket Events: One Change, One Event (design for #506, not built yet)
 
-**Status: a design for review.** Nothing in this section is built. Where it
+**Status: a design under review, with Erik's rulings of 2026-10-15 folded
+in** (listed under Open questions). Nothing in this section is built. Where it
 changes something that the sections above describe as built, that section
 carries a short *Changes under #506* note that points here. Issue:
 [#506](https://github.com/PubliciaLLC/go-help-desk/issues/506).
@@ -2991,7 +2992,7 @@ fixed order is the order of importance:
 `ticket.classified`, `ticket.replied`, `ticket.note_added`, `ticket.linked`.
 
 Two kinds are new: `ticket.priority_changed` and `ticket.classified`
-(category, type or item). See open question 3.
+(category, type or item). Both can be subscribed to (ruling 3).
 
 **Status kinds are made consistent.** Every status move carries
 `ticket.status_changed`. A move into Resolved also carries
@@ -3065,7 +3066,7 @@ transaction. Two doors do several things today:
 
 #### 3. The outbox write moves into the change's transaction
 
-**Recommendation: yes.** This makes the outbox a true transactional
+**Ruled yes (Erik, 2026-10-15).** This makes the outbox a true transactional
 outbox. One change, one event already means rewriting every producer's
 dispatch point. Moving that point inside the transaction is a small step on
 top. It closes the gap where a crash between the commit and the enqueue
@@ -3154,17 +3155,20 @@ to. For `*` it is simply the first kind. This is worked out again at each
 attempt, from the subscription at that moment, in the same way as the filter.
 So a hook subscribed only to `ticket.status_changed` gets
 `"Type": "ticket.status_changed"` for the reopen example above, exactly as
-today. Its body also carries `Kinds`, which says the change was also a
-reopen, an assignment and a priority change. The history's `event_type`
-column stores the `Type` that was sent.
+today. Its body is exactly today's body. The history's `event_type` column
+stores the `Type` that was sent.
 
-**Raw body.** It keeps every key it has today, with the same meaning, and adds
-three: `Kinds`, `Changes` and `Ticket`. All three are ids and enums only, so
-the "no address, subject, tracking number, status name or text" rule holds.
-Two things are new on the wire. **Priority is sent** (as an enum, in
-`Changes` and `Ticket`); today's text lists priority as never sent. And the
-classification ids are sent. See open question 2. The allow-list approach
-stays: `Payload` is still filtered to its two id keys.
+**Raw body: unchanged (Erik, 2026-10-15).** `Kinds`, `Changes` and `Ticket`
+live on the event inside the server, so that the matching and the filter can
+use them. They are not sent. The raw body is still `Type`, `TicketID`,
+`ActorID`, `OccurredAt` and the allow-listed `Payload` ids (`new_status_id`,
+`target_id`). No priority or category id is sent, including for the two new
+names: a `ticket.priority_changed` or `ticket.classified` delivery has no
+`Payload`, and the receiver reads the ticket through the API by `TicketID`.
+There is no version flag. (Erik's ruling describes the body as "ids and
+tracking number only, as today". Today's raw body has no tracking number:
+#448 removed it. This design keeps the body exactly as it is, without a
+tracking number, unless Erik says otherwise.)
 
 **Chat and ITSM formats.** The headline comes from the hook's `Type`, as
 today. Below the headline, the message adds one line naming the other kinds
@@ -3223,30 +3227,28 @@ because she no longer holds the ticket.
 - **A hook subscribed to `ticket.status_changed`, for a change that also
   reopened the ticket**, receives one delivery with
   `Type: ticket.status_changed` and the same `Payload.new_status_id` as
-  today. It also gets the new `Kinds`, `Changes` and `Ticket`.
+  today. The body is byte-for-byte today's shape.
 - **What does change for receivers** (for the upgrade notes):
   - A `*` hook, or a hook with several names, gets one delivery where it got
     two or three. A receiver that switches on `Type` and handles only, say,
     `ticket.replied` will not see the reply in a reply that reopened a
-    ticket, because `Type` is `ticket.reopened`. Such a receiver must look at
-    `Kinds`. This is the cost of one event per change, and it cannot be
-    avoided. Hooks subscribed to a single name are not affected.
+    ticket, because `Type` is `ticket.reopened`, and the body does not list
+    the other kinds. **Still open:** see open question A. Hooks subscribed to
+    a single name are not affected.
   - Hooks fire where they did not before, because the status kinds are now
     consistent: `ticket.status_changed` on the Resolve button and on a close,
     `ticket.resolved` and `ticket.closed` on a `PATCH`, and
     `ticket.status_changed` on a requester's reopening reply.
   - `*` hooks start receiving `ticket.priority_changed` and
     `ticket.classified`.
-- **Payload version flag:** none is recommended. The change to the body only
-  adds keys, and JSON receivers ignore keys they do not know. See open
-  question 4.
+- **Payload version flag:** none (Erik, 2026-10-15). The body does not
+  change.
 - **Rows queued in the old shape during the upgrade.** Outbox rows and
   webhook history copies are JSON. An old row has no `Kinds`. The decoder
   reads such a row as `Kinds = [Type]` and fills `Ticket` from the old
   `attrs` and assignee keys. Every consumer then handles it unchanged: it
-  is a one-kind change. An old per-hook row is delivered as before, with no
-  `Kinds`, `Changes` or `Ticket` in its body. Redelivering an old history
-  entry does the same. An old `email` row has already been split per person
+  is a one-kind change. An old per-hook row is delivered as before.
+  Redelivering an old history entry does the same. An old `email` row has already been split per person
   on the request (old `staff.*` rows), so it is sent as it is, and the worker
   does not split it again. The worker splits only rows that carry `Kinds`.
   This is tested with stored rows in the old shape.
@@ -3306,8 +3308,8 @@ the outbox and transaction tests use real Postgres.
   returns, before any worker runs.
 - **Webhooks:** fires at most once when several kinds match. `Type` is the
   first subscribed kind. A retry recomputes `Type` and the match after the
-  subscription changes. The raw body keeps the old keys and adds only the
-  three new ones, and all of them are ids or enums. The existing filter,
+  subscription changes. The raw body is byte-for-byte today's shape for
+  every kind, and the two new names send no `Payload`. The existing filter,
   Redeliver and 409 tests pass unchanged.
 - **Email:** template precedence for each combination, and one requester mail
   per change. Every existing staff-mail test (`staff_test.go`,
@@ -3335,52 +3337,58 @@ tests. It splits cleanly into three commits that can be reviewed in order:
 3. **Consumers** (`notify/webhook.go`, `webhook_body.go`, `format*.go`,
    `email.go`, `staff.go` moved to the worker, `outbox.go`;
    `cmd/server/main.go` wiring), plus DESIGN.md, `docs/api/openapi.yaml`
-   (the `WebhookEvent` enum gains two names and a description of the body),
+   (the `WebhookEvent` enum gains two names; the body schema is unchanged),
    and the upgrade notes.
 
 The risk is in the staff-mail move and in the `PATCH` consolidation. Both
 are covered by existing tests that must keep passing.
 
-#### 12. Open questions for Erik
+#### 12. Rulings and open questions
 
-1. **Is the outbox write moved into the change's transaction in this PR?**
-   *Recommended: yes* (section 3). It costs the third `InTx` argument and
-   moving staff fan-out to the worker. Without it, one event per change
-   still works, but the crash window stays.
-2. **Should the raw body carry priority and classification ids?** Today's
-   text lists priority as never sent. *Recommended: yes.* They are enums and
-   ids, not text anyone wrote, and a priority change cannot be described
-   without them.
-3. **Should `ticket.priority_changed` and `ticket.classified` be new event
-   names a hook can subscribe to?** *Recommended: yes.* Erik's list of what
-   the event carries includes both. A `*` hook has to be told some `Type` for
-   a priority-only change, and a name that cannot be subscribed to would be
-   the odd one out. The alternative is that these changes appear only inside
-   another event's `Changes`, and a change of only priority or only
-   classification sends nothing, as today.
-4. **Is a payload version flag needed?** *Recommended: no.* The body change
-   only adds keys. The breaking part (fewer deliveries to multi-name hooks)
-   is not something a flag can fix, and it goes in the upgrade notes. 1.3.0
-   has not shipped, and the raw body already changed during the betas.
-5. **Should the status kinds be made consistent?** (Resolve and Close also
-   carry `status_changed`; a `PATCH` to Resolved or Closed also carries
-   `resolved` or `closed`.) *Recommended: yes.* It is the rule #464 set for
-   reopens, applied to the other two, and without it a hook still depends on
-   which button was pressed.
-6. **Should auto-assignment move into the create transaction?** *Recommended:
-   yes, in this PR.* Without it, the most common action, creating a ticket,
-   is still two events, and a group filter still never matches a creation.
-7. **Is "one event per ticket" right for a change that touches two tickets?**
-   (A follow-up gives one event for the new ticket and one `linked` event for
-   the original.) *Recommended: yes*, because "on the work order" reads as
-   per ticket.
-8. **Is it right that staff mail candidates are decided by the worker, a
-   moment after the commit, instead of on the request?** *Recommended: yes.*
-   It is forced by question 1. The send-time checks already make the final
-   decision at send time.
-9. **Order relative to 1.3.0.** *Recommended:* build it as one PR on top of
-   #504 after #503 and #504 merge, as the issue says. Give it its own Fable
-   gate. Write the upgrade notes in the same PR.
+**Ruled by Erik, 2026-10-15:**
+
+1. **The outbox rows are written inside the change's transaction.** Yes
+   (section 3).
+2. **Event names are the same whichever button made the change.** Yes:
+   Resolve and Close also carry `status_changed`, and a `PATCH` to Resolved
+   or Closed also carries `resolved` or `closed`. Priority and category
+   changes now produce events.
+3. **`ticket.priority_changed` and `ticket.classified` are names a hook can
+   subscribe to**, with no priority or category id in the webhook body.
+4. **The webhook body is unchanged.** The event inside the server carries
+   the kinds, the from and to of each field, and the ticket state, so that
+   subscriptions and filters can match on them. The body sent does not gain
+   them. There is no version flag.
+5. **Auto-assignment moves into the create transaction.** Yes.
+
+**Still open:**
+
+- **A. A hook subscribed to several names, or to `*`, gets one delivery per
+  change, labelled with one name.** A requester's reply that also reopened
+  the ticket arrives as `ticket.reopened` only, and the body does not say it
+  was also a reply. Options:
+  - (a) Add only a list of event names to the body, for example
+    `"Kinds": ["ticket.reopened", "ticket.status_changed", "ticket.replied"]`.
+    Names, no values. This adds one key to the body.
+  - (b) Accept it. A receiver that needs the full picture reads the ticket
+    through the API. Document it in the upgrade notes.
+  - (c) Send one delivery per subscribed name for the same change. This keeps
+    today's behaviour for such hooks, but it is the opposite of "fire at most
+    once".
+
+  *Recommended: (a).* It is the smallest change that loses nothing, and it
+  carries no content. (c) brings back the duplicates this issue exists to
+  remove.
+- **B. Is it right to send one event per ticket when one change touches two
+  tickets?** (A follow-up gives one event for the new ticket and one `linked`
+  event for the original.) *Recommended: yes*, because "on the work order"
+  reads as per ticket.
+- **C. Order relative to 1.3.0.** *Recommended:* one PR on top of #504, built
+  after #503 and #504 merge, with its own Fable gate and with the upgrade
+  notes in the same PR.
+
+That staff mail recipients are decided by the worker, a moment after the
+commit, follows from ruling 1 (section 3).
 
 ---
 
