@@ -70,7 +70,7 @@ Core fields (all editions):
 - **Category** (required)
 - **Type** (optional, depends on Category having Types defined)
 - **Item** (optional, depends on Type having Items defined)
-- **Priority** (a fixed set of four: `critical`, `high`, `medium`, `low`; the set is not configurable)
+- **Priority** (a fixed set of four: `critical`, `high`, `medium`, `low`; the set is not configurable). Set at creation; staff and admin can change it afterwards (`PATCH /tickets/{id}`), which re-matches the ticket's SLA policy for the new priority without restarting its clock. Refused on a Resolved or Closed ticket (see SLA Tracking → Re-matching when priority changes, #443)
 - **Status** (customizable statuses per instance, see Ticket Lifecycle below)
 - **Assignee** (staff member or group)
 - **Attachments** (file uploads)
@@ -229,7 +229,7 @@ closed ticket, so a clear `409 ticket_closed` for *their own* ticket tells them
 nothing they cannot already read. It never becomes an existence oracle: a ticket
 the caller may not see answers the not-found refusal first (see Authorization),
 for replies, field edits and links alike. Writes that were already refused by
-role (status, assignment, reclassification, resolve, close, tags) keep their
+role (status, assignment, reclassification, priority, resolve, close, tags) keep their
 `403`; the closed state does not change which refusal a role gets.
 
 **Staff and admin: the minimal reading.** Only *leaving* Closed is removed.
@@ -237,6 +237,33 @@ Replying (including internal notes), assignment, reclassification, tags,
 linking and attachments are unchanged on a closed ticket, because they do not
 change what state the ticket is in, and removing them is not what was decided.
 (A staff reply on a closed ticket still mails the guest a read-only link, below.)
+**Priority is the exception:** it cannot be changed on a Resolved or Closed
+ticket (`409 ticket_closed`), because a finished ticket's priority is part of
+what its SLA was measured against (#443). A `PATCH /tickets/{id}` that sends a
+priority and would leave the ticket Resolved or Closed (or that touches one
+already there) is refused whole with that `409`: the status or assignment in the
+same request is not saved first.
+
+**One PATCH, one outcome (#468).** `PATCH /tickets/{id}` can change a ticket's
+status, assignment, classification and priority in one request, and each is
+saved on its own. Every refusal the request can meet is decided before the first
+of them is saved, so a refused request changes nothing and writes no audit
+entry: an invalid priority value, a priority or assignment or reclassification
+from a role that may not make it, an invalid classification, a priority on a
+ticket that would end up Resolved or Closed, an assignee that cannot be given a
+ticket (unknown, deleted, disabled or a reporting user), a group that does not
+exist, and the status change's own refusals (it is the first write). The service
+writes check again, but only what each can: `Assign` re-checks the assignee and
+group on the locked row; `ChangePriority` re-checks the role and the closed state
+on the locked row; `UpdateStatus` checks the role, then re-checks the reopen
+policy and an inactive status on the locked row; `UpdateCTI` re-checks the
+classification, without a lock. The assignment and reclassification roles are not
+checked by the service: authorisation belongs to the caller, so the handler does
+it before the first write, and a caller other than this handler (MCP, the
+scheduler) must do its own. What stays possible after an earlier write is what
+only the write can know: a concurrent change in the milliseconds between check
+and write (an assignee disabled, the ticket closed) or a database failure.
+Before this, a request whose assignee was refused had already saved its status.
 Over MCP `update_ticket_status` answers a move out of Closed with the closed
 refusal and names the follow-up instead.
 
@@ -401,7 +428,7 @@ Staff and administrators can **follow** a ticket to hear about its activity with
 
 `GET /api/v1/tickets/{id}/audit` (#129) answers "who changed this ticket, and when" from the audit log the domain layer already writes, without database access. Shown on the ticket detail page next to the status timeline, staff and admin only — a UI choice, not a new permission: the route inherits `requireTicketAccess` like every other route under `/tickets/{id}`.
 
-This route only *reads* the audit log; it does not change what the domain layer writes to it. What gets written is narrower than "every mutation": `created`, `status_changed`, `assigned`, `unassigned` (an assignment cleared, or a departing user's tickets returned to the queue, #326), `resolved`, `closed`, `followed` and `unfollowed` (Ticket Followers above; withheld from staff unless `staff_can_view_follow_audit` is on, and from requesters always), and `reopened` (a requester's reply that reopens a Resolved ticket, and `POST /reopen`, which is a force-reopen allowed only by `closed_reopen_policy` (#349) and says so with `forced_reopen` and the policy in its "after"). CTI reclassification and custom-field edits are not recorded, and priority is set at creation and not changed afterwards. Those are gaps in what `ticket.Service` writes, not something this route introduces.
+This route only *reads* the audit log; it does not change what the domain layer writes to it. What gets written is narrower than "every mutation": `created`, `status_changed`, `assigned`, `unassigned` (an assignment cleared, or a departing user's tickets returned to the queue, #326), `resolved`, `closed`, `followed` and `unfollowed` (Ticket Followers above; withheld from staff unless `staff_can_view_follow_audit` is on, and from requesters always), `reopened` (a requester's reply that reopens a Resolved ticket, and `POST /reopen`, which is a force-reopen allowed only by `closed_reopen_policy` (#349) and says so with `forced_reopen` and the policy in its "after"), `priority_changed` (#443: the "after" says why the priority changed, `manual` or `reopened`, what happened to the ticket's SLA, and the ids of the SLA policy and record in force before and after) and `sla_restarted` (#443: written when a reopen starts the SLA clocks over, with the id of the record it replaced; a staff priority change never writes it. Nothing writes it on this build: the reopen that does arrives with #464). CTI reclassification and custom-field edits are not recorded. Those are gaps in what `ticket.Service` writes, not something this route introduces.
 
 That inherited gate is enough for the entry itself (status, priority, subject, assignee are already visible on the ticket to anyone who can view it), but not for the *actor* on `assigned`/`unassigned` entries specifically: assignment is staff/admin-only, and unlike every other action here, nothing else on the ticket discloses that actor's identity to a reporting user — the ticket's own `assignee_user_id` is a bare UUID, and `GET /api/v1/staff`, the only place that resolves one to a name, is itself staff/admin-gated. So the API withholds `actor_id`/`actor_name` on those two actions when the caller is a plain reporting user, the same way `ticket.VisibleReplies` withholds internal-note authorship from that same viewer. Every other action's actor is fine to show as-is, subject to requester-name masking below (see `StatusHistoryEntry.ChangedByName`, which already does, via `/history`).
 
@@ -607,6 +634,7 @@ Routing is best-effort: a failure to assign leaves the ticket unassigned and doe
 ### Local Auth (Default)
 
 - Username/password with bcrypt hashing at **cost 12** (`user.ProductionBcryptCost`, #453). Releases up to 1.2 hashed at cost 10; a hash made at a lower cost is replaced at that account's next successful password sign-in, with a write conditional on the old hash so a password changed in between is never overwritten. The upgrade is best effort: a failure is logged and the sign-in still succeeds. While accounts are still on a lower cost, a wrong password for such an account spends the extra comparisons needed to cost as much as one at cost 12, so it takes as long to refuse as an address with no account. An account with no password (one that signs in only through SSO) or with a hash bcrypt cannot read is refused after the same comparison an unknown address gets, so a wrong password does not say which addresses belong to SSO-only accounts (#476). A hash at a higher cost than this one still takes longer to refuse; none is ever written. A password is 8 to 72 **bytes**, the same rule wherever one is set: first-run setup, admin create, admin reset, the account page and signup verification (`user.ValidatePassword`, #368). The upper bound is bcrypt's: it reads only the first 72 bytes and refuses to hash more. It counts bytes, not characters, so accented letters take 2 bytes each and most other non-Latin characters 3 or 4, and a 25-character passphrase in Chinese is already too long. A password over the limit is refused with a 400 that names it (`bad_request`, or `password_too_long` at signup verification). Sign-in applies no maximum, so a hash made elsewhere by a bcrypt that silently truncated still accepts its owner's full password: only the first 72 bytes are compared, as bcrypt always has.
+- **Old hashes stop working after N days (#453).** Rehash at sign-in only reaches accounts that sign in, so a hash made below cost 12 is refused too once the grace period ends. `admin.KeyPasswordRehashStartedAt` (`password_rehash_started_at`) holds the moment 1.3.0 first ran against the database, written once by migration 000044 (`ON CONFLICT DO NOTHING`; a fresh install has no old hashes, so its date changes nothing). It is a settings row rather than an `instance_secrets` row: that table is for secrets (a name allowlist and at least 32 bytes), and a date is not one. It is a known key only because the migration test requires every seeded key to be one; `PATCH /admin/settings` refuses it with `readonly_setting`, it is auth-critical, and the settings dump leaves it out, so nobody can restart the clock. N is `password_rehash_grace_days` (Authentication tab, default **30**, 1 to 365 enforced when saved; an unreadable or out-of-range stored value reads as 30). Sign-in only: `user.Service.VerifyPasswordForSignIn` returns `ErrPasswordResetRequired` for a **correct** password on a hash below the current cost once `started_at + N days` has passed, and the handler answers 403 `password_reset_required` telling the person to use "Forgot password" or ask an administrator. A wrong password still answers 401 `invalid_credentials`, so a guesser learns nothing about the hash. The refusal spends the same bcrypt work as a wrong password on that hash (it burns the cost difference instead of the rehash), pinned by a work-counting test next to #475's. `VerifyPassword` (confirming the current password while changing it) never refuses, since changing the password is the cure. No deadline recorded, or one that cannot be read, means no refusal. **Every administrator is exempt** (rehashed at sign-in as before): administrators are who reset everyone else, setup does not reopen, and email may be off. An earlier version exempted only the last active administrator, which still locked out the others; Erik widened it. Staff and requesters are refused. The SAML restriction (`saml_required`, password sign-in limited to administrators) is checked first, so a non-administrator under SAML gets that refusal rather than a reset instruction. Part D (#451) will send the reset link from the refusal; the handler marks the spot.
 - Available for all roles by default. With `saml_enabled` on, only administrators keep it (see SAML below).
 - **MFA** (optional toggle `mfa_enabled` in admin settings): a second factor is **either** a TOTP authenticator app (Google Authenticator, Authy, etc., enrolled by QR code) **or** a registered passkey (below). Admin can enforce MFA for specific roles (`mfa_enforced_roles`) or all users; an enforced user with no factor is sent to enrolment at sign-in, and right after verifying a self-service signup.
 - **A half-signed-in session expires** (#452). After the password is accepted but before the second factor is done, the session is good for **5 minutes** when a code from an existing factor is owed (TOTP or passkey) and **15 minutes** for first-time enrolment, which takes longer (installing an app, scanning a code). The limit is chosen when the session is created (`auth.PendingDeadline`) and stored as `SessionData.PendingUntil`; saving a staged enrolment secret does not extend it. Past it, `SessionAuth` deletes the session row and the request carries no actor, so the route answers its usual 401 and the person signs in with their password again; a refused code is never checked, so it does not use up an MFA attempt. The cookie and row are also given that lifetime so an abandoned sign-in clears itself. A pending session with no `PendingUntil` (saved before this existed) counts as expired, so anyone mid-sign-in at upgrade signs in once more. A fully signed-in session is not affected. Enrolment stays outside `RequireMFA`, so the password is still a way in: the sole administrator can always sign in again and recover (`TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor`).
@@ -778,7 +806,7 @@ re-enrolment for a TOTP-protected account since the re-enrolment fix.
 a second factor required up front:
 
 ```
-go-help-desk reset-factors <email>
+/app/server reset-factors <email>
 ```
 
 It clears the account's TOTP enrolment, removes its registered passkeys and ends
@@ -786,13 +814,62 @@ its sessions (one statement), so the next sign-in reaches enrolment and the
 person starts again. It is the answer for every cause of lockout, and for the
 sole administrator the only one, since the web path must keep refusing (a
 password alone being enough to replace somebody's second factor is the bypass
-the guards exist to prevent). It takes an email address only and cannot set a
-password (see the identity provider guard below). It grants nothing new: anyone
+the guards exist to prevent). It takes an email address only and does not touch
+the password (`unlock`, below, does). It grants nothing new: anyone
 able to run it already has the filesystem and the database credentials, so it
 widens no web-facing surface, which a recovery code (another secret at rest,
 worth stealing, the property passkeys exist to remove) would.
 
-**It writes an audit entry** naming the account and the operating-system user
+**`unlock` is the complete version** (#497):
+
+```
+/app/server unlock <email>
+```
+
+(In the published image the binary is `/app/server`:
+`docker compose exec app /app/server unlock <email>`.) In ONE transaction it
+does what `reset-factors` does (`ClearFactors`: every second factor and every
+session), and also re-enables the account if it was disabled, clears the TOTP
+failure count and lock, and sets a **new random password** (24 characters from
+`crypto/rand`, hashed at the current bcrypt cost) that it prints **once** to
+standard output after the commit, never to the log and never into the audit
+entry. It refuses an unknown or deleted address, and if any step fails
+(the audit write included) nothing changes and nothing is printed. It does not
+touch the in-memory sign-in throttle, which lives in the server process and
+only delays a login, never refuses the right password.
+It refuses an OAuth client's service account (#490), which has no password to unlock, naming the client.
+
+**The password it prints must be changed at the next sign-in.** It sets
+`users.must_change_password` (migration 000045). While the flag is set the
+session a correct password opens may do exactly one thing, change the password
+(`PATCH /me/password`, which asks for the current password as ever); the
+login answer carries `password_change_required` and the login page shows the
+change step first. Every other route answers `403 password_change_required`:
+`RequireMFA` refuses it for all the routes behind it, and `RequirePasswordCurrent`
+for the enrolment routes outside it, the way the MFA-pending gate holds a
+half-signed-in session. Changing the password (`SetUserPasswordHash`) clears the
+flag. **The flag must never stop an account signing in**, which is the
+last-administrator rule applied to a new gate: it gates nothing at login, and
+the password change is reachable without having passed MFA. Otherwise an
+administrator whose role must enrol MFA would be held at "enrol first" by
+`RequireMFA` and at "change the password first" by the flag, with a way out of
+neither. That exemption is for a session that owed no factor when the password was
+checked (the login decides, into `PasswordChangeNeedsNoFactor`), never for the raw
+flag: the flag outlives the cleared factors, and a single sign-on session, which
+ignores it, can enrol a new one, after which a password alone must not be enough
+to change the password (`TestMustChangePassword_DoesNotLetAPasswordOnlySessionSkipAnEnrolledFactor`).
+An account with a factor verifies it first and then changes the password
+(`TestMustChangePassword_DoesNotLockOutAnAccountThatOwesEnrolment` covers the
+other case).
+Single sign-on and passkey sign-ins do not read the flag; it is about the
+password, and a federated administrator who never uses it simply keeps it set.
+
+**Its audit entry** (`action: "account_unlock"`, `actor: "server console"`, with
+the operating-system user and host and no actor id) is written in the same
+transaction, unlike `reset-factors`' best-effort write below: this command
+hands out a credential, so an unlock with no record is refused.
+
+**`reset-factors` writes an audit entry** naming the account and the operating-system user
 and host that ran it, with no actor id: nobody signed in, and inventing one
 would record a claim rather than a fact. The shape (`entity_type: "user"`,
 `action: "mfa_reset"`) is the one the user page's Reset MFA writes, and an
@@ -1040,10 +1117,10 @@ infrequent action from the settings page, not a path an unauthenticated attacker
 can drive, and closing it would need a transaction spanning the users and
 settings tables.
 
-**Not built:** extending `reset-factors` to also set a password, so a locked-out
-federated administrator has a complete way back and not just a warning that
-would have stopped them getting here (#300's option 4). `reset-factors` exists
-(see Passkeys) and clears factors only.
+**The complete way back is `/app/server unlock <email>`** (#497, #300's option
+4), so a locked-out federated administrator has more than a warning that would
+have stopped them getting here: it sets a password. See Passkeys, "The way back
+in", for what it does. `reset-factors` remains and clears factors only.
 
 ---
 
@@ -2871,8 +2948,10 @@ staff reply keeps that reply as its first response.
 
 **Deleting a policy.** A policy that any ticket has been tracked against
 cannot be deleted: those tickets' targets and breach stamps are measured
-against it. The API refuses with 409, naming how many tickets depend on
-it. A policy that has never matched a ticket can be deleted freely.
+against it, and that includes a record a priority change has since superseded
+(see Re-matching when priority changes). The API refuses with 409, naming how
+many tickets depend on it. A policy that has never matched a ticket can be
+deleted freely.
 
 ### Policy Matching
 
@@ -2883,6 +2962,121 @@ When a ticket is created, the system selects an SLA policy by specificity:
 3. Category only
 4. A catch-all (no Priority, no Category)
 5. No SLA — if no policy matches
+
+#### Re-matching when priority changes
+
+A ticket can change priority after it is created (staff and admin,
+`PATCH /tickets/{id}`, #443). The SLA policy is then matched again, by the same
+four tiers, against the new priority and the ticket's category, and the change
+is audited. **A staff change never restarts a clock.** Only a reopen does, and nothing
+calls that path yet: see **A reopen restarts both clocks** below.
+
+**Resolved and Closed tickets are refused.** A priority change on either answers
+`409 ticket_closed`, the same refusal every other write to a closed ticket gets,
+and changes nothing: not the priority, not the SLA. The check is made on the
+locked row. `PATCH /tickets/{id}` also asks it before it saves anything else in the request
+(role first, then the closed state), so a status or assignment sent with the
+priority is not left behind by the refusal.
+
+**A record's facts are never rewritten.** A ticket can have a history of SLA
+records, of which at most one is *current*. A re-match does not edit the current
+record: it marks it **superseded** (`sla_records.superseded_at`, the only column
+ever written on it again) and inserts a new record. Everything that addresses
+"the ticket's SLA" (the indicator, the breach sweep, the recording of a first
+response or a resolution) reads the current record only. A superseded record is
+history: it is never evaluated, and its breach stamps stay as they were.
+
+What a staff change does, decided in this order:
+
+| The ticket and its current record | Outcome | The new record |
+|---|---|---|
+| SLA tracking is switched off | `sla_off` | none; nothing is re-matched |
+| No record, no policy matches | `none` | none |
+| No record, a policy matches | `attached` | a record whose clock started **at the ticket's creation**, not at the change. It can already be breached when it is created |
+| The new priority matches the record's own policy | `unchanged` | none |
+| Another policy matches | `rematched` | replaces the old record under the new policy, **keeping its clock** (so elapsed time still counts) and **its facts** (so a target already met stays met) |
+| A record exists, no policy matches | `removed` | none; the record is superseded and the ticket shows no SLA |
+
+**A reopen restarts both clocks.** *Not live on this build.* What exists is the
+service function, `changePriorityInTx` with the reason `reopened`, and its tests;
+the reopen that calls it arrives with the reopen change (#464), so today a
+reopened ticket's SLA is not restarted, no `sla_restarted` entry is written and
+the badge below cannot appear. This is how it will work. When a requester's reply
+reopens a ticket (#464), the reopen's own transaction calls the same primitive
+with the reason `reopened`. That reason always starts both clocks over from the reopen: the
+current record is superseded and kept, and a new one starts at the reopen with
+no facts, so both targets are timed anew. It does so even when the priority does
+not change (a ticket already at the highest priority cannot be raised) and even
+when the new priority maps to the same policy. It is not refused for being
+Resolved or Closed, because the reopen has just moved the ticket out of Closed
+in that same transaction. With SLA tracking switched off no record is created.
+The audit feed carries `priority_changed` (when the priority changed, with the
+outcome) and `sla_restarted`. A record that started over is recognisable as one
+(`started_at` is set), and because it is a clean clock it can clear a breach from
+the indicator; the breach stays on the superseded record, and `sla_restarted`
+says when.
+
+**"SLA restarted" badge.** When the clock really restarted, the ticket page
+shows an **SLA restarted** badge next to the SLA indicator (staff and admin; a
+reporting user sees no SLA). That is a reopen and nothing else: **never after a
+staff or admin priority change**, which re-matches the SLA and keeps its clock,
+whatever the old record had already met or breached. **On this build the badge
+cannot appear**, because the reopen caller arrives with #464 and nothing else
+writes a restarted record; the field and the page are in place and are tested
+with a restarted record. Its tooltip reads "The SLA clock restarted when this
+ticket was reopened. The earlier record is kept; select to see it." Selecting it
+opens a small panel (Escape closes it) with the earlier record's facts: its
+policy, when its clock started, when it was replaced, and whether it ended met or
+breached. `GET /tickets/{id}` carries it as `sla.earlier`; a list row never does.
+
+What tells a restart from a re-match is the clock start, not the stamps: a
+re-match copies the old record's `started_at` and its met and breach stamps onto
+the new record, so the stamps are the same in both and say nothing. Only a
+restart gives a record a `started_at` of its own. The current record's
+`started_at` is the reference: empty means the clock runs from the ticket's
+creation, so it cannot have restarted; otherwise the newest superseded record
+whose clock started somewhere else is the one the restart replaced (a re-match
+after a restart shares the restart's start and is passed over, so the badge stays
+after one, correctly, because the clock did restart). If that record ended with
+nothing met and nothing breached there is no outcome to show and no badge. The
+outcome reads the record's stored stamps, so a breach the sweep has not stamped
+yet is not reported.
+
+**The clock.** A record's clock starts at its `started_at`, or at the ticket's
+creation when that is empty (every record written before this existed, every
+record a new ticket attaches, and a record attached by a staff priority change).
+A record also stores `paused_seconds_at_start`: the ticket's pause total plus
+the part of an open Pending interval already elapsed, as of its start, so pause
+time before a restart does not count toward the new record. A re-match carries
+both onto the record that replaces it.
+
+**Atomic.** The priority, the SLA rows and the audit entries are written in one
+transaction, like the ticket service's other composite writes: an audit entry
+committed apart from the change it describes is not an audit trail. (A new
+ticket's SLA record, by contrast, is attached after the ticket commits and is
+best-effort.) A second change made at the same moment waits for the first, and
+the schema allows one current record per ticket.
+
+**Gated on the toggle.** A re-match creates records, so, like attaching a policy
+to a new ticket, it happens only while SLA tracking is on. Recording a first
+response or a resolution onto an existing record is not gated.
+
+**No event.** A priority change sends no notification and no webhook event.
+
+**Known limit.** Recording a first response or a resolution
+(`RecordFirstResponse`, `RecordResolved`) runs after the reply's own commit and
+outside the ticket's row lock. If a re-match commits between that code's read of
+the record and its write, the write finds no current row to land on (the old one
+is superseded, and the new one is invisible to a statement that started earlier),
+so that one response is not recorded on the new record. For a reopen's restart
+that is correct, because the response or resolution came before the new clock
+(it is the superseded record that misses it). For a staff re-match the new
+record keeps waiting for a response it should have had. The breach sweep has
+the same window, but it heals itself: the new record is evaluated on the next
+pass. The window is
+milliseconds. Closing it would need the write to report rows affected and the
+recording code to retry once, which changes the store signatures; it is left
+until there is a real report.
 
 ### Timer Mechanics (pause / resume)
 
@@ -2908,7 +3102,10 @@ accumulates across possibly several Pending intervals, not a single flag:
   interval closes and its length is added to the ticket's accumulated
   `tickets.sla_paused_seconds`.
 - **Elapsed-toward-target**, at any instant, is `now - created_at -
-  sla_paused_seconds`, with one adjustment: if the ticket is *currently*
+  sla_paused_seconds` (for a record a reopen has started over, and any record
+  that later replaced it, from the record's own start and pause base instead: `now - started_at -
+  (sla_paused_seconds - paused_seconds_at_start)`; see Re-matching when
+  priority changes), with one adjustment: if the ticket is *currently*
   Pending, the still-open interval's length (from its start to now) is added
   on top, so a ticket does not appear to be making progress toward breach
   while it is actively paused.
@@ -2931,7 +3128,11 @@ target still outstanding, and stamps `response_breached_at` /
 `resolution_breached_at` the first time elapsed-toward-target exceeds the
 policy's minutes for that target. The stamp, once set, does not clear itself
 if a ticket is later reopened or its policy changes — a breach that happened
-is a fact about what happened, not a live status.
+is a fact about what happened, not a live status. A priority change that
+re-matches the SLA does not clear it either: the breach stamp is carried onto
+the record that replaces it, and the superseded record, which is never evaluated
+again, keeps its own. (A reopen's restart starts a clean record; the stamp stays
+on the superseded one.)
 
 The sweep runs every minute from a goroutine started in
 `cmd/server/main.go` and calls `sla.Service.SweepBreaches`. That selects

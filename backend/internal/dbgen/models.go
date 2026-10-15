@@ -215,6 +215,10 @@ type SlaRecord struct {
 	ResolutionBreachedAt          sql.NullTime  `json:"resolution_breached_at"`
 	ResponseElapsedAtMetSeconds   sql.NullInt64 `json:"response_elapsed_at_met_seconds"`
 	ResolutionElapsedAtMetSeconds sql.NullInt64 `json:"resolution_elapsed_at_met_seconds"`
+	ID                            uuid.UUID     `json:"id"`
+	StartedAt                     sql.NullTime  `json:"started_at"`
+	PausedSecondsAtStart          int64         `json:"paused_seconds_at_start"`
+	SupersededAt                  sql.NullTime  `json:"superseded_at"`
 }
 
 type SpentSamlHandover struct {
@@ -335,6 +339,7 @@ type User struct {
 	EmailNotifyAssigned bool         `json:"email_notify_assigned"`
 	EmailNotifyActivity bool         `json:"email_notify_activity"`
 	EmailNotifyGroup    bool         `json:"email_notify_group"`
+	MustChangePassword  bool         `json:"must_change_password"`
 }
 
 type WebauthnCredential struct {

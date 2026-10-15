@@ -627,9 +627,21 @@ export interface SLATargetStatus {
   met_at: string | null // set: the numbers above are frozen and color is final
 }
 
+// The SLA record a restart replaced (#443): the clock restarted when the ticket
+// was reopened, and this is the record it replaced. Never sent after a staff or
+// admin priority change, which keeps the clock. One-ticket read only.
+export interface SLAEarlierRecord {
+  policy_id: string
+  policy_name: string
+  started_at: string
+  superseded_at: string
+  outcome: 'met' | 'breached'
+}
+
 export interface TicketSLA {
   policy_id: string
   policy_name: string
   response: SLATargetStatus
   resolution: SLATargetStatus
+  earlier?: SLAEarlierRecord
 }

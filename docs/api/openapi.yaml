@@ -17,7 +17,7 @@ info:
     - Every error from a handler is the envelope in components.schemas.Error,
       served as application/json. Refusals produced by the authentication
       middleware (401 unauthorized, 403 forbidden / mfa_required /
-      insufficient_scope / session_required) carry the same envelope but are
+      password_change_required / insufficient_scope / session_required) carry the same envelope but are
       served as text/plain; charset=utf-8.
     - Any operation may answer 500 internal_error ("an internal error
       occurred"); it is listed only where a handler has a 5xx of its own. A
@@ -379,12 +379,19 @@ paths:
         accepted, even when the budget is spent. The budget is one minute: when it
         is spent, the request is delayed before the password is checked and a
         refused attempt answers 429 with Retry-After set to the seconds left in
-        that minute (at most 60). The response says what
+        that minute (at most 60). A correct password on a hash made below cost 12
+        is upgraded at this sign-in. From password_rehash_grace_days after 1.3.0
+        first ran, it is refused instead (403 password_reset_required).
+        The response says what
         the person must do next: mfa_needed means a TOTP code is owed
         (POST /auth/local/mfa/verify), passkey_needed means a passkey is owed
         (POST /auth/local/passkey/start), and mfa_enrollment_needed means the
-        role must enrol a second factor before it is fully signed in. Until that
-        step is done the session is only half signed in, and it expires: after
+        role must enrol a second factor before it is fully signed in.
+        password_change_required means the account was unlocked from the server
+        console (/app/server unlock) and still holds the password it was handed:
+        the session may only change the password (PATCH /me/password) and every
+        other route answers 403 password_change_required until it has. Until the
+        second-factor step is done the session is only half signed in, and it expires: after
         5 minutes when a code or passkey is owed, after 15 minutes when the
         person must enrol. After that, every route answers 401 as if there were
         no session (the session is deleted), and the person signs in again with
@@ -414,9 +421,12 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [user, mfa_needed, passkey_needed, mfa_enrollment_needed]
+                required: [user, mfa_needed, passkey_needed, mfa_enrollment_needed, password_change_required]
                 properties:
                   user: {$ref: '#/components/schemas/User'}
+                  password_change_required:
+                    type: boolean
+                    description: True when the password must be changed before anything else is allowed (see the operation description).
                   mfa_needed:
                     type: boolean
                     description: True when a TOTP code is owed. Answer with POST /auth/local/mfa/verify.
@@ -436,11 +446,17 @@ paths:
         '403':
           description: >-
             Local sign-in is disabled for this account because SAML is enabled
-            (saml_required), or the account's only second factor is a passkey
-            and passkeys are unavailable on this instance (passkey_unavailable;
-            an administrator's MFA reset clears it). No session is created and
-            the refusal does not count as a failed attempt. Applies to every
-            such account, administrators included. Sent as application/json.
+            (saml_required, checked first), or the account's only second factor
+            is a passkey and passkeys are unavailable on this instance
+            (passkey_unavailable; an administrator's MFA reset clears it), or
+            the password was right but is still stored in the older, weaker form
+            (cost below 12) after the grace period (password_reset_required).
+            No session is created and none of these counts as a failed attempt.
+            passkey_unavailable applies to every such account, administrators
+            included. password_reset_required is only given for a correct
+            password (a wrong one still answers 401 invalid_credentials and takes
+            as long to refuse), leaves the hash as it is, and does not apply to
+            administrators. Sent as application/json.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -2432,7 +2448,12 @@ paths:
       description: |
         Changes the password after checking the current one. The new password must be 8 to 72 bytes long.
         Every other session for the account ends, and this request's session is re-issued with a new cookie,
-        so this browser stays signed in. Session only, and the second factor must have passed.
+        so this browser stays signed in. Session only, and the second factor must have passed,
+        except for a session that owed no second factor when its password was checked and owes this very
+        change (login answered password_change_required with neither mfa_needed nor passkey_needed): that
+        one may make it without MFA. A flagged account that has since enrolled a factor gets 403 mfa_required
+        and must verify the factor first. Any other route refuses a flagged session with 403
+        password_change_required until the password is changed. The change clears the requirement.
         A wrong current_password answers 401 invalid_credentials as application/json, which is distinct
         from the text/plain 401 unauthorized sent when there is no session. The old field name password is still read when new_password is absent. current_password is
         required in either case.
@@ -2987,20 +3008,50 @@ paths:
           $ref: '#/components/responses/TicketNotFound'
     patch:
       operationId: updateTicket
-      summary: Change a ticket's status, assignment or classification.
+      summary: Change a ticket's status, assignment, classification or priority.
       description: |
         Applies whichever of status_id, clear_assignee, assignee_user_id,
-        assignee_group_id and category_id are sent, and answers 200 with the bare
+        assignee_group_id, category_id and priority are sent, and answers 200 with the bare
         Ticket. An empty body is the same as {}: no change, and the response is
         the Ticket. Malformed JSON answers 400 bad_request. The path id is a UUID or a tracking number.
         The changes run in this order: status, then assignment, then
-        classification. Each is saved on its own, with no transaction around the
-        three. If a later one is refused, the earlier ones have already been
-        saved and the response is an error.
+        classification, then priority. Each is saved on its own, with no
+        transaction around the four, but every refusal the request can meet is
+        decided before the first of them is saved, so a refused request changes
+        nothing and writes no audit entry. Decided first: an invalid priority
+        value (400), a priority from a caller who may not change priorities
+        (403, a reporting user), a classification the caller may not make or
+        that is not valid (403, 400), a priority on a request that would leave
+        the ticket Resolved or Closed (409 ticket_closed, see below), an
+        assignment from a caller who may not assign (403), an assignee that
+        cannot be given a ticket (400) and a group that does not exist (400).
+        The status change is the first write, so its own refusals (403, 404,
+        409) also come before anything is saved. When several apply, the order
+        is the invalid value, then the priority role, then the classification,
+        then the closed state, then the assignment, then the status.
+        What this does not cover: a refusal that can only be known at the
+        moment of writing. A concurrent change between the check and the write
+        (an assignee account disabled, or the ticket closed, in those few
+        milliseconds) is refused by the write's own check, and so is a database
+        failure (500), after the changes ahead of it in the order above were
+        saved.
         Who may do what:
         - A reporting user cannot change the status (403 forbidden), cannot
-          assign (403 forbidden), and cannot reclassify (403, "only staff can
-          reclassify tickets").
+          assign (403 forbidden), cannot reclassify (403, "only staff can
+          reclassify tickets"), and cannot change the priority (403 forbidden).
+        - priority is one of critical, high, medium and low. Anything else
+          answers 400 bad_request before any change in the request is saved. A
+          Resolved or Closed ticket's priority cannot be changed: 409
+          ticket_closed, and the priority and the SLA stay as they were. The
+          whole request is refused, nothing in it saved: that covers a request
+          that moves the ticket to Resolved or Closed and sends a priority, and
+          one that assigns or unassigns a ticket that is already Resolved or
+          Closed and sends a priority. A request that moves the ticket out of
+          Resolved to an open status is not refused for its priority (moving
+          out of Closed is still decided by closed_reopen_policy, with the
+          same nothing-saved result when refused). Sending the ticket's current
+          priority on an open ticket is accepted and changes nothing: no audit
+          entry, no SLA change.
         - Only an administrator may set the status to Closed (403 forbidden for
           anyone else).
         - Leaving Closed needs closed_reopen_policy to allow the caller's role.
@@ -3022,6 +3073,19 @@ paths:
         category_id replaces the whole classification: type_id and item_id are
         written as sent, so an absent one clears that level. type_id and item_id
         have no effect unless category_id is sent too.
+        Changing the priority re-matches the ticket's SLA policy for the new
+        priority when SLA tracking is on, and never restarts its clock. The
+        priority, the SLA rows and the audit entry are written in one
+        transaction. A record is never rewritten: a re-match marks the old record
+        superseded and starts a new one under the new policy, which keeps the old
+        one's clock start and its facts, so elapsed time still counts and a
+        target already met stays met. A ticket with no record whose new priority
+        matches a policy gets one whose clock started at the ticket's creation,
+        which can already be breached. If no policy matches the new priority, the
+        old record is superseded and the ticket shows no SLA. The audit entry
+        priority_changed records the reason (manual), the SLA outcome and the
+        policy and record ids before and after. No notification or webhook event
+        is sent for a priority change.
         Reclassifying never moves a ticket INTO an archived category, type or item:
         a level that is archived and different from the ticket's current one answers
         400 bad_request ("type_id is not an active type"), for staff and
@@ -3072,6 +3136,12 @@ paths:
                 item_id:
                   description: The item to set with category_id. Absent clears it.
                   $ref: '#/components/schemas/Uuid'
+                priority:
+                  description: |
+                    Sets the priority and re-matches the ticket's SLA policy for it,
+                    keeping the SLA clock. Staff and administrators only. Absent
+                    leaves it unchanged.
+                  $ref: '#/components/schemas/Priority'
       responses:
         '200':
           description: The ticket after the changes, as the bare Ticket.
@@ -3082,11 +3152,12 @@ paths:
         '400':
           description: |
             `bad_request`: invalid JSON; an assignee that is not a user on this
-            help desk, deleted, disabled or a reporting user; or a classification
+            help desk, deleted, disabled or a reporting user; a classification
             the domain refuses (category_id is not a category on this help desk,
             type_id and item_id do not belong to the category and to each
             other, or a newly chosen category_id, type_id or item_id is archived:
-            "... is not an active ...").
+            "... is not an active ..."); or a priority that is not one of
+            critical, high, medium and low.
           content:
             application/json:
               schema:
@@ -3097,10 +3168,10 @@ paths:
           description: |
             Refused by the middleware (text/plain). Or, from the handler
             (application/json): `forbidden` for a reporting user changing the
-            status, assigning, or reclassifying, and for anyone but an
-            administrator setting the status to Closed; `user_identity_required`
-            for a credential with no user behind it (not an OAuth client, which
-            acts as its service user).
+            status, assigning, reclassifying or changing the priority, and for
+            anyone but an administrator setting the status to Closed;
+            `user_identity_required` for a credential with no user behind it (not
+            an OAuth client, which acts as its service user).
           content:
             text/plain:
               schema:
@@ -3113,7 +3184,8 @@ paths:
         '409':
           description: >-
             `ticket_closed`: the ticket is Closed and the caller's role may not move it
-            out of Closed. `status_inactive`: status_id names an inactive status.
+            out of Closed, or a priority change was sent for a Resolved or Closed
+            ticket. `status_inactive`: status_id names an inactive status.
           content:
             application/json:
               schema:
@@ -4556,6 +4628,10 @@ paths:
         - ticket_prefix is 1 to 8 uppercase letters or digits (invalid_ticket_prefix).
         - audit_retention_days must be an integer of at most 36525. Zero or less
           keeps entries forever.
+        - password_rehash_grace_days must be an integer from 1 to 365 (default 30).
+          Zero, negative, larger, null and non-integers are refused with bad_request.
+          password_rehash_started_at is recorded by the server when 1.3.0 first
+          runs and is refused with 400 readonly_setting; it is left out of GET.
         - guest_submission_enabled, staff_can_view_ticket_change_history and
           staff_can_view_follow_audit must be JSON booleans. null is refused.
         - guest_submission_enabled and self_signup_enabled cannot be turned from
@@ -4605,7 +4681,8 @@ paths:
         attachment_scan_address, attachment_scan_policy, attachment_allowed_types,
         attachment_infected_handling, attachment_mismatch_handling,
         audit_retention_days, staff_can_view_ticket_change_history,
-        staff_can_view_follow_audit, attachment_vt_lookup, attachment_vt_api_key, attachment_reputation_provider,
+        staff_can_view_follow_audit, password_rehash_grace_days, password_rehash_started_at,
+        attachment_vt_lookup, attachment_vt_api_key, attachment_reputation_provider,
         attachment_reputation_api_key, attachment_reputation_virustotal_enabled,
         attachment_reputation_virustotal_key, attachment_reputation_metadefender_enabled,
         attachment_reputation_metadefender_key, attachment_reputation_polyswarm_enabled,
@@ -9220,7 +9297,7 @@ components:
     User:
       description: An account. The password hash, the TOTP secret, single sign-on subjects and the deletion time are never returned. mfa_enabled is the TOTP flag only.
       type: object
-      required: [id, email, display_name, role, mfa_enabled, disabled, created_at, updated_at, email_notify_assigned, email_notify_activity, email_notify_group]
+      required: [id, email, display_name, role, mfa_enabled, disabled, must_change_password, created_at, updated_at, email_notify_assigned, email_notify_activity, email_notify_group]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
         email: {type: string}
@@ -9228,6 +9305,7 @@ components:
         role: {$ref: '#/components/schemas/Role'}
         mfa_enabled: {type: boolean}
         disabled: {type: boolean}
+        must_change_password: {type: boolean, description: "Set by /app/server unlock on the server console; cleared when the account holder changes the password."}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
         email_notify_assigned: {type: boolean, description: 'Email me when a ticket is assigned to me. Staff email switch, on by default.'}
@@ -9449,6 +9527,38 @@ components:
           $ref: '#/components/schemas/SlaTargetStatus'
         resolution:
           $ref: '#/components/schemas/SlaTargetStatus'
+        earlier:
+          $ref: '#/components/schemas/SlaEarlierRecord'
+    SlaEarlierRecord:
+      description: |
+        The SLA record a restart replaced, sent on getTicket only (never on a list
+        row). A restart is a reopen: staff and admin priority changes re-match the
+        SLA and keep its clock, and never produce this. It is the record the "SLA
+        restarted" badge on the ticket page links to. Absent when the clock never
+        restarted, and when the replaced record had nothing met or breached (no
+        outcome to report). Not reachable on this build: the reopen that restarts
+        the clock arrives with #464, so no ticket has one yet. The outcome reads
+        the record's stored stamps, so a breach the sweep has not stamped yet is
+        not reported.
+      type: object
+      required: [policy_id, policy_name, started_at, superseded_at, outcome]
+      properties:
+        policy_id:
+          $ref: '#/components/schemas/Uuid'
+        policy_name:
+          type: string
+        started_at:
+          type: string
+          format: date-time
+          description: Where the record's clock started; the ticket's creation if it never restarted.
+        superseded_at:
+          type: string
+          format: date-time
+          description: When the restart replaced it.
+        outcome:
+          type: string
+          enum: [met, breached]
+          description: breached when a breach was stamped on the record, otherwise met.
     SlaTargetStatus:
       description: |
         Where one SLA target stands. Once met_at is set the numbers
@@ -9575,7 +9685,7 @@ components:
           $ref: '#/components/schemas/Uuid'
         action:
           type: string
-          description: The action name, for example created, assigned, unassigned or closed.
+          description: The action name, for example created, assigned, unassigned, priority_changed, sla_restarted (written when a reopen restarts the SLA clocks; nothing writes it until #464) or closed.
         actor_id:
           description: The actor's account, or null when there is none (or when a reporting user is shown an assignment).
           anyOf:
@@ -9964,6 +10074,14 @@ components:
             ticket's audit trail and in the admin-wide audit view.
             Administrators always can and requesters never can. Off by default.
             Session only.
+        password_rehash_grace_days:
+          type: integer
+          minimum: 1
+          maximum: 365
+          description: >-
+            Days after 1.3.0 first ran before an account still on a password hash
+            made below bcrypt cost 12 must reset its password to sign in. Unset reads
+            as 30. Administrators are exempt. Session only.
         site_name:
           type: string
           description: The site name shown in the interface.

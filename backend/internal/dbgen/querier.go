@@ -423,6 +423,8 @@ type Querier interface {
 	GetAuditTicketScope(ctx context.Context, userID uuid.UUID) (GetAuditTicketScopeRow, error)
 	GetCannedResponse(ctx context.Context, id uuid.UUID) (CannedResponse, error)
 	GetCategory(ctx context.Context, id uuid.UUID) (Category, error)
+	// The ticket's current record, locked for the duration of a re-match.
+	GetCurrentSLARecordForUpdate(ctx context.Context, ticketID uuid.UUID) (SlaRecord, error)
 	GetCustomFieldAssignment(ctx context.Context, id uuid.UUID) (CustomFieldAssignment, error)
 	GetCustomFieldDef(ctx context.Context, id uuid.UUID) (CustomFieldDef, error)
 	GetGroup(ctx context.Context, id uuid.UUID) (Group, error)
@@ -445,7 +447,14 @@ type Querier interface {
 	GetPendingRegistrationByToken(ctx context.Context, token uuid.UUID) (PendingRegistration, error)
 	GetPlugin(ctx context.Context, id string) (Plugin, error)
 	GetSLAPolicy(ctx context.Context, id uuid.UUID) (SlaPolicy, error)
+	// The CURRENT record: a superseded row (000043) is history and is never read
+	// as "the ticket's SLA". Every statement below that addresses a ticket's
+	// record carries the same filter.
 	GetSLARecord(ctx context.Context, ticketID uuid.UUID) (SlaRecord, error)
+	// Only for go-help-desk unlock (#497), which must say WHY it refuses a service
+	// account rather than report "no such account" (GetUserByEmail below hides
+	// them on purpose). Returns the display name, which is the OAuth client's.
+	GetServiceAccountNameByEmail(ctx context.Context, email string) (string, error)
 	// Only unexpired rows: an expired session must behave exactly like a missing
 	// one, so a stale row cannot authenticate anybody between sweeps.
 	//
@@ -547,6 +556,11 @@ type Querier interface {
 	GetWebhookConfig(ctx context.Context, id uuid.UUID) (WebhookConfig, error)
 	GetWebhookDeliveryEvent(ctx context.Context, arg GetWebhookDeliveryEventParams) (json.RawMessage, error)
 	InsertInstanceSecretIfAbsent(ctx context.Context, arg InsertInstanceSecretIfAbsentParams) error
+	// A record started by a re-match: its own id, an explicit clock start (NULL
+	// reads as the ticket's creation) and the ticket's pause total as of that
+	// start. A staff re-match also carries the old record's facts onto it, so a
+	// target already met stays met; a restart passes none.
+	InsertSLARecord(ctx context.Context, arg InsertSLARecordParams) error
 	// Whether a group can be given a ticket. An unknown id used to reach the
 	// foreign key and answer 500 for what is a caller's typo.
 	IsAssignableGroup(ctx context.Context, id uuid.UUID) (bool, error)
@@ -665,8 +679,11 @@ type Querier interface {
 	ListResolvedTicketsBefore(ctx context.Context, arg ListResolvedTicketsBeforeParams) ([]ListResolvedTicketsBeforeRow, error)
 	// Tickets the breach sweep must evaluate: open, under a policy, with at least
 	// one target that is neither met nor already stamped, using the same
-	// pause-aware elapsed time as sla.Elapsed (see that function's doc comment;
-	// the two must change together). LEAST(COALESCE(pending_since, now), now) is
+	// pause-aware elapsed time as sla.Record.Elapsed (see sla.ElapsedFrom's doc
+	// comment; the two must change together). The clock starts at the record's
+	// started_at (the ticket's creation when NULL) and counts the ticket's pause
+	// total from the record's paused_seconds_at_start. Superseded records are
+	// history and are never evaluated. LEAST(COALESCE(pending_since, now), now) is
 	// the instant the SLA clock stopped: pending_since while the ticket is
 	// currently Pending, clipped to now the same way Elapsed clips with
 	// at.After(*PendingSince), and now otherwise. A Pending ticket whose frozen
@@ -686,6 +703,11 @@ type Querier interface {
 	// queries that would compute SLA for limit×(1+groups) rows and throw most
 	// of them away. See sla.Service.StatusesFor.
 	ListSLARecordsByTicketIDs(ctx context.Context, ticketIds []uuid.UUID) ([]SlaRecord, error)
+	// Every record a ticket has had, current and superseded, newest clock first.
+	// A record that a re-match replaced while it was running inherits its
+	// predecessor's started_at, so ties are broken by superseded_at, current row
+	// first. A NULL started_at is the ticket's creation.
+	ListSLARecordsForTicket(ctx context.Context, ticketID uuid.UUID) ([]SlaRecord, error)
 	ListSettings(ctx context.Context) ([]Setting, error)
 	ListStatuses(ctx context.Context) ([]Status, error)
 	// The list staff see on the ticket. Soft-deleted accounts are left out: there
@@ -891,6 +913,9 @@ type Querier interface {
 	//
 	// AdminSetPassword has always been a narrow statement. This is the same thing
 	// for the self-service path, which is the one an attacker can drive.
+	//
+	// Also clears must_change_password (#497): this is the account holder choosing
+	// a password, which is what that flag is waiting for.
 	SetUserPasswordHash(ctx context.Context, arg SetUserPasswordHashParams) error
 	// The same guard for a role change. See DisableUserUnlessLastAdmin.
 	//
@@ -915,6 +940,9 @@ type Querier interface {
 	// request path's first_response_at / resolved_at. A stamp, once set, is a
 	// fact about what happened (DESIGN.md) and is never cleared here.
 	StampSLABreaches(ctx context.Context, arg StampSLABreachesParams) error
+	// The only write a re-match ever makes to an existing record. Every fact on
+	// the row stays as it was; the row simply stops being current.
+	SupersedeSLARecord(ctx context.Context, arg SupersedeSLARecordParams) (int64, error)
 	// What a federated login is allowed to change about an account it recognises:
 	// the address, the name, and nothing else.
 	//
@@ -953,6 +981,12 @@ type Querier interface {
 	// ticket assigned to somebody who has left is history, and history should
 	// record who actually handled it.
 	UnassignTicketsForUser(ctx context.Context, assigneeUserID uuid.NullUUID) ([]uuid.UUID, error)
+	// The account half of /app/server unlock (#497), run in the same transaction
+	// as ClearFactors: re-enable, clear the TOTP lockout, install the generated
+	// password and require it to be changed. Not for a deleted account. The
+	// in-memory sign-in throttle is another process's memory and only ever delays,
+	// never refuses, so there is nothing of it to clear here.
+	UnlockUser(ctx context.Context, arg UnlockUserParams) (int64, error)
 	UpdateAPIKeyLastUsed(ctx context.Context, arg UpdateAPIKeyLastUsedParams) error
 	UpdateCannedResponse(ctx context.Context, arg UpdateCannedResponseParams) error
 	UpdateCategory(ctx context.Context, arg UpdateCategoryParams) error
