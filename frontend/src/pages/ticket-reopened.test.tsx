@@ -98,6 +98,20 @@ describe('the Reopened badge on the ticket page', () => {
     expect(document.querySelector(BADGE)).toBeNull()
   })
 
+  it('does not flicker in while the statuses are still loading', async () => {
+    // The ticket has been resolved again, so the badge must never show; with
+    // the statuses unknown its status cannot be told, and that must read as
+    // "do not show", not as open.
+    mockApi([ticket({ reopen_count: 2, status_id: 'st-res' })])
+    const get = vi.mocked(api.get)
+    const base = get.getMockImplementation()!
+    get.mockImplementation(((url: string) =>
+      url === '/statuses' ? new Promise(() => {}) : base(url)) as never)
+    renderWithQuery(<TicketDetailPage />)
+    await waitFor(() => expect(document.body.textContent).toContain('Printer is on fire'))
+    expect(document.querySelector(BADGE)).toBeNull()
+  })
+
   it('is not shown to the requester', async () => {
     signIn('user')
     mockApi([ticket({ reopen_count: 1 })])

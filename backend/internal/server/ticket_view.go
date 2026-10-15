@@ -30,6 +30,17 @@ type ticketView struct {
 	CanReopen bool `json:"can_reopen"`
 }
 
+// forViewer removes what only staff are shown from a ticket before it is
+// written to a requester: reopen_count (Erik, 2026-10-14). The field is omitted
+// from the JSON when 0, so zeroing it takes the key out. A nil actor is treated
+// as a requester, so a missed check fails closed.
+func forViewer(t ticket.Ticket, actor *authmw.Actor) ticket.Ticket {
+	if actor == nil || actor.Role == user.RoleUser {
+		t.ReopenCount = 0
+	}
+	return t
+}
+
 // ticketViews attaches each ticket's live SLA status via one batch call
 // (sla.Service.StatusesFor), so the cost is two extra queries per response
 // regardless of how many tickets are on the page. Callers pass the page
@@ -51,7 +62,7 @@ type ticketView struct {
 func (s *Server) ticketViews(ctx context.Context, ts []ticket.Ticket, actor *authmw.Actor) ([]ticketView, error) {
 	views := make([]ticketView, len(ts))
 	for i, t := range ts {
-		views[i] = ticketView{Ticket: t}
+		views[i] = ticketView{Ticket: forViewer(t, actor)}
 	}
 	if actor == nil || actor.Role == user.RoleUser {
 		return views, nil

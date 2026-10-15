@@ -9423,7 +9423,7 @@ components:
         /tickets, PATCH, reopen, resolve, close and follow-up answer it. Optional
         keys are absent when unset, never null.
       type: object
-      required: [id, tracking_number, subject, description, category_id, priority, status_id, sla_paused_seconds, reopen_count, created_at, updated_at]
+      required: [id, tracking_number, subject, description, category_id, priority, status_id, sla_paused_seconds, created_at, updated_at]
       properties:
         id:
           $ref: '#/components/schemas/Uuid'
@@ -9475,7 +9475,7 @@ components:
           description: Total seconds the ticket has spent Pending, which SLA timing excludes.
         reopen_count:
           type: integer
-          description: How many times the ticket has been moved from Resolved or Closed back to an open status (#464). Never reset. The Reopened badge shows while this is above 0 and the ticket is open. 0 for a ticket reopened before 1.3.0.
+          description: How many times the ticket has been moved from Resolved or Closed back to an open status (#464). Never reset. Staff and administrators only, and omitted when 0; a requester never receives the key. The Reopened badge shows while this is above 0 and the ticket is open. 0 for a ticket reopened before 1.3.0.
         created_at:
           type: string
           format: date-time

@@ -204,19 +204,14 @@ func TestAddReply_SucceedsAndReopens(t *testing.T) {
 	require.Equal(t, 1, h.store.historyCreates, "exactly one history entry")
 	require.Contains(t, h.dispatcher.types(), notification.EventTicketReopened)
 
-	// Since #464 the reopen also writes priority_changed (the first-reopen
-	// bump); that is pinned in reopen_test.go. What this test is about is that
-	// the reopen itself is audited, once, and first.
-	require.NotEmpty(t, h.auditStore.entries)
-	require.Equal(t, "reopened", h.auditStore.entries[0].Action,
-		"a reply-triggered reopen must write an audit entry, the same as an explicit reopen does")
-	n := 0
+	// The reopen, then the first-reopen bump (#464). The SLA is off in this
+	// harness, so no sla_restarted. The exact list, in order.
+	var actions []string
 	for _, e := range h.auditStore.entries {
-		if e.Action == "reopened" {
-			n++
-		}
+		actions = append(actions, e.Action)
 	}
-	require.Equal(t, 1, n)
+	require.Equal(t, []string{"reopened", "priority_changed"}, actions,
+		"a reply-triggered reopen must write an audit entry, the same as an explicit reopen does")
 }
 
 // TestAddReply_InternalNoteNeverNotifiesCustomer pins an existing rule that the

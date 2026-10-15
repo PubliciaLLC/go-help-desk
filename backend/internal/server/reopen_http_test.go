@@ -120,3 +120,56 @@ func TestReopen_HTTP(t *testing.T) {
 		require.Zero(t, actions(t, tk.ID.String())["priority_changed"])
 	})
 }
+
+// reopen_count is staff information (Erik, 2026-10-14): a requester's view of
+// their own ticket, one or many, has no such key; staff and administrators have
+// it.
+func TestReopen_CountIsForStaffOnly_HTTP(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	staff := ticket.Actor{UserID: &h.staffID, Role: user.RoleStaff}
+
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		Subject: "Printer", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
+	})
+	require.NoError(t, err)
+	_, err = h.ticketSvc.Resolve(ctx, tk.ID, "done", staff)
+	require.NoError(t, err)
+	inProgress, err := h.ticketStore.GetStatusByName(ctx, "In Progress")
+	require.NoError(t, err)
+	_, err = h.ticketSvc.UpdateStatus(ctx, tk.ID, inProgress.ID, staff)
+	require.NoError(t, err)
+
+	one := func(res *http.Response) map[string]any {
+		b, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", b)
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(b, &m))
+		return m
+	}
+	list := func(res *http.Response) []map[string]any {
+		b, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", b)
+		var m []map[string]any
+		require.NoError(t, json.Unmarshal(b, &m))
+		return m
+	}
+	path := "/api/v1/tickets/" + tk.ID.String()
+
+	require.NotContains(t, one(h.doAsUser(t, http.MethodGet, path, nil)), "reopen_count", "requester GET")
+	for _, row := range list(h.doAsUser(t, http.MethodGet, "/api/v1/tickets", nil)) {
+		require.NotContains(t, row, "reopen_count", "requester list")
+	}
+	require.EqualValues(t, 1, one(h.do(t, http.MethodGet, path, nil))["reopen_count"], "staff GET")
+	found := false
+	for _, row := range list(h.doAsAdmin(t, http.MethodGet, "/api/v1/tickets?reporter_id="+h.userID.String(), nil)) {
+		if row["id"] == tk.ID.String() {
+			found = true
+			require.EqualValues(t, 1, row["reopen_count"], "admin list")
+		}
+	}
+	require.True(t, found)
+}

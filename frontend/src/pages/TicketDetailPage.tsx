@@ -529,7 +529,7 @@ export function TicketDetailPage() {
               <Badge variant={priorityVariant(ticket.priority) as never}>
                 {ticket.priority}
               </Badge>
-              {isStaffOrAdmin && <ReopenedBadge reopenCount={ticket.reopen_count} statusName={statusName} />}
+              {isStaffOrAdmin && <ReopenedBadge reopenCount={ticket.reopen_count} statusName={statuses.find((s) => s.id === ticket.status_id)?.name} />}
               <SLAIndicator sla={ticket.sla} />
             </div>
           </div>

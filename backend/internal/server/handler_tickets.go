@@ -467,7 +467,7 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	if fresh, err := s.tickets.GetByID(r.Context(), t.ID); err == nil {
 		t = fresh
 	}
-	JSON(w, http.StatusCreated, t)
+	JSON(w, http.StatusCreated, forViewer(t, authmw.GetActor(r)))
 }
 
 // GET /api/v1/tickets/{id}
@@ -509,8 +509,8 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The record a restart replaced, for the page's "SLA restarted" badge: the
-	// one-ticket read only, so a list never pays for it. Nothing restarts a
-	// clock on this build (#464 adds the reopen), so it is absent for now.
+	// one-ticket read only, so a list never pays for it. Only a reopen restarts
+	// a clock (#464), so it is absent on a ticket that was never reopened.
 	if views[0].SLA != nil {
 		earlier, err := s.slaPolicies.Earlier(r.Context(), t)
 		if err != nil {
@@ -683,7 +683,7 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, t)
+	JSON(w, http.StatusOK, forViewer(t, authmw.GetActor(r)))
 }
 
 // POST /api/v1/tickets/{id}/replies
@@ -871,7 +871,7 @@ func (s *Server) handleCreateFollowUp(w http.ResponseWriter, r *http.Request) {
 	if fresh, err := s.tickets.GetByID(r.Context(), t.ID); err == nil {
 		t = fresh
 	}
-	JSON(w, http.StatusCreated, t)
+	JSON(w, http.StatusCreated, forViewer(t, authmw.GetActor(r)))
 }
 
 // POST /api/v1/tickets/{id}/close

@@ -221,7 +221,7 @@ export interface Ticket {
   // a response that does not carry it, which reads as no.
   can_reopen?: boolean
   // How many times the ticket has been moved from Resolved or Closed back to an
-  // open status (#464). Never reset. Absent on a response that does not carry
+  // open status (#464). Never reset. Staff and administrators only: absent for a requester, and when 0. Absent on a response that does not carry
   // it, which reads as never.
   reopen_count?: number
 }

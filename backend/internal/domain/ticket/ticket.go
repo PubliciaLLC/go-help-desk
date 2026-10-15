@@ -166,7 +166,17 @@ type Ticket struct {
 	// ReopenCount is how many times the ticket has been moved from Resolved or
 	// Closed back to an open status (#464). It is never reset: the badge reads
 	// "> 0 and open", and the priority bump applies only when it was 0.
-	ReopenCount int `json:"reopen_count"`
+	// Omitted when 0, and zeroed for a requester's view: the count is staff
+	// information (ticket views in internal/server).
+	ReopenCount int `json:"reopen_count,omitempty"`
+
+	// LastReopenedAt and PausedSecondsAtLastReopen are the instant of the most
+	// recent reopen and the ticket's Pending total at that instant. They are
+	// where the SLA clock resumes from when a priority change gives a ticket
+	// with no current record one back after a reopen that started none. Not on
+	// the wire.
+	LastReopenedAt            *time.Time `json:"-"`
+	PausedSecondsAtLastReopen int64      `json:"-"`
 }
 
 // Reply is a message on a ticket thread, from either a staff member or the
