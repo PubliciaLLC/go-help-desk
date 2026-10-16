@@ -33,6 +33,10 @@ func renderSlack(s summary) ([]byte, error) {
 		b.WriteString(" — ")
 		b.WriteString(slackEscape(s.Subject))
 	}
+	if s.Also != "" {
+		b.WriteString("\n")
+		b.WriteString(slackEscape(s.Also))
+	}
 	if s.Body != "" {
 		b.WriteString("\n> ")
 		b.WriteString(strings.ReplaceAll(slackEscape(s.Body), "\n", "\n> "))

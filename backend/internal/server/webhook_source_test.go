@@ -37,9 +37,9 @@ func TestWebhookEventSource_ReadsTheTicketAsItIsNow(t *testing.T) {
 	require.Equal(t, string(tk.TrackingNumber), facts.TrackingNumber)
 	require.NotEmpty(t, facts.StatusName, "the status is named, not an id")
 	// What a webhook filter tests (#413), read from the ticket as it is now.
-	require.Equal(t, &notification.TicketAttrs{
+	require.Equal(t, &notification.TicketState{
 		CategoryID: tk.CategoryID, Priority: string(tk.Priority), AssigneeGroupID: tk.AssigneeGroupID,
-	}, facts.Attrs)
+	}, facts.State)
 
 	body, ok, err := src.PublicReplyBody(ctx, tk.ID, pub.ID)
 	require.NoError(t, err)

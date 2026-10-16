@@ -16,14 +16,14 @@ func TestWebhookFilter_Admits(t *testing.T) {
 	catB := uuid.MustParse("aaaaaaaa-0000-0000-0000-000000000002")
 	grpA := uuid.MustParse("bbbbbbbb-0000-0000-0000-000000000001")
 	grpB := uuid.MustParse("bbbbbbbb-0000-0000-0000-000000000002")
-	critical := &TicketAttrs{CategoryID: catA, Priority: "critical", AssigneeGroupID: &grpA}
+	critical := &TicketState{CategoryID: catA, Priority: "critical", AssigneeGroupID: &grpA}
 
-	withPriority := func(a *TicketAttrs, p string) *TicketAttrs {
+	withPriority := func(a *TicketState, p string) *TicketState {
 		c := *a
 		c.Priority = p
 		return &c
 	}
-	unassigned := func(a *TicketAttrs) *TicketAttrs {
+	unassigned := func(a *TicketState) *TicketState {
 		c := *a
 		c.AssigneeGroupID = nil
 		return &c
@@ -32,7 +32,7 @@ func TestWebhookFilter_Admits(t *testing.T) {
 	cases := []struct {
 		name      string
 		filter    WebhookFilter
-		attrs     *TicketAttrs
+		attrs     *TicketState
 		wantAdmit bool
 		wantKnown bool
 	}{

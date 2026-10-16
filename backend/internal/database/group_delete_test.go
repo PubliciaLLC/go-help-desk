@@ -90,7 +90,7 @@ func (f *groupFixture) heldGroup(t *testing.T) *uuid.UUID {
 func (f *groupFixture) service(t *testing.T) *ticket.Service {
 	t.Helper()
 	svc := ticket.NewService(f.ts, f.ts, notification.Noop{}, auditstore.New(f.db.Queries),
-		txrunner.New(f.db.SQL), nil)
+		txrunner.New(f.db.SQL, nil, nil), nil)
 	require.NoError(t, svc.LoadSystemStatuses(context.Background()))
 	return svc
 }

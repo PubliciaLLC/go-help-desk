@@ -99,3 +99,9 @@ func (s *Server) RoutesForTest() []RouteForTest {
 	})
 	return out
 }
+
+// RoundRobinFirst is who the next round-robin create is offered first, for a
+// test that takes turns concurrently.
+func (s *Server) RoundRobinFirst(uids []uuid.UUID) uuid.UUID {
+	return *s.roundRobin(uids)[0].UserID
+}
