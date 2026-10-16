@@ -34,7 +34,8 @@ export async function lookupRequesters(q: string): Promise<RequesterHit[]> {
   return res.data ?? []
 }
 
-export type TicketScope = 'mine' | 'unassigned' | 'all'
+// 'visible' is every ticket the caller can see, for staff/admin search (#444).
+export type TicketScope = 'mine' | 'unassigned' | 'all' | 'visible'
 
 export async function listTickets(params?: {
   assignee_group_id?: string
