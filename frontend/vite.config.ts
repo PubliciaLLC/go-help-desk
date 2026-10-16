@@ -25,5 +25,8 @@ export default defineConfig({
     // Unmounts each test's DOM. Without it component tests leak into one
     // another — see src/test/setup.ts.
     setupFiles: ['./src/test/setup.ts'],
+    // Must stay above asyncUtilTimeout (5000ms in setup.ts) so failing waits
+    // show "Unable to find..." with a DOM dump, not "Test timed out".
+    testTimeout: 15000,
   },
 })

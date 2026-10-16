@@ -1,5 +1,9 @@
 import { afterEach } from 'vitest'
-import { cleanup } from '@testing-library/react'
+import { cleanup, configure } from '@testing-library/react'
+
+// #428: increase async timeout from 1000ms default to 5000ms to avoid flaky
+// tests on loaded CI runners where a cold render can exceed 1 second
+configure({ asyncUtilTimeout: 5000 })
 
 // React Testing Library registers its own afterEach(cleanup) only when Vitest
 // runs with `globals: true`. This project does not, so without this the DOM
