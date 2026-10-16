@@ -170,6 +170,7 @@
     <tr><td>Accounts on an old password hash must reset after 30 days</td><td>People who rarely sign in; API clients that sign in with a password</td></tr>
     <tr><td><code>unlock &lt;email&gt;</code> on the server</td><td>Operators with a locked-out account</td></tr>
     <tr><td>An IP address or one-word <code>BASE_URL</code> turns passkeys off</td><td>Installs reached by IP address or a host with no dot</td></tr>
+    <tr><td>MCP refuses requests from another origin; Streamable HTTP added</td><td>Browser-based MCP clients, proxies that add <code>Origin</code></td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
@@ -483,6 +484,14 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 </ul>
 
 <p>A <code>BASE_URL</code> with a non-ASCII host stops the server from starting. Write it in punycode.</p>
+
+<h2 id="mcp-origin">MCP refuses requests from another origin</h2>
+
+<p><strong>Who notices:</strong> browser-based MCP clients, and reverse proxies that add an <code>Origin</code> header. Streamable HTTP at <code>/mcp</code> is new; the older SSE routes stay.</p>
+
+<p>Every MCP route (<code>/mcp</code>, <code>/mcp/sse</code>, <code>/mcp/message</code> and anything else under <code>/mcp/</code>) answers <code>403 origin_not_allowed</code> when the request carries an <code>Origin</code> header that is not the origin of your <code>BASE_URL</code>. This is checked before sign-in. Requests with no <code>Origin</code> header, which is what SDKs, editors and <code>curl</code> send, are unaffected. Serve a browser client from the <code>BASE_URL</code> origin, or stop the proxy adding the header.</p>
+
+<p>1.2.x accepted these requests on the SSE routes. The change closes a way for a web page on a sibling site to act through a signed-in user's session cookie. Upgrade if you expose MCP over SSE. See <a href="mcp.html">MCP Server</a>.</p>
 
 <h2 id="known-gaps">What is not in 1.3.0</h2>
 
