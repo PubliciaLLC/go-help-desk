@@ -2100,6 +2100,183 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  /api/v1/me/api-keys:
+    get:
+      operationId: listMyAPIKeys
+      summary: List the caller's own API keys.
+      description: |
+        Staff and administrators only, in a signed-in session (second factor required).
+        The caller's own keys, newest first, including ones an administrator issued for them
+        (created_by says who). The token and its hash are never returned. Not gated by
+        staff_can_create_api_keys: listing and revoking only ever remove access. An API key
+        or OAuth client is refused with 403 session_required, because a key that could manage
+        keys would outlive its own revocation. Requesters have no keys of their own to manage
+        here; an administrator issues one for them with POST /admin/api-keys.
+      tags: ['Account']
+      x-ghd-handler: handleListMyAPIKeys
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin, staff]
+      x-ghd-mfa: true
+      responses:
+        '200':
+          description: The caller's keys. An empty array when there are none.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MyApiKey'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: createMyAPIKey
+      summary: Create an API key for the caller.
+      description: |
+        Staff and administrators only, in a signed-in session (second factor required).
+        Creates a key owned by the caller, which acts as the caller. An administrator may always;
+        staff only while the staff_can_create_api_keys setting is on (403 api_keys_not_allowed
+        otherwise). The raw token is returned once. scopes is required and may not exceed the
+        caller's role: see GET /me/api-keys/scopes (invalid_scope otherwise). expires_at is
+        optional and, when given, must be a future RFC 3339 timestamp. user_id is refused
+        (bad_request): this route always issues for the caller. Issuing is audited (entity_type
+        api_key, action api_key_issued). An API key or OAuth client is refused with 403
+        session_required.
+      tags: ['Account']
+      x-ghd-handler: handleCreateMyAPIKey
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin, staff]
+      x-ghd-mfa: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scopes]
+              properties:
+                name:
+                  type: string
+                  description: A label for the key. Not validated.
+                scopes:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+                    pattern: '^[a-z_]+:(read|write)$'
+                expires_at:
+                  type: [string, 'null']
+                  description: RFC 3339 expiry in the future. Omitted, null or empty means the key never expires.
+      responses:
+        '201':
+          description: Created. The token is shown only in this response.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, token, name, expires_at, user_id, created_by]
+                properties:
+                  id: {$ref: '#/components/schemas/Uuid'}
+                  token:
+                    type: string
+                    description: The raw key, GHD_ followed by 64 hexadecimal characters. Shown once.
+                  name: {type: string}
+                  expires_at:
+                    type: [string, 'null']
+                    format: date-time
+                  user_id: {$ref: '#/components/schemas/Uuid'}
+                  created_by: {$ref: '#/components/schemas/Uuid'}
+        '400':
+          description: >-
+            bad_request (a body that does not decode, or user_id present), scopes_required,
+            invalid_scope (not a catalogue scope, or one the caller's role cannot use),
+            invalid_expires_at.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: |
+            Two sources. The authentication middleware refuses with text/plain: forbidden (a
+            requester), mfa_required, session_required (a machine credential). The handler
+            refuses with application/json: api_keys_not_allowed, for staff while
+            staff_can_create_api_keys is off.
+          content:
+            text/plain:
+              schema: {$ref: '#/components/schemas/Error'}
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/me/api-keys/scopes:
+    get:
+      operationId: listMyAPIKeyScopes
+      summary: List the scopes the caller's role can put on a key.
+      description: |
+        Staff and administrators only, in a signed-in session (second factor required).
+        The scopes POST /me/api-keys accepts for this caller: the whole catalogue for an
+        administrator, tickets, groups:read and audit:read for staff. A key acts at its
+        owner's role, so a scope outside that role would only look like access it does not have.
+      tags: ['Account']
+      x-ghd-handler: handleListMyAPIKeyScopes
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin, staff]
+      x-ghd-mfa: true
+      responses:
+        '200':
+          description: The scopes, as GET /admin/scopes lists them.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [scope, resource, action]
+                  properties:
+                    scope: {type: string}
+                    resource: {type: string}
+                    action: {type: string, enum: [read, write]}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v1/me/api-keys/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The API key's id, as listed by GET /me/api-keys.
+        schema:
+          type: string
+          format: uuid
+    delete:
+      operationId: deleteMyAPIKey
+      summary: Revoke one of the caller's own API keys.
+      description: |
+        Staff and administrators only, in a signed-in session (second factor required).
+        Deletes a key the caller owns; it stops working on the next request. Someone else's key
+        answers the same 404 as an id that does not exist. Not gated by
+        staff_can_create_api_keys. Audited (entity_type api_key, action api_key_revoked).
+      tags: ['Account']
+      x-ghd-handler: handleDeleteMyAPIKey
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin, staff]
+      x-ghd-mfa: true
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /api/v1/me/email-preferences:
     patch:
       operationId: updateEmailPreferences
@@ -4646,8 +4823,9 @@ paths:
           Zero, negative, larger, null and non-integers are refused with bad_request.
           password_rehash_started_at is recorded by the server when 1.3.0 first
           runs and is refused with 400 readonly_setting; it is left out of GET.
-        - guest_submission_enabled, staff_can_view_ticket_change_history and
-          staff_can_view_follow_audit must be JSON booleans. null is refused.
+        - guest_submission_enabled, staff_can_view_ticket_change_history,
+          staff_can_view_follow_audit and staff_can_create_api_keys must be JSON
+          booleans. null is refused.
         - guest_submission_enabled and self_signup_enabled cannot be turned from
           off to on while email is not configured (SMTP_HOST and SMTP_FROM): 400
           email_required, and nothing in the body is stored. Both send an email
@@ -4695,7 +4873,8 @@ paths:
         attachment_scan_address, attachment_scan_policy, attachment_allowed_types,
         attachment_infected_handling, attachment_mismatch_handling,
         audit_retention_days, staff_can_view_ticket_change_history,
-        staff_can_view_follow_audit, password_rehash_grace_days, password_rehash_started_at,
+        staff_can_view_follow_audit, staff_can_create_api_keys,
+        password_rehash_grace_days, password_rehash_started_at,
         attachment_vt_lookup, attachment_vt_api_key, attachment_reputation_provider,
         attachment_reputation_api_key, attachment_reputation_virustotal_enabled,
         attachment_reputation_virustotal_key, attachment_reputation_metadefender_enabled,
@@ -5432,14 +5611,23 @@ paths:
       summary: Create an API key.
       description: >-
         Administrators only (second factor required).
-        Creates an API key that acts at the caller's role and counts as having
-        passed MFA. The raw token is returned once, in this response, and cannot
-        be shown again. It has the form GHD_ followed by 64 hexadecimal
-        characters. scopes is required: a non-empty list of resource:action
-        values from GET /api/v1/admin/scopes. An API key can grant only scopes it
-        holds itself. expires_at is optional; when given it must be a
-        future RFC 3339 timestamp. An expired key is refused as if it were
-        unknown. name is not validated and may be empty.
+        Creates an API key that acts at its owner's role and counts as having
+        passed MFA. The owner is the caller, or the account named by user_id: an
+        administrator signed in through the browser can issue a key on behalf of
+        any live account, staff and requesters included. The key belongs to that
+        account and acts as it; created_by records the administrator. An API key
+        or OAuth client that names any user but its own owner is refused with
+        403 session_required. Either way the key is audited (entity_type api_key,
+        action api_key_issued). The raw token is returned once, in this response,
+        and cannot be shown again. It has the form GHD_ followed by 64
+        hexadecimal characters. scopes is required: a non-empty list of
+        resource:action values from GET /api/v1/admin/scopes, and none may exceed
+        the owner's role (a key for a requester can carry only tickets scopes;
+        for staff, tickets, groups:read and audit:read): invalid_scope
+        otherwise. An API key can grant only scopes it holds itself. expires_at
+        is optional; when given it must be a future RFC 3339 timestamp. An
+        expired key is refused as if it were unknown. name is not validated and
+        may be empty.
       tags: ['Admin: Credentials']
       x-ghd-handler: handleCreateAPIKey
       security:
@@ -5474,6 +5662,11 @@ paths:
                     RFC 3339 expiry in the future, for example 2027-01-31T00:00:00Z.
                     Omitted, null, an empty string or only spaces means the key never
                     expires.
+                user_id:
+                  $ref: '#/components/schemas/Uuid'
+                  description: >-
+                    Issue the key for this account instead of the caller. Administrator
+                    sessions only. The account must exist and not be deleted or disabled.
       responses:
         '201':
           description: >-
@@ -5483,7 +5676,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [id, token, name, expires_at]
+                required: [id, token, name, expires_at, user_id, created_by]
                 properties:
                   id: {$ref: '#/components/schemas/Uuid'}
                   token:
@@ -5493,13 +5686,20 @@ paths:
                   expires_at:
                     type: [string, 'null']
                     format: date-time
+                  user_id:
+                    $ref: '#/components/schemas/Uuid'
+                    description: The account the key belongs to.
+                  created_by:
+                    $ref: '#/components/schemas/Uuid'
+                    description: The caller.
         '400':
           description: >-
             Refused by the handler, as application/json. bad_request ("invalid
             JSON") for a body that does not decode. scopes_required when scopes is
             empty or missing. invalid_scope when an entry is not a catalogue scope
-            (for example a write scope on audit). invalid_expires_at when expires_at
-            is not RFC 3339 or is not in the future.
+            (for example a write scope on audit) or is one the owner's role cannot
+            use. invalid_expires_at when expires_at is not RFC 3339 or is not in
+            the future. user_disabled when user_id names a disabled account.
           content:
             application/json:
               schema:
@@ -5512,11 +5712,18 @@ paths:
             forbidden (role), mfa_required (second factor not passed) or
             insufficient_scope (the API key lacks credentials:write). The handler
             refuses with application/json: insufficient_scope when an API key
-            asks to grant a scope it does not hold itself.
+            asks to grant a scope it does not hold itself, and session_required
+            when an API key or OAuth client names a user_id other than its own owner.
           content:
             text/plain:
               schema:
                 $ref: '#/components/schemas/Error'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: not_found, when user_id names no account or a deleted one.
+          content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
@@ -5538,7 +5745,9 @@ paths:
         it. An API key can delete only itself; any other id, its owner's other keys
         included, answers 404 not_found, the same as an id that does not exist.
         Either way the deleted key stops working on the next request. Before 1.3 an
-        API key could delete another administrator's key if it knew the id.
+        API key could delete another administrator's key if it knew the id. Revoking
+        is audited (entity_type api_key, action api_key_revoked); on_behalf says the
+        key was someone else's.
       tags: ['Admin: Credentials']
       x-ghd-handler: handleDeleteAPIKey
       security:
@@ -9325,6 +9534,13 @@ components:
         email_notify_assigned: {type: boolean, description: 'Email me when a ticket is assigned to me. Staff email switch, on by default.'}
         email_notify_activity: {type: boolean, description: 'Email me when a requester replies on a ticket assigned to me, or it is reopened. On by default.'}
         email_notify_group: {type: boolean, description: "Email me about my groups' tickets. On by default."}
+        can_create_api_keys:
+          type: boolean
+          description: >-
+            Whether this account may create its own API keys: always for an
+            administrator, for staff only while staff_can_create_api_keys is on,
+            never for a requester. Present only on GET /me and PATCH
+            /me/email-preferences.
         email_notifications:
           type: object
           description: |
@@ -10098,6 +10314,14 @@ components:
             ticket's audit trail and in the admin-wide audit view.
             Administrators always can and requesters never can. Off by default.
             Session only.
+        staff_can_create_api_keys:
+          type: boolean
+          description: >-
+            Whether staff may create their own API keys (POST /me/api-keys).
+            Administrators always can and requesters never can. Off by default.
+            It governs creating a key only: turning it off does not revoke keys
+            that exist, and staff can still list and revoke their own. Session
+            only.
         password_rehash_grace_days:
           type: integer
           minimum: 1
@@ -10184,13 +10408,21 @@ components:
         key that has never been used omits last_used_at, and a key with no expiry omits
         expires_at.
       type: object
-      required: [id, name, user_id, owner_name, owner_email, scopes, created_at]
+      required: [id, name, user_id, created_by, owner_name, owner_email, scopes, created_at]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
         name: {type: string}
         user_id:
           $ref: '#/components/schemas/Uuid'
-          description: The owning administrator.
+          description: The account the key belongs to and acts as.
+        created_by:
+          description: >-
+            Who issued the key. Equal to user_id when the owner made it, different when
+            an administrator issued it on their behalf, null when not known (made
+            before 1.3, or the issuer has since been deleted).
+          oneOf:
+            - {$ref: '#/components/schemas/Uuid'}
+            - {type: 'null'}
         owner_name:
           type: string
           description: The owner's display name.
@@ -10213,6 +10445,29 @@ components:
         created_at:
           type: string
           format: date-time
+    MyApiKey:
+      description: >-
+        One of the caller's own API keys. The token hash is never returned. A key that has
+        never been used omits last_used_at, and a key with no expiry omits expires_at.
+      type: object
+      required: [id, name, user_id, created_by, scopes, created_at]
+      properties:
+        id: {$ref: '#/components/schemas/Uuid'}
+        name: {type: string}
+        user_id: {$ref: '#/components/schemas/Uuid'}
+        created_by:
+          description: >-
+            Who issued the key: the caller when they made it, an administrator when one issued
+            it for them, null when not known.
+          oneOf:
+            - {$ref: '#/components/schemas/Uuid'}
+            - {type: 'null'}
+        scopes:
+          type: array
+          items: {type: string, pattern: '^[a-z_]+:(read|write)$'}
+        last_used_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time}
+        created_at: {type: string, format: date-time}
     OAuthClient:
       description: >-
         An OAuth client as the list returns it. The secret hash is never returned,

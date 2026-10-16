@@ -2,6 +2,7 @@ package auth
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -201,6 +202,22 @@ func ScopesForRole(role string) []Scope {
 		}
 	case "user":
 		return []Scope{{ResourceTickets, ActionRead}, {ResourceTickets, ActionWrite}}
+	}
+	return nil
+}
+
+// WithinRole returns an error naming the first scope in want that a key owned
+// by role may not carry. want must already have passed ValidateScopes.
+func WithinRole(role string, want []string) error {
+	offered := ScopesForRole(role)
+	for _, w := range want {
+		sc, err := ParseScope(w)
+		if err != nil {
+			return err
+		}
+		if !slices.Contains(offered, sc) {
+			return fmt.Errorf("scope %q is not available to a key owned by a %s account", w, role)
+		}
 	}
 	return nil
 }

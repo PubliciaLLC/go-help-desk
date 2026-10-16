@@ -407,6 +407,22 @@ func (s *Server) meRouter() *chi.Mux {
 		})
 	})
 
+	// Self-service API keys (#450). Refused to machine credentials, as the
+	// routes above are and for a stronger reason: a key that could mint keys
+	// outlives its own revocation. RequireMFA because a half-signed-in session
+	// must not be able to mint a long-lived credential. Requesters are
+	// excluded here; whether staff may create is decided by the setting inside
+	// the handler, so that listing and revoking stay available to them.
+	r.Group(func(r chi.Router) {
+		r.Use(authmw.DenyMachineCredentials)
+		r.Use(authmw.RequireMFA)
+		r.Use(authmw.RequireRole(user.RoleAdmin, user.RoleStaff))
+		r.Get("/api-keys", s.handleListMyAPIKeys)
+		r.Get("/api-keys/scopes", s.handleListMyAPIKeyScopes)
+		r.Post("/api-keys", s.handleCreateMyAPIKey)
+		r.Delete("/api-keys/{id}", s.handleDeleteMyAPIKey)
+	})
+
 	// Reading your own identity is left to machine credentials: an integration
 	// legitimately needs to know who it is acting as, and this discloses
 	// nothing it could not already infer.

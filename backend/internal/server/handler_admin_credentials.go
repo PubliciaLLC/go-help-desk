@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/publiciallc/go-help-desk/backend/internal/safehttp"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -13,9 +14,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/authstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 	"github.com/publiciallc/go-help-desk/backend/internal/server/notify"
 )
@@ -51,30 +54,49 @@ func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
 	var body struct {
-		Name      string   `json:"name"`
-		Scopes    []string `json:"scopes"`
-		ExpiresAt *string  `json:"expires_at"`
+		Name      string     `json:"name"`
+		Scopes    []string   `json:"scopes"`
+		ExpiresAt *string    `json:"expires_at"`
+		UserID    *uuid.UUID `json:"user_id"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	// Required, not defaulted. With deny-by-default an empty list produces a
-	// credential that can do nothing, and the caller would not find out until
-	// the integration started returning 403. Omitting the field used to reach
-	// the database as NULL and come back as an opaque 500 — on the exact call
-	// the upgrade notes tell every operator to make.
-	if len(body.Scopes) == 0 {
-		Error(w, http.StatusBadRequest, "scopes_required",
-			"scopes is required: a credential with no scopes is refused on every route. "+
-				"See GET /api/v1/admin/scopes for the available scopes.")
-		return
+
+	// The key's owner is the caller unless an administrator names someone else
+	// (#450). A machine credential naming anyone but its own owner is refused
+	// before anything else is looked at: credentials:write is otherwise the
+	// ability to become any user, by issuing a key as them and using it.
+	// Naming itself is not naming someone else, so that is let through.
+	owner := ownerOfKey{id: a.UserID, role: a.Role}
+	if body.UserID != nil && *body.UserID != a.UserID {
+		if a.Machine {
+			Error(w, http.StatusForbidden, "session_required",
+				"an API key or OAuth client cannot issue a key for another user; this requires a signed-in session")
+			return
+		}
+		target, err := s.users.GetByIDAdmin(r.Context(), *body.UserID)
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		if target.DeletedAt != nil {
+			handleError(w, fmt.Errorf("user %s: %w", target.ID, user.ErrNotFound))
+			return
+		}
+		// A disabled account's keys are refused on every request, so the key
+		// would be issued dead. Better said now than discovered by the person
+		// it was issued for.
+		if target.Disabled {
+			Error(w, http.StatusBadRequest, "user_disabled", "that account is disabled; enable it before issuing it a key")
+			return
+		}
+		owner = ownerOfKey{id: target.ID, role: target.Role}
 	}
-	// Reject unknown scopes at creation. Unrecognised entries are ignored at
-	// enforcement time, so without this a typo produces a credential that
-	// looks restricted, is accepted, and quietly grants less than intended.
-	if err := auth.ValidateScopes(body.Scopes); err != nil {
-		Error(w, http.StatusBadRequest, "invalid_scope", err.Error())
+
+	expiresAt, ok := s.checkNewKey(w, body.Scopes, body.ExpiresAt, owner.role)
+	if !ok {
 		return
 	}
 	// A machine credential cannot mint one broader than itself. Without this,
@@ -86,6 +108,44 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 				"this credential cannot grant "+over+", which it does not hold itself")
 			return
 		}
+	}
+	s.issueAPIKey(w, r, owner, body.Name, body.Scopes, expiresAt)
+}
+
+// ownerOfKey is who a key will act as. The role is what limits its scopes.
+type ownerOfKey struct {
+	id   uuid.UUID
+	role user.Role
+}
+
+// checkNewKey validates what both key-creating routes accept, writing the
+// refusal and returning false when it is not acceptable.
+func (s *Server) checkNewKey(w http.ResponseWriter, scopes []string, expiresAt *string, ownerRole user.Role) (*time.Time, bool) {
+	// Required, not defaulted. With deny-by-default an empty list produces a
+	// credential that can do nothing, and the caller would not find out until
+	// the integration started returning 403. Omitting the field used to reach
+	// the database as NULL and come back as an opaque 500 — on the exact call
+	// the upgrade notes tell every operator to make.
+	if len(scopes) == 0 {
+		Error(w, http.StatusBadRequest, "scopes_required",
+			"scopes is required: a credential with no scopes is refused on every route. "+
+				"See GET /api/v1/admin/scopes for the available scopes.")
+		return nil, false
+	}
+	// Reject unknown scopes at creation. Unrecognised entries are ignored at
+	// enforcement time, so without this a typo produces a credential that
+	// looks restricted, is accepted, and quietly grants less than intended.
+	if err := auth.ValidateScopes(scopes); err != nil {
+		Error(w, http.StatusBadRequest, "invalid_scope", err.Error())
+		return nil, false
+	}
+	// A key acts at its owner's role, so a scope that role has no route for
+	// can only mislead: it looks like access the key does not have (#450).
+	// Checked against the owner, not the caller: an administrator issuing a
+	// key for a requester is limited by what a requester can do.
+	if err := auth.WithinRole(string(ownerRole), scopes); err != nil {
+		Error(w, http.StatusBadRequest, "invalid_scope", err.Error())
+		return nil, false
 	}
 	// The expiry was decoded and then dropped on the floor: the field was
 	// read off the request, never copied onto the key, and the key never
@@ -99,49 +159,90 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	// is already past: a credential that expires before it is issued is a
 	// request nobody means, and silently issuing a working key for it is how
 	// this defect looked from outside.
-	var expiresAt *time.Time
-	if body.ExpiresAt != nil && strings.TrimSpace(*body.ExpiresAt) != "" {
-		at, err := time.Parse(time.RFC3339, *body.ExpiresAt)
-		if err != nil {
-			Error(w, http.StatusBadRequest, "invalid_expires_at",
-				"expires_at must be an RFC 3339 timestamp, for example 2027-01-31T00:00:00Z")
-			return
-		}
-		if !at.After(time.Now()) {
-			Error(w, http.StatusBadRequest, "invalid_expires_at",
-				"expires_at is in the past, so this credential would be refused on every request")
-			return
-		}
-		expiresAt = &at
+	if expiresAt == nil || strings.TrimSpace(*expiresAt) == "" {
+		return nil, true
 	}
+	at, err := time.Parse(time.RFC3339, *expiresAt)
+	if err != nil {
+		Error(w, http.StatusBadRequest, "invalid_expires_at",
+			"expires_at must be an RFC 3339 timestamp, for example 2027-01-31T00:00:00Z")
+		return nil, false
+	}
+	if !at.After(time.Now()) {
+		Error(w, http.StatusBadRequest, "invalid_expires_at",
+			"expires_at is in the past, so this credential would be refused on every request")
+		return nil, false
+	}
+	return &at, true
+}
 
+// issueAPIKey stores a validated key for owner, audits it, and answers 201 with
+// the raw token, which is shown once and never again.
+func (s *Server) issueAPIKey(w http.ResponseWriter, r *http.Request, owner ownerOfKey, name string, scopes []string, expiresAt *time.Time) {
+	a := authmw.GetActor(r)
 	raw, _, err := auth.GenerateToken()
 	if err != nil {
 		handleError(w, err)
 		return
 	}
 	raw = "GHD_" + raw
-	hashed := auth.HashToken(raw)
 	key := auth.APIKey{
 		ID:          uuid.New(),
-		Name:        body.Name,
-		HashedToken: hashed,
-		UserID:      a.UserID,
-		Scopes:      body.Scopes,
+		Name:        name,
+		HashedToken: auth.HashToken(raw),
+		UserID:      owner.id,
+		Scopes:      scopes,
 		ExpiresAt:   expiresAt,
 		CreatedAt:   time.Now(),
+		CreatedBy:   &a.UserID,
 	}
 	if err := s.authStore.CreateAPIKey(r.Context(), key); err != nil {
 		handleError(w, err)
 		return
 	}
+	s.auditAPIKey(r, "api_key_issued", key.ID, owner.id, scopes, expiresAt)
 	// Return the raw token once — it will never be shown again.
 	JSON(w, http.StatusCreated, map[string]any{
 		"id":         key.ID,
 		"token":      raw, // shown once
 		"name":       key.Name,
 		"expires_at": key.ExpiresAt,
+		"user_id":    key.UserID,
+		"created_by": key.CreatedBy,
 	})
+}
+
+// auditAPIKey records a key being issued or revoked (#450), for the caller's
+// own keys and for other people's alike. on_behalf is the part worth reading
+// later: an administrator acting on somebody else's account.
+//
+// Best effort, like user.Service.writeAuditEntry and for the same reason: the
+// entry does not gate anything, and a key that was issued must not be reported
+// as failed because the log table had a bad moment. It is detached from the
+// request, though, so hanging up right after the key is written cannot be a
+// way to leave no trace of having issued it. The name is left out: it is free
+// text, and the audit view shows only what cannot carry personal data.
+func (s *Server) auditAPIKey(r *http.Request, action string, keyID, ownerID uuid.UUID, scopes []string, expiresAt *time.Time) {
+	if s.auditStore == nil {
+		return
+	}
+	a := authmw.GetActor(r)
+	after := map[string]any{
+		"owner_user_id": ownerID.String(),
+		"on_behalf":     ownerID != a.UserID,
+		"scopes":        strings.Join(scopes, ","),
+	}
+	if expiresAt != nil {
+		after["expires_at"] = expiresAt.UTC().Format(time.RFC3339)
+	}
+	ctx := context.WithoutCancel(r.Context())
+	err := s.auditStore.Create(ctx, audit.Entry{
+		ID: uuid.New(), ActorID: &a.UserID, EntityType: "api_key", EntityID: keyID,
+		Action: action, After: after, CreatedAt: time.Now(),
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "writing audit entry failed", "entity_type", "api_key", "entity_id", keyID, "action", action, "error", err)
+	}
 }
 
 func (s *Server) handleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {
@@ -156,10 +257,21 @@ func (s *Server) handleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {
 		handleError(w, fmt.Errorf("API key %s: %w", id, auth.ErrNotFound))
 		return
 	}
+	// The owner is read first so the audit entry can say whose key it was.
+	rows, err := s.authStore.ListWithOwner(r.Context(), &id)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	if len(rows) == 0 {
+		handleError(w, fmt.Errorf("API key %s: %w", id, auth.ErrNotFound))
+		return
+	}
 	if err := s.authStore.Delete(r.Context(), id); err != nil {
 		handleError(w, err)
 		return
 	}
+	s.auditAPIKey(r, "api_key_revoked", id, rows[0].UserID, rows[0].Scopes, rows[0].ExpiresAt)
 	w.WriteHeader(http.StatusNoContent)
 }
 
