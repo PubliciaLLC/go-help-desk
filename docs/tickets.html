@@ -308,6 +308,15 @@
 <h3>Removing a link</h3>
 <p>Click the <em>×</em> next to any linked ticket. This removes the link in both directions. Staff and admin only — users cannot modify links.</p>
 
+<h3>Resolving all the children at once</h3>
+<p>On a ticket that is the parent in at least one <code>parent_child</code> link, staff and admins see <em>Resolve all children</em> in the Linked tickets section. It asks for resolution notes once, and the same notes are recorded on every child it resolves.</p>
+<ul>
+  <li><strong>Only open children are resolved.</strong> The confirm button counts them (<em>Resolve 3 children</em>), and says how many that are already Resolved or Closed will be skipped. A child that is already resolved is never resolved a second time, so its own notes are not overwritten. If none is open, the button is disabled and reads <em>All children are already resolved.</em></li>
+  <li><strong>Direct children only.</strong> Children of the children are left alone. If any of the children have children of their own, the form says so, naming up to five by tracking number, and tells you to resolve those from their own ticket.</li>
+  <li><strong>Each child is resolved on its own</strong>, one after another, exactly as if you had opened it and clicked Resolve: each gets its own Activity entry, notifications and SLA handling.</li>
+  <li><strong>A refusal does not stop the rest.</strong> When it finishes you get a report such as <em>2 of 3 resolved, 1 already resolved</em>, followed by each child the server refused and the reason. The notes stay in the box, so you can fix the cause and run it again; only the children still open are touched.</li>
+</ul>
+
 
 
 <h2 id="tickets-tags">Tags</h2>
@@ -339,7 +348,7 @@
 
 <p>A ticket can be assigned to:</p>
 <ul>
-  <li><strong>A specific staff member</strong>: the ticket appears in their personal queue. No email is sent for an assignment.</li>
+  <li><strong>A specific staff member</strong>: the ticket appears in their personal queue, and they are emailed about it, unless they or an administrator have switched that email off. See <a href="#tickets-staff-email">Email to staff</a>.</li>
   <li><strong>A group</strong> — the ticket appears in the queue of every member of that group. Useful when you want a team to handle the ticket without specifying an individual.</li>
   <li><strong>Unassigned</strong> — visible to all staff with scope for the ticket's CTI classification.</li>
 </ul>
@@ -347,8 +356,11 @@
 <h3>Who can assign</h3>
 <p>Staff and admins can assign tickets to any staff member or group, regardless of scope. This is intentional — cross-team escalation should not be blocked by routing rules. A ticket can be assigned to staff outside their normal scope, and it will appear in the assignee's queue.</p>
 
+<h3>Assign to me</h3>
+<p>Staff and admins see an <em>Assign to me</em> button in the Assignee panel of the ticket page. It is offered only while the ticket has no assignee, and not on a Resolved or Closed ticket; once anyone holds the ticket, you included, it is gone. It assigns the ticket to you and <strong>keeps the group</strong> the ticket is already assigned to. Picking a person from the list instead replaces the group, as before. Requesters never see the button.</p>
+
 <h3>Reassignment</h3>
-<p>Reassigning a ticket sends no email to either assignee. It is recorded in the ticket's Activity feed, and a <code>ticket.assigned</code> event goes to subscribed webhooks.</p>
+<p>Reassigning a ticket emails the new assignee, and the assigned group's members when it is assigned to a group, as described under <a href="#tickets-staff-email">Email to staff</a>. The person who made the change is never emailed about it. The old assignee is not told. The change is recorded in the ticket's Activity feed, and a <code>ticket.assigned</code> event goes to subscribed webhooks. A reassignment also ends the old assignee's <a href="#tickets-follow">follow</a> of the ticket, if they had one.</p>
 
 <h3>Assignment and scope</h3>
 <p>Scope controls what tickets a staff member sees in their default queue. Assignment overrides this for the assignee: if you are assigned a ticket outside your scope, it appears in your queue. Scope narrows what staff can see only when <em>Limit staff to their group scope</em> is on under <em>Admin → Settings → General → Ticket visibility</em>. It is off by default, and then every staff member can open any ticket and jump to it by its tracking number. List search still covers only the tickets assigned to them or their groups, and searching every ticket is not available to staff in 1.3.0. Tracked in <a href="https://github.com/PubliciaLLC/go-help-desk/issues/444" target="_blank" rel="noopener">#444</a>. With it on, a ticket outside a staff member's visibility answers as not found, even by its tracking number.</p>
