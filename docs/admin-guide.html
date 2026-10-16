@@ -301,6 +301,9 @@ Facilities
 <h3 id="admin-passkeys-banner">Passkeys unavailable</h3>
 <p>Passkeys are tied to a domain name. If <code>BASE_URL</code> is an IP address, a single-word host such as <code>http://helpdesk:8080</code>, or contains non-ASCII characters, passkeys are switched off. The server still starts and everything else works, but every administrator sees a banner, <em>Passkeys are unavailable</em>, which gives the reason. Someone whose only second factor is a passkey cannot sign in while this lasts. They are told to ask an administrator to reset their sign-in factors; <em>Reset MFA</em> clears the passkey, and they then enrol an authenticator app. If the locked-out person is the last administrator, use <code>reset-factors</code> above. To get passkeys, give the instance a DNS name and set <code>BASE_URL</code> to it. Changing the domain makes passkeys registered under the old one stop working.</p>
 
+<h3>SAML metadata as a URL or pasted XML</h3>
+<p>Under <em>Admin → Settings → Authentication → SAML</em> the identity provider's metadata can be given as a URL the server fetches, or as XML you paste or upload. The two are alternatives, and a pasted copy is never refreshed. The steps and the refusals are in <a href="authentication.html#auth-saml">SAML 2.0 SSO</a>.</p>
+
 <h3>Identity-provider lockout guard</h3>
 <p>Saving SAML or OIDC settings is refused with <code>400 bad_request</code> when the change would leave no active administrator able to sign in, for example by turning off the only identity provider that an administrator without a password uses. Local password sign-in is not affected by these settings. A change that leaves only some administrators unable to sign in is saved, and the response carries a warning.</p>
 
