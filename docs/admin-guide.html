@@ -139,6 +139,11 @@
     <li><a href="#admin-users">Account recovery</a>: an identity-provider lockout guard, and a <code>reset-factors</code> command for an account that has lost every second factor. MFA reset also clears passkeys.</li>
     <li><a href="tickets.html#tickets-create">Guest submission</a> works. <code>guest_submission_enabled</code> needs a signed-in administrator, and switching it off also suspends every existing guest link until it is switched on again.</li>
     <li><a href="#admin-attachments">Attachment security</a>: content detection, malware scanning and reputation lookup, all configured under <em>Admin → Settings → Attachments</em>.</li>
+    <li><a href="#admin-staff-email">Staff email</a>: assignments, requester replies and reopens are emailed to staff, with three switches each person controls and an administrator override. Check the overrides before you turn email on. Staff can also <a href="tickets.html#tickets-follow">follow tickets</a>.</li>
+    <li><a href="#admin-email-setup">Email honesty</a>: SMTP must use TLS when a password is set, and a missing or failing mail setup shows as a banner instead of failing silently.</li>
+    <li><a href="#admin-oauth-clients">OAuth clients</a> act as service users, so they can write tickets, and are managed from Users and OAuth Clients.</li>
+    <li><a href="#admin-auto-assign">Routing</a> and a paged <a href="#admin-users-list">Users</a> list, <a href="#admin-cti-archive">archive and restore</a> for categories, types and items, and <a href="#admin-webhook-history">webhook History and Redeliver</a>, with <a href="#admin-webhook-filter">ticket filters</a> and retries.</li>
+    <li><a href="#admin-unlock"><code>unlock</code></a> from the server, and a <a href="#admin-password-age">reset window for old passwords</a>.</li>
     <li>Administration is desktop-only by design. Staff triage and reporting work on a phone.</li>
   </ul>
 </div>
@@ -509,6 +514,7 @@ Facilities
 
 <h3>Deactivating and deleting custom statuses</h3>
 <p>Custom statuses can be <strong>deactivated</strong> — they are removed from ticket-creation dropdowns but existing tickets retain the status, and the status continues to appear in filters and reports. Deactivated statuses can be <strong>reactivated</strong> at any time.</p>
+<p><strong>An inactive status is retired for everyone.</strong> The ticket status picker no longer lists it (a ticket's own current status stays listed), and the server refuses a move into it with <code>409 status_inactive</code>, whether the request comes from staff, an administrator or an API key. A ticket already in an inactive status stays there and can be moved out; sending a ticket the status it already holds is not a move.</p>
 <p>A custom status can only be <strong>deleted</strong> permanently when zero tickets are in that status. The delete button appears only when the ticket count for that status is 0. Deleting is irreversible; deactivating is always the safer option.</p>
 
 <h3>Status change timeline</h3>
@@ -518,7 +524,8 @@ Facilities
 <p>Configure how many days after Resolved a requester can reopen a ticket by replying. Set this from <em>Admin → Settings → General → Ticket lifecycle → Reopen window and auto-close</em>. The default is 7. Set it to 0 for no reopening at all: a Resolved ticket is closed, and read-only, on the next automatic sweep, about five minutes later.</p>
 
 <h3>Reopen target status</h3>
-<p>When a ticket is reopened, it is moved to the <strong>Reopen target status</strong>. Configure this from <em>Admin → Settings → General → Ticket lifecycle → Reopen target status</em>. The picker lists all active, non-system statuses — system statuses (Resolved, Closed) are excluded because transitioning a reopened ticket back into a terminal state would immediately re-trigger the close flow. If no target status is configured, the ticket is moved to the status named <strong>New</strong>.</p>
+<p>When a ticket is reopened, it is moved to the <strong>Reopen target status</strong>. Configure this from <em>Admin → Settings → General → Ticket lifecycle → Reopen target status</em>. The picker lists all active, non-system statuses — system statuses (Resolved, Closed) are excluded because transitioning a reopened ticket back into a terminal state would immediately re-trigger the close flow. If no target status is configured, the ticket is moved to the status named <strong>New</strong>. The same happens if the configured target has since been deactivated: every reopen goes to New, administrators see a banner, <em>The reopen target status is inactive</em>, asking for an active status, and the request that deactivates the target comes back with a warning.</p>
+<p>A reopen does more than change the status. It flags the ticket, raises its priority one level on the first reopen only, starts the SLA over, and emails staff. See <a href="tickets.html#tickets-reopen">Reopened tickets</a>.</p>
 
 <h3 id="admin-closed-reopen">Reopening closed tickets</h3>
 <p>Closed is terminal by default. <em>Reopening closed tickets</em>, under <em>Admin → Settings → General → Ticket lifecycle</em>, decides whether a Closed ticket can be force-reopened, and by whom:</p>
@@ -553,7 +560,7 @@ Facilities
 </table>
 
 <h3>Policy matching</h3>
-<p>When a ticket is created, the system selects an SLA policy by matching in this order:</p>
+<p>When a ticket is created, the system selects an SLA policy by matching in this order. The same order is used again when staff change a ticket's priority (the ticket is matched against the new priority and its category, and the clock is not restarted), and when a ticket is reopened:</p>
 <ol>
   <li>Priority + Category — most specific match</li>
   <li>Priority only</li>
@@ -573,8 +580,8 @@ Facilities
 <p><strong>Who sees it.</strong> The indicator, the policy name, the targets and the breach state are shown to staff and administrators only. A reporting user never sees any of it on their own ticket — the API returns <code>"sla": null</code> for them whether or not a policy is attached — so a customer cannot tell how their ticket is being timed, or that it has breached.</p>
 
 <h3>Pausing SLA timers</h3>
-<p>When a ticket is moved to the <em>Pending</em> status (waiting on the user), the SLA timer is paused. The timer resumes when the ticket moves out of Pending. This prevents SLA breaches for tickets that are legitimately waiting on a response from the submitter. A ticket can pause and resume as many times as it needs to; the paused time accumulates, and reopening a ticket carries that total forward rather than starting a fresh clock.</p>
-<p><strong>It is matched by name.</strong> &ldquo;Pending&rdquo; is an ordinary custom status that the seed data creates — there is no per-status &ldquo;pauses the SLA&rdquo; switch. The consequences are worth knowing before you edit it: <strong>renaming</strong> it stops tickets pausing from that point on, though one already in it stays paused until it leaves; <strong>deactivating</strong> it does not stop it pausing, because the status picker still offers inactive statuses and the transition is accepted; and <strong>deleting</strong> it removes the only way to pause an SLA at all. Whatever status is named Pending — renamed back, or newly created — becomes the pause status.</p>
+<p>When a ticket is moved to the <em>Pending</em> status (waiting on the user), the SLA timer is paused. The timer resumes when the ticket moves out of Pending. This prevents SLA breaches for tickets that are legitimately waiting on a response from the submitter. A ticket can pause and resume as many times as it needs to, and the paused time accumulates. Reopening a ticket starts its SLA over: the earlier record is kept, a new one starts at the reopen, and staff see an <em>SLA restarted</em> badge on the ticket. A reopen does this every time, nothing happens while SLA tracking is switched off, and a staff change of priority never restarts a clock by itself.</p>
+<p><strong>It is matched by name.</strong> &ldquo;Pending&rdquo; is an ordinary custom status that the seed data creates — there is no per-status &ldquo;pauses the SLA&rdquo; switch. The consequences are worth knowing before you edit it: <strong>renaming</strong> it stops tickets pausing from that point on, though one already in it stays paused until it leaves; <strong>deactivating</strong> it stops tickets entering it, because an inactive status can no longer be moved to (a ticket already in it stays paused until it leaves, and a reopen cannot enter it either); and <strong>deleting</strong> it removes the only way to pause an SLA at all. Whatever status is named Pending — renamed back, or newly created — becomes the pause status.</p>
 
 
 <h2 id="admin-email-setup">Email setup &amp; warnings</h2>
