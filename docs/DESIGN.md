@@ -138,10 +138,10 @@ admins, or staff and admins, to force-reopen; requesters never can.
 - **Closed reopen policy**: admin setting (`closed_reopen_policy`, shown as **Reopening closed tickets** under Admin → Settings → Ticket lifecycle; session-gated like the other settings that widen who may do what). `off` (the default) | `admin` | `staff_admin`. **Closed is terminal by default; an instance setting can allow forced reopen by admins only, or by staff and admins; requesters never.** Unset, unreadable or unrecognised reads as `off`, never as a permissive value; an unrecognised value is refused (`400 invalid_closed_reopen_policy`) when saved. Read on every request, never cached, so a change applies to the very next request.
 - **A reopen** ([#464](https://github.com/PubliciaLLC/go-help-desk/issues/464)) is any move from Resolved or Closed back to an open status. Every way of doing it is the same reopen: a requester's reply on a Resolved ticket inside the window (an account holder, or a guest through their link); a status change by staff or an administrator (`PATCH /tickets/{id}` with `status_id`, and MCP `update_ticket_status`); and `POST /tickets/{id}/reopen`. Leaving Closed still needs `closed_reopen_policy` to allow the caller's role, and a refused request changes nothing. Resolved to Closed and Closed to Resolved are not reopens. A reopen does five things, in the same transaction as the status change (`ticket.Atomic`), so none of them happens without the others:
   - **It flags the ticket.** `tickets.reopen_count` (migration `000047`) goes up by one and is never reset; the ticket JSON carries it as `reopen_count`, to staff and administrators only (omitted when 0). A requester never receives it; see *What a requester sees of a ticket* below. Staff and administrators see a **Reopened** badge on the ticket page and on the ticket's row in the queue (table and mobile cards) while the ticket is open, and it goes away when the ticket is Resolved or Closed again. A requester does not see it. Tickets reopened before the upgrade start at 0: reopens were only ever audit entries, which retention can prune, so there is nothing reliable to count from.
-  - **It raises the priority one level on the first reopen only** (low to medium to high to critical; critical stays critical). "First" is the count being 0 before this reopen, so a ticket that is resolved and reopened again is flagged again but not raised again. The change goes through the same primitive as a staff priority change (`changePriorityInTx`, reason `reopened`) and writes `priority_changed` with that reason. A `PATCH` that reopens a ticket and also sends a `priority` raises it first and then applies the priority sent, so the value sent wins.
+  - **It raises the priority one level on the first reopen only** (low to medium to high to critical; critical stays critical). "First" is the count being 0 before this reopen, so a ticket that is resolved and reopened again is flagged again but not raised again. The change goes through the same primitive as a staff priority change (`changePriorityInTx`, reason `reopened`) and writes `priority_changed` with that reason if the priority moved (a critical ticket writes nothing). A `PATCH` that reopens a ticket and also sends a `priority` raises it first and then applies the priority sent, so the value sent wins.
   - **It restarts both SLA clocks**, on every reopen and not only the first, at any priority: see *A reopen restarts both clocks* under SLA Policy Matching. Every reopen is also a **restart point** remembered on the ticket (`last_reopened_at` and the Pending total then, `paused_seconds_at_last_reopen`), including a reopen that lands on a priority with no SLA policy and so starts no record.
   - **It writes `reopened`** to the audit log (and `priority_changed` and `sla_restarted` as above). A status change out of Resolved or Closed now writes `reopened` beside its `status_changed`; before, only the reply and `POST /reopen` did.
-  - **It emails staff and fires `ticket.reopened`**, after the commit: see Notifications. A status change out of Resolved or Closed raises the `ticket.reopened` webhook event, which it did not before.
+  - **It emails staff and fires `ticket.reopened`**: see Notifications. A status change out of Resolved or Closed raises the `ticket.reopened` webhook event, which it did not before. The reopen and the status change are **one event** for the ticket (kinds `ticket.reopened` and `ticket.status_changed`, plus `ticket.priority_changed` on the first reopen, if the priority moved), written to the outbox in the same transaction; the mail and the webhook are sent a moment after the commit. See [Ticket Events: One Change, One Event](#ticket-events-one-change-one-event).
 - **Closed**: automatic transition after the reopen window expires, or an administrator closing the ticket. **Archived read-only, and terminal by default** — see [Closed is terminal](#closed-is-terminal-and-read-only) below. Unless the policy above lets their role, staff and admin cannot reopen it either; they open a linked follow-up.
 
   **Auto-close scheduling.** This transition is driven by a periodic background
@@ -250,27 +250,32 @@ priority and would leave the ticket Resolved or Closed (or that touches one
 already there) is refused whole with that `409`: the status or assignment in the
 same request is not saved first.
 
-**One PATCH, one outcome (#468).** `PATCH /tickets/{id}` can change a ticket's
-status, assignment, classification and priority in one request, and each is
-saved on its own. Every refusal the request can meet is decided before the first
-of them is saved, so a refused request changes nothing and writes no audit
-entry: an invalid priority value, a priority or assignment or reclassification
-from a role that may not make it, an invalid classification, a priority on a
-ticket that would end up Resolved or Closed, an assignee that cannot be given a
-ticket (unknown, deleted, disabled or a reporting user), a group that does not
-exist, and the status change's own refusals (it is the first write). The service
-writes check again, but only what each can: `Assign` re-checks the assignee and
-group on the locked row; `ChangePriority` re-checks the role and the closed state
-on the locked row; `UpdateStatus` checks the role, then re-checks the reopen
-policy and an inactive status on the locked row; `UpdateCTI` re-checks the
-classification, without a lock. The assignment and reclassification roles are not
-checked by the service: authorisation belongs to the caller, so the handler does
-it before the first write, and a caller other than this handler (MCP, the
-scheduler) must do its own. What stays possible after an earlier write is what
-only the write can know: a concurrent change in the milliseconds between check
-and write (an assignee disabled, the ticket closed) or a database failure.
-Before this, a request whose assignee was refused had already saved its status.
-Over MCP `update_ticket_status` answers a move out of Closed with the closed
+**One PATCH, one outcome (#468, #506).** `PATCH /tickets/{id}` can change a
+ticket's status, assignment, classification and priority in one request. It is
+one service call, `Update`, in **one transaction**, in that order (the priority
+last, so a category changed in the same request is the one its SLA policy is
+matched against). A refusal at any step leaves nothing saved and writes no audit
+entry, and the request announces one event (Ticket Events: One Change, One
+Event). The handler still decides every refusal it can before the transaction
+starts: an invalid priority value, a priority or assignment or reclassification
+from a role that may not make it, an invalid classification (`ValidateCTI`), a
+priority on a ticket that would end up Resolved or Closed, an assignee that
+cannot be given a ticket (unknown, deleted, disabled or a reporting user), a
+group that does not exist. The handler makes no status check. `Update` itself
+checks that the status exists and that the role may move to it (`statusFor`)
+before it opens the transaction. Inside the transaction the steps check, on the
+locked row, what each can: the assignment re-checks the assignee and group; the
+priority step re-checks the role and the closed state; the status step checks
+the reopen policy and an inactive status, for the first time and only there
+(`updateStatusInTx`). The
+classification step takes the row lock and does not check again: `ValidateCTI`
+before the transaction is its only check. The assignment and reclassification
+roles are not checked by the service: authorisation belongs to the caller, so
+the handler does it first, and a caller other than this handler (MCP, the
+scheduler) must do its own. A concurrent change between the early check and the
+transaction (an assignee disabled, the ticket closed) or a database failure
+makes the whole request fail and roll back, where before #506 the steps ahead of
+the failing one had already been saved. Over MCP `update_ticket_status` answers a move out of Closed with the closed
 refusal and names the follow-up instead.
 
 **Follow-up.** The way forward from a Closed ticket, in every `closed_reopen_policy`
@@ -439,19 +444,6 @@ The wrapper keys a response may add around a ticket are kept as they are: `sla` 
 **Guests** (the `/guest` routes) are shown less: a strict subset of the same list, `tracking_number`, `subject`, `description` and `created_at`, plus the status's *name* and the replies. (A guest used to receive `updated_at`; it is gone, because a requester does not receive it and the guest list stays a subset.) The guest ticket response goes through `ticket.FilterForGuest`, so there is still one definition.
 
 **Tests.** `TestRequesterKeys_EveryTicketKeyIsClassified` fails when a ticket field is on neither the allowed list nor the never list. `TestRequesterResponses_*` walks the router and calls every route a requester can reach (the router's own list, so a new route is included) with an empty body, against a ticket with every field filled; only create and follow-up are also called with a real body that succeeds. `TestGuestResponses_*` does the same for the guest routes. Both fail if a never-listed key appears anywhere in a body, or a ticket-shaped object carries a key off the list. The MCP tools are not on the router: the test takes its list from `mcp.TicketTools`, and a tool that is not classified in `internal/mcp` fails that package's test. Emails are not JSON and carry only the tracking number and a link to the ticket.
-
-### Ticket Followers
-
-([#441](https://github.com/PubliciaLLC/go-help-desk/issues/441), part D of #464.)
-Staff and administrators can **follow** a ticket to hear about its activity without holding it. A follower is emailed under the staff-email rules (Notifications below), and the ticket shows everyone who follows it.
-
-- **Who can follow: people only.** A staff member or administrator, signed in. An API key, an OAuth client and a service user cannot follow or unfollow: following is a personal choice, and a script acting for someone is not them (#490). The routes answer `403 session_required` to a machine credential, and `ticket.Service.Follow` independently refuses any account that is not an active, non-service staff or admin account, so a second caller (MCP, an importer) cannot get round the route. A requester cannot follow and has no route to the list.
-- **A follower must be able to see the ticket** when following: the routes sit behind `requireTicketAccess` like everything under `/tickets/{id}`, so a ticket out of scope (#391) is a 404, and a tracking number works as well as a UUID. At send time the person is checked again (`Server.StillEntitled`, `CanViewTicket`): mail for a ticket they can no longer see is skipped, and **the row is kept**, so following works again if their scope returns. A deleted or disabled account, a service account and a requester are never mailed (`ListMailableTicketFollowers`).
-- **API.** `PUT` and `DELETE /api/v1/tickets/{id}/follow` follow and unfollow for the caller; both are idempotent and answer 204. `GET /api/v1/tickets/{id}/followers` lists them, oldest first, for staff and administrators (a machine credential with `tickets:read` may read it).
-- **Staff always see the current list of followers** on the ticket page, with a Follow / Unfollow button. No setting hides it.
-- **Following is audited.** A follow and an unfollow each write a `followed` / `unfollowed` entry with the person as actor, in the same transaction as the change (`ticket.Atomic`); repeating either writes nothing. The entries are visible to **administrators**. A staff member sees them only when the administrator turns on **`staff_can_view_follow_audit`** (off by default; a disclosure-widening toggle, so session-only like `staff_can_view_ticket_change_history`). A requester never sees them. Both views leave them out in the query (`audit.Filter.ExcludeActions` for the admin-wide view, in the page and the total alike, so asking for them there by `action` returns nothing for staff; `audit.ActionFilter` for the per-ticket feed). The per-ticket feed also keeps them out of its 500-entry cap: they are fetched on their own, with a cap of their own, only for viewers who may see them, and merged by time, so toggling follow can never push a ticket's real history off its feed. A viewer who may see follow entries always gets their `before` and `after` (redacted like any diff), even without the change-history setting, so a removal on reassignment can say whose follow it was.
-- **Reassigning takes the old assignee's follow with it** (Erik, 2026-10-14: the assignee follows the ticket by being assigned, so a follow on top is dropped when they lose it). When a ticket is assigned away from someone, or unassigned, or its assignee's account is deleted (open tickets only, as account deletion only unassigns those), their follow row is removed in the same transaction (`dropAssigneeFollow`, from `Service.Assign` and `Service.UnassignForUser`, which every route reaches: PATCH, auto-assign, MCP `assign_ticket`, account deletion; there is no bulk assign). It writes an `unfollowed` entry with the reassigning actor as the actor, after the `assigned` / `unassigned` entry; its before and after carry `assignee_user_id` (whose follow went, and who holds it now), and the feed labels it "Follow removed on reassignment (name)". No follow row, no entry. The same person again changes nothing. Only the assignee loses a follow: moving the ticket between groups, with the assignee kept or not, leaves group members' follows alone. They click Follow again to keep the mail. A per-user preference for this is not built.
-- **Data.** `ticket_followers (ticket_id, user_id, created_at)`, primary key `(ticket_id, user_id)`, both columns cascading on a hard delete (users are soft-deleted, so the send-time check does the real work), migration `000046`.
 
 ### Ticket Followers
 
@@ -694,7 +686,7 @@ Scope does two separate jobs: it can restrict what staff see, and it routes new 
 3. `auto_assign_user_ids`: a list of staff the tickets are dealt out to round-robin. The rotation is in memory, per server process. A listed user the assignment refuses (deleted, disabled or no longer staff) is skipped and the next one tried, so a departed colleague does not silently take every Nth ticket out of the queue.
 4. Otherwise the ticket stays unassigned.
 
-Routing is best-effort: a failure to assign leaves the ticket unassigned and does not fail the creation. It runs for tickets created through `POST /tickets` and for follow-ups (`POST /tickets/{id}/follow-up`, `POST /guest/follow-up`). It does **not** run for MCP `create_ticket` and `create_follow_up`, and a new guest submission (`POST /guest/tickets`) does not call it either. `auto_assign_group_id` (a UUID string) and `auto_assign_user_ids` (an array of UUID strings) are set on **Admin → Routing** (a group picker and a staff checklist, with the rules above listed in order) or through `PATCH /admin/settings`. Saving is checked: a group id that names no group, or a user id that names no one or someone who is neither staff nor an administrator, is refused with 400 `invalid_auto_assign` and nothing in the request is written (before #447 such an id was saved and then skipped at routing time). An empty value clears the setting.
+Routing is best-effort in one respect: a candidate that cannot be given a ticket (a departed colleague still on the round-robin list, a group that no longer exists) is skipped for the next, and if none is acceptable the ticket is left unassigned and the creation succeeds. A database error while checking a candidate is not skipped: it aborts the create. It runs for tickets created through `POST /tickets` and for follow-ups (`POST /tickets/{id}/follow-up`, `POST /guest/follow-up`). It does **not** run for MCP `create_ticket` and `create_follow_up`, and a new guest submission (`POST /guest/tickets`) does not call it either. `auto_assign_group_id` (a UUID string) and `auto_assign_user_ids` (an array of UUID strings) are set on **Admin → Routing** (a group picker and a staff checklist, with the rules above listed in order) or through `PATCH /admin/settings`. Saving is checked: a group id that names no group, or a user id that names no one or someone who is neither staff nor an administrator, is refused with 400 `invalid_auto_assign` and nothing in the request is written (before #447 such an id was saved and then skipped at routing time). An empty value clears the setting.
 
 ### Branding
 
@@ -2575,7 +2567,7 @@ on the existing webhook feature instead of as plugins.
   on top does not bring back mail they turned off. The assignee is always left
   out of follower mail, and their own switches decide. For a reply on a ticket
   somebody holds, the group is not mailed, so a member who follows it is
-  mailed as a follower. This is decided when the mail is queued. At send time
+  mailed as a follower. This is decided when the worker first picks up the change, a moment after the commit, not on the request. At send time
   only the follow row (and visibility) is checked, so unfollowing stops mail
   already queued, and mail queued to a follower is not lost if they are then
   assigned the ticket.
@@ -2590,9 +2582,10 @@ on the existing webhook feature instead of as plugins.
   mail, and their own group switch decides. The assignee never gets follower
   mail. Everyone gets one mail. Whoever did the reopening is not mailed, whether a requester (who is no staff candidate
   anyway), the assignee, a group member or a follower. The mail is built from
-  the `ticket.reopened` event, which carries who holds the ticket and who acted;
-  the reply that caused a requester's reopen does not also ask for the reply
-  mail, so nobody is mailed twice for one reply. At send time the same checks run
+  the change's one event, which carries the kind `ticket.reopened`, who holds
+  the ticket and who acted; a requester's reply that reopens is one change
+  carrying both the reply and the reopen, and each person gets one mail for it
+  (the first of assigned, reopened, requester replied whose switch is on). At send time the same checks run
   as for every staff mail: the person must still hold the ticket, still be in
   the group, or still follow it and be able to see it. The requester's own mail
   is unchanged: a force-reopen mails the guest, and a status change mails the
@@ -2631,8 +2624,11 @@ on the existing webhook feature instead of as plugins.
   ticket, is no longer in the group that does, or (for a follower) can no
   longer see it under the ticket-scope rule (#391), because a queued row can
   wait up to an hour of retries while the ticket moves. Rows are
-  made at the moment the request queues its events (`notify.StaffFanout`), and
-  are never webhook events.
+  made by the outbox worker (`notify.ChangeSplitter`, using `notify.StaffFanout`)
+  when it first picks up the change's one email row, not on the request, and are
+  never webhook events. A person qualifying for several kinds in one change gets
+  one mail, and mail is deduplicated by recipient address; see Ticket Events:
+  One Change, One Event.
 - Email is a notification, not a copy of the ticket. A message says what
   happened, names the ticket by its tracking number, and links to it. It does
   not carry the ticket subject or the reply text, and the recipient's own
@@ -2649,7 +2645,10 @@ on the existing webhook feature instead of as plugins.
   `ticket.created`, `ticket.assigned`, `ticket.status_changed`,
   `ticket.replied` (a customer-visible reply only), `ticket.note_added` (a
   staff-only note), `ticket.resolved`, `ticket.closed`, `ticket.reopened` (every reopen: a requester's reply, a status change out of Resolved or Closed, and `POST /reopen`) and
-  `ticket.linked`.
+  `ticket.linked`, `ticket.priority_changed` (a priority change) and
+  `ticket.classified` (a category, type or item change). A hook matches a change
+  when any of the change's kinds is in its list, and fires once. The raw body
+  keeps its shape. See Ticket Events: One Change, One Event.
   **What the raw format carries** ([#448](https://github.com/PubliciaLLC/go-help-desk/issues/448)).
   The raw body is **ids only**: the event name (`Type`), `TicketID`, `ActorID`
   (null for a system event), `OccurredAt` and a `Payload` holding only the ids
@@ -2717,9 +2716,9 @@ on the existing webhook feature instead of as plugins.
   filter is tested against the ticket's classification **as it was when the
   event was raised**, not when the outbox delivers, so a ticket reclassified
   in between is judged by its old values. Consequences worth knowing:
-  `ticket.created` is raised before auto-assignment, so a group condition never
-  matches it; to hear about tickets landing in a group, subscribe to
-  `ticket.assigned`. Category covers the category's types and items. There are
+  auto-assignment happens inside the create's transaction, so a creation
+  carries its group and a group condition matches a new ticket (the filter reads
+  the event's `Ticket` state; see Ticket Events: One Change, One Event). Category covers the category's types and items. There are
   no type or item conditions yet. A filter naming a deleted group or category
   matches no ticket (inverted: every ticket). If a classification is not known
   (an event or a queued row made before this existed), the hook is sent to and
@@ -2762,7 +2761,9 @@ on the existing webhook feature instead of as plugins.
   ([#164](https://github.com/PubliciaLLC/go-help-desk/issues/164)). A request
   that triggers a notification writes it to `notification_outbox`, one row per
   channel that can carry the event (`email`, `webhook`, and `verification`
-  for signup mail, below), and returns. A worker in every server process
+  for signup mail, below), and returns. For a change to a ticket the rows are
+  written in the change's own transaction (Ticket Events: One Change, One
+  Event). A worker in every server process
   claims due rows (`FOR UPDATE SKIP LOCKED`, so replicas never share one, with
   a ten-minute lease that returns a row whose worker died; a claim takes at
   most as many rows as can each run to their full time inside the
@@ -2914,6 +2915,658 @@ on the existing webhook feature instead of as plugins.
 - Anything beyond reshaping this payload — a plugin polling Slack for replies,
   a two-way JIRA sync, a Discord bot — is genuinely plugin territory and stays
   on the v2 plugin timeline above.
+
+---
+
+## Ticket Events: One Change, One Event
+
+Built in [#506](https://github.com/PubliciaLLC/go-help-desk/issues/506) (merged
+as #510, 1.3.0). A change to a ticket is **one event for that ticket**, written
+to the notification outbox in the same database transaction as the change.
+Every reader of that event (webhooks, requester email, staff email) decides
+from it what it is told. Code paths below are relative to `backend/` and were
+checked against the code at `cbe98585`. Where this text and the code ever
+disagree, the code wins and this text is wrong.
+
+**The goal, in Erik's words (2026-10-14):** "a single event carrying the
+entire change needs to fire off, be put on the event bus for the web hooks to
+receive and process, and every Web hook that meets a criteria for that change
+event on the work order needs to fire its payload."
+
+### How it works
+
+#### The bus
+
+The bus is the `notification_outbox` table, the `notification.Dispatcher`
+interface and the outbox worker. There is no external message broker.
+
+**The outbox row is written inside the change's transaction.** An early
+version of the #506 issue text said so, but at that time the code wrote the
+rows after the commit, so a crash in between lost the notification. That gap
+is closed. `txrunner.Runner.InTx` (`internal/database/txrunner/txrunner.go`)
+hands the function a collector (`*notification.Changes`) as its third
+argument. Just before the commit, it writes one outbox row per channel for each
+event the function raised (`EnqueueNotification`, on the transaction's own
+connection). A rolled-back change leaves no row. A committed change cannot
+lose its announcement. After the commit it wakes the worker.
+
+What happens to a change, step by step:
+
+1. **The producer** (a ticket service method) does its writes inside
+   `ticket.Atomic.InTx` and *raises* what it did into the collector. The
+   collector merges everything raised for one ticket into one
+   `notification.Event` (`internal/domain/notification/changes.go`).
+2. **The transaction writes the rows.** For each merged event, one row per
+   channel that can carry it: `email` (when there is a requester recipient,
+   a guest link, a staff user, or the change may mean staff mail), `webhook`
+   (when any of its kinds is a webhook event name) and `verification` (signup
+   mail only) (`notification.Carries`, `channels.go`). The channel list is
+   `email`, `webhook`, `verification` (`cmd/server/outbox_wiring.go`).
+   On a deadlock, `InTx` runs the function again once, with a new collector, so
+   the rolled-back attempt's events are discarded with its writes.
+3. **The worker** runs in every server process. Each turn it claims rows that
+   are due (`FOR UPDATE SKIP LOCKED`, ten-minute lease) and hands each to the
+   sender registered for the row's channel (`internal/server/notify/outbox.go`).
+4. **The senders.** The `email` channel is `ChangeSplitter`, wrapped around
+   `StaffMailDispatcher`, wrapped around `GuestLinkDispatcher`, wrapped around
+   `EmailDispatcher` (`cmd/server/main.go`). `webhook` is `WebhookDispatcher`.
+   `verification` is `VerificationDispatcher`.
+   - `ChangeSplitter` (`notify/split.go`) works out who is mailed and turns the
+     change's one email row into one row for the requester's mail and one row
+     for each staff member (see Staff email). Rows that carry no `Kinds` are
+     sent as they are.
+   - `WebhookDispatcher` (`notify/webhook.go`) turns the change's webhook row
+     into one row for each hook that matches (the per-hook rows of #448). A row
+     that names a hook is one delivery.
+   - `StaffMailDispatcher` reads the staff member's address and runs
+     `StillEntitled` at send time. `GuestLinkDispatcher` issues the guest token
+     at send time.
+5. **Settling.** A successful send deletes the row. A failure is retried after
+   30 seconds, doubling to at most an hour, eight attempts in all. A permanent
+   error, or the eighth failure, marks the row failed. Failed rows are kept for
+   30 days.
+
+**How does a reader know it has not already handled a row?** The readers do not
+look. Nothing polls the table except the worker. Each row names one channel,
+and the worker calls that channel's sender with that row. A row is handled when
+it is deleted, and deletion happens only after a successful send. Two workers
+never hold the same row: the claim skips locked rows and sets a lease. If a
+worker dies after sending but before deleting, the lease runs out and the row is
+sent again. Delivery is therefore "at least once". For webhooks,
+`X-GHD-Delivery` is the same on every retry, so the receiver can drop a
+duplicate. For email there is no such id, and a duplicate mail is accepted.
+
+**Not every event goes through the transaction.** Two events are not changes to
+a ticket and have no transaction to join: `guest.link_resent` (a guest asking
+for a new link) and `registration.verify` (signup mail). They are still
+dispatched after their own write through `notify.OutboxDispatcher`, on a
+context that cannot be cancelled. Neither is a webhook event.
+
+**Plugins.** Nothing reads the bus as a plugin. A plugin reader would be one
+more channel name in `outboxChannels` and one more sender in the worker's map;
+no plugin API is built.
+
+#### Producers: what each door raises
+
+All in `internal/domain/ticket/service.go` unless named otherwise. Every row
+raises into the transaction's collector; none dispatches after the commit.
+"Status kinds" is defined under *The event* below.
+
+| Producer (who calls it) | Kinds it raises | What the event carries |
+| --- | --- | --- |
+| `create` (REST and guest `POST` ticket, MCP `create_ticket`, `CreateFollowUp`, `CreateRequesterFollowUp`) | `ticket.created`; plus `ticket.assigned` when routing picked someone (REST create, REST follow-up and guest follow-up only; guest create, MCP `create_ticket` and MCP `create_follow_up` pass no candidates) | Recipient = guest address and the guest-link flag for a guest. For routing, the `RoutedAssignment` flag (below). |
+| same, follow-up only | `ticket.linked` **on the original ticket** (its own event: one per ticket) | `target_id` = the new ticket, `link_type` = `parent_child` |
+| `UpdateStatus` (MCP `update_ticket_status`; REST `PATCH status_id` runs the same in-transaction step inside `Update`) | the status kinds | `new_status_id`; recipient = guest (none when closing); guest-link flag unless closing |
+| `Assign` (MCP `assign_ticket`; REST `PATCH` assignee or `clear_assignee` runs the same step inside `Update`) | `ticket.assigned`, also for a clear and for assigning the person who already holds it (the event then has no field change) | |
+| `ChangePriority` (no production caller: REST `PATCH priority` runs its step inside `Update`) | `ticket.priority_changed`, only when the priority moved | |
+| `UpdateCTI` (no production caller: REST `PATCH category_id` runs its step inside `Update`) | `ticket.classified`, only when category, type or item changed. Now in a transaction; still writes no audit entry. | |
+| `Update` (REST `PATCH /tickets/{id}`, `handler_tickets.go`; it calls the in-transaction step functions of the four rows above) | whatever its steps raise, merged | see *One transaction* |
+| `addReply` (REST reply, MCP `add_reply`, guest reply) | `ticket.replied`, or `ticket.note_added` for an internal note. A requester's reply that reopens a Resolved ticket adds the status kinds (`status_changed`, `reopened`) and, on the ticket's first reopen, `priority_changed` if the priority moved (a critical ticket cannot be raised). | `reply_id`, `internal`, `ReplyBody` (public only); recipient = reporter when "notify customer" is on; `FromRequester` true for the requester's public reply **including one that reopens** |
+| `Resolve` (REST resolve) | the status kinds into Resolved (`status_changed`, `resolved`). On an already-Resolved ticket with new notes: `ticket.resolved` only. | `new_status_id`; recipient = guest; guest-link flag |
+| `ResolveAsDuplicate` (REST link with `duplicate_of` and resolve) | `ticket.linked` (only when it made the link) merged with the resolve above | `target_id`, `link_type`, then as `Resolve` |
+| `close` (REST close, auto-close scheduler as the system) | the status kinds into Closed (`status_changed`, `closed`) | no recipient |
+| `Reopen` (REST `POST /reopen`) | the status kinds (`status_changed`, `reopened`), plus `priority_changed` on the first reopen, if the priority moved | recipient = guest; guest-link flag |
+| `AddLink` (REST link) | `ticket.linked` on the source ticket | `target_id`, `link_type` |
+| `RequestGuestLink` (guest "resend my link") | `guest.link_resent` through `OutboxDispatcher` | what the guest typed; no ticket id |
+| `registration.Service.Signup` | `registration.verify` through `OutboxDispatcher` | `pending_id` only |
+
+Writes that change a ticket and announce nothing: `RemoveLink`, attachments,
+follow and unfollow, and the bulk unassignments `UnassignForUser` and
+`DeleteGroup`. (The last two move tickets without telling the new holder.
+That is a gap, but a separate one.) The `staff.*` events are not produced by
+domain code at all: the worker makes them (Staff email).
+
+#### Consumers
+
+| Consumer | Reads | Decides by |
+| --- | --- | --- |
+| Requester email (`EmailDispatcher`, `notify/email.go`) | the requester's `email` row, made by `ChangeSplitter` | `Type` → template: created, reopened, resolved, replied, status_changed, guest_link. Needs a `Recipient` or a guest link. Status, resolve and reopen mail go to guests only. |
+| Staff email (`ChangeSplitter`, then `StaffMailDispatcher` + `StillEntitled` at send) | the change's `email` row, then the `staff.*` rows | `Kinds` → candidates (assigned, requester replied, reopened). Then switches, overrides, actor skip, one mail per person. At send: account still mailable, still holds, still in group, or still follows and can see the ticket. |
+| Guest link (`GuestLinkDispatcher`) | `email` row with the guest-link flag | issues and rotates the token at send time |
+| Verification (`VerificationDispatcher`) | `verification` row | `pending_id` |
+| Webhooks (`WebhookDispatcher`) | `webhook` row | `subscribedKinds(hook, event)`: any kind of the change in the hook's list, or `*`, or an empty list. Then the ticket filter on `Ticket`. Again at every retry and at Redeliver. |
+| Chat and ITSM formats (`notify/format*.go`) | the per-hook row | headline chosen by `Type`; "Also" line, reply text and status name chosen by the kinds the hook subscribes to |
+| Plugin registry | nothing | never called |
+
+#### What subscribers are promised
+
+The **raw body** is ids only: `Type`, `TicketID`, `ActorID`, `OccurredAt`, and
+a `Payload` holding only the id that belongs to the name the body is sent
+under: `new_status_id` for `ticket.status_changed`, `target_id` for
+`ticket.linked`, nothing for any other name (`rawKeysFor`,
+`notify/webhook_body.go`). Headers: `X-GHD-Delivery` and `X-GHD-Event` (the same
+name as `Type`), plus the signature. The OpenAPI `WebhookEvent` enum lists `*`
+and the eleven names. The raw body already changed during the 1.3 betas
+(#448), and `docs/upgrade-notes-1.3.0-pending.md` describes both changes to
+1.2.x users.
+
+#### One action, what a `*` hook receives
+
+| One user action | Events | Deliveries to a `*` hook |
+| --- | --- | --- |
+| Staff create (REST), auto-assigned | one event: `created`, `assigned` | 1 |
+| Follow-up, auto-assigned | new ticket: `created`, `assigned`; original: `linked` | 2, over two tickets |
+| `PATCH` status + assignee + priority | one event: the status kinds, `assigned`, `priority_changed` | 1 |
+| `PATCH` out of Resolved/Closed | one event: `reopened`, `status_changed` (+ `priority_changed` on the first reopen, if the priority moved) | 1 |
+| Requester reply that reopens | one event: `reopened`, `status_changed`, `replied` (+ `priority_changed` on the first reopen, if the priority moved) | 1 |
+| `POST /reopen` | one event: `reopened`, `status_changed` (+ `priority_changed` on the first reopen, if the priority moved) | 1 |
+| Resolve as duplicate | one event: `resolved`, `status_changed`, `linked` | 1 |
+| `PATCH` status to Resolved | `resolved`, `status_changed` | 1 |
+| Resolve button | `resolved`, `status_changed` | 1 |
+| Close (button, scheduler, or `PATCH` to Closed) | `closed`, `status_changed` | 1 |
+| `PATCH` that repeats the ticket's current status | nothing about status (see *Same status*) | 0, or 1 for the other kinds in the request |
+| Resolve button on an already-Resolved ticket, new notes | `resolved` only | 1 |
+| `PATCH` priority only | `priority_changed` | 1 |
+| `PATCH` category only | `classified` | 1 |
+
+The same status change has the same names whichever button made it. A hook
+subscribed to `ticket.resolved` sees a resolve done with `PATCH`, and a hook
+subscribed to `ticket.status_changed` sees a resolve done with the button and
+every close.
+
+### The event
+
+#### 1. One event per ticket per committed transaction
+
+One transaction that changes a ticket produces **one event for that ticket**.
+The event lists everything that changed and the ticket's state after the
+commit. A transaction that changes two tickets produces one event for each (a
+follow-up: the new ticket is created, and the original is linked). "On the work
+order" in Erik's sentence is the ticket, so a hook fires at most once per ticket
+per change.
+
+`notification.Event` (`internal/domain/notification/notification.go`) keeps its
+older fields and has three more, none of which is sent in a raw body:
+
+- **`Kinds`**: what happened, as the event names, in a fixed order (below).
+  Consumers match on this.
+- **`Changes`**: field by field, from and to. The fields raised are
+  `status_id`, `assignee_user_id`, `assignee_group_id`, `priority`,
+  `category_id`, `type_id` and `item_id`. Ids and enums only, never text.
+- **`Ticket`** (`TicketState`): the ticket as committed: those same seven
+  fields plus `reopen_count`. It replaces the old `Attrs`, `AssigneeUserID`
+  and `AssigneeGroupID`, which were each a part of it. The webhook filter and
+  staff mail read it.
+
+`Type` stays on the event and is set to the first entry of `Kinds`. The fixed
+order (`notification.KindOrder`) is the order of importance:
+`ticket.created`, `ticket.reopened`, `ticket.resolved`, `ticket.closed`,
+`ticket.status_changed`, `ticket.assigned`, `ticket.priority_changed`,
+`ticket.classified`, `ticket.replied`, `ticket.note_added`, `ticket.linked`.
+Two kinds are new: `ticket.priority_changed` and `ticket.classified`
+(category, type or item). Both can be subscribed to.
+
+**Status kinds are the same for every door** (`statusKinds`,
+`internal/domain/ticket/events.go`). Every status move carries
+`ticket.status_changed`. A move into Resolved also carries `ticket.resolved`. A
+move into Closed also carries `ticket.closed`. A move out of Resolved or Closed
+into an open status also carries `ticket.reopened`. This is the same for the
+buttons, `PATCH`, MCP, a requester's reply and the scheduler.
+
+**Same status.** A move to the status the ticket already has is not a move: it
+carries no status kind and no `status_id` change (Erik's ruling 13, below).
+Resolving an already-Resolved ticket with the Resolve button and new notes is
+the one exception, because that is a resolution; it carries `ticket.resolved`
+only (`resolveInTx`). Any other door repeating Resolved announces nothing about
+status, so a `PATCH` that repeats Resolved and assigns someone sends
+`ticket.assigned` only, and the guest is not mailed or given a new link. An
+event that ends up with no kinds at all is ignored by the collector and writes
+no row.
+
+Example: an agent `PATCH`es a Resolved ticket back to In Progress and assigns it
+to Bob, and this is the ticket's first reopen. The event, as the server holds
+it:
+
+```json
+{
+  "Type": "ticket.reopened",
+  "TicketID": "7d0c…",
+  "ActorID": "a11c…",
+  "OccurredAt": "2026-10-14T15:02:11Z",
+  "Kinds": ["ticket.reopened", "ticket.status_changed",
+            "ticket.assigned", "ticket.priority_changed"],
+  "Changes": [
+    {"field": "status_id",        "from": "<resolved>", "to": "<in progress>"},
+    {"field": "priority",         "from": "medium",     "to": "high"},
+    {"field": "assignee_user_id", "from": "<alice>",    "to": "<bob>"}
+  ],
+  "Ticket": {
+    "status_id": "<in progress>", "priority": "high",
+    "assignee_user_id": "<bob>", "assignee_group_id": "<network>",
+    "category_id": "<hardware>", "type_id": null, "item_id": null,
+    "reopen_count": 1
+  },
+  "Payload": {"new_status_id": "<in progress>"}
+}
+```
+
+(Shown as the server holds it; `Payload` holds the keys of every kind and is cut
+down for the wire, below. Inside the server the other fields are also kept:
+recipient, guest-link flag, tracking number, subject and status name. They are
+never sent to a raw webhook.)
+
+**How the collector merges** (`Changes.Raise`): kinds are a set, kept in the
+fixed order; changes are keyed by field, with the first "from" and the last
+"to"; `Ticket` is the last one raised, so the final raise must describe the
+ticket as the transaction leaves it; `Payload` keys are merged, a later key
+replacing an earlier one; the strings (tracking number, recipient, subject,
+status name) are the last non-empty one; the flags (guest link, `FromRequester`,
+`RoutedAssignment`) are true if any piece said so; the actor is the first
+non-nil one raised and the time is the first piece's.
+
+#### 2. One transaction
+
+A change is one transaction. Each service method raises its kinds and changes
+inside its `InTx`, into the collector, instead of calling `Dispatch` after the
+commit. A door that does several things calls the pieces inside one
+transaction, and the collector merges them.
+
+- **`PATCH /tickets/{id}` is one service method**,
+  `Update(ctx, id, Patch, actor)`. It runs the existing steps in the existing
+  order (status, assignment, classification, priority) inside one `InTx`.
+  The `Validate*` checks the handler makes up front stay as the early answer
+  (`handler_tickets.go`). Because it is one transaction, `PATCH` is
+  all-or-nothing: a refusal partway through leaves the whole request unapplied.
+  The priority is last so that a category changed in the same request is the
+  one its SLA policy is matched against.
+- **Create, then auto-assign.** Routing is inside the create's transaction. The
+  handler still works out the candidates before the transaction (`routing` in
+  `handler_tickets.go`: the CTI group, else the global group, else the
+  round-robin users) and passes them in `CreateInput.AutoAssign`. Inside the
+  transaction, the first candidate that `checkAssignable` accepts is assigned; a
+  candidate refused as unassignable (a departed colleague still on the
+  round-robin list) is skipped for the next. The event is `[created, assigned]`.
+  A group filter therefore matches a new ticket. Routing also writes its own
+  audit entry `assigned`, with no actor and the change `unassigned` to
+  `assigned`. Guest create, MCP `create_ticket` and MCP `create_follow_up` do not auto-assign, as before.
+  - **Round-robin takes its turn up front.** When no group routes the ticket,
+    `roundRobin` advances its counter with one atomic add as `routing` runs,
+    before the transaction, and offers the whole user list rotated from that
+    slot. A create that is then refused still used a turn, and two overlapping
+    creates each get their own.
+  - **A creator who is routed their own ticket is mailed**: routing picked the
+    assignee, so the event carries `RoutedAssignment`, which exempts it from "no
+    mail about your own action" (Staff email).
+
+#### 3. The outbox write is inside the change's transaction
+
+This is a true transactional outbox. The `Atomic` contract
+(`ticket/store.go`) is `InTx(ctx, fn func(Store, audit.Store,
+*notification.Changes) error)`. A separate "announcing" `InTx` was rejected: a
+producer would have had two ways in, and one of them would not announce. The
+recorded decision "`ticket.Atomic` takes both a `Store` and an `audit.Store`"
+extends to the change's events for the same reason: an announcement made apart
+from the change it describes is not reliable.
+
+- **The row encoding** (`EncodeEvent` and `DecodeEvent`) lives in the
+  `notification` package (`codec.go`), so `txrunner` can write rows without
+  importing the server. It refuses an event carrying a raw guest token.
+- **The detached context** is no longer needed on the ticket path. If the client
+  disconnects mid-transaction, the change and its events roll back together.
+  `OutboxDispatcher` keeps its detached context for the two producers that
+  still dispatch after their own write.
+- **No schema change and no migration.** `notification_outbox.event` and
+  `webhook_deliveries.event` are `jsonb`, and the new fields are new keys.
+
+**Staff fan-out moved to the worker.** The fan-out reads group members and
+followers through ordinary connections. Inside the change's transaction those
+reads would not see the transaction's own writes. For example, `Assign` drops
+the previous assignee's follow in the same transaction, so a read inside it
+would still see that follow and mail the previous assignee as a follower. So
+who is mailed is decided when the worker first takes the change's email row
+(normally within a second of the commit), not on the request.
+
+**The split is all or nothing.** `ChangeSplitter` collects the requester's mail
+and each staff member's mail, then `outboxstore.Store.Split`
+(`internal/database/outboxstore/outboxstore.go`) queues them all and deletes
+the change's row in **one transaction**. A failure part way leaves nothing
+queued and the change's row to be tried again. The children's ids derive from
+the change's row id (`uuid.NewSHA1` of the parent and a key: `requester`, or
+`staff:` plus the user id), so a repeat after a crash does not queue anyone twice
+while their rows still wait. Without a database handle, or outside the worker
+(no row id), it falls back to queueing one by one. A failed read of the staff
+accounts returns an error and the row is retried with nothing queued. This is
+deliberate: a requester's mail queued before that error would by then have been
+sent and deleted, and sent a second time, with a new guest link each time. A
+failed read of the followers or of a group's members is logged and costs only
+those people their mail; the rest are mailed.
+
+#### 4. A consumer is still a channel row (no shared log with positions)
+
+One row per channel is kept, written with the change. A shared event log that
+each consumer reads from its own position was considered and not built.
+
+- Each channel needs its own retry state and "done" marker. Today that is the
+  row: its attempts, its next try, and its deletion. Webhooks need this per hook
+  as well (#448). A shared log would still need a table of per-consumer,
+  per-event state for retries, which is the outbox again plus a position.
+- A position in Postgres is unsafe without extra machinery. A sequence number is
+  given out when a row is inserted, not when it commits, so a reader that has
+  read up to 105 can miss 104 if 104 commits after 105.
+
+#### 5. How each consumer matches
+
+**Webhooks.** A hook matches a change if any entry in `Kinds` is in the hook's
+event list, or if the list is `*` or empty (`subscribedKinds`,
+`notify/webhook.go`; for `*` only names that can be webhook events count). The
+ticket filter is then tested against `Ticket`, as before. A matching hook gets
+**one** per-hook row, so one delivery. Retries run the same test against the
+subscription as it is at that moment, and the filter as it is at that moment.
+The rules for a changed URL hash, a disabled hook and a deleted hook are
+unchanged.
+
+**What the hook is told the event "is" (`Type` and `X-GHD-Event`).** It is the
+first kind in `Kinds`, in the fixed order, that **this hook** subscribes to
+(`forHook`). For `*` it is simply the first kind. It is worked out again at each
+attempt, from the subscription at that moment. So a hook subscribed only to
+`ticket.status_changed` gets `"Type": "ticket.status_changed"` for the reopen
+example above. The history's `event_type` column stores the `Type` that was
+sent.
+
+**Raw body (Erik, 2026-10-15): the shape is unchanged.** `Kinds`, `Changes` and
+`Ticket` live on the event inside the server, so that matching and the filter
+can use them. They are not sent. The raw body is `Type`, `TicketID`, `ActorID`,
+`OccurredAt` and the allow-listed `Payload` id, and the id goes out only for the
+name it belongs to (see *What subscribers are promised*). So a `*` hook that is
+told `ticket.reopened` for the example above receives no `Payload`, where the
+server's own copy holds `new_status_id`; a `ticket.priority_changed` or
+`ticket.classified` delivery has none either, and the receiver reads the ticket
+through the API by `TicketID`. The tracking number stays out, as #448 ruled on
+2026-10-13. There is no version flag.
+
+**Chat and ITSM formats** (Slack, Teams, Discord, Jira Automation). The
+headline comes from the hook's `Type`, as before. The headline for
+`ticket.priority_changed` and `ticket.classified` is the event name itself,
+because the headline table has no wording for them (`headline`,
+`notify/format.go`). Under the headline:
+
+- **The "Also" line (ruling 10).** One line names the change's other kinds, such
+  as "Also: assigned, priority changed". It names **only kinds the hook
+  subscribes to**. A `*` hook sees every other kind. A hook subscribed to a
+  single name gets no Also line, and Jira gets no `also` key. The line never
+  tells a channel about something it did not subscribe to: an `assigned`-only
+  Slack hook must not learn that an internal note was added. It names kinds
+  only, never values, because a status or group *name* would be content. The
+  words are: created, reopened, resolved, closed, status changed, assigned,
+  priority changed, reclassified, replied, note added, linked. It is rebuilt at
+  every attempt, so a retry after the subscription narrowed drops the kind. A
+  Redeliver has no kinds beyond the one name, so it has no Also line.
+- **Reply text (ruling 12).** The text of a reply goes only to a hook that
+  subscribes to `ticket.replied` (or `*`). A hook subscribed to
+  `ticket.reopened` only still gets its "Reopened" message, with the subject and
+  the link, but not the text of the reply that reopened the ticket. Internal
+  notes are never included, whatever the hook subscribes to. Jira follows the
+  same rule as chat.
+- **Status name.** The status name is carried only for a hook that subscribes to
+  a status kind (`ticket.status_changed`, `ticket.resolved`, `ticket.closed` or
+  `ticket.reopened`). In Jira that is the `status` key; a hook on
+  `ticket.assigned` alone does not learn the status of a change that also moved
+  it.
+
+**Requester email.** One mail per change at most. The recipient is decided once
+per change, when the change is raised:
+
+- the reporter for a reply with "notify customer" on;
+- the guest for a creation, a status change other than closing, a resolution,
+  and a force-reopen;
+- nobody for a close.
+
+The template is the first kind in the fixed order that has a requester template:
+created, reopened, resolved, replied, status_changed (`requesterTemplates`,
+`notify/staff.go`). Some guest mail changed as a result. A `PATCH` to Resolved
+now says "We have resolved" instead of "There is an update". A status change
+that reopens now says "We have reopened". The guest-link flag is set once per
+change, so a link rotates once per change.
+
+**Staff email** (`ChangeSplitter` and `StaffFanout`, `notify/split.go` and
+`notify/staff.go`). Candidates are worked out for each kind with the existing
+rules (assigned, requester replied, reopened), all from `Ticket`, the state
+after the commit. They are merged with one entry per person. A person who
+qualifies for more than one reason gets the mail of the **first reason, in the
+order assigned, reopened, requester replied, whose switch is on**. Every rule in
+Notifications still holds:
+
+- one mail per person per change;
+- nobody is mailed about their own action, even when an override forces the
+  switch on (checked after the switches), **except** an assignment that routing
+  made inside a create (`RoutedAssignment`): the creator did not choose it, and
+  1.2.x mailed them, so they still get that one mail (ruling 11);
+- only active staff with an address; never a service account or a requester;
+- the three switches and the administrator's overrides;
+- the follower exclusions (the assignee never gets follower mail; group members
+  are excluded from follower mail when the group is mailed for that kind);
+- the send-time re-check (account, holding, group, follow and scope).
+
+`FromRequester` stays, so "requester replied" means the filer's public reply. It
+is **true on a reply that also reopened the ticket**. The old special case "not
+when the reply reopened" is gone: a reply that reopens is one change carrying
+both kinds, and the merge gives each person one mail.
+
+**One mail per address (ruling 11).** After the staff are worked out, the mails
+are deduplicated by recipient address, compared without case or surrounding
+space. Erik's ruling is only that one address gets one mail; which mail is kept is a build decision. The stronger reason is kept:
+
+- If the requester's address is also a staff member's (a staff member who filed
+  the ticket for themselves, or whose address a guest used), the **staff mail is
+  kept** and the requester's mail is dropped. The staff mail carries the more
+  specific reason and the link behind sign-in; the requester's mail would add a
+  guest link, a second credential in the same inbox.
+- If two staff accounts share an address, the first in candidate order is kept,
+  which is strongest reason first: holding the ticket, then its group, then
+  following it.
+- Two different addresses keep both mails. A requester mail whose address is
+  only read at send time (a guest-link mail) cannot be compared and is sent.
+- The send-time check can still drop a kept staff mail if the person stops being
+  entitled between the split and the send, because rows know nothing of each
+  other. That is accepted.
+
+Example, the reopen plus reassignment above: Bob, the new assignee, gets
+"assigned to you" (his Assigned switch). If that switch is off, he gets
+"reopened" (his Activity switch). A follower of the ticket who is neither Bob
+nor in the group gets **one** mail: the follower version of "assigned" ("A ticket
+you follow is assigned"), because `assigned` comes first in the order and the
+follower qualifies for it under the Activity switch; they are not also sent the
+"reopened" mail. Alice, the previous assignee, gets nothing: the holder is read
+from `Ticket`, after the commit.
+
+#### 6. Compatibility for existing webhook subscribers
+
+- **Today's subscriptions keep working as criteria.** The event list on a hook
+  is unchanged, and `Kinds` uses the same names. No stored hook changes, and no
+  migration is needed.
+- **A hook subscribed to `ticket.status_changed`, for a change that also
+  reopened the ticket,** receives one delivery with `Type: ticket.status_changed`
+  and the same `Payload.new_status_id` as before. A hook subscribed to a single
+  name gets the body it always had.
+- **What does change for receivers** (these are in the upgrade notes):
+  - A `*` hook, or a hook with several names, gets one delivery where it got two
+    or three. A receiver that switches on `Type` and handles only, say,
+    `ticket.replied` will not see the reply in a reply that reopened a ticket,
+    because `Type` is `ticket.reopened` and the body does not list the other
+    kinds. **Accepted (Erik, 2026-10-15, ruling 6).** The upgrade notes tell such
+    receivers to read the ticket through the API when they need more than the
+    label.
+  - Hooks fire where they did not before, because the status kinds are now
+    consistent: `ticket.status_changed` on the Resolve button, on a close and on a
+    requester's reopening reply, and `ticket.resolved` and `ticket.closed` on a
+    `PATCH`.
+  - `*` hooks start receiving `ticket.priority_changed` and `ticket.classified`.
+  - A status change to the status the ticket already has no longer announces
+    `ticket.status_changed` (1.2.x did).
+- **Redeliver.** It sends the name that was sent, because the kept copy holds no
+  `Kinds`. `409 webhook_not_subscribed` therefore means the hook no longer
+  subscribes to the `Type` of that delivery (not "to none of the change's
+  kinds", which is not recorded). `webhook_filter_excludes` and
+  `webhook_filter_unverifiable` are unchanged.
+- **Rows queued in the old shape during the upgrade.** Outbox rows and webhook
+  history copies are JSON. A row made before #506 has no `kinds`. `DecodeEvent`
+  leaves `Kinds` **empty** and fills `Ticket` from the old `attrs`,
+  `assignee_user_id` and `assignee_group_id` keys; every consumer reads an event
+  with no `Kinds` as a one-kind change, `[Type]` (`Event.AllKinds`). An old
+  webhook row, per-hook or not, is therefore delivered as before, and an old
+  history entry redelivers as before. An old `email` row had already been split
+  per person on the request, so it carries no `Kinds`, and `ChangeSplitter` sends
+  it as it is and does not split it again. The same rule keeps the worker from
+  splitting its own children: the rows it makes carry no `Kinds`. Tested with
+  stored rows in the old shape (`codec_test.go`, `webhook_one_delivery_test.go`,
+  `split_test.go`).
+
+#### 7. Events that are not ticket changes
+
+`guest.link_resent` and `registration.verify` are not changes to a ticket. Each
+is already a single event for a single action. Neither is a webhook event. They
+keep their path (dispatch after their own write, on a context that cannot be
+cancelled). Registration could be made transactional the same way later; nothing
+in #506 asks for it. The `staff.*` events remain internal rows made by the
+worker's split. They are never dispatched by domain code and never sent to
+webhooks.
+
+#### 8. Out of scope (not built)
+
+- Ordering between events. Two changes to one ticket can still arrive out of
+  order after a retry, as before.
+- Events for writes that announce nothing: `RemoveLink`, attachments, follow and
+  unfollow, and the bulk `UnassignForUser` and `DeleteGroup`.
+- An audit entry for a classification change (`UpdateCTI` still writes none).
+- Auto-assignment for guest-created and MCP-created tickets.
+- A plugin API.
+- `reply_id` on the raw wire. A receiver still cannot tell which reply a
+  `ticket.replied` delivery means without listing replies.
+- A message broker.
+
+#### 9. Tests
+
+Test-first, as CLAUDE.md requires. The outbox and transaction tests use real
+Postgres, and the ones that commit to the outbox run on a database of their own
+(`testutil.NewIsolatedDB`) so no other package's claims or cleanups can touch
+their rows.
+
+- **The collector** (pure): `domain/notification/changes_test.go`. Kinds merged
+  in the fixed order, first-from and last-to, one event per ticket, an empty
+  collector or an event with no kinds writes nothing.
+- **The codec**: `domain/notification/codec_test.go`. Round trip, rows in the old
+  shape, and a test that fails when a field is added to `Event` without a
+  decision about how it is stored.
+- **Producers**: `domain/ticket/one_event_test.go`. One event per change and per
+  ticket, routing inside the create's transaction, a failing `PATCH` step
+  announcing nothing, the same-status rules.
+- **Transactional outbox** (Postgres): `database/outboxstore/txrunner_outbox_test.go`.
+  A rolled-back change leaves no row, a committed one leaves one row per
+  carrying channel, a failed outbox write rolls the change back, a deadlock retry
+  announces only the attempt that committed, and the split is all or nothing.
+  `database/outboxstore/e2e_test.go` runs a change from the service through the
+  runner and the worker to the mail.
+- **Webhooks and formats**: `server/notify/webhook_one_delivery_test.go`. One
+  delivery for `*` and for several names, the exact body for a single name, no
+  payload on the two new names, the retry recomputing the name, the Also line,
+  reply text and status name rules, and old-shape rows.
+- **Staff and requester mail**: `server/notify/split_test.go`. The first reason
+  whose switch is on, the actor skip, the routed creator, one mail per address,
+  a failed lookup retrying the row, a failed insert leaving nothing queued.
+- **No breaking change in existing tests.** Tests that asserted a sequence of
+  separate events were rewritten to assert the single merged event (the
+  resolve-as-duplicate, reopen and priority tests, and the by-type event
+  lookups, now by kind). `TestChangePriority_DispatchesNoNotification` pinned
+  the opposite of ruling 2 and was replaced.
+
+#### 10. Rulings
+
+**Ruled by Erik, 2026-10-15** (the design review):
+
+1. **The outbox rows are written inside the change's transaction.** Yes.
+2. **Event names are the same whichever button made the change.** Yes: Resolve
+   and Close also carry `status_changed`, and a `PATCH` to Resolved or Closed
+   also carries `resolved` or `closed`. Priority and category changes now
+   produce events.
+3. **`ticket.priority_changed` and `ticket.classified` are names a hook can
+   subscribe to**, with no priority or category id in the webhook body.
+4. **The webhook body is unchanged.** The event inside the server carries the
+   kinds, the from and to of each field, and the ticket state, so that
+   subscriptions and filters can match on them. The body sent does not gain them.
+   There is no version flag.
+5. **Auto-assignment moves into the create transaction.** Yes.
+6. **A hook subscribed to several names, or to `*`, gets one delivery per
+   change, labelled with one name: accepted** (option b of three). A requester's
+   reply that also reopened the ticket arrives as `ticket.reopened` only. The
+   body does not list the other kinds. The upgrade notes tell such receivers to
+   read the ticket through the API when they need more than the label. Rejected:
+   (a) a list of names in the body; (c) one delivery per subscribed name, which
+   brings back the duplicates.
+7. **The tracking number stays out of the raw body** (reaffirms the 2026-10-13
+   #448 ruling). The raw body is exactly today's.
+8. **One event per ticket.** A change that touches two tickets produces two
+   events. A follow-up gives one event for the new ticket and one `linked` event
+   for the original.
+9. **Build order.** One PR on top of #504, built after #503
+   and #504 merge, with the upgrade notes in the same PR, then an Opus review.
+
+**Ruled by Erik, 2026-10-16** (from the build and its review, recorded as
+comments on #506):
+
+10. **The Also line names only the kinds the hook subscribes to.** A `*` hook
+    sees every other kind. A hook subscribed to a single name gets no Also line
+    and no Jira `also` key. The line must never tell a channel about something it
+    did not subscribe to.
+11. **A creator who is auto-routed their own ticket gets one email.** Routing
+    picked the assignee, so "no mail about your own action" does not suppress it.
+    Mail is deduplicated by recipient address, so each address gets one mail per
+    change. In Erik's words: "if both actions resolve to the same email address
+    we dedup. one email". (Which mail is kept is a **build decision**, not a
+    ruling of Erik's: the staff mail over the requester's, and between two staff
+    accounts the stronger reason.)
+12. **Reply text in chat and ITSM messages goes only to hooks subscribed to
+    replies.** A hook on `ticket.reopened` only gets its "Reopened" message
+    without the reply's text. Reply text appears only for hooks subscribed to
+    `ticket.replied` or `*`. Internal notes are never included.
+13. **A status change to the same status announces nothing about status.** A
+    re-resolve of an already-Resolved ticket carries `resolved` only, and only
+    the Resolve button with notes sends it. A `PATCH` that sends the same status
+    plus an assignee carries `assigned` only. 1.2.x announced `status_changed`
+    here, so the upgrade notes say so.
+
+**Ruled by Erik, 2026-10-16, fix in progress (not yet built).** These four are
+recorded on #506. This section describes the code as it is on `v1.3.0-beta`; a
+separate fix PR will change the sentences above when it lands.
+
+14. **Chat headlines for the two new events are readable.** `ticket.priority_changed`
+    and `ticket.classified` get proper headlines, not their raw names. Fix in
+    progress (not yet built).
+15. **A failed lookup of followers or group members retries the change.** Today
+    that mail is dropped; after the fix, no mail goes out until every recipient is
+    known. Fix in progress (not yet built).
+16. **An assignment that changes nothing announces nothing.** That covers the
+    same assignee, or a clear on a ticket that is already unassigned. It changes
+    1.2.x behaviour, so it goes in the upgrade notes. Fix in progress (not yet
+    built).
+17. **An auto-routing assignment names nobody as the actor.** The webhook carries
+    `ActorID: null`, as in 1.2.x and as the audit log already records. The
+    `ticket.created` delivery still names the creator. Fix in progress (not yet
+    built).
+
+No other questions are open; rulings 14 to 17 are pending the fix.
+
+That staff mail recipients are decided by the worker, a moment after the commit,
+follows from ruling 1.
 
 ---
 
@@ -3183,7 +3836,7 @@ the schema allows one current record per ticket.
 to a new ticket, it happens only while SLA tracking is on. Recording a first
 response or a resolution onto an existing record is not gated.
 
-**No event.** A priority change sends no notification and no webhook event.
+**Event.** A priority change that moves the priority raises `ticket.priority_changed` (written in the same transaction; no event when the priority is unchanged). It sends no email. See [Ticket Events: One Change, One Event](#ticket-events-one-change-one-event).
 
 **Known limit.** Recording a first response or a resolution
 (`RecordFirstResponse`, `RecordResolved`) runs after the reply's own commit and
