@@ -692,6 +692,7 @@ func (s *Server) handleListAssignableStaff(w http.ResponseWriter, r *http.Reques
 const (
 	userLookupMinQuery = 2
 	userLookupMaxHits  = 10
+	userLookupPage     = 50 // rows read at a time while looking for enabled ones
 )
 
 // userLookupHit is all the picker draws: who, and the address a typed
@@ -707,8 +708,8 @@ type userLookupHit struct {
 // Staff and administrators only, behind the users:read scope that already
 // guards the user list. Any role of account can be a requester, so unlike
 // /staff it is not limited to staff; unlike /admin/users it returns three
-// fields, never pages, and never answers a short query. Service identities
-// and deleted accounts are not found.
+// fields, never pages, and never answers a short query. Service identities,
+// deleted accounts and disabled accounts are not found.
 func (s *Server) handleLookupUsers(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	if utf8.RuneCountInString(q) < userLookupMinQuery {
@@ -717,14 +718,25 @@ func (s *Server) handleLookupUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	people := false
-	users, _, err := s.users.SearchAdmin(r.Context(), "", q, &people, userLookupMaxHits, 0)
-	if err != nil {
-		handleError(w, err)
-		return
-	}
-	out := make([]userLookupHit, len(users))
-	for i, u := range users {
-		out[i] = userLookupHit{ID: u.ID, DisplayName: u.DisplayName, Email: u.Email}
+	// Disabled accounts are skipped: they cannot sign in, so they are no sensible
+	// requester. The admin search includes them and has no way to leave them out,
+	// so pages are read until the ceiling is reached of those that remain, rather
+	// than filtering one page of ten and answering short.
+	out := make([]userLookupHit, 0, userLookupMaxHits)
+	for offset := 0; len(out) < userLookupMaxHits; offset += userLookupPage {
+		users, total, err := s.users.SearchAdmin(r.Context(), "", q, &people, userLookupPage, offset)
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		for _, u := range users {
+			if !u.Disabled && len(out) < userLookupMaxHits {
+				out = append(out, userLookupHit{ID: u.ID, DisplayName: u.DisplayName, Email: u.Email})
+			}
+		}
+		if int64(offset+userLookupPage) >= total {
+			break
+		}
 	}
 	JSON(w, http.StatusOK, out)
 }

@@ -170,3 +170,33 @@ func TestUserLookup_LeavesOutDeletedAccountsAndServiceIdentities(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, decodeLookup(t, h.do(t, http.MethodGet, lookupPath("Zed Service"), nil)))
 }
+
+// A disabled account cannot sign in, so it is not a sensible requester and is
+// not offered (MCP create_ticket still accepts one by id; this is the picker).
+// Disabled accounts do not crowd out the enabled ones: the answer is the first
+// ten enabled matches, not the first ten matches with the disabled removed.
+func TestUserLookup_LeavesOutDisabledAccounts(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	for i := range 20 {
+		u, err := h.userSvc.Create(ctx, user.CreateUserInput{
+			Email: fmt.Sprintf("crowd%02d@test.local", i), DisplayName: fmt.Sprintf("Crowd Person %02d", i),
+			Role: user.RoleUser, Password: "a-real-passphrase",
+		})
+		require.NoError(t, err)
+		if i >= 12 { // the newest, which the list puts first
+			require.NoError(t, h.userSvc.Disable(ctx, u.ID))
+		}
+	}
+
+	hits := decodeLookup(t, h.do(t, http.MethodGet, lookupPath("crowd"), nil))
+	require.Len(t, hits, 10, "twelve are enabled, so the cap is reached")
+	for _, hit := range hits {
+		var n int
+		_, err := fmt.Sscanf(hit.Email, "crowd%02d@", &n)
+		require.NoError(t, err)
+		require.Less(t, n, 12, "%s is disabled", hit.Email)
+	}
+}
