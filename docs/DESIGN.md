@@ -2367,8 +2367,34 @@ reaching `/admin` is administrator-owned, so `users:write` allowed creating a
 second administrator, signing in as them, and resetting the first one's
 password. Guarding only promotion left the reverse open too — demote an
 administrator, reset the now-staff account's password, sign in — so the rule
-covers the whole account in either direction. Managing non-administrator users
-stays available.
+covers the whole account in either direction.
+
+**Keys can't set passwords** (Erik, 2026-10-16). That rule was still not enough:
+a key could create a *staff* account with a password it chose, sign in as it
+(no second factor), and from that session create an API key
+(`POST /me/api-keys`) that survives the revocation of the key that started it;
+resetting an existing staff member's password or second factor gets there too.
+So for **every** account, administrator or not, an API key or OAuth client may
+not set a password or clear a second factor:
+
+- `POST /admin/users` with any non-empty `password` (whitespace included) is `403
+  session_required` for a machine credential. Accounts a key creates have no
+  password; they sign in through SSO, or set their own by the reset link.
+- `POST /admin/users/{id}/password` carries `DenyMachineCredentials`.
+- `PATCH /admin/users/{id}` with `reset_mfa` (the only field that clears a
+  second factor; it clears the authenticator and every passkey) is `403
+  session_required` for a machine credential, checked before anything in the
+  request is applied.
+
+A key may still **create** users (without a password), **rename**, **change
+email**, **change role** (never to administrator) and **disable** non-administrators.
+Only a signed-in administrator can do the credential things. Open question,
+reported to Erik: an email change by a key is not refused, and once password reset
+by email exists (#451) a key that can change an address, or create an account
+with an address of its choosing, can have a reset link mailed to itself. That has
+to be settled in #451's design (for example, no reset link for an account a key
+created or last re-addressed), not by refusing every email edit, which would
+break ordinary provisioning.
 
 Four more things are off limits to a machine credential, for the same reason:
 

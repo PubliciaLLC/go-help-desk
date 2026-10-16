@@ -35,12 +35,12 @@ func TestServiceAccount_AdminCannotGiveItAPasswordOrMFAOrAdminRole(t *testing.T)
 	base := "/api/v1/admin/users/" + c.UserID.String()
 
 	t.Run("password", func(t *testing.T) {
-		resp := h.doAsAdmin(t, http.MethodPost, base+"/password", map[string]string{"new_password": "a-long-enough-passphrase"})
+		resp := h.doAsAdminSession(t, http.MethodPost, base+"/password", map[string]string{"new_password": "a-long-enough-passphrase"})
 		require.Equal(t, http.StatusConflict, resp.StatusCode)
 		require.Equal(t, "service_account", errorCode(t, resp))
 	})
 	t.Run("reset MFA", func(t *testing.T) {
-		resp := h.doAsAdmin(t, http.MethodPatch, base, map[string]any{"reset_mfa": true})
+		resp := h.doAsAdminSession(t, http.MethodPatch, base, map[string]any{"reset_mfa": true})
 		require.Equal(t, http.StatusConflict, resp.StatusCode)
 		require.Equal(t, "service_account", errorCode(t, resp))
 	})

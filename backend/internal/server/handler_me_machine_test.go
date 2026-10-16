@@ -127,23 +127,21 @@ func TestMachineCredential_CannotReachAdministratorCredentials(t *testing.T) {
 }
 
 // Ordinary automation must keep working: provisioning and deprovisioning
-// non-administrators, and resetting a forgotten password.
+// non-administrators. Not their credentials: keys can't set passwords
+// (2026-10-16), see handler_machine_cannot_set_credentials_test.go.
 func TestMachineCredential_CanStillAdministerNonAdmins(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
 	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
-		"email": "new-agent@test.local", "display_name": "Agent",
-		"role": "staff", "password": "a-password-123",
+		"email": "new-agent@test.local", "display_name": "Agent", "role": "staff",
 	})
 	require.Equal(t, http.StatusCreated, resp.StatusCode,
 		"creating a non-administrator is ordinary automation")
-
-	resp = h.doAsAdmin(t, http.MethodPost,
-		"/api/v1/admin/users/"+h.staffID.String()+"/password",
-		map[string]any{"new_password": "a-legitimate-reset-123"})
-	require.Equal(t, http.StatusNoContent, resp.StatusCode,
-		"resetting a non-administrator's password is ordinary automation")
+	resp = h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+h.staffID.String(),
+		map[string]any{"disabled": true})
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"and so is disabling one")
 }
 
 // A signed-in administrator must still be able to do all of it. A guard keyed on

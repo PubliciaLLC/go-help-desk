@@ -165,3 +165,26 @@ func TestAdminPasswordReset_SessionsAndKeysGoEvenIfTheRequestWasCancelled(t *tes
 	require.Equal(t, http.StatusUnauthorized, res.StatusCode, "the session was ended")
 	require.Zero(t, h.keyCount(t, h.staffID), "and the keys revoked, although the request context was cancelled")
 }
+
+// If the password was reset and the sessions could not be ended, the answer
+// says that, and says the keys were not revoked either when they were asked
+// for. A generic internal_error would read as "the reset did not happen".
+func TestAdminPasswordReset_AFailedSessionEndIsNotReportedAsAFailedReset(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	admin := h.session(t, asAdmin)
+	h.session(t, asStaff) // a session row for the trigger to trip on
+
+	_, err := h.tx.Exec(`CREATE FUNCTION ghd_fail_session_delete() RETURNS trigger AS $$
+		BEGIN RAISE EXCEPTION 'injected'; END $$ LANGUAGE plpgsql`)
+	require.NoError(t, err)
+	_, err = h.tx.Exec(`CREATE TRIGGER ghd_fail_session_delete BEFORE DELETE ON sessions
+		FOR EACH ROW EXECUTE FUNCTION ghd_fail_session_delete()`)
+	require.NoError(t, err)
+
+	code, b := h.resetPassword(t, admin, h.staffID, map[string]any{"new_password": "a-brand-new-password"})
+	require.Equal(t, http.StatusInternalServerError, code, "body: %s", b)
+	require.Equal(t, "sessions_not_ended", errCode(t, b))
+	require.Contains(t, string(b), "The password was reset, but existing sessions were NOT ended.")
+	require.NotContains(t, string(b), "API keys")
+}

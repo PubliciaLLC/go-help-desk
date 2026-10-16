@@ -156,7 +156,10 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.Get("/{id}", s.handleGetUser)
 		r.Patch("/{id}", s.handleUpdateUser)
 		r.Delete("/{id}", s.handleDeleteUser)
-		r.Post("/{id}/password", s.handleAdminResetPassword)
+		// Keys can't set passwords (Erik, 2026-10-16): only a signed-in
+		// administrator does. A key that could would set one, sign in as that
+		// person and, from that session, mint credentials of its own.
+		r.With(authmw.DenyMachineCredentials).Post("/{id}/password", s.handleAdminResetPassword)
 	})
 
 	r.Route("/groups", func(r chi.Router) {

@@ -150,3 +150,10 @@ func TestAdminAPIKeys_AKeyCanRevokeItself(t *testing.T) {
 	res.Body.Close()
 	require.Equal(t, http.StatusUnauthorized, res.StatusCode, "the revoked key is no longer a credential")
 }
+
+// doAsAdminSession sends the request as the seeded administrator signed in,
+// for the things only a person may do: set a password, clear a second factor.
+func (h *harness) doAsAdminSession(t *testing.T, method, path string, body any) *http.Response {
+	t.Helper()
+	return h.doSession(t, h.session(t, asAdmin), method, path, body)
+}

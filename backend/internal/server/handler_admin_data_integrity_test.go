@@ -263,7 +263,9 @@ func deletedStaff(t *testing.T, h *harness) uuid.UUID {
 }
 
 // A session and an API key must get the same answer, in the same order: the
-// body is checked first (400), then the account (404).
+// body is checked first (400), then the account (404). Except on the password
+// route, which is closed to keys altogether (2026-10-16): a key gets 403 there
+// whatever the body and whatever the account.
 func TestDeletedAccount_SessionAndAPIKeySeeTheSameAnswers(t *testing.T) {
 	type send func(t *testing.T, h *harness, s *session, method, path string, body any) int
 	senders := map[string]send{
@@ -302,8 +304,12 @@ func TestDeletedAccount_SessionAndAPIKeySeeTheSameAnswers(t *testing.T) {
 				before, err := h.userSvc.GetByIDAdmin(ctx, id)
 				require.NoError(t, err)
 
+				want := tc.want
+				if who == "api key" && tc.tail == "/password" {
+					want = http.StatusForbidden
+				}
 				got := do(t, h, s, tc.method, adminAPI+"/users/"+id.String()+tc.tail, tc.body)
-				require.Equal(t, tc.want, got)
+				require.Equal(t, want, got)
 
 				after, err := h.userSvc.GetByIDAdmin(ctx, id)
 				require.NoError(t, err)

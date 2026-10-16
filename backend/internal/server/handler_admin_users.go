@@ -204,6 +204,13 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		denyMachineAdminTakeover(w, r, "create an administrator") {
 		return
 	}
+	// A key may provision an account but not give it a way in: any non-empty
+	// password is refused, whitespace included, before the password's own
+	// validation can say anything about what it would have accepted. The
+	// account signs in through SSO, or sets its own password by the reset link.
+	if body.Password != "" && denyMachineAdminTakeover(w, r, "set a password") {
+		return
+	}
 	u, err := s.users.Create(r.Context(), user.CreateUserInput{
 		Email:       body.Email,
 		DisplayName: body.DisplayName,
@@ -310,6 +317,11 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	// direction: a machine credential may not change an administrator's role,
 	// email, enabled state, password or MFA, and may not create or promote one.
 	if isMachine(r) {
+		// Clearing a second factor is the same takeover as setting a password:
+		// the account is then enrolled by whoever gets there first.
+		if body.ResetMFA && denyMachineAdminTakeover(w, r, "reset a second factor") {
+			return
+		}
 		if s.denyMachineTargetingAdmin(w, r, id, "modify an administrator") {
 			return
 		}
@@ -522,23 +534,24 @@ func isMachine(r *http.Request) bool {
 	return a != nil && a.Machine
 }
 
-// denyMachineAdminTakeover refuses a machine credential that is reaching for
-// administrator credentials.
+// denyMachineAdminTakeover refuses a machine credential that is reaching for a
+// way into an account.
 //
-// Refusing only the credential's own owner closed the path and not the outcome.
-// Every API key that reaches /admin is administrator-owned, because only an
-// administrator can mint one and it acts at its owner's role — so with
-// users:write the long way round was four requests: create a second
-// administrator, sign in as them, reset the original owner's password. Promoting
-// an existing user to administrator gets there too.
+// Two rules, both ending in "a signed-in session".
 //
-// So the rule is about administrators rather than about self: a machine
-// credential may not create one, promote to one, or reset one's credentials.
-// That closes every route to holding an administrator's password, including the
-// self-target that started this.
+// Administrators are managed by administrators, not by automation: a machine
+// credential may not create one, promote to one, or modify one. Every API key
+// that reaches /admin is administrator-owned, so with users:write the long way
+// round was four requests: create a second administrator, sign in as them,
+// reset the original owner's password.
 //
-// Managing non-administrator users — provisioning, deprovisioning, resetting a
-// forgotten password — is ordinary automation and stays available.
+// And keys can't set passwords or clear second factors for ANYONE (Erik,
+// 2026-10-16). The earlier rule left staff accounts open: create one with a
+// password the key chose, sign in as it, and from that session create an API
+// key (POST /me/api-keys) that outlives the revocation of the key that started
+// it. So a password at creation, POST /admin/users/{id}/password and reset_mfa
+// are all session-only. What stays automatable is provisioning without a
+// credential: create, rename, change role (not to administrator), disable.
 func denyMachineAdminTakeover(w http.ResponseWriter, r *http.Request, why string) bool {
 	if !isMachine(r) {
 		return false
@@ -591,9 +604,6 @@ func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request
 		handleError(w, err)
 		return
 	}
-	if s.denyMachineTargetingAdmin(w, r, id, "reset an administrator's password") {
-		return
-	}
 	actor := authmw.GetActor(r)
 	var actorID *uuid.UUID
 	if actor != nil {
@@ -604,6 +614,16 @@ func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err := s.finishAdminReset(r.Context(), actorID, id, body.RevokeAPIKeys); err != nil {
+		var notEnded *sessionsNotEndedError
+		if errors.As(err, &notEnded) {
+			slog.ErrorContext(r.Context(), "ending sessions after a password reset failed", "user_id", id, "error", notEnded.err)
+			msg := "The password was reset, but existing sessions were NOT ended."
+			if body.RevokeAPIKeys {
+				msg = "The password was reset, but existing sessions were NOT ended and API keys were NOT revoked."
+			}
+			Error(w, http.StatusInternalServerError, "sessions_not_ended", msg)
+			return
+		}
 		var notRevoked *keysNotRevokedError
 		if errors.As(err, &notRevoked) {
 			// Said exactly: the reset is done, the keys are not gone. A plain
@@ -619,6 +639,14 @@ func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// sessionsNotEndedError marks a failure to end the account's sessions after
+// the password changed: the old sessions are still live, and so are any keys the
+// caller asked to have revoked.
+type sessionsNotEndedError struct{ err error }
+
+func (e *sessionsNotEndedError) Error() string { return "ending sessions: " + e.err.Error() }
+func (e *sessionsNotEndedError) Unwrap() error { return e.err }
 
 // keysNotRevokedError marks the one failure that happens after the password has
 // changed and the sessions are gone.
@@ -637,7 +665,7 @@ func (e *keysNotRevokedError) Unwrap() error { return e.err }
 func (s *Server) finishAdminReset(reqCtx context.Context, actorID *uuid.UUID, id uuid.UUID, revokeKeys bool) error {
 	ctx := context.WithoutCancel(reqCtx)
 	if err := s.sessions.DeleteForUser(ctx, id); err != nil {
-		return err
+		return &sessionsNotEndedError{err}
 	}
 	if revokeKeys {
 		if err := s.revokeUserAPIKeys(ctx, actorID, id); err != nil {

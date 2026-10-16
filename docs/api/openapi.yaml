@@ -6938,7 +6938,11 @@ paths:
       description: >-
         Administrators only (second factor required).
         Creates an account with the given role. The account has no second factor.
-        password is optional. When present it must be 8 to 72 bytes. An account
+        password is optional. When present it must be 8 to 72 bytes, and only a
+        signed-in session may send one: an API key or OAuth client that sends any
+        non-empty password is refused with 403 session_required (keys can't set
+        passwords; an account made by a key has no password and signs in through SSO
+        or sets one itself). An account
         created without a password has no local sign-in until one is set with
         POST /api/v1/admin/users/{id}/password. The email address is trimmed and
         lowercased. An address that any account holds, deleted accounts included,
@@ -7086,7 +7090,10 @@ paths:
         earlier ones applied. The last
         active administrator cannot be disabled or demoted. An
         API key cannot change an administrator's account or promote a user to
-        administrator; that answers 403 session_required, after the body checks. The
+        administrator, and cannot send reset_mfa: keys can't clear a second factor
+        for anyone. Those answer 403 session_required, after the body checks. A key
+        may still change display_name, email, role (not to administrator) and
+        disabled. The
         response is the same detail view GET returns, passkey_count included.
       tags: ['Admin: Users']
       x-ghd-handler: handleUpdateUser
@@ -7205,11 +7212,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           description: >-
-            Two sources. The authentication middleware refuses with text/plain:
-            forbidden (role), mfa_required (second factor not passed) or
-            insufficient_scope (the API key lacks users:write). The handler refuses with
-            application/json: session_required when an API key targets an
-            administrator.
+            The authentication middleware refuses with text/plain: forbidden (role),
+            mfa_required (second factor not passed) or session_required (an API key).
           content:
             text/plain:
               schema:
@@ -7249,13 +7253,13 @@ paths:
       operationId: adminResetPassword
       summary: Set a user's password.
       description: >-
-        Administrators only (second factor required).
-        Sets a new local password without asking for the old one, and ends all of the
-        account's sessions, since a reset usually answers a compromise. The checks run
-        in the same order for a signed-in session and for an API key: the body and
-        the password first (400), then, for an API key only, whether the account is an
-        administrator (403 session_required), then the account itself. An unknown
-        or soft-deleted id answers 404; a soft-deleted account's password is not
+        Administrators only, in a signed-in session (second factor required).
+        Keys can't set passwords: an API key is refused with 403 session_required
+        (an OAuth client by the role check, 403 forbidden), whatever the account and
+        whatever the body. Sets a new local password without asking for the old one,
+        and ends all of the account's sessions, since a reset usually answers a
+        compromise. The body and the password are checked first (400), then the
+        account itself. An unknown or soft-deleted id answers 404; a soft-deleted account's password is not
         set. The reset is recorded in the audit log on a best-effort basis.
         revoke_api_keys, when true, also deletes every API key the account owns,
         after the password is set and the sessions ended, and records
@@ -7267,7 +7271,6 @@ paths:
       x-ghd-handler: handleAdminResetPassword
       security:
         - sessionCookie: []
-        - apiKey: ['users:write']
       x-ghd-roles: [admin]
       x-ghd-mfa: true
       requestBody:
@@ -7331,6 +7334,9 @@ paths:
                 $ref: '#/components/schemas/Error'
         '500':
           description: >-
+            sessions_not_ended: the password was reset but the account's sessions could not be
+            ended (message "The password was reset, but existing sessions were NOT ended.", and
+            "... and API keys were NOT revoked." when revoke_api_keys was true). Or
             keys_not_revoked, only when revoke_api_keys was true: the password was
             reset and the sessions ended, but the API keys could not be deleted. The
             message is "The password was reset, but the API keys were NOT revoked.
@@ -7340,7 +7346,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-
   /api/v1/admin/webhooks:
     get:
       operationId: listWebhooks
