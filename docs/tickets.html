@@ -86,6 +86,7 @@
       <li><a href="#tickets-links">Linked Tickets</a></li>
       <li><a href="#tickets-tags">Tags</a></li>
       <li><a href="#tickets-assignment">Assignment</a></li>
+      <li><a href="#tickets-priority">Changing priority</a></li>
       <li><a href="#tickets-custom-fields">Custom Fields</a></li>
       <li><a href="#tickets-attachments">Attachments</a></li>
       <li><a href="#tickets-search">Search</a></li>
@@ -130,7 +131,7 @@
   <li><strong>Description</strong>: the full detail of the request, as plain text, up to 50,000 bytes. Staff read this first, so include error messages, steps to reproduce and what you have already tried.</li>
   <li><strong>Type</strong> — shown only if the selected Category has Types defined. Filters Items.</li>
   <li><strong>Item</strong> — shown only if the selected Type has Items defined.</li>
-  <li><strong>Priority</strong>: defaults to Medium. Only staff and admins can choose it, when they create a ticket. It cannot be changed afterwards.</li>
+  <li><strong>Priority</strong>: defaults to Medium. Only staff and admins can choose it when they create a ticket. Staff and admins can change it afterwards; see <a href="#tickets-priority">Changing priority</a>.</li>
   <li><strong>Attachments</strong> — files can be attached at creation. See <a href="#tickets-attachments">Attachments</a>.</li>
 </ul>
 
@@ -351,6 +352,17 @@
 
 <h3>Assignment and scope</h3>
 <p>Scope controls what tickets a staff member sees in their default queue. Assignment overrides this for the assignee: if you are assigned a ticket outside your scope, it appears in your queue. Scope narrows what staff can see only when <em>Limit staff to their group scope</em> is on under <em>Admin → Settings → General → Ticket visibility</em>. It is off by default, and then every staff member can open any ticket and jump to it by its tracking number. List search still covers only the tickets assigned to them or their groups, and searching every ticket is not available to staff in 1.3.0. Tracked in <a href="https://github.com/PubliciaLLC/go-help-desk/issues/444" target="_blank" rel="noopener">#444</a>. With it on, a ticket outside a staff member's visibility answers as not found, even by its tracking number.</p>
+
+
+<h2 id="tickets-priority">Changing priority</h2>
+
+<p>Staff and admins can change a ticket's priority after it is created. On the ticket page, the <strong>Details</strong> card has a <em>Priority</em> drop-down with Critical, High, Medium and Low. Pick a new value and it is saved straight away; the ticket, its Activity feed and the ticket lists refresh. A requester sees the priority as a plain badge and cannot change it.</p>
+<ul>
+  <li><strong>The SLA follows the new priority.</strong> The ticket is matched again against your SLA policies for its new priority and category, using the same order as when a ticket is created. A change by staff never restarts the clock. Only a reopen does; see <a href="#tickets-reopen">Reopened tickets</a>.</li>
+  <li><strong>Not on a Resolved or Closed ticket.</strong> The drop-down is greyed out with the note <em>Priority cannot be changed on a resolved or closed ticket.</em> The server refuses it too, with <code>409 ticket_closed</code>, so nothing changes.</li>
+  <li><strong>It is recorded.</strong> The change shows in the ticket's Activity feed as a priority change.</li>
+  <li>If the server refuses a change for any other reason, the message is shown under the drop-down and the old priority stays.</li>
+</ul>
 
 
 <h2 id="tickets-custom-fields">Custom fields</h2>
