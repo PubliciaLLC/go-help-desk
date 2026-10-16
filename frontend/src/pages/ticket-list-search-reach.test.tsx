@@ -22,7 +22,7 @@ vi.mock('@tanstack/react-router', () => ({
 
 import { TicketListPage } from './TicketListPage'
 
-function setRole(role: 'staff' | 'user') {
+function setRole(role: 'staff' | 'user' | 'admin') {
   useAuthStore.setState({
     user: {
       id: 'u-1',
@@ -101,5 +101,72 @@ describe('search reach for requesters', () => {
     expect(ticketCalls().some(p => p.scope === 'visible')).toBe(false)
     expect(screen.queryByText('Searching all tickets you can see')).toBeNull()
     expect(screen.queryByRole('button', { name: /^Only / })).toBeNull()
+  })
+})
+
+describe('whitespace', () => {
+  it('a box holding only spaces behaves like an empty box', async () => {
+    setRole('staff')
+    renderWithQuery(<TicketListPage />)
+    await typeSearch('   ')
+    // Past the 300 ms debounce.
+    await new Promise(r => setTimeout(r, 450))
+
+    expect(ticketCalls().some(p => p.scope === 'visible')).toBe(false)
+    expect(screen.queryByText('Searching all tickets you can see')).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Only / })).toBeNull()
+  })
+})
+
+describe('the chip resets so every new search starts wide', () => {
+  async function chipOn() {
+    setRole('admin')
+    renderWithQuery(<TicketListPage />)
+    await typeSearch('printer')
+    fireEvent.click(await screen.findByRole('button', { name: 'Only my tickets' }))
+    await screen.findByRole('button', { name: /Only my tickets/ })
+  }
+
+  it('clearing the box turns it off', async () => {
+    await chipOn()
+    await typeSearch('')
+    await typeSearch('toner')
+    await waitFor(() => expect(ticketCalls().at(-1)).toMatchObject({ q: 'toner', scope: 'visible' }))
+  })
+
+  it('changing the queue turns it off', async () => {
+    await chipOn()
+    fireEvent.click(screen.getByRole('button', { name: 'unassigned' }))
+    await waitFor(() => expect(ticketCalls().at(-1)).toMatchObject({ q: 'printer', scope: 'visible' }))
+    expect(screen.getByRole('button', { name: 'Only unassigned' }).getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('refining the same search keeps it on', async () => {
+    await chipOn()
+    await typeSearch('printer jam')
+    await waitFor(() => expect(ticketCalls().at(-1)).toMatchObject({ q: 'printer jam', scope: 'mine' }))
+  })
+})
+
+describe('admin All queue', () => {
+  it('shows the label, with no chip', async () => {
+    setRole('admin')
+    renderWithQuery(<TicketListPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'all' }))
+    await typeSearch('printer')
+
+    await screen.findByText('Searching all tickets you can see')
+    expect(screen.queryByRole('button', { name: /^Only / })).toBeNull()
+  })
+})
+
+describe('the label', () => {
+  it('is a polite live region', async () => {
+    setRole('staff')
+    renderWithQuery(<TicketListPage />)
+    await typeSearch('printer')
+
+    const label = await screen.findByText('Searching all tickets you can see')
+    expect(label.getAttribute('aria-live')).toBe('polite')
   })
 })

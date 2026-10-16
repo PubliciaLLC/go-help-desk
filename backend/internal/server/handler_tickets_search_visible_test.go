@@ -168,3 +168,42 @@ func TestSearchVisible_Paging(t *testing.T) {
 		})
 	}
 }
+
+// The same scope=visible request with nothing in the box takes the List*
+// branch, a different query from the search one. #511's review found that
+// pointing scoped staff at ListAll there left every test green.
+func TestVisibleNoQuery_ScopedStaffGetOnlyTheirGroups(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	mine, err := h.groupSvc.Create(ctx, "Mine "+uuid.NewString()[:8], "")
+	require.NoError(t, err)
+	require.NoError(t, h.groupSvc.AddMember(ctx, mine.ID, h.staffID))
+	other, err := h.groupSvc.Create(ctx, "Other "+uuid.NewString()[:8], "")
+	require.NoError(t, err)
+	newTicketAsAdmin(t, h, "in my group", &mine.ID)
+	newTicketAsAdmin(t, h, "in other group", &other.ID)
+	enableScope(t, h)
+
+	got := searchSubjects(t, h.do(t, http.MethodGet, "/api/v1/tickets?scope=visible", nil))
+	require.Equal(t, map[string]bool{"in my group": true}, got)
+}
+
+func TestVisibleNoQuery_AdminAndUnscopedStaffGetEverything(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	other, err := h.groupSvc.Create(ctx, "Other "+uuid.NewString()[:8], "")
+	require.NoError(t, err)
+	newTicketAsAdmin(t, h, "unassigned one", nil)
+	newTicketAsAdmin(t, h, "other group one", &other.ID)
+	want := map[string]bool{"unassigned one": true, "other group one": true}
+
+	require.Equal(t, want, searchSubjects(t, h.do(t, http.MethodGet, "/api/v1/tickets?scope=visible", nil)),
+		"unscoped staff")
+	enableScope(t, h) // admins are never scoped
+	require.Equal(t, want, searchSubjects(t, h.doAsAdmin(t, http.MethodGet, "/api/v1/tickets?scope=visible", nil)),
+		"admin")
+}

@@ -51,6 +51,9 @@ export function TicketListPage() {
   // The "Only <queue>" chip (#444). Off by default: a search covers everything
   // the viewer can see until they narrow it.
   const [onlyQueue, setOnlyQueue] = useState(false)
+  // Every new search starts wide: clearing the box resets the chip. Adjusted
+  // during render rather than in an effect, which would run a render late.
+  if (onlyQueue && query.trim() === '') setOnlyQueue(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkStatusId, setBulkStatusId] = useState('')
   const [bulkError, setBulkError] = useState('')
@@ -90,7 +93,9 @@ export function TicketListPage() {
   //
   // A staff or admin search with the chip off asks for scope=visible instead
   // of the selected queue. With an empty box the queue behaves as before.
-  const searchingAll = isStaffOrAdmin && debouncedQuery !== '' && !onlyQueue && !reporterFilter
+  // trim(): a box of spaces is an empty box, as it is for the queue today.
+  const searching = isStaffOrAdmin && debouncedQuery.trim() !== '' && !reporterFilter
+  const searchingAll = searching && !onlyQueue
   const requestScope: TicketScope = searchingAll ? 'visible' : effectiveScope
   const asking = `${debouncedQuery}\u0000${requestScope}\u0000${reporterFilter ?? ''}`
   const [paged, setPaged] = useState({ asking, page: 0 })
@@ -230,7 +235,7 @@ export function TicketListPage() {
                 <button
                   key={s}
                   type="button"
-                  onClick={() => setScope(s)}
+                  onClick={() => { setScope(s); setOnlyQueue(false) }}
                   className={
                     'px-3 py-1.5 capitalize transition-colors ' +
                     (scope === s
@@ -287,25 +292,29 @@ export function TicketListPage() {
           <p role="alert" className="text-sm text-red-600">{jumpError}</p>
         )}
 
-        {/* Search reach (#444). Shown while the box has text. The admin "all"
-            queue is already everything, so there is nothing to narrow to. */}
-        {isStaffOrAdmin && debouncedQuery !== '' && !reporterFilter && QUEUE_NAMES[effectiveScope] && (
+        {/* Search reach (#444). Label while the box has text; the chip too, except on
+            the admin "all" queue, which is already everything. */}
+        {searching && (
           <div className="flex items-center gap-2 text-sm">
-            {!onlyQueue && <span className="text-gray-500">Searching all tickets you can see</span>}
-            <button
-              type="button"
-              aria-pressed={onlyQueue}
-              onClick={() => setOnlyQueue(v => !v)}
-              className={
-                'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium ' +
-                (onlyQueue
-                  ? 'border-gray-900 bg-gray-900 text-white'
-                  : 'border-gray-300 bg-gray-100 text-gray-700 hover:bg-gray-200')
-              }
-            >
-              Only {QUEUE_NAMES[effectiveScope]}
-              {onlyQueue && <span aria-hidden="true">×</span>}
-            </button>
+            {!onlyQueue && (
+              <span aria-live="polite" className="text-gray-500">Searching all tickets you can see</span>
+            )}
+            {QUEUE_NAMES[effectiveScope] && (
+              <button
+                type="button"
+                aria-pressed={onlyQueue}
+                onClick={() => setOnlyQueue(v => !v)}
+                className={
+                  'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium ' +
+                  (onlyQueue
+                    ? 'border-gray-900 bg-gray-900 text-white'
+                    : 'border-gray-300 bg-gray-100 text-gray-700 hover:bg-gray-200')
+                }
+              >
+                Only {QUEUE_NAMES[effectiveScope]}
+                {onlyQueue && <span aria-hidden="true">×</span>}
+              </button>
+            )}
           </div>
         )}
 
