@@ -140,7 +140,7 @@
     <li><a href="tickets.html#tickets-create">Guest submission</a> works. <code>guest_submission_enabled</code> needs a signed-in administrator, and switching it off also suspends every existing guest link until it is switched on again.</li>
     <li><a href="#admin-attachments">Attachment security</a>: content detection, malware scanning and reputation lookup, all configured under <em>Admin → Settings → Attachments</em>.</li>
     <li><a href="#admin-staff-email">Staff email</a>: assignments, requester replies and reopens are emailed to staff, with three switches each person controls and an administrator override. Check the overrides before you turn email on. Staff can also <a href="tickets.html#tickets-follow">follow tickets</a>.</li>
-    <li><a href="#admin-email-setup">Email honesty</a>: SMTP must use TLS when a password is set, and a missing or failing mail setup shows as a banner instead of failing silently.</li>
+    <li><a href="#admin-email-setup">Email setup rules</a>: SMTP must use TLS when a password is set, and a missing or failing mail setup shows as a banner instead of failing silently.</li>
     <li><a href="#admin-oauth-clients">OAuth clients</a> act as service users, so they can write tickets, and are managed from Users and OAuth Clients.</li>
     <li><a href="#admin-auto-assign">Routing</a> and a paged <a href="#admin-users-list">Users</a> list, <a href="#admin-cti-archive">archive and restore</a> for categories, types and items, and <a href="#admin-webhook-history">webhook History and Redeliver</a>, with <a href="#admin-webhook-filter">ticket filters</a> and retries.</li>
     <li><a href="#admin-unlock"><code>unlock</code></a> from the server, and a <a href="#admin-password-age">reset window for old passwords</a>.</li>
@@ -589,7 +589,7 @@ Facilities
 
 <h2 id="admin-email-setup">Email setup &amp; warnings</h2>
 
-<p>Email is set up with environment variables in <code>docker/.env</code>, not in the admin panel: <code>SMTP_HOST</code> and <code>SMTP_FROM</code> turn it on, <code>SMTP_PORT</code> defaults to 587, and <code>SMTP_USER</code> and <code>SMTP_PASSWORD</code> are optional. Restart the server after changing them. Email fails loudly: it never quietly sends in the clear, and a problem shows in the admin panel.</p>
+<p>Email is set up with environment variables in <code>docker/.env</code>, not in the admin panel: <code>SMTP_HOST</code> and <code>SMTP_FROM</code> turn it on, <code>SMTP_PORT</code> defaults to 587, and <code>SMTP_USER</code> and <code>SMTP_PASSWORD</code> are optional. Restart the server after changing them. Email fails loudly: it never sends a password unencrypted (to any server, a private one included), it sends mail without a password unencrypted only to a private address, and a problem shows in the admin panel.</p>
 
 <h3>Encryption rules</h3>
 <ul>
@@ -633,7 +633,7 @@ Facilities
 <h2 id="admin-email-tpl">Email templates</h2>
 
 <div class="callout callout-warn">
-  <p><strong>Editing templates from the admin UI is coming soon</strong> — <a href="https://github.com/PubliciaLLC/go-help-desk/issues/158">issue #158</a>. There is no <em>Admin → Email → Templates</em> page yet, no preview and no send-test. The templates are compiled into the binary; changing one today means editing the file and rebuilding.</p>
+  <p><strong>Editing templates from the admin UI is not available in 1.3.0</strong>; it is tracked in <a href="https://github.com/PubliciaLLC/go-help-desk/issues/158">issue #158</a>. There is no <em>Admin → Email → Templates</em> page yet, no preview and no send-test. The templates are compiled into the binary; changing one today means editing the file and rebuilding.</p>
 </div>
 
 <p>There are sixteen, in <code>backend/internal/server/notify/templates/</code>. Seven go to requesters and the people who sign up, and nine go to staff:</p>
@@ -776,7 +776,7 @@ function verifySignature(secret, body, header) {
 
 
 <h3>Delivery and retries</h3>
-<p>Each attempt has a 10-second timeout. A delivery that fails with a connection error, a DNS or TLS failure, a timeout, a <code>5xx</code> status or <code>429</code> is tried again: the wait starts at 30 seconds and doubles up to an hour, for 8 attempts in all. A <code>Retry-After</code> header from the receiver is honoured, up to an hour. A blocked (private or internal) address, and any other status such as <code>400</code> or <code>404</code>, is not retried.</p>
+<p>Each attempt has a 10-second timeout. A delivery that fails with a connection error, a DNS or TLS failure, a timeout, a <code>5xx</code> status or <code>429</code> is tried again: there are 8 attempts in all, with a wait that starts at 30 seconds and doubles each time (30 seconds, then 1, 2, 4, 8, 16 and 32 minutes), each wait capped at an hour. In practice the waits add up to a little over an hour. Email uses the same schedule. A <code>Retry-After</code> header from the receiver is honoured, up to an hour. A blocked (private or internal) address, and any other status such as <code>400</code> or <code>404</code>, is not retried.</p>
 <p><strong>A receiver can therefore see the same event twice.</strong> Every delivery carries two headers: <code>X-GHD-Delivery</code>, a UUID that stays the same across the retries of one delivery (use it to drop a repeat), and <code>X-GHD-Event</code>, the event name. The signature headers are unchanged. If you change a hook's URL, deliveries still waiting for the old address are dropped, and so are deliveries waiting for an event the hook no longer lists, or that are for a hook that is now disabled.</p>
 
 <h3>Last delivery</h3>
@@ -832,7 +832,7 @@ function verifySignature(secret, body, header) {
 
 <h3>Where you can read it</h3>
 <ul>
-  <li><strong>On a ticket.</strong> Staff and administrators see an <em>Activity</em> feed on the ticket. The field-by-field diff is for administrators. Staff see it only when <em>Staff can view ticket change history</em> is on. That setting is off by default, and it is under <em>Admin → Settings → General → Audit log</em>.</li>
+  <li><strong>On a ticket.</strong> Staff and administrators see an <em>Activity</em> feed on the ticket. The field-by-field diff is for administrators. Staff see it only when <em>Staff can view ticket change history</em> is on. That setting is off by default, and it is under <em>Admin → Settings → General → Audit log</em>. A change of status or assignee shows the status or person by name, with the id as a tooltip; if the status or account has since been deleted, the id is shown. Names appear only to someone who is allowed to see the diff.</li>
   <li><strong>Audit Log.</strong> A searchable view across entities, in the sidebar for administrators and staff. Staff see ticket entries only, and only for tickets they can see. Administrators see every entry, including account actions.</li>
 </ul>
 
