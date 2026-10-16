@@ -243,6 +243,15 @@ func (s *Service) StaffCanViewFollowAudit(ctx context.Context) bool {
 	return v
 }
 
+// StaffCanCreateAPIKeys returns whether staff may create their own API keys
+// (#450). Off by default. Administrators do not consult it, and a requester is
+// refused whatever it says. Turning it off does not touch keys that already
+// exist: it stops new ones being made.
+func (s *Service) StaffCanCreateAPIKeys(ctx context.Context) bool {
+	v, _ := s.GetBool(ctx, KeyStaffCanCreateAPIKeys)
+	return v
+}
+
 // AuditRetentionDays returns the audit-log retention window in days, or
 // AuditRetentionForever when entries are kept indefinitely.
 //

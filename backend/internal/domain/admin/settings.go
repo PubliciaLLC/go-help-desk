@@ -233,6 +233,15 @@ const (
 	// only about the history of who followed and unfollowed when.
 	KeyStaffCanViewFollowAudit = "staff_can_view_follow_audit" // bool
 
+	// Whether staff may create their own API keys (#450). Administrators always
+	// can, and a requester never can: this is the one switch, with no per-user
+	// permission beside it. Off by default, because a key is a long-lived
+	// bearer credential that acts as its owner, and a release that quietly
+	// let every staff member mint one would be changing who holds such
+	// credentials without anyone deciding it. It governs creating a key only;
+	// see Service.StaffCanCreateAPIKeys.
+	KeyStaffCanCreateAPIKeys = "staff_can_create_api_keys" // bool
+
 	// How many days an audit entry is kept before the retention sweep hard-
 	// deletes it. Unset, zero or negative means forever — see
 	// admin.Service.AuditRetentionDays for why the fallback points that way.
@@ -368,6 +377,7 @@ func KnownKeys() []string {
 		KeyTicketPrefix, KeyTicketScopeEnforced,
 		KeyAutoAssignGroupID, KeyAutoAssignUserIDs,
 		KeyStaffCanViewTicketChangeHistory, KeyAuditRetentionDays, KeyStaffCanViewFollowAudit,
+		KeyStaffCanCreateAPIKeys,
 		KeyStaffEmailAssignedOverride, KeyStaffEmailActivityOverride, KeyStaffEmailGroupOverride,
 		KeyPasswordRehashGraceDays, KeyPasswordRehashStartedAt,
 	}
@@ -438,6 +448,12 @@ func AuthCriticalKeys() []string {
 		// And the same for the follow entries (#441): a disclosure-widening
 		// toggle of the same family.
 		KeyStaffCanViewFollowAudit,
+		// Who may mint an API key (#450). A key is a long-lived bearer
+		// credential that acts as its owner, so widening the set of people who
+		// can hold one is a permission change, not configuration: a leaked
+		// administrator key must not be able to switch this on and then use
+		// it. Same reasoning as closed_reopen_policy above.
+		KeyStaffCanCreateAPIKeys,
 		// How long an old password hash keeps working. Pushing it out is a
 		// way to keep a weak hash alive, so it is not a call for a leaked key.
 		KeyPasswordRehashGraceDays,

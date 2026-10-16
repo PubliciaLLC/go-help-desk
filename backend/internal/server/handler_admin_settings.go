@@ -463,6 +463,16 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// And the staff API-key toggle (#450). A bool and nothing else: a string
+	// "false" would read back as off, and a JSON null as off too.
+	if raw, ok := body[admin.KeyStaffCanCreateAPIKeys]; ok {
+		var on bool
+		if err := unmarshalSetting(raw, "staff_can_create_api_keys", &on); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+
 	// Same reasoning as the prefix above: a value that is accepted and then
 	// ignored is worse than a refusal, and here the ignored value is a
 	// security control. An unrecognised policy falls back to "required", so a
