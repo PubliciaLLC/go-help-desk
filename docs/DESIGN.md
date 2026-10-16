@@ -3261,7 +3261,7 @@ mail queued before that error would by then have been sent and deleted, and sent
 a second time, with a new guest link each time, and mailing the people found so
 far would lose the rest with no retry. The cost is that a lookup that keeps
 failing holds back every mail of the change, the requester's included: it is
-retried 8 times over about an hour, then the row is marked failed. The log says
+tried 8 times in all over about an hour, then the row is marked failed. The log says
 "staff email: could not work out who to notify".
 
 #### 4. A consumer is still a channel row (no shared log with positions)
@@ -3561,15 +3561,18 @@ comments on #506):
 **Ruled by Erik, 2026-10-16.** Recorded on #506.
 
 14. **Chat headlines for the two new events are readable.** `ticket.priority_changed`
-    is "Priority changed" and `ticket.classified` is "Reclassified", with no value
-    or name in them.
+    is "Priority changed" and `ticket.classified` is "Reclassified". (That the
+    headlines name no value or name is a **build decision**, not a ruling of
+    Erik's: values are content, as for the rest of the event.)
 15. **A failed lookup of followers or group members retries the change.** No mail
     goes out until every recipient is known; nothing is queued from a partial
     answer.
 16. **An assignment that changes nothing announces nothing.** That covers the
-    same assignee and group, or a clear on a ticket that is already unassigned.
-    The audit entry is still written, as for a same-status move. It changes
-    1.2.x behaviour, so it is in the upgrade notes.
+    same assignee, or a clear on a ticket that is already unassigned. It changes
+    1.2.x behaviour, so it is in the upgrade notes. (Two details are **build
+    decisions**, not rulings of Erik's: that "same" means the same user and the
+    same group, and that the audit entry is still written, as for a same-status
+    move.)
 17. **An auto-routing assignment names nobody as the actor.** A hook told
     `ticket.assigned` gets `ActorID: null`, as in 1.2.x and as the audit log
     already records. The `ticket.created` delivery still names the creator.
