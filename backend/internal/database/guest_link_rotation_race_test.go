@@ -52,7 +52,7 @@ func TestIssueGuestLink_ConcurrentSendsLeaveOneWorkingLink(t *testing.T) {
 		_, _ = db.SQL.Exec(`DELETE FROM categories WHERE id = $1`, cat.ID)
 	})
 
-	svc := ticket.NewService(ts, ts, notification.Noop{}, auditstore.New(q), txrunner.New(db.SQL), nil)
+	svc := ticket.NewService(ts, ts, notification.Noop{}, auditstore.New(q), txrunner.New(db.SQL, nil, nil), nil)
 	require.NoError(t, svc.LoadSystemStatuses(ctx))
 
 	ev := notification.Event{Type: notification.EventTicketReplied, TicketID: tk.ID, GuestLink: true}

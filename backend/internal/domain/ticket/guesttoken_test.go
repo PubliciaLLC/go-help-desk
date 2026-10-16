@@ -2,6 +2,7 @@ package ticket_test
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -256,7 +257,7 @@ func TestGuestToken_ReRequestNeedsBothHalvesAndStillFindsAClosedTicket(t *testin
 func lastEventOfType(t *testing.T, h *harness, ty notification.EventType) notification.Event {
 	t.Helper()
 	for i := len(h.dispatcher.events) - 1; i >= 0; i-- {
-		if h.dispatcher.events[i].Type == ty {
+		if slices.Contains(h.dispatcher.events[i].AllKinds(), ty) {
 			return h.dispatcher.events[i]
 		}
 	}

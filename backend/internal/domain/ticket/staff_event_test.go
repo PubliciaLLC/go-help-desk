@@ -36,8 +36,8 @@ func TestAssign_EventNamesTheAssignee(t *testing.T) {
 	require.NoError(t, err)
 
 	ev := firstEvent(t, h.dispatcher.events, notification.EventTicketAssigned)
-	require.Equal(t, &assignee, ev.AssigneeUserID)
-	require.Equal(t, &group, ev.AssigneeGroupID)
+	require.Equal(t, &assignee, ev.Ticket.AssigneeUserID)
+	require.Equal(t, &group, ev.Ticket.AssigneeGroupID)
 	require.Equal(t, &actor, ev.ActorID)
 }
 
@@ -53,8 +53,8 @@ func TestAssign_UnassigningLeavesTheEventEmpty(t *testing.T) {
 	require.NoError(t, err)
 
 	ev := firstEvent(t, h.dispatcher.events, notification.EventTicketAssigned)
-	require.Nil(t, ev.AssigneeUserID)
-	require.Nil(t, ev.AssigneeGroupID)
+	require.Nil(t, ev.Ticket.AssigneeUserID)
+	require.Nil(t, ev.Ticket.AssigneeGroupID)
 }
 
 // The requester is whoever filed the ticket, not whoever has the user role
@@ -135,6 +135,6 @@ func TestReply_EventNamesTheAssignee(t *testing.T) {
 	require.NoError(t, err)
 
 	ev := firstEvent(t, h.dispatcher.events, notification.EventTicketReplied)
-	require.Equal(t, &assignee, ev.AssigneeUserID)
-	require.Equal(t, &group, ev.AssigneeGroupID)
+	require.Equal(t, &assignee, ev.Ticket.AssigneeUserID)
+	require.Equal(t, &group, ev.Ticket.AssigneeGroupID)
 }

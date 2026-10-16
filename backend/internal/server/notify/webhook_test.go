@@ -382,10 +382,10 @@ func TestDispatch_MarshalFailureIsLogged(t *testing.T) {
 	disp := &WebhookDispatcher{store: store, log: logger}
 
 	// A channel value in Payload cannot be marshalled to JSON. The key is one
-	// the raw body carries (rawPayloadKeys): anything else is dropped before
-	// marshalling, so it could not fail.
+	// the raw body carries for this name (rawKeysFor): anything else is dropped
+	// before marshalling, so it could not fail.
 	ev := notification.Event{
-		Type:           notification.EventTicketReplied,
+		Type:           notification.EventTicketStatusChanged,
 		TicketID:       fixtureTicketID,
 		Payload:        map[string]any{"new_status_id": make(chan int)},
 		OccurredAt:     fixtureOccurred,
@@ -397,7 +397,7 @@ func TestDispatch_MarshalFailureIsLogged(t *testing.T) {
 
 	logged := buf.String()
 	require.Contains(t, logged, "could not be marshalled")
-	require.Contains(t, logged, "event=ticket.replied")
+	require.Contains(t, logged, "event=ticket.status_changed")
 }
 
 // TestNewWebhookDispatcher_NilLoggerDefaultsInsteadOfPanicking pins that a nil
@@ -978,7 +978,7 @@ func TestDispatch_FilteredHooksReceiveOnlyMatchingTickets(t *testing.T) {
 		log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 
 	ev := fixtureReplyEvent(false)
-	ev.Attrs = &notification.TicketAttrs{Priority: "critical"}
+	ev.Ticket = &notification.TicketState{Priority: "critical"}
 	require.NoError(t, disp.Dispatch(context.Background(), ev))
 
 	got := map[string]bool{}
@@ -1012,7 +1012,7 @@ func TestDispatch_FilterDoesNotChangeTheRawBody(t *testing.T) {
 	const want = `{"Type":"ticket.replied","TicketID":"11111111-2222-3333-4444-555555555555",` +
 		`"ActorID":"22222222-3333-4444-5555-666666666666","Payload":null,"OccurredAt":"2026-09-25T12:00:00Z"}`
 	ev := fixtureReplyEvent(false)
-	ev.Attrs = &notification.TicketAttrs{Priority: "critical", CategoryID: uuid.New()}
+	ev.Ticket = &notification.TicketState{Priority: "critical", CategoryID: uuid.New()}
 	require.NoError(t, disp.Dispatch(context.Background(), ev))
 
 	got := map[string][]byte{}
@@ -1026,7 +1026,7 @@ func TestDispatch_FilterDoesNotChangeTheRawBody(t *testing.T) {
 	}
 	for path, body := range got {
 		require.Equal(t, want, string(body), path)
-		require.NotContains(t, string(body), ev.Attrs.CategoryID.String(), path+": the category id leaked")
+		require.NotContains(t, string(body), ev.Ticket.CategoryID.String(), path+": the category id leaked")
 		require.NotContains(t, string(body), "critical", path+": the priority leaked")
 	}
 	require.Len(t, got, 2)

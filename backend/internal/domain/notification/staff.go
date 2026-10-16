@@ -105,6 +105,10 @@ type StaffCandidate struct {
 	UserID uuid.UUID
 	Prefs  StaffPrefs
 	Reason StaffSwitch
+	// Mail is the staff.* event the person would be mailed with, so a person
+	// who qualifies for several kinds of one change keeps the mail of the
+	// first that passes (#506). Unused by the switch rule.
+	Mail EventType
 }
 
 // StaffRecipient is one person to mail and the reason that let them through:
@@ -112,6 +116,7 @@ type StaffCandidate struct {
 type StaffRecipient struct {
 	UserID uuid.UUID
 	Reason StaffSwitch
+	Mail   EventType
 }
 
 // StaffRecipients returns who is mailed for one event: one entry per person,
@@ -135,7 +140,7 @@ func StaffRecipients(cands []StaffCandidate, actor *uuid.UUID, ov StaffOverrides
 			continue
 		}
 		seen[c.UserID] = true
-		out = append(out, StaffRecipient{UserID: c.UserID, Reason: c.Reason})
+		out = append(out, StaffRecipient{UserID: c.UserID, Reason: c.Reason, Mail: c.Mail})
 	}
 	return out
 }

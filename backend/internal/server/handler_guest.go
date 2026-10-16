@@ -362,7 +362,8 @@ func (s *Server) handleGuestFollowUp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	created, err := s.tickets.CreateRequesterFollowUp(ctx, t.ID, s.adminSvc.TicketPrefix(ctx),
-		ticket.Actor{Role: user.RoleUser}, s.requesterClassificationOpen)
+		ticket.Actor{Role: user.RoleUser}, s.requesterClassificationOpen,
+		s.routing(ctx, t.CategoryID, nil)...) // a guest's follow-up carries no type
 	if err != nil {
 		switch {
 		case errors.Is(err, ticket.ErrNotClosed), errors.Is(err, ticket.ErrFollowUpExists),
@@ -376,7 +377,6 @@ func (s *Server) handleGuestFollowUp(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	s.autoAssign(ctx, created)
 	JSON(w, http.StatusCreated, guestJSON(map[string]string{
 		"tracking_number": string(created.TrackingNumber),
 	}))

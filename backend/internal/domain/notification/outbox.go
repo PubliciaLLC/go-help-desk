@@ -46,3 +46,19 @@ type EmailHealth struct {
 type HealthReader interface {
 	EmailHealth(ctx context.Context) (EmailHealth, error)
 }
+
+// NewRow is a row to be queued.
+type NewRow struct {
+	ID      uuid.UUID
+	Channel string
+	Event   []byte
+}
+
+// Splitter is implemented by an outbox that can queue the rows a change's row is
+// split into AND settle that row in one transaction (#506). All or nothing: a
+// failure part way leaves no child queued and the change's row in place to be
+// tried again. Queued one at a time, a child inserted before the failure could be
+// sent and deleted before the retry, which would queue it a second time.
+type Splitter interface {
+	Split(ctx context.Context, parent uuid.UUID, rows []NewRow) error
+}

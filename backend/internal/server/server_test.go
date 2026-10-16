@@ -194,7 +194,7 @@ func newHarnessPasskeys(t *testing.T, authRateLimit int, clamAVAddr string, muta
 	dispatcher := &sendTimeDispatcher{next: notify.NewMulti()}
 	// Joins the harness transaction rather than beginning a second one; see
 	// testutil.JoiningTxRunner for why a real runner cannot work here.
-	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, testutil.NewJoiningTxRunner(q), slaPolicySvc)
+	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, testutil.NewJoiningTxRunner(q, dispatcher), slaPolicySvc)
 	require.NoError(t, ticketSvc.LoadSystemStatuses(ctx))
 
 	// Seed an admin user.
@@ -1833,7 +1833,7 @@ func newBareHarness(t *testing.T) (*harness, func()) {
 	dispatcher := notify.NewMulti()
 	// Joins the harness transaction rather than beginning a second one; see
 	// testutil.JoiningTxRunner for why a real runner cannot work here.
-	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, testutil.NewJoiningTxRunner(q), nil)
+	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, testutil.NewJoiningTxRunner(q, dispatcher), nil)
 	require.NoError(t, ticketSvc.LoadSystemStatuses(ctx))
 
 	apiKeyLookup := authmw.APIKeyAuthFunc(func(ctx context.Context, hashed string) (auth.APIKey, user.User, error) {

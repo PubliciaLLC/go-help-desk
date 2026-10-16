@@ -25,6 +25,8 @@ const EVENTS = [
   'ticket.closed',
   'ticket.reopened',
   'ticket.linked',
+  'ticket.priority_changed',
+  'ticket.classified',
 ] as const
 
 // notify.Formats, in the same order. The values are what the API stores; the

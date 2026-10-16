@@ -60,7 +60,7 @@ func spyOn(rig *queueRig) *enqueueSpy {
 
 func eventWithPriority(p string) notification.Event {
 	ev := fixtureReplyEvent(false)
-	ev.Attrs = &notification.TicketAttrs{CategoryID: uuid.New(), Priority: p}
+	ev.Ticket = &notification.TicketState{CategoryID: uuid.New(), Priority: p}
 	return ev
 }
 
@@ -287,8 +287,8 @@ func TestQueueFilter_RedeliverRechecksTheFilterAgainstTheTicketNow(t *testing.T)
 			require.Equal(t, 1, rc.count())
 			original := firstDelivery(t, rig, hook.ID)
 
-			now := &notification.TicketAttrs{CategoryID: ev.Attrs.CategoryID, Priority: tc.priority}
-			src.facts[ev.TicketID] = TicketFacts{Subject: "now", Attrs: now}
+			now := &notification.TicketState{CategoryID: ev.Ticket.CategoryID, Priority: tc.priority}
+			src.facts[ev.TicketID] = TicketFacts{Subject: "now", State: now}
 			before := len(rig.store.order)
 			err := rig.disp.Redeliver(context.Background(), hook.ID, original)
 			rig.drain(t)
@@ -401,8 +401,8 @@ func TestQueueFilter_RedeliveredRowIsRecheckedAtSend(t *testing.T) {
 	require.NoError(t, rig.front.Dispatch(context.Background(), ev))
 	rig.drain(t)
 	original := firstDelivery(t, rig, hook.ID)
-	now := &notification.TicketAttrs{CategoryID: ev.Attrs.CategoryID, Priority: "low"}
-	src.facts[ev.TicketID] = TicketFacts{Attrs: now}
+	now := &notification.TicketState{CategoryID: ev.Ticket.CategoryID, Priority: "low"}
+	src.facts[ev.TicketID] = TicketFacts{State: now}
 	spy := spyOn(rig)
 
 	require.NoError(t, rig.disp.Redeliver(context.Background(), hook.ID, original))
@@ -411,7 +411,7 @@ func TestQueueFilter_RedeliveredRowIsRecheckedAtSend(t *testing.T) {
 	queued, err := decodeEvent(spy.rows[0])
 	spy.mu.Unlock()
 	require.NoError(t, err)
-	require.Equal(t, now, queued.Attrs, "the replay's row holds the ticket's attributes")
+	require.Equal(t, now, queued.Ticket, "the replay's row holds the ticket's attributes")
 
 	setFilter(rig.hooks, hook.ID, notification.WebhookFilter{Priorities: []string{"critical"}})
 	rig.drain(t)
@@ -451,7 +451,7 @@ func TestQueueFilter_PerHookRowsKeepAttrsInternally(t *testing.T) {
 			spy := spyOn(rig)
 			ev := eventWithPriority("low")
 			group := uuid.New()
-			ev.Attrs.AssigneeGroupID = &group
+			ev.Ticket.AssigneeGroupID = &group
 
 			require.NoError(t, rig.front.Dispatch(context.Background(), ev))
 			rig.drain(t)
@@ -461,19 +461,19 @@ func TestQueueFilter_PerHookRowsKeepAttrsInternally(t *testing.T) {
 			require.Len(t, spy.rows, 1)
 			got, err := decodeEvent(spy.rows[0])
 			require.NoError(t, err)
-			require.Equal(t, ev.Attrs, got.Attrs, "the queued row keeps the attributes")
+			require.Equal(t, ev.Ticket, got.Ticket, "the queued row keeps the attributes")
 
 			sent := bodies()
 			require.Len(t, sent, 2, "the first attempt failed and was retried")
 			for _, b := range sent {
 				for _, leak := range []string{"attrs", "category_id", "assignee_group_id",
-					ev.Attrs.CategoryID.String(), group.String()} {
+					ev.Ticket.CategoryID.String(), group.String()} {
 					require.NotContains(t, b, leak, "a sent body must not carry the filter attributes")
 				}
 			}
 			require.Eventually(t, func() bool { return rig.hooks.last().DeliveryID != uuid.Nil }, time.Second, 10*time.Millisecond)
 			kept := string(rig.hooks.last().Event)
-			for _, leak := range []string{"attrs", ev.Attrs.CategoryID.String(), group.String()} {
+			for _, leak := range []string{"attrs", ev.Ticket.CategoryID.String(), group.String()} {
 				require.NotContains(t, kept, leak, "the history copy keeps no attributes")
 			}
 		})
@@ -499,7 +499,7 @@ func TestQueueFilter_FailedRowScrubKeepsNoAttrs(t *testing.T) {
 			for id := range rig.store.failed {
 				kept := string(rig.store.rows[id].event)
 				require.NotContains(t, kept, "attrs")
-				require.NotContains(t, kept, ev.Attrs.CategoryID.String())
+				require.NotContains(t, kept, ev.Ticket.CategoryID.String())
 				require.Contains(t, kept, ev.TicketID.String(), "ids stay")
 			}
 		})
