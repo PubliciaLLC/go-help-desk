@@ -3514,10 +3514,10 @@ their rows.
    brings back the duplicates.
 7. **The tracking number stays out of the raw body** (reaffirms the 2026-10-13
    #448 ruling). The raw body is exactly today's.
-8. **One event per ticket** A change that touches two tickets produces two
+8. **One event per ticket.** A change that touches two tickets produces two
    events. A follow-up gives one event for the new ticket and one `linked` event
    for the original.
-9. **Build order** One PR on top of #504, built after #503
+9. **Build order.** One PR on top of #504, built after #503
    and #504 merge, with the upgrade notes in the same PR, then an Opus review.
 
 **Ruled by Erik, 2026-10-16** (from the build and its review, recorded as
