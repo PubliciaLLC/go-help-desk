@@ -1090,6 +1090,13 @@ func (s *Service) SearchAdmin(ctx context.Context, role, q string, serviceAccoun
 	return s.store.SearchAdmin(ctx, role, q, serviceAccount, limit, offset)
 }
 
+// LookupRequesters returns up to ten accounts a ticket can be filed for whose
+// name or address contains q (case-insensitive), by display name. Disabled,
+// deleted and service accounts are not found. The caller sets any minimum on q.
+func (s *Service) LookupRequesters(ctx context.Context, q string) ([]User, error) {
+	return s.store.LookupRequesters(ctx, q)
+}
+
 // ListAdmin returns all users including disabled ones.
 func (s *Service) ListAdmin(ctx context.Context, limit, offset int) ([]User, error) {
 	return s.store.ListAdmin(ctx, limit, offset)

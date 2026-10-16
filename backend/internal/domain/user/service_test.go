@@ -225,6 +225,10 @@ func (f *fakeUserStore) SearchAdmin(_ context.Context, _, _ string, _ *bool, _, 
 	return nil, 0, nil
 }
 
+func (f *fakeUserStore) LookupRequesters(_ context.Context, _ string) ([]user.User, error) {
+	return nil, nil
+}
+
 func (f *fakeUserStore) ListActiveAdmins(_ context.Context) ([]user.User, error) {
 	out := make([]user.User, 0, len(f.byID))
 	for _, u := range f.byID {

@@ -293,6 +293,21 @@ func (s *Store) SearchAdmin(ctx context.Context, role, q string, serviceAccount 
 	return out, total, nil
 }
 
+// LookupRequesters is the requester picker's search: up to ten accounts a
+// ticket can be filed for (not disabled, deleted or a service identity) whose
+// name or address contains q, by display name. One query.
+func (s *Store) LookupRequesters(ctx context.Context, q string) ([]user.User, error) {
+	rows, err := s.q.LookupRequesters(ctx, likeEscaper.Replace(q))
+	if err != nil {
+		return nil, fmt.Errorf("looking up requesters: %w", err)
+	}
+	out := make([]user.User, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(r)
+	}
+	return out, nil
+}
+
 func (s *Store) Count(ctx context.Context) (int64, error) {
 	return s.q.CountUsers(ctx)
 }

@@ -1453,7 +1453,9 @@ address shows a required **Name** and an optional **Phone**, as the guest form
 does. Another
 user is a search box: `GET /users/lookup?q=` (staff and administrators; `users:read`
 for a machine credential) answers with `id`, `display_name` and `email` of at most
-ten accounts whose name or address contains the query, ignoring case. A query
+ten accounts whose name or address contains the query, ignoring case, ordered by
+display name then id. Disabled, deleted and service accounts are excluded by the
+query itself (one read, `LIMIT 10`), not read and dropped afterwards. A query
 shorter than two characters is `400`, so the endpoint finds a person and cannot
 list the directory; deleted accounts, disabled accounts (they cannot sign in) and
 service accounts are not found. The search minimum is counted in characters, not

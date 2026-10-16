@@ -379,6 +379,24 @@ WHERE deleted_at IS NULL
        OR email ILIKE '%' || sqlc.arg(q)::text || '%'
        OR display_name ILIKE '%' || sqlc.arg(q)::text || '%');
 
+-- name: LookupRequesters :many
+-- The requester picker's lookup (#444): the accounts a ticket can be filed
+-- for whose name or address contains q, at most ten. Matches the way
+-- SearchUsersAdmin does (q is already LIKE-escaped by the caller; backslash is
+-- the escape character) but leaves out, in the query itself, the accounts that
+-- cannot be requesters: disabled, deleted and service identities. Filtering
+-- here is what keeps it one bounded read however many matches are disabled; the
+-- admin search had to be paged and filtered in the caller. display_name, id is
+-- a total order, so an account is neither repeated nor missed.
+SELECT * FROM users
+WHERE deleted_at IS NULL
+  AND disabled = FALSE
+  AND NOT service_account
+  AND (email ILIKE '%' || sqlc.arg(q)::text || '%'
+       OR display_name ILIKE '%' || sqlc.arg(q)::text || '%')
+ORDER BY display_name, id
+LIMIT 10;
+
 -- name: RestoreUser :exec
 UPDATE users SET deleted_at = NULL, updated_at = now() WHERE id = $1;
 

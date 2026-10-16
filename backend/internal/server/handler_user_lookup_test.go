@@ -200,3 +200,44 @@ func TestUserLookup_LeavesOutDisabledAccounts(t *testing.T) {
 		require.Less(t, n, 12, "%s is disabled", hit.Email)
 	}
 }
+
+// Most of the matches are disabled, and the answer is still up to ten enabled
+// ones, once, in an order that does not depend on how the rows were read: the
+// disabled are left out by the query itself, not by walking every match and
+// dropping them, and the order (display name, then id) is a total one, so no
+// account can be answered twice or missed. Created in name order, so
+// "newest first" (the admin list's order) is the reverse of it and does not pass.
+func TestUserLookup_MostlyDisabledMatchesStillAnswerTenInOrderWithoutRepeats(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	const total = 120
+	for i := 0; i < total; i++ {
+		_, err := h.userSvc.Create(ctx, user.CreateUserInput{
+			Email: fmt.Sprintf("mass%03d@test.local", i), DisplayName: fmt.Sprintf("Mass Person %03d", i),
+			Role: user.RoleUser, Password: "a-real-passphrase",
+		})
+		require.NoError(t, err)
+	}
+	// 14 enabled (every ninth), 106 disabled: the first ten enabled by name are
+	// 000, 009, ... 081.
+	_, err := h.tx.ExecContext(ctx, `UPDATE users SET disabled = true
+		WHERE email LIKE 'mass%@test.local' AND (substring(email from 5 for 3))::int % 9 <> 0`)
+	require.NoError(t, err)
+
+	hits := decodeLookup(t, h.do(t, http.MethodGet, lookupPath("mass"), nil))
+
+	var got []string
+	seen := map[string]bool{}
+	for _, hit := range hits {
+		require.False(t, seen[hit.ID], "%s answered twice", hit.Email)
+		seen[hit.ID] = true
+		got = append(got, hit.Email)
+	}
+	var want []string
+	for i := 0; len(want) < 10; i += 9 {
+		want = append(want, fmt.Sprintf("mass%03d@test.local", i))
+	}
+	require.Equal(t, want, got, "the first ten enabled matches by display name")
+}

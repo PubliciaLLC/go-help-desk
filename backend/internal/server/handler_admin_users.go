@@ -686,14 +686,11 @@ func (s *Server) handleListAssignableStaff(w http.ResponseWriter, r *http.Reques
 	JSON(w, http.StatusOK, staff)
 }
 
-// The requester picker's bounds (#444). A query shorter than the floor is
-// refused rather than answered, and a broad one gets at most the ceiling, so
-// the lookup is a way to find a person and not a way to list everyone.
-const (
-	userLookupMinQuery = 2
-	userLookupMaxHits  = 10
-	userLookupPage     = 50 // rows read at a time while looking for enabled ones
-)
+// The requester picker's floor (#444). A query shorter than this is refused
+// rather than answered, and a broad one gets at most ten (the ceiling is the
+// query's own LIMIT), so the lookup is a way to find a person and not a way to
+// list everyone.
+const userLookupMinQuery = 2
 
 // userLookupHit is all the picker draws: who, and the address a typed
 // reporter_email would have been.
@@ -717,26 +714,16 @@ func (s *Server) handleLookupUsers(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("q must be at least %d characters", userLookupMinQuery))
 		return
 	}
-	people := false
-	// Disabled accounts are skipped: they cannot sign in, so they are no sensible
-	// requester. The admin search includes them and has no way to leave them out,
-	// so pages are read until the ceiling is reached of those that remain, rather
-	// than filtering one page of ten and answering short.
-	out := make([]userLookupHit, 0, userLookupMaxHits)
-	for offset := 0; len(out) < userLookupMaxHits; offset += userLookupPage {
-		users, total, err := s.users.SearchAdmin(r.Context(), "", q, &people, userLookupPage, offset)
-		if err != nil {
-			handleError(w, err)
-			return
-		}
-		for _, u := range users {
-			if !u.Disabled && len(out) < userLookupMaxHits {
-				out = append(out, userLookupHit{ID: u.ID, DisplayName: u.DisplayName, Email: u.Email})
-			}
-		}
-		if int64(offset+userLookupPage) >= total {
-			break
-		}
+	// One bounded read: disabled, deleted and service accounts are excluded by
+	// the query, which also caps the answer at ten.
+	users, err := s.users.LookupRequesters(r.Context(), q)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	out := make([]userLookupHit, 0, len(users))
+	for _, u := range users {
+		out = append(out, userLookupHit{ID: u.ID, DisplayName: u.DisplayName, Email: u.Email})
 	}
 	JSON(w, http.StatusOK, out)
 }

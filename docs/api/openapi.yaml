@@ -5485,7 +5485,9 @@ paths:
         user) needs users:read. The New ticket page's requester picker.
         Returns accounts whose display name or email contains q, ignoring case
         (% and _ match themselves), as a bare array of id, display_name and
-        email, newest account first, at most 10. Any role of account is
+        email, ordered by display name (then id), at most 10. The disabled, deleted
+        and service accounts are left out by the query itself, so a search whose
+        matches are mostly disabled still answers up to 10 of the rest. Any role of account is
         returned; deleted accounts, disabled accounts and service accounts (an
         OAuth client's identity) are not. q must be at least 2 characters after trimming; a
         shorter or missing q is 400, so the endpoint cannot list the directory.

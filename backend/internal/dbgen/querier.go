@@ -766,6 +766,15 @@ type Querier interface {
 	// UnassignTicketsForGroup and the delete would lose its group silently, which
 	// is the gap this exists to close.
 	LockGroup(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
+	// The requester picker's lookup (#444): the accounts a ticket can be filed
+	// for whose name or address contains q, at most ten. Matches the way
+	// SearchUsersAdmin does (q is already LIKE-escaped by the caller; backslash is
+	// the escape character) but leaves out, in the query itself, the accounts that
+	// cannot be requesters: disabled, deleted and service identities. Filtering
+	// here is what keeps it one bounded read however many matches are disabled; the
+	// admin search had to be paged and filtered in the caller. display_name, id is
+	// a total order, so an account is neither repeated nor missed.
+	LookupRequesters(ctx context.Context, q_ string) ([]User, error)
 	NextTicketSeq(ctx context.Context) (int64, error)
 	// Keeps the newest keep_n deliveries of one hook (#448).
 	PruneWebhookDeliveries(ctx context.Context, arg PruneWebhookDeliveriesParams) error
