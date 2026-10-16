@@ -174,6 +174,7 @@
     <tr><td>A public reply through MCP emails the requester</td><td>Anyone with an agent connected over MCP</td></tr>
     <tr><td>Nobody can newly file into an archived category, type or item</td><td>Staff, administrators, scripts that file or reclassify</td></tr>
     <tr><td>OAuth clients act through a service user</td><td>Administrators who use OAuth clients</td></tr>
+    <tr><td>Staff are emailed about their tickets</td><td>Every staff member and administrator, once email is configured</td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
@@ -535,6 +536,21 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 </ul>
 
 <p>If you downgrade, the down migration deletes the service users. The tickets they wrote stay, with no author link.</p>
+
+<h2 id="staff-email">Staff are emailed about their tickets</h2>
+
+<p><strong>Who notices:</strong> every staff member and administrator, once email is configured.</p>
+
+<p>1.2 never emailed staff. <strong>Once email is configured (<code>SMTP_HOST</code> and <code>SMTP_FROM</code>), every existing staff member and administrator starts receiving it, because all three switches are on by default.</strong> Nothing is sent while email is not configured.</p>
+
+<ul>
+  <li><strong>When:</strong> a ticket is assigned to you, a ticket is assigned to a group you belong to, and a requester (an account holder or a guest) replies on a ticket assigned to you. A requester's reply on a group ticket that nobody personally holds goes to the group's members. A reopen is mailed too (see <a href="#reopen">Reopening a ticket now does more</a>).</li>
+  <li><strong>Not when:</strong> you did it yourself, a colleague replies, or someone adds an internal note. A staff member who filed a ticket and replies on it counts as the requester.</li>
+  <li><strong>Each person chooses</strong> under <strong>Your account → Email about tickets</strong>: <em>Tickets assigned to me</em>, <em>Activity on tickets I'm assigned to or follow</em> and <em>My groups' tickets</em>.</li>
+  <li><strong>Administrators can force a switch on or off for everyone</strong> under <strong>Admin → Settings → Email</strong> (<code>staff_email_assigned_override</code>, <code>staff_email_activity_override</code> and <code>staff_email_group_override</code>, each <code>user</code>, <code>on</code> or <code>off</code>, <code>user</code> by default). To keep your staff's inboxes as they were, set all three to <em>Off for everyone</em> before you turn email on.</li>
+  <li>The service users of OAuth clients are never emailed, even when they belong to a group.</li>
+  <li>The emails carry only the ticket's tracking number and a link, like every other email from the help desk.</li>
+</ul>
 
 <h2 id="known-gaps">What is not in 1.3.0</h2>
 
