@@ -2461,6 +2461,12 @@ one is a permission decision with one switch and no per-user exceptions.
   lists and revokes only itself, #466). This also makes the "a machine
   credential naming another user" and "broader than itself" cases unreachable,
   so those checks are gone rather than left as dead code.
+  **OAuth clients are covered by the same rule** ("API keys cannot create oauth",
+  Erik, 2026-10-16): `POST /admin/oauth-clients` carries
+  `DenyMachineCredentials` (an API key `403 session_required`, an OAuth client `403
+  forbidden`). A client made by a leaked key would outlive it. A key can still
+  list and delete clients. There is no route that rotates a client's secret, so
+  creation is the only path that mints one.
 - **A change of role keeps the person's keys** (Erik, 2026-10-16). A key acts
   within its owner's *current* role: the role check runs on every request, and
   the scope table only limits what can be put on a key at creation. Demoting an

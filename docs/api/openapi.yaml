@@ -6506,8 +6506,10 @@ paths:
       operationId: createOAuthClient
       summary: Create an OAuth client.
       description: >-
-        Administrators only (second factor required).
-        Creates a client that can obtain bearer tokens from POST
+        Administrators only, in a signed-in session (second factor required).
+        Only a signed-in person creates an OAuth client: an API key is refused with 403
+        session_required, and an OAuth client by the role check (403 forbidden). A key can
+        still list and delete clients. Creates a client that can obtain bearer tokens from POST
         /api/v1/auth/oauth/token. Creating the client also creates its service
         user, in the same statement, named after the client: staff role, no
         password, no second factor, no SSO identity, never able to sign in. The
@@ -6518,13 +6520,11 @@ paths:
         The client_secret is returned once. The response carries the record id
         (the one DELETE uses), client_id, the secret and the service user's
         user_id. scopes is required
-        and must be a non-empty list of valid resource:action values. An API key
-        can grant only scopes it holds itself.
+        and must be a non-empty list of valid resource:action values.
       tags: ['Admin: Credentials']
       x-ghd-handler: handleCreateOAuthClient
       security:
         - sessionCookie: []
-        - apiKey: ['credentials:write']
       x-ghd-roles: [admin]
       x-ghd-mfa: true
       requestBody:
@@ -6582,9 +6582,7 @@ paths:
           description: >-
             Two sources. The authentication middleware refuses with text/plain:
             forbidden (role), mfa_required (second factor not passed) or
-            insufficient_scope (the API key lacks credentials:write). The handler
-            refuses with application/json: insufficient_scope when an API key
-            asks to grant a scope it does not hold itself.
+            session_required (an API key). Keys cannot create OAuth clients.
           content:
             text/plain:
               schema:
@@ -7331,6 +7329,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+        '500':
+          description: >-
+            keys_not_revoked, only when revoke_api_keys was true: the password was
+            reset and the sessions ended, but the API keys could not be deleted. The
+            message is "The password was reset, but the API keys were NOT revoked.
+            Revoke them from Admin → API Keys." Any other 500 is internal_error and
+            means the password may not have been set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /api/v1/admin/webhooks:
     get:
       operationId: listWebhooks

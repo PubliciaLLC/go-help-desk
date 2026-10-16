@@ -144,3 +144,24 @@ func TestAdminPasswordReset_AFailedRevokeIsNotReportedAsAFailedReset(t *testing.
 	require.Equal(t, "keys_not_revoked", errCode(t, b))
 	require.Contains(t, string(b), "The password was reset, but the API keys were NOT revoked.")
 }
+
+// Everything after the password is set is detached, not just the revoke: the
+// sessions go first, and a client that hangs up there must not stop the keys it
+// asked to have revoked from being revoked.
+func TestAdminPasswordReset_SessionsAndKeysGoEvenIfTheRequestWasCancelled(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	cookie := h.session(t, asStaff)
+	res := h.doSession(t, cookie, http.MethodGet, "/api/v1/me", nil)
+	res.Body.Close()
+	require.Equal(t, http.StatusOK, res.StatusCode, "precondition: the session works")
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.NoError(t, h.srv.FinishAdminResetForTest(cancelled, h.adminID, h.staffID, true))
+
+	res = h.doSession(t, cookie, http.MethodGet, "/api/v1/me", nil)
+	res.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, res.StatusCode, "the session was ended")
+	require.Zero(t, h.keyCount(t, h.staffID), "and the keys revoked, although the request context was cancelled")
+}

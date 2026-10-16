@@ -427,16 +427,8 @@ func (s *Server) handleCreateOAuthClient(w http.ResponseWriter, r *http.Request)
 		Error(w, http.StatusBadRequest, "invalid_scope", err.Error())
 		return
 	}
-	// A machine credential cannot mint one broader than itself. Without this,
-	// credentials:write is every scope: hold only that, issue a key with
-	// users:write, use it. Escalation by one extra request is not a boundary.
-	if isMachine(r) {
-		if over, ok := auth.Subset(authmw.GetActor(r).Scopes, body.Scopes); !ok {
-			Error(w, http.StatusForbidden, "insufficient_scope",
-				"this credential cannot grant "+over+", which it does not hold itself")
-			return
-		}
-	}
+	// Only a signed-in person reaches this route (routes.go): keys can't make
+	// credentials, so there is no machine credential to compare scopes with.
 	raw, hashed, err := auth.GenerateToken()
 	if err != nil {
 		handleError(w, err)

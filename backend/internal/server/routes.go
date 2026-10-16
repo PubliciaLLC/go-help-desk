@@ -308,7 +308,11 @@ func (s *Server) adminRouter() *chi.Mux {
 	r.Route("/oauth-clients", func(r chi.Router) {
 		r.Use(authmw.RequireResource(auth.ResourceCredentials))
 		r.Get("/", s.handleListOAuthClients)
-		r.Post("/", s.handleCreateOAuthClient)
+		// An OAuth client is a credential like an API key: keys can't make
+		// keys (Erik, 2026-10-16). A client made by a leaked key would outlive
+		// it. Listing and deleting stay open. There is no route that rotates
+		// a client's secret, so this is the only creating path.
+		r.With(authmw.DenyMachineCredentials).Post("/", s.handleCreateOAuthClient)
 		r.Delete("/{id}", s.handleDeleteOAuthClient)
 	})
 

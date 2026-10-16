@@ -431,7 +431,7 @@ func TestSLAPolicyList_OrdersBySeverityNotAlphabet(t *testing.T) {
 func TestCreateOAuthClient_ReturnsID(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
-	res := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/oauth-clients",
+	res := h.createCredential(t, "/api/v1/admin/oauth-clients",
 		map[string]any{"name": "ci", "scopes": []string{"tickets:read"}})
 	require.Equal(t, http.StatusCreated, res.StatusCode)
 	created := respMap(t, res)

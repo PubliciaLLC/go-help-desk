@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -602,28 +603,48 @@ func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request
 		handleError(w, err)
 		return
 	}
-	// An administrator resetting someone's password is usually responding to a
-	// compromise, so any session opened with the old one has to go.
-	if err := s.sessions.DeleteForUser(r.Context(), id); err != nil {
-		handleError(w, err)
-		return
-	}
-	// After the password and the sessions, so a reset that is refused earlier
-	// has taken nothing. Not one transaction with them: the password is already
-	// changed and the sessions gone, and a failure here is reported as the
-	// failure it is, with the reset itself still done.
-	if body.RevokeAPIKeys {
-		if err := s.revokeUserAPIKeys(r.Context(), actorID, id); err != nil {
+	if err := s.finishAdminReset(r.Context(), actorID, id, body.RevokeAPIKeys); err != nil {
+		var notRevoked *keysNotRevokedError
+		if errors.As(err, &notRevoked) {
 			// Said exactly: the reset is done, the keys are not gone. A plain
 			// 500 would read as "nothing happened", and the administrator
 			// asked for the keys to go because they feared a leak.
-			slog.ErrorContext(r.Context(), "revoking API keys after a password reset failed", "user_id", id, "error", err)
+			slog.ErrorContext(r.Context(), "revoking API keys after a password reset failed", "user_id", id, "error", notRevoked.err)
 			Error(w, http.StatusInternalServerError, "keys_not_revoked",
 				"The password was reset, but the API keys were NOT revoked. Revoke them from Admin → API Keys.")
 			return
 		}
+		handleError(w, err)
+		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// keysNotRevokedError marks the one failure that happens after the password has
+// changed and the sessions are gone.
+type keysNotRevokedError struct{ err error }
+
+func (e *keysNotRevokedError) Error() string { return "revoking API keys: " + e.err.Error() }
+func (e *keysNotRevokedError) Unwrap() error { return e.err }
+
+// finishAdminReset is what follows AdminSetPassword: the account's sessions end
+// (a reset usually answers a compromise) and, when asked, its API keys go.
+//
+// All of it is detached from the request, from the moment the password has
+// changed. The sessions come first, so a client that hangs up there would
+// otherwise stop the keys it asked to have revoked from ever being revoked.
+// Not one transaction with the password: that is already changed.
+func (s *Server) finishAdminReset(reqCtx context.Context, actorID *uuid.UUID, id uuid.UUID, revokeKeys bool) error {
+	ctx := context.WithoutCancel(reqCtx)
+	if err := s.sessions.DeleteForUser(ctx, id); err != nil {
+		return err
+	}
+	if revokeKeys {
+		if err := s.revokeUserAPIKeys(ctx, actorID, id); err != nil {
+			return &keysNotRevokedError{err}
+		}
+	}
+	return nil
 }
 
 // revokeUserAPIKeys deletes every key the user owns and audits how many.

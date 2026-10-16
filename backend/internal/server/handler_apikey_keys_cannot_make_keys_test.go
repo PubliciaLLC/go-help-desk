@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 )
 
 // Keys can't make keys (CTO, 2026-10-16). Only a signed-in person creates an
@@ -71,13 +73,80 @@ func TestAdminAPIKeys_AKeyCanStillListAndRevoke(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, res.StatusCode)
 }
 
-// createCredential makes a credential the way a person does. API keys are made
-// in a signed-in session, since a key cannot make one; an OAuth client is still
-// made by the administrator's API key.
+// createCredential makes a credential the way a person does, in a signed-in
+// session: a key can create neither an API key nor an OAuth client.
 func (h *harness) createCredential(t *testing.T, path string, body any) *http.Response {
 	t.Helper()
-	if path == adminKeys {
-		return h.doSession(t, h.session(t, asAdmin), http.MethodPost, path, body)
+	return h.doSession(t, h.session(t, asAdmin), http.MethodPost, path, body)
+}
+
+// "API keys cannot create oauth. Keys cannot create keys." (CTO, 2026-10-16.)
+// An OAuth client is a credential too: one made by a leaked key would outlive
+// the key and could be used after the key is revoked.
+func TestAdminCreateOAuthClient_NoMachineCredentialCanCreateOne(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	client := h.newServiceClient(t, "existing", allScopes()...)
+	before, err := h.authStore.ListOAuthClients(context.Background())
+	require.NoError(t, err)
+
+	body := map[string]any{"name": "successor", "scopes": []string{"tickets:read"}}
+	for name, c := range map[string]struct {
+		do   func() *http.Response
+		code string
+	}{
+		"an administrator's API key": {func() *http.Response {
+			return h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/oauth-clients", body)
+		}, "session_required"},
+		"an OAuth client": {func() *http.Response {
+			return h.doBearer(t, client.Token, http.MethodPost, "/api/v1/admin/oauth-clients", body)
+		}, "forbidden"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			res := c.do()
+			out := readAll(t, res)
+			require.Equal(t, http.StatusForbidden, res.StatusCode, "body: %s", out)
+			require.Equal(t, c.code, errCode(t, out))
+		})
 	}
-	return h.doAsAdmin(t, http.MethodPost, path, body)
+	after, err := h.authStore.ListOAuthClients(context.Background())
+	require.NoError(t, err)
+	require.Len(t, after, len(before), "nothing was created")
+
+	t.Run("a signed-in administrator still can", func(t *testing.T) {
+		res := h.createCredential(t, "/api/v1/admin/oauth-clients", body)
+		out := readAll(t, res)
+		require.Equal(t, http.StatusCreated, res.StatusCode, "body: %s", out)
+	})
+}
+
+// Keys may still look at and remove OAuth clients.
+func TestAdminOAuthClients_AKeyCanStillListAndRevoke(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	client := h.newServiceClient(t, "doomed", allScopes()...)
+
+	res := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/oauth-clients", nil)
+	res.Body.Close()
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	res = h.doAsAdmin(t, http.MethodDelete, "/api/v1/admin/oauth-clients/"+client.ID.String(), nil)
+	res.Body.Close()
+	require.Equal(t, http.StatusNoContent, res.StatusCode)
+}
+
+// A key can revoke itself on the admin route (and only itself, #466). Once it
+// has, it is no credential at all.
+func TestAdminAPIKeys_AKeyCanRevokeItself(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	self, err := h.authStore.GetByHash(context.Background(), auth.HashToken(h.adminKey))
+	require.NoError(t, err)
+
+	res := h.doAsAdmin(t, http.MethodDelete, adminKeys+"/"+self.ID.String(), nil)
+	res.Body.Close()
+	require.Equal(t, http.StatusNoContent, res.StatusCode)
+
+	res = h.doAsAdmin(t, http.MethodGet, adminKeys, nil)
+	res.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, res.StatusCode, "the revoked key is no longer a credential")
 }

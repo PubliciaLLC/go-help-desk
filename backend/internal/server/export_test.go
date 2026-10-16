@@ -117,3 +117,9 @@ func (s *Server) AuditAPIKeyForTest(ctx context.Context, actor uuid.UUID, action
 func (s *Server) RevokeUserKeysForTest(ctx context.Context, actor, target uuid.UUID) error {
 	return s.revokeUserAPIKeys(ctx, &actor, target)
 }
+
+// FinishAdminResetForTest runs what follows a successful admin password reset
+// (sessions ended, keys optionally revoked) with the context it is given.
+func (s *Server) FinishAdminResetForTest(ctx context.Context, actor, target uuid.UUID, revoke bool) error {
+	return s.finishAdminReset(ctx, &actor, target, revoke)
+}
