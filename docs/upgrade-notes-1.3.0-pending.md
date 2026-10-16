@@ -325,5 +325,5 @@ A change to a ticket is now **one event**, written to the notification queue in 
 
 **Staff email**
 
-- Who is mailed is decided by the server when it first picks the change up, a moment after the commit, not on the request. A person who qualifies for several reasons in one change gets one mail: the first of assigned, reopened, requester replied whose switch is on. Mail queued before the upgrade is sent as it is.
+- Who is mailed is decided by the server when it first picks the change up, a moment after the commit, not on the request. At most one mail goes to any address in one change (compared without case); when a guest's address is also a staff member's, the staff mail is the one sent. A person who qualifies for several reasons in one change gets one mail: the first of assigned, reopened, requester replied whose switch is on. Mail queued before the upgrade is sent as it is.
 - A guest may get a different template: the first of created, reopened, resolved, replied, status changed that the change carries. A `PATCH` to Resolved now says "We have resolved", and a status change that reopens says "We have reopened".

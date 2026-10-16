@@ -252,3 +252,54 @@ func TestChangeSplitter_AnAssignmentTheActorMadeStillMailsNobody(t *testing.T) {
 
 	require.Empty(t, rig.sent.got)
 }
+
+// One mail per recipient address per change, compared without case or
+// surrounding space. When the requester's mail and a staff member's resolve to
+// the same address, the staff mail is the one sent.
+func guestRoutedCreate(guest string, assignee *uuid.UUID) notification.Event {
+	ev := routedCreate(nil, assignee)
+	ev.Recipient = guest
+	return ev
+}
+
+func mailsTo(r *recorder) (requester, staff int) {
+	for _, e := range r.got {
+		if e.StaffUserID != nil {
+			staff++
+		} else {
+			requester++
+		}
+	}
+	return
+}
+
+func TestChangeSplitter_ASharedAddressGetsTheStaffMailOnly(t *testing.T) {
+	for name, guest := range map[string]string{
+		"the same address":           "assignee@example.com",
+		"the same address, any case": "  Assignee@Example.COM ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			assignee := staffUser("assignee") // assignee@example.com
+			rig := newSplitRig(newFakeStaffUsers(assignee), fakeStaffGroups{}, fakeStaffFollowers{})
+			rig.queue(t, guestRoutedCreate(guest, &assignee.ID))
+
+			rig.drain(t)
+
+			req, st := mailsTo(rig.sent)
+			require.Equal(t, 1, req+st, "one mail to the address")
+			require.Equal(t, 1, st, "and it is the staff mail, with the staff link and the more specific reason")
+		})
+	}
+}
+
+func TestChangeSplitter_ADifferentAddressKeepsBothMails(t *testing.T) {
+	assignee := staffUser("assignee")
+	rig := newSplitRig(newFakeStaffUsers(assignee), fakeStaffGroups{}, fakeStaffFollowers{})
+	rig.queue(t, guestRoutedCreate("guest@example.com", &assignee.ID))
+
+	rig.drain(t)
+
+	req, st := mailsTo(rig.sent)
+	require.Equal(t, 1, req)
+	require.Equal(t, 1, st)
+}

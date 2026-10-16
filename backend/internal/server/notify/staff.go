@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -102,38 +103,70 @@ func requesterMail(ev notification.Event) (notification.Event, bool) {
 }
 
 func (f *StaffFanout) Dispatch(ctx context.Context, ev notification.Event) error {
-	// The requester's mail first and unchanged: a problem finding staff to mail
-	// must not cost them anything.
-	var err error
-	if req, ok := requesterMail(ev); ok {
-		err = f.next.Dispatch(ctx, req)
-	}
+	req, hasReq := requesterMail(ev)
 
 	cands, ok := f.candidates(ctx, ev)
-	if !ok {
-		return err
-	}
-	ids, lerr := f.recipients(ctx, ev, cands)
-	if lerr != nil {
-		f.log.ErrorContext(ctx, "staff email: could not work out who to notify",
-			"event", ev.Type, "ticket_id", ev.TicketID, "error", lerr)
-		if err == nil {
-			err = lerr
+	var recips []notification.StaffRecipient
+	var emails map[uuid.UUID]string
+	if ok {
+		var lerr error
+		recips, emails, lerr = f.recipients(ctx, ev, cands)
+		if lerr != nil {
+			f.log.ErrorContext(ctx, "staff email: could not work out who to notify",
+				"event", ev.Type, "ticket_id", ev.TicketID, "error", lerr)
+			// The requester's mail does not wait on finding staff: a problem
+			// there must not cost them anything. The error has the worker try
+			// the change again; the rows' derived ids make the repeat harmless.
+			var err error
+			if hasReq {
+				err = f.next.Dispatch(ctx, req)
+			}
+			if err == nil {
+				err = lerr
+			}
+			return err
 		}
-		return err
 	}
-	for _, r := range ids {
-		staff := notification.Event{
+
+	// One mail per recipient address per change. The address is compared without
+	// case or surrounding space.
+	//
+	// WHY the staff mail wins when the requester's and a staff member's resolve to
+	// the same address (a staff member who filed the ticket for themselves, or
+	// whose address a guest used): the staff mail carries the staff link, behind
+	// sign-in, and the more specific reason (assigned to you, reopened); the
+	// requester's mail is generic, and its guest link would be a second credential
+	// in the same inbox. The person is staff, so they lose nothing by it.
+	seen := map[string]bool{}
+	var out []notification.Event
+	for _, r := range recips {
+		if addr := normalAddress(emails[r.UserID]); addr != "" {
+			if seen[addr] {
+				continue
+			}
+			seen[addr] = true
+		}
+		out = append(out, notification.Event{
 			Type: r.Mail, TicketID: ev.TicketID, ActorID: ev.ActorID,
 			TrackingNumber: ev.TrackingNumber, OccurredAt: ev.OccurredAt,
 			StaffUserID: &r.UserID, StaffReason: r.Reason,
-		}
-		if derr := f.next.Dispatch(ctx, staff); derr != nil && err == nil {
+		})
+	}
+	var err error
+	if hasReq && !seen[normalAddress(req.Recipient)] {
+		err = f.next.Dispatch(ctx, req)
+	}
+	for _, e := range out {
+		if derr := f.next.Dispatch(ctx, e); derr != nil && err == nil {
 			err = derr
 		}
 	}
 	return err
 }
+
+// normalAddress is an address as compared for "one mail per address". "" stays
+// "" (a guest-link mail whose address is read at send time cannot be compared).
+func normalAddress(a string) string { return strings.ToLower(strings.TrimSpace(a)) }
 
 // candidate is a person with a reason to hear about an event, before their
 // account is read. mail is the staff.* event they would be mailed with.
@@ -266,9 +299,9 @@ func (f *StaffFanout) groupMembers(ctx context.Context, ev notification.Event, r
 }
 
 // recipients reads the candidates' accounts and applies the rule.
-func (f *StaffFanout) recipients(ctx context.Context, ev notification.Event, cands []candidate) ([]notification.StaffRecipient, error) {
+func (f *StaffFanout) recipients(ctx context.Context, ev notification.Event, cands []candidate) ([]notification.StaffRecipient, map[uuid.UUID]string, error) {
 	if len(cands) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	ids := make([]uuid.UUID, len(cands))
 	for i, c := range cands {
@@ -276,13 +309,17 @@ func (f *StaffFanout) recipients(ctx context.Context, ev notification.Event, can
 	}
 	users, err := f.users.GetByIDs(ctx, ids)
 	if err != nil {
-		return nil, fmt.Errorf("reading staff accounts: %w", err)
+		return nil, nil, fmt.Errorf("reading staff accounts: %w", err)
 	}
 	byID := make(map[uuid.UUID]user.User, len(users))
 	for _, u := range users {
 		byID[u.ID] = u
 	}
 	var eligible []notification.StaffCandidate
+	emails := make(map[uuid.UUID]string, len(users))
+	for _, u := range users {
+		emails[u.ID] = u.Email
+	}
 	for _, c := range cands {
 		u, ok := byID[c.id]
 		if !ok || !u.CanReceiveStaffMail() {
@@ -300,7 +337,7 @@ func (f *StaffFanout) recipients(ctx context.Context, ev notification.Event, can
 	if ev.RoutedAssignment {
 		actor = nil
 	}
-	return notification.StaffRecipients(eligible, actor, f.overrides(ctx)), nil
+	return notification.StaffRecipients(eligible, actor, f.overrides(ctx)), emails, nil
 }
 
 // StaffAccess is the send-time check that a person should still hear about a
