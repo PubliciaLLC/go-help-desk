@@ -85,6 +85,8 @@
       <li><a href="#admin-canned-responses">Canned Responses</a></li>
       <li><a href="#admin-statuses">Ticket Statuses</a></li>
       <li><a href="#admin-sla">SLA Policies</a></li>
+      <li><a href="#admin-email-setup">Email Setup &amp; Warnings</a></li>
+      <li><a href="#admin-staff-email">Staff Email</a></li>
       <li><a href="#admin-email-tpl">Email Templates</a></li>
       <li><a href="#admin-webhooks">Webhooks</a></li>
       <li><a href="#admin-audit">Audit Log</a></li>
@@ -574,28 +576,74 @@ Facilities
 <p><strong>It is matched by name.</strong> &ldquo;Pending&rdquo; is an ordinary custom status that the seed data creates — there is no per-status &ldquo;pauses the SLA&rdquo; switch. The consequences are worth knowing before you edit it: <strong>renaming</strong> it stops tickets pausing from that point on, though one already in it stays paused until it leaves; <strong>deactivating</strong> it does not stop it pausing, because the status picker still offers inactive statuses and the transition is accepted; and <strong>deleting</strong> it removes the only way to pause an SLA at all. Whatever status is named Pending — renamed back, or newly created — becomes the pause status.</p>
 
 
+<h2 id="admin-email-setup">Email setup &amp; warnings</h2>
+
+<p>Email is set up with environment variables in <code>docker/.env</code>, not in the admin panel: <code>SMTP_HOST</code> and <code>SMTP_FROM</code> turn it on, <code>SMTP_PORT</code> defaults to 587, and <code>SMTP_USER</code> and <code>SMTP_PASSWORD</code> are optional. Restart the server after changing them. Email fails loudly: it never quietly sends in the clear, and a problem shows in the admin panel.</p>
+
+<h3>Encryption rules</h3>
+<ul>
+  <li><strong>With <code>SMTP_PASSWORD</code> set, TLS is required.</strong> Port 465 uses TLS from the first byte; every other port must offer STARTTLS. The password is never sent unencrypted, even to a private address.</li>
+  <li><strong>With no password</strong>, plain SMTP is allowed only when the server's address is loopback or private (10.x.x.x, 172.16-31.x.x, 192.168.x.x, or IPv6 fc00::/7). A public address still needs TLS.</li>
+  <li>If <code>SMTP_USER</code> is set, the server must offer authentication. Otherwise the send fails rather than going out anonymously.</li>
+  <li>A mail server that offers STARTTLS (or uses port 465), and AUTH when you set <code>SMTP_USER</code>, needs no change. A relay on this machine that took a password without TLS, or a public server without STARTTLS, now fails; turn on STARTTLS on it, or drop the password if the relay does not need one on your network.</li>
+</ul>
+
+<h3>What you will see</h3>
+<ul>
+  <li><strong>Email is not set up</strong> banner for administrators, listing which of <code>SMTP_HOST</code> and <code>SMTP_FROM</code> is missing. It appears only when self-service signup or guest submission is on, because those cannot work without email. An install that runs without email on purpose, and uses neither, sees no banner. Settings shows the same note beside the signup and guest submission switches.</li>
+  <li><strong>Turning on signup or guest submission is refused while email is off</strong>: saving the setting answers <code>400 email_required</code>, and the screen explains what to set. An install that already has either on is not switched off and can still save other settings; it gets the banner instead.</li>
+  <li><strong>Email is not being delivered</strong> banner (red) while any message is being retried or has failed in the last day. It shows how many messages are affected and the latest error, with addresses replaced by <code>[address]</code>. Failed sends are retried for about an hour and then marked failed. A broken email template fails the message at once, with no retries.</li>
+  <li>The server log says once at startup whether email is enabled, and warns when only one of <code>SMTP_HOST</code> and <code>SMTP_FROM</code> is set.</li>
+</ul>
+
+
+<h2 id="admin-staff-email">Staff email about tickets</h2>
+
+<p>Staff and administrators are emailed about their own tickets, which earlier releases never did. <strong>Once email is configured, every existing staff member and administrator starts receiving it, because all three switches are on by default.</strong> Nothing is sent while email is not configured. Each person chooses what they get under <em>Your account → Email about tickets</em>; see <a href="tickets.html#tickets-staff-email">Email to staff</a> for what each switch covers.</p>
+
+<h3>Overriding the switches for everyone</h3>
+<p>Under <em>Admin → Settings → Email</em>, the <em>Staff email about tickets</em> section has one drop-down for each switch. Each offers <em>Use each person's choice</em> (the default), <em>On for everyone</em> and <em>Off for everyone</em>; the last two ignore what people chose.</p>
+<table>
+  <thead><tr><th>Switch</th><th>Setting</th></tr></thead>
+  <tbody>
+    <tr><td><em>Tickets assigned to me</em></td><td><code>staff_email_assigned_override</code></td></tr>
+    <tr><td><em>Activity on tickets I'm assigned to or follow</em></td><td><code>staff_email_activity_override</code></td></tr>
+    <tr><td><em>My groups' tickets</em></td><td><code>staff_email_group_override</code></td></tr>
+  </tbody>
+</table>
+<ul>
+  <li><strong>To keep your staff's inboxes as they were</strong>, set all three to <em>Off for everyone</em> before you turn email on.</li>
+  <li>The override of the activity switch also covers people <a href="tickets.html#tickets-follow">following</a> a ticket, and mail about <a href="tickets.html#tickets-reopen">reopened tickets</a>.</li>
+  <li>The mail goes to staff and administrators only. An OAuth client's service user is never emailed, even when it is in a group. Nobody is emailed about their own action.</li>
+  <li>These emails carry only the ticket's tracking number and a link, like every other email from the help desk. Their wording changes with why the person is being told: assigned to you, assigned to your group, or a ticket you follow.</li>
+</ul>
+
+
 <h2 id="admin-email-tpl">Email templates</h2>
 
 <div class="callout callout-warn">
   <p><strong>Editing templates from the admin UI is coming soon</strong> — <a href="https://github.com/PubliciaLLC/go-help-desk/issues/158">issue #158</a>. There is no <em>Admin → Email → Templates</em> page yet, no preview and no send-test. The templates are compiled into the binary; changing one today means editing the file and rebuilding.</p>
 </div>
 
-<p>There are seven, in <code>backend/internal/server/notify/templates/</code>:</p>
+<p>There are sixteen, in <code>backend/internal/server/notify/templates/</code>. Seven go to requesters and the people who sign up, and nine go to staff:</p>
 
 <table>
   <thead><tr><th>Template</th><th>When sent</th><th>Recipient</th></tr></thead>
   <tbody>
     <tr><td><code>ticket_created.tmpl</code></td><td>A ticket is filed with a guest address</td><td>That address</td></tr>
-    <tr><td><code>ticket_replied.tmpl</code></td><td>Staff post a public reply with <em>Send ticket update email to customer</em> ticked (the default)</td><td>The requester, account holder or guest</td></tr>
+    <tr><td><code>ticket_replied.tmpl</code></td><td>Staff post a public reply with <em>Send ticket update email to customer</em> ticked (the default), or a public reply is added through the MCP <code>add_reply</code> tool, which always notifies</td><td>The requester, account holder or guest</td></tr>
     <tr><td><code>ticket_status_changed.tmpl</code></td><td>A guest's ticket changes status, other than to Closed</td><td>The guest</td></tr>
     <tr><td><code>ticket_resolved.tmpl</code></td><td>A guest's ticket is resolved</td><td>The guest</td></tr>
     <tr><td><code>ticket_reopened.tmpl</code></td><td>A guest's Closed ticket is reopened with the Reopen action. A reopen by the guest's own reply sends no mail</td><td>The guest</td></tr>
     <tr><td><code>guest_link.tmpl</code></td><td>A guest asks for a new link at <code>/track</code></td><td>The guest</td></tr>
     <tr><td><code>email_verification.tmpl</code></td><td>Someone signs up</td><td>The address they gave</td></tr>
+    <tr><td><code>staff_assigned.tmpl</code>, <code>staff_assigned_group.tmpl</code>, <code>staff_assigned_follow.tmpl</code></td><td>A ticket is assigned to the person, to a group they belong to, or a ticket they follow is assigned</td><td>That staff member or administrator</td></tr>
+    <tr><td><code>staff_requester_replied.tmpl</code>, <code>staff_requester_replied_group.tmpl</code>, <code>staff_requester_replied_follow.tmpl</code></td><td>The requester replies on a ticket assigned to the person, on a group ticket nobody holds, or on a ticket they follow</td><td>That staff member or administrator</td></tr>
+    <tr><td><code>staff_reopened.tmpl</code>, <code>staff_reopened_group.tmpl</code>, <code>staff_reopened_follow.tmpl</code></td><td>A ticket assigned to the person, to a group they belong to (when nobody holds it), or that they follow is reopened</td><td>That staff member or administrator</td></tr>
   </tbody>
 </table>
 
-<p>Assignment, closing and internal notes send no email to anyone. An account holder is emailed only about public replies from staff; the status mails exist for guests, because each one carries the guest's replacement link.</p>
+<p>Closing and internal notes send no email to anyone. An account holder is emailed only about public replies from staff; the status mails exist for guests, because each one carries the guest's replacement link. Staff mail is described under <a href="#admin-staff-email">Staff email about tickets</a>. Assigning a ticket emails the new assignee, not the requester.</p>
 
 <h3>Template variables</h3>
 
