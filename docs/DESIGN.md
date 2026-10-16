@@ -1416,7 +1416,24 @@ staff recipient of the same change (the staff mail wins). A member of staff who
 files their own ticket, with neither field or by naming themselves, is not
 mailed about it, as before; nor is a requester who files theirs. A typed
 address with no account is filed as a guest ticket and gets the guest link, as
-above. A reporting
+above.
+
+**Mail limit on the typed-address path.** A typed address with no account mails
+a stranger on a staff member's say-so alone, so those are capped: **40 per
+hour per staff member**, and the 41st is `429 rate_limited` with `Retry-After`
+(the time left in the window) and files nothing. Only that case is counted: a
+picked user, and a typed address that matches an account, spend nothing and are
+not stopped by a spent budget. The key is the authenticated user, not the
+address of the request, so an API key or OAuth client counts against the user it
+acts as (the same budget as that person's own session), and another staff
+member is unaffected. The figure is fixed, not configurable. Like the credential
+limiter it is in memory and per process: a restart clears every count and each
+replica counts separately, so N replicas allow N times the cap. The window is
+the limiter's fixed one, shared by all keys, so a full budget filed just before
+it ends can be followed by another just after. MCP `create_ticket` cannot
+file for a typed address (picked users only), so it is not counted.
+
+A reporting
 user who sends either field gets `403 forbidden`, the same as any other staff-only
 action; it is never ignored, because a ticket quietly filed under their own name is
 not what they asked for. A guest (no credential) is refused the same way.

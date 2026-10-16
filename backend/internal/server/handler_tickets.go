@@ -525,6 +525,10 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusCreated, viewerJSON(authmw.GetActor(r), t))
 }
 
+// onBehalfMailPerHour is the most tickets one member of staff can file for
+// addresses that have no account in an hour (#444).
+const onBehalfMailPerHour = 40
+
 // fileOnBehalf sets who a staff-filed ticket is for on in, from the picked
 // user (reporter_user_id) or the typed address (reporter_email), and reports
 // whether the request may go on. When it returns false it has answered.
@@ -535,6 +539,9 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 // path, so the same address rules and the same link by email), which is a
 // dead end while guest submission is off, so it is refused then (#424). Like
 // the guest form it needs a name (the phone number stays optional).
+//
+// That last case mails a stranger, so it is the one that is capped: at most
+// onBehalfMailPerHour a staff member, then 429 (see Server.onBehalfMailLimiter).
 func (s *Server) fileOnBehalf(w http.ResponseWriter, r *http.Request, in *ticket.CreateInput,
 	id *uuid.UUID, email *string, guestName, guestPhone string) bool {
 	if id != nil && email != nil {
@@ -563,6 +570,11 @@ func (s *Server) fileOnBehalf(w http.ResponseWriter, r *http.Request, in *ticket
 		// The guest form's rule: a name is required, a phone number is not.
 		if strings.TrimSpace(guestName) == "" {
 			Error(w, http.StatusBadRequest, "bad_request", "name is required for an address with no account")
+			return false
+		}
+		// Last, so a request that was going to be refused anyway spends nothing.
+		if !s.onBehalfMailLimiter.Allow(authmw.GetActor(r).UserID.String()) {
+			tooManyAttempts(w, s.onBehalfMailLimiter.Remaining())
 			return false
 		}
 		in.GuestEmail = &addr

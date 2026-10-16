@@ -204,6 +204,22 @@ type Server struct {
 	// straight away, and turns a sustained lockout into an inconvenience.
 	guestResendLimiter *authmw.RateLimiter
 
+	// onBehalfMailLimiter caps how many tickets one member of staff can file
+	// for an address that has no account (#444): each one mails a stranger the
+	// "we have received your ticket" message with a link, so without a cap a
+	// compromised or careless staff session is a way to send mail to anyone.
+	// Keyed on the authenticated user, never on the address of the request: a
+	// machine credential is its owner. Only that path spends it; a picked user
+	// or a typed address that belongs to an account does not.
+	//
+	// INTERIM, like loginLimiter: in memory and per process, so a restart
+	// clears every count and N replicas multiply the cap by N. Its window is
+	// fixed and shared by every key (see RateLimiter), so a member of staff
+	// can file a full budget just before the window ends and another just
+	// after: "40 an hour" is a cap on the pace, not a promise about any
+	// particular sixty minutes.
+	onBehalfMailLimiter *authmw.RateLimiter
+
 	cfg      *config.Config
 	router   *chi.Mux
 	sessions SessionStore
@@ -377,6 +393,8 @@ func New(
 		loginLimiter:       authmw.NewRateLimiter(cfg.AuthRateLimitPerMinute, time.Minute),
 		loginThrottleDelay: cfg.AuthThrottleDelay,
 		guestResendLimiter: authmw.NewRateLimiter(1, 5*time.Minute),
+		// Not configurable: the figure is the ruling on #444, not a tuning knob.
+		onBehalfMailLimiter: authmw.NewRateLimiter(onBehalfMailPerHour, time.Hour),
 		// One Budget for the life of the process, always — even when no
 		// lookup is wired, so that nothing has to check for nil later. A
 		// Budget built per request is a fresh allowance per request, which is

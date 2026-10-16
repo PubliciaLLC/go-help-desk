@@ -2884,6 +2884,16 @@ paths:
         actor in the ticket's history, its created audit entry and the created
         event. A reporting user who sends either field gets 403 forbidden; the
         field is never ignored. GET /users/lookup finds an account to pick.
+
+        Mail limit: each reporter_email with no account mails a stranger, so
+        one member of staff can file at most 40 such tickets an hour, then 429
+        rate_limited with Retry-After and nothing is created. Only that case
+        counts; a picked reporter_user_id, and a reporter_email that belongs
+        to an account, do not. The count is per user, not per address of the
+        request: a machine credential counts against the user it acts as, and
+        another member of staff is unaffected. It is kept in memory, so it
+        resets when the server restarts and each replica of a multi-instance
+        deployment counts separately. Its window is fixed, not sliding.
       tags: ['Tickets']
       x-ghd-handler: handleCreateTicket
       security:
@@ -2977,6 +2987,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
   /api/v1/tickets/fields:
     get:
       operationId: resolveFieldsForCTI
