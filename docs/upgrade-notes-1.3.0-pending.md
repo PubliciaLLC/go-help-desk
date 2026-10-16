@@ -353,14 +353,18 @@ A change to a ticket is now **one event**, written to the notification queue in 
 - Chat and Jira messages include reply text only for a hook that subscribes to `ticket.replied` (or `*`), and Jira includes the ticket's status name only for a hook that subscribes to a status event (`ticket.status_changed`, `ticket.resolved`, `ticket.closed` or `ticket.reopened`); a hook on `ticket.reopened` alone gets its Reopened message without the reply, as in 1.2.x. Internal notes are never included.
 - Chat and Jira formats add one line under the headline naming the change's other kinds ("Also: assigned, priority changed"), but only kinds that hook subscribes to; a hook subscribed to a single name gets no such line. Jira gains an optional `also` key under the same rule.
 - Rows queued before the upgrade are delivered as they were.
+- **Chat messages for `ticket.priority_changed` and `ticket.classified`** are headed "Priority changed" and "Reclassified". They name no value (no priority, category or type name).
+- **A routed new ticket's `ticket.assigned` delivery names no actor** (`ActorID` is null), as in 1.2.x: routing is the system's act, not the creator's. The `ticket.created` delivery for the same ticket still carries the creator. A hook subscribed to both is told `ticket.created`, with the creator.
 
 **Ticket behaviour**
 
 - **`PATCH /tickets/{id}` is all or nothing.** The status, assignee, classification and priority are applied in one transaction. A refusal partway through now leaves the whole request unapplied; before, the steps ahead of it were already saved.
 - **Auto-assignment happens in the create's transaction.** A new ticket is announced once, as created and assigned.
+- **An assignment that changes nothing announces nothing (changed from 1.2.x).** Assigning a ticket to the user and group it already has, or clearing an already-unassigned ticket, used to send `ticket.assigned` and the assignee's email again. It now sends neither, as with a same-status or same-priority change. The audit entry for the request is still written, as it is for a same-status move.
 - **Reclassifying announces `ticket.classified`**, and a priority change announces `ticket.priority_changed`. Reclassifying still writes no audit entry.
 
 **Staff email**
 
 - Who is mailed is decided by the server when it first picks the change up, a moment after the commit, not on the request. At most one mail goes to any address in one change (compared without case); when a guest's address is also a staff member's, the staff mail is the one sent. A person who qualifies for several reasons in one change gets one mail: the first of assigned, reopened, requester replied whose switch is on. Mail queued before the upgrade is sent as it is.
+- **A failed lookup of a ticket's followers or of a group's members retries the whole change.** Before, the mail to those people was dropped without a retry, and only a failed read of staff accounts was retried. Nobody is mailed from a partial answer, so a retry does not mail anyone twice. A lookup that keeps failing holds back every mail for that change, the requester's included: the change is tried 8 times in all over about an hour, then the row is marked failed. The error in the log is "staff email: could not work out who to notify".
 - A guest may get a different template: the first of created, reopened, resolved, replied, status changed that the change carries. A `PATCH` to Resolved now says "We have resolved", and a status change that reopens says "We have reopened".
