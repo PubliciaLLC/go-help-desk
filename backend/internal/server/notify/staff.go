@@ -293,7 +293,14 @@ func (f *StaffFanout) recipients(ctx context.Context, ev notification.Event, can
 			Prefs: notification.StaffPrefs{Assigned: u.EmailNotifyAssigned, Activity: u.EmailNotifyActivity, Group: u.EmailNotifyGroup},
 		})
 	}
-	return notification.StaffRecipients(eligible, ev.ActorID, f.overrides(ctx)), nil
+	// "Nobody is mailed about their own action" does not apply to an assignment
+	// routing made inside a create: the creator did not choose it (as in 1.2.x,
+	// when routing was a second, system-made write).
+	actor := ev.ActorID
+	if ev.RoutedAssignment {
+		actor = nil
+	}
+	return notification.StaffRecipients(eligible, actor, f.overrides(ctx)), nil
 }
 
 // StaffAccess is the send-time check that a person should still hear about a

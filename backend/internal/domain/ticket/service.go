@@ -649,6 +649,9 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 		if routed != nil {
 			assigned := raiseOn(t, actor, now)
 			assigned.Kinds = []notification.EventType{notification.EventTicketAssigned}
+			// Routing picked the assignee, not the creator: staff mail must not
+			// treat it as the creator's own action.
+			assigned.RoutedAssignment = true
 			assigned.Changes = append(optIDChange("assignee_user_id", nil, routed.UserID),
 				optIDChange("assignee_group_id", nil, routed.GroupID)...)
 			ch.Raise(assigned)

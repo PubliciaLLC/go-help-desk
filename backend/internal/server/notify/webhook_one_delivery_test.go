@@ -229,3 +229,82 @@ func TestAlsoLine(t *testing.T) {
 		Kinds: []notification.EventType{notification.EventTicketStatusChanged, notification.EventTicketAssigned}}),
 		"the name the hook was told is not repeated")
 }
+
+// The "Also" line names only kinds the receiving hook is subscribed to: it must
+// never tell a channel about a kind it did not ask for (an internal note in
+// particular). Worked out per hook from its subscription at delivery time.
+func assignAndNote() notification.Event {
+	ev := fixtureStatusChangedEvent()
+	ev.Type = notification.EventTicketAssigned
+	ev.Kinds = []notification.EventType{
+		notification.EventTicketAssigned, notification.EventTicketPriorityChanged, notification.EventTicketNoteAdded,
+	}
+	ev.Ticket = &notification.TicketState{Priority: "high", CategoryID: uuid.New()}
+	return ev
+}
+
+func slackHook(url string, events ...string) authstore.WebhookConfig {
+	h := hookOn(url, events...)
+	h.PayloadFormat = "slack"
+	return h
+}
+
+func deliverOne(t *testing.T, h authstore.WebhookConfig, rc *receiver, ev notification.Event) string {
+	t.Helper()
+	bodies := bodiesOf(rc)
+	rig := newQueueRig(t, rc.srv.Client(), h)
+	require.NoError(t, rig.front.Dispatch(context.Background(), ev))
+	rig.drain(t)
+	require.Equal(t, 1, rc.count())
+	return bodies()[0]
+}
+
+func TestAlso_ASingleNameHookGetsNoAlsoLine(t *testing.T) {
+	rc := newReceiver(t, 200)
+	body := deliverOne(t, slackHook(rc.srv.URL, "ticket.assigned"), rc, assignAndNote())
+	require.NotContains(t, body, "Also")
+	require.NotContains(t, body, "note added")
+}
+
+func TestAlso_NamesOnlyWhatTheHookSubscribesTo(t *testing.T) {
+	rc := newReceiver(t, 200)
+	body := deliverOne(t, slackHook(rc.srv.URL, "ticket.assigned", "ticket.priority_changed"), rc, assignAndNote())
+	require.Contains(t, body, "Also: priority changed")
+	require.NotContains(t, body, "note added")
+}
+
+func TestAlso_AWildcardHookSeesEveryKind(t *testing.T) {
+	rc := newReceiver(t, 200)
+	body := deliverOne(t, slackHook(rc.srv.URL, "*"), rc, assignAndNote())
+	require.Contains(t, body, "Also: priority changed, note added")
+}
+
+func TestAlso_JiraKeyFollowsTheSameRule(t *testing.T) {
+	rc := newReceiver(t, 200)
+	h := hookOn(rc.srv.URL, "ticket.assigned")
+	h.PayloadFormat = "jira"
+	require.NotContains(t, deliverOne(t, h, rc, assignAndNote()), `"also"`)
+}
+
+// A retry works the line out again from the subscription as it is then.
+func TestAlso_ARetryAfterTheSubscriptionNarrowsDropsTheKind(t *testing.T) {
+	rc := newReceiver(t, 503, 200)
+	bodies := bodiesOf(rc)
+	hook := slackHook(rc.srv.URL, "ticket.assigned", "ticket.note_added")
+	rig := newQueueRig(t, rc.srv.Client(), hook)
+	require.NoError(t, rig.front.Dispatch(context.Background(), assignAndNote()))
+	rig.store.makeDue()
+	_, err := rig.worker.RunOnce(context.Background()) // fan-out
+	require.NoError(t, err)
+	rig.store.makeDue()
+	_, err = rig.worker.RunOnce(context.Background()) // 503
+	require.NoError(t, err)
+	require.Contains(t, bodies()[0], "Also: note added")
+
+	rig.setHook(hook.ID, func(h *authstore.WebhookConfig) { h.Events = []string{"ticket.assigned"} })
+	rig.drain(t)
+
+	require.Len(t, bodies(), 2)
+	require.NotContains(t, bodies()[1], "note added")
+	require.NotContains(t, bodies()[1], "Also")
+}

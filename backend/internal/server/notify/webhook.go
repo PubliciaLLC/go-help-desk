@@ -210,12 +210,10 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event notification.Eve
 	for _, hook := range hooks {
 		// One delivery per change, labelled with the first kind this hook
 		// subscribes to (#506, ruling 6).
-		label, ok := subscribedKind(hook, event)
+		ev, ok := forHook(hook, event)
 		if !ok {
 			continue
 		}
-		ev := event
-		ev.Type = label
 		// The ticket filter (#413) decides whether this hook fires for this
 		// event, and nothing else: the body below is built the same way for
 		// every hook. A filtered-out event is not a delivery, so nothing is
@@ -344,11 +342,10 @@ func (d *WebhookDispatcher) deliverQueued(ctx context.Context, ev notification.E
 	// The label is worked out again here, from the subscription as it is now: a
 	// hook that dropped the kind it was queued for but lists another the change
 	// carries is sent that one.
-	label, subscribed := subscribedKind(hook, ev)
+	ev, subscribed := forHook(hook, ev)
 	if !subscribed {
 		return nil
 	}
-	ev.Type = label
 	if ev.TargetURLHash != urlHash(hook.URL) {
 		d.log.InfoContext(ctx, "webhook delivery dropped: the hook's URL changed since it was queued",
 			"webhook_id", hook.ID, "event", ev.Type)
@@ -659,23 +656,39 @@ func (d *WebhookDispatcher) post(ctx context.Context, hook authstore.WebhookConf
 // ticket.status_changed alone is told ticket.status_changed for a change that
 // also reopened the ticket, exactly as before.
 func subscribedKind(hook authstore.WebhookConfig, ev notification.Event) (notification.EventType, bool) {
-	kinds := ev.AllKinds()
-	if len(hook.Events) == 0 || slices.Contains(hook.Events, "*") {
-		// Empty = all events. Only kinds a hook can have: a name outside
-		// WebhookEvents (guest.link_resent) is never sent, whatever "*" says.
-		for _, k := range kinds {
-			if IsWebhookEvent(string(k)) {
-				return k, true
-			}
-		}
+	kinds := subscribedKinds(hook, ev)
+	if len(kinds) == 0 {
 		return "", false
 	}
-	for _, k := range kinds {
-		if slices.Contains(hook.Events, string(k)) {
-			return k, true
+	return kinds[0], true
+}
+
+// subscribedKinds are the kinds of the change this hook subscribes to, in the
+// fixed order. For "*" or no list, every kind a webhook can carry (a name
+// outside WebhookEvents, guest.link_resent, is never sent, whatever "*" says).
+func subscribedKinds(hook authstore.WebhookConfig, ev notification.Event) []notification.EventType {
+	all := len(hook.Events) == 0 || slices.Contains(hook.Events, "*")
+	var out []notification.EventType
+	for _, k := range ev.AllKinds() {
+		if all && IsWebhookEvent(string(k)) || !all && slices.Contains(hook.Events, string(k)) {
+			out = append(out, k)
 		}
 	}
-	return "", false
+	return out
+}
+
+// forHook is the change as this hook is told of it: Type the name it is sent
+// under and Kinds only those the hook subscribes to, so nothing built from the
+// event (the chat "Also" line) can name a kind the channel did not ask for, an
+// internal note in particular. Worked out from the subscription as it is now,
+// at every attempt. ok is false when the hook subscribes to none of them.
+func forHook(hook authstore.WebhookConfig, ev notification.Event) (notification.Event, bool) {
+	kinds := subscribedKinds(hook, ev)
+	if len(kinds) == 0 {
+		return ev, false
+	}
+	ev.Type, ev.Kinds = kinds[0], kinds
+	return ev, true
 }
 
 // classifyDeliveryError categorizes a delivery error into one of the delivery

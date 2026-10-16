@@ -206,3 +206,49 @@ func TestChangeSplitter_ANotableChangeWithNobodyToMailIsSettled(t *testing.T) {
 	require.Empty(t, rig.sent.got)
 	require.Empty(t, liveRows(rig.outbox))
 }
+
+// Routing a create to its own creator (#506, ruling B): the person who filed the
+// ticket did not pick the assignee, routing did, so they hear of it, once. Only
+// this case; acting on your own ticket by hand still mails you nothing.
+func routedCreate(creator, assignee *uuid.UUID) notification.Event {
+	return notification.Event{
+		Type: notification.EventTicketCreated, TicketID: uuid.New(), ActorID: creator, OccurredAt: time.Now(),
+		TrackingNumber: "GHD-2026-000007", RoutedAssignment: true,
+		Kinds:  []notification.EventType{notification.EventTicketCreated, notification.EventTicketAssigned},
+		Ticket: &notification.TicketState{AssigneeUserID: assignee},
+	}
+}
+
+func TestChangeSplitter_ACreatorRoutedToThemselvesIsMailedOnce(t *testing.T) {
+	creator := staffUser("creator")
+	rig := newSplitRig(newFakeStaffUsers(creator), fakeStaffGroups{}, fakeStaffFollowers{})
+	rig.queue(t, routedCreate(&creator.ID, &creator.ID))
+
+	rig.drain(t)
+
+	require.Equal(t, []uuid.UUID{creator.ID}, recipientsOf(rig.sent), "exactly one mail, not none")
+	require.Equal(t, notification.EventStaffAssigned, rig.sent.got[0].Type)
+}
+
+func TestChangeSplitter_ARoutedCreateMailsTheAssigneeAndNotTheCreator(t *testing.T) {
+	creator, assignee := staffUser("creator"), staffUser("assignee")
+	rig := newSplitRig(newFakeStaffUsers(creator, assignee), fakeStaffGroups{}, fakeStaffFollowers{})
+	rig.queue(t, routedCreate(&creator.ID, &assignee.ID))
+
+	rig.drain(t)
+
+	require.Equal(t, []uuid.UUID{assignee.ID}, recipientsOf(rig.sent))
+}
+
+// The same event without the routing mark is the person's own action.
+func TestChangeSplitter_AnAssignmentTheActorMadeStillMailsNobody(t *testing.T) {
+	actor := staffUser("actor")
+	ev := routedCreate(&actor.ID, &actor.ID)
+	ev.RoutedAssignment = false
+	rig := newSplitRig(newFakeStaffUsers(actor), fakeStaffGroups{}, fakeStaffFollowers{})
+	rig.queue(t, ev)
+
+	rig.drain(t)
+
+	require.Empty(t, rig.sent.got)
+}

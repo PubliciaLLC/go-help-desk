@@ -129,6 +129,7 @@ func (c *Changes) Raise(ev Event) {
 	}
 	dst.GuestLink = dst.GuestLink || ev.GuestLink
 	dst.FromRequester = dst.FromRequester || ev.FromRequester
+	dst.RoutedAssignment = dst.RoutedAssignment || ev.RoutedAssignment
 }
 
 // Events returns the merged events, one per ticket, in the order the tickets

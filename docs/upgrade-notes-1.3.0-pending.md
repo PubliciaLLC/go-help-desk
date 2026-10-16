@@ -314,13 +314,13 @@ A change to a ticket is now **one event**, written to the notification queue in 
 - **The same status move has the same names from every door.** A move into Resolved is `ticket.status_changed` and `ticket.resolved`; into Closed, `ticket.status_changed` and `ticket.closed`; out of Resolved or Closed into an open status, `ticket.status_changed` and `ticket.reopened`. So `ticket.status_changed` now also fires for the Resolve button, the Close button, the auto-close and a requester's reopening reply, and `ticket.resolved` and `ticket.closed` now also fire for a `PATCH` of `status_id`.
 - **New events:** `ticket.priority_changed` and `ticket.classified` (category, type or item). A hook subscribed to `*` starts receiving them. Neither body has a `Payload`; read the ticket by `TicketID`. They can be selected in Admin → Webhooks and are in the `WebhookEvent` enum.
 - **The body is unchanged**: ids only, as before. No tracking number, no kinds, no version flag.
-- Chat and Jira formats add one line under the headline naming the other kinds ("Also: assigned, priority changed"); Jira gains an optional `also` key.
+- Chat and Jira formats add one line under the headline naming the change's other kinds ("Also: assigned, priority changed"), but only kinds that hook subscribes to; a hook subscribed to a single name gets no such line. Jira gains an optional `also` key under the same rule.
 - Rows queued before the upgrade are delivered as they were.
 
 **Ticket behaviour**
 
 - **`PATCH /tickets/{id}` is all or nothing.** The status, assignee, classification and priority are applied in one transaction. A refusal partway through now leaves the whole request unapplied; before, the steps ahead of it were already saved.
-- **Auto-assignment happens in the create's transaction.** A new ticket is announced once, as created and assigned. The staff member who files a ticket that routing then assigns to them is no longer mailed "assigned to you": they did the filing, and one change has one actor.
+- **Auto-assignment happens in the create's transaction.** A new ticket is announced once, as created and assigned.
 - **Reclassifying announces `ticket.classified`**, and a priority change announces `ticket.priority_changed`. Reclassifying still writes no audit entry.
 
 **Staff email**

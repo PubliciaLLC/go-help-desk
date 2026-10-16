@@ -106,6 +106,13 @@ type Event struct {
 	// known": an event that names no ticket. Excluded from JSON like Kinds.
 	Ticket *TicketState `json:"-"`
 
+	// RoutedAssignment marks an assignment that routing made inside a create,
+	// not the person who filed the ticket. Staff mail skips "nobody is mailed
+	// about their own action" for it: routing picked the assignee, they did not,
+	// and a creator the routing assigned to must still hear of it (as in 1.2.x).
+	// Excluded from JSON.
+	RoutedAssignment bool `json:"-"`
+
 	// FromRequester marks a ticket.replied that the requester wrote (an
 	// account holder with the user role, or a guest) and that is not an
 	// internal note. It is what makes a reply a reason to mail staff.

@@ -234,3 +234,21 @@ func TestUpdate_ReclassifyingToTheSameClassificationAnnouncesNothing(t *testing.
 	require.NoError(t, err)
 	require.Empty(t, h.dispatcher.events)
 }
+
+// Routing marks its assignment, so staff mail does not treat it as the
+// creator's own action (ruling B).
+func TestCreate_TheRoutedAssignmentIsMarkedAsRouting(t *testing.T) {
+	h := newHarness(t)
+	staff := uuid.New()
+	_, err := h.svc.Create(context.Background(), ticket.CreateInput{
+		Subject: "s", CategoryID: uuid.New(), ReporterUserID: &staff,
+		AutoAssign: []ticket.Assignment{{UserID: &staff}},
+	})
+	require.NoError(t, err)
+	require.True(t, h.dispatcher.events[0].RoutedAssignment)
+
+	h2 := newHarness(t)
+	_, err = h2.svc.Create(context.Background(), ticket.CreateInput{Subject: "s", CategoryID: uuid.New(), ReporterUserID: &staff})
+	require.NoError(t, err)
+	require.False(t, h2.dispatcher.events[0].RoutedAssignment)
+}

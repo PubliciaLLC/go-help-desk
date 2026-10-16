@@ -43,9 +43,10 @@ type outboxRecord struct {
 
 	// Staff mail (#441). StaffUserID is the one person a staff.* row is for;
 	// their address is read when it is sent, never stored here.
-	StaffUserID   *uuid.UUID  `json:"staff_user_id,omitempty"`
-	FromRequester bool        `json:"from_requester,omitempty"`
-	StaffReason   StaffSwitch `json:"staff_reason,omitempty"`
+	StaffUserID      *uuid.UUID  `json:"staff_user_id,omitempty"`
+	FromRequester    bool        `json:"from_requester,omitempty"`
+	RoutedAssignment bool        `json:"routed_assignment,omitempty"`
+	StaffReason      StaffSwitch `json:"staff_reason,omitempty"`
 
 	// Read only, never written: how a row queued before #506 said what is now
 	// in Ticket. The classification a webhook filter tests, and who held the
@@ -69,7 +70,7 @@ func EncodeEvent(ev Event) ([]byte, error) {
 		Kinds: ev.Kinds, Changes: ev.Changes, Ticket: ev.Ticket,
 		TargetWebhook: ev.TargetWebhook,
 		TargetURLHash: ev.TargetURLHash,
-		StaffUserID:   ev.StaffUserID, FromRequester: ev.FromRequester,
+		StaffUserID:   ev.StaffUserID, FromRequester: ev.FromRequester, RoutedAssignment: ev.RoutedAssignment,
 		StaffReason: ev.StaffReason,
 	})
 }
@@ -87,7 +88,7 @@ func DecodeEvent(b []byte) (Event, error) {
 		Kinds: r.Kinds, Changes: r.Changes, Ticket: r.Ticket,
 		TargetWebhook: r.TargetWebhook,
 		TargetURLHash: r.TargetURLHash,
-		StaffUserID:   r.StaffUserID, FromRequester: r.FromRequester,
+		StaffUserID:   r.StaffUserID, FromRequester: r.FromRequester, RoutedAssignment: r.RoutedAssignment,
 		StaffReason: r.StaffReason,
 	}
 	if ev.Ticket == nil && (r.LegacyAttrs != nil || r.LegacyAssigneeUserID != nil || r.LegacyAssigneeGroupID != nil) {
