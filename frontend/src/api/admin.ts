@@ -239,6 +239,9 @@ export async function deleteStatus(id: string): Promise<void> {
 export interface SAMLConfig {
   configured: boolean
   metadata_url: string
+  // The IdP metadata as pasted, returned as stored (it is public data). Empty
+  // when the metadata is given by URL or not at all.
+  metadata_xml: string
   cert_pem: string
   sp_metadata_url: string
 }
@@ -254,8 +257,13 @@ export async function getSAMLConfig(): Promise<SAMLConfig> {
 // never round-tripped by getSAMLConfig (the server never returns a private
 // key at all), so a caller must genuinely leave it out to preserve the
 // stored key rather than send back the blank the form started with.
+//
+// metadata_url and metadata_xml are alternatives (#461): the server refuses a
+// save that would leave both set, so the source the admin did not choose is
+// sent as "" rather than left out.
 export async function saveSAMLConfig(input: {
   metadata_url?: string
+  metadata_xml?: string
   cert_pem?: string
   key_pem?: string
 }): Promise<{ warning?: string }> {

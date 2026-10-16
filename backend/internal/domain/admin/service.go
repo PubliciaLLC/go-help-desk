@@ -139,10 +139,11 @@ func (s *Service) GetOIDCConfig(ctx context.Context) auth.OIDCConfig {
 	}
 }
 
-// SAMLConfigured returns true when all three SAML fields are non-empty.
+// SAMLConfigured returns true when the IdP metadata (a URL or XML), the
+// certificate and the key are all non-empty.
 func (s *Service) SAMLConfigured(ctx context.Context) bool {
 	u, c, k := s.GetSAMLConfig(ctx)
-	return u != "" && c != "" && k != ""
+	return (u != "" || s.GetSAMLMetadataXML(ctx) != "") && c != "" && k != ""
 }
 
 // OIDCConfigured returns true when required OIDC settings exist.
@@ -194,6 +195,21 @@ func (s *Service) SetSAMLConfig(ctx context.Context, metadataURL, certPEM, keyPE
 	}
 	if err := s.SetString(ctx, KeySAMLKeyPEM, keyPEM); err != nil {
 		return fmt.Errorf("saving saml_key_pem: %w", err)
+	}
+	return nil
+}
+
+// GetSAMLMetadataXML returns the pasted IdP metadata, or "" when the metadata
+// is given by URL or not at all.
+func (s *Service) GetSAMLMetadataXML(ctx context.Context) string {
+	v, _ := s.GetString(ctx, KeySAMLMetadataXML)
+	return v
+}
+
+// SetSAMLMetadataXML persists the pasted IdP metadata. "" clears it.
+func (s *Service) SetSAMLMetadataXML(ctx context.Context, xml string) error {
+	if err := s.SetString(ctx, KeySAMLMetadataXML, xml); err != nil {
+		return fmt.Errorf("saving saml_metadata_xml: %w", err)
 	}
 	return nil
 }

@@ -684,7 +684,7 @@ func (s *Server) handleGetSiteConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // InitSAML reads SAML config from the database and initialises the SP
-// middleware if all three fields (cert, key, metadata URL) are present.
+// middleware if the cert, the key and the IdP metadata (a URL or pasted XML) are present.
 // It is called once at startup; a non-fatal error is logged and ignored so
 // that the server starts even when SAML is not yet configured.
 
@@ -776,7 +776,7 @@ func (s *Server) InitSAML(ctx context.Context) {
 
 // buildSAMLMiddleware is buildOIDCProvider's SAML counterpart: constructs a
 // middleware from CANDIDATE settings without touching the live s.samlHandler.
-// An incomplete config (any of the three fields blank) has never had a
+// An incomplete config (no metadata, no cert or no key) has never had a
 // fail-safe here — reloadSAML always cleared the handler outright for it,
 // and that is unchanged.
 //
@@ -799,15 +799,16 @@ func (s *Server) InitSAML(ctx context.Context) {
 // functions): the row being persisted has no live process to fall back on,
 // so reachable is false whenever cfg itself fails to build, regardless of
 // what a DIFFERENT, currently-live config says.
-func (s *Server) buildSAMLMiddleware(ctx context.Context, metadataURL, certPEM, keyPEM string) (reachable bool, mw *samlsp.Middleware, commit bool, err error) {
-	if metadataURL == "" || certPEM == "" || keyPEM == "" {
+func (s *Server) buildSAMLMiddleware(ctx context.Context, c samlSettings) (reachable bool, mw *samlsp.Middleware, commit bool, err error) {
+	if !samlFieldsLookConfigured(c) {
 		return false, nil, true, nil
 	}
 	mw, buildErr := auth.NewSAMLMiddleware(ctx, auth.SAMLConfig{
 		BaseURL:     s.cfg.BaseURL,
-		MetadataURL: metadataURL,
-		CertPEM:     []byte(certPEM),
-		KeyPEM:      []byte(keyPEM),
+		MetadataURL: c.MetadataURL,
+		MetadataXML: []byte(c.MetadataXML),
+		CertPEM:     []byte(c.CertPEM),
+		KeyPEM:      []byte(c.KeyPEM),
 	})
 	if buildErr != nil {
 		return false, nil, false, buildErr
@@ -823,18 +824,18 @@ func (s *Server) commitSAMLMiddleware(mw *samlsp.Middleware) {
 	s.samlMu.Unlock()
 }
 
-// reloadSAML reads the three SAML settings from the database, (re)initialises
+// reloadSAML reads the SAML settings from the database, (re)initialises
 // the crewjam/saml middleware, and stores it for use by the request handlers.
 // Callers must hold no lock; this method acquires the write lock internally.
 func (s *Server) reloadSAML(ctx context.Context) error {
-	metadataURL, certPEM, keyPEM := s.adminSvc.GetSAMLConfig(ctx)
-	_, mw, commit, err := s.buildSAMLMiddleware(ctx, metadataURL, certPEM, keyPEM)
+	c := s.storedSAMLSettings(ctx)
+	_, mw, commit, err := s.buildSAMLMiddleware(ctx, c)
 	if !commit {
 		return err
 	}
 	s.commitSAMLMiddleware(mw)
 	if mw != nil {
-		slog.Info("SAML middleware loaded", "metadata_url", metadataURL)
+		slog.Info("SAML middleware loaded", "metadata_url", c.MetadataURL, "metadata_xml", c.MetadataXML != "")
 	}
 	return nil
 }
