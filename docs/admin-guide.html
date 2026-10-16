@@ -619,12 +619,12 @@ Read it here:
 
 <p>Messages are <code>text/plain</code>, quoted-printable, with no HTML alternative. Adding an HTML part would turn the body into a live sink the moment any content went back into it.</p>
 
-<p>If you need the ticket text in an external system, use a webhook: those carry the full event payload, subject and reply body included, because a webhook target is registered by an administrator rather than chosen by a reporter.</p>
+<p>If you need the ticket text in an external system, use a webhook. A hook in the Slack, Teams, Discord or Jira Automation format carries the subject, tracking number, status and public reply text, because a webhook target is registered by an administrator rather than chosen by a reporter. A raw JSON hook carries ids only; fetch the ticket through the REST API with the <code>TicketID</code> it gives you. See <a href="#admin-webhook-formats">Payload formats</a>.</p>
 
 
 <h2 id="admin-webhooks">Webhooks</h2>
 
-<p>Webhooks send ticket events to another system as an HTTP <code>POST</code>. Manage them from <em>Admin → Webhooks</em>.</p>
+<p>Webhooks send ticket events to another system as an HTTP <code>POST</code>. Manage them from <em>Admin → Webhooks</em>. Each hook in the list has <em>Disable</em> or <em>Enable</em>, <em>History</em>, <em>Edit</em> and <em>Delete</em>.</p>
 
 <h3>Configuration</h3>
 <table class="param-table">
@@ -634,6 +634,7 @@ Read it here:
     <tr><td><code>Payload format</code></td><td>Raw JSON</td><td>The body shape. See <a href="#admin-webhook-formats">Payload formats</a>.</td></tr>
     <tr><td><code>Secret</code></td><td>optional</td><td>Signs each delivery with HMAC-SHA256. It is write-only: it is never shown again after it is saved, and an empty secret field on edit keeps the stored one.</td></tr>
     <tr><td><code>Events</code></td><td>required</td><td>One or more event names from the table below, or <em>All events</em>, which is stored as <code>*</code>.</td></tr>
+    <tr><td><code>Tickets</code></td><td>optional</td><td>Limits the hook to tickets in chosen categories, priorities or assigned groups, or sends for every ticket that does not match. See <a href="#admin-webhook-filter">Limiting a hook to some tickets</a>. A hook with no filter, which is every hook created before this existed, receives every ticket.</td></tr>
     <tr><td><code>Enabled</code></td><td></td><td>A disabled hook receives nothing. A hook can be created switched off, so it can be saved before its receiver is ready.</td></tr>
   </tbody>
 </table>
@@ -641,7 +642,7 @@ Read it here:
 <h3>Which events a hook receives</h3>
 <ul>
   <li>Every enabled hook that subscribes to an event's type receives that event. <code>*</code> (All events) subscribes to every event.</li>
-  <li>There are no per-category, per-priority or per-group rules. A hook receives every event of its types, whatever the ticket's category, priority or group.</li>
+  <li>A hook with no ticket filter receives every event of its types, whatever the ticket's category, priority or group. With a <a href="#admin-webhook-filter">ticket filter</a> it receives them only for the tickets the filter admits.</li>
   <li><code>guest.link_resent</code> is never sent to webhooks. The API refuses it as a subscription (<code>400 invalid_event_name</code>).</li>
   <li>The API refuses an empty events list on create and on update (<code>400 missing_events</code>). An empty list is how a hook saved before events were required is stored, and delivery treats it as all events; the admin screen shows it as <em>All events</em>.</li>
 </ul>
@@ -653,13 +654,24 @@ Read it here:
     <tr><td><code>ticket.created</code></td><td>A ticket is created, by any route.</td></tr>
     <tr><td><code>ticket.assigned</code></td><td>The assignee or the assigned group changes, or the ticket is unassigned.</td></tr>
     <tr><td><code>ticket.status_changed</code></td><td>The status is changed directly: the status picker, <code>PATCH status_id</code>, or MCP <code>update_ticket_status</code>. That includes a direct change to Resolved or Closed, which sends only this event. The Resolve, Close and Reopen actions send their own events instead of this one.</td></tr>
-    <tr><td><code>ticket.replied</code></td><td>A reply is added. An internal note is sent with this event too, with <code>internal</code> set to true and no reply text. Subscribing to this event therefore includes staff-only notes, in that form.</td></tr>
+    <tr><td><code>ticket.replied</code></td><td>A customer-visible reply is added. Internal notes are not sent with this event.</td></tr>
+    <tr><td><code>ticket.note_added</code></td><td>An internal note is added. A hook that listed only <code>ticket.replied</code> before 1.3.0 stops receiving notes; add this event, or choose <em>All events</em>, to keep them.</td></tr>
     <tr><td><code>ticket.resolved</code></td><td>The ticket is resolved with the Resolve action (<em>Mark Resolved</em>, or <code>POST /api/v1/tickets/{id}/resolve</code>), including when it is resolved as a duplicate.</td></tr>
     <tr><td><code>ticket.closed</code></td><td>The ticket is closed with <em>Close Ticket</em> by an administrator, or by the automatic sweep.</td></tr>
-    <tr><td><code>ticket.reopened</code></td><td>A Resolved ticket is reopened by its requester's reply, or a Closed ticket is reopened with the Reopen action, which <em>Reopening closed tickets</em> must allow.</td></tr>
+    <tr><td><code>ticket.reopened</code></td><td>A ticket is reopened: a requester's reply on a Resolved ticket, a status change by staff or an administrator out of Resolved or Closed, or the Reopen action on a Closed ticket, which <em>Reopening closed tickets</em> must allow.</td></tr>
     <tr><td><code>ticket.linked</code></td><td>A link is created between two tickets, including the link a follow-up makes.</td></tr>
   </tbody>
 </table>
+
+<h3 id="admin-webhook-filter">Limiting a hook to some tickets</h3>
+<p>In the webhook form, the <em>Tickets</em> group has tick boxes for <em>Category</em>, <em>Priority</em> and <em>Group</em> (the group the ticket is assigned to), and a <em>Send for</em> drop-down with <em>Tickets that match</em> and <em>All other tickets</em>. Leave everything unticked to send for every ticket. In the list of hooks, the <em>Tickets</em> column shows the result, for example <em>All tickets</em>, or <em>Category: Hardware or Software</em>, or <em>All except</em> followed by the conditions.</p>
+<ul>
+  <li><strong>How conditions combine.</strong> Within one list, any ticked value matches. Every list that has a tick must match. Choosing <em>All other tickets</em> inverts the result.</li>
+  <li><strong>An event the filter turns away is not a delivery.</strong> It has no delivery id, no retry and no entry in History.</li>
+  <li><strong>The filter is read as it is now.</strong> It is tested when the event happens, again at each attempt of a queued delivery, and again at Redeliver. If you tighten a filter, deliveries already waiting for a retry that it no longer admits are dropped at their next attempt, with nothing sent and no History entry. If you widen it, they still go out. A retry is judged against the ticket as it was when the event happened.</li>
+  <li><strong>A group condition never matches <code>ticket.created</code>.</strong> That event is raised before auto-assignment. To hear about tickets landing in a group, subscribe to <code>ticket.assigned</code>.</li>
+  <li>The filter does not change what a hook is sent: the body is the same, and the ticket details used for the test are never put in a body or kept in History.</li>
+</ul>
 
 <h3 id="admin-webhook-formats">Payload formats</h3>
 <p>Each hook has one payload format. <strong>Raw JSON</strong> sends the event as JSON, shown below. <strong>Slack</strong>, <strong>Microsoft Teams</strong>, <strong>Discord</strong> and <strong>Jira Automation</strong> rewrite the body into the shape that service's incoming webhook expects. The signature covers the body that is actually sent.</p>
@@ -669,6 +681,8 @@ Read it here:
 Content-Type: application/json
 X-GHD-Signature: sha256=&lt;hmac-hex&gt;
 X-OHD-Signature: sha256=&lt;hmac-hex&gt;
+X-GHD-Delivery: &lt;uuid&gt;
+X-GHD-Event: ticket.status_changed
 
 {
   "Type":       "ticket.status_changed",
@@ -678,7 +692,7 @@ X-OHD-Signature: sha256=&lt;hmac-hex&gt;
   "OccurredAt": "2026-04-05T14:32:00Z"
 }</code></pre>
 
-<p>The keys are the field names of the event, as they are written in the body. <code>ActorID</code> is <code>null</code> for an event the system made. <code>Payload</code> holds the details of the event, and what it holds differs by event: a status change carries the new status's ID. A public reply carries its text in <code>Payload.ReplyBody</code>. An internal note's <code>ticket.replied</code> has no <code>ReplyBody</code>. A guest's access token is never part of the body.</p>
+<p>The keys are the field names of the event, as they are written in the body. <code>ActorID</code> is <code>null</code> for an event the system made. <strong>The raw body carries ids only.</strong> It has the event name (<code>Type</code>), <code>TicketID</code>, <code>ActorID</code> and <code>OccurredAt</code>, and, where the event has them, a <code>Payload</code> holding <code>new_status_id</code> (a status change) or <code>target_id</code> (a link). It does not carry the tracking number, subject, priority, any email address or name, or the text of a reply or note. A receiver that needs those fetches the ticket through the REST API with <code>TicketID</code>. Whether something is a reply or a note is the event name, <code>ticket.replied</code> or <code>ticket.note_added</code>. The Slack, Teams, Discord and Jira Automation formats still carry the subject, tracking number, status and public reply text, and never an address or a note's text. A guest's access token is never part of any body.</p>
 
 <h3>Verifying the signature</h3>
 <p>The <code>X-GHD-Signature</code> header is <code>sha256=&lt;hex&gt;</code> where the hex is an HMAC-SHA256 of the raw request body, keyed with your webhook secret. Each delivery also carries <code>X-OHD-Signature</code> with the same value, kept for integrations written before the rename. Verify <code>X-GHD-Signature</code>.</p>
@@ -703,8 +717,8 @@ function verifySignature(secret, body, header) {
 
 
 <h3>Delivery and retries</h3>
-<p>Each delivery is attempted once, with a 10-second timeout. <strong>Webhooks are never retried.</strong> A delivery that fails is recorded on the hook and is not sent again. Webhook deliveries are queued in the same outbox as email, but the outbox treats a webhook as done once the send has started, so there is no retry schedule for them. Email is retried; webhooks are not.</p>
-<p>There is no way to resend a delivery. Fix the receiver, and the next matching event is delivered.</p>
+<p>Each attempt has a 10-second timeout. A delivery that fails with a connection error, a DNS or TLS failure, a timeout, a <code>5xx</code> status or <code>429</code> is tried again: the wait starts at 30 seconds and doubles up to an hour, for 8 attempts in all. A <code>Retry-After</code> header from the receiver is honoured, up to an hour. A blocked (private or internal) address, and any other status such as <code>400</code> or <code>404</code>, is not retried.</p>
+<p><strong>A receiver can therefore see the same event twice.</strong> Every delivery carries two headers: <code>X-GHD-Delivery</code>, a UUID that stays the same across the retries of one delivery (use it to drop a repeat), and <code>X-GHD-Event</code>, the event name. The signature headers are unchanged. If you change a hook's URL, deliveries still waiting for the old address are dropped, and so are deliveries waiting for an event the hook no longer lists, or that are for a hook that is now disabled.</p>
 
 <h3>Last delivery</h3>
 <p>The list shows each hook's most recent delivery: <em>Delivered</em> with the HTTP status, or <em>Failing</em> with the status or a failure class, and when it happened.</p>
@@ -721,7 +735,18 @@ function verifySignature(secret, body, header) {
     <tr><td>Failing · error</td><td>Any other failure.</td></tr>
   </tbody>
 </table>
-<p>Only the latest result is kept, and it is kept as a class, never as the error text or the response body, because a webhook URL can carry a secret. There is no delivery history. A hook that has never been delivered to shows <em>No deliveries yet</em>.</p>
+<p>The list keeps only the latest result per hook, as a class, never as the error text or the response body, because a webhook URL can carry a secret. A hook that has never been delivered to shows <em>No deliveries yet</em>.</p>
+
+<h3 id="admin-webhook-history">History and Redeliver</h3>
+<p>Each hook has a <em>History</em> button that opens its last 25 deliveries. Each row shows the event, the result (<em>Delivered</em>, <em>Retrying</em> or <em>Failed</em>, with the status or failure class), the number of attempts and the time of the last attempt. No payloads and no error text are kept.</p>
+<p><em>Redeliver</em> on a row sends that delivery's event again as a new delivery, with a new <code>X-GHD-Delivery</code> id so a receiver that drops repeats by id does not discard it. It is queued and sent in the background, and retried like any delivery; the page says it is queued, and the row appears in History once it has been attempted. A raw hook gets the same ids-only body as the original. A Slack, Teams, Discord or Jira message is rebuilt from the ticket as it is now, so it can differ from the original, and a reply's text is included only if the reply still exists and is public.</p>
+<p>Redeliver is refused, with a message, when:</p>
+<ul>
+  <li>the hook is disabled (<code>409 webhook_disabled</code>): enable it first;</li>
+  <li>the hook no longer lists that event (<code>409 webhook_not_subscribed</code>): add the event first;</li>
+  <li>the hook's <a href="#admin-webhook-filter">ticket filter</a>, as it is now, does not admit the ticket (<code>409 webhook_filter_excludes</code>): change the filter first;</li>
+  <li>the hook has a filter and the ticket has since been deleted, so the filter cannot be checked (<code>409 webhook_filter_unverifiable</code>). A hook with no filter is still sent.</li>
+</ul>
 <img src="../screenshots/18-admin-webhooks.png" alt="Admin Webhooks page: the New webhook form above a list of three hooks. Two show Failing · 405 as their last delivery, and the disabled third shows No deliveries yet" width="2880" height="2030" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
 
