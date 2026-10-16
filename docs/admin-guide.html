@@ -612,6 +612,8 @@ Facilities
 
 <p>Staff and administrators are emailed about their own tickets, which earlier releases never did. <strong>Once email is configured, every existing staff member and administrator starts receiving it, because all three switches are on by default.</strong> Nothing is sent while email is not configured. Each person chooses what they get under <em>Your account → Email about tickets</em>; see <a href="tickets.html#tickets-staff-email">Email to staff</a> for what each switch covers.</p>
 
+<p><strong>One mail per person per change.</strong> A change is queued in the same step as the change itself, so a change that fails sends nothing. The server works out who is mailed a moment after the change commits. At most one mail goes to any address for one change (addresses are compared without regard to case). A person who qualifies for several reasons in one change, such as being assigned and following the ticket, gets one mail, for the first of assigned, reopened, and requester replied whose switch is on. When a guest's address is also a staff member's, the staff mail is the one sent. A person who files a ticket that auto-assignment then assigns to them gets one mail. Mail queued before the upgrade is sent as it was.</p>
+
 <h3>Overriding the switches for everyone</h3>
 <p>Under <em>Admin → Settings → Email</em>, the <em>Staff email about tickets</em> section has one drop-down for each switch. Each offers <em>Use each person's choice</em> (the default), <em>On for everyone</em> and <em>Off for everyone</em>; the last two ignore what people chose.</p>
 <table>
@@ -700,7 +702,7 @@ Read it here:
 
 <h3>Which events a hook receives</h3>
 <ul>
-  <li>Every enabled hook that subscribes to an event's type receives that event. <code>*</code> (All events) subscribes to every event.</li>
+  <li>Every enabled hook that subscribes to one of a change's event names receives it, <strong>once</strong>. <code>*</code> (All events) subscribes to every name. See <a href="#admin-webhook-one">One change, one delivery</a>.</li>
   <li>A hook with no ticket filter receives every event of its types, whatever the ticket's category, priority or group. With a <a href="#admin-webhook-filter">ticket filter</a> it receives them only for the tickets the filter admits.</li>
   <li><code>guest.link_resent</code> is never sent to webhooks. The API refuses it as a subscription (<code>400 invalid_event_name</code>).</li>
   <li>The API refuses an empty events list on create and on update (<code>400 missing_events</code>). An empty list is how a hook saved before events were required is stored, and delivery treats it as all events; the admin screen shows it as <em>All events</em>.</li>
@@ -710,17 +712,35 @@ Read it here:
 <table>
   <thead><tr><th>Event</th><th>Sent when</th></tr></thead>
   <tbody>
-    <tr><td><code>ticket.created</code></td><td>A ticket is created, by any route.</td></tr>
+    <tr><td><code>ticket.created</code></td><td>A ticket is created, by any route. A ticket that auto-assignment gives an assignee when it is created is announced once, as created and assigned.</td></tr>
     <tr><td><code>ticket.assigned</code></td><td>The assignee or the assigned group changes, or the ticket is unassigned.</td></tr>
-    <tr><td><code>ticket.status_changed</code></td><td>The status is changed directly: the status picker, <code>PATCH status_id</code>, or MCP <code>update_ticket_status</code>. That includes a direct change to Resolved or Closed, which sends only this event. The Resolve, Close and Reopen actions send their own events instead of this one.</td></tr>
+    <tr><td><code>ticket.status_changed</code></td><td>The status moves to a different one, from any route: the status picker, <code>PATCH status_id</code>, MCP <code>update_ticket_status</code>, the Resolve and Close actions, the automatic close, or a requester's reply that reopens the ticket. A change to the status the ticket already has is not announced as a status change.</td></tr>
     <tr><td><code>ticket.replied</code></td><td>A customer-visible reply is added. Internal notes are not sent with this event.</td></tr>
     <tr><td><code>ticket.note_added</code></td><td>An internal note is added. A hook that listed only <code>ticket.replied</code> before 1.3.0 stops receiving notes; add this event, or choose <em>All events</em>, to keep them.</td></tr>
-    <tr><td><code>ticket.resolved</code></td><td>The ticket is resolved with the Resolve action (<em>Mark Resolved</em>, or <code>POST /api/v1/tickets/{id}/resolve</code>), including when it is resolved as a duplicate.</td></tr>
-    <tr><td><code>ticket.closed</code></td><td>The ticket is closed with <em>Close Ticket</em> by an administrator, or by the automatic sweep.</td></tr>
+    <tr><td><code>ticket.resolved</code></td><td>The ticket moves into Resolved, by the Resolve action (<em>Mark Resolved</em>, or <code>POST /api/v1/tickets/{id}/resolve</code>, including when it is resolved as a duplicate) or by a status change. Using the Resolve action on a ticket that is already Resolved, with new notes, sends this event alone.</td></tr>
+    <tr><td><code>ticket.closed</code></td><td>The ticket moves into Closed: <em>Close Ticket</em> by an administrator, the automatic sweep, or a status change.</td></tr>
     <tr><td><code>ticket.reopened</code></td><td>A ticket is reopened: a requester's reply on a Resolved ticket, a status change by staff or an administrator out of Resolved or Closed, or the Reopen action on a Closed ticket, which <em>Reopening closed tickets</em> must allow.</td></tr>
+    <tr><td><code>ticket.priority_changed</code></td><td>The priority is changed, by staff or by a reopen raising it. New in 1.3.0.</td></tr>
+    <tr><td><code>ticket.classified</code></td><td>The category, type or item is changed. New in 1.3.0.</td></tr>
     <tr><td><code>ticket.linked</code></td><td>A link is created between two tickets, including the link a follow-up makes.</td></tr>
   </tbody>
 </table>
+
+<h3 id="admin-webhook-one">One change, one delivery</h3>
+<p>A change to a ticket is one event, however many things it changes, and it is saved to the delivery queue in the same step as the change. If the change fails, nothing is sent. A hook gets <strong>one delivery per change</strong>, even when it is subscribed to <em>All events</em> or to several names and the change counts as several of them (for example, one save that changes the status, the assignee and the priority, or a requester's reply that reopens a ticket).</p>
+<ul>
+  <li><strong>The delivery carries one name</strong>, in <code>Type</code> and in the <code>X-GHD-Event</code> header: the first of these that the hook subscribes to, in this order: <code>ticket.created</code>, <code>ticket.reopened</code>, <code>ticket.resolved</code>, <code>ticket.closed</code>, <code>ticket.status_changed</code>, <code>ticket.assigned</code>, <code>ticket.priority_changed</code>, <code>ticket.classified</code>, <code>ticket.replied</code>, <code>ticket.note_added</code>, <code>ticket.linked</code>. A hook subscribed to one name is told that name, as before.</li>
+  <li><strong>Switching on <code>Type</code> can miss a kind.</strong> The body does not list the other kinds. A requester's reply that reopens a ticket arrives as <code>ticket.reopened</code> only, so a receiver that handles just <code>ticket.replied</code> will not see that reply. To know more than the label, read the ticket through the REST API with <code>TicketID</code>.</li>
+  <li><strong>The same status move has the same names from every route.</strong> A move into Resolved is <code>ticket.status_changed</code> and <code>ticket.resolved</code>. A move into Closed is <code>ticket.status_changed</code> and <code>ticket.closed</code>. A move out of Resolved or Closed into an open status is <code>ticket.status_changed</code> and <code>ticket.reopened</code>. This is a change from 1.2.x: <code>ticket.status_changed</code> now also comes from the Resolve and Close buttons, the automatic close and a reopening reply, and <code>ticket.resolved</code> and <code>ticket.closed</code> now also come from a change of status.</li>
+  <li><strong>A change to the status the ticket already has announces nothing about status.</strong> 1.2.x sent <code>ticket.status_changed</code> here. A save that repeats the current status and also assigns someone sends <code>ticket.assigned</code> only.</li>
+  <li><strong>The raw body is unchanged:</strong> ids only, with no tracking number and no list of kinds. Deliveries queued before the upgrade are sent as they were.</li>
+</ul>
+<h4>Chat and Jira messages</h4>
+<ul>
+  <li>Under the headline, a Slack, Teams, Discord or Jira message can add one line such as <em>Also: assigned, priority changed</em>. It names only the other kinds that this hook subscribes to, so a hook never learns of something it did not ask for. A hook subscribed to a single name gets no such line. A Jira message gains an optional <code>also</code> key under the same rule.</li>
+  <li>The text of a reply is included only for a hook subscribed to <code>ticket.replied</code> (or <em>All events</em>). A hook subscribed to <code>ticket.reopened</code> alone still gets its Reopened message, without the reply that caused it. Internal notes are never included.</li>
+  <li>A Jira message includes the status name only for a hook subscribed to a status event (<code>ticket.status_changed</code>, <code>ticket.resolved</code>, <code>ticket.closed</code> or <code>ticket.reopened</code>).</li>
+</ul>
 
 <h3 id="admin-webhook-filter">Limiting a hook to some tickets</h3>
 <p>In the webhook form, the <em>Tickets</em> group has tick boxes for <em>Category</em>, <em>Priority</em> and <em>Group</em> (the group the ticket is assigned to), and a <em>Send for</em> drop-down with <em>Tickets that match</em> and <em>All other tickets</em>. Leave everything unticked to send for every ticket. In the list of hooks, the <em>Tickets</em> column shows the result, for example <em>All tickets</em>, or <em>Category: Hardware or Software</em>, or <em>All except</em> followed by the conditions.</p>
@@ -728,7 +748,7 @@ Read it here:
   <li><strong>How conditions combine.</strong> Within one list, any ticked value matches. Every list that has a tick must match. Choosing <em>All other tickets</em> inverts the result.</li>
   <li><strong>An event the filter turns away is not a delivery.</strong> It has no delivery id, no retry and no entry in History.</li>
   <li><strong>The filter is read as it is now.</strong> It is tested when the event happens, again at each attempt of a queued delivery, and again at Redeliver. If you tighten a filter, deliveries already waiting for a retry that it no longer admits are dropped at their next attempt, with nothing sent and no History entry. If you widen it, they still go out. A retry is judged against the ticket as it was when the event happened.</li>
-  <li><strong>A group condition never matches <code>ticket.created</code>.</strong> That event is raised before auto-assignment. To hear about tickets landing in a group, subscribe to <code>ticket.assigned</code>.</li>
+  <li><strong>A ticket that auto-assignment routes when it is created</strong> is announced with its group already set, so a group condition can match <code>ticket.created</code>.</li>
   <li>The filter does not change what a hook is sent: the body is the same, and the ticket details used for the test are never put in a body or kept in History.</li>
 </ul>
 
@@ -776,7 +796,7 @@ function verifySignature(secret, body, header) {
 
 
 <h3>Delivery and retries</h3>
-<p>Each attempt has a 10-second timeout. A delivery that fails with a connection error, a DNS or TLS failure, a timeout, a <code>5xx</code> status or <code>429</code> is tried again: there are 8 attempts in all, with a wait that starts at 30 seconds and doubles each time (30 seconds, then 1, 2, 4, 8, 16 and 32 minutes), each wait capped at an hour. In practice the waits add up to a little over an hour. Email uses the same schedule. A <code>Retry-After</code> header from the receiver is honoured, up to an hour. A blocked (private or internal) address, and any other status such as <code>400</code> or <code>404</code>, is not retried.</p>
+<p>Each attempt has a 10-second timeout. A delivery that fails with a connection error, a DNS or TLS failure, a timeout, a <code>5xx</code> status or <code>429</code> is tried again: there are 8 attempts in all, with a wait that starts at 30 seconds and doubles each time (30 seconds, then 1, 2, 4, 8, 16 and 32 minutes), each wait capped at an hour. In practice the waits add up to a little over an hour. Email uses the same schedule. If a <code>429</code> or <code>5xx</code> answer carries <code>Retry-After</code> asking for a longer wait than the schedule, that wait is used, up to an hour. A blocked (private or internal) address, and any other status such as <code>400</code> or <code>404</code>, is not retried.</p>
 <p><strong>A receiver can therefore see the same event twice.</strong> Every delivery carries two headers: <code>X-GHD-Delivery</code>, a UUID that stays the same across the retries of one delivery (use it to drop a repeat), and <code>X-GHD-Event</code>, the event name. The signature headers are unchanged. If you change a hook's URL, deliveries still waiting for the old address are dropped, and so are deliveries waiting for an event the hook no longer lists, or that are for a hook that is now disabled.</p>
 
 <h3>Last delivery</h3>
@@ -832,7 +852,7 @@ function verifySignature(secret, body, header) {
 
 <h3>Where you can read it</h3>
 <ul>
-  <li><strong>On a ticket.</strong> Staff and administrators see an <em>Activity</em> feed on the ticket. The field-by-field diff is for administrators. Staff see it only when <em>Staff can view ticket change history</em> is on. That setting is off by default, and it is under <em>Admin → Settings → General → Audit log</em>. A change of status or assignee shows the status or person by name, with the id as a tooltip; if the status or account has since been deleted, the id is shown. Names appear only to someone who is allowed to see the diff.</li>
+  <li><strong>On a ticket.</strong> Staff and administrators see an <em>Activity</em> feed on the ticket. The field-by-field diff is for administrators. Staff see it only when <em>Staff can view ticket change history</em> is on. That setting is off by default, and it is under <em>Admin → Settings → General → Audit log</em>. A change of status or assignee shows the status or person by name, with the id as a tooltip; if the status or account has since been deleted, the id is shown. The same names appear in the admin-wide Audit log, not only on a ticket. Names appear only to someone who is allowed to see the diff.</li>
   <li><strong>Audit Log.</strong> A searchable view across entities, in the sidebar for administrators and staff. Staff see ticket entries only, and only for tickets they can see. Administrators see every entry, including account actions.</li>
 </ul>
 

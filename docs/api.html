@@ -94,6 +94,7 @@
       <li><a href="#api-requesters">What a requester sees</a></li>
       <li><a href="#api-service-users">OAuth clients &amp; service users</a></li>
       <li><a href="#api-priority">Priority and following</a></li>
+      <li><a href="#api-webhook-events">Webhook events</a></li>
       <li><a href="#api-errors">Errors &amp; pagination</a></li>
       <li><a href="api-reference.html">API Reference</a></li>
       <li><a href="mcp.html">MCP Server</a></li>
@@ -295,6 +296,10 @@ Cache-Control: private, max-age=3600</code></pre>
   <li><strong>Followers.</strong> <code>PUT</code> and <code>DELETE /api/v1/tickets/{id}/follow</code> start and stop following a ticket for the signed-in staff member or administrator, and answer <code>204</code>. <code>GET /api/v1/tickets/{id}/followers</code> lists who follows it. Following is a personal choice, so an API key or OAuth client gets <code>403 session_required</code>.</li>
   <li><strong>Archived classification.</strong> Nobody, staff and administrators included, may file a new ticket into an archived category, type or item, or reclassify one into it: <code>400 bad_request</code>. A ticket already in an archived node can keep it.</li>
 </ul>
+
+<h2 id="api-webhook-events">Webhook events</h2>
+
+<p>A webhook subscribes to event names, set with <code>events</code> on <code>/api/v1/admin/webhooks</code>. The names are <code>*</code> (all), <code>ticket.created</code>, <code>ticket.assigned</code>, <code>ticket.status_changed</code>, <code>ticket.replied</code>, <code>ticket.note_added</code>, <code>ticket.resolved</code>, <code>ticket.closed</code>, <code>ticket.reopened</code>, <code>ticket.linked</code>, <code>ticket.priority_changed</code> and <code>ticket.classified</code>. A change to a ticket is one event, and a hook gets <strong>one delivery per change</strong>, labelled with the first name it subscribes to that the change carries. The raw body holds ids only. When a change is announced under several names, a receiver that reads only <code>Type</code> can miss one; read the ticket by <code>TicketID</code> to know more. See <a href="admin-guide.html#admin-webhook-one">Webhooks in the admin guide</a> for the order of names and the chat messages, and the <a href="api-reference.html">API reference</a> for the request fields.</p>
 
 <h2 id="api-errors">Errors &amp; pagination</h2>
 

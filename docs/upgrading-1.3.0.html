@@ -94,10 +94,11 @@
       <li><a href="#reopen">Reopening</a></li>
       <li><a href="#ticket-page">Priority, Assign to me</a></li>
       <li><a href="#webhooks">Webhooks</a></li>
+      <li><a href="#one-event">One change, one event</a></li>
       <li><a href="#admin-api">Admin API</a></li>
       <li><a href="#api-changes">Other API changes</a></li>
-      <li><a href="#saml-metadata">SAML metadata XML</a></li>
       <li><a href="#admin-screens">Routing and paged Users</a></li>
+      <li><a href="#saml-metadata">SAML metadata XML</a></li>
       <li><a href="#known-gaps">Not in 1.3.0</a></li>
       <li><a href="#steps">Doing the upgrade</a></li>
     </ul>
@@ -196,6 +197,7 @@
     <tr><td>Reopening a ticket flags it, raises priority once, restarts the SLA and mails staff; requesters see less</td><td>Staff, administrators, requesters, scripts that read the audit routes</td></tr>
     <tr><td>Change priority, Assign to me, Resolve all children</td><td>Staff and administrators</td></tr>
     <tr><td>Webhooks: the raw JSON body holds only ids, notes are their own event, failed deliveries are retried, a history, a ticket filter</td><td>Anyone who receives webhooks</td></tr>
+    <tr><td>One change, one event: a hook gets one delivery per change; two new event names; status moves carry the same names from every route; one staff mail per person per change</td><td>Anyone who receives webhooks; staff who get ticket email</td></tr>
     <tr><td>Admin API: checks before writes, inactive statuses retired, keys list only themselves</td><td>Scripts and API keys that call admin routes</td></tr>
     <tr><td>Other API changes: unknown settings keys refused, new answer shapes</td><td>Scripts and integrations</td></tr>
     <tr><td>New Admin → Routing page; Admin → Users is paged</td><td>Administrators; scripts that save the auto-assignment settings</td></tr>
@@ -228,6 +230,7 @@
   <li><strong>More on the ticket page.</strong> Staff can change a ticket's priority, take an unassigned ticket with Assign to me, and resolve all open child tickets at once. <a href="#ticket-page">Details</a></li>
   <li><strong>Archive from the admin screen.</strong> Categories, types and items can be archived and unarchived in <strong>Admin → Categories</strong>. <a href="#archived-nodes">Details</a></li>
   <li><strong>OAuth clients can write.</strong> Each client acts as a service user that is listed in Admin → Users. <a href="#service-users">Details</a></li>
+  <li><strong>One delivery per change.</strong> A webhook gets one delivery for one change, however many things it changed, and nothing is sent for a change that failed. <a href="#one-event">Details</a></li>
   <li><strong>Webhook retries, history and a ticket filter.</strong> <a href="#webhooks">Details</a></li>
   <li><strong>MCP over Streamable HTTP.</strong> The server answers MCP at <code>/mcp</code>, and the older SSE routes stay. <a href="mcp.html">MCP Server</a></li>
   <li><strong>A way back in.</strong> <code>unlock &lt;email&gt;</code> on the server clears an account's lockouts and gives it a new one-time password. <a href="#unlock">Details</a></li>
@@ -547,12 +550,12 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 
 <ul>
   <li><code>POST /api/v1/tickets</code>, <code>PATCH /api/v1/tickets/{id}</code> (with <code>category_id</code>, <code>type_id</code> or <code>item_id</code>) and the MCP <code>create_ticket</code> tool answer <code>400 bad_request</code>, for example <em>type_id is not an active type</em>. This holds for sessions and API keys alike.</li>
-  <li>A ticket already in an archived node keeps it. Unrelated edits, a change that repeats the existing classification, and staff follow-ups of a closed ticket still work.</li>
-  <li>Staff and administrators still see archived entries, greyed out and labelled <em>(archived)</em>, and cannot pick them in the new-ticket and reclassify pickers. A ticket's own archived node stays selected so it can keep it.</li>
+  <li>A ticket already in an archived category, type or item keeps it. Unrelated edits, a change that repeats the existing classification, and staff follow-ups of a closed ticket still work.</li>
+  <li>Staff and administrators still see archived entries, greyed out and labelled <em>(archived)</em>, and cannot pick them in the new-ticket and reclassify pickers. A ticket's own archived category, type or item stays selected so it can keep it.</li>
   <li>A change that carries a refused classification now changes nothing. The status and assignee in the same request are no longer applied before the <code>400</code>.</li>
 </ul>
 
-<p>Administrators can now archive and unarchive a category, type or item from <strong>Admin → Categories</strong>. To file into an archived node again, unarchive it there.</p>
+<p>Administrators can now archive and unarchive a category, type or item from <strong>Admin → Categories</strong>. To file into it again, unarchive it there.</p>
 
 <h2 id="service-users">OAuth clients act through a service user</h2>
 
@@ -645,14 +648,44 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 <p><code>ticket.replied</code> is now sent for customer-visible replies only. Internal notes are sent as the new <code>ticket.note_added</code>. A hook subscribed to <code>ticket.replied</code> stops receiving notes. Add <code>ticket.note_added</code>, or choose all events, to keep them.</p>
 
 <h3 id="webhooks-retries">A receiver may now see an event twice</h3>
-<p>A delivery that fails with a connection error, DNS or TLS failure, timeout, a 5xx or a 429 is tried again: 8 attempts in all, with a wait that starts at 30 seconds and doubles each time (30 seconds, then 1, 2, 4, 8, 16 and 32 minutes), each wait capped at an hour. In practice the waits add up to a little over an hour. A <code>Retry-After</code> header from the receiver is honoured up to an hour. A blocked (internal) address and any other status, such as 400 or 404, are not retried. If you change a hook's URL, deliveries still waiting for the old address are dropped, and so are deliveries waiting for an event the hook no longer lists.</p>
+<p>A delivery that fails with a connection error, DNS or TLS failure, timeout, a 5xx or a 429 is tried again: 8 attempts in all, with a wait that starts at 30 seconds and doubles each time (30 seconds, then 1, 2, 4, 8, 16 and 32 minutes), each wait capped at an hour. In practice the waits add up to a little over an hour. If a <code>429</code> or <code>5xx</code> answer carries <code>Retry-After</code> asking for a longer wait than the schedule, that wait is used, up to an hour. A blocked (internal) address and any other status, such as 400 or 404, are not retried. If you change a hook's URL, deliveries still waiting for the old address are dropped, and so are deliveries waiting for an event the hook no longer lists.</p>
 <p>Every delivery now carries two headers: <code>X-GHD-Delivery</code>, a UUID that stays the same across the retries of one delivery (use it to drop a repeat), and <code>X-GHD-Event</code>, the event name. The signature headers are unchanged.</p>
 
 <h3 id="webhooks-history">New: History and Redeliver</h3>
 <p><strong>Admin → Webhooks</strong> has a <strong>History</strong> button per hook: its last 25 deliveries with the outcome, status, number of attempts and time. Payloads and error text are not kept. <strong>Redeliver</strong> sends a delivery's event again as a new delivery. A chat message is rebuilt from the ticket as it is now, so it can differ from the original, and a reply's text is sent only if the reply still exists and is public.</p>
 
 <h3 id="webhooks-filter">New: a ticket filter</h3>
-<p>A hook can be limited to tickets in chosen categories, priorities or assigned groups (<strong>Admin → Webhooks → Ticket filter</strong>), or inverted to send for every ticket that does not match. A hook with no filter, which is every hook after the upgrade, behaves as before. An event the filter turns away is not a delivery for that hook: no delivery id, no retry, no History entry. The filter is read as it is now, when an event is sent, at every retry and at Redeliver, so tightening a filter drops waiting retries that it no longer admits. Redeliver is refused with <code>409 webhook_filter_excludes</code> when the filter does not admit the ticket, and with <code>409 webhook_filter_unverifiable</code> when the hook has a filter and the ticket is gone. <code>ticket.created</code> is raised before auto-assignment, so a group condition never matches it. Subscribe to <code>ticket.assigned</code> to hear about tickets landing in a group.</p>
+<p>A hook can be limited to tickets in chosen categories, priorities or assigned groups (<strong>Admin → Webhooks → Ticket filter</strong>), or inverted to send for every ticket that does not match. A hook with no filter, which is every hook after the upgrade, behaves as before. An event the filter turns away is not a delivery for that hook: no delivery id, no retry, no History entry. The filter is read as it is now, when an event is sent, at every retry and at Redeliver, so tightening a filter drops waiting retries that it no longer admits. Redeliver is refused with <code>409 webhook_filter_excludes</code> when the filter does not admit the ticket, and with <code>409 webhook_filter_unverifiable</code> when the hook has a filter and the ticket is gone. A ticket that auto-assignment routes when it is created is announced with its group already set, so a group condition can match <code>ticket.created</code>.</p>
+
+<h2 id="one-event">One change, one event: webhooks and staff email</h2>
+
+<p><strong>Who notices:</strong> anyone who receives webhooks, and staff who get ticket email. Nothing to change in settings, and no migration.</p>
+
+<p>A change to a ticket is now one event, saved to the delivery queue in the same step as the change. Before, each field that changed was announced on its own after the change had been saved, so a crash in between lost the notification. Now a change that fails sends nothing.</p>
+
+<h3 id="one-event-webhooks">Webhook receivers</h3>
+<ul>
+  <li><strong>One delivery per change, per hook.</strong> A hook subscribed to <em>All events</em> (<code>*</code>), or to several names, used to get two or three deliveries for one click: a save that changed status, assignee and priority; a reopen; a reply that reopens. It now gets one. <code>X-GHD-Event</code> and <code>Type</code> carry the first name, in this order, that the hook subscribes to: <code>ticket.created</code>, <code>ticket.reopened</code>, <code>ticket.resolved</code>, <code>ticket.closed</code>, <code>ticket.status_changed</code>, <code>ticket.assigned</code>, <code>ticket.priority_changed</code>, <code>ticket.classified</code>, <code>ticket.replied</code>, <code>ticket.note_added</code>, <code>ticket.linked</code>. A hook subscribed to one name is told that name, with the body it always had.</li>
+  <li><strong>A receiver that switches on <code>Type</code> can miss a kind.</strong> The body does not list the other kinds. A requester's reply that reopens a ticket arrives as <code>ticket.reopened</code> only, so a receiver that handles just <code>ticket.replied</code> will not see that reply. If you need more than the label, read the ticket through the REST API with <code>TicketID</code>.</li>
+  <li><strong>The same status move has the same names from every route.</strong> A move into Resolved is <code>ticket.status_changed</code> and <code>ticket.resolved</code>; into Closed, <code>ticket.status_changed</code> and <code>ticket.closed</code>; out of Resolved or Closed into an open status, <code>ticket.status_changed</code> and <code>ticket.reopened</code>. So <code>ticket.status_changed</code> now also fires for the Resolve button, the Close button, the automatic close and a requester's reopening reply, and <code>ticket.resolved</code> and <code>ticket.closed</code> now also fire when a status is changed directly.</li>
+  <li><strong>Two new names:</strong> <code>ticket.priority_changed</code> and <code>ticket.classified</code> (category, type or item). A hook subscribed to <em>All events</em> starts receiving them. They can be chosen in <strong>Admin → Webhooks</strong>. Their bodies have no <code>Payload</code>; read the ticket by <code>TicketID</code>.</li>
+  <li><strong>A status change to the status the ticket already has announces nothing about status.</strong> 1.2.x sent <code>ticket.status_changed</code> for it. That holds for a change through the API or MCP that repeats the current status, Resolved included: a save that repeats Resolved and assigns someone sends <code>ticket.assigned</code> only, and the guest is not mailed or given a new link. Only the Resolve button on an already-Resolved ticket, with new notes, is still a resolution: it sends <code>ticket.resolved</code> only.</li>
+  <li><strong>The raw body is unchanged:</strong> ids only, with no tracking number, no list of kinds and no version flag. Deliveries queued before the upgrade are sent as they were.</li>
+  <li><strong>Chat and Jira messages.</strong> Under the headline they can add one line, such as <em>Also: assigned, priority changed</em>, that names the change's other kinds, but only kinds that this hook subscribes to. A hook subscribed to a single name gets no such line, and a Jira message gains an optional <code>also</code> key under the same rule. The text of a reply appears only for a hook subscribed to <code>ticket.replied</code> (or <em>All events</em>); a hook on <code>ticket.reopened</code> alone gets its Reopened message without the reply. A Jira message includes the status name only for a hook subscribed to a status event. Internal notes never appear.</li>
+  <li>A ticket that auto-assignment routes when it is created is announced once, as created and assigned.</li>
+</ul>
+
+<h3 id="one-event-tickets">Ticket behaviour</h3>
+<ul>
+  <li><strong>A <code>PATCH /api/v1/tickets/{id}</code> is all or nothing.</strong> Status, assignee, classification and priority are applied in one step. A refusal partway through now leaves the whole request unapplied; before, the steps ahead of it were already saved.</li>
+  <li><strong>Reclassifying announces <code>ticket.classified</code></strong> and a priority change announces <code>ticket.priority_changed</code>. Reclassifying still writes no audit entry.</li>
+</ul>
+
+<h3 id="one-event-email">Staff email</h3>
+<ul>
+  <li>The server works out who is mailed a moment after the change is saved. At most one mail goes to any address for one change (compared without regard to case); when a guest's address is also a staff member's, the staff mail is sent. A person who qualifies for several reasons in one change gets one mail, for the first of assigned, reopened, requester replied whose switch is on. A person who files a ticket that auto-assignment then assigns to them gets one mail.</li>
+  <li>A guest may get a different message: the first of created, reopened, resolved, replied, status changed that the change carries. A change of status to Resolved now says "We have resolved", and one that reopens says "We have reopened". Mail queued before the upgrade is sent as it was.</li>
+</ul>
 
 <h2 id="admin-api">Admin API: no more half-applied edits, and new rules</h2>
 
