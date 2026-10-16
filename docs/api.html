@@ -362,6 +362,7 @@ Cache-Control: private, max-age=3600</code></pre>
   <li>The audit list returns an object with <code>entries</code>, <code>total</code>, <code>total_capped</code> and <code>has_more</code>. Page while <code>has_more</code> is true. When <code>total_capped</code> is true, <code>total</code> is the cap (10,000) and means "at least this many".</li>
 </ul>
 <pre><code>GET /api/v1/tickets?limit=50&amp;offset=100</code></pre>
+<p><code>GET /api/v1/tickets</code> also takes <code>scope</code>: <code>mine</code> (the default), <code>unassigned</code>, <code>all</code> (administrators only) and <code>visible</code>. <code>scope=visible</code> is available to staff and administrators and returns every ticket the caller can see, in one query that pages with <code>limit</code> and <code>offset</code>: every ticket for an administrator, or for staff while <em>Limit staff to their group scope</em> is off, and the staff scope while it is on. A reporting user still gets only their own tickets. A server older than this release ignores an unknown scope and answers as <code>mine</code>.</p>
 <p>Every other list returns its whole result as a bare JSON array.</p>
 
 <h3>Rate limiting</h3>

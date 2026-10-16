@@ -99,6 +99,7 @@
       <li><a href="#api-changes">Other API changes</a></li>
       <li><a href="#admin-screens">Routing and paged Users</a></li>
       <li><a href="#saml-metadata">SAML metadata XML</a></li>
+      <li><a href="#staff-search">Staff search</a></li>
       <li><a href="#known-gaps">Not in 1.3.0</a></li>
       <li><a href="#steps">Doing the upgrade</a></li>
     </ul>
@@ -202,6 +203,7 @@
     <tr><td>Other API changes: unknown settings keys refused, new answer shapes</td><td>Scripts and integrations</td></tr>
     <tr><td>New Admin → Routing page; Admin → Users is paged</td><td>Administrators; scripts that save the auto-assignment settings</td></tr>
     <tr><td>SAML accepts pasted metadata XML and reads more name claims</td><td>Administrators who set up SAML; SAML users whose display name may change</td></tr>
+    <tr><td>Staff search covers every ticket the person can see, with an <em>Only my tickets</em> chip</td><td>Staff and administrators; <code>scope=visible</code> is new</td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
@@ -230,6 +232,7 @@
   <li><strong>More on the ticket page.</strong> Staff can change a ticket's priority, take an unassigned ticket with Assign to me, and resolve all open child tickets at once. <a href="#ticket-page">Details</a></li>
   <li><strong>Archive from the admin screen.</strong> Categories, types and items can be archived and unarchived in <strong>Admin → Categories</strong>. <a href="#archived-nodes">Details</a></li>
   <li><strong>OAuth clients can write.</strong> Each client acts as a service user that is listed in Admin → Users. <a href="#service-users">Details</a></li>
+  <li><strong>Search finds more.</strong> Staff search covers every ticket they can see, with a chip to narrow it to the queue. <a href="#staff-search">Details</a></li>
   <li><strong>One delivery per change.</strong> A webhook gets one delivery for one change, however many things it changed, and nothing is sent for a change that failed. <a href="#one-event">Details</a></li>
   <li><strong>Webhook retries, history and a ticket filter.</strong> <a href="#webhooks">Details</a></li>
   <li><strong>MCP over Streamable HTTP.</strong> The server answers MCP at <code>/mcp</code>, and the older SSE routes stay. <a href="mcp.html">MCP Server</a></li>
@@ -757,6 +760,18 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
   <li><strong>More name claims.</strong> The display name is now also read from <code>firstName</code> and <code>lastName</code>, and from the claim names Microsoft Entra ID sends by default. A person's stored name is rewritten at each sign-in, so an identity provider that already sent these may change some display names at the next sign-in. <a href="authentication.html#auth-saml">Details</a></li>
 </ul>
 
+<h2 id="staff-search">Staff search covers every ticket they can see</h2>
+
+<p><strong>Who notices:</strong> staff and administrators. Requesters are unchanged and still see only their own tickets.</p>
+
+<p>Searching the ticket list used to cover only the selected queue, so staff searching from <em>Mine</em> never found a ticket assigned to someone else. <strong>Typing in the search box now covers every ticket the person can see, whatever queue is selected</strong>, and the results area says <em>Searching all tickets you can see</em>.</p>
+
+<ul>
+  <li>An <em>Only my tickets</em> or <em>Only unassigned</em> chip narrows the search to the queue. Click it again to widen it. It resets when the box is cleared or the queue changes, and it is not offered on an administrator's <em>All</em> queue. A box with only spaces counts as empty, and with an empty box the queue behaves as before.</li>
+  <li><strong>Who can see what is unchanged.</strong> Administrators, and staff while <em>Limit staff to their group scope</em> is off, see every ticket. With it on, staff see tickets they reported or are assigned, tickets assigned to one of their groups, and tickets in a category or type their groups cover, so a staff member in one group still cannot find another group's ticket.</li>
+  <li><strong>API:</strong> <code>GET /api/v1/tickets?scope=visible</code> for staff and administrators. An older server ignores an unknown scope and answers as <code>mine</code>. The existing scopes behave as before. There is no migration.</li>
+</ul>
+
 <h2 id="known-gaps">What is not in 1.3.0</h2>
 
 <p>Earlier versions of these pages described or implied some things that the product does not do. Each is tracked as an issue. These are gaps in the product, not changes in 1.3.0. The pages now say what the product does.</p>
@@ -765,7 +780,7 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
   <thead><tr><th>Area</th><th>What is missing</th><th>Issue</th></tr></thead>
   <tbody>
   <tr><td>Ticket detail</td><td>Markdown is shown as typed, not rendered. A reply cannot be edited or deleted by anyone: a correction is a new reply, by design.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/443" target="_blank" rel="noopener">#443</a></td></tr>
-  <tr><td>Staff workflow</td><td>No filing a ticket on someone's behalf outside MCP, and search covers only your own queue.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/444" target="_blank" rel="noopener">#444</a></td></tr>
+  <tr><td>Staff workflow</td><td>No filing a ticket on someone's behalf outside MCP.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/514" target="_blank" rel="noopener">#514</a></td></tr>
   <tr><td>Guest attachments</td><td>A guest can attach a file only through the API. The guest page has no upload control.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/445" target="_blank" rel="noopener">#445</a></td></tr>
   <tr><td>API keys</td><td>Only administrators can create them.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/450" target="_blank" rel="noopener">#450</a></td></tr>
   <tr><td>Password reset</td><td>No reset by email.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/451" target="_blank" rel="noopener">#451</a></td></tr>
