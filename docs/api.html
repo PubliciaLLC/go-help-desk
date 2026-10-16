@@ -89,8 +89,11 @@
       <li><a href="#api-session-only">Session-only settings</a></li>
       <li><a href="#api-visibility">Visibility &amp; tracking numbers</a></li>
       <li><a href="#api-closed">Closed tickets</a></li>
+      <li><a href="#api-requesters">What a requester sees</a></li>
+      <li><a href="#api-service-users">OAuth clients &amp; service users</a></li>
       <li><a href="#api-attachments">Attachment downloads</a></li>
       <li><a href="#api-guest">Guest access</a></li>
+      <li><a href="#api-priority">Priority and following</a></li>
       <li><a href="#api-errors">Errors &amp; pagination</a></li>
       <li><a href="api-reference.html">API Reference</a></li>
       <li><a href="mcp.html">MCP Server</a></li>
@@ -117,7 +120,7 @@
 
 <p>The REST API is mounted at <code>/api/v1/</code>. Requests and responses are JSON, except where a route takes a multipart upload, returns a file, or returns another format; the reference marks those. Timestamps are RFC 3339 strings. Resource IDs are UUIDs.</p>
 
-<p>Tickets also carry a human-readable tracking number such as <code>GHD-2026-000001</code>. The prefix (<code>GHD</code>) is the <code>ticket_prefix</code> setting, so your instance may use another. <code>GET /api/v1/tickets/{id}</code> accepts a tracking number in place of the UUID. Every other ticket route takes the UUID only: for a ticket you can see, a tracking number there answers <code>400</code>. See <a href="#api-visibility">Visibility &amp; tracking numbers</a>.</p>
+<p>Tickets also carry a human-readable tracking number such as <code>GHD-2026-000001</code>. The prefix (<code>GHD</code>) is the <code>ticket_prefix</code> setting, so your instance may use another. Every route under <code>/api/v1/tickets/{id}</code> accepts a tracking number in place of the UUID. See <a href="#api-visibility">Visibility &amp; tracking numbers</a>.</p>
 
 <h3>Base URL</h3>
 <pre><code>&lt;BASE_URL&gt;/api/v1</code></pre>
@@ -145,7 +148,7 @@
     </tr>
     <tr>
       <td><strong>OAuth2 JWT</strong></td>
-      <td>POST to <code>/api/v1/auth/oauth/token</code> with <code>"grant_type": "client_credentials"</code>, <code>client_id</code> and <code>client_secret</code> in a JSON body (form encoding is refused). The token lasts one hour (<code>expires_in: 3600</code>). Send it as <code>Authorization: Bearer &lt;token&gt;</code>. A client acts at the staff role, so it cannot reach admin-only routes. Deleting the client revokes its tokens on the next request.</td>
+      <td>POST to <code>/api/v1/auth/oauth/token</code> with <code>"grant_type": "client_credentials"</code>, <code>client_id</code> and <code>client_secret</code> in a JSON body (form encoding is refused). The token lasts one hour (<code>expires_in: 3600</code>). Send it as <code>Authorization: Bearer &lt;token&gt;</code>. A client acts through its own service user, an account created with the client and named after it, at that user's role (staff or user, never administrator), so it cannot reach admin-only routes. Disabling that user or deleting the client stops its tokens on the next request. See <a href="#api-service-users">OAuth clients and their service user</a>.</td>
       <td>Server-to-server integrations (JIRA, chatbots)</td>
     </tr>
     <tr>
@@ -157,7 +160,7 @@
 </table>
 
 <div class="callout callout-note">
-  <p>The MCP server at <code>/mcp/</code> accepts the same session, API key and OAuth2 JWT authentication as the REST API. See <a href="mcp.html">MCP Server</a> for connection details.</p>
+  <p>The MCP server at <code>/mcp</code> accepts the same session, API key and OAuth2 JWT authentication as the REST API. See <a href="mcp.html">MCP Server</a> for connection details.</p>
 </div>
 
 
@@ -179,6 +182,8 @@
 
 <p>The catalogue is served by <code>GET /api/v1/admin/scopes</code>, which needs <code>credentials:read</code>. Credentials issued before scopes were enforced (1.2.0) carry none and stop working until they are reissued. See <a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a>.</p>
 
+
+<p>An administrator signed in through the browser lists and deletes every API key, whoever owns it. An API key can list and delete only itself: another key's id, its owner's other keys included, answers <code>404 not_found</code>. Before 1.3.0 a signed-in administrator saw only their own keys, and a key could delete another administrator's key if it knew the id.</p>
 
 <h2 id="api-session-only">Settings that need a signed-in administrator</h2>
 
@@ -203,7 +208,7 @@
 
 <p>A ticket you may not see answers <code>404 not_found</code>, the same answer as a ticket that does not exist. It is never <code>403</code>, so tracking numbers, which are sequential, cannot be walked to learn which tickets exist. Earlier releases answered <code>403</code>; from 1.3.0 the answer is <code>404</code>.</p>
 
-<p><code>GET /api/v1/tickets/{id}</code> accepts a tracking number in any letter case, so <code>ghd-2026-000001</code> and <code>GHD-2026-000001</code> reach the same ticket. There is no separate lookup endpoint. Every other route under <code>/api/v1/tickets/{id}</code> takes the UUID, and answers <code>400</code> for a tracking number of a ticket you can see.</p>
+<p>Every route under <code>/api/v1/tickets/{id}</code> accepts a tracking number in any letter case in place of the UUID, so <code>ghd-2026-000001</code> and <code>GHD-2026-000001</code> reach the same ticket. There is no separate lookup endpoint. A value that is not a UUID is looked up as a tracking number, so one that names no ticket answers <code>404 not_found</code>. Before 1.3.0 only <code>GET /api/v1/tickets/{id}</code> took a tracking number, and the other routes answered <code>400</code>.</p>
 
 
 <h2 id="api-closed">Closed tickets</h2>
@@ -260,6 +265,37 @@ Cache-Control: private, max-age=3600</code></pre>
 </ul>
 
 
+<h2 id="api-requesters">What a requester sees</h2>
+
+<p>A requester is a caller with the <code>user</code> role. On a ticket they reported, they see its current state and its conversation, and not its history.</p>
+
+<ul>
+  <li>A ticket sent to a requester carries only these fields: <code>id</code>, <code>tracking_number</code>, <code>subject</code>, <code>description</code>, <code>status_id</code>, <code>priority</code>, <code>category_id</code>, <code>type_id</code>, <code>item_id</code>, <code>created_at</code>, <code>resolved_at</code>, <code>assignee_user_id</code> and <code>resolution_notes</code>. The group, the reporter, guest details, <code>closed_at</code>, <code>updated_at</code>, the Pending times and <code>reopen_count</code> are for staff and administrators. The same list applies wherever a ticket is returned, including over MCP.</li>
+  <li><code>GET /api/v1/tickets/{id}/audit</code>, <code>/history</code> and <code>/followers</code> answer <code>403 forbidden</code> to a requester on a ticket they can see (and <code>404</code> on one they cannot).</li>
+  <li>A requester's ticket has <code>sla: null</code> and <code>can_reopen: false</code>. A requester cannot change a ticket's status, assignment, classification or priority (<code>403 forbidden</code>).</li>
+</ul>
+
+<h2 id="api-service-users">OAuth clients and their service user <span class="badge-new">New in 1.3.0</span></h2>
+
+<p>Creating an OAuth client also creates a service user, named after the client. The client acts as that user, at its role (staff by default, or user; never administrator). Tickets and replies a client writes carry the client's name, so a client holding <code>tickets:write</code> can now create tickets and replies. Before 1.3.0 those calls answered <code>403 user_identity_required</code>.</p>
+
+<ul>
+  <li><code>POST /api/v1/admin/oauth-clients</code> returns the service user's <code>user_id</code>. <code>GET /api/v1/admin/oauth-clients</code> returns <code>user_id</code> and <code>groups</code> for each client. A client sees tickets by its service user's groups, so a client whose user is in no group sees nothing when ticket scope enforcement is on.</li>
+  <li>The user is listed on <code>GET /api/v1/admin/users</code> with <code>service_account: true</code>. An administrator can rename it (which renames the client), change its role between staff and user, give it groups, and disable it. Disabling the user stops the client.</li>
+  <li>A service user never signs in. An attempt to give it a way in, such as <code>reset_mfa</code> or the administrator role, answers <code>409 service_account</code>. <code>DELETE /api/v1/admin/users/{id}</code> on one also answers <code>409</code>: delete the client instead, which removes its user. Tickets it wrote keep its name.</li>
+  <li>A service user is never emailed, and an API key or OAuth client cannot follow a ticket (<code>403 session_required</code>).</li>
+  <li><code>GET /api/v1/admin/users</code> returns the newest 200 accounts unless you send <code>page</code>. With <code>page</code> (1-based) it takes <code>per_page</code> (default 50, at most 200), <code>q</code>, <code>role</code> and <code>service_account</code>, and the total comes back in the <code>X-Total-Count</code> header.</li>
+</ul>
+
+<h2 id="api-priority">Priority and following</h2>
+
+<ul>
+  <li><strong>Changing priority.</strong> <code>PATCH /api/v1/tickets/{id}</code> takes <code>priority</code> (<code>critical</code>, <code>high</code>, <code>medium</code> or <code>low</code>) beside the status, assignment and classification fields. Staff and administrators only; a requester gets <code>403 forbidden</code>. Changing it re-matches the ticket's SLA policy for the new priority and keeps the SLA clock. An unknown value answers <code>400 bad_request</code>, and a Resolved or Closed ticket answers <code>409 ticket_closed</code> with nothing saved.</li>
+  <li><strong>Reopening.</strong> A move from Resolved or Closed back to an open status is a reopen: <code>reopen_count</code> goes up by one, the first reopen raises the priority one level, and the SLA starts over. This holds for <code>PATCH</code> with a <code>status_id</code>, for <code>POST /api/v1/tickets/{id}/reopen</code> and for a requester's reply to a Resolved ticket.</li>
+  <li><strong>Followers.</strong> <code>PUT</code> and <code>DELETE /api/v1/tickets/{id}/follow</code> start and stop following a ticket for the signed-in staff member or administrator, and answer <code>204</code>. <code>GET /api/v1/tickets/{id}/followers</code> lists who follows it. Following is a personal choice, so an API key or OAuth client gets <code>403 session_required</code>.</li>
+  <li><strong>Archived classification.</strong> Nobody, staff and administrators included, may file a new ticket into an archived category, type or item, or reclassify one into it: <code>400 bad_request</code>. A ticket already in an archived node can keep it.</li>
+</ul>
+
 <h2 id="api-errors">Errors &amp; pagination</h2>
 
 <h3>Error format</h3>
@@ -270,7 +306,7 @@ Cache-Control: private, max-age=3600</code></pre>
     "message": "subject is required"
   }
 }</code></pre>
-<p>Match on <code>code</code>, not on <code>message</code>. Refusals made by the authentication and role checks (<code>401 unauthorized</code>, and <code>403</code> with <code>forbidden</code>, <code>mfa_required</code>, <code>insufficient_scope</code> or <code>session_required</code>) carry the same envelope but are sent as <code>text/plain</code>. An unknown path answers <code>404</code> with the plain text <code>404 page not found</code>.</p>
+<p>Match on <code>code</code>, not on <code>message</code>. Refusals made by the authentication and role checks (<code>401 unauthorized</code>, and <code>403</code> with <code>forbidden</code>, <code>mfa_required</code>, <code>password_change_required</code>, <code>insufficient_scope</code> or <code>session_required</code>) carry the same envelope but are sent as <code>text/plain</code>. An unknown path answers <code>404</code> with the plain text <code>404 page not found</code>.</p>
 
 <h3>Codes</h3>
 <table>
@@ -282,15 +318,22 @@ Cache-Control: private, max-age=3600</code></pre>
     <tr><td><code>unauthorized</code></td><td>401</td><td>No valid session, API key or OAuth token.</td></tr>
     <tr><td><code>forbidden</code></td><td>403</td><td>The caller is known but the role does not allow this.</td></tr>
     <tr><td><code>mfa_required</code></td><td>403</td><td>The session has not passed its second factor.</td></tr>
+    <tr><td><code>password_change_required</code></td><td>403</td><td>The account was unlocked from the server console and still holds the password it was given. The session may only change its password (<code>PATCH /api/v1/me/password</code>).</td></tr>
+    <tr><td><code>password_reset_required</code></td><td>403</td><td>The password is right but is still stored in the older, weaker form, and the grace period has passed. It must be reset by an administrator. Administrators are exempt.</td></tr>
     <tr><td><code>insufficient_scope</code></td><td>403</td><td>The credential does not carry the scope the route needs.</td></tr>
     <tr><td><code>session_required</code></td><td>403</td><td>A setting or account action that only a signed-in session may perform.</td></tr>
     <tr><td><code>not_downloadable</code></td><td>403</td><td>An attachment request whose <code>Sec-Fetch-Dest</code> says it will be rendered.</td></tr>
     <tr><td><code>not_found</code></td><td>404</td><td>The resource does not exist, or you may not see it.</td></tr>
+    <tr><td><code>unknown_setting</code></td><td>400</td><td><code>PATCH /api/v1/admin/settings</code> named a setting the server does not know. Nothing in the body is saved. A name ending in <code>_set</code> answers <code>readonly_setting</code>.</td></tr>
+    <tr><td><code>email_required</code></td><td>400</td><td>Turning on <code>self_signup_enabled</code> or <code>guest_submission_enabled</code> while email is not configured (<code>SMTP_HOST</code> and <code>SMTP_FROM</code>).</td></tr>
     <tr><td><code>group_name_taken</code>, <code>category_in_use</code>, <code>type_in_use</code>, <code>item_in_use</code></td><td>409</td><td>A group name that already exists, or a category, type or item that tickets (or, for a category, SLA records of its policies) still refer to and so cannot be deleted.</td></tr>
     <tr><td><code>ticket_closed</code></td><td>409</td><td>The ticket is closed and the caller may not change it.</td></tr>
     <tr><td><code>ticket_not_closed</code>, <code>follow_up_exists</code></td><td>409</td><td>A follow-up was asked for a ticket that is open, or a requester asked for a second one.</td></tr>
+    <tr><td><code>service_account</code></td><td>409</td><td>An attempt to delete a service user, or to give it a way to sign in. Manage it through its OAuth client.</td></tr>
+    <tr><td><code>webhook_filter_excludes</code>, <code>webhook_filter_unverifiable</code></td><td>409</td><td>Redelivering a webhook delivery whose ticket the hook's filter does not admit, or whose ticket no longer exists so the filter cannot be checked. Nothing is queued. <code>webhook_disabled</code> and <code>webhook_not_subscribed</code> refuse it the same way.</td></tr>
+    <tr><td><code>passkeys_unavailable</code></td><td>503</td><td>The passkey routes, when <code>BASE_URL</code> is an IP address or a single-word host. See <a href="authentication.html">Authentication</a>.</td></tr>
     <tr><td><code>reopen_window_closed</code></td><td>409</td><td>A requester's reply to a Resolved ticket after the reopen window.</td></tr>
-    <tr><td><code>rate_limited</code></td><td>429</td><td>Too many attempts. <code>Retry-After</code> says when to try again.</td></tr>
+    <tr><td><code>rate_limited</code></td><td>429</td><td>Too many attempts. <code>Retry-After</code> says in seconds when to try again. Sign-in sends at most 60, and a locked second factor sends 900.</td></tr>
     <tr><td><code>internal_error</code></td><td>500</td><td>An unexpected server error. Check the application logs.</td></tr>
   </tbody>
 </table>
