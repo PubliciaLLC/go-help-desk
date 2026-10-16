@@ -223,6 +223,14 @@ type CreateInput struct {
 	GuestName      string // required when GuestEmail is set
 	GuestPhone     string // optional
 
+	// FiledBy is the member of staff filing the ticket on someone else's
+	// behalf (#444). The status history, the "created" audit entry and the
+	// "created" event name them as the actor; the requester above stays the
+	// ticket's reporter or guest. Nil means the requester filed it themselves,
+	// and is the actor, as before. Whether the caller may file for someone else
+	// is the caller's decision: the service cannot see a role here.
+	FiledBy *uuid.UUID
+
 	// TrackingPrefix is the instance's configured tracking-number prefix.
 	// Empty falls back to DefaultTrackingPrefix, so a caller that does not
 	// care — a test, a script — still produces well-formed numbers.
@@ -250,7 +258,11 @@ type Assignment struct {
 // Create opens a new ticket, fires the created event, and optionally attaches
 // an SLA policy.
 func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
-	return s.create(ctx, in, Actor{UserID: in.ReporterUserID}, nil)
+	actor := Actor{UserID: in.ReporterUserID}
+	if in.FiledBy != nil {
+		actor.UserID = in.FiledBy
+	}
+	return s.create(ctx, in, actor, nil)
 }
 
 // CreateFollowUp opens a NEW ticket from a Closed one, linked back to it
