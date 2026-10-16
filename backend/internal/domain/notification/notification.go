@@ -24,6 +24,12 @@ const (
 	EventTicketReopened  EventType = "ticket.reopened"
 	EventTicketLinked    EventType = "ticket.linked"
 
+	// EventTicketPriorityChanged and EventTicketClassified (category, type or
+	// item) are raised by changes that announced nothing before (#506). Both
+	// are names a webhook can subscribe to; neither carries an id on the wire.
+	EventTicketPriorityChanged EventType = "ticket.priority_changed"
+	EventTicketClassified      EventType = "ticket.classified"
+
 	// EventGuestLinkResent is a guest asking for a fresh access link, which is
 	// not a change to the ticket. It exists so the mail goes out through the
 	// one path that sends mail, rather than giving the HTTP layer a mailer of
@@ -82,12 +88,23 @@ type Event struct {
 	// Excluded from JSON like GuestToken: a webhook has no use for it.
 	GuestLink bool `json:"-"`
 
-	// AssigneeUserID and AssigneeGroupID are who holds the ticket as of this
-	// event. They are set on ticket.assigned and ticket.replied so staff mail
-	// can be addressed without a second read of a ticket that may have moved
-	// on. Excluded from JSON: the webhook body is unchanged.
-	AssigneeUserID  *uuid.UUID `json:"-"`
-	AssigneeGroupID *uuid.UUID `json:"-"`
+	// Kinds is everything that happened in the change this event announces,
+	// as the existing event names, in KindOrder (#506). Consumers match on it:
+	// a hook fires when any kind is one it subscribes to. Empty on an event
+	// raised the old way and on the rows made by splitting a change (a staff.*
+	// row, the requester's mail row): AllKinds then reads it as [Type].
+	// Excluded from JSON: the webhook body does not change.
+	Kinds []EventType `json:"-"`
+
+	// Changes is each field that moved, from and to, ids and enums only
+	// (never text). Excluded from JSON like Kinds.
+	Changes []Change `json:"-"`
+
+	// Ticket is the ticket as committed, for the webhook filter and for staff
+	// mail (who holds it now). It replaces the Attrs, AssigneeUserID and
+	// AssigneeGroupID fields, which were each a part of it. Nil means "not
+	// known": an event that names no ticket. Excluded from JSON like Kinds.
+	Ticket *TicketState `json:"-"`
 
 	// FromRequester marks a ticket.replied that the requester wrote (an
 	// account holder with the user role, or a guest) and that is not an
@@ -117,12 +134,6 @@ type Event struct {
 	Subject    string `json:"-"`
 	StatusName string `json:"-"`
 
-	// Attrs is the classification of the ticket this event describes, as it
-	// was when the event was raised, for webhook filters (#413). Excluded from
-	// JSON like Subject: the raw body does not change. Nil means "not known":
-	// an event queued before #413, or one that names no ticket.
-	Attrs *TicketAttrs `json:"-"`
-
 	// TargetWebhook, when set, makes the event a delivery to that one hook
 	// instead of an announcement to all of them: the webhook channel's queued
 	// row is first fanned out into one row per subscribed hook, so each hook
@@ -136,12 +147,28 @@ type Event struct {
 	TargetURLHash string `json:"-"`
 }
 
-// TicketAttrs is the part of a ticket a webhook filter can test. Priority is
-// ticket.Priority as a string: ticket imports notification, not the reverse.
-type TicketAttrs struct {
-	CategoryID      uuid.UUID  `json:"category_id"`
-	Priority        string     `json:"priority"`
+// TicketState is the ticket as committed by the change an event announces.
+// Priority is ticket.Priority as a string: ticket imports notification, not
+// the reverse. The three json keys that predate #506 (category_id, priority,
+// assignee_group_id) keep their names, so a row queued before it still reads.
+type TicketState struct {
+	StatusID        uuid.UUID  `json:"status_id"`
+	AssigneeUserID  *uuid.UUID `json:"assignee_user_id,omitempty"`
 	AssigneeGroupID *uuid.UUID `json:"assignee_group_id,omitempty"` // nil = no group
+	Priority        string     `json:"priority"`
+	CategoryID      uuid.UUID  `json:"category_id"`
+	TypeID          *uuid.UUID `json:"type_id,omitempty"`
+	ItemID          *uuid.UUID `json:"item_id,omitempty"`
+	ReopenCount     int        `json:"reopen_count,omitempty"`
+}
+
+// AllKinds is what the event announces: its Kinds, or just its Type when it
+// has none.
+func (e Event) AllKinds() []EventType {
+	if len(e.Kinds) > 0 {
+		return e.Kinds
+	}
+	return []EventType{e.Type}
 }
 
 // RetryAfterError asks the outbox worker to wait at least After before the
