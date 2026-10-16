@@ -235,3 +235,23 @@ func TestAPIKeyMaxLifetimeSetting(t *testing.T) {
 		require.Equal(t, 2, h.adminSvc.APIKeyMaxLifetimeYears(context.Background()))
 	})
 }
+
+// "-1" is the setting's value for Never, not a date. In expires_at it is
+// text that is not an RFC 3339 timestamp, so it is refused under a limit and
+// under no limit alike; reading it as "no expiry" would turn a typo into a key
+// that never expires.
+func TestAPIKeyLifetime_TheStringMinusOneIsNotAnExpiry(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	creators := h.creators(t)
+	for _, years := range []int{2, admin.APIKeyNoLimit} {
+		h.setMaxYears(t, years)
+		for name, create := range creators {
+			for _, bad := range []string{"-1", " -1 ", "0"} {
+				code, b := create(map[string]any{"expires_at": bad})
+				require.Equal(t, http.StatusBadRequest, code, "%s, limit %d, %q: %s", name, years, bad, b)
+				require.Equal(t, "invalid_expires_at", errCode(t, b), "%s %q", name, bad)
+			}
+		}
+	}
+}

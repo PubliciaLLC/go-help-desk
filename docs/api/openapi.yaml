@@ -2164,7 +2164,9 @@ paths:
         staff only while the staff_can_create_api_keys setting is on (403 api_keys_not_allowed
         otherwise). The raw token is returned once. scopes is required and may not exceed the
         caller's role: see GET /me/api-keys/scopes (invalid_scope otherwise). expires_at is
-        optional and, when given, must be a future RFC 3339 timestamp. user_id is refused
+        required unless the api_key_max_lifetime_years setting is Never (-1): 400
+        expires_at_required without it, and it must be a future RFC 3339 timestamp no later
+        than that many years from now (400 expires_at_too_far). user_id is refused
         (bad_request): this route always issues for the caller. Issuing is audited (entity_type
         api_key, action api_key_issued). An API key or OAuth client is refused with 403
         session_required.
@@ -5648,29 +5650,31 @@ paths:
       operationId: createAPIKey
       summary: Create an API key.
       description: >-
-        Administrators only (second factor required).
-        Creates an API key that acts at its owner's role and counts as having
-        passed MFA. The owner is the caller, or the staff member named by user_id: an
-        administrator signed in through the browser can issue a key on behalf of
-        a live staff member, or for themselves. A requester, another administrator
-        and a service account (an OAuth client's identity) cannot own a key. The key belongs to that
-        account and acts as it; created_by records the administrator. An API key
-        or OAuth client that names any user but its own owner is refused with
-        403 session_required. Either way the key is audited (entity_type api_key,
-        action api_key_issued). The raw token is returned once, in this response,
-        and cannot be shown again. It has the form GHD_ followed by 64
+        Administrators only, in a signed-in session (second factor required).
+        Only a signed-in person creates an API key: an API key is refused with 403
+        session_required, so a key cannot mint a successor before it expires (an OAuth
+        client is a staff identity and is refused by the role check, 403 forbidden). A key can still list
+        and revoke keys. Creates an API key that acts at its owner's role and counts
+        as having passed MFA. The owner is the caller, or the staff member named by
+        user_id: an administrator can issue a key on behalf of a live staff member, or
+        for themselves. A requester, another administrator and a service account (an
+        OAuth client's identity) cannot own a key. The key belongs to that account and
+        acts as it; created_by records the administrator. Either way the key is audited
+        (entity_type api_key, action api_key_issued). The raw token is returned once, in
+        this response, and cannot be shown again. It has the form GHD_ followed by 64
         hexadecimal characters. scopes is required: a non-empty list of
         resource:action values from GET /api/v1/admin/scopes, and none may exceed
         the owner's role (for staff, tickets, groups:read and audit:read; for
-        an administrator, any): invalid_scope otherwise. An API key can grant only scopes it holds itself. expires_at
-        is optional; when given it must be a future RFC 3339 timestamp. An
-        expired key is refused as if it were unknown. name is not validated and
-        may be empty.
+        an administrator, any): invalid_scope otherwise. expires_at is required unless
+        the api_key_max_lifetime_years setting is Never (-1): 400 expires_at_required
+        without it, and it must be a future RFC 3339 timestamp no later than that many
+        years from now (400 expires_at_too_far). Only with Never may it be omitted, for a
+        key that never expires. An expired key is refused as if it were unknown. name is
+        not validated and may be empty.
       tags: ['Admin: Credentials']
       x-ghd-handler: handleCreateAPIKey
       security:
         - sessionCookie: []
-        - apiKey: ['credentials:write']
       x-ghd-roles: [admin]
       x-ghd-mfa: true
       requestBody:
@@ -5757,10 +5761,7 @@ paths:
           description: >-
             Two sources. The authentication middleware refuses with text/plain:
             forbidden (role), mfa_required (second factor not passed) or
-            insufficient_scope (the API key lacks credentials:write). The handler
-            refuses with application/json: insufficient_scope when an API key
-            asks to grant a scope it does not hold itself, and session_required
-            when an API key or OAuth client names a user_id other than its own owner.
+            session_required (an API key). Keys cannot create keys.
           content:
             text/plain:
               schema:

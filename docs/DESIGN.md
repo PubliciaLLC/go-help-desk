@@ -2407,10 +2407,11 @@ Four more things are off limits to a machine credential, for the same reason:
   code check could spend the account's durable failed-attempt budget and lock
   the owner out repeatedly; the passkey routes sit beside it and answer to the
   same rule.
-- **Issuing a credential broader than itself.** Otherwise `credentials:write` is
-  every scope: hold only that, mint a key with `users:write`, use it. A
-  signed-in administrator is exempt — they already hold everything a credential
-  could be granted, so they are not escalating.
+- **Creating an API key** (#450). Keys can't make keys: only a signed-in person
+  creates one. (It used to be allowed within the key's own scopes, which still
+  let `credentials:write` mint a successor before the first expired, and that one
+  another.) See Who can create API keys, below. A key can still list and revoke
+  keys.
 
 Scopes cannot express any of this. The narrowest possible key still belongs to
 its owner, so any scope reaching those routes reaches account takeover.
@@ -2454,17 +2455,29 @@ one is a permission decision with one switch and no per-user exceptions.
   admin "issue for" search leaves service accounts out). A deleted account is
   `404`, a disabled one `400 user_disabled`. The owner is judged before the
   scopes, so the refusal gives the real reason.
-- **A machine credential that names another user gets `403 session_required`.**
-  Otherwise `credentials:write` is the ability to become anyone: issue a key
-  as the administrator and use it. Naming its own owner is not naming another
-  user and is accepted.
-- **Keys cannot mint keys.** `GET/POST /me/api-keys`, `GET /me/api-keys/scopes`
-  and `DELETE /me/api-keys/{id}` sit inside `meRouter` behind
-  `DenyMachineCredentials`, `RequireMFA` and `RequireRole(admin, staff)`. A
-  leaked key that could create keys would turn one leak into as many as the
-  attacker liked, and revoking the first would remove none of the rest.
-  `POST /admin/api-keys` is open to a key holding `credentials:write` as before,
-  but a key it issues is owned by the key's own owner.
+- **Keys can't make keys** (Erik, 2026-10-16). Only a signed-in person creates an
+  API key, on `/me/api-keys` or `POST /admin/api-keys`. A key that could would
+  mint a successor that expires up to the full lifetime limit later, and that
+  one another, so the limit would mean nothing, and revoking the first would
+  remove none of the rest. `GET/POST /me/api-keys`, `GET /me/api-keys/scopes` and
+  `DELETE /me/api-keys/{id}` sit inside `meRouter` behind
+  `DenyMachineCredentials`, `RequireMFA` and `RequireRole(admin, staff)`;
+  `POST /admin/api-keys` carries `DenyMachineCredentials` too. An administrator's
+  API key gets `403 session_required` on both; an OAuth client is a staff
+  identity, so on the admin route the role check refuses it first (`403
+  forbidden`). Listing and revoking stay open to a key on the admin routes (a key
+  lists and revokes only itself, #466). This also makes the "a machine
+  credential naming another user" and "broader than itself" cases unreachable,
+  so those checks are gone rather than left as dead code.
+- **A change of role keeps the person's keys** (Erik, 2026-10-16). A key acts
+  within its owner's *current* role: the role check runs on every request, and
+  the scope table only limits what can be put on a key at creation. Demoting an
+  administrator leaves their keys alive but able to reach only what staff can.
+  Promoting a staff member leaves their keys alive and, by the same rule, able to
+  reach what an administrator can reach, so "issue a key for a staff member, then
+  promote them" leaves an administrator holding a key another administrator
+  issued. That is an accepted consequence, not an oversight; revoke the keys, or
+  use the password-reset checkbox, if it is not wanted.
 - **`staff_can_create_api_keys` is auth-critical** (`admin.AuthCriticalKeys`), so
   a machine credential cannot change it. Switching it on widens who may hold a
   bearer credential, the same kind of change as `closed_reopen_policy`, and a
@@ -2488,10 +2501,12 @@ one is a permission decision with one switch and no per-user exceptions.
   administrator-only scope is offered to staff, and fails if a scope the router lets a role use is
   missing from the table.
 - **Every issue and revoke is audited**, a person's own keys and keys issued or
-  revoked on someone's behalf alike (a revoke-on-reset is one entry with the count) (`entity_type` `api_key`; actions
+  revoked on someone's behalf alike (`entity_type` `api_key`; actions
   `api_key_issued` and `api_key_revoked`; the entry carries the owner's id,
   `on_behalf`, the scopes and the expiry, and never the key's name, which is
-  free text). The write is best effort and detached from the request with
+  free text). A revoke-on-reset is a different entry: `entity_type` `user` (the
+  account whose keys went), action `api_keys_revoked`, with `keys_revoked`, the
+  count. The write is best effort and detached from the request with
   `context.WithoutCancel`, like `user.Service.ResetMFA`: an audit entry here does
   not gate anything, and hanging up after the key is written cannot suppress it
   (`TestAPIKeyAudit_IsWrittenEvenIfTheRequestWasCancelled`).
@@ -2524,7 +2539,11 @@ one is a permission decision with one switch and no per-user exceptions.
   `POST /admin/users/{id}/password`. When true the server deletes every key the
   account owns after the password is set and the sessions are ended, and records
   `api_keys_revoked` on the account's audit entries with `keys_revoked`, the
-  count. It is a separate step from the reset, not one transaction. A person
+  count. It is a separate step from the reset, not one transaction, and it is
+  detached from the request (`context.WithoutCancel`) like the audit write. If
+  the revoke fails after the reset succeeded, the answer is `500 keys_not_revoked`
+  with "The password was reset, but the API keys were NOT revoked.", which the
+  page shows as it is. A person
   changing or resetting their own password never touches keys, and neither
   `server unlock` nor `server reset-factors` does.
 - Both screens take the expiry as a date. `GET /me` reports `can_create_api_keys`

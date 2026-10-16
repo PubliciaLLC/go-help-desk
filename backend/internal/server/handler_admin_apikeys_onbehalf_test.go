@@ -132,46 +132,6 @@ func TestAdminIssueKey_ScopesFollowTheOwnersRole(t *testing.T) {
 	}
 }
 
-// Without this, credentials:write is the ability to become anyone: a leaked
-// key holding only that would mint one for the administrator and use it.
-func TestAdminIssueKey_AMachineCredentialCannotNameAnotherUser(t *testing.T) {
-	h, cleanup := newHarness(t)
-	defer cleanup()
-
-	before, err := h.authStore.ListByUser(t.Context(), h.staffID)
-	require.NoError(t, err)
-
-	res := h.doAsAdmin(t, http.MethodPost, adminKeys, map[string]any{
-		"name": "x", "scopes": []string{"tickets:read"}, "user_id": h.staffID.String(),
-	})
-	b := readAll(t, res)
-	require.Equal(t, http.StatusForbidden, res.StatusCode, "body: %s", b)
-	require.Equal(t, "session_required", errCode(t, b))
-
-	after, err := h.authStore.ListByUser(t.Context(), h.staffID)
-	require.NoError(t, err)
-	require.Len(t, after, len(before), "nothing was issued")
-
-	t.Run("an OAuth client likewise", func(t *testing.T) {
-		client := h.newServiceClient(t, "minter", allScopes()...)
-		res := h.doBearer(t, client.Token, http.MethodPost, adminKeys, map[string]any{
-			"name": "x", "scopes": []string{"tickets:read"}, "user_id": h.adminID.String(),
-		})
-		b := readAll(t, res)
-		// An OAuth client's service user is staff, so it never reaches this
-		// route at all. Either refusal is a 403 and nothing is issued.
-		require.Equal(t, http.StatusForbidden, res.StatusCode, "body: %s", b)
-	})
-
-	t.Run("naming itself is not naming someone else", func(t *testing.T) {
-		res := h.doAsAdmin(t, http.MethodPost, adminKeys, map[string]any{
-			"name": "x", "scopes": []string{"tickets:read"}, "user_id": h.adminID.String(), "expires_at": inYears(1),
-		})
-		b := readAll(t, res)
-		require.Equal(t, http.StatusCreated, res.StatusCode, "body: %s", b)
-	})
-}
-
 func TestAdminIssueKey_TheNamedUserMustBeLive(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()

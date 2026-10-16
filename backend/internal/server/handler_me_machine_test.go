@@ -301,29 +301,28 @@ func TestMachineCredential_CannotChangeAuthCriticalSettings(t *testing.T) {
 }
 
 // credentials:write was every scope: hold only that, mint a key with
-// users:write, use it.
+// users:write, use it. Keys can't make keys at all now (2026-10-16), so there is
+// no scope to escalate through: the narrow key is refused outright, whatever it
+// asks for.
 func TestMachineCredential_CannotMintABroaderCredential(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
 	narrow := mintKey(t, h, []string{"credentials:write", "credentials:read"})
 
-	resp := withKey(t, h, narrow, http.MethodPost, "/api/v1/admin/api-keys",
-		map[string]any{"name": "escalation", "scopes": []string{"users:write"}})
-	require.Equal(t, http.StatusForbidden, resp.StatusCode,
-		"a credential must not mint one broader than itself")
-
-	var body struct {
-		Error struct{ Code, Message string } `json:"error"`
+	for name, scopes := range map[string][]string{
+		"broader": {"users:write"},
+		"its own": {"credentials:read"},
+	} {
+		resp := withKey(t, h, narrow, http.MethodPost, "/api/v1/admin/api-keys",
+			map[string]any{"name": "escalation", "scopes": scopes, "expires_at": inYears(1)})
+		require.Equal(t, http.StatusForbidden, resp.StatusCode, name)
+		var body struct {
+			Error struct{ Code, Message string } `json:"error"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+		require.Equal(t, "session_required", body.Error.Code, name)
 	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
-	require.Equal(t, "insufficient_scope", body.Error.Code)
-	require.Contains(t, body.Error.Message, "users:write")
-
-	// Minting within its own scopes is still fine.
-	resp = withKey(t, h, narrow, http.MethodPost, "/api/v1/admin/api-keys",
-		map[string]any{"name": "sibling", "scopes": []string{"credentials:read"}, "expires_at": inYears(1)})
-	require.Equal(t, http.StatusCreated, resp.StatusCode)
 }
 
 // A signed-in administrator is not escalating — they already hold everything a

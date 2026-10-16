@@ -613,19 +613,37 @@ func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request
 	// changed and the sessions gone, and a failure here is reported as the
 	// failure it is, with the reset itself still done.
 	if body.RevokeAPIKeys {
-		n, err := s.authStore.DeleteAllForUser(r.Context(), id)
-		if err != nil {
-			handleError(w, err)
+		if err := s.revokeUserAPIKeys(r.Context(), actorID, id); err != nil {
+			// Said exactly: the reset is done, the keys are not gone. A plain
+			// 500 would read as "nothing happened", and the administrator
+			// asked for the keys to go because they feared a leak.
+			slog.ErrorContext(r.Context(), "revoking API keys after a password reset failed", "user_id", id, "error", err)
+			Error(w, http.StatusInternalServerError, "keys_not_revoked",
+				"The password was reset, but the API keys were NOT revoked. Revoke them from Admin → API Keys.")
 			return
-		}
-		if actor != nil && s.auditStore != nil {
-			s.writeAudit(r.Context(), audit.Entry{
-				ID: uuid.New(), ActorID: actorID, EntityType: "user", EntityID: id,
-				Action: "api_keys_revoked", After: map[string]any{"keys_revoked": n}, CreatedAt: time.Now(),
-			})
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// revokeUserAPIKeys deletes every key the user owns and audits how many.
+//
+// Detached from the request with context.WithoutCancel, as the audit write is:
+// the password has already changed, and a client that hangs up now must not
+// decide whether the keys it asked to have revoked are still there.
+func (s *Server) revokeUserAPIKeys(reqCtx context.Context, actorID *uuid.UUID, id uuid.UUID) error {
+	ctx := context.WithoutCancel(reqCtx)
+	n, err := s.authStore.DeleteAllForUser(ctx, id)
+	if err != nil {
+		return err
+	}
+	if actorID != nil && s.auditStore != nil {
+		s.writeAudit(ctx, audit.Entry{
+			ID: uuid.New(), ActorID: actorID, EntityType: "user", EntityID: id,
+			Action: "api_keys_revoked", After: map[string]any{"keys_revoked": n}, CreatedAt: time.Now(),
+		})
+	}
+	return nil
 }
 
 func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {

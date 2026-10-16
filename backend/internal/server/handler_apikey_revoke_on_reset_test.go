@@ -111,3 +111,36 @@ func TestOwnPasswordChange_NeverTouchesKeys(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, res.StatusCode, "body: %s", b)
 	require.Equal(t, 1, h.keyCount(t, h.staffID), "the flag means nothing on a person's own change")
 }
+
+// The revoke is detached from the request, as the audit write is: a client that
+// hangs up after the password changed must not leave the keys it asked to have
+// revoked (pgx reports "context canceled" even for a write that completed).
+func TestAdminPasswordReset_TheRevokeIsDetachedFromTheRequest(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	require.NoError(t, h.srv.RevokeUserKeysForTest(cancelled, h.adminID, h.staffID))
+	require.Zero(t, h.keyCount(t, h.staffID), "the keys went although the request context was cancelled")
+}
+
+// If the password was reset and the keys could not be revoked, the answer says
+// exactly that. A plain 500 would read as "nothing happened", and the person
+// who asked for the keys to go would believe they were still there to revoke
+// another way, or that the reset itself failed.
+func TestAdminPasswordReset_AFailedRevokeIsNotReportedAsAFailedReset(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	admin := h.session(t, asAdmin)
+
+	// Make only the key statement fail.
+	_, err := h.tx.Exec(`ALTER TABLE api_keys RENAME TO api_keys_gone`)
+	require.NoError(t, err)
+
+	code, b := h.resetPassword(t, admin, h.staffID,
+		map[string]any{"new_password": "a-brand-new-password", "revoke_api_keys": true})
+	require.Equal(t, http.StatusInternalServerError, code, "body: %s", b)
+	require.Equal(t, "keys_not_revoked", errCode(t, b))
+	require.Contains(t, string(b), "The password was reset, but the API keys were NOT revoked.")
+}

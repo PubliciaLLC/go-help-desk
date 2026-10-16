@@ -295,7 +295,13 @@ func (s *Server) adminRouter() *chi.Mux {
 	r.Route("/api-keys", func(r chi.Router) {
 		r.Use(authmw.RequireResource(auth.ResourceCredentials))
 		r.Get("/", s.handleListAPIKeys)
-		r.Post("/", s.handleCreateAPIKey)
+		// Keys can't make keys (Erik, 2026-10-16): only a signed-in person
+		// creates an API key. A key that could would mint a successor before
+		// it expired, and that one another, so the lifetime limit would mean
+		// nothing and revoking the first would remove none of the rest. Listing
+		// and revoking stay open to a key. An OAuth client never gets this far:
+		// it is staff, and the role check above has already refused it.
+		r.With(authmw.DenyMachineCredentials).Post("/", s.handleCreateAPIKey)
 		r.Delete("/{id}", s.handleDeleteAPIKey)
 	})
 

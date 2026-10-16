@@ -78,17 +78,10 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The key's owner is the caller unless an administrator names someone else
-	// (#450). A machine credential naming anyone but its own owner is refused
-	// before anything else is looked at: credentials:write is otherwise the
-	// ability to become any user, by issuing a key as them and using it.
-	// Naming itself is not naming someone else, so that is let through.
+	// (#450). Only a signed-in person reaches this route (see routes.go), so
+	// there is no machine credential to guard against here.
 	owner := ownerOfKey{id: a.UserID, role: a.Role}
 	if body.UserID != nil && *body.UserID != a.UserID {
-		if a.Machine {
-			Error(w, http.StatusForbidden, "session_required",
-				"an API key or OAuth client cannot issue a key for another user; this requires a signed-in session")
-			return
-		}
 		target, err := s.users.GetByIDAdmin(r.Context(), *body.UserID)
 		if err != nil {
 			handleError(w, err)
@@ -130,17 +123,6 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	if !checkKeyScopes(w, body.Scopes, owner.role) {
 		return
 	}
-	// A machine credential cannot mint one broader than itself. Without this,
-	// credentials:write is every scope: hold only that, issue a key with
-	// users:write, use it. Escalation by one extra request is not a boundary.
-	if isMachine(r) {
-		if over, ok := auth.Subset(authmw.GetActor(r).Scopes, body.Scopes); !ok {
-			Error(w, http.StatusForbidden, "insufficient_scope",
-				"this credential cannot grant "+over+", which it does not hold itself")
-			return
-		}
-	}
-	// Last, as before: a refusal for scopes is told before one for the date.
 	expiresAt, ok := s.checkKeyExpiry(w, r.Context(), body.ExpiresAt)
 	if !ok {
 		return

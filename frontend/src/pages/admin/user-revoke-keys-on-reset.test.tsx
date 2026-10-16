@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { screen, waitFor } from '@testing-library/react'
+import { AxiosError } from 'axios'
 import userEvent from '@testing-library/user-event'
 import { renderWithQuery } from '@/test/render'
 import { api } from '@/api/client'
@@ -75,5 +76,21 @@ describe('the admin password reset', () => {
     await reset(true)
     await waitFor(() =>
       expect((screen.getByRole('checkbox', { name: /also revoke/i }) as HTMLInputElement).checked).toBe(false))
+  })
+
+  // The reset happened and the keys are still there. The page says exactly
+  // that, in the server's words, and does not claim the password was not set.
+  it('shows the server message when the password was reset but the keys were not revoked', async () => {
+    const message = 'The password was reset, but the API keys were NOT revoked. Revoke them from Admin → API Keys.'
+    vi.spyOn(api, 'post').mockRejectedValue(new AxiosError('x', '500', undefined, undefined, {
+      status: 500, statusText: '', headers: {}, config: {} as never,
+      data: { error: { code: 'keys_not_revoked', message } },
+    }))
+    renderWithQuery(<UserDetailPage />)
+    await userEvent.type(await screen.findByPlaceholderText('New password'), 'a-brand-new-password')
+    await userEvent.click(screen.getByRole('checkbox', { name: /also revoke/i }))
+    await userEvent.click(screen.getByRole('button', { name: 'Set password' }))
+    expect((await screen.findByRole('alert')).textContent).toBe(message)
+    expect(screen.queryByText('Password updated.')).toBeNull()
   })
 })

@@ -111,3 +111,9 @@ func (s *Server) RoundRobinFirst(uids []uuid.UUID) uuid.UUID {
 func (s *Server) AuditAPIKeyForTest(ctx context.Context, actor uuid.UUID, action string, keyID, ownerID uuid.UUID) {
 	s.auditAPIKey(ctx, actor, action, keyID, ownerID, []string{"tickets:read"}, nil)
 }
+
+// RevokeUserKeysForTest runs the revoke-on-reset step with the context it is
+// given, so a test can hand it one that is already cancelled.
+func (s *Server) RevokeUserKeysForTest(ctx context.Context, actor, target uuid.UUID) error {
+	return s.revokeUserAPIKeys(ctx, &actor, target)
+}
