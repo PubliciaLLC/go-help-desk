@@ -624,6 +624,12 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 		}
 		views[0].SLA.Earlier = earlier
 	}
+	// The Requester line is staff's. A requester's response is filtered anyway
+	// (it is not on their allowed list); not building it for them avoids the
+	// lookup too.
+	if a := authmw.GetActor(r); a != nil && (a.Role == user.RoleStaff || a.Role == user.RoleAdmin) {
+		views[0].Requester = s.requesterOf(r.Context(), t)
+	}
 	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), views[0]))
 }
 
