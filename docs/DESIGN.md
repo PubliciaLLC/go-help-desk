@@ -2715,9 +2715,8 @@ on the existing webhook feature instead of as plugins.
   filter is tested against the ticket's classification **as it was when the
   event was raised**, not when the outbox delivers, so a ticket reclassified
   in between is judged by its old values. Consequences worth knowing:
-  `ticket.created` is raised before auto-assignment, so a group condition never
-  matches it; to hear about tickets landing in a group, subscribe to
-  `ticket.assigned`. Category covers the category's types and items. There are
+  auto-assignment now happens in the create's own transaction (#506), so
+  `ticket.created` carries the routed group and a group condition can match it. Category covers the category's types and items. There are
   no type or item conditions yet. A filter naming a deleted group or category
   matches no ticket (inverted: every ticket). If a classification is not known
   (an event or a queued row made before this existed), the hook is sent to and
