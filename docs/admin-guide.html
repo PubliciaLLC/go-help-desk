@@ -199,7 +199,16 @@ Facilities
   <li><strong>Add Type</strong> — click <em>Add Type</em> next to a Category. Types cannot exist without a parent Category.</li>
   <li><strong>Add Item</strong> — click <em>Add Item</em> next to a Type.</li>
   <li><strong>Reorder</strong> — drag-and-drop entries to change the order they appear in the ticket form dropdowns.</li>
-  <li><strong>Delete</strong>: Categories, Types and Items with existing tickets cannot be deleted; the API refuses with <code>409</code>. A Category is also kept while an SLA record of one of its SLA policies still exists.</li>
+  <li><strong>Delete</strong>: Categories, Types and Items with existing tickets cannot be deleted; the API refuses with <code>409</code>, and the screen suggests archiving instead. A Category is also kept while an SLA record of one of its SLA policies still exists. Deleting a Category, Type or Item also deletes the custom-field assignments made to it (a Category's include those of its Types and Items).</li>
+  <li><strong>Archive and restore</strong>: see below.</li>
+</ul>
+
+<h3 id="admin-cti-archive">Archiving a Category, Type or Item</h3>
+<p>Archiving hides an entry from new tickets while keeping every ticket already filed under it. Hover over a row and use the archive icon (<em>Archive category</em>, <em>Archive type</em> or <em>Archive item</em>); you are asked to confirm, because requesters will no longer see it. An archived row shows an <em>Archived</em> badge. Its icon becomes <em>Restore</em>, which undoes it at once with no confirmation.</p>
+<ul>
+  <li><strong>Nobody files new tickets into an archived entry</strong>: not requesters, not guests, and not staff or administrators either. Creating a ticket, or moving one to a different classification, with an archived Category, Type or Item is refused with <code>400</code>. This applies to the web screens, API keys and the MCP server alike.</li>
+  <li><strong>Tickets already in it keep it.</strong> Editing such a ticket in other ways, or saving it with the classification it already has, still works.</li>
+  <li><strong>Staff and administrators still see archived entries</strong> in the new-ticket and reclassify pickers, greyed out and marked as archived, but they cannot select them. A ticket's own archived entry stays selected so it can keep it.</li>
 </ul>
 
 <h3>Groups in the CTI editor</h3>
