@@ -168,6 +168,7 @@
     <tr><td>Client mistakes get 4xx; DELETE of an unknown id is 404</td><td>API clients and scripts that call admin routes</td></tr>
     <tr><td>Email refuses to send a password or mail unencrypted to a public server; email-off is reported</td><td>Anyone whose mail server lacks STARTTLS, or who sets <code>SMTP_USER</code> for a server with no login</td></tr>
     <tr><td>Accounts on an old password hash must reset after 30 days</td><td>People who rarely sign in; API clients that sign in with a password</td></tr>
+    <tr><td><code>unlock &lt;email&gt;</code> on the server</td><td>Operators with a locked-out account</td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
@@ -455,6 +456,18 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 </ul>
 
 <p>Tell the people who sign in rarely, or have an administrator reset them, before day 30. New installs are not affected.</p>
+
+<h2 id="unlock">Unlock an account from the server</h2>
+
+<p><strong>Who notices:</strong> nobody, until someone is locked out. This is new.</p>
+
+<p>The server binary has a second recovery command beside <code>reset-factors</code>. In the Compose stack:</p>
+
+<pre><code>docker compose exec app /app/server unlock you@example.com</code></pre>
+
+<p>It works when the web cannot: a lost authenticator or passkey, a disabled account (the only administrator included), a used-up second-factor lockout, or an administrator who signs in through single sign-on and has no usable password. In one step it clears every second factor, turns the account back on, clears the second-factor lockout, ends all sessions, and sets a new random password that it prints once. The person must choose a new password at their next sign-in. The command is recorded in the audit log with the server console as the actor. It needs shell access to the server and adds nothing reachable from the network. <code>reset-factors</code> is unchanged and still does only the factor part.</p>
+
+<p>A signed-in session that owes a password change is answered <code>403 password_change_required</code> everywhere except <code>PATCH /api/v1/me/password</code>. <code>POST /api/v1/auth/local/login</code> reports it as <code>password_change_required</code>, and the user record carries <code>must_change_password</code>. See <a href="getting-started.html#locked-out">Getting Started: Locked out?</a>.</p>
 
 <h2 id="known-gaps">What is not in 1.3.0</h2>
 
