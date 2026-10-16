@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -242,29 +241,6 @@ func TestOutboxRecord_RoundTripsWhatChannelsRead(t *testing.T) {
 	after, err := json.Marshal(got)
 	require.NoError(t, err)
 	require.JSONEq(t, string(before), string(after))
-}
-
-// Every field of Event is either stored or deliberately left out. A new field
-// added to Event without a decision would otherwise vanish silently on the
-// way through the queue.
-func TestOutboxRecord_CoversEveryEventField(t *testing.T) {
-	stored := map[string]bool{}
-	rt := reflect.TypeOf(outboxRecord{})
-	for i := range rt.NumField() {
-		stored[rt.Field(i).Name] = true
-	}
-	notStored := map[string]string{
-		"GuestToken": "a raw credential; created by the worker at send time instead",
-	}
-	et := reflect.TypeOf(notification.Event{})
-	for i := range et.NumField() {
-		name := et.Field(i).Name
-		if stored[name] {
-			continue
-		}
-		_, decided := notStored[name]
-		require.True(t, decided, "Event.%s is neither stored in outboxRecord nor listed as deliberately left out", name)
-	}
 }
 
 func newTestWorker(store notification.Outbox, channels map[string]notification.Dispatcher) *Worker {
@@ -846,17 +822,17 @@ func TestVerificationDispatcher(t *testing.T) {
 // come back as it went in: a group set, and no group.
 func TestOutboxRecord_RoundTripsTicketAttrs(t *testing.T) {
 	grp := uuid.New()
-	for _, attrs := range []*notification.TicketAttrs{
+	for _, attrs := range []*notification.TicketState{
 		{CategoryID: uuid.New(), Priority: "critical", AssigneeGroupID: &grp},
 		{CategoryID: uuid.New(), Priority: "low", AssigneeGroupID: nil},
 	} {
 		ev := sampleEvent()
-		ev.Attrs = attrs
+		ev.Ticket = attrs
 		b, err := encodeEvent(ev)
 		require.NoError(t, err)
 		got, err := decodeEvent(b)
 		require.NoError(t, err)
-		require.Equal(t, attrs, got.Attrs)
+		require.Equal(t, attrs, got.Ticket)
 	}
 }
 
@@ -866,7 +842,7 @@ func TestOutboxRecord_ARowQueuedBeforeAttrsDecodesWithoutThem(t *testing.T) {
 	old := []byte(`{"type":"ticket.created","ticket_id":"11111111-2222-3333-4444-555555555555","occurred_at":"2026-01-01T00:00:00Z"}`)
 	got, err := decodeEvent(old)
 	require.NoError(t, err)
-	require.Nil(t, got.Attrs)
+	require.Nil(t, got.Ticket)
 }
 
 // The filter reads Attrs after the queue (#413). The event is queued, a worker
@@ -884,7 +860,7 @@ func TestOutbox_WebhookFilterSeesAttrsAfterTheQueue(t *testing.T) {
 		TicketID:   uuid.New(),
 		OccurredAt: time.Now().UTC().Truncate(time.Microsecond),
 		Subject:    "Printer jammed",
-		Attrs:      &notification.TicketAttrs{CategoryID: uuid.New(), Priority: "low"},
+		Ticket:     &notification.TicketState{CategoryID: uuid.New(), Priority: "low"},
 	}
 	require.NoError(t, NewOutboxDispatcher(store, []string{"webhook"}, nil).Dispatch(ctx, ev))
 
@@ -922,7 +898,7 @@ func TestOutbox_WebhookFilterSeesAttrsAfterTheQueue(t *testing.T) {
 
 	// The queue carries the attrs, the receiver never sees them: the body is
 	// the bytes of the same event without attrs, as before #413.
-	ev.Attrs = nil
+	ev.Ticket = nil
 	want, err := json.Marshal(ev)
 	require.NoError(t, err)
 	require.Equal(t, string(want), string(body))

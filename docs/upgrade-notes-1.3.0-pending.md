@@ -317,3 +317,30 @@ API keys can now be made by staff, and issued by an administrator on someone els
 - **Existing keys:** an administrator's existing keys keep acting as administrator, unchanged.
 
 **Ordering.** This change adds migration **000048** (`api_keys.created_by`); #451 takes 000049.
+
+## One Change, One Event: Webhooks and Staff Email (#506)
+
+A change to a ticket is now **one event**, written to the notification queue in the same database transaction as the change. Before, each field changed was its own event, announced after the change had committed; a crash in between lost the notification. No migration, and no setting to change.
+
+**Webhook receivers**
+
+- **One delivery per change, per hook.** A hook subscribed to `*`, or to several names, used to get two or three deliveries for one click (a `PATCH` of status, assignee and priority; a reopen; a reply that reopens). It now gets one, with `X-GHD-Event` and `Type` set to the first name, in this order, that the hook subscribes to: `ticket.created`, `ticket.reopened`, `ticket.resolved`, `ticket.closed`, `ticket.status_changed`, `ticket.assigned`, `ticket.priority_changed`, `ticket.classified`, `ticket.replied`, `ticket.note_added`, `ticket.linked`. A hook subscribed to a single name is told that name, with the body it always had.
+- **A receiver that switches on `Type` can miss a kind.** The body does not list the other kinds. A requester's reply that reopens a ticket arrives as `ticket.reopened` only, so a receiver that handles just `ticket.replied` will not see that reply. If you need more than the label, read the ticket through the API by `TicketID`.
+- **The same status move has the same names from every door.** A move into Resolved is `ticket.status_changed` and `ticket.resolved`; into Closed, `ticket.status_changed` and `ticket.closed`; out of Resolved or Closed into an open status, `ticket.status_changed` and `ticket.reopened`. So `ticket.status_changed` now also fires for the Resolve button, the Close button, the auto-close and a requester's reopening reply, and `ticket.resolved` and `ticket.closed` now also fire for a `PATCH` of `status_id`.
+- **New events:** `ticket.priority_changed` and `ticket.classified` (category, type or item). A hook subscribed to `*` starts receiving them. Neither body has a `Payload`; read the ticket by `TicketID`. They can be selected in Admin → Webhooks and are in the `WebhookEvent` enum.
+- **A status change to the status the ticket already has announces nothing about status.** 1.2.x sent `ticket.status_changed` for it. That holds for a `PATCH` or an MCP `update_ticket_status` that repeats the current status, Resolved included: a `PATCH` that repeats Resolved and assigns someone sends `ticket.assigned` only, and the guest is not mailed or given a new link. Only the Resolve button on an already-Resolved ticket, with new notes, is still a resolution: it sends `ticket.resolved` only.
+- **The body is unchanged**: ids only, as before. No tracking number, no kinds, no version flag.
+- Chat and Jira messages include reply text only for a hook that subscribes to `ticket.replied` (or `*`), and Jira includes the ticket's status name only for a hook that subscribes to a status event (`ticket.status_changed`, `ticket.resolved`, `ticket.closed` or `ticket.reopened`); a hook on `ticket.reopened` alone gets its Reopened message without the reply, as in 1.2.x. Internal notes are never included.
+- Chat and Jira formats add one line under the headline naming the change's other kinds ("Also: assigned, priority changed"), but only kinds that hook subscribes to; a hook subscribed to a single name gets no such line. Jira gains an optional `also` key under the same rule.
+- Rows queued before the upgrade are delivered as they were.
+
+**Ticket behaviour**
+
+- **`PATCH /tickets/{id}` is all or nothing.** The status, assignee, classification and priority are applied in one transaction. A refusal partway through now leaves the whole request unapplied; before, the steps ahead of it were already saved.
+- **Auto-assignment happens in the create's transaction.** A new ticket is announced once, as created and assigned.
+- **Reclassifying announces `ticket.classified`**, and a priority change announces `ticket.priority_changed`. Reclassifying still writes no audit entry.
+
+**Staff email**
+
+- Who is mailed is decided by the server when it first picks the change up, a moment after the commit, not on the request. At most one mail goes to any address in one change (compared without case); when a guest's address is also a staff member's, the staff mail is the one sent. A person who qualifies for several reasons in one change gets one mail: the first of assigned, reopened, requester replied whose switch is on. Mail queued before the upgrade is sent as it is.
+- A guest may get a different template: the first of created, reopened, resolved, replied, status changed that the change carries. A `PATCH` to Resolved now says "We have resolved", and a status change that reopens says "We have reopened".

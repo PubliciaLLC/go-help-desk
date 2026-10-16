@@ -2,6 +2,7 @@ package notify
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -70,6 +71,11 @@ type summary struct {
 	Internal   bool
 	URL        string // baseURL + "/tickets/" + TicketID — the staff link, never the guest one
 
+	// Also names the other kinds of the change under the headline, as
+	// "Also: assigned, priority changed" (#506). Kinds only, never values: a
+	// status or group NAME would be content. "" when the change is one kind.
+	Also string
+
 	// Extra fields the JIRA body needs and no chat renderer reads. Kept on
 	// summary rather than read off Payload in format_jira.go so every
 	// renderer still goes through the one function that decides what a
@@ -98,8 +104,13 @@ func summarize(ev notification.Event, baseURL string) summary {
 		internal = true
 	}
 
+	// Reply text goes only to a hook that subscribes to replies. An event now
+	// announces a whole change (#506), and its Payload still holds the reply of a
+	// reply that also reopened; ev.Kinds is already cut down to what this hook
+	// subscribes to (forHook), so a hook on ticket.reopened alone gets its
+	// message without the text, as in 1.2.x.
 	var body string
-	if !internal {
+	if !internal && slices.Contains(ev.AllKinds(), notification.EventTicketReplied) {
 		if b, ok := ev.Payload["ReplyBody"].(string); ok {
 			body = truncateRunes(b, 1000)
 		}
@@ -132,9 +143,10 @@ func summarize(ev notification.Event, baseURL string) summary {
 		Ref:            ref(ev),
 		Tracking:       trackingOf(ev),
 		Headline:       headline(ev.Type, ev.StatusName, internal, linkedTicketID, linkType),
+		Also:           alsoLine(ev),
 		Subject:        sanitizeSubject(ev.Subject),
 		Body:           body,
-		StatusName:     ev.StatusName,
+		StatusName:     statusFor(ev),
 		Internal:       internal,
 		URL:            strings.TrimRight(baseURL, "/") + "/tickets/" + ev.TicketID.String(),
 		Priority:       priority,
@@ -142,6 +154,53 @@ func summarize(ev notification.Event, baseURL string) summary {
 		LinkType:       linkType,
 		OccurredAt:     ev.OccurredAt,
 	}
+}
+
+// kindPhrases word a kind for the "Also" line.
+var kindPhrases = map[notification.EventType]string{
+	notification.EventTicketCreated:         "created",
+	notification.EventTicketReopened:        "reopened",
+	notification.EventTicketResolved:        "resolved",
+	notification.EventTicketClosed:          "closed",
+	notification.EventTicketStatusChanged:   "status changed",
+	notification.EventTicketAssigned:        "assigned",
+	notification.EventTicketPriorityChanged: "priority changed",
+	notification.EventTicketClassified:      "reclassified",
+	notification.EventTicketReplied:         "replied",
+	notification.EventTicketNoteAdded:       "note added",
+	notification.EventTicketLinked:          "linked",
+}
+
+// alsoLine is the one line under the headline that names the change's other
+// kinds, the ones the headline (the hook's own name for the change) does not.
+func alsoLine(ev notification.Event) string {
+	var words []string
+	for _, k := range ev.Kinds {
+		if k == ev.Type {
+			continue
+		}
+		if w, ok := kindPhrases[k]; ok {
+			words = append(words, w)
+		}
+	}
+	if len(words) == 0 {
+		return ""
+	}
+	return "Also: " + strings.Join(words, ", ")
+}
+
+// statusFor is the status name a message may carry: only for a hook whose
+// cut-down kinds include a status kind. A hook subscribed to ticket.assigned
+// alone must not learn the status of a change that also moved it.
+func statusFor(ev notification.Event) string {
+	for _, k := range ev.AllKinds() {
+		switch k {
+		case notification.EventTicketStatusChanged, notification.EventTicketResolved,
+			notification.EventTicketClosed, notification.EventTicketReopened:
+			return ev.StatusName
+		}
+	}
+	return ""
 }
 
 // ref prefers the typed TrackingNumber field (set at every dispatch site),

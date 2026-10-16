@@ -27,7 +27,7 @@ func (f WebhookFilter) IsEmpty() bool {
 // Admits reports whether a ticket with attributes a passes f. known is false
 // only when f has conditions and a is nil. Admits then returns admit=true:
 // the caller delivers and logs (fail open).
-func (f WebhookFilter) Admits(a *TicketAttrs) (admit, known bool) {
+func (f WebhookFilter) Admits(a *TicketState) (admit, known bool) {
 	if f.IsEmpty() {
 		return true, true
 	}

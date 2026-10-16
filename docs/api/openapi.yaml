@@ -10535,10 +10535,10 @@ components:
     WebhookEvent:
       description: >-
         An event name a webhook can subscribe to. The wildcard "*" subscribes to all
-        nine. guest.link_resent is never sent to a webhook.
+        eleven. guest.link_resent is never sent to a webhook.
         ticket.replied is a customer-visible reply only; a staff-only note is ticket.note_added.
       type: string
-      enum: ['*', ticket.created, ticket.assigned, ticket.status_changed, ticket.replied, ticket.note_added, ticket.resolved, ticket.closed, ticket.reopened, ticket.linked]
+      enum: ['*', ticket.created, ticket.assigned, ticket.status_changed, ticket.replied, ticket.note_added, ticket.resolved, ticket.closed, ticket.reopened, ticket.linked, ticket.priority_changed, ticket.classified]
     WebhookPayloadFormat:
       description: >-
         The body shape a delivery uses.

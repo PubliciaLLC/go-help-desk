@@ -68,7 +68,7 @@ func newHarness(t *testing.T) *harness {
 		pendingStatus:    pendingSt,
 		inProgressStatus: inProgressSt,
 	}
-	h.atomic = &fakeAtomic{store: h.store, audit: h.auditStore}
+	h.atomic = &fakeAtomic{store: h.store, audit: h.auditStore, sink: h.dispatcher}
 	h.svc = ticket.NewService(h.store, statuses, h.dispatcher, h.auditStore, h.atomic, h.sla)
 	require.NoError(t, h.svc.LoadSystemStatuses(context.Background()))
 	h.dispatcher.sendTime = h.svc.IssueGuestLink

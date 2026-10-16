@@ -704,12 +704,17 @@ type fakeAtomic struct {
 	store *fakeStore
 	audit *fakeAuditStore
 
+	// sink stands in for the outbox the production runner writes in the
+	// transaction (#506): the merged events of a change that committed are
+	// delivered here, and those of one that rolled back never are.
+	sink notification.Dispatcher
+
 	commits    int
 	rollbacks  int
 	errBeginTx error
 }
 
-func (a *fakeAtomic) InTx(_ context.Context, fn func(ticket.Store, audit.Store) error) error {
+func (a *fakeAtomic) InTx(ctx context.Context, fn func(ticket.Store, audit.Store, *notification.Changes) error) error {
 	if a.errBeginTx != nil {
 		return a.errBeginTx
 	}
@@ -734,7 +739,8 @@ func (a *fakeAtomic) InTx(_ context.Context, fn func(ticket.Store, audit.Store) 
 	counters := [4]int{a.store.creates, a.store.updates, a.store.replyCreates, a.store.historyCreates}
 	slaRecords := append([]fakeSLARecord(nil), a.store.slaRecords...)
 
-	if err := fn(a.store, a.audit); err != nil {
+	changes := &notification.Changes{}
+	if err := fn(a.store, a.audit, changes); err != nil {
 		a.store.slaRecords = slaRecords
 		a.store.tickets = tickets
 		a.store.replies = replies
@@ -748,6 +754,11 @@ func (a *fakeAtomic) InTx(_ context.Context, fn func(ticket.Store, audit.Store) 
 	}
 
 	a.commits++
+	if a.sink != nil {
+		for _, ev := range changes.Events() {
+			_ = a.sink.Dispatch(ctx, ev)
+		}
+	}
 	return nil
 }
 
@@ -852,4 +863,15 @@ func (f *fakeStore) guestTokenCount(ticketID uuid.UUID) int {
 		}
 	}
 	return n
+}
+
+// kinds is every kind the recorded events announce, in order. An event is one
+// change (#506), so what a test used to ask of "the events dispatched" it asks
+// of the kinds they carry.
+func (f *fakeDispatcher) kinds() []notification.EventType {
+	var out []notification.EventType
+	for _, e := range f.events {
+		out = append(out, e.AllKinds()...)
+	}
+	return out
 }
