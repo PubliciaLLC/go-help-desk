@@ -175,6 +175,7 @@
     <tr><td>Nobody can newly file into an archived category, type or item</td><td>Staff, administrators, scripts that file or reclassify</td></tr>
     <tr><td>OAuth clients act through a service user</td><td>Administrators who use OAuth clients</td></tr>
     <tr><td>Staff are emailed about their tickets</td><td>Every staff member and administrator, once email is configured</td></tr>
+    <tr><td>Staff can follow a ticket</td><td>Staff and administrators</td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
@@ -550,6 +551,20 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
   <li><strong>Administrators can force a switch on or off for everyone</strong> under <strong>Admin → Settings → Email</strong> (<code>staff_email_assigned_override</code>, <code>staff_email_activity_override</code> and <code>staff_email_group_override</code>, each <code>user</code>, <code>on</code> or <code>off</code>, <code>user</code> by default). To keep your staff's inboxes as they were, set all three to <em>Off for everyone</em> before you turn email on.</li>
   <li>The service users of OAuth clients are never emailed, even when they belong to a group.</li>
   <li>The emails carry only the ticket's tracking number and a link, like every other email from the help desk.</li>
+</ul>
+
+<h2 id="followers">Staff can follow a ticket</h2>
+
+<p><strong>Who notices:</strong> staff and administrators. This is new.</p>
+
+<p>A <strong>Follow</strong> button on the ticket page (or <code>PUT</code> and <code>DELETE /api/v1/tickets/{id}/follow</code>) makes a staff member or administrator a follower. A follower is emailed when the ticket is assigned and when its requester replies, under the <em>Activity on tickets I'm assigned to or follow</em> switch. The administrator's override of that switch applies to followers too. Nobody is emailed about their own change, and nobody is emailed twice for one event.</p>
+
+<ul>
+  <li><strong>People only.</strong> An API key, an OAuth client or a service user cannot follow or unfollow (<code>403 session_required</code>). Reading <code>GET /api/v1/tickets/{id}/followers</code> works for staff and administrators, and for a key with <code>tickets:read</code>. Staff always see who follows a ticket.</li>
+  <li><strong>Following is recorded</strong> in the audit log (<code>followed</code>, <code>unfollowed</code>). Administrators see these on a ticket's activity feed and in the admin-wide audit view. Staff do not, until an administrator turns on <strong>Staff can view follow history</strong> (<code>staff_can_view_follow_audit</code>, under <strong>Admin → Settings → General → Audit log</strong>; off by default). Requesters never see them.</li>
+  <li>A follower who can no longer see the ticket (ticket scope was turned on, or their groups changed) is skipped when the mail is sent, and keeps following.</li>
+  <li><strong>Reassigning a ticket ends the old assignee's follow</strong> if they followed the ticket they held. It is recorded as <code>unfollowed</code> with whoever moved the ticket as the actor. Moving a ticket between groups does not touch anyone's follow.</li>
+  <li>The assignee is not also mailed as a follower, and neither are the members of an assigned group when the group itself is mailed. For those, their own switches decide.</li>
 </ul>
 
 <h2 id="known-gaps">What is not in 1.3.0</h2>
