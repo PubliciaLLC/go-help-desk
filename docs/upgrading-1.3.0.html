@@ -169,6 +169,7 @@
     <tr><td>Email refuses to send a password or mail unencrypted to a public server; email-off is reported</td><td>Anyone whose mail server lacks STARTTLS, or who sets <code>SMTP_USER</code> for a server with no login</td></tr>
     <tr><td>Accounts on an old password hash must reset after 30 days</td><td>People who rarely sign in; API clients that sign in with a password</td></tr>
     <tr><td><code>unlock &lt;email&gt;</code> on the server</td><td>Operators with a locked-out account</td></tr>
+    <tr><td>An IP address or one-word <code>BASE_URL</code> turns passkeys off</td><td>Installs reached by IP address or a host with no dot</td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
@@ -468,6 +469,20 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 <p>It works when the web cannot: a lost authenticator or passkey, a disabled account (the only administrator included), a used-up second-factor lockout, or an administrator who signs in through single sign-on and has no usable password. In one step it clears every second factor, turns the account back on, clears the second-factor lockout, ends all sessions, and sets a new random password that it prints once. The person must choose a new password at their next sign-in. The command is recorded in the audit log with the server console as the actor. It needs shell access to the server and adds nothing reachable from the network. <code>reset-factors</code> is unchanged and still does only the factor part.</p>
 
 <p>A signed-in session that owes a password change is answered <code>403 password_change_required</code> everywhere except <code>PATCH /api/v1/me/password</code>. <code>POST /api/v1/auth/local/login</code> reports it as <code>password_change_required</code>, and the user record carries <code>must_change_password</code>. See <a href="getting-started.html#locked-out">Getting Started: Locked out?</a>.</p>
+
+<h2 id="passkeys-base-url">An IP address or one-word <code>BASE_URL</code> turns passkeys off</h2>
+
+<p><strong>Who notices:</strong> installs reached by an IP address or a host name with no dot, and anyone whose only second factor is a passkey.</p>
+
+<p>Passkeys are tied to a domain name, so they work only when the host in <code>BASE_URL</code> is a domain name (<code>help.example.com</code>) or <code>localhost</code>. If it is an IP address (<code>http://192.168.1.10:8080</code>), a single word (<code>http://helpdesk:8080</code>) or has non-ASCII characters, <strong>passkeys are switched off</strong>. The server still starts, logs <em>passkeys unavailable</em> once, and administrators see a warning banner that explains it.</p>
+
+<ul>
+  <li>The passkey routes answer <code>503 passkeys_unavailable</code>. <code>GET /api/v1/auth/providers</code> reports <code>passkeys: false</code>, and <code>GET /api/v1/admin/security-warnings</code> carries <code>passkeys</code> with <code>available</code> and <code>reason</code>.</li>
+  <li><strong>An account whose only second factor is a passkey cannot sign in</strong> while passkeys are off. Sign-in answers <code>403 passkey_unavailable</code> and tells the person to ask an administrator to reset their sign-in factors. After <strong>Reset MFA</strong>, they sign in and enrol an authenticator app. Accounts with an authenticator app are not affected. For the last administrator, run <code>reset-factors</code> or <a href="#unlock"><code>unlock</code></a> on the server.</li>
+  <li>Passkeys registered under a domain that you later fix work again if the domain matches.</li>
+</ul>
+
+<p>A <code>BASE_URL</code> with a non-ASCII host stops the server from starting. Write it in punycode.</p>
 
 <h2 id="known-gaps">What is not in 1.3.0</h2>
 
