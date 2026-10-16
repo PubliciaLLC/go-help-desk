@@ -88,6 +88,15 @@ func (f *fakeOutbox) Fail(_ context.Context, id uuid.UUID, reason string) error 
 	return nil
 }
 
+func (f *fakeOutbox) RewriteEvent(_ context.Context, id uuid.UUID, ev []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if r, ok := f.rows[id]; ok {
+		r.event = ev
+	}
+	return nil
+}
+
 func (f *fakeOutbox) DeleteFailedBefore(context.Context, time.Time) (int64, error) { return 0, nil }
 
 // makeDue lets a test skip a backoff.
@@ -618,6 +627,30 @@ var redactAddressCases = []struct{ in, want string }{
 	{"550 recipient 'guest@example.com' rejected", "550 recipient '[address]' rejected"},
 	// #389: an IP literal the relay never closed is hidden too.
 	{"550 5.1.1 <guest@[10.0.0.1>: Recipient address rejected", "550 5.1.1 <[address]>: Recipient address rejected"},
+	// The quoted local part's {0,64} bound: the quote must close within 64
+	// units (an escaped pair counts as one), so 64 is an address and 65 is not.
+	{`"` + strings.Repeat("a", 64) + `"@example.com`, "[address]"},
+	{`"` + strings.Repeat("a", 65) + `"@example.com`, `"` + strings.Repeat("a", 65) + `"@example.com`},
+	// An empty quoted local part is a valid address (RFC 5321/5322), so the
+	// quoted alternative's {0,64} must allow zero inner characters.
+	{`550 <""@example.com> rejected`, "550 <[address]> rejected"},
+	// The IP literal's {0,255} bound: 255 inner characters are an address
+	// with its closing "]"; a 256th leaves the "]" (and that character)
+	// outside the match.
+	{"550 <guest@[" + strings.Repeat("1", 255) + "]>", "550 <[address]>"},
+	{"550 <guest@[" + strings.Repeat("1", 256) + "]>", "550 <[address]1]>"},
+	// The IP literal's whitespace exclusion: the run stops at whitespace, so
+	// a later "]" is not swallowed. Without it the first row would hide
+	// "rest]" too. The CRLF and tab rows have no space between "[" and "]",
+	// so only a \r, \n or \t can stop the run (a literal-space class
+	// would not).
+	{"x guest@[10.0.0.1 rest] tail", "x [address] rest] tail"},
+	// "<" ends the run like ">" does, and the run stops at the closing "]"
+	// (a port after it stays visible).
+	{"550 <guest@[10.0.0.1<a@b.com>", "550 <[address]<[address]>"},
+	{"550 guest@[192.168.1.10]:25 rest", "550 [address]:25 rest"},
+	{"550 5.1.1 <guest@[10.0.0.1\r\nx@b.com]>", "550 5.1.1 <[address]\r\n[address]]>"},
+	{"550 5.1.1 <guest@[10.0.0.1\ta@b.com]>", "550 5.1.1 <[address]\t[address]]>"},
 	// A queue id shaped like an address is hidden too; nothing is lost
 	// that an operator needs.
 	{"250 2.0.0 Ok: queued as 4ABC123@mail.example.com", "250 2.0.0 Ok: queued as [address]"},
@@ -640,9 +673,8 @@ func TestRedactAddresses(t *testing.T) {
 
 // redactAddresses runs on the outbox worker goroutine, and its input is the
 // SMTP relay's reply, which the relay controls. Go's regexp is linear in the
-// input only when the pattern is bounded: an unbounded quoted local part
-// that never closes made matching quadratic, about a minute at 96 KB before
-// the bound (measured, #358 review).
+// input only when the pattern is bounded: without the {0,64} on the quoted
+// local part, an unclosed quote made matching quadratic (measured, #358 review).
 //
 // The bound is checked against a time limit, not a ratio. Ratios between
 // sizes were tried and are not robust: under CPU contention the larger run
@@ -808,4 +840,90 @@ func TestVerificationDispatcher(t *testing.T) {
 	require.Equal(t, []uuid.UUID{id}, got)
 	require.Error(t, d.Dispatch(context.Background(), notification.Event{Type: notification.EventRegistrationVerify}),
 		"a verification event with no id must fail, not vanish")
+}
+
+// The filter (#413) reads Attrs at fan-out, after the queue. Each shape must
+// come back as it went in: a group set, and no group.
+func TestOutboxRecord_RoundTripsTicketAttrs(t *testing.T) {
+	grp := uuid.New()
+	for _, attrs := range []*notification.TicketAttrs{
+		{CategoryID: uuid.New(), Priority: "critical", AssigneeGroupID: &grp},
+		{CategoryID: uuid.New(), Priority: "low", AssigneeGroupID: nil},
+	} {
+		ev := sampleEvent()
+		ev.Attrs = attrs
+		b, err := encodeEvent(ev)
+		require.NoError(t, err)
+		got, err := decodeEvent(b)
+		require.NoError(t, err)
+		require.Equal(t, attrs, got.Attrs)
+	}
+}
+
+// A row queued before #413 has no attrs. It must still decode, and it must
+// decode to nil, which the filter reads as "not known".
+func TestOutboxRecord_ARowQueuedBeforeAttrsDecodesWithoutThem(t *testing.T) {
+	old := []byte(`{"type":"ticket.created","ticket_id":"11111111-2222-3333-4444-555555555555","occurred_at":"2026-01-01T00:00:00Z"}`)
+	got, err := decodeEvent(old)
+	require.NoError(t, err)
+	require.Nil(t, got.Attrs)
+}
+
+// The filter reads Attrs after the queue (#413). The event is queued, a worker
+// delivers it, and the webhook dispatcher must see the attrs the queue carried:
+// /match is sent to, /miss is not, and nothing is logged as not evaluated. If
+// the outbox dropped Attrs, both hooks would be sent to by fail-open, and the
+// log would say so.
+func TestOutbox_WebhookFilterSeesAttrsAfterTheQueue(t *testing.T) {
+	srv, deliveries := newDeliveryRecorder(t)
+	store := newFakeOutbox()
+	ctx := context.Background()
+
+	ev := notification.Event{
+		Type:       notification.EventTicketCreated,
+		TicketID:   uuid.New(),
+		OccurredAt: time.Now().UTC().Truncate(time.Microsecond),
+		Subject:    "Printer jammed",
+		Attrs:      &notification.TicketAttrs{CategoryID: uuid.New(), Priority: "low"},
+	}
+	require.NoError(t, NewOutboxDispatcher(store, []string{"webhook"}, nil).Dispatch(ctx, ev))
+
+	var buf bytes.Buffer
+	disp := &WebhookDispatcher{
+		store: fakeWebhookStore{
+			{ID: uuid.New(), PayloadFormat: "raw", URL: srv.URL + "/match",
+				Filter: notification.WebhookFilter{Priorities: []string{"low"}}},
+			{ID: uuid.New(), PayloadFormat: "raw", URL: srv.URL + "/miss",
+				Filter: notification.WebhookFilter{Priorities: []string{"critical"}}},
+		},
+		client:  srv.Client(),
+		baseURL: fixtureBaseURL,
+		log:     slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	}
+	n, err := newTestWorker(store, map[string]notification.Dispatcher{"webhook": disp}).RunOnce(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, n, "the queued event should have been claimed once")
+
+	got := map[string]bool{}
+	var body []byte
+	window := time.After(300 * time.Millisecond)
+	for collecting := true; collecting; {
+		select {
+		case d := <-deliveries:
+			got[d.path] = true
+			body = d.body
+		case <-window:
+			collecting = false
+		}
+	}
+	require.Equal(t, map[string]bool{"/match": true}, got)
+	require.NotContains(t, buf.String(), "not evaluated",
+		"the queued event lost its attrs: the filter fell open")
+
+	// The queue carries the attrs, the receiver never sees them: the body is
+	// the bytes of the same event without attrs, as before #413.
+	ev.Attrs = nil
+	want, err := json.Marshal(ev)
+	require.NoError(t, err)
+	require.Equal(t, string(want), string(body))
 }

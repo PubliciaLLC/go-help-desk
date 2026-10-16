@@ -49,3 +49,27 @@ func TestCheckOutboxWiring(t *testing.T) {
 		})
 	}
 }
+
+// stubDispatcher is a pointer to a non-zero-size stub, so distinct stubs are
+// distinct values and the test can tell the senders apart by identity. (The
+// zero-size nopSender compares equal to every other nopSender.)
+type stubDispatcher struct{ name string }
+
+func (*stubDispatcher) Dispatch(context.Context, notification.Event) error { return nil }
+
+// checkOutboxWiring only asks that every queued channel has a non-nil sender,
+// so it cannot see a missing entry that is not queued or a swap of two
+// senders. This pins both against outboxChannels.
+func TestOutboxSenderMap(t *testing.T) {
+	guest, hook, verify := &stubDispatcher{"guest-link"}, &stubDispatcher{"webhook"}, &stubDispatcher{"verification"}
+	got := outboxSenderMap(guest, hook, verify)
+
+	var keys []string
+	for ch := range got {
+		keys = append(keys, ch)
+	}
+	require.ElementsMatch(t, outboxChannels(), keys)
+	require.Same(t, guest, got["email"])
+	require.Same(t, hook, got["webhook"])
+	require.Same(t, verify, got["verification"])
+}

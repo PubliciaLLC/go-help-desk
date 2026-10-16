@@ -144,7 +144,7 @@ func TestDeletePolicy_RecordReferencingIt_TriggersRealForeignKeyViolation(t *tes
 	// above still references this policy, so this hits the real
 	// sla_records_policy_id_fkey violation rather than the count-based
 	// refusal an admin request would see first.
-	delErr := s.q.DeleteSLAPolicy(ctx, policy.ID)
+	_, delErr := s.q.DeleteSLAPolicy(ctx, policy.ID)
 	require.Error(t, delErr)
 	require.True(t, isPolicyInUseViolation(delErr), "got %v, want a real sla_records_policy_id_fkey violation", delErr)
 }

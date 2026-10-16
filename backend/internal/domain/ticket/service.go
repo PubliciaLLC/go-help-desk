@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -57,6 +56,48 @@ type Service struct {
 	// off. The domain does not import the settings package; the server wires
 	// this (see SetClosedReopenPolicy).
 	closedReopenPolicy func(context.Context) string
+
+	// slaEnabled reads the SLA feature toggle. A function, read inside the
+	// priority change's transaction, like closedReopenPolicy. Nil reads as off.
+	slaEnabled func(context.Context) bool
+
+	// userEmail finds an account holder's address. A function because the
+	// domain does not import the user package's store; the server wires it.
+	// Nil means no account address can be found.
+	userEmail func(context.Context, uuid.UUID) (string, error)
+}
+
+// SetUserEmailLookup wires the lookup ReplyRecipient uses for tickets filed by
+// an account. Called once at start-up, before the service takes requests.
+func (s *Service) SetUserEmailLookup(find func(context.Context, uuid.UUID) (string, error)) {
+	s.userEmail = find
+}
+
+// ReplyRecipient is the address a public reply on t is mailed to: the guest's
+// address, else the reporting account's. Empty means the requester cannot be
+// emailed (no address on record, or the account is gone or unreadable), and the
+// caller then sends the reply without mail rather than rejecting it.
+//
+// One rule for every door that accepts a reply. The REST handler had it inline
+// and MCP passed "", so a reply an AI agent wrote never reached the customer
+// (#442). A staff member or administrator is not mailed a copy of their own
+// reply, even on a ticket they filed (Erik's decision; REST used to mail them).
+// An ordinary requester replying on their own ticket still is: the copy is
+// their receipt, and nothing about that changed.
+func (s *Service) ReplyRecipient(ctx context.Context, t Ticket, author Actor) string {
+	if t.GuestEmail != nil {
+		return *t.GuestEmail
+	}
+	authorIsRequester := author.UserID != nil && t.ReporterUserID != nil && *author.UserID == *t.ReporterUserID
+	if authorIsRequester && author.Role != user.RoleUser {
+		return ""
+	}
+	if t.ReporterUserID != nil && s.userEmail != nil {
+		if email, err := s.userEmail(ctx, *t.ReporterUserID); err == nil {
+			return email
+		}
+	}
+	return ""
 }
 
 // SetClosedReopenPolicy wires the source of the closed_reopen_policy setting
@@ -64,6 +105,15 @@ type Service struct {
 // it Closed is terminal for every role, which is the default setting.
 func (s *Service) SetClosedReopenPolicy(read func(context.Context) string) {
 	s.closedReopenPolicy = read
+}
+
+// SetSLAEnabled wires the source of the SLA feature toggle for the priority
+// re-match (#443b). Called once at start-up, before the service takes requests;
+// without it a priority change never touches the SLA. Like AttachPolicy, a
+// re-match creates records, so it is gated on the toggle; writing facts onto an
+// existing record (RecordFirstResponse, RecordResolved) is not.
+func (s *Service) SetSLAEnabled(read func(context.Context) bool) {
+	s.slaEnabled = read
 }
 
 // forceReopenGate is asked by every route that would move a ticket OUT of
@@ -413,6 +463,16 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 			"%w: type_id and item_id must belong to the category and to each other", ErrValidation)
 	}
 
+	// Nobody newly picks an archived node (#421). A follow-up is exempt: it
+	// copies the closed ticket's classification, which may have been retired
+	// since, and that is not a new pick. A requester's follow-up is held to
+	// the active-only rule by its own caller (see CreateRequesterFollowUp).
+	if followUpOf == nil {
+		if err := s.refuseArchivedPick(ctx, in.CategoryID, in.TypeID, in.ItemID, nil); err != nil {
+			return Ticket{}, err
+		}
+	}
+
 	// A supplied reporter, checked for the same reason the priority above is:
 	// everything after this takes a tracking number first, so an id the
 	// foreign key refuses costs a 500 and a permanent gap in the sequence.
@@ -554,6 +614,7 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 		Recipient:      emailRecipient,
 		GuestLink:      guestLink,
 		Subject:        t.Subject,
+		Attrs:          attrsOf(t),
 	})
 	// Announced like any other link (AddLink), for whoever follows
 	// ticket.linked: the original is the source, the follow-up its child.
@@ -566,6 +627,7 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 			OccurredAt:     now,
 			TrackingNumber: string(followUpOf.TrackingNumber),
 			Subject:        followUpOf.Subject,
+			Attrs:          attrsOf(*followUpOf),
 		})
 	}
 
@@ -659,7 +721,8 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 	var oldStatusID uuid.UUID
 	var guestLink bool
 	var closing bool
-	now := time.Now()
+	var reopening bool
+	var now time.Time // taken under the row lock, like ChangePriority's
 
 	// resolved_at and closed_at are maintained here as well as in
 	// Resolve/Close, because this is a second door into the same three
@@ -681,6 +744,7 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 		if err != nil {
 			return err
 		}
+		now = time.Now()
 		// Closed is terminal by default (#349): nothing leaves it by a status
 		// change unless closed_reopen_policy lets this role. Decided on the
 		// locked row, so a close that committed first is seen, and the policy
@@ -694,11 +758,25 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 			}
 			forcedPolicy = p
 		}
+		// A retired status takes no new tickets, whoever asks. Decided on the
+		// locked row so "already in it" is the truth: a ticket sitting in an
+		// inactive status may be sent the status it holds (a PATCH that
+		// repeats it alongside another change), and may leave.
+		if !newStatus.Active && t.StatusID != newStatusID {
+			return fmt.Errorf("status %q: %w", newStatus.Name, ErrStatusInactive)
+		}
 		before = ticketMap(t)
 		oldStatusID = t.StatusID
 		t.StatusID = newStatusID
 		t.UpdatedAt = now
 		applyStatusTimestamps(&t, oldStatusID, newStatus, s.sys, now)
+		// Decided on the locked row, like the Closed gate above. The count goes
+		// in before the write so one Update saves the status and the flag.
+		reopening = s.isReopen(oldStatusID, newStatusID)
+		firstReopen := false
+		if reopening {
+			firstReopen = markReopened(&t, now)
+		}
 
 		if err := st.Update(ctx, t); err != nil {
 			return fmt.Errorf("updating ticket status: %w", err)
@@ -712,6 +790,20 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 		}
 		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "status_changed", before, after)); err != nil {
 			return fmt.Errorf("auditing status change: %w", err)
+		}
+		if reopening {
+			// The same entry the other two doors write, so the feed and the
+			// audit view's action filter find every reopen by one name.
+			reopenedAfter := ticketMap(t)
+			if forcedPolicy != "" {
+				forcedAudit(reopenedAfter, forcedPolicy)
+			}
+			if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "reopened", before, reopenedAfter)); err != nil {
+				return fmt.Errorf("auditing reopen: %w", err)
+			}
+			if t, err = s.finishReopenInTx(ctx, st, au, t, firstReopen, actor, now); err != nil {
+				return err
+			}
 		}
 		// A status change is something the guest is told about, so it rotates
 		// the link and the notification carries the replacement. Closing is
@@ -783,9 +875,71 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 		GuestLink:      guestLink,
 		Subject:        t.Subject,
 		StatusName:     newStatus.Name,
+		Attrs:          attrsOf(t),
 	})
+	// A reopen is announced as one as well, for the staff who hold or follow the
+	// ticket and for webhook subscribers. No Recipient: the status-change event
+	// above already mails the guest, and a second mail would be a duplicate.
+	if reopening {
+		_ = s.dispatcher.Dispatch(ctx, reopenedEvent(t, actor, ""))
+	}
 
 	return t, nil
+}
+
+// reopenedEvent is the ticket.reopened announcement every reopen makes after it
+// commits. It carries who holds the ticket as of the commit and who did the
+// reopening, which is what staff mail is addressed from; recipient is the
+// requester's own address when this door mails them (the force-reopen).
+func reopenedEvent(t Ticket, actor Actor, recipient string) notification.Event {
+	return notification.Event{
+		Type:            notification.EventTicketReopened,
+		TicketID:        t.ID,
+		ActorID:         actor.UserID,
+		OccurredAt:      time.Now(),
+		TrackingNumber:  string(t.TrackingNumber),
+		Recipient:       recipient,
+		Subject:         t.Subject,
+		AssigneeUserID:  t.AssigneeUserID,
+		AssigneeGroupID: t.AssigneeGroupID,
+		Attrs:           attrsOf(t),
+	}
+}
+
+// checkAssignable is the assignment's own refusal: the user must be somebody
+// a ticket can be given to, and the group must exist. Assign asks it on the
+// locked row, where it is the guarantee; ValidateAssignment asks it ahead of
+// the first write, where it is the early answer.
+func checkAssignable(ctx context.Context, st Store, assigneeUserID, assigneeGroupID *uuid.UUID) error {
+	if assigneeUserID != nil {
+		ok, err := st.IsAssignableUser(ctx, *assigneeUserID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("%w: that account cannot be given a ticket — it may be deleted, disabled, or not staff", ErrValidation)
+		}
+	}
+	if assigneeGroupID != nil {
+		ok, err := st.IsAssignableGroup(ctx, *assigneeGroupID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("%w: no such group", ErrValidation)
+		}
+	}
+	return nil
+}
+
+// ValidateAssignment runs the checks Assign makes on its assignee and group,
+// without writing. A caller that applies other changes in the same request
+// (the PATCH handler) calls it first, so a refused assignment leaves the whole
+// request unapplied (#468). Assign still checks on the locked row, so this is
+// the early answer, not the guarantee: an account disabled between the two is
+// refused by Assign, after anything saved before it.
+func (s *Service) ValidateAssignment(ctx context.Context, assigneeUserID, assigneeGroupID *uuid.UUID) error {
+	return checkAssignable(ctx, s.store, assigneeUserID, assigneeGroupID)
 }
 
 // Assign sets the assignee user and/or group on a ticket.
@@ -812,26 +966,12 @@ func (s *Service) Assign(ctx context.Context, ticketID uuid.UUID, assigneeUserID
 		//
 		// A check the caller makes is a check every future caller has to
 		// remember to make. This one is where the write is.
-		if assigneeUserID != nil {
-			ok, err := st.IsAssignableUser(ctx, *assigneeUserID)
-			if err != nil {
-				return err
-			}
-			if !ok {
-				return fmt.Errorf("%w: that account cannot be given a ticket — it may be deleted, disabled, or not staff", ErrValidation)
-			}
-		}
-		if assigneeGroupID != nil {
-			ok, err := st.IsAssignableGroup(ctx, *assigneeGroupID)
-			if err != nil {
-				return err
-			}
-			if !ok {
-				return fmt.Errorf("%w: no such group", ErrValidation)
-			}
+		if err := checkAssignable(ctx, st, assigneeUserID, assigneeGroupID); err != nil {
+			return err
 		}
 
 		before := ticketMap(t)
+		previous := t.AssigneeUserID
 		t.AssigneeUserID = assigneeUserID
 		t.AssigneeGroupID = assigneeGroupID
 		t.UpdatedAt = now
@@ -851,6 +991,15 @@ func (s *Service) Assign(ctx context.Context, ticketID uuid.UUID, assigneeUserID
 		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, action, before, ticketMap(t))); err != nil {
 			return fmt.Errorf("auditing assignment: %w", err)
 		}
+		// Reassigned away from somebody: their follow goes with the
+		// assignment (#441), written after the assignment's own entry so the
+		// feed reads the reassignment first. The same person again changes
+		// nothing.
+		if previous != nil && (assigneeUserID == nil || *assigneeUserID != *previous) {
+			if err := dropAssigneeFollow(ctx, st, au, t.ID, *previous, actor.UserID, assigneeUserID); err != nil {
+				return err
+			}
+		}
 		return nil
 	}); err != nil {
 		return Ticket{}, err
@@ -863,8 +1012,252 @@ func (s *Service) Assign(ctx context.Context, ticketID uuid.UUID, assigneeUserID
 		OccurredAt:     time.Now(),
 		TrackingNumber: string(t.TrackingNumber),
 		Subject:        t.Subject,
+		// Who holds it now, for staff mail (#441). Both nil when the ticket
+		// was unassigned, which leaves nobody to mail.
+		AssigneeUserID:  t.AssigneeUserID,
+		AssigneeGroupID: t.AssigneeGroupID,
+		Attrs:           attrsOf(t),
 	})
 
+	return t, nil
+}
+
+// ChangePriority sets a ticket's priority and re-matches its SLA policy for the
+// new priority (#443). Staff and admin only: anyone else gets ErrForbidden,
+// decided here so that a caller added later cannot forget it. Whether the
+// caller may see the ticket at all is the route's question.
+//
+// A Resolved or Closed ticket is refused outright, priority included
+// (ErrClosed, the same 409 every other write to a closed ticket gets): a
+// finished ticket's priority is part of what its SLA was measured against.
+// Checked on the locked row.
+//
+// A staff change never restarts an SLA clock; see planSLARematch. Everything
+// happens in one transaction: the priority, the SLA rows and the audit entry
+// commit together or not at all. See changePriorityInTx.
+func (s *Service) ChangePriority(ctx context.Context, ticketID uuid.UUID, p Priority, actor Actor) (Ticket, error) {
+	var out Ticket
+
+	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
+		t, err := st.GetByIDForUpdate(ctx, ticketID)
+		if err != nil {
+			return err
+		}
+		// Taken under the row lock, not before it: a change that waited behind
+		// another one must not stamp the record it supersedes with a time from
+		// before that record existed. superseded_at orders a ticket's history.
+		now := time.Now()
+		if err := CanChangePriority(actor.Role); err != nil {
+			return err
+		}
+		if s.isFinished(t.StatusID) {
+			return ErrClosed
+		}
+		out, err = s.changePriorityInTx(ctx, st, au, t, p, PriorityChangeManual, actor, now)
+		return err
+	}); err != nil {
+		return Ticket{}, err
+	}
+	return out, nil
+}
+
+// isFinished reports whether a status is Resolved or Closed: the two states in
+// which a ticket's priority is frozen (#443).
+func (s *Service) isFinished(statusID uuid.UUID) bool {
+	return statusID == s.sys.closedID || statusID == s.sys.resolvedID
+}
+
+// ValidatePriorityChange is the closed-state check ChangePriority makes, without
+// writing, for a caller that will apply other changes first. statusAfter is the
+// status the same request moves the ticket to, or nil when it leaves the status
+// alone. The priority is refused (ErrClosed) when the ticket would end up
+// Resolved or Closed: either the request moves it there, or it is already there
+// and the request does not move it out. A move out of Closed that the reopen
+// policy refuses is UpdateStatus's refusal to give; here it counts as moving
+// out. ChangePriority still checks on the locked row, so this is the early
+// answer, not the guarantee.
+func (s *Service) ValidatePriorityChange(ctx context.Context, ticketID uuid.UUID, statusAfter *uuid.UUID) error {
+	if statusAfter != nil {
+		if s.isFinished(*statusAfter) {
+			return ErrClosed
+		}
+		return nil
+	}
+	t, err := s.store.GetByID(ctx, ticketID)
+	if err != nil {
+		return err
+	}
+	if s.isFinished(t.StatusID) {
+		return ErrClosed
+	}
+	return nil
+}
+
+// isReopen reports whether a status change takes a ticket out of Resolved or
+// Closed to an open status (#464). Resolved to Closed, and Closed to Resolved,
+// stay finished and are not reopens.
+func (s *Service) isReopen(oldStatusID, newStatusID uuid.UUID) bool {
+	return s.isFinished(oldStatusID) && !s.isFinished(newStatusID)
+}
+
+// markReopened counts a reopen on t, ahead of the write that saves the new
+// status, and reports whether it is the ticket's first. The count is the whole
+// memory of "first": it is never reset, so a later reopen flags the ticket again
+// but is not bumped again.
+//
+// It also stamps the reopen as a restart point on the ticket: when it happened
+// and the Pending total then. Call it after applyStatusTimestamps, so an
+// interval the move just closed or opened is counted. The SLA clock resumes
+// from here if a later priority change gives the ticket a record back after a
+// reopen that started none (it landed on a priority with no policy).
+func markReopened(t *Ticket, now time.Time) (first bool) {
+	first = t.ReopenCount == 0
+	t.ReopenCount++
+	t.LastReopenedAt = &now
+	t.PausedSecondsAtLastReopen = pausedSecondsAt(*t, now)
+	return first
+}
+
+// finishReopenInTx is what every reopen does after its status write, inside the
+// same transaction: raise the priority one level when this is the first reopen,
+// and start the SLA over. The ticket's audit trail (reopened, priority_changed,
+// sla_restarted) and the SLA rows commit with the status change or not at all.
+//
+// A later reopen passes the priority it already has: the clocks still start
+// over (changePriorityInTx restarts them whatever the priority), and no
+// priority_changed entry is written because nothing changed.
+func (s *Service) finishReopenInTx(ctx context.Context, st Store, au audit.Store, t Ticket, first bool,
+	actor Actor, now time.Time) (Ticket, error) {
+	p := t.Priority
+	if first {
+		p = p.Raised()
+	}
+	return s.changePriorityInTx(ctx, st, au, t, p, PriorityChangeReopened, actor, now)
+}
+
+// changePriorityInTx is ChangePriority's body for a caller that already holds
+// the ticket's row lock in its own transaction and has written its own changes
+// to t. It checks no role and no status: the caller decided this change is
+// allowed, and for a reopen has just moved the ticket out of Closed in this
+// same transaction. Unexported because ChangePriority and the reopen paths
+// (finishReopenInTx, from addReply, UpdateStatus and Reopen) are its only callers.
+//
+// reason decides what the change does to the SLA:
+//
+//   - PriorityChangeManual (ChangePriority): the same priority is a no-op, with
+//     no write, no audit entry and no re-match. Otherwise the policy is
+//     re-matched and the clock is kept (planSLARematch).
+//   - PriorityChangeReopened (a reopen, by any door): the clocks always start
+//     over from now (planSLARestart), even when the priority does not change,
+//     which is the case for a ticket already at the highest priority and for
+//     every reopen after the first. The caller makes one call whatever the
+//     priority (finishReopenInTx): the raised priority on the first reopen, the
+//     current one after.
+//     With the SLA switched off no record is created or superseded.
+func (s *Service) changePriorityInTx(ctx context.Context, st Store, au audit.Store, t Ticket,
+	p Priority, reason PriorityChangeReason, actor Actor, now time.Time) (Ticket, error) {
+	if !p.Valid() {
+		return Ticket{}, fmt.Errorf("%w: priority must be one of critical, high, medium, low", ErrValidation)
+	}
+	reopen := reason == PriorityChangeReopened
+	changed := p != t.Priority
+	if !changed && !reopen {
+		return t, nil
+	}
+
+	before := ticketMap(t)
+	if changed {
+		t.Priority = p
+		t.UpdatedAt = now
+		if err := st.Update(ctx, t); err != nil {
+			return Ticket{}, fmt.Errorf("changing priority: %w", err)
+		}
+	}
+
+	cur, err := st.CurrentSLARecordForUpdate(ctx, t.ID)
+	if err != nil {
+		return Ticket{}, fmt.Errorf("reading SLA record: %w", err)
+	}
+	matched, err := st.MatchSLAPolicy(ctx, p, t.CategoryID)
+	if err != nil {
+		return Ticket{}, fmt.Errorf("matching SLA policy: %w", err)
+	}
+	enabled := s.slaEnabled != nil && s.slaEnabled(ctx)
+	plan := planSLARematch
+	if reopen {
+		plan = planSLARestart
+	}
+	outcome, start := plan(enabled, cur, matched, t, now)
+	// A staff change that gives a record to a ticket that has none: the clock
+	// resumes from the later of the ticket's last reopen and the newest
+	// superseded record's start, with the pause base that goes with it and none
+	// of the old record's facts. A restart is not lost to a trip through a
+	// priority with no policy, whether the restart was a record or only a
+	// reopen that landed on such a priority, and the time spent there still
+	// counts. A ticket that never had a record and was never reopened keeps the
+	// plan's NULL start, the ticket's creation.
+	if outcome == SLAAttached && !reopen {
+		prior, err := st.LatestSupersededSLARecord(ctx, t.ID)
+		if err != nil {
+			return Ticket{}, fmt.Errorf("reading superseded SLA record: %w", err)
+		}
+		if prior != nil {
+			start.StartedAt, start.PausedSecondsAtStart = prior.StartedAt, prior.PausedSecondsAtStart
+		}
+		// A NULL start is the ticket's creation, earlier than any reopen.
+		if t.LastReopenedAt != nil && (start.StartedAt == nil || t.LastReopenedAt.After(*start.StartedAt)) {
+			start.StartedAt, start.PausedSecondsAtStart = t.LastReopenedAt, t.PausedSecondsAtLastReopen
+		}
+	}
+
+	// The old record first: a ticket has one current record at most.
+	switch outcome {
+	case SLARematched, SLARestarted, SLARemoved:
+		if err := st.SupersedeSLARecord(ctx, cur.ID, now); err != nil {
+			return Ticket{}, fmt.Errorf("superseding SLA record: %w", err)
+		}
+	}
+	if start != nil {
+		if err := st.StartSLARecord(ctx, *start); err != nil {
+			return Ticket{}, fmt.Errorf("starting SLA record: %w", err)
+		}
+	}
+
+	if changed {
+		if cur != nil {
+			before["sla_policy_id"] = cur.PolicyID
+			before["sla_record_id"] = cur.ID
+		}
+		after := ticketMap(t)
+		after["priority_change_reason"] = reason
+		after["sla_outcome"] = outcome
+		if start != nil {
+			after["sla_policy_id"] = start.PolicyID
+			after["sla_record_id"] = start.ID
+		}
+		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "priority_changed", before, after)); err != nil {
+			return Ticket{}, fmt.Errorf("auditing priority change: %w", err)
+		}
+	}
+
+	// A reopen that replaced a clock says so in an entry of its own, so the
+	// audit view's action filter finds the moments a clock started again, and so
+	// a restart at an unchanged priority is not silent. Only when a record was
+	// superseded (Erik, 2026-10-15): a reopen that starts a first clock on a
+	// ticket with none replaced nothing, and a priority with no policy still
+	// supersedes the old record (and starts none). With the SLA off nothing was
+	// superseded either.
+	if reopen && (outcome == SLARestarted || outcome == SLARemoved) {
+		prev := map[string]any{"sla_record_id": cur.ID, "sla_policy_id": cur.PolicyID}
+		next := map[string]any{"previous_sla_record_id": cur.ID}
+		if start != nil {
+			next["sla_record_id"] = start.ID
+			next["sla_policy_id"] = start.PolicyID
+		}
+		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "sla_restarted", prev, next)); err != nil {
+			return Ticket{}, fmt.Errorf("auditing SLA restart: %w", err)
+		}
+	}
 	return t, nil
 }
 
@@ -1103,12 +1496,14 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 			return nil
 		}
 		before := ticketMap(locked)
+		now := time.Now() // under the row lock, like ChangePriority's
 		locked.StatusID = t.StatusID
-		locked.UpdatedAt = t.UpdatedAt
+		locked.UpdatedAt = now
 		// Through the shared rule, so this door agrees with the others about
 		// resolved_at and closed_at rather than clearing one and forgetting
 		// the other.
-		applyStatusTimestamps(&locked, oldStatusID, target, s.sys, t.UpdatedAt)
+		applyStatusTimestamps(&locked, oldStatusID, target, s.sys, now)
+		firstReopen := markReopened(&locked, now)
 		t = locked
 
 		if err := st.Update(ctx, t); err != nil {
@@ -1125,7 +1520,8 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "reopened", before, ticketMap(t))); err != nil {
 			return fmt.Errorf("auditing reopen: %w", err)
 		}
-		return nil
+		t, err = s.finishReopenInTx(ctx, st, au, t, firstReopen, actor, now)
+		return err
 	}); err != nil {
 		return Reply{}, err
 	}
@@ -1133,14 +1529,7 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 	// Announced only after the commit, so a rollback cannot send a "reopened"
 	// email for a transition that did not happen.
 	if reopened {
-		_ = s.dispatcher.Dispatch(ctx, notification.Event{
-			Type:           notification.EventTicketReopened,
-			TicketID:       t.ID,
-			ActorID:        actor.UserID,
-			OccurredAt:     time.Now(),
-			TrackingNumber: string(t.TrackingNumber),
-			Subject:        t.Subject,
-		})
+		_ = s.dispatcher.Dispatch(ctx, reopenedEvent(t, actor, ""))
 	}
 
 	// Record first staff response for SLA. Deliberately best-effort: the reply
@@ -1167,20 +1556,42 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 	// is a row read from the store — under FOR UPDATE on the reopen path,
 	// plainly otherwise. Either way it is the record, not request text, which
 	// is the property that matters here.
+	//
+	// A staff-only note is its own event, so a webhook subscribed to
+	// ticket.replied sees customer-visible replies only (#448). It has no
+	// email: reporterEmail is blank for a note.
+	replyEvent := notification.EventTicketReplied
+	if internal {
+		replyEvent = notification.EventTicketNoteAdded
+	}
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
-		Type:           notification.EventTicketReplied,
+		Type:           replyEvent,
 		TicketID:       t.ID,
 		ActorID:        actor.UserID,
 		TrackingNumber: string(t.TrackingNumber),
 		Recipient:      reporterEmail,
 		GuestLink:      guestLink,
 		Subject:        t.Subject,
+		// A public reply by the requester is what staff mail is for (#441).
+		// The requester is whoever filed the ticket, not whoever holds the
+		// user role: a staff member replying on a ticket they filed is the
+		// requester replying, and one replying on somebody else's is not. A
+		// guest has no account and no id, and is always the requester.
+		// An internal note is staff talking to staff.
+		//
+		// Not when the reply reopened the ticket: the reopen event above is the
+		// staff mail for that action, and sending both would mail the same
+		// person twice for one reply.
+		FromRequester:   !internal && isRequester(t, actor) && !reopened,
+		AssigneeUserID:  t.AssigneeUserID,
+		AssigneeGroupID: t.AssigneeGroupID,
 		Payload: func() map[string]any {
 			p := map[string]any{
 				"reporter_email": reporterEmail, // used by dispatcher to set To address
 				"TrackingNumber": string(t.TrackingNumber),
 				"Subject":        t.Subject,
 				"internal":       internal,
+				"reply_id":       reply.ID,
 			}
 			// An internal note's body does not go in the event.
 			//
@@ -1199,9 +1610,19 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 			return p
 		}(),
 		OccurredAt: time.Now(),
+		Attrs:      attrsOf(t),
 	})
 
 	return reply, nil
+}
+
+// isRequester reports whether actor is the person who filed t: its reporter,
+// or the guest (no id, user role) the ticket was filed for.
+func isRequester(t Ticket, actor Actor) bool {
+	if actor.UserID == nil {
+		return actor.Role == user.RoleUser
+	}
+	return t.ReporterUserID != nil && *t.ReporterUserID == *actor.UserID
 }
 
 // resolutionNotesMatch reports whether notes is exactly what a ticket already
@@ -1340,6 +1761,7 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 		Recipient:      guestRecipient(t),
 		GuestLink:      guestLink,
 		Subject:        t.Subject,
+		Attrs:          attrsOf(t),
 	})
 
 	return t, nil
@@ -1476,6 +1898,7 @@ func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uui
 			OccurredAt:     now,
 			TrackingNumber: string(t.TrackingNumber),
 			Subject:        t.Subject,
+			Attrs:          attrsOf(t),
 		})
 	}
 
@@ -1503,6 +1926,7 @@ func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uui
 		Recipient:      guestRecipient(t),
 		GuestLink:      guestLink,
 		Subject:        t.Subject,
+		Attrs:          attrsOf(t),
 	})
 
 	return t, nil
@@ -1647,6 +2071,7 @@ func (s *Service) close(ctx context.Context, ticketID uuid.UUID, actor Actor, el
 		OccurredAt:     now,
 		TrackingNumber: string(t.TrackingNumber),
 		Subject:        t.Subject,
+		Attrs:          attrsOf(t),
 	})
 	return closed, nil
 }
@@ -1685,7 +2110,7 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 		return Ticket{}, err
 	}
 
-	now := time.Now()
+	var now time.Time // taken under the row lock, like ChangePriority's
 	var oldStatusID uuid.UUID
 	var guestLink bool
 
@@ -1697,6 +2122,7 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 		if err != nil {
 			return err
 		}
+		now = time.Now()
 		if t.StatusID != s.sys.closedID {
 			return fmt.Errorf("%w: ticket is not closed", ErrNotClosed)
 		}
@@ -1712,9 +2138,10 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 		t.UpdatedAt = now
 		// Through the shared rule: its default arm clears ClosedAt/ResolvedAt,
 		// carries the accumulated SLA pause forward and opens a fresh interval
-		// if the reopen target is Pending — a reopened ticket is not a new SLA
-		// clock.
+		// if the reopen target is Pending. The SLA clock itself restarts below
+		// (finishReopenInTx).
 		applyStatusTimestamps(&t, oldStatusID, target, s.sys, now)
+		firstReopen := markReopened(&t, now)
 
 		if err := st.Update(ctx, t); err != nil {
 			return fmt.Errorf("reopening ticket: %w", err)
@@ -1725,6 +2152,9 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "reopened", before, forcedAudit(ticketMap(t), policy))); err != nil {
 			return fmt.Errorf("auditing reopen: %w", err)
 		}
+		if t, err = s.finishReopenInTx(ctx, st, au, t, firstReopen, actor, now); err != nil {
+			return err
+		}
 		// The guest is told, with a link issued when the mail is sent.
 		guestLink = hasGuestRecipient(t)
 		return nil
@@ -1732,16 +2162,9 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 		return Ticket{}, err
 	}
 
-	_ = s.dispatcher.Dispatch(ctx, notification.Event{
-		Type:           notification.EventTicketReopened,
-		TicketID:       t.ID,
-		ActorID:        actor.UserID,
-		OccurredAt:     time.Now(),
-		TrackingNumber: string(t.TrackingNumber),
-		Recipient:      guestRecipient(t),
-		GuestLink:      guestLink,
-		Subject:        t.Subject,
-	})
+	ev := reopenedEvent(t, actor, guestRecipient(t))
+	ev.GuestLink = guestLink
+	_ = s.dispatcher.Dispatch(ctx, ev)
 	return t, nil
 }
 
@@ -1768,22 +2191,6 @@ func (s *Service) ListStatusHistory(ctx context.Context, ticketID uuid.UUID) ([]
 // real pagination; one ticket does not.
 const ticketAuditCap = 500
 
-// ListAuditEntries returns everything recorded against one ticket, oldest
-// first — the same ordering ListStatusHistory uses, so the two feeds a
-// ticket's detail page shows side by side read the same direction.
-//
-// ListByEntity's own query is newest-first, shared with the (not yet built)
-// admin-wide view where that ordering suits pagination; reversed here rather
-// than changing the shared query underneath it.
-func (s *Service) ListAuditEntries(ctx context.Context, ticketID uuid.UUID) ([]audit.Entry, error) {
-	entries, err := s.auditStore.ListByEntity(ctx, "ticket", ticketID, ticketAuditCap, 0)
-	if err != nil {
-		return nil, fmt.Errorf("listing audit entries: %w", err)
-	}
-	slices.Reverse(entries)
-	return entries, nil
-}
-
 // AddLink creates a directed link between two tickets.
 func (s *Service) AddLink(ctx context.Context, sourceID, targetID uuid.UUID, lt LinkType, actor Actor) error {
 	if sourceID == targetID {
@@ -1795,6 +2202,7 @@ func (s *Service) AddLink(ctx context.Context, sourceID, targetID uuid.UUID, lt 
 	}
 
 	var subject, tracking string
+	var attrs *notification.TicketAttrs
 	if err := s.atomic.InTx(ctx, func(st Store, _ audit.Store) error {
 		// Lock both ticket rows FOR UPDATE up front, in the same fixed order
 		// (lexicographically smaller id first) ResolveAsDuplicate uses, before
@@ -1828,6 +2236,7 @@ func (s *Service) AddLink(ctx context.Context, sourceID, targetID uuid.UUID, lt 
 		}
 		subject = source.Subject
 		tracking = string(source.TrackingNumber)
+		attrs = attrsOf(source)
 
 		link := TicketLink{SourceTicketID: sourceID, TargetTicketID: targetID, LinkType: lt}
 		if err := st.CreateLink(ctx, link); err != nil {
@@ -1846,6 +2255,7 @@ func (s *Service) AddLink(ctx context.Context, sourceID, targetID uuid.UUID, lt 
 		OccurredAt:     time.Now(),
 		TrackingNumber: tracking,
 		Subject:        subject,
+		Attrs:          attrs,
 	})
 	return nil
 }
@@ -1860,9 +2270,64 @@ func (s *Service) GetByID(ctx context.Context, id uuid.UUID) (Ticket, error) {
 	return s.store.GetByID(ctx, id)
 }
 
+// refuseArchivedPick is ErrValidation when a classification being picked
+// includes an archived category, type or item. It is the one place the rule
+// lives, so REST, MCP and the guest form all obey it, and it holds for every
+// role: a retired node is out of circulation for staff and administrators too
+// (#421).
+//
+// current is the ticket's existing classification when this is a reclassify,
+// nil for a new ticket. A level that is unchanged is not a new pick and is not
+// checked, so a ticket already sitting in an archived node keeps it through any
+// edit that leaves that level alone.
+func (s *Service) refuseArchivedPick(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID, current *Ticket) error {
+	var cat *uuid.UUID
+	if current == nil || current.CategoryID != categoryID {
+		cat = &categoryID
+	}
+	if current != nil {
+		if sameID(typeID, current.TypeID) {
+			typeID = nil
+		}
+		if sameID(itemID, current.ItemID) {
+			itemID = nil
+		}
+	}
+	level, err := s.store.ArchivedCTINode(ctx, cat, typeID, itemID)
+	if err != nil {
+		return err
+	}
+	if level != "" {
+		return fmt.Errorf("%w: %s_id is not an active %s", ErrValidation, level, level)
+	}
+	return nil
+}
+
+func sameID(a, b *uuid.UUID) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
 // UpdateCTI changes the category/type/item classification of a ticket.
 // Only staff and admin may call this; enforcement is at the handler layer.
+// Moving INTO an archived node is refused for them too (refuseArchivedPick).
 func (s *Service) UpdateCTI(ctx context.Context, id, categoryID uuid.UUID, typeID, itemID *uuid.UUID) (Ticket, error) {
+	if err := s.ValidateCTI(ctx, id, categoryID, typeID, itemID); err != nil {
+		return Ticket{}, err
+	}
+	if err := s.store.UpdateCTI(ctx, id, categoryID, typeID, itemID); err != nil {
+		return Ticket{}, fmt.Errorf("updating ticket CTI: %w", err)
+	}
+	return s.store.GetByID(ctx, id)
+}
+
+// ValidateCTI runs every check UpdateCTI makes, without writing. A caller that
+// applies other changes in the same request (the PATCH handler) calls it first,
+// so a refused classification leaves the whole request unapplied rather than
+// half done.
+func (s *Service) ValidateCTI(ctx context.Context, id, categoryID uuid.UUID, typeID, itemID *uuid.UUID) error {
 	// The same checks Create makes, because reclassifying is creating a
 	// classification.
 	//
@@ -1873,21 +2338,21 @@ func (s *Service) UpdateCTI(ctx context.Context, id, categoryID uuid.UUID, typeI
 	// exist. An unknown id answered 500 from the foreign key rather than
 	// saying which id was wrong.
 	if ok, err := s.store.CategoryExists(ctx, categoryID); err != nil {
-		return Ticket{}, err
+		return err
 	} else if !ok {
-		return Ticket{}, fmt.Errorf("%w: category_id is not a category on this help desk", ErrValidation)
+		return fmt.Errorf("%w: category_id is not a category on this help desk", ErrValidation)
 	}
 	if ok, err := s.store.CTIIsCoherent(ctx, categoryID, typeID, itemID); err != nil {
-		return Ticket{}, err
+		return err
 	} else if !ok {
-		return Ticket{}, fmt.Errorf(
+		return fmt.Errorf(
 			"%w: type_id and item_id must belong to the category and to each other", ErrValidation)
 	}
-
-	if err := s.store.UpdateCTI(ctx, id, categoryID, typeID, itemID); err != nil {
-		return Ticket{}, fmt.Errorf("updating ticket CTI: %w", err)
+	current, err := s.store.GetByID(ctx, id)
+	if err != nil {
+		return err
 	}
-	return s.store.GetByID(ctx, id)
+	return s.refuseArchivedPick(ctx, categoryID, typeID, itemID, &current)
 }
 
 // GetByTrackingNumber returns the ticket with the given tracking number.
@@ -2103,6 +2568,16 @@ func (s *Service) getStatusByID(ctx context.Context, id uuid.UUID) (Status, erro
 	return Status{}, fmt.Errorf("status %s not found: %w", id, ErrStatusNotFound)
 }
 
+// attrsOf is the classification a webhook filter tests, for the ticket an
+// event describes (#413). Read at the moment the event is raised.
+func attrsOf(t Ticket) *notification.TicketAttrs {
+	return &notification.TicketAttrs{
+		CategoryID:      t.CategoryID,
+		Priority:        string(t.Priority),
+		AssigneeGroupID: t.AssigneeGroupID,
+	}
+}
+
 // auditEntry builds an audit row. Callers write it through the transaction's
 // audit store so it commits with the change it describes; it used to be written
 // separately with its error discarded, which meant the trail could lose entries
@@ -2162,6 +2637,47 @@ func (s *Service) UnassignForUser(ctx context.Context, actorID, userID uuid.UUID
 			if err := au.Create(ctx, auditEntry(&actorID, "ticket", id, "unassigned", before, after)); err != nil {
 				return fmt.Errorf("auditing unassignment: %w", err)
 			}
+			if err := dropAssigneeFollow(ctx, st, au, id, userID, &actorID, nil); err != nil {
+				return err
+			}
+		}
+		moved = len(ids)
+		return nil
+	})
+	return moved, err
+}
+
+// DeleteGroup deletes a group and returns every ticket it held to the queue,
+// reporting how many moved. actorID is nil when no person is behind the call.
+//
+// All of it in one transaction with the audit entries (#419). The database
+// clears assignee_group_id by itself when the group row goes, so the tickets
+// used to lose their group with nothing in the trail to say so: the same gap
+// UnassignForUser closed for a deleted user.
+//
+// This is the one place the ticket service deletes something that is not a
+// ticket. Atomic hands out only the ticket and audit stores, and the audit
+// entries must commit with the unassignment they describe, so the delete rides
+// along rather than running in a second transaction.
+//
+// Every ticket, not only open ones: the foreign key would clear a closed
+// ticket's group as well, and the trail should say what actually happened.
+func (s *Service) DeleteGroup(ctx context.Context, actorID *uuid.UUID, groupID uuid.UUID) (int, error) {
+	var moved int
+	err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
+		ids, err := st.UnassignForGroup(ctx, groupID)
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			before := map[string]any{"assignee_group_id": groupID.String()}
+			after := map[string]any{"assignee_group_id": nil}
+			if err := au.Create(ctx, auditEntry(actorID, "ticket", id, "unassigned", before, after)); err != nil {
+				return fmt.Errorf("auditing unassignment: %w", err)
+			}
+		}
+		if err := st.DeleteGroup(ctx, groupID); err != nil {
+			return err
 		}
 		moved = len(ids)
 		return nil
@@ -2215,6 +2731,11 @@ func (s *Service) refuseRequesterOnClosed(ctx context.Context, st Store, ticketI
 // GetAttachment returns a single attachment by ID.
 func (s *Service) GetAttachment(ctx context.Context, id uuid.UUID) (Attachment, error) {
 	return s.store.GetAttachmentByID(ctx, id)
+}
+
+// AnyAttachmentExists reports whether any attachment is stored on the instance.
+func (s *Service) AnyAttachmentExists(ctx context.Context) (bool, error) {
+	return s.store.AnyAttachmentExists(ctx)
 }
 
 // ListAttachments returns all attachments for a ticket.

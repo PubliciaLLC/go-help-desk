@@ -43,7 +43,7 @@ import (
 func resetFactors(ctx context.Context, email string) error {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if email == "" {
-		return fmt.Errorf("usage: go-help-desk reset-factors <email>")
+		return fmt.Errorf("usage: /app/server reset-factors <email>")
 	}
 
 	cfg, err := config.Load()

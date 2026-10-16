@@ -3,10 +3,13 @@ package customfieldstore
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/sqlc-dev/pqtype"
@@ -30,7 +33,7 @@ func (s *Store) CreateFieldDef(ctx context.Context, def customfield.FieldDef) (c
 		Active:    def.Active,
 	})
 	if err != nil {
-		return customfield.FieldDef{}, fmt.Errorf("creating field def: %w", err)
+		return customfield.FieldDef{}, mapWriteError("creating field def", err, nameTaken, "")
 	}
 	return defFromRow(row), nil
 }
@@ -49,6 +52,9 @@ func (s *Store) ListFieldDefs(ctx context.Context) ([]customfield.FieldDef, erro
 
 func (s *Store) GetFieldDef(ctx context.Context, id uuid.UUID) (customfield.FieldDef, error) {
 	row, err := s.q.GetCustomFieldDef(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return customfield.FieldDef{}, fmt.Errorf("field def %s: %w", id, customfield.ErrNotFound)
+	}
 	if err != nil {
 		return customfield.FieldDef{}, fmt.Errorf("getting field def %s: %w", id, err)
 	}
@@ -56,7 +62,7 @@ func (s *Store) GetFieldDef(ctx context.Context, id uuid.UUID) (customfield.Fiel
 }
 
 func (s *Store) UpdateFieldDef(ctx context.Context, def customfield.FieldDef) error {
-	return s.q.UpdateCustomFieldDef(ctx, dbgen.UpdateCustomFieldDefParams{
+	err := s.q.UpdateCustomFieldDef(ctx, dbgen.UpdateCustomFieldDefParams{
 		ID:        def.ID,
 		Name:      def.Name,
 		FieldType: string(def.FieldType),
@@ -64,6 +70,7 @@ func (s *Store) UpdateFieldDef(ctx context.Context, def customfield.FieldDef) er
 		SortOrder: int32(def.SortOrder),
 		Active:    def.Active,
 	})
+	return mapWriteError("updating field def", err, nameTaken, "")
 }
 
 // ── Assignments ───────────────────────────────────────────────────────────────
@@ -79,7 +86,7 @@ func (s *Store) CreateAssignment(ctx context.Context, a customfield.Assignment) 
 		RequiredOnNew: a.RequiredOnNew,
 	})
 	if err != nil {
-		return customfield.Assignment{}, fmt.Errorf("creating assignment: %w", err)
+		return customfield.Assignment{}, mapWriteError("creating assignment", err, alreadyAssigned, "field_def_id does not name a field")
 	}
 	return customfield.Assignment{
 		ID:            row.ID,
@@ -150,17 +157,25 @@ func (s *Store) UpdateAssignment(ctx context.Context, a customfield.Assignment) 
 }
 
 func (s *Store) DeleteAssignment(ctx context.Context, id uuid.UUID) error {
-	return s.q.DeleteCustomFieldAssignment(ctx, id)
+	n, err := s.q.DeleteCustomFieldAssignment(ctx, id)
+	if err != nil {
+		return fmt.Errorf("deleting field assignment %s: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("field assignment %s: %w", id, customfield.ErrNotFound)
+	}
+	return nil
 }
 
 // ── Values ────────────────────────────────────────────────────────────────────
 
 func (s *Store) UpsertValue(ctx context.Context, ticketID, fieldDefID uuid.UUID, value string) error {
-	return s.q.UpsertCustomFieldValue(ctx, dbgen.UpsertCustomFieldValueParams{
+	err := s.q.UpsertCustomFieldValue(ctx, dbgen.UpsertCustomFieldValueParams{
 		TicketID:   ticketID,
 		FieldDefID: fieldDefID,
 		Value:      value,
 	})
+	return mapWriteError("saving field value", err, "", "the ticket or the field does not exist")
 }
 
 func (s *Store) DeleteValue(ctx context.Context, ticketID, fieldDefID uuid.UUID) error {
@@ -191,6 +206,32 @@ func (s *Store) ListValuesForTicket(ctx context.Context, ticketID uuid.UUID) ([]
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+const (
+	nameTaken       = "a custom field with this name already exists"
+	alreadyAssigned = "this field is already assigned here"
+)
+
+// mapWriteError turns the two constraint failures a caller can cause into
+// errors that carry a message written here. Detected from the SQLSTATE, never
+// from the driver's text, and that text is not passed on: it names the
+// constraint and the table. Anything else is wrapped as it always was and
+// reaches the handler as a 500.
+func mapWriteError(op string, err error, conflictMsg, refMsg string) error {
+	if err == nil {
+		return nil
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch {
+		case pgErr.Code == "23505" && conflictMsg != "":
+			return customfield.Conflict(conflictMsg)
+		case pgErr.Code == "23503" && refMsg != "":
+			return customfield.InvalidReference(refMsg)
+		}
+	}
+	return fmt.Errorf("%s: %w", op, err)
+}
 
 func defFromRow(r dbgen.CustomFieldDef) customfield.FieldDef {
 	return customfield.FieldDef{

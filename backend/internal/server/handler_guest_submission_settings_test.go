@@ -59,7 +59,9 @@ func TestUpdateSettings_RejectsNonBooleanGuestSubmissionEnabled(t *testing.T) {
 // only closes the machine-credential and malformed-value doors — a signed-in
 // administrator sending a genuine boolean still works exactly as before.
 func TestUpdateSettings_GuestSubmissionEnabled_AdminCanSet(t *testing.T) {
-	h, cleanup := newHarness(t)
+	// Email is configured: turning guest submission on while email is off is
+	// refused (#456, see handler_email_honesty_test.go).
+	h, cleanup := newHarnessCfg(t, 0, "", emailOn)
 	defer cleanup()
 	ctx := context.Background()
 

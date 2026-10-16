@@ -23,6 +23,7 @@ WHERE (sqlc.narg(entity_type)::text IS NULL OR entity_type = sqlc.narg(entity_ty
     OR entity_type ILIKE '%' || sqlc.narg(q)::text || '%'
     OR action ILIKE '%' || sqlc.narg(q)::text || '%'
   )
+  AND (sqlc.narg(exclude_actions)::text[] IS NULL OR NOT (action = ANY (sqlc.narg(exclude_actions)::text[])))
 -- id breaks the tie, because created_at alone does not order entries written
 -- in the same microsecond — which happens inside a single request. Without a
 -- total order, two pages of one listing can disagree about which tied row
@@ -48,6 +49,7 @@ SELECT COUNT(*) FROM (
       OR entity_type ILIKE '%' || sqlc.narg(q)::text || '%'
       OR action ILIKE '%' || sqlc.narg(q)::text || '%'
     )
+    AND (sqlc.narg(exclude_actions)::text[] IS NULL OR NOT (action = ANY (sqlc.narg(exclude_actions)::text[])))
   LIMIT sqlc.arg(count_cap)
 ) AS matched;
 
@@ -92,6 +94,7 @@ WHERE (sqlc.narg(entity_type)::text IS NULL OR entity_type = sqlc.narg(entity_ty
     OR entity_type ILIKE '%' || sqlc.narg(q)::text || '%'
     OR action ILIKE '%' || sqlc.narg(q)::text || '%'
   )
+  AND (sqlc.narg(exclude_actions)::text[] IS NULL OR NOT (action = ANY (sqlc.narg(exclude_actions)::text[])))
   -- Staff scope (#330, #331). Only ticket entries on a ticket this staff
   -- member may see: the same four ways in as ticket.CanView — reported by
   -- them, assigned to them, assigned to a group of theirs, or inside a
@@ -155,6 +158,7 @@ SELECT COUNT(*) FROM (
       OR entity_type ILIKE '%' || sqlc.narg(q)::text || '%'
       OR action ILIKE '%' || sqlc.narg(q)::text || '%'
     )
+    AND (sqlc.narg(exclude_actions)::text[] IS NULL OR NOT (action = ANY (sqlc.narg(exclude_actions)::text[])))
     -- Staff scope (#330, #331). Only ticket entries on a ticket this staff
     -- member may see: the same four ways in as ticket.CanView — reported by
     -- them, assigned to them, assigned to a group of theirs, or inside a

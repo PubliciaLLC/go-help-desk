@@ -4,18 +4,18 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/crewjam/saml/samlsp"
+	"github.com/google/uuid"
 	"github.com/gorilla/sessions"
-	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
@@ -72,12 +72,30 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		s.loginLimiter.Tarpit(r.Context(), loginKey, s.loginThrottleDelay)
 	}
 
-	u, err := s.users.VerifyPassword(r.Context(), body.Email, body.Password)
+	u, err := s.users.VerifyPasswordForSignIn(r.Context(), body.Email, body.Password)
+	if errors.Is(err, user.ErrPasswordResetRequired) {
+		// The SAML restriction first: a non-administrator under SAML cannot use a
+		// password at all, so telling them to reset one would be wrong.
+		if !user.IsLocalAuthAllowed(u, s.adminSvc.SAMLEnabled(r.Context())) {
+			Error(w, http.StatusForbidden, "saml_required", "local login is disabled; use SAML")
+			return
+		}
+		// The password was right, so this is not a failed guess: it is not
+		// counted, and it does not reset the counter either. It costs the same
+		// as a wrong password (see VerifyPasswordForSignIn).
+		//
+		// Part D (#451) hooks in here: once "Forgot password" exists, send the
+		// person a reset link at this point and change the message to say so.
+		Error(w, http.StatusForbidden, "password_reset_required",
+			"Your password was saved in an older, weaker form and must be reset before you can sign in. "+
+				"Use \"Forgot password\" on the sign-in page, or ask an administrator to reset it for you.")
+		return
+	}
 	if err != nil {
 		// Only failures are counted, and the refusal happens here rather than
 		// before the check, so a legitimate user is never held out.
 		if !s.loginLimiter.Allow(loginKey) {
-			tooManyAttempts(w, time.Minute)
+			tooManyAttempts(w, s.loginLimiter.Remaining())
 			return
 		}
 		Error(w, http.StatusUnauthorized, "invalid_credentials", "invalid email or password")
@@ -120,25 +138,52 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 	// authenticator they already have. The passkey route is still reachable
 	// directly for anyone who prefers it.
 	mfaNeeded := mfaEnabled && u.MFAEnabled
+	//
+	// Passkeys unavailable (#494): a key the server cannot check is not a
+	// factor, so it is never asked for. An account whose ONLY second factor is
+	// such a key is refused rather than let in on its password alone, or a
+	// stolen password would take over exactly the accounts that chose a
+	// stronger factor. That includes the last administrator: the way back is
+	// an administrator's MFA reset, or reset-factors on the server. The
+	// refusal comes after loginLimiter.Reset, so it never counts as a failed
+	// attempt, and before any session is written.
+	stranded := mfaEnabled && !u.MFAEnabled && passkeys > 0 && !s.passkeysAvailable()
+	if stranded {
+		Error(w, http.StatusForbidden, "passkey_unavailable",
+			"Your passkey can't be used on this server right now. Ask an administrator to reset your sign-in factors.")
+		return
+	}
 	passkeyNeeded := mfaEnabled && !u.MFAEnabled && passkeys > 0
 	mfaEnrollmentNeeded := mfaEnabled && !u.MFAEnabled && passkeys == 0 &&
 		s.adminSvc.MFARequiredFor(r.Context(), string(u.Role))
 	mfaPassed := !mfaNeeded && !passkeyNeeded && !mfaEnrollmentNeeded
 
-	if err := s.writeSession(w, r, auth.SessionData{
+	sd := auth.SessionData{
 		UserID:    u.ID,
 		Role:      u.Role,
 		MFAPassed: mfaPassed,
-	}); err != nil {
+
+		MustChangePassword: u.MustChangePassword,
+		// Not the raw flag: see auth.SessionData.PasswordChangeNeedsNoFactor.
+		PasswordChangeNeedsNoFactor: u.MustChangePassword && !mfaNeeded && !passkeyNeeded,
+	}
+	// The limit is chosen here, where we know which factor is owed: five
+	// minutes to type a code, fifteen to install an app and enrol.
+	if !mfaPassed {
+		sd.PendingUntil = auth.PendingDeadline(time.Now(), mfaEnrollmentNeeded)
+	}
+
+	if err := s.writeSession(w, r, sd); err != nil {
 		handleError(w, err)
 		return
 	}
 
 	JSON(w, http.StatusOK, map[string]any{
-		"user":                  u,
-		"mfa_needed":            mfaNeeded,
-		"passkey_needed":        passkeyNeeded,
-		"mfa_enrollment_needed": mfaEnrollmentNeeded,
+		"user":                     u,
+		"mfa_needed":               mfaNeeded,
+		"passkey_needed":           passkeyNeeded,
+		"mfa_enrollment_needed":    mfaEnrollmentNeeded,
+		"password_change_required": u.MustChangePassword,
 	})
 }
 
@@ -228,6 +273,8 @@ func (s *Server) handleMFAVerify(w http.ResponseWriter, r *http.Request) {
 		Role:           a.Role,
 		MFAPassed:      true,
 		FactorVerified: true,
+
+		MustChangePassword: a.MustChangePassword,
 	}); err != nil {
 		handleError(w, err)
 		return
@@ -528,43 +575,50 @@ func (s *Server) writeSession(w http.ResponseWriter, r *http.Request, sd auth.Se
 	}
 
 	session.Values[auth.SessionDataKey] = sd
+
+	// A half-signed-in session's row and cookie die with its deadline, so an
+	// abandoned one does not sit for the full seven days. The deadline in the
+	// payload is what is enforced; this is housekeeping. Rounded up and kept
+	// above zero, because MaxAge 0 means "use the default" and below 0 deletes.
+	if !sd.MFAPassed && sd.UserID != uuid.Nil && !sd.PendingUntil.IsZero() {
+		opts := *session.Options
+		opts.MaxAge = max(1, int(math.Ceil(time.Until(sd.PendingUntil).Seconds())))
+		session.Options = &opts
+	}
 	return session.Save(r, w)
 }
 
-// handleAuthProviders returns available authentication providers.
+// handleAuthProviders returns the sign-in methods the login page can use now.
+//
+// "Now" is the point (#421). oidc and saml are true when the provider is
+// loaded and a sign-in can start, which is what the login routes themselves
+// test; they used to echo the settings, so a provider whose identity server
+// never answered still got a button that led to a 503. local is always true,
+// as before, because the page still shows the password form; local_admin_only
+// says that form is limited to administrators (saml_enabled), the same test
+// local login applies.
 func (s *Server) handleAuthProviders(w http.ResponseWriter, r *http.Request) {
-
-	ctx := r.Context()
-
 	type Provider struct {
 		Name    string `json:"name"`
 		Enabled bool   `json:"enabled"`
 	}
 
-	response := struct {
-		Providers []Provider `json:"providers"`
+	JSON(w, http.StatusOK, struct {
+		Providers      []Provider `json:"providers"`
+		LocalAdminOnly bool       `json:"local_admin_only"`
+		// Passkeys is false when BASE_URL cannot be a relying-party id
+		// (#494), so the page does not offer a key it cannot check. Public
+		// on purpose: the reason is not, and only goes to administrators.
+		Passkeys bool `json:"passkeys"`
 	}{
 		Providers: []Provider{
-			{
-				Name:    "local",
-				Enabled: true,
-			},
-			{
-				Name: "saml",
-				Enabled: s.adminSvc.SAMLEnabled(ctx) &&
-					s.adminSvc.SAMLConfigured(ctx),
-			},
-			{
-				Name: "oidc",
-				Enabled: func() bool {
-					v, _ := s.adminSvc.GetBool(ctx, admin.KeyOIDCEnabled)
-					return v
-				}(),
-			},
+			{Name: "local", Enabled: true},
+			{Name: "saml", Enabled: s.samlReachableNow()},
+			{Name: "oidc", Enabled: s.oidcReachableNow()},
 		},
-	}
-
-	json.NewEncoder(w).Encode(response)
+		LocalAdminOnly: s.adminSvc.SAMLEnabled(r.Context()),
+		Passkeys:       s.passkeysAvailable(),
+	})
 }
 
 // loginRateKey derives a fixed-size rate-limit key from a submitted email.

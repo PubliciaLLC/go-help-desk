@@ -141,9 +141,10 @@ func TestSettings_ReputationRefusalsAreUnchanged(t *testing.T) {
 			"virustotal toggle null",
 			nil,
 			map[string]any{"attachment_reputation_virustotal_enabled": nil},
-			http.StatusNoContent,
-			"",
-			"",
+			// Was 204 (null read as "leave the toggle"); refused since #420.
+			http.StatusBadRequest,
+			"invalid_reputation_config",
+			"invalid input: attachment_reputation_virustotal_enabled must not be null",
 		},
 		{
 			"multiple enabled without keys",

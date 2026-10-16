@@ -33,6 +33,10 @@ type adminAuditEntryView struct {
 	CreatedAt   time.Time      `json:"created_at"`
 	Before      map[string]any `json:"before,omitempty"`
 	After       map[string]any `json:"after,omitempty"`
+	// Names resolves the ids in Before/After to what they name now (#422),
+	// keyed by the id as it appears there. An id with no entry no longer
+	// resolves; show the id. Before/After keep the ids exactly as stored.
+	Names map[string]auditName `json:"names,omitempty"`
 }
 
 type adminAuditListResponse struct {
@@ -111,6 +115,13 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Follow and unfollow entries (#441) are an administrator's to see unless
+	// the setting lets staff. Left out by the query itself, so the page, the
+	// offset and the total describe one sequence.
+	if role == user.RoleStaff && !s.adminSvc.StaffCanViewFollowAudit(ctx) {
+		f.ExcludeActions = ticket.FollowAuditActions()
+	}
+
 	page, err := s.auditStore.Search(ctx, f, limit, offset)
 	if err != nil {
 		handleError(w, err)
@@ -121,16 +132,24 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 	showDiff := role == user.RoleAdmin ||
 		(role == user.RoleStaff && s.adminSvc.StaffCanViewTicketChangeHistory(ctx))
 
+	// As in the per-ticket feed: a viewer who may see follow entries always
+	// gets their before and after (redacted), so a removal on reassignment
+	// can say whose follow it was rather than read as its actor stopping.
+	showFollow := role == user.RoleAdmin ||
+		(role == user.RoleStaff && s.adminSvc.StaffCanViewFollowAudit(ctx))
+
 	maskRequesters := s.masksRequestersIn(ctx, admin.MaskRequesterNamesAdminLog)
 	views := make([]adminAuditEntryView, len(entries))
 	names := make(map[uuid.UUID]auditActor)
+	diffs := make([]map[string]any, 0, 2*len(entries))
 	for i, e := range entries {
 		v := adminAuditEntryView{
 			ID: e.ID, EntityType: e.EntityType, EntityID: e.EntityID,
 			Action: e.Action, ActorID: e.ActorID, CreatedAt: e.CreatedAt,
 		}
-		if showDiff {
+		if showDiff || (showFollow && ticket.IsFollowAuditAction(e.Action)) {
 			v.Before, v.After = audit.Redact(e.Before, e.After)
+			diffs = append(diffs, v.Before, v.After)
 		}
 		if e.ActorID != nil {
 			a, cached := names[*e.ActorID]
@@ -150,6 +169,15 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 			v.ActorMasked = a.masked
 		}
 		views[i] = v
+	}
+
+	// Names come from the diffs as sent, so what the diff gate and audit.Redact
+	// withheld is never resolved. One batch for the page.
+	if len(diffs) > 0 {
+		resolved := s.resolveAuditNames(ctx, maskRequesters, diffs...)
+		for i := range views {
+			views[i].Names = resolved.forEntry(views[i].Before, views[i].After)
+		}
 	}
 
 	JSON(w, http.StatusOK, adminAuditListResponse{

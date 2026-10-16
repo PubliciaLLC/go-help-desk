@@ -125,6 +125,21 @@ describe('AdminAuditPage', () => {
     expect(screen.getByText(/a → b/)).toBeTruthy()
   })
 
+  it('shows names in the diff and keeps the id as a tooltip (#422)', async () => {
+    mockList({
+      entries: [entry({
+        before: { status_id: 'id-new' }, after: { status_id: 'id-prog' },
+        names: { 'id-new': { name: 'New' }, 'id-prog': { name: 'In Progress' } },
+      })],
+      total: 1,
+      has_more: false,
+    })
+    renderWithQuery(<AdminAuditPage />)
+
+    await waitFor(() => expect(screen.getByText('In Progress')).toBeTruthy())
+    expect(screen.getByText('New').getAttribute('title')).toBe('id-new')
+  })
+
   it('shows an empty state rather than a blank table', async () => {
     mockList({ entries: [], total: 0, has_more: false })
     renderWithQuery(<AdminAuditPage />)

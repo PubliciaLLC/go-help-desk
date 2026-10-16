@@ -43,6 +43,11 @@ type fakeStore struct {
 	// already had in hand.
 	onRead func(ticket.Ticket) ticket.Ticket
 
+	// followers[ticket][user]; notPeople are accounts IsAssignableUser refuses
+	// (a service account, a requester). See followers_test.go.
+	followers map[uuid.UUID]map[uuid.UUID]time.Time
+	notPeople map[uuid.UUID]bool
+
 	tickets map[uuid.UUID]ticket.Ticket
 	replies map[uuid.UUID][]ticket.Reply
 	history []ticket.StatusHistoryEntry
@@ -55,8 +60,16 @@ type fakeStore struct {
 	replyCreates   int
 	historyCreates int
 
+	// SLA records, in insertion order, and the policy each priority matches.
+	// The unique-current rule of the real table is enforced in StartSLARecord.
+	// slaPolicies maps a priority to the policy MatchSLAPolicy returns for it;
+	// a priority with no entry matches none.
+	slaRecords  []fakeSLARecord
+	slaPolicies map[ticket.Priority]uuid.UUID
+
 	// Injectable failures.
 	errUpdate        error
+	errDeleteGroup   error
 	errCreate        error
 	errCreateReply   error
 	errGetByID       error
@@ -74,6 +87,100 @@ func newFakeStore() *fakeStore {
 }
 
 func (f *fakeStore) seed(t ticket.Ticket) { f.tickets[t.ID] = t }
+
+// ── SLA records (the re-match's four store methods) ──────────────────────────
+
+// fakeSLARecord is one sla_records row as far as the re-match can see it.
+type fakeSLARecord struct {
+	id, ticketID, policyID uuid.UUID
+	startedAt              *time.Time
+	pausedBase             int64
+	facts                  ticket.SLAFacts
+	supersededAt           *time.Time
+}
+
+// errSecondCurrentSLARecord stands in for the sla_records_current_idx violation.
+var errSecondCurrentSLARecord = errors.New("duplicate key value violates unique constraint \"sla_records_current_idx\"")
+
+// seedSLARecord adds a current record for a ticket and returns its id.
+func (f *fakeStore) seedSLARecord(ticketID, policyID uuid.UUID, startedAt *time.Time, pausedBase int64, facts ticket.SLAFacts) uuid.UUID {
+	r := fakeSLARecord{id: uuid.New(), ticketID: ticketID, policyID: policyID, startedAt: startedAt, pausedBase: pausedBase, facts: facts}
+	f.slaRecords = append(f.slaRecords, r)
+	return r.id
+}
+
+// slaRows returns every record a ticket has had, oldest first.
+func (f *fakeStore) slaRows(ticketID uuid.UUID) []fakeSLARecord {
+	var out []fakeSLARecord
+	for _, r := range f.slaRecords {
+		if r.ticketID == ticketID {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func (f *fakeStore) CurrentSLARecordForUpdate(_ context.Context, ticketID uuid.UUID) (*ticket.SLARecordState, error) {
+	for _, r := range f.slaRecords {
+		if r.ticketID == ticketID && r.supersededAt == nil {
+			return &ticket.SLARecordState{
+				ID: r.id, PolicyID: r.policyID, StartedAt: r.startedAt,
+				PausedSecondsAtStart: r.pausedBase, Facts: r.facts,
+			}, nil
+		}
+	}
+	return nil, nil
+}
+
+func (f *fakeStore) LatestSupersededSLARecord(_ context.Context, ticketID uuid.UUID) (*ticket.SLARecordState, error) {
+	var best *fakeSLARecord
+	for i, r := range f.slaRecords {
+		if r.ticketID != ticketID || r.supersededAt == nil {
+			continue
+		}
+		if best == nil || !r.supersededAt.Before(*best.supersededAt) {
+			best = &f.slaRecords[i]
+		}
+	}
+	if best == nil {
+		return nil, nil
+	}
+	return &ticket.SLARecordState{
+		ID: best.id, PolicyID: best.policyID, StartedAt: best.startedAt,
+		PausedSecondsAtStart: best.pausedBase, Facts: best.facts,
+	}, nil
+}
+
+func (f *fakeStore) MatchSLAPolicy(_ context.Context, p ticket.Priority, _ uuid.UUID) (*uuid.UUID, error) {
+	if id, ok := f.slaPolicies[p]; ok {
+		return &id, nil
+	}
+	return nil, nil
+}
+
+func (f *fakeStore) SupersedeSLARecord(_ context.Context, id uuid.UUID, at time.Time) error {
+	for i, r := range f.slaRecords {
+		if r.id == id && r.supersededAt == nil {
+			r.supersededAt = &at
+			f.slaRecords[i] = r
+			return nil
+		}
+	}
+	return errNotFound
+}
+
+func (f *fakeStore) StartSLARecord(_ context.Context, r ticket.SLARecordStart) error {
+	for _, existing := range f.slaRecords {
+		if existing.ticketID == r.TicketID && existing.supersededAt == nil {
+			return errSecondCurrentSLARecord
+		}
+	}
+	f.slaRecords = append(f.slaRecords, fakeSLARecord{
+		id: r.ID, ticketID: r.TicketID, policyID: r.PolicyID,
+		startedAt: r.StartedAt, pausedBase: r.PausedSecondsAtStart, facts: r.Facts,
+	})
+	return nil
+}
 
 func (f *fakeStore) Create(_ context.Context, t ticket.Ticket) error {
 	if f.errCreate != nil {
@@ -220,12 +327,18 @@ func (f *fakeStore) ListUnassigned(context.Context, int, int) ([]ticket.Ticket, 
 // IsAssignableUser and IsAssignableGroup: this fake has no user table, so
 // everything it is asked about is assignable. The real rule lives in SQL and
 // is exercised against a real database.
-func (f *fakeStore) IsAssignableUser(context.Context, uuid.UUID) (bool, error) {
-	return true, nil
+func (f *fakeStore) IsAssignableUser(_ context.Context, id uuid.UUID) (bool, error) {
+	return !f.notPeople[id], nil
 }
 
 func (f *fakeStore) CTIIsCoherent(context.Context, uuid.UUID, *uuid.UUID, *uuid.UUID) (bool, error) {
 	return true, nil
+}
+
+// ArchivedCTINode: this fake has no catalogue, so nothing is archived. The real
+// rule lives in SQL and is exercised against a real database.
+func (f *fakeStore) ArchivedCTINode(context.Context, *uuid.UUID, *uuid.UUID, *uuid.UUID) (string, error) {
+	return "", nil
 }
 
 func (f *fakeStore) CategoryExists(context.Context, uuid.UUID) (bool, error) {
@@ -255,6 +368,26 @@ func (f *fakeStore) UnassignForUser(_ context.Context, userID uuid.UUID) ([]uuid
 		moved = append(moved, id)
 	}
 	return moved, nil
+}
+
+// UnassignForGroup clears the group on every ticket held by it, whatever
+// state the ticket is in: the foreign key would clear them anyway.
+func (f *fakeStore) UnassignForGroup(_ context.Context, groupID uuid.UUID) ([]uuid.UUID, error) {
+	var moved []uuid.UUID
+	for id, t := range f.tickets {
+		if t.AssigneeGroupID == nil || *t.AssigneeGroupID != groupID {
+			continue
+		}
+		t.AssigneeGroupID = nil
+		f.tickets[id] = t
+		moved = append(moved, id)
+	}
+	return moved, nil
+}
+
+// DeleteGroup is where a test makes the last step of a group delete fail.
+func (f *fakeStore) DeleteGroup(_ context.Context, _ uuid.UUID) error {
+	return f.errDeleteGroup
 }
 
 func (f *fakeStore) ListResolvedBefore(_ context.Context, before time.Time, resolvedStatusID uuid.UUID, limit int) ([]ticket.Ticket, error) {
@@ -325,6 +458,7 @@ func (f *fakeStore) ListAttachments(context.Context, uuid.UUID) ([]ticket.Attach
 	return nil, nil
 }
 func (f *fakeStore) DeleteAttachment(context.Context, uuid.UUID) error { return nil }
+func (f *fakeStore) AnyAttachmentExists(context.Context) (bool, error) { return false, nil }
 
 // ── status store ─────────────────────────────────────────────────────────────
 
@@ -422,9 +556,18 @@ func (f *fakeDispatcher) types() []notification.EventType {
 type fakeAuditStore struct {
 	entries []audit.Entry
 	err     error
+
+	// failOnCall, when non-zero, fails the Nth call to Create (1-based) and no
+	// other, so a test can let a first audit write succeed and fail the second.
+	failOnCall int
+	calls      int
 }
 
 func (f *fakeAuditStore) Create(_ context.Context, e audit.Entry) error {
+	f.calls++
+	if f.failOnCall != 0 && f.calls == f.failOnCall {
+		return errStoreDown
+	}
 	if f.err != nil {
 		return f.err
 	}
@@ -589,8 +732,10 @@ func (a *fakeAtomic) InTx(_ context.Context, fn func(ticket.Store, audit.Store) 
 		links[k] = append([]ticket.TicketLink(nil), v...)
 	}
 	counters := [4]int{a.store.creates, a.store.updates, a.store.replyCreates, a.store.historyCreates}
+	slaRecords := append([]fakeSLARecord(nil), a.store.slaRecords...)
 
 	if err := fn(a.store, a.audit); err != nil {
+		a.store.slaRecords = slaRecords
 		a.store.tickets = tickets
 		a.store.replies = replies
 		a.store.history = history

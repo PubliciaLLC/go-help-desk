@@ -137,6 +137,7 @@ export function APIKeysPage() {
               <thead className="bg-gray-50 text-xs text-gray-500 uppercase">
                 <tr>
                   <th className="px-4 py-3 text-left">Name</th>
+                  <th className="px-4 py-3 text-left">Owner</th>
                   <th className="px-4 py-3 text-left">Permissions</th>
                   <th className="px-4 py-3 text-left">Created</th>
                   <th className="px-4 py-3 text-left">Last used</th>
@@ -150,6 +151,10 @@ export function APIKeysPage() {
                     <td className="px-4 py-3 font-medium text-gray-900 flex items-center gap-2">
                       <KeyIcon className="h-3.5 w-3.5 text-gray-400 shrink-0" />
                       {k.name}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="text-gray-900">{k.owner_name}</div>
+                      <div className="text-xs text-gray-500">{k.owner_email}</div>
                     </td>
                     <td className="px-4 py-3">
                       {k.scopes?.length ? (
@@ -184,7 +189,7 @@ export function APIKeysPage() {
                 ))}
                 {keys.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="px-4 py-8 text-center text-gray-400">
+                    <td colSpan={7} className="px-4 py-8 text-center text-gray-400">
                       No API keys yet.
                     </td>
                   </tr>
@@ -197,7 +202,8 @@ export function APIKeysPage() {
 
       <ConfirmDialog
         open={pendingDelete !== null}
-        onOpenChange={(open) => { if (!open) setPendingDelete(null) }}
+        onOpenChange={(open) => { if (!open) { setPendingDelete(null); deleteMutation.reset() } }}
+        error={deleteMutation.isError ? extractError(deleteMutation.error) : undefined}
         title={`Revoke key "${pendingDelete?.name ?? ''}"?`}
         description="Any service using this key will immediately lose access. This cannot be undone."
         confirmLabel="Revoke"

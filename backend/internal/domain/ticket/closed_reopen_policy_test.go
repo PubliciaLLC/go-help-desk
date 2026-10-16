@@ -2,11 +2,13 @@ package ticket_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -250,8 +252,9 @@ func TestForceReopen_IsRecordedAsForced(t *testing.T) {
 	require.Equal(t, &staffID, last.ChangedByUserID)
 
 	require.Greater(t, len(h.auditStore.entries), auditBefore)
-	e := h.auditStore.entries[len(h.auditStore.entries)-1]
-	require.Equal(t, "reopened", e.Action)
+	// The reopened entry, not simply the last: the first-reopen bump (#464)
+	// writes priority_changed after it.
+	e := lastAuditEntry(h, "reopened")
 	require.Equal(t, &staffID, e.ActorID)
 	require.Equal(t, true, e.After["forced_reopen"])
 	require.Equal(t, ticket.ReopenPolicyStaffAdmin, e.After["closed_reopen_policy"])
@@ -286,7 +289,9 @@ func TestForceReopen_StatusChangeAndResolveAreAuditedAsForced(t *testing.T) {
 			h.policy = ticket.ReopenPolicyAdmin
 			tk := h.seedClosed()
 			require.NoError(t, route(h, tk.ID))
-			e := h.auditStore.entries[len(h.auditStore.entries)-1]
+			// The status change's own entry, not simply the last: a reopen
+			// (#464) writes reopened and priority_changed after it.
+			e := lastAuditEntry(h, "status_changed", "resolved")
 			require.Equal(t, true, e.After["forced_reopen"])
 			require.Equal(t, ticket.ReopenPolicyAdmin, e.After["closed_reopen_policy"])
 		})
@@ -375,4 +380,16 @@ func TestForceReopen_RequestersAreReadOnlyInEveryMode(t *testing.T) {
 		require.ErrorIs(t, h.svc.CreateAttachment(context.Background(),
 			ticket.Attachment{ID: uuid.New(), TicketID: tk.ID}, reporter), ticket.ErrClosed, policy)
 	}
+}
+
+// lastAuditEntry is the newest audit entry with one of the actions.
+func lastAuditEntry(h *harness, actions ...string) audit.Entry {
+	for i := len(h.auditStore.entries) - 1; i >= 0; i-- {
+		for _, a := range actions {
+			if h.auditStore.entries[i].Action == a {
+				return h.auditStore.entries[i]
+			}
+		}
+	}
+	panic("no audit entry with action " + strings.Join(actions, " or "))
 }

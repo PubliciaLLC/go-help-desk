@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import { renderWithQuery } from '@/test/render'
 import { api } from '@/api/client'
 import { InsecureConfigBanner } from './InsecureConfigBanner'
@@ -105,5 +105,95 @@ describe('the attachment scanning warning', () => {
     renderWithQuery(<InsecureConfigBanner isAdmin={false} />)
 
     expect(api.get).not.toHaveBeenCalled()
+  })
+})
+
+// #459: scanning that is off because nobody chose it. The backend sets
+// stale_off only when no policy was ever saved, no scanner address exists and
+// attachments are already stored; a deliberate "Do not scan" never sets it.
+describe('the scanning-is-off-by-default warning', () => {
+  const off = {
+    policy: 'off',
+    configured: false,
+    reachable: false,
+    effect: 'Attachments are not scanned. Uploads are accepted without being checked.',
+  }
+
+  it('gives the exact fix when stale_off is true', async () => {
+    mockWarnings({
+      insecure_secrets: [],
+      attachment_scanning: { ...off, policy_explicit: false, stale_off: true },
+    })
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+
+    const alert = await screen.findByRole('alert')
+    const text = alert.textContent ?? ''
+    expect(text).toMatch(/attachments are not being scanned/i)
+    expect(text).toContain('COMPOSE_PROFILES=antivirus')
+    expect(text).toContain('CLAMAV_ADDR=tcp://clamav:3310')
+    expect(text).toContain('docker/.env')
+    expect(text).toContain('docker compose up -d')
+    expect(text).toMatch(/Settings.*Attachments/)
+    expect(text).toContain('Do not scan')
+  })
+
+  it('says nothing when stale_off is false', async () => {
+    mockWarnings({
+      insecure_secrets: [],
+      attachment_scanning: { ...off, policy_explicit: true, stale_off: false },
+    })
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/admin/security-warnings'))
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('says nothing to a non-admin', () => {
+    mockWarnings({
+      insecure_secrets: [],
+      attachment_scanning: { ...off, policy_explicit: false, stale_off: true },
+    })
+    renderWithQuery(<InsecureConfigBanner isAdmin={false} />)
+
+    expect(api.get).not.toHaveBeenCalled()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+})
+
+// #420: with ticket scope enforcement on, an OAuth client whose service user is
+// in no group sees no tickets, and nothing else says so. The backend lists the
+// names; the banner keeps naming them until each has a group or is disabled.
+describe('the OAuth clients without groups warning', () => {
+  const healthy = {
+    insecure_secrets: [],
+    attachment_scanning: { policy: 'required', configured: true, reachable: true, effect: 'ok' },
+  }
+
+  it('names the clients and links to the page that fixes them', async () => {
+    mockWarnings({ ...healthy, oauth_clients_without_groups: ['JIRA sync', 'CI pipeline'] })
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+
+    const alert = await screen.findByRole('alert')
+    const text = alert.textContent ?? ''
+    expect(text).toContain('JIRA sync')
+    expect(text).toContain('CI pipeline')
+    expect(text).toMatch(/no tickets/i)
+    expect(within(alert).getByRole('link').getAttribute('href')).toBe('/admin/oauth-clients')
+  })
+
+  it('says nothing when the list is empty', async () => {
+    mockWarnings({ ...healthy, oauth_clients_without_groups: [] })
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/admin/security-warnings'))
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('says nothing from a server that predates the field', async () => {
+    mockWarnings(healthy)
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/admin/security-warnings'))
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 })

@@ -34,12 +34,19 @@ type Store interface {
 	// silently revert a role, a password or an MFA enrolment that changed
 	// while the request was in flight.
 	UpdateProfile(ctx context.Context, id uuid.UUID, email, displayName string) error
+	// SetEmailPreferences writes only the switches the patch names, for the
+	// same reason UpdateProfile is narrow (#441).
+	SetEmailPreferences(ctx context.Context, id uuid.UUID, p EmailPreferencesPatch) error
 	// SetPasswordHash, SetMFA and SyncFederated each write the one thing they
 	// name. The whole-row Update below carries a copy of every column, so a
 	// caller that reads, thinks, and then writes puts back whatever changed
 	// while it was thinking — and for a password change, the thinking is a
 	// bcrypt hash the account holder chose the moment of.
 	SetPasswordHash(ctx context.Context, id uuid.UUID, hash string) error
+	// RehashPassword replaces oldHash with newHash only while oldHash is still
+	// the stored hash, and reports whether it did. False means the password
+	// changed meanwhile, which is not an error (#453).
+	RehashPassword(ctx context.Context, id uuid.UUID, oldHash, newHash string) (bool, error)
 	SetMFA(ctx context.Context, id uuid.UUID, secret string, enabled bool) error
 	// SetFirstMFA adopts secret only if the account has no TOTP when the row
 	// is written, and reports whether it did (#338).
@@ -71,6 +78,9 @@ type Store interface {
 
 	Create(ctx context.Context, u User) error
 	GetByID(ctx context.Context, id uuid.UUID) (User, error)
+	// GetByIDs is GetByID for many ids in one statement. An id with no live
+	// account is left out of the result, not an error.
+	GetByIDs(ctx context.Context, ids []uuid.UUID) ([]User, error)
 	GetByIDAdmin(ctx context.Context, id uuid.UUID) (User, error)
 	GetByEmail(ctx context.Context, email string) (User, error)
 	GetBySAMLSubject(ctx context.Context, subject string) (User, error)
@@ -82,6 +92,12 @@ type Store interface {
 	Enable(ctx context.Context, id uuid.UUID) error
 	List(ctx context.Context, limit, offset int) ([]User, error)
 	ListAdmin(ctx context.Context, limit, offset int) ([]User, error)
+	// SearchAdmin is the paged admin list: one page of the accounts matching
+	// role ("" = any) and q (a substring of email or display name, "" = all),
+	// and how many match in total.
+	// serviceAccount filters on the service-account flag: nil = both, true = only
+	// service users, false = only people.
+	SearchAdmin(ctx context.Context, role, q string, serviceAccount *bool, limit, offset int) ([]User, int64, error)
 	// ListActiveAdmins returns every administrator who is neither disabled nor
 	// soft-deleted, in full — not a count, unlike CountOtherActiveAdmins. The
 	// SSO-settings guard (#300) has to know WHICH administrators would still

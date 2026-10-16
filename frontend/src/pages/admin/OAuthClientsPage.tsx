@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { listOAuthClients, createOAuthClient, deleteOAuthClient, listScopes } from '@/api/admin'
 import { extractError } from '@/api/client'
@@ -115,7 +116,9 @@ export function OAuthClientsPage() {
           <h1 className="text-2xl font-bold text-gray-900">OAuth Clients</h1>
           <p className="mt-1 text-sm text-gray-500">
             Machine-to-machine integrations exchange a client ID and secret for a short-lived
-            token. Deleting a client stops its existing tokens working immediately.
+            token. Each client acts as its own service user, and that user's groups are the
+            client's ticket scope. Deleting a client stops its existing tokens working
+            immediately and deletes its service user.
           </p>
         </div>
 
@@ -170,6 +173,8 @@ export function OAuthClientsPage() {
                   <th className="px-4 py-3 text-left">Name</th>
                   <th className="px-4 py-3 text-left">Client ID</th>
                   <th className="px-4 py-3 text-left">Permissions</th>
+                  <th className="px-4 py-3 text-left">Acts as</th>
+                  <th className="px-4 py-3 text-left">Groups</th>
                   <th className="px-4 py-3 text-left">Created</th>
                   <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
@@ -202,6 +207,36 @@ export function OAuthClientsPage() {
                         </span>
                       )}
                     </td>
+                    <td className="px-4 py-3">
+                      {c.user_id ? (
+                        <Link
+                          to="/admin/users/$id"
+                          params={{ id: c.user_id }}
+                          className="text-blue-600 hover:underline"
+                        >
+                          {c.name} (service user)
+                        </Link>
+                      ) : (
+                        <span className="text-gray-400">—</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      {c.groups?.length ? (
+                        <div className="flex flex-wrap gap-1">
+                          {c.groups.map((g) => (
+                            <span key={g.id} className="rounded bg-blue-50 px-1.5 py-0.5 text-xs text-blue-800">
+                              {g.name}
+                            </span>
+                          ))}
+                        </div>
+                      ) : c.groups ? (
+                        <span className="text-xs text-amber-700">
+                          No groups: with ticket scope on, this client sees no tickets
+                        </span>
+                      ) : (
+                        <span className="text-gray-400">—</span>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-gray-500">{fmt(c.created_at)}</td>
                     <td className="px-4 py-3 text-right">
                       <Button
@@ -218,7 +253,7 @@ export function OAuthClientsPage() {
                 ))}
                 {clients.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-4 py-8 text-center text-gray-400">
+                    <td colSpan={7} className="px-4 py-8 text-center text-gray-400">
                       No OAuth clients yet.
                     </td>
                   </tr>
@@ -231,7 +266,8 @@ export function OAuthClientsPage() {
 
       <ConfirmDialog
         open={pendingDelete !== null}
-        onOpenChange={(open) => { if (!open) setPendingDelete(null) }}
+        onOpenChange={(open) => { if (!open) { setPendingDelete(null); deleteMutation.reset() } }}
+        error={deleteMutation.isError ? extractError(deleteMutation.error) : undefined}
         title={`Revoke client "${pendingDelete?.name ?? ''}"?`}
         description="Any integration using this client loses access immediately, including tokens it already holds. This cannot be undone."
         confirmLabel="Revoke"

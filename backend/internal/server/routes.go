@@ -25,8 +25,8 @@ func (s *Server) authRouter() *chi.Mux {
 	r.With(authmw.DenyMachineCredentials).Post("/local/mfa/verify", s.handleMFAVerify)
 	// The passkey half of the same gate. Both re-issue the session with
 	// MFAPassed true on success, so nothing downstream learns a new idea.
-	r.With(authmw.DenyMachineCredentials).Post("/local/passkey/start", s.handlePasskeyLoginStart)
-	r.With(authmw.DenyMachineCredentials).Post("/local/passkey/finish", s.handlePasskeyLoginFinish)
+	r.With(authmw.DenyMachineCredentials, s.requirePasskeys).Post("/local/passkey/start", s.handlePasskeyLoginStart)
+	r.With(authmw.DenyMachineCredentials, s.requirePasskeys).Post("/local/passkey/finish", s.handlePasskeyLoginFinish)
 
 	r.Post("/oauth/token", s.handleOAuthToken)
 	r.Get("/providers", s.handleAuthProviders)
@@ -88,8 +88,16 @@ func (s *Server) ticketRouter() *chi.Mux {
 		r.Delete("/links/{targetId}/{linkType}", s.handleRemoveLink)
 		r.Get("/links", s.handleListLinks)
 
-		r.Get("/history", s.handleListStatusHistory)
-		r.Get("/audit", s.handleListTicketAudit)
+		// The status timeline and the audit feed are history, which a requester
+		// does not get (Erik, 2026-10-15: requesters see the current state of
+		// the ticket and its conversation, not its history). Staff and
+		// administrators only, like tags and followers; the ticket-access check
+		// above still answers first, so a ticket out of reach is a 404.
+		r.Group(func(r chi.Router) {
+			r.Use(authmw.RequireRole(user.RoleAdmin, user.RoleStaff))
+			r.Get("/history", s.handleListStatusHistory)
+			r.Get("/audit", s.handleListTicketAudit)
+		})
 
 		// Tags are how staff mark a ticket for other staff — "fraud-suspect",
 		// "legal-hold", "difficult-customer". DESIGN.md gives them to Staff and
@@ -101,6 +109,16 @@ func (s *Server) ticketRouter() *chi.Mux {
 			r.Get("/tags", s.handleListTicketTags)
 			r.Post("/tags", s.handleAddTicketTag)
 			r.Delete("/tags/{tagId}", s.handleRemoveTicketTag)
+		})
+
+		// Followers (#441). Staff and admin only. Following is a person's own
+		// choice, so a machine credential may read the list but not change
+		// whether somebody follows.
+		r.Group(func(r chi.Router) {
+			r.Use(authmw.RequireRole(user.RoleAdmin, user.RoleStaff))
+			r.Get("/followers", s.handleListFollowers)
+			r.With(authmw.DenyMachineCredentials).Put("/follow", s.handleFollowTicket)
+			r.With(authmw.DenyMachineCredentials).Delete("/follow", s.handleUnfollowTicket)
 		})
 
 		// Canned responses are for staff/admin composing replies, not the
@@ -294,6 +312,8 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.Post("/", s.handleCreateWebhook)
 		r.Patch("/{id}", s.handleUpdateWebhook)
 		r.Delete("/{id}", s.handleDeleteWebhook)
+		r.Get("/{id}/deliveries", s.handleListWebhookDeliveries)
+		r.Post("/{id}/deliveries/{delivery}/redeliver", s.handleRedeliverWebhook)
 	})
 
 	r.Route("/tags", func(r chi.Router) {
@@ -348,24 +368,42 @@ func (s *Server) meRouter() *chi.Mux {
 		// reachable by top-level navigation from any site — the session cookie
 		// is SameSite=Lax — so a single link could start enrolment for a
 		// logged-in victim.
-		r.Post("/mfa/enroll", s.handleMFAEnrollStart)
-		r.Post("/mfa/enroll/confirm", s.handleMFAEnrollConfirm)
+		//
+		// RequirePasswordCurrent on all of them: a session that owes the
+		// password change the console's unlock command imposed (#497) may do
+		// that and nothing else, enrolment included. The change itself is
+		// reachable without MFA (below), so this cannot strand anyone.
+		r.Group(func(r chi.Router) {
+			r.Use(authmw.RequirePasswordCurrent)
+			r.Post("/mfa/enroll", s.handleMFAEnrollStart)
+			r.Post("/mfa/enroll/confirm", s.handleMFAEnrollConfirm)
 
-		// Passkeys sit beside TOTP enrolment and inherit both placements
-		// deliberately: refused to machine credentials, because a key must
-		// not be able to add a way of becoming its owner; and outside
-		// RequireMFA, because somebody compelled to enrol has to be able to
-		// finish. The second is what lets a sole administrator with no
-		// working factor recover alone, pinned by
-		// TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor.
-		r.Get("/passkeys", s.handleListPasskeys)
-		r.Post("/passkeys/register/start", s.handlePasskeyRegisterStart)
-		r.Post("/passkeys/register/finish", s.handlePasskeyRegisterFinish)
-		r.Delete("/passkeys/{id}", s.handleDeletePasskey)
+			// Passkeys sit beside TOTP enrolment and inherit both placements
+			// deliberately: refused to machine credentials, because a key must
+			// not be able to add a way of becoming its owner; and outside
+			// RequireMFA, because somebody compelled to enrol has to be able to
+			// finish. The second is what lets a sole administrator with no
+			// working factor recover alone, pinned by
+			// TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor.
+			//
+			// All but delete answer 503 while passkeys are unavailable (#494).
+			// Delete never touches the ceremony service, and a person should be
+			// able to remove a key from an account whatever BASE_URL is.
+			r.With(s.requirePasskeys).Get("/passkeys", s.handleListPasskeys)
+			r.With(s.requirePasskeys).Post("/passkeys/register/start", s.handlePasskeyRegisterStart)
+			r.With(s.requirePasskeys).Post("/passkeys/register/finish", s.handlePasskeyRegisterFinish)
+			r.Delete("/passkeys/{id}", s.handleDeletePasskey)
+		})
+
+		r.With(authmw.RequireMFAOrPasswordChange).Patch("/password", s.handleChangePassword)
 
 		r.Group(func(r chi.Router) {
 			r.Use(authmw.RequireMFA)
-			r.Patch("/password", s.handleChangePassword)
+			// Staff only: a requester account is never sent staff mail. Refused
+			// to machine credentials with the rest of this group; a key has no
+			// inbox of its own to choose for.
+			r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff)).
+				Patch("/email-preferences", s.handleUpdateEmailPreferences)
 		})
 	})
 
@@ -383,9 +421,12 @@ func (s *Server) meRouter() *chi.Mux {
 // guestRouter is the whole surface a per-ticket token reaches.
 //
 // Mounted at /api/v1/guest, outside ticketRouter. Submission and re-request are
-// public and throttled; the other two require a token, which the middleware
+// public and throttled; the token routes require a token, which the middleware
 // resolves to exactly one ticket. There is no id parameter anywhere below, so
 // there is nothing for a guest to change in order to reach a different ticket.
+// All routes, public and token-based, are gated on guest_submission_enabled: when
+// off, the instance answers 404 to all guest routes rather than advertising
+// routes it will not serve, suspending existing links until the setting is on again (#424).
 func (s *Server) guestRouter() *chi.Mux {
 	r := chi.NewRouter()
 

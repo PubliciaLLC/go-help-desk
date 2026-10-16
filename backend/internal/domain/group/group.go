@@ -1,6 +1,8 @@
 package group
 
 import (
+	"errors"
+
 	"github.com/google/uuid"
 )
 
@@ -34,3 +36,14 @@ func (s GroupScope) IsInScope(categoryID uuid.UUID, typeID *uuid.UUID) bool {
 	}
 	return *s.TypeID == *typeID
 }
+
+var (
+	// ErrNotFound is returned when a group, member, or scope does not exist.
+	ErrNotFound = errors.New("not found")
+	// ErrValidation is returned when a group name is blank.
+	ErrValidation = errors.New("validation error")
+	// ErrNameTaken is returned when a group name is already in use.
+	ErrNameTaken = errors.New("name taken")
+	// ErrInvalidReference is returned when a user_id does not exist.
+	ErrInvalidReference = errors.New("invalid reference")
+)
