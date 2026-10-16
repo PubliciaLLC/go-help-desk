@@ -7,10 +7,12 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -367,4 +369,52 @@ func TestNewSAMLMiddleware_HandoverCookieIsSameSiteLax(t *testing.T) {
 		_, token := samlCookies(t, base)
 		require.Contains(t, token, "SameSite=Lax", base)
 	}
+}
+
+// Pasted metadata builds the same middleware a fetched URL does, with no
+// network involved (#461).
+func TestNewSAMLMiddleware_FromMetadataXML(t *testing.T) {
+	certPEM, keyPEM := selfSignedSP(t)
+	mw, err := auth.NewSAMLMiddleware(context.Background(), auth.SAMLConfig{
+		BaseURL:     "https://helpdesk.example.com",
+		MetadataXML: []byte(samlIDPMetadataXML),
+		CertPEM:     certPEM,
+		KeyPEM:      keyPEM,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "https://idp.testshib.org/idp/shibboleth", mw.ServiceProvider.IDPMetadata.EntityID)
+}
+
+// Both set can only come from a direct database edit (both API doors refuse
+// it). XML wins, because it has no network dependency.
+func TestNewSAMLMiddleware_MetadataXMLWinsOverURL(t *testing.T) {
+	var hits atomic.Int64
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte(samlIDPMetadataXML))
+	}))
+	defer idp.Close()
+
+	certPEM, keyPEM := selfSignedSP(t)
+	_, err := auth.NewSAMLMiddleware(context.Background(), auth.SAMLConfig{
+		BaseURL:     "https://helpdesk.example.com",
+		MetadataURL: idp.URL,
+		MetadataXML: []byte(samlIDPMetadataXML),
+		CertPEM:     certPEM,
+		KeyPEM:      keyPEM,
+	})
+	require.NoError(t, err)
+	require.Zero(t, hits.Load(), "pasted XML must not be accompanied by a fetch")
+}
+
+func TestNewSAMLMiddleware_RefusesInvalidMetadataXML(t *testing.T) {
+	certPEM, keyPEM := selfSignedSP(t)
+	_, err := auth.NewSAMLMiddleware(context.Background(), auth.SAMLConfig{
+		BaseURL:     "https://helpdesk.example.com",
+		MetadataXML: []byte("hello"),
+		CertPEM:     certPEM,
+		KeyPEM:      keyPEM,
+	})
+	require.Error(t, err)
+	require.True(t, errors.Is(err, auth.ErrIdPMetadataInvalid), "got %v", err)
 }
