@@ -44,6 +44,18 @@ type ticketRequester struct {
 	Email string `json:"email"`
 }
 
+// requesterFor is the Requester line for this viewer: requesterOf for staff and
+// administrators, nil for anyone else (a reporting user, an unknown role, no
+// actor). It is the handler's layer of keeping the line from requesters, which
+// also means no lookup is made for them; the other layer is the field filter
+// (the key is not on the requester allowed list). Each is tested on its own.
+func (s *Server) requesterFor(ctx context.Context, a *authmw.Actor, t ticket.Ticket) *ticketRequester {
+	if a == nil || (a.Role != user.RoleStaff && a.Role != user.RoleAdmin) {
+		return nil
+	}
+	return s.requesterOf(ctx, t)
+}
+
 // requesterOf names who a ticket is for. A deleted account is still named: the
 // ticket remains, and staff reading it need to know who it was about. nil when
 // there is nobody to name or the account cannot be read, which is logged: the

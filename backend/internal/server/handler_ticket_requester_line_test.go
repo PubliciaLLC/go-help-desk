@@ -10,6 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
 
 // #444: the staff ticket page names who the ticket is for, on every ticket: the
@@ -105,6 +107,41 @@ func TestGetTicket_ARequesterIsNotSentTheRequesterLine(t *testing.T) {
 			whole, err := json.Marshal(m)
 			require.NoError(t, err)
 			require.NotContains(t, string(whole), "staff@test.local")
+		})
+	}
+}
+
+// The Requester line is kept from a requester by two layers, and each is pinned
+// without the other. The field filter's (the key is not on the requester
+// allowed list) is ticket.TestFilterForViewer_DropsTheStaffOnlyRequesterKeyFromARequesterView.
+// This is the handler's: it does not build the line for anyone but staff and
+// administrators, so it would not leak if the allowed list were ever widened.
+// It asks the function the ticket read uses, before any filter sees the view.
+func TestGetTicket_TheRequesterLineIsOnlyBuiltForStaff(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	tk := decodeTicket(t, h.postOnBehalf(t, "user", nil))
+	// What the requester was sent has no reporter (the allowed list drops it);
+	// the ticket the read has is the stored one.
+	tk.ReporterUserID = &h.userID
+	ctx := context.Background()
+
+	for name, a := range map[string]*authmw.Actor{
+		"the requester whose ticket it is": {UserID: h.userID, Role: user.RoleUser},
+		"another requester":                {UserID: uuid.New(), Role: user.RoleUser},
+		"an unknown role":                  {UserID: h.userID, Role: user.Role("auditor")},
+		"no actor":                         nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.Nil(t, h.srv.RequesterForTest(ctx, a, tk), "not built, so there is nothing to leak")
+		})
+	}
+	for name, a := range map[string]*authmw.Actor{
+		"staff": {UserID: h.staffID, Role: user.RoleStaff},
+		"admin": {UserID: h.adminID, Role: user.RoleAdmin},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.NotNil(t, h.srv.RequesterForTest(ctx, a, tk))
 		})
 	}
 }
