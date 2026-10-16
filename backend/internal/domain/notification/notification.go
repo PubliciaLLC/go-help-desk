@@ -115,10 +115,18 @@ type Event struct {
 	Ticket *TicketState `json:"-"`
 
 	// RoutedAssignment marks an assignment that routing made inside a create,
-	// not the person who filed the ticket. Staff mail skips "nobody is mailed
-	// about their own action" for it: routing picked the assignee, they did not,
-	// and a creator the routing assigned to must still hear of it (as in 1.2.x).
-	// Excluded from JSON.
+	// not the person who filed the ticket. Two things read it: staff mail skips
+	// "nobody is mailed about their own action" for it (routing picked the
+	// assignee, they did not, and a creator the routing assigned to must still
+	// hear of it, as in 1.2.x), and the webhook sender names no actor for a hook
+	// told ticket.assigned (routing is the system's act). The outbox codec
+	// persists it. Excluded from the webhook JSON.
+	//
+	// Known limit: only create's routing sets it, and create raises no manual
+	// assignment in the same transaction. Changes.Raise ORs it and keeps the
+	// first actor, so if a future change lets one transaction raise both a
+	// routed and a manual assignment, the human's actor would be nulled under
+	// ticket.assigned. That would need per-kind actors on the event.
 	RoutedAssignment bool `json:"-"`
 
 	// FromRequester marks a ticket.replied that the requester wrote (an

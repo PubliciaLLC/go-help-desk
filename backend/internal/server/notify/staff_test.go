@@ -570,16 +570,16 @@ func TestStaffFanout_FollowersWhoCannotReceiveStaffMailAreSkipped(t *testing.T) 
 	require.Equal(t, []uuid.UUID{ok.ID}, recipientsOf(next))
 }
 
-// Not being able to list followers costs the followers their mail and nobody
-// else theirs.
-func TestStaffFanout_AFollowerLookupFailureStillMailsTheAssignee(t *testing.T) {
+// Not being able to list followers fails the change, so the worker retries it
+// whole; nobody is mailed from a partial answer.
+func TestStaffFanout_AFollowerLookupFailureIsAnErrorAndQueuesNothing(t *testing.T) {
 	assignee := staffUser("assignee")
 	next := &recorder{}
 	f := fanoutWithFollowers(next, newFakeStaffUsers(assignee), fakeStaffGroups{}, failingStaffFollowers{})
 
-	require.NoError(t, f.Dispatch(context.Background(), requesterReply(&assignee.ID, nil)))
+	require.Error(t, f.Dispatch(context.Background(), requesterReply(&assignee.ID, nil)))
 
-	require.Equal(t, []uuid.UUID{assignee.ID}, recipientsOf(next))
+	require.Empty(t, next.got)
 }
 
 func TestEventToEmail_FollowersAreToldItIsATicketTheyFollow(t *testing.T) {

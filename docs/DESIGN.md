@@ -2664,7 +2664,7 @@ on the existing webhook feature instead of as plugins.
   keeps its shape. See Ticket Events: One Change, One Event.
   **What the raw format carries** ([#448](https://github.com/PubliciaLLC/go-help-desk/issues/448)).
   The raw body is **ids only**: the event name (`Type`), `TicketID`, `ActorID`
-  (null for a system event), `OccurredAt` and a `Payload` holding only the ids
+  (null for a system event, and for a routed create under `ticket.assigned`), `OccurredAt` and a `Payload` holding only the ids
   `new_status_id` (status changed) and `target_id` (linked), where the event
   has them. Every other event has no payload. Whether an event is a reply or a
   note is its name, so there is no `internal` flag, and no link type is sent.
@@ -3031,7 +3031,7 @@ raises into the transaction's collector; none dispatches after the commit.
 | `create` (REST and guest `POST` ticket, MCP `create_ticket`, `CreateFollowUp`, `CreateRequesterFollowUp`) | `ticket.created`; plus `ticket.assigned` when routing picked someone (REST create, REST follow-up and guest follow-up only; guest create, MCP `create_ticket` and MCP `create_follow_up` pass no candidates) | Recipient = guest address and the guest-link flag for a guest. For routing, the `RoutedAssignment` flag (below). |
 | same, follow-up only | `ticket.linked` **on the original ticket** (its own event: one per ticket) | `target_id` = the new ticket, `link_type` = `parent_child` |
 | `UpdateStatus` (MCP `update_ticket_status`; REST `PATCH status_id` runs the same in-transaction step inside `Update`) | the status kinds | `new_status_id`; recipient = guest (none when closing); guest-link flag unless closing |
-| `Assign` (MCP `assign_ticket`; REST `PATCH` assignee or `clear_assignee` runs the same step inside `Update`) | `ticket.assigned`, also for a clear and for assigning the person who already holds it (the event then has no field change) | |
+| `Assign` (MCP `assign_ticket`; REST `PATCH` assignee or `clear_assignee` runs the same step inside `Update`) | `ticket.assigned`, only when the assignee user or group moved. A clear of an assigned ticket is a change; a clear of an unassigned one, or assigning the person and group already held, raises nothing (ruling 16). The audit entry is still written, as for a same-status move. | |
 | `ChangePriority` (no production caller: REST `PATCH priority` runs its step inside `Update`) | `ticket.priority_changed`, only when the priority moved | |
 | `UpdateCTI` (no production caller: REST `PATCH category_id` runs its step inside `Update`) | `ticket.classified`, only when category, type or item changed. Now in a transaction; still writes no audit entry. | |
 | `Update` (REST `PATCH /tickets/{id}`, `handler_tickets.go`; it calls the in-transaction step functions of the four rows above) | whatever its steps raise, merged | see *One transaction* |
@@ -3088,6 +3088,7 @@ and the eleven names. The raw body already changed during the 1.3 betas
 | `PATCH` status to Resolved | `resolved`, `status_changed` | 1 |
 | Resolve button | `resolved`, `status_changed` | 1 |
 | Close (button, scheduler, or `PATCH` to Closed) | `closed`, `status_changed` | 1 |
+| `PATCH` or assign that repeats the current assignee and group, or clears an unassigned ticket | nothing (the audit entry is still written) | 0 |
 | `PATCH` that repeats the ticket's current status | nothing about status (see *Same status*) | 0, or 1 for the other kinds in the request |
 | Resolve button on an already-Resolved ticket, new notes | `resolved` only | 1 |
 | `PATCH` priority only | `priority_changed` | 1 |
@@ -3186,7 +3187,9 @@ ticket as the transaction leaves it; `Payload` keys are merged, a later key
 replacing an earlier one; the strings (tracking number, recipient, subject,
 status name) are the last non-empty one; the flags (guest link, `FromRequester`,
 `RoutedAssignment`) are true if any piece said so; the actor is the first
-non-nil one raised and the time is the first piece's.
+non-nil one raised and the time is the first piece's. One event has one
+actor; a routed create's actor is the creator's, and the webhook sender drops it
+for the name `ticket.assigned` (see *Create, then auto-assign*).
 
 #### 2. One transaction
 
@@ -3212,7 +3215,13 @@ transaction, and the collector merges them.
   round-robin list) is skipped for the next. The event is `[created, assigned]`.
   A group filter therefore matches a new ticket. Routing also writes its own
   audit entry `assigned`, with no actor and the change `unassigned` to
-  `assigned`. Guest create, MCP `create_ticket` and MCP `create_follow_up` do not auto-assign, as before.
+  `assigned`. The event carries the creator as its one actor, but routing is the
+  system's act: a hook that is told `ticket.assigned` gets `ActorID: null`
+  (`forHook`, `notify/webhook.go`, from `RoutedAssignment`), and one told
+  `ticket.created` still gets the creator (ruling 17). Limit: only create's routing
+  sets the flag and create raises no manual assignment in the same transaction; if
+  a future change lets one transaction raise both, the merge would null the
+  human's actor under `ticket.assigned`, and per-kind actors would be needed. Guest create, MCP `create_ticket` and MCP `create_follow_up` do not auto-assign, as before.
   - **Round-robin takes its turn up front.** When no group routes the ticket,
     `roundRobin` advances its counter with one atomic add as `routing` runs,
     before the transaction, and offers the whole user list rotated from that
@@ -3220,7 +3229,8 @@ transaction, and the collector merges them.
     creates each get their own.
   - **A creator who is routed their own ticket is mailed**: routing picked the
     assignee, so the event carries `RoutedAssignment`, which exempts it from "no
-    mail about your own action" (Staff email).
+    mail about your own action" (Staff email). The same flag makes the
+    `ticket.assigned` webhook name no actor.
 
 #### 3. The outbox write is inside the change's transaction
 
@@ -3259,11 +3269,14 @@ the change's row id (`uuid.NewSHA1` of the parent and a key: `requester`, or
 `staff:` plus the user id), so a repeat after a crash does not queue anyone twice
 while their rows still wait. Without a database handle, or outside the worker
 (no row id), it falls back to queueing one by one. A failed read of the staff
-accounts returns an error and the row is retried with nothing queued. This is
-deliberate: a requester's mail queued before that error would by then have been
-sent and deleted, and sent a second time, with a new guest link each time. A
-failed read of the followers or of a group's members is logged and costs only
-those people their mail; the rest are mailed.
+accounts, of the followers or of a group's members returns an error and the row
+is retried with nothing queued (ruling 15). This is deliberate: a requester's
+mail queued before that error would by then have been sent and deleted, and sent
+a second time, with a new guest link each time, and mailing the people found so
+far would lose the rest with no retry. The cost is that a lookup that keeps
+failing holds back every mail of the change, the requester's included: it is
+tried 8 times in all over about an hour, then the row is marked failed. The log says
+"staff email: could not work out who to notify".
 
 #### 4. A consumer is still a channel row (no shared log with positions)
 
@@ -3310,9 +3323,10 @@ through the API by `TicketID`. The tracking number stays out, as #448 ruled on
 
 **Chat and ITSM formats** (Slack, Teams, Discord, Jira Automation). The
 headline comes from the hook's `Type`, as before. The headline for
-`ticket.priority_changed` and `ticket.classified` is the event name itself,
-because the headline table has no wording for them (`headline`,
-`notify/format.go`). Under the headline:
+`ticket.priority_changed` is "Priority changed" and for `ticket.classified`
+"Reclassified" (`headline`, `notify/format.go`); neither carries a value or a
+name. Jira has no headline and keeps the event name in its `event` key. Under
+the headline:
 
 - **The "Also" line (ruling 10).** One line names the change's other kinds, such
   as "Also: assigned, priority changed". It names **only kinds the hook
@@ -3558,26 +3572,26 @@ comments on #506):
     plus an assignee carries `assigned` only. 1.2.x announced `status_changed`
     here, so the upgrade notes say so.
 
-**Ruled by Erik, 2026-10-16, fix in progress (not yet built).** These four are
-recorded on #506. This section describes the code as it is on `v1.3.0-beta`; a
-separate fix PR will change the sentences above when it lands.
+**Ruled by Erik, 2026-10-16.** Recorded on #506.
 
 14. **Chat headlines for the two new events are readable.** `ticket.priority_changed`
-    and `ticket.classified` get proper headlines, not their raw names. Fix in
-    progress (not yet built).
-15. **A failed lookup of followers or group members retries the change.** Today
-    that mail is dropped; after the fix, no mail goes out until every recipient is
-    known. Fix in progress (not yet built).
+    is "Priority changed" and `ticket.classified` is "Reclassified". (That the
+    headlines name no value or name is a **build decision**, not a ruling of
+    Erik's: values are content, as for the rest of the event.)
+15. **A failed lookup of followers or group members retries the change.** No mail
+    goes out until every recipient is known; nothing is queued from a partial
+    answer.
 16. **An assignment that changes nothing announces nothing.** That covers the
     same assignee, or a clear on a ticket that is already unassigned. It changes
-    1.2.x behaviour, so it goes in the upgrade notes. Fix in progress (not yet
-    built).
-17. **An auto-routing assignment names nobody as the actor.** The webhook carries
-    `ActorID: null`, as in 1.2.x and as the audit log already records. The
-    `ticket.created` delivery still names the creator. Fix in progress (not yet
-    built).
+    1.2.x behaviour, so it is in the upgrade notes. (Two details are **build
+    decisions**, not rulings of Erik's: that "same" means the same user and the
+    same group, and that the audit entry is still written, as for a same-status
+    move.)
+17. **An auto-routing assignment names nobody as the actor.** A hook told
+    `ticket.assigned` gets `ActorID: null`, as in 1.2.x and as the audit log
+    already records. The `ticket.created` delivery still names the creator.
 
-No other questions are open; rulings 14 to 17 are pending the fix.
+No other questions are open.
 
 That staff mail recipients are decided by the worker, a moment after the commit,
 follows from ruling 1.

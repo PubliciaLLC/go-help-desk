@@ -1118,10 +1118,17 @@ func (s *Service) assignInTx(ctx context.Context, st Store, au audit.Store, ch *
 		}
 	}
 
+	// Nothing moved (same user and group, or a clear on an unassigned ticket):
+	// nothing is announced, as for a same-status or same-priority change. The
+	// audit entry above is still written, as a same-status move writes its own.
+	changes := append(optIDChange("assignee_user_id", previous, assigneeUserID),
+		optIDChange("assignee_group_id", previousGroup, assigneeGroupID)...)
+	if len(changes) == 0 {
+		return t, nil
+	}
 	ev := raiseOn(t, actor, now)
 	ev.Kinds = []notification.EventType{notification.EventTicketAssigned}
-	ev.Changes = append(optIDChange("assignee_user_id", previous, assigneeUserID),
-		optIDChange("assignee_group_id", previousGroup, assigneeGroupID)...)
+	ev.Changes = changes
 	ch.Raise(ev)
 	return t, nil
 }
