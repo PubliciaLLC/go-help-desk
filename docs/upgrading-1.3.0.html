@@ -173,6 +173,7 @@
     <tr><td>MCP refuses requests from another origin; Streamable HTTP added</td><td>Browser-based MCP clients, proxies that add <code>Origin</code></td></tr>
     <tr><td>A public reply through MCP emails the requester</td><td>Anyone with an agent connected over MCP</td></tr>
     <tr><td>Nobody can newly file into an archived category, type or item</td><td>Staff, administrators, scripts that file or reclassify</td></tr>
+    <tr><td>OAuth clients act through a service user</td><td>Administrators who use OAuth clients</td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
@@ -517,6 +518,23 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 </ul>
 
 <p>Administrators can now archive and unarchive a category, type or item from <strong>Admin → Categories</strong>. To file into an archived node again, unarchive it there.</p>
+
+<h2 id="service-users">OAuth clients act through a service user</h2>
+
+<p><strong>Who notices:</strong> administrators who use OAuth clients, and the integrations behind them.</p>
+
+<p>Every OAuth client now has a <strong>service user</strong>: an account made with the client, named after it, that the client acts as. Upgrading creates one for each existing client, with the staff role and no groups.</p>
+
+<ul>
+  <li><strong>Clients can now write.</strong> A client holding <code>tickets:write</code> creates tickets and replies as its service user, and the audit trail shows the client's name. Before, those calls were refused with <code>403 user_identity_required</code>. A client with only <code>tickets:read</code> is still refused.</li>
+  <li><strong>Service users appear in Admin → Users.</strong> They can be renamed (which renames the client), set to staff or user (never administrator), given groups, and disabled. <strong>Disabling the user stops the client.</strong> A service user cannot be deleted on its own: <code>DELETE /api/v1/admin/users/{id}</code> answers <code>409 service_account</code> and says to delete the client instead.</li>
+  <li><strong>They never sign in.</strong> No password, no second factor, no passkey, no single sign-on, no administrator role.</li>
+  <li>They are left out of assignee pickers and round-robin, do not count as administrators, and are never emailed. A ticket a client opens sends no requester email.</li>
+  <li><code>POST /api/v1/admin/oauth-clients</code> now returns <code>user_id</code>. <code>GET /api/v1/admin/oauth-clients</code> returns <code>user_id</code> and <code>groups</code> for each client.</li>
+  <li><strong>Before you turn on ticket scope enforcement,</strong> give each service user a group. A service user in no group sees no tickets. Saving the setting tells you which clients have none, and the security warnings list them (<code>oauth_clients_without_groups</code>) until each has a group or is disabled. With enforcement off, clients behave as before.</li>
+</ul>
+
+<p>If you downgrade, the down migration deletes the service users. The tickets they wrote stay, with no author link.</p>
 
 <h2 id="known-gaps">What is not in 1.3.0</h2>
 
