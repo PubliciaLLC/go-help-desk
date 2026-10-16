@@ -172,6 +172,7 @@
     <tr><td>An IP address or one-word <code>BASE_URL</code> turns passkeys off</td><td>Installs reached by IP address or a host with no dot</td></tr>
     <tr><td>MCP refuses requests from another origin; Streamable HTTP added</td><td>Browser-based MCP clients, proxies that add <code>Origin</code></td></tr>
     <tr><td>A public reply through MCP emails the requester</td><td>Anyone with an agent connected over MCP</td></tr>
+    <tr><td>Nobody can newly file into an archived category, type or item</td><td>Staff, administrators, scripts that file or reclassify</td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
@@ -501,6 +502,21 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 <p>A public reply posted through the MCP <code>add_reply</code> tool used to be saved and never emailed. It now emails the requester (the guest, with a guest link, or the reporting account), the same as a reply through the REST API. <strong>Anything connected over MCP can now send mail to your customers.</strong> Review which credentials have <code>tickets:write</code> before you upgrade. Internal notes (<code>internal: true</code>) still send nothing, and MCP has no <code>notify_customer</code> switch: use an internal note for anything that should not reach the requester.</p>
 
 <p>One change for staff over both REST and MCP: a staff member or administrator who replies publicly on a ticket they filed themselves is no longer emailed a copy of their own reply. Webhook receivers see it too, as an empty <code>reporter_email</code> in the raw payload. An ordinary user replying on their own ticket still gets the copy.</p>
+
+<h2 id="archived-nodes">Nobody can newly file into an archived category, type or item</h2>
+
+<p><strong>Who notices:</strong> staff, administrators, and scripts that file or reclassify tickets.</p>
+
+<p>Before, staff and administrators could create tickets under, and move tickets into, categories and types an administrator had archived, and nobody was checked on items. That is reversed: <strong>nobody, staff and administrators included, can newly pick an archived category, type or item.</strong></p>
+
+<ul>
+  <li><code>POST /api/v1/tickets</code>, <code>PATCH /api/v1/tickets/{id}</code> (with <code>category_id</code>, <code>type_id</code> or <code>item_id</code>) and the MCP <code>create_ticket</code> tool answer <code>400 bad_request</code>, for example <em>type_id is not an active type</em>. This holds for sessions and API keys alike.</li>
+  <li>A ticket already in an archived node keeps it. Unrelated edits, a change that repeats the existing classification, and staff follow-ups of a closed ticket still work.</li>
+  <li>Staff and administrators still see archived entries, greyed out and labelled <em>(archived)</em>, and cannot pick them in the new-ticket and reclassify pickers. A ticket's own archived node stays selected so it can keep it.</li>
+  <li>A change that carries a refused classification now changes nothing. The status and assignee in the same request are no longer applied before the <code>400</code>.</li>
+</ul>
+
+<p>Administrators can now archive and unarchive a category, type or item from <strong>Admin → Categories</strong>. To file into an archived node again, unarchive it there.</p>
 
 <h2 id="known-gaps">What is not in 1.3.0</h2>
 
