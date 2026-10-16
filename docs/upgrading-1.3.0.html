@@ -176,6 +176,7 @@
     <tr><td>OAuth clients act through a service user</td><td>Administrators who use OAuth clients</td></tr>
     <tr><td>Staff are emailed about their tickets</td><td>Every staff member and administrator, once email is configured</td></tr>
     <tr><td>Staff can follow a ticket</td><td>Staff and administrators</td></tr>
+    <tr><td>Reopening a ticket flags it, raises priority once, restarts the SLA and mails staff; requesters see less</td><td>Staff, administrators, requesters, scripts that read the audit routes</td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
@@ -566,6 +567,30 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
   <li><strong>Reassigning a ticket ends the old assignee's follow</strong> if they followed the ticket they held. It is recorded as <code>unfollowed</code> with whoever moved the ticket as the actor. Moving a ticket between groups does not touch anyone's follow.</li>
   <li>The assignee is not also mailed as a follower, and neither are the members of an assigned group when the group itself is mailed. For those, their own switches decide.</li>
 </ul>
+
+<h2 id="reopen">Reopening a ticket now does more</h2>
+
+<p><strong>Who notices:</strong> staff, administrators, requesters, and anything that reopens tickets or reads the audit routes.</p>
+
+<p>A reopen is any move from Resolved or Closed back to an open status: a requester's reply on a Resolved ticket (an account holder or a guest), a status change by staff or an administrator, and <code>POST /api/v1/tickets/{id}/reopen</code>. Until now a reopen changed the status and nothing else. It now does five things in the same step as the status change:</p>
+
+<ul>
+  <li><strong>The ticket is flagged.</strong> Staff and administrators see a <strong>Reopened</strong> badge on the ticket and in the queue while it is open again. It goes away when the ticket is resolved again. The count is <code>reopen_count</code> on the ticket, shown to staff and administrators only and left out when it is 0.</li>
+  <li><strong>The priority goes up one level on the first reopen only</strong> (low, medium, high, critical; critical stays). A ticket that used to keep its priority through a reopen now gets a new one, which can match a different SLA policy. Later reopens do not raise it again.</li>
+  <li><strong>The SLA starts over</strong> on every reopen. The earlier record is kept, staff see an <strong>SLA restarted</strong> badge, and the audit log gets <code>sla_restarted</code>. Nothing happens while SLA tracking is off.</li>
+  <li><strong>Staff are emailed:</strong> the assignee (under <em>Activity on tickets I'm assigned to or follow</em>), the assigned group's members (under <em>My groups' tickets</em>, only while nobody holds the ticket) and its followers, once each, and never the person who reopened it. The administrator's overrides apply. <strong>Staff who already receive staff email start receiving these.</strong></li>
+  <li><strong>The change is audited</strong> as <code>reopened</code>, and a move out of Resolved or Closed now raises the <code>ticket.reopened</code> webhook event, which it did not before.</li>
+</ul>
+
+<p>A priority change can no longer undo a restart: if a ticket's priority moves to one with no SLA policy and later to one with a policy, the new record resumes from the clock it left, or from the last reopen if that is later.</p>
+
+<p><strong>Requesters see less.</strong> A requester sees the ticket as it is now and its public replies, and nothing about how it got there:</p>
+<ul>
+  <li><code>GET /api/v1/tickets/{id}/audit</code> and <code>GET /api/v1/tickets/{id}/history</code> now answer <code>403</code> to a requester. Before, a requester could read both for their own ticket. The ticket page no longer shows them status changes in the conversation either. Staff and administrators are unchanged, and guests never had either route.</li>
+  <li>A requester now receives only these ticket fields, in every ticket response including MCP: <code>id</code>, <code>tracking_number</code>, <code>subject</code>, <code>description</code>, <code>status_id</code>, <code>priority</code>, <code>category_id</code>, <code>type_id</code>, <code>item_id</code>, <code>created_at</code>, <code>resolved_at</code>, <code>assignee_user_id</code> and <code>resolution_notes</code>. They no longer receive <code>assignee_group_id</code>, <code>reporter_user_id</code>, <code>guest_email</code>, <code>guest_name</code>, <code>guest_phone</code>, <code>closed_at</code>, <code>updated_at</code>, <code>pending_since</code>, <code>sla_paused_seconds</code> or <code>reopen_count</code>. Guests no longer receive <code>updated_at</code>; the rest of their view is unchanged. A field added to tickets in a later release stays hidden from requesters until it is added to this list.</li>
+</ul>
+
+<p>A script that signs in as a requester and reads those routes or keys will see the change.</p>
 
 <h2 id="known-gaps">What is not in 1.3.0</h2>
 
