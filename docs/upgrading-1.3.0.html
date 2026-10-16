@@ -179,6 +179,7 @@
     <tr><td>Reopening a ticket flags it, raises priority once, restarts the SLA and mails staff; requesters see less</td><td>Staff, administrators, requesters, scripts that read the audit routes</td></tr>
     <tr><td>Change priority, Assign to me, Resolve all children</td><td>Staff and administrators</td></tr>
     <tr><td>Webhooks: ids-only raw payload, notes as their own event, retries, history, ticket filter</td><td>Anyone who receives webhooks</td></tr>
+    <tr><td>Admin API: checks before writes, inactive statuses retired, keys list only themselves</td><td>Scripts and API keys that call admin routes</td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
@@ -623,6 +624,32 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 
 <h3 id="webhooks-filter">New: a ticket filter</h3>
 <p>A hook can be limited to tickets in chosen categories, priorities or assigned groups (<strong>Admin → Webhooks → Ticket filter</strong>), or inverted to send for every ticket that does not match. A hook with no filter, which is every hook after the upgrade, behaves as before. An event the filter turns away is not a delivery for that hook: no delivery id, no retry, no History entry. The filter is read as it is now, when an event is sent, at every retry and at Redeliver, so tightening a filter drops waiting retries that it no longer admits. Redeliver is refused with <code>409 webhook_filter_excludes</code> when the filter does not admit the ticket, and with <code>409 webhook_filter_unverifiable</code> when the hook has a filter and the ticket is gone. <code>ticket.created</code> is raised before auto-assignment, so a group condition never matches it. Subscribe to <code>ticket.assigned</code> to hear about tickets landing in a group.</p>
+
+<h2 id="admin-api">Admin API: no more half-applied edits, and new rules</h2>
+
+<p><strong>Who notices:</strong> scripts and API keys that call the admin API. Nothing needs doing in the admin screens.</p>
+
+<h3>Breaking</h3>
+<ul>
+  <li><strong>Inactive statuses are retired for everyone.</strong> <code>PATCH /api/v1/tickets/{id}</code> with a <code>status_id</code> that names an inactive status answers <code>409 status_inactive</code>, for staff, administrators and API keys alike. Tickets already in an inactive status stay there and can move out. The status picker no longer lists inactive statuses. If you deactivated <em>Pending</em> expecting the SLA to keep pausing, it now stops for new tickets. If the status that reopened tickets go to is inactive, every reopen goes to New instead, administrators see a banner (<code>reopen_target</code> in <code>GET /api/v1/admin/security-warnings</code>), and deactivating that status returns a <code>warning</code>.</li>
+  <li><strong>API keys list and revoke only themselves.</strong> An API key could delete another administrator's key if it knew the id; that has been possible since 1.0.0 and is revoke-only. Now a key lists and revokes only itself (any other id answers <code>404</code>). An administrator signed in through the browser lists and revokes every key, so <code>GET /api/v1/admin/api-keys</code> for a browser session now returns all keys, each with <code>owner_name</code> and <code>owner_email</code>. A script that used one key to list or revoke the others now needs a browser session.</li>
+  <li><strong>Custom-field errors have their own codes.</strong> A name already in use, and a field assigned twice to one place, answer <code>409 conflict</code>. A <code>field_def_id</code> that names no field answers <code>400 invalid_reference</code>. A database failure is a <code>500 internal_error</code>. No response carries database text.</li>
+  <li><strong>A failed ticket count fails the request.</strong> <code>GET /api/v1/admin/statuses</code> and <code>GET /api/v1/statuses</code> answer <code>500</code> when a count cannot be read. Before, the status was reported with <code>ticket_count: 0</code>.</li>
+  <li><strong>Names are trimmed on change</strong> for categories, types and items, as they are on create.</li>
+  <li><strong>Deleting a category, type or item also deletes its custom-field assignments.</strong> Leftovers from earlier deletes are removed once at upgrade.</li>
+  <li><strong>Deleting a group writes an <code>unassigned</code> audit entry for every ticket it held</strong>, in the same step as the delete.</li>
+  <li><strong><code>PATCH /api/v1/admin/users/{id}</code> checks every field before it writes any.</strong> A bad email, an email another account holds (<code>409</code>), or a change that would remove the last active administrator (<code>400</code>) is refused before anything changes. Soft-deleted accounts answer <code>404</code> to this route and to <code>POST /api/v1/admin/users/{id}/password</code>. Both check the body first (<code>400</code>), then the caller (<code>403</code>), then the account (<code>404</code>), for a session and an API key alike.</li>
+  <li><strong>Mismatched ids in a URL answer <code>404</code></strong> on the type and item routes under a category and on all the custom-field assignment routes. Listing the items of an unknown type, or the assignments of an unknown category, type or item, answers <code>404</code> instead of an empty list.</li>
+</ul>
+
+<h3>Added or corrected</h3>
+<ul>
+  <li><code>auth_type</code> reports OIDC with new values <code>oidc</code>, <code>local+oidc</code>, <code>saml+oidc</code> and <code>local+saml+oidc</code>. A client that switches on <code>auth_type</code> with a fixed list of values needs to handle them.</li>
+  <li><code>visible_on_new</code> on a new custom-field assignment now defaults to false in the database too, as it did in the API. Existing rows are untouched.</li>
+  <li><code>GET /api/v1/admin/sla/policies</code> is ordered by severity (critical, high, medium, low, then no priority), then by name.</li>
+  <li><code>POST /api/v1/admin/oauth-clients</code> returns <code>id</code>, the record id that <code>DELETE</code> takes. <code>PATCH /api/v1/admin/users/{id}</code> returns the real <code>passkey_count</code>. <code>PATCH /api/v1/admin/webhooks/{id}</code> and <code>PATCH /api/v1/admin/custom-fields/{id}</code> return the saved row, and the status routes return the real <code>ticket_count</code>.</li>
+  <li>A blank webhook <code>secret</code> on <code>PATCH</code> still clears it, by design and for administrators only.</li>
+</ul>
 
 <h2 id="known-gaps">What is not in 1.3.0</h2>
 
