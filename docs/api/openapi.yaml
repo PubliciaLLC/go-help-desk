@@ -2866,6 +2866,19 @@ paths:
         An OAuth client creates the ticket as its service user, which becomes
         the reporter, and needs the tickets:write scope. Nobody is mailed for a
         service user.
+
+        Filing for someone else (staff and administrators only). The caller is
+        the requester unless reporter_user_id or reporter_email is sent; send at
+        most one. reporter_user_id picks an existing account. reporter_email
+        types an address: if it belongs to an account the ticket is filed for
+        that account, otherwise it is filed exactly like a guest ticket, so the
+        person is sent the guest link at that address. That needs guest
+        submission to be on (400 otherwise, because the link would not open),
+        and guest_name and guest_phone are kept as they are on a guest ticket,
+        both optional here. Either way the caller, not the requester, is the
+        actor in the ticket's history, its created audit entry and the created
+        event. A reporting user who sends either field gets 403 forbidden; the
+        field is never ignored. GET /users/lookup finds an account to pick.
       tags: ['Tickets']
       x-ghd-handler: handleCreateTicket
       security:
@@ -2904,6 +2917,18 @@ paths:
                   type: object
                   additionalProperties:
                     type: string
+                reporter_user_id:
+                  description: Staff and administrators only. The existing account the ticket is for. Not with reporter_email. An id that is not a live account is 400.
+                  $ref: '#/components/schemas/Uuid'
+                reporter_email:
+                  type: string
+                  description: Staff and administrators only. An address the ticket is for. An account's address files for the account; any other makes a guest ticket and mails the guest link there (guest submission must be on). Not with reporter_user_id.
+                guest_name:
+                  type: string
+                  description: With reporter_email and no account behind it, the guest's name. Optional.
+                guest_phone:
+                  type: string
+                  description: With reporter_email and no account behind it, the guest's phone. Optional.
       responses:
         '201':
           description: The ticket as created, before routing assigned it.
@@ -2920,7 +2945,11 @@ paths:
             type; item_id is not an active item, which a reporting user never
             sees because their item_id is dropped first), type_id does not belong to
             category_id, and the domain's own checks (for example priority must
-            be one of critical, high, medium, low, or subject is too long).
+            be one of critical, high, medium, low, or subject is too long). For
+            staff and administrators also: both reporter_user_id and
+            reporter_email were sent, reporter_user_id is not a live account,
+            reporter_email is not a plain address (reporter_email: ...), or
+            reporter_email has no account and guest submission is off.
           content:
             application/json:
               schema:
@@ -2932,7 +2961,9 @@ paths:
             Refused by the middleware (text/plain). Or, from the handler
             (application/json): `user_identity_required`, for a credential
             that arrives with no user behind it. An OAuth client always has one,
-            its service user, so it is not refused this way.
+            its service user, so it is not refused this way. Or `forbidden`:
+            reporter_user_id or reporter_email was sent by a caller who is not
+            staff or an administrator.
           content:
             text/plain:
               schema:
@@ -5423,6 +5454,62 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /api/v1/users/lookup:
+    get:
+      operationId: lookupUsers
+      summary: Find accounts to file a ticket for.
+      description: |
+        Staff and administrators only (second factor required). A machine
+        credential (an API key, or an OAuth client acting as a staff service
+        user) needs users:read. The New ticket page's requester picker.
+        Returns accounts whose display name or email contains q, ignoring case
+        (% and _ match themselves), as a bare array of id, display_name and
+        email, newest account first, at most 10. Any role of account is
+        returned; deleted accounts and service accounts (an OAuth client's
+        identity) are not. q must be at least 2 characters after trimming; a
+        shorter or missing q is 400, so the endpoint cannot list the directory.
+        Not paged.
+      tags: ['Reference data']
+      x-ghd-handler: handleLookupUsers
+      security:
+        - sessionCookie: []
+        - apiKey: ['users:read']
+        - oauthClient: ['users:read']
+      x-ghd-roles: [admin, staff]
+      x-ghd-mfa: true
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: What to look for. At least 2 characters after trimming.
+          schema:
+            type: string
+            minLength: 2
+      responses:
+        '200':
+          description: The matching accounts, up to 10, as a bare array (never null).
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 10
+                items:
+                  type: object
+                  required: [id, display_name, email]
+                  properties:
+                    id: {$ref: '#/components/schemas/Uuid'}
+                    display_name: {type: string}
+                    email: {type: string}
+        '400':
+          description: "`bad_request`: q is missing or shorter than 2 characters."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /api/v1/admin/api-keys:
     get:
       operationId: listAPIKeys

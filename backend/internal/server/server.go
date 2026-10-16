@@ -578,6 +578,12 @@ func (s *Server) buildRouter() *chi.Mux {
 		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff), authmw.RequireMFA).
 			With(authmw.RequireResource(auth.ResourceTickets)).
 			Get("/staff", s.handleListAssignableStaff)
+		// Who a ticket can be filed for (#444): the New ticket page's
+		// requester picker. The scope is users:read, the one that guards the
+		// user list, because this returns addresses.
+		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff), authmw.RequireMFA).
+			With(authmw.RequireResource(auth.ResourceUsers)).
+			Get("/users/lookup", s.handleLookupUsers)
 		// The admin-wide audit view (#129). Staff and admin only. A signed-in
 		// session needs no scope; a machine credential needs audit:read
 		// (#362), not tickets:read — for an admin's key the view covers every

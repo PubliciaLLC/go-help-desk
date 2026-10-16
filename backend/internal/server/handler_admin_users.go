@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -683,4 +684,47 @@ func (s *Server) handleListAssignableStaff(w http.ResponseWriter, r *http.Reques
 		staff = []user.AssignableStaff{}
 	}
 	JSON(w, http.StatusOK, staff)
+}
+
+// The requester picker's bounds (#444). A query shorter than the floor is
+// refused rather than answered, and a broad one gets at most the ceiling, so
+// the lookup is a way to find a person and not a way to list everyone.
+const (
+	userLookupMinQuery = 2
+	userLookupMaxHits  = 10
+)
+
+// userLookupHit is all the picker draws: who, and the address a typed
+// reporter_email would have been.
+type userLookupHit struct {
+	ID          uuid.UUID `json:"id"`
+	DisplayName string    `json:"display_name"`
+	Email       string    `json:"email"`
+}
+
+// GET /api/v1/users/lookup?q= — find accounts to file a ticket for.
+//
+// Staff and administrators only, behind the users:read scope that already
+// guards the user list. Any role of account can be a requester, so unlike
+// /staff it is not limited to staff; unlike /admin/users it returns three
+// fields, never pages, and never answers a short query. Service identities
+// and deleted accounts are not found.
+func (s *Server) handleLookupUsers(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if utf8.RuneCountInString(q) < userLookupMinQuery {
+		Error(w, http.StatusBadRequest, "bad_request",
+			fmt.Sprintf("q must be at least %d characters", userLookupMinQuery))
+		return
+	}
+	people := false
+	users, _, err := s.users.SearchAdmin(r.Context(), "", q, &people, userLookupMaxHits, 0)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	out := make([]userLookupHit, len(users))
+	for i, u := range users {
+		out[i] = userLookupHit{ID: u.ID, DisplayName: u.DisplayName, Email: u.Email}
+	}
+	JSON(w, http.StatusOK, out)
 }
