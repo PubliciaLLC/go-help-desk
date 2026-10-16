@@ -228,7 +228,7 @@ func TestScopesForRole(t *testing.T) {
 		require.Equal(t, auth.All(), auth.ScopesForRole("admin"))
 	})
 
-	for _, role := range []string{"staff", "user"} {
+	for _, role := range []string{"staff"} {
 		t.Run(role+" gets no administrative scope", func(t *testing.T) {
 			got := auth.ScopesForRole(role)
 			require.NotEmpty(t, got)
@@ -243,11 +243,10 @@ func TestScopesForRole(t *testing.T) {
 		})
 	}
 
-	t.Run("a reporting user is offered no more than staff", func(t *testing.T) {
-		staff := scopeStrings(auth.ScopesForRole("staff"))
-		for _, s := range scopeStrings(auth.ScopesForRole("user")) {
-			require.Contains(t, staff, s)
-		}
+	// Requesters never own a key (#450), so there is nothing to offer them.
+	t.Run("a reporting user is offered nothing", func(t *testing.T) {
+		require.Empty(t, auth.ScopesForRole("user"))
+		require.Error(t, auth.WithinRole("user", []string{"tickets:read"}))
 	})
 
 	t.Run("a role it does not know gets nothing", func(t *testing.T) {

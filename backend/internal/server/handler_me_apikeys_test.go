@@ -44,7 +44,7 @@ type issuedKey struct {
 // mintMine creates a key through /me/api-keys on the given session and returns it.
 func (h *harness) mintMine(t *testing.T, cookie string, scopes ...string) issuedKey {
 	t.Helper()
-	res := h.doSession(t, cookie, http.MethodPost, meKeys, map[string]any{"name": "mine", "scopes": scopes})
+	res := h.doSession(t, cookie, http.MethodPost, meKeys, map[string]any{"name": "mine", "scopes": scopes, "expires_at": inYears(1)})
 	b := readAll(t, res)
 	require.Equal(t, http.StatusCreated, res.StatusCode, "body: %s", b)
 	var k issuedKey
@@ -170,7 +170,7 @@ func TestMeAPIKeys_ScopesNeverExceedTheOwnersRole(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			res := h.doSession(t, staff, http.MethodPost, meKeys, map[string]any{"name": "x", "scopes": tc.scopes})
+			res := h.doSession(t, staff, http.MethodPost, meKeys, map[string]any{"name": "x", "scopes": tc.scopes, "expires_at": inYears(1)})
 			b := readAll(t, res)
 			require.Equal(t, tc.want, res.StatusCode, "body: %s", b)
 			if tc.code != "" {
@@ -449,7 +449,7 @@ func TestMeAPIKeys_StaffCanRevokeAKeyIssuedForThemWithTheSettingOff(t *testing.T
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	res := h.doSession(t, h.session(t, asAdmin), http.MethodPost, "/api/v1/admin/api-keys", map[string]any{
-		"name": "for staff", "scopes": []string{"tickets:read"}, "user_id": h.staffID.String(),
+		"name": "for staff", "scopes": []string{"tickets:read"}, "user_id": h.staffID.String(), "expires_at": inYears(1),
 	})
 	b := readAll(t, res)
 	require.Equal(t, http.StatusCreated, res.StatusCode, "body: %s", b)

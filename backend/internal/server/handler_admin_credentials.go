@@ -8,12 +8,14 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/safehttp"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/authstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
@@ -48,7 +50,18 @@ func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, keys)
+	// Marked so an administrator can find the keys worth rotating (#450).
+	years := s.adminSvc.APIKeyMaxLifetimeYears(r.Context())
+	now := time.Now()
+	type view struct {
+		auth.APIKeyWithOwner
+		BeyondLimit bool `json:"beyond_limit"`
+	}
+	out := make([]view, len(keys))
+	for i, k := range keys {
+		out[i] = view{k, beyondLimit(years, k.ExpiresAt, now)}
+	}
+	JSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
@@ -85,6 +98,25 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 			handleError(w, fmt.Errorf("user %s: %w", target.ID, user.ErrNotFound))
 			return
 		}
+		// Who may own a key (Erik, 2026-10-16): staff, and the administrator
+		// themselves. Judged before the scopes, so the refusal says the real
+		// reason. A service account is an OAuth client's identity and has its
+		// own credential; a requester never holds a key; and issuing for
+		// another administrator is a second administrator's credential minted
+		// by the first.
+		switch {
+		case target.ServiceAccount:
+			Error(w, http.StatusBadRequest, "service_account_cannot_own_key",
+				"a service account (an OAuth client's identity) cannot own an API key")
+			return
+		case target.Role == user.RoleUser:
+			Error(w, http.StatusBadRequest, "requester_cannot_own_key", "a requester cannot own an API key")
+			return
+		case target.Role == user.RoleAdmin:
+			Error(w, http.StatusBadRequest, "cannot_issue_for_administrator",
+				"a key can be issued on behalf of a staff member, or for yourself, but not for another administrator")
+			return
+		}
 		// A disabled account's keys are refused on every request, so the key
 		// would be issued dead. Better said now than discovered by the person
 		// it was issued for.
@@ -95,8 +127,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		owner = ownerOfKey{id: target.ID, role: target.Role}
 	}
 
-	expiresAt, ok := s.checkNewKey(w, body.Scopes, body.ExpiresAt, owner.role)
-	if !ok {
+	if !checkKeyScopes(w, body.Scopes, owner.role) {
 		return
 	}
 	// A machine credential cannot mint one broader than itself. Without this,
@@ -109,6 +140,11 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Last, as before: a refusal for scopes is told before one for the date.
+	expiresAt, ok := s.checkKeyExpiry(w, r.Context(), body.ExpiresAt)
+	if !ok {
+		return
+	}
 	s.issueAPIKey(w, r, owner, body.Name, body.Scopes, expiresAt)
 }
 
@@ -118,9 +154,9 @@ type ownerOfKey struct {
 	role user.Role
 }
 
-// checkNewKey validates what both key-creating routes accept, writing the
-// refusal and returning false when it is not acceptable.
-func (s *Server) checkNewKey(w http.ResponseWriter, scopes []string, expiresAt *string, ownerRole user.Role) (*time.Time, bool) {
+// checkKeyScopes validates the scopes both key-creating routes accept, writing
+// the refusal and returning false when they are not acceptable.
+func checkKeyScopes(w http.ResponseWriter, scopes []string, ownerRole user.Role) bool {
 	// Required, not defaulted. With deny-by-default an empty list produces a
 	// credential that can do nothing, and the caller would not find out until
 	// the integration started returning 403. Omitting the field used to reach
@@ -130,14 +166,14 @@ func (s *Server) checkNewKey(w http.ResponseWriter, scopes []string, expiresAt *
 		Error(w, http.StatusBadRequest, "scopes_required",
 			"scopes is required: a credential with no scopes is refused on every route. "+
 				"See GET /api/v1/admin/scopes for the available scopes.")
-		return nil, false
+		return false
 	}
 	// Reject unknown scopes at creation. Unrecognised entries are ignored at
 	// enforcement time, so without this a typo produces a credential that
 	// looks restricted, is accepted, and quietly grants less than intended.
 	if err := auth.ValidateScopes(scopes); err != nil {
 		Error(w, http.StatusBadRequest, "invalid_scope", err.Error())
-		return nil, false
+		return false
 	}
 	// A key acts at its owner's role, so a scope that role has no route for
 	// can only mislead: it looks like access the key does not have (#450).
@@ -145,8 +181,14 @@ func (s *Server) checkNewKey(w http.ResponseWriter, scopes []string, expiresAt *
 	// key for a requester is limited by what a requester can do.
 	if err := auth.WithinRole(string(ownerRole), scopes); err != nil {
 		Error(w, http.StatusBadRequest, "invalid_scope", err.Error())
-		return nil, false
+		return false
 	}
+	return true
+}
+
+// checkKeyExpiry validates the expiry both routes accept: readable, in the
+// future, present when a limit applies, and within it. nil means no expiry.
+func (s *Server) checkKeyExpiry(w http.ResponseWriter, ctx context.Context, expiresAt *string) (*time.Time, bool) {
 	// The expiry was decoded and then dropped on the floor: the field was
 	// read off the request, never copied onto the key, and the key never
 	// expired. The middleware honours ExpiresAt, the client type declares it,
@@ -159,7 +201,19 @@ func (s *Server) checkNewKey(w http.ResponseWriter, scopes []string, expiresAt *
 	// is already past: a credential that expires before it is issued is a
 	// request nobody means, and silently issuing a working key for it is how
 	// this defect looked from outside.
+	//
+	// And capped (Erik, 2026-10-16): every key lives at most
+	// api_key_max_lifetime_years (2 unless an administrator says otherwise),
+	// and with a cap the expiry is required. Checked here, when the key is
+	// made, and never when it is used: lowering the limit does not break a key
+	// that exists.
+	years := s.adminSvc.APIKeyMaxLifetimeYears(ctx)
 	if expiresAt == nil || strings.TrimSpace(*expiresAt) == "" {
+		if years != admin.APIKeyNoLimit {
+			Error(w, http.StatusBadRequest, "expires_at_required",
+				"expires_at is required: an API key can live at most "+lifetimeWords(years)+". Use an RFC 3339 timestamp, for example 2027-01-31T00:00:00Z")
+			return nil, false
+		}
 		return nil, true
 	}
 	at, err := time.Parse(time.RFC3339, *expiresAt)
@@ -173,7 +227,31 @@ func (s *Server) checkNewKey(w http.ResponseWriter, scopes []string, expiresAt *
 			"expires_at is in the past, so this credential would be refused on every request")
 		return nil, false
 	}
+	if years != admin.APIKeyNoLimit && at.After(time.Now().AddDate(years, 0, 0)) {
+		Error(w, http.StatusBadRequest, "expires_at_too_far",
+			"expires_at is more than the longest an API key may live, "+lifetimeWords(years)+" from now")
+		return nil, false
+	}
 	return &at, true
+}
+
+// lifetimeWords is "1 year" or "N years".
+func lifetimeWords(years int) string {
+	if years == 1 {
+		return "1 year"
+	}
+	return strconv.Itoa(years) + " years"
+}
+
+// beyondLimit reports whether a key outlives the current maximum: no expiry at
+// all, or one further off than the limit allows from now. Used only to mark
+// keys in the lists so they can be rotated; the limit is not applied to a key
+// that already exists.
+func beyondLimit(years int, expiresAt *time.Time, now time.Time) bool {
+	if years == admin.APIKeyNoLimit {
+		return false
+	}
+	return expiresAt == nil || expiresAt.After(now.AddDate(years, 0, 0))
 }
 
 // issueAPIKey stores a validated key for owner, audits it, and answers 201 with
@@ -200,7 +278,7 @@ func (s *Server) issueAPIKey(w http.ResponseWriter, r *http.Request, owner owner
 		handleError(w, err)
 		return
 	}
-	s.auditAPIKey(r, "api_key_issued", key.ID, owner.id, scopes, expiresAt)
+	s.auditAPIKey(r.Context(), a.UserID, "api_key_issued", key.ID, owner.id, scopes, expiresAt)
 	// Return the raw token once — it will never be shown again.
 	JSON(w, http.StatusCreated, map[string]any{
 		"id":         key.ID,
@@ -222,26 +300,34 @@ func (s *Server) issueAPIKey(w http.ResponseWriter, r *http.Request, owner owner
 // request, though, so hanging up right after the key is written cannot be a
 // way to leave no trace of having issued it. The name is left out: it is free
 // text, and the audit view shows only what cannot carry personal data.
-func (s *Server) auditAPIKey(r *http.Request, action string, keyID, ownerID uuid.UUID, scopes []string, expiresAt *time.Time) {
+func (s *Server) auditAPIKey(reqCtx context.Context, actorID uuid.UUID, action string, keyID, ownerID uuid.UUID, scopes []string, expiresAt *time.Time) {
 	if s.auditStore == nil {
 		return
 	}
-	a := authmw.GetActor(r)
 	after := map[string]any{
 		"owner_user_id": ownerID.String(),
-		"on_behalf":     ownerID != a.UserID,
+		"on_behalf":     ownerID != actorID,
 		"scopes":        strings.Join(scopes, ","),
 	}
 	if expiresAt != nil {
 		after["expires_at"] = expiresAt.UTC().Format(time.RFC3339)
 	}
-	ctx := context.WithoutCancel(r.Context())
-	err := s.auditStore.Create(ctx, audit.Entry{
-		ID: uuid.New(), ActorID: &a.UserID, EntityType: "api_key", EntityID: keyID,
+	s.writeAudit(reqCtx, audit.Entry{
+		ID: uuid.New(), ActorID: &actorID, EntityType: "api_key", EntityID: keyID,
 		Action: action, After: after, CreatedAt: time.Now(),
 	})
-	if err != nil {
-		slog.ErrorContext(ctx, "writing audit entry failed", "entity_type", "api_key", "entity_id", keyID, "action", action, "error", err)
+}
+
+// writeAudit is the best-effort, detached audit write the key paths share.
+// reqCtx is only the parent: context.WithoutCancel keeps its values and drops
+// its cancellation, exactly as user.Service.ResetMFA does. Without it a caller
+// who disconnects right after the change commits (pgx then reports "context
+// canceled") would suppress the entry, which is the one thing the actor
+// issuing a credential might want.
+func (s *Server) writeAudit(reqCtx context.Context, e audit.Entry) {
+	ctx := context.WithoutCancel(reqCtx)
+	if err := s.auditStore.Create(ctx, e); err != nil {
+		slog.ErrorContext(ctx, "writing audit entry failed", "entity_type", e.EntityType, "entity_id", e.EntityID, "action", e.Action, "error", err)
 	}
 }
 
@@ -271,7 +357,7 @@ func (s *Server) handleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	s.auditAPIKey(r, "api_key_revoked", id, rows[0].UserID, rows[0].Scopes, rows[0].ExpiresAt)
+	s.auditAPIKey(r.Context(), authmw.GetActor(r).UserID, "api_key_revoked", id, rows[0].UserID, rows[0].Scopes, rows[0].ExpiresAt)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -288,6 +374,16 @@ func (s *Server) handleListScopes(w http.ResponseWriter, r *http.Request) {
 		Action   string `json:"action"`
 	}
 	all := auth.All()
+	// ?role= narrows the list to what a key owned by that role may carry, for
+	// the picker when issuing on someone's behalf (#450). Only the roles that
+	// can own a key.
+	if role := r.URL.Query().Get("role"); role != "" {
+		if role != string(user.RoleAdmin) && role != string(user.RoleStaff) {
+			Error(w, http.StatusBadRequest, "bad_request", "role must be admin or staff: no other role can own an API key")
+			return
+		}
+		all = auth.ScopesForRole(role)
+	}
 	out := make([]scopeInfo, len(all))
 	for i, sc := range all {
 		out[i] = scopeInfo{Scope: sc.String(), Resource: sc.Resource, Action: string(sc.Action)}

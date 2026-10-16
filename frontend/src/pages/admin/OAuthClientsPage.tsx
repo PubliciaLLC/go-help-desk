@@ -81,7 +81,7 @@ export function OAuthClientsPage() {
 
   const { data: catalogue = [] } = useQuery({
     queryKey: ['admin', 'scopes'],
-    queryFn: listScopes,
+    queryFn: () => listScopes(),
   })
 
   const createMutation = useMutation({

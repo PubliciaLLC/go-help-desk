@@ -107,7 +107,7 @@ func offeredTo(role user.Role) []string {
 // The other direction matters too. A scope the router uses for staff but the
 // table omits is a key that cannot be given the access its owner has.
 func TestScopesForRole_MatchTheRouter(t *testing.T) {
-	for _, role := range []user.Role{user.RoleAdmin, user.RoleStaff, user.RoleUser} {
+	for _, role := range []user.Role{user.RoleAdmin, user.RoleStaff} {
 		t.Run(string(role), func(t *testing.T) {
 			derived := scopesTheRouterGives(t, role)
 			offered := offeredTo(role)
@@ -123,5 +123,16 @@ func TestScopesForRole_MatchTheRouter(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A requester can never own a key (#450, 2026-10-16), whatever scopes the
+// router would let one use. The table offers them nothing, and the router
+// derivation above is not applied to them: it would say tickets:read|write,
+// which is what an existing requester key can still do, not what a new one may
+// be given.
+func TestScopesForRole_RequesterGetsNone(t *testing.T) {
+	if got := offeredTo(user.RoleUser); len(got) != 0 {
+		t.Errorf("a requester is offered %v; requesters never own keys", got)
 	}
 }

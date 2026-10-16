@@ -86,6 +86,15 @@ func (s *Store) DeleteForUser(ctx context.Context, id, userID uuid.UUID) error {
 	return nil
 }
 
+// DeleteAllForUser removes every key the user owns and says how many there were.
+func (s *Store) DeleteAllForUser(ctx context.Context, userID uuid.UUID) (int64, error) {
+	n, err := s.q.DeleteAllAPIKeysForUser(ctx, userID)
+	if err != nil {
+		return 0, fmt.Errorf("deleting all API keys of %s: %w", userID, err)
+	}
+	return n, nil
+}
+
 func (s *Store) ListByUser(ctx context.Context, userID uuid.UUID) ([]auth.APIKey, error) {
 	rows, err := s.q.ListAPIKeysByUser(ctx, userID)
 	if err != nil {

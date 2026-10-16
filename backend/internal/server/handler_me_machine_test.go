@@ -322,7 +322,7 @@ func TestMachineCredential_CannotMintABroaderCredential(t *testing.T) {
 
 	// Minting within its own scopes is still fine.
 	resp = withKey(t, h, narrow, http.MethodPost, "/api/v1/admin/api-keys",
-		map[string]any{"name": "sibling", "scopes": []string{"credentials:read"}})
+		map[string]any{"name": "sibling", "scopes": []string{"credentials:read"}, "expires_at": inYears(1)})
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 }
 
@@ -338,7 +338,7 @@ func TestSession_CanStillMintAnyCredential(t *testing.T) {
 	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
 
 	res, body = sess.send(t, http.MethodPost, "/api/v1/admin/api-keys",
-		map[string]any{"name": "issued-by-a-human", "scopes": []string{"users:write", "settings:write"}})
+		map[string]any{"name": "issued-by-a-human", "scopes": []string{"users:write", "settings:write"}, "expires_at": inYears(1)})
 	require.Equal(t, http.StatusCreated, res.StatusCode, "body: %s", body)
 }
 

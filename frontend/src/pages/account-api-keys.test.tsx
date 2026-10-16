@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { renderWithQuery } from '@/test/render'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
+import { maxExpiryDate } from '@/lib/expiry'
 
 // #450: staff manage their own API keys under Account, when an administrator
 // has allowed it; administrators always can; requesters never see the section.
@@ -28,12 +29,13 @@ vi.mock('@/hooks/useSiteBranding', () => ({ useSiteBranding: () => ({ name: 'Hel
 
 import { AccountPage } from './AccountPage'
 
-function signedInAs(role: 'staff' | 'admin' | 'user', canCreate: boolean) {
+function signedInAs(role: 'staff' | 'admin' | 'user', canCreate: boolean, maxYears = -1) {
   useAuthStore.setState({
     user: {
       id: 'u-1', email: 'sam@example.com', display_name: 'Sam', role, mfa_enabled: false,
       created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
       can_create_api_keys: canCreate,
+      api_key_max_lifetime_years: maxYears,
     },
   })
 }
@@ -120,6 +122,56 @@ describe('API keys on the account page', () => {
     const dialog = await screen.findByRole('dialog')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Revoke' }))
     await waitFor(() => expect(del).toHaveBeenCalledWith('/me/api-keys/k-1'))
+  })
+
+  it('with a limit, starts at the longest allowed date and will not create without one', async () => {
+    signedInAs('staff', true, 2)
+    const post = vi.spyOn(api, 'post').mockResolvedValue({ data: { id: 'k-2', name: 'ci', token: 'GHD_secret' } } as never)
+    renderWithQuery(<AccountPage />)
+    await section()
+    const date = screen.getByLabelText(/expires/i) as HTMLInputElement
+    expect(date.value).toBe(maxExpiryDate(2))
+
+    await userEvent.type(screen.getByPlaceholderText(/key name/i), 'ci')
+    await userEvent.click(await screen.findByRole('checkbox', { name: 'tickets:read' }))
+    const create = screen.getByRole('button', { name: 'Create key' }) as HTMLButtonElement
+    expect(create.disabled).toBe(false)
+
+    await userEvent.clear(date)
+    expect(create.disabled).toBe(true)
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it('with a limit, will not create a key dated past it', async () => {
+    signedInAs('staff', true, 2)
+    renderWithQuery(<AccountPage />)
+    await section()
+    await userEvent.type(screen.getByPlaceholderText(/key name/i), 'ci')
+    await userEvent.click(await screen.findByRole('checkbox', { name: 'tickets:read' }))
+    const date = screen.getByLabelText(/expires/i) as HTMLInputElement
+    await userEvent.clear(date)
+    await userEvent.type(date, '2099-01-01')
+    expect((screen.getByRole('button', { name: 'Create key' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('marks a key with no expiry as longer than the limit', async () => {
+    signedInAs('staff', true, 2)
+    keys = [{ ...KEY, beyond_limit: true }, { ...KEY, id: 'k-9', name: 'fine', expires_at: '2027-01-01T00:00:00Z', beyond_limit: false }]
+    renderWithQuery(<AccountPage />)
+    await section()
+    const row = (await screen.findByText('my script')).closest('tr')!
+    expect(row.textContent).toMatch(/No expiry \(longer than the current limit\)/)
+    expect((await screen.findByText('fine')).closest('tr')!.textContent).not.toMatch(/longer than the current limit/)
+  })
+
+  it('marks a key dated past a lowered limit', async () => {
+    signedInAs('staff', true, 1)
+    keys = [{ ...KEY, expires_at: '2030-01-01T00:00:00Z', beyond_limit: true }]
+    renderWithQuery(<AccountPage />)
+    await section()
+    const row = (await screen.findByText('my script')).closest('tr')!
+    expect(row.textContent).toMatch(/longer than the current limit/)
+    expect(row.textContent).not.toMatch(/No expiry/)
   })
 
   it('says who issued a key that an administrator issued for the person', async () => {

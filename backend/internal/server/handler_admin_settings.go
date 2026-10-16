@@ -473,6 +473,23 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The key lifetime (#450): exactly one of the slider's six stops, 1 to 5
+	// years or -1 for Never. 0 and 6 are refused, not clamped, because the
+	// reader would replace them with the default of 2 and the number an
+	// administrator typed would not be the number in force.
+	if raw, ok := body[admin.KeyAPIKeyMaxLifetimeYears]; ok {
+		var years int
+		if err := unmarshalSetting(raw, "api_key_max_lifetime_years", &years); err != nil {
+			handleError(w, err)
+			return
+		}
+		if !admin.ValidAPIKeyMaxLifetime(years) {
+			Error(w, http.StatusBadRequest, "bad_request",
+				"api_key_max_lifetime_years must be 1, 2, 3, 4 or 5 years, or -1 for no limit")
+			return
+		}
+	}
+
 	// Same reasoning as the prefix above: a value that is accepted and then
 	// ignored is worse than a refusal, and here the ignored value is a
 	// security control. An unrecognised policy falls back to "required", so a

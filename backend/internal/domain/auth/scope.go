@@ -187,7 +187,7 @@ func Subset(have, want []string) (string, bool) {
 // direction, so a route that is opened to staff, or a scope added for an admin
 // route, cannot leave this stale.
 //
-// An unknown role gets nothing.
+// Requesters and unknown roles get nothing.
 func ScopesForRole(role string) []Scope {
 	switch role {
 	case "admin":
@@ -200,9 +200,10 @@ func ScopesForRole(role string) []Scope {
 			// The admin-wide audit view, which staff may open (#129).
 			{ResourceAudit, ActionRead},
 		}
-	case "user":
-		return []Scope{{ResourceTickets, ActionRead}, {ResourceTickets, ActionWrite}}
 	}
+	// A requester gets nothing: requesters never own a key (#450). That is a
+	// rule about who may hold a key, so it is stated here rather than derived
+	// from the router, which would say tickets:read|write.
 	return nil
 }
 

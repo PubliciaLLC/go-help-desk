@@ -150,6 +150,20 @@ func (q *Queries) DeleteAPIKeyForUser(ctx context.Context, arg DeleteAPIKeyForUs
 	return result.RowsAffected()
 }
 
+const deleteAllAPIKeysForUser = `-- name: DeleteAllAPIKeysForUser :execrows
+DELETE FROM api_keys WHERE user_id = $1
+`
+
+// Every key a user owns, for an administrator's password reset that asks to
+// revoke them too (#450). Returns how many, which the audit entry records.
+func (q *Queries) DeleteAllAPIKeysForUser(ctx context.Context, userID uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteAllAPIKeysForUser, userID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const deleteOAuthClient = `-- name: DeleteOAuthClient :execrows
 WITH soft AS (
     UPDATE users SET deleted_at = now(), updated_at = now()

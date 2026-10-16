@@ -5,7 +5,8 @@ import { createMyAPIKey, deleteMyAPIKey, listMyAPIKeys, listMyAPIKeyScopes } fro
 import { extractError } from '@/api/client'
 import { ScopePicker } from '@/components/admin/ScopePicker'
 import { ExpiryField } from '@/components/admin/ExpiryField'
-import { expiryToISO } from '@/lib/expiry'
+import { ExpiryCell } from '@/components/admin/ExpiryCell'
+import { expiryToISO, maxExpiryDate, pastLimit, DEFAULT_MAX_YEARS } from '@/lib/expiry'
 import { TokenBanner } from '@/components/admin/TokenBanner'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -28,18 +29,20 @@ function Form({ onCreated }: { onCreated: (token: string) => void }) {
   const qc = useQueryClient()
   const [name, setName] = useState('')
   const [scopes, setScopes] = useState<string[]>([])
-  const [expires, setExpires] = useState('')
+  const maxYears = useAuthStore((s) => s.user?.api_key_max_lifetime_years) ?? DEFAULT_MAX_YEARS
+  // Starts at the longest allowed; empty when there is no limit.
+  const [expires, setExpires] = useState(() => maxExpiryDate(maxYears))
   const [error, setError] = useState('')
 
   // Served by the API for this role, so the picker offers what will be accepted.
   const { data: catalogue = [] } = useQuery({ queryKey: ['me', 'api-key-scopes'], queryFn: listMyAPIKeyScopes })
 
   const create = useMutation({
-    mutationFn: () => createMyAPIKey({ name: name.trim(), scopes, expires_at: expiryToISO(expires) }),
+    mutationFn: () => createMyAPIKey({ name: name.trim(), scopes, expires_at: expiryToISO(expires, maxYears) }),
     onSuccess: (res) => {
       setName('')
       setScopes([])
-      setExpires('')
+      setExpires(maxExpiryDate(maxYears))
       setError('')
       onCreated(res.token)
       qc.invalidateQueries({ queryKey: ['me', 'api-keys'] })
@@ -56,8 +59,11 @@ function Form({ onCreated }: { onCreated: (token: string) => void }) {
         className="max-w-xs"
       />
       <ScopePicker catalogue={catalogue} selected={scopes} onChange={setScopes} disabled={create.isPending} />
-      <ExpiryField value={expires} onChange={setExpires} disabled={create.isPending} />
-      <Button onClick={() => create.mutate()} disabled={!name.trim() || scopes.length === 0 || create.isPending}>
+      <ExpiryField value={expires} onChange={setExpires} maxYears={maxYears} disabled={create.isPending} />
+      <Button onClick={() => create.mutate()} disabled={
+          !name.trim() || scopes.length === 0 || create.isPending ||
+          (maxYears !== -1 && !expires) || pastLimit(expires, maxYears)
+        }>
         <PlusIcon className="mr-2 h-4 w-4" />
         {create.isPending ? 'Creating…' : 'Create key'}
       </Button>
@@ -140,7 +146,7 @@ export function ApiKeysSection() {
                     </div>
                   </td>
                   <td className="py-2 text-gray-500">{fmt(k.last_used_at)}</td>
-                  <td className="py-2 text-gray-500">{fmt(k.expires_at)}</td>
+                  <td className="py-2 text-gray-500"><ExpiryCell expiresAt={k.expires_at} beyondLimit={k.beyond_limit} /></td>
                   <td className="py-2 text-right">
                     <Button
                       size="sm"

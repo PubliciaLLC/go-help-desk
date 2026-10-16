@@ -263,6 +263,9 @@ type Querier interface {
 	// that is somebody else's deletes nothing and is indistinguishable from one
 	// that does not exist.
 	DeleteAPIKeyForUser(ctx context.Context, arg DeleteAPIKeyForUserParams) (int64, error)
+	// Every key a user owns, for an administrator's password reset that asks to
+	// revoke them too (#450). Returns how many, which the audit entry records.
+	DeleteAllAPIKeysForUser(ctx context.Context, userID uuid.UUID) (int64, error)
 	DeleteAttachment(ctx context.Context, id uuid.UUID) error
 	// The retention sweep's hard delete. No archive table — see audit.Store's
 	// own comment on DeleteOlderThan for why.

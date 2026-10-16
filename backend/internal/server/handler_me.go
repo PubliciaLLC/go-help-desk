@@ -56,6 +56,9 @@ type meUser struct {
 	// CanCreateAPIKeys is whether the Account page should offer to make a key
 	// (#450). Always present, so a client can tell false from an old server.
 	CanCreateAPIKeys bool `json:"can_create_api_keys"`
+	// APIKeyMaxLifetimeYears is the longest a new key may live: 1 to 5, or -1
+	// for no limit (#450). The create forms cap the expiry with it.
+	APIKeyMaxLifetimeYears int `json:"api_key_max_lifetime_years"`
 }
 
 // switchState is one email switch as it applies to this person: whether they
@@ -75,7 +78,7 @@ type emailNotifications struct {
 // meView adds the effective email state (#441). A requester is never sent
 // staff mail, so has none to report.
 func (s *Server) meView(ctx context.Context, u user.User) meUser {
-	v := meUser{User: u}
+	v := meUser{User: u, APIKeyMaxLifetimeYears: s.adminSvc.APIKeyMaxLifetimeYears(ctx)}
 	v.CanCreateAPIKeys = u.Role == user.RoleAdmin || (u.Role == user.RoleStaff && s.adminSvc.StaffCanCreateAPIKeys(ctx))
 	if u.Role == user.RoleUser {
 		return v

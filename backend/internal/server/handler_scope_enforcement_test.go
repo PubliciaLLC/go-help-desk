@@ -20,7 +20,7 @@ import (
 func mintKey(t *testing.T, h *harness, scopes []string) string {
 	t.Helper()
 	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/api-keys", map[string]any{
-		"name": "scoped-test-key", "scopes": scopes,
+		"name": "scoped-test-key", "scopes": scopes, "expires_at": inYears(1),
 	})
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 	var out struct {
@@ -258,7 +258,7 @@ func TestScopeCatalogue_MatchesWhatIsEnforced(t *testing.T) {
 	// Every advertised scope must be one a credential can actually be created
 	// with, and there must be no wildcard among them.
 	resp = h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/api-keys",
-		map[string]any{"name": "every-scope", "scopes": served})
+		map[string]any{"name": "every-scope", "scopes": served, "expires_at": inYears(1)})
 	require.Equal(t, http.StatusCreated, resp.StatusCode,
 		"every scope the catalogue advertises must be accepted at creation")
 
@@ -303,7 +303,7 @@ func TestCredentialCreation_RequiresScopes(t *testing.T) {
 
 			t.Run("with scopes still works", func(t *testing.T) {
 				resp := h.doAsAdmin(t, http.MethodPost, path,
-					map[string]any{"name": "fine", "scopes": []string{"tickets:read"}})
+					map[string]any{"name": "fine", "scopes": []string{"tickets:read"}, "expires_at": inYears(1)})
 				require.Equal(t, http.StatusCreated, resp.StatusCode)
 			})
 		})
@@ -329,7 +329,7 @@ func TestCredentialCreation_RefusesAuditWrite(t *testing.T) {
 			require.Contains(t, body.Error.Message, "audit:write")
 
 			resp = h.doAsAdmin(t, http.MethodPost, path,
-				map[string]any{"name": "audit-reader", "scopes": []string{"audit:read"}})
+				map[string]any{"name": "audit-reader", "scopes": []string{"audit:read"}, "expires_at": inYears(1)})
 			require.Equal(t, http.StatusCreated, resp.StatusCode, "audit:read alone must still be grantable")
 		})
 	}

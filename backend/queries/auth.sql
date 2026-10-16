@@ -17,6 +17,11 @@ DELETE FROM api_keys WHERE id = $1;
 -- that does not exist.
 DELETE FROM api_keys WHERE id = $1 AND user_id = $2;
 
+-- name: DeleteAllAPIKeysForUser :execrows
+-- Every key a user owns, for an administrator's password reset that asks to
+-- revoke them too (#450). Returns how many, which the audit entry records.
+DELETE FROM api_keys WHERE user_id = $1;
+
 -- name: ListAPIKeysByUser :many
 SELECT * FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC;
 

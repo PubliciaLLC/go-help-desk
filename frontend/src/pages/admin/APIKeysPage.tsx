@@ -9,7 +9,9 @@ import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import { ScopePicker } from '@/components/admin/ScopePicker'
 import { ExpiryField } from '@/components/admin/ExpiryField'
-import { expiryToISO } from '@/lib/expiry'
+import { expiryToISO, maxExpiryDate, pastLimit, DEFAULT_MAX_YEARS } from '@/lib/expiry'
+import { useAuthStore } from '@/store/auth'
+import { ExpiryCell } from '@/components/admin/ExpiryCell'
 import { TokenBanner } from '@/components/admin/TokenBanner'
 import { PlusIcon, KeyIcon } from 'lucide-react'
 import type { AdminUser, APIKey } from '@/api/types'
@@ -36,9 +38,12 @@ function OwnerPicker({
 
   const { data } = useQuery({
     queryKey: ['admin', 'users', 'issue-for', q],
-    queryFn: () => listUsersPage(1, { q }),
+    queryFn: () => listUsersPage(1, { q, role: 'staff', serviceAccount: false }),
     enabled: q.length >= 2 && value === null,
   })
+  // Staff only, and people only (#450): an administrator issues for a staff
+  // member or for themselves (leave this empty); a requester or a service
+  // account cannot own a key. The query says so, and the server enforces it.
   // A disabled account's keys are refused on every request, so it is not a
   // sensible owner, and the server refuses it.
   const matches = (data?.users ?? []).filter((u) => !u.disabled)
@@ -85,7 +90,10 @@ export function APIKeysPage() {
   const qc = useQueryClient()
   const [newName, setNewName] = useState('')
   const [newScopes, setNewScopes] = useState<string[]>([])
-  const [newExpires, setNewExpires] = useState('')
+  const maxYears = useAuthStore((s) => s.user?.api_key_max_lifetime_years) ?? DEFAULT_MAX_YEARS
+  // Starts at the longest allowed, so the usual key needs no thought and a
+  // longer one is a choice. Empty when there is no limit: never expires.
+  const [newExpires, setNewExpires] = useState(() => maxExpiryDate(maxYears))
   const [issueFor, setIssueFor] = useState<AdminUser | null>(null)
   const [createError, setCreateError] = useState('')
   const [newToken, setNewToken] = useState<string | null>(null)
@@ -98,22 +106,28 @@ export function APIKeysPage() {
 
   // Served by the API rather than hard-coded here, so the picker cannot offer a
   // scope the server does not enforce, or omit one it does.
+  // The scopes the key's owner could use: all of them for the administrator,
+  // staff's for a staff member (#450). The server checks again.
+  const ownerRole = issueFor ? 'staff' : undefined
   const { data: catalogue = [] } = useQuery({
-    queryKey: ['admin', 'scopes'],
-    queryFn: listScopes,
+    queryKey: ['admin', 'scopes', ownerRole ?? 'all'],
+    queryFn: () => listScopes(ownerRole),
   })
+  // Whatever was ticked for a different owner and this one cannot carry goes.
+  const offered = new Set(catalogue.map((c) => c.scope))
+  const scopesShown = newScopes.filter((sc) => offered.size === 0 || offered.has(sc))
 
   const createMutation = useMutation({
     mutationFn: () => createAPIKey({
       name: newName.trim(),
-      scopes: newScopes,
-      expires_at: expiryToISO(newExpires),
+      scopes: scopesShown,
+      expires_at: expiryToISO(newExpires, maxYears),
       user_id: issueFor?.id,
     }),
     onSuccess: (res) => {
       setNewName('')
       setNewScopes([])
-      setNewExpires('')
+      setNewExpires(maxExpiryDate(maxYears))
       setIssueFor(null)
       setCreateError('')
       setNewToken(res.token)
@@ -163,16 +177,19 @@ export function APIKeysPage() {
 
             <ScopePicker
               catalogue={catalogue}
-              selected={newScopes}
+              selected={scopesShown}
               onChange={setNewScopes}
               disabled={createMutation.isPending}
             />
 
-            <ExpiryField value={newExpires} onChange={setNewExpires} disabled={createMutation.isPending} />
+            <ExpiryField value={newExpires} onChange={setNewExpires} maxYears={maxYears} disabled={createMutation.isPending} />
 
             <Button
               onClick={() => createMutation.mutate()}
-              disabled={!newName.trim() || newScopes.length === 0 || createMutation.isPending}
+              disabled={
+                !newName.trim() || scopesShown.length === 0 || createMutation.isPending ||
+                (maxYears !== -1 && !newExpires) || pastLimit(newExpires, maxYears)
+              }
             >
               <PlusIcon className="mr-2 h-4 w-4" />
               {createMutation.isPending ? 'Creating…' : 'Create'}
@@ -228,7 +245,9 @@ export function APIKeysPage() {
                     </td>
                     <td className="px-4 py-3 text-gray-500">{fmt(k.created_at)}</td>
                     <td className="px-4 py-3 text-gray-500">{fmt(k.last_used_at)}</td>
-                    <td className="px-4 py-3 text-gray-500">{fmt(k.expires_at)}</td>
+                    <td className="px-4 py-3 text-gray-500">
+                      <ExpiryCell expiresAt={k.expires_at} beyondLimit={k.beyond_limit} />
+                    </td>
                     <td className="px-4 py-3 text-right">
                       <Button
                         size="sm"

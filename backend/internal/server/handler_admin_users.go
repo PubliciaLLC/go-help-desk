@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
@@ -572,6 +573,10 @@ func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request
 	}
 	var body struct {
 		NewPassword string `json:"new_password"`
+		// Also revoke every API key the account owns (#450). Off unless sent:
+		// a reset is often a routine one, and a script's key is not the thing
+		// being fixed. Someone resetting because a credential leaked ticks it.
+		RevokeAPIKeys bool `json:"revoke_api_keys"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -602,6 +607,23 @@ func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request
 	if err := s.sessions.DeleteForUser(r.Context(), id); err != nil {
 		handleError(w, err)
 		return
+	}
+	// After the password and the sessions, so a reset that is refused earlier
+	// has taken nothing. Not one transaction with them: the password is already
+	// changed and the sessions gone, and a failure here is reported as the
+	// failure it is, with the reset itself still done.
+	if body.RevokeAPIKeys {
+		n, err := s.authStore.DeleteAllForUser(r.Context(), id)
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		if actor != nil && s.auditStore != nil {
+			s.writeAudit(r.Context(), audit.Entry{
+				ID: uuid.New(), ActorID: actorID, EntityType: "user", EntityID: id,
+				Action: "api_keys_revoked", After: map[string]any{"keys_revoked": n}, CreatedAt: time.Now(),
+			})
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

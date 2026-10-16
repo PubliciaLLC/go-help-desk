@@ -6,6 +6,7 @@ import { extractError, extractErrorCode } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { LifetimeSlider } from '@/components/admin/LifetimeSlider'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Spinner } from '@/components/ui/spinner'
@@ -950,7 +951,7 @@ function AuthPanel({
       <Section title="API keys">
         <SettingRow
           label="Staff may create their own API keys"
-          description="When on, staff can create, list and revoke their own API keys under Account. A key acts as its owner and can carry only permissions that owner's role has. Administrators can always create keys, and can issue one on behalf of any account from Admin → API Keys. Requesters never create keys. Turning this off does not revoke keys that exist. Off by default."
+          description="When on, staff can create their own API keys under Account. Turning it off only stops staff creating new keys: keys that already exist keep working, and staff can still list and revoke their own. Administrators can always create keys, and can issue one on behalf of a staff member from Admin → API Keys. Requesters never own keys. A key acts as its owner and can carry only permissions that owner's role has. Off by default."
         >
           <Toggle
             label="Staff may create their own API keys"
@@ -958,6 +959,17 @@ function AuthPanel({
             onChange={(v) => setBool('staff_can_create_api_keys', v)}
           />
         </SettingRow>
+        <div className="border-t px-5 py-4 space-y-2">
+          <div className="text-sm text-gray-500">
+            Every new API key must expire, and no later than this. It is checked when a key is created, so lowering it
+            does not break keys that already exist; they are marked in the key lists so they can be rotated. Choosing
+            Never lets keys be made with no expiry.
+          </div>
+          <LifetimeSlider
+            value={has('api_key_max_lifetime_years') ? num('api_key_max_lifetime_years') : undefined}
+            onChange={(v) => setNum('api_key_max_lifetime_years', v)}
+          />
+        </div>
       </Section>
 
       <Section title="Registration">

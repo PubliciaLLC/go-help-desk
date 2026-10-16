@@ -46,10 +46,17 @@ func (s *Server) handleListMyAPIKeys(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	if keys == nil {
-		keys = []auth.APIKey{} // [] and not null: "no keys" is an answer
+	years := s.adminSvc.APIKeyMaxLifetimeYears(r.Context())
+	now := time.Now()
+	type view struct {
+		auth.APIKey
+		BeyondLimit bool `json:"beyond_limit"`
 	}
-	JSON(w, http.StatusOK, keys)
+	out := make([]view, len(keys)) // [] and not null: "no keys" is an answer
+	for i, k := range keys {
+		out[i] = view{k, beyondLimit(years, k.ExpiresAt, now)}
+	}
+	JSON(w, http.StatusOK, out)
 }
 
 // handleListMyAPIKeyScopes serves the scopes the caller's own role can put on
@@ -95,7 +102,10 @@ func (s *Server) handleCreateMyAPIKey(w http.ResponseWriter, r *http.Request) {
 			"user_id is not accepted here: this route issues a key for you. An administrator can issue one for someone else at POST /api/v1/admin/api-keys")
 		return
 	}
-	expiresAt, ok := s.checkNewKey(w, body.Scopes, body.ExpiresAt, a.Role)
+	if !checkKeyScopes(w, body.Scopes, a.Role) {
+		return
+	}
+	expiresAt, ok := s.checkKeyExpiry(w, r.Context(), body.ExpiresAt)
 	if !ok {
 		return
 	}
@@ -127,6 +137,6 @@ func (s *Server) handleDeleteMyAPIKey(w http.ResponseWriter, r *http.Request) {
 	if len(mine) > 0 {
 		scopes, expires = mine[0].Scopes, mine[0].ExpiresAt
 	}
-	s.auditAPIKey(r, "api_key_revoked", id, a.UserID, scopes, expires)
+	s.auditAPIKey(r.Context(), a.UserID, "api_key_revoked", id, a.UserID, scopes, expires)
 	w.WriteHeader(http.StatusNoContent)
 }

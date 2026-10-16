@@ -151,6 +151,8 @@ type AuthStoreIface interface {
 	// DeleteForUser is Delete limited to a key the user owns (#450).
 	DeleteForUser(ctx context.Context, id, userID uuid.UUID) error
 	ListByUser(ctx context.Context, userID uuid.UUID) ([]auth.APIKey, error)
+	// DeleteAllForUser revokes every key the user owns and returns how many.
+	DeleteAllForUser(ctx context.Context, userID uuid.UUID) (int64, error)
 	ListWithOwner(ctx context.Context, keyID *uuid.UUID) ([]auth.APIKeyWithOwner, error)
 	CreateOAuthClient(ctx context.Context, c auth.OAuthClient) error
 	DeleteOAuthClient(ctx context.Context, id uuid.UUID) error

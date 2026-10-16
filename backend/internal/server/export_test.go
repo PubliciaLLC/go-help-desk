@@ -105,3 +105,9 @@ func (s *Server) RoutesForTest() []RouteForTest {
 func (s *Server) RoundRobinFirst(uids []uuid.UUID) uuid.UUID {
 	return *s.roundRobin(uids)[0].UserID
 }
+
+// AuditAPIKeyForTest writes a key audit entry with the context it is given, so
+// a test can hand it one that is already cancelled.
+func (s *Server) AuditAPIKeyForTest(ctx context.Context, actor uuid.UUID, action string, keyID, ownerID uuid.UUID) {
+	s.auditAPIKey(ctx, actor, action, keyID, ownerID, []string{"tickets:read"}, nil)
+}

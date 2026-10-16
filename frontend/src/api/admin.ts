@@ -86,8 +86,13 @@ export async function updateUser(id: string, patch: {
   return res.data
 }
 
-export async function adminResetPassword(id: string, newPassword: string): Promise<void> {
-  await api.post(`/admin/users/${id}/password`, { new_password: newPassword })
+/**
+ * Sets someone's password. revokeAPIKeys also deletes every API key they own
+ * (#450); it is always sent, false included, so what was asked for is visible
+ * on the wire.
+ */
+export async function adminResetPassword(id: string, newPassword: string, revokeAPIKeys = false): Promise<void> {
+  await api.post(`/admin/users/${id}/password`, { new_password: newPassword, revoke_api_keys: revokeAPIKeys })
 }
 
 export async function deleteUser(id: string): Promise<void> {
@@ -331,8 +336,11 @@ export async function updateSettings(patch: Record<string, unknown>): Promise<{ 
 
 // ── API Keys ─────────────────────────────────────────────────────────────────
 
-export async function listScopes(): Promise<ScopeInfo[]> {
-  const res = await api.get<ScopeInfo[]>('/admin/scopes')
+/** The scope catalogue, or with role the scopes a key owned by that role may carry. */
+export async function listScopes(role?: 'admin' | 'staff'): Promise<ScopeInfo[]> {
+  const res = role
+    ? await api.get<ScopeInfo[]>('/admin/scopes', { params: { role } })
+    : await api.get<ScopeInfo[]>('/admin/scopes')
   return res.data
 }
 

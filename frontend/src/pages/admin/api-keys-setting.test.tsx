@@ -64,3 +64,16 @@ describe('the staff API keys setting', () => {
     expect(call[1]).toMatchObject({ staff_can_create_api_keys: true })
   })
 })
+
+// Only creating stops. Keys that exist keep working, and staff can still list
+// and revoke theirs (CTO, 2026-10-16), so the text must not say otherwise.
+describe('what the staff API keys setting says it does', () => {
+  it('says that turning it off stops creating only', async () => {
+    await renderSettings({})
+    const text = toggle().closest('div')!.parentElement!.textContent ?? ''
+    expect(text).toMatch(/only stops staff creating new keys/i)
+    expect(text).toMatch(/keep working/i)
+    expect(text).toMatch(/still list and revoke/i)
+    expect(text).not.toMatch(/staff can create, list and revoke/i)
+  })
+})

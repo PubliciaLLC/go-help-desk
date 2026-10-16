@@ -1,12 +1,15 @@
 package server_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // Issuing a key on someone's behalf (#450): POST /admin/api-keys with user_id.
@@ -18,7 +21,7 @@ const adminKeys = "/api/v1/admin/api-keys"
 func (h *harness) issueFor(t *testing.T, cookie string, userID uuid.UUID, scopes ...string) (*http.Response, []byte) {
 	t.Helper()
 	res := h.doSession(t, cookie, http.MethodPost, adminKeys, map[string]any{
-		"name": "issued", "scopes": scopes, "user_id": userID.String(),
+		"name": "issued", "scopes": scopes, "user_id": userID.String(), "expires_at": inYears(1),
 	})
 	b := readAll(t, res)
 	return res, b
@@ -116,9 +119,6 @@ func TestAdminIssueKey_ScopesFollowTheOwnersRole(t *testing.T) {
 	}{
 		{"staff, a staff scope", h.staffID, []string{"tickets:write", "audit:read"}, http.StatusCreated},
 		{"staff, an admin-only scope", h.staffID, []string{"users:read"}, http.StatusBadRequest},
-		{"requester, tickets", h.userID, []string{"tickets:read"}, http.StatusCreated},
-		{"requester, a staff scope", h.userID, []string{"audit:read"}, http.StatusBadRequest},
-		{"requester, an admin-only scope", h.userID, []string{"settings:write"}, http.StatusBadRequest},
 		{"administrator, anything", h.adminID, []string{"settings:write"}, http.StatusCreated},
 	}
 	for _, tc := range cases {
@@ -165,7 +165,7 @@ func TestAdminIssueKey_AMachineCredentialCannotNameAnotherUser(t *testing.T) {
 
 	t.Run("naming itself is not naming someone else", func(t *testing.T) {
 		res := h.doAsAdmin(t, http.MethodPost, adminKeys, map[string]any{
-			"name": "x", "scopes": []string{"tickets:read"}, "user_id": h.adminID.String(),
+			"name": "x", "scopes": []string{"tickets:read"}, "user_id": h.adminID.String(), "expires_at": inYears(1),
 		})
 		b := readAll(t, res)
 		require.Equal(t, http.StatusCreated, res.StatusCode, "body: %s", b)
@@ -180,16 +180,20 @@ func TestAdminIssueKey_TheNamedUserMustBeLive(t *testing.T) {
 	res, b := h.issueFor(t, admin, uuid.New(), "tickets:read")
 	require.Equal(t, http.StatusNotFound, res.StatusCode, "body: %s", b)
 
-	r := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+h.userID.String(), map[string]any{"disabled": true})
+	r := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+h.staffID.String(), map[string]any{"disabled": true})
 	r.Body.Close()
-	res, b = h.issueFor(t, admin, h.userID, "tickets:read")
+	res, b = h.issueFor(t, admin, h.staffID, "tickets:read")
 	require.Equal(t, http.StatusBadRequest, res.StatusCode, "body: %s", b)
 	require.Equal(t, "user_disabled", errCode(t, b))
 
-	r = h.doAsAdmin(t, http.MethodDelete, "/api/v1/admin/users/"+h.staffID.String(), nil)
+	gone, err := h.userSvc.Create(context.Background(), user.CreateUserInput{
+		Email: "gone@test.local", DisplayName: "Gone", Role: user.RoleStaff, Password: "password",
+	})
+	require.NoError(t, err)
+	r = h.doAsAdmin(t, http.MethodDelete, "/api/v1/admin/users/"+gone.ID.String(), nil)
 	r.Body.Close()
 	require.Equal(t, http.StatusNoContent, r.StatusCode)
-	res, b = h.issueFor(t, admin, h.staffID, "tickets:read")
+	res, b = h.issueFor(t, admin, gone.ID, "tickets:read")
 	require.Equal(t, http.StatusNotFound, res.StatusCode, "a deleted account is not a person to issue for: %s", b)
 }
 
@@ -200,7 +204,7 @@ func TestAdminIssueKey_WithoutUserIDIsTheCallersOwn(t *testing.T) {
 	defer cleanup()
 
 	res := h.doSession(t, h.session(t, asAdmin), http.MethodPost, adminKeys,
-		map[string]any{"name": "own", "scopes": []string{"users:read", "credentials:read"}})
+		map[string]any{"name": "own", "scopes": []string{"users:read", "credentials:read"}, "expires_at": inYears(1)})
 	b := readAll(t, res)
 	require.Equal(t, http.StatusCreated, res.StatusCode, "body: %s", b)
 	var k issuedKey

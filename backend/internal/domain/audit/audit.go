@@ -217,6 +217,8 @@ var shownKeys = map[string]bool{
 	// was acting on someone else's account, the scopes (a fixed vocabulary) and
 	// the expiry. The key's name is free text and is not written.
 	"owneruserid": true, "onbehalf": true, "scopes": true, "expiresat": true,
+	// How many keys an administrator's password reset revoked with it (#450).
+	"keysrevoked": true,
 }
 
 // Redact returns copies of before/after showing only allow-listed keys
