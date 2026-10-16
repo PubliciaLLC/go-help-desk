@@ -30,6 +30,8 @@ import (
 //   - assignee_group_id=<uuid> — tickets for a specific group (staff/admin only).
 //   - scope=mine|unassigned|all — admin-only scopes. "unassigned" returns tickets
 //     with no assignee user or group. "all" returns every ticket. Defaults to "mine".
+//   - scope=visible — staff/admin: every ticket the caller can see (all of them,
+//     or the staff scope when enforcement is on). A reporting user is unaffected.
 //
 // pageParams reads limit and offset from the query string.
 //
@@ -134,6 +136,40 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 			tickets, err = s.tickets.SearchByAssigneeGroup(ctx, gid, q, limit, offset)
 		} else {
 			tickets, err = s.tickets.ListByAssigneeGroup(ctx, gid, limit, offset)
+		}
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		s.writeTickets(w, r, tickets)
+		return
+	}
+
+	// scope=visible: every ticket the caller can see, in one query, whatever
+	// queue they are looking at (#444). The search box sends it; the "Only
+	// <queue>" chip sends the queue's own scope instead.
+	//
+	// Visibility is not redefined here. Admins, and staff while scope
+	// enforcement is off, see everything (the same rule GET /tickets/{id}
+	// applies). Staff with enforcement on use the DESIGN.md staff scope query
+	// that already backs their default list. A reporting user falls through to
+	// the branch below and still gets only their own tickets.
+	if scope == "visible" && a.Role != user.RoleUser {
+		var (
+			tickets []ticket.Ticket
+			err     error
+		)
+		switch {
+		case a.Role == user.RoleStaff && s.adminSvc.TicketScopeEnforced(ctx):
+			if q != "" {
+				tickets, err = s.tickets.SearchVisibleToStaff(ctx, a.UserID, q, limit, offset)
+			} else {
+				tickets, err = s.tickets.ListVisibleToStaff(ctx, a.UserID, limit, offset)
+			}
+		case q != "":
+			tickets, err = s.tickets.SearchAll(ctx, q, limit, offset)
+		default:
+			tickets, err = s.tickets.ListAll(ctx, limit, offset)
 		}
 		if err != nil {
 			handleError(w, err)
