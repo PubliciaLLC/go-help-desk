@@ -220,7 +220,10 @@ Facilities
 
 <h2 id="admin-users">Users &amp; roles</h2>
 
-<p>Manage accounts from <em>Admin → Users</em>. The page lists all accounts with their role, login type, and join date. Click any row to open the user detail page.</p>
+<p>Manage accounts from <em>Admin → Users</em>. The page lists accounts with their role, login type, and join date. Click any row to open the user detail page.</p>
+
+<h3 id="admin-users-list">Finding accounts in a long list</h3>
+<p>The list is shown 50 accounts at a time, with <em>Previous</em> and <em>Next</em> buttons and a line such as <em>Showing 1-50 of 640</em>, so an instance with more than 200 accounts can reach every one of them. Narrow the list with the <em>Search name or email</em> box, the <em>All roles</em> drop-down, or the <em>Show</em> drop-down (<em>All accounts</em>, <em>People</em> or <em>Service accounts</em>). Without paging, the API still returns only the newest 200 accounts; ask for a page to go further.</p>
 
 <h3>Roles</h3>
 <table>
@@ -265,10 +268,30 @@ Facilities
   <li><strong>Local + SSO</strong> — the account can authenticate with either method (common when an admin account was created before SAML was enabled).</li>
 </ul>
 
+<h3 id="admin-service-users">Service users</h3>
+<p>Each <a href="#admin-oauth-clients">OAuth client</a> acts as its own account, a <em>service user</em>, which appears in the list with a <em>Service</em> badge. It never signs in: it has no password, no second factor, no passkey and no single sign-on, and cannot be an administrator. On its detail page you can rename it (which renames the client too), set its role to staff or user, give it groups, and disable it. <strong>Disabling the service user stops the client</strong>; enabling it again restores it. You cannot delete it from here: the delete is refused and points you to the OAuth Clients page, because deleting the client is what removes the account. Service users are left out of assignee lists and round-robin, do not count as administrators, and are never emailed.</p>
+
 <h3>Locked out of every second factor</h3>
 <p>An administrator who loses every second factor, with no other administrator to reset it, can be recovered from the server. Run this where the server runs, while the <code>app</code> container is up:</p>
 <pre><code>docker compose exec app /app/server reset-factors user@example.com</code></pre>
 <p>The command clears the authenticator and every passkey for that account, and ends its sessions. It does not change the password. It writes an audit entry recording the operating-system user and host that ran it, with <code>source</code> set to <code>cli</code>. The user then signs in with their password and enrols a factor again. Anyone who can run the command already holds the server and database credentials, which is why no web route does the same.</p>
+
+<h3 id="admin-unlock">Unlocking an account from the server</h3>
+<p><code>reset-factors</code> only clears second factors. When an account is locked out in another way, or you cannot tell which, use <code>unlock</code>. It works when the web screens cannot: a lost authenticator or passkey, a disabled account (the only administrator included), a second-factor lockout that has run out its attempts, or a single-sign-on administrator with no usable password. Run it where the server runs, while the <code>app</code> container is up:</p>
+<pre><code>docker compose exec app /app/server unlock user@example.com</code></pre>
+<p>In one step, it clears every second factor, switches the account back on, clears the second-factor lockout, ends all of the account's sessions, and sets a new random password, which it prints once. Copy it then; it is not shown again, and the audit entry does not contain it. The person must choose a new password at their next sign-in. It writes an audit entry recording the operating-system user and host that ran it. It refuses an address that belongs to no account, and the address of an OAuth client's service user (it names the client instead). If the account cannot use a password to sign in on this instance, for example because single sign-on is required, the command says so after it has finished, because the new password would not help them.</p>
+
+<h3 id="admin-password-age">Old password hashes</h3>
+<p>Releases before 1.3.0 stored passwords in a weaker form. 1.3.0 upgrades an account's stored password automatically the next time its owner signs in. People who do not sign in for a long time keep the old form, so after a deadline they are refused: a correct password on an old hash is rejected with <code>403 password_reset_required</code> and the message <em>Your password was saved in an older, weaker form and must be reset before you can sign in.</em></p>
+<ul>
+  <li><strong>The setting.</strong> <em>Admin → Settings → Authentication → Passwords</em>, <em>Reset window for old passwords</em> (<code>password_rehash_grace_days</code>). It is a number of days, 1 to 365, and the default is 30. The count starts the first time 1.3.0 runs against your database. Changing the number moves the deadline for everyone.</li>
+  <li><strong>Administrators are exempt.</strong> An administrator is never refused for this, so the instance cannot lock itself out. Their password is upgraded at their next sign-in like everyone else's. Staff and requesters are not exempt.</li>
+  <li><strong>New installs are not affected</strong>, and neither is anyone who signs in within the window.</li>
+  <li><strong>How someone gets back in.</strong> Password reset by email is not available in 1.3.0, so an administrator sets a new password for them from their user page (<em>Reset password</em>). Tell people who sign in rarely, such as seasonal staff, before the deadline, or reset them in advance.</li>
+</ul>
+
+<h3 id="admin-passkeys-banner">Passkeys unavailable</h3>
+<p>Passkeys are tied to a domain name. If <code>BASE_URL</code> is an IP address, a single-word host such as <code>http://helpdesk:8080</code>, or contains non-ASCII characters, passkeys are switched off. The server still starts and everything else works, but every administrator sees a banner, <em>Passkeys are unavailable</em>, which gives the reason. Someone whose only second factor is a passkey cannot sign in while this lasts. They are told to ask an administrator to reset their sign-in factors; <em>Reset MFA</em> clears the passkey, and they then enrol an authenticator app. If the locked-out person is the last administrator, use <code>reset-factors</code> above. To get passkeys, give the instance a DNS name and set <code>BASE_URL</code> to it. Changing the domain makes passkeys registered under the old one stop working.</p>
 
 <h3>Identity-provider lockout guard</h3>
 <p>Saving SAML or OIDC settings is refused with <code>400 bad_request</code> when the change would leave no active administrator able to sign in, for example by turning off the only identity provider that an administrator without a password uses. Local password sign-in is not affected by these settings. A change that leaves only some administrators unable to sign in is saved, and the response carries a warning.</p>
