@@ -1402,8 +1402,9 @@ ticket for someone else, which is how a phone-in request is recorded. `POST
   can sign in. **Otherwise it is filed exactly like a guest ticket**: the same
   creation path, the person is sent the same guest link at that address (read
   and reply, read-only once the ticket closes, replaced when the ticket changes
-  in a way they are told about), and the optional `guest_name` and `guest_phone`
-  are kept (optional here, where the guest form requires the name). Guest links
+  in a way they are told about). **`guest_name` is required, exactly as on the
+  guest form** (`400` without a non-blank one); `guest_phone` is optional and
+  kept. An address that matches an account needs no name. Guest links
   are suspended while guest submission is off (#424), so a typed address with no
   account behind it is `400` then, and nothing is filed; an address that belongs
   to an account is not affected. Only the requester's identity follows the guest
@@ -1413,23 +1414,48 @@ ticket for someone else, which is how a phone-in request is recorded. `POST
 With neither field the caller is the requester, as before. **The member of staff
 is the actor** in the status history, the `created` audit entry and the
 `created` event (`ticket.CreateInput.FiledBy`); the requester is the ticket's
-reporter or guest, which is how the ticket page already shows them. A reporting
+reporter or guest, and the staff ticket page shows them (the Requester line,
+below). **An existing user who is filed for is told**: someone picked by id, or
+a typed address that matches an account, is sent the ordinary "We have received
+your ticket" email with a link to the ticket (the sign-in one: they have an
+account, so no guest link), queued through the notification outbox like every
+other requester mail, so one mail goes to an address even when it is also a
+staff recipient of the same change (the staff mail wins). A member of staff who
+files their own ticket, with neither field or by naming themselves, is not
+mailed about it, as before; nor is a requester who files theirs. A typed
+address with no account is filed as a guest ticket and gets the guest link, as
+above. A reporting
 user who sends either field gets `403 forbidden`, the same as any other staff-only
 action; it is never ignored, because a ticket quietly filed under their own name is
 not what they asked for. A guest (no credential) is refused the same way.
 
+**The Requester line (#444).** The staff ticket page shows a **Requester** line
+on every ticket, not only those filed on behalf of someone: the reporting
+account's name and email, or the guest's. `GET /tickets/{id}` carries it as
+`requester` (`{name, email}`) for staff and administrators only; it is not on
+the requester allowed list, so a reporting user is never sent it (they are on
+their own ticket, and what they see does not widen), and it is not on a ticket
+list. A deleted account is still named; if the account cannot be read the line
+reads "unknown" and the failure is logged.
+
 On the New ticket page, staff and administrators see a **Requester** choice
-(Me, the default; Another user; Email address) and a requester sees none. Another
+(Me, the default; Another user; Email address) and a requester sees none. Email
+address shows a required **Name** and an optional **Phone**, as the guest form
+does. Another
 user is a search box: `GET /users/lookup?q=` (staff and administrators; `users:read`
 for a machine credential) answers with `id`, `display_name` and `email` of at most
 ten accounts whose name or address contains the query, ignoring case. A query
 shorter than two characters is `400`, so the endpoint finds a person and cannot
-list the directory; deleted accounts and service accounts are not found. A
-reporting user gets `403`.
+list the directory; deleted accounts, disabled accounts (they cannot sign in) and
+service accounts are not found. The search minimum is counted in characters, not
+bytes or UTF-16 units. A reporting user gets `403`. The lookup is the picker's:
+a disabled account sent by id is still accepted, as MCP accepts one.
 
-MCP `create_ticket` is unchanged: it takes `reporter_user_id` only (no typed
-address), and it still records the reporter as the actor of the creation, not the
-member of staff who called it. Bringing it in line is not part of #444.
+MCP `create_ticket` takes `reporter_user_id` only (no typed address). **When it
+names someone other than the caller, the caller is the actor** of the creation,
+as on REST (`CreateInput.FiledBy`), and the reporter is who it is for; the
+account is emailed as above. Naming yourself, or omitting it, is filing your own
+ticket and is unchanged.
 
 **Nobody newly picks an archived category, type or item (#421).** Staff and
 administrators see archived rows (in the picker and in the catalogue API) so they

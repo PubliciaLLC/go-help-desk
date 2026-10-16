@@ -2875,8 +2875,12 @@ paths:
         that account, otherwise it is filed exactly like a guest ticket, so the
         person is sent the guest link at that address. That needs guest
         submission to be on (400 otherwise, because the link would not open),
-        and guest_name and guest_phone are kept as they are on a guest ticket,
-        both optional here. Either way the caller, not the requester, is the
+        and guest_name is required (400 without a non-blank one), as on the
+        guest form; guest_phone is kept and optional. An address that belongs to
+        an account needs no name. An account that is filed for (picked, or
+        matched by its typed address) is sent the ordinary "We have received
+        your ticket" email with a link to the ticket, through the notification
+        outbox, unless it is the caller. Either way the caller, not the requester, is the
         actor in the ticket's history, its created audit entry and the created
         event. A reporting user who sends either field gets 403 forbidden; the
         field is never ignored. GET /users/lookup finds an account to pick.
@@ -2926,7 +2930,7 @@ paths:
                   description: Staff and administrators only. An address the ticket is for. An account's address files for the account; any other makes a guest ticket and mails the guest link there (guest submission must be on). Not with reporter_user_id.
                 guest_name:
                   type: string
-                  description: With reporter_email and no account behind it, the guest's name. Optional.
+                  description: With reporter_email and no account behind it, the guest's name. Required (400 when missing or blank); not used when the address belongs to an account.
                 guest_phone:
                   type: string
                   description: With reporter_email and no account behind it, the guest's phone. Optional.
@@ -2950,7 +2954,8 @@ paths:
             staff and administrators also: both reporter_user_id and
             reporter_email were sent, reporter_user_id is not a live account,
             reporter_email is not a plain address (reporter_email: ...), or
-            reporter_email has no account and guest submission is off.
+            reporter_email has no account and guest submission is off, or it has
+            no account and guest_name is missing or blank.
           content:
             application/json:
               schema:
@@ -3041,6 +3046,9 @@ paths:
         ticket that does not exist does. It is never 403, so tracking numbers
         cannot be probed. A reporting user sees only the tickets they
         reported. For them sla is null and can_reopen is false.
+        Staff and administrators also receive requester, who the ticket is
+        for (the account's name and email, or the guest's), on every ticket. A
+        reporting user does not receive it.
       tags: ['Tickets']
       x-ghd-handler: handleGetTicket
       security:
@@ -5466,8 +5474,8 @@ paths:
         Returns accounts whose display name or email contains q, ignoring case
         (% and _ match themselves), as a bare array of id, display_name and
         email, newest account first, at most 10. Any role of account is
-        returned; deleted accounts and service accounts (an OAuth client's
-        identity) are not. q must be at least 2 characters after trimming; a
+        returned; deleted accounts, disabled accounts and service accounts (an
+        OAuth client's identity) are not. q must be at least 2 characters after trimming; a
         shorter or missing q is 400, so the endpoint cannot list the directory.
         Not paged.
       tags: ['Reference data']
@@ -9652,6 +9660,17 @@ components:
             can_reopen:
               type: boolean
               description: True when the ticket is Closed and closed_reopen_policy allows the viewer's role to force-reopen it. Always false for a reporting user.
+            requester:
+              description: Who the ticket is for, shown as the Requester line on the staff ticket page (#444). Sent on getTicket only (never on a list row), to staff and administrators only, on every ticket; never to a reporting user. Absent when the reporting account cannot be read. A deleted account is still named.
+              type: object
+              required: [name, email]
+              properties:
+                name:
+                  type: string
+                  description: The account's display name, or the guest's name.
+                email:
+                  type: string
+                  description: The account's address, or the guest's.
     SlaStatus:
       description: |
         A ticket's live SLA status. Computed fresh on every read from the
