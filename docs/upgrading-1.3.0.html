@@ -166,6 +166,7 @@
     <tr><td>Compose passes the sign-in limits; a delay of 0 is refused</td><td>Installs that set <code>AUTH_RATE_LIMIT_PER_MINUTE</code> or <code>AUTH_THROTTLE_DELAY</code> in <code>.env</code>, or set the delay to 0</td></tr>
     <tr><td><code>ATTACHMENT_DIR</code> is checked at startup</td><td>Installs whose attachment directory cannot be written</td></tr>
     <tr><td>Client mistakes get 4xx; DELETE of an unknown id is 404</td><td>API clients and scripts that call admin routes</td></tr>
+    <tr><td>Email refuses to send a password or mail unencrypted to a public server; email-off is reported</td><td>Anyone whose mail server lacks STARTTLS, or who sets <code>SMTP_USER</code> for a server with no login</td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
@@ -413,6 +414,31 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 </ul>
 
 <p>Treat a <code>404</code> on DELETE as "already gone" if your script needs to be idempotent. See <a href="api.html#api-client-errors">REST API: Errors</a>.</p>
+
+<h2 id="smtp">Email needs encryption to send a password, and says when it is off</h2>
+
+<p><strong>Who notices:</strong> anyone whose mail server does not offer encryption, or whose <code>SMTP_USER</code> is set for a server that does not log in. Read this one before you upgrade.</p>
+
+<p>There is no new setting. The rule depends on the port and on whether <code>SMTP_PASSWORD</code> is set:</p>
+
+<ul>
+  <li><strong>Password set:</strong> the connection must be encrypted. Port 465 is encrypted from the first byte. Any other port must offer STARTTLS. A password is never sent unencrypted, even to a private address.</li>
+  <li><strong>No password:</strong> unencrypted mail is allowed only to a server on a loopback or private address (10.x.x.x, 172.16 to 172.31, 192.168.x.x, or IPv6 fc00::/7). A public address still needs encryption.</li>
+</ul>
+
+<p>Nothing needs changing if your mail server offers STARTTLS (or you use port 465) and, when <code>SMTP_USER</code> is set, offers AUTH. What now fails:</p>
+
+<ol>
+  <li><strong>A relay on localhost that takes a password without encryption.</strong> The send fails with <em>SMTP server does not offer STARTTLS, and SMTP_PASSWORD is set: refusing to send the password unencrypted</em>. Turn on STARTTLS (or TLS on port 465) on the relay, or drop the password if the relay does not need one for your network.</li>
+  <li><strong>Mail without a password to a public server that has no STARTTLS.</strong> The send fails with <em>SMTP server does not offer STARTTLS and is not on a private address: refusing to send mail unencrypted</em>. Use a server that offers STARTTLS, or port 465.</li>
+  <li><strong><code>SMTP_USER</code> set, but the server offers no AUTH.</strong> The send fails with <em>SMTP server does not offer AUTH but SMTP_USER is set</em>. Before, the mail was sent without logging in. Point at a server that offers AUTH, or remove <code>SMTP_USER</code> and <code>SMTP_PASSWORD</code> if the relay accepts your mail without a login.</li>
+  <li><strong>Turning on self-signup or guest submission while email is off.</strong> Saving the setting is refused with <code>400 email_required</code> when <code>SMTP_HOST</code> or <code>SMTP_FROM</code> is unset. An install that already has either one on is not switched off and can still save other settings; it gets a warning in the admin panel instead.</li>
+  <li><strong>A damaged email template.</strong> The message is marked failed at once, with no retries, and the error shows in the admin email warning. The shipped templates render, so this matters only for a damaged build.</li>
+</ol>
+
+<p>Port 465 now connects with TLS from the first byte. Before, it waited until the timeout, so no working setup changes.</p>
+
+<p><strong>How you see it.</strong> A failed send is retried for about an hour (a template error is not retried) and then marked failed. While any message is retrying, or failed within the last day, administrators see an email warning with the newest error, with any address replaced by <code>[address]</code>. The same warning lists which of <code>SMTP_HOST</code> and <code>SMTP_FROM</code> is unset, and whether signup or guest submission is on with email off. The server log says once at startup whether email is enabled, and warns when only one of the two is set. The warning is also in <code>GET /api/v1/admin/security-warnings</code>, as <code>email</code>.</p>
 
 <h2 id="known-gaps">What is not in 1.3.0</h2>
 
