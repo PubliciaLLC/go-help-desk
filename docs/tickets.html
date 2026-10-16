@@ -41,7 +41,7 @@
     <ul class="nav-links">
       <li><a href="../index.html">Home</a></li>
       <li><a href="../docs.html" style="color:var(--blue);">Docs</a></li>
-      <li><a href="/docs/upgrading-1.2.0.html">Upgrading</a></li>
+      <li><a href="/docs/upgrading-1.3.0.html">Upgrading</a></li>
       <li><a href="/docs/security.html">Security</a></li>
       <li><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></li>
     </ul>
@@ -54,7 +54,10 @@
 
   <div class="sidebar-group">
     <div class="sidebar-group-label">Upgrading</div>
-    <ul><li><a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a></li></ul>
+    <ul>
+      <li><a href="upgrading-1.3.0.html">Upgrading to 1.3.0</a></li>
+      <li><a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a></li>
+    </ul>
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Getting Started</div>
@@ -70,7 +73,7 @@
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Security</div>
-    <ul><li><a href="attachment-security.html">Attachment Security <span class="badge-beta">Beta</span></a></li></ul>
+    <ul><li><a href="attachment-security.html">Attachment Security</a></li></ul>
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Tickets</div>
@@ -78,10 +81,15 @@
       <li><a href="tickets.html" class="active">Overview</a></li>
       <li><a href="#tickets-create">Creating a Ticket</a></li>
       <li><a href="#tickets-lifecycle">Ticket Lifecycle</a></li>
+      <li><a href="#tickets-follow-up">Follow-up Tickets</a></li>
       <li><a href="#tickets-replies">Replies &amp; Notes</a></li>
       <li><a href="#tickets-links">Linked Tickets</a></li>
       <li><a href="#tickets-tags">Tags</a></li>
       <li><a href="#tickets-assignment">Assignment</a></li>
+      <li><a href="#tickets-priority">Changing priority</a></li>
+      <li><a href="#tickets-follow">Following a ticket</a></li>
+      <li><a href="#tickets-staff-email">Email to staff</a></li>
+      <li><a href="#tickets-reopen">Reopened tickets</a></li>
       <li><a href="#tickets-custom-fields">Custom Fields</a></li>
       <li><a href="#tickets-attachments">Attachments</a></li>
       <li><a href="#tickets-search">Search</a></li>
@@ -91,6 +99,7 @@
     <div class="sidebar-group-label">Integrations</div>
     <ul>
       <li><a href="api.html">REST API</a></li>
+      <li><a href="api-reference.html">API Reference</a></li>
       <li><a href="mcp.html">MCP Server</a></li>
     </ul>
   </div>
@@ -112,20 +121,20 @@
 
 <h2 id="tickets-create">Creating a ticket</h2>
 
-<p>Click <em>New ticket</em> from the dashboard or ticket list. Staff and admins can create tickets on behalf of any user. Users create tickets for themselves.</p>
+<p>Click <em>New ticket</em> from the dashboard or ticket list. A ticket is filed as the signed-in user. (Through the <a href="mcp.html">MCP server</a>, staff can name another user as the reporter.)</p>
 
 <h3>Required fields</h3>
 <ul>
-  <li><strong>Subject</strong> — a short summary (max 255 characters). This is the ticket's title across all views.</li>
-  <li><strong>Description</strong> — the full detail of the request or issue. Markdown formatting is supported. Staff will read this first, so include all relevant context: error messages, steps to reproduce, what you've already tried.</li>
+  <li><strong>Subject</strong>: a short summary, up to 500 bytes. Accented and non-Latin characters take two to four bytes each. This is the ticket's title across all views.</li>
   <li><strong>Category</strong> — required. At least one Category must be configured before any ticket can be created.</li>
 </ul>
 
 <h3>Optional fields</h3>
 <ul>
+  <li><strong>Description</strong>: the full detail of the request, as plain text, up to 50,000 bytes. Staff read this first, so include error messages, steps to reproduce and what you have already tried.</li>
   <li><strong>Type</strong> — shown only if the selected Category has Types defined. Filters Items.</li>
   <li><strong>Item</strong> — shown only if the selected Type has Items defined.</li>
-  <li><strong>Priority</strong> — defaults to Medium. Users can set priority if the admin has enabled <em>User-selectable priority</em> in settings. Staff and admins can always set and change priority.</li>
+  <li><strong>Priority</strong>: defaults to Medium. Only staff and admins can choose it when they create a ticket. Staff and admins can change it afterwards; see <a href="#tickets-priority">Changing priority</a>.</li>
   <li><strong>Attachments</strong> — files can be attached at creation. See <a href="#tickets-attachments">Attachments</a>.</li>
 </ul>
 
@@ -151,23 +160,22 @@
   </tbody>
 </table>
 
-<h3>Guest ticket submission <span class="badge-beta">New in 1.3.0-beta</span></h3>
+<h3>Guest ticket submission <span class="badge-new">New in 1.3.0</span></h3>
 
-<div class="callout callout-warn">
-  <p><strong>This works from v1.3.0-beta and does not work in v1.2.0 or earlier.</strong> In every released version the pieces exist and do not connect, so turning the setting on produces no error and no guest tickets. It is off by default.</p>
-</div>
+<p>Guest submission is off by default. When it is enabled (<em>Admin → Settings</em>), the public form at <code>/submit</code> is reachable without logging in. Required: <strong>name</strong>, <strong>email</strong>, <strong>subject</strong> and <strong>category</strong>, which must be an active one. Phone is optional. Type, Item and priority are not shown and are not accepted: priority is always Medium on a guest ticket.</p>
 
-<p>When guest submission is enabled (<em>Admin → Settings</em>), the public form at <code>/submit</code> is reachable without logging in. Required: <strong>name</strong>, <strong>email</strong>, <strong>subject</strong> and <strong>category</strong>, which must be an active one. Phone is optional. Type, Item and priority are not shown and are not accepted — priority is always Medium on a guest ticket.</p>
+<img src="../screenshots/28-guest-submit.png" alt="The guest submission form at /submit: name, email, optional phone, subject, description and category. There are no type, item or priority fields" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
 <p>On success the page shows the ticket's <strong>tracking number</strong>, which can be quoted when following up by phone or email, and the server emails the address a <strong>private link to that one ticket</strong>. The link is the credential: there is no guest password and no guest account.</p>
 
 <h4>The guest link</h4>
 <ul>
   <li><strong>It opens one ticket and nothing else.</strong> A guest sees the subject, description, status, and the public replies — internal notes are never included, and staff names are not shown. They can post a reply, subject to the same lifecycle rules as anyone else, including the reopen window.</li>
-  <li><strong>Guests get no attachments at all.</strong> They cannot upload one and cannot download one; the guest view does not even say that a ticket has any.</li>
-  <li><strong>It is replaced every time the help desk writes to them.</strong> A staff reply, a status change, a resolve or a reopen each send a fresh link and invalidate the previous one immediately. There is no grace period, so the newest email is the one that works.</li>
-  <li><strong>Closing the ticket revokes it</strong>, and no mail is sent for the close.</li>
+  <li><strong>No attachments on the guest page.</strong> The guest page has no upload control and does not list attachments, and a guest cannot download one. The guest API does accept a file (<code>POST /api/v1/guest/attachments</code>) while the guest could still reply, under the same rules as a reply.</li>
+  <li><strong>It is replaced every time the help desk writes to them.</strong> A staff reply, a status change, a resolve or a reopen by staff each send a fresh link and invalidate the previous one immediately. There is no grace period, so the newest email is the one that works.</li>
+  <li><strong>Closing the ticket stops the link being replaced, but does not revoke it.</strong> The last link sent still opens the ticket, read-only, until it expires. No mail is sent for the close. A guest can still open a follow-up from a closed ticket with the link.</li>
   <li><strong>It expires 30 days after it was issued.</strong></li>
+  <li><strong>Switching guest submission off suspends every link.</strong> While the setting is off, a guest link answers <code>404</code>, the same as a link that never existed, so a guest in the middle of a conversation cannot read or reply. Links are suspended, not revoked: switch the setting back on and the ones that have not expired work again.</li>
   <li><strong>Lost it?</strong> <code>/track</code> takes a tracking number and the email address and mails a new link, replacing the old one. It always answers the same way whether or not those details matched anything, so it cannot be used to find out which tickets exist. One request per ticket every five minutes.</li>
 </ul>
 
@@ -190,13 +198,14 @@
 <table>
   <thead><tr><th>Transition</th><th>Who can trigger it</th><th>Notes</th></tr></thead>
   <tbody>
-    <tr><td>Any status → any status</td><td>Staff, Admin</td><td>No restrictions except Closed (see below).</td></tr>
+    <tr><td>Any status → any status</td><td>Staff, Admin</td><td>Only an administrator can move a ticket to Closed, and leaving Closed follows the rows below.</td></tr>
     <tr><td>Any → Resolved</td><td>Staff, Admin</td><td>Optionally captures resolution notes. Starts the reopen window timer.</td></tr>
     <tr><td>Resolved → Closed (automatic)</td><td>System</td><td>Triggered when the reopen window expires. A background sweep checks every five minutes.</td></tr>
     <tr><td>Resolved → Closed (manual)</td><td>Admin only</td><td>Closes a ticket immediately, bypassing the reopen window. Use the <em>Close Ticket</em> button on the ticket detail page or <code>POST /api/v1/tickets/{id}/close</code>.</td></tr>
-    <tr><td>Resolved → Reopened (via reply)</td><td>User</td><td>Only within the reopen window. Automatically transitions the ticket back to New.</td></tr>
-    <tr><td>Closed → any</td><td>Staff, Admin only</td><td>Users cannot interact with Closed tickets.</td></tr>
-    <tr><td>Resolved or Closed → Reopened (manual)</td><td>Staff, Admin</td><td>Bypasses the reopen window restriction.</td></tr>
+    <tr><td>Resolved → Reopened (via reply)</td><td>User</td><td>Only within the reopen window. Automatically transitions the ticket to the reopen target status (New by default).</td></tr>
+    <tr><td>Closed → any</td><td>Nobody, by default</td><td>Admins, or staff and admins, only if <em>Reopening closed tickets</em> allows it. Requesters never can. Otherwise open a follow-up.</td></tr>
+    <tr><td>Resolved → any other status (manual)</td><td>Staff, Admin</td><td>An ordinary status change from the status picker, whatever the reopen window says. The <em>Reopen</em> action itself applies only to a Closed ticket.</td></tr>
+    <tr><td>Closed → Reopened (manual)</td><td>Admin, or staff and admin, per policy</td><td>Only when <em>Reopening closed tickets</em> allows the role. Requesters never can.</td></tr>
   </tbody>
 </table>
 
@@ -207,12 +216,23 @@
 <p>After a ticket is Resolved, the submitter has a configurable number of days to reopen it by replying. The default is 7 days. When a user adds a reply to a Resolved ticket within the window:</p>
 <ol>
   <li>The reply is saved.</li>
-  <li>The ticket status is automatically changed back to New.</li>
-  <li>The ticket is flagged in the staff queue as reopened.</li>
-  <li>The original assignee (if any) receives an email notification.</li>
+  <li>The ticket status is automatically changed to the reopen target status (New by default).</li>
+  <li>The reopen is recorded in the ticket's Activity feed, and a <code>ticket.reopened</code> event goes to subscribed webhooks.</li>
 </ol>
 
-<p>After the window expires, the ticket transitions to Closed automatically. Users can still view Closed tickets but cannot add replies. Staff can reopen Closed tickets manually at any time.</p>
+<p>After the window expires, the ticket is closed automatically. A closed ticket is read-only for its requester: they can still view it, but cannot reply. It stays Closed unless <em>Reopening closed tickets</em> allows staff or administrators to reopen it. The way on is a <a href="#tickets-follow-up">follow-up ticket</a>.</p>
+<p>The reopen window is set by the administrator, and 0 means no reopening at all: a Resolved ticket is closed, and read-only, on the next automatic sweep, about five minutes later.</p>
+
+<h3 id="tickets-follow-up">Follow-up tickets</h3>
+<p>A Closed ticket is not reopened to continue its work. The way on is a <em>follow-up</em>: a new ticket that continues the work, linked to the closed ticket as its child. The closed ticket is the parent. The follow-up and its link are created together, so one never exists without the other, and opening a follow-up does not change the closed ticket.</p>
+<p>Who can open one:</p>
+<ul>
+  <li><strong>Staff and admins</strong> can open a follow-up from any Closed ticket they can see. It copies the subject, description, category, type, item, priority and requester.</li>
+  <li><strong>The requester</strong> can open one from their own Closed ticket: an account holder through their account, or a guest through their link. It copies the subject, description and category, and the type for an account holder, never for a guest. It starts at Medium priority, with no item, unassigned, and with a fresh SLA clock.</li>
+</ul>
+<img src="../screenshots/27-closed-ticket-requester.png" alt="A closed ticket as its requester sees it: a notice that the ticket is closed and read-only with a pointer to Create follow-up, the Create follow-up button at the top right, and a timeline ending Resolved to Closed" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+
+<p>A requester can open one follow-up per closed ticket. A second request from a requester is refused with <code>409 follow_up_exists</code>, and a follow-up opened by staff counts towards that one. Staff and administrators are not limited. Staff, admins and the requester open one with <em>Create follow-up</em> on the ticket. The API routes are <code>POST /api/v1/tickets/{id}/follow-up</code> for a signed-in user and <code>POST /api/v1/guest/follow-up</code> for a guest link. A follow-up is the only write a guest can make on a closed ticket.</p>
 
 
 <h2 id="tickets-replies">Replies &amp; internal notes</h2>
@@ -224,7 +244,7 @@
   <li>All staff and admins who have access to the ticket</li>
   <li>Guest users with a valid access link (for guest-submitted tickets)</li>
 </ul>
-<p>Email notifications are sent to all participants when a public reply is added.</p>
+<p>When staff post a public reply with <em>Send ticket update email to customer</em> ticked, which is the default, the requester is emailed a notice with a link to the ticket. The email carries no reply text. Staff are not emailed about a staff reply or an internal note. They are emailed when the <em>requester</em> replies; see <a href="#tickets-staff-email">Email to staff</a>.</p>
 
 <h3>Internal notes</h3>
 <p>Staff and admins can add internal notes to any ticket. Internal notes are:</p>
@@ -244,21 +264,11 @@
   <li>Documenting failed solutions before finding the correct one</li>
 </ul>
 
-<h3>Markdown support</h3>
-<p>Both replies and notes support a subset of Markdown:</p>
-<ul>
-  <li><code>**bold**</code> and <code>*italic*</code></li>
-  <li>Inline code with backticks: <code>`code`</code></li>
-  <li>Code blocks with triple backticks (with optional language hint for syntax highlighting)</li>
-  <li>Ordered and unordered lists</li>
-  <li>Links: <code>[text](url)</code></li>
-  <li>Blockquotes with <code>&gt;</code></li>
-</ul>
+<h3>Formatting</h3>
+<p>Replies, notes and descriptions are plain text. Line breaks are kept. Markdown and HTML are shown exactly as typed, never rendered.</p>
 
-<p>HTML is not supported and is escaped before rendering.</p>
-
-<h3>Editing and deleting replies</h3>
-<p>Users can edit or delete their own replies within 15 minutes of posting. Staff and admins can edit any reply at any time. Deletions are soft — a "deleted reply" placeholder is shown to staff. The original content is preserved in the audit log.</p>
+<h3>Replies are permanent</h3>
+<p>A reply or note cannot be edited or deleted once it is posted, by anyone. To correct one, post another.</p>
 
 <h3>Inserting canned responses</h3>
 <p>Staff and admins see an <em>Insert canned response</em> button above the reply box. It opens a searchable picker limited to the responses in scope for that ticket — global templates, plus any scoped to the ticket's category or category and type. Selecting one splices the template's body into the reply at the current cursor position (or appends it, if the box is empty), and the inserted text stays fully editable before sending. Managing the templates themselves is an admin task — see <a href="admin-guide.html#admin-canned-responses">Canned Responses</a> in the Admin Guide.</p>
@@ -278,7 +288,7 @@
       <td>They affect similar systems, came from the same user, or are otherwise connected but neither caused the other.</td>
     </tr>
     <tr>
-      <td><code>parent_of</code> / <code>child_of</code></td>
+      <td><code>parent_child</code></td>
       <td>One ticket is a sub-issue of another.</td>
       <td>A "batch laptop deployment" parent ticket with individual "setup laptop for [user]" children. Or a widespread network outage parent with individual "I can't access the VPN" children.</td>
     </tr>
@@ -301,8 +311,15 @@
 <h3>Removing a link</h3>
 <p>Click the <em>×</em> next to any linked ticket. This removes the link in both directions. Staff and admin only — users cannot modify links.</p>
 
-<h3>Bulk operations on linked tickets</h3>
-<p>From a parent ticket, staff can resolve all child tickets at once using <em>Resolve all children</em>. Each child receives the same resolution notes as the parent. This is useful for closing out many individual duplicate or child tickets after resolving the root cause.</p>
+<h3>Resolving all the children at once</h3>
+<p>On a ticket that is the parent in at least one <code>parent_child</code> link, staff and admins see <em>Resolve all children</em> in the Linked tickets section. It asks for resolution notes once, and the same notes are recorded on every child it resolves.</p>
+<ul>
+  <li><strong>Only open children are resolved.</strong> The confirm button counts them (<em>Resolve 3 children</em>), and says how many that are already Resolved or Closed will be skipped. A child that is already resolved is never resolved a second time, so its own notes are not overwritten. If none is open, the button is disabled and reads <em>All children are already resolved.</em></li>
+  <li><strong>Direct children only.</strong> Children of the children are left alone. If any of the children have children of their own, the form says so, naming up to five by tracking number, and tells you to resolve those from their own ticket.</li>
+  <li><strong>Each child is resolved on its own</strong>, one after another, exactly as if you had opened it and clicked Resolve: each gets its own Activity entry, notifications and SLA handling.</li>
+  <li><strong>A refusal does not stop the rest.</strong> When it finishes you get a report such as <em>2 of 3 resolved, 1 already resolved</em>, followed by each child the server refused and the reason. The notes stay in the box, so you can fix the cause and run it again; only the children still open are touched.</li>
+</ul>
+
 
 
 <h2 id="tickets-tags">Tags</h2>
@@ -324,7 +341,7 @@
 <p>As you type, existing active tags that match the prefix are shown as suggestions. Select a suggestion to apply it, or press Enter to create a new tag with the text you've typed. Tags with no matching suggestions show a "Press Enter to create…" hint.</p>
 
 <h3>Tag visibility</h3>
-<p>Tags are visible to all users who can view the ticket, including the ticket submitter. Only staff and admins can add or remove tags.</p>
+<p>Tags are for staff. Only staff and admins can see, add or remove them; the requester never sees the tags on their ticket.</p>
 
 <h3>Admin tag management</h3>
 <p>Admins can deactivate inappropriate tags or restore previously deactivated ones from <em>Admin → Tags</em>. See <a href="admin-guide.html#admin-tags">Tags</a> in the Admin Guide for details.</p>
@@ -334,7 +351,7 @@
 
 <p>A ticket can be assigned to:</p>
 <ul>
-  <li><strong>A specific staff member</strong> — the ticket appears in their personal queue and they receive an email notification.</li>
+  <li><strong>A specific staff member</strong>: the ticket appears in their personal queue, and they are emailed about it, unless they or an administrator have switched that email off. See <a href="#tickets-staff-email">Email to staff</a>.</li>
   <li><strong>A group</strong> — the ticket appears in the queue of every member of that group. Useful when you want a team to handle the ticket without specifying an individual.</li>
   <li><strong>Unassigned</strong> — visible to all staff with scope for the ticket's CTI classification.</li>
 </ul>
@@ -342,14 +359,75 @@
 <h3>Who can assign</h3>
 <p>Staff and admins can assign tickets to any staff member or group, regardless of scope. This is intentional — cross-team escalation should not be blocked by routing rules. A ticket can be assigned to staff outside their normal scope, and it will appear in the assignee's queue.</p>
 
-<h3>Self-assignment</h3>
-<p>Staff can click <em>Assign to me</em> to take ownership of an unassigned ticket immediately.</p>
+<h3>Assign to me</h3>
+<p>Staff and admins see an <em>Assign to me</em> button in the Assignee panel of the ticket page. It is offered only while the ticket has no assignee, and not on a Resolved or Closed ticket; once anyone holds the ticket, you included, it is gone. It assigns the ticket to you and <strong>keeps the group</strong> the ticket is already assigned to. Picking a person from the list instead replaces the group, as before. Requesters never see the button.</p>
 
 <h3>Reassignment</h3>
-<p>Reassigning a ticket (changing from one assignee to another) generates an email notification to the new assignee. The old assignee does not receive a notification unless they are also a participant (i.e. they added a reply).
+<p>Reassigning a ticket emails the new assignee, and the assigned group's members when it is assigned to a group, as described under <a href="#tickets-staff-email">Email to staff</a>. The person who made the change is never emailed about it. Assigning a ticket to the person and group it already has, or clearing a ticket that is already unassigned, changes nothing and sends no email or webhook. The old assignee is not told. The change is recorded in the ticket's Activity feed, and a <code>ticket.assigned</code> event goes to subscribed webhooks. A reassignment also ends the old assignee's <a href="#tickets-follow">follow</a> of the ticket, if they had one.</p>
 
 <h3>Assignment and scope</h3>
-<p>Scope controls what tickets a staff member sees in their default queue. Assignment overrides this for the assignee — if you are assigned a ticket outside your scope, it appears in your queue. You can always find any ticket by its ID using the search bar, regardless of scope or assignment.</p>
+<p>Scope controls what tickets a staff member sees in their default queue. Assignment overrides this for the assignee: if you are assigned a ticket outside your scope, it appears in your queue. Scope narrows what staff can see only when <em>Limit staff to their group scope</em> is on under <em>Admin → Settings → General → Ticket visibility</em>. It is off by default, and then every staff member can open any ticket and jump to it by its tracking number. Searching the list covers every ticket the staff member can see, not only their queue (see <a href="#tickets-search">Search</a>). With it on, a ticket outside a staff member's visibility answers as not found, even by its tracking number.</p>
+
+
+<h2 id="tickets-priority">Changing priority</h2>
+
+<p>Staff and admins can change a ticket's priority after it is created. On the ticket page, the <strong>Details</strong> card has a <em>Priority</em> drop-down with Critical, High, Medium and Low. Pick a new value and it is saved straight away; the ticket, its Activity feed and the ticket lists refresh. A requester sees the priority as a plain badge and cannot change it.</p>
+<ul>
+  <li><strong>The SLA follows the new priority.</strong> The ticket is matched again against your SLA policies for its new priority and category, using the same order as when a ticket is created. A change by staff never restarts the clock. Only a reopen does; see <a href="#tickets-reopen">Reopened tickets</a>.</li>
+  <li><strong>Not on a Resolved or Closed ticket.</strong> The drop-down is greyed out with the note <em>Priority cannot be changed on a resolved or closed ticket.</em> The server refuses it too, with <code>409 ticket_closed</code>, so nothing changes.</li>
+  <li><strong>It is recorded.</strong> The change shows in the ticket's Activity feed as a priority change.</li>
+  <li>If the server refuses a change for any other reason, the message is shown under the drop-down and the old priority stays.</li>
+</ul>
+
+
+<h2 id="tickets-follow">Following a ticket</h2>
+
+<p>Staff and admins can follow a ticket to be emailed about it without being assigned to it. On the ticket page, the <strong>Followers</strong> card lists who follows the ticket and has a <em>Follow</em> button, which becomes <em>Unfollow</em> once you follow. It only ever changes your own follow.</p>
+<ul>
+  <li><strong>What a follower is emailed about.</strong> The ticket being assigned, its requester replying, and the ticket being reopened. These come under your <em>Activity on tickets I'm assigned to or follow</em> switch (see <a href="#tickets-staff-email">Email to staff</a>), and an administrator's override of that switch applies to followers too. You are never emailed about your own change, and never twice for one event.</li>
+  <li><strong>You are not mailed as a follower of a ticket you hold.</strong> The assignee is not mailed as a follower, and neither are the members of an assigned group when the group itself is being mailed. For those events, their own switches decide.</li>
+  <li><strong>Reassigning ends the old assignee's follow.</strong> If you followed a ticket you were assigned, and it is then assigned to someone else or to nobody, your follow is removed. Click <em>Follow</em> again to keep the mail. Moving a ticket between groups does not touch anyone's follow.</li>
+  <li><strong>If you can no longer see the ticket</strong> (for example, staff were limited to their group scope), you are skipped when mail is sent but keep following, and are mailed again if you can see it again.</li>
+  <li><strong>Everyone on staff can see the list of followers.</strong> Following and unfollowing are written to the ticket's Activity feed. Administrators always see those entries; staff see them only if an administrator has turned on <em>Staff can view follow history</em> (see <a href="admin-guide.html#admin-settings-audit">the Admin Guide</a>). Requesters never see followers or follow entries.</li>
+  <li><strong>People only.</strong> An API key, an OAuth client or a service user cannot follow a ticket. Over the API, <code>PUT</code> and <code>DELETE /api/v1/tickets/{id}/follow</code> follow and unfollow, and <code>GET /api/v1/tickets/{id}/followers</code> lists them.</li>
+</ul>
+
+
+<h2 id="tickets-staff-email">Email to staff</h2>
+
+<p>Staff and admins are emailed about their own work, not only requesters about theirs. This needs email to be set up on the server; nothing is sent until then. Like every email from the help desk, these carry only the ticket's tracking number and a link, never the ticket's content.</p>
+
+<h3>Your account: Email about tickets</h3>
+<p>Under <em>Your account</em>, the <em>Email about tickets</em> section has three switches. All three are on by default. Requesters do not see this section.</p>
+<table>
+  <thead><tr><th>Switch</th><th>You are emailed when</th></tr></thead>
+  <tbody>
+    <tr><td><em>Tickets assigned to me</em></td><td>A ticket is assigned to you.</td></tr>
+    <tr><td><em>Activity on tickets I'm assigned to or follow</em></td><td>A requester replies on a ticket assigned to you, or it is reopened. Also, for a ticket you follow: it is assigned, gets a requester's reply, or is reopened.</td></tr>
+    <tr><td><em>My groups' tickets</em></td><td>A ticket is assigned to a group you belong to. Also, on a group ticket that nobody personally holds: a requester replies, or it is reopened.</td></tr>
+  </tbody>
+</table>
+<ul>
+  <li>You are never emailed about something you did yourself.</li>
+  <li>A colleague's reply, and an internal note, never send mail. A staff member who filed a ticket and replies on it counts as the requester.</li>
+  <li>A requester's reply on a ticket that has both an assignee and a group goes to the assignee only, not to the whole group.</li>
+  <li>An administrator can force any of the three switches on or off for everyone; see <a href="admin-guide.html#admin-staff-email">the Admin Guide</a>. When a switch is forced, your own setting is overridden.</li>
+</ul>
+
+
+<h2 id="tickets-reopen">Reopened tickets</h2>
+
+<p>A reopen is any move from Resolved or Closed back to an open status. All of these count: a requester replying to a Resolved ticket inside the reopen window (an account holder, or a guest through their link), staff or an administrator changing the status, and a forced reopen of a Closed ticket where <em>Reopening closed tickets</em> allows it. Each one does the following.</p>
+<ul>
+  <li><strong>The ticket is flagged.</strong> Staff and admins see a <em>Reopened</em> badge on the ticket and in the ticket lists while the ticket is open. It goes away when the ticket is resolved again. The number of reopens is counted for good and is never reset. Requesters do not see the badge.</li>
+  <li><strong>The priority goes up one level on the first reopen only</strong> (Low to Medium to High to Critical; Critical stays Critical). A second reopen flags the ticket again but does not raise the priority again. Because the priority changes, the ticket can match a different SLA policy. The change is recorded in the Activity feed.</li>
+  <li><strong>The SLA starts over, on every reopen.</strong> The earlier SLA record is kept, and staff and admins see an <em>SLA restarted</em> badge beside the SLA indicator when the earlier record had something met or breached; select it to see the earlier record. The Activity feed notes the restart. Nothing happens to the SLA while SLA tracking is switched off.</li>
+  <li><strong>Staff are emailed.</strong> The assignee, under <em>Activity on tickets I'm assigned to or follow</em>. The assigned group's members, under <em>My groups' tickets</em>, but only while nobody personally holds the ticket. The ticket's followers, whoever holds it. Each person gets one email, and the person who reopened the ticket gets none. See <a href="#tickets-staff-email">Email to staff</a>.</li>
+  <li><strong>The change is recorded and announced.</strong> A status change out of Resolved or Closed is written to the Activity feed as a reopen, and subscribed webhooks receive <code>ticket.reopened</code>, as they do for a requester's reply.</li>
+</ul>
+
+<h3>What requesters can and cannot see</h3>
+<p>A requester sees the ticket's current state and its public replies. They do not see the Activity feed or the status timeline of their own ticket (the API refuses those requests with <code>403</code>), and the conversation no longer shows status-change events. They receive only these ticket fields: id, tracking number, subject, description, status, priority, category, type, item, created and resolved dates, the assignee's id, and resolution notes. Everything else is withheld, including the assigned group, the reporter, guest contact details, the closed and last-updated dates, its Pending timing, and the reopen count. A guest's view is the same, and it no longer includes the last-updated date.</p>
 
 
 <h2 id="tickets-custom-fields">Custom fields</h2>
@@ -367,10 +445,10 @@
 
 <h2 id="tickets-attachments">Attachments</h2>
 
-<p>Any logged-in user (including regular users) can attach files when creating a ticket. Attachments are listed on the ticket detail page and served through the API. Authentication is required to download. Guests cannot upload or download attachments at all.</p>
+<p>Any logged-in user (including regular users) can attach files when creating a ticket. Attachments are listed on the ticket detail page and served through the API. Authentication is required to download. Reporters can also attach files to a reply, up to five per reply. A guest cannot attach a file on the submission form or on the guest page, and cannot download any attachment.</p>
 
 <div class="callout callout-note">
-  <p><strong>What the server does with an uploaded file changed substantially in v1.3.0-beta.</strong> This section is the summary; the full account — content detection, the three storage tiers, the quarantine archive, and the optional reputation lookup — is on the <a href="attachment-security.html">Attachment Security</a> page.</p>
+  <p><strong>What the server does with an uploaded file changed substantially in 1.3.0.</strong> This section is the summary; the full account, content detection, the three storage tiers, the quarantine archive, and the optional reputation lookup, is on the <a href="attachment-security.html">Attachment Security</a> page.</p>
 </div>
 
 <h3>Limits</h3>
@@ -386,7 +464,7 @@
 
 <h3>Allowed file types</h3>
 
-<p><strong>Which extensions this instance accepts is an operator setting</strong> <span class="badge-beta">Changed in 1.3.0-beta</span> — <code>attachment_allowed_types</code> under <em>Admin → Settings → Attachments</em>. It was a fixed list in the source up to and including 1.2.0. An empty list is a valid setting and means this instance takes no attachments at all.</p>
+<p><strong>Which extensions this instance accepts is an operator setting</strong> <span class="badge-new">Changed in 1.3.0</span>, <code>attachment_allowed_types</code> under <em>Admin → Settings → Attachments</em>. It was a fixed list in the source up to and including 1.2.0. An empty list is a valid setting and means this instance takes no attachments at all.</p>
 
 <p>The shipped default is the same set 1.2.0 accepted:</p>
 
@@ -411,7 +489,7 @@
 
 <p>Both the detection and the hash are taken on the file exactly as uploaded, before any recompression or wrapping. For a recompressed image, that means <strong>the recorded hash is not the hash of the file on disk</strong>.</p>
 
-<p>Attachments uploaded before 1.3.0-beta carry none of this, and nothing is backfilled. The ticket UI renders that as an absence rather than as a clean bill of health — "nobody looked" and "nothing wrong" are different statements.</p>
+<p>Attachments uploaded before 1.3.0 carry none of this, and nothing is backfilled. The ticket UI renders that as an absence rather than as a clean bill of health: "nobody looked" and "nothing wrong" are different statements.</p>
 
 <h3>When content does not match the name</h3>
 
@@ -425,7 +503,7 @@
 <h3>Virus scanning</h3>
 
 <div class="callout callout-warn">
-  <p><strong>An unscannable upload is now refused by default</strong> <span class="badge-beta">Changed in 1.3.0-beta</span>. Up to and including 1.2.0, a ClamAV that was unreachable or unconfigured meant a logged warning and an upload accepted unchecked — so an instance whose scanner had been dead for a month accepted everything and showed the administrator nothing. That behaviour is now reachable only by choosing it.</p>
+  <p><strong>An unscannable upload is now refused by default wherever a scanner address is configured</strong> <span class="badge-new">Changed in 1.3.0</span>. Up to and including 1.2.0, a ClamAV that was unreachable or unconfigured meant a logged warning and an upload accepted unchecked, so an instance whose scanner had been dead for a month accepted everything and showed the administrator nothing. That behaviour is now reachable only by choosing it.</p>
 </div>
 
 <p>Uploads are passed to the configured ClamAV daemon before they are stored. What happens to a file the scanner could not look at is the <code>attachment_scan_policy</code> setting:</p>
@@ -435,20 +513,21 @@
   <tbody>
     <tr><td><code>off</code></td><td>Accepted. Nothing is scanned at all.</td></tr>
     <tr><td><code>required</code></td><td>Refused with <code>503</code> and a <code>Retry-After</code>. <strong>The default wherever a scanner address is configured.</strong></td></tr>
-    <tr><td><code>permissive</code></td><td>Accepted, with a warning logged. The pre-1.3.0-beta behaviour.</td></tr>
+    <tr><td><code>permissive</code></td><td>Accepted, with a warning logged. The behaviour up to and including 1.2.0.</td></tr>
   </tbody>
 </table>
 
 <p>A file the scanner identifies is refused with <code>422 infected</code> and the user is shown the scanner's name for it — unless the operator has set <code>attachment_infected_handling</code> to <code>quarantine</code>, in which case it is stored inside a password-protected archive and the ticket carries a warning banner. See the <a href="admin-guide.html#admin-attachments">Admin Guide</a> for both settings.</p>
 
-<p>The Docker Compose setup runs a ClamAV container automatically and wires everything up — no configuration needed. For bare-metal or Kubernetes installs, point <code>CLAMAV_ADDR</code> at your own daemon (<code>tcp://host:port</code> or <code>unix:///path/to/clamd.sock</code>), or set the address under <em>Admin → Settings → Attachments</em>, which takes effect without a restart.</p>
+<p>Docker Compose does not scan by default. To scan with the bundled ClamAV, set <code>CLAMAV_ADDR=tcp://clamav:3310</code> and <code>COMPOSE_PROFILES=antivirus</code> in <code>docker/.env</code>; see <a href="getting-started.html#config-scanning">Getting Started: Virus scanning</a>. For other installs, point <code>CLAMAV_ADDR</code> at your own daemon (<code>tcp://host:port</code> or <code>unix:///path/to/clamd.sock</code>), or set the address under <em>Admin → Settings → Attachments</em>, which takes effect without a restart.</p>
 
 <h3>Downloads</h3>
 
-<p><strong>Attachments are download-only. There is no previewer</strong> <span class="badge-beta">Changed in 1.3.0-beta</span> — no lightbox, no thumbnail, no inline PDF view. Every attachment is served as <code>application/octet-stream</code> with <code>Content-Disposition: attachment</code>, whatever the file claims to be, and the download route refuses a request whose <code>Sec-Fetch-Dest</code> says the browser intends to render it. Before 1.3.0-beta the content type came from the filename, so a PDF went out as <code>application/pdf</code> and one header was holding the whole thing up.</p>
+<p><strong>Attachments are download-only. There is no previewer</strong> <span class="badge-new">Changed in 1.3.0</span>: no lightbox, no thumbnail, no inline PDF view. Every attachment is served as <code>application/octet-stream</code> with <code>Content-Disposition: attachment</code>, whatever the file claims to be, and the download route refuses a request whose <code>Sec-Fetch-Dest</code> says the browser intends to render it. Before 1.3.0 the content type came from the filename, so a PDF went out as <code>application/pdf</code> and one header was holding the whole thing up.</p>
 
 <h3>Storage</h3>
 <p>Files are stored under <code>ATTACHMENT_DIR/tickets/&lt;ticketID&gt;/</code> with UUID-based filenames to prevent enumeration. The original filename is preserved in the database and shown in the UI and <code>Content-Disposition</code> headers on download — except where the server renamed the file itself, which is the quarantine and mismatch wraps above.</p>
+<p>The server checks at startup, and again before each upload, that this directory exists and can be written. While it cannot, an upload from anyone, a guest included, is refused with <code>503 attachments_unavailable</code> before the file is read, and administrators see an <em>Attachment uploads are disabled</em> banner. Files already stored can still be downloaded while the directory is readable.</p>
 
 
 <h2 id="tickets-search">Search</h2>
@@ -456,10 +535,14 @@
 <h3>Live search</h3>
 <p>The search bar at the top of the ticket list searches across <strong>tracking number</strong>, <strong>subject</strong>, and <strong>description</strong>, the latter two powered by Postgres full-text search and ranked by relevance. Results appear after you type at least 2 characters (with a short debounce). A spinner is shown while results load.</p>
 <ul>
-  <li>Tracking number searches use a <strong>prefix match</strong> — e.g. typing <code>OHD-2025-0</code> matches all tickets in that series.</li>
+  <li>Tracking number searches use a <strong>prefix match</strong>: typing <code>GHD-2026-0</code> matches all tickets in that series.</li>
   <li>Subject and description searches tokenize your query into words and <strong>prefix-match each one</strong> — e.g. <code>print jam</code> matches a ticket containing a word starting with "print" and a word starting with "jam", in any order or field. A match in the <strong>subject</strong> ranks above one only in the description.</li>
-  <li>Users only see results from their own tickets. Staff and admins see results from tickets assigned to them and their groups.</li>
+  <li>Users only see results from their own tickets. Staff and administrators search <strong>every ticket they can see</strong>, whatever queue is selected, and the results area says <em>Searching all tickets you can see</em>. With <em>Limit staff to their group scope</em> off, that is every ticket. With it on, it is the tickets reported by or assigned to the staff member, tickets assigned to one of their groups, and tickets in a category or type their groups cover. Nothing is searched that the staff member could not open.</li>
+  <li>An <em>Only my tickets</em> or <em>Only unassigned</em> chip, shown while you search from the <em>Mine</em> or <em>Unassigned</em> queue, narrows the search to that queue; click it again to widen it. The chip is not offered on an administrator's <em>All</em> queue, which is already everything. It switches off when you clear the search box or change queue, so every new search starts wide. A box with only spaces counts as empty, and with an empty box the queue is shown as usual.
 </ul>
+
+<h3>On a phone</h3>
+<p>On a narrow screen the search box takes a full row of its own, so it is no longer squeezed. The tracking number on a ticket stays on one line, and a long description wraps at spaces rather than in the middle of words.</p>
 
 <h3>Jump to ticket (staff and admin)</h3>
 <p>Staff and admins can submit the search form (press Enter or click <em>Jump to ticket</em>) to navigate directly to a ticket by its exact tracking number or UUID. If no match is found, an inline error is shown.</p>

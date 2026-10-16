@@ -118,6 +118,13 @@ nav {
 .nav-links a { color: var(--ink-2); }
 .nav-links a:hover { color: var(--blue); text-decoration: none; }
 
+/* On a phone the links wrap onto a second row instead of running off the
+   right edge of the page. */
+@media (max-width: 768px) {
+  .nav-inner { height: auto; flex-wrap: wrap; row-gap: 0.5rem; padding-top: 0.75rem; padding-bottom: 0.75rem; }
+  .nav-links { flex-wrap: wrap; gap: 0.4rem 1.1rem; font-size: 0.85rem; }
+}
+
 .btn {
   display: inline-flex;
   align-items: center;
@@ -175,7 +182,7 @@ nav {
 }
 
 .hero-code {
-  max-width: 520px;
+  max-width: 640px;
   margin: 0 auto;
   text-align: left;
   border-radius: 10px;
@@ -221,8 +228,19 @@ section + section { border-top: 1px solid var(--border); }
   gap: 1.5rem;
 }
 
+/* Five milestones: three across, then two wider cards, so no row has a gap. */
+.roadmap-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 1rem;
+}
+.roadmap-grid > * { grid-column: span 2; }
+.roadmap-grid > :nth-child(n+4) { grid-column: span 3; }
+
 @media (max-width: 768px) {
   .features-grid { grid-template-columns: 1fr; }
+  .roadmap-grid { grid-template-columns: minmax(0, 1fr); }
+  .roadmap-grid > *, .roadmap-grid > :nth-child(n+4) { grid-column: auto; }
   h1 { font-size: 2rem; }
   .hero { padding: 4rem 0 3rem; }
 }
@@ -289,6 +307,14 @@ section + section { border-top: 1px solid var(--border); }
   display: block;
   object-fit: cover;
   object-position: top left;
+}
+
+/* A screenshot that is not a desktop-shaped frame (a phone screen, a single
+   panel) is shown whole, centred, instead of cropped to its top-left corner. */
+.scr-thumb-fit img {
+  object-fit: contain;
+  object-position: center;
+  background: var(--bg-2);
 }
 
 .scr-thumb span {
@@ -529,13 +555,42 @@ footer {
   white-space: nowrap;
 }
 
+/* Release marker: "New in 1.3.0" / "Changed in 1.3.0". Same geometry as
+   .badge-beta, in the site's blue, because it is settled. */
+.badge-new {
+  display: inline-block; padding: 0.1rem 0.4rem; border-radius: 4px;
+  border: 1px solid var(--blue); background: var(--blue-light); color: var(--blue-dark);
+  font-family: var(--mono); font-size: 0.7rem; font-weight: 700; letter-spacing: 0.03em;
+  text-transform: uppercase; vertical-align: middle; white-space: nowrap;
+}
+
 .callout-note { background: var(--blue-light); border-color: var(--blue); color: var(--blue-dark); }
 .callout-warn { background: #fffbeb; border-color: #f59e0b; color: #92400e; }
 .callout p { color: inherit; margin: 0; }
 .callout strong { color: inherit; }
 
 @media (max-width: 768px) {
-  .docs-layout { grid-template-columns: 1fr; }
+  .docs-layout { grid-template-columns: minmax(0, 1fr); }
   .docs-sidebar { position: static; height: auto; }
-  .docs-content { padding: 2rem 1rem; }
+  .docs-content { padding: 2rem 1rem; min-width: 0; }
+  /* A wide table scrolls inside its own box rather than widening the page. */
+  .docs-content table { display: block; overflow-x: auto; }
+  /* The parameter tables and the upgrade pages' breaks tables set nowrap per
+     page so names stay on one line on a desktop. On a phone the cells wrap, so
+     the description stays in the box. !important beats the per-page nowrap
+     (same specificity, and the page's own style block loads after this file). */
+  .docs-content .param-table td,
+  .docs-content .breaks-table td { white-space: normal !important; }
+  .docs-content .param-table td:first-child { overflow-wrap: anywhere; }
+  /* Code can break anywhere (below), so a table sizes its columns by their
+     longest content and the name column ends up narrowest: get_ticket and
+     DATABASE_URL split across lines while the description has room. A floor
+     under the first column, and less cell padding, keep names of up to about
+     14 characters whole; only longer ones break. */
+  .docs-content th, .docs-content td { padding: 0.5rem 0.6rem; }
+  .docs-content td:first-child { min-width: 8rem; }
+  /* Flex children (the numbered steps) and long inline code must be allowed
+     to shrink below their content, or a wide pre inside a step widens the page. */
+  .step-body { min-width: 0; }
+  .docs-content code { overflow-wrap: anywhere; }
 }
