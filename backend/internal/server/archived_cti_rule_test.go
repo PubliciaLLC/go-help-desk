@@ -415,7 +415,7 @@ func TestArchivedRule_TheServiceEnforcesItForEveryCaller(t *testing.T) {
 				Subject: "x", Description: "x", CategoryID: tree.catOpen, ReporterUserID: &h.staffID,
 			})
 			require.NoError(t, err)
-			_, err = h.ticketSvc.UpdateCTI(ctx, tk.ID, pick.cat, pick.typ, pick.item)
+			_, err = h.ticketSvc.UpdateCTI(ctx, tk.ID, pick.cat, pick.typ, pick.item, ticket.SystemActor)
 			require.ErrorIs(t, err, ticket.ErrValidation)
 			require.ErrorContains(t, err, pick.want)
 		})

@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"time"
 
@@ -26,34 +27,15 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 )
 
-// WebhookEvents is the list of event types that can be subscribed to via webhooks.
-// guest.link_resent is excluded because webhooks are defined as HTTP callbacks
-// for ticket lifecycle events; guest link resends are not ticket changes.
-var WebhookEvents = []notification.EventType{
-	notification.EventTicketCreated,
-	notification.EventTicketAssigned,
-	notification.EventTicketStatusChanged,
-	notification.EventTicketReplied,
-	notification.EventTicketNoteAdded,
-	notification.EventTicketResolved,
-	notification.EventTicketClosed,
-	notification.EventTicketReopened,
-	notification.EventTicketLinked,
-}
+// WebhookEvents is the list of event types that can be subscribed to via
+// webhooks. The list and IsWebhookEvent live in the notification package (#506),
+// where the transaction runner needs them to decide which channels carry a
+// change.
+var WebhookEvents = notification.WebhookEvents
 
 // IsWebhookEvent reports whether e is "*" or one of WebhookEvents.
 // Exact, case-sensitive, untrimmed: the same comparison hookSubscribes makes.
-func IsWebhookEvent(e string) bool {
-	if e == "*" {
-		return true
-	}
-	for _, event := range WebhookEvents {
-		if e == string(event) {
-			return true
-		}
-	}
-	return false
-}
+func IsWebhookEvent(e string) bool { return notification.IsWebhookEvent(e) }
 
 // Delivery error classes stored on the hook. A class, never a message: see
 // migration 000034, whose CHECK lists exactly these.
@@ -95,9 +77,9 @@ type TicketFacts struct {
 	TrackingNumber string
 	StatusName     string // the ticket's current status
 	Priority       string
-	// Attrs is what a webhook filter tests, as the ticket is now (#413). Nil
-	// when the source cannot say.
-	Attrs *notification.TicketAttrs
+	// State is the ticket as it is now, for the webhook filter (#413). Nil when
+	// the source cannot say.
+	State *notification.TicketState
 }
 
 // EventSource reads the ticket fresh, so Redeliver can rebuild a chat message
@@ -205,7 +187,7 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event notification.Eve
 	// any hook is considered, rather than inside hookSubscribes: it is a
 	// property of the EVENT, not of any one hook's subscription shape. See
 	// #212.
-	if !IsWebhookEvent(string(event.Type)) {
+	if !slices.ContainsFunc(event.AllKinds(), func(k notification.EventType) bool { return IsWebhookEvent(string(k)) }) {
 		return nil
 	}
 	if d.queue != nil {
@@ -225,55 +207,58 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event notification.Eve
 		return nil // store failure is non-fatal
 	}
 
-	// Marshalled once: the raw wire body every "raw" (and empty-format)
-	// subscription receives, ids only (rawBody). bodyFor below reshapes the
-	// full event per format for the others; it never touches this slice for
-	// those hooks.
-	payload, err := rawBody(event)
-	if err != nil {
-		d.log.ErrorContext(ctx, "webhook dispatch skipped: event could not be marshalled",
-			"event", event.Type, "error", err)
-		return nil
-	}
-
 	for _, hook := range hooks {
-		if !hookSubscribes(hook, event.Type) {
+		// One delivery per change, labelled with the first kind this hook
+		// subscribes to (#506, ruling 6).
+		label, ok := subscribedKind(hook, event)
+		if !ok {
 			continue
 		}
+		ev := event
+		ev.Type = label
 		// The ticket filter (#413) decides whether this hook fires for this
 		// event, and nothing else: the body below is built the same way for
 		// every hook. A filtered-out event is not a delivery, so nothing is
 		// recorded for the hook.
-		if !d.admits(ctx, hook, event) {
+		if !d.admits(ctx, hook, ev) {
 			continue
 		}
-		body, err := bodyFor(hook, event, payload, d.baseURL)
+		// The raw wire body every "raw" (and empty-format) subscription
+		// receives, ids only (rawBody). bodyFor reshapes the full event per
+		// format for the others; it never touches these bytes for those hooks.
+		payload, err := rawBody(ev)
+		if err != nil {
+			d.log.ErrorContext(ctx, "webhook skipped: event could not be marshalled",
+				"webhook_id", hook.ID, "event", ev.Type, "error", err)
+			continue
+		}
+		body, err := bodyFor(hook, ev, payload, d.baseURL)
 		if err != nil {
 			// Unknown payload_format: skip this hook rather than falling
 			// back to raw. A Slack URL fed the full raw event is a
 			// delivery bug, not a degraded-but-working delivery.
 			d.log.WarnContext(ctx, "webhook skipped: payload could not be built",
 				"webhook_id", hook.ID, "payload_format", hook.PayloadFormat,
-				"event", event.Type, "error", err)
+				"event", ev.Type, "error", err)
 			continue
 		}
 		// Fire-and-forget per webhook, as before; the result is recorded on the
 		// hook so a failing one shows on the admin page (#157), not only in the log.
-		go func(hook authstore.WebhookConfig, body []byte) {
-			res, _ := d.post(context.Background(), hook, body, uuid.New(), event.Type)
+		go func(hook authstore.WebhookConfig, body []byte, label notification.EventType) {
+			res, _ := d.post(context.Background(), hook, body, uuid.New(), label)
 			d.record(hook, res)
-		}(hook, body)
+		}(hook, body, ev.Type)
 	}
 	return nil
 }
 
 // admits reports whether the hook's ticket filter lets the event through. An
-// event with no attrs (queued before #413) is let through and logged: an extra
-// message beats a missed one.
+// event with no ticket state (queued before #413) is let through and logged: an
+// extra message beats a missed one.
 func (d *WebhookDispatcher) admits(ctx context.Context, hook authstore.WebhookConfig, ev notification.Event) bool {
-	admit, known := hook.Filter.Admits(ev.Attrs)
+	admit, known := hook.Filter.Admits(ev.Ticket)
 	if !known {
-		d.log.WarnContext(ctx, "webhook filter not evaluated: event carries no ticket attributes; delivering",
+		d.log.WarnContext(ctx, "webhook filter not evaluated: event carries no ticket state; delivering",
 			"webhook_id", hook.ID, "event", ev.Type, "ticket_id", ev.TicketID)
 	}
 	return admit
@@ -281,8 +266,9 @@ func (d *WebhookDispatcher) admits(ctx context.Context, hook authstore.WebhookCo
 
 // fanOut turns the webhook channel's one row for an event into one row per
 // subscribed hook, so each is retried on its own and a healthy hook is never
-// sent again because another failed (#448). Hook selection is exactly
-// hookSubscribes, as before.
+// sent again because another failed (#448). A hook is subscribed when any kind
+// of the change is one it lists (subscribedKind), and gets one row for the
+// change, however many kinds match (#506, ruling 6).
 //
 // The per-hook row ids derive from the fan-out row's id, and the outbox
 // ignores a repeated id, so running this again after a crash (between queueing
@@ -302,7 +288,7 @@ func (d *WebhookDispatcher) fanOut(ctx context.Context, ev notification.Event) e
 	parent := RowID(ctx)
 	var first error
 	for _, hook := range hooks {
-		if !hookSubscribes(hook, ev.Type) {
+		if _, ok := subscribedKind(hook, ev); !ok {
 			continue
 		}
 		// The ticket filter (#413) is applied here first: a hook it turns away
@@ -354,9 +340,15 @@ func (d *WebhookDispatcher) deliverQueued(ctx context.Context, ev notification.E
 	// stops retries too. Only the URL is fingerprinted: the current secret is
 	// used, so a receiver that rotated its key gets the retry signed with the
 	// new one.
-	if !hookSubscribes(hook, ev.Type) {
+	//
+	// The label is worked out again here, from the subscription as it is now: a
+	// hook that dropped the kind it was queued for but lists another the change
+	// carries is sent that one.
+	label, subscribed := subscribedKind(hook, ev)
+	if !subscribed {
 		return nil
 	}
+	ev.Type = label
 	if ev.TargetURLHash != urlHash(hook.URL) {
 		d.log.InfoContext(ctx, "webhook delivery dropped: the hook's URL changed since it was queued",
 			"webhook_id", hook.ID, "event", ev.Type)
@@ -474,7 +466,7 @@ func (d *WebhookDispatcher) Redeliver(ctx context.Context, hookID, deliveryID uu
 	}
 	// Refused up front, with a reason, rather than queued and then dropped at
 	// send time where nobody would see why.
-	if !hookSubscribes(hook, ev.Type) {
+	if _, ok := subscribedKind(hook, ev); !ok {
 		return ErrWebhookNotSubscribed
 	}
 	// The ticket as it is now, when something needs it: the filter, for its
@@ -498,7 +490,7 @@ func (d *WebhookDispatcher) Redeliver(ctx context.Context, hookID, deliveryID uu
 		return ErrWebhookFilterUnverifiable
 	}
 	if found {
-		ev.Attrs = facts.Attrs // also what the queued row is re-checked with
+		ev.Ticket = facts.State // also what the queued row is re-checked with
 	}
 	if !d.admits(ctx, hook, ev) {
 		return ErrWebhookFilterExcludes
@@ -658,16 +650,32 @@ func (d *WebhookDispatcher) post(ctx context.Context, hook authstore.WebhookConf
 	return authstore.WebhookDelivery{At: at, Status: resp.StatusCode}, 0
 }
 
-func hookSubscribes(hook authstore.WebhookConfig, eventType notification.EventType) bool {
-	if len(hook.Events) == 0 {
-		return true // empty = all events
+// subscribedKind says whether the hook is to be told of a change, and under
+// what name. A hook fires when ANY kind of the change is one it lists, or it
+// lists "*" or nothing, and it fires once however many match (#506, ruling 6).
+//
+// The name it is told is the first kind, in the fixed order, that the hook
+// subscribes to: for "*" simply the first kind. So a hook subscribed to
+// ticket.status_changed alone is told ticket.status_changed for a change that
+// also reopened the ticket, exactly as before.
+func subscribedKind(hook authstore.WebhookConfig, ev notification.Event) (notification.EventType, bool) {
+	kinds := ev.AllKinds()
+	if len(hook.Events) == 0 || slices.Contains(hook.Events, "*") {
+		// Empty = all events. Only kinds a hook can have: a name outside
+		// WebhookEvents (guest.link_resent) is never sent, whatever "*" says.
+		for _, k := range kinds {
+			if IsWebhookEvent(string(k)) {
+				return k, true
+			}
+		}
+		return "", false
 	}
-	for _, e := range hook.Events {
-		if e == string(eventType) || e == "*" {
-			return true
+	for _, k := range kinds {
+		if slices.Contains(hook.Events, string(k)) {
+			return k, true
 		}
 	}
-	return false
+	return "", false
 }
 
 // classifyDeliveryError categorizes a delivery error into one of the delivery

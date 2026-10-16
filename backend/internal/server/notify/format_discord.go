@@ -59,6 +59,10 @@ func renderDiscord(s summary) ([]byte, error) {
 		b.WriteString(" — ")
 		b.WriteString(escapeChatMarkdown(s.Subject))
 	}
+	if s.Also != "" {
+		b.WriteString("\n")
+		b.WriteString(escapeChatMarkdown(s.Also))
+	}
 	if s.Body != "" {
 		body := escapeChatMarkdown(s.Body)
 		b.WriteString("\n> ")

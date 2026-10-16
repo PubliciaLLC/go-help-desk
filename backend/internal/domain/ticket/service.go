@@ -277,7 +277,10 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 // (ErrNotClosed otherwise): an open ticket needs no way forward, and allowing
 // it would make this a general "clone" that two tickets can then drift apart
 // from. trackingPrefix is the instance's configured prefix, as in CreateInput.
-func (s *Service) CreateFollowUp(ctx context.Context, originalID uuid.UUID, trackingPrefix string, actor Actor) (Ticket, error) {
+//
+// route is who the new ticket may be routed to, as CreateInput.AutoAssign; none
+// leaves it unassigned (the MCP tool passes none).
+func (s *Service) CreateFollowUp(ctx context.Context, originalID uuid.UUID, trackingPrefix string, actor Actor, route ...Assignment) (Ticket, error) {
 	if actor.Role == user.RoleUser {
 		return Ticket{}, ErrForbidden
 	}
@@ -304,6 +307,7 @@ func (s *Service) CreateFollowUp(ctx context.Context, originalID uuid.UUID, trac
 		GuestName:      orig.GuestName,
 		GuestPhone:     orig.GuestPhone,
 		TrackingPrefix: trackingPrefix,
+		AutoAssign:     route,
 	}
 	return s.create(ctx, in, actor, &orig)
 }
@@ -334,6 +338,7 @@ func (s *Service) CreateRequesterFollowUp(
 	trackingPrefix string,
 	actor Actor,
 	open func(ctx context.Context, categoryID uuid.UUID, typeID *uuid.UUID) error,
+	route ...Assignment,
 ) (Ticket, error) {
 	if actor.Role != user.RoleUser {
 		return Ticket{}, ErrForbidden
@@ -370,6 +375,7 @@ func (s *Service) CreateRequesterFollowUp(
 		GuestName:      orig.GuestName,
 		GuestPhone:     orig.GuestPhone,
 		TrackingPrefix: trackingPrefix,
+		AutoAssign:     route,
 	}
 	if actor.UserID != nil {
 		in.TypeID = orig.TypeID // an account holder picks category and type

@@ -101,34 +101,54 @@ func newFanout(next notification.Dispatcher, users StaffUsers, groups StaffGroup
 
 func assignedEvent(actor *uuid.UUID, assignee, group *uuid.UUID) notification.Event {
 	return notification.Event{
-		Type: notification.EventTicketAssigned, TicketID: uuid.New(), ActorID: actor,
+		Type: notification.EventTicketAssigned, Kinds: []notification.EventType{notification.EventTicketAssigned},
+		TicketID: uuid.New(), ActorID: actor,
 		TrackingNumber: "GHD-2026-000007", OccurredAt: time.Now(),
-		AssigneeUserID: assignee, AssigneeGroupID: group,
+		Ticket: &notification.TicketState{AssigneeUserID: assignee, AssigneeGroupID: group},
 	}
 }
 
 func requesterReply(assignee, group *uuid.UUID) notification.Event {
 	return notification.Event{
-		Type: notification.EventTicketReplied, TicketID: uuid.New(), FromRequester: true,
+		Type: notification.EventTicketReplied, Kinds: []notification.EventType{notification.EventTicketReplied},
+		TicketID: uuid.New(), FromRequester: true,
 		TrackingNumber: "GHD-2026-000007", OccurredAt: time.Now(),
-		AssigneeUserID: assignee, AssigneeGroupID: group,
+		Ticket: &notification.TicketState{AssigneeUserID: assignee, AssigneeGroupID: group},
 	}
 }
 
 // ── fan-out: assignment ──────────────────────────────────────────────────────
 
-// The original event goes through untouched: the webhook channel and the
-// requester's own mail depend on it, and staff mail is added beside it.
-func TestStaffFanout_ForwardsTheOriginalEventFirst(t *testing.T) {
+// The fan-out runs in the worker on a change's email row (#506). It hands on
+// the requester's mail when the change has one, and staff mail beside it; the
+// webhook channel has a row of its own and is not its business. A change with
+// nobody to mail as a requester hands on staff mail only.
+func TestStaffFanout_HandsOnTheRequestersMailFirstWhenThereIsOne(t *testing.T) {
+	a := staffUser("assignee")
+	next := &recorder{}
+	ev := assignedEvent(nil, &a.ID, nil)
+	ev.Kinds = []notification.EventType{notification.EventTicketStatusChanged, notification.EventTicketAssigned}
+	ev.Type = notification.EventTicketStatusChanged
+	ev.Recipient = "guest@example.com"
+
+	require.NoError(t, newFanout(next, newFakeStaffUsers(a), fakeStaffGroups{}).Dispatch(context.Background(), ev))
+
+	require.Len(t, next.got, 2)
+	require.Equal(t, notification.EventTicketStatusChanged, next.got[0].Type)
+	require.Empty(t, next.got[0].Kinds, "a single mail: it is sent as it is, not split again")
+	require.Equal(t, "guest@example.com", next.got[0].Recipient)
+	require.Equal(t, notification.EventStaffAssigned, next.got[1].Type)
+}
+
+func TestStaffFanout_NoRequesterMailWhenThereIsNoRecipient(t *testing.T) {
 	a := staffUser("assignee")
 	next := &recorder{}
 	ev := assignedEvent(nil, &a.ID, nil)
 
 	require.NoError(t, newFanout(next, newFakeStaffUsers(a), fakeStaffGroups{}).Dispatch(context.Background(), ev))
 
-	require.Len(t, next.got, 2)
-	require.Equal(t, ev, next.got[0])
-	require.Equal(t, notification.EventStaffAssigned, next.got[1].Type)
+	require.Len(t, next.got, 1)
+	require.Equal(t, notification.EventStaffAssigned, next.got[0].Type)
 }
 
 func TestStaffFanout_AssignmentMailsTheAssigneeAndTheGroup(t *testing.T) {
@@ -141,7 +161,7 @@ func TestStaffFanout_AssignmentMailsTheAssigneeAndTheGroup(t *testing.T) {
 	require.NoError(t, f.Dispatch(context.Background(), ev))
 
 	require.Equal(t, []uuid.UUID{assignee.ID, m1.ID, m2.ID}, recipientsOf(next))
-	for _, got := range next.got[1:] {
+	for _, got := range next.got {
 		require.Equal(t, notification.EventStaffAssigned, got.Type)
 		require.Equal(t, ev.TicketID, got.TicketID)
 		require.Equal(t, "GHD-2026-000007", got.TrackingNumber)
@@ -160,7 +180,7 @@ func TestStaffFanout_EachRowSaysWhyThePersonIsBeingMailed(t *testing.T) {
 	require.NoError(t, f.Dispatch(context.Background(), assignedEvent(nil, &assignee.ID, &g)))
 
 	reasons := map[uuid.UUID]notification.StaffSwitch{}
-	for _, ev := range next.got[1:] {
+	for _, ev := range next.got {
 		reasons[*ev.StaffUserID] = ev.StaffReason
 	}
 	require.Equal(t, map[uuid.UUID]notification.StaffSwitch{
@@ -303,7 +323,7 @@ func TestStaffFanout_ServiceAccountsAreNeverMailed(t *testing.T) {
 func TestStaffFanout_UnassigningMailsNobody(t *testing.T) {
 	next := &recorder{}
 	require.NoError(t, newFanout(next, newFakeStaffUsers(), fakeStaffGroups{}).Dispatch(context.Background(), assignedEvent(nil, nil, nil)))
-	require.Len(t, next.got, 1, "only the original event")
+	require.Empty(t, next.got, "nobody to mail")
 }
 
 // ── fan-out: requester replies ───────────────────────────────────────────────
@@ -318,7 +338,7 @@ func TestStaffFanout_RequesterReplyMailsTheAssignee(t *testing.T) {
 
 	// The group is not also mailed when somebody personally holds the ticket.
 	require.Equal(t, []uuid.UUID{assignee.ID}, recipientsOf(next))
-	require.Equal(t, notification.EventStaffRequesterReplied, next.got[1].Type)
+	require.Equal(t, notification.EventStaffRequesterReplied, next.got[0].Type)
 }
 
 func TestStaffFanout_RequesterReplyOnAGroupTicketMailsTheGroup(t *testing.T) {
@@ -335,7 +355,7 @@ func TestStaffFanout_RequesterReplyOnAGroupTicketMailsTheGroup(t *testing.T) {
 func TestStaffFanout_RequesterReplyOnAnUnassignedTicketMailsNobody(t *testing.T) {
 	next := &recorder{}
 	require.NoError(t, newFanout(next, newFakeStaffUsers(), fakeStaffGroups{}).Dispatch(context.Background(), requesterReply(nil, nil)))
-	require.Len(t, next.got, 1)
+	require.Empty(t, next.got)
 }
 
 // Only a requester's public reply is a reason to mail staff.
@@ -344,13 +364,13 @@ func TestStaffFanout_StaffRepliesAndOtherEventsMailNobody(t *testing.T) {
 	staffReply := requesterReply(&a.ID, nil)
 	staffReply.FromRequester = false
 	closed := assignedEvent(nil, &a.ID, nil)
-	closed.Type = notification.EventTicketClosed
+	closed.Type, closed.Kinds = notification.EventTicketClosed, []notification.EventType{notification.EventTicketClosed}
 
 	for name, ev := range map[string]notification.Event{"a staff reply or internal note": staffReply, "a ticket closing": closed} {
 		t.Run(name, func(t *testing.T) {
 			next := &recorder{}
 			require.NoError(t, newFanout(next, newFakeStaffUsers(a), fakeStaffGroups{}).Dispatch(context.Background(), ev))
-			require.Len(t, next.got, 1)
+			require.Empty(t, next.got)
 		})
 	}
 }
@@ -410,7 +430,7 @@ func TestStaffFanout_OneEmailPerPersonAcrossAssigneeGroupAndFollower(t *testing.
 
 	require.Equal(t, []uuid.UUID{assignee.ID, member.ID, both.ID, plain.ID}, recipientsOf(next), "each exactly once")
 	reasons := map[uuid.UUID]notification.StaffSwitch{}
-	for _, e := range next.got[1:] {
+	for _, e := range next.got {
 		reasons[*e.StaffUserID] = e.StaffReason
 	}
 	require.Equal(t, notification.SwitchAssigned, reasons[assignee.ID], "holding it wins")
@@ -491,7 +511,7 @@ func TestStaffFanout_AGroupMemberFollowingAnUnheldTicketIsMailedOnceOnAReply(t *
 	require.NoError(t, f.Dispatch(context.Background(), ev))
 
 	require.Equal(t, []uuid.UUID{member.ID}, recipientsOf(next))
-	require.Equal(t, notification.SwitchGroup, next.got[1].StaffReason)
+	require.Equal(t, notification.SwitchGroup, next.got[0].StaffReason)
 }
 
 // Never mail the person who made the change, even though they follow.
@@ -580,21 +600,26 @@ func TestEventToEmail_FollowersAreToldItIsATicketTheyFollow(t *testing.T) {
 
 // ── fan-out: failures ────────────────────────────────────────────────────────
 
-// Not being able to find out who to mail must not stop the event reaching the
-// channels that need no lookup, and must be reported.
-func TestStaffFanout_ALookupFailureStillForwardsTheOriginal(t *testing.T) {
+// Not being able to find out who to mail must not stop the requester's mail from
+// being handed on, and must be reported: the worker then tries the change again,
+// and the ids the rows are given make the repeat harmless.
+func TestStaffFanout_ALookupFailureStillHandsOnTheRequestersMail(t *testing.T) {
 	a := staffUser("a")
 	users := newFakeStaffUsers(a)
 	users.err = errors.New("database down")
 	next := &recorder{}
+	ev := assignedEvent(nil, &a.ID, nil)
+	ev.Kinds = []notification.EventType{notification.EventTicketStatusChanged, notification.EventTicketAssigned}
+	ev.Recipient = "guest@example.com"
 
-	err := newFanout(next, users, fakeStaffGroups{}).Dispatch(context.Background(), assignedEvent(nil, &a.ID, nil))
+	err := newFanout(next, users, fakeStaffGroups{}).Dispatch(context.Background(), ev)
 
 	require.Error(t, err)
 	require.Len(t, next.got, 1)
+	require.Equal(t, "guest@example.com", next.got[0].Recipient)
 }
 
-func TestStaffFanout_AFailureOfTheOriginalIsReturned(t *testing.T) {
+func TestStaffFanout_AFailureToHandOnIsReturned(t *testing.T) {
 	a := staffUser("a")
 	next := &recorder{fail: errors.New("queue full")}
 	err := newFanout(next, newFakeStaffUsers(a), fakeStaffGroups{}).Dispatch(context.Background(), assignedEvent(nil, &a.ID, nil))
@@ -750,24 +775,24 @@ func TestStaffTemplates_Render(t *testing.T) {
 
 func TestOutbox_StaffMailIsEmailOnly(t *testing.T) {
 	ev := staffEvent(uuid.New())
-	require.True(t, carries("email", ev), "no Recipient is set yet: it is read at send time")
-	require.False(t, carries("webhook", ev), "a webhook subscriber already has the event this came from")
-	require.False(t, carries("verification", ev))
+	require.True(t, notification.Carries("email", ev), "no Recipient is set yet: it is read at send time")
+	require.False(t, notification.Carries("webhook", ev), "a webhook subscriber already has the event this came from")
+	require.False(t, notification.Carries("verification", ev))
 }
 
 func TestOutboxRecord_RoundTripsTheStaffFields(t *testing.T) {
 	staff, a, g := uuid.New(), uuid.New(), uuid.New()
 	ev := notification.Event{
 		Type: notification.EventStaffRequesterReplied, TicketID: uuid.New(), OccurredAt: time.Now().UTC().Truncate(time.Microsecond),
-		StaffUserID: &staff, AssigneeUserID: &a, AssigneeGroupID: &g, FromRequester: true, StaffReason: notification.SwitchGroup,
+		StaffUserID: &staff, Ticket: &notification.TicketState{AssigneeUserID: &a, AssigneeGroupID: &g}, FromRequester: true, StaffReason: notification.SwitchGroup,
 	}
 	b, err := encodeEvent(ev)
 	require.NoError(t, err)
 	got, err := decodeEvent(b)
 	require.NoError(t, err)
 	require.Equal(t, &staff, got.StaffUserID)
-	require.Equal(t, &a, got.AssigneeUserID)
-	require.Equal(t, &g, got.AssigneeGroupID)
+	require.Equal(t, &a, got.Ticket.AssigneeUserID)
+	require.Equal(t, &g, got.Ticket.AssigneeGroupID)
 	require.True(t, got.FromRequester)
 	require.Equal(t, notification.SwitchGroup, got.StaffReason)
 }

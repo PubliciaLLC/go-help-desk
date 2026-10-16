@@ -106,7 +106,7 @@ func newChangePriorityFx(t *testing.T) *changePriorityFx {
 func (f *changePriorityFx) service(t *testing.T, atomic ticket.Atomic) *ticket.Service {
 	t.Helper()
 	if atomic == nil {
-		atomic = txrunner.New(f.db.SQL)
+		atomic = txrunner.New(f.db.SQL, nil, nil)
 	}
 	svc := ticket.NewService(f.ts, f.ts, notification.Noop{}, f.au, atomic, nil)
 	require.NoError(t, svc.LoadSystemStatuses(f.ctx))
@@ -290,14 +290,14 @@ type failingAuditAtomic struct {
 	failAction string
 }
 
-func (a failingAuditAtomic) InTx(ctx context.Context, fn func(ticket.Store, audit.Store) error) error {
+func (a failingAuditAtomic) InTx(ctx context.Context, fn func(ticket.Store, audit.Store, *notification.Changes) error) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
 	q := dbgen.New(tx)
-	if err := fn(ticketstore.New(q), refusingAudit{Store: auditstore.New(q), action: a.failAction}); err != nil {
+	if err := fn(ticketstore.New(q), refusingAudit{Store: auditstore.New(q), action: a.failAction}, &notification.Changes{}); err != nil {
 		return err
 	}
 	return tx.Commit()

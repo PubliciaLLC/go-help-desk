@@ -70,6 +70,11 @@ type summary struct {
 	Internal   bool
 	URL        string // baseURL + "/tickets/" + TicketID — the staff link, never the guest one
 
+	// Also names the other kinds of the change under the headline, as
+	// "Also: assigned, priority changed" (#506). Kinds only, never values: a
+	// status or group NAME would be content. "" when the change is one kind.
+	Also string
+
 	// Extra fields the JIRA body needs and no chat renderer reads. Kept on
 	// summary rather than read off Payload in format_jira.go so every
 	// renderer still goes through the one function that decides what a
@@ -132,6 +137,7 @@ func summarize(ev notification.Event, baseURL string) summary {
 		Ref:            ref(ev),
 		Tracking:       trackingOf(ev),
 		Headline:       headline(ev.Type, ev.StatusName, internal, linkedTicketID, linkType),
+		Also:           alsoLine(ev),
 		Subject:        sanitizeSubject(ev.Subject),
 		Body:           body,
 		StatusName:     ev.StatusName,
@@ -142,6 +148,39 @@ func summarize(ev notification.Event, baseURL string) summary {
 		LinkType:       linkType,
 		OccurredAt:     ev.OccurredAt,
 	}
+}
+
+// kindPhrases word a kind for the "Also" line.
+var kindPhrases = map[notification.EventType]string{
+	notification.EventTicketCreated:         "created",
+	notification.EventTicketReopened:        "reopened",
+	notification.EventTicketResolved:        "resolved",
+	notification.EventTicketClosed:          "closed",
+	notification.EventTicketStatusChanged:   "status changed",
+	notification.EventTicketAssigned:        "assigned",
+	notification.EventTicketPriorityChanged: "priority changed",
+	notification.EventTicketClassified:      "reclassified",
+	notification.EventTicketReplied:         "replied",
+	notification.EventTicketNoteAdded:       "note added",
+	notification.EventTicketLinked:          "linked",
+}
+
+// alsoLine is the one line under the headline that names the change's other
+// kinds, the ones the headline (the hook's own name for the change) does not.
+func alsoLine(ev notification.Event) string {
+	var words []string
+	for _, k := range ev.Kinds {
+		if k == ev.Type {
+			continue
+		}
+		if w, ok := kindPhrases[k]; ok {
+			words = append(words, w)
+		}
+	}
+	if len(words) == 0 {
+		return ""
+	}
+	return "Also: " + strings.Join(words, ", ")
 }
 
 // ref prefers the typed TrackingNumber field (set at every dispatch site),

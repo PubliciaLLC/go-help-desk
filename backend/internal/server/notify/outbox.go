@@ -2,7 +2,6 @@ package notify
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -20,75 +19,12 @@ import (
 // the answer through its timing (#164). Requests now enqueue; Worker sends.
 
 // ErrRawGuestToken refuses to queue an event carrying a guest's raw access
-// token. The guest token table holds only hashes; a copy in the outbox would
-// undo that. Guest links are created by the worker at send time instead.
-var ErrRawGuestToken = errors.New("refusing to queue a raw guest token")
+// token. The row encoding lives in the notification package (#506), so the
+// transaction runner can write rows without importing this one.
+var ErrRawGuestToken = notification.ErrRawGuestToken
 
-// outboxRecord is how an event is stored. Spelled out field by field rather
-// than json.Marshal(event), because Event's own JSON is the webhook body and
-// deliberately omits the email-only fields this needs.
-//
-// GuestToken is absent on purpose. TestOutboxRecord_CoversEveryEventField
-// fails when a field is added to Event without a decision here.
-type outboxRecord struct {
-	Type           notification.EventType    `json:"type"`
-	TicketID       uuid.UUID                 `json:"ticket_id"`
-	ActorID        *uuid.UUID                `json:"actor_id,omitempty"`
-	Payload        map[string]any            `json:"payload,omitempty"`
-	OccurredAt     time.Time                 `json:"occurred_at"`
-	TrackingNumber string                    `json:"tracking_number,omitempty"`
-	Recipient      string                    `json:"recipient,omitempty"`
-	Subject        string                    `json:"subject,omitempty"`
-	StatusName     string                    `json:"status_name,omitempty"`
-	GuestLink      bool                      `json:"guest_link,omitempty"`
-	Attrs          *notification.TicketAttrs `json:"attrs,omitempty"`
-	// TargetWebhook is set on the per-hook rows the webhook fan-out queues (#448).
-	TargetWebhook uuid.UUID `json:"webhook_id,omitzero"`
-	TargetURLHash string    `json:"webhook_url_sha256,omitempty"`
-
-	// Staff mail (#441). StaffUserID is the one person a staff.* row is for;
-	// their address is read when it is sent, never stored here.
-	StaffUserID     *uuid.UUID               `json:"staff_user_id,omitempty"`
-	AssigneeUserID  *uuid.UUID               `json:"assignee_user_id,omitempty"`
-	AssigneeGroupID *uuid.UUID               `json:"assignee_group_id,omitempty"`
-	FromRequester   bool                     `json:"from_requester,omitempty"`
-	StaffReason     notification.StaffSwitch `json:"staff_reason,omitempty"`
-}
-
-func encodeEvent(ev notification.Event) ([]byte, error) {
-	if ev.GuestToken != "" {
-		return nil, ErrRawGuestToken
-	}
-	return json.Marshal(outboxRecord{
-		Type: ev.Type, TicketID: ev.TicketID, ActorID: ev.ActorID, Payload: ev.Payload,
-		OccurredAt: ev.OccurredAt, TrackingNumber: ev.TrackingNumber, Recipient: ev.Recipient,
-		Subject: ev.Subject, StatusName: ev.StatusName, GuestLink: ev.GuestLink,
-		Attrs:         ev.Attrs,
-		TargetWebhook: ev.TargetWebhook,
-		TargetURLHash: ev.TargetURLHash,
-		StaffUserID:   ev.StaffUserID, AssigneeUserID: ev.AssigneeUserID,
-		AssigneeGroupID: ev.AssigneeGroupID, FromRequester: ev.FromRequester,
-		StaffReason: ev.StaffReason,
-	})
-}
-
-func decodeEvent(b []byte) (notification.Event, error) {
-	var r outboxRecord
-	if err := json.Unmarshal(b, &r); err != nil {
-		return notification.Event{}, err
-	}
-	return notification.Event{
-		Type: r.Type, TicketID: r.TicketID, ActorID: r.ActorID, Payload: r.Payload,
-		OccurredAt: r.OccurredAt, TrackingNumber: r.TrackingNumber, Recipient: r.Recipient,
-		Subject: r.Subject, StatusName: r.StatusName, GuestLink: r.GuestLink,
-		Attrs:         r.Attrs,
-		TargetWebhook: r.TargetWebhook,
-		TargetURLHash: r.TargetURLHash,
-		StaffUserID:   r.StaffUserID, AssigneeUserID: r.AssigneeUserID,
-		AssigneeGroupID: r.AssigneeGroupID, FromRequester: r.FromRequester,
-		StaffReason: r.StaffReason,
-	}, nil
-}
+func encodeEvent(ev notification.Event) ([]byte, error) { return notification.EncodeEvent(ev) }
+func decodeEvent(b []byte) (notification.Event, error)  { return notification.DecodeEvent(b) }
 
 type attemptKey struct{}
 
@@ -120,8 +56,11 @@ func LastAttempt(ctx context.Context) bool {
 	return b
 }
 
-// OutboxDispatcher is the Dispatcher requests call: it queues one row per
-// channel and returns without contacting any of them.
+// OutboxDispatcher queues one row per channel for an event and returns without
+// contacting any of them. Ticket changes no longer come through it: they are
+// written in the change's own transaction (txrunner, #506). It remains for the
+// two events that are not changes to a ticket, the guest link resend and the
+// signup verification, which have no transaction to join.
 type OutboxDispatcher struct {
 	store    notification.Outbox
 	channels []string
@@ -141,25 +80,6 @@ func (d *OutboxDispatcher) Channels() []string {
 	return slices.Clone(d.channels)
 }
 
-// carries reports whether a channel can deliver an event type at all. A row
-// for an event its channel would discard is a write, a claim and a delete for
-// nothing — and guest resend, which queues on every unauthenticated request,
-// wrote one webhook row per request that way (#164 round 1).
-func carries(channel string, ev notification.Event) bool {
-	switch channel {
-	case "webhook":
-		return IsWebhookEvent(string(ev.Type))
-	case "email":
-		// An account holder's status change has nobody to mail. A guest-link
-		// event may have no recipient yet: the send-time step fills it in.
-		// So does a staff event, whose address is read when it is sent.
-		return ev.Recipient != "" || ev.GuestLink || ev.StaffUserID != nil
-	case "verification":
-		return ev.Type == notification.EventRegistrationVerify
-	}
-	return true
-}
-
 func (d *OutboxDispatcher) Dispatch(ctx context.Context, ev notification.Event) error {
 	body, err := encodeEvent(ev)
 	if err != nil {
@@ -170,7 +90,7 @@ func (d *OutboxDispatcher) Dispatch(ctx context.Context, ev notification.Event) 
 	ctx = context.WithoutCancel(ctx)
 	var first error
 	for _, ch := range d.channels {
-		if !carries(ch, ev) {
+		if !notification.Carries(ch, ev) {
 			continue
 		}
 		if err := d.store.Enqueue(ctx, uuid.New(), ch, body); err != nil {

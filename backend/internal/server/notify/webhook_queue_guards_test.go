@@ -88,23 +88,50 @@ func capture(rc *receiver) func() []string {
 // ── Raw is ids only (#448, Erik's decision) ──────────────────────────────────
 
 func TestRawBody_CarriesOnlyIdsAndFlags(t *testing.T) {
-	ev := contentEvent()
-	body, err := rawBody(ev)
-	require.NoError(t, err)
+	// An event carries the Payload keys of every kind of its change (#506); the
+	// body carries only those of the name it is sent under, so it is what that
+	// name always carried. The id each name owns is what is checked per name.
+	for _, tc := range []struct {
+		name         notification.EventType
+		has, hasNot  string
+		hasNoPayload bool
+	}{
+		{notification.EventTicketStatusChanged, "new_status_id", "target_id", false},
+		{notification.EventTicketLinked, "target_id", "new_status_id", false},
+		{notification.EventTicketReplied, "", "", true},
+		{notification.EventTicketPriorityChanged, "", "", true},
+		{notification.EventTicketClassified, "", "", true},
+	} {
+		t.Run(string(tc.name), func(t *testing.T) {
+			ev := contentEvent()
+			ev.Type = tc.name
+			body, err := rawBody(ev)
+			require.NoError(t, err)
 
-	for _, leak := range contentStrings {
-		require.NotContains(t, string(body), leak)
-	}
-	for _, key := range []string{"guest_email", "reporter_email", "ReplyBody", "Subject", "TrackingNumber", "Priority"} {
-		require.NotContains(t, string(body), key)
-	}
-	for _, want := range []string{`"Type":"ticket.replied"`, ev.TicketID.String(), "target_id", "new_status_id", "OccurredAt"} {
-		require.Contains(t, string(body), want)
-	}
-	// Ids and the event name only: not the link type, not the internal flag (the
-	// event name already says note or reply), not the reply id.
-	for _, gone := range []string{"link_type", "internal", "reply_id", contentReplyID.String()} {
-		require.NotContains(t, string(body), gone)
+			for _, leak := range contentStrings {
+				require.NotContains(t, string(body), leak)
+			}
+			for _, key := range []string{"guest_email", "reporter_email", "ReplyBody", "Subject", "TrackingNumber", "Priority"} {
+				require.NotContains(t, string(body), key)
+			}
+			for _, want := range []string{`"Type":"` + string(tc.name) + `"`, ev.TicketID.String(), "OccurredAt"} {
+				require.Contains(t, string(body), want)
+			}
+			if tc.has != "" {
+				require.Contains(t, string(body), tc.has)
+			}
+			if tc.hasNot != "" {
+				require.NotContains(t, string(body), tc.hasNot)
+			}
+			if tc.hasNoPayload {
+				require.Contains(t, string(body), `"Payload":null`, "no id rides on this name")
+			}
+			// Ids and the event name only: not the link type, not the internal flag (the
+			// event name already says note or reply), not the reply id.
+			for _, gone := range []string{"link_type", "internal", "reply_id", contentReplyID.String()} {
+				require.NotContains(t, string(body), gone)
+			}
+		})
 	}
 }
 

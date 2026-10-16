@@ -48,7 +48,7 @@ func (f *changePriorityFx) raceTicket(t *testing.T) ticket.Ticket {
 // commit, outside the ticket lock, the way production does.
 func (f *changePriorityFx) raceService(t *testing.T) *ticket.Service {
 	t.Helper()
-	svc := ticket.NewService(f.ts, f.ts, notification.Noop{}, f.au, txrunner.New(f.db.SQL), sla.NewService(f.ss))
+	svc := ticket.NewService(f.ts, f.ts, notification.Noop{}, f.au, txrunner.New(f.db.SQL, nil, nil), sla.NewService(f.ss))
 	require.NoError(t, svc.LoadSystemStatuses(f.ctx))
 	svc.SetSLAEnabled(func(context.Context) bool { return true })
 	return svc

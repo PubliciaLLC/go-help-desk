@@ -19,9 +19,10 @@ import (
 
 func reopenedEventFor(actor, assignee, group *uuid.UUID) notification.Event {
 	return notification.Event{
-		Type: notification.EventTicketReopened, TicketID: uuid.New(), ActorID: actor,
+		Type: notification.EventTicketReopened, Kinds: []notification.EventType{notification.EventTicketReopened},
+		TicketID: uuid.New(), ActorID: actor,
 		TrackingNumber: "GHD-2026-000007", OccurredAt: time.Now(),
-		AssigneeUserID: assignee, AssigneeGroupID: group,
+		Ticket: &notification.TicketState{AssigneeUserID: assignee, AssigneeGroupID: group},
 	}
 }
 
@@ -37,7 +38,7 @@ func reasonsOf(r *recorder) map[uuid.UUID]notification.StaffSwitch {
 
 // A held ticket: the assignee and a follower are mailed, once each. The group
 // is not mailed (Erik, 2026-10-14: the reply rule), so a group member who does
-// not follow hears nothing. The original event goes through first, unchanged.
+// not follow hears nothing.
 func TestStaffFanout_ReopenOfAHeldTicketMailsTheAssigneeAndFollowersNotTheGroup(t *testing.T) {
 	assignee, member, follower := staffUser("assignee"), staffUser("member"), staffUser("follower")
 	g := uuid.New()
@@ -48,13 +49,12 @@ func TestStaffFanout_ReopenOfAHeldTicketMailsTheAssigneeAndFollowersNotTheGroup(
 
 	require.NoError(t, f.Dispatch(context.Background(), ev))
 
-	require.Equal(t, ev, next.got[0])
 	require.Equal(t, []uuid.UUID{assignee.ID, follower.ID}, recipientsOf(next))
 	require.Equal(t, map[uuid.UUID]notification.StaffSwitch{
 		assignee.ID: notification.SwitchActivity, // under the "requester replied" switch, per Erik
 		follower.ID: notification.SwitchFollow,
 	}, reasonsOf(next))
-	for _, e := range next.got[1:] {
+	for _, e := range next.got {
 		require.Equal(t, notification.EventStaffReopened, e.Type)
 		require.Equal(t, ev.TicketID, e.TicketID)
 		require.Equal(t, "GHD-2026-000007", e.TrackingNumber)
@@ -170,9 +170,9 @@ func TestStaffFanout_ReopenHonoursTheSwitchesAndOverrides(t *testing.T) {
 		members := fakeStaffGroups{}
 		switch role {
 		case "assignee":
-			ev.AssigneeUserID = &person.ID
+			ev.Ticket.AssigneeUserID = &person.ID
 		case "group":
-			ev.AssigneeGroupID = &g
+			ev.Ticket.AssigneeGroupID = &g
 			members[g] = []uuid.UUID{person.ID}
 		case "follower":
 			fol[ev.TicketID] = []uuid.UUID{person.ID}
@@ -205,7 +205,7 @@ func TestStaffFanout_ReopenHonoursTheSwitchesAndOverrides(t *testing.T) {
 func TestStaffFanout_ReopenOfAnUnheldTicketMailsNobody(t *testing.T) {
 	next := &recorder{}
 	require.NoError(t, newFanout(next, newFakeStaffUsers(), fakeStaffGroups{}).Dispatch(context.Background(), reopenedEventFor(nil, nil, nil)))
-	require.Len(t, next.got, 1, "only the original event")
+	require.Empty(t, next.got, "nobody to mail")
 }
 
 func TestStaffFanout_ReopenFollowerLookupFailureStillMailsTheAssignee(t *testing.T) {
@@ -269,8 +269,8 @@ func TestStaffTemplates_ReopenRender(t *testing.T) {
 func TestOutbox_ReopenStaffMailIsEmailOnly(t *testing.T) {
 	id := uuid.New()
 	ev := notification.Event{Type: notification.EventStaffReopened, TicketID: uuid.New(), StaffUserID: &id}
-	require.True(t, carries("email", ev))
-	require.False(t, carries("webhook", ev), "a webhook subscriber already has ticket.reopened")
+	require.True(t, notification.Carries("email", ev))
+	require.False(t, notification.Carries("webhook", ev), "a webhook subscriber already has ticket.reopened")
 }
 
 // The reopen event itself, without a Recipient (a status change or a requester's
