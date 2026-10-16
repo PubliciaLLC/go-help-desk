@@ -12,11 +12,13 @@ import (
 
 	"github.com/publiciallc/go-help-desk/backend/internal/database/auditstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/categorystore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/groupstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/outboxstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/txrunner"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -35,9 +37,11 @@ func (m *mailRecorder) Dispatch(_ context.Context, ev notification.Event) error 
 	return nil
 }
 
-type noGroups struct{}
+type fakeGroups map[uuid.UUID][]uuid.UUID
 
-func (noGroups) ListMailableMembers(context.Context, uuid.UUID) ([]uuid.UUID, error) { return nil, nil }
+func (g fakeGroups) ListMailableMembers(_ context.Context, id uuid.UUID) ([]uuid.UUID, error) {
+	return g[id], nil
+}
 
 type outboxRow struct {
 	channel string
@@ -72,7 +76,7 @@ func channelsOf(rows []outboxRow) map[string]int {
 }
 
 func TestEndToEnd_AChangeIsAnnouncedOnceAndMailedOncePerPerson(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 	ctx := context.Background()
 	q := db.Queries
@@ -87,7 +91,12 @@ func TestEndToEnd_AChangeIsAnnouncedOnceAndMailedOncePerPerson(t *testing.T) {
 		require.NoError(t, us.Create(ctx, u))
 		return u
 	}
-	routedTo, other, actor := mkStaff("routed"), mkStaff("other"), mkStaff("actor")
+	routedTo, other, actor, member := mkStaff("routed"), mkStaff("other"), mkStaff("actor"), mkStaff("member")
+	// The person who acts is also a member of the group the ticket ends up in, so
+	// "the actor gets no mail" is a real exclusion and not an absence.
+	grp := group.Group{ID: uuid.New(), Name: "e2e " + uuid.NewString()[:8]}
+	require.NoError(t, groupstore.New(q).Create(ctx, grp))
+	members := fakeGroups{grp.ID: {actor.ID, member.ID}}
 	cat := category.Category{ID: uuid.New(), Name: "e2e " + uuid.NewString()[:8], SortOrder: 1, Active: true}
 	require.NoError(t, categorystore.New(q).CreateCategory(ctx, cat))
 
@@ -98,7 +107,6 @@ func TestEndToEnd_AChangeIsAnnouncedOnceAndMailedOncePerPerson(t *testing.T) {
 	guest := "guest-" + uuid.NewString() + "@test.local"
 	var ticketID uuid.UUID
 	defer func() {
-		forgetOutbox(db, ticketID)
 		_, _ = db.SQL.Exec(`DELETE FROM tickets WHERE id = $1`, ticketID)
 		_, _ = db.SQL.Exec(`DELETE FROM audit_log WHERE entity_id = $1`, ticketID)
 		_, _ = db.SQL.Exec(`DELETE FROM users WHERE id = ANY($1)`, []uuid.UUID{routedTo.ID, other.ID, actor.ID})
@@ -107,7 +115,7 @@ func TestEndToEnd_AChangeIsAnnouncedOnceAndMailedOncePerPerson(t *testing.T) {
 
 	// Staff mail is read by the worker, with the real follower and account reads.
 	recorder := &mailRecorder{}
-	splitter := notify.NewChangeSplitter(recorder, outboxstore.New(q), nil, us, noGroups{}, ts,
+	splitter := notify.NewChangeSplitter(recorder, outboxstore.New(q), nil, us, members, ts,
 		func(context.Context) notification.StaffOverrides { return notification.StaffOverrides{} },
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	worker := notify.NewWorker(outboxstore.New(q), map[string]notification.Dispatcher{
@@ -168,13 +176,14 @@ func TestEndToEnd_AChangeIsAnnouncedOnceAndMailedOncePerPerson(t *testing.T) {
 	_, err = svc.Resolve(ctx, ticketID, "fixed", ticket.Actor{UserID: &actor.ID, Role: user.RoleStaff})
 	require.NoError(t, err)
 	drain()
-	forgetOutbox(db, ticketID)
+	_, err = db.SQL.Exec(`DELETE FROM notification_outbox`)
+	require.NoError(t, err)
 	recorder.got = nil
 
 	newStatus, err := ts.GetStatusByName(ctx, ticket.StatusNameNew)
 	require.NoError(t, err)
 	_, err = svc.Update(ctx, ticketID, ticket.Patch{
-		StatusID: &newStatus.ID, Assign: &ticket.Assignment{UserID: &other.ID},
+		StatusID: &newStatus.ID, Assign: &ticket.Assignment{UserID: &other.ID, GroupID: &grp.ID},
 	}, ticket.Actor{UserID: &actor.ID, Role: user.RoleStaff})
 	require.NoError(t, err)
 
@@ -190,7 +199,21 @@ func TestEndToEnd_AChangeIsAnnouncedOnceAndMailedOncePerPerson(t *testing.T) {
 	require.Len(t, req, 1, "one mail to the guest")
 	require.Equal(t, notification.EventTicketReopened, req[0].Type, "the reopened template")
 	require.Equal(t, guest, req[0].Recipient)
-	require.Equal(t, map[uuid.UUID]int{other.ID: 1}, staffMailTo(),
-		"the new assignee once; the previous one and the person who acted not at all")
+	require.Equal(t, map[uuid.UUID]int{other.ID: 1, member.ID: 1}, staffMailTo(),
+		"the new assignee and the group's other member once each; the previous assignee, and the "+
+			"actor, who is in the group, not at all")
 	require.Empty(t, rowsFor(t, db, ticketID), "every row settled")
+
+	// (c) A staff member files a ticket and routing gives it to them: they are
+	// mailed once, not zero (routing picked them, they did not). Turns red if the
+	// create's mark, or its codec field, is lost on the way to the worker.
+	recorder.got = nil
+	mine, err := svc.Create(ctx, ticket.CreateInput{
+		Subject: "mine", Description: "d", CategoryID: cat.ID, ReporterUserID: &routedTo.ID,
+		AutoAssign: []ticket.Assignment{{UserID: &routedTo.ID}},
+	})
+	require.NoError(t, err)
+	drain()
+	require.Equal(t, map[uuid.UUID]int{routedTo.ID: 1}, staffMailTo())
+	_ = mine
 }

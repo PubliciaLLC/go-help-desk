@@ -52,14 +52,12 @@ func raiseOn(t Ticket, actor Actor, at time.Time) notification.Event {
 // open status also carries ticket.reopened. The same for every door, so the
 // button that made the change no longer decides what a subscriber is told.
 //
-// A move to the status the ticket already has is not a move: no status_changed
-// (CTO ruling 13). Resolving an already-Resolved ticket with new notes is still
-// a resolution, so it carries ticket.resolved and nothing else.
+// A move to the status the ticket already has is not a move: nothing about
+// status is announced (CTO ruling 13), whichever door repeats it. The one
+// exception, resolving an already-Resolved ticket with new notes, is the
+// Resolve button's own and is decided in resolveInTx.
 func (s *Service) statusKinds(oldStatusID, newStatusID uuid.UUID) []notification.EventType {
 	if oldStatusID == newStatusID {
-		if newStatusID == s.sys.resolvedID {
-			return []notification.EventType{notification.EventTicketResolved}
-		}
 		return nil
 	}
 	kinds := []notification.EventType{notification.EventTicketStatusChanged}

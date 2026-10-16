@@ -78,6 +78,13 @@ func (c *Changes) Raise(ev Event) {
 	if len(ev.Kinds) == 0 && ev.Type != "" {
 		ev.Kinds = []EventType{ev.Type}
 	}
+	// An event that says nothing is not announced. A door whose change turned out
+	// to have no kind (a status move to the status the ticket already has) may
+	// raise one; merging it would panic on the first kind below, and writing it
+	// would send a row no consumer can match.
+	if len(ev.Kinds) == 0 {
+		return
+	}
 	dst, ok := c.byID[ev.TicketID]
 	if !ok {
 		if c.byID == nil {

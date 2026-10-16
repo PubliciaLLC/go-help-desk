@@ -136,3 +136,10 @@ func TestChange_Constructors(t *testing.T) {
 	require.Equal(t, Change{Field: "x", From: nil, To: ptr(id.String())}, IDChange("x", nil, &id))
 	require.Equal(t, Change{Field: "p", From: ptr("a"), To: ptr("b")}, ValueChange("p", "a", "b"))
 }
+
+// An event with no kinds says nothing; it is ignored, not a panic.
+func TestChanges_AnEventWithNoKindsIsIgnored(t *testing.T) {
+	c := &Changes{}
+	require.NotPanics(t, func() { c.Raise(Event{TicketID: uuid.New()}) })
+	require.Empty(t, c.Events())
+}

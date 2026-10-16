@@ -1,41 +1,42 @@
 package server_test
 
 import (
-	"context"
-	"net/http"
+	"sync"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
 
-// Round-robin advances only when a ticket was actually routed (F7). Routing is
-// worked out before the create now, so a refused create must not use up a turn:
-// the next ticket gets the person the refused one would have had.
-func TestRoundRobin_ARefusedCreateDoesNotAdvanceIt(t *testing.T) {
+// Round-robin hands out turns atomically: creates that overlap each take their
+// own slot. N overlapping creates over N candidates go to N different people.
+// (The counter is the thing under test, so it is driven directly: the HTTP
+// harness runs inside one shared transaction and cannot overlap requests.)
+func TestRoundRobin_OverlappingCreatesTakeDifferentTurns(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
-	ctx := context.Background()
-	status, body := patchSettings(t, h, map[string]any{
-		"auto_assign_user_ids": []string{h.staffID.String(), h.adminID.String()},
-	})
-	require.Equal(t, http.StatusNoContent, status, body)
+	const n = 8
+	candidates := make([]uuid.UUID, n)
+	for i := range candidates {
+		candidates[i] = uuid.New()
+	}
 
-	first := createTicketAsUser(t, h, "First")
-	firstHeld, err := h.ticketSvc.GetByID(ctx, first.ID)
-	require.NoError(t, err)
-	require.NotNil(t, firstHeld.AssigneeUserID)
-
-	// Refused by the service after routing was worked out: an unknown category.
-	res := h.do(t, http.MethodPost, "/api/v1/tickets", map[string]any{
-		"subject": "Nowhere", "description": "x", "category_id": "11111111-1111-1111-1111-111111111111",
-	})
-	res.Body.Close()
-	require.Equal(t, http.StatusBadRequest, res.StatusCode)
-
-	second := createTicketAsUser(t, h, "Second")
-	secondHeld, err := h.ticketSvc.GetByID(ctx, second.ID)
-	require.NoError(t, err)
-	require.NotNil(t, secondHeld.AssigneeUserID)
-	require.NotEqual(t, *firstHeld.AssigneeUserID, *secondHeld.AssigneeUserID,
-		"the refused create used up a turn, so the same person got two in a row")
+	for round := range 20 {
+		got := make(chan uuid.UUID, n)
+		var wg sync.WaitGroup
+		for range n {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				got <- h.srv.RoundRobinFirst(candidates)
+			}()
+		}
+		wg.Wait()
+		close(got)
+		seen := map[uuid.UUID]bool{}
+		for id := range got {
+			seen[id] = true
+		}
+		require.Len(t, seen, n, "round %d: overlapping creates were offered the same person", round)
+	}
 }

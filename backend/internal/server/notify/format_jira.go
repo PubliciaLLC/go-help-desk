@@ -66,9 +66,9 @@ func renderJIRA(s summary) ([]byte, error) {
 	if s.Event == notification.EventTicketReplied || s.Event == notification.EventTicketNoteAdded {
 		internal := s.Internal
 		b.Internal = &internal
-		if !s.Internal {
-			b.Body = s.Body
-		}
 	}
+	// The reply text is the summary's decision, the same as for chat: only when
+	// the hook's cut-down kinds include ticket.replied, never an internal note.
+	b.Body = s.Body
 	return json.Marshal(b)
 }

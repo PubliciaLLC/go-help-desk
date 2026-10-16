@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/database/auditstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/outboxstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/txrunner"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
@@ -22,16 +23,6 @@ import (
 // real against the shared outbox queue, so they live beside the outbox store's
 // own tests, which already own that table (each clears it) and run one after
 // another; in a package of their own they would race those.
-
-// forgetOutbox removes the rows these tests committed, and only those: the queue
-// is shared, and a test that clears it all (or claims what it did not make)
-// takes another's rows as its input. Other packages' tests read it from their
-// own transactions and would see what is left.
-func forgetOutbox(db *testutil.DB, ticketIDs ...uuid.UUID) {
-	for _, id := range ticketIDs {
-		_, _ = db.SQL.Exec(`DELETE FROM notification_outbox WHERE event->>'ticket_id' = $1`, id.String())
-	}
-}
 
 var errCallerFailed = errors.New("the caller failed after writing")
 
@@ -82,12 +73,11 @@ var allChannels = []string{"email", "webhook", "verification"}
 // The change and its announcement are one commit: the rows are there the
 // moment InTx returns, before any worker has run.
 func TestInTx_WritesOneRowPerCarryingChannelWithTheChange(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 	woken := 0
 	r := txrunner.New(db.SQL, allChannels, func() { woken++ })
 	tid := uuid.New()
-	defer forgetOutbox(db, tid)
 
 	require.NoError(t, r.InTx(context.Background(), func(_ ticket.Store, au audit.Store, ch *notification.Changes) error {
 		require.NoError(t, au.Create(context.Background(), entry(tid, "committed")))
@@ -104,12 +94,11 @@ func TestInTx_WritesOneRowPerCarryingChannelWithTheChange(t *testing.T) {
 // The point of the change: a rolled-back change leaves no row. Before #506 the
 // rows were written after the commit, so this could not be asked of them.
 func TestInTx_ARolledBackChangeLeavesNoOutboxRow(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 	woken := 0
 	r := txrunner.New(db.SQL, allChannels, func() { woken++ })
 	tid := uuid.New()
-	defer forgetOutbox(db, tid)
 
 	err := r.InTx(context.Background(), func(_ ticket.Store, au audit.Store, ch *notification.Changes) error {
 		require.NoError(t, au.Create(context.Background(), entry(tid, "rolled back")))
@@ -125,11 +114,10 @@ func TestInTx_ARolledBackChangeLeavesNoOutboxRow(t *testing.T) {
 
 // A failure writing the rows fails the change: the announcement is part of it.
 func TestInTx_AnOutboxWriteFailureRollsBackTheChange(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 	r := txrunner.New(db.SQL, []string{"email"}, nil)
 	tid := uuid.New()
-	defer forgetOutbox(db, tid)
 
 	err := r.InTx(context.Background(), func(_ ticket.Store, au audit.Store, ch *notification.Changes) error {
 		require.NoError(t, au.Create(context.Background(), entry(tid, "must not stay")))
@@ -144,12 +132,11 @@ func TestInTx_AnOutboxWriteFailureRollsBackTheChange(t *testing.T) {
 
 // A change that raised nothing writes nothing and wakes nobody.
 func TestInTx_NothingRaisedWritesNothing(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 	woken := 0
 	r := txrunner.New(db.SQL, allChannels, func() { woken++ })
 	tid := uuid.New()
-	defer forgetOutbox(db, tid)
 
 	require.NoError(t, r.InTx(context.Background(), func(_ ticket.Store, au audit.Store, _ *notification.Changes) error {
 		return au.Create(context.Background(), entry(tid, "quiet"))
@@ -163,11 +150,10 @@ func TestInTx_NothingRaisedWritesNothing(t *testing.T) {
 // committed announced ticket B, and only B has rows. A collector shared between
 // the attempts would write A's event as well.
 func TestInTx_ADeadlockRetryAnnouncesOnlyTheAttemptThatCommitted(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 	r := txrunner.New(db.SQL, allChannels, nil)
 	a, b := uuid.New(), uuid.New()
-	defer forgetOutbox(db, a, b)
 
 	attempts := 0
 	require.NoError(t, r.InTx(context.Background(), func(_ ticket.Store, au audit.Store, ch *notification.Changes) error {
@@ -184,4 +170,36 @@ func TestInTx_ADeadlockRetryAnnouncesOnlyTheAttemptThatCommitted(t *testing.T) {
 	require.Equal(t, 2, attempts)
 	require.Empty(t, outboxRows(t, db, a), "the rolled-back attempt announced nothing")
 	require.Equal(t, map[string]int{"email": 1, "webhook": 1}, outboxRows(t, db, b))
+	require.Equal(t, 1, visible(t, db, b), "and the audit trail committed with the rows")
+}
+
+// Split queues a change's rows and deletes the change's own row in one
+// transaction: a row that cannot be inserted leaves no sibling behind and the
+// change's row where it was, to be tried again (F1/#506).
+func TestStore_SplitIsAllOrNothing(t *testing.T) {
+	db, closeDB := testutil.NewIsolatedDB(t)
+	defer closeDB()
+	ctx := context.Background()
+	s := outboxstore.NewWithDB(db.SQL)
+	parent := uuid.New()
+	require.NoError(t, s.Enqueue(ctx, parent, "email", []byte(`{"type":"ticket.created"}`)))
+
+	err := s.Split(ctx, parent, []notification.NewRow{
+		{ID: uuid.New(), Channel: "email", Event: []byte(`{"type":"staff.assigned"}`)},
+		{ID: uuid.New(), Channel: "email", Event: []byte(`not json`)}, // jsonb refuses it
+	})
+	require.Error(t, err)
+	var n int
+	require.NoError(t, db.SQL.QueryRow(`SELECT count(*) FROM notification_outbox`).Scan(&n))
+	require.Equal(t, 1, n, "no child was queued, and the change's row is still there")
+
+	good := []notification.NewRow{
+		{ID: uuid.New(), Channel: "email", Event: []byte(`{"type":"staff.assigned"}`)},
+		{ID: uuid.New(), Channel: "email", Event: []byte(`{"type":"ticket.created"}`)},
+	}
+	require.NoError(t, s.Split(ctx, parent, good))
+	require.NoError(t, db.SQL.QueryRow(`SELECT count(*) FROM notification_outbox WHERE id = $1`, parent).Scan(&n))
+	require.Zero(t, n, "the change's row is settled with them")
+	require.NoError(t, db.SQL.QueryRow(`SELECT count(*) FROM notification_outbox`).Scan(&n))
+	require.Equal(t, 2, n)
 }

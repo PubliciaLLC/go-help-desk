@@ -351,3 +351,102 @@ func TestChangeSplitter_AStaffLookupFailingOnceMailsTheGuestOnce(t *testing.T) {
 	require.Equal(t, 1, st)
 	require.Equal(t, 1, links, "and exactly one guest link issued")
 }
+
+// Two staff accounts sharing one address: one mail to it, and it is the one with
+// the stronger reason (holding the ticket beats being in its group), so the
+// send-time check that drops a mail whose reason no longer holds is least likely
+// to leave the address with nothing.
+func TestChangeSplitter_TwoStaffSharingAnAddressGetOneMail_TheStrongerReason(t *testing.T) {
+	assignee, member := staffUser("shared"), staffUser("shared2")
+	member.Email = " SHARED@example.com " // the assignee's address, in another case
+	g := uuid.New()
+	ev := changeRow("", &assignee.ID, &g, nil)
+	// The group member is listed first by the group, ahead of the assignee's
+	// own candidacy being ranked.
+	rig := newSplitRig(newFakeStaffUsers(assignee, member), fakeStaffGroups{g: {member.ID}}, fakeStaffFollowers{})
+	rig.queue(t, ev)
+
+	rig.drain(t)
+
+	require.Equal(t, []uuid.UUID{assignee.ID}, recipientsOf(rig.sent), "one mail, to the person who holds it")
+}
+
+// flakyOutbox fails the nth row insert once, like a database that blips mid-split.
+// Split is all or nothing, as the real store's transaction is.
+type flakyOutbox struct {
+	*fakeOutbox
+	inserts, failAt int
+}
+
+func (f *flakyOutbox) hit() error {
+	f.inserts++
+	if f.inserts == f.failAt {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
+func (f *flakyOutbox) Enqueue(ctx context.Context, id uuid.UUID, ch string, ev []byte) error {
+	if err := f.hit(); err != nil {
+		return err
+	}
+	return f.fakeOutbox.Enqueue(ctx, id, ch, ev)
+}
+
+func (f *flakyOutbox) Split(ctx context.Context, parent uuid.UUID, rows []notification.NewRow) error {
+	for range rows {
+		if err := f.hit(); err != nil {
+			return err // nothing was inserted, and the parent stays
+		}
+	}
+	for _, r := range rows {
+		if err := f.fakeOutbox.Enqueue(ctx, r.ID, r.Channel, r.Event); err != nil {
+			return err
+		}
+	}
+	return f.fakeOutbox.Delete(ctx, parent)
+}
+
+// A child insert that fails after an earlier child was queued must leave nothing
+// behind: all of a change's rows are queued, and its row settled, in one step.
+// Otherwise the first child is sent, deleted, and queued again by the retry.
+func TestChangeSplitter_AFailedInsertLeavesNoChildAndEachMailIsSentOnce(t *testing.T) {
+	assignee, follower := staffUser("assignee"), staffUser("follower")
+	ev := changeRow("guest@example.com", &assignee.ID, nil, nil)
+	outbox := &flakyOutbox{fakeOutbox: newFakeOutbox(), failAt: 2} // the second child
+	sent := &recorder{}
+	split := NewChangeSplitter(sent, outbox, nil, newFakeStaffUsers(assignee, follower), fakeStaffGroups{},
+		fakeStaffFollowers{ev.TicketID: {follower.ID}}, noOverrides, quietLog())
+	w := NewWorker(outbox, map[string]notification.Dispatcher{"email": split}, quietLog())
+	w.Backoff = func(int) time.Duration { return time.Hour }
+	b, err := encodeEvent(ev)
+	require.NoError(t, err)
+	parent := uuid.New()
+	require.NoError(t, outbox.fakeOutbox.Enqueue(context.Background(), parent, "email", b))
+
+	for range 5 { // everything due now: the change fails, and nothing else is queued
+		n, err := w.RunOnce(context.Background())
+		require.NoError(t, err)
+		if n == 0 {
+			break
+		}
+	}
+	require.Empty(t, sent.got, "no child was queued, so none was sent")
+	require.Len(t, outbox.rows, 1, "only the change's own row, waiting to be retried")
+
+	for range 10 {
+		outbox.makeDue()
+		n, err := w.RunOnce(context.Background())
+		require.NoError(t, err)
+		if n == 0 {
+			break
+		}
+	}
+	require.Len(t, sent.got, 3, "the guest, the assignee and the follower, once each")
+	require.Equal(t, 1, countRequester(sent), "and the guest only once")
+}
+
+func countRequester(r *recorder) int {
+	n, _ := mailsTo(r)
+	return n
+}

@@ -131,6 +131,15 @@ func (f *StaffFanout) Dispatch(ctx context.Context, ev notification.Event) error
 	// sign-in, and the more specific reason (assigned to you, reopened); the
 	// requester's mail is generic, and its guest link would be a second credential
 	// in the same inbox. The person is staff, so they lose nothing by it.
+	//
+	// Between two staff accounts that share an address, the one kept is the first
+	// in candidate order, which is strongest reason first (holding the ticket,
+	// then its group, then following it). The send-time check drops a mail whose
+	// reason has stopped holding, so keeping the strongest makes it least likely
+	// that the address is left with nothing. It cannot be ruled out: the check
+	// runs later, per row, and rows know nothing of each other. A staff mail kept
+	// over a requester's is dropped by it only if the person stops being entitled
+	// in the seconds between the split and the send.
 	seen := map[string]bool{}
 	var out []notification.Event
 	for _, r := range recips {

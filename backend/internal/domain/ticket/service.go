@@ -1640,12 +1640,14 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 				// The reopen is part of this reply's event, not an event of its own:
 				// the reply that reopens is one change (#506). No recipient of its own
 				// either; the reply's decides who is mailed.
-				moved := raiseOn(t, actor, now)
-				moved.Kinds = s.statusKinds(oldStatusID, reopenTargetStatusID)
-				moved.Changes = statusChanges(oldStatusID, reopenTargetStatusID)
-				moved.Payload = map[string]any{"new_status_id": reopenTargetStatusID}
-				moved.StatusName = target.Name
-				ch.Raise(moved)
+				if kinds := s.statusKinds(oldStatusID, reopenTargetStatusID); len(kinds) > 0 {
+					moved := raiseOn(t, actor, now)
+					moved.Kinds = kinds
+					moved.Changes = statusChanges(oldStatusID, reopenTargetStatusID)
+					moved.Payload = map[string]any{"new_status_id": reopenTargetStatusID}
+					moved.StatusName = target.Name
+					ch.Raise(moved)
+				}
 				if t, err = s.finishReopenInTx(ctx, st, au, ch, t, firstReopen, actor, now); err != nil {
 					return err
 				}
@@ -1822,6 +1824,11 @@ func (s *Service) resolveInTx(ctx context.Context, st Store, au audit.Store, ch 
 	// one they need to reopen inside the window.
 	ev := raiseOn(t, actor, now)
 	ev.Kinds = s.statusKinds(oldStatusID, s.sys.resolvedID)
+	if len(ev.Kinds) == 0 {
+		// Resolving a ticket that is already Resolved, with new notes: not a
+		// status move, but the Resolve button's resolution all the same.
+		ev.Kinds = []notification.EventType{notification.EventTicketResolved}
+	}
 	ev.Changes = statusChanges(oldStatusID, s.sys.resolvedID)
 	ev.Payload = map[string]any{"new_status_id": s.sys.resolvedID}
 	ev.Recipient = guestRecipient(t)
@@ -2120,7 +2127,7 @@ func (s *Service) close(ctx context.Context, ticketID uuid.UUID, actor Actor, el
 		}
 		// No recipient: closing tells nobody, whichever door closed it.
 		ev := raiseOn(t, actor, now)
-		ev.Kinds = s.statusKinds(oldStatusID, s.sys.closedID)
+		ev.Kinds = s.statusKinds(oldStatusID, s.sys.closedID) // never empty: an already-Closed ticket returned above
 		ev.Changes = statusChanges(oldStatusID, s.sys.closedID)
 		ev.Payload = map[string]any{"new_status_id": s.sys.closedID}
 		ev.StatusName = s.sys.closed.Name
@@ -2237,14 +2244,16 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 			return fmt.Errorf("auditing reopen: %w", err)
 		}
 		// The guest is told, with a link issued when the mail is sent.
-		ev := raiseOn(t, actor, now)
-		ev.Kinds = s.statusKinds(oldStatusID, targetStatusID)
-		ev.Changes = statusChanges(oldStatusID, targetStatusID)
-		ev.Payload = map[string]any{"new_status_id": targetStatusID}
-		ev.Recipient = guestRecipient(t)
-		ev.GuestLink = hasGuestRecipient(t)
-		ev.StatusName = target.Name
-		ch.Raise(ev)
+		if kinds := s.statusKinds(oldStatusID, targetStatusID); len(kinds) > 0 {
+			ev := raiseOn(t, actor, now)
+			ev.Kinds = kinds
+			ev.Changes = statusChanges(oldStatusID, targetStatusID)
+			ev.Payload = map[string]any{"new_status_id": targetStatusID}
+			ev.Recipient = guestRecipient(t)
+			ev.GuestLink = hasGuestRecipient(t)
+			ev.StatusName = target.Name
+			ch.Raise(ev)
+		}
 		// After the status is raised, so the priority it may raise is the
 		// ticket's last word.
 		if t, err = s.finishReopenInTx(ctx, st, au, ch, t, firstReopen, actor, now); err != nil {

@@ -322,3 +322,58 @@ func TestCreate_TheRoutingAuditEntryRecordsUnassignedToAssigned(t *testing.T) {
 	require.Equal(t, assignee.String(), routed.After["assignee_user_id"])
 	require.NotEqual(t, routed.Before, routed.After)
 }
+
+// Repeating Resolved is not a status move, whichever door repeats it (CTO
+// ruling 13). Only the Resolve button, which carries notes, is a resolution.
+func TestSameResolved_IsNotAStatusMoveAtAnyDoorButTheResolveButton(t *testing.T) {
+	ctx := context.Background()
+	assignee := uuid.New()
+	guest := "guest@example.test"
+	resolvedGuestTicket := func(h *prioHarness) ticket.Ticket {
+		tk := h.seedFinished("resolved", ticket.PriorityMedium)
+		tk.ReporterUserID, tk.GuestEmail = nil, &guest
+		h.store.seed(tk)
+		return tk
+	}
+
+	t.Run("a PATCH of Resolved plus an assignee is assigned only, and mails and rotates nothing", func(t *testing.T) {
+		h := newPrioHarness(t)
+		tk := resolvedGuestTicket(h)
+		_, err := h.svc.Update(ctx, tk.ID, ticket.Patch{
+			StatusID: &h.resolvedStatus.ID, Assign: &ticket.Assignment{UserID: &assignee},
+		}, reopenStaff)
+		require.NoError(t, err)
+
+		require.Len(t, h.dispatcher.events, 1)
+		ev := h.dispatcher.events[0]
+		require.Equal(t, []notification.EventType{notification.EventTicketAssigned}, ev.Kinds)
+		require.Empty(t, ev.Recipient, "the guest is not told it was resolved again")
+		require.Empty(t, ev.GuestToken, "and their link is not rotated")
+		require.False(t, ev.GuestLink)
+	})
+
+	t.Run("update_ticket_status (UpdateStatus) to the same Resolved announces nothing about status", func(t *testing.T) {
+		h := newPrioHarness(t)
+		tk := resolvedGuestTicket(h)
+		_, err := h.svc.UpdateStatus(ctx, tk.ID, h.resolvedStatus.ID, reopenStaff)
+		require.NoError(t, err)
+		require.Empty(t, h.dispatcher.events)
+	})
+}
+
+// A reopen whose target is the status the ticket already has (Closed) has no
+// status kind to announce; it must not panic the collector.
+func TestReopen_ToTheSameStatusDoesNotPanicAndAnnouncesNoStatus(t *testing.T) {
+	h := newPrioHarness(t)
+	tk := h.seedFinished("closed", ticket.PriorityMedium)
+	h.policy = ticket.ReopenPolicyStaffAdmin
+
+	require.NotPanics(t, func() {
+		_, _ = h.svc.Reopen(context.Background(), tk.ID, h.closedStatus.ID, reopenStaff)
+	})
+	for _, ev := range h.dispatcher.events {
+		for _, k := range ev.Kinds {
+			require.Equal(t, notification.EventTicketPriorityChanged, k, "nothing about status")
+		}
+	}
+}

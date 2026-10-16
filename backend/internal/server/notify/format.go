@@ -146,7 +146,7 @@ func summarize(ev notification.Event, baseURL string) summary {
 		Also:           alsoLine(ev),
 		Subject:        sanitizeSubject(ev.Subject),
 		Body:           body,
-		StatusName:     ev.StatusName,
+		StatusName:     statusFor(ev),
 		Internal:       internal,
 		URL:            strings.TrimRight(baseURL, "/") + "/tickets/" + ev.TicketID.String(),
 		Priority:       priority,
@@ -187,6 +187,20 @@ func alsoLine(ev notification.Event) string {
 		return ""
 	}
 	return "Also: " + strings.Join(words, ", ")
+}
+
+// statusFor is the status name a message may carry: only for a hook whose
+// cut-down kinds include a status kind. A hook subscribed to ticket.assigned
+// alone must not learn the status of a change that also moved it.
+func statusFor(ev notification.Event) string {
+	for _, k := range ev.AllKinds() {
+		switch k {
+		case notification.EventTicketStatusChanged, notification.EventTicketResolved,
+			notification.EventTicketClosed, notification.EventTicketReopened:
+			return ev.StatusName
+		}
+	}
+	return ""
 }
 
 // ref prefers the typed TrackingNumber field (set at every dispatch site),

@@ -314,7 +314,7 @@ func run() error {
 	// started once the server exists, sends them (#164). The worker needs the
 	// server for the send-time guest-link step, and the ticket service needs a
 	// dispatcher before the server can be built, hence the late assignment.
-	outboxStore := outboxstore.New(q)
+	outboxStore := outboxstore.NewWithDB(sqlDB)
 	var outboxWorker *notify.Worker
 	// Each subscribed hook gets its own queued, retried delivery (#448); the
 	// worker below sends them.

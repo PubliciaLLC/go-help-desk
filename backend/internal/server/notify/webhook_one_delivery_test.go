@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -353,4 +354,45 @@ func TestReplyText_AnInternalNoteIsNeverIncluded(t *testing.T) {
 	ev.Payload["internal"] = true
 	body := deliverOne(t, slackHook(rc.srv.URL, "*"), rc, ev)
 	require.NotContains(t, body, "Paper tray 2 was empty.")
+}
+
+// A channel sees only what it subscribed to: the status name rides on a message
+// only when the hook's cut-down kinds include a status kind, in every format.
+func assignAlsoMovedStatus() notification.Event {
+	ev := assignAndNote()
+	ev.Kinds = []notification.EventType{notification.EventTicketAssigned, notification.EventTicketStatusChanged}
+	ev.StatusName = "SECRET-STATUS-NAME"
+	return ev
+}
+
+func TestStatusName_OnlyForHooksThatSubscribeToAStatusKind(t *testing.T) {
+	for _, format := range []string{"slack", "teams", "discord", "jira"} {
+		t.Run(format+" on assigned alone", func(t *testing.T) {
+			rc := newReceiver(t, 200)
+			h := hookOn(rc.srv.URL, "ticket.assigned")
+			h.PayloadFormat = format
+			require.NotContains(t, deliverOne(t, h, rc, assignAlsoMovedStatus()), "SECRET-STATUS-NAME")
+		})
+		if format != "jira" {
+			continue // a chat message names the status only in a status_changed headline
+		}
+		t.Run(format+" on assigned and status_changed", func(t *testing.T) {
+			rc := newReceiver(t, 200)
+			h := hookOn(rc.srv.URL, "ticket.assigned", "ticket.status_changed")
+			h.PayloadFormat = format
+			require.Contains(t, deliverOne(t, h, rc, assignAlsoMovedStatus()), "SECRET-STATUS-NAME")
+		})
+	}
+}
+
+// Jira and chat follow one rule for reply text: the cut-down kinds include
+// ticket.replied, and never an internal note.
+func TestReplyText_JiraFollowsTheSameRuleAsChat(t *testing.T) {
+	for events, want := range map[string]bool{"*": true, "ticket.reopened": false} {
+		rc := newReceiver(t, 200)
+		h := hookOn(rc.srv.URL, events)
+		h.PayloadFormat = "jira"
+		body := deliverOne(t, h, rc, reopenWithReply())
+		require.Equal(t, want, strings.Contains(body, "Paper tray 2 was empty."), "hook on %s: %s", events, body)
+	}
 }
