@@ -73,7 +73,7 @@ Read the full notes before upgrading: [1.3.0](https://gohelpdesk.org/docs/upgrad
 - Reporters can attach files to replies (#175). [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#reporter-attachments)
 - Building from source needs Docker Buildx (#297, #301). [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#buildx)
 - `MFA_ENABLED` and `GUEST_SUBMISSION_ENABLED` are removed. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#env-removed)
-- Email now refuses to send a password or mail over an unencrypted connection to a public server. Check your SMTP setup before upgrading. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#smtp)
+- Email never sends a password unencrypted, to any server, and sends mail without a password unencrypted only to a private address. Check your SMTP setup before upgrading. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#smtp)
 - Accounts that have not signed in within 30 days of the first 1.3.0 start must reset their password. Administrators are exempt. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#password-age)
 - Raw JSON webhooks now carry ids only, and internal notes are their own event. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#webhooks)
 - Staff and administrators start receiving email about their tickets once email is configured. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#staff-email)

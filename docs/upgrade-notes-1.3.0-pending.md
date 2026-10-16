@@ -69,7 +69,7 @@ Every MCP route (`/mcp`, `/mcp/sse`, `/mcp/message` and anything else under `/mc
 
 - A browser-based MCP client served from a different origin, or a reverse proxy that injects an `Origin` header, is now refused. Serve the client from `BASE_URL`'s origin or stop the proxy adding the header.
 - 1.2.x accepted these requests on the SSE routes. This closes a path by which a web page on a sibling site could act through a signed-in user's session cookie. Upgrade if you expose MCP over SSE.
-- A `BASE_URL` with a non-ASCII host stops the server from starting (passkeys refuse it); write it in punycode.
+- A `BASE_URL` with a non-ASCII host does not stop the server: passkeys are turned off (see the passkeys section above). Write it in punycode if you want them.
 
 ## JWT Secret (`JWT_SECRET`)
 
