@@ -87,6 +87,9 @@
       <li><a href="#tickets-tags">Tags</a></li>
       <li><a href="#tickets-assignment">Assignment</a></li>
       <li><a href="#tickets-priority">Changing priority</a></li>
+      <li><a href="#tickets-follow">Following a ticket</a></li>
+      <li><a href="#tickets-staff-email">Email to staff</a></li>
+      <li><a href="#tickets-reopen">Reopened tickets</a></li>
       <li><a href="#tickets-custom-fields">Custom Fields</a></li>
       <li><a href="#tickets-attachments">Attachments</a></li>
       <li><a href="#tickets-search">Search</a></li>
@@ -241,7 +244,7 @@
   <li>All staff and admins who have access to the ticket</li>
   <li>Guest users with a valid access link (for guest-submitted tickets)</li>
 </ul>
-<p>When staff post a public reply with <em>Send ticket update email to customer</em> ticked, which is the default, the requester is emailed a notice with a link to the ticket. The email carries no reply text. Nobody else is emailed about replies.</p>
+<p>When staff post a public reply with <em>Send ticket update email to customer</em> ticked, which is the default, the requester is emailed a notice with a link to the ticket. The email carries no reply text. Staff are not emailed about a staff reply or an internal note. They are emailed when the <em>requester</em> replies; see <a href="#tickets-staff-email">Email to staff</a>.</p>
 
 <h3>Internal notes</h3>
 <p>Staff and admins can add internal notes to any ticket. Internal notes are:</p>
@@ -375,6 +378,56 @@
   <li><strong>It is recorded.</strong> The change shows in the ticket's Activity feed as a priority change.</li>
   <li>If the server refuses a change for any other reason, the message is shown under the drop-down and the old priority stays.</li>
 </ul>
+
+
+<h2 id="tickets-follow">Following a ticket</h2>
+
+<p>Staff and admins can follow a ticket to be emailed about it without being assigned to it. On the ticket page, the <strong>Followers</strong> card lists who follows the ticket and has a <em>Follow</em> button, which becomes <em>Unfollow</em> once you follow. It only ever changes your own follow.</p>
+<ul>
+  <li><strong>What a follower is emailed about.</strong> The ticket being assigned, its requester replying, and the ticket being reopened. These come under your <em>Activity on tickets I'm assigned to or follow</em> switch (see <a href="#tickets-staff-email">Email to staff</a>), and an administrator's override of that switch applies to followers too. You are never emailed about your own change, and never twice for one event.</li>
+  <li><strong>You are not mailed as a follower of a ticket you hold.</strong> The assignee is not mailed as a follower, and neither are the members of an assigned group when the group itself is being mailed. For those events, their own switches decide.</li>
+  <li><strong>Reassigning ends the old assignee's follow.</strong> If you followed a ticket you were assigned, and it is then assigned to someone else or to nobody, your follow is removed. Click <em>Follow</em> again to keep the mail. Moving a ticket between groups does not touch anyone's follow.</li>
+  <li><strong>If you can no longer see the ticket</strong> (for example, staff were limited to their group scope), you are skipped when mail is sent but keep following, and are mailed again if you can see it again.</li>
+  <li><strong>Everyone on staff can see the list of followers.</strong> Following and unfollowing are written to the ticket's Activity feed. Administrators always see those entries; staff see them only if an administrator has turned on <em>Staff can view follow history</em> (see <a href="admin-guide.html#admin-settings-audit">the Admin Guide</a>). Requesters never see followers or follow entries.</li>
+  <li><strong>People only.</strong> An API key, an OAuth client or a service user cannot follow a ticket. Over the API, <code>PUT</code> and <code>DELETE /api/v1/tickets/{id}/follow</code> follow and unfollow, and <code>GET /api/v1/tickets/{id}/followers</code> lists them.</li>
+</ul>
+
+
+<h2 id="tickets-staff-email">Email to staff</h2>
+
+<p>Staff and admins are emailed about their own work, not only requesters about theirs. This needs email to be set up on the server; nothing is sent until then. Like every email from the help desk, these carry only the ticket's tracking number and a link, never the ticket's content.</p>
+
+<h3>Your account: Email about tickets</h3>
+<p>Under <em>Your account</em>, the <em>Email about tickets</em> section has three switches. All three are on by default. Requesters do not see this section.</p>
+<table>
+  <thead><tr><th>Switch</th><th>You are emailed when</th></tr></thead>
+  <tbody>
+    <tr><td><em>Tickets assigned to me</em></td><td>A ticket is assigned to you.</td></tr>
+    <tr><td><em>Activity on tickets I'm assigned to or follow</em></td><td>A requester replies on a ticket assigned to you, or it is reopened. Also, for a ticket you follow: it is assigned, gets a requester's reply, or is reopened.</td></tr>
+    <tr><td><em>My groups' tickets</em></td><td>A ticket is assigned to a group you belong to. Also, on a group ticket that nobody personally holds: a requester replies, or it is reopened.</td></tr>
+  </tbody>
+</table>
+<ul>
+  <li>You are never emailed about something you did yourself.</li>
+  <li>A colleague's reply, and an internal note, never send mail. A staff member who filed a ticket and replies on it counts as the requester.</li>
+  <li>A requester's reply on a ticket that has both an assignee and a group goes to the assignee only, not to the whole group.</li>
+  <li>An administrator can force any of the three switches on or off for everyone; see <a href="admin-guide.html#admin-staff-email">the Admin Guide</a>. When a switch is forced, your own setting is overridden.</li>
+</ul>
+
+
+<h2 id="tickets-reopen">Reopened tickets</h2>
+
+<p>A reopen is any move from Resolved or Closed back to an open status. All of these count: a requester replying to a Resolved ticket inside the reopen window (an account holder, or a guest through their link), staff or an administrator changing the status, and a forced reopen of a Closed ticket where <em>Reopening closed tickets</em> allows it. Each one does the following.</p>
+<ul>
+  <li><strong>The ticket is flagged.</strong> Staff and admins see a <em>Reopened</em> badge on the ticket and in the ticket lists while the ticket is open. It goes away when the ticket is resolved again. The number of reopens is counted for good and is never reset. Requesters do not see the badge.</li>
+  <li><strong>The priority goes up one level on the first reopen only</strong> (Low to Medium to High to Critical; Critical stays Critical). A second reopen flags the ticket again but does not raise the priority again. Because the priority changes, the ticket can match a different SLA policy. The change is recorded in the Activity feed.</li>
+  <li><strong>The SLA starts over, on every reopen.</strong> The earlier SLA record is kept, and staff and admins see an <em>SLA restarted</em> badge on the ticket; select it to see the earlier record. The Activity feed notes the restart. Nothing happens to the SLA while SLA tracking is switched off.</li>
+  <li><strong>Staff are emailed.</strong> The assignee, under <em>Activity on tickets I'm assigned to or follow</em>. The assigned group's members, under <em>My groups' tickets</em>, but only while nobody personally holds the ticket. The ticket's followers, whoever holds it. Each person gets one email, and the person who reopened the ticket gets none. See <a href="#tickets-staff-email">Email to staff</a>.</li>
+  <li><strong>The change is recorded and announced.</strong> A status change out of Resolved or Closed is written to the Activity feed as a reopen, and subscribed webhooks receive <code>ticket.reopened</code>, as they do for a requester's reply.</li>
+</ul>
+
+<h3>What requesters can and cannot see</h3>
+<p>A requester sees the ticket's current state and its public replies. They do not see the Activity feed or the status timeline of their own ticket (the API refuses those requests with <code>403</code>), and the conversation no longer shows status-change events. They receive only these ticket fields: id, tracking number, subject, description, status, priority, category, type, item, created and resolved dates, the assignee's id, and resolution notes. Everything else is withheld, including the assigned group, the reporter, guest contact details, the closed and last-updated dates, its Pending timing, and the reopen count. A guest's view is the same, and it no longer includes the last-updated date.</p>
 
 
 <h2 id="tickets-custom-fields">Custom fields</h2>
