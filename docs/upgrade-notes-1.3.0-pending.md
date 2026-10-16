@@ -305,18 +305,26 @@ Scripts and API keys that call the admin API can see these changes. Migration 00
 
 ## Staff Can Create Their Own API Keys (#450)
 
-API keys can now be made by staff, and issued by an administrator on someone else's behalf. **Nothing changes until an administrator turns it on:** the new setting **Staff may create their own API keys** (Settings → Authentication → API keys, `staff_can_create_api_keys`) is off, and while it is off staff cannot create keys.
+API keys can now be made by staff, issued by an administrator on a staff member's behalf, and every new key has a maximum lifetime. **Two new settings**, both under Settings → Authentication → API keys and both session only (an API key or OAuth client cannot change them):
 
-- **Who:** administrators always. Staff only while the setting is on. Requesters never create keys themselves. There is no per-user permission.
-- **Where:** Account → API keys (list, create with an optional expiry, revoke), and `GET/POST /api/v1/me/api-keys`, `GET /api/v1/me/api-keys/scopes`, `DELETE /api/v1/me/api-keys/{id}`. These are session-only: an API key or OAuth client gets 403 `session_required`, so a key cannot create more keys.
-- **Turning the setting off** stops new keys. Keys that already exist keep working, and staff can still list and revoke their own. To remove them, revoke them under Admin → API Keys.
-- **A key's scopes never exceed its owner's role.** Staff keys can carry `tickets:read|write`, `groups:read` and `audit:read`; a requester's `tickets:read|write`; an administrator's any scope. Anything else is refused with 400 `invalid_scope`. This applies to a key an administrator issues for someone else too, and to `POST /admin/api-keys`, which now rejects a scope its key's owner cannot use (always fine for an administrator's own key).
-- **Issuing on behalf:** `POST /api/v1/admin/api-keys` takes an optional `user_id`; the key belongs to that account and acts as it. Only a signed-in administrator can do this. **An API key or OAuth client that names a `user_id` other than its own owner now gets 403 `session_required`** (it used to have no such field). Responses to this route now include `user_id` and `created_by`.
-- **Audit:** every key issued or revoked, whether the person's own or someone else's, writes `api_key_issued` / `api_key_revoked` (entity type `api_key`) to the admin audit log.
-- **Lists:** `GET /api/v1/admin/api-keys` entries gain `created_by` (who issued the key; null for keys made before 1.3). The settings API accepts and returns `staff_can_create_api_keys`, session only.
+| Setting | Key | Default | Values |
+|---|---|---|---|
+| Staff may create their own API keys | `staff_can_create_api_keys` | off | true / false |
+| Longest an API key may live | `api_key_max_lifetime_years` | 2 | integer 1 to 5 (years), or `-1` for Never; the settings page shows a slider with those six stops and a red warning above 2 |
+
+- **Who:** administrators always. Staff only while the first setting is on. Requesters never own keys: `/me/api-keys` is 403 for them and an administrator cannot issue one for them (400 `requester_cannot_own_key`). There is no per-user permission.
+- **Turning staff creation off** only stops new keys. Keys that already exist keep working, and staff can still list and revoke their own.
+- **Where:** Account → API keys (list, create with an expiry, revoke), and `GET/POST /api/v1/me/api-keys`, `GET /api/v1/me/api-keys/scopes`, `DELETE /api/v1/me/api-keys/{id}`. Session only: an API key or OAuth client gets 403 `session_required`, so a key cannot create more keys.
+- **Issuing on behalf:** `POST /api/v1/admin/api-keys` takes an optional `user_id`. An administrator (signed in) can issue for a staff member or for themselves. Not for another administrator (400 `cannot_issue_for_administrator`), a requester, or a service account (400 `service_account_cannot_own_key`). **An API key or OAuth client that names a `user_id` other than its own owner gets 403 `session_required`.** Responses now include `user_id` and `created_by`.
+- **A key's scopes never exceed its owner's role.** Staff keys can carry `tickets:read|write`, `groups:read` and `audit:read`; an administrator's any scope. Anything else is 400 `invalid_scope`, on both routes. `GET /api/v1/admin/scopes?role=staff` lists what a staff key may carry.
+- **Maximum lifetime: this changes `POST /admin/api-keys` for existing scripts.** While the limit is a number of years, `expires_at` is now **required** (400 `expires_at_required`) and may be no later than that many years from now (400 `expires_at_too_far`). A script that creates keys without `expires_at` needs to send one, or an administrator must choose Never. Keys made before the upgrade keep working. The limit is applied when a key is created, not when it is used.
+- **Marked for rotation:** both key lists carry `beyond_limit`. A key with no expiry, or one beyond the current limit (for example after the limit is lowered), is shown as "No expiry (longer than the current limit)" so it can be rotated.
+- **Password reset can revoke keys:** `POST /api/v1/admin/users/{id}/password` takes `revoke_api_keys` (default false); the admin form has "Also revoke this person's API keys", unticked. It deletes every key the account owns and audits the count. A person's own password change, `server unlock` and `server reset-factors` never touch keys.
+- **Audit:** every key issued or revoked, own or on someone's behalf, writes `api_key_issued` / `api_key_revoked` (entity type `api_key`) to the admin audit log; a revoke-on-reset writes `api_keys_revoked` on the account with the number of keys.
+- **Lists and settings API:** `GET /api/v1/admin/api-keys` entries gain `created_by` and `beyond_limit`. `GET /me` gains `can_create_api_keys` and `api_key_max_lifetime_years`.
 - **Existing keys:** an administrator's existing keys keep acting as administrator, unchanged.
 
-**Ordering.** This change adds migration **000048** (`api_keys.created_by`); #451 takes 000049.
+**Ordering.** This change adds migration **000048** (`api_keys.created_by`); #451 takes 000049. The new settings are rows in the settings table and need no migration.
 
 ## One Change, One Event: Webhooks and Staff Email (#506)
 

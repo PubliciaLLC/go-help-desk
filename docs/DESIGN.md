@@ -2397,7 +2397,7 @@ Four more things are off limits to a machine credential, for the same reason:
   address and policy, allowed types, infected and mismatch handling, the
   reputation toggles, keys and refresh interval); and audit retention, staff
   visibility of change history and whether requester names are masked in audit
-  views; and who may create API keys (`staff_can_create_api_keys`, #450).
+  views; who may create API keys (`staff_can_create_api_keys`) and how long a new one may live (`api_key_max_lifetime_years`, #450).
   Ordinary configuration such as the site name
   stays automatable.
 - **Verifying a second factor** (`POST /auth/local/mfa/verify` and
@@ -2439,12 +2439,19 @@ one is a permission decision with one switch and no per-user exceptions.
   and revoke their own keys whatever it says, including a key an administrator
   issued for them. Revoking only ever removes access, and a person must be able
   to remove a credential that acts as them.
-- **Requesters** never create keys. `/me/api-keys` answers them `403`.
-- **An administrator can issue a key for any live account** with `user_id` on
-  `POST /admin/api-keys` (a signed-in session only). The key belongs to that
-  account and acts as it. That includes a requester: this is how a requester's
-  integration gets a key without the requester ever holding the ability to mint
-  one. A deleted account is `404`, a disabled one `400 user_disabled`.
+- **Requesters never own keys.** `/me/api-keys` answers them `403`, and an
+  administrator cannot issue one for them either (`400 requester_cannot_own_key`).
+  A requester's integration uses an OAuth client or a staff member's key.
+- **An administrator can issue a key for a staff member, or for themselves**
+  (`user_id` on `POST /admin/api-keys`, a signed-in session only, or `user_id`
+  equal to their own id). The key belongs to that account and acts as it. Not for
+  another administrator (`400 cannot_issue_for_administrator`: one administrator
+  minting another's credential), not for a requester, and not for a service
+  account, the identity an OAuth client acts as (`400
+  service_account_cannot_own_key`; the client has its own credential and the
+  admin "issue for" search leaves service accounts out). A deleted account is
+  `404`, a disabled one `400 user_disabled`. The owner is judged before the
+  scopes, so the refusal gives the real reason.
 - **A machine credential that names another user gets `403 session_required`.**
   Otherwise `credentials:write` is the ability to become anyone: issue a key
   as the administrator and use it. Naming its own owner is not naming another
@@ -2465,30 +2472,62 @@ one is a permission decision with one switch and no per-user exceptions.
   *make*, so it takes the stricter reading.)
 - **A key's scopes never exceed its owner's role.** `auth.ScopesForRole` is the
   table: an administrator may carry any scope; staff `tickets:read|write`,
-  `groups:read` and `audit:read`; a requester `tickets:read|write`. It is checked
-  against the key's *owner*, so an administrator issuing a key for a requester is
-  limited by what a requester can do; a scope outside it is `400 invalid_scope`.
+  `groups:read` and `audit:read`; a requester none, since requesters never own a
+  key (an existing requester key still acts within the role check). It is checked
+  against the key's *owner*, so an administrator issuing a key for a staff member is
+  limited by what staff can do; a scope outside it is `400 invalid_scope`.
+  `GET /admin/scopes?role=staff` serves that list, and the admin picker offers
+  only it once an owner is chosen.
   Scopes only narrow, so this is defence in depth and not the boundary: the role
   check still refuses a staff key every admin route. What it prevents is a key
   that looks as though it can edit users and cannot. The table is written out
   and `TestScopesForRole_MatchTheRouter` derives the same answer from the
-  router's own middleware, fails if an administrator-only scope is offered to
-  staff or a requester, and fails if a scope the router lets a role use is
+  router's own middleware for administrators and staff, fails if an
+  administrator-only scope is offered to staff, and fails if a scope the router lets a role use is
   missing from the table.
 - **Every issue and revoke is audited**, a person's own keys and keys issued or
-  revoked on someone's behalf alike (`entity_type` `api_key`; actions
+  revoked on someone's behalf alike (a revoke-on-reset is one entry with the count) (`entity_type` `api_key`; actions
   `api_key_issued` and `api_key_revoked`; the entry carries the owner's id,
   `on_behalf`, the scopes and the expiry, and never the key's name, which is
-  free text). The write is best effort and detached from the request, like
-  `user.Service.writeAuditEntry`: an audit entry here does not gate anything,
-  and hanging up after the key is written cannot suppress it.
+  free text). The write is best effort and detached from the request with
+  `context.WithoutCancel`, like `user.Service.ResetMFA`: an audit entry here does
+  not gate anything, and hanging up after the key is written cannot suppress it
+  (`TestAPIKeyAudit_IsWrittenEvenIfTheRequestWasCancelled`).
 - `api_keys.created_by` (migration 000048) records who issued each new key. It
   equals `user_id` when the owner made it and differs when it was issued on their
   behalf; NULL means unknown (a key made before 1.3, or an issuer deleted since).
   It is returned by both key lists, and the Account page says "Issued for you by
   an administrator" and the admin page "Issued on their behalf".
-- Both screens take an optional expiry. `GET /me` reports `can_create_api_keys`
-  so the Account page knows whether to offer the form.
+- **Maximum key lifetime** (`api_key_max_lifetime_years`, Admin → Settings →
+  Authentication → API keys). Every key made through `/me/api-keys` or
+  `POST /admin/api-keys`, own or on someone's behalf, must expire, and no later
+  than this: **2 years by default**, set on a slider with six stops, 1 to 5 years
+  and Never. Stored as the integer 1 to 5, or `-1` for Never; `0`, `6`, a
+  fraction, a string and null are refused with 400, and an unreadable stored
+  value reads as 2. With a limit, a missing expiry is `400 expires_at_required`
+  and one past it `400 expires_at_too_far`, naming the limit; only with Never may
+  `expires_at` be omitted. The setting is **auth-critical** (session only),
+  because raising it, or choosing Never, widens how long a stolen key stays
+  useful; the panel shows a red warning whenever it is above 2. The check is made
+  **when the key is created, never when it is used**. A key that already exists
+  with no expiry, or an expiry beyond the current limit (after the limit is
+  lowered), keeps working and is returned with `beyond_limit: true` in both key
+  lists, which the screens show as "No expiry (longer than the current limit)" so
+  it can be rotated. The create forms default the date to the longest allowed,
+  require one while there is a limit, and refuse a later one; the server enforces
+  the same. The UI sends the end of the chosen day, but never later than an hour
+  before the limit, so the last day the form offers is not refused.
+- **An administrator's password reset can revoke the person's keys.** The reset
+  form has "Also revoke this person's API keys", unticked; `revoke_api_keys` on
+  `POST /admin/users/{id}/password`. When true the server deletes every key the
+  account owns after the password is set and the sessions are ended, and records
+  `api_keys_revoked` on the account's audit entries with `keys_revoked`, the
+  count. It is a separate step from the reset, not one transaction. A person
+  changing or resetting their own password never touches keys, and neither
+  `server unlock` nor `server reset-factors` does.
+- Both screens take the expiry as a date. `GET /me` reports `can_create_api_keys`
+  and `api_key_max_lifetime_years` so the Account page knows whether to offer the
+  form and what to cap it at.
 
 **A blank webhook `secret` clears it, by design.** `PATCH /api/v1/admin/webhooks/{id}`
 with `"secret": ""` removes the stored secret, and deliveries to that hook are

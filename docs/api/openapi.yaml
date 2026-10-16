@@ -2193,7 +2193,12 @@ paths:
                     pattern: '^[a-z_]+:(read|write)$'
                 expires_at:
                   type: [string, 'null']
-                  description: RFC 3339 expiry in the future. Omitted, null or empty means the key never expires.
+                  description: >-
+                    RFC 3339 expiry in the future and no later than api_key_max_lifetime_years
+                    from now (2 years by default; GET /me reports the figure). Required while
+                    there is a limit (400 expires_at_required, 400 expires_at_too_far). Omitted,
+                    null or empty means the key never expires, and is accepted only when the
+                    setting is Never (-1).
       responses:
         '201':
           description: Created. The token is shown only in this response.
@@ -2217,7 +2222,8 @@ paths:
           description: >-
             bad_request (a body that does not decode, or user_id present), scopes_required,
             invalid_scope (not a catalogue scope, or one the caller's role cannot use),
-            invalid_expires_at.
+            invalid_expires_at, expires_at_required, expires_at_too_far (the message names
+            the limit).
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -4850,6 +4856,10 @@ paths:
         - guest_submission_enabled, staff_can_view_ticket_change_history,
           staff_can_view_follow_audit and staff_can_create_api_keys must be JSON
           booleans. null is refused.
+        - api_key_max_lifetime_years must be the integer 1, 2, 3, 4 or 5 (years), or
+          -1 for no limit ("Never"). 0, 6 or more, anything below -1, a fraction, a
+          string and null are refused with bad_request, and nothing is stored. Unset
+          reads as 2.
         - guest_submission_enabled and self_signup_enabled cannot be turned from
           off to on while email is not configured (SMTP_HOST and SMTP_FROM): 400
           email_required, and nothing in the body is stored. Both send an email
@@ -4901,7 +4911,7 @@ paths:
         attachment_infected_handling, attachment_mismatch_handling,
         audit_retention_days, staff_can_view_ticket_change_history,
         staff_can_view_follow_audit, staff_can_create_api_keys,
-        password_rehash_grace_days, password_rehash_started_at,
+        api_key_max_lifetime_years, password_rehash_grace_days, password_rehash_started_at,
         attachment_vt_lookup, attachment_vt_api_key, attachment_reputation_provider,
         attachment_reputation_api_key, attachment_reputation_virustotal_enabled,
         attachment_reputation_virustotal_key, attachment_reputation_metadefender_enabled,
@@ -5639,9 +5649,10 @@ paths:
       description: >-
         Administrators only (second factor required).
         Creates an API key that acts at its owner's role and counts as having
-        passed MFA. The owner is the caller, or the account named by user_id: an
+        passed MFA. The owner is the caller, or the staff member named by user_id: an
         administrator signed in through the browser can issue a key on behalf of
-        any live account, staff and requesters included. The key belongs to that
+        a live staff member, or for themselves. A requester, another administrator
+        and a service account (an OAuth client's identity) cannot own a key. The key belongs to that
         account and acts as it; created_by records the administrator. An API key
         or OAuth client that names any user but its own owner is refused with
         403 session_required. Either way the key is audited (entity_type api_key,
@@ -5649,9 +5660,8 @@ paths:
         and cannot be shown again. It has the form GHD_ followed by 64
         hexadecimal characters. scopes is required: a non-empty list of
         resource:action values from GET /api/v1/admin/scopes, and none may exceed
-        the owner's role (a key for a requester can carry only tickets scopes;
-        for staff, tickets, groups:read and audit:read): invalid_scope
-        otherwise. An API key can grant only scopes it holds itself. expires_at
+        the owner's role (for staff, tickets, groups:read and audit:read; for
+        an administrator, any): invalid_scope otherwise. An API key can grant only scopes it holds itself. expires_at
         is optional; when given it must be a future RFC 3339 timestamp. An
         expired key is refused as if it were unknown. name is not validated and
         may be empty.
@@ -5686,9 +5696,13 @@ paths:
                 expires_at:
                   type: [string, 'null']
                   description: >-
-                    RFC 3339 expiry in the future, for example 2027-01-31T00:00:00Z.
-                    Omitted, null, an empty string or only spaces means the key never
-                    expires.
+                    RFC 3339 expiry in the future, for example 2027-01-31T00:00:00Z, and
+                    no later than api_key_max_lifetime_years from now (2 years by default).
+                    Required while there is a limit: 400 expires_at_required, or 400
+                    expires_at_too_far naming the limit. Omitted, null, an empty string or
+                    only spaces means the key never expires, and is accepted only when the
+                    setting is Never (-1). The limit applies when the key is made, not
+                    when it is used.
                 user_id:
                   $ref: '#/components/schemas/Uuid'
                   description: >-
@@ -5726,7 +5740,12 @@ paths:
             empty or missing. invalid_scope when an entry is not a catalogue scope
             (for example a write scope on audit) or is one the owner's role cannot
             use. invalid_expires_at when expires_at is not RFC 3339 or is not in
-            the future. user_disabled when user_id names a disabled account.
+            the future. expires_at_required and expires_at_too_far for the lifetime
+            limit. user_disabled when user_id names a disabled account.
+            requester_cannot_own_key, cannot_issue_for_administrator (an account
+            other than the caller that is an administrator) and
+            service_account_cannot_own_key when user_id names an account that may not
+            own a key: a key can be issued for a staff member or for yourself.
           content:
             application/json:
               schema:
@@ -6771,8 +6790,17 @@ paths:
         Returns every scope a credential can hold, as resource:action pairs. Write
         implies read on the same resource, and the audit resource has only read.
         There is no wildcard scope. The admin UI builds its picker from this list,
-        so it cannot drift from what the server enforces.
+        so it cannot drift from what the server enforces. With ?role=staff or
+        ?role=admin the list is only what a key owned by that role may carry
+        (the same table POST /admin/api-keys checks); any other role is 400
+        bad_request, because no other role can own a key.
       tags: ['Admin: Credentials']
+      parameters:
+        - name: role
+          in: query
+          required: false
+          schema: {type: string, enum: [admin, staff]}
+          description: Narrow the list to what a key owned by this role may carry.
       x-ghd-handler: handleListScopes
       security:
         - sessionCookie: []
@@ -6800,6 +6828,8 @@ paths:
                     action:
                       type: string
                       enum: [read, write]
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -7227,6 +7257,12 @@ paths:
         administrator (403 session_required), then the account itself. An unknown
         or soft-deleted id answers 404; a soft-deleted account's password is not
         set. The reset is recorded in the audit log on a best-effort basis.
+        revoke_api_keys, when true, also deletes every API key the account owns,
+        after the password is set and the sessions ended, and records
+        api_keys_revoked on the account's audit entries with keys_revoked, the
+        number removed. It is false when omitted: a routine reset leaves keys alone.
+        A person changing their own password (PATCH /me/password) never revokes keys,
+        and neither does the server unlock or reset-factors console command.
       tags: ['Admin: Users']
       x-ghd-handler: handleAdminResetPassword
       security:
@@ -7245,6 +7281,10 @@ paths:
                 new_password:
                   type: string
                   description: Required. 8 to 72 bytes, counted in bytes rather than characters.
+                revoke_api_keys:
+                  type: boolean
+                  default: false
+                  description: Also delete every API key the account owns. Audited with the count.
       responses:
         '204':
           $ref: '#/components/responses/NoContent'
@@ -9561,6 +9601,13 @@ components:
         email_notify_assigned: {type: boolean, description: 'Email me when a ticket is assigned to me. Staff email switch, on by default.'}
         email_notify_activity: {type: boolean, description: 'Email me when a requester replies on a ticket assigned to me, or it is reopened. On by default.'}
         email_notify_group: {type: boolean, description: "Email me about my groups' tickets. On by default."}
+        api_key_max_lifetime_years:
+          type: integer
+          enum: [1, 2, 3, 4, 5, -1]
+          description: >-
+            The longest a new API key may live, in years, or -1 for no limit (the
+            api_key_max_lifetime_years setting). Present only on GET /me and PATCH
+            /me/email-preferences, beside can_create_api_keys.
         can_create_api_keys:
           type: boolean
           description: >-
@@ -10352,6 +10399,15 @@ components:
             It governs creating a key only: turning it off does not revoke keys
             that exist, and staff can still list and revoke their own. Session
             only.
+        api_key_max_lifetime_years:
+          type: integer
+          enum: [1, 2, 3, 4, 5, -1]
+          description: >-
+            The longest a new API key may live, in years: 1 to 5, or -1 for no limit
+            (the Never stop on the admin slider). Default 2 when unset. While there is
+            a limit every new key must have an expiry no later than this; with -1 an
+            expiry is optional. Checked when a key is created, never when one is used.
+            Session only.
         password_rehash_grace_days:
           type: integer
           minimum: 1
@@ -10438,13 +10494,19 @@ components:
         key that has never been used omits last_used_at, and a key with no expiry omits
         expires_at.
       type: object
-      required: [id, name, user_id, created_by, owner_name, owner_email, scopes, created_at]
+      required: [id, name, user_id, created_by, beyond_limit, owner_name, owner_email, scopes, created_at]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
         name: {type: string}
         user_id:
           $ref: '#/components/schemas/Uuid'
           description: The account the key belongs to and acts as.
+        beyond_limit:
+          type: boolean
+          description: >-
+            True when the key outlives the current maximum lifetime: it has no expiry, or
+            expires later than api_key_max_lifetime_years from now. It still works; the
+            flag is for finding keys to rotate. Always false when the setting is Never.
         created_by:
           description: >-
             Who issued the key. Equal to user_id when the owner made it, different when
@@ -10480,11 +10542,16 @@ components:
         One of the caller's own API keys. The token hash is never returned. A key that has
         never been used omits last_used_at, and a key with no expiry omits expires_at.
       type: object
-      required: [id, name, user_id, created_by, scopes, created_at]
+      required: [id, name, user_id, created_by, beyond_limit, scopes, created_at]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
         name: {type: string}
         user_id: {$ref: '#/components/schemas/Uuid'}
+        beyond_limit:
+          type: boolean
+          description: >-
+            True when the key outlives the current maximum lifetime (no expiry, or one
+            further off than the limit). It still works; it is marked so it can be rotated.
         created_by:
           description: >-
             Who issued the key: the caller when they made it, an administrator when one issued
