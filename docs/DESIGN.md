@@ -141,7 +141,7 @@ admins, or staff and admins, to force-reopen; requesters never can.
   - **It raises the priority one level on the first reopen only** (low to medium to high to critical; critical stays critical). "First" is the count being 0 before this reopen, so a ticket that is resolved and reopened again is flagged again but not raised again. The change goes through the same primitive as a staff priority change (`changePriorityInTx`, reason `reopened`) and writes `priority_changed` with that reason. A `PATCH` that reopens a ticket and also sends a `priority` raises it first and then applies the priority sent, so the value sent wins.
   - **It restarts both SLA clocks**, on every reopen and not only the first, at any priority: see *A reopen restarts both clocks* under SLA Policy Matching. Every reopen is also a **restart point** remembered on the ticket (`last_reopened_at` and the Pending total then, `paused_seconds_at_last_reopen`), including a reopen that lands on a priority with no SLA policy and so starts no record.
   - **It writes `reopened`** to the audit log (and `priority_changed` and `sla_restarted` as above). A status change out of Resolved or Closed now writes `reopened` beside its `status_changed`; before, only the reply and `POST /reopen` did.
-  - **It emails staff and fires `ticket.reopened`**: see Notifications. A status change out of Resolved or Closed raises the `ticket.reopened` webhook event, which it did not before. The reopen and the status change are **one event** for the ticket (kinds `ticket.reopened` and `ticket.status_changed`, plus `ticket.priority_changed` on the first reopen), written to the outbox in the same transaction; the mail and the webhook are sent a moment after the commit. See [Ticket Events: One Change, One Event](#ticket-events-one-change-one-event).
+  - **It emails staff and fires `ticket.reopened`**: see Notifications. A status change out of Resolved or Closed raises the `ticket.reopened` webhook event, which it did not before. The reopen and the status change are **one event** for the ticket (kinds `ticket.reopened` and `ticket.status_changed`, plus `ticket.priority_changed` on the first reopen, if the priority moved), written to the outbox in the same transaction; the mail and the webhook are sent a moment after the commit. See [Ticket Events: One Change, One Event](#ticket-events-one-change-one-event).
 - **Closed**: automatic transition after the reopen window expires, or an administrator closing the ticket. **Archived read-only, and terminal by default** — see [Closed is terminal](#closed-is-terminal-and-read-only) below. Unless the policy above lets their role, staff and admin cannot reopen it either; they open a linked follow-up.
 
   **Auto-close scheduling.** This transition is driven by a periodic background
@@ -250,27 +250,30 @@ priority and would leave the ticket Resolved or Closed (or that touches one
 already there) is refused whole with that `409`: the status or assignment in the
 same request is not saved first.
 
-**One PATCH, one outcome (#468).** `PATCH /tickets/{id}` can change a ticket's
-status, assignment, classification and priority in one request, and each is
-saved on its own. Every refusal the request can meet is decided before the first
-of them is saved, so a refused request changes nothing and writes no audit
-entry: an invalid priority value, a priority or assignment or reclassification
-from a role that may not make it, an invalid classification, a priority on a
-ticket that would end up Resolved or Closed, an assignee that cannot be given a
-ticket (unknown, deleted, disabled or a reporting user), a group that does not
-exist, and the status change's own refusals (it is the first write). The service
-writes check again, but only what each can: `Assign` re-checks the assignee and
-group on the locked row; `ChangePriority` re-checks the role and the closed state
-on the locked row; `UpdateStatus` checks the role, then re-checks the reopen
-policy and an inactive status on the locked row; `UpdateCTI` re-checks the
-classification, without a lock. The assignment and reclassification roles are not
-checked by the service: authorisation belongs to the caller, so the handler does
-it before the first write, and a caller other than this handler (MCP, the
-scheduler) must do its own. What stays possible after an earlier write is what
-only the write can know: a concurrent change in the milliseconds between check
-and write (an assignee disabled, the ticket closed) or a database failure.
-Before this, a request whose assignee was refused had already saved its status.
-Over MCP `update_ticket_status` answers a move out of Closed with the closed
+**One PATCH, one outcome (#468, #506).** `PATCH /tickets/{id}` can change a
+ticket's status, assignment, classification and priority in one request. It is
+one service call, `Update`, in **one transaction**, in that order (the priority
+last, so a category changed in the same request is the one its SLA policy is
+matched against). A refusal at any step leaves nothing saved and writes no audit
+entry, and the request announces one event (Ticket Events: One Change, One
+Event). The handler still decides every refusal it can before the transaction
+starts: an invalid priority value, a priority or assignment or reclassification
+from a role that may not make it, an invalid classification (`ValidateCTI`), a
+priority on a ticket that would end up Resolved or Closed, an assignee that
+cannot be given a ticket (unknown, deleted, disabled or a reporting user), a
+group that does not exist, and the status change's own refusals. Inside the
+transaction the steps check again, on the locked row, what each can: the
+assignment re-checks the assignee and group; the priority step re-checks the
+role and the closed state; the status step re-checks the reopen policy and an
+inactive status (its role check is made before the transaction). The
+classification step takes the row lock and does not check again: `ValidateCTI`
+before the transaction is its only check. The assignment and reclassification
+roles are not checked by the service: authorisation belongs to the caller, so
+the handler does it first, and a caller other than this handler (MCP, the
+scheduler) must do its own. A concurrent change between the early check and the
+transaction (an assignee disabled, the ticket closed) or a database failure
+makes the whole request fail and roll back, where before #506 the steps ahead of
+the failing one had already been saved. Over MCP `update_ticket_status` answers a move out of Closed with the closed
 refusal and names the follow-up instead.
 
 **Follow-up.** The way forward from a Closed ticket, in every `closed_reopen_policy`
@@ -679,7 +682,7 @@ Scope does two separate jobs: it can restrict what staff see, and it routes new 
 3. `auto_assign_user_ids`: a list of staff the tickets are dealt out to round-robin. The rotation is in memory, per server process. A listed user the assignment refuses (deleted, disabled or no longer staff) is skipped and the next one tried, so a departed colleague does not silently take every Nth ticket out of the queue.
 4. Otherwise the ticket stays unassigned.
 
-Routing is best-effort: a failure to assign leaves the ticket unassigned and does not fail the creation. It runs for tickets created through `POST /tickets` and for follow-ups (`POST /tickets/{id}/follow-up`, `POST /guest/follow-up`). It does **not** run for MCP `create_ticket` and `create_follow_up`, and a new guest submission (`POST /guest/tickets`) does not call it either. `auto_assign_group_id` (a UUID string) and `auto_assign_user_ids` (an array of UUID strings) are set on **Admin → Routing** (a group picker and a staff checklist, with the rules above listed in order) or through `PATCH /admin/settings`. Saving is checked: a group id that names no group, or a user id that names no one or someone who is neither staff nor an administrator, is refused with 400 `invalid_auto_assign` and nothing in the request is written (before #447 such an id was saved and then skipped at routing time). An empty value clears the setting.
+Routing is best-effort in one respect: a candidate that cannot be given a ticket (a departed colleague still on the round-robin list, a group that no longer exists) is skipped for the next, and if none is acceptable the ticket is left unassigned and the creation succeeds. A database error while checking a candidate is not skipped: it aborts the create. It runs for tickets created through `POST /tickets` and for follow-ups (`POST /tickets/{id}/follow-up`, `POST /guest/follow-up`). It does **not** run for MCP `create_ticket` and `create_follow_up`, and a new guest submission (`POST /guest/tickets`) does not call it either. `auto_assign_group_id` (a UUID string) and `auto_assign_user_ids` (an array of UUID strings) are set on **Admin → Routing** (a group picker and a staff checklist, with the rules above listed in order) or through `PATCH /admin/settings`. Saving is checked: a group id that names no group, or a user id that names no one or someone who is neither staff nor an administrator, is refused with 400 `invalid_auto_assign` and nothing in the request is written (before #447 such an id was saved and then skipped at routing time). An empty value clears the setting.
 
 ### Branding
 
@@ -3007,18 +3010,18 @@ raises into the transaction's collector; none dispatches after the commit.
 
 | Producer (who calls it) | Kinds it raises | What the event carries |
 | --- | --- | --- |
-| `create` (REST and guest `POST` ticket, MCP `create_ticket`, `CreateFollowUp`, `CreateRequesterFollowUp`) | `ticket.created`; plus `ticket.assigned` when routing picked someone (REST create and both follow-ups only; guest create and MCP create pass no candidates) | Recipient = guest address and the guest-link flag for a guest. For routing, the `RoutedAssignment` flag (below). |
+| `create` (REST and guest `POST` ticket, MCP `create_ticket`, `CreateFollowUp`, `CreateRequesterFollowUp`) | `ticket.created`; plus `ticket.assigned` when routing picked someone (REST create, REST follow-up and guest follow-up only; guest create, MCP `create_ticket` and MCP `create_follow_up` pass no candidates) | Recipient = guest address and the guest-link flag for a guest. For routing, the `RoutedAssignment` flag (below). |
 | same, follow-up only | `ticket.linked` **on the original ticket** (its own event: one per ticket) | `target_id` = the new ticket, `link_type` = `parent_child` |
-| `UpdateStatus` (REST `PATCH status_id`, MCP `update_ticket_status`) | the status kinds | `new_status_id`; recipient = guest (none when closing); guest-link flag unless closing |
-| `Assign` (REST `PATCH` assignee or `clear_assignee`, MCP `assign_ticket`) | `ticket.assigned`, also for a clear and for assigning the person who already holds it (the event then has no field change) | |
-| `ChangePriority` (REST `PATCH priority`) | `ticket.priority_changed`, only when the priority moved | |
-| `UpdateCTI` (REST `PATCH category_id`) | `ticket.classified`, only when category, type or item changed. Now in a transaction; still writes no audit entry. | |
-| `Update` (REST `PATCH /tickets/{id}`) | whatever its steps raise, merged | see *One transaction* |
-| `addReply` (REST reply, MCP `add_reply`, guest reply) | `ticket.replied`, or `ticket.note_added` for an internal note. A requester's reply that reopens a Resolved ticket adds the status kinds (`status_changed`, `reopened`) and, on the ticket's first reopen, `priority_changed`. | `reply_id`, `internal`, `ReplyBody` (public only); recipient = reporter when "notify customer" is on; `FromRequester` true for the requester's public reply **including one that reopens** |
+| `UpdateStatus` (MCP `update_ticket_status`; REST `PATCH status_id` runs the same in-transaction step inside `Update`) | the status kinds | `new_status_id`; recipient = guest (none when closing); guest-link flag unless closing |
+| `Assign` (MCP `assign_ticket`; REST `PATCH` assignee or `clear_assignee` runs the same step inside `Update`) | `ticket.assigned`, also for a clear and for assigning the person who already holds it (the event then has no field change) | |
+| `ChangePriority` (no production caller: REST `PATCH priority` runs its step inside `Update`) | `ticket.priority_changed`, only when the priority moved | |
+| `UpdateCTI` (no production caller: REST `PATCH category_id` runs its step inside `Update`) | `ticket.classified`, only when category, type or item changed. Now in a transaction; still writes no audit entry. | |
+| `Update` (REST `PATCH /tickets/{id}`, `handler_tickets.go`; it calls the in-transaction step functions of the four rows above) | whatever its steps raise, merged | see *One transaction* |
+| `addReply` (REST reply, MCP `add_reply`, guest reply) | `ticket.replied`, or `ticket.note_added` for an internal note. A requester's reply that reopens a Resolved ticket adds the status kinds (`status_changed`, `reopened`) and, on the ticket's first reopen, `priority_changed` if the priority moved (a critical ticket cannot be raised). | `reply_id`, `internal`, `ReplyBody` (public only); recipient = reporter when "notify customer" is on; `FromRequester` true for the requester's public reply **including one that reopens** |
 | `Resolve` (REST resolve) | the status kinds into Resolved (`status_changed`, `resolved`). On an already-Resolved ticket with new notes: `ticket.resolved` only. | `new_status_id`; recipient = guest; guest-link flag |
 | `ResolveAsDuplicate` (REST link with `duplicate_of` and resolve) | `ticket.linked` (only when it made the link) merged with the resolve above | `target_id`, `link_type`, then as `Resolve` |
 | `close` (REST close, auto-close scheduler as the system) | the status kinds into Closed (`status_changed`, `closed`) | no recipient |
-| `Reopen` (REST `POST /reopen`) | the status kinds (`status_changed`, `reopened`), plus `priority_changed` on the first reopen | recipient = guest; guest-link flag |
+| `Reopen` (REST `POST /reopen`) | the status kinds (`status_changed`, `reopened`), plus `priority_changed` on the first reopen, if the priority moved | recipient = guest; guest-link flag |
 | `AddLink` (REST link) | `ticket.linked` on the source ticket | `target_id`, `link_type` |
 | `RequestGuestLink` (guest "resend my link") | `guest.link_resent` through `OutboxDispatcher` | what the guest typed; no ticket id |
 | `registration.Service.Signup` | `registration.verify` through `OutboxDispatcher` | `pending_id` only |
@@ -3060,9 +3063,9 @@ and the eleven names. The raw body already changed during the 1.3 betas
 | Staff create (REST), auto-assigned | one event: `created`, `assigned` | 1 |
 | Follow-up, auto-assigned | new ticket: `created`, `assigned`; original: `linked` | 2, over two tickets |
 | `PATCH` status + assignee + priority | one event: the status kinds, `assigned`, `priority_changed` | 1 |
-| `PATCH` out of Resolved/Closed | one event: `reopened`, `status_changed` (+ `priority_changed` on the first reopen) | 1 |
-| Requester reply that reopens | one event: `reopened`, `status_changed`, `replied` (+ `priority_changed` on the first reopen) | 1 |
-| `POST /reopen` | one event: `reopened`, `status_changed` | 1 |
+| `PATCH` out of Resolved/Closed | one event: `reopened`, `status_changed` (+ `priority_changed` on the first reopen, if the priority moved) | 1 |
+| Requester reply that reopens | one event: `reopened`, `status_changed`, `replied` (+ `priority_changed` on the first reopen, if the priority moved) | 1 |
+| `POST /reopen` | one event: `reopened`, `status_changed` (+ `priority_changed` on the first reopen, if the priority moved) | 1 |
 | Resolve as duplicate | one event: `resolved`, `status_changed`, `linked` | 1 |
 | `PATCH` status to Resolved | `resolved`, `status_changed` | 1 |
 | Resolve button | `resolved`, `status_changed` | 1 |
@@ -3164,8 +3167,8 @@ fixed order; changes are keyed by field, with the first "from" and the last
 ticket as the transaction leaves it; `Payload` keys are merged, a later key
 replacing an earlier one; the strings (tracking number, recipient, subject,
 status name) are the last non-empty one; the flags (guest link, `FromRequester`,
-`RoutedAssignment`) are true if any piece said so; the actor and time are the
-first piece's.
+`RoutedAssignment`) are true if any piece said so; the actor is the first
+non-nil one raised and the time is the first piece's.
 
 #### 2. One transaction
 
@@ -3191,7 +3194,7 @@ transaction, and the collector merges them.
   round-robin list) is skipped for the next. The event is `[created, assigned]`.
   A group filter therefore matches a new ticket. Routing also writes its own
   audit entry `assigned`, with no actor and the change `unassigned` to
-  `assigned`. Guest create and MCP create do not auto-assign, as before.
+  `assigned`. Guest create, MCP `create_ticket` and MCP `create_follow_up` do not auto-assign, as before.
   - **Round-robin takes its turn up front.** When no group routes the ticket,
     `roundRobin` advances its counter with one atomic add as `routing` runs,
     before the transaction, and offers the whole user list rotated from that
@@ -3357,7 +3360,7 @@ both kinds, and the merge gives each person one mail.
 
 **One mail per address (ruling 11).** After the staff are worked out, the mails
 are deduplicated by recipient address, compared without case or surrounding
-space. The stronger reason is kept:
+space. Erik's ruling is only that one address gets one mail; which mail is kept is a build decision. The stronger reason is kept:
 
 - If the requester's address is also a staff member's (a staff member who filed
   the ticket for themselves, or whose address a guest used), the **staff mail is
@@ -3506,12 +3509,12 @@ their rows.
    (a) a list of names in the body; (c) one delivery per subscribed name, which
    brings back the duplicates.
 7. **The tracking number stays out of the raw body** (reaffirms the 2026-10-13
-   #448 ruling).
-8. **One event per ticket.** A change that touches two tickets produces two
+   #448 ruling). The raw body is exactly today's.
+8. **One event per ticket** (was open question B). A change that touches two tickets produces two
    events. A follow-up gives one event for the new ticket and one `linked` event
    for the original.
-9. **Build order.** One PR on top of #504, with the upgrade notes in the same PR,
-   then an Opus review.
+9. **Build order** (was open question C). One PR on top of #504, built after #503
+   and #504 merge, with the upgrade notes in the same PR, then an Opus review.
 
 **Ruled by Erik, 2026-10-16** (from the build and its review, recorded as
 comments on #506):
@@ -3523,9 +3526,10 @@ comments on #506):
 11. **A creator who is auto-routed their own ticket gets one email.** Routing
     picked the assignee, so "no mail about your own action" does not suppress it.
     Mail is deduplicated by recipient address, so each address gets one mail per
-    change, and the stronger reason is kept (the staff mail over the requester's).
-    In Erik's words: "if both actions resolve to the same email address we dedup.
-    one email".
+    change. In Erik's words: "if both actions resolve to the same email address
+    we dedup. one email". (Which mail is kept is a **build decision**, not a
+    ruling of Erik's: the staff mail over the requester's, and between two staff
+    accounts the stronger reason.)
 12. **Reply text in chat and ITSM messages goes only to hooks subscribed to
     replies.** A hook on `ticket.reopened` only gets its "Reopened" message
     without the reply's text. Reply text appears only for hooks subscribed to
@@ -3536,7 +3540,26 @@ comments on #506):
     plus an assignee carries `assigned` only. 1.2.x announced `status_changed`
     here, so the upgrade notes say so.
 
-No questions are open.
+**Ruled by Erik, 2026-10-16, fix in progress (not yet built).** These four are
+recorded on #506. This section describes the code as it is on `v1.3.0-beta`; a
+separate fix PR will change the sentences below when it lands.
+
+14. **Chat headlines for the two new events are readable.** `ticket.priority_changed`
+    and `ticket.classified` get proper headlines, not their raw names. Fix in
+    progress (not yet built).
+15. **A failed lookup of followers or group members retries the change.** Today
+    that mail is dropped; after the fix, no mail goes out until every recipient is
+    known. Fix in progress (not yet built).
+16. **An assignment that changes nothing announces nothing.** That covers the
+    same assignee, or a clear on a ticket that is already unassigned. It changes
+    1.2.x behaviour, so it goes in the upgrade notes. Fix in progress (not yet
+    built).
+17. **An auto-routing assignment names nobody as the actor.** The webhook carries
+    `ActorID: null`, as in 1.2.x and as the audit log already records. The
+    `ticket.created` delivery still names the creator. Fix in progress (not yet
+    built).
+
+No other questions are open; rulings 14 to 17 are pending the fix.
 
 That staff mail recipients are decided by the worker, a moment after the commit,
 follows from ruling 1.
@@ -3809,7 +3832,7 @@ the schema allows one current record per ticket.
 to a new ticket, it happens only while SLA tracking is on. Recording a first
 response or a resolution onto an existing record is not gated.
 
-**No event.** A priority change sends no notification and no webhook event.
+**Event.** A priority change that moves the priority raises `ticket.priority_changed` (written in the same transaction; no event when the priority is unchanged). It sends no email. See [Ticket Events: One Change, One Event](#ticket-events-one-change-one-event).
 
 **Known limit.** Recording a first response or a resolution
 (`RecordFirstResponse`, `RecordResolved`) runs after the reply's own commit and
