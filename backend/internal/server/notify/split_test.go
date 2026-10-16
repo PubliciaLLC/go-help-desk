@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -449,6 +450,70 @@ func TestChangeSplitter_AFailedInsertLeavesNoChildAndEachMailIsSentOnce(t *testi
 func countRequester(r *recorder) int {
 	n, _ := mailsTo(r)
 	return n
+}
+
+// flakyFollowers and flakyGroups fail their first lookup and then answer, like a
+// database that blips once.
+type flakyFollowers struct {
+	fakeStaffFollowers
+	failFirst int
+}
+
+func (f *flakyFollowers) ListMailableFollowerIDs(ctx context.Context, id uuid.UUID) ([]uuid.UUID, error) {
+	if f.failFirst > 0 {
+		f.failFirst--
+		return nil, errors.New("database blipped")
+	}
+	return f.fakeStaffFollowers.ListMailableFollowerIDs(ctx, id)
+}
+
+type flakyGroups struct {
+	fakeStaffGroups
+	failFirst int
+}
+
+func (f *flakyGroups) ListMailableMembers(ctx context.Context, id uuid.UUID) ([]uuid.UUID, error) {
+	if f.failFirst > 0 {
+		f.failFirst--
+		return nil, errors.New("database blipped")
+	}
+	return f.fakeStaffGroups.ListMailableMembers(ctx, id)
+}
+
+// A follower or group-member lookup that fails must retry the change's row, as a
+// failed read of staff accounts does, and queue no one while it fails (all or
+// nothing). After the retry each person has exactly one mail.
+func TestChangeSplitter_AFailedFollowerOrGroupLookupRetriesTheRowAndMailsEveryoneOnce(t *testing.T) {
+	assignee, follower, member := staffUser("assignee"), staffUser("follower"), staffUser("member")
+	group := uuid.New()
+	for _, tc := range []struct {
+		name string
+		rig  func(ev notification.Event) *splitRig
+	}{
+		{"followers", func(ev notification.Event) *splitRig {
+			fol := &flakyFollowers{fakeStaffFollowers: fakeStaffFollowers{ev.TicketID: {follower.ID}}, failFirst: 1}
+			return newSplitRig(newFakeStaffUsers(assignee, follower, member), fakeStaffGroups{group: {member.ID}}, fol)
+		}},
+		{"group members", func(ev notification.Event) *splitRig {
+			grp := &flakyGroups{fakeStaffGroups: fakeStaffGroups{group: {member.ID}}, failFirst: 1}
+			return newSplitRig(newFakeStaffUsers(assignee, follower, member), grp, fakeStaffFollowers{ev.TicketID: {follower.ID}})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := changeRow("", &assignee.ID, &group, nil)
+			rig := tc.rig(ev)
+			rig.queue(t, ev)
+
+			_, err := rig.worker.RunOnce(context.Background())
+			require.NoError(t, err)
+			require.Len(t, rig.outbox.retries, 1, "rescheduled, not settled")
+			require.Empty(t, rig.sent.got, "nothing queued or sent while a lookup fails")
+
+			rig.drain(t)
+			got := recipientsOf(rig.sent)
+			require.ElementsMatch(t, []uuid.UUID{assignee.ID, follower.ID, member.ID}, got, "one mail per person")
+		})
+	}
 }
 
 // An existing user somebody else filed a ticket for (#444) is mailed through the

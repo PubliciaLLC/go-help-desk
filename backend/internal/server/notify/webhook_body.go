@@ -95,6 +95,8 @@ func rowFor(ev notification.Event, hook authstore.WebhookConfig) notification.Ev
 	if isRaw(hook) {
 		out := historyEvent(ev)
 		out.Kinds, out.Ticket = ev.Kinds, ev.Ticket
+		// forHook reads it on the next attempt: a routed assignment names no actor.
+		out.RoutedAssignment = ev.RoutedAssignment
 		return out
 	}
 	out := ev

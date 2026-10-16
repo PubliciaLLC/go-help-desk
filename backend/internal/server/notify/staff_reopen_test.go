@@ -208,14 +208,14 @@ func TestStaffFanout_ReopenOfAnUnheldTicketMailsNobody(t *testing.T) {
 	require.Empty(t, next.got, "nobody to mail")
 }
 
-func TestStaffFanout_ReopenFollowerLookupFailureStillMailsTheAssignee(t *testing.T) {
+func TestStaffFanout_ReopenFollowerLookupFailureIsAnErrorAndQueuesNothing(t *testing.T) {
 	assignee := staffUser("assignee")
 	next := &recorder{}
 	f := fanoutWithFollowers(next, newFakeStaffUsers(assignee), fakeStaffGroups{}, failingStaffFollowers{})
 
-	require.NoError(t, f.Dispatch(context.Background(), reopenedEventFor(nil, &assignee.ID, nil)))
+	require.Error(t, f.Dispatch(context.Background(), reopenedEventFor(nil, &assignee.ID, nil)))
 
-	require.Equal(t, []uuid.UUID{assignee.ID}, recipientsOf(next))
+	require.Empty(t, next.got, "all or nothing: the worker retries the whole change")
 }
 
 // The mail carries the tracking number and a link, nothing a requester wrote,

@@ -459,8 +459,13 @@ func TestFollowers_OneEmailPerPersonAcrossAssigneeGroupAndFollower(t *testing.T)
 	requesterReplies(t, h, tk)
 	require.Equal(t, []string{"staff@test.local"}, m.recipients(t))
 
+	// A real change (a repeat of the same assignment announces nothing): moved to
+	// a second group the same person belongs to, still the assignee and a follower.
+	g2, err := h.groupSvc.Create(ctx, "Desk 2", "")
+	require.NoError(t, err)
+	require.NoError(t, h.groupSvc.AddMember(ctx, g2.ID, h.staffID))
 	res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/tickets/"+tk.ID.String(),
-		map[string]any{"assignee_user_id": h.staffID, "assignee_group_id": g.ID})
+		map[string]any{"assignee_user_id": h.staffID, "assignee_group_id": g2.ID})
 	res.Body.Close()
 	require.Equal(t, []string{"staff@test.local"}, m.recipients(t))
 }
