@@ -302,3 +302,57 @@ func TestCreateTicket_OnBehalf_NeedsTheTicketsWriteScope(t *testing.T) {
 	defer res.Body.Close()
 	require.Equal(t, http.StatusForbidden, res.StatusCode)
 }
+
+// createdMail is the "We have received your ticket" event a create queued.
+func createdMail(t *testing.T, h *harness) notification.Event {
+	t.Helper()
+	var got []notification.Event
+	for _, ev := range h.dispatcher.queued {
+		if ev.Type == notification.EventTicketCreated {
+			got = append(got, ev)
+		}
+	}
+	require.Len(t, got, 1, "one created event")
+	return got[0]
+}
+
+// An existing user who is filed for hears of it with the ordinary mail, whether
+// they were picked or their address was typed; a member of staff filing their
+// own ticket is not mailed about it, as before.
+func TestCreateTicket_OnBehalf_NotifiesTheAccountFiledFor(t *testing.T) {
+	cases := []struct {
+		name          string
+		caller        string
+		extra         func(h *harness) map[string]any
+		wantRecipient string
+	}{
+		{"picked from the list", "staff", func(h *harness) map[string]any {
+			return map[string]any{"reporter_user_id": h.userID.String()}
+		}, "user@test.local"},
+		{"picked from the list, by an administrator", "admin", func(h *harness) map[string]any {
+			return map[string]any{"reporter_user_id": h.userID.String()}
+		}, "user@test.local"},
+		{"a typed address that matches an account", "staff", func(*harness) map[string]any {
+			return map[string]any{"reporter_email": " User@Test.local "}
+		}, "user@test.local"},
+		{"staff file their own ticket", "staff", func(*harness) map[string]any { return nil }, ""},
+		{"staff pick themselves", "staff", func(h *harness) map[string]any {
+			return map[string]any{"reporter_user_id": h.staffID.String()}
+		}, ""},
+		{"a requester files their own ticket", "user", func(*harness) map[string]any { return nil }, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, cleanup := newHarness(t)
+			defer cleanup()
+			h.dispatcher.record = true
+
+			res := h.postOnBehalf(t, tc.caller, tc.extra(h))
+			require.Equal(t, http.StatusCreated, res.StatusCode, readBody(t, res))
+
+			ev := createdMail(t, h)
+			require.Equal(t, tc.wantRecipient, ev.Recipient)
+			require.False(t, ev.GuestLink, "an account holder signs in; no guest link")
+		})
+	}
+}
