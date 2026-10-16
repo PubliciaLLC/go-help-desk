@@ -27,7 +27,9 @@ Go Help Desk is an open-source ticket management system. Staff submit and track 
 - Custom fields, tags, canned responses, and full-text search
 - Optional SLA tracking; resolved tickets close automatically after a configurable reopen window
 - Readable audit log with opt-in retention
-- Email notifications, queued with retries, and webhooks (Slack, Teams, Discord and JIRA formats), sent once
+- Email notifications, queued with retries. Staff are emailed about their tickets and can follow a ticket
+- Reopened tickets are flagged, raised one priority level the first time, and get a fresh SLA clock; staff can change a ticket's priority
+- Webhooks (Slack, Teams, Discord and JIRA formats, or raw JSON), retried on failure, with a delivery history and an optional ticket filter
 - Attachments: content detection, optional ClamAV scanning and reputation lookups, download only
 - REST API (OpenAPI 3.1 reference on the website) and an MCP server for AI assistant integration
 
@@ -71,6 +73,11 @@ Read the full notes before upgrading: [1.3.0](https://gohelpdesk.org/docs/upgrad
 - Reporters can attach files to replies (#175). [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#reporter-attachments)
 - Building from source needs Docker Buildx (#297, #301). [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#buildx)
 - `MFA_ENABLED` and `GUEST_SUBMISSION_ENABLED` are removed. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#env-removed)
+- Email now refuses to send a password or mail over an unencrypted connection to a public server. Check your SMTP setup before upgrading. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#smtp)
+- Accounts that have not signed in within 30 days of the first 1.3.0 start must reset their password. Administrators are exempt. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#password-age)
+- Raw JSON webhooks now carry ids only, and internal notes are their own event. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#webhooks)
+- Staff and administrators start receiving email about their tickets once email is configured. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#staff-email)
+- Locked out? `docker compose exec app /app/server unlock you@example.com` on the server. [Details](https://gohelpdesk.org/docs/getting-started#locked-out)
 
 **1.2.0**
 
