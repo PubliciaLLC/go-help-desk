@@ -353,7 +353,7 @@ type Store interface {
 // constants to agree, so adding a constant without listing it fails the build.
 func KnownKeys() []string {
 	return []string{
-		KeySAMLEnabled, KeySAMLMetadataURL, KeySAMLCertPEM, KeySAMLKeyPEM,
+		KeySAMLEnabled, KeySAMLMetadataURL, KeySAMLMetadataXML, KeySAMLCertPEM, KeySAMLKeyPEM,
 		KeyOIDCEnabled, KeyOIDCIssuerURL, KeyOIDCClientID, KeyOIDCClientSecret, KeyOIDCRedirectURL,
 		KeyGuestSubmissionEnabled, KeySLAEnabled, KeyMFAEnabled, KeyMFAEnforcedRoles,
 		KeyReopenWindowDays, KeyReopenTargetStatusName,
