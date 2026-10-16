@@ -105,7 +105,15 @@ func requesterMail(ev notification.Event) (notification.Event, bool) {
 func (f *StaffFanout) Dispatch(ctx context.Context, ev notification.Event) error {
 	req, hasReq := requesterMail(ev)
 
-	cands, ok := f.candidates(ctx, ev)
+	cands, ok, cerr := f.candidates(ctx, ev)
+	if cerr != nil {
+		// Same as a failed read of the accounts below: nothing is queued and the
+		// change is tried again. Mailing who was found and dropping the rest
+		// would lose the followers' or the group's mail with no retry.
+		f.log.ErrorContext(ctx, "staff email: could not work out who to notify",
+			"event", ev.Type, "ticket_id", ev.TicketID, "error", cerr)
+		return cerr
+	}
 	var recips []notification.StaffRecipient
 	var emails map[uuid.UUID]string
 	if ok {
@@ -193,8 +201,9 @@ func holders(ev notification.Event) (user, group *uuid.UUID) {
 // result of recipients, with the mail of the first kind (in the order assigned,
 // reopened, requester replied) whose switch is on. ok is false for a change that
 // calls for none; an empty slice with ok true means it calls for some but nobody
-// holds the ticket.
-func (f *StaffFanout) candidates(ctx context.Context, ev notification.Event) ([]candidate, bool) {
+// holds the ticket. A failed lookup of followers or of a group's members is an
+// error, so the change is retried whole.
+func (f *StaffFanout) candidates(ctx context.Context, ev notification.Event) ([]candidate, bool, error) {
 	kinds := ev.AllKinds()
 	assignee, _ := holders(ev)
 	var cands []candidate
@@ -205,10 +214,18 @@ func (f *StaffFanout) candidates(ctx context.Context, ev notification.Event) ([]
 		if assignee != nil {
 			cands = append(cands, candidate{*assignee, notification.SwitchAssigned, notification.EventStaffAssigned})
 		}
-		cands = append(cands, f.groupMembers(ctx, ev, notification.SwitchGroup, notification.EventStaffAssigned)...)
+		gm, err := f.groupMembers(ctx, ev, notification.SwitchGroup, notification.EventStaffAssigned)
+		if err != nil {
+			return nil, false, err
+		}
+		cands = append(cands, gm...)
 		// An assignment mails the assigned group, so its members are left out
 		// of follower mail.
-		cands = append(cands, f.followerCandidates(ctx, ev, true, notification.EventStaffAssigned)...)
+		fc, err := f.followerCandidates(ctx, ev, true, notification.EventStaffAssigned)
+		if err != nil {
+			return nil, false, err
+		}
+		cands = append(cands, fc...)
 	}
 
 	if slices.Contains(kinds, notification.EventTicketReopened) {
@@ -219,7 +236,11 @@ func (f *StaffFanout) candidates(ctx context.Context, ev notification.Event) ([]
 		// ("requester replied on my tickets"). Followers hear about it whoever
 		// holds the ticket; a group member who follows is mailed as a follower
 		// only when the group itself is not mailed.
-		cands = append(cands, f.replyRule(ctx, ev, notification.EventStaffReopened)...)
+		rr, err := f.replyRule(ctx, ev, notification.EventStaffReopened)
+		if err != nil {
+			return nil, false, err
+		}
+		cands = append(cands, rr...)
 	}
 
 	if slices.Contains(kinds, notification.EventTicketReplied) && ev.FromRequester {
@@ -230,23 +251,35 @@ func (f *StaffFanout) candidates(ctx context.Context, ev notification.Event) ([]
 		// that is not theirs.
 		//
 		// Followers hear about every reply, whoever holds the ticket.
-		cands = append(cands, f.replyRule(ctx, ev, notification.EventStaffRequesterReplied)...)
+		rr, err := f.replyRule(ctx, ev, notification.EventStaffRequesterReplied)
+		if err != nil {
+			return nil, false, err
+		}
+		cands = append(cands, rr...)
 	}
-	return cands, called
+	return cands, called, nil
 }
 
 // replyRule is who is a candidate for a requester's reply and for a reopen,
 // which follow one rule.
-func (f *StaffFanout) replyRule(ctx context.Context, ev notification.Event, mail notification.EventType) []candidate {
+func (f *StaffFanout) replyRule(ctx context.Context, ev notification.Event, mail notification.EventType) ([]candidate, error) {
 	assignee, _ := holders(ev)
 	var cands []candidate
 	if assignee != nil {
 		cands = append(cands, candidate{*assignee, notification.SwitchActivity, mail})
 	} else {
-		cands = append(cands, f.groupMembers(ctx, ev, notification.SwitchGroup, mail)...)
+		gm, err := f.groupMembers(ctx, ev, notification.SwitchGroup, mail)
+		if err != nil {
+			return nil, err
+		}
+		cands = append(cands, gm...)
 	}
 	// The group is mailed only while nobody holds the ticket.
-	return append(cands, f.followerCandidates(ctx, ev, assignee == nil, mail)...)
+	fc, err := f.followerCandidates(ctx, ev, assignee == nil, mail)
+	if err != nil {
+		return nil, err
+	}
+	return append(cands, fc...), nil
 }
 
 // followerCandidates are the ticket's followers, except the assignee always,
@@ -255,22 +288,23 @@ func (f *StaffFanout) replyRule(ctx context.Context, ev notification.Event, mail
 // Those people are told through their own switches (Erik, 2026-10-14), and
 // following on top must not bring back mail they turned off. When the group is
 // not mailed (a reply while somebody holds the ticket) a member's follow
-// counts, so a member who follows hears about it. A lookup that fails costs
-// the followers their mail and nothing else: the people already found are
-// still mailed.
-func (f *StaffFanout) followerCandidates(ctx context.Context, ev notification.Event, groupMailed bool, mail notification.EventType) []candidate {
+// counts, so a member who follows hears about it. A lookup that fails is an
+// error: the change is retried whole rather than mailed without its followers.
+func (f *StaffFanout) followerCandidates(ctx context.Context, ev notification.Event, groupMailed bool, mail notification.EventType) ([]candidate, error) {
 	ids, err := f.followers.ListMailableFollowerIDs(ctx, ev.TicketID)
 	if err != nil {
-		f.log.ErrorContext(ctx, "staff email: could not list the ticket's followers",
-			"event", ev.Type, "ticket_id", ev.TicketID, "error", err)
-		return nil
+		return nil, fmt.Errorf("listing the ticket's followers: %w", err)
 	}
 	left := map[uuid.UUID]bool{}
 	if assignee, _ := holders(ev); assignee != nil {
 		left[*assignee] = true
 	}
 	if groupMailed {
-		for _, m := range f.groupMembers(ctx, ev, notification.SwitchGroup, mail) {
+		gm, err := f.groupMembers(ctx, ev, notification.SwitchGroup, mail)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range gm {
 			left[m.id] = true
 		}
 	}
@@ -280,25 +314,23 @@ func (f *StaffFanout) followerCandidates(ctx context.Context, ev notification.Ev
 			out = append(out, candidate{id, notification.SwitchFollow, mail})
 		}
 	}
-	return out
+	return out, nil
 }
 
-func (f *StaffFanout) groupMembers(ctx context.Context, ev notification.Event, reason notification.StaffSwitch, mail notification.EventType) []candidate {
+func (f *StaffFanout) groupMembers(ctx context.Context, ev notification.Event, reason notification.StaffSwitch, mail notification.EventType) ([]candidate, error) {
 	_, group := holders(ev)
 	if group == nil {
-		return nil
+		return nil, nil
 	}
 	members, err := f.groups.ListMailableMembers(ctx, *group)
 	if err != nil {
-		f.log.ErrorContext(ctx, "staff email: could not list the group's members",
-			"event", ev.Type, "ticket_id", ev.TicketID, "error", err)
-		return nil
+		return nil, fmt.Errorf("listing the group's members: %w", err)
 	}
 	out := make([]candidate, len(members))
 	for i, m := range members {
 		out[i] = candidate{m, reason, mail}
 	}
-	return out
+	return out, nil
 }
 
 // recipients reads the candidates' accounts and applies the rule.
