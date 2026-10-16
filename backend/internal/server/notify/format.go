@@ -245,6 +245,12 @@ func headline(t notification.EventType, statusName string, internal bool, linked
 		return "Status changed to " + statusName
 	case notification.EventTicketAssigned:
 		return "Assigned"
+	// Kinds only, no value: the priority, category and type names are content,
+	// and Priority is rendered for ticket.created alone.
+	case notification.EventTicketPriorityChanged:
+		return "Priority changed"
+	case notification.EventTicketClassified:
+		return "Reclassified"
 	case notification.EventTicketResolved:
 		return "Resolved"
 	case notification.EventTicketClosed:

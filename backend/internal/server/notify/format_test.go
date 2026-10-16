@@ -733,3 +733,41 @@ func TestRenderDiscord_StaysUnderContentLimit(t *testing.T) {
 		})
 	}
 }
+
+// ticket.priority_changed and ticket.classified are headed in words in every
+// chat format, never by their label, and never with a value: the new priority,
+// category or type name is content (#506 rulings). JIRA has no headline; its
+// body names the event, which stays the machine-readable label.
+func TestRender_PriorityChangedAndClassifiedHaveReadableHeadlines(t *testing.T) {
+	const secret = "Zq-secret-name"
+	cases := []struct {
+		typ  notification.EventType
+		want string
+	}{
+		{notification.EventTicketPriorityChanged, "Priority changed"},
+		{notification.EventTicketClassified, "Reclassified"},
+	}
+	for _, tc := range cases {
+		ev := notification.Event{
+			Type: tc.typ, Kinds: []notification.EventType{tc.typ}, TicketID: fixtureTicketID,
+			Payload:    map[string]any{"Priority": secret, "CategoryName": secret, "TypeName": secret},
+			OccurredAt: fixtureOccurred, TrackingNumber: "GHD-2026-000001", Subject: "Printer jammed",
+		}
+		s := summarize(ev, fixtureBaseURL)
+		for name, render := range map[string]func(summary) ([]byte, error){
+			"slack": renderSlack, "teams": renderTeams, "discord": renderDiscord, "jira": renderJIRA,
+		} {
+			t.Run(string(tc.typ)+"/"+name, func(t *testing.T) {
+				got, err := render(s)
+				require.NoError(t, err)
+				require.NotContains(t, string(got), secret)
+				if name == "jira" {
+					require.Contains(t, string(got), `"event":"`+string(tc.typ)+`"`)
+					return
+				}
+				require.Contains(t, string(got), tc.want)
+				require.NotContains(t, string(got), "ticket.")
+			})
+		}
+	}
+}

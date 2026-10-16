@@ -46,6 +46,11 @@ func TestAssign_EventNamesTheAssignee(t *testing.T) {
 func TestAssign_UnassigningLeavesTheEventEmpty(t *testing.T) {
 	h := newHarness(t)
 	seeded := h.seedOpen()
+	// Held by somebody: a clear on an unassigned ticket changes nothing and
+	// announces nothing (assign_noop_test.go).
+	holder := uuid.New()
+	seeded.AssigneeUserID = &holder
+	h.store.seed(seeded)
 	actor := uuid.New()
 
 	_, err := h.svc.Assign(context.Background(), seeded.ID, nil, nil,
