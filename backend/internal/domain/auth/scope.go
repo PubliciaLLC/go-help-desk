@@ -173,3 +173,34 @@ func Subset(have, want []string) (string, bool) {
 	}
 	return "", true
 }
+
+// ScopesForRole is the most a key owned by role may carry: a key acts at its
+// owner's role, so a scope no route that role can reach uses is a scope that
+// can only mislead. role is user.Role's string value; this package cannot
+// import user.
+//
+// Written out, not computed, because the router is the source of truth and the
+// router lives in a package this one cannot import.
+// TestScopesForRole_MatchTheRouter (internal/server) derives the same table
+// from the router's own middleware and fails when the two differ in either
+// direction, so a route that is opened to staff, or a scope added for an admin
+// route, cannot leave this stale.
+//
+// An unknown role gets nothing.
+func ScopesForRole(role string) []Scope {
+	switch role {
+	case "admin":
+		return All()
+	case "staff":
+		return []Scope{
+			{ResourceTickets, ActionRead}, {ResourceTickets, ActionWrite},
+			// The assignee picker's group list, read only (groupsRouter).
+			{ResourceGroups, ActionRead},
+			// The admin-wide audit view, which staff may open (#129).
+			{ResourceAudit, ActionRead},
+		}
+	case "user":
+		return []Scope{{ResourceTickets, ActionRead}, {ResourceTickets, ActionWrite}}
+	}
+	return nil
+}
