@@ -10,6 +10,9 @@ import (
 const (
 	KeySAMLEnabled     = "saml_enabled"
 	KeySAMLMetadataURL = "saml_metadata_url"
+	// KeySAMLMetadataXML holds the IdP's metadata XML as pasted, the
+	// alternative to the URL (#461). Public data, so not a secret setting.
+	KeySAMLMetadataXML = "saml_metadata_xml"
 	KeySAMLCertPEM     = "saml_cert_pem"
 	KeySAMLKeyPEM      = "saml_key_pem"
 
@@ -350,7 +353,7 @@ type Store interface {
 // constants to agree, so adding a constant without listing it fails the build.
 func KnownKeys() []string {
 	return []string{
-		KeySAMLEnabled, KeySAMLMetadataURL, KeySAMLCertPEM, KeySAMLKeyPEM,
+		KeySAMLEnabled, KeySAMLMetadataURL, KeySAMLMetadataXML, KeySAMLCertPEM, KeySAMLKeyPEM,
 		KeyOIDCEnabled, KeyOIDCIssuerURL, KeyOIDCClientID, KeyOIDCClientSecret, KeyOIDCRedirectURL,
 		KeyGuestSubmissionEnabled, KeySLAEnabled, KeyMFAEnabled, KeyMFAEnforcedRoles,
 		KeyReopenWindowDays, KeyReopenTargetStatusName,
@@ -387,7 +390,7 @@ func IsKnownKey(key string) bool {
 // identity provider the caller controls, or opening registration.
 func AuthCriticalKeys() []string {
 	return []string{
-		KeySAMLEnabled, KeySAMLMetadataURL, KeySAMLCertPEM, KeySAMLKeyPEM,
+		KeySAMLEnabled, KeySAMLMetadataURL, KeySAMLMetadataXML, KeySAMLCertPEM, KeySAMLKeyPEM,
 		KeyOIDCEnabled, KeyOIDCIssuerURL, KeyOIDCClientID, KeyOIDCClientSecret,
 		KeyOIDCRedirectURL,
 		KeyMFAEnabled, KeyMFAEnforcedRoles,

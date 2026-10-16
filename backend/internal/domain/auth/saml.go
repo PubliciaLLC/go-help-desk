@@ -88,8 +88,13 @@ func NewHandoverCodec(opts samlsp.Options) HandoverCodec {
 type SAMLConfig struct {
 	// BaseURL is the external root URL of this service, e.g. https://helpdesk.example.com
 	BaseURL string
-	// MetadataURL is the URL of the IdP's SAML 2.0 metadata XML.
+	// MetadataURL is the URL of the IdP's SAML 2.0 metadata XML. It is fetched.
 	MetadataURL string
+	// MetadataXML is the IdP's SAML 2.0 metadata itself, as pasted. When it is
+	// set, MetadataURL is ignored and nothing is fetched (#461). The two are
+	// alternatives; both API doors refuse a save that sets both, so both set
+	// can only come from a direct database edit, and the XML wins.
+	MetadataXML []byte
 	// CertPEM and KeyPEM are the PEM-encoded SP signing certificate and private key.
 	CertPEM []byte
 	KeyPEM  []byte
@@ -136,24 +141,17 @@ func NewSAMLMiddleware(ctx context.Context, cfg SAMLConfig) (*samlsp.Middleware,
 		return nil, fmt.Errorf("parsing SP base URL: %w", err)
 	}
 
-	metadataURL, err := url.Parse(cfg.MetadataURL)
-	if err != nil {
-		return nil, fmt.Errorf("parsing IdP metadata URL: %w", err)
-	}
-	// The caller's context is honoured rather than discarded, so a shutdown or
-	// a cancelled admin request stops the fetch instead of outliving it.
-	fetchCtx, cancel := context.WithTimeout(ctx, metadataFetchTimeout)
-	defer cancel()
-
-	// NOT address-guarded, deliberately: a self-hosted deployment commonly runs
-	// its IdP on the same private network, so refusing private addresses here
-	// would break a normal topology on upgrade. The exposure is bounded instead
-	// by the timeout and by not echoing the fetch error back to the caller —
-	// see handleSaveSAMLConfig. Webhook targets ARE guarded, because those are
-	// external by definition.
-	idpMeta, err := samlsp.FetchMetadata(fetchCtx, &http.Client{Timeout: metadataFetchTimeout}, *metadataURL)
-	if err != nil {
-		return nil, fmt.Errorf("fetching IdP metadata from %s: %w", cfg.MetadataURL, err)
+	var idpMeta *saml.EntityDescriptor
+	if len(cfg.MetadataXML) > 0 {
+		idpMeta, err = ParseIdPMetadataXML(cfg.MetadataXML)
+		if err != nil {
+			return nil, fmt.Errorf("parsing IdP metadata XML: %w", err)
+		}
+	} else {
+		idpMeta, err = fetchIdPMetadata(ctx, cfg.MetadataURL)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// samlsp.Options wants a crypto.Signer, not specifically an RSA key —
@@ -204,4 +202,28 @@ func NewSAMLMiddleware(ctx context.Context, cfg SAMLConfig) (*samlsp.Middleware,
 	}
 	mw.RequestTracker = tracker
 	return mw, nil
+}
+
+// fetchIdPMetadata fetches and parses the IdP metadata at rawURL.
+func fetchIdPMetadata(ctx context.Context, rawURL string) (*saml.EntityDescriptor, error) {
+	metadataURL, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("parsing IdP metadata URL: %w", err)
+	}
+	// The caller's context is honoured rather than discarded, so a shutdown or
+	// a cancelled admin request stops the fetch instead of outliving it.
+	fetchCtx, cancel := context.WithTimeout(ctx, metadataFetchTimeout)
+	defer cancel()
+
+	// NOT address-guarded, deliberately: a self-hosted deployment commonly runs
+	// its IdP on the same private network, so refusing private addresses here
+	// would break a normal topology on upgrade. The exposure is bounded instead
+	// by the timeout and by not echoing the fetch error back to the caller —
+	// see handleSaveSAMLConfig. Webhook targets ARE guarded, because those are
+	// external by definition.
+	idpMeta, err := samlsp.FetchMetadata(fetchCtx, &http.Client{Timeout: metadataFetchTimeout}, *metadataURL)
+	if err != nil {
+		return nil, fmt.Errorf("fetching IdP metadata from %s: %w", rawURL, err)
+	}
+	return idpMeta, nil
 }
