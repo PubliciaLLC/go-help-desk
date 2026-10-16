@@ -302,3 +302,18 @@ Scripts and API keys that call the admin API can see these changes. Migration 00
 - **How people reset:** "Forgot password" on the sign-in page once password reset by email lands (#451), or an administrator sets a new password for them. Until then only the administrator route works.
 - **What to check:** people who sign in rarely (seasonal staff, requesters) are the ones affected. Tell them, or have an administrator reset them, before day 30.
 - **API clients:** sign-in with an old hash after the deadline answers 403 `password_reset_required` instead of 200. New installs are unaffected.
+
+## Staff Can Create Their Own API Keys (#450)
+
+API keys can now be made by staff, and issued by an administrator on someone else's behalf. **Nothing changes until an administrator turns it on:** the new setting **Staff may create their own API keys** (Settings → Authentication → API keys, `staff_can_create_api_keys`) is off, and while it is off staff cannot create keys.
+
+- **Who:** administrators always. Staff only while the setting is on. Requesters never create keys themselves. There is no per-user permission.
+- **Where:** Account → API keys (list, create with an optional expiry, revoke), and `GET/POST /api/v1/me/api-keys`, `GET /api/v1/me/api-keys/scopes`, `DELETE /api/v1/me/api-keys/{id}`. These are session-only: an API key or OAuth client gets 403 `session_required`, so a key cannot create more keys.
+- **Turning the setting off** stops new keys. Keys that already exist keep working, and staff can still list and revoke their own. To remove them, revoke them under Admin → API Keys.
+- **A key's scopes never exceed its owner's role.** Staff keys can carry `tickets:read|write`, `groups:read` and `audit:read`; a requester's `tickets:read|write`; an administrator's any scope. Anything else is refused with 400 `invalid_scope`. This applies to a key an administrator issues for someone else too, and to `POST /admin/api-keys`, which now rejects a scope its key's owner cannot use (always fine for an administrator's own key).
+- **Issuing on behalf:** `POST /api/v1/admin/api-keys` takes an optional `user_id`; the key belongs to that account and acts as it. Only a signed-in administrator can do this. **An API key or OAuth client that names a `user_id` other than its own owner now gets 403 `session_required`** (it used to have no such field). Responses to this route now include `user_id` and `created_by`.
+- **Audit:** every key issued or revoked, whether the person's own or someone else's, writes `api_key_issued` / `api_key_revoked` (entity type `api_key`) to the admin audit log.
+- **Lists:** `GET /api/v1/admin/api-keys` entries gain `created_by` (who issued the key; null for keys made before 1.3). The settings API accepts and returns `staff_can_create_api_keys`, session only.
+- **Existing keys:** an administrator's existing keys keep acting as administrator, unchanged.
+
+**Ordering.** This change adds migration **000048** (`api_keys.created_by`); #451 takes 000049.

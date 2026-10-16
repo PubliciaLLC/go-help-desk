@@ -2361,7 +2361,7 @@ category and status endpoints. The top-level `/tags` and `/statuses` reference
 endpoints are covered by `tickets:read` for the same reason.
 
 A machine credential is also refused the endpoints that change how an account
-authenticates: its own (`/me/password`, `/me/mfa/enroll*`, `/me/passkeys*`), and — through the
+authenticates: its own (`/me/password`, `/me/mfa/enroll*`, `/me/passkeys*`) and its owner's API keys (`/me/api-keys*`, #450), and — through the
 admin surface — **any administrator's**. It may not create an administrator,
 promote a user to administrator, or reset an administrator's password or MFA.
 
@@ -2395,7 +2395,8 @@ Four more things are off limits to a machine credential, for the same reason:
   address and policy, allowed types, infected and mismatch handling, the
   reputation toggles, keys and refresh interval); and audit retention, staff
   visibility of change history and whether requester names are masked in audit
-  views. Ordinary configuration such as the site name
+  views; and who may create API keys (`staff_can_create_api_keys`, #450).
+  Ordinary configuration such as the site name
   stays automatable.
 - **Verifying a second factor** (`POST /auth/local/mfa/verify` and
   `POST /auth/local/passkey/start|finish`). A machine credential reaching the
@@ -2423,6 +2424,69 @@ so a leaked key held by an administrator cannot revoke the owner's other keys,
 which are what would let the owner recover.
 Before 1.3, revoking ignored the owner while listing did not, so any admin
 credential that knew a key id could revoke another administrator's key.
+
+**Who can create API keys** ([#450](https://github.com/PubliciaLLC/go-help-desk/issues/450)).
+A key is a long-lived bearer credential that acts as its owner, so who may make
+one is a permission decision with one switch and no per-user exceptions.
+
+- **Administrators** can always create their own keys.
+- **Staff** can create their own only while the admin setting
+  `staff_can_create_api_keys` ("Staff may create their own API keys", Admin →
+  Settings → Authentication → API keys) is on. It is off by default. It governs
+  *creating* a key: turning it off revokes nothing, and staff can still list
+  and revoke their own keys whatever it says, including a key an administrator
+  issued for them. Revoking only ever removes access, and a person must be able
+  to remove a credential that acts as them.
+- **Requesters** never create keys. `/me/api-keys` answers them `403`.
+- **An administrator can issue a key for any live account** with `user_id` on
+  `POST /admin/api-keys` (a signed-in session only). The key belongs to that
+  account and acts as it. That includes a requester: this is how a requester's
+  integration gets a key without the requester ever holding the ability to mint
+  one. A deleted account is `404`, a disabled one `400 user_disabled`.
+- **A machine credential that names another user gets `403 session_required`.**
+  Otherwise `credentials:write` is the ability to become anyone: issue a key
+  as the administrator and use it. Naming its own owner is not naming another
+  user and is accepted.
+- **Keys cannot mint keys.** `GET/POST /me/api-keys`, `GET /me/api-keys/scopes`
+  and `DELETE /me/api-keys/{id}` sit inside `meRouter` behind
+  `DenyMachineCredentials`, `RequireMFA` and `RequireRole(admin, staff)`. A
+  leaked key that could create keys would turn one leak into as many as the
+  attacker liked, and revoking the first would remove none of the rest.
+  `POST /admin/api-keys` is open to a key holding `credentials:write` as before,
+  but a key it issues is owned by the key's own owner.
+- **`staff_can_create_api_keys` is auth-critical** (`admin.AuthCriticalKeys`), so
+  a machine credential cannot change it. Switching it on widens who may hold a
+  bearer credential, the same kind of change as `closed_reopen_policy`, and a
+  leaked administrator key must not be able to switch it on and then use it.
+  (The alternative, session-gated detail for settings that only widen what staff
+  *see*, is the `staff_can_view_*` family. This one widens what staff can
+  *make*, so it takes the stricter reading.)
+- **A key's scopes never exceed its owner's role.** `auth.ScopesForRole` is the
+  table: an administrator may carry any scope; staff `tickets:read|write`,
+  `groups:read` and `audit:read`; a requester `tickets:read|write`. It is checked
+  against the key's *owner*, so an administrator issuing a key for a requester is
+  limited by what a requester can do; a scope outside it is `400 invalid_scope`.
+  Scopes only narrow, so this is defence in depth and not the boundary: the role
+  check still refuses a staff key every admin route. What it prevents is a key
+  that looks as though it can edit users and cannot. The table is written out
+  and `TestScopesForRole_MatchTheRouter` derives the same answer from the
+  router's own middleware, fails if an administrator-only scope is offered to
+  staff or a requester, and fails if a scope the router lets a role use is
+  missing from the table.
+- **Every issue and revoke is audited**, a person's own keys and keys issued or
+  revoked on someone's behalf alike (`entity_type` `api_key`; actions
+  `api_key_issued` and `api_key_revoked`; the entry carries the owner's id,
+  `on_behalf`, the scopes and the expiry, and never the key's name, which is
+  free text). The write is best effort and detached from the request, like
+  `user.Service.writeAuditEntry`: an audit entry here does not gate anything,
+  and hanging up after the key is written cannot suppress it.
+- `api_keys.created_by` (migration 000048) records who issued each new key. It
+  equals `user_id` when the owner made it and differs when it was issued on their
+  behalf; NULL means unknown (a key made before 1.3, or an issuer deleted since).
+  It is returned by both key lists, and the Account page says "Issued for you by
+  an administrator" and the admin page "Issued on their behalf".
+- Both screens take an optional expiry. `GET /me` reports `can_create_api_keys`
+  so the Account page knows whether to offer the form.
 
 **A blank webhook `secret` clears it, by design.** `PATCH /api/v1/admin/webhooks/{id}`
 with `"secret": ""` removes the stored secret, and deliveries to that hook are
