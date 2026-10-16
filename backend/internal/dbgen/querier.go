@@ -802,6 +802,11 @@ type Querier interface {
 	// reason: unknown, used, replaced, expired, or an account that cannot have its
 	// password set. The caller does not tell those apart.
 	//
+	// An account with an empty password_hash has no password to replace and is not
+	// given one: it signs in through an identity provider, or was created without a
+	// password. A link made before it lost its password, or for one that never had
+	// it, spends itself and changes nothing.
+	//
 	// Also clears must_change_password: this is the account holder choosing a
 	// password, which is what that flag is waiting for (#497).
 	RedeemPasswordResetToken(ctx context.Context, arg RedeemPasswordResetTokenParams) (uuid.UUID, error)
