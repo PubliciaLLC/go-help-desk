@@ -69,7 +69,7 @@ Every MCP route (`/mcp`, `/mcp/sse`, `/mcp/message` and anything else under `/mc
 
 - A browser-based MCP client served from a different origin, or a reverse proxy that injects an `Origin` header, is now refused. Serve the client from `BASE_URL`'s origin or stop the proxy adding the header.
 - 1.2.x accepted these requests on the SSE routes. This closes a path by which a web page on a sibling site could act through a signed-in user's session cookie. Upgrade if you expose MCP over SSE.
-- A `BASE_URL` with a non-ASCII host stops the server from starting (passkeys refuse it); write it in punycode.
+- A `BASE_URL` with a non-ASCII host does not stop the server: passkeys are turned off (see the passkeys section above). Write it in punycode if you want them. Browser requests to the MCP routes that carry an `Origin` are refused (`403 origin_not_allowed`) while `BASE_URL` has a non-ASCII host, because no origin can be built from it; requests with no `Origin` header are unaffected.
 
 ## JWT Secret (`JWT_SECRET`)
 
@@ -224,7 +224,7 @@ Admin, Webhooks has a History button per hook: its last 25 deliveries with the o
 
 This adds a database table through a migration that runs at start-up.
 
-## Email: SMTP Encryption and Honesty (Breaking, Read First)
+## Email: SMTP Encryption and Setup Rules (Breaking, Read First)
 
 Email (SMTP) now fails loudly instead of quietly. Several setups that used to "work" now fail, and the failure shows in the admin panel. Check these before upgrading. Nothing needs changing if your mail server offers STARTTLS (or you use port 465) and, when `SMTP_USER` is set, offers AUTH.
 
@@ -263,7 +263,7 @@ A hook can now be limited to tickets in chosen categories, priorities or assigne
 
 It works together with the retries and history above, as follows. An event a hook's filter turns away is not a delivery for that hook: no `X-GHD-Delivery`, no retry, no History entry. The filter is read as it is now, not once. It is tested when an event is fanned out to the hooks, again at every attempt of a queued delivery, and again at Redeliver. If you tighten a filter, deliveries already waiting for a retry that it no longer admits are dropped at their next attempt, without a send or a History entry, the same way a retry is dropped when the hook is disabled, unsubscribed from the event or given a new URL. If you widen it, they still go out. A retry is tested against the ticket as it was when the event happened; a delivery queued before this upgrade has no ticket to test and is sent whatever the filter says. Redeliver tests the ticket as it is now, and is refused with `409 webhook_filter_excludes` when the filter does not admit it (if the hook has a filter and the ticket is gone, the filter cannot be checked and it is refused with `409 webhook_filter_unverifiable`; a hook with no filter is still sent). Nothing about this changes what a hook is sent: the raw payload and the chat messages are the same, and the ticket details used for the test are never put in a body or kept in the History.
 
-`ticket.created` is raised before auto-assignment, so a group condition never matches it; subscribe to `ticket.assigned` to hear about tickets landing in a group.
+Since #506, auto-assignment happens in the create's own transaction, so `ticket.created` carries the routed group and a group condition can match it.
 
 This adds a column to `webhook_configs` through a migration that runs at start-up.
 
