@@ -86,6 +86,15 @@ func makeSSOOnly(t *testing.T, h *harness, email string) {
 	require.NoError(t, err)
 }
 
+// makeLocalNoPassword turns an account into a local one created without a
+// password: an empty hash and no OIDC or SAML subject, so nothing but the empty
+// hash marks it.
+func makeLocalNoPassword(t *testing.T, h *harness, email string) {
+	t.Helper()
+	_, err := h.tx.Exec(`UPDATE users SET password_hash = '', oidc_subject = '', saml_subject = '' WHERE email = $1`, email)
+	require.NoError(t, err)
+}
+
 func passwordSignIn(t *testing.T, h *harness, email, password string) (*http.Response, string) {
 	t.Helper()
 	s := &session{h: h}
@@ -196,6 +205,9 @@ func TestForgotPassword_NoLinkForAnAccountThatCannotHaveOne(t *testing.T) {
 		{"an account that signs in through OIDC and has no password", func(t *testing.T, h *harness) {
 			makeSSOOnly(t, h, "user@test.local")
 		}, "user@test.local", false},
+		{"a local account created without a password, with no OIDC or SAML subject", func(t *testing.T, h *harness) {
+			makeLocalNoPassword(t, h, "user@test.local")
+		}, "user@test.local", false},
 		{"an administrator with no password when SAML limits passwords to administrators", func(t *testing.T, h *harness) {
 			require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeySAMLEnabled, true))
 			makeSSOOnly(t, h, "admin@test.local")
@@ -241,6 +253,29 @@ func TestResetPassword_ALinkForAnAccountThatLostItsPasswordDoesNothing(t *testin
 	require.Empty(t, hash, "the account was given a password")
 	in, inBody := passwordSignIn(t, h, "user@test.local", "a-brand-new-password")
 	require.NotEqual(t, http.StatusOK, in.StatusCode, "local sign-in opened for an SSO-only account: %s", inBody)
+	again, _ := resetPassword(t, h, token, "a-brand-new-password")
+	require.Equal(t, http.StatusUnprocessableEntity, again.StatusCode)
+}
+
+// #451: the same holds for a local account that never had a password and has no
+// identity provider subject. The statement that applies a link tests the hash,
+// not the subject, so it refuses and spends the link here too.
+func TestResetPassword_ALinkForALocalAccountWithNoPasswordDoesNothing(t *testing.T) {
+	h, cleanup := harnessWithEmail(t)
+	defer cleanup()
+	forgot(t, h, "user@test.local")
+	token := h.resetMail.latest(t).token
+	makeLocalNoPassword(t, h, "user@test.local")
+
+	res, body := resetPassword(t, h, token, "a-brand-new-password")
+
+	require.Equal(t, http.StatusUnprocessableEntity, res.StatusCode, "%s", body)
+	require.Equal(t, "token_invalid", bodyErrorCode(body))
+	var hash string
+	require.NoError(t, h.tx.QueryRow(`SELECT password_hash FROM users WHERE email = 'user@test.local'`).Scan(&hash))
+	require.Empty(t, hash, "the account was given a password")
+	in, inBody := passwordSignIn(t, h, "user@test.local", "a-brand-new-password")
+	require.NotEqual(t, http.StatusOK, in.StatusCode, "local sign-in opened for a no-password account: %s", inBody)
 	again, _ := resetPassword(t, h, token, "a-brand-new-password")
 	require.Equal(t, http.StatusUnprocessableEntity, again.StatusCode)
 }

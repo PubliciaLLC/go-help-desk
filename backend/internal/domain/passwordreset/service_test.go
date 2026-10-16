@@ -128,8 +128,10 @@ func account(role user.Role) user.User {
 	return user.User{ID: uuid.New(), Email: "ada@example.com", DisplayName: "Ada", Role: role, PasswordHash: "hash"}
 }
 
-// ssoOnly is an account that signs in through an identity provider and has no
-// password of its own.
+// ssoOnly is an account with no password of its own. It carries no identity
+// provider subject unless the test sets one, so on its own it is also a local
+// account created without a password: the guard tests the hash, not the
+// subject.
 func ssoOnly(role user.Role) user.User {
 	u := account(role)
 	u.PasswordHash = ""
@@ -226,6 +228,7 @@ func TestSend_DecidesAtSendTime(t *testing.T) {
 		{"a non-administrator when SAML restricts passwords", []user.User{account(user.RoleStaff)}, true, "ada@example.com", true, false},
 		{"a requester when SAML restricts passwords", []user.User{account(user.RoleUser)}, true, "ada@example.com", true, false},
 		{"an administrator when SAML restricts passwords", []user.User{account(user.RoleAdmin)}, true, "ada@example.com", true, true},
+		{"a local account created without a password, with no OIDC or SAML subject", []user.User{ssoOnly(user.RoleUser)}, false, "ada@example.com", true, false},
 		{"an account that signs in through OIDC and has no password", []user.User{oidc}, false, "ada@example.com", true, false},
 		{"an account that signs in through SAML and has no password", []user.User{saml}, false, "ada@example.com", true, false},
 		{"an administrator with no password when SAML restricts passwords", []user.User{ssoOnly(user.RoleAdmin)}, true, "ada@example.com", true, false},
