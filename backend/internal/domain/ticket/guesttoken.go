@@ -118,7 +118,7 @@ func (s *Service) IssueGuestLink(ctx context.Context, ev notification.Event) (no
 		token string
 		ok    bool
 	)
-	err := s.atomic.InTx(ctx, func(st Store, _ audit.Store) error {
+	err := s.atomic.InTx(ctx, func(st Store, _ audit.Store, _ *notification.Changes) error {
 		var err error
 		t, err = st.GetByIDForUpdate(ctx, ev.TicketID)
 		if err != nil {

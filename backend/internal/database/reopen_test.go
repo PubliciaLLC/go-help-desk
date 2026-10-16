@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
@@ -192,4 +193,39 @@ func TestReopen_ATicketThatNeverHadARecordStillStartsFromCreation(t *testing.T) 
 	rows := f.records(t)
 	require.Len(t, rows, 1)
 	require.False(t, rows[0].StartedAt.Valid)
+}
+
+// Scenario 1 on real rows: the reopen raises the ticket to a priority with no
+// policy (no record starts), and moving it back resumes from the reopen, which
+// the ticket remembers in last_reopened_at.
+func TestReopen_OntoAPriorityWithNoPolicyIsStillARestartPoint(t *testing.T) {
+	f := newChangePriorityFx(t)
+	svc := f.service(t, nil)
+	f.resolvedWithMetSLA(t, svc)
+	_, err := f.db.SQL.Exec(`DELETE FROM sla_policies WHERE id = $1`, f.pol[ticket.PriorityHigh].ID)
+	require.NoError(t, err)
+	before := time.Now().UTC().Add(-time.Second)
+
+	_, err = svc.UpdateStatus(f.ctx, f.tk.ID, f.newStatusID(t), f.staff)
+	require.NoError(t, err)
+	stored, err := f.ts.GetByID(f.ctx, f.tk.ID)
+	require.NoError(t, err)
+	require.NotNil(t, stored.LastReopenedAt, "persisted")
+	require.True(t, stored.LastReopenedAt.After(before))
+	for _, r := range f.records(t) {
+		require.True(t, r.SupersededAt.Valid, "no record is current: high has no policy")
+	}
+
+	_, err = svc.ChangePriority(f.ctx, f.tk.ID, ticket.PriorityMedium, f.staff)
+	require.NoError(t, err)
+
+	var cur dbgen.SlaRecord
+	for _, r := range f.records(t) {
+		if !r.SupersededAt.Valid {
+			cur = r
+		}
+	}
+	require.True(t, cur.StartedAt.Valid)
+	require.True(t, cur.StartedAt.Time.Equal(*stored.LastReopenedAt), "resumes from the reopen")
+	require.False(t, cur.FirstResponseAt.Valid)
 }

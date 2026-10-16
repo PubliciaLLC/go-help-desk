@@ -204,9 +204,9 @@ export interface Ticket {
   guest_phone?: string
   resolution_notes?: string
   resolved_at?: string
-  closed_at?: string
+  closed_at?: string // staff and admin only: a requester does not receive it
   created_at: string
-  updated_at: string
+  updated_at?: string // staff and admin only: a requester does not receive it
   // The ticket's live SLA read, computed by the server on every GET /tickets
   // and GET /tickets/{id} response. null means no matching policy or SLA
   // tracking is off for this instance — render nothing, not green. The color
@@ -221,7 +221,7 @@ export interface Ticket {
   // a response that does not carry it, which reads as no.
   can_reopen?: boolean
   // How many times the ticket has been moved from Resolved or Closed back to an
-  // open status (#464). Never reset. Absent on a response that does not carry
+  // open status (#464). Never reset. Staff and administrators only: absent for a requester, and when 0. Absent on a response that does not carry
   // it, which reads as never.
   reopen_count?: number
 }

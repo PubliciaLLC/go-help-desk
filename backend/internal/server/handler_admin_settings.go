@@ -215,6 +215,12 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		out[k+"_set"] = json.RawMessage("false")
 	}
 	for k, v := range all {
+		// A row the server keeps, not a setting: it is not writable, and the
+		// page sends this dump back on save, so listing it would make every
+		// save refuse an unknown key.
+		if k == admin.KeyPasswordRehashStartedAt {
+			continue
+		}
 		if _, secret := secretSettingKeys[k]; secret {
 			out[k+"_set"] = json.RawMessage(strconv.FormatBool(hasSecretValue(v)))
 			continue
@@ -272,6 +278,14 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	// dropped, for the same reason as everything else in this handler — a
 	// value accepted and then ignored is worse than a refusal.
 	for k := range body {
+		// The start of the password-reset clock is known (a migration seeds
+		// it) but not writable: restarting it would hand everyone a new grace
+		// period. Refused by name, like the presence flags.
+		if k == admin.KeyPasswordRehashStartedAt {
+			Error(w, http.StatusBadRequest, "readonly_setting",
+				k+" is recorded by the server and cannot be changed")
+			return
+		}
 		if strings.HasSuffix(k, "_set") {
 			Error(w, http.StatusBadRequest, "readonly_setting",
 				k+" is a read-only presence flag from the settings dump, not a setting; "+
@@ -395,6 +409,23 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			Error(w, http.StatusBadRequest, "bad_request", fmt.Sprintf(
 				"audit retention must be at most %d days (about a century); 0 or less keeps entries forever",
 				admin.AuditRetentionMaxDays))
+			return
+		}
+	}
+
+	// How many days an old password hash keeps working (#453). A value the
+	// reader would replace with the default is refused instead, so the number
+	// an admin typed is the number in force. 0 would refuse everyone at once.
+	if raw, ok := body[admin.KeyPasswordRehashGraceDays]; ok {
+		var days int
+		if err := unmarshalSetting(raw, "password_rehash_grace_days", &days); err != nil {
+			handleError(w, err)
+			return
+		}
+		if days < admin.PasswordRehashGraceMin || days > admin.PasswordRehashGraceMax {
+			Error(w, http.StatusBadRequest, "bad_request", fmt.Sprintf(
+				"password reset grace period must be between %d and %d days",
+				admin.PasswordRehashGraceMin, admin.PasswordRehashGraceMax))
 			return
 		}
 	}
@@ -759,7 +790,7 @@ func isJSONNull(raw json.RawMessage) bool {
 func (s *Server) ssoSettingsWarning(ctx context.Context, body map[string]json.RawMessage) (string, error) {
 	touchesSAML := false
 	touchesOIDC := false
-	for _, k := range []string{admin.KeySAMLMetadataURL, admin.KeySAMLCertPEM, admin.KeySAMLKeyPEM} {
+	for _, k := range []string{admin.KeySAMLMetadataURL, admin.KeySAMLMetadataXML, admin.KeySAMLCertPEM, admin.KeySAMLKeyPEM} {
 		if _, ok := body[k]; ok {
 			touchesSAML = true
 		}
@@ -773,21 +804,31 @@ func (s *Server) ssoSettingsWarning(ctx context.Context, body map[string]json.Ra
 		return "", nil
 	}
 
-	metadataURL, certPEM, keyPEM := s.adminSvc.GetSAMLConfig(ctx)
+	c := s.storedSAMLSettings(ctx)
 	if raw, ok := body[admin.KeySAMLMetadataURL]; ok {
-		if err := unmarshalSetting(raw, "saml_metadata_url", &metadataURL); err != nil {
+		if err := unmarshalSetting(raw, "saml_metadata_url", &c.MetadataURL); err != nil {
+			return "", err
+		}
+	}
+	if raw, ok := body[admin.KeySAMLMetadataXML]; ok {
+		if err := unmarshalSetting(raw, "saml_metadata_xml", &c.MetadataXML); err != nil {
 			return "", err
 		}
 	}
 	if raw, ok := body[admin.KeySAMLCertPEM]; ok {
-		if err := unmarshalSetting(raw, "saml_cert_pem", &certPEM); err != nil {
+		if err := unmarshalSetting(raw, "saml_cert_pem", &c.CertPEM); err != nil {
 			return "", err
 		}
 	}
 	if raw, ok := body[admin.KeySAMLKeyPEM]; ok {
-		if err := unmarshalSetting(raw, "saml_key_pem", &keyPEM); err != nil {
+		if err := unmarshalSetting(raw, "saml_key_pem", &c.KeyPEM); err != nil {
 			return "", err
 		}
+	}
+	// The same refusals as PUT /admin/saml, reported the way this door reports
+	// every SSO refusal: 400 bad_request with the message.
+	if _, msg := c.metadataRefusal(); msg != "" {
+		return "", fmt.Errorf("%w: %s", user.ErrValidation, msg)
 	}
 
 	cfg := s.adminSvc.GetOIDCConfig(ctx)
@@ -821,7 +862,7 @@ func (s *Server) ssoSettingsWarning(ctx context.Context, body map[string]json.Ra
 		return "", errIncompleteOIDCConfig
 	}
 
-	return s.refuseIfOrphaning(ctx, samlFieldsLookConfigured(metadataURL, certPEM, keyPEM), oidcFieldsLookConfigured(cfg))
+	return s.refuseIfOrphaning(ctx, samlFieldsLookConfigured(c), oidcFieldsLookConfigured(cfg))
 }
 
 // refuseNullSetting is unmarshalSetting's null half, for the settings whose

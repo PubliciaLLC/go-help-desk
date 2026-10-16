@@ -14,6 +14,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
@@ -57,7 +58,7 @@ type failingStepAtomic struct {
 	err  error
 }
 
-func (a failingStepAtomic) InTx(ctx context.Context, fn func(ticket.Store, audit.Store) error) error {
+func (a failingStepAtomic) InTx(ctx context.Context, fn func(ticket.Store, audit.Store, *notification.Changes) error) error {
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -69,7 +70,7 @@ func (a failingStepAtomic) InTx(ctx context.Context, fn func(ticket.Store, audit
 	if a.step == "audit" {
 		au = failingStepAudit{Store: au, err: a.err}
 	}
-	if err := fn(st, au); err != nil {
+	if err := fn(st, au, &notification.Changes{}); err != nil {
 		return err
 	}
 	return tx.Commit()

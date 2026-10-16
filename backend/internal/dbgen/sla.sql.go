@@ -179,7 +179,7 @@ func (q *Queries) GetCurrentSLARecordForUpdate(ctx context.Context, ticketID uui
 
 const getLatestSupersededSLARecord = `-- name: GetLatestSupersededSLARecord :one
 SELECT ticket_id, policy_id, first_response_at, resolved_at, response_breached_at, resolution_breached_at, response_elapsed_at_met_seconds, resolution_elapsed_at_met_seconds, id, started_at, paused_seconds_at_start, superseded_at FROM sla_records WHERE ticket_id = $1 AND superseded_at IS NOT NULL
-ORDER BY superseded_at DESC LIMIT 1
+ORDER BY superseded_at DESC, id DESC LIMIT 1
 `
 
 // The record a ticket most recently stopped having. Read, in the same

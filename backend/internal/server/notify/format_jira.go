@@ -43,6 +43,10 @@ type jiraBody struct {
 	Priority       string `json:"priority,omitempty"`
 	LinkedTicketID string `json:"linked_ticket_id,omitempty"`
 	LinkType       string `json:"link_type,omitempty"`
+
+	// Also names the change's other kinds ("Also: assigned"), when it had any
+	// besides the one sent as the event (#506).
+	Also string `json:"also,omitempty"`
 }
 
 func renderJIRA(s summary) ([]byte, error) {
@@ -57,13 +61,14 @@ func renderJIRA(s summary) ([]byte, error) {
 		Priority:       s.Priority,
 		LinkedTicketID: s.LinkedTicketID,
 		LinkType:       s.LinkType,
+		Also:           s.Also,
 	}
 	if s.Event == notification.EventTicketReplied || s.Event == notification.EventTicketNoteAdded {
 		internal := s.Internal
 		b.Internal = &internal
-		if !s.Internal {
-			b.Body = s.Body
-		}
 	}
+	// The reply text is the summary's decision, the same as for chat: only when
+	// the hook's cut-down kinds include ticket.replied, never an internal note.
+	b.Body = s.Body
 	return json.Marshal(b)
 }

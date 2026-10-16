@@ -423,6 +423,7 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	in.TrackingPrefix = s.adminSvc.TicketPrefix(r.Context())
+	in.AutoAssign = s.routing(r.Context(), in.CategoryID, in.TypeID)
 
 	t, err := s.tickets.Create(r.Context(), in)
 	if err != nil {
@@ -433,8 +434,6 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-
-	s.autoAssign(r.Context(), t)
 
 	// Set any custom field values supplied on creation.
 	//
@@ -467,7 +466,7 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	if fresh, err := s.tickets.GetByID(r.Context(), t.ID); err == nil {
 		t = fresh
 	}
-	JSON(w, http.StatusCreated, t)
+	JSON(w, http.StatusCreated, viewerJSON(authmw.GetActor(r), t))
 }
 
 // GET /api/v1/tickets/{id}
@@ -509,8 +508,8 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The record a restart replaced, for the page's "SLA restarted" badge: the
-	// one-ticket read only, so a list never pays for it. Nothing restarts a
-	// clock on this build (#464 adds the reopen), so it is absent for now.
+	// one-ticket read only, so a list never pays for it. Only a reopen restarts
+	// a clock (#464), so it is absent on a ticket that was never reopened.
 	if views[0].SLA != nil {
 		earlier, err := s.slaPolicies.Earlier(r.Context(), t)
 		if err != nil {
@@ -519,7 +518,7 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 		}
 		views[0].SLA.Earlier = earlier
 	}
-	JSON(w, http.StatusOK, views[0])
+	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), views[0]))
 }
 
 // PATCH /api/v1/tickets/{id}
@@ -639,51 +638,33 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if body.StatusID != nil {
-		if _, err := s.tickets.UpdateStatus(r.Context(), id, *body.StatusID, actor); err != nil {
-			handleError(w, err)
-			return
-		}
-	}
+	// The whole request is one change: one transaction, one event (#506).
+	patch := ticket.Patch{StatusID: body.StatusID}
 	if body.ClearAssignee {
 		// Explicitly to nobody. Previously unreachable: the UI sent both
 		// fields as undefined, which serialised to {} and skipped this branch
 		// entirely, so "Clear assignment" returned 200 and changed nothing.
-		if _, err := s.tickets.Assign(r.Context(), id, nil, nil, actor); err != nil {
-			handleError(w, err)
-			return
-		}
+		patch.Assign = &ticket.Assignment{}
 	} else if body.AssigneeUserID != nil || body.AssigneeGroupID != nil {
-		if _, err := s.tickets.Assign(r.Context(), id, body.AssigneeUserID, body.AssigneeGroupID, actor); err != nil {
-			handleError(w, err)
-			return
-		}
+		patch.Assign = &ticket.Assignment{UserID: body.AssigneeUserID, GroupID: body.AssigneeGroupID}
 	}
 	if body.CategoryID != nil {
 		if a.Role == user.RoleUser {
 			Error(w, http.StatusForbidden, "forbidden", "only staff can reclassify tickets")
 			return
 		}
-		if _, err := s.tickets.UpdateCTI(r.Context(), id, *body.CategoryID, body.TypeID, body.ItemID); err != nil {
-			handleError(w, err)
-			return
-		}
+		patch.CTI = &ticket.Classification{CategoryID: *body.CategoryID, TypeID: body.TypeID, ItemID: body.ItemID}
 	}
-	// After the reclassification above, so a category change in the same
-	// request is the one the new priority's SLA policy is matched against.
 	if body.Priority != nil {
-		if _, err := s.tickets.ChangePriority(r.Context(), id, ticket.Priority(*body.Priority), actor); err != nil {
-			handleError(w, err)
-			return
-		}
+		p := ticket.Priority(*body.Priority)
+		patch.Priority = &p
 	}
-
-	t, err := s.tickets.GetByID(r.Context(), id)
+	t, err := s.tickets.Update(r.Context(), id, patch, actor)
 	if err != nil {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, t)
+	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), t))
 }
 
 // POST /api/v1/tickets/{id}/replies
@@ -793,7 +774,7 @@ func (s *Server) handleResolveTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, t)
+	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), t))
 }
 
 // POST /api/v1/tickets/{id}/reopen
@@ -824,7 +805,7 @@ func (s *Server) handleReopenTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, t)
+	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), t))
 }
 
 // POST /api/v1/tickets/{id}/follow-up
@@ -852,11 +833,19 @@ func (s *Server) handleCreateFollowUp(w http.ResponseWriter, r *http.Request) {
 		t   ticket.Ticket
 		err error
 	)
+	// The follow-up copies the closed ticket's classification (a requester's
+	// without the item, a guest's without the type), and is routed on that.
+	orig, err := s.tickets.GetByID(r.Context(), id)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
 	if a.Role == user.RoleUser {
 		t, err = s.tickets.CreateRequesterFollowUp(r.Context(), id, s.adminSvc.TicketPrefix(r.Context()), actor,
-			s.requesterClassificationOpen)
+			s.requesterClassificationOpen, s.routing(r.Context(), orig.CategoryID, orig.TypeID)...)
 	} else {
-		t, err = s.tickets.CreateFollowUp(r.Context(), id, s.adminSvc.TicketPrefix(r.Context()), actor)
+		t, err = s.tickets.CreateFollowUp(r.Context(), id, s.adminSvc.TicketPrefix(r.Context()), actor,
+			s.routing(r.Context(), orig.CategoryID, orig.TypeID)...)
 	}
 	if err != nil {
 		if errors.Is(err, ticket.ErrValidation) {
@@ -866,12 +855,11 @@ func (s *Server) handleCreateFollowUp(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	s.autoAssign(r.Context(), t)
 	// Read back, so the response carries whoever the routing assigned.
 	if fresh, err := s.tickets.GetByID(r.Context(), t.ID); err == nil {
 		t = fresh
 	}
-	JSON(w, http.StatusCreated, t)
+	JSON(w, http.StatusCreated, viewerJSON(authmw.GetActor(r), t))
 }
 
 // POST /api/v1/tickets/{id}/close
@@ -896,7 +884,7 @@ func (s *Server) handleCloseTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, t)
+	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), t))
 }
 
 // POST /api/v1/tickets/{id}/links
@@ -946,7 +934,7 @@ func (s *Server) handleAddLink(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
-		JSON(w, http.StatusOK, t)
+		JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), t))
 		return
 	}
 
@@ -1056,17 +1044,18 @@ type ticketAuditEntryView struct {
 
 // GET /api/v1/tickets/{id}/audit
 //
-// #129: a per-ticket activity feed next to the status timeline. Relies on
-// requireTicketAccess like every other route in this subtree — a ticket's
-// audit trail is ticket content, not a separate permission — with one
-// exception: assigned/unassigned entries name a staff or admin actor
-// (assignment is staff/admin-only, see ticket.CanAssign), and nothing else
-// on a ticket discloses that actor's identity to a reporting user — the
-// ticket's own assignee_user_id is a bare UUID, and /api/v1/staff, the only
-// place that resolves one to a name, is itself staff/admin-gated. A
-// reporting user would otherwise learn a staff member's name from this feed
-// alone, so those two actions withhold actor identity for RoleUser viewers,
-// the same way VisibleReplies withholds internal-note authorship.
+// #129: a per-ticket activity feed next to the status timeline. Staff and
+// admin only (the route sits behind RequireRole in routes.go, after the
+// ticket-access check, so a ticket out of reach is a 404 first): since
+// 2026-10-15 a requester sees the ticket's current state and its
+// conversation, not its history or audit trail, and is refused with 403.
+//
+// The RoleUser branch below, which withholds the actor of assigned/unassigned
+// entries, is therefore unreachable today. It is kept as a second safeguard
+// (assignment is staff/admin-only, see ticket.CanAssign, and nothing else on a
+// ticket discloses that actor's identity to a reporting user), so that loosening
+// the route gate by mistake does not start naming staff to requesters; the
+// same way VisibleReplies withholds internal-note authorship.
 //
 // The field-level before/after diff is a second, independent gate, settled
 // by the admin-wide view's own design round: admin always sees it; staff
@@ -1161,32 +1150,42 @@ func (s *Server) handleListLinks(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, links)
 }
 
-// autoAssign routes a newly created ticket: CTI-scoped group first, then the
-// global group, then round-robin users, else it stays unassigned. Shared by
-// handleCreateTicket and handleCreateFollowUp, because a follow-up is a new
-// ticket and goes through the same routing (#349).
-func (s *Server) autoAssign(ctx context.Context, t ticket.Ticket) {
-	if matched, _ := s.groups.GetGroupsForTicket(ctx, t.CategoryID, t.TypeID); len(matched) > 0 {
+// routing works out who a newly created ticket may be routed to, best first:
+// the CTI-scoped group, else the global group, else the round-robin users, else
+// nobody. Shared by the create and both follow-ups, because a follow-up is a new
+// ticket and goes through the same routing (#349). The ticket service assigns
+// the first one the assignment accepts, inside the create's transaction (#506).
+func (s *Server) routing(ctx context.Context, categoryID uuid.UUID, typeID *uuid.UUID) []ticket.Assignment {
+	if matched, _ := s.groups.GetGroupsForTicket(ctx, categoryID, typeID); len(matched) > 0 {
 		gid := matched[0].ID
-		_, _ = s.tickets.Assign(ctx, t.ID, nil, &gid, ticket.SystemActor)
-	} else if gid := s.adminSvc.AutoAssignGroupID(ctx); gid != nil {
-		_, _ = s.tickets.Assign(ctx, t.ID, nil, gid, ticket.SystemActor)
-	} else if uids := s.adminSvc.AutoAssignUserIDs(ctx); len(uids) > 0 {
-		// Round-robin, skipping anybody the assignment refuses.
-		//
-		// Nothing removes a departed colleague from this setting, so the list
-		// outlives them. Assign now refuses a deleted, disabled or
-		// non-staff account — but taking their slot and giving up would
-		// silently leave every Nth ticket unassigned, which is a queue that
-		// quietly loses a share of its work. Try the next one instead.
-		start := s.rrIdx.Add(1)
-		for i := range uids {
-			uid := uids[(start+uint64(i))%uint64(len(uids))]
-			if _, err := s.tickets.Assign(ctx, t.ID, &uid, nil, ticket.SystemActor); err == nil {
-				break
-			}
-		}
+		return []ticket.Assignment{{GroupID: &gid}}
 	}
+	if gid := s.adminSvc.AutoAssignGroupID(ctx); gid != nil {
+		return []ticket.Assignment{{GroupID: gid}}
+	}
+	uids := s.adminSvc.AutoAssignUserIDs(ctx)
+	if len(uids) == 0 {
+		return nil
+	}
+	return s.roundRobin(uids)
+}
+
+// roundRobin offers every user, rotated from the next slot. The turn is taken
+// with one atomic add, so creates that overlap each get their own.
+//
+// Nothing removes a departed colleague from this setting, so the list
+// outlives them. Assign refuses a deleted, disabled or non-staff account —
+// but taking their slot and giving up would silently leave every Nth ticket
+// unassigned, which is a queue that quietly loses a share of its work. The
+// whole list is offered, rotated, so the next one is tried instead.
+func (s *Server) roundRobin(uids []uuid.UUID) []ticket.Assignment {
+	start := s.rrIdx.Add(1)
+	out := make([]ticket.Assignment, len(uids))
+	for i := range uids {
+		uid := uids[(start+uint64(i))%uint64(len(uids))]
+		out[i] = ticket.Assignment{UserID: &uid}
+	}
+	return out
 }
 
 // reopenTargetStatusID resolves the configured reopen target, falling back to

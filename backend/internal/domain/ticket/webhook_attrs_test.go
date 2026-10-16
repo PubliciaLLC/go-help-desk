@@ -35,9 +35,17 @@ func (h *harness) seedClassified(status uuid.UUID) ticket.Ticket {
 	return t
 }
 
+// classification is the part of a ticket a webhook filter tests. The event now
+// carries the whole ticket (#506); the filter reads these three.
+type classification struct {
+	CategoryID      uuid.UUID
+	Priority        string
+	AssigneeGroupID *uuid.UUID
+}
+
 // classificationOf is what a webhook filter must see for tk.
-func classificationOf(tk ticket.Ticket) notification.TicketAttrs {
-	return notification.TicketAttrs{
+func classificationOf(tk ticket.Ticket) classification {
+	return classification{
 		CategoryID:      tk.CategoryID,
 		Priority:        string(tk.Priority),
 		AssigneeGroupID: tk.AssigneeGroupID,
@@ -56,8 +64,10 @@ func requireAttrsOnEveryTicketEvent(t *testing.T, h *harness, want ticket.Ticket
 			continue
 		}
 		seen++
-		require.NotNil(t, e.Attrs, "%s carries no ticket attrs", e.Type)
-		require.Equal(t, classificationOf(want), *e.Attrs, "%s carries the wrong ticket attrs", e.Type)
+		require.NotNil(t, e.Ticket, "%s carries no ticket state", e.Type)
+		require.Equal(t, classificationOf(want),
+			classification{e.Ticket.CategoryID, e.Ticket.Priority, e.Ticket.AssigneeGroupID},
+			"%s carries the wrong ticket state", e.Type)
 	}
 	require.NotZero(t, seen, "the call dispatched no ticket event; the check would pass vacuously")
 }
@@ -193,13 +203,13 @@ func TestWebhookEvents_FollowUpCarriesEachTicketsOwnAttrs(t *testing.T) {
 		case notification.EventTicketLinked:
 			sawLinked = true
 			require.Equal(t, orig.ID, e.TicketID)
-			require.NotNil(t, e.Attrs, "ticket.linked carries no ticket attrs")
-			require.Equal(t, classificationOf(orig), *e.Attrs)
+			require.NotNil(t, e.Ticket, "ticket.linked carries no ticket state")
+			require.Equal(t, classificationOf(orig), classification{e.Ticket.CategoryID, e.Ticket.Priority, e.Ticket.AssigneeGroupID})
 		case notification.EventTicketCreated:
 			sawCreated = true
 			require.Equal(t, got.ID, e.TicketID)
-			require.NotNil(t, e.Attrs, "ticket.created carries no ticket attrs")
-			require.Equal(t, classificationOf(got), *e.Attrs)
+			require.NotNil(t, e.Ticket, "ticket.created carries no ticket state")
+			require.Equal(t, classificationOf(got), classification{e.Ticket.CategoryID, e.Ticket.Priority, e.Ticket.AssigneeGroupID})
 		}
 	}
 	require.True(t, sawLinked, "no ticket.linked event was raised")

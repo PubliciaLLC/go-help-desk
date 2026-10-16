@@ -13,6 +13,14 @@ Previously the server let staff and administrators create tickets under, and rec
 
 What to check: scripts or integrations that file or reclassify tickets as staff or admin into an archived node will start getting 400. Unarchive the node (Admin → Categories) or file into an active one.
 
+## New: `unlock <email>` on the Server Console (#497)
+
+`docker compose exec app /app/server unlock <email>` is the way back for a locked-out account, and it works when the web path cannot: a lost authenticator or passkey, a disabled account (the sole administrator included), a spent MFA lockout, or a federated administrator with no usable password. In one transaction it clears every second factor, re-enables the account, clears the MFA lockout, sets a new random password and prints it once, and ends all sessions. The password must be changed at the next sign-in.
+
+- New migration `000045_must_change_password` adds `users.must_change_password` (default false). Nothing changes for existing accounts.
+- `POST /api/v1/auth/local/login` gains `password_change_required` and `User` gains `must_change_password`. A session in that state is answered `403 password_change_required` everywhere except `PATCH /api/v1/me/password`.
+- `reset-factors` is unchanged.
+
 ## An IP or Single-Label `BASE_URL` Disables Passkeys (#494)
 
 Passkeys are bound to a domain name, so they work only when the host in `BASE_URL` is a domain name (`help.example.com`) or `localhost`. **If `BASE_URL` is an IP address (`http://192.168.1.10:8080`, `http://[::1]:8080`), a single-label host (`http://helpdesk:8080`) or contains non-ASCII characters, passkeys are disabled.** The server still starts. It logs `passkeys unavailable` once at startup, and administrators see a warning banner explaining that `BASE_URL` must be a domain name.
@@ -133,15 +141,18 @@ Staff and administrators can now **follow a ticket** (a Follow button on the tic
 
 A reopen is any move from Resolved or Closed back to an open status: a requester's reply on a Resolved ticket (an account holder, or a guest), a status change by staff or an administrator (`PATCH /tickets/{id}`, or MCP `update_ticket_status`), and `POST /tickets/{id}/reopen`. Until now a reopen changed the status and nothing else. It now does five things, all in the same transaction as the status change:
 
-- **The ticket is flagged.** `reopen_count` (new on the ticket JSON, never reset) counts reopens, and staff and administrators see a **Reopened** badge on the ticket and in the queue while the ticket is open. It goes away when the ticket is resolved again. Tickets reopened before the upgrade start at 0.
+- **The ticket is flagged.** `reopen_count` (new on the ticket JSON for staff and administrators only, omitted when 0, never reset) counts reopens, and staff and administrators see a **Reopened** badge on the ticket and in the queue while the ticket is open. It goes away when the ticket is resolved again. Tickets reopened before the upgrade start at 0.
 - **The priority goes up one level on the first reopen only** (low, medium, high, critical; critical stays). This is a behaviour change on an existing action: a ticket that used to keep its priority through a reopen now gets a `priority_changed` entry and a new priority, and can match a different SLA policy. Later reopens do not raise it again.
 - **The SLA starts over**, on every reopen (the priority rise is the first reopen only). The earlier record is kept, the ticket shows the **SLA restarted** badge (staff and administrators), and the audit log gets `sla_restarted`. Nothing happens to the SLA while SLA tracking is switched off. Before this, a reopened ticket kept its old record, which could already be met or breached.
 - **Staff are emailed**: the assignee (under *Activity on tickets I'm assigned to or follow*), the assigned group's members (under *My groups' tickets*, only while nobody personally holds the ticket, as for a reply) and the ticket's followers (under the activity switch, whoever holds it), once each, and never the person who reopened it. A group member of a held ticket hears about a reopen only if they follow it. The administrator's overrides apply. **Once email is configured, staff who already receive staff email start receiving these.** Set the overrides to Off for everyone to keep their inboxes as they were.
 - **A status change out of Resolved or Closed is now audited as `reopened`** beside `status_changed`, and **raises the `ticket.reopened` webhook event**, which it did not before. A webhook subscribed to `ticket.reopened` will see it for those changes as well as for a requester's reply and `POST /reopen`.
 
-- **A priority change can no longer undo a restart.** If a ticket's priority is moved to one with no SLA policy and later to one with a policy, the new SLA record resumes from the clock it left (it used to start from the ticket's creation, which could erase a restart). The older record's met and breach marks are not copied. A ticket that never had an SLA record still starts from creation.
+- **A priority change can no longer undo a restart.** If a ticket's priority is moved to one with no SLA policy and later to one with a policy, the new SLA record resumes from the clock it left, or from the ticket's last reopen if that is later (it used to start from the ticket's creation, which could erase a restart). A reopen is remembered as a restart point even when it lands on a priority with no policy. The older record's met and breach marks are not copied. A ticket that never had an SLA record still starts from creation.
 
-Database migration `000047` adds `tickets.reopen_count` (an integer, default 0). It is safe to apply on a running instance.
+- **Requesters no longer see the activity history.** `GET /tickets/{id}/audit` and `GET /tickets/{id}/history` now answer a reporting user `403`; before, a requester could read the audit feed (with assignment actors withheld) and the status timeline of their own ticket. The ticket page no longer shows them status-change events in the conversation either. Requesters see the ticket's current state and its public replies, as before. Staff and administrators are unchanged, and guests never had either route. A script that signs in as a requester and reads those two routes will now get `403`.
+- **A requester now receives only an allowed list of ticket fields**, in every ticket response including MCP and the follow-up. They get `id`, `tracking_number`, `subject`, `description`, `status_id`, `priority`, `category_id`, `type_id`, `item_id`, `created_at`, `resolved_at`, `assignee_user_id` (kept as an id) and `resolution_notes`. **They no longer receive** `assignee_group_id`, `reporter_user_id`, `guest_email`, `guest_name`, `guest_phone`, `closed_at`, `updated_at`, `pending_since`, `sla_paused_seconds` or `reopen_count`. A script that signs in as a requester and reads those keys will find them gone; the ticket page does not read them. A field added to a ticket in a later release stays hidden from requesters until it is added to the list. Guests no longer receive `updated_at` (they had it); the rest of their view is unchanged. Staff and administrators are unchanged except that `reopen_count` is omitted when 0.
+
+Database migration `000047` adds `tickets.reopen_count` (an integer, default 0), `last_reopened_at` and `paused_seconds_at_last_reopen`. It is safe to apply on a running instance.
 
 ## Admin API: data left behind, half-applied edits and path checks (#419)
 
@@ -280,3 +291,41 @@ Scripts and API keys that call the admin API can see these changes. Migration 00
 - **A blank webhook `secret` on `PATCH` still clears it**, by design and for administrators only; now documented in the API spec and DESIGN.md.
 
 **Ordering.** This change adds migration **000040**, which follows 000039 (#432).
+
+## Old Password Hashes Must Be Reset After 30 Days (#453)
+
+1.3.0 hashes passwords at bcrypt cost 12 (earlier releases used 10). An account is upgraded automatically the next time its owner signs in. **Accounts that have not signed in within 30 days of the first start of 1.3.0 must reset their password:** a correct password on an old hash is refused with 403 `password_reset_required` and the message "Your password was saved in an older, weaker form and must be reset before you can sign in." until it is reset.
+
+- **Clock:** starts when 1.3.0 first runs against the database (migration 000044 records it once).
+- **N:** Settings → Authentication → Passwords, default 30, 1 to 365. Changing it moves the deadline for everyone.
+- **Exempt:** all administrators, so an instance cannot lock itself out. They are upgraded at their next sign-in like everyone else. Staff and requesters are refused. When SAML restricts password sign-in to administrators, others get the SAML refusal instead.
+- **How people reset:** "Forgot password" on the sign-in page once password reset by email lands (#451), or an administrator sets a new password for them. Until then only the administrator route works.
+- **What to check:** people who sign in rarely (seasonal staff, requesters) are the ones affected. Tell them, or have an administrator reset them, before day 30.
+- **API clients:** sign-in with an old hash after the deadline answers 403 `password_reset_required` instead of 200. New installs are unaffected.
+
+## One Change, One Event: Webhooks and Staff Email (#506)
+
+A change to a ticket is now **one event**, written to the notification queue in the same database transaction as the change. Before, each field changed was its own event, announced after the change had committed; a crash in between lost the notification. No migration, and no setting to change.
+
+**Webhook receivers**
+
+- **One delivery per change, per hook.** A hook subscribed to `*`, or to several names, used to get two or three deliveries for one click (a `PATCH` of status, assignee and priority; a reopen; a reply that reopens). It now gets one, with `X-GHD-Event` and `Type` set to the first name, in this order, that the hook subscribes to: `ticket.created`, `ticket.reopened`, `ticket.resolved`, `ticket.closed`, `ticket.status_changed`, `ticket.assigned`, `ticket.priority_changed`, `ticket.classified`, `ticket.replied`, `ticket.note_added`, `ticket.linked`. A hook subscribed to a single name is told that name, with the body it always had.
+- **A receiver that switches on `Type` can miss a kind.** The body does not list the other kinds. A requester's reply that reopens a ticket arrives as `ticket.reopened` only, so a receiver that handles just `ticket.replied` will not see that reply. If you need more than the label, read the ticket through the API by `TicketID`.
+- **The same status move has the same names from every door.** A move into Resolved is `ticket.status_changed` and `ticket.resolved`; into Closed, `ticket.status_changed` and `ticket.closed`; out of Resolved or Closed into an open status, `ticket.status_changed` and `ticket.reopened`. So `ticket.status_changed` now also fires for the Resolve button, the Close button, the auto-close and a requester's reopening reply, and `ticket.resolved` and `ticket.closed` now also fire for a `PATCH` of `status_id`.
+- **New events:** `ticket.priority_changed` and `ticket.classified` (category, type or item). A hook subscribed to `*` starts receiving them. Neither body has a `Payload`; read the ticket by `TicketID`. They can be selected in Admin → Webhooks and are in the `WebhookEvent` enum.
+- **A status change to the status the ticket already has announces nothing about status.** 1.2.x sent `ticket.status_changed` for it. That holds for a `PATCH` or an MCP `update_ticket_status` that repeats the current status, Resolved included: a `PATCH` that repeats Resolved and assigns someone sends `ticket.assigned` only, and the guest is not mailed or given a new link. Only the Resolve button on an already-Resolved ticket, with new notes, is still a resolution: it sends `ticket.resolved` only.
+- **The body is unchanged**: ids only, as before. No tracking number, no kinds, no version flag.
+- Chat and Jira messages include reply text only for a hook that subscribes to `ticket.replied` (or `*`), and Jira includes the ticket's status name only for a hook that subscribes to a status event (`ticket.status_changed`, `ticket.resolved`, `ticket.closed` or `ticket.reopened`); a hook on `ticket.reopened` alone gets its Reopened message without the reply, as in 1.2.x. Internal notes are never included.
+- Chat and Jira formats add one line under the headline naming the change's other kinds ("Also: assigned, priority changed"), but only kinds that hook subscribes to; a hook subscribed to a single name gets no such line. Jira gains an optional `also` key under the same rule.
+- Rows queued before the upgrade are delivered as they were.
+
+**Ticket behaviour**
+
+- **`PATCH /tickets/{id}` is all or nothing.** The status, assignee, classification and priority are applied in one transaction. A refusal partway through now leaves the whole request unapplied; before, the steps ahead of it were already saved.
+- **Auto-assignment happens in the create's transaction.** A new ticket is announced once, as created and assigned.
+- **Reclassifying announces `ticket.classified`**, and a priority change announces `ticket.priority_changed`. Reclassifying still writes no audit entry.
+
+**Staff email**
+
+- Who is mailed is decided by the server when it first picks the change up, a moment after the commit, not on the request. At most one mail goes to any address in one change (compared without case); when a guest's address is also a staff member's, the staff mail is the one sent. A person who qualifies for several reasons in one change gets one mail: the first of assigned, reopened, requester replied whose switch is on. Mail queued before the upgrade is sent as it is.
+- A guest may get a different template: the first of created, reopened, resolved, replied, status changed that the change carries. A `PATCH` to Resolved now says "We have resolved", and a status change that reopens says "We have reopened".

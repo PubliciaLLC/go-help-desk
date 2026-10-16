@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 )
 
 // Following a ticket (#441, part D of #464).
@@ -67,7 +68,7 @@ func (s *Service) setFollowing(ctx context.Context, ticketID uuid.UUID, actor Ac
 		return ErrForbidden
 	}
 	uid := *actor.UserID
-	return s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
+	return s.atomic.InTx(ctx, func(st Store, au audit.Store, _ *notification.Changes) error {
 		if _, err := st.GetByID(ctx, ticketID); err != nil {
 			return err
 		}

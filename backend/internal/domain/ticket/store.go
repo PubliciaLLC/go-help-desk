@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 )
 
 // Atomic runs a set of writes against stores bound to a single transaction,
@@ -20,8 +21,15 @@ import (
 //
 // fn receives both stores because atomicity has to span them. An audit entry
 // committed separately from the change it describes is not an audit trail.
+//
+// It receives the change's collector for the same reason (#506). What fn
+// raises into it is announced by the implementation as part of the same
+// commit: the production runner writes the outbox rows inside the transaction,
+// so a rollback announces nothing and a commit cannot lose its announcement. A
+// second, non-announcing way in was rejected; a producer would have had two
+// ways in, and one of them would not announce.
 type Atomic interface {
-	InTx(ctx context.Context, fn func(Store, audit.Store) error) error
+	InTx(ctx context.Context, fn func(Store, audit.Store, *notification.Changes) error) error
 }
 
 // Store is the persistence interface for tickets and their sub-resources.

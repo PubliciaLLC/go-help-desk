@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
+	"time"
 
 	qrcode "github.com/skip2/go-qrcode"
 
@@ -178,12 +179,19 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	if err := s.writeSession(w, r, auth.SessionData{
+	sd := auth.SessionData{
 		UserID:         a.UserID,
 		Role:           a.Role,
 		MFAPassed:      a.MFAPassed,
 		FactorVerified: a.FactorVerified,
-	}); err != nil {
+	}
+	// Only a session that owed the change can get here without having passed
+	// MFA (RequireMFAOrPasswordChange), and it still owes the enrolment, so
+	// it gets the enrolment window rather than an already-expired one.
+	if !sd.MFAPassed {
+		sd.PendingUntil = auth.PendingDeadline(time.Now(), true)
+	}
+	if err := s.writeSession(w, r, sd); err != nil {
 		handleError(w, err)
 		return
 	}

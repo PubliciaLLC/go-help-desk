@@ -70,11 +70,11 @@ Core fields (all editions):
 - **Category** (required)
 - **Type** (optional, depends on Category having Types defined)
 - **Item** (optional, depends on Type having Items defined)
-- **Priority** (a fixed set of four: `critical`, `high`, `medium`, `low`; the set is not configurable). Set at creation; staff and admin can change it afterwards (`PATCH /tickets/{id}`), which re-matches the ticket's SLA policy for the new priority without restarting its clock. Refused on a Resolved or Closed ticket (see SLA Tracking → Re-matching when priority changes, #443)
+- **Priority** (a fixed set of four: `critical`, `high`, `medium`, `low`; the set is not configurable). Set at creation; staff and admin can change it afterwards (`PATCH /tickets/{id}`), which re-matches the ticket's SLA policy for the new priority without restarting its clock. Refused on a Resolved or Closed ticket (see SLA Tracking → Re-matching when priority changes, #443). On the ticket page it is a select in the **Details** card, shown to staff and admin only (a reporting user sees the badge), and disabled with a one-line reason on a Resolved or Closed ticket; a refusal shows the server's message and leaves the old value
 - **Status** (customizable statuses per instance, see Ticket Lifecycle below)
-- **Assignee** (staff member or group)
+- **Assignee** (staff member or group). On the ticket page, staff and admin get an **Assign to me** button in the Assignee panel, offered only when the ticket has no assignee user (#444): it is hidden once the ticket is assigned to anyone, me included, on a Resolved or Closed ticket, and for a reporting user. **It keeps the ticket's group.** The server's assign sets the user and the group from the request, so a user-only `PATCH` would clear the group; the button sends `assignee_user_id` together with the ticket's own `assignee_group_id` (the key is omitted when there is no group). Picking a user from the list, by contrast, replaces the group, as before
 - **Attachments** (file uploads)
-- **Replies/thread** (staff and user messages)
+- **Replies/thread** (staff and user messages). **Append-only by design.** A reply cannot be edited or deleted, by anyone; a correction is a new reply. Decided on #468 (2026-10-13).
 - **Linked tickets** (related, parent/child, caused-by, duplicate-of — can link to any ticket including Closed)
 - **Tracking number** (quoted in notification email, and one half of a guest link re-request). Shaped `PREFIX-YEAR-SEQUENCE`, e.g. `GHD-2026-000001`. The prefix is the `ticket_prefix` setting (**Admin → Settings → General → Tickets**): one to eight uppercase letters or digits, `GHD` by default, validated when saved (`400 invalid_ticket_prefix`) and applied only to tickets created afterwards, because issued numbers are already in customers' inboxes and replies and are never rewritten
 - **Resolution notes** (summary of what resolved the ticket, captured at resolution)
@@ -137,9 +137,9 @@ admins, or staff and admins, to force-reopen; requesters never can.
 - **Reopen target status**: the status a ticket is moved to when it is reopened. Configured from **Admin → Settings → General → Ticket lifecycle → Reopen target status** (a picker limited to active, non-system statuses). Defaults to the status named "New" when unset, not to the first active custom status. It is stored by name, so it can be deactivated after it was picked. An inactive status is retired, so every reopen (forced reopen, a requester's reply on a Resolved ticket, a guest's reply) goes to New instead, administrators see a banner from `GET /admin/security-warnings` (`reopen_target`) asking for an active status, and the `PATCH /admin/statuses/{id}` that deactivates the target carries a `warning` in its response.
 - **Closed reopen policy**: admin setting (`closed_reopen_policy`, shown as **Reopening closed tickets** under Admin → Settings → Ticket lifecycle; session-gated like the other settings that widen who may do what). `off` (the default) | `admin` | `staff_admin`. **Closed is terminal by default; an instance setting can allow forced reopen by admins only, or by staff and admins; requesters never.** Unset, unreadable or unrecognised reads as `off`, never as a permissive value; an unrecognised value is refused (`400 invalid_closed_reopen_policy`) when saved. Read on every request, never cached, so a change applies to the very next request.
 - **A reopen** ([#464](https://github.com/PubliciaLLC/go-help-desk/issues/464)) is any move from Resolved or Closed back to an open status. Every way of doing it is the same reopen: a requester's reply on a Resolved ticket inside the window (an account holder, or a guest through their link); a status change by staff or an administrator (`PATCH /tickets/{id}` with `status_id`, and MCP `update_ticket_status`); and `POST /tickets/{id}/reopen`. Leaving Closed still needs `closed_reopen_policy` to allow the caller's role, and a refused request changes nothing. Resolved to Closed and Closed to Resolved are not reopens. A reopen does five things, in the same transaction as the status change (`ticket.Atomic`), so none of them happens without the others:
-  - **It flags the ticket.** `tickets.reopen_count` (migration `000047`) goes up by one and is never reset; the ticket JSON carries it as `reopen_count`. Staff and administrators see a **Reopened** badge on the ticket page and on the ticket's row in the queue (table and mobile cards) while the ticket is open, and it goes away when the ticket is Resolved or Closed again. A requester does not see it. Tickets reopened before the upgrade start at 0: reopens were only ever audit entries, which retention can prune, so there is nothing reliable to count from.
+  - **It flags the ticket.** `tickets.reopen_count` (migration `000047`) goes up by one and is never reset; the ticket JSON carries it as `reopen_count`, to staff and administrators only (omitted when 0). A requester never receives it; see *What a requester sees of a ticket* below. Staff and administrators see a **Reopened** badge on the ticket page and on the ticket's row in the queue (table and mobile cards) while the ticket is open, and it goes away when the ticket is Resolved or Closed again. A requester does not see it. Tickets reopened before the upgrade start at 0: reopens were only ever audit entries, which retention can prune, so there is nothing reliable to count from.
   - **It raises the priority one level on the first reopen only** (low to medium to high to critical; critical stays critical). "First" is the count being 0 before this reopen, so a ticket that is resolved and reopened again is flagged again but not raised again. The change goes through the same primitive as a staff priority change (`changePriorityInTx`, reason `reopened`) and writes `priority_changed` with that reason. A `PATCH` that reopens a ticket and also sends a `priority` raises it first and then applies the priority sent, so the value sent wins.
-  - **It restarts both SLA clocks**, on every reopen and not only the first, at any priority: see *A reopen restarts both clocks* under SLA Policy Matching.
+  - **It restarts both SLA clocks**, on every reopen and not only the first, at any priority: see *A reopen restarts both clocks* under SLA Policy Matching. Every reopen is also a **restart point** remembered on the ticket (`last_reopened_at` and the Pending total then, `paused_seconds_at_last_reopen`), including a reopen that lands on a priority with no SLA policy and so starts no record.
   - **It writes `reopened`** to the audit log (and `priority_changed` and `sla_restarted` as above). A status change out of Resolved or Closed now writes `reopened` beside its `status_changed`; before, only the reply and `POST /reopen` did.
   - **It emails staff and fires `ticket.reopened`**, after the commit: see Notifications. A status change out of Resolved or Closed raises the `ticket.reopened` webhook event, which it did not before.
     *Changes under #506:* the reopen and the status change become one event, written in the change's transaction; see [Ticket Events: One Change, One Event](#ticket-events-one-change-one-event-design-for-506-not-built-yet).
@@ -416,7 +416,56 @@ ticket's own guest columns, and `follow_up_of` says what it continues.
   reopened tickets go to New and administrators are warned. They can only be **deleted** when no ticket is in that
   status and no status-history entry references it; otherwise deactivate
   it. System statuses can never be renamed, deactivated or deleted.
-- Every status transition is recorded in a **status history** timeline and displayed on the ticket detail page interleaved with replies, in chronological order. Events include: the old and new status names (with colors), who made the change (user display name or "System" for auto-close), and the timestamp. The initial status assignment at ticket creation is also recorded.
+- Every status transition is recorded in a **status history** timeline and displayed on the ticket detail page interleaved with replies, in chronological order, **to staff and administrators**. A requester sees the ticket's current state and its conversation, not its history: `GET /tickets/{id}/history` and `/audit` answer them `403` (Erik, 2026-10-15), and the page shows them no timeline events. Events include: the old and new status names (with colors), who made the change (user display name or "System" for auto-close), and the timestamp. The initial status assignment at ticket creation is also recorded.
+
+### What a requester sees of a ticket
+
+(Erik, 2026-10-15; the list below was approved by Erik on 2026-10-15.) A requester sees the **current state** of their ticket and its conversation, not its history and not the staff's working data. This is an **allowed list**, applied to the response on its way out (`ticket.FilterForViewer` in `internal/domain/ticket/requester_view.go`), not a list of fields to remove: a field added to a ticket is hidden from requesters until it is added to the list on purpose. Staff and administrators get every response as built.
+
+A requester is any account that is not staff or an administrator, including a role the code does not recognise. Every response that carries a ticket goes through the filter: `GET`, list, `POST`, `PATCH` and the other ticket routes, the follow-up, and every MCP tool that returns a ticket (`get_ticket`, `list_tickets`, `create_ticket`, `assign_ticket`, `update_ticket_status`, `create_follow_up`). Inside each ticket object, whatever the shape (one ticket, a list, a ticket wrapped with extra fields), only these keys are kept:
+
+| Key | Why a requester gets it |
+| --- | --- |
+| `id`, `tracking_number`, `subject`, `description` | the ticket itself |
+| `status_id`, `priority` | its current state, both shown on the ticket page |
+| `category_id`, `type_id`, `item_id` | its classification, shown in the page's Classification panel |
+| `created_at`, `resolved_at` | when it was opened and when it was resolved (the page shows both) |
+| `assignee_user_id` | who holds it, as an id only; a requester has no route that turns the id into a name (the staff list and the user routes are staff-only), though a public reply by that person carries their name as it always has |
+| `resolution_notes` | sent to requesters before the list existed; their visibility is unchanged |
+
+The wrapper keys a response may add around a ticket are kept as they are: `sla` (already null for a requester), `can_reopen` (always false for a requester), `replies` (already without internal notes) and `links` (ticket ids and a link type). Any other wrapper key is dropped.
+
+**Never sent to a requester**: `assignee_group_id` (which team holds it), `reporter_user_id` (their own id; the page never reads it), `guest_email`, `guest_name` and `guest_phone`, `closed_at` and `updated_at` (history-like timestamps: when it was archived, when anything last touched it), `pending_since` and `sla_paused_seconds` (when and for how long the ticket waited: audit information, not state), and `reopen_count` (staff information). The conversation, the audit feed and the status timeline are separate: the conversation stays (public replies only), the other two are staff-only routes.
+
+**Guests** (the `/guest` routes) are shown less: a strict subset of the same list, `tracking_number`, `subject`, `description` and `created_at`, plus the status's *name* and the replies. (A guest used to receive `updated_at`; it is gone, because a requester does not receive it and the guest list stays a subset.) The guest ticket response goes through `ticket.FilterForGuest`, so there is still one definition.
+
+**Tests.** `TestRequesterKeys_EveryTicketKeyIsClassified` fails when a ticket field is on neither the allowed list nor the never list. `TestRequesterResponses_*` walks the router and calls every route a requester can reach (the router's own list, so a new route is included) with an empty body, against a ticket with every field filled; only create and follow-up are also called with a real body that succeeds. `TestGuestResponses_*` does the same for the guest routes. Both fail if a never-listed key appears anywhere in a body, or a ticket-shaped object carries a key off the list. The MCP tools are not on the router: the test takes its list from `mcp.TicketTools`, and a tool that is not classified in `internal/mcp` fails that package's test. Emails are not JSON and carry only the tracking number and a link to the ticket.
+
+### Ticket Followers
+
+([#441](https://github.com/PubliciaLLC/go-help-desk/issues/441), part D of #464.)
+Staff and administrators can **follow** a ticket to hear about its activity without holding it. A follower is emailed under the staff-email rules (Notifications below), and the ticket shows everyone who follows it.
+
+- **Who can follow: people only.** A staff member or administrator, signed in. An API key, an OAuth client and a service user cannot follow or unfollow: following is a personal choice, and a script acting for someone is not them (#490). The routes answer `403 session_required` to a machine credential, and `ticket.Service.Follow` independently refuses any account that is not an active, non-service staff or admin account, so a second caller (MCP, an importer) cannot get round the route. A requester cannot follow and has no route to the list.
+- **A follower must be able to see the ticket** when following: the routes sit behind `requireTicketAccess` like everything under `/tickets/{id}`, so a ticket out of scope (#391) is a 404, and a tracking number works as well as a UUID. At send time the person is checked again (`Server.StillEntitled`, `CanViewTicket`): mail for a ticket they can no longer see is skipped, and **the row is kept**, so following works again if their scope returns. A deleted or disabled account, a service account and a requester are never mailed (`ListMailableTicketFollowers`).
+- **API.** `PUT` and `DELETE /api/v1/tickets/{id}/follow` follow and unfollow for the caller; both are idempotent and answer 204. `GET /api/v1/tickets/{id}/followers` lists them, oldest first, for staff and administrators (a machine credential with `tickets:read` may read it).
+- **Staff always see the current list of followers** on the ticket page, with a Follow / Unfollow button. No setting hides it.
+- **Following is audited.** A follow and an unfollow each write a `followed` / `unfollowed` entry with the person as actor, in the same transaction as the change (`ticket.Atomic`); repeating either writes nothing. The entries are visible to **administrators**. A staff member sees them only when the administrator turns on **`staff_can_view_follow_audit`** (off by default; a disclosure-widening toggle, so session-only like `staff_can_view_ticket_change_history`). A requester never sees them. Both views leave them out in the query (`audit.Filter.ExcludeActions` for the admin-wide view, in the page and the total alike, so asking for them there by `action` returns nothing for staff; `audit.ActionFilter` for the per-ticket feed). The per-ticket feed also keeps them out of its 500-entry cap: they are fetched on their own, with a cap of their own, only for viewers who may see them, and merged by time, so toggling follow can never push a ticket's real history off its feed. A viewer who may see follow entries always gets their `before` and `after` (redacted like any diff), even without the change-history setting, so a removal on reassignment can say whose follow it was.
+- **Reassigning takes the old assignee's follow with it** (Erik, 2026-10-14: the assignee follows the ticket by being assigned, so a follow on top is dropped when they lose it). When a ticket is assigned away from someone, or unassigned, or its assignee's account is deleted (open tickets only, as account deletion only unassigns those), their follow row is removed in the same transaction (`dropAssigneeFollow`, from `Service.Assign` and `Service.UnassignForUser`, which every route reaches: PATCH, auto-assign, MCP `assign_ticket`, account deletion; there is no bulk assign). It writes an `unfollowed` entry with the reassigning actor as the actor, after the `assigned` / `unassigned` entry; its before and after carry `assignee_user_id` (whose follow went, and who holds it now), and the feed labels it "Follow removed on reassignment (name)". No follow row, no entry. The same person again changes nothing. Only the assignee loses a follow: moving the ticket between groups, with the assignee kept or not, leaves group members' follows alone. They click Follow again to keep the mail. A per-user preference for this is not built.
+- **Data.** `ticket_followers (ticket_id, user_id, created_at)`, primary key `(ticket_id, user_id)`, both columns cascading on a hard delete (users are soft-deleted, so the send-time check does the real work), migration `000046`.
+
+### Ticket Followers
+
+([#441](https://github.com/PubliciaLLC/go-help-desk/issues/441), part D of #464.)
+Staff and administrators can **follow** a ticket to hear about its activity without holding it. A follower is emailed under the staff-email rules (Notifications below), and the ticket shows everyone who follows it.
+
+- **Who can follow: people only.** A staff member or administrator, signed in. An API key, an OAuth client and a service user cannot follow or unfollow: following is a personal choice, and a script acting for someone is not them (#490). The routes answer `403 session_required` to a machine credential, and `ticket.Service.Follow` independently refuses any account that is not an active, non-service staff or admin account, so a second caller (MCP, an importer) cannot get round the route. A requester cannot follow and has no route to the list.
+- **A follower must be able to see the ticket** when following: the routes sit behind `requireTicketAccess` like everything under `/tickets/{id}`, so a ticket out of scope (#391) is a 404, and a tracking number works as well as a UUID. At send time the person is checked again (`Server.StillEntitled`, `CanViewTicket`): mail for a ticket they can no longer see is skipped, and **the row is kept**, so following works again if their scope returns. A deleted or disabled account, a service account and a requester are never mailed (`ListMailableTicketFollowers`).
+- **API.** `PUT` and `DELETE /api/v1/tickets/{id}/follow` follow and unfollow for the caller; both are idempotent and answer 204. `GET /api/v1/tickets/{id}/followers` lists them, oldest first, for staff and administrators (a machine credential with `tickets:read` may read it).
+- **Staff always see the current list of followers** on the ticket page, with a Follow / Unfollow button. No setting hides it.
+- **Following is audited.** A follow and an unfollow each write a `followed` / `unfollowed` entry with the person as actor, in the same transaction as the change (`ticket.Atomic`); repeating either writes nothing. The entries are visible to **administrators**. A staff member sees them only when the administrator turns on **`staff_can_view_follow_audit`** (off by default; a disclosure-widening toggle, so session-only like `staff_can_view_ticket_change_history`). A requester never sees them. Both views leave them out in the query (`audit.Filter.ExcludeActions` for the admin-wide view, in the page and the total alike, so asking for them there by `action` returns nothing for staff; `audit.ActionFilter` for the per-ticket feed). The per-ticket feed also keeps them out of its 500-entry cap: they are fetched on their own, with a cap of their own, only for viewers who may see them, and merged by time, so toggling follow can never push a ticket's real history off its feed. A viewer who may see follow entries always gets their `before` and `after` (redacted like any diff), even without the change-history setting, so a removal on reassignment can say whose follow it was.
+- **Reassigning takes the old assignee's follow with it** (Erik, 2026-10-14: the assignee follows the ticket by being assigned, so a follow on top is dropped when they lose it). When a ticket is assigned away from someone, or unassigned, or its assignee's account is deleted (open tickets only, as account deletion only unassigns those), their follow row is removed in the same transaction (`dropAssigneeFollow`, from `Service.Assign` and `Service.UnassignForUser`, which every route reaches: PATCH, auto-assign, MCP `assign_ticket`, account deletion; there is no bulk assign). It writes an `unfollowed` entry with the reassigning actor as the actor, after the `assigned` / `unassigned` entry; its before and after carry `assignee_user_id` (whose follow went, and who holds it now), and the feed labels it "Follow removed on reassignment (name)". No follow row, no entry. The same person again changes nothing. Only the assignee loses a follow: moving the ticket between groups, with the assignee kept or not, leaves group members' follows alone. They click Follow again to keep the mail. A per-user preference for this is not built.
+- **Data.** `ticket_followers (ticket_id, user_id, created_at)`, primary key `(ticket_id, user_id)`, both columns cascading on a hard delete (users are soft-deleted, so the send-time check does the real work), migration `000046`.
 
 ### Ticket Followers
 
@@ -433,9 +482,11 @@ Staff and administrators can **follow** a ticket to hear about its activity with
 
 ### Ticket Activity Feed
 
-`GET /api/v1/tickets/{id}/audit` (#129) answers "who changed this ticket, and when" from the audit log the domain layer already writes, without database access. Shown on the ticket detail page next to the status timeline, staff and admin only — a UI choice, not a new permission: the route inherits `requireTicketAccess` like every other route under `/tickets/{id}`.
+`GET /api/v1/tickets/{id}/audit` (#129) answers "who changed this ticket, and when" from the audit log the domain layer already writes, without database access. Shown on the ticket detail page next to the status timeline. **Staff and administrators only** (Erik, 2026-10-15: requesters and guests see the current state of the ticket and its conversation, not its history or its audit trail): the route sits behind the same role gate as tags and followers, so a requester gets `403 forbidden` on a ticket they can see, and `404` on one they cannot, as for every route under `/tickets/{id}` (`requireTicketAccess` answers first). `GET /tickets/{id}/history` is gated the same way. Guests have neither route. Public replies stay visible to requesters; internal notes stay hidden.
 
-This route only *reads* the audit log; it does not change what the domain layer writes to it. What gets written is narrower than "every mutation": `created`, `status_changed`, `assigned`, `unassigned` (an assignment cleared, or a departing user's tickets returned to the queue, #326), `resolved`, `closed`, `followed` and `unfollowed` (Ticket Followers above; withheld from staff unless `staff_can_view_follow_audit` is on, and from requesters always), and `reopened` (every reopen: a requester's reply that reopens a Resolved ticket, a status change out of Resolved or Closed, and `POST /reopen`; a move out of Closed is a force-reopen allowed only by `closed_reopen_policy` (#349) and says so with `forced_reopen` and the policy in its "after"), `priority_changed` (#443: the "after" says why the priority changed, `manual` or `reopened`, what happened to the ticket's SLA, and the ids of the SLA policy and record in force before and after) and `sla_restarted` (#443, #464: written by every reopen that starts the SLA clocks over, with the id of the record it replaced; a staff priority change never writes it). CTI reclassification and custom-field edits are not recorded. Those are gaps in what `ticket.Service` writes, not something this route introduces.
+This route only *reads* the audit log; it does not change what the domain layer writes to it. What gets written is narrower than "every mutation": `created`, `status_changed`, `assigned`, `unassigned` (an assignment cleared, or a departing user's tickets returned to the queue, #326), `resolved`, `closed`, `followed` and `unfollowed` (Ticket Followers above; withheld from staff unless `staff_can_view_follow_audit` is on, and from requesters always), and `reopened` (every reopen: a requester's reply that reopens a Resolved ticket, a status change out of Resolved or Closed, and `POST /reopen`; a move out of Closed is a force-reopen allowed only by `closed_reopen_policy` (#349) and says so with `forced_reopen` and the policy in its "after"), `priority_changed` (#443: the "after" says why the priority changed, `manual` or `reopened`, what happened to the ticket's SLA, and the ids of the SLA policy and record in force before and after) and `sla_restarted` (#443, #464: written by a reopen that replaces an SLA record, with the id of the record it replaced and, when one starts, the new one; a reopen that starts a first clock on a ticket that had none replaced nothing and writes nothing; a staff priority change never writes it). CTI reclassification and custom-field edits are not recorded. Those are gaps in what `ticket.Service` writes, not something this route introduces.
+
+(The paragraphs below about what a *reporting user* sees in this feed describe the code's response shaping, which a requester no longer reaches: the route is refused to them. They still apply to the staff and administrator views where they mention the diff.)
 
 That inherited gate is enough for the entry itself (status, priority, subject, assignee are already visible on the ticket to anyone who can view it), but not for the *actor* on `assigned`/`unassigned` entries specifically: assignment is staff/admin-only, and unlike every other action here, nothing else on the ticket discloses that actor's identity to a reporting user — the ticket's own `assignee_user_id` is a bare UUID, and `GET /api/v1/staff`, the only place that resolves one to a name, is itself staff/admin-gated. So the API withholds `actor_id`/`actor_name` on those two actions when the caller is a plain reporting user, the same way `ticket.VisibleReplies` withholds internal-note authorship from that same viewer. Every other action's actor is fine to show as-is, subject to requester-name masking below (see `StatusHistoryEntry.ChangedByName`, which already does, via `/history`).
 
@@ -547,6 +598,37 @@ separate value for each direction:
   "optionally" in "optionally auto-resolves the duplicate" — it is a choice
   made per link, not an instance-wide setting.
 
+**Resolve all children** (#443). On a ticket that is the *source* of at least
+one `parent_child` link (the parent), the Linked tickets panel offers **Resolve
+all children** to staff and admin. It asks for resolution notes once (required),
+then resolves the children **from the browser, one at a time**, each through the
+ordinary `POST /tickets/{id}/resolve` with the same notes. There is no bulk
+endpoint: each child therefore gets its own audit entry, notifications and SLA
+handling, and the closed-ticket rules apply to it as to any resolve. A child
+that is already Resolved or Closed is **skipped and never re-resolved**,
+because a second Resolve with different notes overwrites the notes the child
+already carries (#225). A refusal on one child does not stop the rest. The
+panel reports `n of m resolved, k already resolved, j refused:` followed by each
+refused child's tracking number and the server's reason, the same shape as the
+ticket list's bulk status change; the notes stay in the box after a partial
+failure, so a retry is one click and only touches the children still open. A
+ticket that is only a child, or has only related, caused-by or duplicate-of
+links, does not show the button.
+
+**Direct children only** (decided on #505, 2026-10-15). The button resolves the
+parent's *direct* children and nothing below them. Its count is the number of
+direct children that are **not** Resolved or Closed: with four children of which
+two are done it reads "Resolve 2 children" and says the other two are skipped,
+and when none is open it is disabled with "All children are already resolved."
+Each child is read again right before its own resolve, since its state can
+change while the form is open. Once the form is open the panel reads each direct
+child's links (one `GET /tickets/{id}/links` per child, nothing before the form
+opens and nothing below the children) and, when some of them are themselves the
+source of a `parent_child` link, says so: "2 of these children have children of
+their own (tracking numbers, listed up to five); resolve those from their own
+ticket." A child whose links cannot be read gets no notice, because the page
+cannot say what it does not know.
+
 ### OAuth Clients and Service Users
 
 Decided on [#434](https://github.com/PubliciaLLC/go-help-desk/pull/434) for
@@ -641,6 +723,7 @@ Routing is best-effort: a failure to assign leaves the ticket unassigned and doe
 ### Local Auth (Default)
 
 - Username/password with bcrypt hashing at **cost 12** (`user.ProductionBcryptCost`, #453). Releases up to 1.2 hashed at cost 10; a hash made at a lower cost is replaced at that account's next successful password sign-in, with a write conditional on the old hash so a password changed in between is never overwritten. The upgrade is best effort: a failure is logged and the sign-in still succeeds. While accounts are still on a lower cost, a wrong password for such an account spends the extra comparisons needed to cost as much as one at cost 12, so it takes as long to refuse as an address with no account. An account with no password (one that signs in only through SSO) or with a hash bcrypt cannot read is refused after the same comparison an unknown address gets, so a wrong password does not say which addresses belong to SSO-only accounts (#476). A hash at a higher cost than this one still takes longer to refuse; none is ever written. A password is 8 to 72 **bytes**, the same rule wherever one is set: first-run setup, admin create, admin reset, the account page and signup verification (`user.ValidatePassword`, #368). The upper bound is bcrypt's: it reads only the first 72 bytes and refuses to hash more. It counts bytes, not characters, so accented letters take 2 bytes each and most other non-Latin characters 3 or 4, and a 25-character passphrase in Chinese is already too long. A password over the limit is refused with a 400 that names it (`bad_request`, or `password_too_long` at signup verification). Sign-in applies no maximum, so a hash made elsewhere by a bcrypt that silently truncated still accepts its owner's full password: only the first 72 bytes are compared, as bcrypt always has.
+- **Old hashes stop working after N days (#453).** Rehash at sign-in only reaches accounts that sign in, so a hash made below cost 12 is refused too once the grace period ends. `admin.KeyPasswordRehashStartedAt` (`password_rehash_started_at`) holds the moment 1.3.0 first ran against the database, written once by migration 000044 (`ON CONFLICT DO NOTHING`; a fresh install has no old hashes, so its date changes nothing). It is a settings row rather than an `instance_secrets` row: that table is for secrets (a name allowlist and at least 32 bytes), and a date is not one. It is a known key only because the migration test requires every seeded key to be one; `PATCH /admin/settings` refuses it with `readonly_setting`, it is auth-critical, and the settings dump leaves it out, so nobody can restart the clock. N is `password_rehash_grace_days` (Authentication tab, default **30**, 1 to 365 enforced when saved; an unreadable or out-of-range stored value reads as 30). Sign-in only: `user.Service.VerifyPasswordForSignIn` returns `ErrPasswordResetRequired` for a **correct** password on a hash below the current cost once `started_at + N days` has passed, and the handler answers 403 `password_reset_required` telling the person to use "Forgot password" or ask an administrator. A wrong password still answers 401 `invalid_credentials`, so a guesser learns nothing about the hash. The refusal spends the same bcrypt work as a wrong password on that hash (it burns the cost difference instead of the rehash), pinned by a work-counting test next to #475's. `VerifyPassword` (confirming the current password while changing it) never refuses, since changing the password is the cure. No deadline recorded, or one that cannot be read, means no refusal. **Every administrator is exempt** (rehashed at sign-in as before): administrators are who reset everyone else, setup does not reopen, and email may be off. An earlier version exempted only the last active administrator, which still locked out the others; Erik widened it. Staff and requesters are refused. The SAML restriction (`saml_required`, password sign-in limited to administrators) is checked first, so a non-administrator under SAML gets that refusal rather than a reset instruction. Part D (#451) will send the reset link from the refusal; the handler marks the spot.
 - Available for all roles by default. With `saml_enabled` on, only administrators keep it (see SAML below).
 - **MFA** (optional toggle `mfa_enabled` in admin settings): a second factor is **either** a TOTP authenticator app (Google Authenticator, Authy, etc., enrolled by QR code) **or** a registered passkey (below). Admin can enforce MFA for specific roles (`mfa_enforced_roles`) or all users; an enforced user with no factor is sent to enrolment at sign-in, and right after verifying a self-service signup.
 - **A half-signed-in session expires** (#452). After the password is accepted but before the second factor is done, the session is good for **5 minutes** when a code from an existing factor is owed (TOTP or passkey) and **15 minutes** for first-time enrolment, which takes longer (installing an app, scanning a code). The limit is chosen when the session is created (`auth.PendingDeadline`) and stored as `SessionData.PendingUntil`; saving a staged enrolment secret does not extend it. Past it, `SessionAuth` deletes the session row and the request carries no actor, so the route answers its usual 401 and the person signs in with their password again; a refused code is never checked, so it does not use up an MFA attempt. The cookie and row are also given that lifetime so an abandoned sign-in clears itself. A pending session with no `PendingUntil` (saved before this existed) counts as expired, so anyone mid-sign-in at upgrade signs in once more. A fully signed-in session is not affected. Enrolment stays outside `RequireMFA`, so the password is still a way in: the sole administrator can always sign in again and recover (`TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor`).
@@ -812,7 +895,7 @@ re-enrolment for a TOTP-protected account since the re-enrolment fix.
 a second factor required up front:
 
 ```
-go-help-desk reset-factors <email>
+/app/server reset-factors <email>
 ```
 
 It clears the account's TOTP enrolment, removes its registered passkeys and ends
@@ -820,13 +903,62 @@ its sessions (one statement), so the next sign-in reaches enrolment and the
 person starts again. It is the answer for every cause of lockout, and for the
 sole administrator the only one, since the web path must keep refusing (a
 password alone being enough to replace somebody's second factor is the bypass
-the guards exist to prevent). It takes an email address only and cannot set a
-password (see the identity provider guard below). It grants nothing new: anyone
+the guards exist to prevent). It takes an email address only and does not touch
+the password (`unlock`, below, does). It grants nothing new: anyone
 able to run it already has the filesystem and the database credentials, so it
 widens no web-facing surface, which a recovery code (another secret at rest,
 worth stealing, the property passkeys exist to remove) would.
 
-**It writes an audit entry** naming the account and the operating-system user
+**`unlock` is the complete version** (#497):
+
+```
+/app/server unlock <email>
+```
+
+(In the published image the binary is `/app/server`:
+`docker compose exec app /app/server unlock <email>`.) In ONE transaction it
+does what `reset-factors` does (`ClearFactors`: every second factor and every
+session), and also re-enables the account if it was disabled, clears the TOTP
+failure count and lock, and sets a **new random password** (24 characters from
+`crypto/rand`, hashed at the current bcrypt cost) that it prints **once** to
+standard output after the commit, never to the log and never into the audit
+entry. It refuses an unknown or deleted address, and if any step fails
+(the audit write included) nothing changes and nothing is printed. It does not
+touch the in-memory sign-in throttle, which lives in the server process and
+only delays a login, never refuses the right password.
+It refuses an OAuth client's service account (#490), which has no password to unlock, naming the client.
+
+**The password it prints must be changed at the next sign-in.** It sets
+`users.must_change_password` (migration 000045). While the flag is set the
+session a correct password opens may do exactly one thing, change the password
+(`PATCH /me/password`, which asks for the current password as ever); the
+login answer carries `password_change_required` and the login page shows the
+change step first. Every other route answers `403 password_change_required`:
+`RequireMFA` refuses it for all the routes behind it, and `RequirePasswordCurrent`
+for the enrolment routes outside it, the way the MFA-pending gate holds a
+half-signed-in session. Changing the password (`SetUserPasswordHash`) clears the
+flag. **The flag must never stop an account signing in**, which is the
+last-administrator rule applied to a new gate: it gates nothing at login, and
+the password change is reachable without having passed MFA. Otherwise an
+administrator whose role must enrol MFA would be held at "enrol first" by
+`RequireMFA` and at "change the password first" by the flag, with a way out of
+neither. That exemption is for a session that owed no factor when the password was
+checked (the login decides, into `PasswordChangeNeedsNoFactor`), never for the raw
+flag: the flag outlives the cleared factors, and a single sign-on session, which
+ignores it, can enrol a new one, after which a password alone must not be enough
+to change the password (`TestMustChangePassword_DoesNotLetAPasswordOnlySessionSkipAnEnrolledFactor`).
+An account with a factor verifies it first and then changes the password
+(`TestMustChangePassword_DoesNotLockOutAnAccountThatOwesEnrolment` covers the
+other case).
+Single sign-on and passkey sign-ins do not read the flag; it is about the
+password, and a federated administrator who never uses it simply keeps it set.
+
+**Its audit entry** (`action: "account_unlock"`, `actor: "server console"`, with
+the operating-system user and host and no actor id) is written in the same
+transaction, unlike `reset-factors`' best-effort write below: this command
+hands out a credential, so an unlock with no record is refused.
+
+**`reset-factors` writes an audit entry** naming the account and the operating-system user
 and host that ran it, with no actor id: nobody signed in, and inventing one
 would record a claim rather than a fact. The shape (`entity_type: "user"`,
 `action: "mfa_reset"`) is the one the user page's Reset MFA writes, and an
@@ -911,13 +1043,14 @@ refuses that and will keep refusing it).
 
 ### SAML (Optional, Off by Default)
 
-- Configured under **Admin → Settings → Authentication** with the IdP's metadata URL and a service-provider certificate and key (the key is write-only). The IdP registers this instance from `GET /api/v1/auth/saml/metadata`. Sign-in starts at `GET /api/v1/auth/saml/login`, which always opens a new request at the IdP (even when the browser still holds a hand-over cookie) and accepts no return address. It returns to `POST /api/v1/auth/saml/acs`, then always to `GET /api/v1/auth/saml/complete` ([#390](https://github.com/PubliciaLLC/go-help-desk/issues/390); pinned by `TestSAMLLogin_RedirectsToTheIdP`, `TestSAMLLogin_IgnoresReturnToParameters` and `TestSAMLLogin_StartsFreshEvenWithAHandoverCookie`). IdP-initiated sign-in is not accepted. The login page shows a **Sign in with SAML** button, a plain link to `GET /api/v1/auth/saml/login`, when `GET /auth/providers` reports SAML enabled (the middleware is loaded, whatever `saml_enabled` says) ([#393](https://github.com/PubliciaLLC/go-help-desk/issues/393), [#421](https://github.com/PubliciaLLC/go-help-desk/issues/421)).
-- **SAML runs whenever the metadata URL, certificate and key are all set**; otherwise its routes answer `503 saml_not_configured`. There is no on/off switch for SAML itself. The settings page only shows the SAML fields while the "Enable SAML login" (`saml_enabled`) toggle is on, so it steers an operator configuring SAML toward also turning off password login for non-administrators; the toggle only takes effect when the settings are saved (the SAML fields have their own "Save SAML config"), so it can be switched back off after the SAML config is saved.
+- Configured under **Admin → Settings → Authentication** with the IdP's metadata, given as a URL the server fetches or as the metadata XML pasted or uploaded on the settings page (readable after saving: it is public data), and a service-provider certificate and key (the key is write-only). The IdP registers this instance from `GET /api/v1/auth/saml/metadata`. Sign-in starts at `GET /api/v1/auth/saml/login`, which always opens a new request at the IdP (even when the browser still holds a hand-over cookie) and accepts no return address. It returns to `POST /api/v1/auth/saml/acs`, then always to `GET /api/v1/auth/saml/complete` ([#390](https://github.com/PubliciaLLC/go-help-desk/issues/390); pinned by `TestSAMLLogin_RedirectsToTheIdP`, `TestSAMLLogin_IgnoresReturnToParameters` and `TestSAMLLogin_StartsFreshEvenWithAHandoverCookie`). IdP-initiated sign-in is not accepted. The login page shows a **Sign in with SAML** button, a plain link to `GET /api/v1/auth/saml/login`, when `GET /auth/providers` reports SAML enabled (the middleware is loaded, whatever `saml_enabled` says) ([#393](https://github.com/PubliciaLLC/go-help-desk/issues/393), [#421](https://github.com/PubliciaLLC/go-help-desk/issues/421)).
+- **SAML runs whenever the IdP metadata (a URL or XML), the certificate and the key are all set**; otherwise its routes answer `503 saml_not_configured`. There is no on/off switch for SAML itself. The settings page only shows the SAML fields while the "Enable SAML login" (`saml_enabled`) toggle is on, so it steers an operator configuring SAML toward also turning off password login for non-administrators; the toggle only takes effect when the settings are saved (the SAML fields have their own "Save SAML config"), so it can be switched back off after the SAML config is saved.
+- **IdP metadata: a URL or XML (#461).** `saml_metadata_url` and `saml_metadata_xml` are alternatives. A save that would leave both set is refused: `400 saml_metadata_conflict` on `PUT /admin/saml`, and `400 bad_request` on the settings PATCH. Pasted XML is parsed before anything is saved, by the parser a fetched URL goes through (`samlsp.ParseMetadata`). A document that does not parse, is not SAML metadata, has no `IDPSSODescriptor` (most often this instance's own SP metadata pasted by mistake), or has no signing certificate that parses as X.509 (the certificates the SP verifies every assertion against; such metadata loads, so it would otherwise count as reachable for the lockout guard and then refuse every sign-in) is refused with `invalid_saml_metadata`, and one over 256 KiB with `saml_metadata_too_large`. Go's XML decoder resolves no external entities, fetches no DTD and expands no declared entity, so a pasted document cannot make the server read a file or a URL (pinned by `TestParseIdPMetadataXML_FetchesNoExternalEntity`). The settings page's upload button only fills the text box, so pasted and uploaded XML are the same input. Saved XML is never refreshed: when the IdP rotates its signing certificate, paste its new metadata. A URL is fetched again at each save and each restart. The private key stays write-only; the XML is returned by `GET /admin/saml` and the settings dump.
 - **`saml_enabled`** (the "Enable SAML login" toggle) is a separate, stricter posture an operator opts into: it removes password login for non-administrators (`user.IsLocalAuthAllowed`; refused with `403 saml_required`), and `GET /auth/providers` says so with `local_admin_only` (true exactly when `saml_enabled` is on; `local` stays true, since the password form is still offered). `GET /auth/providers` is JSON, and its `saml` and `oidc` entries mean *loaded and able to sign someone in now*, not *switched on*: an identity provider that did not answer no longer gets a button that leads to a 503 (#421).
 - **Admin failsafe**: administrators can still sign in with a local password.
-- **First sign-in provisioning.** A known SAML subject signs in and has its email and display name refreshed from the assertion (the domain allowlist is not applied again). An unknown subject creates a `User`-role account, provided the email's domain passes `allowed_email_domains` (an empty list is unrestricted for this path). It never adopts an existing local account by email: an address already held by another account is refused (`/login?error=email_taken`). The email comes from `email`, `mail` or the LDAP `mail` OID, falling back to the NameID; the name from `displayName`, `cn`, `name` or given name plus surname, falling back to the email. Other refusals redirect to `/login?error=` with `domain_not_allowed`, `account_disabled`, `account_link_refused`, `invalid_assertion`, `email_not_verified`, `sso_session_used` or `invalid_email` (an address that needs quotation marks, see Guest Submission). The login page shows a fixed message for each of these codes and a generic one for any other; it never displays text from the query string. An SSO sign-in counts as having passed MFA; whether it also counts as having proved a factor is under Passkeys above.
+- **First sign-in provisioning.** A known SAML subject signs in and has its email and display name refreshed from the assertion (the domain allowlist is not applied again). An unknown subject creates a `User`-role account, provided the email's domain passes `allowed_email_domains` (an empty list is unrestricted for this path). It never adopts an existing local account by email: an address already held by another account is refused (`/login?error=email_taken`). The email comes from `email`, `mail`, the LDAP `mail` OID or Entra ID's `…/claims/emailaddress`, falling back to the NameID. The name comes from `displayName`, Entra ID's `…/identity/claims/displayname`, `cn` or `name`, then the given name (`givenName`, `firstName` or `…/claims/givenname`) and surname (`sn`, `lastName` or `…/claims/surname`), either alone if only one is sent, then Entra ID's `…/claims/name` (ranked last because Entra fills it with the user principal name), falling back to the email (#461; `TestSAMLIdentity`). A blank value counts as absent. Each sign-in of a known subject rewrites the stored name, and the email when it is valid, from these, so an IdP that starts sending a name, or a release that starts reading one, changes the display name at the next sign-in. Other refusals redirect to `/login?error=` with `domain_not_allowed`, `account_disabled`, `account_link_refused`, `invalid_assertion`, `email_not_verified`, `sso_session_used` or `invalid_email` (an address that needs quotation marks, see Guest Submission). The login page shows a fixed message for each of these codes and a generic one for any other; it never displays text from the query string. An SSO sign-in counts as having passed MFA; whether it also counts as having proved a factor is under Passkeys above.
 
-**Supported IdPs:** Okta, Azure AD / Entra ID, Google Workspace (standard SAML 2.0; additional IdPs should work via metadata import).
+**Supported IdPs:** Okta, Azure AD / Entra ID, Google Workspace (whose metadata is a download: paste or upload it; standard SAML 2.0; additional IdPs should work via metadata import).
 
 The SP root URL passed to the SAML library carries a trailing slash
 (`{baseURL}/api/v1/auth/`), not the bare prefix (see `auth.NewSAMLMiddleware`).
@@ -1019,8 +1152,9 @@ administrator:
   MFA (TOTP or passkey) is deliberately not consulted: a second factor is never a
   way *in* on its own, so it cannot rescue a stranded administrator and cannot
   strand one.
-- SAML reachability depends only on the three configuration fields being
-  non-empty plus a successful metadata load. The guard gives SAML **no `enabled`
+- SAML reachability depends only on the IdP metadata (a URL or XML), the
+  certificate and the key being non-empty plus a successful metadata load (a
+  fetch for a URL, a parse for XML). The guard gives SAML **no `enabled`
   flag**, and `saml_enabled` is not part of the load decision: it already means
   something else (it removes password login for non-admins). Wiring it in would
   take SAML down on every instance that leaves it off to keep password login
@@ -1032,7 +1166,7 @@ administrator:
 
 - The dedicated endpoints (`PUT /admin/oidc`, `PUT /admin/saml`) build the real
   provider or middleware against the *candidate* configuration (running OIDC
-  discovery, or fetching and parsing the SAML metadata) **before** persisting
+  discovery, or fetching or parsing the SAML metadata) **before** persisting
   anything, and the guard's decision is that real outcome. "Are the fields
   non-empty" is wrong in the dangerous direction: a well-formed but unreachable
   IdP (a typo'd issuer, a metadata endpoint that is down) would sail through. The
@@ -1074,10 +1208,10 @@ infrequent action from the settings page, not a path an unauthenticated attacker
 can drive, and closing it would need a transaction spanning the users and
 settings tables.
 
-**Not built:** extending `reset-factors` to also set a password, so a locked-out
-federated administrator has a complete way back and not just a warning that
-would have stopped them getting here (#300's option 4). `reset-factors` exists
-(see Passkeys) and clears factors only.
+**The complete way back is `/app/server unlock <email>`** (#497, #300's option
+4), so a locked-out federated administrator has more than a warning that would
+have stopped them getting here: it sets a password. See Passkeys, "The way back
+in", for what it does. `reset-factors` remains and clears factors only.
 
 ---
 
@@ -3566,9 +3700,17 @@ What a staff change does, decided in this order:
 **Moving through a priority with no policy does not undo a restart** (Erik,
 2026-10-14). A priority with no matching policy supersedes the record and leaves
 the ticket with none (`removed`). When a later change gives it one back
-(`attached`), the new record resumes from the superseded record's clock instead
-of the ticket's creation, so a restart is not thrown away by a trip through a
-priority with no policy, and the time spent there still counts. It gains
+(`attached`), the new record resumes from the **later of** the ticket's last
+reopen (`last_reopened_at`) and the newest superseded record's start, with the
+pause base that goes with whichever wins, instead of the ticket's creation. So a
+restart is not thrown away by a trip through a priority with no policy, a reopen
+that itself lands on a priority with no policy still counts as a restart (a
+ticket reopened onto high, which has no policy, and moved back to medium resumes
+from the reopen, not from before it), and the time spent there still counts.
+`sla_restarted` is written when a reopen supersedes a record, even if none
+starts, because the old clock did end and the restart point is recorded on the
+ticket; it is not written when the ticket had no record to replace, even if the
+reopen starts a first one (Erik, 2026-10-15). It gains
 nothing, and it is not punished beyond what happened: the pause base comes with
 the start, and the record's facts (met, breached) are not copied. This applies to
 a staff change only; a reopen always starts at the reopen. The "SLA restarted"
@@ -3595,9 +3737,13 @@ when.
 
 **"SLA restarted" badge.** When the clock really restarted, the ticket page
 shows an **SLA restarted** badge next to the SLA indicator (staff and admin; a
-reporting user sees no SLA). That is a reopen and nothing else: **never after a
-staff or admin priority change**, which re-matches the SLA and keeps its clock,
-whatever the old record had already met or breached. It appears on a reopened
+reporting user sees no SLA). It exists because of a reopen and nothing else: a staff or admin priority change
+**never makes it appear on a ticket that was never reopened**, and never
+restarts a clock itself; it re-matches the SLA and keeps its clock, whatever the
+old record had already met or breached. (On a ticket whose reopen landed on a
+priority with no policy, the badge first shows at the staff change that gives it
+a record back: that record resumes from the reopen, so it is the reopen's
+restart showing, not the priority change's.) It appears on a reopened
 ticket whose earlier record had something met or breached. Its tooltip reads
 "The SLA clock restarted when this ticket was reopened. The earlier record is
 kept; select to see it." Selecting it

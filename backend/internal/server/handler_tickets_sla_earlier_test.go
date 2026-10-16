@@ -18,9 +18,9 @@ import (
 // facts, and only after a restart. A staff or admin priority change re-matches
 // the SLA and keeps its clock, so it never shows the badge, however many times
 // it happens and whatever the old record had already recorded. A restart is a
-// reopen's new record (a started_at of its own); nothing on this build calls
-// the reopen path (#464), so the tests write the record the way it does, with
-// the ticket store. One-ticket read only; never on a list row; never to a
+// reopen's new record (a started_at of its own). This test writes that record
+// directly with the ticket store; reopen_test.go in the ticket and database
+// packages drive the real reopen. One-ticket read only; never on a list row; never to a
 // reporting user (their sla is null).
 func TestTicketSLA_EarlierRecord_HTTP(t *testing.T) {
 	h, cleanup := newHarness(t)

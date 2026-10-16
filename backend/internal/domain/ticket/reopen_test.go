@@ -340,8 +340,8 @@ func TestReopen_IsAnnouncedWithWhoHoldsTheTicketAndWhoDidIt(t *testing.T) {
 			}
 			require.Equal(t, 1, n, "announced once")
 			ev := lastEventOfType(t, h.harness, notification.EventTicketReopened)
-			require.Equal(t, &reopenAssignee, ev.AssigneeUserID)
-			require.Equal(t, &reopenGroup, ev.AssigneeGroupID)
+			require.Equal(t, &reopenAssignee, ev.Ticket.AssigneeUserID)
+			require.Equal(t, &reopenGroup, ev.Ticket.AssigneeGroupID)
 			require.Equal(t, actor.UserID, ev.ActorID)
 			require.Equal(t, tk.ID, ev.TicketID)
 		})
@@ -349,8 +349,9 @@ func TestReopen_IsAnnouncedWithWhoHoldsTheTicketAndWhoDidIt(t *testing.T) {
 }
 
 // Only the door that already mailed the requester keeps doing so: a status
-// change already tells the guest through its own event, and the requester who
-// reopened needs no mail about their own reply.
+// change already tells the guest. The reopen is part of the same event now
+// (#506), so there is one recipient on one event, and no second mail to
+// duplicate.
 func TestReopen_TheRequestersOwnMailIsUnchanged(t *testing.T) {
 	h := newPrioHarness(t)
 	tk := h.seedFinished("resolved", ticket.PriorityMedium)
@@ -360,15 +361,17 @@ func TestReopen_TheRequestersOwnMailIsUnchanged(t *testing.T) {
 	_, err := h.svc.UpdateStatus(context.Background(), tk.ID, h.inProgressStatus.ID, reopenStaff)
 	require.NoError(t, err)
 
-	reopened := lastEventOfType(t, h.harness, notification.EventTicketReopened)
-	require.Empty(t, reopened.Recipient, "the status-change event already mails the guest; a second mail would be a duplicate")
-	status := lastEventOfType(t, h.harness, notification.EventTicketStatusChanged)
-	require.Equal(t, "guest@example.test", status.Recipient)
+	require.Len(t, h.dispatcher.events, 1, "the status change and the reopen are one change")
+	ev := h.dispatcher.events[0]
+	require.Contains(t, ev.Kinds, notification.EventTicketReopened)
+	require.Contains(t, ev.Kinds, notification.EventTicketStatusChanged)
+	require.Equal(t, "guest@example.test", ev.Recipient)
 }
 
-// A reply that reopens is announced by the reopen, so staff are not mailed
-// twice for one action: the reply event no longer asks for staff mail.
-func TestReopen_AReplyThatReopensDoesNotAlsoAskForTheReplyMail(t *testing.T) {
+// A reply that reopens is one change with both kinds (#506), still the
+// requester replying: staff are not mailed twice because the worker gives each
+// person one mail per change, not because the reply stopped asking for it.
+func TestReopen_AReplyThatReopensIsOneEventCarryingBothKinds(t *testing.T) {
 	h := newPrioHarness(t)
 	tk := h.seedFinished("resolved", ticket.PriorityMedium)
 	requester := ticket.Actor{UserID: tk.ReporterUserID, Role: user.RoleUser}
@@ -376,9 +379,13 @@ func TestReopen_AReplyThatReopensDoesNotAlsoAskForTheReplyMail(t *testing.T) {
 	_, err := h.svc.AddReply(context.Background(), tk.ID, "still broken", false, true, "r@example.test", requester, 30, h.newStatus.ID)
 	require.NoError(t, err)
 
-	reply := lastEventOfType(t, h.harness, notification.EventTicketReplied)
-	require.False(t, reply.FromRequester, "the reopen event carries the staff mail for this action")
-	require.Equal(t, "r@example.test", reply.Recipient, "everything else about the reply event is unchanged")
+	require.Len(t, h.dispatcher.events, 1)
+	reply := h.dispatcher.events[0]
+	require.Equal(t, notification.EventTicketReopened, reply.Type, "the reopen is the first kind")
+	require.Contains(t, reply.Kinds, notification.EventTicketReplied)
+	require.Contains(t, reply.Kinds, notification.EventTicketStatusChanged)
+	require.True(t, reply.FromRequester, "it is still the requester replying")
+	require.Equal(t, "r@example.test", reply.Recipient)
 
 	// And a requester's reply that does not reopen still asks for it.
 	open := h.seedMedium()
@@ -479,4 +486,158 @@ func onlyCurrent(h *prioHarness, id uuid.UUID) *fakeSLARecord {
 		}
 	}
 	return nil
+}
+
+// ── every reopen is a restart point, even onto a priority with no policy ─────
+//
+// (Erik, 2026-10-14.) A reopen that lands on a priority with no SLA policy
+// starts no record, but the clock restarted all the same: the ticket remembers
+// when it was last reopened and its pause total then, and a later change that
+// gives it a record back resumes from the later of that and the newest
+// superseded record's start.
+
+// Scenario 1: medium has a policy, high has none. The first reopen raises the
+// ticket to high (no record starts), and staff move it back to medium. The new
+// record resumes from the reopen, not from before it, so the time the ticket sat
+// Resolved does not count.
+func TestReopenWithNoPolicy_AMoveBackResumesFromTheReopenNotFromBefore(t *testing.T) {
+	h := newPrioHarness(t)
+	delete(h.store.slaPolicies, ticket.PriorityHigh)
+	tk := h.seedFinished("resolved", ticket.PriorityMedium)
+	tk.SLAPausedSeconds = 100 // the ticket's Pending total; the old record's base is 0
+	h.store.seed(tk)
+	ctx := context.Background()
+	before := time.Now()
+
+	_, err := h.svc.UpdateStatus(ctx, tk.ID, h.inProgressStatus.ID, reopenStaff)
+	require.NoError(t, err)
+	require.Nil(t, onlyCurrent(h, tk.ID), "high has no policy: the reopen starts no record")
+
+	_, err = h.svc.ChangePriority(ctx, tk.ID, ticket.PriorityMedium, reopenStaff)
+	require.NoError(t, err)
+
+	cur := onlyCurrent(h, tk.ID)
+	require.NotNil(t, cur)
+	require.NotNil(t, cur.startedAt, "NULL, or the old record's start, would count the days spent Resolved")
+	require.False(t, cur.startedAt.Before(before), "resumes from the reopen")
+	require.Equal(t, int64(100), cur.pausedBase, "with the pause total as of the reopen, not the old record's base")
+	require.Equal(t, ticket.SLAFacts{}, cur.facts)
+	got, _ := h.store.GetByID(ctx, tk.ID)
+	require.True(t, got.LastReopenedAt.Equal(*cur.startedAt))
+}
+
+// Scenario 2: the first reopen restarts the clock at T1; the ticket moves to a
+// priority with no policy, is resolved, and is reopened at T2 (no record starts
+// again). Moving back resumes from T2, not T1.
+func TestReopenWithNoPolicy_ALaterReopenMovesTheResumePoint(t *testing.T) {
+	h := newPrioHarness(t)
+	tk := h.seedFinished("resolved", ticket.PriorityMedium)
+	ctx := context.Background()
+
+	_, err := h.svc.UpdateStatus(ctx, tk.ID, h.inProgressStatus.ID, reopenStaff) // T1: high, restart
+	require.NoError(t, err)
+	t1 := *onlyCurrent(h, tk.ID).startedAt
+	_, err = h.svc.ChangePriority(ctx, tk.ID, ticket.PriorityLow, reopenStaff) // no policy
+	require.NoError(t, err)
+	_, err = h.svc.Resolve(ctx, tk.ID, "done", reopenStaff)
+	require.NoError(t, err)
+	time.Sleep(5 * time.Millisecond)
+	_, err = h.svc.UpdateStatus(ctx, tk.ID, h.inProgressStatus.ID, reopenStaff) // T2: no bump, no policy
+	require.NoError(t, err)
+	require.Nil(t, onlyCurrent(h, tk.ID))
+
+	_, err = h.svc.ChangePriority(ctx, tk.ID, ticket.PriorityHigh, reopenStaff)
+	require.NoError(t, err)
+
+	cur := onlyCurrent(h, tk.ID)
+	require.NotNil(t, cur)
+	require.True(t, cur.startedAt.After(t1), "T2, not T1")
+	got, _ := h.store.GetByID(ctx, tk.ID)
+	require.True(t, got.LastReopenedAt.Equal(*cur.startedAt))
+}
+
+// The record's own restart still wins when it is the later one: a reopen that
+// starts a record, and nothing after it, resumes from that record.
+func TestReopenWithNoPolicy_TheNewestRestartWins(t *testing.T) {
+	h := newPrioHarness(t)
+	tk := h.seedFinished("resolved", ticket.PriorityMedium)
+	ctx := context.Background()
+	_, err := h.svc.UpdateStatus(ctx, tk.ID, h.inProgressStatus.ID, reopenStaff)
+	require.NoError(t, err)
+	restart := *onlyCurrent(h, tk.ID).startedAt
+
+	_, err = h.svc.ChangePriority(ctx, tk.ID, ticket.PriorityLow, reopenStaff)
+	require.NoError(t, err)
+	_, err = h.svc.ChangePriority(ctx, tk.ID, ticket.PriorityHigh, reopenStaff)
+	require.NoError(t, err)
+
+	require.True(t, restart.Equal(*onlyCurrent(h, tk.ID).startedAt))
+}
+
+// sla_restarted is written when a reopen supersedes a record and starts none
+// (the old clock ended and the restart point is recorded on the ticket), and
+// not when there was no clock at all.
+func TestReopenWithNoPolicy_SLARestartedIsWrittenOnlyWhenARecordWasReplaced(t *testing.T) {
+	t.Run("a record is superseded and none starts", func(t *testing.T) {
+		h := newPrioHarness(t)
+		delete(h.store.slaPolicies, ticket.PriorityHigh)
+		tk := h.seedFinished("resolved", ticket.PriorityMedium)
+		_, err := h.svc.UpdateStatus(context.Background(), tk.ID, h.inProgressStatus.ID, reopenStaff)
+		require.NoError(t, err)
+		e := onlyEntry(t, h.auditStore.entries, "sla_restarted")
+		require.NotContains(t, e.After, "sla_record_id")
+		require.NotNil(t, e.After["previous_sla_record_id"])
+	})
+	t.Run("there was no record and none starts", func(t *testing.T) {
+		h := newPrioHarness(t)
+		tk := h.seedFinished("resolved", ticket.PriorityMedium)
+		h.store.slaRecords = nil
+		delete(h.store.slaPolicies, ticket.PriorityHigh)
+		_, err := h.svc.UpdateStatus(context.Background(), tk.ID, h.inProgressStatus.ID, reopenStaff)
+		require.NoError(t, err)
+		require.Zero(t, actionsOf(h, "sla_restarted"))
+		got, _ := h.store.GetByID(context.Background(), tk.ID)
+		require.NotNil(t, got.LastReopenedAt, "but the reopen is still a restart point")
+	})
+}
+
+// A reopen that starts a FIRST clock on a ticket that had no record replaces
+// nothing, so it writes no sla_restarted (Erik, 2026-10-15). The record itself
+// starts, and priority_changed still says so.
+func TestReopen_StartingAFirstClockWritesNoSLARestarted(t *testing.T) {
+	h := newPrioHarness(t)
+	tk := h.seedFinished("resolved", ticket.PriorityMedium)
+	h.store.slaRecords = nil // the ticket never had a record
+
+	_, err := h.svc.UpdateStatus(context.Background(), tk.ID, h.inProgressStatus.ID, reopenStaff)
+	require.NoError(t, err)
+
+	cur := onlyCurrent(h, tk.ID)
+	require.NotNil(t, cur, "high has a policy: a clock starts")
+	require.NotNil(t, cur.startedAt)
+	require.Zero(t, actionsOf(h, "sla_restarted"), "nothing was replaced, so nothing restarted")
+	pc := onlyEntry(t, h.auditStore.entries, "priority_changed")
+	require.Equal(t, ticket.SLAAttached, pc.After["sla_outcome"])
+}
+
+// Every door stamps the restart point, not only UpdateStatus: the instant, and
+// the Pending total at that instant.
+func TestReopen_EveryDoorStampsTheRestartPoint(t *testing.T) {
+	for _, d := range reopenDoors() {
+		t.Run(d.name, func(t *testing.T) {
+			h := newPrioHarness(t)
+			tk := h.seedFinished(d.from, ticket.PriorityMedium)
+			tk.SLAPausedSeconds = 100
+			h.store.seed(tk)
+			before := time.Now()
+
+			_, err := d.do(h, tk)
+			require.NoError(t, err)
+
+			got, _ := h.store.GetByID(context.Background(), tk.ID)
+			require.NotNil(t, got.LastReopenedAt)
+			require.False(t, got.LastReopenedAt.Before(before))
+			require.Equal(t, int64(100), got.PausedSecondsAtLastReopen)
+		})
+	}
 }

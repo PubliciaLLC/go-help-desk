@@ -17,7 +17,7 @@ info:
     - Every error from a handler is the envelope in components.schemas.Error,
       served as application/json. Refusals produced by the authentication
       middleware (401 unauthorized, 403 forbidden / mfa_required /
-      insufficient_scope / session_required) carry the same envelope but are
+      password_change_required / insufficient_scope / session_required) carry the same envelope but are
       served as text/plain; charset=utf-8.
     - Any operation may answer 500 internal_error ("an internal error
       occurred"); it is listed only where a handler has a 5xx of its own. A
@@ -254,9 +254,10 @@ paths:
       summary: Read the SAML sign-in configuration.
       description: >-
         Administrators only (second factor required).
-        Returns the saved SAML settings and the URL of this server's service
-        provider metadata, which is what the administrator gives the identity
-        provider. The private key is never returned. Requires the settings:read
+        Returns the saved SAML settings, including pasted metadata XML, and the
+        URL of this server's service provider metadata, which is what the
+        administrator gives the identity provider. The private key is never
+        returned. Requires the settings:read
         scope for an API key.
       tags: ['Admin: Single sign-on']
       x-ghd-handler: handleGetSAMLConfig
@@ -272,13 +273,13 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [configured, live, metadata_url, cert_pem, sp_metadata_url]
+                required: [configured, live, metadata_url, metadata_xml, cert_pem, sp_metadata_url]
                 properties:
                   configured:
                     type: boolean
                     description: >-
-                      True when a metadata URL, a certificate and a private key are all stored.
-                      It does not say whether SAML sign-in is in use or whether the identity
+                      True when IdP metadata (a URL or XML), a certificate and a private key
+                      are all stored. It does not say whether SAML sign-in is in use or whether the identity
                       provider's metadata could be loaded.
                   live:
                     type: boolean
@@ -289,6 +290,12 @@ paths:
                   metadata_url:
                     type: string
                     description: The identity provider's metadata URL. Empty when unset.
+                  metadata_xml:
+                    type: string
+                    description: >-
+                      The identity provider's metadata XML as saved, returned as stored. Empty
+                      when unset or when the metadata is given by URL. It is public data; the
+                      private key is never returned.
                   cert_pem:
                     type: string
                     description: The service provider certificate in PEM form. Empty when unset.
@@ -307,9 +314,17 @@ paths:
         Each field may be omitted, which keeps the stored value, or sent. A field
         sent as an empty string clears it, and null is treated the same as an
         omitted field. The certificate and key are checked as a pair before
-        anything is saved, and a mismatch is refused with invalid_cert_key. The
-        identity provider's metadata is then fetched once, from the candidate
-        settings, before anything is saved. If no active administrator could sign
+        anything is saved, and a mismatch is refused with invalid_cert_key.
+        metadata_url and metadata_xml are alternatives. A save that would leave
+        both non-empty, counting stored values the request does not clear, is
+        refused with saml_metadata_conflict. metadata_xml is parsed before
+        anything is saved, with the same parser a fetched URL goes through. A
+        document that is not SAML metadata, has no IDPSSODescriptor, or has no
+        signing certificate that parses as X.509 is refused with
+        invalid_saml_metadata, and one over 262144 bytes with
+        saml_metadata_too_large. With metadata_xml nothing is fetched. The
+        identity provider's metadata is then loaded once (fetched, for a URL),
+        from the candidate settings, before anything is saved. If no active administrator could sign
         in afterwards (a failed fetch counts as SAML being unusable), the save is
         refused with 400 bad_request. If only some administrators would be
         stranded, or the fetch failed without stranding everyone, the settings are
@@ -334,6 +349,10 @@ paths:
                 metadata_url:
                   type: [string, 'null']
                   description: The identity provider's metadata URL. Omitted or null keeps the stored value; "" clears it.
+                metadata_xml:
+                  type: [string, 'null']
+                  maxLength: 262144
+                  description: The identity provider's metadata XML. Omitted or null keeps the stored value; "" clears it. Returned by GET.
                 cert_pem:
                   type: [string, 'null']
                   description: The service provider certificate in PEM form. Omitted or null keeps the stored value; "" clears it.
@@ -361,7 +380,12 @@ paths:
           description: >-
             bad_request: the body is not JSON, or the save would leave no active
             administrator able to sign in. invalid_cert_key: the certificate and
-            private key are invalid or do not match.
+            private key are invalid or do not match. saml_metadata_conflict: the
+            save would leave both metadata_url and metadata_xml set.
+            invalid_saml_metadata: metadata_xml does not parse, is not SAML
+            metadata, has no IDPSSODescriptor, or has no signing certificate
+            that parses as X.509. saml_metadata_too_large:
+            metadata_xml is over 262144 bytes.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -379,12 +403,19 @@ paths:
         accepted, even when the budget is spent. The budget is one minute: when it
         is spent, the request is delayed before the password is checked and a
         refused attempt answers 429 with Retry-After set to the seconds left in
-        that minute (at most 60). The response says what
+        that minute (at most 60). A correct password on a hash made below cost 12
+        is upgraded at this sign-in. From password_rehash_grace_days after 1.3.0
+        first ran, it is refused instead (403 password_reset_required).
+        The response says what
         the person must do next: mfa_needed means a TOTP code is owed
         (POST /auth/local/mfa/verify), passkey_needed means a passkey is owed
         (POST /auth/local/passkey/start), and mfa_enrollment_needed means the
-        role must enrol a second factor before it is fully signed in. Until that
-        step is done the session is only half signed in, and it expires: after
+        role must enrol a second factor before it is fully signed in.
+        password_change_required means the account was unlocked from the server
+        console (/app/server unlock) and still holds the password it was handed:
+        the session may only change the password (PATCH /me/password) and every
+        other route answers 403 password_change_required until it has. Until the
+        second-factor step is done the session is only half signed in, and it expires: after
         5 minutes when a code or passkey is owed, after 15 minutes when the
         person must enrol. After that, every route answers 401 as if there were
         no session (the session is deleted), and the person signs in again with
@@ -414,9 +445,12 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [user, mfa_needed, passkey_needed, mfa_enrollment_needed]
+                required: [user, mfa_needed, passkey_needed, mfa_enrollment_needed, password_change_required]
                 properties:
                   user: {$ref: '#/components/schemas/User'}
+                  password_change_required:
+                    type: boolean
+                    description: True when the password must be changed before anything else is allowed (see the operation description).
                   mfa_needed:
                     type: boolean
                     description: True when a TOTP code is owed. Answer with POST /auth/local/mfa/verify.
@@ -436,11 +470,17 @@ paths:
         '403':
           description: >-
             Local sign-in is disabled for this account because SAML is enabled
-            (saml_required), or the account's only second factor is a passkey
-            and passkeys are unavailable on this instance (passkey_unavailable;
-            an administrator's MFA reset clears it). No session is created and
-            the refusal does not count as a failed attempt. Applies to every
-            such account, administrators included. Sent as application/json.
+            (saml_required, checked first), or the account's only second factor
+            is a passkey and passkeys are unavailable on this instance
+            (passkey_unavailable; an administrator's MFA reset clears it), or
+            the password was right but is still stored in the older, weaker form
+            (cost below 12) after the grace period (password_reset_required).
+            No session is created and none of these counts as a failed attempt.
+            passkey_unavailable applies to every such account, administrators
+            included. password_reset_required is only given for a correct
+            password (a wrong one still answers 401 invalid_credentials and takes
+            as long to refuse), leaves the hash as it is, and does not apply to
+            administrators. Sent as application/json.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -1972,7 +2012,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [tracking_number, subject, description, status, created_at, updated_at, replies]
+                required: [tracking_number, subject, description, status, created_at, replies]
                 properties:
                   tracking_number: {type: string}
                   subject: {type: string}
@@ -1981,7 +2021,6 @@ paths:
                     type: string
                     description: The name of the ticket's current status. Empty if the status cannot be found.
                   created_at: {type: string, format: date-time}
-                  updated_at: {type: string, format: date-time}
                   replies:
                     type: array
                     items: {$ref: '#/components/schemas/AccountGuestReply'}
@@ -2433,7 +2472,12 @@ paths:
       description: |
         Changes the password after checking the current one. The new password must be 8 to 72 bytes long.
         Every other session for the account ends, and this request's session is re-issued with a new cookie,
-        so this browser stays signed in. Session only, and the second factor must have passed.
+        so this browser stays signed in. Session only, and the second factor must have passed,
+        except for a session that owed no second factor when its password was checked and owes this very
+        change (login answered password_change_required with neither mfa_needed nor passkey_needed): that
+        one may make it without MFA. A flagged account that has since enrolled a factor gets 403 mfa_required
+        and must verify the factor first. Any other route refuses a flagged session with 403
+        password_change_required until the password is changed. The change clears the requirement.
         A wrong current_password answers 401 invalid_credentials as application/json, which is distinct
         from the text/plain 401 unauthorized sent when there is no session. The old field name password is still read when new_password is absent. current_password is
         required in either case.
@@ -3184,13 +3228,15 @@ paths:
       operationId: listTicketAudit
       summary: List a ticket's audit trail.
       description: |
-        The per-ticket activity feed: every audit entry recorded against
+        Staff and administrators only (second factor required). The per-ticket
+        activity feed: every audit entry recorded against
         the ticket, oldest first, capped at the newest 500 entries. Each entry has
         the action, the actor and the time.
+        A reporting user is refused with 403
+        forbidden on a ticket they can see (and 404 on one they cannot): requesters
+        see the ticket's current state and its conversation, not its history or
+        audit trail. Guests have no such route.
         Who sees what:
-        - A reporting user gets no actor for assigned and unassigned entries.
-          actor_id is null there, and the actor's name is not sent. Staff and
-          administrators are named.
         - before and after (the field-level diff, redacted) go only to
           administrators, and to staff when the staff change-history setting is
           on. Everyone else gets neither.
@@ -3220,7 +3266,7 @@ paths:
         - sessionCookie: []
         - apiKey: ['tickets:read']
         - oauthClient: ['tickets:read']
-      x-ghd-roles: [admin, staff, user]
+      x-ghd-roles: [admin, staff]
       x-ghd-mfa: true
       responses:
         '200':
@@ -3638,7 +3684,9 @@ paths:
       operationId: listStatusHistory
       summary: List a ticket's status changes.
       description: |
-        Every status transition on the ticket, oldest first. Status names and
+        Staff and administrators only (second factor required). Every status
+        transition on the ticket, oldest first. A reporting user is refused with
+        403 forbidden, as for the audit feed. Status names and
         colours are read from the statuses table when the request is served. The
         id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
@@ -3653,7 +3701,7 @@ paths:
         - sessionCookie: []
         - apiKey: ['tickets:read']
         - oauthClient: ['tickets:read']
-      x-ghd-roles: [admin, staff, user]
+      x-ghd-roles: [admin, staff]
       x-ghd-mfa: true
       responses:
         '200':
@@ -4618,6 +4666,10 @@ paths:
         - ticket_prefix is 1 to 8 uppercase letters or digits (invalid_ticket_prefix).
         - audit_retention_days must be an integer of at most 36525. Zero or less
           keeps entries forever.
+        - password_rehash_grace_days must be an integer from 1 to 365 (default 30).
+          Zero, negative, larger, null and non-integers are refused with bad_request.
+          password_rehash_started_at is recorded by the server when 1.3.0 first
+          runs and is refused with 400 readonly_setting; it is left out of GET.
         - guest_submission_enabled, staff_can_view_ticket_change_history and
           staff_can_view_follow_audit must be JSON booleans. null is refused.
         - guest_submission_enabled and self_signup_enabled cannot be turned from
@@ -4647,11 +4699,14 @@ paths:
           round-robin off. Anything else is refused with 400 invalid_auto_assign.
           Before this check an id that did not parse, or named nobody, was saved
           and then skipped when a ticket was routed.
-        - saml_metadata_url, saml_cert_pem, saml_key_pem, oidc_issuer_url,
-          oidc_client_id and oidc_client_secret must be strings and oidc_enabled a
-          boolean; null is refused (bad_request). saml_enabled and
+        - saml_metadata_url, saml_metadata_xml, saml_cert_pem, saml_key_pem,
+          oidc_issuer_url, oidc_client_id and oidc_client_secret must be strings
+          and oidc_enabled a boolean; null is refused (bad_request). saml_enabled and
           oidc_redirect_url are not type-checked. Enabling OIDC needs an issuer
           URL, a client id and a client secret.
+        - saml_metadata_url and saml_metadata_xml cannot both be non-empty after
+          the write, and saml_metadata_xml must be SAML IdP metadata of at most
+          262144 bytes; either refusal is 400 bad_request.
         - If the write leaves some administrators unable to sign in by any method,
           it is applied and the answer is 200 with a warning that names them. If it
           would leave no administrator able to sign in, it is refused with 400.
@@ -4659,15 +4714,16 @@ paths:
         anywhere in the body, is refused with 403 session_required, and nothing is
         written. Every other key is open to a machine credential that has
         settings:write.
-        saml_enabled, saml_metadata_url, saml_cert_pem, saml_key_pem,
-        oidc_enabled, oidc_issuer_url, oidc_client_id, oidc_client_secret,
+        saml_enabled, saml_metadata_url, saml_metadata_xml, saml_cert_pem,
+        saml_key_pem, oidc_enabled, oidc_issuer_url, oidc_client_id, oidc_client_secret,
         oidc_redirect_url, mfa_enabled, mfa_enforced_roles, allowed_email_domains,
         self_signup_enabled, open_registration_enabled, closed_reopen_policy,
         audit_mask_requester_names, guest_submission_enabled,
         attachment_scan_address, attachment_scan_policy, attachment_allowed_types,
         attachment_infected_handling, attachment_mismatch_handling,
         audit_retention_days, staff_can_view_ticket_change_history,
-        staff_can_view_follow_audit, attachment_vt_lookup, attachment_vt_api_key, attachment_reputation_provider,
+        staff_can_view_follow_audit, password_rehash_grace_days, password_rehash_started_at,
+        attachment_vt_lookup, attachment_vt_api_key, attachment_reputation_provider,
         attachment_reputation_api_key, attachment_reputation_virustotal_enabled,
         attachment_reputation_virustotal_key, attachment_reputation_metadefender_enabled,
         attachment_reputation_metadefender_key, attachment_reputation_polyswarm_enabled,
@@ -9282,7 +9338,7 @@ components:
     User:
       description: An account. The password hash, the TOTP secret, single sign-on subjects and the deletion time are never returned. mfa_enabled is the TOTP flag only.
       type: object
-      required: [id, email, display_name, role, mfa_enabled, disabled, created_at, updated_at, email_notify_assigned, email_notify_activity, email_notify_group]
+      required: [id, email, display_name, role, mfa_enabled, disabled, must_change_password, created_at, updated_at, email_notify_assigned, email_notify_activity, email_notify_group]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
         email: {type: string}
@@ -9290,6 +9346,7 @@ components:
         role: {$ref: '#/components/schemas/Role'}
         mfa_enabled: {type: boolean}
         disabled: {type: boolean}
+        must_change_password: {type: boolean, description: "Set by /app/server unlock on the server console; cleared when the account holder changes the password."}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
         email_notify_assigned: {type: boolean, description: 'Email me when a ticket is assigned to me. Staff email switch, on by default.'}
@@ -9422,8 +9479,16 @@ components:
         The bare ticket, as POST
         /tickets, PATCH, reopen, resolve, close and follow-up answer it. Optional
         keys are absent when unset, never null.
+        A reporting user (any role other than staff or administrator) receives
+        only these keys: id, tracking_number, subject, description, status_id,
+        priority, category_id, type_id, item_id, created_at, resolved_at,
+        assignee_user_id and resolution_notes. Everything else here
+        (assignee_group_id, reporter_user_id, guest_email, guest_name,
+        guest_phone, closed_at, updated_at, pending_since, sla_paused_seconds,
+        reopen_count) is for staff and administrators only. The same list applies to every
+        response that carries a ticket, MCP included.
       type: object
-      required: [id, tracking_number, subject, description, category_id, priority, status_id, sla_paused_seconds, reopen_count, created_at, updated_at]
+      required: [id, tracking_number, subject, description, category_id, priority, status_id, created_at]
       properties:
         id:
           $ref: '#/components/schemas/Uuid'
@@ -9468,14 +9533,14 @@ components:
         pending_since:
           type: string
           format: date-time
-          description: When the ticket entered its current Pending interval. Present only while the ticket is Pending.
+          description: When the ticket entered its current Pending interval. Present only while the ticket is Pending, and only for staff and administrators; a requester never receives the key.
         sla_paused_seconds:
           type: integer
           format: int64
-          description: Total seconds the ticket has spent Pending, which SLA timing excludes.
+          description: Total seconds the ticket has spent Pending, which SLA timing excludes. Staff and administrators only (always present for them, 0 included); a requester never receives the key (Pending times are audit information, not state).
         reopen_count:
           type: integer
-          description: How many times the ticket has been moved from Resolved or Closed back to an open status (#464). Never reset. The Reopened badge shows while this is above 0 and the ticket is open. 0 for a ticket reopened before 1.3.0.
+          description: How many times the ticket has been moved from Resolved or Closed back to an open status (#464). Never reset. Staff and administrators only, and omitted when 0; a requester never receives the key (see Ticket). The Reopened badge shows while this is above 0 and the ticket is open. 0 for a ticket reopened before 1.3.0.
         created_at:
           type: string
           format: date-time
@@ -9962,6 +10027,9 @@ components:
         saml_metadata_url:
           type: string
           description: SAML identity provider metadata URL. Session only.
+        saml_metadata_xml:
+          type: string
+          description: SAML identity provider metadata XML, as pasted. Readable. Session only.
         saml_cert_pem:
           type: string
           description: SAML certificate, PEM. Session only.
@@ -10060,6 +10128,14 @@ components:
             ticket's audit trail and in the admin-wide audit view.
             Administrators always can and requesters never can. Off by default.
             Session only.
+        password_rehash_grace_days:
+          type: integer
+          minimum: 1
+          maximum: 365
+          description: >-
+            Days after 1.3.0 first ran before an account still on a password hash
+            made below bcrypt cost 12 must reset its password to sign in. Unset reads
+            as 30. Administrators are exempt. Session only.
         site_name:
           type: string
           description: The site name shown in the interface.
@@ -10204,10 +10280,10 @@ components:
     WebhookEvent:
       description: >-
         An event name a webhook can subscribe to. The wildcard "*" subscribes to all
-        nine. guest.link_resent is never sent to a webhook.
+        eleven. guest.link_resent is never sent to a webhook.
         ticket.replied is a customer-visible reply only; a staff-only note is ticket.note_added.
       type: string
-      enum: ['*', ticket.created, ticket.assigned, ticket.status_changed, ticket.replied, ticket.note_added, ticket.resolved, ticket.closed, ticket.reopened, ticket.linked]
+      enum: ['*', ticket.created, ticket.assigned, ticket.status_changed, ticket.replied, ticket.note_added, ticket.resolved, ticket.closed, ticket.reopened, ticket.linked, ticket.priority_changed, ticket.classified]
     WebhookPayloadFormat:
       description: >-
         The body shape a delivery uses.

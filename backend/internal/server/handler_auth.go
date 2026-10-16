@@ -72,7 +72,25 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		s.loginLimiter.Tarpit(r.Context(), loginKey, s.loginThrottleDelay)
 	}
 
-	u, err := s.users.VerifyPassword(r.Context(), body.Email, body.Password)
+	u, err := s.users.VerifyPasswordForSignIn(r.Context(), body.Email, body.Password)
+	if errors.Is(err, user.ErrPasswordResetRequired) {
+		// The SAML restriction first: a non-administrator under SAML cannot use a
+		// password at all, so telling them to reset one would be wrong.
+		if !user.IsLocalAuthAllowed(u, s.adminSvc.SAMLEnabled(r.Context())) {
+			Error(w, http.StatusForbidden, "saml_required", "local login is disabled; use SAML")
+			return
+		}
+		// The password was right, so this is not a failed guess: it is not
+		// counted, and it does not reset the counter either. It costs the same
+		// as a wrong password (see VerifyPasswordForSignIn).
+		//
+		// Part D (#451) hooks in here: once "Forgot password" exists, send the
+		// person a reset link at this point and change the message to say so.
+		Error(w, http.StatusForbidden, "password_reset_required",
+			"Your password was saved in an older, weaker form and must be reset before you can sign in. "+
+				"Use \"Forgot password\" on the sign-in page, or ask an administrator to reset it for you.")
+		return
+	}
 	if err != nil {
 		// Only failures are counted, and the refusal happens here rather than
 		// before the check, so a legitimate user is never held out.
@@ -144,6 +162,10 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		UserID:    u.ID,
 		Role:      u.Role,
 		MFAPassed: mfaPassed,
+
+		MustChangePassword: u.MustChangePassword,
+		// Not the raw flag: see auth.SessionData.PasswordChangeNeedsNoFactor.
+		PasswordChangeNeedsNoFactor: u.MustChangePassword && !mfaNeeded && !passkeyNeeded,
 	}
 	// The limit is chosen here, where we know which factor is owed: five
 	// minutes to type a code, fifteen to install an app and enrol.
@@ -157,10 +179,11 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	JSON(w, http.StatusOK, map[string]any{
-		"user":                  u,
-		"mfa_needed":            mfaNeeded,
-		"passkey_needed":        passkeyNeeded,
-		"mfa_enrollment_needed": mfaEnrollmentNeeded,
+		"user":                     u,
+		"mfa_needed":               mfaNeeded,
+		"passkey_needed":           passkeyNeeded,
+		"mfa_enrollment_needed":    mfaEnrollmentNeeded,
+		"password_change_required": u.MustChangePassword,
 	})
 }
 
@@ -250,6 +273,8 @@ func (s *Server) handleMFAVerify(w http.ResponseWriter, r *http.Request) {
 		Role:           a.Role,
 		MFAPassed:      true,
 		FactorVerified: true,
+
+		MustChangePassword: a.MustChangePassword,
 	}); err != nil {
 		handleError(w, err)
 		return
@@ -442,22 +467,7 @@ func (s *Server) handleSAMLSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	nameID := claims.Subject
-	email := firstNonEmpty(
-		claims.Attributes.Get("email"),
-		claims.Attributes.Get("mail"),
-		claims.Attributes.Get("urn:oid:0.9.2342.19200300.100.1.3"),
-		nameID, // fall back to NameID when it is an email address
-	)
-	displayName := firstNonEmpty(
-		claims.Attributes.Get("displayName"),
-		claims.Attributes.Get("cn"),
-		claims.Attributes.Get("name"),
-		strings.Join([]string{
-			claims.Attributes.Get("givenName"),
-			claims.Attributes.Get("sn"),
-		}, " "),
-		email,
-	)
+	email, displayName := samlIdentity(nameID, claims.Attributes)
 
 	allowedDomains := s.adminSvc.AllowedEmailDomains(r.Context())
 	u, err := s.users.UpsertSAMLUser(r.Context(), nameID, email, displayName, allowedDomains)

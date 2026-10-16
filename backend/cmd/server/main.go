@@ -70,6 +70,17 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "unlock" {
+		var email string
+		if len(os.Args) > 2 {
+			email = os.Args[2]
+		}
+		if err := unlock(context.Background(), email, os.Stdout); err != nil {
+			slog.Error("unlock", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		// Not log.Fatalf. run() installs a slog JSON handler as the default,
 		// which also routes the stdlib log package — and Go's stdlib-log
@@ -221,11 +232,13 @@ func run() error {
 	// ── Domain services ───────────────────────────────────────────────────────
 	tagStore := tagstore.New(q)
 
-	userSvc := user.NewService(uStore, user.WithAuditStore(auStore))
+	// adminSvc supplies the deadline after which an old password hash is
+	// refused at sign-in (#453).
+	adminSvc := admin.NewService(aStore)
+	userSvc := user.NewService(uStore, user.WithAuditStore(auStore), user.WithPasswordExpiry(adminSvc))
 	categorySvc := category.NewService(cStore)
 	groupSvc := group.NewService(gStore)
 	tagSvc := tag.NewService(tagStore)
-	adminSvc := admin.NewService(aStore)
 
 	// Say so when attachments are not being scanned.
 	//
@@ -301,7 +314,7 @@ func run() error {
 	// started once the server exists, sends them (#164). The worker needs the
 	// server for the send-time guest-link step, and the ticket service needs a
 	// dispatcher before the server can be built, hence the late assignment.
-	outboxStore := outboxstore.New(q)
+	outboxStore := outboxstore.NewWithDB(sqlDB)
 	var outboxWorker *notify.Worker
 	// Each subscribed hook gets its own queued, retried delivery (#448); the
 	// worker below sends them.
@@ -331,13 +344,18 @@ func run() error {
 
 	// ── Ticket service ────────────────────────────────────────────────────────
 	// txRunner groups each composite ticket write — the ticket row, its status
-	// history, its audit entry — into a single transaction.
-	txRunner := txrunner.New(sqlDB)
-	// Staff email (#441) is queued beside the events that call for it, so the
-	// ticket service dispatches through the fan-out. The registration service
-	// above has no use for it and keeps the plain dispatcher.
-	ticketDispatcher := notify.NewStaffFanout(dispatcher, userSvc, groupSvc, tStore, adminSvc.StaffEmailOverrides, slog.Default())
-	ticketSvc := ticket.NewService(tStore, tStore, ticketDispatcher, auStore, txRunner, slaSvc)
+	// history, its audit entry — into a single transaction, and writes the
+	// outbox rows for the change's event in that same transaction (#506). The
+	// staff fan-out (#441) happens in the worker, on the change's email row
+	// (see outboxSenders below), not on the request.
+	txRunner := txrunner.New(sqlDB, outboxChannels(), func() {
+		if outboxWorker != nil {
+			outboxWorker.Wake()
+		}
+	})
+	// The dispatcher is for what is not a change to a ticket: the guest's link
+	// resend.
+	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, txRunner, slaSvc)
 	// The SLA re-match a priority change makes is gated on the same live
 	// toggle as AttachPolicy (#443).
 	ticketSvc.SetSLAEnabled(slaToggle(adminSvc, slog.Default()))
@@ -469,7 +487,12 @@ func run() error {
 	// shutdown stay queued and are sent after the next start.
 	outboxSenders := outboxSenderMap(
 		// A staff row gets its address here, at send time (#441).
-		notify.NewStaffMailDispatcher(notify.NewGuestLinkDispatcher(emailDisp, srv.PrepareGuestLink), userSvc, srv),
+		// A change's row is split here, first, into the requester's mail and
+		// one mail per staff member (#506); every other row goes on to be sent.
+		notify.NewChangeSplitter(
+			notify.NewStaffMailDispatcher(notify.NewGuestLinkDispatcher(emailDisp, srv.PrepareGuestLink), userSvc, srv),
+			outboxStore, func() { outboxWorker.Wake() },
+			userSvc, groupSvc, tStore, adminSvc.StaffEmailOverrides, slog.Default()),
 		webhookDisp,
 		notify.NewVerificationDispatcher(registrationSvc.SendVerification),
 	)

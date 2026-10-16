@@ -160,13 +160,24 @@ type Ticket struct {
 	// when it is not Pending. SLAPausedSeconds is the sum of every Pending
 	// interval that has already closed. Both are maintained by
 	// applyStatusTimestamps and read by sla.Elapsed; nothing else writes them.
+	// Staff and administrators only on the wire (see requester_view.go).
 	PendingSince     *time.Time `json:"pending_since,omitempty"`
 	SLAPausedSeconds int64      `json:"sla_paused_seconds"`
 
 	// ReopenCount is how many times the ticket has been moved from Resolved or
 	// Closed back to an open status (#464). It is never reset: the badge reads
 	// "> 0 and open", and the priority bump applies only when it was 0.
-	ReopenCount int `json:"reopen_count"`
+	// Omitted when 0. A requester never receives it: the count is staff
+	// information, and requester_view.go's allowed list leaves it out.
+	ReopenCount int `json:"reopen_count,omitempty"`
+
+	// LastReopenedAt and PausedSecondsAtLastReopen are the instant of the most
+	// recent reopen and the ticket's Pending total at that instant. They are
+	// where the SLA clock resumes from when a priority change gives a ticket
+	// with no current record one back after a reopen that started none. Not on
+	// the wire.
+	LastReopenedAt            *time.Time `json:"-"`
+	PausedSecondsAtLastReopen int64      `json:"-"`
 }
 
 // Reply is a message on a ticket thread, from either a staff member or the

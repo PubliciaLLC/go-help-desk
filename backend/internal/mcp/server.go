@@ -493,7 +493,7 @@ func (s *Server) handleGetTicket(ctx context.Context, req mcpgo.CallToolRequest)
 		}
 		out.Links = links
 	}
-	return jsonResult(out)
+	return ticketResult(caller.Role, out)
 }
 
 func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -568,7 +568,7 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 	if err != nil {
 		return storeErr(ctx, "create ticket", err)
 	}
-	return jsonResult(t)
+	return ticketResult(actor.Role, t)
 }
 
 func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -703,7 +703,7 @@ func (s *Server) handleListTickets(ctx context.Context, req mcpgo.CallToolReques
 	if err != nil {
 		return storeErr(ctx, "list tickets", err)
 	}
-	return jsonResult(tickets)
+	return ticketResult(caller.Role, tickets)
 }
 
 func (s *Server) handleAssignTicket(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -777,7 +777,7 @@ func (s *Server) handleAssignTicket(ctx context.Context, req mcpgo.CallToolReque
 	if err != nil {
 		return storeErr(ctx, "assign ticket", err)
 	}
-	return jsonResult(t)
+	return ticketResult(caller.Role, t)
 }
 
 func (s *Server) handleUpdateTicketStatus(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -816,7 +816,7 @@ func (s *Server) handleUpdateTicketStatus(ctx context.Context, req mcpgo.CallToo
 	if err != nil {
 		return storeErr(ctx, "update ticket status", err)
 	}
-	return jsonResult(t)
+	return ticketResult(caller.Role, t)
 }
 
 // handleCreateFollowUp is create_follow_up (#349). The rule — staff and admin
@@ -850,7 +850,7 @@ func (s *Server) handleCreateFollowUp(ctx context.Context, req mcpgo.CallToolReq
 	if err != nil {
 		return storeErr(ctx, "create follow-up", err)
 	}
-	return jsonResult(t)
+	return ticketResult(caller.Role, t)
 }
 
 // catalogCategory is the Category/Type/Item tree as list_categories returns it.
@@ -914,6 +914,17 @@ func (s *Server) handleListStatuses(ctx context.Context, _ mcpgo.CallToolRequest
 func str(args map[string]any, key string) string {
 	v, _ := args[key].(string)
 	return v
+}
+
+// ticketResult is the exit point for every tool that returns tickets: the same
+// allowed list as the HTTP views (ticket.FilterForViewer), so a requester over
+// MCP is shown what a requester over HTTP is shown.
+func ticketResult(role user.Role, v any) (*mcpgo.CallToolResult, error) {
+	filtered, err := ticket.FilterForViewer(role, v)
+	if err != nil {
+		return errResult("could not encode the ticket")
+	}
+	return jsonResult(filtered)
 }
 
 func jsonResult(v any) (*mcpgo.CallToolResult, error) {
