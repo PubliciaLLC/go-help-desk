@@ -893,6 +893,19 @@ function AuthPanel({
         </SettingRow>
       </Section>
 
+      <Section title="API keys">
+        <SettingRow
+          label="Staff may create their own API keys"
+          description="When on, staff can create, list and revoke their own API keys under Account. A key acts as its owner and can carry only permissions that owner's role has. Administrators can always create keys, and can issue one on behalf of any account from Admin → API Keys. Requesters never create keys. Turning this off does not revoke keys that exist. Off by default."
+        >
+          <Toggle
+            label="Staff may create their own API keys"
+            checked={bool('staff_can_create_api_keys')}
+            onChange={(v) => setBool('staff_can_create_api_keys', v)}
+          />
+        </SettingRow>
+      </Section>
+
       <Section title="Registration">
         <SettingRow
           label="Allow self-service signup"

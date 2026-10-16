@@ -357,6 +357,8 @@ export async function createAPIKey(input: {
   name: string
   scopes?: string[]
   expires_at?: string
+  // Issue the key for this account instead of the caller (#450).
+  user_id?: string
 }): Promise<{ id: string; name: string; token: string }> {
   const res = await api.post<{ id: string; name: string; token: string }>('/admin/api-keys', input)
   return res.data

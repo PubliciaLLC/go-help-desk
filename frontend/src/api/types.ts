@@ -23,6 +23,10 @@ export interface User {
     activity: EmailSwitchState
     group: EmailSwitchState
   }
+  /** Whether Account should offer to make an API key (#450): always for an
+   *  administrator, for staff only while an administrator allows it. Only on
+   *  /me; absent reads as no. */
+  can_create_api_keys?: boolean
 }
 
 export interface EmailSwitchState {
@@ -480,10 +484,25 @@ export interface APIKey {
   id: string
   name: string
   user_id: string
+  // Who issued it (#450). Different from user_id when an administrator issued
+  // the key on the owner's behalf; null when not known.
+  created_by?: string | null
   // Whose key it is. A signed-in administrator is sent every key, so the list
   // has to say.
   owner_name?: string
   owner_email?: string
+  scopes: string[]
+  last_used_at?: string
+  expires_at?: string
+  created_at: string
+}
+
+/** One of the caller's own keys, from GET /me/api-keys. */
+export interface MyAPIKey {
+  id: string
+  name: string
+  user_id: string
+  created_by?: string | null
   scopes: string[]
   last_used_at?: string
   expires_at?: string
