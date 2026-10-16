@@ -390,3 +390,30 @@ func TestCreateTicket_OnBehalf_TypedAddressNeedsAName(t *testing.T) {
 		})
 	}
 }
+
+// A ticket staff file for someone, which routing then assigns, is ONE event
+// whose created half names the member of staff who filed it and whose assigned
+// half is marked as routing's. The webhook sender names nobody as the actor of
+// ticket.assigned for such an event (ruling 17 of #506; pinned where the sender
+// is, notify's TestOneDelivery_ARoutedCreateNamesNoActor...), so what this pins
+// is that the real on-behalf create, through the handler and routing, hands it
+// exactly that event and does not name the filer as the one who assigned.
+func TestCreateTicket_OnBehalf_RoutedAssignmentIsMarkedAsRoutings(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	g, err := h.groupSvc.Create(ctx, "Routing target", "")
+	require.NoError(t, err)
+	require.NoError(t, h.adminSvc.SetString(ctx, admin.KeyAutoAssignGroupID, g.ID.String()))
+	h.dispatcher.record = true
+
+	tk := decodeTicket(t, h.postOnBehalf(t, "staff", map[string]any{"reporter_user_id": h.userID.String()}))
+	require.NotNil(t, tk.AssigneeGroupID, "routing assigned it")
+
+	ev := createdMail(t, h)
+	require.Equal(t, []notification.EventType{notification.EventTicketCreated, notification.EventTicketAssigned}, ev.Kinds,
+		"one event, told as created and as assigned")
+	require.True(t, ev.RoutedAssignment, "the assignment is routing's, not the filer's")
+	require.NotNil(t, ev.ActorID)
+	require.Equal(t, h.staffID, *ev.ActorID, "the created half names who filed it")
+}
