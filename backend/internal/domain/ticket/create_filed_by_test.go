@@ -82,3 +82,28 @@ func TestCreate_FiledBy(t *testing.T) {
 		})
 	}
 }
+
+// A routed create filed on someone's behalf is still ONE event, whose actor is
+// the member of staff who filed it (the created half) and which marks its
+// assignment as routing's (the assigned half). The mark is what lets the
+// webhook sender name nobody as the actor of ticket.assigned while a hook told
+// ticket.created still names the filer (ruling 17 of #506): the filer did not
+// pick the assignee, routing did, and the mark must not be lost because
+// FiledBy changed who the actor is.
+func TestCreate_FiledByThenRoutedKeepsTheRoutingMarkOnTheOneEvent(t *testing.T) {
+	h := newHarness(t)
+	staffID, reporterID, assignee := uuid.New(), uuid.New(), uuid.New()
+
+	_, err := h.svc.Create(context.Background(), ticket.CreateInput{
+		Subject: "s", CategoryID: uuid.New(), ReporterUserID: &reporterID, FiledBy: &staffID,
+		AutoAssign: []ticket.Assignment{{UserID: &assignee}},
+	})
+	require.NoError(t, err)
+
+	require.Len(t, h.dispatcher.events, 1, "one change, one event")
+	ev := h.dispatcher.events[0]
+	require.Equal(t, []notification.EventType{notification.EventTicketCreated, notification.EventTicketAssigned}, ev.Kinds)
+	require.True(t, ev.RoutedAssignment, "the assignment is routing's")
+	require.NotNil(t, ev.ActorID)
+	require.Equal(t, staffID, *ev.ActorID, "the event itself is the filer's, as the created half says")
+}
