@@ -11,6 +11,7 @@ import { Badge } from '@/components/ui/badge'
 import { Spinner } from '@/components/ui/spinner'
 import { PlusIcon, SearchIcon } from 'lucide-react'
 import { priorityVariant } from '@/lib/format'
+import { ReopenedBadge } from '@/components/ticket/ReopenedBadge'
 import { SLAIndicator } from '@/components/ticket/SLAIndicator'
 import { apiRefusal, extractError } from '@/api/client'
 
@@ -200,7 +201,7 @@ export function TicketListPage() {
 
         {/* Toolbar: search + scope + closed toggle */}
         <div className="flex items-center gap-3 flex-wrap">
-          <div className="relative flex-1 max-w-lg">
+          <div className="relative w-full md:flex-1 md:max-w-lg">
             <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
             <Input
               className="pl-9"
@@ -438,9 +439,12 @@ export function TicketListPage() {
                           ) : '—'}
                         </td>
                         <td className="px-4 py-2">
-                          <Badge variant={priorityVariant(t.priority) as never}>
-                            {t.priority}
-                          </Badge>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <Badge variant={priorityVariant(t.priority) as never}>
+                              {t.priority}
+                            </Badge>
+                            {isStaffOrAdmin && <ReopenedBadge reopenCount={t.reopen_count} statusName={status?.name} />}
+                          </div>
                         </td>
                         {showSLAColumn && (
                           <td className="px-4 py-2">
@@ -488,6 +492,7 @@ export function TicketListPage() {
                         <Badge variant={priorityVariant(t.priority) as never}>
                           {t.priority}
                         </Badge>
+                        {isStaffOrAdmin && <ReopenedBadge reopenCount={t.reopen_count} statusName={status?.name} />}
                         {showSLAColumn && <SLAIndicator sla={t.sla} compact />}
                       </div>
                     </Link>

@@ -24,6 +24,40 @@ func (q *Queries) AnyAttachmentExists(ctx context.Context) (bool, error) {
 	return exists, err
 }
 
+const archivedCTINode = `-- name: ArchivedCTINode :one
+SELECT (CASE
+    WHEN $1::uuid IS NOT NULL
+         AND EXISTS (SELECT 1 FROM categories WHERE id = $1 AND NOT active) THEN 'category'
+    WHEN $2::uuid IS NOT NULL
+         AND EXISTS (SELECT 1 FROM types WHERE id = $2 AND NOT active) THEN 'type'
+    WHEN $3::uuid IS NOT NULL
+         AND EXISTS (SELECT 1 FROM items WHERE id = $3 AND NOT active) THEN 'item'
+    ELSE ''
+END)::text AS archived_level
+`
+
+type ArchivedCTINodeParams struct {
+	CategoryID uuid.NullUUID `json:"category_id"`
+	TypeID     uuid.NullUUID `json:"type_id"`
+	ItemID     uuid.NullUUID `json:"item_id"`
+}
+
+// Which level of a classification being NEWLY picked is archived: 'category',
+// 'type', 'item', or ” when none is. Highest level first, so a ticket aimed at
+// an archived category is told about the category, not the type under it.
+//
+// A NULL argument means "not being picked" and is skipped; the caller passes
+// only the levels that differ from what the ticket already holds, because a
+// ticket already sitting in an archived node keeps it (#421). An id that does
+// not exist matches nothing here: CategoryExists and CTIIsCoherent refuse
+// those.
+func (q *Queries) ArchivedCTINode(ctx context.Context, arg ArchivedCTINodeParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, archivedCTINode, arg.CategoryID, arg.TypeID, arg.ItemID)
+	var archived_level string
+	err := row.Scan(&archived_level)
+	return archived_level, err
+}
+
 const cTIIsCoherent = `-- name: CTIIsCoherent :one
 SELECT
     ($1::uuid IS NULL OR EXISTS (
@@ -263,32 +297,35 @@ func (q *Queries) GetAttachmentByID(ctx context.Context, id uuid.UUID) (Attachme
 }
 
 const getTicketByID = `-- name: GetTicketByID :one
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds FROM tickets WHERE id = $1
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets WHERE id = $1
 `
 
 type GetTicketByIDRow struct {
-	ID               uuid.UUID      `json:"id"`
-	TrackingNumber   string         `json:"tracking_number"`
-	Subject          string         `json:"subject"`
-	Description      string         `json:"description"`
-	CategoryID       uuid.UUID      `json:"category_id"`
-	TypeID           uuid.NullUUID  `json:"type_id"`
-	ItemID           uuid.NullUUID  `json:"item_id"`
-	Priority         string         `json:"priority"`
-	StatusID         uuid.UUID      `json:"status_id"`
-	AssigneeUserID   uuid.NullUUID  `json:"assignee_user_id"`
-	AssigneeGroupID  uuid.NullUUID  `json:"assignee_group_id"`
-	ReporterUserID   uuid.NullUUID  `json:"reporter_user_id"`
-	GuestEmail       sql.NullString `json:"guest_email"`
-	ResolutionNotes  sql.NullString `json:"resolution_notes"`
-	ResolvedAt       sql.NullTime   `json:"resolved_at"`
-	ClosedAt         sql.NullTime   `json:"closed_at"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	GuestName        string         `json:"guest_name"`
-	GuestPhone       string         `json:"guest_phone"`
-	PendingSince     sql.NullTime   `json:"pending_since"`
-	SlaPausedSeconds int64          `json:"sla_paused_seconds"`
+	ID                        uuid.UUID      `json:"id"`
+	TrackingNumber            string         `json:"tracking_number"`
+	Subject                   string         `json:"subject"`
+	Description               string         `json:"description"`
+	CategoryID                uuid.UUID      `json:"category_id"`
+	TypeID                    uuid.NullUUID  `json:"type_id"`
+	ItemID                    uuid.NullUUID  `json:"item_id"`
+	Priority                  string         `json:"priority"`
+	StatusID                  uuid.UUID      `json:"status_id"`
+	AssigneeUserID            uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID           uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID            uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail                sql.NullString `json:"guest_email"`
+	ResolutionNotes           sql.NullString `json:"resolution_notes"`
+	ResolvedAt                sql.NullTime   `json:"resolved_at"`
+	ClosedAt                  sql.NullTime   `json:"closed_at"`
+	CreatedAt                 time.Time      `json:"created_at"`
+	UpdatedAt                 time.Time      `json:"updated_at"`
+	GuestName                 string         `json:"guest_name"`
+	GuestPhone                string         `json:"guest_phone"`
+	PendingSince              sql.NullTime   `json:"pending_since"`
+	SlaPausedSeconds          int64          `json:"sla_paused_seconds"`
+	ReopenCount               int32          `json:"reopen_count"`
+	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
+	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
 }
 
 func (q *Queries) GetTicketByID(ctx context.Context, id uuid.UUID) (GetTicketByIDRow, error) {
@@ -317,37 +354,43 @@ func (q *Queries) GetTicketByID(ctx context.Context, id uuid.UUID) (GetTicketByI
 		&i.GuestPhone,
 		&i.PendingSince,
 		&i.SlaPausedSeconds,
+		&i.ReopenCount,
+		&i.LastReopenedAt,
+		&i.PausedSecondsAtLastReopen,
 	)
 	return i, err
 }
 
 const getTicketByIDForUpdate = `-- name: GetTicketByIDForUpdate :one
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds FROM tickets WHERE id = $1 FOR UPDATE
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets WHERE id = $1 FOR UPDATE
 `
 
 type GetTicketByIDForUpdateRow struct {
-	ID               uuid.UUID      `json:"id"`
-	TrackingNumber   string         `json:"tracking_number"`
-	Subject          string         `json:"subject"`
-	Description      string         `json:"description"`
-	CategoryID       uuid.UUID      `json:"category_id"`
-	TypeID           uuid.NullUUID  `json:"type_id"`
-	ItemID           uuid.NullUUID  `json:"item_id"`
-	Priority         string         `json:"priority"`
-	StatusID         uuid.UUID      `json:"status_id"`
-	AssigneeUserID   uuid.NullUUID  `json:"assignee_user_id"`
-	AssigneeGroupID  uuid.NullUUID  `json:"assignee_group_id"`
-	ReporterUserID   uuid.NullUUID  `json:"reporter_user_id"`
-	GuestEmail       sql.NullString `json:"guest_email"`
-	ResolutionNotes  sql.NullString `json:"resolution_notes"`
-	ResolvedAt       sql.NullTime   `json:"resolved_at"`
-	ClosedAt         sql.NullTime   `json:"closed_at"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	GuestName        string         `json:"guest_name"`
-	GuestPhone       string         `json:"guest_phone"`
-	PendingSince     sql.NullTime   `json:"pending_since"`
-	SlaPausedSeconds int64          `json:"sla_paused_seconds"`
+	ID                        uuid.UUID      `json:"id"`
+	TrackingNumber            string         `json:"tracking_number"`
+	Subject                   string         `json:"subject"`
+	Description               string         `json:"description"`
+	CategoryID                uuid.UUID      `json:"category_id"`
+	TypeID                    uuid.NullUUID  `json:"type_id"`
+	ItemID                    uuid.NullUUID  `json:"item_id"`
+	Priority                  string         `json:"priority"`
+	StatusID                  uuid.UUID      `json:"status_id"`
+	AssigneeUserID            uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID           uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID            uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail                sql.NullString `json:"guest_email"`
+	ResolutionNotes           sql.NullString `json:"resolution_notes"`
+	ResolvedAt                sql.NullTime   `json:"resolved_at"`
+	ClosedAt                  sql.NullTime   `json:"closed_at"`
+	CreatedAt                 time.Time      `json:"created_at"`
+	UpdatedAt                 time.Time      `json:"updated_at"`
+	GuestName                 string         `json:"guest_name"`
+	GuestPhone                string         `json:"guest_phone"`
+	PendingSince              sql.NullTime   `json:"pending_since"`
+	SlaPausedSeconds          int64          `json:"sla_paused_seconds"`
+	ReopenCount               int32          `json:"reopen_count"`
+	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
+	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
 }
 
 // The same row as GetTicketByID, with a write lock held until the transaction
@@ -389,37 +432,43 @@ func (q *Queries) GetTicketByIDForUpdate(ctx context.Context, id uuid.UUID) (Get
 		&i.GuestPhone,
 		&i.PendingSince,
 		&i.SlaPausedSeconds,
+		&i.ReopenCount,
+		&i.LastReopenedAt,
+		&i.PausedSecondsAtLastReopen,
 	)
 	return i, err
 }
 
 const getTicketByTrackingNumber = `-- name: GetTicketByTrackingNumber :one
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds FROM tickets WHERE tracking_number = $1
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets WHERE tracking_number = $1
 `
 
 type GetTicketByTrackingNumberRow struct {
-	ID               uuid.UUID      `json:"id"`
-	TrackingNumber   string         `json:"tracking_number"`
-	Subject          string         `json:"subject"`
-	Description      string         `json:"description"`
-	CategoryID       uuid.UUID      `json:"category_id"`
-	TypeID           uuid.NullUUID  `json:"type_id"`
-	ItemID           uuid.NullUUID  `json:"item_id"`
-	Priority         string         `json:"priority"`
-	StatusID         uuid.UUID      `json:"status_id"`
-	AssigneeUserID   uuid.NullUUID  `json:"assignee_user_id"`
-	AssigneeGroupID  uuid.NullUUID  `json:"assignee_group_id"`
-	ReporterUserID   uuid.NullUUID  `json:"reporter_user_id"`
-	GuestEmail       sql.NullString `json:"guest_email"`
-	ResolutionNotes  sql.NullString `json:"resolution_notes"`
-	ResolvedAt       sql.NullTime   `json:"resolved_at"`
-	ClosedAt         sql.NullTime   `json:"closed_at"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	GuestName        string         `json:"guest_name"`
-	GuestPhone       string         `json:"guest_phone"`
-	PendingSince     sql.NullTime   `json:"pending_since"`
-	SlaPausedSeconds int64          `json:"sla_paused_seconds"`
+	ID                        uuid.UUID      `json:"id"`
+	TrackingNumber            string         `json:"tracking_number"`
+	Subject                   string         `json:"subject"`
+	Description               string         `json:"description"`
+	CategoryID                uuid.UUID      `json:"category_id"`
+	TypeID                    uuid.NullUUID  `json:"type_id"`
+	ItemID                    uuid.NullUUID  `json:"item_id"`
+	Priority                  string         `json:"priority"`
+	StatusID                  uuid.UUID      `json:"status_id"`
+	AssigneeUserID            uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID           uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID            uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail                sql.NullString `json:"guest_email"`
+	ResolutionNotes           sql.NullString `json:"resolution_notes"`
+	ResolvedAt                sql.NullTime   `json:"resolved_at"`
+	ClosedAt                  sql.NullTime   `json:"closed_at"`
+	CreatedAt                 time.Time      `json:"created_at"`
+	UpdatedAt                 time.Time      `json:"updated_at"`
+	GuestName                 string         `json:"guest_name"`
+	GuestPhone                string         `json:"guest_phone"`
+	PendingSince              sql.NullTime   `json:"pending_since"`
+	SlaPausedSeconds          int64          `json:"sla_paused_seconds"`
+	ReopenCount               int32          `json:"reopen_count"`
+	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
+	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
 }
 
 func (q *Queries) GetTicketByTrackingNumber(ctx context.Context, trackingNumber string) (GetTicketByTrackingNumberRow, error) {
@@ -448,6 +497,9 @@ func (q *Queries) GetTicketByTrackingNumber(ctx context.Context, trackingNumber 
 		&i.GuestPhone,
 		&i.PendingSince,
 		&i.SlaPausedSeconds,
+		&i.ReopenCount,
+		&i.LastReopenedAt,
+		&i.PausedSecondsAtLastReopen,
 	)
 	return i, err
 }
@@ -471,11 +523,14 @@ WHERE id = $1
   AND deleted_at IS NULL
   AND disabled = FALSE
   AND role IN ('staff', 'admin')
+  AND NOT service_account
 FOR SHARE
 `
 
 // Whether a user can be given a ticket: the account exists, is not deleted,
-// is not disabled, and is staff. A reporting user is not a queue.
+// is not disabled, and is staff. A reporting user is not a queue, and neither
+// is a service user (#420): an OAuth client's identity cannot work a ticket,
+// which also keeps it out of round-robin without a check of its own.
 //
 // Asked inside the assignment transaction rather than by the caller, because
 // the caller is not the only caller. The REST handler checked this and MCP
@@ -498,7 +553,7 @@ func (q *Queries) IsAssignableUser(ctx context.Context, id uuid.UUID) (uuid.UUID
 }
 
 const listAllTickets = `-- name: ListAllTickets :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds FROM tickets ORDER BY created_at DESC LIMIT $1 OFFSET $2
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets ORDER BY created_at DESC LIMIT $1 OFFSET $2
 `
 
 type ListAllTicketsParams struct {
@@ -507,28 +562,31 @@ type ListAllTicketsParams struct {
 }
 
 type ListAllTicketsRow struct {
-	ID               uuid.UUID      `json:"id"`
-	TrackingNumber   string         `json:"tracking_number"`
-	Subject          string         `json:"subject"`
-	Description      string         `json:"description"`
-	CategoryID       uuid.UUID      `json:"category_id"`
-	TypeID           uuid.NullUUID  `json:"type_id"`
-	ItemID           uuid.NullUUID  `json:"item_id"`
-	Priority         string         `json:"priority"`
-	StatusID         uuid.UUID      `json:"status_id"`
-	AssigneeUserID   uuid.NullUUID  `json:"assignee_user_id"`
-	AssigneeGroupID  uuid.NullUUID  `json:"assignee_group_id"`
-	ReporterUserID   uuid.NullUUID  `json:"reporter_user_id"`
-	GuestEmail       sql.NullString `json:"guest_email"`
-	ResolutionNotes  sql.NullString `json:"resolution_notes"`
-	ResolvedAt       sql.NullTime   `json:"resolved_at"`
-	ClosedAt         sql.NullTime   `json:"closed_at"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	GuestName        string         `json:"guest_name"`
-	GuestPhone       string         `json:"guest_phone"`
-	PendingSince     sql.NullTime   `json:"pending_since"`
-	SlaPausedSeconds int64          `json:"sla_paused_seconds"`
+	ID                        uuid.UUID      `json:"id"`
+	TrackingNumber            string         `json:"tracking_number"`
+	Subject                   string         `json:"subject"`
+	Description               string         `json:"description"`
+	CategoryID                uuid.UUID      `json:"category_id"`
+	TypeID                    uuid.NullUUID  `json:"type_id"`
+	ItemID                    uuid.NullUUID  `json:"item_id"`
+	Priority                  string         `json:"priority"`
+	StatusID                  uuid.UUID      `json:"status_id"`
+	AssigneeUserID            uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID           uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID            uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail                sql.NullString `json:"guest_email"`
+	ResolutionNotes           sql.NullString `json:"resolution_notes"`
+	ResolvedAt                sql.NullTime   `json:"resolved_at"`
+	ClosedAt                  sql.NullTime   `json:"closed_at"`
+	CreatedAt                 time.Time      `json:"created_at"`
+	UpdatedAt                 time.Time      `json:"updated_at"`
+	GuestName                 string         `json:"guest_name"`
+	GuestPhone                string         `json:"guest_phone"`
+	PendingSince              sql.NullTime   `json:"pending_since"`
+	SlaPausedSeconds          int64          `json:"sla_paused_seconds"`
+	ReopenCount               int32          `json:"reopen_count"`
+	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
+	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
 }
 
 func (q *Queries) ListAllTickets(ctx context.Context, arg ListAllTicketsParams) ([]ListAllTicketsRow, error) {
@@ -563,6 +621,9 @@ func (q *Queries) ListAllTickets(ctx context.Context, arg ListAllTicketsParams) 
 			&i.GuestPhone,
 			&i.PendingSince,
 			&i.SlaPausedSeconds,
+			&i.ReopenCount,
+			&i.LastReopenedAt,
+			&i.PausedSecondsAtLastReopen,
 		); err != nil {
 			return nil, err
 		}
@@ -678,7 +739,7 @@ func (q *Queries) ListReplies(ctx context.Context, ticketID uuid.UUID) ([]ListRe
 }
 
 const listResolvedTicketsBefore = `-- name: ListResolvedTicketsBefore :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets
 WHERE resolved_at IS NOT NULL AND resolved_at < $1 AND status_id = $2 AND closed_at IS NULL
 ORDER BY resolved_at ASC
 LIMIT $3
@@ -691,28 +752,31 @@ type ListResolvedTicketsBeforeParams struct {
 }
 
 type ListResolvedTicketsBeforeRow struct {
-	ID               uuid.UUID      `json:"id"`
-	TrackingNumber   string         `json:"tracking_number"`
-	Subject          string         `json:"subject"`
-	Description      string         `json:"description"`
-	CategoryID       uuid.UUID      `json:"category_id"`
-	TypeID           uuid.NullUUID  `json:"type_id"`
-	ItemID           uuid.NullUUID  `json:"item_id"`
-	Priority         string         `json:"priority"`
-	StatusID         uuid.UUID      `json:"status_id"`
-	AssigneeUserID   uuid.NullUUID  `json:"assignee_user_id"`
-	AssigneeGroupID  uuid.NullUUID  `json:"assignee_group_id"`
-	ReporterUserID   uuid.NullUUID  `json:"reporter_user_id"`
-	GuestEmail       sql.NullString `json:"guest_email"`
-	ResolutionNotes  sql.NullString `json:"resolution_notes"`
-	ResolvedAt       sql.NullTime   `json:"resolved_at"`
-	ClosedAt         sql.NullTime   `json:"closed_at"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	GuestName        string         `json:"guest_name"`
-	GuestPhone       string         `json:"guest_phone"`
-	PendingSince     sql.NullTime   `json:"pending_since"`
-	SlaPausedSeconds int64          `json:"sla_paused_seconds"`
+	ID                        uuid.UUID      `json:"id"`
+	TrackingNumber            string         `json:"tracking_number"`
+	Subject                   string         `json:"subject"`
+	Description               string         `json:"description"`
+	CategoryID                uuid.UUID      `json:"category_id"`
+	TypeID                    uuid.NullUUID  `json:"type_id"`
+	ItemID                    uuid.NullUUID  `json:"item_id"`
+	Priority                  string         `json:"priority"`
+	StatusID                  uuid.UUID      `json:"status_id"`
+	AssigneeUserID            uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID           uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID            uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail                sql.NullString `json:"guest_email"`
+	ResolutionNotes           sql.NullString `json:"resolution_notes"`
+	ResolvedAt                sql.NullTime   `json:"resolved_at"`
+	ClosedAt                  sql.NullTime   `json:"closed_at"`
+	CreatedAt                 time.Time      `json:"created_at"`
+	UpdatedAt                 time.Time      `json:"updated_at"`
+	GuestName                 string         `json:"guest_name"`
+	GuestPhone                string         `json:"guest_phone"`
+	PendingSince              sql.NullTime   `json:"pending_since"`
+	SlaPausedSeconds          int64          `json:"sla_paused_seconds"`
+	ReopenCount               int32          `json:"reopen_count"`
+	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
+	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
 }
 
 // status_id is the Resolved status's id. Without this filter, a row that
@@ -753,6 +817,9 @@ func (q *Queries) ListResolvedTicketsBefore(ctx context.Context, arg ListResolve
 			&i.GuestPhone,
 			&i.PendingSince,
 			&i.SlaPausedSeconds,
+			&i.ReopenCount,
+			&i.LastReopenedAt,
+			&i.PausedSecondsAtLastReopen,
 		); err != nil {
 			return nil, err
 		}
@@ -796,7 +863,7 @@ func (q *Queries) ListTicketLinks(ctx context.Context, sourceTicketID uuid.UUID)
 }
 
 const listTicketsByAssigneeGroup = `-- name: ListTicketsByAssigneeGroup :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds FROM tickets WHERE assignee_group_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets WHERE assignee_group_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
 `
 
 type ListTicketsByAssigneeGroupParams struct {
@@ -806,28 +873,31 @@ type ListTicketsByAssigneeGroupParams struct {
 }
 
 type ListTicketsByAssigneeGroupRow struct {
-	ID               uuid.UUID      `json:"id"`
-	TrackingNumber   string         `json:"tracking_number"`
-	Subject          string         `json:"subject"`
-	Description      string         `json:"description"`
-	CategoryID       uuid.UUID      `json:"category_id"`
-	TypeID           uuid.NullUUID  `json:"type_id"`
-	ItemID           uuid.NullUUID  `json:"item_id"`
-	Priority         string         `json:"priority"`
-	StatusID         uuid.UUID      `json:"status_id"`
-	AssigneeUserID   uuid.NullUUID  `json:"assignee_user_id"`
-	AssigneeGroupID  uuid.NullUUID  `json:"assignee_group_id"`
-	ReporterUserID   uuid.NullUUID  `json:"reporter_user_id"`
-	GuestEmail       sql.NullString `json:"guest_email"`
-	ResolutionNotes  sql.NullString `json:"resolution_notes"`
-	ResolvedAt       sql.NullTime   `json:"resolved_at"`
-	ClosedAt         sql.NullTime   `json:"closed_at"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	GuestName        string         `json:"guest_name"`
-	GuestPhone       string         `json:"guest_phone"`
-	PendingSince     sql.NullTime   `json:"pending_since"`
-	SlaPausedSeconds int64          `json:"sla_paused_seconds"`
+	ID                        uuid.UUID      `json:"id"`
+	TrackingNumber            string         `json:"tracking_number"`
+	Subject                   string         `json:"subject"`
+	Description               string         `json:"description"`
+	CategoryID                uuid.UUID      `json:"category_id"`
+	TypeID                    uuid.NullUUID  `json:"type_id"`
+	ItemID                    uuid.NullUUID  `json:"item_id"`
+	Priority                  string         `json:"priority"`
+	StatusID                  uuid.UUID      `json:"status_id"`
+	AssigneeUserID            uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID           uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID            uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail                sql.NullString `json:"guest_email"`
+	ResolutionNotes           sql.NullString `json:"resolution_notes"`
+	ResolvedAt                sql.NullTime   `json:"resolved_at"`
+	ClosedAt                  sql.NullTime   `json:"closed_at"`
+	CreatedAt                 time.Time      `json:"created_at"`
+	UpdatedAt                 time.Time      `json:"updated_at"`
+	GuestName                 string         `json:"guest_name"`
+	GuestPhone                string         `json:"guest_phone"`
+	PendingSince              sql.NullTime   `json:"pending_since"`
+	SlaPausedSeconds          int64          `json:"sla_paused_seconds"`
+	ReopenCount               int32          `json:"reopen_count"`
+	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
+	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
 }
 
 func (q *Queries) ListTicketsByAssigneeGroup(ctx context.Context, arg ListTicketsByAssigneeGroupParams) ([]ListTicketsByAssigneeGroupRow, error) {
@@ -862,6 +932,9 @@ func (q *Queries) ListTicketsByAssigneeGroup(ctx context.Context, arg ListTicket
 			&i.GuestPhone,
 			&i.PendingSince,
 			&i.SlaPausedSeconds,
+			&i.ReopenCount,
+			&i.LastReopenedAt,
+			&i.PausedSecondsAtLastReopen,
 		); err != nil {
 			return nil, err
 		}
@@ -877,7 +950,7 @@ func (q *Queries) ListTicketsByAssigneeGroup(ctx context.Context, arg ListTicket
 }
 
 const listTicketsByAssigneeUser = `-- name: ListTicketsByAssigneeUser :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds FROM tickets WHERE assignee_user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets WHERE assignee_user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
 `
 
 type ListTicketsByAssigneeUserParams struct {
@@ -887,28 +960,31 @@ type ListTicketsByAssigneeUserParams struct {
 }
 
 type ListTicketsByAssigneeUserRow struct {
-	ID               uuid.UUID      `json:"id"`
-	TrackingNumber   string         `json:"tracking_number"`
-	Subject          string         `json:"subject"`
-	Description      string         `json:"description"`
-	CategoryID       uuid.UUID      `json:"category_id"`
-	TypeID           uuid.NullUUID  `json:"type_id"`
-	ItemID           uuid.NullUUID  `json:"item_id"`
-	Priority         string         `json:"priority"`
-	StatusID         uuid.UUID      `json:"status_id"`
-	AssigneeUserID   uuid.NullUUID  `json:"assignee_user_id"`
-	AssigneeGroupID  uuid.NullUUID  `json:"assignee_group_id"`
-	ReporterUserID   uuid.NullUUID  `json:"reporter_user_id"`
-	GuestEmail       sql.NullString `json:"guest_email"`
-	ResolutionNotes  sql.NullString `json:"resolution_notes"`
-	ResolvedAt       sql.NullTime   `json:"resolved_at"`
-	ClosedAt         sql.NullTime   `json:"closed_at"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	GuestName        string         `json:"guest_name"`
-	GuestPhone       string         `json:"guest_phone"`
-	PendingSince     sql.NullTime   `json:"pending_since"`
-	SlaPausedSeconds int64          `json:"sla_paused_seconds"`
+	ID                        uuid.UUID      `json:"id"`
+	TrackingNumber            string         `json:"tracking_number"`
+	Subject                   string         `json:"subject"`
+	Description               string         `json:"description"`
+	CategoryID                uuid.UUID      `json:"category_id"`
+	TypeID                    uuid.NullUUID  `json:"type_id"`
+	ItemID                    uuid.NullUUID  `json:"item_id"`
+	Priority                  string         `json:"priority"`
+	StatusID                  uuid.UUID      `json:"status_id"`
+	AssigneeUserID            uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID           uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID            uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail                sql.NullString `json:"guest_email"`
+	ResolutionNotes           sql.NullString `json:"resolution_notes"`
+	ResolvedAt                sql.NullTime   `json:"resolved_at"`
+	ClosedAt                  sql.NullTime   `json:"closed_at"`
+	CreatedAt                 time.Time      `json:"created_at"`
+	UpdatedAt                 time.Time      `json:"updated_at"`
+	GuestName                 string         `json:"guest_name"`
+	GuestPhone                string         `json:"guest_phone"`
+	PendingSince              sql.NullTime   `json:"pending_since"`
+	SlaPausedSeconds          int64          `json:"sla_paused_seconds"`
+	ReopenCount               int32          `json:"reopen_count"`
+	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
+	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
 }
 
 func (q *Queries) ListTicketsByAssigneeUser(ctx context.Context, arg ListTicketsByAssigneeUserParams) ([]ListTicketsByAssigneeUserRow, error) {
@@ -943,6 +1019,9 @@ func (q *Queries) ListTicketsByAssigneeUser(ctx context.Context, arg ListTickets
 			&i.GuestPhone,
 			&i.PendingSince,
 			&i.SlaPausedSeconds,
+			&i.ReopenCount,
+			&i.LastReopenedAt,
+			&i.PausedSecondsAtLastReopen,
 		); err != nil {
 			return nil, err
 		}
@@ -958,7 +1037,7 @@ func (q *Queries) ListTicketsByAssigneeUser(ctx context.Context, arg ListTickets
 }
 
 const listTicketsByReporter = `-- name: ListTicketsByReporter :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds FROM tickets WHERE reporter_user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets WHERE reporter_user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
 `
 
 type ListTicketsByReporterParams struct {
@@ -968,28 +1047,31 @@ type ListTicketsByReporterParams struct {
 }
 
 type ListTicketsByReporterRow struct {
-	ID               uuid.UUID      `json:"id"`
-	TrackingNumber   string         `json:"tracking_number"`
-	Subject          string         `json:"subject"`
-	Description      string         `json:"description"`
-	CategoryID       uuid.UUID      `json:"category_id"`
-	TypeID           uuid.NullUUID  `json:"type_id"`
-	ItemID           uuid.NullUUID  `json:"item_id"`
-	Priority         string         `json:"priority"`
-	StatusID         uuid.UUID      `json:"status_id"`
-	AssigneeUserID   uuid.NullUUID  `json:"assignee_user_id"`
-	AssigneeGroupID  uuid.NullUUID  `json:"assignee_group_id"`
-	ReporterUserID   uuid.NullUUID  `json:"reporter_user_id"`
-	GuestEmail       sql.NullString `json:"guest_email"`
-	ResolutionNotes  sql.NullString `json:"resolution_notes"`
-	ResolvedAt       sql.NullTime   `json:"resolved_at"`
-	ClosedAt         sql.NullTime   `json:"closed_at"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	GuestName        string         `json:"guest_name"`
-	GuestPhone       string         `json:"guest_phone"`
-	PendingSince     sql.NullTime   `json:"pending_since"`
-	SlaPausedSeconds int64          `json:"sla_paused_seconds"`
+	ID                        uuid.UUID      `json:"id"`
+	TrackingNumber            string         `json:"tracking_number"`
+	Subject                   string         `json:"subject"`
+	Description               string         `json:"description"`
+	CategoryID                uuid.UUID      `json:"category_id"`
+	TypeID                    uuid.NullUUID  `json:"type_id"`
+	ItemID                    uuid.NullUUID  `json:"item_id"`
+	Priority                  string         `json:"priority"`
+	StatusID                  uuid.UUID      `json:"status_id"`
+	AssigneeUserID            uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID           uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID            uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail                sql.NullString `json:"guest_email"`
+	ResolutionNotes           sql.NullString `json:"resolution_notes"`
+	ResolvedAt                sql.NullTime   `json:"resolved_at"`
+	ClosedAt                  sql.NullTime   `json:"closed_at"`
+	CreatedAt                 time.Time      `json:"created_at"`
+	UpdatedAt                 time.Time      `json:"updated_at"`
+	GuestName                 string         `json:"guest_name"`
+	GuestPhone                string         `json:"guest_phone"`
+	PendingSince              sql.NullTime   `json:"pending_since"`
+	SlaPausedSeconds          int64          `json:"sla_paused_seconds"`
+	ReopenCount               int32          `json:"reopen_count"`
+	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
+	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
 }
 
 func (q *Queries) ListTicketsByReporter(ctx context.Context, arg ListTicketsByReporterParams) ([]ListTicketsByReporterRow, error) {
@@ -1024,6 +1106,9 @@ func (q *Queries) ListTicketsByReporter(ctx context.Context, arg ListTicketsByRe
 			&i.GuestPhone,
 			&i.PendingSince,
 			&i.SlaPausedSeconds,
+			&i.ReopenCount,
+			&i.LastReopenedAt,
+			&i.PausedSecondsAtLastReopen,
 		); err != nil {
 			return nil, err
 		}
@@ -1039,7 +1124,7 @@ func (q *Queries) ListTicketsByReporter(ctx context.Context, arg ListTicketsByRe
 }
 
 const listTicketsByStatus = `-- name: ListTicketsByStatus :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds FROM tickets WHERE status_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets WHERE status_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
 `
 
 type ListTicketsByStatusParams struct {
@@ -1049,28 +1134,31 @@ type ListTicketsByStatusParams struct {
 }
 
 type ListTicketsByStatusRow struct {
-	ID               uuid.UUID      `json:"id"`
-	TrackingNumber   string         `json:"tracking_number"`
-	Subject          string         `json:"subject"`
-	Description      string         `json:"description"`
-	CategoryID       uuid.UUID      `json:"category_id"`
-	TypeID           uuid.NullUUID  `json:"type_id"`
-	ItemID           uuid.NullUUID  `json:"item_id"`
-	Priority         string         `json:"priority"`
-	StatusID         uuid.UUID      `json:"status_id"`
-	AssigneeUserID   uuid.NullUUID  `json:"assignee_user_id"`
-	AssigneeGroupID  uuid.NullUUID  `json:"assignee_group_id"`
-	ReporterUserID   uuid.NullUUID  `json:"reporter_user_id"`
-	GuestEmail       sql.NullString `json:"guest_email"`
-	ResolutionNotes  sql.NullString `json:"resolution_notes"`
-	ResolvedAt       sql.NullTime   `json:"resolved_at"`
-	ClosedAt         sql.NullTime   `json:"closed_at"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	GuestName        string         `json:"guest_name"`
-	GuestPhone       string         `json:"guest_phone"`
-	PendingSince     sql.NullTime   `json:"pending_since"`
-	SlaPausedSeconds int64          `json:"sla_paused_seconds"`
+	ID                        uuid.UUID      `json:"id"`
+	TrackingNumber            string         `json:"tracking_number"`
+	Subject                   string         `json:"subject"`
+	Description               string         `json:"description"`
+	CategoryID                uuid.UUID      `json:"category_id"`
+	TypeID                    uuid.NullUUID  `json:"type_id"`
+	ItemID                    uuid.NullUUID  `json:"item_id"`
+	Priority                  string         `json:"priority"`
+	StatusID                  uuid.UUID      `json:"status_id"`
+	AssigneeUserID            uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID           uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID            uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail                sql.NullString `json:"guest_email"`
+	ResolutionNotes           sql.NullString `json:"resolution_notes"`
+	ResolvedAt                sql.NullTime   `json:"resolved_at"`
+	ClosedAt                  sql.NullTime   `json:"closed_at"`
+	CreatedAt                 time.Time      `json:"created_at"`
+	UpdatedAt                 time.Time      `json:"updated_at"`
+	GuestName                 string         `json:"guest_name"`
+	GuestPhone                string         `json:"guest_phone"`
+	PendingSince              sql.NullTime   `json:"pending_since"`
+	SlaPausedSeconds          int64          `json:"sla_paused_seconds"`
+	ReopenCount               int32          `json:"reopen_count"`
+	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
+	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
 }
 
 func (q *Queries) ListTicketsByStatus(ctx context.Context, arg ListTicketsByStatusParams) ([]ListTicketsByStatusRow, error) {
@@ -1105,6 +1193,9 @@ func (q *Queries) ListTicketsByStatus(ctx context.Context, arg ListTicketsByStat
 			&i.GuestPhone,
 			&i.PendingSince,
 			&i.SlaPausedSeconds,
+			&i.ReopenCount,
+			&i.LastReopenedAt,
+			&i.PausedSecondsAtLastReopen,
 		); err != nil {
 			return nil, err
 		}
@@ -1120,7 +1211,7 @@ func (q *Queries) ListTicketsByStatus(ctx context.Context, arg ListTicketsByStat
 }
 
 const listTicketsFiltered = `-- name: ListTicketsFiltered :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds FROM tickets t
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets t
 WHERE
   (
     $1::bool
@@ -1185,28 +1276,31 @@ type ListTicketsFilteredParams struct {
 }
 
 type ListTicketsFilteredRow struct {
-	ID               uuid.UUID      `json:"id"`
-	TrackingNumber   string         `json:"tracking_number"`
-	Subject          string         `json:"subject"`
-	Description      string         `json:"description"`
-	CategoryID       uuid.UUID      `json:"category_id"`
-	TypeID           uuid.NullUUID  `json:"type_id"`
-	ItemID           uuid.NullUUID  `json:"item_id"`
-	Priority         string         `json:"priority"`
-	StatusID         uuid.UUID      `json:"status_id"`
-	AssigneeUserID   uuid.NullUUID  `json:"assignee_user_id"`
-	AssigneeGroupID  uuid.NullUUID  `json:"assignee_group_id"`
-	ReporterUserID   uuid.NullUUID  `json:"reporter_user_id"`
-	GuestEmail       sql.NullString `json:"guest_email"`
-	ResolutionNotes  sql.NullString `json:"resolution_notes"`
-	ResolvedAt       sql.NullTime   `json:"resolved_at"`
-	ClosedAt         sql.NullTime   `json:"closed_at"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	GuestName        string         `json:"guest_name"`
-	GuestPhone       string         `json:"guest_phone"`
-	PendingSince     sql.NullTime   `json:"pending_since"`
-	SlaPausedSeconds int64          `json:"sla_paused_seconds"`
+	ID                        uuid.UUID      `json:"id"`
+	TrackingNumber            string         `json:"tracking_number"`
+	Subject                   string         `json:"subject"`
+	Description               string         `json:"description"`
+	CategoryID                uuid.UUID      `json:"category_id"`
+	TypeID                    uuid.NullUUID  `json:"type_id"`
+	ItemID                    uuid.NullUUID  `json:"item_id"`
+	Priority                  string         `json:"priority"`
+	StatusID                  uuid.UUID      `json:"status_id"`
+	AssigneeUserID            uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID           uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID            uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail                sql.NullString `json:"guest_email"`
+	ResolutionNotes           sql.NullString `json:"resolution_notes"`
+	ResolvedAt                sql.NullTime   `json:"resolved_at"`
+	ClosedAt                  sql.NullTime   `json:"closed_at"`
+	CreatedAt                 time.Time      `json:"created_at"`
+	UpdatedAt                 time.Time      `json:"updated_at"`
+	GuestName                 string         `json:"guest_name"`
+	GuestPhone                string         `json:"guest_phone"`
+	PendingSince              sql.NullTime   `json:"pending_since"`
+	SlaPausedSeconds          int64          `json:"sla_paused_seconds"`
+	ReopenCount               int32          `json:"reopen_count"`
+	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
+	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
 }
 
 // The MCP list surface: one query carrying every optional filter plus the
@@ -1269,6 +1363,9 @@ func (q *Queries) ListTicketsFiltered(ctx context.Context, arg ListTicketsFilter
 			&i.GuestPhone,
 			&i.PendingSince,
 			&i.SlaPausedSeconds,
+			&i.ReopenCount,
+			&i.LastReopenedAt,
+			&i.PausedSecondsAtLastReopen,
 		); err != nil {
 			return nil, err
 		}
@@ -1284,7 +1381,7 @@ func (q *Queries) ListTicketsFiltered(ctx context.Context, arg ListTicketsFilter
 }
 
 const listTicketsVisibleToStaff = `-- name: ListTicketsVisibleToStaff :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds FROM tickets t
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets t
 WHERE
   t.reporter_user_id = $1
   OR t.assignee_user_id = $1
@@ -1307,28 +1404,31 @@ type ListTicketsVisibleToStaffParams struct {
 }
 
 type ListTicketsVisibleToStaffRow struct {
-	ID               uuid.UUID      `json:"id"`
-	TrackingNumber   string         `json:"tracking_number"`
-	Subject          string         `json:"subject"`
-	Description      string         `json:"description"`
-	CategoryID       uuid.UUID      `json:"category_id"`
-	TypeID           uuid.NullUUID  `json:"type_id"`
-	ItemID           uuid.NullUUID  `json:"item_id"`
-	Priority         string         `json:"priority"`
-	StatusID         uuid.UUID      `json:"status_id"`
-	AssigneeUserID   uuid.NullUUID  `json:"assignee_user_id"`
-	AssigneeGroupID  uuid.NullUUID  `json:"assignee_group_id"`
-	ReporterUserID   uuid.NullUUID  `json:"reporter_user_id"`
-	GuestEmail       sql.NullString `json:"guest_email"`
-	ResolutionNotes  sql.NullString `json:"resolution_notes"`
-	ResolvedAt       sql.NullTime   `json:"resolved_at"`
-	ClosedAt         sql.NullTime   `json:"closed_at"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	GuestName        string         `json:"guest_name"`
-	GuestPhone       string         `json:"guest_phone"`
-	PendingSince     sql.NullTime   `json:"pending_since"`
-	SlaPausedSeconds int64          `json:"sla_paused_seconds"`
+	ID                        uuid.UUID      `json:"id"`
+	TrackingNumber            string         `json:"tracking_number"`
+	Subject                   string         `json:"subject"`
+	Description               string         `json:"description"`
+	CategoryID                uuid.UUID      `json:"category_id"`
+	TypeID                    uuid.NullUUID  `json:"type_id"`
+	ItemID                    uuid.NullUUID  `json:"item_id"`
+	Priority                  string         `json:"priority"`
+	StatusID                  uuid.UUID      `json:"status_id"`
+	AssigneeUserID            uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID           uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID            uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail                sql.NullString `json:"guest_email"`
+	ResolutionNotes           sql.NullString `json:"resolution_notes"`
+	ResolvedAt                sql.NullTime   `json:"resolved_at"`
+	ClosedAt                  sql.NullTime   `json:"closed_at"`
+	CreatedAt                 time.Time      `json:"created_at"`
+	UpdatedAt                 time.Time      `json:"updated_at"`
+	GuestName                 string         `json:"guest_name"`
+	GuestPhone                string         `json:"guest_phone"`
+	PendingSince              sql.NullTime   `json:"pending_since"`
+	SlaPausedSeconds          int64          `json:"sla_paused_seconds"`
+	ReopenCount               int32          `json:"reopen_count"`
+	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
+	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
 }
 
 // Every ticket a staff member may see under DESIGN.md's scope model: reported
@@ -1370,6 +1470,9 @@ func (q *Queries) ListTicketsVisibleToStaff(ctx context.Context, arg ListTickets
 			&i.GuestPhone,
 			&i.PendingSince,
 			&i.SlaPausedSeconds,
+			&i.ReopenCount,
+			&i.LastReopenedAt,
+			&i.PausedSecondsAtLastReopen,
 		); err != nil {
 			return nil, err
 		}
@@ -1385,7 +1488,7 @@ func (q *Queries) ListTicketsVisibleToStaff(ctx context.Context, arg ListTickets
 }
 
 const listUnassignedTickets = `-- name: ListUnassignedTickets :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets
 WHERE assignee_user_id IS NULL AND assignee_group_id IS NULL
 ORDER BY created_at DESC LIMIT $1 OFFSET $2
 `
@@ -1396,28 +1499,31 @@ type ListUnassignedTicketsParams struct {
 }
 
 type ListUnassignedTicketsRow struct {
-	ID               uuid.UUID      `json:"id"`
-	TrackingNumber   string         `json:"tracking_number"`
-	Subject          string         `json:"subject"`
-	Description      string         `json:"description"`
-	CategoryID       uuid.UUID      `json:"category_id"`
-	TypeID           uuid.NullUUID  `json:"type_id"`
-	ItemID           uuid.NullUUID  `json:"item_id"`
-	Priority         string         `json:"priority"`
-	StatusID         uuid.UUID      `json:"status_id"`
-	AssigneeUserID   uuid.NullUUID  `json:"assignee_user_id"`
-	AssigneeGroupID  uuid.NullUUID  `json:"assignee_group_id"`
-	ReporterUserID   uuid.NullUUID  `json:"reporter_user_id"`
-	GuestEmail       sql.NullString `json:"guest_email"`
-	ResolutionNotes  sql.NullString `json:"resolution_notes"`
-	ResolvedAt       sql.NullTime   `json:"resolved_at"`
-	ClosedAt         sql.NullTime   `json:"closed_at"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	GuestName        string         `json:"guest_name"`
-	GuestPhone       string         `json:"guest_phone"`
-	PendingSince     sql.NullTime   `json:"pending_since"`
-	SlaPausedSeconds int64          `json:"sla_paused_seconds"`
+	ID                        uuid.UUID      `json:"id"`
+	TrackingNumber            string         `json:"tracking_number"`
+	Subject                   string         `json:"subject"`
+	Description               string         `json:"description"`
+	CategoryID                uuid.UUID      `json:"category_id"`
+	TypeID                    uuid.NullUUID  `json:"type_id"`
+	ItemID                    uuid.NullUUID  `json:"item_id"`
+	Priority                  string         `json:"priority"`
+	StatusID                  uuid.UUID      `json:"status_id"`
+	AssigneeUserID            uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID           uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID            uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail                sql.NullString `json:"guest_email"`
+	ResolutionNotes           sql.NullString `json:"resolution_notes"`
+	ResolvedAt                sql.NullTime   `json:"resolved_at"`
+	ClosedAt                  sql.NullTime   `json:"closed_at"`
+	CreatedAt                 time.Time      `json:"created_at"`
+	UpdatedAt                 time.Time      `json:"updated_at"`
+	GuestName                 string         `json:"guest_name"`
+	GuestPhone                string         `json:"guest_phone"`
+	PendingSince              sql.NullTime   `json:"pending_since"`
+	SlaPausedSeconds          int64          `json:"sla_paused_seconds"`
+	ReopenCount               int32          `json:"reopen_count"`
+	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
+	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
 }
 
 func (q *Queries) ListUnassignedTickets(ctx context.Context, arg ListUnassignedTicketsParams) ([]ListUnassignedTicketsRow, error) {
@@ -1452,6 +1558,9 @@ func (q *Queries) ListUnassignedTickets(ctx context.Context, arg ListUnassignedT
 			&i.GuestPhone,
 			&i.PendingSince,
 			&i.SlaPausedSeconds,
+			&i.ReopenCount,
+			&i.LastReopenedAt,
+			&i.PausedSecondsAtLastReopen,
 		); err != nil {
 			return nil, err
 		}
@@ -1466,6 +1575,22 @@ func (q *Queries) ListUnassignedTickets(ctx context.Context, arg ListUnassignedT
 	return items, nil
 }
 
+const lockGroup = `-- name: LockGroup :one
+SELECT id FROM groups WHERE id = $1 FOR UPDATE
+`
+
+// Locks the group row so nothing can be assigned to it until the transaction
+// ends. A ticket's assignee_group_id takes a share lock on the group it names,
+// and this conflicts with that. Without it a ticket assigned between
+// UnassignTicketsForGroup and the delete would lose its group silently, which
+// is the gap this exists to close.
+func (q *Queries) LockGroup(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
+	row := q.db.QueryRowContext(ctx, lockGroup, id)
+	var id_2 uuid.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
 const nextTicketSeq = `-- name: NextTicketSeq :one
 SELECT nextval('ticket_seq')::bigint
 `
@@ -1478,7 +1603,7 @@ func (q *Queries) NextTicketSeq(ctx context.Context) (int64, error) {
 }
 
 const searchAllTickets = `-- name: SearchAllTickets :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets
 WHERE (
     tracking_number ILIKE $3
     OR (CASE WHEN $4::text <> '' THEN search_vector @@ to_tsquery('english', $4::text) ELSE false END)
@@ -1497,28 +1622,31 @@ type SearchAllTicketsParams struct {
 }
 
 type SearchAllTicketsRow struct {
-	ID               uuid.UUID      `json:"id"`
-	TrackingNumber   string         `json:"tracking_number"`
-	Subject          string         `json:"subject"`
-	Description      string         `json:"description"`
-	CategoryID       uuid.UUID      `json:"category_id"`
-	TypeID           uuid.NullUUID  `json:"type_id"`
-	ItemID           uuid.NullUUID  `json:"item_id"`
-	Priority         string         `json:"priority"`
-	StatusID         uuid.UUID      `json:"status_id"`
-	AssigneeUserID   uuid.NullUUID  `json:"assignee_user_id"`
-	AssigneeGroupID  uuid.NullUUID  `json:"assignee_group_id"`
-	ReporterUserID   uuid.NullUUID  `json:"reporter_user_id"`
-	GuestEmail       sql.NullString `json:"guest_email"`
-	ResolutionNotes  sql.NullString `json:"resolution_notes"`
-	ResolvedAt       sql.NullTime   `json:"resolved_at"`
-	ClosedAt         sql.NullTime   `json:"closed_at"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	GuestName        string         `json:"guest_name"`
-	GuestPhone       string         `json:"guest_phone"`
-	PendingSince     sql.NullTime   `json:"pending_since"`
-	SlaPausedSeconds int64          `json:"sla_paused_seconds"`
+	ID                        uuid.UUID      `json:"id"`
+	TrackingNumber            string         `json:"tracking_number"`
+	Subject                   string         `json:"subject"`
+	Description               string         `json:"description"`
+	CategoryID                uuid.UUID      `json:"category_id"`
+	TypeID                    uuid.NullUUID  `json:"type_id"`
+	ItemID                    uuid.NullUUID  `json:"item_id"`
+	Priority                  string         `json:"priority"`
+	StatusID                  uuid.UUID      `json:"status_id"`
+	AssigneeUserID            uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID           uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID            uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail                sql.NullString `json:"guest_email"`
+	ResolutionNotes           sql.NullString `json:"resolution_notes"`
+	ResolvedAt                sql.NullTime   `json:"resolved_at"`
+	ClosedAt                  sql.NullTime   `json:"closed_at"`
+	CreatedAt                 time.Time      `json:"created_at"`
+	UpdatedAt                 time.Time      `json:"updated_at"`
+	GuestName                 string         `json:"guest_name"`
+	GuestPhone                string         `json:"guest_phone"`
+	PendingSince              sql.NullTime   `json:"pending_since"`
+	SlaPausedSeconds          int64          `json:"sla_paused_seconds"`
+	ReopenCount               int32          `json:"reopen_count"`
+	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
+	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
 }
 
 func (q *Queries) SearchAllTickets(ctx context.Context, arg SearchAllTicketsParams) ([]SearchAllTicketsRow, error) {
@@ -1558,6 +1686,9 @@ func (q *Queries) SearchAllTickets(ctx context.Context, arg SearchAllTicketsPara
 			&i.GuestPhone,
 			&i.PendingSince,
 			&i.SlaPausedSeconds,
+			&i.ReopenCount,
+			&i.LastReopenedAt,
+			&i.PausedSecondsAtLastReopen,
 		); err != nil {
 			return nil, err
 		}
@@ -1573,7 +1704,7 @@ func (q *Queries) SearchAllTickets(ctx context.Context, arg SearchAllTicketsPara
 }
 
 const searchTicketsByAssigneeGroup = `-- name: SearchTicketsByAssigneeGroup :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets
 WHERE assignee_group_id = $1
   AND (
     tracking_number ILIKE $4
@@ -1594,28 +1725,31 @@ type SearchTicketsByAssigneeGroupParams struct {
 }
 
 type SearchTicketsByAssigneeGroupRow struct {
-	ID               uuid.UUID      `json:"id"`
-	TrackingNumber   string         `json:"tracking_number"`
-	Subject          string         `json:"subject"`
-	Description      string         `json:"description"`
-	CategoryID       uuid.UUID      `json:"category_id"`
-	TypeID           uuid.NullUUID  `json:"type_id"`
-	ItemID           uuid.NullUUID  `json:"item_id"`
-	Priority         string         `json:"priority"`
-	StatusID         uuid.UUID      `json:"status_id"`
-	AssigneeUserID   uuid.NullUUID  `json:"assignee_user_id"`
-	AssigneeGroupID  uuid.NullUUID  `json:"assignee_group_id"`
-	ReporterUserID   uuid.NullUUID  `json:"reporter_user_id"`
-	GuestEmail       sql.NullString `json:"guest_email"`
-	ResolutionNotes  sql.NullString `json:"resolution_notes"`
-	ResolvedAt       sql.NullTime   `json:"resolved_at"`
-	ClosedAt         sql.NullTime   `json:"closed_at"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	GuestName        string         `json:"guest_name"`
-	GuestPhone       string         `json:"guest_phone"`
-	PendingSince     sql.NullTime   `json:"pending_since"`
-	SlaPausedSeconds int64          `json:"sla_paused_seconds"`
+	ID                        uuid.UUID      `json:"id"`
+	TrackingNumber            string         `json:"tracking_number"`
+	Subject                   string         `json:"subject"`
+	Description               string         `json:"description"`
+	CategoryID                uuid.UUID      `json:"category_id"`
+	TypeID                    uuid.NullUUID  `json:"type_id"`
+	ItemID                    uuid.NullUUID  `json:"item_id"`
+	Priority                  string         `json:"priority"`
+	StatusID                  uuid.UUID      `json:"status_id"`
+	AssigneeUserID            uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID           uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID            uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail                sql.NullString `json:"guest_email"`
+	ResolutionNotes           sql.NullString `json:"resolution_notes"`
+	ResolvedAt                sql.NullTime   `json:"resolved_at"`
+	ClosedAt                  sql.NullTime   `json:"closed_at"`
+	CreatedAt                 time.Time      `json:"created_at"`
+	UpdatedAt                 time.Time      `json:"updated_at"`
+	GuestName                 string         `json:"guest_name"`
+	GuestPhone                string         `json:"guest_phone"`
+	PendingSince              sql.NullTime   `json:"pending_since"`
+	SlaPausedSeconds          int64          `json:"sla_paused_seconds"`
+	ReopenCount               int32          `json:"reopen_count"`
+	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
+	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
 }
 
 func (q *Queries) SearchTicketsByAssigneeGroup(ctx context.Context, arg SearchTicketsByAssigneeGroupParams) ([]SearchTicketsByAssigneeGroupRow, error) {
@@ -1656,6 +1790,9 @@ func (q *Queries) SearchTicketsByAssigneeGroup(ctx context.Context, arg SearchTi
 			&i.GuestPhone,
 			&i.PendingSince,
 			&i.SlaPausedSeconds,
+			&i.ReopenCount,
+			&i.LastReopenedAt,
+			&i.PausedSecondsAtLastReopen,
 		); err != nil {
 			return nil, err
 		}
@@ -1671,7 +1808,7 @@ func (q *Queries) SearchTicketsByAssigneeGroup(ctx context.Context, arg SearchTi
 }
 
 const searchTicketsByAssigneeUser = `-- name: SearchTicketsByAssigneeUser :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets
 WHERE assignee_user_id = $1
   AND (
     tracking_number ILIKE $4
@@ -1692,28 +1829,31 @@ type SearchTicketsByAssigneeUserParams struct {
 }
 
 type SearchTicketsByAssigneeUserRow struct {
-	ID               uuid.UUID      `json:"id"`
-	TrackingNumber   string         `json:"tracking_number"`
-	Subject          string         `json:"subject"`
-	Description      string         `json:"description"`
-	CategoryID       uuid.UUID      `json:"category_id"`
-	TypeID           uuid.NullUUID  `json:"type_id"`
-	ItemID           uuid.NullUUID  `json:"item_id"`
-	Priority         string         `json:"priority"`
-	StatusID         uuid.UUID      `json:"status_id"`
-	AssigneeUserID   uuid.NullUUID  `json:"assignee_user_id"`
-	AssigneeGroupID  uuid.NullUUID  `json:"assignee_group_id"`
-	ReporterUserID   uuid.NullUUID  `json:"reporter_user_id"`
-	GuestEmail       sql.NullString `json:"guest_email"`
-	ResolutionNotes  sql.NullString `json:"resolution_notes"`
-	ResolvedAt       sql.NullTime   `json:"resolved_at"`
-	ClosedAt         sql.NullTime   `json:"closed_at"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	GuestName        string         `json:"guest_name"`
-	GuestPhone       string         `json:"guest_phone"`
-	PendingSince     sql.NullTime   `json:"pending_since"`
-	SlaPausedSeconds int64          `json:"sla_paused_seconds"`
+	ID                        uuid.UUID      `json:"id"`
+	TrackingNumber            string         `json:"tracking_number"`
+	Subject                   string         `json:"subject"`
+	Description               string         `json:"description"`
+	CategoryID                uuid.UUID      `json:"category_id"`
+	TypeID                    uuid.NullUUID  `json:"type_id"`
+	ItemID                    uuid.NullUUID  `json:"item_id"`
+	Priority                  string         `json:"priority"`
+	StatusID                  uuid.UUID      `json:"status_id"`
+	AssigneeUserID            uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID           uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID            uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail                sql.NullString `json:"guest_email"`
+	ResolutionNotes           sql.NullString `json:"resolution_notes"`
+	ResolvedAt                sql.NullTime   `json:"resolved_at"`
+	ClosedAt                  sql.NullTime   `json:"closed_at"`
+	CreatedAt                 time.Time      `json:"created_at"`
+	UpdatedAt                 time.Time      `json:"updated_at"`
+	GuestName                 string         `json:"guest_name"`
+	GuestPhone                string         `json:"guest_phone"`
+	PendingSince              sql.NullTime   `json:"pending_since"`
+	SlaPausedSeconds          int64          `json:"sla_paused_seconds"`
+	ReopenCount               int32          `json:"reopen_count"`
+	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
+	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
 }
 
 func (q *Queries) SearchTicketsByAssigneeUser(ctx context.Context, arg SearchTicketsByAssigneeUserParams) ([]SearchTicketsByAssigneeUserRow, error) {
@@ -1754,6 +1894,9 @@ func (q *Queries) SearchTicketsByAssigneeUser(ctx context.Context, arg SearchTic
 			&i.GuestPhone,
 			&i.PendingSince,
 			&i.SlaPausedSeconds,
+			&i.ReopenCount,
+			&i.LastReopenedAt,
+			&i.PausedSecondsAtLastReopen,
 		); err != nil {
 			return nil, err
 		}
@@ -1769,7 +1912,7 @@ func (q *Queries) SearchTicketsByAssigneeUser(ctx context.Context, arg SearchTic
 }
 
 const searchTicketsByReporter = `-- name: SearchTicketsByReporter :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets
 WHERE reporter_user_id = $1
   AND (
     tracking_number ILIKE $4
@@ -1790,28 +1933,31 @@ type SearchTicketsByReporterParams struct {
 }
 
 type SearchTicketsByReporterRow struct {
-	ID               uuid.UUID      `json:"id"`
-	TrackingNumber   string         `json:"tracking_number"`
-	Subject          string         `json:"subject"`
-	Description      string         `json:"description"`
-	CategoryID       uuid.UUID      `json:"category_id"`
-	TypeID           uuid.NullUUID  `json:"type_id"`
-	ItemID           uuid.NullUUID  `json:"item_id"`
-	Priority         string         `json:"priority"`
-	StatusID         uuid.UUID      `json:"status_id"`
-	AssigneeUserID   uuid.NullUUID  `json:"assignee_user_id"`
-	AssigneeGroupID  uuid.NullUUID  `json:"assignee_group_id"`
-	ReporterUserID   uuid.NullUUID  `json:"reporter_user_id"`
-	GuestEmail       sql.NullString `json:"guest_email"`
-	ResolutionNotes  sql.NullString `json:"resolution_notes"`
-	ResolvedAt       sql.NullTime   `json:"resolved_at"`
-	ClosedAt         sql.NullTime   `json:"closed_at"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	GuestName        string         `json:"guest_name"`
-	GuestPhone       string         `json:"guest_phone"`
-	PendingSince     sql.NullTime   `json:"pending_since"`
-	SlaPausedSeconds int64          `json:"sla_paused_seconds"`
+	ID                        uuid.UUID      `json:"id"`
+	TrackingNumber            string         `json:"tracking_number"`
+	Subject                   string         `json:"subject"`
+	Description               string         `json:"description"`
+	CategoryID                uuid.UUID      `json:"category_id"`
+	TypeID                    uuid.NullUUID  `json:"type_id"`
+	ItemID                    uuid.NullUUID  `json:"item_id"`
+	Priority                  string         `json:"priority"`
+	StatusID                  uuid.UUID      `json:"status_id"`
+	AssigneeUserID            uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID           uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID            uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail                sql.NullString `json:"guest_email"`
+	ResolutionNotes           sql.NullString `json:"resolution_notes"`
+	ResolvedAt                sql.NullTime   `json:"resolved_at"`
+	ClosedAt                  sql.NullTime   `json:"closed_at"`
+	CreatedAt                 time.Time      `json:"created_at"`
+	UpdatedAt                 time.Time      `json:"updated_at"`
+	GuestName                 string         `json:"guest_name"`
+	GuestPhone                string         `json:"guest_phone"`
+	PendingSince              sql.NullTime   `json:"pending_since"`
+	SlaPausedSeconds          int64          `json:"sla_paused_seconds"`
+	ReopenCount               int32          `json:"reopen_count"`
+	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
+	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
 }
 
 func (q *Queries) SearchTicketsByReporter(ctx context.Context, arg SearchTicketsByReporterParams) ([]SearchTicketsByReporterRow, error) {
@@ -1852,6 +1998,9 @@ func (q *Queries) SearchTicketsByReporter(ctx context.Context, arg SearchTickets
 			&i.GuestPhone,
 			&i.PendingSince,
 			&i.SlaPausedSeconds,
+			&i.ReopenCount,
+			&i.LastReopenedAt,
+			&i.PausedSecondsAtLastReopen,
 		); err != nil {
 			return nil, err
 		}
@@ -1867,7 +2016,7 @@ func (q *Queries) SearchTicketsByReporter(ctx context.Context, arg SearchTickets
 }
 
 const searchTicketsVisibleToStaff = `-- name: SearchTicketsVisibleToStaff :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds FROM tickets t
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets t
 WHERE
   (
     t.reporter_user_id = $1
@@ -1900,28 +2049,31 @@ type SearchTicketsVisibleToStaffParams struct {
 }
 
 type SearchTicketsVisibleToStaffRow struct {
-	ID               uuid.UUID      `json:"id"`
-	TrackingNumber   string         `json:"tracking_number"`
-	Subject          string         `json:"subject"`
-	Description      string         `json:"description"`
-	CategoryID       uuid.UUID      `json:"category_id"`
-	TypeID           uuid.NullUUID  `json:"type_id"`
-	ItemID           uuid.NullUUID  `json:"item_id"`
-	Priority         string         `json:"priority"`
-	StatusID         uuid.UUID      `json:"status_id"`
-	AssigneeUserID   uuid.NullUUID  `json:"assignee_user_id"`
-	AssigneeGroupID  uuid.NullUUID  `json:"assignee_group_id"`
-	ReporterUserID   uuid.NullUUID  `json:"reporter_user_id"`
-	GuestEmail       sql.NullString `json:"guest_email"`
-	ResolutionNotes  sql.NullString `json:"resolution_notes"`
-	ResolvedAt       sql.NullTime   `json:"resolved_at"`
-	ClosedAt         sql.NullTime   `json:"closed_at"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	GuestName        string         `json:"guest_name"`
-	GuestPhone       string         `json:"guest_phone"`
-	PendingSince     sql.NullTime   `json:"pending_since"`
-	SlaPausedSeconds int64          `json:"sla_paused_seconds"`
+	ID                        uuid.UUID      `json:"id"`
+	TrackingNumber            string         `json:"tracking_number"`
+	Subject                   string         `json:"subject"`
+	Description               string         `json:"description"`
+	CategoryID                uuid.UUID      `json:"category_id"`
+	TypeID                    uuid.NullUUID  `json:"type_id"`
+	ItemID                    uuid.NullUUID  `json:"item_id"`
+	Priority                  string         `json:"priority"`
+	StatusID                  uuid.UUID      `json:"status_id"`
+	AssigneeUserID            uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID           uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID            uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail                sql.NullString `json:"guest_email"`
+	ResolutionNotes           sql.NullString `json:"resolution_notes"`
+	ResolvedAt                sql.NullTime   `json:"resolved_at"`
+	ClosedAt                  sql.NullTime   `json:"closed_at"`
+	CreatedAt                 time.Time      `json:"created_at"`
+	UpdatedAt                 time.Time      `json:"updated_at"`
+	GuestName                 string         `json:"guest_name"`
+	GuestPhone                string         `json:"guest_phone"`
+	PendingSince              sql.NullTime   `json:"pending_since"`
+	SlaPausedSeconds          int64          `json:"sla_paused_seconds"`
+	ReopenCount               int32          `json:"reopen_count"`
+	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
+	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
 }
 
 // Search variant of ListTicketsVisibleToStaff, matching the predicate and
@@ -1964,6 +2116,9 @@ func (q *Queries) SearchTicketsVisibleToStaff(ctx context.Context, arg SearchTic
 			&i.GuestPhone,
 			&i.PendingSince,
 			&i.SlaPausedSeconds,
+			&i.ReopenCount,
+			&i.LastReopenedAt,
+			&i.PausedSecondsAtLastReopen,
 		); err != nil {
 			return nil, err
 		}
@@ -1979,7 +2134,7 @@ func (q *Queries) SearchTicketsVisibleToStaff(ctx context.Context, arg SearchTic
 }
 
 const searchUnassignedTickets = `-- name: SearchUnassignedTickets :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets
 WHERE assignee_user_id IS NULL AND assignee_group_id IS NULL
   AND (
     tracking_number ILIKE $3
@@ -1999,28 +2154,31 @@ type SearchUnassignedTicketsParams struct {
 }
 
 type SearchUnassignedTicketsRow struct {
-	ID               uuid.UUID      `json:"id"`
-	TrackingNumber   string         `json:"tracking_number"`
-	Subject          string         `json:"subject"`
-	Description      string         `json:"description"`
-	CategoryID       uuid.UUID      `json:"category_id"`
-	TypeID           uuid.NullUUID  `json:"type_id"`
-	ItemID           uuid.NullUUID  `json:"item_id"`
-	Priority         string         `json:"priority"`
-	StatusID         uuid.UUID      `json:"status_id"`
-	AssigneeUserID   uuid.NullUUID  `json:"assignee_user_id"`
-	AssigneeGroupID  uuid.NullUUID  `json:"assignee_group_id"`
-	ReporterUserID   uuid.NullUUID  `json:"reporter_user_id"`
-	GuestEmail       sql.NullString `json:"guest_email"`
-	ResolutionNotes  sql.NullString `json:"resolution_notes"`
-	ResolvedAt       sql.NullTime   `json:"resolved_at"`
-	ClosedAt         sql.NullTime   `json:"closed_at"`
-	CreatedAt        time.Time      `json:"created_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	GuestName        string         `json:"guest_name"`
-	GuestPhone       string         `json:"guest_phone"`
-	PendingSince     sql.NullTime   `json:"pending_since"`
-	SlaPausedSeconds int64          `json:"sla_paused_seconds"`
+	ID                        uuid.UUID      `json:"id"`
+	TrackingNumber            string         `json:"tracking_number"`
+	Subject                   string         `json:"subject"`
+	Description               string         `json:"description"`
+	CategoryID                uuid.UUID      `json:"category_id"`
+	TypeID                    uuid.NullUUID  `json:"type_id"`
+	ItemID                    uuid.NullUUID  `json:"item_id"`
+	Priority                  string         `json:"priority"`
+	StatusID                  uuid.UUID      `json:"status_id"`
+	AssigneeUserID            uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID           uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID            uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail                sql.NullString `json:"guest_email"`
+	ResolutionNotes           sql.NullString `json:"resolution_notes"`
+	ResolvedAt                sql.NullTime   `json:"resolved_at"`
+	ClosedAt                  sql.NullTime   `json:"closed_at"`
+	CreatedAt                 time.Time      `json:"created_at"`
+	UpdatedAt                 time.Time      `json:"updated_at"`
+	GuestName                 string         `json:"guest_name"`
+	GuestPhone                string         `json:"guest_phone"`
+	PendingSince              sql.NullTime   `json:"pending_since"`
+	SlaPausedSeconds          int64          `json:"sla_paused_seconds"`
+	ReopenCount               int32          `json:"reopen_count"`
+	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
+	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
 }
 
 func (q *Queries) SearchUnassignedTickets(ctx context.Context, arg SearchUnassignedTicketsParams) ([]SearchUnassignedTicketsRow, error) {
@@ -2060,10 +2218,46 @@ func (q *Queries) SearchUnassignedTickets(ctx context.Context, arg SearchUnassig
 			&i.GuestPhone,
 			&i.PendingSince,
 			&i.SlaPausedSeconds,
+			&i.ReopenCount,
+			&i.LastReopenedAt,
+			&i.PausedSecondsAtLastReopen,
 		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const unassignTicketsForGroup = `-- name: UnassignTicketsForGroup :many
+UPDATE tickets
+SET assignee_group_id = NULL, updated_at = now()
+WHERE assignee_group_id = $1
+RETURNING id
+`
+
+// Takes every ticket off a group that is about to be deleted, and says which.
+// All of them, resolved and closed too: the foreign key (ON DELETE SET NULL)
+// would clear those anyway, and the audit trail should record it.
+func (q *Queries) UnassignTicketsForGroup(ctx context.Context, assigneeGroupID uuid.NullUUID) ([]uuid.UUID, error) {
+	rows, err := q.db.QueryContext(ctx, unassignTicketsForGroup, assigneeGroupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
@@ -2123,26 +2317,29 @@ UPDATE tickets
 SET subject = $2, description = $3, type_id = $4, item_id = $5,
     priority = $6, status_id = $7, assignee_user_id = $8, assignee_group_id = $9,
     resolution_notes = $10, resolved_at = $11, closed_at = $12, updated_at = $13,
-    pending_since = $14, sla_paused_seconds = $15
+    pending_since = $14, sla_paused_seconds = $15, reopen_count = $16, last_reopened_at = $17, paused_seconds_at_last_reopen = $18
 WHERE id = $1
 `
 
 type UpdateTicketParams struct {
-	ID               uuid.UUID      `json:"id"`
-	Subject          string         `json:"subject"`
-	Description      string         `json:"description"`
-	TypeID           uuid.NullUUID  `json:"type_id"`
-	ItemID           uuid.NullUUID  `json:"item_id"`
-	Priority         string         `json:"priority"`
-	StatusID         uuid.UUID      `json:"status_id"`
-	AssigneeUserID   uuid.NullUUID  `json:"assignee_user_id"`
-	AssigneeGroupID  uuid.NullUUID  `json:"assignee_group_id"`
-	ResolutionNotes  sql.NullString `json:"resolution_notes"`
-	ResolvedAt       sql.NullTime   `json:"resolved_at"`
-	ClosedAt         sql.NullTime   `json:"closed_at"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	PendingSince     sql.NullTime   `json:"pending_since"`
-	SlaPausedSeconds int64          `json:"sla_paused_seconds"`
+	ID                        uuid.UUID      `json:"id"`
+	Subject                   string         `json:"subject"`
+	Description               string         `json:"description"`
+	TypeID                    uuid.NullUUID  `json:"type_id"`
+	ItemID                    uuid.NullUUID  `json:"item_id"`
+	Priority                  string         `json:"priority"`
+	StatusID                  uuid.UUID      `json:"status_id"`
+	AssigneeUserID            uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID           uuid.NullUUID  `json:"assignee_group_id"`
+	ResolutionNotes           sql.NullString `json:"resolution_notes"`
+	ResolvedAt                sql.NullTime   `json:"resolved_at"`
+	ClosedAt                  sql.NullTime   `json:"closed_at"`
+	UpdatedAt                 time.Time      `json:"updated_at"`
+	PendingSince              sql.NullTime   `json:"pending_since"`
+	SlaPausedSeconds          int64          `json:"sla_paused_seconds"`
+	ReopenCount               int32          `json:"reopen_count"`
+	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
+	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
 }
 
 func (q *Queries) UpdateTicket(ctx context.Context, arg UpdateTicketParams) error {
@@ -2162,6 +2359,9 @@ func (q *Queries) UpdateTicket(ctx context.Context, arg UpdateTicketParams) erro
 		arg.UpdatedAt,
 		arg.PendingSince,
 		arg.SlaPausedSeconds,
+		arg.ReopenCount,
+		arg.LastReopenedAt,
+		arg.PausedSecondsAtLastReopen,
 	)
 	return err
 }

@@ -26,6 +26,19 @@ type SessionData struct {
 	// factors.
 	FactorVerified bool
 
+	// MustChangePassword mirrors users.must_change_password as of sign-in
+	// (#497). While it is set the session may change the password and do
+	// nothing else; see middleware.RequireMFA.
+	MustChangePassword bool
+
+	// PasswordChangeNeedsNoFactor: the flag was set AND, at password sign-in,
+	// the account owed no second factor. Only this lets the password change
+	// skip MFA (middleware.RequireMFAOrPasswordChange). The flag alone is not
+	// enough: it can outlive the cleared factors, because an SSO sign-in
+	// ignores it and may enrol a new one, and a password alone must not then
+	// replace the password of an account that has a factor (#498).
+	PasswordChangeNeedsNoFactor bool
+
 	// OIDCState stores the temporary OAuth2 state value used during login.
 	// It is cleared after callback validation.
 	OIDCState string

@@ -50,6 +50,15 @@ type Store interface {
 	// UnassignForUser clears the assignee on every OPEN ticket held by a
 	// user, and reports how many moved. Used when an account is deleted.
 	UnassignForUser(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
+	// UnassignForGroup clears the group on EVERY ticket held by it, open or
+	// not, and returns their ids. It locks the group row first, so a ticket
+	// cannot be assigned to the group between this and DeleteGroup; an unknown
+	// group wraps group.ErrNotFound.
+	UnassignForGroup(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID, error)
+	// DeleteGroup removes the group row. It lives on this store so a group can
+	// be deleted in the same transaction as the audit entries for the tickets
+	// it held (see Service.DeleteGroup).
+	DeleteGroup(ctx context.Context, groupID uuid.UUID) error
 	// IsAssignableUser and IsAssignableGroup are asked inside the assignment
 	// transaction, so every caller gets the same answer and no caller has to
 	// remember to ask.
@@ -64,6 +73,10 @@ type Store interface {
 	// the type — the pairings the foreign keys only enforce at the INSERT,
 	// which is after the tracking number has been taken.
 	CTIIsCoherent(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID) (bool, error)
+	// ArchivedCTINode names the first archived level among the ids given
+	// ("category", "type" or "item"), or "" when none is; a nil id is not
+	// checked. It is how "nobody newly picks an archived node" is decided.
+	ArchivedCTINode(ctx context.Context, categoryID, typeID, itemID *uuid.UUID) (string, error)
 	IsAssignableGroup(ctx context.Context, groupID uuid.UUID) (bool, error)
 	// ListResolvedBefore lists tickets resolved before the given time.
 	// resolvedStatusID must be the Resolved status's id: without it, a row
@@ -123,9 +136,48 @@ type Store interface {
 	DeleteLink(ctx context.Context, source, target uuid.UUID, lt LinkType) error
 	ListLinks(ctx context.Context, ticketID uuid.UUID) ([]TicketLink, error)
 
+	// Followers (#441). On Store because following is audited, and the audit
+	// entry must commit with the row it describes, which InTx hands out only
+	// through a Store.
+	//
+	// AddFollower and RemoveFollower report whether they changed anything, so
+	// a repeat is not audited twice.
+	AddFollower(ctx context.Context, ticketID, userID uuid.UUID) (bool, error)
+	RemoveFollower(ctx context.Context, ticketID, userID uuid.UUID) (bool, error)
+	ListFollowers(ctx context.Context, ticketID uuid.UUID) ([]Follower, error)
+	// ListMailableFollowerIDs: followers staff email can go to (active staff
+	// or admin, never a service account). Whether they can still see the
+	// ticket is the send-time check's question, not this one's.
+	ListMailableFollowerIDs(ctx context.Context, ticketID uuid.UUID) ([]uuid.UUID, error)
+
 	// Status history
 	CreateStatusHistoryEntry(ctx context.Context, e StatusHistoryEntry) error
 	ListStatusHistory(ctx context.Context, ticketID uuid.UUID) ([]StatusHistoryEntry, error)
+
+	// SLA re-match (#443b). A priority change re-matches the ticket's SLA in
+	// the ticket's own transaction, so its writes are reached through this
+	// Store: ticket.Atomic hands out only a Store and an audit.Store, and the
+	// sla package imports ticket, not the other way round. The sla package
+	// keeps everything about elapsed time and colour; these only say which row
+	// is current and where its clock starts.
+
+	// CurrentSLARecordForUpdate returns the ticket's current record, locked
+	// until the transaction ends. nil, nil means the ticket has none.
+	CurrentSLARecordForUpdate(ctx context.Context, ticketID uuid.UUID) (*SLARecordState, error)
+	// LatestSupersededSLARecord returns the record the ticket most recently
+	// stopped having (the newest superseded_at). nil, nil means it never had
+	// one. Read when a ticket with no current record gets one back, so the
+	// clock resumes where the last one ran instead of at the ticket's creation.
+	LatestSupersededSLARecord(ctx context.Context, ticketID uuid.UUID) (*SLARecordState, error)
+	// MatchSLAPolicy returns the policy that governs a ticket with this
+	// priority and category. nil, nil means none does.
+	MatchSLAPolicy(ctx context.Context, p Priority, categoryID uuid.UUID) (*uuid.UUID, error)
+	// SupersedeSLARecord marks a record as replaced, writing superseded_at and
+	// nothing else. Called before StartSLARecord: a ticket has one current
+	// record at most.
+	SupersedeSLARecord(ctx context.Context, id uuid.UUID, at time.Time) error
+	// StartSLARecord inserts the record a re-match starts.
+	StartSLARecord(ctx context.Context, r SLARecordStart) error
 }
 
 // StatusStore manages ticket statuses. Method names use a "Status" suffix to

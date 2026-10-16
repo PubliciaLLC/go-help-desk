@@ -72,12 +72,12 @@ func TestRedact_MatchesRegardlessOfCaseAndSeparators(t *testing.T) {
 }
 
 // The keys real writers put in Before/After that are safe to show: ids,
-// statuses, flags and counts from ticketMap, UnassignForUser, ResetMFA and
+// statuses, flags and counts from ticketMap, UnassignForUser, DeleteGroup, ResetMFA and
 // cmd/server/resetfactors.go. They are shown as written.
 func TestRedact_ShowsTheAllowListedFields(t *testing.T) {
 	m := map[string]any{
 		"id": "1", "status_id": "2", "priority": "low",
-		"assignee_user_id": "u", "follow_up_of": "t",
+		"assignee_user_id": "u", "assignee_group_id": "g", "follow_up_of": "t",
 		"forced_reopen": true, "closed_reopen_policy": "staff_only",
 		"os_user": "bob", "host": "h", "source": "cli",
 		"passkeys_removed": 2, "totp_cleared": true, "sessions_revoked": true,
@@ -125,4 +125,30 @@ func TestRedact_AnAllowListedKeyWithANestedValueIsLeftOut(t *testing.T) {
 	got, _ := audit.Redact(map[string]any{"priority": map[string]any{"note": "free text"}}, nil)
 	_, shown := got["priority"]
 	require.False(t, shown, "a nested value under an allowed name was shown")
+}
+
+// The priority change (#443b) writes five keys the view may show: why the
+// priority changed, what happened to the SLA, and the ids of the policy and
+// record before and after. Each is an id or a fixed enum; none can carry
+// requester text. The subject written beside them is still dropped.
+func TestRedact_ShowsThePriorityChangeKeys(t *testing.T) {
+	shown := map[string]any{
+		"priority_change_reason": "reopened",
+		"sla_outcome":            "restarted",
+		"sla_policy_id":          "11111111-1111-1111-1111-111111111111",
+		"sla_record_id":          "22222222-2222-2222-2222-222222222222",
+		"previous_sla_record_id": "33333333-3333-3333-3333-333333333333",
+	}
+	in := map[string]any{"subject": "Printer on fire", "priority": "high"}
+	for k, v := range shown {
+		in[k] = v
+	}
+
+	_, got := audit.Redact(nil, in)
+
+	for k, v := range shown {
+		require.Equal(t, v, got[k], "%s must be shown", k)
+	}
+	require.Equal(t, "high", got["priority"])
+	require.NotContains(t, got, "subject", "free text is still left out")
 }

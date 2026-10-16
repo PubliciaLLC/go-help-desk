@@ -27,6 +27,10 @@ type Store interface {
 	Create(ctx context.Context, e Entry) error
 	ListByEntity(ctx context.Context, entityType string, entityID uuid.UUID, limit, offset int) ([]Entry, error)
 
+	// ListByEntityActions is ListByEntity narrowed by action, newest first. The
+	// narrowing is in the query, so entries left out never count toward limit.
+	ListByEntityActions(ctx context.Context, entityType string, entityID uuid.UUID, f ActionFilter, limit, offset int) ([]Entry, error)
+
 	// Search answers the admin-wide audit view (#129): every field on Filter
 	// is optional and narrows the result, newest first, ties broken by id.
 	// Returns the matching page and what a pager needs, see Page. The count
@@ -46,6 +50,12 @@ type Store interface {
 	// has set a retention window — the default keeps everything. There is
 	// no soft-delete or archive table: an expired entry is gone.
 	DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
+// ActionFilter narrows a ListByEntityActions call. Only, when non-empty, keeps
+// just those actions; Exclude drops these. The zero value narrows nothing.
+type ActionFilter struct {
+	Only, Exclude []string
 }
 
 // TotalCap is the most Search will count. A table nobody prunes (retention is
@@ -87,6 +97,13 @@ type Filter struct {
 	From       *time.Time // inclusive
 	To         *time.Time // inclusive
 	Q          string     // case-insensitive substring against entity_type and action
+
+	// ExcludeActions leaves out every entry whose action is listed, in the
+	// page and in the count alike. It is how a view withholds a kind of entry
+	// from a viewer (follow and unfollow, from staff, #441) without filtering
+	// the page afterwards, which would leave the count and the offset
+	// describing a different sequence from the one the caller reads.
+	ExcludeActions []string
 
 	// ScopedTo, when set, restricts the result to ticket entries on tickets
 	// that staff member may see under the DESIGN.md staff scope: tickets they
@@ -172,7 +189,9 @@ const redactedPlaceholder = "[redacted]"
 
 // shownKeys is every Before/After key the audit view may show, normalised
 // (normaliseKey). Each is an id, a status, a flag or a count, written by
-// ticketMap and the ticket audit paths, UnassignForUser, user.ResetMFA and
+// ticketMap and the ticket audit paths (including the priority change's
+// reason, SLA outcome and record ids), UnassignForUser, DeleteGroup,
+// user.ResetMFA and
 // cmd/server/resetfactors.go (whose os_user and host say who ran it, as
 // actor_name does for everyone else).
 //
@@ -185,10 +204,15 @@ const redactedPlaceholder = "[redacted]"
 // Adding a key here is a decision that its values can never carry such data.
 var shownKeys = map[string]bool{
 	"id": true, "statusid": true, "priority": true,
-	"assigneeuserid": true, "followupof": true,
+	"assigneeuserid": true, "assigneegroupid": true, "followupof": true,
 	"forcedreopen": true, "closedreopenpolicy": true,
 	"passkeysremoved": true, "totpcleared": true, "sessionsrevoked": true,
 	"osuser": true, "host": true, "source": true,
+	// The priority change and SLA re-match (#443b): why the priority changed
+	// and what happened to the SLA (fixed enums), and the policy and record
+	// ids before and after.
+	"prioritychangereason": true, "slaoutcome": true,
+	"slapolicyid": true, "slarecordid": true, "previousslarecordid": true,
 }
 
 // Redact returns copies of before/after showing only allow-listed keys

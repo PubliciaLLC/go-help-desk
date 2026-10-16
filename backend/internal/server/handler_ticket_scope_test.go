@@ -216,8 +216,8 @@ var _ = uuid.Nil
 // listing omits it — but ?assignee_group_id= refused only RoleUser and then ran
 // an unscoped query. Group ids are handed to every staff member by GET /groups,
 // so naming a group you do not belong to returned its tickets. An OAuth client
-// acts as staff and belongs to no group at all, which made it every ticket
-// assigned to any group.
+// acts as staff and, until an administrator gives its service user a group,
+// belongs to none, which made it every ticket assigned to any group.
 func TestTicketScope_GroupFilterRespectsScope(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()

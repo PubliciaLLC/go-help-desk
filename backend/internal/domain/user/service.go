@@ -42,6 +42,10 @@ type Service struct {
 	dummyOnce sync.Once
 	dummyHash []byte
 
+	// expiry says when a hash below hashCost stops being upgraded and starts
+	// being refused at sign-in (#453). Nil means never; see WithPasswordExpiry.
+	expiry PasswordExpiry
+
 	// audit records factor- and credential-clearing actions; see WithAuditStore.
 	// Nil in most test harnesses, which is fine — writeAuditEntry no-ops without it.
 	audit audit.Store
@@ -62,6 +66,11 @@ func NewService(store Store, opts ...Option) *Service {
 	return s
 }
 
+// dummyPassword is the plaintext behind the dummy hash. It is a literal in a
+// public repository, so no code path may let a comparison against the dummy
+// hash decide a sign-in.
+const dummyPassword = "dummy password for constant-time misses"
+
 // compareAgainstDummyHash burns the same work a real password check would.
 //
 // Without it, VerifyPassword returns in microseconds for an address with no
@@ -74,7 +83,7 @@ func (s *Service) compareAgainstDummyHash(plain string) {
 	// configurable and a constant from another cost would time differently,
 	// which is the whole thing being avoided.
 	s.dummyOnce.Do(func() {
-		if h, err := bcrypt.GenerateFromPassword([]byte("dummy password for constant-time misses"), s.hashCost); err == nil {
+		if h, err := bcrypt.GenerateFromPassword([]byte(dummyPassword), s.hashCost); err == nil {
 			s.dummyHash = h
 		}
 	})
@@ -82,6 +91,25 @@ func (s *Service) compareAgainstDummyHash(plain string) {
 		return
 	}
 	_ = s.compare(s.dummyHash, []byte(plain))
+}
+
+// ErrPasswordResetRequired is what VerifyPasswordForSignIn returns for a
+// correct password on a hash made below the current cost, once the grace
+// period has ended (#453). The caller tells the person to reset their password.
+var ErrPasswordResetRequired = errors.New("password reset required")
+
+// PasswordExpiry supplies the date after which an old hash is refused. The
+// admin settings service implements it; this package cannot import that one.
+type PasswordExpiry interface {
+	// PasswordRehashDeadline reports the end of the grace period, or false
+	// when none is recorded, in which case nothing is refused.
+	PasswordRehashDeadline(ctx context.Context) (time.Time, bool)
+}
+
+// WithPasswordExpiry makes VerifyPasswordForSignIn refuse hashes below the
+// current cost once the policy's deadline has passed.
+func WithPasswordExpiry(p PasswordExpiry) Option {
+	return func(s *Service) { s.expiry = p }
 }
 
 // Option configures a Service at construction.
@@ -208,8 +236,12 @@ func (s *Service) SetPassword(ctx context.Context, userID uuid.UUID, plain strin
 	if err := ValidatePassword(plain); err != nil {
 		return fmt.Errorf("%w: %w", ErrValidation, err)
 	}
-	if _, err := s.store.GetByID(ctx, userID); err != nil {
+	u, err := s.store.GetByID(ctx, userID)
+	if err != nil {
 		return err
+	}
+	if u.ServiceAccount {
+		return ErrServiceAccount
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(plain), s.hashCost)
 	if err != nil {
@@ -268,13 +300,16 @@ func (s *Service) refusalFor(ctx context.Context, id uuid.UUID) error {
 	if u.DeletedAt != nil {
 		return ErrNotFound
 	}
+	// SoftDelete refuses a service user (it goes with its OAuth client), and
+	// "this is the only administrator" would be a lie about it.
+	if u.ServiceAccount {
+		return ErrServiceAccount
+	}
 	return ErrLastAdmin
 }
 
 func (s *Service) SetRole(ctx context.Context, id uuid.UUID, role Role) error {
-	switch role {
-	case RoleAdmin, RoleStaff, RoleUser:
-	default:
+	if !role.Valid() {
 		return fmt.Errorf("%w: invalid role", ErrValidation)
 	}
 	applied, err := s.store.SetRoleUnlessLastAdmin(ctx, id, string(role))
@@ -314,11 +349,27 @@ func (s *Service) UpdateProfile(ctx context.Context, id uuid.UUID, email, displa
 	if err != nil {
 		return err
 	}
-	name := strings.TrimSpace(displayName)
-	if name == "" {
-		return fmt.Errorf("%w: display name is required", ErrValidation)
+	name, err := ValidateDisplayName(displayName)
+	if err != nil {
+		return err
 	}
 	return s.store.UpdateProfile(ctx, id, addr, name)
+}
+
+// SetEmailPreferences changes the caller's own staff-email switches (#441).
+func (s *Service) SetEmailPreferences(ctx context.Context, id uuid.UUID, p EmailPreferencesPatch) error {
+	return s.store.SetEmailPreferences(ctx, id, p)
+}
+
+// ValidateDisplayName is the display-name rule UpdateProfile applies, for a
+// caller that has to know the answer before it writes anything else (#419).
+// It returns the name as it would be stored.
+func ValidateDisplayName(displayName string) (string, error) {
+	name := strings.TrimSpace(displayName)
+	if name == "" {
+		return "", fmt.Errorf("%w: display name is required", ErrValidation)
+	}
+	return name, nil
 }
 
 // ListAssignableStaff returns the people work can be given to.
@@ -342,7 +393,22 @@ func (s *Service) GetByEmail(ctx context.Context, email string) (User, error) {
 }
 
 // VerifyPassword looks up a user by email and checks the plain-text password.
+// It never refuses on the age of the hash: it is also how a signed-in person
+// proves their current password while changing it, and changing it is the cure.
 func (s *Service) VerifyPassword(ctx context.Context, email, plain string) (User, error) {
+	return s.verifyPassword(ctx, email, plain, false)
+}
+
+// VerifyPasswordForSignIn is VerifyPassword for the sign-in form. After the
+// grace period a correct password on a hash below the current cost returns
+// ErrPasswordResetRequired instead of upgrading the hash (#453), unless the
+// account is an administrator. The account is returned with the error so the
+// caller can apply its own sign-in rules (SAML) before telling anyone to reset.
+func (s *Service) VerifyPasswordForSignIn(ctx context.Context, email, plain string) (User, error) {
+	return s.verifyPassword(ctx, email, plain, true)
+}
+
+func (s *Service) verifyPassword(ctx context.Context, email, plain string, enforceExpiry bool) (User, error) {
 	u, err := s.store.GetByEmail(ctx, strings.ToLower(strings.TrimSpace(email)))
 	if err != nil {
 		// Spend the same work on a miss as on a hit. Returning here without
@@ -360,8 +426,37 @@ func (s *Service) VerifyPassword(ctx context.Context, email, plain string) (User
 		s.burnCostDifference(u.PasswordHash, plain)
 		return User{}, fmt.Errorf("invalid credentials")
 	}
+	if enforceExpiry && s.resetRequired(ctx, u) {
+		// Only reached with the right password, so it tells nobody anything
+		// they could not already do. It still spends what a wrong password on
+		// this hash spends, in place of the rehash it replaces, so the
+		// outcomes on an old hash cost the same (#475).
+		s.burnCostDifference(u.PasswordHash, plain)
+		return u, ErrPasswordResetRequired
+	}
 	s.rehashIfBelowTarget(ctx, u, plain)
 	return u, nil
+}
+
+// resetRequired reports whether u's hash is old enough to refuse.
+//
+// Every administrator is exempt (Erik's rule, after review found that exempting
+// only the last one still locked out the others): administrators are the ones
+// who can reset everyone else, and with email off there may be no reset link
+// to follow. Rehash at sign-in still applies to them.
+func (s *Service) resetRequired(ctx context.Context, u User) bool {
+	if s.expiry == nil {
+		return false
+	}
+	c, err := bcrypt.Cost([]byte(u.PasswordHash))
+	if err != nil || c >= s.hashCost {
+		return false
+	}
+	deadline, ok := s.expiry.PasswordRehashDeadline(ctx)
+	if !ok || !time.Now().After(deadline) {
+		return false
+	}
+	return u.Role != RoleAdmin
 }
 
 // burnCostDifference tops a failed comparison against a hash made at a lower
@@ -374,9 +469,23 @@ func (s *Service) VerifyPassword(ctx context.Context, email, plain string) (User
 // step, so the missing work is 2^d - 1 more comparisons of the same hash,
 // where d is the cost difference. Comparing the stored hash again needs no
 // dummy hash per stored cost, and is exact by construction.
+//
+// A hash bcrypt cannot read (an SSO-only account's empty hash, or a malformed
+// one) is refused before any hashing. Without a comparison here, a wrong
+// password for an SSO-only address answered in microseconds while an unknown
+// address took a full one, which said which addresses sign in only through
+// SSO (#476). Nothing was spent, so the whole comparison is owed.
 func (s *Service) burnCostDifference(stored, plain string) {
 	c, err := bcrypt.Cost([]byte(stored))
-	if err != nil || c >= s.hashCost {
+	if err != nil {
+		// The result is discarded and must stay discarded: the dummy
+		// password is a literal in a public repository, so honouring this
+		// comparison would sign anyone in as an account that has no password.
+		// This path only spends time; it never succeeds.
+		s.compareAgainstDummyHash(plain)
+		return
+	}
+	if c >= s.hashCost {
 		return
 	}
 	for i := 1<<(s.hashCost-c) - 1; i > 0; i-- {
@@ -425,6 +534,16 @@ func (s *Service) rehashIfBelowTarget(ctx context.Context, u User, plain string)
 // be enforced.
 var ErrMFAAlreadyEnrolled = errors.New("MFA is already enabled for this account")
 
+// The two things a person can get wrong when confirming an enrolment (#421).
+// Anything else ConfirmMFAEnrollmentWith returns is a fault, not a mistake.
+// The message text is what the API has always sent in the 400.
+var (
+	// ErrMFANotStarted: no secret was staged, so there is nothing to confirm.
+	ErrMFANotStarted = errors.New("MFA enrollment not started")
+	// ErrMFAInvalidCode: the code does not match the staged secret.
+	ErrMFAInvalidCode = errors.New("invalid TOTP code")
+)
+
 // EnrollMFA generates a new TOTP secret for a user and stores it.
 //
 // allowReenroll must be true to re-enrol an account that already has MFA
@@ -455,10 +574,10 @@ var ErrMFAAlreadyEnrolled = errors.New("MFA is already enabled for this account"
 // rotation and overwrite the winner.
 func (s *Service) ConfirmMFAEnrollmentWith(ctx context.Context, userID uuid.UUID, pendingSecret, code string, allowReplace bool) error {
 	if pendingSecret == "" {
-		return fmt.Errorf("MFA enrollment not started")
+		return ErrMFANotStarted
 	}
 	if !totp.Validate(code, pendingSecret) {
-		return fmt.Errorf("invalid TOTP code")
+		return ErrMFAInvalidCode
 	}
 	if _, err := s.store.GetByID(ctx, userID); err != nil {
 		return err
@@ -485,6 +604,9 @@ func (s *Service) GenerateMFASecret(ctx context.Context, userID uuid.UUID, issue
 	if err != nil {
 		return "", "", err
 	}
+	if u.ServiceAccount {
+		return "", "", ErrServiceAccount
+	}
 	if u.MFAEnabled && !allowReenroll {
 		return "", "", ErrMFAAlreadyEnrolled
 	}
@@ -504,6 +626,9 @@ func (s *Service) EnrollMFA(ctx context.Context, userID uuid.UUID, issuer string
 	u, err := s.store.GetByID(ctx, userID)
 	if err != nil {
 		return "", "", err
+	}
+	if u.ServiceAccount {
+		return "", "", ErrServiceAccount
 	}
 	if u.MFAEnabled && !allowReenroll {
 		return "", "", ErrMFAAlreadyEnrolled
@@ -529,6 +654,9 @@ func (s *Service) ConfirmMFAEnrollment(ctx context.Context, userID uuid.UUID, co
 	u, err := s.store.GetByID(ctx, userID)
 	if err != nil {
 		return err
+	}
+	if u.ServiceAccount {
+		return ErrServiceAccount
 	}
 	if u.MFASecret == "" {
 		return fmt.Errorf("MFA enrollment not started")
@@ -783,6 +911,8 @@ func (s *Service) UpsertOIDCUser(
 // unprivileged account that is not already federated.
 func canAdoptByEmail(u User, oidcSubject string) error {
 	switch {
+	case u.ServiceAccount:
+		return fmt.Errorf("%w: the account is a service account", ErrAccountLinkRefused)
 	case !u.IsActive():
 		return ErrUserDisabled
 	case u.Role == RoleAdmin:
@@ -897,6 +1027,15 @@ func (s *Service) GetByID(ctx context.Context, id uuid.UUID) (User, error) {
 	return s.store.GetByID(ctx, id)
 }
 
+// GetByIDs returns the live accounts among ids in one query; ids with no live
+// account are absent from the result.
+func (s *Service) GetByIDs(ctx context.Context, ids []uuid.UUID) ([]User, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return s.store.GetByIDs(ctx, ids)
+}
+
 // List returns a paginated list of users.
 func (s *Service) List(ctx context.Context, limit, offset int) ([]User, error) {
 	return s.store.List(ctx, limit, offset)
@@ -941,6 +1080,14 @@ func (s *Service) Update(ctx context.Context, u User) error {
 // GetByIDAdmin returns the user with the given ID, including disabled users.
 func (s *Service) GetByIDAdmin(ctx context.Context, id uuid.UUID) (User, error) {
 	return s.store.GetByIDAdmin(ctx, id)
+}
+
+// SearchAdmin returns one page of users, disabled ones included, filtered by
+// role ("" = any) and a case-insensitive substring of email or display name,
+// plus the total number that match. serviceAccount nil means both. The caller
+// validates role.
+func (s *Service) SearchAdmin(ctx context.Context, role, q string, serviceAccount *bool, limit, offset int) ([]User, int64, error) {
+	return s.store.SearchAdmin(ctx, role, q, serviceAccount, limit, offset)
 }
 
 // ListAdmin returns all users including disabled ones.
@@ -990,6 +1137,9 @@ func (s *Service) ResetMFA(ctx context.Context, id uuid.UUID, actorID *uuid.UUID
 	// separately, answers the caller 500 for a reset that already happened.
 	// Same shape as handler_passkeys.go's detached Touch call.
 	ctx = context.WithoutCancel(ctx)
+	if err := s.refuseServiceAccount(ctx, id); err != nil {
+		return err
+	}
 	passkeys, err := s.store.ClearFactors(ctx, id)
 	if err != nil {
 		return err
@@ -1008,6 +1158,21 @@ func (s *Service) ResetMFA(ctx context.Context, id uuid.UUID, actorID *uuid.UUID
 	return nil
 }
 
+// refuseServiceAccount answers ErrServiceAccount when id is a service account,
+// before an administrator's reset does any work for it. The database would
+// refuse the password write anyway (users_service_account_inert); this is so
+// the caller gets a reason, and a reset of nothing is not recorded as done.
+//
+// A failed lookup is not this check's to report: the write that follows reports
+// a missing row or an outage in its own words, and a lookup that fails here
+// would have failed there.
+func (s *Service) refuseServiceAccount(ctx context.Context, id uuid.UUID) error {
+	if u, err := s.store.GetByIDAdmin(ctx, id); err == nil && u.ServiceAccount {
+		return ErrServiceAccount
+	}
+	return nil
+}
+
 // AdminSetPassword hashes and stores a new password without requiring the
 // old one, and records who did it. See ResetMFA on actorID.
 func (s *Service) AdminSetPassword(ctx context.Context, id uuid.UUID, plain string, actorID *uuid.UUID) error {
@@ -1016,13 +1181,11 @@ func (s *Service) AdminSetPassword(ctx context.Context, id uuid.UUID, plain stri
 	// 500. Validation and hashing below don't touch I/O, so detaching this
 	// early costs nothing.
 	ctx = context.WithoutCancel(ctx)
-	if strings.TrimSpace(plain) == "" {
-		return fmt.Errorf("%w: password is required", ErrValidation)
+	if err := s.refuseServiceAccount(ctx, id); err != nil {
+		return err
 	}
-	// Reset was the loosest of the four paths: it refused only a blank
-	// password, so an administrator could reset an account to "b".
-	if err := ValidatePassword(plain); err != nil {
-		return fmt.Errorf("%w: %w", ErrValidation, err)
+	if err := CheckNewPassword(plain); err != nil {
+		return err
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(plain), s.hashCost)
 	if err != nil {
@@ -1080,6 +1243,22 @@ var (
 	ErrPasswordTooShort = fmt.Errorf("password must be at least %d characters", MinPasswordLength)
 	ErrPasswordTooLong  = fmt.Errorf("password must be at most %d bytes; accented and non-Latin characters count as 2 to 4 bytes each", MaxPasswordLength)
 )
+
+// CheckNewPassword is what an administrator's password reset requires of the
+// new password, as an error handleError answers 400 to. AdminSetPassword
+// applies it, and the handler asks it first so a bad body is refused before
+// anything else about the request is looked at (#419).
+func CheckNewPassword(plain string) error {
+	if strings.TrimSpace(plain) == "" {
+		return fmt.Errorf("%w: password is required", ErrValidation)
+	}
+	// Reset was the loosest of the four paths: it refused only a blank
+	// password, so an administrator could reset an account to "b".
+	if err := ValidatePassword(plain); err != nil {
+		return fmt.Errorf("%w: %w", ErrValidation, err)
+	}
+	return nil
+}
 
 // ValidatePassword is the length rule every path that sets a password applies.
 // One function, because the minimum alone was once four different rules.

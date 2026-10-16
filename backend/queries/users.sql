@@ -17,8 +17,24 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
 -- name: GetUserByID :one
 SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL;
 
+-- name: GetUsersByIDs :many
+SELECT * FROM users WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL;
+
+-- name: GetServiceAccountNameByEmail :one
+-- Only for go-help-desk unlock (#497), which must say WHY it refuses a service
+-- account rather than report "no such account" (GetUserByEmail below hides
+-- them on purpose). Returns the display name, which is the OAuth client's.
+SELECT display_name FROM users WHERE email = $1 AND deleted_at IS NULL AND service_account;
+
 -- name: GetUserByEmail :one
-SELECT * FROM users WHERE email = $1 AND deleted_at IS NULL;
+-- This is the lookup behind password login, OIDC adoption by address and
+-- password reset, so it is where a service account (an OAuth client's
+-- identity, #420) is kept from ever signing in: it simply is not found. A miss
+-- already spends the dummy bcrypt hash, so there is no timing difference to
+-- tell it from an unknown address. The two subject lookups below carry the
+-- same filter; the database already refuses a service account a subject, so
+-- that one is belt and braces.
+SELECT * FROM users WHERE email = $1 AND deleted_at IS NULL AND NOT service_account;
 
 -- name: EmailIsTaken :one
 -- Whether any row holds this address, INCLUDING a deleted one.
@@ -32,11 +48,11 @@ SELECT * FROM users WHERE email = $1 AND deleted_at IS NULL;
 SELECT EXISTS (SELECT 1 FROM users WHERE email = $1);
 
 -- name: GetUserBySAMLSubject :one
-SELECT * FROM users WHERE saml_subject = $1 AND saml_subject != '' AND deleted_at IS NULL;
+SELECT * FROM users WHERE saml_subject = $1 AND saml_subject != '' AND deleted_at IS NULL AND NOT service_account;
 
 -- name: GetUserByOIDCSubject :one
 
-SELECT * FROM users WHERE oidc_subject = $1 AND oidc_subject != '' AND deleted_at IS NULL;
+SELECT * FROM users WHERE oidc_subject = $1 AND oidc_subject != '' AND deleted_at IS NULL AND NOT service_account;
 
 -- name: UpdateUser :exec
 UPDATE users
@@ -55,13 +71,13 @@ UPDATE users SET deleted_at = now() WHERE id = $1;
 UPDATE users SET disabled = TRUE, updated_at = now() WHERE id = $1;
 
 -- name: EnableUser :exec
-UPDATE users SET disabled = FALSE, updated_at = now() WHERE id = $1;
+UPDATE users SET disabled = FALSE, updated_at = now() WHERE id = $1 AND deleted_at IS NULL;
 
 -- name: ListUsers :many
-SELECT * FROM users WHERE deleted_at IS NULL AND disabled = FALSE ORDER BY created_at DESC LIMIT $1 OFFSET $2;
+SELECT * FROM users WHERE deleted_at IS NULL AND disabled = FALSE AND NOT service_account ORDER BY created_at DESC LIMIT $1 OFFSET $2;
 
 -- name: CountUsers :one
-SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND disabled = FALSE;
+SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND disabled = FALSE AND NOT service_account;
 
 -- name: SetUserPasswordHash :exec
 -- Writes only the password hash.
@@ -77,8 +93,26 @@ SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND disabled = FALSE;
 --
 -- AdminSetPassword has always been a narrow statement. This is the same thing
 -- for the self-service path, which is the one an attacker can drive.
+--
+-- Also clears must_change_password (#497): this is the account holder choosing
+-- a password, which is what that flag is waiting for.
 UPDATE users
-SET password_hash = $2, updated_at = now()
+SET password_hash = $2, must_change_password = false, updated_at = now()
+WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: UnlockUser :execrows
+-- The account half of /app/server unlock (#497), run in the same transaction
+-- as ClearFactors: re-enable, clear the TOTP lockout, install the generated
+-- password and require it to be changed. Not for a deleted account. The
+-- in-memory sign-in throttle is another process's memory and only ever delays,
+-- never refuses, so there is nothing of it to clear here.
+UPDATE users
+SET disabled = false,
+    mfa_failed_attempts = 0,
+    mfa_locked_until = NULL,
+    password_hash = $2,
+    must_change_password = true,
+    updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL;
 
 -- name: RehashUserPassword :execrows
@@ -112,7 +146,7 @@ UPDATE users
 SET email = $2, display_name = $3, updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL;
 
--- name: UpdateUserProfile :exec
+-- name: UpdateUserProfile :execrows
 -- The parts of a user an administrator edits: the address and the name.
 --
 -- Its own statement because UpdateUser writes the WHOLE row from a struct
@@ -125,9 +159,27 @@ WHERE id = $1 AND deleted_at IS NULL;
 --
 -- A rename should rename. Everything else has its own path, and the role has
 -- a guarded one.
+--
+-- Renaming a service user (#420) renames its OAuth client in the same
+-- statement, so the two names cannot drift. For anyone else no client has
+-- user_id = $1 and the first part touches nothing.
+WITH renamed AS (
+    UPDATE oauth_clients SET name = $3 WHERE user_id = $1
+)
 UPDATE users
 SET email = $2, display_name = $3, updated_at = now()
-WHERE id = $1 AND deleted_at IS NULL;
+WHERE users.id = $1 AND users.deleted_at IS NULL;
+
+-- name: SetUserEmailPreferences :exec
+-- The person's staff-email switches (#441), each changed only when given.
+-- Narrow for the reason UpdateUserProfile is: UpdateUser writes a whole row
+-- from an earlier read, and must not be the way a choice made a moment ago is
+-- put back. updated_at is left alone; the account itself did not change.
+UPDATE users
+SET email_notify_assigned = COALESCE(sqlc.narg('assigned'), email_notify_assigned),
+    email_notify_activity = COALESCE(sqlc.narg('activity'), email_notify_activity),
+    email_notify_group    = COALESCE(sqlc.narg('grp'), email_notify_group)
+WHERE id = sqlc.arg('id') AND deleted_at IS NULL;
 
 -- name: ListAssignableStaff :many
 -- The people work can be given to: active staff and administrators, name and
@@ -146,12 +198,17 @@ WHERE id = $1 AND deleted_at IS NULL;
 -- statement about somebody having left, and it was not true. Re-enabling them
 -- would have made the name reappear.
 --
+-- Not the service users (#420): an OAuth client's identity is not a colleague
+-- and cannot be given work. Nothing can be assigned to one, so there is no
+-- assigned ticket whose name this list would have to resolve.
+--
 -- Deliberately narrow: an id, a display name and that flag. No email, no
 -- role, no login state — that is the administrator's view.
 SELECT id, display_name,
        (disabled = FALSE AND role IN ('staff', 'admin')) AS assignable
 FROM users
 WHERE deleted_at IS NULL
+  AND NOT service_account
 ORDER BY display_name;
 
 -- name: DisableUserUnlessLastAdmin :one
@@ -216,6 +273,9 @@ RETURNING t.id;
 
 -- name: SoftDeleteUserUnlessLastAdmin :one
 -- The same guard for deletion. See DisableUserUnlessLastAdmin.
+--
+-- Never a service user (#420): it goes when its OAuth client does, in
+-- DeleteOAuthClient. Deleting it alone would leave the client listed and dead.
 WITH admins AS (
     SELECT u.id AS admin_id FROM users u
     WHERE u.role = 'admin' AND u.deleted_at IS NULL AND u.disabled = FALSE
@@ -226,6 +286,7 @@ UPDATE users AS t
 SET deleted_at = now(), updated_at = now()
 WHERE t.id = $1
   AND t.deleted_at IS NULL
+  AND NOT t.service_account
   AND (SELECT count(*) FROM admins WHERE admins.admin_id <> $1) > 0
 RETURNING t.id;
 
@@ -293,6 +354,31 @@ SELECT * FROM users WHERE id = $1;
 -- name: ListUsersAdmin :many
 SELECT * FROM users WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT $1 OFFSET $2;
 
+-- name: SearchUsersAdmin :many
+-- The paged admin list (#449). role = '' means any role; q is already
+-- LIKE-escaped by the caller (backslash is the escape character), and an empty
+-- q matches everyone. id breaks created_at ties so a page boundary never
+-- repeats or drops an account. ListUsersAdmin, above, is the unpaged list and
+-- is left alone.
+SELECT * FROM users
+WHERE deleted_at IS NULL
+  AND (sqlc.arg(role)::text = '' OR role = sqlc.arg(role)::text)
+  AND (sqlc.narg(service_account)::boolean IS NULL OR service_account = sqlc.narg(service_account)::boolean)
+  AND (sqlc.arg(q)::text = ''
+       OR email ILIKE '%' || sqlc.arg(q)::text || '%'
+       OR display_name ILIKE '%' || sqlc.arg(q)::text || '%')
+ORDER BY created_at DESC, id
+LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
+
+-- name: CountSearchUsersAdmin :one
+SELECT count(*) FROM users
+WHERE deleted_at IS NULL
+  AND (sqlc.arg(role)::text = '' OR role = sqlc.arg(role)::text)
+  AND (sqlc.narg(service_account)::boolean IS NULL OR service_account = sqlc.narg(service_account)::boolean)
+  AND (sqlc.arg(q)::text = ''
+       OR email ILIKE '%' || sqlc.arg(q)::text || '%'
+       OR display_name ILIKE '%' || sqlc.arg(q)::text || '%');
+
 -- name: RestoreUser :exec
 UPDATE users SET deleted_at = NULL, updated_at = now() WHERE id = $1;
 
@@ -358,7 +444,7 @@ SELECT
 -- name: AdminSetPassword :execrows
 -- :execrows, for the same reason as ClearMFA above: a nonexistent id
 -- reported success (204, no error) and still wrote an audit entry.
-UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1;
+UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1 AND deleted_at IS NULL;
 
 -- name: ClaimMFAAttempt :one
 -- Takes one attempt off the account's TOTP budget, and reports what is left.
@@ -455,6 +541,7 @@ WHERE id = sqlc.arg('id')
   AND deleted_at IS NULL
   AND disabled = FALSE
   AND role <> 'admin'
+  AND NOT service_account
   AND saml_subject = ''
   AND oidc_subject IN ('', sqlc.arg('oidc_subject'))
 RETURNING id;

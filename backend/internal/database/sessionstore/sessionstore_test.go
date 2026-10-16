@@ -300,6 +300,24 @@ func TestStore_SoftDeletedUsersSessionDoesNotLoad(t *testing.T) {
 		"a soft-deleted user's session must not load")
 }
 
+// A service user (an OAuth client's identity) never signs in, so no session
+// for one may load, even a forged or leftover one (#420). Nothing writes such
+// a session; this is the lookup refusing to depend on that staying true.
+func TestStore_ServiceUsersSessionDoesNotLoad(t *testing.T) {
+	st, q, tx, cleanup := newStoreWithLifetime(t, 3600)
+	defer cleanup()
+
+	id := seedUser(t, q)
+	value := saveNew(t, st, id)
+	require.False(t, load(t, st, value).IsNew, "it loads while the user is an ordinary one")
+
+	_, err := tx.ExecContext(context.Background(), `UPDATE users SET service_account = TRUE WHERE id = $1`, id)
+	require.NoError(t, err)
+
+	require.True(t, load(t, st, value).IsNew,
+		"a service user's session must not load")
+}
+
 // Re-enabling restores it — a lookup that refused every session with a user
 // would pass the two tests above.
 func TestStore_ReEnabledUsersSessionLoadsAgain(t *testing.T) {

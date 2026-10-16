@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"math"
 	"net/http"
@@ -54,7 +55,9 @@ func pageParams(r *http.Request) (limit, offset int) {
 		// and Postgres answered "OFFSET must not be negative" as a 500, and
 		// 4294967296 wrapped to 0 and quietly returned page one.
 		//
-		// A negative offset is refused for the same reason it used to 500.
+		// A zero, negative or unparseable offset is not refused: it is
+		// ignored and the first page comes back. A bad limit likewise falls
+		// back to the default.
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			offset = min(n, math.MaxInt32)
 		}
@@ -110,8 +113,10 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 		// the caller's groups — and this branch handed the same tickets over to
 		// anyone who named the group. Group ids are listed to every staff
 		// member by GET /groups, so it was a filter, not a boundary. An OAuth
-		// client acts as staff and belongs to no group at all, which made it
-		// every ticket assigned to any group.
+		// client acts as staff through its service user, and that user is in
+		// whatever groups an administrator gave it (none, until they do),
+		// which used to make a group-less client every ticket assigned to any
+		// group.
 		if a.Role == user.RoleStaff && s.adminSvc.TicketScopeEnforced(ctx) {
 			scope, err := s.staffScopeFor(ctx, a)
 			if err != nil {
@@ -382,10 +387,9 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		// states for them. The picker they are shown only lists active types,
 		// so an archived one means the id came from somewhere else.
 		//
-		// Staff and administrators are not held to this, for the same reason
-		// they are not held to it on the category: filing or reclassifying an
-		// old ticket under the classification it actually belongs to is
-		// ordinary work, and that classification may well be archived.
+		// Staff and administrators are held to it too, but by the ticket
+		// service (refuseArchivedPick) rather than here, so that MCP and every
+		// other caller get the same rule from one place (#421).
 		if !isStaffOrAdmin && !ty.Active {
 			Error(w, http.StatusBadRequest, "bad_request",
 				"type_id is not an active type")
@@ -458,7 +462,12 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	JSON(w, http.StatusCreated, t)
+	// Read back, so the response carries whoever the routing assigned, as
+	// handleCreateFollowUp does. A failed read keeps the ticket as created.
+	if fresh, err := s.tickets.GetByID(r.Context(), t.ID); err == nil {
+		t = fresh
+	}
+	JSON(w, http.StatusCreated, viewerJSON(authmw.GetActor(r), t))
 }
 
 // GET /api/v1/tickets/{id}
@@ -499,17 +508,24 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, views[0])
+	// The record a restart replaced, for the page's "SLA restarted" badge: the
+	// one-ticket read only, so a list never pays for it. Only a reopen restarts
+	// a clock (#464), so it is absent on a ticket that was never reopened.
+	if views[0].SLA != nil {
+		earlier, err := s.slaPolicies.Earlier(r.Context(), t)
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		views[0].SLA.Earlier = earlier
+	}
+	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), views[0]))
 }
 
 // PATCH /api/v1/tickets/{id}
 func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 
 	var body struct {
 		StatusID        *uuid.UUID `json:"status_id"`
@@ -524,8 +540,15 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		CategoryID    *uuid.UUID `json:"category_id"`
 		TypeID        *uuid.UUID `json:"type_id"`
 		ItemID        *uuid.UUID `json:"item_id"`
+		// Priority is staff and admin only, and re-matches the ticket's SLA
+		// policy, keeping its clock (#443). A string, not ticket.Priority,
+		// so a value that is not a priority reaches the service and answers
+		// 400 there instead of being dropped.
+		Priority *string `json:"priority"`
 	}
-	if err := DecodeJSON(r, &body); err != nil {
+	// No body at all is {}: nothing to change. Only here, not in DecodeJSON,
+	// which every other route relies on to refuse an empty body.
+	if err := DecodeJSON(r, &body); err != nil && !errors.Is(err, io.EOF) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
@@ -535,22 +558,93 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 	}
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
 
-	if body.StatusID != nil {
-		if _, err := s.tickets.UpdateStatus(r.Context(), id, *body.StatusID, actor); err != nil {
+	// A value that is not a priority is a malformed request, answered before
+	// anything else in it is saved. (ChangePriority checks it too, for every
+	// other caller.)
+	if body.Priority != nil && !ticket.Priority(*body.Priority).Valid() {
+		Error(w, http.StatusBadRequest, "bad_request", "priority must be one of critical, high, medium, low")
+		return
+	}
+	// Whether the caller may change a priority at all is a role question and
+	// does not depend on the ticket, so it is answered here, before any other
+	// change in the request is saved. (ChangePriority applies the same rule.)
+	if body.Priority != nil {
+		if err := ticket.CanChangePriority(actor.Role); err != nil {
 			handleError(w, err)
 			return
 		}
 	}
-	// Covers both branches below: clear_assignee is a separate path from
-	// assignee_user_id, and guarding only one would leave a reporter able to
-	// unassign the staff member working their ticket.
+
+	// A refused classification must leave the whole request unapplied, so it is
+	// checked before the status or the assignee is touched (#421). The write
+	// itself stays where it was, after those.
+	if body.CategoryID != nil {
+		if a.Role == user.RoleUser {
+			Error(w, http.StatusForbidden, "forbidden", "only staff can reclassify tickets")
+			return
+		}
+		if err := s.tickets.ValidateCTI(r.Context(), id, *body.CategoryID, body.TypeID, body.ItemID); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+
+	// A Resolved or Closed ticket's priority cannot change, and a request that
+	// would leave the ticket in either state is refused whole: ChangePriority
+	// runs last, so without this the status or assignment ahead of it would be
+	// saved and then answered with a 409. After the 400 and the 403s above, so
+	// those win when several things are wrong.
+	if body.Priority != nil {
+		if err := s.tickets.ValidatePriorityChange(r.Context(), id, body.StatusID); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+
+	// Who the ticket may be given to is decided before the status is saved,
+	// for the same reason (#468): UpdateStatus runs first, so a 400 or 403 from
+	// the assignment after it left the status changed and an audit row
+	// written. Assign checks the same things again on the locked row.
+	//
+	// The role check covers both branches below: clear_assignee is a separate
+	// path from assignee_user_id, and guarding only one would leave a reporter
+	// able to unassign the staff member working their ticket.
 	if body.ClearAssignee || body.AssigneeUserID != nil || body.AssigneeGroupID != nil {
 		if err := ticket.CanAssign(actor.Role); err != nil {
 			handleError(w, err)
 			return
 		}
 	}
+	// The assignee is checked here, and not only by the column's foreign key,
+	// because a foreign key can only answer 500.
+	//
+	// Four things got through: an unknown id (a typo, answered with "an
+	// internal error occurred"), a deleted account (which puts the ticket
+	// straight back into the limbo that deleting a user was just fixed to
+	// avoid — it shows as unassigned and is missing from the unassigned
+	// queue), a disabled account, and a reporting user, who is not
+	// somebody work can be assigned to.
+	if !body.ClearAssignee {
+		if body.AssigneeUserID != nil {
+			if err := s.assignableUser(r.Context(), *body.AssigneeUserID); err != nil {
+				Error(w, http.StatusBadRequest, "bad_request", err.Error())
+				return
+			}
+		}
+		if body.AssigneeUserID != nil || body.AssigneeGroupID != nil {
+			if err := s.tickets.ValidateAssignment(r.Context(), body.AssigneeUserID, body.AssigneeGroupID); err != nil {
+				handleError(w, err)
+				return
+			}
+		}
+	}
 
+	if body.StatusID != nil {
+		if _, err := s.tickets.UpdateStatus(r.Context(), id, *body.StatusID, actor); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
 	if body.ClearAssignee {
 		// Explicitly to nobody. Previously unreachable: the UI sent both
 		// fields as undefined, which serialised to {} and skipped this branch
@@ -560,22 +654,6 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else if body.AssigneeUserID != nil || body.AssigneeGroupID != nil {
-		// Checked before the write, because the column's foreign key is the
-		// only thing that was checking it — and a foreign key can only
-		// answer 500.
-		//
-		// Four things got through: an unknown id (a typo, answered with "an
-		// internal error occurred"), a deleted account (which puts the ticket
-		// straight back into the limbo that deleting a user was just fixed to
-		// avoid — it shows as unassigned and is missing from the unassigned
-		// queue), a disabled account, and a reporting user, who is not
-		// somebody work can be assigned to.
-		if body.AssigneeUserID != nil {
-			if err := s.assignableUser(r.Context(), *body.AssigneeUserID); err != nil {
-				Error(w, http.StatusBadRequest, "bad_request", err.Error())
-				return
-			}
-		}
 		if _, err := s.tickets.Assign(r.Context(), id, body.AssigneeUserID, body.AssigneeGroupID, actor); err != nil {
 			handleError(w, err)
 			return
@@ -591,23 +669,27 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// After the reclassification above, so a category change in the same
+	// request is the one the new priority's SLA policy is matched against.
+	if body.Priority != nil {
+		if _, err := s.tickets.ChangePriority(r.Context(), id, ticket.Priority(*body.Priority), actor); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
 
 	t, err := s.tickets.GetByID(r.Context(), id)
 	if err != nil {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, t)
+	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), t))
 }
 
 // POST /api/v1/tickets/{id}/replies
 func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 
 	var body struct {
 		Body           string `json:"body"`
@@ -646,13 +728,7 @@ func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 	var reporterEmail string
 	if notifyCustomer {
 		if t, err := s.tickets.GetByID(r.Context(), id); err == nil {
-			if t.GuestEmail != nil {
-				reporterEmail = *t.GuestEmail
-			} else if t.ReporterUserID != nil {
-				if u, err := s.users.GetByID(r.Context(), *t.ReporterUserID); err == nil {
-					reporterEmail = u.Email
-				}
-			}
+			reporterEmail = s.tickets.ReplyRecipient(r.Context(), t, ticket.Actor{UserID: &a.UserID, Role: a.Role})
 		}
 	}
 
@@ -671,16 +747,18 @@ func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	// The list names the author; so does the reply it was just created as.
+	// A failed lookup leaves the name empty rather than failing a reply that
+	// is already stored.
+	if u, err := s.users.GetByID(r.Context(), a.UserID); err == nil {
+		reply.AuthorName = u.DisplayName
+	}
 	JSON(w, http.StatusCreated, reply)
 }
 
 // GET /api/v1/tickets/{id}/replies
 func (s *Server) handleListReplies(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 	replies, err := s.tickets.ListReplies(r.Context(), id)
 	if err != nil {
 		handleError(w, err)
@@ -695,15 +773,16 @@ func (s *Server) handleListReplies(w http.ResponseWriter, r *http.Request) {
 // POST /api/v1/tickets/{id}/resolve
 func (s *Server) handleResolveTicket(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 	var body struct {
 		Notes string `json:"notes"`
 	}
-	_ = DecodeJSON(r, &body)
+	// An empty body is valid (resolve with no notes); anything else that does
+	// not parse is the client's mistake, not a reason to drop its notes (#421).
+	if err := DecodeJSON(r, &body); err != nil && !errors.Is(err, io.EOF) {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
 
 	if !s.requireUserIdentity(w, r) {
 		return
@@ -714,7 +793,7 @@ func (s *Server) handleResolveTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, t)
+	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), t))
 }
 
 // POST /api/v1/tickets/{id}/reopen
@@ -730,11 +809,7 @@ func (s *Server) handleReopenTicket(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusForbidden, "forbidden", "users cannot directly reopen tickets")
 		return
 	}
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 	targetID, err := s.reopenTargetStatusID(r.Context())
 	if err != nil {
 		handleError(w, err)
@@ -749,7 +824,7 @@ func (s *Server) handleReopenTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, t)
+	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), t))
 }
 
 // POST /api/v1/tickets/{id}/follow-up
@@ -764,11 +839,7 @@ func (s *Server) handleReopenTicket(w http.ResponseWriter, r *http.Request) {
 // a ticket that is not closed, ErrFollowUpExists for a requester's second.
 func (s *Server) handleCreateFollowUp(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 	if !s.requireUserIdentity(w, r) {
 		return
 	}
@@ -777,7 +848,10 @@ func (s *Server) handleCreateFollowUp(w http.ResponseWriter, r *http.Request) {
 	// could set on a normal create; staff and admin copy more. Which rule is the
 	// service's (the role decides which method will accept the actor); the one
 	// thing decided here is the active-classification check it cannot make.
-	var t ticket.Ticket
+	var (
+		t   ticket.Ticket
+		err error
+	)
 	if a.Role == user.RoleUser {
 		t, err = s.tickets.CreateRequesterFollowUp(r.Context(), id, s.adminSvc.TicketPrefix(r.Context()), actor,
 			s.requesterClassificationOpen)
@@ -797,7 +871,7 @@ func (s *Server) handleCreateFollowUp(w http.ResponseWriter, r *http.Request) {
 	if fresh, err := s.tickets.GetByID(r.Context(), t.ID); err == nil {
 		t = fresh
 	}
-	JSON(w, http.StatusCreated, t)
+	JSON(w, http.StatusCreated, viewerJSON(authmw.GetActor(r), t))
 }
 
 // POST /api/v1/tickets/{id}/close
@@ -807,11 +881,7 @@ func (s *Server) handleCloseTicket(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusForbidden, "forbidden", "only admins can close tickets")
 		return
 	}
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 	// The admin who pressed the button, not SystemActor: the authorisation
 	// check above is this handler's job, and the actor is for attribution.
 	if !s.requireUserIdentity(w, r) {
@@ -826,17 +896,13 @@ func (s *Server) handleCloseTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, t)
+	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), t))
 }
 
 // POST /api/v1/tickets/{id}/links
 func (s *Server) handleAddLink(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
-	sourceID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	sourceID := ticketIDFrom(r)
 	var body struct {
 		TargetID           uuid.UUID `json:"target_id"`
 		LinkType           string    `json:"link_type"`
@@ -880,7 +946,7 @@ func (s *Server) handleAddLink(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
-		JSON(w, http.StatusOK, t)
+		JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), t))
 		return
 	}
 
@@ -894,11 +960,7 @@ func (s *Server) handleAddLink(w http.ResponseWriter, r *http.Request) {
 
 // DELETE /api/v1/tickets/{id}/links/{targetId}/{linkType}
 func (s *Server) handleRemoveLink(w http.ResponseWriter, r *http.Request) {
-	sourceID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	sourceID := ticketIDFrom(r)
 	targetID, err := uuid.Parse(chi.URLParam(r, "targetId"))
 	if err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid target ID")
@@ -948,11 +1010,7 @@ func (s *Server) handleRemoveLink(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/v1/tickets/{id}/history
 func (s *Server) handleListStatusHistory(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 	// Status history is ticket content: gate it on the same rule as the ticket.
 	{
 		t, err := s.tickets.GetByID(r.Context(), id)
@@ -992,21 +1050,24 @@ type ticketAuditEntryView struct {
 	CreatedAt   time.Time      `json:"created_at"`
 	Before      map[string]any `json:"before,omitempty"`
 	After       map[string]any `json:"after,omitempty"`
+	// Names: see adminAuditEntryView.Names.
+	Names map[string]auditName `json:"names,omitempty"`
 }
 
 // GET /api/v1/tickets/{id}/audit
 //
-// #129: a per-ticket activity feed next to the status timeline. Relies on
-// requireTicketAccess like every other route in this subtree — a ticket's
-// audit trail is ticket content, not a separate permission — with one
-// exception: assigned/unassigned entries name a staff or admin actor
-// (assignment is staff/admin-only, see ticket.CanAssign), and nothing else
-// on a ticket discloses that actor's identity to a reporting user — the
-// ticket's own assignee_user_id is a bare UUID, and /api/v1/staff, the only
-// place that resolves one to a name, is itself staff/admin-gated. A
-// reporting user would otherwise learn a staff member's name from this feed
-// alone, so those two actions withhold actor identity for RoleUser viewers,
-// the same way VisibleReplies withholds internal-note authorship.
+// #129: a per-ticket activity feed next to the status timeline. Staff and
+// admin only (the route sits behind RequireRole in routes.go, after the
+// ticket-access check, so a ticket out of reach is a 404 first): since
+// 2026-10-15 a requester sees the ticket's current state and its
+// conversation, not its history or audit trail, and is refused with 403.
+//
+// The RoleUser branch below, which withholds the actor of assigned/unassigned
+// entries, is therefore unreachable today. It is kept as a second safeguard
+// (assignment is staff/admin-only, see ticket.CanAssign, and nothing else on a
+// ticket discloses that actor's identity to a reporting user), so that loosening
+// the route gate by mistake does not start naming staff to requesters; the
+// same way VisibleReplies withholds internal-note authorship.
 //
 // The field-level before/after diff is a second, independent gate, settled
 // by the admin-wide view's own design round: admin always sees it; staff
@@ -1018,20 +1079,22 @@ type ticketAuditEntryView struct {
 // audit.Redact — because a sensitive field name would be exactly as
 // sensitive here as there.
 func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
-	entries, err := s.tickets.ListAuditEntries(r.Context(), id)
+	id := ticketIDFrom(r)
+	role := authmw.GetActor(r).Role
+	showDiff := role == user.RoleAdmin ||
+		(role == user.RoleStaff && s.adminSvc.StaffCanViewTicketChangeHistory(r.Context()))
+
+	// Follow and unfollow entries (#441): administrators always, staff only
+	// when the administrator allows it, a requester never. Left out by the
+	// query rather than dropped afterwards, so they never count toward the
+	// feed's cap and cannot push the ticket's real history off it.
+	showFollow := role == user.RoleAdmin ||
+		(role == user.RoleStaff && s.adminSvc.StaffCanViewFollowAudit(r.Context()))
+	entries, err := s.tickets.ListAuditFeed(r.Context(), id, showFollow)
 	if err != nil {
 		handleError(w, err)
 		return
 	}
-
-	role := authmw.GetActor(r).Role
-	showDiff := role == user.RoleAdmin ||
-		(role == user.RoleStaff && s.adminSvc.StaffCanViewTicketChangeHistory(r.Context()))
 
 	views := make([]ticketAuditEntryView, len(entries))
 	// Cached per request: the same actor (an assignee working a long
@@ -1040,10 +1103,17 @@ func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
 	// GetByID rather than one per entry.
 	maskRequesters := s.masksRequestersIn(r.Context(), admin.MaskRequesterNamesTicketLog)
 	names := make(map[uuid.UUID]auditActor)
+	diffs := make([]map[string]any, 0, 2*len(entries))
 	for i, e := range entries {
 		v := ticketAuditEntryView{ID: e.ID, Action: e.Action, ActorID: e.ActorID, CreatedAt: e.CreatedAt}
-		if showDiff {
+		// A viewer who may see follow entries always gets their before and
+		// after, redacted like any diff: an unfollowed entry written when a
+		// ticket was reassigned has the reassigning actor as its actor, and
+		// without the diff it would read as that person stopping, not as
+		// whose follow it was.
+		if showDiff || (showFollow && ticket.IsFollowAuditAction(e.Action)) {
 			v.Before, v.After = audit.Redact(e.Before, e.After)
+			diffs = append(diffs, v.Before, v.After)
 		}
 		if role == user.RoleUser && (e.Action == "assigned" || e.Action == "unassigned") {
 			v.ActorID = nil
@@ -1071,16 +1141,19 @@ func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
 		}
 		views[i] = v
 	}
+	// See handleListAdminAudit: resolved from the diffs as sent, in one batch.
+	if len(diffs) > 0 {
+		resolved := s.resolveAuditNames(r.Context(), maskRequesters, diffs...)
+		for i := range views {
+			views[i].Names = resolved.forEntry(views[i].Before, views[i].After)
+		}
+	}
 	JSON(w, http.StatusOK, views)
 }
 
 // GET /api/v1/tickets/{id}/links
 func (s *Server) handleListLinks(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 	links, err := s.tickets.ListLinks(r.Context(), id)
 	if err != nil {
 		handleError(w, err)
@@ -1142,15 +1215,32 @@ func (s *Server) reopenTargetStatusID(ctx context.Context) (uuid.UUID, error) {
 		return uuid.Nil, err
 	}
 	want := s.adminSvc.ReopenTargetStatusName(ctx)
+	inactive := false
 	for _, st := range statuses {
-		if st.Name == want {
-			return st.ID, nil
+		if st.Name != want {
+			continue
 		}
+		// A deactivated status is retired for everyone, so nothing is reopened
+		// into it. The target is chosen by name from active statuses and can
+		// be deactivated afterwards; reopening then goes to New, like an
+		// unresolvable name, until an administrator picks another. The admin
+		// security warnings say so.
+		if !st.Active {
+			inactive = true
+			break
+		}
+		return st.ID, nil
 	}
 	for _, st := range statuses {
 		if st.Name == ticket.StatusNameNew {
-			slog.WarnContext(ctx, "configured reopen target status does not exist; falling back to New",
-				"configured", want)
+			// One message, for the one condition that applies.
+			if inactive {
+				slog.WarnContext(ctx, "configured reopen target status is inactive; falling back to New",
+					"configured", want)
+			} else {
+				slog.WarnContext(ctx, "configured reopen target status does not exist; falling back to New",
+					"configured", want)
+			}
 			return st.ID, nil
 		}
 	}
@@ -1164,9 +1254,9 @@ func (s *Server) reopenTargetStatusID(ctx context.Context) (uuid.UUID, error) {
 // does not contain it — so filing into one means the id came from somewhere
 // else, which is not a thing to accept silently.
 //
-// Staff are not held to this: reclassifying an old ticket into the category
-// it actually belongs to is ordinary work, and that category may well be
-// archived.
+// Staff are held to the same rule by the ticket service (refuseArchivedPick,
+// #421); this is the reporter's check, made ahead of it for the reporter's
+// own wording and so the guest form can use it before anything is written.
 func (s *Server) categoryIsOpen(ctx context.Context, id uuid.UUID) error {
 	cats, err := s.categories.ListCategories(ctx, true)
 	if err != nil {
@@ -1182,9 +1272,9 @@ func (s *Server) categoryIsOpen(ctx context.Context, id uuid.UUID) error {
 
 // requesterClassificationOpen is the creation rule a requester is held to for a
 // ticket's classification, as handleCreateTicket applies it: the category must
-// be active, and the type, when there is one, active too. Staff are not held to
-// it (an old ticket is filed under the classification it belongs to, and that
-// may be archived); a requester's follow-up is a new ticket and is (#349).
+// be active, and the type, when there is one, active too. A requester's
+// follow-up is a new ticket and is held to it (#349); a staff follow-up copies
+// the closed ticket's classification and is not.
 func (s *Server) requesterClassificationOpen(ctx context.Context, categoryID uuid.UUID, typeID *uuid.UUID) error {
 	if err := s.categoryIsOpen(ctx, categoryID); err != nil {
 		return err

@@ -14,11 +14,15 @@ const (
 	EventTicketCreated       EventType = "ticket.created"
 	EventTicketAssigned      EventType = "ticket.assigned"
 	EventTicketStatusChanged EventType = "ticket.status_changed"
-	EventTicketReplied       EventType = "ticket.replied"
-	EventTicketResolved      EventType = "ticket.resolved"
-	EventTicketClosed        EventType = "ticket.closed"
-	EventTicketReopened      EventType = "ticket.reopened"
-	EventTicketLinked        EventType = "ticket.linked"
+	// EventTicketReplied is a customer-visible reply only. A staff-only note
+	// is EventTicketNoteAdded, so a subscriber can ask for one without the
+	// other (#448).
+	EventTicketReplied   EventType = "ticket.replied"
+	EventTicketNoteAdded EventType = "ticket.note_added"
+	EventTicketResolved  EventType = "ticket.resolved"
+	EventTicketClosed    EventType = "ticket.closed"
+	EventTicketReopened  EventType = "ticket.reopened"
+	EventTicketLinked    EventType = "ticket.linked"
 
 	// EventGuestLinkResent is a guest asking for a fresh access link, which is
 	// not a change to the ticket. It exists so the mail goes out through the
@@ -31,6 +35,16 @@ const (
 	// read from the pending registration when the email is sent. Never a
 	// webhook event, and no ticket.
 	EventRegistrationVerify EventType = "registration.verify"
+
+	// EventStaffAssigned, EventStaffRequesterReplied and EventStaffReopened are
+	// the email a staff member gets about a ticket (#441, #464). They are made
+	// from EventTicketAssigned, a requester's EventTicketReplied and
+	// EventTicketReopened, one per person to be mailed, by
+	// notify.StaffFanout, and never dispatched by domain code. Not webhook
+	// events: a webhook subscriber already has the events they derive from.
+	EventStaffAssigned         EventType = "staff.assigned"
+	EventStaffRequesterReplied EventType = "staff.requester_replied"
+	EventStaffReopened         EventType = "staff.reopened"
 )
 
 // Event carries the data for a single lifecycle event on a ticket.
@@ -68,6 +82,30 @@ type Event struct {
 	// Excluded from JSON like GuestToken: a webhook has no use for it.
 	GuestLink bool `json:"-"`
 
+	// AssigneeUserID and AssigneeGroupID are who holds the ticket as of this
+	// event. They are set on ticket.assigned and ticket.replied so staff mail
+	// can be addressed without a second read of a ticket that may have moved
+	// on. Excluded from JSON: the webhook body is unchanged.
+	AssigneeUserID  *uuid.UUID `json:"-"`
+	AssigneeGroupID *uuid.UUID `json:"-"`
+
+	// FromRequester marks a ticket.replied that the requester wrote (an
+	// account holder with the user role, or a guest) and that is not an
+	// internal note. It is what makes a reply a reason to mail staff.
+	FromRequester bool `json:"-"`
+
+	// StaffUserID is the one staff member a staff.* event is for. Their
+	// address is read at send time rather than copied here, so the outbox
+	// holds no address for them and a deleted or disabled account is skipped
+	// instead of mailed.
+	StaffUserID *uuid.UUID `json:"-"`
+
+	// StaffReason is why StaffUserID is being mailed: SwitchAssigned for the
+	// person who holds the ticket, SwitchGroup for a member of the group that
+	// does. It words the email, and it is what the send-time check confirms
+	// is still true.
+	StaffReason StaffSwitch `json:"-"`
+
 	// Subject and StatusName exist for the webhook chat/ITSM renderers
 	// (internal/server/notify), which need a human-readable line for events
 	// whose Payload carries only ids — ticket.status_changed's Payload is
@@ -78,7 +116,44 @@ type Event struct {
 	// instead: readable by a dispatcher, invisible on the wire.
 	Subject    string `json:"-"`
 	StatusName string `json:"-"`
+
+	// Attrs is the classification of the ticket this event describes, as it
+	// was when the event was raised, for webhook filters (#413). Excluded from
+	// JSON like Subject: the raw body does not change. Nil means "not known":
+	// an event queued before #413, or one that names no ticket.
+	Attrs *TicketAttrs `json:"-"`
+
+	// TargetWebhook, when set, makes the event a delivery to that one hook
+	// instead of an announcement to all of them: the webhook channel's queued
+	// row is first fanned out into one row per subscribed hook, so each hook
+	// is retried on its own (#448). Never part of the wire body.
+	TargetWebhook uuid.UUID `json:"-"`
+
+	// TargetURLHash is the SHA-256 (hex) of the hook's URL when the per-hook row
+	// was queued. A URL can carry a token, so the outbox holds a fingerprint of
+	// it and never the URL; at send time a row whose hash no longer matches the
+	// hook's URL is dropped (#448). Never part of the wire body.
+	TargetURLHash string `json:"-"`
 }
+
+// TicketAttrs is the part of a ticket a webhook filter can test. Priority is
+// ticket.Priority as a string: ticket imports notification, not the reverse.
+type TicketAttrs struct {
+	CategoryID      uuid.UUID  `json:"category_id"`
+	Priority        string     `json:"priority"`
+	AssigneeGroupID *uuid.UUID `json:"assignee_group_id,omitempty"` // nil = no group
+}
+
+// RetryAfterError asks the outbox worker to wait at least After before the
+// next attempt, because the receiver said so (a Retry-After header). The
+// worker never waits longer than its longest backoff.
+type RetryAfterError struct {
+	Err   error
+	After time.Duration
+}
+
+func (e *RetryAfterError) Error() string { return e.Err.Error() }
+func (e *RetryAfterError) Unwrap() error { return e.Err }
 
 // Dispatcher delivers events to whatever sinks are registered.
 // Callers fire and forget — the dispatcher is responsible for retry/durability.

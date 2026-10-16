@@ -28,18 +28,20 @@ SELECT COUNT(*) FROM (
       OR entity_type ILIKE '%' || $6::text || '%'
       OR action ILIKE '%' || $6::text || '%'
     )
-  LIMIT $7
+    AND ($7::text[] IS NULL OR NOT (action = ANY ($7::text[])))
+  LIMIT $8
 ) AS matched
 `
 
 type CountAuditLogParams struct {
-	EntityType sql.NullString `json:"entity_type"`
-	Action     sql.NullString `json:"action"`
-	ActorID    uuid.NullUUID  `json:"actor_id"`
-	FromTs     sql.NullTime   `json:"from_ts"`
-	ToTs       sql.NullTime   `json:"to_ts"`
-	Q          sql.NullString `json:"q"`
-	CountCap   int32          `json:"count_cap"`
+	EntityType     sql.NullString `json:"entity_type"`
+	Action         sql.NullString `json:"action"`
+	ActorID        uuid.NullUUID  `json:"actor_id"`
+	FromTs         sql.NullTime   `json:"from_ts"`
+	ToTs           sql.NullTime   `json:"to_ts"`
+	Q              sql.NullString `json:"q"`
+	ExcludeActions []string       `json:"exclude_actions"`
+	CountCap       int32          `json:"count_cap"`
 }
 
 // Same filters as SearchAuditLog, but BOUNDED: it counts at most count_cap
@@ -55,6 +57,7 @@ func (q *Queries) CountAuditLog(ctx context.Context, arg CountAuditLogParams) (i
 		arg.FromTs,
 		arg.ToTs,
 		arg.Q,
+		pq.Array(arg.ExcludeActions),
 		arg.CountCap,
 	)
 	var count int64
@@ -75,6 +78,7 @@ SELECT COUNT(*) FROM (
       OR entity_type ILIKE '%' || $6::text || '%'
       OR action ILIKE '%' || $6::text || '%'
     )
+    AND ($7::text[] IS NULL OR NOT (action = ANY ($7::text[])))
     -- Staff scope (#330, #331). Only ticket entries on a ticket this staff
     -- member may see: the same four ways in as ticket.CanView — reported by
     -- them, assigned to them, assigned to a group of theirs, or inside a
@@ -87,10 +91,10 @@ SELECT COUNT(*) FROM (
       SELECT 1 FROM tickets t
       WHERE t.id = audit_log.entity_id
         AND (
-          t.reporter_user_id = $7::uuid
-          OR t.assignee_user_id = $7::uuid
-          OR t.assignee_group_id = ANY ($8::uuid[])
-          OR t.category_id = ANY ($9::uuid[])
+          t.reporter_user_id = $8::uuid
+          OR t.assignee_user_id = $8::uuid
+          OR t.assignee_group_id = ANY ($9::uuid[])
+          OR t.category_id = ANY ($10::uuid[])
           -- A rule with a type. type_id alone decides it: a type belongs to one
           -- category, and the (category_id, type_id) foreign keys on tickets and
           -- group_scopes (000013) hold both to it. The category test is
@@ -98,11 +102,11 @@ SELECT COUNT(*) FROM (
           -- so every arm of the OR has an index and the planner can collect a
           -- small visible set with a BitmapOr instead of scanning tickets.
           -- A ticket with no type is not covered here (NULL = ANY is not true).
-          OR (t.category_id = ANY ($10::uuid[])
-              AND t.type_id = ANY ($11::uuid[]))
+          OR (t.category_id = ANY ($11::uuid[])
+              AND t.type_id = ANY ($12::uuid[]))
         )
     )
-  LIMIT $12
+  LIMIT $13
 ) AS matched
 `
 
@@ -113,6 +117,7 @@ type CountAuditLogScopedParams struct {
 	FromTs           sql.NullTime   `json:"from_ts"`
 	ToTs             sql.NullTime   `json:"to_ts"`
 	Q                sql.NullString `json:"q"`
+	ExcludeActions   []string       `json:"exclude_actions"`
 	UserID           uuid.UUID      `json:"user_id"`
 	GroupIds         []uuid.UUID    `json:"group_ids"`
 	CategoryIds      []uuid.UUID    `json:"category_ids"`
@@ -149,6 +154,7 @@ func (q *Queries) CountAuditLogScoped(ctx context.Context, arg CountAuditLogScop
 		arg.FromTs,
 		arg.ToTs,
 		arg.Q,
+		pq.Array(arg.ExcludeActions),
 		arg.UserID,
 		pq.Array(arg.GroupIds),
 		pq.Array(arg.CategoryIds),
@@ -315,19 +321,21 @@ WHERE ($1::text IS NULL OR entity_type = $1::text)
     OR entity_type ILIKE '%' || $6::text || '%'
     OR action ILIKE '%' || $6::text || '%'
   )
+  AND ($7::text[] IS NULL OR NOT (action = ANY ($7::text[])))
 ORDER BY created_at DESC, id DESC
-LIMIT $8 OFFSET $7
+LIMIT $9 OFFSET $8
 `
 
 type SearchAuditLogParams struct {
-	EntityType sql.NullString `json:"entity_type"`
-	Action     sql.NullString `json:"action"`
-	ActorID    uuid.NullUUID  `json:"actor_id"`
-	FromTs     sql.NullTime   `json:"from_ts"`
-	ToTs       sql.NullTime   `json:"to_ts"`
-	Q          sql.NullString `json:"q"`
-	PageOffset int32          `json:"page_offset"`
-	PageLimit  int32          `json:"page_limit"`
+	EntityType     sql.NullString `json:"entity_type"`
+	Action         sql.NullString `json:"action"`
+	ActorID        uuid.NullUUID  `json:"actor_id"`
+	FromTs         sql.NullTime   `json:"from_ts"`
+	ToTs           sql.NullTime   `json:"to_ts"`
+	Q              sql.NullString `json:"q"`
+	ExcludeActions []string       `json:"exclude_actions"`
+	PageOffset     int32          `json:"page_offset"`
+	PageLimit      int32          `json:"page_limit"`
 }
 
 // The admin-wide audit view (#129), unscoped: an administrator, or staff while
@@ -345,6 +353,7 @@ func (q *Queries) SearchAuditLog(ctx context.Context, arg SearchAuditLogParams) 
 		arg.FromTs,
 		arg.ToTs,
 		arg.Q,
+		pq.Array(arg.ExcludeActions),
 		arg.PageOffset,
 		arg.PageLimit,
 	)
@@ -390,6 +399,7 @@ WHERE ($1::text IS NULL OR entity_type = $1::text)
     OR entity_type ILIKE '%' || $6::text || '%'
     OR action ILIKE '%' || $6::text || '%'
   )
+  AND ($7::text[] IS NULL OR NOT (action = ANY ($7::text[])))
   -- Staff scope (#330, #331). Only ticket entries on a ticket this staff
   -- member may see: the same four ways in as ticket.CanView — reported by
   -- them, assigned to them, assigned to a group of theirs, or inside a
@@ -402,10 +412,10 @@ WHERE ($1::text IS NULL OR entity_type = $1::text)
     SELECT 1 FROM tickets t
     WHERE t.id = audit_log.entity_id
       AND (
-        t.reporter_user_id = $7::uuid
-        OR t.assignee_user_id = $7::uuid
-        OR t.assignee_group_id = ANY ($8::uuid[])
-        OR t.category_id = ANY ($9::uuid[])
+        t.reporter_user_id = $8::uuid
+        OR t.assignee_user_id = $8::uuid
+        OR t.assignee_group_id = ANY ($9::uuid[])
+        OR t.category_id = ANY ($10::uuid[])
         -- A rule with a type. type_id alone decides it: a type belongs to one
         -- category, and the (category_id, type_id) foreign keys on tickets and
         -- group_scopes (000013) hold both to it. The category test is
@@ -413,12 +423,12 @@ WHERE ($1::text IS NULL OR entity_type = $1::text)
         -- so every arm of the OR has an index and the planner can collect a
         -- small visible set with a BitmapOr instead of scanning tickets.
         -- A ticket with no type is not covered here (NULL = ANY is not true).
-        OR (t.category_id = ANY ($10::uuid[])
-            AND t.type_id = ANY ($11::uuid[]))
+        OR (t.category_id = ANY ($11::uuid[])
+            AND t.type_id = ANY ($12::uuid[]))
       )
   )
 ORDER BY created_at DESC, id DESC
-LIMIT $13 OFFSET $12
+LIMIT $14 OFFSET $13
 `
 
 type SearchAuditLogScopedParams struct {
@@ -428,6 +438,7 @@ type SearchAuditLogScopedParams struct {
 	FromTs           sql.NullTime   `json:"from_ts"`
 	ToTs             sql.NullTime   `json:"to_ts"`
 	Q                sql.NullString `json:"q"`
+	ExcludeActions   []string       `json:"exclude_actions"`
 	UserID           uuid.UUID      `json:"user_id"`
 	GroupIds         []uuid.UUID    `json:"group_ids"`
 	CategoryIds      []uuid.UUID    `json:"category_ids"`
@@ -447,6 +458,7 @@ func (q *Queries) SearchAuditLogScoped(ctx context.Context, arg SearchAuditLogSc
 		arg.FromTs,
 		arg.ToTs,
 		arg.Q,
+		pq.Array(arg.ExcludeActions),
 		arg.UserID,
 		pq.Array(arg.GroupIds),
 		pq.Array(arg.CategoryIds),

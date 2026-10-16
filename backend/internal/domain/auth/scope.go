@@ -9,7 +9,7 @@ import (
 //
 // A scope is checked AFTER the role, so a credential cannot reach anything its
 // owner could not reach anyway: an API key acts at its owner's role, and an
-// OAuth client acts as staff. Granting `users:write` to a key owned by a
+// OAuth client acts at its service user's role (staff or user, never admin). Granting `users:write` to a key owned by a
 // reporting user grants nothing.
 //
 // An empty scope list denies everything. That is deliberate and it is a

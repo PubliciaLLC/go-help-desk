@@ -15,6 +15,7 @@ import { extractError, extractErrorCode } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { EmailNotificationsSection } from '@/components/EmailNotificationsSection'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
@@ -375,6 +376,24 @@ function PasskeySection() {
     },
   })
 
+  // The server has passkeys off (#494). The list request is what says so, in
+  // the same breath as every other passkey route, rather than a second
+  // request that could disagree with it.
+  if (extractErrorCode(passkeys.error) === 'passkeys_unavailable') {
+    return (
+      <Section
+        icon={<KeyRoundIcon className="h-4 w-4" />}
+        title="Passkeys"
+        description="Sign in with your fingerprint, face, screen lock or a security key."
+      >
+        <p className="text-sm text-gray-500">
+          Passkeys are not available on this instance. Ask an administrator, who can see why under the
+          security warnings.
+        </p>
+      </Section>
+    )
+  }
+
   if (!supported) {
     return (
       <Section
@@ -504,7 +523,7 @@ function AuthenticatorSection() {
           {/* There is deliberately no button here. Nothing in the API removes
               an authenticator, because an account's second factor should not
               be strippable by whoever is holding the session. An
-              administrator resets it with `go-help-desk reset-factors`. */}
+              administrator resets it with `/app/server reset-factors`. */}
           <p className="text-xs text-gray-500">
             To replace it, ask an administrator to reset your second factor.
           </p>
@@ -561,6 +580,7 @@ export function AccountPage() {
           <h1 className="text-xl font-semibold text-gray-900">Your account</h1>
           <p className="mt-1 text-sm text-gray-500">{user?.email}</p>
         </div>
+        <EmailNotificationsSection />
         <PasswordSection />
         <PasskeySection />
         <AuthenticatorSection />

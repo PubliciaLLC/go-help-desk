@@ -122,7 +122,7 @@ Environment variables control infrastructure; feature flags (SAML, MFA, SLA, gue
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `DATABASE_URL` | yes | — | `postgres://user:pass@host/db?sslmode=disable` |
-| `BASE_URL` | yes | — | Public URL (e.g. `https://helpdesk.example.com`) |
+| `BASE_URL` | yes | — | Public URL (e.g. `https://helpdesk.example.com`). Passkeys need its host to be a domain name or `localhost`; with an IP address or a single-word host the server still starts, with passkeys off |
 | `SESSION_SECRET` | yes | — | Random secret ≥ 32 chars |
 | `JWT_SECRET` | yes | — | Random secret. No minimum is enforced; 32+ characters is the sensible choice |
 | `HTTP_PORT` | | `8080` | Listen port |
@@ -155,6 +155,23 @@ Environment variables control infrastructure; feature flags (SAML, MFA, SLA, gue
 > tickets got no error and no guests.
 > Changing an auth-related setting requires a signed-in administrator — an API
 > key cannot, whatever scopes it holds.
+
+## Locked out?
+
+Lost your authenticator or passkey, disabled the only administrator, or never
+had a working password? Run this on the server. It needs shell access and
+nothing else:
+
+```sh
+docker compose exec app /app/server unlock you@example.com
+```
+
+It clears every second factor, re-enables the account, clears the MFA
+lockout, ends all sessions and prints a new random password **once**. Sign in
+with it; you will be asked to choose your own before anything else. The
+command is recorded in the audit log with the server console as the actor.
+`/app/server reset-factors <email>` does only the factor part and leaves the
+password alone.
 
 ## Upgrading to 1.3.0
 

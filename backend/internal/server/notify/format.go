@@ -62,6 +62,7 @@ type summary struct {
 	Event      notification.EventType
 	TicketID   uuid.UUID
 	Ref        string // tracking number, or the ticket id when none is known
+	Tracking   string // the tracking number itself, "" when none is known (JIRA wants no stand-in)
 	Headline   string // per-event line; see headline()
 	Subject    string // "" when the event does not carry one
 	Body       string // public reply body only, truncated to 1000 runes; "" otherwise
@@ -92,6 +93,10 @@ type summary struct {
 // puts it in the payload anyway.
 func summarize(ev notification.Event, baseURL string) summary {
 	internal, _ := ev.Payload["internal"].(bool)
+	// A note is internal by definition; do not rely on the flag being present.
+	if ev.Type == notification.EventTicketNoteAdded {
+		internal = true
+	}
 
 	var body string
 	if !internal {
@@ -125,6 +130,7 @@ func summarize(ev notification.Event, baseURL string) summary {
 		Event:          ev.Type,
 		TicketID:       ev.TicketID,
 		Ref:            ref(ev),
+		Tracking:       trackingOf(ev),
 		Headline:       headline(ev.Type, ev.StatusName, internal, linkedTicketID, linkType),
 		Subject:        sanitizeSubject(ev.Subject),
 		Body:           body,
@@ -143,13 +149,22 @@ func summarize(ev notification.Event, baseURL string) summary {
 // predates that, and falls back to the ticket id so a renderer never has to
 // handle an empty reference.
 func ref(ev notification.Event) string {
+	if tn := trackingOf(ev); tn != "" {
+		return tn
+	}
+	return ev.TicketID.String()
+}
+
+// trackingOf is the tracking number alone, "" when the event has none. A
+// field that means "tracking number" (JIRA's) must not be handed a ticket id.
+func trackingOf(ev notification.Event) string {
 	if ev.TrackingNumber != "" {
 		return ev.TrackingNumber
 	}
 	if tn, ok := ev.Payload["TrackingNumber"].(string); ok && tn != "" {
 		return tn
 	}
-	return ev.TicketID.String()
+	return ""
 }
 
 // headline is the one-line summary every format leads with.
@@ -157,12 +172,17 @@ func headline(t notification.EventType, statusName string, internal bool, linked
 	switch t {
 	case notification.EventTicketCreated:
 		return "New ticket"
+	case notification.EventTicketNoteAdded:
+		return "Internal note added"
 	case notification.EventTicketReplied:
 		if internal {
 			return "Internal note added"
 		}
 		return "New reply"
 	case notification.EventTicketStatusChanged:
+		if statusName == "" {
+			return "Status changed"
+		}
 		return "Status changed to " + statusName
 	case notification.EventTicketAssigned:
 		return "Assigned"

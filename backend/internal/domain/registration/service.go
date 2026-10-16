@@ -192,8 +192,15 @@ func (s *Service) SendVerification(ctx context.Context, id uuid.UUID) error {
 // using the link, so the verification page can show the address before asking
 // for a password (#370). ErrNotFound is a link that is unknown, replaced or
 // used, and ErrTokenExpired one past its TTL; any other error is a fault, not
-// a verdict on the link. A link that passes can still fail at Verify, with
-// ErrAlreadyRegistered, if the address has gained an account since.
+// a verdict on the link. So is ErrAlreadyRegistered: the address has gained an
+// account since the link was mailed (#421), which Verify would refuse anyway.
+// A link that passes can still fail at Verify if the account appears between
+// the two calls.
+//
+// This does not reopen #348. Register, which anyone can call, is untouched and
+// answers the same for a taken address; this runs only for the holder of a
+// token, and a token for a taken address was never mailed, so its only holder
+// is the inbox owner who received it before the account existed.
 func (s *Service) Lookup(ctx context.Context, token uuid.UUID) (PendingRegistration, error) {
 	pr, err := s.store.GetByToken(ctx, token)
 	if err != nil {
@@ -201,6 +208,13 @@ func (s *Service) Lookup(ctx context.Context, token uuid.UUID) (PendingRegistrat
 	}
 	if time.Now().After(pr.ExpiresAt) {
 		return PendingRegistration{}, ErrTokenExpired
+	}
+	taken, err := s.users.EmailIsTaken(ctx, pr.Email)
+	if err != nil {
+		return PendingRegistration{}, fmt.Errorf("checking the address: %w", err)
+	}
+	if taken {
+		return PendingRegistration{}, ErrAlreadyRegistered
 	}
 	return pr, nil
 }

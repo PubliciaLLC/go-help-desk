@@ -1,7 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
 import { listTicketAudit } from '@/api/tickets'
+import type { TicketAuditEntry } from '@/api/types'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { AuditDiff } from '@/components/AuditDiff'
+import { followRemovalLabel, isFollowAction } from '@/lib/followAudit'
 import { EyeOffIcon } from 'lucide-react'
 
 interface AuditFeedProps {
@@ -20,6 +22,8 @@ const ACTION_LABELS: Record<string, string> = {
   resolved: 'Resolved',
   closed: 'Closed',
   reopened: 'Reopened',
+  followed: 'Started following',
+  unfollowed: 'Stopped following',
 }
 
 function labelFor(action: string): string {
@@ -27,6 +31,10 @@ function labelFor(action: string): string {
     ACTION_LABELS[action] ??
     action.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase())
   )
+}
+
+function labelForEntry(e: TicketAuditEntry): string {
+  return followRemovalLabel(e) ?? labelFor(e.action)
 }
 
 // #129: the per-ticket activity feed, next to the status timeline —
@@ -58,7 +66,7 @@ export function AuditFeed({ ticketId }: AuditFeedProps) {
         <ul className="space-y-2">
           {entries.map((e) => (
             <li key={e.id} className="text-xs text-gray-700">
-              <span className="font-medium">{labelFor(e.action)}</span>
+              <span className="font-medium">{labelForEntry(e)}</span>
               {e.actor_name && (
                 <>
                   {' by '}
@@ -70,7 +78,10 @@ export function AuditFeed({ ticketId }: AuditFeedProps) {
               <span className="block text-gray-400">
                 {new Date(e.created_at).toLocaleString()}
               </span>
-              <AuditDiff before={e.before} after={e.after} />
+              {/* A follow entry's diff only repeats what its label says. */}
+              {!isFollowAction(e.action) && (
+                <AuditDiff before={e.before} after={e.after} names={e.names} />
+              )}
             </li>
           ))}
         </ul>

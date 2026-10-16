@@ -23,7 +23,7 @@ export interface GuestTicket {
   description: string
   status: string
   created_at: string
-  updated_at: string
+  updated_at?: string // no longer sent (2026-10-15); nothing reads it
   replies: GuestReply[]
 }
 

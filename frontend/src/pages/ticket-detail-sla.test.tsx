@@ -104,4 +104,35 @@ describe('the SLA indicator on the ticket header', () => {
 
     expect(document.querySelectorAll('[data-target]').length).toBe(0)
   })
+
+  it('shows the "SLA restarted" badge when the SLA has an earlier record, and only then', async () => {
+    mockApi({
+      ...TICKET,
+      sla: {
+        ...TICKET.sla,
+        earlier: {
+          policy_id: 'pol-0',
+          policy_name: 'Standard medium',
+          started_at: '2026-09-20T10:00:00Z',
+          superseded_at: '2026-09-21T10:00:00Z',
+          outcome: 'met',
+        },
+      },
+    } as unknown as typeof TICKET)
+    renderWithQuery(<TicketDetailPage />)
+    await waitFor(() => {
+      expect(document.body.textContent).toContain(TICKET.subject)
+    })
+    expect(document.querySelector('[data-testid="sla-restarted"]')).not.toBeNull()
+  })
+
+  it('shows no "SLA restarted" badge for an SLA with no earlier record', async () => {
+    mockApi(TICKET)
+    renderWithQuery(<TicketDetailPage />)
+    await waitFor(() => {
+      expect(document.body.textContent).toContain(TICKET.subject)
+    })
+    expect(document.querySelector('[data-target="response"]')).not.toBeNull()
+    expect(document.querySelector('[data-testid="sla-restarted"]')).toBeNull()
+  })
 })

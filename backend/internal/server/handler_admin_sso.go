@@ -21,6 +21,10 @@ import (
 //
 // Returns the persisted OIDC configuration.
 // The client secret is intentionally never returned to the browser.
+//
+// `configured` says the saved settings are complete; `live` says the provider
+// is loaded and can sign someone in now. They differ when the identity
+// provider did not answer at startup or at the last save (#421).
 func (s *Server) handleGetOIDCConfig(w http.ResponseWriter, r *http.Request) {
 	cfg := s.adminSvc.GetOIDCConfig(r.Context())
 
@@ -31,6 +35,7 @@ func (s *Server) handleGetOIDCConfig(w http.ResponseWriter, r *http.Request) {
 		"client_secret": "",
 		"redirect_url":  cfg.RedirectURL,
 		"configured":    s.adminSvc.OIDCConfigured(r.Context()),
+		"live":          s.oidcReachableNow(),
 	})
 }
 
@@ -140,11 +145,15 @@ func (s *Server) handleSaveOIDCConfig(w http.ResponseWriter, r *http.Request) {
 // ── SAML ──────────────────────────────────────────────────────────────────────
 
 // GET /api/v1/admin/saml
+//
+// `configured` is "the saved settings are complete", `live` is "the SAML
+// middleware is loaded" (see handleGetOIDCConfig).
 func (s *Server) handleGetSAMLConfig(w http.ResponseWriter, r *http.Request) {
 	metadataURL, certPEM, _ := s.adminSvc.GetSAMLConfig(r.Context())
 	configured := s.adminSvc.SAMLConfigured(r.Context())
 	JSON(w, http.StatusOK, map[string]any{
 		"configured":      configured,
+		"live":            s.samlReachableNow(),
 		"metadata_url":    metadataURL,
 		"metadata_xml":    s.adminSvc.GetSAMLMetadataXML(r.Context()),
 		"cert_pem":        certPEM,
