@@ -2,6 +2,7 @@ package ticket_test
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/google/uuid"
@@ -22,7 +23,7 @@ import (
 func eventOfType(t *testing.T, events []notification.Event, ty notification.EventType) notification.Event {
 	t.Helper()
 	for _, e := range events {
-		if e.Type == ty {
+		if slices.Contains(e.AllKinds(), ty) {
 			return e
 		}
 	}

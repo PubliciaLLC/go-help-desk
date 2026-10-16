@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
@@ -198,13 +199,28 @@ func TestChangePriority_SamePriorityDoesNotReMatchTheSLA(t *testing.T) {
 	require.Empty(t, h.auditStore.entries)
 }
 
-// A priority change announces nothing: there is no event for it (decided on
-// #468, Q9), and #413's priority filter must never see one.
-func TestChangePriority_DispatchesNoNotification(t *testing.T) {
+// A priority change used to announce nothing (decided on #468, Q9). #506
+// ruling 2 reverses that: it is ticket.priority_changed, ids and enums only.
+func TestChangePriority_AnnouncesOnePriorityChanged(t *testing.T) {
 	h := newPrioHarness(t)
 	seeded := h.seedMedium()
 
 	_, err := h.svc.ChangePriority(context.Background(), seeded.ID, ticket.PriorityHigh, priorityStaff)
+
+	require.NoError(t, err)
+	require.Len(t, h.dispatcher.events, 1)
+	ev := h.dispatcher.events[0]
+	require.Equal(t, []notification.EventType{notification.EventTicketPriorityChanged}, ev.Kinds)
+	require.Equal(t, []notification.Change{notification.ValueChange("priority", "medium", "high")}, ev.Changes)
+	require.Equal(t, "high", ev.Ticket.Priority)
+}
+
+// A change that moves nothing announces nothing.
+func TestChangePriority_TheSamePriorityAnnouncesNothing(t *testing.T) {
+	h := newPrioHarness(t)
+	seeded := h.seedMedium()
+
+	_, err := h.svc.ChangePriority(context.Background(), seeded.ID, ticket.PriorityMedium, priorityStaff)
 
 	require.NoError(t, err)
 	require.Empty(t, h.dispatcher.events)
@@ -421,10 +437,10 @@ func (h *prioHarness) reopenBump(t *testing.T, ticketID uuid.UUID, p ticket.Prio
 	t.Helper()
 	requester := uuid.New()
 	actor := ticket.Actor{UserID: &requester, Role: user.RoleUser}
-	err := h.atomic.InTx(context.Background(), func(st ticket.Store, au audit.Store) error {
+	err := h.atomic.InTx(context.Background(), func(st ticket.Store, au audit.Store, ch *notification.Changes) error {
 		tk, err := st.GetByIDForUpdate(context.Background(), ticketID)
 		require.NoError(t, err)
-		_, err = h.svc.ChangePriorityInTx(context.Background(), st, au, tk, p,
+		_, err = h.svc.ChangePriorityInTx(context.Background(), st, au, ch, tk, p,
 			ticket.PriorityChangeReopened, actor, time.Now())
 		return err
 	})
@@ -471,7 +487,9 @@ func TestReopenBump_RaisingThePriorityRestartsBothClocks(t *testing.T) {
 	require.Equal(t, map[string]any{
 		"sla_record_id": cur.id, "sla_policy_id": h.high, "previous_sla_record_id": oldID,
 	}, sr.After)
-	require.Empty(t, h.dispatcher.events)
+	// The raise is announced as a priority change (#506).
+	require.Len(t, h.dispatcher.events, 1)
+	require.Equal(t, []notification.EventType{notification.EventTicketPriorityChanged}, h.dispatcher.events[0].Kinds)
 }
 
 // (b) A reopen at the highest priority, which cannot be raised: the same call,

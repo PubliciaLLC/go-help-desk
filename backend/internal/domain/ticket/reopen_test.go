@@ -340,8 +340,8 @@ func TestReopen_IsAnnouncedWithWhoHoldsTheTicketAndWhoDidIt(t *testing.T) {
 			}
 			require.Equal(t, 1, n, "announced once")
 			ev := lastEventOfType(t, h.harness, notification.EventTicketReopened)
-			require.Equal(t, &reopenAssignee, ev.AssigneeUserID)
-			require.Equal(t, &reopenGroup, ev.AssigneeGroupID)
+			require.Equal(t, &reopenAssignee, ev.Ticket.AssigneeUserID)
+			require.Equal(t, &reopenGroup, ev.Ticket.AssigneeGroupID)
 			require.Equal(t, actor.UserID, ev.ActorID)
 			require.Equal(t, tk.ID, ev.TicketID)
 		})
@@ -349,8 +349,9 @@ func TestReopen_IsAnnouncedWithWhoHoldsTheTicketAndWhoDidIt(t *testing.T) {
 }
 
 // Only the door that already mailed the requester keeps doing so: a status
-// change already tells the guest through its own event, and the requester who
-// reopened needs no mail about their own reply.
+// change already tells the guest. The reopen is part of the same event now
+// (#506), so there is one recipient on one event, and no second mail to
+// duplicate.
 func TestReopen_TheRequestersOwnMailIsUnchanged(t *testing.T) {
 	h := newPrioHarness(t)
 	tk := h.seedFinished("resolved", ticket.PriorityMedium)
@@ -360,15 +361,17 @@ func TestReopen_TheRequestersOwnMailIsUnchanged(t *testing.T) {
 	_, err := h.svc.UpdateStatus(context.Background(), tk.ID, h.inProgressStatus.ID, reopenStaff)
 	require.NoError(t, err)
 
-	reopened := lastEventOfType(t, h.harness, notification.EventTicketReopened)
-	require.Empty(t, reopened.Recipient, "the status-change event already mails the guest; a second mail would be a duplicate")
-	status := lastEventOfType(t, h.harness, notification.EventTicketStatusChanged)
-	require.Equal(t, "guest@example.test", status.Recipient)
+	require.Len(t, h.dispatcher.events, 1, "the status change and the reopen are one change")
+	ev := h.dispatcher.events[0]
+	require.Contains(t, ev.Kinds, notification.EventTicketReopened)
+	require.Contains(t, ev.Kinds, notification.EventTicketStatusChanged)
+	require.Equal(t, "guest@example.test", ev.Recipient)
 }
 
-// A reply that reopens is announced by the reopen, so staff are not mailed
-// twice for one action: the reply event no longer asks for staff mail.
-func TestReopen_AReplyThatReopensDoesNotAlsoAskForTheReplyMail(t *testing.T) {
+// A reply that reopens is one change with both kinds (#506), still the
+// requester replying: staff are not mailed twice because the worker gives each
+// person one mail per change, not because the reply stopped asking for it.
+func TestReopen_AReplyThatReopensIsOneEventCarryingBothKinds(t *testing.T) {
 	h := newPrioHarness(t)
 	tk := h.seedFinished("resolved", ticket.PriorityMedium)
 	requester := ticket.Actor{UserID: tk.ReporterUserID, Role: user.RoleUser}
@@ -376,9 +379,13 @@ func TestReopen_AReplyThatReopensDoesNotAlsoAskForTheReplyMail(t *testing.T) {
 	_, err := h.svc.AddReply(context.Background(), tk.ID, "still broken", false, true, "r@example.test", requester, 30, h.newStatus.ID)
 	require.NoError(t, err)
 
-	reply := lastEventOfType(t, h.harness, notification.EventTicketReplied)
-	require.False(t, reply.FromRequester, "the reopen event carries the staff mail for this action")
-	require.Equal(t, "r@example.test", reply.Recipient, "everything else about the reply event is unchanged")
+	require.Len(t, h.dispatcher.events, 1)
+	reply := h.dispatcher.events[0]
+	require.Equal(t, notification.EventTicketReopened, reply.Type, "the reopen is the first kind")
+	require.Contains(t, reply.Kinds, notification.EventTicketReplied)
+	require.Contains(t, reply.Kinds, notification.EventTicketStatusChanged)
+	require.True(t, reply.FromRequester, "it is still the requester replying")
+	require.Equal(t, "r@example.test", reply.Recipient)
 
 	// And a requester's reply that does not reopen still asks for it.
 	open := h.seedMedium()

@@ -2,6 +2,7 @@ package ticket_test
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/google/uuid"
@@ -177,10 +178,13 @@ func TestResolve_DifferentNotesUpdateOnReResolve(t *testing.T) {
 		"a genuine re-resolve dispatches EventTicketResolved again, unlike a true double-submit")
 }
 
+// countType counts the events that announce a kind. An event is one change
+// carrying every kind it did (#506), so "one resolve and one link" is one event
+// with both kinds, and a count of 1 for each.
 func countType(events []notification.Event, want notification.EventType) int {
 	n := 0
 	for _, e := range events {
-		if e.Type == want {
+		if slices.Contains(e.AllKinds(), want) {
 			n++
 		}
 	}
