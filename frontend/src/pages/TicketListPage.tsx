@@ -294,12 +294,14 @@ export function TicketListPage() {
 
         {/* Search reach (#444). Label while the box has text; the chip too, except on
             the admin "all" queue, which is already everything. */}
-        {searching && (
-          <div className="flex items-center gap-2 text-sm">
-            {!onlyQueue && (
-              <span aria-live="polite" className="text-gray-500">Searching all tickets you can see</span>
-            )}
-            {QUEUE_NAMES[effectiveScope] && (
+        {isStaffOrAdmin && (
+          <div className={searching ? 'flex items-center gap-2 text-sm' : 'sr-only'}>
+            {/* Always in the page, only its text changes: a live region added
+                together with its text is often not announced. */}
+            <span aria-live="polite" className="text-gray-500">
+              {searching && !onlyQueue ? 'Searching all tickets you can see' : ''}
+            </span>
+            {searching && QUEUE_NAMES[effectiveScope] && (
               <button
                 type="button"
                 aria-pressed={onlyQueue}

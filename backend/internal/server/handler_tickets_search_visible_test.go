@@ -46,6 +46,26 @@ func newTicketAsAdmin(t *testing.T, h *harness, subject string, groupID *uuid.UU
 	return created.ID
 }
 
+// newTicketAsRequester files the ticket as the seeded requester, so an admin
+// asking for it cannot see it merely because they reported it.
+func newTicketAsRequester(t *testing.T, h *harness, subject string, groupID *uuid.UUID) string {
+	t.Helper()
+	resp := h.doAsUser(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject": subject, "description": "x", "category_id": h.catID.String(),
+	})
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	var created struct {
+		ID string `json:"id"`
+	}
+	decodeJSON(t, resp, &created)
+	if groupID != nil {
+		resp = h.doAsAdmin(t, http.MethodPatch, "/api/v1/tickets/"+created.ID,
+			map[string]any{"assignee_group_id": groupID.String()})
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+	}
+	return created.ID
+}
+
 func TestSearchVisible_StaffScopeOffFindsEverything(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
@@ -104,8 +124,8 @@ func TestSearchVisible_AdminFindsEverythingAndNarrowsToQueue(t *testing.T) {
 
 	grp, err := h.groupSvc.Create(ctx, "Grp "+uuid.NewString()[:8], "")
 	require.NoError(t, err)
-	newTicketAsAdmin(t, h, "bilby unassigned", nil)
-	newTicketAsAdmin(t, h, "bilby grouped", &grp.ID)
+	newTicketAsRequester(t, h, "bilby unassigned", nil)
+	newTicketAsRequester(t, h, "bilby grouped", &grp.ID)
 	enableScope(t, h) // admins are not scoped
 
 	got := searchSubjects(t, h.doAsAdmin(t, http.MethodGet, "/api/v1/tickets?scope=visible&q=bilby", nil))
@@ -197,8 +217,8 @@ func TestVisibleNoQuery_AdminAndUnscopedStaffGetEverything(t *testing.T) {
 
 	other, err := h.groupSvc.Create(ctx, "Other "+uuid.NewString()[:8], "")
 	require.NoError(t, err)
-	newTicketAsAdmin(t, h, "unassigned one", nil)
-	newTicketAsAdmin(t, h, "other group one", &other.ID)
+	newTicketAsRequester(t, h, "unassigned one", nil)
+	newTicketAsRequester(t, h, "other group one", &other.ID)
 	want := map[string]bool{"unassigned one": true, "other group one": true}
 
 	require.Equal(t, want, searchSubjects(t, h.do(t, http.MethodGet, "/api/v1/tickets?scope=visible", nil)),

@@ -60,7 +60,7 @@ describe('search reach for staff', () => {
 
     expect(ticketCalls().every(p => p.scope === 'mine' && p.q === undefined)).toBe(true)
     expect(screen.queryByText('Searching all tickets you can see')).toBeNull()
-    expect(screen.queryByRole('button', { name: /^Only / })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Only/ })).toBeNull()
   })
 
   it('typing searches everything visible and says so', async () => {
@@ -100,7 +100,7 @@ describe('search reach for requesters', () => {
     await waitFor(() => expect(ticketCalls().at(-1)).toMatchObject({ q: 'printer' }))
     expect(ticketCalls().some(p => p.scope === 'visible')).toBe(false)
     expect(screen.queryByText('Searching all tickets you can see')).toBeNull()
-    expect(screen.queryByRole('button', { name: /^Only / })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Only/ })).toBeNull()
   })
 })
 
@@ -114,7 +114,7 @@ describe('whitespace', () => {
 
     expect(ticketCalls().some(p => p.scope === 'visible')).toBe(false)
     expect(screen.queryByText('Searching all tickets you can see')).toBeNull()
-    expect(screen.queryByRole('button', { name: /^Only / })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Only/ })).toBeNull()
   })
 })
 
@@ -141,6 +141,12 @@ describe('the chip resets so every new search starts wide', () => {
     expect(screen.getByRole('button', { name: 'Only unassigned' }).getAttribute('aria-pressed')).toBe('false')
   })
 
+  it('a box of only spaces turns it off', async () => {
+    await chipOn()
+    await typeSearch('   ')
+    expect(screen.getByRole('button', { name: /Only my tickets/ }).getAttribute('aria-pressed')).toBe('false')
+  })
+
   it('refining the same search keeps it on', async () => {
     await chipOn()
     await typeSearch('printer jam')
@@ -156,17 +162,21 @@ describe('admin All queue', () => {
     await typeSearch('printer')
 
     await screen.findByText('Searching all tickets you can see')
-    expect(screen.queryByRole('button', { name: /^Only / })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Only/ })).toBeNull()
   })
 })
 
 describe('the label', () => {
-  it('is a polite live region', async () => {
+  it('is a polite live region that is in the page before it has anything to say', async () => {
     setRole('staff')
-    renderWithQuery(<TicketListPage />)
+    const { container } = renderWithQuery(<TicketListPage />)
+    const region = container.querySelector('[aria-live="polite"]')
+    expect(region).not.toBeNull()
+    expect(region!.textContent).toBe('')
+
     await typeSearch('printer')
 
     const label = await screen.findByText('Searching all tickets you can see')
-    expect(label.getAttribute('aria-live')).toBe('polite')
+    expect(label).toBe(region)
   })
 })
