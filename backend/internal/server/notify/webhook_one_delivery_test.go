@@ -396,3 +396,66 @@ func TestReplyText_JiraFollowsTheSameRuleAsChat(t *testing.T) {
 		require.Equal(t, want, strings.Contains(body, "Paper tray 2 was empty."), "hook on %s: %s", events, body)
 	}
 }
+
+// Routing is the system's act, as it was in 1.2.x and as the audit entry says:
+// the delivery named ticket.assigned for a routed create has no actor, while
+// the one named ticket.created still names the creator. One event carries one
+// ActorID (the creator's); the assignment's absence of an actor is applied to
+// the name it is sent under.
+func TestOneDelivery_ARoutedCreateNamesNoActorUnderAssignedAndTheCreatorUnderCreated(t *testing.T) {
+	cases := []struct {
+		name      string
+		events    []string
+		wantLabel string
+		wantActor bool
+	}{
+		{"assigned only", []string{"ticket.assigned"}, "ticket.assigned", false},
+		{"created only", []string{"ticket.created"}, "ticket.created", true},
+		{"both: told the first kind, created", []string{"ticket.created", "ticket.assigned"}, "ticket.created", true},
+		{"wildcard: told the first kind, created", []string{"*"}, "ticket.created", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := newReceiver(t, 200)
+			bodies := bodiesOf(rc)
+			rig := newQueueRig(t, rc.srv.Client(), hookOn(rc.srv.URL, tc.events...))
+			ev := fixtureStatusChangedEvent() // an actor, a ticket and a time
+			ev.Type = notification.EventTicketCreated
+			ev.Kinds = []notification.EventType{notification.EventTicketCreated, notification.EventTicketAssigned}
+			ev.RoutedAssignment = true
+			ev.Ticket = &notification.TicketState{Priority: "high"}
+
+			require.NoError(t, rig.front.Dispatch(context.Background(), ev))
+			rig.drain(t)
+
+			require.Equal(t, 1, rc.count())
+			require.Equal(t, tc.wantLabel, rc.header(0, "X-GHD-Event"))
+			var got map[string]any
+			require.NoError(t, json.Unmarshal([]byte(bodies()[0]), &got))
+			if tc.wantActor {
+				require.Equal(t, fixtureActorID.String(), got["ActorID"])
+			} else {
+				require.Contains(t, got, "ActorID")
+				require.Nil(t, got["ActorID"], "routing names nobody")
+			}
+		})
+	}
+}
+
+// An assignment a person made carries the person, whatever the name.
+func TestOneDelivery_AnAssignmentAPersonMadeNamesThem(t *testing.T) {
+	rc := newReceiver(t, 200)
+	bodies := bodiesOf(rc)
+	rig := newQueueRig(t, rc.srv.Client(), hookOn(rc.srv.URL, "ticket.assigned"))
+	ev := fixtureStatusChangedEvent()
+	ev.Type = notification.EventTicketAssigned
+	ev.Kinds = []notification.EventType{notification.EventTicketAssigned}
+	ev.Ticket = &notification.TicketState{Priority: "high"}
+
+	require.NoError(t, rig.front.Dispatch(context.Background(), ev))
+	rig.drain(t)
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal([]byte(bodies()[0]), &got))
+	require.Equal(t, fixtureActorID.String(), got["ActorID"])
+}

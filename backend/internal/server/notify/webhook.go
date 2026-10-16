@@ -688,6 +688,13 @@ func forHook(hook authstore.WebhookConfig, ev notification.Event) (notification.
 		return ev, false
 	}
 	ev.Type, ev.Kinds = kinds[0], kinds
+	// A routed create is one event with one ActorID, the creator's. Routing is
+	// the system's act (as in 1.2.x, and as its audit entry says), so a hook told
+	// ticket.assigned is told of nobody; one told ticket.created still gets the
+	// creator. Decided here, per attempt, from the name the hook is sent under.
+	if ev.Type == notification.EventTicketAssigned && ev.RoutedAssignment {
+		ev.ActorID = nil
+	}
 	return ev, true
 }
 
