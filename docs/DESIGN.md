@@ -1382,7 +1382,52 @@ Tracked as [#296](https://github.com/PubliciaLLC/go-help-desk/issues/296); shipp
 | Type | — (not shown) | Active only | Active selectable; archived shown greyed |
 | Item | — | — (not shown) | Active selectable; archived shown greyed |
 | Priority | — (defaults to Medium) | — (defaults to Medium) | Selectable |
+| Requester | Their own name and email (above) | Always themselves | Me (default), an existing user, or a typed email address (below) |
 | Attachments | — | Yes | Yes |
+
+**Filing on behalf of a requester (#444).** Staff and administrators can open a
+ticket for someone else, which is how a phone-in request is recorded. `POST
+/tickets` takes one of two optional fields, never both (`400` if both are sent):
+
+- `reporter_user_id`, an existing account. The checks are MCP `create_ticket`'s,
+  because they are the ticket service's: an id that is not a live account is
+  `400`, and a disabled account is accepted.
+- `reporter_email`, an address typed for someone who may have no account. It is
+  trimmed and lower-cased, and held to the same address rules as a guest's (a
+  display name or a local part that needs quotation marks is `400`). **If the
+  address belongs to an account, the ticket is filed for that account**, as if
+  its id had been sent, rather than creating a guest identity for a person who
+  can sign in. **Otherwise it is filed exactly like a guest ticket**: the same
+  creation path, the person is sent the same guest link at that address (read
+  and reply, read-only once the ticket closes, replaced when the ticket changes
+  in a way they are told about), and the optional `guest_name` and `guest_phone`
+  are kept (optional here, where the guest form requires the name). Guest links
+  are suspended while guest submission is off (#424), so a typed address with no
+  account behind it is `400` then, and nothing is filed; an address that belongs
+  to an account is not affected. Only the requester's identity follows the guest
+  rules: the ticket is still filed with the caller's staff rights (type, item,
+  priority) and routed like any `POST /tickets`.
+
+With neither field the caller is the requester, as before. **The member of staff
+is the actor** in the status history, the `created` audit entry and the
+`created` event (`ticket.CreateInput.FiledBy`); the requester is the ticket's
+reporter or guest, which is how the ticket page already shows them. A reporting
+user who sends either field gets `403 forbidden`, the same as any other staff-only
+action; it is never ignored, because a ticket quietly filed under their own name is
+not what they asked for. A guest (no credential) is refused the same way.
+
+On the New ticket page, staff and administrators see a **Requester** choice
+(Me, the default; Another user; Email address) and a requester sees none. Another
+user is a search box: `GET /users/lookup?q=` (staff and administrators; `users:read`
+for a machine credential) answers with `id`, `display_name` and `email` of at most
+ten accounts whose name or address contains the query, ignoring case. A query
+shorter than two characters is `400`, so the endpoint finds a person and cannot
+list the directory; deleted accounts and service accounts are not found. A
+reporting user gets `403`.
+
+MCP `create_ticket` is unchanged: it takes `reporter_user_id` only (no typed
+address), and it still records the reporter as the actor of the creation, not the
+member of staff who called it. Bringing it in line is not part of #444.
 
 **Nobody newly picks an archived category, type or item (#421).** Staff and
 administrators see archived rows (in the picker and in the catalogue API) so they
@@ -2320,7 +2365,7 @@ only `read`.
 |----------|--------|
 | `tickets` | Tickets and everything under `/tickets/{id}` — replies, links, tags, attachments, custom fields, status transitions — plus the staff picker (`/staff`) |
 | `audit` | The admin-wide audit view (`/admin/audit`). A session needs no scope; an API key or OAuth client needs `audit:read`, which an administrator grants on purpose and which `tickets:read` does not imply. There is no `audit:write`: only the running server writes audit entries, so granting it to an API key or OAuth client is refused like an unknown scope, and one stored before the refusal ([#371](https://github.com/PubliciaLLC/go-help-desk/issues/371)) grants nothing, not even `audit:read` |
-| `users` | User administration |
+| `users` | User administration, and the requester lookup (`GET /users/lookup`, #444) |
 | `groups` | Groups, their members, and their category/type scopes |
 | `categories` | Categories, types, items, and custom-field assignments |
 | `tags` | Tag administration |

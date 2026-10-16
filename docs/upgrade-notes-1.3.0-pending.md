@@ -13,6 +13,17 @@ Previously the server let staff and administrators create tickets under, and rec
 
 What to check: scripts or integrations that file or reclassify tickets as staff or admin into an archived node will start getting 400. Unarchive the node (Admin → Categories) or file into an active one.
 
+## New: Staff and Administrators Can File a Ticket for a Requester (#444)
+
+`POST /api/v1/tickets` takes `reporter_user_id` (an existing account) or `reporter_email` (a typed address), **staff and administrators only**, at most one. The New ticket page shows them a **Requester** choice: Me (the default), Another user (search) or Email address. Requesters see no such control, and a requester who sends either field is refused with `403 forbidden`.
+
+- **A typed address sends the guest link to that address.** Unless the address belongs to an account (then the ticket is filed for that account), it is filed exactly like a guest ticket: the person is emailed the link to read and reply, as for a ticket they submitted themselves. It is refused with `400` while guest submission is off, because the link would not open.
+- The member of staff is the actor in the ticket's history and audit entry; the requester is its reporter or guest.
+- New `GET /api/v1/users/lookup?q=` feeds the picker: staff and administrators only, `users:read` for an API key or OAuth client, at most ten results (`id`, `display_name`, `email`), `400` for a query under two characters.
+- No migration. Existing callers that send neither field behave exactly as before.
+
+What to check: an API key that files tickets does not need `users:read` to use `reporter_user_id` or `reporter_email`; only the lookup does.
+
 ## New: `unlock <email>` on the Server Console (#497)
 
 `docker compose exec app /app/server unlock <email>` is the way back for a locked-out account, and it works when the web path cannot: a lost authenticator or passkey, a disabled account (the sole administrator included), a spent MFA lockout, or a federated administrator with no usable password. In one transaction it clears every second factor, re-enables the account, clears the MFA lockout, sets a new random password and prints it once, and ends all sessions. The password must be changed at the next sign-in.
