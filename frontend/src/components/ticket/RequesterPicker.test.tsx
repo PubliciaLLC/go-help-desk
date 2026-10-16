@@ -75,4 +75,30 @@ describe('RequesterPicker', () => {
     expect(onChange).toHaveBeenLastCalledWith({ mode: 'user', picked: null })
     expect((screen.getByLabelText('Search users') as HTMLInputElement).value).toBe('')
   })
+
+  it('asks for a name and an optional phone number beside a typed address', async () => {
+    const onChange = vi.fn()
+    const user = userEvent.setup()
+    renderWithQuery(<Harness onChange={onChange} />)
+
+    await user.click(screen.getByRole('radio', { name: 'Email address' }))
+    expect(screen.getByLabelText('Requester name (required)')).toBeTruthy()
+    expect(screen.getByLabelText('Requester phone (optional)')).toBeTruthy()
+
+    await user.type(screen.getByLabelText('Requester name (required)'), 'Ada')
+    expect(onChange).toHaveBeenLastCalledWith({ mode: 'email', email: '', name: 'Ada', phone: '' })
+  })
+
+  it('counts the two-character minimum in characters, as the server does: one emoji is one', async () => {
+    const user = userEvent.setup()
+    renderWithQuery(<Harness />)
+
+    await user.click(screen.getByRole('radio', { name: 'Another user' }))
+    await user.type(screen.getByLabelText('Search users'), '\u{1F600}')
+    await new Promise((r) => setTimeout(r, 450)) // past the debounce
+    expect(lookup).not.toHaveBeenCalled()
+
+    await user.type(screen.getByLabelText('Search users'), 'a')
+    await waitFor(() => expect(lookup).toHaveBeenCalledWith('\u{1F600}a'))
+  })
 })

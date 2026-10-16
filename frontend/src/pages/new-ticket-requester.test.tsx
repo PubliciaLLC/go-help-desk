@@ -141,13 +141,46 @@ describe.each(['staff', 'admin'] as const)('the requester control for %s', (role
 
     await user.click(screen.getByRole('radio', { name: /email address/i }))
     await user.type(screen.getByLabelText(/requester email/i), '  new.person@example.com ')
+    await user.type(screen.getByLabelText(/requester name/i), ' Ada Lovelace ')
+    await user.type(screen.getByLabelText(/requester phone/i), '555-0100')
     expect(screen.getByText(/sent a link/i)).toBeTruthy()
     await user.click(screen.getByRole('button', { name: /submit ticket/i }))
 
     await waitFor(() => expect(createTicket).toHaveBeenCalledTimes(1))
     const sent = createTicket.mock.calls[0][0]
     expect(sent.reporter_email).toBe('new.person@example.com')
+    expect(sent.guest_name).toBe('Ada Lovelace')
+    expect(sent.guest_phone).toBe('555-0100')
     expect(sent).not.toHaveProperty('reporter_user_id')
+  })
+
+  it('files for a typed address without a phone number', async () => {
+    signInAs(role)
+    const user = userEvent.setup()
+    renderWithQuery(<NewTicketPage />)
+    await fillTicket(user)
+
+    await user.click(screen.getByRole('radio', { name: /email address/i }))
+    await user.type(screen.getByLabelText(/requester email/i), 'new.person@example.com')
+    await user.type(screen.getByLabelText(/requester name/i), 'Ada')
+    await user.click(screen.getByRole('button', { name: /submit ticket/i }))
+
+    await waitFor(() => expect(createTicket).toHaveBeenCalledTimes(1))
+    expect(createTicket.mock.calls[0][0]).not.toHaveProperty('guest_phone')
+  })
+
+  it('will not submit a typed address without a name', async () => {
+    signInAs(role)
+    const user = userEvent.setup()
+    renderWithQuery(<NewTicketPage />)
+    await fillTicket(user)
+
+    await user.click(screen.getByRole('radio', { name: /email address/i }))
+    await user.type(screen.getByLabelText(/requester email/i), 'new.person@example.com')
+    await user.click(screen.getByRole('button', { name: /submit ticket/i }))
+
+    expect((await screen.findByRole('alert')).textContent).toMatch(/name/i)
+    expect(createTicket).not.toHaveBeenCalled()
   })
 
   it('will not submit an empty address', async () => {
@@ -171,11 +204,13 @@ describe.each(['staff', 'admin'] as const)('the requester control for %s', (role
 
     await user.click(screen.getByRole('radio', { name: /email address/i }))
     await user.type(screen.getByLabelText(/requester email/i), 'new.person@example.com')
+    await user.type(screen.getByLabelText(/requester name/i), 'Ada')
     await user.click(screen.getByRole('radio', { name: /^me$/i }))
     await user.click(screen.getByRole('button', { name: /submit ticket/i }))
 
     await waitFor(() => expect(createTicket).toHaveBeenCalledTimes(1))
     expect(createTicket.mock.calls[0][0]).not.toHaveProperty('reporter_email')
+    expect(createTicket.mock.calls[0][0]).not.toHaveProperty('guest_name')
   })
 
   it('shows the server\'s reason when the ticket is refused', async () => {
@@ -189,6 +224,7 @@ describe.each(['staff', 'admin'] as const)('the requester control for %s', (role
     await fillTicket(user)
     await user.click(screen.getByRole('radio', { name: /email address/i }))
     await user.type(screen.getByLabelText(/requester email/i), 'new.person@example.com')
+    await user.type(screen.getByLabelText(/requester name/i), 'Ada')
     await user.click(screen.getByRole('button', { name: /submit ticket/i }))
 
     expect((await screen.findByRole('alert')).textContent).toMatch(/guest submission is off/)

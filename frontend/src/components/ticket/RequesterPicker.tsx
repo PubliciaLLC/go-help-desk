@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { lookupRequesters } from '@/api/tickets'
-import { ME, MIN_QUERY, type Requester } from './requester'
+import { ME, MIN_QUERY, queryLength, type Requester } from './requester'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -22,7 +22,7 @@ export function RequesterPicker({
     return () => clearTimeout(timer)
   }, [search])
 
-  const searching = value.mode === 'user' && !value.picked && debounced.length >= MIN_QUERY
+  const searching = value.mode === 'user' && !value.picked && queryLength(debounced) >= MIN_QUERY
   const { data: hits = [], isFetching } = useQuery({
     queryKey: ['requester-lookup', debounced],
     queryFn: () => lookupRequesters(debounced),
@@ -34,7 +34,7 @@ export function RequesterPicker({
     setDebounced('')
     if (mode === 'me') onChange(ME)
     else if (mode === 'user') onChange({ mode: 'user', picked: null })
-    else onChange({ mode: 'email', email: '' })
+    else onChange({ mode: 'email', email: '', name: '', phone: '' })
   }
 
   return (
@@ -125,20 +125,46 @@ export function RequesterPicker({
       )}
 
       {value.mode === 'email' && (
-        <div className="space-y-1">
-          <Label htmlFor="requester-email">Requester email</Label>
-          <Input
-            id="requester-email"
-            type="email"
-            value={value.email}
-            onChange={(e) => onChange({ mode: 'email', email: e.target.value })}
-            placeholder="someone@example.com"
-            autoComplete="off"
-            disabled={disabled}
-          />
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <Label htmlFor="requester-email">Requester email</Label>
+            <Input
+              id="requester-email"
+              type="email"
+              value={value.email}
+              onChange={(e) => onChange({ ...value, email: e.target.value })}
+              placeholder="someone@example.com"
+              autoComplete="off"
+              disabled={disabled}
+            />
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="space-y-1">
+              <Label htmlFor="requester-name">Requester name (required)</Label>
+              <Input
+                id="requester-name"
+                value={value.name}
+                onChange={(e) => onChange({ ...value, name: e.target.value })}
+                autoComplete="off"
+                disabled={disabled}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="requester-phone">Requester phone (optional)</Label>
+              <Input
+                id="requester-phone"
+                type="tel"
+                value={value.phone}
+                onChange={(e) => onChange({ ...value, phone: e.target.value })}
+                autoComplete="off"
+                disabled={disabled}
+              />
+            </div>
+          </div>
           <p className="text-sm text-gray-500">
-            If this address has an account the ticket is filed for that account. Otherwise they are
-            sent a link to follow it, as for any guest ticket.
+            If this address has an account the ticket is filed for that account, and the name and
+            phone are not used. Otherwise they are sent a link to follow it, as for any guest
+            ticket.
           </p>
         </div>
       )}
