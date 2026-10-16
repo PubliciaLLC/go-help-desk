@@ -18,7 +18,9 @@ const DEAD_LINK = 'This link is invalid, has expired or has already been used.'
 // new password like anyone else.
 export function ResetPasswordPage() {
   const navigate = useNavigate()
-  const token = new URLSearchParams(window.location.search).get('token') ?? ''
+  // Read once, into state: the effect below removes it from the address, and a
+  // later render would otherwise find none.
+  const [token] = useState(() => new URLSearchParams(window.location.search).get('token') ?? '')
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
   const [error, setError] = useState(token ? '' : DEAD_LINK)
@@ -27,6 +29,17 @@ export function ResetPasswordPage() {
   const [linkDead, setLinkDead] = useState(!token)
   const [loading, setLoading] = useState(false)
   const [done, setDone] = useState(false)
+
+  // The link is a credential. Once read it does not stay in the address bar,
+  // the browser's history or a Referer header.
+  useEffect(() => {
+    const { pathname, search, hash } = window.location
+    const params = new URLSearchParams(search)
+    if (!params.has('token')) return
+    params.delete('token')
+    const rest = params.toString()
+    window.history.replaceState(window.history.state, '', pathname + (rest ? `?${rest}` : '') + hash)
+  }, [])
 
   useEffect(() => {
     if (!done) return

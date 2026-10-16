@@ -47,6 +47,30 @@ describe('the reset password page', () => {
     expect(resetPassword).not.toHaveBeenCalled()
   })
 
+  // The link is a credential: it must not stay in the address bar, where it is
+  // shown over a shoulder, kept in history and sent to anything the page loads
+  // as a referrer. Removing it must not lose it, though: the submit still needs it.
+  it('takes the token out of the address bar once it has read it', async () => {
+    renderWithQuery(<ResetPasswordPage />)
+    await screen.findByLabelText('New password')
+    expect(window.location.search).toBe('')
+    expect(window.location.pathname).toBe('/reset-password')
+  })
+
+  it('still sends the token after taking it out of the address bar', async () => {
+    await choose('a-brand-new-password')
+    await waitFor(() => expect(resetPassword).toHaveBeenCalledWith('tok-123', 'a-brand-new-password'))
+    expect(window.location.search).toBe('')
+  })
+
+  it('leaves the rest of the address alone', async () => {
+    window.history.replaceState({}, '', '/reset-password?token=tok-123&lang=fr#top')
+    renderWithQuery(<ResetPasswordPage />)
+    await screen.findByLabelText('New password')
+    expect(window.location.search).toBe('?lang=fr')
+    expect(window.location.hash).toBe('#top')
+  })
+
   it('sends the token from the link with the password', async () => {
     await choose('a-brand-new-password')
     await waitFor(() => expect(resetPassword).toHaveBeenCalledWith('tok-123', 'a-brand-new-password'))
