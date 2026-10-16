@@ -73,9 +73,12 @@ var allChannels = []string{"email", "webhook", "verification"}
 // moment InTx returns, before any worker has run.
 func TestInTx_WritesOneRowPerCarryingChannelWithTheChange(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
 	_, err := db.SQL.Exec(`DELETE FROM notification_outbox`)
 	require.NoError(t, err)
-	defer closeDB()
+	// Leaves nothing queued: other packages' tests read the shared outbox
+	// from their own transactions and would see what these commit.
+	defer func() { _, _ = db.SQL.Exec(`DELETE FROM notification_outbox`) }()
 	woken := 0
 	r := txrunner.New(db.SQL, allChannels, func() { woken++ })
 	tid := uuid.New()
@@ -96,9 +99,12 @@ func TestInTx_WritesOneRowPerCarryingChannelWithTheChange(t *testing.T) {
 // rows were written after the commit, so this could not be asked of them.
 func TestInTx_ARolledBackChangeLeavesNoOutboxRow(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
 	_, err := db.SQL.Exec(`DELETE FROM notification_outbox`)
 	require.NoError(t, err)
-	defer closeDB()
+	// Leaves nothing queued: other packages' tests read the shared outbox
+	// from their own transactions and would see what these commit.
+	defer func() { _, _ = db.SQL.Exec(`DELETE FROM notification_outbox`) }()
 	woken := 0
 	r := txrunner.New(db.SQL, allChannels, func() { woken++ })
 	tid := uuid.New()
@@ -118,9 +124,12 @@ func TestInTx_ARolledBackChangeLeavesNoOutboxRow(t *testing.T) {
 // A failure writing the rows fails the change: the announcement is part of it.
 func TestInTx_AnOutboxWriteFailureRollsBackTheChange(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
 	_, err := db.SQL.Exec(`DELETE FROM notification_outbox`)
 	require.NoError(t, err)
-	defer closeDB()
+	// Leaves nothing queued: other packages' tests read the shared outbox
+	// from their own transactions and would see what these commit.
+	defer func() { _, _ = db.SQL.Exec(`DELETE FROM notification_outbox`) }()
 	r := txrunner.New(db.SQL, []string{"email"}, nil)
 	tid := uuid.New()
 
@@ -138,9 +147,12 @@ func TestInTx_AnOutboxWriteFailureRollsBackTheChange(t *testing.T) {
 // A change that raised nothing writes nothing and wakes nobody.
 func TestInTx_NothingRaisedWritesNothing(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
 	_, err := db.SQL.Exec(`DELETE FROM notification_outbox`)
 	require.NoError(t, err)
-	defer closeDB()
+	// Leaves nothing queued: other packages' tests read the shared outbox
+	// from their own transactions and would see what these commit.
+	defer func() { _, _ = db.SQL.Exec(`DELETE FROM notification_outbox`) }()
 	woken := 0
 	r := txrunner.New(db.SQL, allChannels, func() { woken++ })
 	tid := uuid.New()
@@ -156,9 +168,12 @@ func TestInTx_NothingRaisedWritesNothing(t *testing.T) {
 // own: the rows are one set, not two.
 func TestInTx_ADeadlockRetryLeavesOneSetOfRows(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
 	_, err := db.SQL.Exec(`DELETE FROM notification_outbox`)
 	require.NoError(t, err)
-	defer closeDB()
+	// Leaves nothing queued: other packages' tests read the shared outbox
+	// from their own transactions and would see what these commit.
+	defer func() { _, _ = db.SQL.Exec(`DELETE FROM notification_outbox`) }()
 	r := txrunner.New(db.SQL, allChannels, nil)
 	tid := uuid.New()
 
