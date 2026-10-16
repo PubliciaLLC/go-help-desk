@@ -177,6 +177,7 @@
     <tr><td>Staff are emailed about their tickets</td><td>Every staff member and administrator, once email is configured</td></tr>
     <tr><td>Staff can follow a ticket</td><td>Staff and administrators</td></tr>
     <tr><td>Reopening a ticket flags it, raises priority once, restarts the SLA and mails staff; requesters see less</td><td>Staff, administrators, requesters, scripts that read the audit routes</td></tr>
+    <tr><td>Change priority, Assign to me, Resolve all children</td><td>Staff and administrators</td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
@@ -591,6 +592,16 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 </ul>
 
 <p>A script that signs in as a requester and reads those routes or keys will see the change.</p>
+
+<h2 id="ticket-page">Change priority, Assign to me, and Resolve all children</h2>
+
+<p><strong>Who notices:</strong> staff and administrators. These are new; nothing existing changes.</p>
+
+<ul>
+  <li><strong>Priority.</strong> Staff and administrators can change a ticket's priority from a select in the <strong>Details</strong> card on the ticket page (or with <code>PATCH /api/v1/tickets/{id}</code>). The SLA policy is matched again for the new priority, and the clock keeps running. A Resolved or Closed ticket refuses the change (<code>409 ticket_closed</code>), and the select is disabled with the reason. Requesters see the priority but cannot change it.</li>
+  <li><strong>Assign to me.</strong> A button in the Assignee panel, offered to staff and administrators only while the ticket has no assignee and is not Resolved or Closed. It keeps the ticket's group.</li>
+  <li><strong>Resolve all children.</strong> On a parent ticket, the Linked tickets panel asks for resolution notes once and resolves the direct children that are still open, one after another, each with the same notes. Children already Resolved or Closed are skipped. A refusal on one child does not stop the others, and the panel reports how many were resolved, skipped and refused, and why. <strong>Only direct children are resolved.</strong> If some of those children have children of their own, the panel names up to five of them and says to resolve those from their own tickets.</li>
+</ul>
 
 <h2 id="known-gaps">What is not in 1.3.0</h2>
 
