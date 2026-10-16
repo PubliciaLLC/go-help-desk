@@ -142,6 +142,15 @@
 
 <p>Users sign in with their email address and password. Passwords are hashed with bcrypt at cost 12. Releases up to 1.2 hashed at cost 10. An older hash keeps working, and is replaced by a cost-12 hash the next time its owner signs in with the password. Each cost step doubles the work, so checking a password now takes about four times as much server time as at cost 10.</p>
 
+<h3 id="auth-old-hash">Old password hashes expire</h3>
+<p>An older hash does not keep working forever. Once a set number of days has passed since 1.3.0 first started on your database, a correct password that is still stored in the old form is refused with <code>403 password_reset_required</code> and the message that it was saved in an older, weaker form and must be reset. The number of days is <em>Admin → Settings → Authentication → Passwords → Reset window for old passwords</em>: 30 by default, from 1 to 365, and changing it moves the deadline for everyone. Anyone who signs in before the deadline is upgraded automatically.</p>
+<ul>
+  <li><strong>Administrators are exempt</strong>, so the instance cannot lock itself out. They are upgraded at their next sign-in like everyone else.</li>
+  <li>Staff and users past the deadline need an administrator to set a new password under <em>Admin → Users → [user] → Reset password</em>. Resetting a password by email is not available in 1.3.0.</li>
+  <li>People who sign in rarely, such as seasonal staff, are the ones affected. New installs are not.</li>
+  <li>When SAML restricts password sign-in to administrators, other accounts get the SAML refusal instead.</li>
+</ul>
+
 <h3>Account creation</h3>
 <p>Accounts are created in one of four ways:</p>
 <ul>
@@ -192,7 +201,17 @@
 
 <h3>Losing every factor</h3>
 <p>There are no recovery codes. A user who has lost their authenticator and every passkey is reset by an administrator: <em>Admin → Users → [user] → Reset MFA</em> clears the authenticator and every passkey and ends the user's sessions. They then sign in with their password and enrol again; if MFA is required for their role, they are asked to at that sign-in.</p>
-<p>An administrator with no other administrator to reset them recovers on the server with <code>go-help-desk reset-factors &lt;email&gt;</code>. See <a href="admin-guide.html#admin-users">Admin Guide: Users</a>.</p>
+<p>An administrator with no other administrator to reset them recovers on the server. <code>docker compose exec app /app/server reset-factors &lt;email&gt;</code> clears their authenticator and passkeys. <code>docker compose exec app /app/server unlock &lt;email&gt;</code> does that and more, for an account that is also disabled, locked out of code entry, or without a usable password. See <a href="getting-started.html#locked-out">Locked out?</a> and <a href="admin-guide.html#admin-users">Admin Guide: Users</a>.</p>
+
+<h3 id="auth-must-change">After an unlock: choosing a new password</h3>
+<p>An unlock gives the account a random password, printed once on the server. When the person signs in with it, the login page says they signed in with a password an administrator generated for them and asks them to choose a new one (<em>Choose a new password</em>). Until they do, the session can do nothing else, and the API answers <code>403 password_change_required</code> on every route except the password change.</p>
+
+<h3 id="auth-passkeys-unavailable">Passkeys need a domain name</h3>
+<p>A passkey is tied to a domain name, so passkeys work only when the host in <code>BASE_URL</code> is a domain name such as <code>help.example.com</code>, or <code>localhost</code>. If <code>BASE_URL</code> is an IP address (<code>http://192.168.1.10:8080</code>), a single-word host (<code>http://helpdesk:8080</code>) or a host with non-ASCII characters, passkeys are turned off. The server still starts, and administrators see a banner, <em>Passkeys are unavailable</em>, explaining why. The passkey routes answer <code>503 passkeys_unavailable</code>.</p>
+<ul>
+  <li>An account whose only second factor is a passkey cannot sign in while passkeys are off. It is refused with <code>403 passkey_unavailable</code> and told to ask an administrator to reset its sign-in factors. <em>Reset MFA</em> clears the passkey, and the person then enrols an authenticator app. Accounts with an authenticator app are unaffected.</li>
+  <li>To use passkeys, give the help desk a DNS name and set <code>BASE_URL</code> to it. Passkeys registered under a different domain stop working when the domain changes.</li>
+</ul>
 
 <h3>Second factors in the API</h3>
 <p>For a programmatic sign-in, submit the code to <code>POST /api/v1/auth/local/mfa/verify</code> after a successful password sign-in, or complete a passkey with <code>POST /api/v1/auth/local/passkey/start</code> and <code>/finish</code>. API keys and OAuth clients are refused on these routes. See the <a href="api-reference.html">API Reference</a>.</p>
@@ -423,7 +442,13 @@
 <p>A key acts as the administrator who created it, but only within the scopes it was given. There is no wildcard scope. <code>GET /api/v1/admin/scopes</code> lists them. See <a href="api.html#api-scopes">REST API: Scopes</a>.</p>
 
 <h3>OAuth clients</h3>
-<p>Under <em>Admin → OAuth Clients</em>, an administrator creates a client with its scopes. The client exchanges its ID and secret for a short-lived bearer token at <code>POST /api/v1/auth/oauth/token</code> and sends it as <code>Authorization: Bearer &lt;token&gt;</code>. An OAuth client has no user identity of its own, so it cannot do anything that has to be recorded as a person's act, such as filing or replying to a ticket.</p>
+<p>Under <em>Admin → OAuth Clients</em>, an administrator creates a client with its scopes. The client also gets a service user, named after it. The client exchanges its ID and secret for a short-lived bearer token at <code>POST /api/v1/auth/oauth/token</code> and sends it as <code>Authorization: Bearer &lt;token&gt;</code>. The client acts as its service user, at that user's role: staff by default, or user, never administrator. A client holding <code>tickets:write</code> can create tickets and replies, recorded under the client's name.</p>
+<ul>
+  <li>The service user appears under <em>Admin → Users</em> with a <em>Service</em> badge, and in the client list as <em>(service user)</em>. An administrator can rename it (which renames the client), change its role, give it groups and disable it. Disabling it stops the client.</li>
+  <li>The user's groups are the client's ticket scope. When staff are limited to their group scope, a client whose user is in no group sees no tickets; the client list says so, and the admin warning banner lists such clients.</li>
+  <li>A service user never signs in: it has no password, second factor, passkey or SSO identity, and cannot be made an administrator. It is never emailed.</li>
+  <li>Deleting the client deletes its service user. The tickets and replies it wrote keep its name.</li>
+</ul>
 
 <h3>Revoking a key</h3>
 <p>On <em>Admin → API Keys</em>, click <em>Revoke</em> next to the key. Revocation is immediate: the next request with that key gets <code>401</code>. Disabling the user who created a key also stops the key working.</p>
