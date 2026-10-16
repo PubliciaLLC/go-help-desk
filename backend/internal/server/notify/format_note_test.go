@@ -44,7 +44,9 @@ func TestRenderJIRA_NoteAddedIsFlaggedInternal(t *testing.T) {
 
 func TestIsWebhookEvent_NoteAdded(t *testing.T) {
 	require.True(t, IsWebhookEvent("ticket.note_added"))
-	require.True(t, hookSubscribes(authstore.WebhookConfig{Events: []string{"ticket.note_added"}}, notification.EventTicketNoteAdded))
-	require.False(t, hookSubscribes(authstore.WebhookConfig{Events: []string{"ticket.replied"}}, notification.EventTicketNoteAdded),
-		"subscribing to replies must not subscribe to notes")
+	note := notification.Event{Type: notification.EventTicketNoteAdded}
+	_, ok := subscribedKind(authstore.WebhookConfig{Events: []string{"ticket.note_added"}}, note)
+	require.True(t, ok)
+	_, ok = subscribedKind(authstore.WebhookConfig{Events: []string{"ticket.replied"}}, note)
+	require.False(t, ok, "subscribing to replies must not subscribe to notes")
 }

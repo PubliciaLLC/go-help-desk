@@ -20,7 +20,25 @@ import (
 //	target_id      ticket.linked
 //
 // Whether an event is a reply or a note is the event name, so no flag is sent.
+//
+// An event now announces a whole change, and its Payload holds the keys of
+// every kind it carried (#506). The body must still be exactly what the name
+// it is sent under always carried, so a key goes out only for the name it
+// belongs to (rawKeysFor): a hook told ticket.resolved gets no
+// new_status_id, a hook told ticket.priority_changed or ticket.classified gets
+// no Payload at all, and the receiver reads the ticket through the API.
 var rawPayloadKeys = []string{"new_status_id", "target_id"}
+
+// rawKeysFor is the allow-listed Payload keys that belong to an event name.
+func rawKeysFor(t notification.EventType) []string {
+	switch t {
+	case notification.EventTicketStatusChanged:
+		return []string{"new_status_id"}
+	case notification.EventTicketLinked:
+		return []string{"target_id"}
+	}
+	return nil
+}
 
 // historyPayloadKeys are what the copy kept for Redeliver adds: the link type
 // (an enum, for the headline) and the id of the reply the event announced, so a
@@ -57,7 +75,7 @@ func historyEvent(ev notification.Event) notification.Event {
 // The Slack, Teams, Discord and JIRA renderers do not use it; they render from
 // the full in-memory event (bodyFor), which is never sent as is.
 func rawBody(ev notification.Event) ([]byte, error) {
-	return json.Marshal(keepOnly(ev, rawPayloadKeys))
+	return json.Marshal(keepOnly(ev, rawKeysFor(ev.Type)))
 }
 
 // rowFor is the event as it is stored in one hook's outbox row. Never an
@@ -67,15 +85,16 @@ func rawBody(ev notification.Event) ([]byte, error) {
 // and reply text its message is built from until the row is sent and deleted,
 // or scrubbed if the delivery finally fails (scrubFailedRow).
 //
-// Every row of either kind keeps Attrs: ids and a priority, for the next
-// attempt, which judges the hook's filter as it is then (#413). They are
-// internal. No body is built from them (rawBody and the renderers never read
-// Attrs), and the copy kept in the history and the scrubbed failed row go
-// through historyEvent, which drops them.
+// Every row of either kind keeps the kinds and the ticket state: ids, enums and
+// a priority, for the next attempt, which works out the name to send and judges
+// the hook's filter as they are then (#413, #506). They are internal. No body
+// is built from them (rawBody and the renderers never read them as content),
+// and the copy kept in the history and the scrubbed failed row go through
+// historyEvent, which drops them.
 func rowFor(ev notification.Event, hook authstore.WebhookConfig) notification.Event {
 	if isRaw(hook) {
 		out := historyEvent(ev)
-		out.Attrs = ev.Attrs
+		out.Kinds, out.Ticket = ev.Kinds, ev.Ticket
 		return out
 	}
 	out := ev

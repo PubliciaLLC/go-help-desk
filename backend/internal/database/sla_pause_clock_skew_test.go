@@ -72,7 +72,7 @@ func TestUpdateStatus_LeavingPendingUnderClockSkewDoesNotFailTheCheckConstraint(
 		_, _ = db.SQL.Exec(`DELETE FROM categories WHERE id = $1`, cat.ID)
 	})
 
-	svc := ticket.NewService(ts, ts, notification.Noop{}, auStore, txrunner.New(db.SQL), nil)
+	svc := ticket.NewService(ts, ts, notification.Noop{}, auStore, txrunner.New(db.SQL, nil, nil), nil)
 	require.NoError(t, svc.LoadSystemStatuses(ctx))
 
 	staff := ticket.Actor{UserID: &reporter.ID, Role: user.RoleStaff}

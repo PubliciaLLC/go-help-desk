@@ -252,8 +252,13 @@ func TestResolveAsDuplicate_CreatesLinkAndResolvesTicket(t *testing.T) {
 	require.Len(t, h.auditStore.entries, 1)
 	require.Equal(t, "resolved", h.auditStore.entries[0].Action)
 
-	// Both events should be dispatched
-	require.Len(t, h.dispatcher.events, 2)
+	// One change, one event (#506): the link and the resolution are announced
+	// together, on the source ticket.
+	require.Len(t, h.dispatcher.events, 1)
+	require.Equal(t, []notification.EventType{
+		notification.EventTicketResolved, notification.EventTicketStatusChanged, notification.EventTicketLinked,
+	}, h.dispatcher.events[0].Kinds)
+	require.Equal(t, source.ID, h.dispatcher.events[0].TicketID)
 }
 
 func TestResolveAsDuplicate_DefaultsTheNotes(t *testing.T) {

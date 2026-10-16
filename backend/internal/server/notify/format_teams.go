@@ -46,9 +46,9 @@ type teamsAction struct {
 
 // renderTeams builds a message envelope carrying one Adaptive Card.
 //
-// body[0] is always "[Ref] Headline". body[1] is present when Subject is
-// non-empty; body[2] is present when Body is non-empty (a public reply
-// only — an internal note has no third block, not an empty one). actions is
+// body[0] is always "[Ref] Headline". Then, each only when present: the
+// Subject, the "Also" line naming the change's other kinds, and the Body (a
+// public reply only — an internal note has no block for it, not an empty one). actions is
 // always the single Action.OpenUrl back to the ticket. No mention entities
 // are emitted, so user-chosen text cannot page anyone through this format.
 //
@@ -65,6 +65,9 @@ func renderTeams(s summary) ([]byte, error) {
 	}
 	if s.Subject != "" {
 		body = append(body, teamsTextBlock{Type: "TextBlock", Wrap: true, Text: escapeChatMarkdown(s.Subject)})
+	}
+	if s.Also != "" {
+		body = append(body, teamsTextBlock{Type: "TextBlock", Wrap: true, Text: escapeChatMarkdown(s.Also)})
 	}
 	if s.Body != "" {
 		body = append(body, teamsTextBlock{Type: "TextBlock", Wrap: true, Text: escapeChatMarkdown(s.Body)})

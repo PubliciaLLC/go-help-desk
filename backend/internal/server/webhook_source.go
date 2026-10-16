@@ -34,7 +34,7 @@ func (s webhookEventSource) TicketFacts(ctx context.Context, id uuid.UUID) (noti
 		return notify.TicketFacts{}, false, fmt.Errorf("listing statuses: %w", err)
 	}
 	facts := notify.TicketFacts{Subject: t.Subject, TrackingNumber: string(t.TrackingNumber), Priority: string(t.Priority),
-		Attrs: &notification.TicketAttrs{CategoryID: t.CategoryID, Priority: string(t.Priority), AssigneeGroupID: t.AssigneeGroupID}}
+		State: &notification.TicketState{CategoryID: t.CategoryID, Priority: string(t.Priority), AssigneeGroupID: t.AssigneeGroupID}}
 	for _, st := range statuses {
 		if st.ID == t.StatusID {
 			facts.StatusName = st.Name

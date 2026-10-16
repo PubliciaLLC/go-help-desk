@@ -89,7 +89,7 @@ func TestAddLink_RacesResolveAsDuplicateWithoutDeadlocking(t *testing.T) {
 	// single-shared-transaction JoiningTxRunner: the two calls need genuinely
 	// separate transactions on separate connections for a deadlock to be
 	// possible at all.
-	svc := ticket.NewService(ts, ts, notification.Noop{}, auStore, txrunner.New(db.SQL), nil)
+	svc := ticket.NewService(ts, ts, notification.Noop{}, auStore, txrunner.New(db.SQL, nil, nil), nil)
 	require.NoError(t, svc.LoadSystemStatuses(ctx))
 
 	staff := ticket.Actor{UserID: &agentUser.ID, Role: user.RoleStaff}

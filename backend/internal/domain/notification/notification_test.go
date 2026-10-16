@@ -118,7 +118,7 @@ func TestEvent_AttrsStayOutOfTheWebhookPayload(t *testing.T) {
 
 	catID := uuid.MustParse("aaaaaaaa-0000-0000-0000-000000000001")
 	grpID := uuid.MustParse("bbbbbbbb-0000-0000-0000-000000000002")
-	ev.Attrs = &TicketAttrs{CategoryID: catID, Priority: "critical", AssigneeGroupID: &grpID}
+	ev.Ticket = &TicketState{CategoryID: catID, Priority: "critical", AssigneeGroupID: &grpID}
 	after, err := json.Marshal(ev)
 	require.NoError(t, err)
 
