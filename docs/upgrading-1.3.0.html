@@ -96,6 +96,7 @@
       <li><a href="#webhooks">Webhooks</a></li>
       <li><a href="#admin-api">Admin API</a></li>
       <li><a href="#api-changes">Other API changes</a></li>
+      <li><a href="#admin-screens">Routing and paged Users</a></li>
       <li><a href="#known-gaps">Not in 1.3.0</a></li>
       <li><a href="#steps">Doing the upgrade</a></li>
     </ul>
@@ -196,6 +197,7 @@
     <tr><td>Webhooks: ids-only raw payload, notes as their own event, retries, history, ticket filter</td><td>Anyone who receives webhooks</td></tr>
     <tr><td>Admin API: checks before writes, inactive statuses retired, keys list only themselves</td><td>Scripts and API keys that call admin routes</td></tr>
     <tr><td>Other API changes: unknown settings keys refused, new answer shapes</td><td>Scripts and integrations</td></tr>
+    <tr><td>New Admin → Routing page; Admin → Users is paged</td><td>Administrators; scripts that save the auto-assignment settings</td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
@@ -700,6 +702,16 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
   <li>Every route under <code>/tickets/{id}</code> now accepts a tracking number (for example <code>GHD-2026-000001</code>) as well as a UUID.</li>
 </ul>
 
+<h2 id="admin-screens">New admin screens: Routing, and a paged Users list</h2>
+
+<p><strong>Who notices:</strong> administrators, and scripts that save the auto-assignment settings or list users.</p>
+
+<ul>
+  <li><strong>Admin → Routing</strong> is a new page for the auto-assignment fallbacks: the fallback group (<code>auto_assign_group_id</code>) and the people who take tickets in turn (<code>auto_assign_user_ids</code>). They could only be changed through the API before. Suspended people stay in the list, ticked, disabled and labelled <em>(suspended)</em>, until they are re-enabled.</li>
+  <li><code>PATCH /api/v1/admin/settings</code> now answers <code>400 invalid_auto_assign</code> for a group or user that does not exist, or a person who is not staff or an administrator, instead of saving it and skipping it when a ticket is routed.</li>
+  <li><strong>Admin → Users</strong> is paged (50 a page) and searchable, so it is no longer limited to the first 200 accounts. <code>GET /api/v1/admin/users</code> takes <code>page</code>, <code>per_page</code>, <code>q</code> and <code>role</code> and reports the number of matches in the <code>X-Total-Count</code> header. Without <code>page</code> it answers as before.</li>
+</ul>
+
 <h2 id="known-gaps">What is not in 1.3.0</h2>
 
 <p>Earlier versions of these pages described or implied some things that the product does not do. Each is tracked as an issue. These are gaps in the product, not changes in 1.3.0. The pages now say what the product does.</p>
@@ -707,20 +719,11 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 <table class="breaks-table">
   <thead><tr><th>Area</th><th>What is missing</th><th>Issue</th></tr></thead>
   <tbody>
-  <tr><td>Staff email</td><td>Nobody on the help desk side is emailed about assignment, requester replies or reopening.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/441" target="_blank" rel="noopener">#441</a></td></tr>
-  <tr><td>MCP replies</td><td><code>add_reply</code> does not email the requester.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/442" target="_blank" rel="noopener">#442</a></td></tr>
-  <tr><td>Ticket detail</td><td>Markdown, changing priority, resolving all child tickets and the reopened flag, plus a decision on editing replies.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/443" target="_blank" rel="noopener">#443</a></td></tr>
-  <tr><td>Staff workflow</td><td>No &quot;Assign to me&quot;, no filing on someone's behalf outside MCP, and search covers only your own queue.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/444" target="_blank" rel="noopener">#444</a></td></tr>
+  <tr><td>Ticket detail</td><td>Markdown is shown as typed, not rendered. A reply cannot be edited or deleted by anyone: a correction is a new reply, by design.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/443" target="_blank" rel="noopener">#443</a></td></tr>
+  <tr><td>Staff workflow</td><td>No filing a ticket on someone's behalf outside MCP, and search covers only your own queue.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/444" target="_blank" rel="noopener">#444</a></td></tr>
   <tr><td>Guest attachments</td><td>The guest page has no way to attach a file.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/445" target="_blank" rel="noopener">#445</a></td></tr>
-  <tr><td>Archiving</td><td>The admin UI cannot archive a category, type or item.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/446" target="_blank" rel="noopener">#446</a></td></tr>
-  <tr><td>Auto-assignment</td><td>The fallbacks have no admin page and are changed only through the API.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/447" target="_blank" rel="noopener">#447</a></td></tr>
-  <tr><td>Webhooks</td><td>No retry, no delivery id, no history or redelivery, and notes cannot be subscribed apart from replies.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/448" target="_blank" rel="noopener">#448</a></td></tr>
-  <tr><td>Users list</td><td>Admin → Users shows only the first 200 accounts.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/449" target="_blank" rel="noopener">#449</a></td></tr>
   <tr><td>API keys</td><td>Only administrators can create them.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/450" target="_blank" rel="noopener">#450</a></td></tr>
   <tr><td>Password reset</td><td>No reset by email.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/451" target="_blank" rel="noopener">#451</a></td></tr>
-  <tr><td>SMTP</td><td>No implicit TLS, STARTTLS is optional and downgradable, and credentials are skipped when AUTH is not offered.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/455" target="_blank" rel="noopener">#455</a></td></tr>
-  <tr><td>Email off</td><td>Email can be disabled without anyone being told.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/456" target="_blank" rel="noopener">#456</a></td></tr>
-  <tr><td>MCP transport</td><td>Only the HTTP+SSE transport is served, not Streamable HTTP.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/460" target="_blank" rel="noopener">#460</a></td></tr>
   <tr><td>SAML</td><td>Pasted IdP metadata XML is not accepted, and the attribute names earlier pages told admins to send are not read.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/461" target="_blank" rel="noopener">#461</a></td></tr>
   <tr><td>Plugins</td><td>The plugin system is a v2 feature. 1.x has no working plugin system: plugins cannot be installed, and an enabled plugin record never receives events. Earlier pages promised it.</td><td><a href="../index.html#roadmap">v2 on the roadmap</a></td></tr>
   </tbody>
