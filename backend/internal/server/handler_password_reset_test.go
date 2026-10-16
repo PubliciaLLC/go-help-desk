@@ -364,6 +364,58 @@ func TestResetPassword_EndsEverySessionTheAccountHolds(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, me.StatusCode, "a session survived the password reset")
 }
 
+// A reset is the account holder's own act; it ends sessions and nothing else.
+// API keys are the person's integrations, and #450 decided they are not touched
+// (an administrator's reset leaves them too).
+func TestResetPassword_LeavesTheAccountsAPIKeysAlone(t *testing.T) {
+	h, cleanup := harnessWithEmail(t)
+	defer cleanup()
+	count := func() int {
+		var n int
+		require.NoError(t, h.tx.QueryRow(`SELECT count(*) FROM api_keys WHERE user_id = $1`, h.staffID).Scan(&n))
+		return n
+	}
+	before := count()
+	require.NotZero(t, before, "precondition: the account has an API key")
+	res := h.do(t, http.MethodGet, "/api/v1/me", nil)
+	res.Body.Close()
+	require.Equal(t, http.StatusOK, res.StatusCode, "precondition: the key works")
+
+	forgot(t, h, "staff@test.local")
+	reset, body := resetPassword(t, h, h.resetMail.latest(t).token, "a-brand-new-password")
+	require.Equal(t, http.StatusNoContent, reset.StatusCode, "%s", body)
+
+	require.Equal(t, before, count(), "a reset removed an API key")
+	res = h.do(t, http.MethodGet, "/api/v1/me", nil)
+	res.Body.Close()
+	require.Equal(t, http.StatusOK, res.StatusCode, "the API key stopped working")
+}
+
+// A session that has passed the password but still owes the second factor is a
+// session too: the reset ends it, so a password that was stolen and then reset
+// cannot be carried on from a half-finished sign-in.
+func TestResetPassword_EndsAHalfSignedInSessionToo(t *testing.T) {
+	h, cleanup := harnessWithEmail(t)
+	defer cleanup()
+	mfaOptionalForStaff(t, h)
+	enrolTOTP(t, staffPasswordLogin(t, h))
+
+	pending := &session{h: h}
+	login, loginBody := pending.send(t, http.MethodPost, "/api/v1/auth/local/login",
+		map[string]any{"email": "staff@test.local", "password": "password"})
+	require.Equal(t, http.StatusOK, login.StatusCode, "%s", loginBody)
+	require.Contains(t, string(loginBody), `"mfa_needed":true`, "precondition: the sign-in is half done")
+	before, _ := pending.send(t, http.MethodGet, "/api/v1/me", nil)
+	require.Equal(t, http.StatusForbidden, before.StatusCode, "precondition: the session owes its second factor")
+
+	forgot(t, h, "staff@test.local")
+	res, body := resetPassword(t, h, h.resetMail.latest(t).token, "a-brand-new-password")
+	require.Equal(t, http.StatusNoContent, res.StatusCode, "%s", body)
+
+	after, _ := pending.send(t, http.MethodGet, "/api/v1/me", nil)
+	require.Equal(t, http.StatusUnauthorized, after.StatusCode, "the half-signed-in session survived the reset")
+}
+
 func TestResetPassword_ALinkWorksOnce(t *testing.T) {
 	h, cleanup := harnessWithEmail(t)
 	defer cleanup()
@@ -431,6 +483,29 @@ func TestResetPassword_RefusesAnUnknownOrMissingLink(t *testing.T) {
 		require.Equal(t, http.StatusUnprocessableEntity, res.StatusCode, "%q: %s", tok, body)
 		require.Equal(t, "token_invalid", bodyErrorCode(body))
 	}
+}
+
+// A token that is not the account's link changes nothing, and does not spend the
+// link that is. Through the handler, so the check that the token is the one on
+// file is pinned here as well as in the store.
+func TestResetPassword_AWrongTokenForARealAccountChangesNothing(t *testing.T) {
+	h, cleanup := harnessWithEmail(t)
+	defer cleanup()
+	forgot(t, h, "user@test.local")
+	real := h.resetMail.latest(t).token
+	wrong := strings.Repeat("b", len(real))
+	require.NotEqual(t, real, wrong)
+
+	for _, tok := range []string{wrong, real + "x", real[:len(real)-1]} {
+		res, body := resetPassword(t, h, tok, "a-brand-new-password")
+		require.Equal(t, http.StatusUnprocessableEntity, res.StatusCode, "%q: %s", tok, body)
+		require.Equal(t, "token_invalid", bodyErrorCode(body))
+	}
+
+	old, oldBody := passwordSignIn(t, h, "user@test.local", "password")
+	require.Equal(t, http.StatusOK, old.StatusCode, "a wrong token changed the password: %s", oldBody)
+	res, body := resetPassword(t, h, real, "a-brand-new-password")
+	require.Equal(t, http.StatusNoContent, res.StatusCode, "a wrong token spent the real link: %s", body)
 }
 
 // A password the rules refuse does not use the link up, so the person can try
