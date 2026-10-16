@@ -303,3 +303,51 @@ func TestChangeSplitter_ADifferentAddressKeepsBothMails(t *testing.T) {
 	require.Equal(t, 1, req)
 	require.Equal(t, 1, st)
 }
+
+// A staff lookup that fails once must not cost the guest a second mail. The
+// requester's mail is only queued once everyone is resolved, so the retry of the
+// change starts clean; before, it was queued first, sent and deleted, and then
+// queued again by the retry, each time issuing a new guest link.
+func TestChangeSplitter_AStaffLookupFailingOnceMailsTheGuestOnce(t *testing.T) {
+	assignee := staffUser("assignee")
+	users := newFakeStaffUsers(assignee)
+	users.failFirst = 1
+	outbox := newFakeOutbox()
+	sent := &recorder{}
+	links := 0
+	send := NewGuestLinkDispatcher(sent, func(_ context.Context, ev notification.Event) (notification.Event, bool, error) {
+		links++
+		return ev, true, nil
+	})
+	split := NewChangeSplitter(send, outbox, nil, users, fakeStaffGroups{}, fakeStaffFollowers{}, noOverrides, quietLog())
+	w := NewWorker(outbox, map[string]notification.Dispatcher{"email": split}, quietLog())
+	w.Backoff = func(int) time.Duration { return time.Hour } // the retry waits; the queued mail would not
+	ev := guestRoutedCreate("guest@example.com", &assignee.ID)
+	ev.GuestLink = true
+	b, err := encodeEvent(ev)
+	require.NoError(t, err)
+	require.NoError(t, outbox.Enqueue(context.Background(), uuid.New(), "email", b))
+
+	// Everything that is due now: the change fails, and whatever it queued is sent.
+	for range 5 {
+		n, err := w.RunOnce(context.Background())
+		require.NoError(t, err)
+		if n == 0 {
+			break
+		}
+	}
+	// Then the retry comes due.
+	for range 5 {
+		outbox.makeDue()
+		n, err := w.RunOnce(context.Background())
+		require.NoError(t, err)
+		if n == 0 {
+			break
+		}
+	}
+
+	req, st := mailsTo(sent)
+	require.Equal(t, 1, req, "exactly one mail to the guest")
+	require.Equal(t, 1, st)
+	require.Equal(t, 1, links, "and exactly one guest link issued")
+}

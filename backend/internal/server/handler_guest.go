@@ -377,6 +377,7 @@ func (s *Server) handleGuestFollowUp(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	s.routed(created)
 	JSON(w, http.StatusCreated, guestJSON(map[string]string{
 		"tracking_number": string(created.TrackingNumber),
 	}))

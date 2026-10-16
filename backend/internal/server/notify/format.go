@@ -2,6 +2,7 @@ package notify
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -103,8 +104,13 @@ func summarize(ev notification.Event, baseURL string) summary {
 		internal = true
 	}
 
+	// Reply text goes only to a hook that subscribes to replies. An event now
+	// announces a whole change (#506), and its Payload still holds the reply of a
+	// reply that also reopened; ev.Kinds is already cut down to what this hook
+	// subscribes to (forHook), so a hook on ticket.reopened alone gets its
+	// message without the text, as in 1.2.x.
 	var body string
-	if !internal {
+	if !internal && slices.Contains(ev.AllKinds(), notification.EventTicketReplied) {
 		if b, ok := ev.Payload["ReplyBody"].(string); ok {
 			body = truncateRunes(b, 1000)
 		}

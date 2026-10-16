@@ -556,6 +556,8 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 		// round-robin list) is skipped for the next, as the handler did when
 		// routing was a second write after the create. Any other error is the
 		// database's, which has aborted this transaction anyway.
+		unrouted := ticketMap(t)
+		unrouted["assignee_user_id"], unrouted["assignee_group_id"] = nil, nil
 		var routed *Assignment
 		for i := range in.AutoAssign {
 			c := in.AutoAssign[i]
@@ -588,7 +590,9 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 		// Routing is the system's act, as it was when it was a second write:
 		// its own audit entry, with no person behind it.
 		if routed != nil {
-			if err := au.Create(ctx, auditEntry(nil, "ticket", t.ID, "assigned", ticketMap(t), ticketMap(t))); err != nil {
+			routedTo := ticketMap(t)
+			routedTo["assignee_user_id"], routedTo["assignee_group_id"] = idString(routed.UserID), idString(routed.GroupID)
+			if err := au.Create(ctx, auditEntry(nil, "ticket", t.ID, "assigned", unrouted, routedTo)); err != nil {
 				return fmt.Errorf("auditing routing: %w", err)
 			}
 		}
@@ -910,14 +914,16 @@ func (s *Service) updateStatusInTx(ctx context.Context, st Store, au audit.Store
 	// /tickets/<uuid>, a page they have no account to open. The two doors into
 	// Closed behave the same way.
 	closing := newStatusID == s.sys.closedID
-	ev := raiseOn(t, actor, now)
-	ev.Kinds = s.statusKinds(oldStatusID, newStatusID)
-	ev.Changes = []notification.Change{notification.ValueChange("status_id", oldStatusID.String(), newStatusID.String())}
-	ev.Payload = map[string]any{"new_status_id": newStatusID}
-	ev.Recipient = guestNotifyTarget(t, closing)
-	ev.GuestLink = !closing && hasGuestRecipient(t)
-	ev.StatusName = newStatus.Name
-	ch.Raise(ev)
+	if kinds := s.statusKinds(oldStatusID, newStatusID); len(kinds) > 0 {
+		ev := raiseOn(t, actor, now)
+		ev.Kinds = kinds
+		ev.Changes = statusChanges(oldStatusID, newStatusID)
+		ev.Payload = map[string]any{"new_status_id": newStatusID}
+		ev.Recipient = guestNotifyTarget(t, closing)
+		ev.GuestLink = !closing && hasGuestRecipient(t)
+		ev.StatusName = newStatus.Name
+		ch.Raise(ev)
+	}
 
 	if reopening {
 		// After the status is raised, so the priority it may raise is the
@@ -1636,7 +1642,7 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 				// either; the reply's decides who is mailed.
 				moved := raiseOn(t, actor, now)
 				moved.Kinds = s.statusKinds(oldStatusID, reopenTargetStatusID)
-				moved.Changes = []notification.Change{notification.ValueChange("status_id", oldStatusID.String(), reopenTargetStatusID.String())}
+				moved.Changes = statusChanges(oldStatusID, reopenTargetStatusID)
 				moved.Payload = map[string]any{"new_status_id": reopenTargetStatusID}
 				moved.StatusName = target.Name
 				ch.Raise(moved)
@@ -1816,7 +1822,7 @@ func (s *Service) resolveInTx(ctx context.Context, st Store, au audit.Store, ch 
 	// one they need to reopen inside the window.
 	ev := raiseOn(t, actor, now)
 	ev.Kinds = s.statusKinds(oldStatusID, s.sys.resolvedID)
-	ev.Changes = []notification.Change{notification.ValueChange("status_id", oldStatusID.String(), s.sys.resolvedID.String())}
+	ev.Changes = statusChanges(oldStatusID, s.sys.resolvedID)
 	ev.Payload = map[string]any{"new_status_id": s.sys.resolvedID}
 	ev.Recipient = guestRecipient(t)
 	ev.GuestLink = hasGuestRecipient(t)
@@ -2115,7 +2121,7 @@ func (s *Service) close(ctx context.Context, ticketID uuid.UUID, actor Actor, el
 		// No recipient: closing tells nobody, whichever door closed it.
 		ev := raiseOn(t, actor, now)
 		ev.Kinds = s.statusKinds(oldStatusID, s.sys.closedID)
-		ev.Changes = []notification.Change{notification.ValueChange("status_id", oldStatusID.String(), s.sys.closedID.String())}
+		ev.Changes = statusChanges(oldStatusID, s.sys.closedID)
 		ev.Payload = map[string]any{"new_status_id": s.sys.closedID}
 		ev.StatusName = s.sys.closed.Name
 		ch.Raise(ev)
@@ -2233,7 +2239,7 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 		// The guest is told, with a link issued when the mail is sent.
 		ev := raiseOn(t, actor, now)
 		ev.Kinds = s.statusKinds(oldStatusID, targetStatusID)
-		ev.Changes = []notification.Change{notification.ValueChange("status_id", oldStatusID.String(), targetStatusID.String())}
+		ev.Changes = statusChanges(oldStatusID, targetStatusID)
 		ev.Payload = map[string]any{"new_status_id": targetStatusID}
 		ev.Recipient = guestRecipient(t)
 		ev.GuestLink = hasGuestRecipient(t)
@@ -2673,6 +2679,14 @@ func (s *Service) getStatusByID(ctx context.Context, id uuid.UUID) (Status, erro
 		}
 	}
 	return Status{}, fmt.Errorf("status %s not found: %w", id, ErrStatusNotFound)
+}
+
+// idString is an optional id as the audit entries hold it: its text, or nil.
+func idString(id *uuid.UUID) any {
+	if id == nil {
+		return nil
+	}
+	return id.String()
 }
 
 // auditEntry builds an audit row. Callers write it through the transaction's

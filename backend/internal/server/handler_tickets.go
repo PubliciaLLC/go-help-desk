@@ -434,6 +434,7 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	s.routed(t)
 
 	// Set any custom field values supplied on creation.
 	//
@@ -855,6 +856,7 @@ func (s *Server) handleCreateFollowUp(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	s.routed(t)
 	// Read back, so the response carries whoever the routing assigned.
 	if fresh, err := s.tickets.GetByID(r.Context(), t.ID); err == nil {
 		t = fresh
@@ -1175,13 +1177,23 @@ func (s *Server) routing(ctx context.Context, categoryID uuid.UUID, typeID *uuid
 	// but taking their slot and giving up would silently leave every Nth ticket
 	// unassigned, which is a queue that quietly loses a share of its work. The
 	// whole list is offered, rotated, so the next one is tried instead.
-	start := s.rrIdx.Add(1)
+	start := s.rrIdx.Load() + 1
 	out := make([]ticket.Assignment, len(uids))
 	for i := range uids {
 		uid := uids[(start+uint64(i))%uint64(len(uids))]
 		out[i] = ticket.Assignment{UserID: &uid}
 	}
 	return out
+}
+
+// routed is called with the ticket a create returned, once it is committed: a
+// ticket that went to a user used up that round-robin turn. The counter moves
+// only then, so a create the service refused (routing is worked out before it)
+// does not cost the next ticket its person.
+func (s *Server) routed(t ticket.Ticket) {
+	if t.AssigneeUserID != nil {
+		s.rrIdx.Add(1)
+	}
 }
 
 // reopenTargetStatusID resolves the configured reopen target, falling back to

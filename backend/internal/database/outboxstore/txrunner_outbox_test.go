@@ -23,6 +23,16 @@ import (
 // own tests, which already own that table (each clears it) and run one after
 // another; in a package of their own they would race those.
 
+// forgetOutbox removes the rows these tests committed, and only those: the queue
+// is shared, and a test that clears it all (or claims what it did not make)
+// takes another's rows as its input. Other packages' tests read it from their
+// own transactions and would see what is left.
+func forgetOutbox(db *testutil.DB, ticketIDs ...uuid.UUID) {
+	for _, id := range ticketIDs {
+		_, _ = db.SQL.Exec(`DELETE FROM notification_outbox WHERE event->>'ticket_id' = $1`, id.String())
+	}
+}
+
 var errCallerFailed = errors.New("the caller failed after writing")
 
 func entry(entityID uuid.UUID, action string) audit.Entry {
@@ -74,14 +84,10 @@ var allChannels = []string{"email", "webhook", "verification"}
 func TestInTx_WritesOneRowPerCarryingChannelWithTheChange(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
-	_, err := db.SQL.Exec(`DELETE FROM notification_outbox`)
-	require.NoError(t, err)
-	// Leaves nothing queued: other packages' tests read the shared outbox
-	// from their own transactions and would see what these commit.
-	defer func() { _, _ = db.SQL.Exec(`DELETE FROM notification_outbox`) }()
 	woken := 0
 	r := txrunner.New(db.SQL, allChannels, func() { woken++ })
 	tid := uuid.New()
+	defer forgetOutbox(db, tid)
 
 	require.NoError(t, r.InTx(context.Background(), func(_ ticket.Store, au audit.Store, ch *notification.Changes) error {
 		require.NoError(t, au.Create(context.Background(), entry(tid, "committed")))
@@ -100,16 +106,12 @@ func TestInTx_WritesOneRowPerCarryingChannelWithTheChange(t *testing.T) {
 func TestInTx_ARolledBackChangeLeavesNoOutboxRow(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
-	_, err := db.SQL.Exec(`DELETE FROM notification_outbox`)
-	require.NoError(t, err)
-	// Leaves nothing queued: other packages' tests read the shared outbox
-	// from their own transactions and would see what these commit.
-	defer func() { _, _ = db.SQL.Exec(`DELETE FROM notification_outbox`) }()
 	woken := 0
 	r := txrunner.New(db.SQL, allChannels, func() { woken++ })
 	tid := uuid.New()
+	defer forgetOutbox(db, tid)
 
-	err = r.InTx(context.Background(), func(_ ticket.Store, au audit.Store, ch *notification.Changes) error {
+	err := r.InTx(context.Background(), func(_ ticket.Store, au audit.Store, ch *notification.Changes) error {
 		require.NoError(t, au.Create(context.Background(), entry(tid, "rolled back")))
 		raise(ch, tid, notification.EventTicketStatusChanged)
 		return errCallerFailed
@@ -125,15 +127,11 @@ func TestInTx_ARolledBackChangeLeavesNoOutboxRow(t *testing.T) {
 func TestInTx_AnOutboxWriteFailureRollsBackTheChange(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
-	_, err := db.SQL.Exec(`DELETE FROM notification_outbox`)
-	require.NoError(t, err)
-	// Leaves nothing queued: other packages' tests read the shared outbox
-	// from their own transactions and would see what these commit.
-	defer func() { _, _ = db.SQL.Exec(`DELETE FROM notification_outbox`) }()
 	r := txrunner.New(db.SQL, []string{"email"}, nil)
 	tid := uuid.New()
+	defer forgetOutbox(db, tid)
 
-	err = r.InTx(context.Background(), func(_ ticket.Store, au audit.Store, ch *notification.Changes) error {
+	err := r.InTx(context.Background(), func(_ ticket.Store, au audit.Store, ch *notification.Changes) error {
 		require.NoError(t, au.Create(context.Background(), entry(tid, "must not stay")))
 		// A raw guest token is refused by the encoder; the change goes with it.
 		ch.Raise(notification.Event{Kinds: []notification.EventType{notification.EventTicketReplied},
@@ -148,14 +146,10 @@ func TestInTx_AnOutboxWriteFailureRollsBackTheChange(t *testing.T) {
 func TestInTx_NothingRaisedWritesNothing(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
-	_, err := db.SQL.Exec(`DELETE FROM notification_outbox`)
-	require.NoError(t, err)
-	// Leaves nothing queued: other packages' tests read the shared outbox
-	// from their own transactions and would see what these commit.
-	defer func() { _, _ = db.SQL.Exec(`DELETE FROM notification_outbox`) }()
 	woken := 0
 	r := txrunner.New(db.SQL, allChannels, func() { woken++ })
 	tid := uuid.New()
+	defer forgetOutbox(db, tid)
 
 	require.NoError(t, r.InTx(context.Background(), func(_ ticket.Store, au audit.Store, _ *notification.Changes) error {
 		return au.Create(context.Background(), entry(tid, "quiet"))
@@ -165,30 +159,29 @@ func TestInTx_NothingRaisedWritesNothing(t *testing.T) {
 }
 
 // The transaction is retried once after a deadlock, with a collector of its
-// own: the rows are one set, not two.
-func TestInTx_ADeadlockRetryLeavesOneSetOfRows(t *testing.T) {
+// own: the attempt that was rolled back announced ticket A, the one that
+// committed announced ticket B, and only B has rows. A collector shared between
+// the attempts would write A's event as well.
+func TestInTx_ADeadlockRetryAnnouncesOnlyTheAttemptThatCommitted(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
-	_, err := db.SQL.Exec(`DELETE FROM notification_outbox`)
-	require.NoError(t, err)
-	// Leaves nothing queued: other packages' tests read the shared outbox
-	// from their own transactions and would see what these commit.
-	defer func() { _, _ = db.SQL.Exec(`DELETE FROM notification_outbox`) }()
 	r := txrunner.New(db.SQL, allChannels, nil)
-	tid := uuid.New()
+	a, b := uuid.New(), uuid.New()
+	defer forgetOutbox(db, a, b)
 
 	attempts := 0
 	require.NoError(t, r.InTx(context.Background(), func(_ ticket.Store, au audit.Store, ch *notification.Changes) error {
 		attempts++
-		require.NoError(t, au.Create(context.Background(), entry(tid, "attempt")))
-		raise(ch, tid, notification.EventTicketStatusChanged)
 		if attempts == 1 {
+			raise(ch, a, notification.EventTicketStatusChanged)
 			return &pgconn.PgError{Code: "40P01"} // what Postgres says to the transaction it kills
 		}
+		require.NoError(t, au.Create(context.Background(), entry(b, "attempt 2")))
+		raise(ch, b, notification.EventTicketAssigned)
 		return nil
 	}))
 
 	require.Equal(t, 2, attempts)
-	require.Equal(t, map[string]int{"email": 1, "webhook": 1}, outboxRows(t, db, tid))
-	require.Equal(t, 1, visible(t, db, tid))
+	require.Empty(t, outboxRows(t, db, a), "the rolled-back attempt announced nothing")
+	require.Equal(t, map[string]int{"email": 1, "webhook": 1}, outboxRows(t, db, b))
 }

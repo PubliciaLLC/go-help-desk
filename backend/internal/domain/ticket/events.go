@@ -51,7 +51,17 @@ func raiseOn(t Ticket, actor Actor, at time.Time) notification.Event {
 // carries ticket.resolved or ticket.closed, and a move out of either into an
 // open status also carries ticket.reopened. The same for every door, so the
 // button that made the change no longer decides what a subscriber is told.
+//
+// A move to the status the ticket already has is not a move: no status_changed
+// (CTO ruling 13). Resolving an already-Resolved ticket with new notes is still
+// a resolution, so it carries ticket.resolved and nothing else.
 func (s *Service) statusKinds(oldStatusID, newStatusID uuid.UUID) []notification.EventType {
+	if oldStatusID == newStatusID {
+		if newStatusID == s.sys.resolvedID {
+			return []notification.EventType{notification.EventTicketResolved}
+		}
+		return nil
+	}
 	kinds := []notification.EventType{notification.EventTicketStatusChanged}
 	switch newStatusID {
 	case s.sys.resolvedID:
@@ -63,6 +73,15 @@ func (s *Service) statusKinds(oldStatusID, newStatusID uuid.UUID) []notification
 		kinds = append(kinds, notification.EventTicketReopened)
 	}
 	return kinds
+}
+
+// statusChanges is the status_id change of a move, or none for a move to the
+// status the ticket already has.
+func statusChanges(oldStatusID, newStatusID uuid.UUID) []notification.Change {
+	if oldStatusID == newStatusID {
+		return nil
+	}
+	return []notification.Change{notification.ValueChange("status_id", oldStatusID.String(), newStatusID.String())}
 }
 
 // optIDChange is a nullable-id field's change, or none when it did not move.

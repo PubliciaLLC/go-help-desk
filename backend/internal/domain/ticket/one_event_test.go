@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -251,4 +252,73 @@ func TestCreate_TheRoutedAssignmentIsMarkedAsRouting(t *testing.T) {
 	_, err = h2.svc.Create(context.Background(), ticket.CreateInput{Subject: "s", CategoryID: uuid.New(), ReporterUserID: &staff})
 	require.NoError(t, err)
 	require.False(t, h2.dispatcher.events[0].RoutedAssignment)
+}
+
+// A status change to the status the ticket already has announces nothing about
+// status (CTO ruling 13; 1.2.x announced status_changed here, which the upgrade
+// notes say).
+func TestSameStatus_AnnouncesNothingAboutStatus(t *testing.T) {
+	ctx := context.Background()
+	assignee := uuid.New()
+
+	t.Run("a re-resolve with new notes is resolved only", func(t *testing.T) {
+		h := newPrioHarness(t)
+		tk := h.seedMedium()
+		_, err := h.svc.Resolve(ctx, tk.ID, "first", reopenStaff)
+		require.NoError(t, err)
+		h.dispatcher.events = nil
+
+		_, err = h.svc.Resolve(ctx, tk.ID, "second", reopenStaff)
+		require.NoError(t, err)
+
+		require.Len(t, h.dispatcher.events, 1)
+		require.Equal(t, []notification.EventType{notification.EventTicketResolved}, h.dispatcher.events[0].Kinds)
+		for _, c := range h.dispatcher.events[0].Changes {
+			require.NotEqual(t, "status_id", c.Field)
+		}
+	})
+
+	t.Run("a PATCH of the same status plus an assignee is assigned only", func(t *testing.T) {
+		h := newPrioHarness(t)
+		tk := h.seedMedium()
+		_, err := h.svc.Update(ctx, tk.ID, ticket.Patch{
+			StatusID: &tk.StatusID, Assign: &ticket.Assignment{UserID: &assignee},
+		}, reopenStaff)
+		require.NoError(t, err)
+
+		require.Len(t, h.dispatcher.events, 1)
+		require.Equal(t, []notification.EventType{notification.EventTicketAssigned}, h.dispatcher.events[0].Kinds)
+		require.Empty(t, h.dispatcher.events[0].Payload["new_status_id"])
+	})
+
+	t.Run("a PATCH of the same status alone announces nothing", func(t *testing.T) {
+		h := newPrioHarness(t)
+		tk := h.seedMedium()
+		_, err := h.svc.Update(ctx, tk.ID, ticket.Patch{StatusID: &tk.StatusID}, reopenStaff)
+		require.NoError(t, err)
+		require.Empty(t, h.dispatcher.events)
+	})
+}
+
+// Routing's audit entry says what it did: unassigned, then assigned (F4). It was
+// the same ticket map twice.
+func TestCreate_TheRoutingAuditEntryRecordsUnassignedToAssigned(t *testing.T) {
+	h := newHarness(t)
+	assignee := uuid.New()
+	_, err := h.svc.Create(context.Background(), ticket.CreateInput{
+		Subject: "s", CategoryID: uuid.New(), ReporterUserID: ptr(uuid.New()),
+		AutoAssign: []ticket.Assignment{{UserID: &assignee}},
+	})
+	require.NoError(t, err)
+
+	var routed audit.Entry
+	for _, e := range h.auditStore.entries {
+		if e.Action == "assigned" {
+			routed = e
+		}
+	}
+	require.NotEmpty(t, routed.Action)
+	require.Nil(t, routed.Before["assignee_user_id"])
+	require.Equal(t, assignee.String(), routed.After["assignee_user_id"])
+	require.NotEqual(t, routed.Before, routed.After)
 }

@@ -308,3 +308,49 @@ func TestAlso_ARetryAfterTheSubscriptionNarrowsDropsTheKind(t *testing.T) {
 	require.NotContains(t, bodies()[1], "note added")
 	require.NotContains(t, bodies()[1], "Also")
 }
+
+// Reply text rides on a chat or ITSM message only for a hook that subscribes to
+// ticket.replied (or "*"). A hook on ticket.reopened alone still gets its
+// Reopened message, with subject and link, but not the reply (CTO ruling 12;
+// 1.2.x sent the reply text only to hooks that asked for replies). Internal
+// notes are never included, whatever the subscription.
+func reopenWithReply() notification.Event {
+	ev := fixtureReplyEvent(false)
+	ev.Type = notification.EventTicketReopened
+	ev.Kinds = []notification.EventType{notification.EventTicketReopened, notification.EventTicketReplied}
+	ev.Ticket = &notification.TicketState{Priority: "low", CategoryID: uuid.New()}
+	return ev
+}
+
+func TestReplyText_OnlyForHooksThatSubscribeToReplies(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		events []string
+		want   bool
+	}{
+		{"reopened only", []string{"ticket.reopened"}, false},
+		{"reopened and replied", []string{"ticket.reopened", "ticket.replied"}, true},
+		{"wildcard", []string{"*"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := newReceiver(t, 200)
+			body := deliverOne(t, slackHook(rc.srv.URL, tc.events...), rc, reopenWithReply())
+			require.Contains(t, body, "Reopened")
+			require.Contains(t, body, "Printer jammed", "the subject stays")
+			if tc.want {
+				require.Contains(t, body, "Paper tray 2 was empty.")
+			} else {
+				require.NotContains(t, body, "Paper tray 2 was empty.")
+			}
+		})
+	}
+}
+
+func TestReplyText_AnInternalNoteIsNeverIncluded(t *testing.T) {
+	rc := newReceiver(t, 200)
+	ev := reopenWithReply()
+	ev.Kinds = []notification.EventType{notification.EventTicketReopened, notification.EventTicketReplied, notification.EventTicketNoteAdded}
+	ev.Payload["internal"] = true
+	body := deliverOne(t, slackHook(rc.srv.URL, "*"), rc, ev)
+	require.NotContains(t, body, "Paper tray 2 was empty.")
+}

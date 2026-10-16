@@ -20,6 +20,9 @@ import (
 type fakeStaffUsers struct {
 	byID map[uuid.UUID]user.User
 	err  error
+	// failFirst makes the first n lookups fail, then succeed: a database that
+	// blips once.
+	failFirst int
 }
 
 func newFakeStaffUsers(us ...user.User) *fakeStaffUsers {
@@ -33,6 +36,10 @@ func newFakeStaffUsers(us ...user.User) *fakeStaffUsers {
 func (f *fakeStaffUsers) GetByIDs(_ context.Context, ids []uuid.UUID) ([]user.User, error) {
 	if f.err != nil {
 		return nil, f.err
+	}
+	if f.failFirst > 0 {
+		f.failFirst--
+		return nil, errors.New("database blipped")
 	}
 	var out []user.User
 	for _, id := range ids {
@@ -600,10 +607,11 @@ func TestEventToEmail_FollowersAreToldItIsATicketTheyFollow(t *testing.T) {
 
 // ── fan-out: failures ────────────────────────────────────────────────────────
 
-// Not being able to find out who to mail must not stop the requester's mail from
-// being handed on, and must be reported: the worker then tries the change again,
-// and the ids the rows are given make the repeat harmless.
-func TestStaffFanout_ALookupFailureStillHandsOnTheRequestersMail(t *testing.T) {
+// Not being able to find out who to mail queues NOTHING and is reported: the
+// worker then tries the change again from a clean start. Handing the requester's
+// mail on first would let it be sent and deleted before the retry, which would
+// queue it a second time (its id is free once the row is gone).
+func TestStaffFanout_ALookupFailureQueuesNothing(t *testing.T) {
 	a := staffUser("a")
 	users := newFakeStaffUsers(a)
 	users.err = errors.New("database down")
@@ -615,8 +623,7 @@ func TestStaffFanout_ALookupFailureStillHandsOnTheRequestersMail(t *testing.T) {
 	err := newFanout(next, users, fakeStaffGroups{}).Dispatch(context.Background(), ev)
 
 	require.Error(t, err)
-	require.Len(t, next.got, 1)
-	require.Equal(t, "guest@example.com", next.got[0].Recipient)
+	require.Empty(t, next.got)
 }
 
 func TestStaffFanout_AFailureToHandOnIsReturned(t *testing.T) {

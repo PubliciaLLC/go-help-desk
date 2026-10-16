@@ -114,17 +114,11 @@ func (f *StaffFanout) Dispatch(ctx context.Context, ev notification.Event) error
 		if lerr != nil {
 			f.log.ErrorContext(ctx, "staff email: could not work out who to notify",
 				"event", ev.Type, "ticket_id", ev.TicketID, "error", lerr)
-			// The requester's mail does not wait on finding staff: a problem
-			// there must not cost them anything. The error has the worker try
-			// the change again; the rows' derived ids make the repeat harmless.
-			var err error
-			if hasReq {
-				err = f.next.Dispatch(ctx, req)
-			}
-			if err == nil {
-				err = lerr
-			}
-			return err
+			// Nothing is queued until everyone is resolved. The worker tries the
+			// change again, and a requester's mail queued before this error would
+			// by then have been sent and deleted, its derived id free, and be
+			// queued and sent a second time (a new guest link each time).
+			return lerr
 		}
 	}
 
