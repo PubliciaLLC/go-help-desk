@@ -70,11 +70,11 @@ Core fields (all editions):
 - **Category** (required)
 - **Type** (optional, depends on Category having Types defined)
 - **Item** (optional, depends on Type having Items defined)
-- **Priority** (a fixed set of four: `critical`, `high`, `medium`, `low`; the set is not configurable). Set at creation; staff and admin can change it afterwards (`PATCH /tickets/{id}`), which re-matches the ticket's SLA policy for the new priority without restarting its clock. Refused on a Resolved or Closed ticket (see SLA Tracking → Re-matching when priority changes, #443)
+- **Priority** (a fixed set of four: `critical`, `high`, `medium`, `low`; the set is not configurable). Set at creation; staff and admin can change it afterwards (`PATCH /tickets/{id}`), which re-matches the ticket's SLA policy for the new priority without restarting its clock. Refused on a Resolved or Closed ticket (see SLA Tracking → Re-matching when priority changes, #443). On the ticket page it is a select in the **Details** card, shown to staff and admin only (a reporting user sees the badge), and disabled with a one-line reason on a Resolved or Closed ticket; a refusal shows the server's message and leaves the old value
 - **Status** (customizable statuses per instance, see Ticket Lifecycle below)
-- **Assignee** (staff member or group)
+- **Assignee** (staff member or group). On the ticket page, staff and admin get an **Assign to me** button in the Assignee panel, offered only when the ticket has no assignee user (#444): it is hidden once the ticket is assigned to anyone, me included, on a Resolved or Closed ticket, and for a reporting user. **It keeps the ticket's group.** The server's assign sets the user and the group from the request, so a user-only `PATCH` would clear the group; the button sends `assignee_user_id` together with the ticket's own `assignee_group_id` (the key is omitted when there is no group). Picking a user from the list, by contrast, replaces the group, as before
 - **Attachments** (file uploads)
-- **Replies/thread** (staff and user messages)
+- **Replies/thread** (staff and user messages). **Append-only by design.** A reply cannot be edited or deleted, by anyone; a correction is a new reply. Decided on #468 (2026-10-13).
 - **Linked tickets** (related, parent/child, caused-by, duplicate-of — can link to any ticket including Closed)
 - **Tracking number** (quoted in notification email, and one half of a guest link re-request). Shaped `PREFIX-YEAR-SEQUENCE`, e.g. `GHD-2026-000001`. The prefix is the `ticket_prefix` setting (**Admin → Settings → General → Tickets**): one to eight uppercase letters or digits, `GHD` by default, validated when saved (`400 invalid_ticket_prefix`) and applied only to tickets created afterwards, because issued numbers are already in customers' inboxes and replies and are never rewritten
 - **Resolution notes** (summary of what resolved the ticket, captured at resolution)
@@ -583,6 +583,37 @@ separate value for each direction:
   Unchecked, the link is recorded with no status change. This is the
   "optionally" in "optionally auto-resolves the duplicate" — it is a choice
   made per link, not an instance-wide setting.
+
+**Resolve all children** (#443). On a ticket that is the *source* of at least
+one `parent_child` link (the parent), the Linked tickets panel offers **Resolve
+all children** to staff and admin. It asks for resolution notes once (required),
+then resolves the children **from the browser, one at a time**, each through the
+ordinary `POST /tickets/{id}/resolve` with the same notes. There is no bulk
+endpoint: each child therefore gets its own audit entry, notifications and SLA
+handling, and the closed-ticket rules apply to it as to any resolve. A child
+that is already Resolved or Closed is **skipped and never re-resolved**,
+because a second Resolve with different notes overwrites the notes the child
+already carries (#225). A refusal on one child does not stop the rest. The
+panel reports `n of m resolved, k already resolved, j refused:` followed by each
+refused child's tracking number and the server's reason, the same shape as the
+ticket list's bulk status change; the notes stay in the box after a partial
+failure, so a retry is one click and only touches the children still open. A
+ticket that is only a child, or has only related, caused-by or duplicate-of
+links, does not show the button.
+
+**Direct children only** (decided on #505, 2026-10-15). The button resolves the
+parent's *direct* children and nothing below them. Its count is the number of
+direct children that are **not** Resolved or Closed: with four children of which
+two are done it reads "Resolve 2 children" and says the other two are skipped,
+and when none is open it is disabled with "All children are already resolved."
+Each child is read again right before its own resolve, since its state can
+change while the form is open. Once the form is open the panel reads each direct
+child's links (one `GET /tickets/{id}/links` per child, nothing before the form
+opens and nothing below the children) and, when some of them are themselves the
+source of a `parent_child` link, says so: "2 of these children have children of
+their own (tracking numbers, listed up to five); resolve those from their own
+ticket." A child whose links cannot be read gets no notice, because the page
+cannot say what it does not know.
 
 ### OAuth Clients and Service Users
 
