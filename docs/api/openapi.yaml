@@ -404,8 +404,8 @@ paths:
         queued row, so neither the answer nor the time it takes says who has an
         account. Whether anything is mailed is decided when the mail would be sent,
         off the request. Nothing is sent for an address with no account, a disabled
-        or deleted account, an account with no password (it signs in only through an
-        identity provider), or an account that cannot use a password because
+        or deleted account, an account with no password (an identity-provider account, or a local account
+        created without one), or an account that cannot use a password because
         saml_enabled limits password sign-in to administrators; and an account is
         mailed at most once per five minutes however many requests arrive. A string
         that is not an email address is answered 202 and queues nothing. The link
