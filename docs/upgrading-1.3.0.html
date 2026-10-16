@@ -768,7 +768,7 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 
 <ul>
   <li>An <em>Only my tickets</em> or <em>Only unassigned</em> chip narrows the search to the queue. Click it again to widen it. It resets when the box is cleared or the queue changes, and it is not offered on an administrator's <em>All</em> queue. A box with only spaces counts as empty, and with an empty box the queue behaves as before.</li>
-  <li><strong>Who can see what is unchanged.</strong> Administrators, and staff while <em>Limit staff to their group scope</em> is off, see every ticket. With it on, staff see tickets they reported or are assigned, tickets assigned to one of their groups, and tickets in a category or type their groups cover, so a staff member in one group still cannot find another group's ticket.</li>
+  <li><strong>Who can see what is unchanged.</strong> Administrators, and staff while <em>Limit staff to their group scope</em> is off, see every ticket. With it on, staff see tickets they reported or are assigned, tickets assigned to one of their groups, and tickets in a category or type their groups cover, so search never shows a ticket the staff member could not already open.</li>
   <li><strong>API:</strong> <code>GET /api/v1/tickets?scope=visible</code> for staff and administrators. An older server ignores an unknown scope and answers as <code>mine</code>. The existing scopes behave as before. There is no migration.</li>
 </ul>
 
