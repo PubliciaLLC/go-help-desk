@@ -87,7 +87,7 @@
       <li><a href="#passkeys-base-url">Passkeys need a domain</a></li>
       <li><a href="#mcp-origin">MCP origin check</a></li>
       <li><a href="#mcp-reply">MCP replies email</a></li>
-      <li><a href="#archived-nodes">Archived nodes</a></li>
+      <li><a href="#archived-nodes">Archived categories, types and items</a></li>
       <li><a href="#service-users">OAuth service users</a></li>
       <li><a href="#staff-email">Staff email</a></li>
       <li><a href="#followers">Followers</a></li>
@@ -96,6 +96,7 @@
       <li><a href="#webhooks">Webhooks</a></li>
       <li><a href="#admin-api">Admin API</a></li>
       <li><a href="#api-changes">Other API changes</a></li>
+      <li><a href="#saml-metadata">SAML metadata XML</a></li>
       <li><a href="#admin-screens">Routing and paged Users</a></li>
       <li><a href="#known-gaps">Not in 1.3.0</a></li>
       <li><a href="#steps">Doing the upgrade</a></li>
@@ -182,7 +183,7 @@
     <tr><td>Compose passes the sign-in limits; a delay of 0 is refused</td><td>Installs that set <code>AUTH_RATE_LIMIT_PER_MINUTE</code> or <code>AUTH_THROTTLE_DELAY</code> in <code>.env</code>, or set the delay to 0</td></tr>
     <tr><td><code>ATTACHMENT_DIR</code> is checked at startup</td><td>Installs whose attachment directory cannot be written</td></tr>
     <tr><td>Client mistakes get 4xx; DELETE of an unknown id is 404</td><td>API clients and scripts that call admin routes</td></tr>
-    <tr><td>Email refuses to send a password or mail unencrypted to a public server; email-off is reported</td><td>Anyone whose mail server lacks STARTTLS, or who sets <code>SMTP_USER</code> for a server with no login</td></tr>
+    <tr><td>Email never sends a password unencrypted, and sends mail without a password unencrypted only to a private address; a mail setup that is off or failing is reported</td><td>Anyone whose mail server lacks STARTTLS, or who sets <code>SMTP_USER</code> for a server with no login</td></tr>
     <tr><td>Accounts on an old password hash must reset after 30 days</td><td>People who rarely sign in; API clients that sign in with a password</td></tr>
     <tr><td><code>unlock &lt;email&gt;</code> on the server</td><td>Operators with a locked-out account</td></tr>
     <tr><td>An IP address or one-word <code>BASE_URL</code> turns passkeys off</td><td>Installs reached by IP address or a host with no dot</td></tr>
@@ -194,10 +195,11 @@
     <tr><td>Staff can follow a ticket</td><td>Staff and administrators</td></tr>
     <tr><td>Reopening a ticket flags it, raises priority once, restarts the SLA and mails staff; requesters see less</td><td>Staff, administrators, requesters, scripts that read the audit routes</td></tr>
     <tr><td>Change priority, Assign to me, Resolve all children</td><td>Staff and administrators</td></tr>
-    <tr><td>Webhooks: ids-only raw payload, notes as their own event, retries, history, ticket filter</td><td>Anyone who receives webhooks</td></tr>
+    <tr><td>Webhooks: the raw JSON body holds only ids, notes are their own event, failed deliveries are retried, a history, a ticket filter</td><td>Anyone who receives webhooks</td></tr>
     <tr><td>Admin API: checks before writes, inactive statuses retired, keys list only themselves</td><td>Scripts and API keys that call admin routes</td></tr>
     <tr><td>Other API changes: unknown settings keys refused, new answer shapes</td><td>Scripts and integrations</td></tr>
     <tr><td>New Admin → Routing page; Admin → Users is paged</td><td>Administrators; scripts that save the auto-assignment settings</td></tr>
+    <tr><td>SAML accepts pasted metadata XML and reads more name claims</td><td>Administrators who set up SAML; SAML users whose display name may change</td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
@@ -229,7 +231,7 @@
   <li><strong>Webhook retries, history and a ticket filter.</strong> <a href="#webhooks">Details</a></li>
   <li><strong>MCP over Streamable HTTP.</strong> The server answers MCP at <code>/mcp</code>, and the older SSE routes stay. <a href="mcp.html">MCP Server</a></li>
   <li><strong>A way back in.</strong> <code>unlock &lt;email&gt;</code> on the server clears an account's lockouts and gives it a new one-time password. <a href="#unlock">Details</a></li>
-  <li><strong>Notifications from an outbox.</strong> Email is queued in the database and retried after 30 seconds, doubling each time, up to eight attempts. Webhooks are queued too and are retried when a delivery fails (see <a href="#webhooks">Webhooks</a>); the Webhooks screen shows each hook's last delivery result and a History of the last 25.</li>
+  <li><strong>Notifications from an outbox.</strong> Email is queued in the database and retried with the same schedule as webhooks: 8 attempts, a wait that starts at 30 seconds and doubles each time, about an hour in all. Webhooks are queued too and are retried when a delivery fails (see <a href="#webhooks">Webhooks</a>); the Webhooks screen shows each hook's last delivery result and a History of the last 25.</li>
   <li><strong>Webhooks with chat formats.</strong> An Admin → Webhooks screen, with Slack, Teams, Discord and JIRA payload formats. <a href="admin-guide.html#admin-webhooks">Webhooks</a></li>
   <li><strong>Attachment security.</strong> Content detection, mismatch handling, quarantine, download-only files, and optional scanning and reputation lookups. <a href="attachment-security.html">Attachment Security</a></li>
   <li><strong>Published images.</strong> Multi-architecture images for amd64 and arm64, published to GHCR. Building from source is still supported. <a href="getting-started.html#quick-start">Quick start</a></li>
@@ -269,6 +271,8 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 <p>Entries were written before 1.3.0, but nothing could read them. From 1.3.0 there is a per-ticket activity feed and an admin-wide searchable view.</p>
 
 <p>Nothing is deleted unless you ask. <code>audit_retention_days</code> defaults to 0, which keeps everything. To start pruning, set it to a number of days under <strong>Admin → Settings</strong>. The maximum is 36,525 days, a century. Set it back to 0 to keep everything again. The first sweep runs two minutes after the server starts, then once a day, so an instance that restarts more often than daily still prunes. Only a signed-in administrator can change this setting. An API key cannot, because shortening retention destroys evidence rather than merely widening access.</p>
+
+<p>The diff shows names, not just ids. A change of status or assignee lists the status or person by name (the id stays in the entry), so a reader does not have to look up a raw id. Only status and assignee changes carry names. The names are what the status or person is called now, and the stored entry is unchanged. Names are shown only to a reader who is allowed to see the diff at all. An id with nothing behind it (a deleted status or account) is shown as the id.</p>
 
 <p>Staff see the per-ticket feed. The field-level before and after diff is behind a second setting, <code>staff_can_view_ticket_change_history</code>. It is <strong>off by default</strong>, so no instance starts showing staff something it did not show them in 1.2.0.</p>
 
@@ -518,7 +522,6 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
   <li>Passkeys registered under a domain that you later fix work again if the domain matches.</li>
 </ul>
 
-<p>A <code>BASE_URL</code> with a non-ASCII host stops the server from starting. Write it in punycode.</p>
 
 <h2 id="mcp-origin">MCP refuses requests from another origin</h2>
 
@@ -534,7 +537,7 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 
 <p>A public reply posted through the MCP <code>add_reply</code> tool used to be saved and never emailed. It now emails the requester (the guest, with a guest link, or the reporting account), the same as a reply through the REST API. <strong>Anything connected over MCP can now send mail to your customers.</strong> Review which credentials have <code>tickets:write</code> before you upgrade. Internal notes (<code>internal: true</code>) still send nothing, and MCP has no <code>notify_customer</code> switch: use an internal note for anything that should not reach the requester.</p>
 
-<p>One change for staff over both REST and MCP: a staff member or administrator who replies publicly on a ticket they filed themselves is no longer emailed a copy of their own reply. Webhook receivers see it too, as an empty <code>reporter_email</code> in the raw payload. An ordinary user replying on their own ticket still gets the copy.</p>
+<p>One change for staff over both REST and MCP: a staff member or administrator who replies publicly on a ticket they filed themselves is no longer emailed a copy of their own reply.  An ordinary user replying on their own ticket still gets the copy.</p>
 
 <h2 id="archived-nodes">Nobody can newly file into an archived category, type or item</h2>
 
@@ -642,7 +645,7 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 <p><code>ticket.replied</code> is now sent for customer-visible replies only. Internal notes are sent as the new <code>ticket.note_added</code>. A hook subscribed to <code>ticket.replied</code> stops receiving notes. Add <code>ticket.note_added</code>, or choose all events, to keep them.</p>
 
 <h3 id="webhooks-retries">A receiver may now see an event twice</h3>
-<p>A delivery that fails with a connection error, DNS or TLS failure, timeout, a 5xx or a 429 is tried again, 30 seconds doubling to an hour, 8 attempts in all. A <code>Retry-After</code> header from the receiver is honoured up to an hour. A blocked (internal) address and any other status, such as 400 or 404, are not retried. If you change a hook's URL, deliveries still waiting for the old address are dropped, and so are deliveries waiting for an event the hook no longer lists.</p>
+<p>A delivery that fails with a connection error, DNS or TLS failure, timeout, a 5xx or a 429 is tried again: 8 attempts in all, with a wait that starts at 30 seconds and doubles each time (30 seconds, then 1, 2, 4, 8, 16 and 32 minutes), each wait capped at an hour. In practice the waits add up to a little over an hour. A <code>Retry-After</code> header from the receiver is honoured up to an hour. A blocked (internal) address and any other status, such as 400 or 404, are not retried. If you change a hook's URL, deliveries still waiting for the old address are dropped, and so are deliveries waiting for an event the hook no longer lists.</p>
 <p>Every delivery now carries two headers: <code>X-GHD-Delivery</code>, a UUID that stays the same across the retries of one delivery (use it to drop a repeat), and <code>X-GHD-Event</code>, the event name. The signature headers are unchanged.</p>
 
 <h3 id="webhooks-history">New: History and Redeliver</h3>
@@ -707,9 +710,18 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 <p><strong>Who notices:</strong> administrators, and scripts that save the auto-assignment settings or list users.</p>
 
 <ul>
-  <li><strong>Admin → Routing</strong> is a new page for the auto-assignment fallbacks: the fallback group (<code>auto_assign_group_id</code>) and the people who take tickets in turn (<code>auto_assign_user_ids</code>). They could only be changed through the API before. Suspended people stay in the list, ticked, disabled and labelled <em>(suspended)</em>, until they are re-enabled.</li>
+  <li><strong>Admin → Routing</strong> is a new page for the auto-assignment fallbacks: the fallback group (<code>auto_assign_group_id</code>) and the people who take tickets in turn (<code>auto_assign_user_ids</code>). They could only be changed through the API before. A person who cannot take work right now, such as someone suspended, stays ticked and is labelled <em>(can't take work right now)</em>. They can be unticked.</li>
   <li><code>PATCH /api/v1/admin/settings</code> now answers <code>400 invalid_auto_assign</code> for a group or user that does not exist, or a person who is not staff or an administrator, instead of saving it and skipping it when a ticket is routed.</li>
   <li><strong>Admin → Users</strong> is paged (50 a page) and searchable, so it is no longer limited to the first 200 accounts. <code>GET /api/v1/admin/users</code> takes <code>page</code>, <code>per_page</code>, <code>q</code> and <code>role</code> and reports the number of matches in the <code>X-Total-Count</code> header. Without <code>page</code> it answers as before.</li>
+</ul>
+
+<h2 id="saml-metadata">SAML accepts pasted metadata, and reads more name claims</h2>
+
+<p><strong>Who notices:</strong> administrators who set up SAML, and people who sign in through SAML with Microsoft Entra ID or an identity provider that sends <code>firstName</code> and <code>lastName</code>.</p>
+
+<ul>
+  <li><strong>Metadata as XML.</strong> Under <strong>Admin → Settings → Authentication → SAML</strong> you can now give the identity provider's metadata as a URL (as before) or as XML that you paste or upload (<strong>Upload .xml</strong> fills the same box). The two are alternatives: <code>PUT /api/v1/admin/saml</code> refuses a save that would leave both set with <code>400 saml_metadata_conflict</code>. The XML is checked before anything is saved, and refused with <code>invalid_saml_metadata</code> if it is not SAML metadata, has no identity provider section, or has no signing certificate, and with <code>saml_metadata_too_large</code> over 262144 bytes (256 KiB). It is shown again after saving, and it is never refreshed: paste the new metadata when your identity provider changes its signing certificate. <code>GET /api/v1/admin/saml</code> now returns <code>metadata_xml</code>.</li>
+  <li><strong>More name claims.</strong> The display name is now also read from <code>firstName</code> and <code>lastName</code>, and from the claim names Microsoft Entra ID sends by default. A person's stored name is rewritten at each sign-in, so an identity provider that already sent these may change some display names at the next sign-in. <a href="authentication.html#auth-saml">Details</a></li>
 </ul>
 
 <h2 id="known-gaps">What is not in 1.3.0</h2>
@@ -721,10 +733,9 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
   <tbody>
   <tr><td>Ticket detail</td><td>Markdown is shown as typed, not rendered. A reply cannot be edited or deleted by anyone: a correction is a new reply, by design.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/443" target="_blank" rel="noopener">#443</a></td></tr>
   <tr><td>Staff workflow</td><td>No filing a ticket on someone's behalf outside MCP, and search covers only your own queue.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/444" target="_blank" rel="noopener">#444</a></td></tr>
-  <tr><td>Guest attachments</td><td>The guest page has no way to attach a file.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/445" target="_blank" rel="noopener">#445</a></td></tr>
+  <tr><td>Guest attachments</td><td>A guest can attach a file only through the API. The guest page has no upload control.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/445" target="_blank" rel="noopener">#445</a></td></tr>
   <tr><td>API keys</td><td>Only administrators can create them.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/450" target="_blank" rel="noopener">#450</a></td></tr>
   <tr><td>Password reset</td><td>No reset by email.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/451" target="_blank" rel="noopener">#451</a></td></tr>
-  <tr><td>SAML</td><td>Pasted IdP metadata XML is not accepted, and the attribute names earlier pages told admins to send are not read.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/461" target="_blank" rel="noopener">#461</a></td></tr>
   <tr><td>Plugins</td><td>The plugin system is a v2 feature. 1.x has no working plugin system: plugins cannot be installed, and an enabled plugin record never receives events. Earlier pages promised it.</td><td><a href="../index.html#roadmap">v2 on the roadmap</a></td></tr>
   </tbody>
 </table>
