@@ -224,7 +224,7 @@ Admin, Webhooks has a History button per hook: its last 25 deliveries with the o
 
 This adds a database table through a migration that runs at start-up.
 
-## Email: SMTP Encryption and Honesty (Breaking, Read First)
+## Email: SMTP Encryption and Setup Rules (Breaking, Read First)
 
 Email (SMTP) now fails loudly instead of quietly. Several setups that used to "work" now fail, and the failure shows in the admin panel. Check these before upgrading. Nothing needs changing if your mail server offers STARTTLS (or you use port 465) and, when `SMTP_USER` is set, offers AUTH.
 
