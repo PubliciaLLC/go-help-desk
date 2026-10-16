@@ -81,6 +81,21 @@
       <li><a href="#compose-vars">Compose passes two more</a></li>
       <li><a href="#startup-checks">Startup checks</a></li>
       <li><a href="#client-errors">4xx, and 404 on DELETE</a></li>
+      <li><a href="#smtp">Email encryption</a></li>
+      <li><a href="#password-age">Old password hashes</a></li>
+      <li><a href="#unlock">Unlock command</a></li>
+      <li><a href="#passkeys-base-url">Passkeys need a domain</a></li>
+      <li><a href="#mcp-origin">MCP origin check</a></li>
+      <li><a href="#mcp-reply">MCP replies email</a></li>
+      <li><a href="#archived-nodes">Archived nodes</a></li>
+      <li><a href="#service-users">OAuth service users</a></li>
+      <li><a href="#staff-email">Staff email</a></li>
+      <li><a href="#followers">Followers</a></li>
+      <li><a href="#reopen">Reopening</a></li>
+      <li><a href="#ticket-page">Priority, Assign to me</a></li>
+      <li><a href="#webhooks">Webhooks</a></li>
+      <li><a href="#admin-api">Admin API</a></li>
+      <li><a href="#api-changes">Other API changes</a></li>
       <li><a href="#known-gaps">Not in 1.3.0</a></li>
       <li><a href="#steps">Doing the upgrade</a></li>
     </ul>
@@ -204,7 +219,15 @@
   <li><strong>Works on a phone.</strong> Staff triage and reporters can use the app on a phone. Administration stays on the desktop. <a href="https://github.com/PubliciaLLC/go-help-desk/blob/v1.3.0/docs/DESIGN.md#small-screens">Design notes</a></li>
   <li><strong>First-run setup creates a category.</strong> A new instance can file a ticket straight away. <a href="getting-started.html#first-run">First-run setup</a></li>
   <li><strong>A readable audit log.</strong> A per-ticket activity feed and an admin-wide searchable view. <a href="admin-guide.html#admin-audit">Audit log</a></li>
-  <li><strong>Notifications from an outbox.</strong> Email is queued in the database and retried after 30 seconds, doubling each time, up to eight attempts. Webhooks are queued too, but each one is sent once and never retried; the Webhooks screen shows each hook's last delivery result.</li>
+  <li><strong>Staff email and followers.</strong> Staff are emailed when a ticket is assigned to them or their group, when a requester replies, and when a ticket is reopened, and can follow any ticket to get the same mail. <a href="#staff-email">Staff email</a>, <a href="#followers">Followers</a></li>
+  <li><strong>Reopened tickets are flagged.</strong> A reopen raises the priority one level the first time, starts the SLA over and mails staff. <a href="#reopen">Details</a></li>
+  <li><strong>More on the ticket page.</strong> Staff can change a ticket's priority, take an unassigned ticket with Assign to me, and resolve all open child tickets at once. <a href="#ticket-page">Details</a></li>
+  <li><strong>Archive from the admin screen.</strong> Categories, types and items can be archived and unarchived in <strong>Admin → Categories</strong>. <a href="#archived-nodes">Details</a></li>
+  <li><strong>OAuth clients can write.</strong> Each client acts as a service user that is listed in Admin → Users. <a href="#service-users">Details</a></li>
+  <li><strong>Webhook retries, history and a ticket filter.</strong> <a href="#webhooks">Details</a></li>
+  <li><strong>MCP over Streamable HTTP.</strong> The server answers MCP at <code>/mcp</code>, and the older SSE routes stay. <a href="mcp.html">MCP Server</a></li>
+  <li><strong>A way back in.</strong> <code>unlock &lt;email&gt;</code> on the server clears an account's lockouts and gives it a new one-time password. <a href="#unlock">Details</a></li>
+  <li><strong>Notifications from an outbox.</strong> Email is queued in the database and retried after 30 seconds, doubling each time, up to eight attempts. Webhooks are queued too and are retried when a delivery fails (see <a href="#webhooks">Webhooks</a>); the Webhooks screen shows each hook's last delivery result and a History of the last 25.</li>
   <li><strong>Webhooks with chat formats.</strong> An Admin → Webhooks screen, with Slack, Teams, Discord and JIRA payload formats. <a href="admin-guide.html#admin-webhooks">Webhooks</a></li>
   <li><strong>Attachment security.</strong> Content detection, mismatch handling, quarantine, download-only files, and optional scanning and reputation lookups. <a href="attachment-security.html">Attachment Security</a></li>
   <li><strong>Published images.</strong> Multi-architecture images for amd64 and arm64, published to GHCR. Building from source is still supported. <a href="getting-started.html#quick-start">Quick start</a></li>
@@ -361,7 +384,7 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 
 <p><strong>Who notices:</strong> everyone who signs in with a password, once; and servers that take many sign-ins at the same moment.</p>
 
-<p>New passwords are hashed with bcrypt at cost 12. Releases up to 1.2 used cost 10, although earlier security pages said 12. An existing hash keeps working and is replaced with a cost-12 hash the next time its owner signs in with the correct password. The replacement is best effort: if it fails, the failure is logged and the sign-in still succeeds, and the next sign-in tries again. It never overwrites a password that was changed in the meantime. An account that does not sign in keeps its cost-10 hash.</p>
+<p>New passwords are hashed with bcrypt at cost 12. Releases up to 1.2 used cost 10, although earlier security pages said 12. An existing hash keeps working and is replaced with a cost-12 hash the next time its owner signs in with the correct password. The replacement is best effort: if it fails, the failure is logged and the sign-in still succeeds, and the next sign-in tries again. It never overwrites a password that was changed in the meantime. An account that does not sign in keeps its cost-10 hash, and must reset its password after 30 days (see <a href="#password-age">Accounts on an old password hash must reset</a>).</p>
 
 <p>Each cost step doubles the work, so a password check takes about four times the server time it did. If many people sign in at once, check <code>AUTH_THROTTLE_DELAY</code> and <code>AUTH_RATE_LIMIT_PER_MINUTE</code>. A wrong password for an account still on cost 10 is made to cost as much as one for an address that has no account, so the change of cost does not let the response time show which addresses have accounts.</p>
 
@@ -717,6 +740,10 @@ docker compose up -d</code></pre>
     If you checked out a tag earlier (for example <code>v1.2.0</code>), run <code>git checkout main</code> before <code>git pull</code>. If you build from source, run the build command from <a href="getting-started.html#build-from-source">Building from source</a> instead of the two <code>docker compose</code> commands. Migrations run automatically on startup, before the server accepts traffic.
   </li>
   <li><strong>Sign in as an administrator.</strong> Look for the red insecure-configuration banner, the red <em>Attachment uploads are disabled</em> banner and the amber scanning banner, and check the scanning status under <strong>Admin → Settings → Attachments → Malware scanning</strong>. Decide <code>audit_retention_days</code> and whether staff should see the field-level change history (<code>staff_can_view_ticket_change_history</code>).</li>
+  <li><strong>Check your mail server</strong> against <a href="#smtp">the new encryption rule</a>, and decide whether staff should start getting <a href="#staff-email">staff email</a>. To keep their inboxes as they were, set the three overrides under <strong>Admin → Settings → Email</strong> to <em>Off for everyone</em> before you turn email on.</li>
+  <li><strong>If you have webhook receivers,</strong> read <a href="#webhooks">the raw payload and note-event changes</a>, and make receivers cope with a repeated delivery.</li>
+  <li><strong>If you have MCP agents,</strong> note that <a href="#mcp-reply">their public replies now email the requester</a>.</li>
+  <li><strong>Tell people who rarely sign in</strong> about <a href="#password-age">the 30-day password reset</a>.</li>
   <li><strong>If you have API clients that drive signup,</strong> update them for <a href="#signup">the new verification request</a>.</li>
   <li><strong>If you have scripts that call admin DELETE routes,</strong> or that drive sign-in in two requests, or that fetch OAuth tokens, see <a href="#client-errors">the 404 and 4xx changes</a>, <a href="#pending-session">the 5-minute session</a> and <a href="#jwt-secret">the JWT key</a>.</li>
 </ol>
