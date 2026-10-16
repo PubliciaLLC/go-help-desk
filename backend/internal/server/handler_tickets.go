@@ -533,7 +533,8 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 // create_ticket gets. A typed address that belongs to an account files for that
 // account; any other is filed exactly like a guest ticket (the guest creation
 // path, so the same address rules and the same link by email), which is a
-// dead end while guest submission is off, so it is refused then (#424).
+// dead end while guest submission is off, so it is refused then (#424). Like
+// the guest form it needs a name (the phone number stays optional).
 func (s *Server) fileOnBehalf(w http.ResponseWriter, r *http.Request, in *ticket.CreateInput,
 	id *uuid.UUID, email *string, guestName, guestPhone string) bool {
 	if id != nil && email != nil {
@@ -557,6 +558,11 @@ func (s *Server) fileOnBehalf(w http.ResponseWriter, r *http.Request, in *ticket
 		if !s.adminSvc.GuestSubmissionEnabled(r.Context()) {
 			Error(w, http.StatusBadRequest, "bad_request",
 				"reporter_email has no account, and guest submission is off, so the link to the ticket could not be used")
+			return false
+		}
+		// The guest form's rule: a name is required, a phone number is not.
+		if strings.TrimSpace(guestName) == "" {
+			Error(w, http.StatusBadRequest, "bad_request", "name is required for an address with no account")
 			return false
 		}
 		in.GuestEmail = &addr

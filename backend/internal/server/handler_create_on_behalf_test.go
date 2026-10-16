@@ -356,3 +356,37 @@ func TestCreateTicket_OnBehalf_NotifiesTheAccountFiledFor(t *testing.T) {
 		})
 	}
 }
+
+// Exactly like the guest form: an address with no account behind it needs a
+// name, a phone number is optional. An address that belongs to an account
+// needs no name, because the account has one.
+func TestCreateTicket_OnBehalf_TypedAddressNeedsAName(t *testing.T) {
+	cases := []struct {
+		name    string
+		extra   map[string]any
+		want    int
+		wantMsg string
+	}{
+		{"no name", map[string]any{"reporter_email": "new@example.test"}, http.StatusBadRequest, "name is required"},
+		{"a blank name", map[string]any{"reporter_email": "new@example.test", "guest_name": "  \t"}, http.StatusBadRequest, "name is required"},
+		{"a name, no phone", map[string]any{"reporter_email": "new@example.test", "guest_name": "Ada"}, http.StatusCreated, ""},
+		{"a name and a phone", map[string]any{"reporter_email": "new@example.test", "guest_name": "Ada", "guest_phone": "555-0100"}, http.StatusCreated, ""},
+		{"an account's address, no name", map[string]any{"reporter_email": "user@test.local"}, http.StatusCreated, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, cleanup := newHarness(t)
+			defer cleanup()
+			require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeyGuestSubmissionEnabled, true))
+			before := ticketCount(t, h)
+
+			res := h.postOnBehalf(t, "staff", tc.extra)
+			body := readBody(t, res)
+			require.Equal(t, tc.want, res.StatusCode, body)
+			if tc.want == http.StatusBadRequest {
+				require.Contains(t, body, tc.wantMsg)
+				require.Equal(t, before, ticketCount(t, h), "nothing was filed")
+			}
+		})
+	}
+}
