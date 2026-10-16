@@ -138,7 +138,7 @@ admins, or staff and admins, to force-reopen; requesters never can.
 - **Closed reopen policy**: admin setting (`closed_reopen_policy`, shown as **Reopening closed tickets** under Admin → Settings → Ticket lifecycle; session-gated like the other settings that widen who may do what). `off` (the default) | `admin` | `staff_admin`. **Closed is terminal by default; an instance setting can allow forced reopen by admins only, or by staff and admins; requesters never.** Unset, unreadable or unrecognised reads as `off`, never as a permissive value; an unrecognised value is refused (`400 invalid_closed_reopen_policy`) when saved. Read on every request, never cached, so a change applies to the very next request.
 - **A reopen** ([#464](https://github.com/PubliciaLLC/go-help-desk/issues/464)) is any move from Resolved or Closed back to an open status. Every way of doing it is the same reopen: a requester's reply on a Resolved ticket inside the window (an account holder, or a guest through their link); a status change by staff or an administrator (`PATCH /tickets/{id}` with `status_id`, and MCP `update_ticket_status`); and `POST /tickets/{id}/reopen`. Leaving Closed still needs `closed_reopen_policy` to allow the caller's role, and a refused request changes nothing. Resolved to Closed and Closed to Resolved are not reopens. A reopen does five things, in the same transaction as the status change (`ticket.Atomic`), so none of them happens without the others:
   - **It flags the ticket.** `tickets.reopen_count` (migration `000047`) goes up by one and is never reset; the ticket JSON carries it as `reopen_count`, to staff and administrators only (omitted when 0). A requester never receives it; see *What a requester sees of a ticket* below. Staff and administrators see a **Reopened** badge on the ticket page and on the ticket's row in the queue (table and mobile cards) while the ticket is open, and it goes away when the ticket is Resolved or Closed again. A requester does not see it. Tickets reopened before the upgrade start at 0: reopens were only ever audit entries, which retention can prune, so there is nothing reliable to count from.
-  - **It raises the priority one level on the first reopen only** (low to medium to high to critical; critical stays critical). "First" is the count being 0 before this reopen, so a ticket that is resolved and reopened again is flagged again but not raised again. The change goes through the same primitive as a staff priority change (`changePriorityInTx`, reason `reopened`) and writes `priority_changed` with that reason. A `PATCH` that reopens a ticket and also sends a `priority` raises it first and then applies the priority sent, so the value sent wins.
+  - **It raises the priority one level on the first reopen only** (low to medium to high to critical; critical stays critical). "First" is the count being 0 before this reopen, so a ticket that is resolved and reopened again is flagged again but not raised again. The change goes through the same primitive as a staff priority change (`changePriorityInTx`, reason `reopened`) and writes `priority_changed` with that reason if the priority moved (a critical ticket writes nothing). A `PATCH` that reopens a ticket and also sends a `priority` raises it first and then applies the priority sent, so the value sent wins.
   - **It restarts both SLA clocks**, on every reopen and not only the first, at any priority: see *A reopen restarts both clocks* under SLA Policy Matching. Every reopen is also a **restart point** remembered on the ticket (`last_reopened_at` and the Pending total then, `paused_seconds_at_last_reopen`), including a reopen that lands on a priority with no SLA policy and so starts no record.
   - **It writes `reopened`** to the audit log (and `priority_changed` and `sla_restarted` as above). A status change out of Resolved or Closed now writes `reopened` beside its `status_changed`; before, only the reply and `POST /reopen` did.
   - **It emails staff and fires `ticket.reopened`**: see Notifications. A status change out of Resolved or Closed raises the `ticket.reopened` webhook event, which it did not before. The reopen and the status change are **one event** for the ticket (kinds `ticket.reopened` and `ticket.status_changed`, plus `ticket.priority_changed` on the first reopen, if the priority moved), written to the outbox in the same transaction; the mail and the webhook are sent a moment after the commit. See [Ticket Events: One Change, One Event](#ticket-events-one-change-one-event).
@@ -261,11 +261,13 @@ starts: an invalid priority value, a priority or assignment or reclassification
 from a role that may not make it, an invalid classification (`ValidateCTI`), a
 priority on a ticket that would end up Resolved or Closed, an assignee that
 cannot be given a ticket (unknown, deleted, disabled or a reporting user), a
-group that does not exist, and the status change's own refusals. Inside the
-transaction the steps check again, on the locked row, what each can: the
-assignment re-checks the assignee and group; the priority step re-checks the
-role and the closed state; the status step re-checks the reopen policy and an
-inactive status (its role check is made before the transaction). The
+group that does not exist. The handler makes no status check. `Update` itself
+checks that the status exists and that the role may move to it (`statusFor`)
+before it opens the transaction. Inside the transaction the steps check, on the
+locked row, what each can: the assignment re-checks the assignee and group; the
+priority step re-checks the role and the closed state; the status step checks
+the reopen policy and an inactive status, for the first time and only there
+(`updateStatusInTx`). The
 classification step takes the row lock and does not check again: `ValidateCTI`
 before the transaction is its only check. The assignment and reclassification
 roles are not checked by the service: authorisation belongs to the caller, so
@@ -3510,10 +3512,10 @@ their rows.
    brings back the duplicates.
 7. **The tracking number stays out of the raw body** (reaffirms the 2026-10-13
    #448 ruling). The raw body is exactly today's.
-8. **One event per ticket** (was open question B). A change that touches two tickets produces two
+8. **One event per ticket** A change that touches two tickets produces two
    events. A follow-up gives one event for the new ticket and one `linked` event
    for the original.
-9. **Build order** (was open question C). One PR on top of #504, built after #503
+9. **Build order** One PR on top of #504, built after #503
    and #504 merge, with the upgrade notes in the same PR, then an Opus review.
 
 **Ruled by Erik, 2026-10-16** (from the build and its review, recorded as
@@ -3542,7 +3544,7 @@ comments on #506):
 
 **Ruled by Erik, 2026-10-16, fix in progress (not yet built).** These four are
 recorded on #506. This section describes the code as it is on `v1.3.0-beta`; a
-separate fix PR will change the sentences below when it lands.
+separate fix PR will change the sentences above when it lands.
 
 14. **Chat headlines for the two new events are readable.** `ticket.priority_changed`
     and `ticket.classified` get proper headlines, not their raw names. Fix in
