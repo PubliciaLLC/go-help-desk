@@ -35,6 +35,7 @@ func (s *Store) CreateAPIKey(ctx context.Context, k auth.APIKey) error {
 		Scopes:      k.Scopes,
 		ExpiresAt:   database.NullTime(k.ExpiresAt),
 		CreatedAt:   k.CreatedAt,
+		CreatedBy:   database.NullUUID(k.CreatedBy),
 	})
 }
 
@@ -52,6 +53,7 @@ func (s *Store) GetByHash(ctx context.Context, hashed string) (auth.APIKey, erro
 		LastUsedAt:  database.TimePtr(r.LastUsedAt),
 		ExpiresAt:   database.TimePtr(r.ExpiresAt),
 		CreatedAt:   r.CreatedAt,
+		CreatedBy:   database.UUIDPtr(r.CreatedBy),
 	}, nil
 }
 
@@ -64,6 +66,17 @@ func (s *Store) UpdateLastUsed(ctx context.Context, id uuid.UUID, at time.Time) 
 
 func (s *Store) Delete(ctx context.Context, id uuid.UUID) error {
 	n, err := s.q.DeleteAPIKey(ctx, id)
+	if err != nil {
+		return fmt.Errorf("deleting API key %s: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("API key %s: %w", id, auth.ErrNotFound)
+	}
+	return nil
+}
+
+func (s *Store) DeleteForUser(ctx context.Context, id, userID uuid.UUID) error {
+	n, err := s.q.DeleteAPIKeyForUser(ctx, dbgen.DeleteAPIKeyForUserParams{ID: id, UserID: userID})
 	if err != nil {
 		return fmt.Errorf("deleting API key %s: %w", id, err)
 	}
@@ -89,6 +102,7 @@ func (s *Store) ListByUser(ctx context.Context, userID uuid.UUID) ([]auth.APIKey
 			LastUsedAt:  database.TimePtr(r.LastUsedAt),
 			ExpiresAt:   database.TimePtr(r.ExpiresAt),
 			CreatedAt:   r.CreatedAt,
+			CreatedBy:   database.UUIDPtr(r.CreatedBy),
 		}
 	}
 	return out, nil
@@ -113,6 +127,7 @@ func (s *Store) ListWithOwner(ctx context.Context, keyID *uuid.UUID) ([]auth.API
 				LastUsedAt:  database.TimePtr(r.LastUsedAt),
 				ExpiresAt:   database.TimePtr(r.ExpiresAt),
 				CreatedAt:   r.CreatedAt,
+				CreatedBy:   database.UUIDPtr(r.CreatedBy),
 			},
 			OwnerEmail: r.OwnerEmail,
 			OwnerName:  r.OwnerName,

@@ -1,6 +1,6 @@
 -- name: CreateAPIKey :exec
-INSERT INTO api_keys (id, name, hashed_token, user_id, scopes, expires_at, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7);
+INSERT INTO api_keys (id, name, hashed_token, user_id, scopes, expires_at, created_at, created_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
 -- name: GetAPIKeyByHash :one
 SELECT * FROM api_keys WHERE hashed_token = $1;
@@ -10,6 +10,12 @@ UPDATE api_keys SET last_used_at = $2 WHERE id = $1;
 
 -- name: DeleteAPIKey :execrows
 DELETE FROM api_keys WHERE id = $1;
+
+-- name: DeleteAPIKeyForUser :execrows
+-- The self-service revoke (#450): the owner is part of the statement, so a key
+-- that is somebody else's deletes nothing and is indistinguishable from one
+-- that does not exist.
+DELETE FROM api_keys WHERE id = $1 AND user_id = $2;
 
 -- name: ListAPIKeysByUser :many
 SELECT * FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC;

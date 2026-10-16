@@ -23,6 +23,11 @@ type APIKey struct {
 	LastUsedAt  *time.Time `json:"last_used_at,omitempty"`
 	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
+	// CreatedBy is who issued the key (#450). Equal to UserID when the owner
+	// made it; different when an administrator issued it on their behalf; nil
+	// when it is not known (made before this was recorded, or the issuer has
+	// since been deleted).
+	CreatedBy *uuid.UUID `json:"created_by"`
 }
 
 // APIKeyWithOwner is a key with the account it belongs to, for the admin list.
@@ -56,6 +61,9 @@ type APIKeyStore interface {
 	GetByHash(ctx context.Context, hashed string) (APIKey, error)
 	UpdateLastUsed(ctx context.Context, id uuid.UUID, at time.Time) error
 	Delete(ctx context.Context, id uuid.UUID) error
+	// DeleteForUser deletes the key only if userID owns it; ErrNotFound
+	// otherwise, whether it is someone else's or does not exist.
+	DeleteForUser(ctx context.Context, id, userID uuid.UUID) error
 	ListByUser(ctx context.Context, userID uuid.UUID) ([]APIKey, error)
 }
 
