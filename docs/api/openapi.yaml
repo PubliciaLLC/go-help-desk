@@ -404,7 +404,8 @@ paths:
         queued row, so neither the answer nor the time it takes says who has an
         account. Whether anything is mailed is decided when the mail would be sent,
         off the request. Nothing is sent for an address with no account, a disabled
-        or deleted account, or an account that cannot use a password because
+        or deleted account, an account with no password (it signs in only through an
+        identity provider), or an account that cannot use a password because
         saml_enabled limits password sign-in to administrators; and an account is
         mailed at most once per five minutes however many requests arrive. A string
         that is not an email address is answered 202 and queues nothing. The link
@@ -461,7 +462,7 @@ paths:
         password outside 8 to 72 bytes is refused (password_too_short or
         password_too_long) before the link is touched, so it still works. A link
         that is unknown, already used, replaced by a newer one, expired, or for an
-        account that has since been disabled or deleted is refused with 422
+        account that has since been disabled, deleted or left with no password is refused with 422
         token_invalid, the same answer for each. An audit entry
         password_reset_by_email is written for the account, with no actor. Works
         with email switched off, for a link already mailed. Each client address has

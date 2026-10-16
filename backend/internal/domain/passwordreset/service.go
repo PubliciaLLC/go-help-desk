@@ -69,7 +69,8 @@ func (s *Service) Request(ctx context.Context, email string) error {
 // to be mailed, and if so makes the token and mails the link. It mails nothing,
 // and returns nil so the worker does not retry, for an address with no account,
 // a disabled account, an account that cannot use a password because SAML limits
-// password sign-in to administrators, or one whose budget is spent.
+// password sign-in to administrators, an account that has no password (it signs
+// in through an identity provider), or one whose budget is spent.
 //
 // allow charges and checks that budget for an account. It is the caller's, not
 // this package's: the budget must be charged once per request and not once per
@@ -90,6 +91,12 @@ func (s *Service) Send(ctx context.Context, ev notification.Event, allow func(us
 		return fmt.Errorf("looking up the account: %w", err)
 	}
 	if !u.IsActive() || !user.IsLocalAuthAllowed(u, s.samlEnabled(ctx)) {
+		return nil
+	}
+	// An account with no password signs in through an identity provider, and
+	// "forgot password" is not for it: giving it one would put a way in beside
+	// the provider's MFA and conditional access. Tested as sso_guard.go tests it.
+	if u.PasswordHash == "" {
 		return nil
 	}
 	if !allow(u.ID) {

@@ -51,6 +51,7 @@ WITH spent AS (
       AND users.deleted_at IS NULL
       AND NOT users.disabled
       AND NOT users.service_account
+      AND users.password_hash <> ''
     RETURNING users.id
 ), ended AS (
     DELETE FROM sessions WHERE sessions.user_id IN (SELECT id FROM changed) RETURNING sessions.id
@@ -76,6 +77,10 @@ type RedeemPasswordResetTokenParams struct {
 // spent and does nothing. No row back means the link did not work for any
 // reason: unknown, used, replaced, expired, or an account that cannot have its
 // password set. The caller does not tell those apart.
+//
+// An account with no password (password_hash = '') signs in through an identity
+// provider and is not given one: a link made before it lost its password, or
+// for one that never had it, spends itself and changes nothing.
 //
 // Also clears must_change_password: this is the account holder choosing a
 // password, which is what that flag is waiting for (#497).

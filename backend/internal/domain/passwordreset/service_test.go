@@ -124,7 +124,16 @@ func newRig(accounts ...user.User) *rig {
 }
 
 func account(role user.Role) user.User {
-	return user.User{ID: uuid.New(), Email: "ada@example.com", DisplayName: "Ada", Role: role}
+	// With a password: "forgot password" is for an account that has one.
+	return user.User{ID: uuid.New(), Email: "ada@example.com", DisplayName: "Ada", Role: role, PasswordHash: "hash"}
+}
+
+// ssoOnly is an account that signs in through an identity provider and has no
+// password of its own.
+func ssoOnly(role user.Role) user.User {
+	u := account(role)
+	u.PasswordHash = ""
+	return u
 }
 
 func allow(uuid.UUID) bool { return true }
@@ -198,6 +207,10 @@ func TestSend_MailsALinkWhoseTokenIsStoredHashed(t *testing.T) {
 func TestSend_DecidesAtSendTime(t *testing.T) {
 	disabled := account(user.RoleUser)
 	disabled.Disabled = true
+	oidc := ssoOnly(user.RoleUser)
+	oidc.OIDCSubject = "oidc-sub"
+	saml := ssoOnly(user.RoleUser)
+	saml.SAMLSubject = "saml-sub"
 
 	cases := []struct {
 		name     string
@@ -213,6 +226,9 @@ func TestSend_DecidesAtSendTime(t *testing.T) {
 		{"a non-administrator when SAML restricts passwords", []user.User{account(user.RoleStaff)}, true, "ada@example.com", true, false},
 		{"a requester when SAML restricts passwords", []user.User{account(user.RoleUser)}, true, "ada@example.com", true, false},
 		{"an administrator when SAML restricts passwords", []user.User{account(user.RoleAdmin)}, true, "ada@example.com", true, true},
+		{"an account that signs in through OIDC and has no password", []user.User{oidc}, false, "ada@example.com", true, false},
+		{"an account that signs in through SAML and has no password", []user.User{saml}, false, "ada@example.com", true, false},
+		{"an administrator with no password when SAML restricts passwords", []user.User{ssoOnly(user.RoleAdmin)}, true, "ada@example.com", true, false},
 		{"an account whose budget is spent", []user.User{account(user.RoleUser)}, false, "ada@example.com", false, false},
 	}
 	for _, tc := range cases {

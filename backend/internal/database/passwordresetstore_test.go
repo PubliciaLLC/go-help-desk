@@ -171,3 +171,26 @@ func TestPasswordResetStore_ADisabledOrDeletedAccountIsNotChanged(t *testing.T) 
 		})
 	}
 }
+
+// #451: an account with no password (it signs in through an identity provider)
+// is not given one by a link. The link is spent and the password stays empty,
+// even if the account lost its password after the link was made.
+func TestPasswordResetStore_AnAccountWithNoPasswordIsNotChanged(t *testing.T) {
+	r := newResetRig(t)
+	ada := r.account(t, "ada@reset.test")
+	r.session(t, ada.ID)
+	require.NoError(t, r.store.Issue(r.ctx, ada.ID, "tok", passwordreset.TokenTTL))
+	require.NoError(t, r.query(
+		`UPDATE users SET password_hash = '', oidc_subject = 'oidc-ada' WHERE id = $1 RETURNING id`, ada.ID).scan(new(uuid.UUID)))
+
+	_, err := r.store.Redeem(r.ctx, "tok", "new-hash")
+
+	require.ErrorIs(t, err, passwordreset.ErrTokenInvalid)
+	require.Empty(t, r.hashOf(t, ada.ID), "the account was given a password")
+	require.Equal(t, 1, r.sessions(t, ada.ID), "a refused link ended a session")
+	_, err = r.store.Redeem(r.ctx, "tok", "again")
+	require.ErrorIs(t, err, passwordreset.ErrTokenInvalid)
+	var left int
+	require.NoError(t, r.query(`SELECT count(*) FROM password_reset_tokens WHERE user_id = $1`, ada.ID).scan(&left))
+	require.Zero(t, left, "the link was not spent")
+}

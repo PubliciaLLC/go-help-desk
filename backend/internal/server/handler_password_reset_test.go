@@ -78,6 +78,14 @@ func bodyErrorCode(body string) string {
 	return e.Error.Code
 }
 
+// makeSSOOnly turns an account into one that signs in through OIDC alone: it
+// has an identity provider subject and no password.
+func makeSSOOnly(t *testing.T, h *harness, email string) {
+	t.Helper()
+	_, err := h.tx.Exec(`UPDATE users SET password_hash = '', oidc_subject = 'oidc-' || id::text WHERE email = $1`, email)
+	require.NoError(t, err)
+}
+
 func passwordSignIn(t *testing.T, h *harness, email, password string) (*http.Response, string) {
 	t.Helper()
 	s := &session{h: h}
@@ -182,6 +190,16 @@ func TestForgotPassword_NoLinkForAnAccountThatCannotHaveOne(t *testing.T) {
 		{"an administrator when SAML limits passwords to administrators", func(t *testing.T, h *harness) {
 			require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeySAMLEnabled, true))
 		}, "admin@test.local", true},
+		// #451: "forgot password" is not for accounts that sign in through an
+		// identity provider. Giving one a password would put a way in beside the
+		// provider's MFA and conditional access.
+		{"an account that signs in through OIDC and has no password", func(t *testing.T, h *harness) {
+			makeSSOOnly(t, h, "user@test.local")
+		}, "user@test.local", false},
+		{"an administrator with no password when SAML limits passwords to administrators", func(t *testing.T, h *harness) {
+			require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeySAMLEnabled, true))
+			makeSSOOnly(t, h, "admin@test.local")
+		}, "admin@test.local", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -202,6 +220,29 @@ func TestForgotPassword_NoLinkForAnAccountThatCannotHaveOne(t *testing.T) {
 			}
 		})
 	}
+}
+
+// #451: a link mailed while the account had a password must not give an SSO-only
+// account one if the password went away before the link was used. The link is
+// refused and spent, no password appears, and local sign-in stays closed.
+func TestResetPassword_ALinkForAnAccountThatLostItsPasswordDoesNothing(t *testing.T) {
+	h, cleanup := harnessWithEmail(t)
+	defer cleanup()
+	forgot(t, h, "user@test.local")
+	token := h.resetMail.latest(t).token
+	makeSSOOnly(t, h, "user@test.local")
+
+	res, body := resetPassword(t, h, token, "a-brand-new-password")
+
+	require.Equal(t, http.StatusUnprocessableEntity, res.StatusCode, "%s", body)
+	require.Equal(t, "token_invalid", bodyErrorCode(body))
+	var hash string
+	require.NoError(t, h.tx.QueryRow(`SELECT password_hash FROM users WHERE email = 'user@test.local'`).Scan(&hash))
+	require.Empty(t, hash, "the account was given a password")
+	in, inBody := passwordSignIn(t, h, "user@test.local", "a-brand-new-password")
+	require.NotEqual(t, http.StatusOK, in.StatusCode, "local sign-in opened for an SSO-only account: %s", inBody)
+	again, _ := resetPassword(t, h, token, "a-brand-new-password")
+	require.Equal(t, http.StatusUnprocessableEntity, again.StatusCode)
 }
 
 // An address is matched the way a sign-in matches it.
