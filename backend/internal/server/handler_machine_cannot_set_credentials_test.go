@@ -8,6 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // Keys can't set passwords (CTO, 2026-10-16). An API key or OAuth client may
@@ -109,7 +111,6 @@ func TestMachineCredential_CanStillProvisionUsersWithoutAPassword(t *testing.T) 
 	t.Run("the other fields still work", func(t *testing.T) {
 		for _, body := range []map[string]any{
 			{"display_name": "Renamed"},
-			{"email": "renamed@test.local"},
 			{"role": "user"},
 			{"disabled": true},
 			{"disabled": false},
@@ -119,6 +120,11 @@ func TestMachineCredential_CanStillProvisionUsersWithoutAPassword(t *testing.T) 
 			out := readAll(t, res)
 			require.Equal(t, http.StatusOK, res.StatusCode, "%v: %s", body, out)
 		}
+	})
+	t.Run("it was created with the address it was given", func(t *testing.T) {
+		u, err := h.userSvc.GetByID(context.Background(), created.ID)
+		require.NoError(t, err)
+		require.Equal(t, "provisioned@test.local", u.Email)
 	})
 	t.Run("an empty password is not a password", func(t *testing.T) {
 		res := h.doAsAdmin(t, http.MethodPost, usersPath, map[string]any{
@@ -163,4 +169,69 @@ func TestSession_AdministratorCanStillSetPasswordsAndResetFactors(t *testing.T) 
 	res = h.doSession(t, admin, http.MethodPatch, usersPath+"/"+h.staffID.String(), map[string]any{"reset_mfa": true})
 	res.Body.Close()
 	require.Equal(t, http.StatusOK, res.StatusCode)
+}
+
+// Keys never change emails (CTO, 2026-10-16). Once a reset link goes to an
+// account's address (#451), re-addressing an account sends the link to whoever
+// holds the key. Refused whenever the field is present, even unchanged, and
+// before anything else in the request is applied.
+func TestMachineCredential_CannotChangeAnEmailAddress(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	passwordless, err := h.userSvc.Create(ctx, user.CreateUserInput{
+		Email: "nopass@test.local", DisplayName: "No Password", Role: user.RoleStaff,
+	})
+	require.NoError(t, err)
+	require.Empty(t, passwordless.PasswordHash, "precondition: no password")
+
+	for name, c := range map[string]struct {
+		id    uuid.UUID
+		email string
+		name  string
+	}{
+		"a staff member with a password": {h.staffID, "attacker@evil.test", "Staff"},
+		"an account with no password":    {passwordless.ID, "attacker2@evil.test", "No Password"},
+		"the same address, unchanged":    {h.staffID, "staff@test.local", "Staff"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			res := h.doAsAdmin(t, http.MethodPatch, usersPath+"/"+c.id.String(), map[string]any{
+				"email": c.email, "display_name": "Changed in the same request", "disabled": true,
+			})
+			b := readAll(t, res)
+			require.Equal(t, http.StatusForbidden, res.StatusCode, "body: %s", b)
+			require.Equal(t, "session_required", errCode(t, b))
+
+			// Nothing else in the request was applied either.
+			u, err := h.userSvc.GetByIDAdmin(ctx, c.id)
+			require.NoError(t, err)
+			require.Equal(t, c.name, u.DisplayName)
+			require.False(t, u.Disabled)
+			if c.email != "staff@test.local" {
+				require.NotEqual(t, c.email, u.Email)
+			}
+		})
+	}
+
+	t.Run("an OAuth client is refused by its role, and changes nothing", func(t *testing.T) {
+		client := h.newServiceClient(t, "syncer", allScopes()...)
+		res := h.doBearer(t, client.Token, http.MethodPatch, usersPath+"/"+h.staffID.String(),
+			map[string]any{"email": "attacker3@evil.test"})
+		res.Body.Close()
+		require.Equal(t, http.StatusForbidden, res.StatusCode)
+		u, err := h.userSvc.GetByIDAdmin(ctx, h.staffID)
+		require.NoError(t, err)
+		require.Equal(t, "staff@test.local", u.Email)
+	})
+
+	t.Run("a signed-in administrator still can", func(t *testing.T) {
+		res := h.doAsAdminSession(t, http.MethodPatch, usersPath+"/"+h.staffID.String(),
+			map[string]any{"email": "Renamed@Test.Local"})
+		b := readAll(t, res)
+		require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", b)
+		u, err := h.userSvc.GetByIDAdmin(ctx, h.staffID)
+		require.NoError(t, err)
+		require.Equal(t, "renamed@test.local", u.Email)
+	})
 }

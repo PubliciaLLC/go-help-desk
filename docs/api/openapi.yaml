@@ -7090,10 +7090,12 @@ paths:
         earlier ones applied. The last
         active administrator cannot be disabled or demoted. An
         API key cannot change an administrator's account or promote a user to
-        administrator, and cannot send reset_mfa: keys can't clear a second factor
-        for anyone. Those answer 403 session_required, after the body checks. A key
-        may still change display_name, email, role (not to administrator) and
-        disabled. The
+        administrator, and cannot send reset_mfa (keys can't clear a second factor
+        for anyone) or email (keys can't change an address, because a reset link
+        goes to it; refused whenever the field is present, even unchanged, and
+        before any other field is applied). Those answer 403 session_required,
+        after the body checks. A key may still change display_name, role (not to
+        administrator) and disabled. The
         response is the same detail view GET returns, passkey_count included.
       tags: ['Admin: Users']
       x-ghd-handler: handleUpdateUser

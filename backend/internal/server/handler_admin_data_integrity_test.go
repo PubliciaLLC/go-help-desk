@@ -308,6 +308,11 @@ func TestDeletedAccount_SessionAndAPIKeySeeTheSameAnswers(t *testing.T) {
 				if who == "api key" && tc.tail == "/password" {
 					want = http.StatusForbidden
 				}
+				// And on an email change (2026-10-16), which a key may not make.
+				// A malformed address is still the 400 the body check gives first.
+				if who == "api key" && tc.name == "patch, new email" {
+					want = http.StatusForbidden
+				}
 				got := do(t, h, s, tc.method, adminAPI+"/users/"+id.String()+tc.tail, tc.body)
 				require.Equal(t, want, got)
 

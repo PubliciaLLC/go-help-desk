@@ -2386,15 +2386,22 @@ not set a password or clear a second factor:
   session_required` for a machine credential, checked before anything in the
   request is applied.
 
-A key may still **create** users (without a password), **rename**, **change
-email**, **change role** (never to administrator) and **disable** non-administrators.
-Only a signed-in administrator can do the credential things. Open question,
-reported to Erik: an email change by a key is not refused, and once password reset
-by email exists (#451) a key that can change an address, or create an account
-with an address of its choosing, can have a reset link mailed to itself. That has
-to be settled in #451's design (for example, no reset link for an account a key
-created or last re-addressed), not by refusing every email edit, which would
-break ordinary provisioning.
+- `PATCH /admin/users/{id}` with an `email` field is `403 session_required` for a
+  machine credential, **whoever the account is and whether or not it has a
+  password**, and even when the value is unchanged: the field being present is
+  enough. It is checked first, with `reset_mfa`, before anything else in the
+  request is applied. It is the only route that changes an address. The reason
+  is password reset by email (#451): the reset link goes to the account's
+  address, so re-addressing an account would send its link to whoever holds the
+  key.
+
+A key may still **create** users, with an email address and no password, and
+**rename**, **change role** (never to administrator) and **disable**
+non-administrators. Creating with an address of its choosing is safe because the
+new account has no password, and the reset-by-email flow (#451) sends no link to
+an account without one; an account only becomes usable when a signed-in
+administrator gives it a credential. Only a signed-in administrator can set
+passwords, clear factors or change addresses.
 
 Four more things are off limits to a machine credential, for the same reason:
 

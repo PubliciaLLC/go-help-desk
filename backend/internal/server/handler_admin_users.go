@@ -322,6 +322,14 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		if body.ResetMFA && denyMachineAdminTakeover(w, r, "reset a second factor") {
 			return
 		}
+		// Nor an address (Erik, 2026-10-16), whoever it belongs to and whether
+		// or not the account has a password, and even when the value is
+		// unchanged: the field being present is enough. Once a reset link goes
+		// to an account's address (#451), re-addressing an account sends the
+		// link to whoever holds the key.
+		if body.Email != nil && denyMachineAdminTakeover(w, r, "change an email address") {
+			return
+		}
 		if s.denyMachineTargetingAdmin(w, r, id, "modify an administrator") {
 			return
 		}
@@ -549,9 +557,11 @@ func isMachine(r *http.Request) bool {
 // 2026-10-16). The earlier rule left staff accounts open: create one with a
 // password the key chose, sign in as it, and from that session create an API
 // key (POST /me/api-keys) that outlives the revocation of the key that started
-// it. So a password at creation, POST /admin/users/{id}/password and reset_mfa
-// are all session-only. What stays automatable is provisioning without a
-// credential: create, rename, change role (not to administrator), disable.
+// it. So a password at creation, POST /admin/users/{id}/password, reset_mfa and
+// an email change (a reset link goes to the address, #451) are all
+// session-only. What stays automatable is provisioning without a credential:
+// create (with an address, and no password), rename, change role (not to
+// administrator), disable.
 func denyMachineAdminTakeover(w http.ResponseWriter, r *http.Request, why string) bool {
 	if !isMachine(r) {
 		return false
