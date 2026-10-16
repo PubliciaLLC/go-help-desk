@@ -303,6 +303,16 @@ Scripts and API keys that call the admin API can see these changes. Migration 00
 - **What to check:** people who sign in rarely (seasonal staff, requesters) are the ones affected. Tell them, or have an administrator reset them, before day 30.
 - **API clients:** sign-in with an old hash after the deadline answers 403 `password_reset_required` instead of 200. New installs are unaffected.
 
+## Staff Search Now Covers Every Ticket They Can See (#444)
+
+A search in the ticket list used to cover only the selected queue, so staff searching from "Mine" never found a ticket assigned to someone else. **For staff and administrators the search box now covers every ticket the viewer can see, whatever queue is selected.**
+
+- The results say "Searching all tickets you can see". A chip, "Only my tickets" (or "Only unassigned"), narrows the search to the queue; clicking it again widens it. With an empty box the queue is unchanged.
+- **Who can see what is unchanged.** Administrators, and staff while `ticket_scope_enforced` is off, see every ticket. With it on, staff see only what their groups' scope admits, so a group-scoped staff member still cannot find another group's ticket.
+- Requesters are unchanged and see only their own tickets.
+- **API:** new `GET /api/v1/tickets?scope=visible` for staff and administrators. Older servers ignore an unknown scope and answer as `mine`. Existing scopes behave as before.
+- No migration and no new index: the query is the one the administrator's All queue and the staff scope list already use.
+
 ## One Change, One Event: Webhooks and Staff Email (#506)
 
 A change to a ticket is now **one event**, written to the notification queue in the same database transaction as the change. Before, each field changed was its own event, announced after the change had committed; a crash in between lost the notification. No migration, and no setting to change.
