@@ -178,6 +178,7 @@
     <tr><td>Staff can follow a ticket</td><td>Staff and administrators</td></tr>
     <tr><td>Reopening a ticket flags it, raises priority once, restarts the SLA and mails staff; requesters see less</td><td>Staff, administrators, requesters, scripts that read the audit routes</td></tr>
     <tr><td>Change priority, Assign to me, Resolve all children</td><td>Staff and administrators</td></tr>
+    <tr><td>Webhooks: ids-only raw payload, notes as their own event, retries, history, ticket filter</td><td>Anyone who receives webhooks</td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
@@ -602,6 +603,26 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
   <li><strong>Assign to me.</strong> A button in the Assignee panel, offered to staff and administrators only while the ticket has no assignee and is not Resolved or Closed. It keeps the ticket's group.</li>
   <li><strong>Resolve all children.</strong> On a parent ticket, the Linked tickets panel asks for resolution notes once and resolves the direct children that are still open, one after another, each with the same notes. Children already Resolved or Closed are skipped. A refusal on one child does not stop the others, and the panel reports how many were resolved, skipped and refused, and why. <strong>Only direct children are resolved.</strong> If some of those children have children of their own, the panel names up to five of them and says to resolve those from their own tickets.</li>
 </ul>
+
+<h2 id="webhooks">Webhooks: retries, delivery ids, history, notes and a ticket filter</h2>
+
+<p><strong>Who notices:</strong> anyone who receives webhooks. Two of these changes can break a receiver.</p>
+
+<h3 id="webhooks-raw">Breaking: the raw payload carries ids only</h3>
+<p>A hook with the <strong>Raw JSON</strong> format is now sent only the event name (<code>Type</code>), <code>TicketID</code>, <code>ActorID</code>, <code>OccurredAt</code> and, where the event has them, a <code>Payload</code> with <code>new_status_id</code> or <code>target_id</code>. These are gone: <code>TrackingNumber</code>, <code>Subject</code>, <code>Priority</code>, <code>guest_email</code>, <code>reporter_email</code>, <code>ReplyBody</code>, and the <code>internal</code> and <code>link_type</code> fields. A receiver that reads any of them must fetch the ticket through the REST API with <code>TicketID</code>. Slack, Teams, Discord and Jira Automation hooks are not affected: their messages still carry the subject, tracking number, status and public reply text, and never an address or a note's text.</p>
+
+<h3 id="webhooks-notes">Breaking: internal notes are their own event</h3>
+<p><code>ticket.replied</code> is now sent for customer-visible replies only. Internal notes are sent as the new <code>ticket.note_added</code>. A hook subscribed to <code>ticket.replied</code> stops receiving notes. Add <code>ticket.note_added</code>, or choose all events, to keep them.</p>
+
+<h3 id="webhooks-retries">A receiver may now see an event twice</h3>
+<p>A delivery that fails with a connection error, DNS or TLS failure, timeout, a 5xx or a 429 is tried again, 30 seconds doubling to an hour, 8 attempts in all. A <code>Retry-After</code> header from the receiver is honoured up to an hour. A blocked (internal) address and any other status, such as 400 or 404, are not retried. If you change a hook's URL, deliveries still waiting for the old address are dropped, and so are deliveries waiting for an event the hook no longer lists.</p>
+<p>Every delivery now carries two headers: <code>X-GHD-Delivery</code>, a UUID that stays the same across the retries of one delivery (use it to drop a repeat), and <code>X-GHD-Event</code>, the event name. The signature headers are unchanged.</p>
+
+<h3 id="webhooks-history">New: History and Redeliver</h3>
+<p><strong>Admin → Webhooks</strong> has a <strong>History</strong> button per hook: its last 25 deliveries with the outcome, status, number of attempts and time. Payloads and error text are not kept. <strong>Redeliver</strong> sends a delivery's event again as a new delivery. A chat message is rebuilt from the ticket as it is now, so it can differ from the original, and a reply's text is sent only if the reply still exists and is public.</p>
+
+<h3 id="webhooks-filter">New: a ticket filter</h3>
+<p>A hook can be limited to tickets in chosen categories, priorities or assigned groups (<strong>Admin → Webhooks → Ticket filter</strong>), or inverted to send for every ticket that does not match. A hook with no filter, which is every hook after the upgrade, behaves as before. An event the filter turns away is not a delivery for that hook: no delivery id, no retry, no History entry. The filter is read as it is now, when an event is sent, at every retry and at Redeliver, so tightening a filter drops waiting retries that it no longer admits. Redeliver is refused with <code>409 webhook_filter_excludes</code> when the filter does not admit the ticket, and with <code>409 webhook_filter_unverifiable</code> when the hook has a filter and the ticket is gone. <code>ticket.created</code> is raised before auto-assignment, so a group condition never matches it. Subscribe to <code>ticket.assigned</code> to hear about tickets landing in a group.</p>
 
 <h2 id="known-gaps">What is not in 1.3.0</h2>
 
