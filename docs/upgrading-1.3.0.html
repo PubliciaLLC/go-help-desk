@@ -171,6 +171,7 @@
     <tr><td><code>unlock &lt;email&gt;</code> on the server</td><td>Operators with a locked-out account</td></tr>
     <tr><td>An IP address or one-word <code>BASE_URL</code> turns passkeys off</td><td>Installs reached by IP address or a host with no dot</td></tr>
     <tr><td>MCP refuses requests from another origin; Streamable HTTP added</td><td>Browser-based MCP clients, proxies that add <code>Origin</code></td></tr>
+    <tr><td>A public reply through MCP emails the requester</td><td>Anyone with an agent connected over MCP</td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
@@ -492,6 +493,14 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 <p>Every MCP route (<code>/mcp</code>, <code>/mcp/sse</code>, <code>/mcp/message</code> and anything else under <code>/mcp/</code>) answers <code>403 origin_not_allowed</code> when the request carries an <code>Origin</code> header that is not the origin of your <code>BASE_URL</code>. This is checked before sign-in. Requests with no <code>Origin</code> header, which is what SDKs, editors and <code>curl</code> send, are unaffected. Serve a browser client from the <code>BASE_URL</code> origin, or stop the proxy adding the header.</p>
 
 <p>1.2.x accepted these requests on the SSE routes. The change closes a way for a web page on a sibling site to act through a signed-in user's session cookie. Upgrade if you expose MCP over SSE. See <a href="mcp.html">MCP Server</a>.</p>
+
+<h2 id="mcp-reply">A public reply through MCP now emails the requester</h2>
+
+<p><strong>Who notices:</strong> anyone with an AI agent or other tool connected over MCP.</p>
+
+<p>A public reply posted through the MCP <code>add_reply</code> tool used to be saved and never emailed. It now emails the requester (the guest, with a guest link, or the reporting account), the same as a reply through the REST API. <strong>Anything connected over MCP can now send mail to your customers.</strong> Review which credentials have <code>tickets:write</code> before you upgrade. Internal notes (<code>internal: true</code>) still send nothing, and MCP has no <code>notify_customer</code> switch: use an internal note for anything that should not reach the requester.</p>
+
+<p>One change for staff over both REST and MCP: a staff member or administrator who replies publicly on a ticket they filed themselves is no longer emailed a copy of their own reply. Webhook receivers see it too, as an empty <code>reporter_email</code> in the raw payload. An ordinary user replying on their own ticket still gets the copy.</p>
 
 <h2 id="known-gaps">What is not in 1.3.0</h2>
 
