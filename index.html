@@ -180,7 +180,7 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
         </div>
         <h3>Webhooks for Slack, Teams, Discord and JIRA</h3>
-        <p>Each enabled webhook receives the events it subscribes to, in the payload format you choose. Webhooks are sent once and are not retried. <a href="docs/admin-guide.html#admin-webhooks">Read about webhooks →</a></p>
+        <p>Each enabled webhook receives the events it subscribes to, in the payload format you choose. A failed delivery is retried, and each hook keeps a short delivery history. <a href="docs/admin-guide.html#admin-webhooks">Read about webhooks →</a></p>
       </div>
 
       <div class="feature-card">
@@ -336,7 +336,7 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
         </div>
         <h3>Ticket Lifecycle</h3>
-        <p>Configurable statuses, a reopen window for resolved tickets, and automatic closure. Closed is read-only by default; a linked follow-up ticket carries on the work.</p>
+        <p>Configurable statuses, a reopen window for resolved tickets, and automatic closure. Closed is read-only by default; a linked follow-up ticket carries on the work. A reopened ticket is flagged, raised one priority level the first time, and gets a fresh SLA clock.</p>
       </div>
 
       <div class="feature-card">
@@ -376,7 +376,7 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
         </div>
         <h3>Email &amp; Webhooks</h3>
-        <p>Email requesters about ticket events via SMTP, queued and retried on failure. Staff are not emailed about ticket events. Staff email is not available in 1.3.0. Tracked in <a href="https://github.com/PubliciaLLC/go-help-desk/issues/441" target="_blank" rel="noopener">#441</a>. Outbound webhooks for Slack, Teams, Discord and JIRA formats, or raw JSON, sent once without retry.</p>
+        <p>Email requesters about ticket events via SMTP, queued and retried on failure. Staff are emailed about their own and their groups' tickets, and about tickets they follow. Outbound webhooks for Slack, Teams, Discord and JIRA formats, or raw JSON, retried when a delivery fails, with a delivery history and an optional ticket filter.</p>
       </div>
 
       <div class="feature-card">
