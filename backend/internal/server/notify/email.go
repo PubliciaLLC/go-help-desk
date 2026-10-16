@@ -212,6 +212,23 @@ func (d *EmailDispatcher) SendVerificationEmail(to, token, baseURL string) error
 	return d.send(to, "Verify your email address", buf.Bytes())
 }
 
+// SendPasswordResetEmail sends the link a "forgot password" request is
+// answered with (#451). It implements passwordreset.Mailer. The link's host
+// comes from baseURL, which the caller takes from configuration, never from a
+// request.
+func (d *EmailDispatcher) SendPasswordResetEmail(to, token, baseURL string) error {
+	if !d.cfg.EmailEnabled() {
+		return nil
+	}
+	var buf bytes.Buffer
+	if err := d.templates.ExecuteTemplate(&buf, "password_reset.tmpl", map[string]string{
+		"ResetURL": baseURL + "/reset-password?token=" + token,
+	}); err != nil {
+		return fmt.Errorf("rendering password reset email: %w: %w", ErrPermanent, err)
+	}
+	return d.send(to, "Reset your password", buf.Bytes())
+}
+
 // send builds a MIME message with sanitized headers and quoted-printable-encoded
 // body, then hands it to smtp.SendMail. All user-controlled input passes through
 // validation (mail.ParseAddress) or encoding (quoted-printable / sanitizeHeader)
