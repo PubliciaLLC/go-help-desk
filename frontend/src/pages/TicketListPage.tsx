@@ -26,6 +26,12 @@ function emptyMessageFor(scope: TicketScope) {
   }
 }
 
+// What the "Only <queue>" chip calls each queue.
+const QUEUE_NAMES: Partial<Record<TicketScope, string>> = {
+  mine: 'my tickets',
+  unassigned: 'unassigned',
+}
+
 // Matches the server's default. Larger pages mean fewer clicks; smaller ones
 // mean a faster first paint. 50 is the compromise.
 const PAGE_SIZE = 50
@@ -42,6 +48,12 @@ export function TicketListPage() {
   const [debouncedQuery, setDebouncedQuery] = useState('')
   const [includeClosed, setIncludeClosed] = useState(false)
   const [scope, setScope] = useState<TicketScope>('mine')
+  // The "Only <queue>" chip (#444). Off by default: a search covers everything
+  // the viewer can see until they narrow it.
+  const [onlyQueue, setOnlyQueue] = useState(false)
+  // Every new search starts wide: clearing the box resets the chip. Adjusted
+  // during render rather than in an effect, which would run a render late.
+  if (onlyQueue && query.trim() === '') setOnlyQueue(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkStatusId, setBulkStatusId] = useState('')
   const [bulkError, setBulkError] = useState('')
@@ -78,18 +90,25 @@ export function TicketListPage() {
   // effect that resets it, because the effect ran a render late: the query
   // fired once for the new search at the old offset, and that wasted request
   // is the empty flash it was meant to prevent.
-  const asking = `${debouncedQuery}\u0000${effectiveScope}\u0000${reporterFilter ?? ''}`
+  //
+  // A staff or admin search with the chip off asks for scope=visible instead
+  // of the selected queue. With an empty box the queue behaves as before.
+  // trim(): a box of spaces is an empty box, as it is for the queue today.
+  const searching = isStaffOrAdmin && debouncedQuery.trim() !== '' && !reporterFilter
+  const searchingAll = searching && !onlyQueue
+  const requestScope: TicketScope = searchingAll ? 'visible' : effectiveScope
+  const asking = `${debouncedQuery}\u0000${requestScope}\u0000${reporterFilter ?? ''}`
   const [paged, setPaged] = useState({ asking, page: 0 })
   const page = paged.asking === asking ? paged.page : 0
   const setPage = (next: (p: number) => number) =>
     setPaged({ asking, page: next(page) })
 
   const { data: allTickets = [], isFetching } = useQuery({
-    queryKey: ['tickets', { q: debouncedQuery || undefined, scope: effectiveScope, reporter: reporterFilter, page }],
+    queryKey: ['tickets', { q: debouncedQuery || undefined, scope: requestScope, reporter: reporterFilter, page }],
     queryFn: () =>
       listTickets({
         q: debouncedQuery || undefined,
-        scope: reporterFilter ? undefined : effectiveScope,
+        scope: reporterFilter ? undefined : requestScope,
         reporter_id: reporterFilter,
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
@@ -216,7 +235,7 @@ export function TicketListPage() {
                 <button
                   key={s}
                   type="button"
-                  onClick={() => setScope(s)}
+                  onClick={() => { setScope(s); setOnlyQueue(false) }}
                   className={
                     'px-3 py-1.5 capitalize transition-colors ' +
                     (scope === s
@@ -271,6 +290,34 @@ export function TicketListPage() {
 
         {jumpError && (
           <p role="alert" className="text-sm text-red-600">{jumpError}</p>
+        )}
+
+        {/* Search reach (#444). Label while the box has text; the chip too, except on
+            the admin "all" queue, which is already everything. */}
+        {isStaffOrAdmin && (
+          <div className={searching ? 'flex items-center gap-2 text-sm' : 'sr-only'}>
+            {/* Always in the page, only its text changes: a live region added
+                together with its text is often not announced. */}
+            <span aria-live="polite" className="text-gray-500">
+              {searching && !onlyQueue ? 'Searching all tickets you can see' : ''}
+            </span>
+            {searching && QUEUE_NAMES[effectiveScope] && (
+              <button
+                type="button"
+                aria-pressed={onlyQueue}
+                onClick={() => setOnlyQueue(v => !v)}
+                className={
+                  'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium ' +
+                  (onlyQueue
+                    ? 'border-gray-900 bg-gray-900 text-white'
+                    : 'border-gray-300 bg-gray-100 text-gray-700 hover:bg-gray-200')
+                }
+              >
+                Only {QUEUE_NAMES[effectiveScope]}
+                {onlyQueue && <span aria-hidden="true">×</span>}
+              </button>
+            )}
+          </div>
         )}
 
         {/* Active status filter chip */}

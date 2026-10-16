@@ -2881,8 +2881,9 @@ paths:
           assignee_group_id only for a group its user belongs to while
           enforcement is on, and for any group while it is off.
         Four parameters can change the listing. reporter_id (admin only) is
-        checked first, then assignee_group_id, then scope=unassigned or
-        scope=all (admin only). The first one present wins. Any other scope
+        checked first, then assignee_group_id, then scope=visible (staff and
+        admin: every ticket the caller can see; ignored for a reporting user),
+        then scope=unassigned or scope=all (admin only). The first one present wins. Any other scope
         value is ignored and the default listing is used.
         q searches by tracking number prefix, subject and description (full-text
         search). Results are newest first. With q they are ordered by relevance
@@ -2909,7 +2910,7 @@ paths:
         - name: scope
           in: query
           required: false
-          description: "mine (the default), unassigned or all. unassigned and all are admin only. Other values are ignored and behave as mine."
+          description: "mine (the default), unassigned, all or visible. unassigned and all are admin only. visible is every ticket the caller can see: every ticket for an admin, or for staff while ticket scope enforcement is off, and the staff scope with it on; a reporting user still gets only their own tickets. Other values are ignored and behave as mine."
           schema:
             type: string
         - name: reporter_id
