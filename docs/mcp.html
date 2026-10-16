@@ -123,7 +123,7 @@
 <h1 class="docs-page-title" id="mcp-overview">MCP Server</h1>
 <p class="docs-page-sub">Give AI assistants native access to your help desk using the Model Context Protocol.</p>
 
-<p>Go Help Desk includes a built-in <a href="https://modelcontextprotocol.io">Model Context Protocol (MCP)</a> server under <code>/mcp/</code>. MCP lets an AI assistant call help desk operations as structured tools rather than driving the web UI.</p>
+<p>Go Help Desk includes a built-in <a href="https://modelcontextprotocol.io">Model Context Protocol (MCP)</a> server at <code>/mcp</code>. MCP lets an AI assistant call help desk operations as structured tools rather than driving the web UI.</p>
 
 <p>With the MCP server connected, an AI assistant can:</p>
 <ul>
@@ -221,7 +221,7 @@
     <tr><td><code>internal</code></td><td>boolean (optional)</td><td>An internal note, never shown to the requester. Default <code>false</code>.</td></tr>
   </tbody>
 </table>
-<p>A reply added through MCP sends no notification email: the tool does not look up the requester's address. It does raise the <code>ticket.replied</code> event, so webhooks receive it.</p>
+<p>A public reply emails the requester, the same as a reply through the REST API: the guest's address (with a link to the ticket) or the reporting account's address. An internal note sends nothing. There is no <code>notify_customer</code> switch over MCP, so use an internal note for anything that should not reach the requester. A staff member or administrator replying publicly on a ticket they filed themselves is not sent a copy of their own reply. Either kind of reply raises the <code>ticket.replied</code> event, so webhooks receive it. Anything connected over MCP with <code>tickets:write</code> can therefore send mail to your customers.</p>
 
 <h3><code>assign_ticket</code></h3>
 <p>Assign a ticket to a user or a group, or take it off whoever has it, as the authenticated caller.</p>
@@ -259,9 +259,13 @@
 
 <h2 id="mcp-connect">Connecting clients</h2>
 
-<p>The server uses MCP's <strong>HTTP with Server-Sent Events (SSE)</strong> transport. A client opens the event stream at:</p>
+<p>The server speaks two transports. The current one, <strong>Streamable HTTP</strong>, is at:</p>
+<pre><code>&lt;BASE_URL&gt;/mcp</code></pre>
+<p>It is stateless: each request is a POST that carries one complete JSON-RPC message and is answered with <code>application/json</code>. There is no session id, and <code>GET</code> and <code>DELETE</code> answer <code>405</code>. <code>/mcp/</code> answers the same as <code>/mcp</code>.</p>
+<p>The older <strong>HTTP with Server-Sent Events (SSE)</strong> transport is kept so existing configurations keep working. A client opens the event stream at:</p>
 <pre><code>&lt;BASE_URL&gt;/mcp/sse</code></pre>
-<p>and the server tells it where to post messages (<code>/mcp/message</code>). Nothing else under <code>/mcp/</code> answers. Configure your client for an SSE server at that URL, and send an <code>Authorization</code> header with every request (see <a href="#mcp-auth">Authentication</a>).</p>
+<p>and the server tells it where to post messages (<code>/mcp/message</code>). The examples below use the SSE URL. Whichever you choose, send an <code>Authorization</code> header with every request (see <a href="#mcp-auth">Authentication</a>).</p>
+<p><strong>Requests from another origin are refused.</strong> Every MCP route answers <code>403</code> with the code <code>origin_not_allowed</code> when the request carries an <code>Origin</code> header that is not the origin of your <code>BASE_URL</code>. This is checked before authentication. A request with no <code>Origin</code> header, which is what SDKs, editors and <code>curl</code> send, is not affected. A browser-based client has to be served from the <code>BASE_URL</code> origin, and a reverse proxy must not add an <code>Origin</code> header.</p>
 
 <h3>Claude Code</h3>
 <pre><code>claude mcp add --transport sse helpdesk \
@@ -325,7 +329,7 @@ mcpServers:
 <p>Format taken from Cursor's <a href="https://cursor.com/docs/context/mcp">Model Context Protocol documentation</a>: a remote server entry takes <code>url</code> and optional <code>headers</code>, and its remote examples carry no <code>type</code> key.</p>
 
 <h3>Other clients</h3>
-<p>Any MCP client that supports the SSE transport and custom request headers works. Give it the <code>/mcp/sse</code> URL and the <code>Authorization</code> header. A client configured for the newer Streamable HTTP transport against <code>/mcp/</code> will not connect.</p>
+<p>Any MCP client that supports the SSE transport and custom request headers works. Give it the <code>/mcp/sse</code> URL and the <code>Authorization</code> header. A client that supports the Streamable HTTP transport can use <code>/mcp</code> instead.</p>
 
 
 <h2 id="mcp-auth">Authentication</h2>
@@ -356,7 +360,7 @@ mcpServers:
   <li><strong>Reads</strong> are filtered by the same visibility rule as the REST API. A reporting user sees only their own tickets and never internal notes. Staff see what their ticket visibility allows, which is every ticket unless <em>Limit staff to their group scope</em> is on. Administrators see everything.</li>
   <li><strong>Writes</strong> need a Staff or Admin account. A reporting user who calls one gets a tool error saying so.</li>
   <li><strong>Machine credentials</strong> also need the scope in the table above. An API key or OAuth client without it gets a tool error naming the missing scope.</li>
-  <li><strong>An OAuth client can read but not write.</strong> It has no user identity, and every write records which user acted, so the write tools refuse it. Use an API key, which acts as the administrator who created it, to write.</li>
+  <li><strong>An OAuth client acts as its service user.</strong> A client holding <code>tickets:write</code> can use the write tools as that user, and what it does is recorded under the client's name. The service user is staff unless an administrator changed it to the user role, and a user-role account cannot write. An API key acts as the administrator who created it.</li>
 </ul>
 
 <p>A ticket the caller may not see is reported exactly as one that does not exist, so the tools cannot be used to find out which tracking numbers are real.</p>
