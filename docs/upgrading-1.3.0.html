@@ -180,6 +180,7 @@
     <tr><td>Change priority, Assign to me, Resolve all children</td><td>Staff and administrators</td></tr>
     <tr><td>Webhooks: ids-only raw payload, notes as their own event, retries, history, ticket filter</td><td>Anyone who receives webhooks</td></tr>
     <tr><td>Admin API: checks before writes, inactive statuses retired, keys list only themselves</td><td>Scripts and API keys that call admin routes</td></tr>
+    <tr><td>Other API changes: unknown settings keys refused, new answer shapes</td><td>Scripts and integrations</td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
@@ -649,6 +650,31 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
   <li><code>GET /api/v1/admin/sla/policies</code> is ordered by severity (critical, high, medium, low, then no priority), then by name.</li>
   <li><code>POST /api/v1/admin/oauth-clients</code> returns <code>id</code>, the record id that <code>DELETE</code> takes. <code>PATCH /api/v1/admin/users/{id}</code> returns the real <code>passkey_count</code>. <code>PATCH /api/v1/admin/webhooks/{id}</code> and <code>PATCH /api/v1/admin/custom-fields/{id}</code> return the saved row, and the status routes return the real <code>ticket_count</code>.</li>
   <li>A blank webhook <code>secret</code> on <code>PATCH</code> still clears it, by design and for administrators only.</li>
+</ul>
+
+<h2 id="api-changes">Other API changes</h2>
+
+<p><strong>Who notices:</strong> scripts and integrations that call the API. Three can make a request that used to succeed now fail.</p>
+
+<h3>Requests that now fail</h3>
+<ul>
+  <li><strong>Unknown settings keys are refused.</strong> <code>PATCH /api/v1/admin/settings</code> with a key that is not a real setting answers <code>400 unknown_setting</code>, names the key, and writes nothing, not even the valid keys in the same request. Use the exact names from <code>GET /api/v1/admin/settings</code>.</li>
+  <li><strong><code>POST /api/v1/tickets/{id}/resolve</code> with a body that is not valid JSON is <code>400</code>.</strong> Before, it resolved the ticket and dropped the notes. An empty body still resolves with no notes.</li>
+  <li><strong><code>GET /api/v1/auth/verify-email?token=</code> is <code>422 token_invalid</code></strong> for an address that has since gained an account.</li>
+  <li><code>PATCH /api/v1/admin/settings</code> refuses JSON <code>null</code> (<code>400</code>) for <code>attachment_scan_address</code>, <code>attachment_allowed_types</code> and the four <code>attachment_reputation_*_enabled</code> settings. To clear the scanner address, send an empty string.</li>
+</ul>
+
+<h3>Answers that say something different</h3>
+<ul>
+  <li><code>GET /api/v1/auth/providers</code> is served as JSON. <code>oidc</code> and <code>saml</code> now mean loaded and working, not switched on. The new <code>local_admin_only</code> is true when SAML limits password sign-in to administrators.</li>
+  <li><code>GET /api/v1/admin/oidc</code> and <code>/admin/saml</code> gain <code>live</code>: <code>configured: true, live: false</code> means saved, not working.</li>
+  <li><code>GET /api/v1/auth/signup/status</code>: <code>open_registration</code> is what is in force, so it is false when an allowed-domains list limits signup. The new <code>restricted_by_domain_list</code> says why.</li>
+  <li><code>Retry-After</code> on a <code>429</code> from the sixty-second sign-in, signup and guest limits is now the seconds left (1 to 60). The 15-minute second-factor lock still says 900.</li>
+  <li>A server crash inside a request answers a JSON <code>500 internal_error</code> instead of an empty body.</li>
+  <li>The passkey <code>finish</code> routes answer <code>500</code> when the server cannot write the session (they said <code>400 no_challenge</code>), and refuse a body over 64 KiB with <code>413 too_large</code>. <code>POST /api/v1/me/mfa/enroll/confirm</code> answers <code>500</code> when the server cannot save the factor. <code>POST /api/v1/guest/resend</code> accepts an empty body.</li>
+  <li><code>POST /api/v1/tickets</code> answers with the ticket after routing, so <code>assignee_user_id</code> and <code>assignee_group_id</code> are filled in when a rule applied. <code>POST /api/v1/tickets/{id}/replies</code> includes <code>author_name</code>. <code>PATCH /api/v1/tickets/{id}</code> with no body is the same as <code>{}</code> and answers <code>200</code>.</li>
+  <li>The six choice settings in <code>PATCH /api/v1/admin/settings</code> answer their own error code for every refusal: <code>invalid_closed_reopen_policy</code>, <code>invalid_audit_mask_requester_names</code>, <code>invalid_scan_policy</code>, <code>invalid_infected_handling</code>, <code>invalid_mismatch_handling</code> and <code>invalid_reputation_refresh</code>. Match on those instead of <code>bad_request</code>.</li>
+  <li>Every route under <code>/tickets/{id}</code> now accepts a tracking number (for example <code>GHD-2026-000001</code>) as well as a UUID.</li>
 </ul>
 
 <h2 id="known-gaps">What is not in 1.3.0</h2>
