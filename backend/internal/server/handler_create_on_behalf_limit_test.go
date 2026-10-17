@@ -137,3 +137,31 @@ func TestCreateTicket_OnBehalf_BudgetFollowsTheCredentialsUser(t *testing.T) {
 	defer res.Body.Close()
 	require.Equal(t, http.StatusTooManyRequests, res.StatusCode, "and so is the key")
 }
+
+// The budget is for tickets filed. A request that is refused, or that fails
+// validation inside Create, files nothing and mails nobody, so it must not use
+// the hour up: otherwise 40 bad requests lock a member of staff out without
+// anything having been sent.
+func TestCreateTicket_OnBehalf_OnlyFiledTicketsSpendTheBudget(t *testing.T) {
+	h, cleanup := newLimitHarness(t)
+	defer cleanup()
+
+	// Refused by Create's own validation, after the limiter has been asked.
+	for i := 0; i < onBehalfMailBudget+5; i++ {
+		res := h.postOnBehalf(t, "staff", map[string]any{
+			"priority":       "urgent-ish",
+			"reporter_email": fmt.Sprintf("walk-in-%d@example.test", i), "guest_name": "Ada",
+		})
+		require.Equal(t, http.StatusBadRequest, res.StatusCode, "bad #%d: %s", i, readBody(t, res))
+		res.Body.Close()
+	}
+	require.Equal(t, 0, ticketCount(t, h))
+
+	for i := 0; i < onBehalfMailBudget; i++ {
+		res := typedNew(t, h, "staff", i)
+		require.Equal(t, http.StatusCreated, res.StatusCode, "valid #%d: %s", i, readBody(t, res))
+		res.Body.Close()
+	}
+	require.Equal(t, http.StatusTooManyRequests, typedNew(t, h, "staff", onBehalfMailBudget).StatusCode,
+		"and the forty-first filed ticket is the one that is refused")
+}

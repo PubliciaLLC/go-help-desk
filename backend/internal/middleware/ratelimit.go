@@ -78,6 +78,24 @@ func (rl *RateLimiter) Allow(key string) bool {
 	return rl.counts[key] <= rl.limit
 }
 
+// Refund gives back one attempt Allow counted against key, for a caller that
+// spends before the work and then finds the work did not happen. It never takes
+// the count below zero, and a window that has since ended has nothing to give
+// back.
+func (rl *RateLimiter) Refund(key string) {
+	if rl.limit <= 0 {
+		return
+	}
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	if time.Now().After(rl.resetAt) {
+		return
+	}
+	if rl.counts[key] > 0 {
+		rl.counts[key]--
+	}
+}
+
 // Remaining is the time until the current window ends, which is when every
 // counter is cleared. It is what a 429's Retry-After should say: the window is
 // shared by all keys and fixed, so a caller refused 40 seconds in can retry in

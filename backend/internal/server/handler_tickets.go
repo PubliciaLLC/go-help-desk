@@ -446,6 +446,7 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	created := false
 	in := ticket.CreateInput{
 		Subject:     body.Subject,
 		Description: body.Description,
@@ -464,8 +465,18 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if onBehalf {
-			if !s.fileOnBehalf(w, r, &in, body.ReporterUserID, body.ReporterEmail, body.GuestName, body.GuestPhone) {
+			ok, refund := s.fileOnBehalf(w, r, &in, body.ReporterUserID, body.ReporterEmail, body.GuestName, body.GuestPhone)
+			if !ok {
 				return
+			}
+			if refund != nil {
+				// Nothing is filed if Create fails, so nothing was mailed
+				// and the budget is not spent.
+				defer func() {
+					if !created {
+						refund()
+					}
+				}()
 			}
 			in.FiledBy = &a.UserID
 		} else {
@@ -490,6 +501,7 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	created = true
 
 	// Set any custom field values supplied on creation.
 	//
@@ -541,21 +553,22 @@ const onBehalfMailPerHour = 40
 // the guest form it needs a name (the phone number stays optional).
 //
 // That last case mails a stranger, so it is the one that is capped: at most
-// onBehalfMailPerHour a staff member, then 429 (see Server.onBehalfMailLimiter).
+// onBehalfMailPerHour filed tickets a staff member, then 429 (see
+// Server.onBehalfMailLimiter).
 func (s *Server) fileOnBehalf(w http.ResponseWriter, r *http.Request, in *ticket.CreateInput,
-	id *uuid.UUID, email *string, guestName, guestPhone string) bool {
+	id *uuid.UUID, email *string, guestName, guestPhone string) (ok bool, refund func()) {
 	if id != nil && email != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "only one of reporter_user_id and reporter_email may be given")
-		return false
+		return false, nil
 	}
 	if id != nil {
 		in.ReporterUserID = id
-		return true
+		return true, nil
 	}
 	addr, err := user.ValidateEmail(*email)
 	if err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "reporter_email: "+err.Error())
-		return false
+		return false, nil
 	}
 	u, err := s.users.GetByEmail(r.Context(), addr)
 	switch {
@@ -565,26 +578,31 @@ func (s *Server) fileOnBehalf(w http.ResponseWriter, r *http.Request, in *ticket
 		if !s.adminSvc.GuestSubmissionEnabled(r.Context()) {
 			Error(w, http.StatusBadRequest, "bad_request",
 				"reporter_email has no account, and guest submission is off, so the link to the ticket could not be used")
-			return false
+			return false, nil
 		}
 		// The guest form's rule: a name is required, a phone number is not.
 		if strings.TrimSpace(guestName) == "" {
 			Error(w, http.StatusBadRequest, "bad_request", "name is required for an address with no account")
-			return false
+			return false, nil
 		}
 		// Last, so a request that was going to be refused anyway spends nothing.
-		if !s.onBehalfMailLimiter.Allow(authmw.GetActor(r).UserID.String()) {
+		// Spent now rather than checked now and spent after Create, so requests
+		// in flight together cannot all pass a budget with one slot left; the
+		// caller gives it back if the ticket is not filed.
+		key := authmw.GetActor(r).UserID.String()
+		if !s.onBehalfMailLimiter.Allow(key) {
 			tooManyAttempts(w, s.onBehalfMailLimiter.Remaining())
-			return false
+			return false, nil
 		}
+		refund = func() { s.onBehalfMailLimiter.Refund(key) }
 		in.GuestEmail = &addr
 		in.GuestName = strings.TrimSpace(guestName)
 		in.GuestPhone = strings.TrimSpace(guestPhone)
 	default:
 		handleError(w, err)
-		return false
+		return false, nil
 	}
-	return true
+	return true, refund
 }
 
 // GET /api/v1/tickets/{id}

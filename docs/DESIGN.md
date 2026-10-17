@@ -1421,7 +1421,9 @@ above.
 **Mail limit on the typed-address path.** A typed address with no account mails
 a stranger on a staff member's say-so alone, so those are capped: **40 per
 hour per staff member**, and the 41st is `429 rate_limited` with `Retry-After`
-(the time left in the window) and files nothing. Only that case is counted: a
+(the time left in the window) and files nothing. What is counted is tickets
+filed: a request refused for any other reason, or that fails validation, is not
+counted. Only that case is counted: a
 picked user, and a typed address that matches an account, spend nothing and are
 not stopped by a spent budget. The key is the authenticated user, not the
 address of the request, so an API key or OAuth client counts against the user it
