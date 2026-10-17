@@ -515,3 +515,44 @@ func TestChangeSplitter_AFailedFollowerOrGroupLookupRetriesTheRowAndMailsEveryon
 		})
 	}
 }
+
+// An existing user somebody else filed a ticket for (#444) is mailed through the
+// same row as a guest would be, with the address on the event and no guest
+// link: one "We have received your ticket" mail, to that address, once.
+func filedForAccount(addr string, filer, assignee *uuid.UUID) notification.Event {
+	ev := routedCreate(filer, assignee)
+	ev.Recipient = addr
+	if assignee == nil {
+		ev.Kinds, ev.RoutedAssignment, ev.Ticket = []notification.EventType{notification.EventTicketCreated}, false, nil
+	}
+	return ev
+}
+
+func TestChangeSplitter_AnAccountFiledForIsMailedOnce(t *testing.T) {
+	filer := staffUser("filer")
+	rig := newSplitRig(newFakeStaffUsers(filer), fakeStaffGroups{}, fakeStaffFollowers{})
+	rig.queue(t, filedForAccount("requester@example.com", &filer.ID, nil))
+
+	rig.drain(t)
+
+	require.Len(t, rig.sent.got, 1)
+	got := rig.sent.got[0]
+	require.Equal(t, notification.EventTicketCreated, got.Type)
+	require.Equal(t, "requester@example.com", got.Recipient)
+	require.False(t, got.GuestLink)
+	require.Nil(t, got.StaffUserID, "the requester's mail, not a staff one")
+}
+
+// The person filed for is also who routing assigned the ticket to: one mail to
+// the address, the staff one.
+func TestChangeSplitter_AnAccountFiledForWhoIsAlsoTheAssigneeGetsOneMail(t *testing.T) {
+	filer, assignee := staffUser("filer"), staffUser("assignee") // assignee@example.com
+	rig := newSplitRig(newFakeStaffUsers(filer, assignee), fakeStaffGroups{}, fakeStaffFollowers{})
+	rig.queue(t, filedForAccount("assignee@example.com", &filer.ID, &assignee.ID))
+
+	rig.drain(t)
+
+	req, st := mailsTo(rig.sent)
+	require.Equal(t, 0, req)
+	require.Equal(t, 1, st)
+}

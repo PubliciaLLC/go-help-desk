@@ -945,6 +945,69 @@ func (q *Queries) ListUsersAdmin(ctx context.Context, arg ListUsersAdminParams) 
 	return items, nil
 }
 
+const lookupRequesters = `-- name: LookupRequesters :many
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account, email_notify_assigned, email_notify_activity, email_notify_group, must_change_password FROM users
+WHERE deleted_at IS NULL
+  AND disabled = FALSE
+  AND NOT service_account
+  AND (email ILIKE '%' || $1::text || '%'
+       OR display_name ILIKE '%' || $1::text || '%')
+ORDER BY display_name, id
+LIMIT 10
+`
+
+// The requester picker's lookup (#444): the accounts a ticket can be filed
+// for whose name or address contains q, at most ten. Matches the way
+// SearchUsersAdmin does (q is already LIKE-escaped by the caller; backslash is
+// the escape character) but leaves out, in the query itself, the accounts that
+// cannot be requesters: disabled, deleted and service identities. Filtering
+// here is what keeps it one bounded read however many matches are disabled; the
+// admin search had to be paged and filtered in the caller. display_name, id is
+// a total order, so an account is neither repeated nor missed.
+func (q *Queries) LookupRequesters(ctx context.Context, q_ string) ([]User, error) {
+	rows, err := q.db.QueryContext(ctx, lookupRequesters, q_)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []User
+	for rows.Next() {
+		var i User
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.DisplayName,
+			&i.Role,
+			&i.PasswordHash,
+			&i.MfaSecret,
+			&i.MfaEnabled,
+			&i.SamlSubject,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DeletedAt,
+			&i.Disabled,
+			&i.OidcSubject,
+			&i.MfaFailedAttempts,
+			&i.MfaLockedUntil,
+			&i.ServiceAccount,
+			&i.EmailNotifyAssigned,
+			&i.EmailNotifyActivity,
+			&i.EmailNotifyGroup,
+			&i.MustChangePassword,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const recordMFAFailure = `-- name: RecordMFAFailure :one
 UPDATE users
 SET mfa_failed_attempts = mfa_failed_attempts + 1,

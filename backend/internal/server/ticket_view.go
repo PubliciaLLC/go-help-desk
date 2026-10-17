@@ -28,6 +28,52 @@ type ticketView struct {
 	// False for a reporting user whatever the setting, and false for any
 	// ticket that is not Closed.
 	CanReopen bool `json:"can_reopen"`
+
+	// Requester is who the ticket is for: the reporting account's name and
+	// address, or the guest's (#444). Sent on the single-ticket read to staff
+	// and administrators only, on every ticket. Never to a requester, who is on
+	// their own ticket and whom this would tell nothing: it is not on the
+	// requester allowed list, so FilterForViewer drops it. Absent when the
+	// account cannot be read.
+	Requester *ticketRequester `json:"requester,omitempty"`
+}
+
+// ticketRequester is the Requester line of the staff ticket page.
+type ticketRequester struct {
+	Name  string `json:"name"`
+	Email string `json:"email"`
+}
+
+// requesterFor is the Requester line for this viewer: requesterOf for staff and
+// administrators, nil for anyone else (a reporting user, an unknown role, no
+// actor). It is the handler's layer of keeping the line from requesters, which
+// also means no lookup is made for them; the other layer is the field filter
+// (the key is not on the requester allowed list). Each is tested on its own.
+func (s *Server) requesterFor(ctx context.Context, a *authmw.Actor, t ticket.Ticket) *ticketRequester {
+	if a == nil || (a.Role != user.RoleStaff && a.Role != user.RoleAdmin) {
+		return nil
+	}
+	return s.requesterOf(ctx, t)
+}
+
+// requesterOf names who a ticket is for. A deleted account is still named: the
+// ticket remains, and staff reading it need to know who it was about. nil when
+// there is nobody to name or the account cannot be read, which is logged: the
+// ticket is still sent, without its Requester line.
+func (s *Server) requesterOf(ctx context.Context, t ticket.Ticket) *ticketRequester {
+	if t.ReporterUserID != nil {
+		u, err := s.users.GetByIDAdmin(ctx, *t.ReporterUserID)
+		if err != nil {
+			slog.WarnContext(ctx, "reading a ticket's reporting account failed; omitting its requester line",
+				"ticket_id", t.ID, "error", err)
+			return nil
+		}
+		return &ticketRequester{Name: u.DisplayName, Email: u.Email}
+	}
+	if t.GuestEmail != nil {
+		return &ticketRequester{Name: t.GuestName, Email: *t.GuestEmail}
+	}
+	return nil
 }
 
 // viewerJSON is the exit point for any response that carries tickets: staff and
