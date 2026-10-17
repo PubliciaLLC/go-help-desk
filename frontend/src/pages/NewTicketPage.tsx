@@ -13,6 +13,8 @@ import { extractError } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
 import { Layout } from '@/components/Layout'
 import { AttachmentUpload, type UploadState } from '@/components/AttachmentUpload'
+import { RequesterPicker } from '@/components/ticket/RequesterPicker'
+import { ME, reporterFields, type Requester } from '@/components/ticket/requester'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -100,6 +102,7 @@ export function NewTicketPage() {
   const [customFieldValues, setCustomFieldValues] = useState<Record<string, string>>({})
   const [files, setFiles] = useState<File[]>([])
   const [uploadStates, setUploadStates] = useState<Record<string, UploadState> | undefined>()
+  const [requester, setRequester] = useState<Requester>(ME)
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [createdTicketId, setCreatedTicketId] = useState<string | null>(null)
@@ -158,9 +161,15 @@ export function NewTicketPage() {
       }
     }
 
+    // Only staff and administrators choose a requester; the server refuses it
+    // from anybody else, so a requester's form never sends one.
+    const who = isStaffOrAdmin ? reporterFields(requester) : { fields: {} }
+    if ('error' in who) { setError(who.error); return }
+
     setSubmitting(true)
     try {
       const t = await createTicket({
+        ...who.fields,
         subject,
         description,
         category_id: categoryId,
@@ -222,6 +231,10 @@ export function NewTicketPage() {
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-5">
+              {isStaffOrAdmin && (
+                <RequesterPicker value={requester} onChange={setRequester} disabled={isUploading} />
+              )}
+
               <div className="space-y-1">
                 <Label htmlFor="subject">Subject *</Label>
                 <Input

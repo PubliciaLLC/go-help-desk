@@ -98,6 +98,11 @@ type Store interface {
 	// serviceAccount filters on the service-account flag: nil = both, true = only
 	// service users, false = only people.
 	SearchAdmin(ctx context.Context, role, q string, serviceAccount *bool, limit, offset int) ([]User, int64, error)
+	// LookupRequesters is the requester picker's search (#444): at most ten
+	// accounts that a ticket can be filed for (not disabled, deleted or a
+	// service account) whose email or display name contains q, in one read,
+	// ordered by display name then id.
+	LookupRequesters(ctx context.Context, q string) ([]User, error)
 	// ListActiveAdmins returns every administrator who is neither disabled nor
 	// soft-deleted, in full — not a count, unlike CountOtherActiveAdmins. The
 	// SSO-settings guard (#300) has to know WHICH administrators would still

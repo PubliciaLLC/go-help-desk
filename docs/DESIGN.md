@@ -1389,7 +1389,99 @@ Tracked as [#296](https://github.com/PubliciaLLC/go-help-desk/issues/296); shipp
 | Type | — (not shown) | Active only | Active selectable; archived shown greyed |
 | Item | — | — (not shown) | Active selectable; archived shown greyed |
 | Priority | — (defaults to Medium) | — (defaults to Medium) | Selectable |
+| Requester | Their own name and email (above) | Always themselves | Me (default), an existing user, or a typed email address (below) |
 | Attachments | — | Yes | Yes |
+
+**Filing on behalf of a requester (#444).** Staff and administrators can open a
+ticket for someone else, which is how a phone-in request is recorded. `POST
+/tickets` takes one of two optional fields, never both (`400` if both are sent):
+
+- `reporter_user_id`, an existing account. The checks are MCP `create_ticket`'s,
+  because they are the ticket service's: an id that is not a live account is
+  `400`, and a disabled account is accepted.
+- `reporter_email`, an address typed for someone who may have no account. It is
+  trimmed and lower-cased, and held to the same address rules as a guest's (a
+  display name or a local part that needs quotation marks is `400`). **If the
+  address belongs to an account, the ticket is filed for that account**, as if
+  its id had been sent, rather than creating a guest identity for a person who
+  can sign in. **Otherwise it is filed exactly like a guest ticket**: the same
+  creation path, the person is sent the same guest link at that address (read
+  and reply, read-only once the ticket closes, replaced when the ticket changes
+  in a way they are told about). **`guest_name` is required, exactly as on the
+  guest form** (`400` without a non-blank one); `guest_phone` is optional and
+  kept. An address that matches an account needs no name. Guest links
+  are suspended while guest submission is off (#424), so a typed address with no
+  account behind it is `400` then, and nothing is filed; an address that belongs
+  to an account is not affected. Only the requester's identity follows the guest
+  rules: the ticket is still filed with the caller's staff rights (type, item,
+  priority) and routed like any `POST /tickets`.
+
+With neither field the caller is the requester, as before. **The member of staff
+is the actor** in the status history, the `created` audit entry and the
+`created` event (`ticket.CreateInput.FiledBy`); the requester is the ticket's
+reporter or guest, and the staff ticket page shows them (the Requester line,
+below). **An existing user who is filed for is told**: someone picked by id, or
+a typed address that matches an account, is sent the ordinary "We have received
+your ticket" email with a link to the ticket (the sign-in one: they have an
+account, so no guest link), queued through the notification outbox like every
+other requester mail, so one mail goes to an address even when it is also a
+staff recipient of the same change (the staff mail wins). A member of staff who
+files their own ticket, with neither field or by naming themselves, is not
+mailed about it, as before; nor is a requester who files theirs. A typed
+address with no account is filed as a guest ticket and gets the guest link, as
+above.
+
+**Mail limit on the typed-address path.** A typed address with no account mails
+a stranger on a staff member's say-so alone, so those are capped: **40 per
+hour per staff member**, and the 41st is `429 rate_limited` with `Retry-After`
+(the time left in the window) and files nothing. What is counted is tickets
+filed: a request refused for any other reason, or that fails validation, is not
+counted. Filing for an existing account is not counted either: a picked user,
+and a typed address that matches an account, spend nothing and are not stopped
+by a spent budget. The key is the authenticated user, not the
+address of the request, so an API key or OAuth client counts against the user it
+acts as (the same budget as that person's own session), and another staff
+member is unaffected. The figure is fixed, not configurable. Like the credential
+limiter it is in memory and per process: a restart clears every count and each
+replica counts separately, so N replicas allow N times the cap. The window is
+the limiter's fixed one, shared by all keys, so a full budget filed just before
+it ends can be followed by another just after. MCP `create_ticket` cannot
+file for a typed address (picked users only), so it is not counted.
+
+A reporting
+user who sends either field gets `403 forbidden`, the same as any other staff-only
+action; it is never ignored, because a ticket quietly filed under their own name is
+not what they asked for. A guest (no credential) is refused the same way.
+
+**The Requester line (#444).** The staff ticket page shows a **Requester** line
+on every ticket, not only those filed on behalf of someone: the reporting
+account's name and email, or the guest's. `GET /tickets/{id}` carries it as
+`requester` (`{name, email}`) for staff and administrators only; it is not on
+the requester allowed list, so a reporting user is never sent it (they are on
+their own ticket, and what they see does not widen), and it is not on a ticket
+list. A deleted account is still named; if the account cannot be read the line
+reads "unknown" and the failure is logged.
+
+On the New ticket page, staff and administrators see a **Requester** choice
+(Me, the default; Another user; Email address) and a requester sees none. Email
+address shows a required **Name** and an optional **Phone**, as the guest form
+does. Another
+user is a search box: `GET /users/lookup?q=` (staff and administrators; `users:read`
+for a machine credential) answers with `id`, `display_name` and `email` of at most
+ten accounts whose name or address contains the query, ignoring case, ordered by
+display name then id. Disabled, deleted and service accounts are excluded by the
+query itself (one read, `LIMIT 10`), not read and dropped afterwards. A query
+shorter than two characters is `400`, so the endpoint finds a person and cannot
+list the directory; deleted accounts, disabled accounts (they cannot sign in) and
+service accounts are not found. The search minimum is counted in characters, not
+bytes or UTF-16 units. A reporting user gets `403`. The lookup is the picker's:
+a disabled account sent by id is still accepted, as MCP accepts one.
+
+MCP `create_ticket` takes `reporter_user_id` only (no typed address). **When it
+names someone other than the caller, the caller is the actor** of the creation,
+as on REST (`CreateInput.FiledBy`), and the reporter is who it is for; the
+account is emailed as above. Naming yourself, or omitting it, is filing your own
+ticket and is unchanged.
 
 **Nobody newly picks an archived category, type or item (#421).** Staff and
 administrators see archived rows (in the picker and in the catalogue API) so they
@@ -2327,7 +2419,7 @@ only `read`.
 |----------|--------|
 | `tickets` | Tickets and everything under `/tickets/{id}` — replies, links, tags, attachments, custom fields, status transitions — plus the staff picker (`/staff`) |
 | `audit` | The admin-wide audit view (`/admin/audit`). A session needs no scope; an API key or OAuth client needs `audit:read`, which an administrator grants on purpose and which `tickets:read` does not imply. There is no `audit:write`: only the running server writes audit entries, so granting it to an API key or OAuth client is refused like an unknown scope, and one stored before the refusal ([#371](https://github.com/PubliciaLLC/go-help-desk/issues/371)) grants nothing, not even `audit:read` |
-| `users` | User administration |
+| `users` | User administration, and the requester lookup (`GET /users/lookup`, #444) |
 | `groups` | Groups, their members, and their category/type scopes |
 | `categories` | Categories, types, items, and custom-field assignments |
 | `tags` | Tag administration |
