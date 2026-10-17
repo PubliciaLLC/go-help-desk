@@ -22,12 +22,15 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"github.com/google/uuid"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -310,6 +313,10 @@ func (*noSessions) Terminate(string) (isNotAllowed bool, err error) { return tru
 //
 // Must be wrapped by Server.ProtectMCP; see the package comment.
 //
+// Every POST body is capped at MaxRequestBody (413 over it), and an SSE stream
+// belongs to the actor and credential that opened it: a /mcp/message POST for
+// its sessionId from anyone else is refused with 403 before the body is read.
+//
 // The context func runs on every POST of both transports, not only when a
 // stream opens, so each tool call sees the actor of the request that made it
 // rather than the actor that happened to open the stream or initialize.
@@ -325,9 +332,11 @@ func (*noSessions) Terminate(string) (isNotAllowed bool, err error) { return tru
 // WithHeartbeatInterval either: the first starts a goroutine nothing stops,
 // the second applies to the GET stream that is off.
 func (s *Server) Handler() http.Handler {
+	sessionIDs := &sseSessionIDs{owners: map[string]sessionOwner{}}
 	sse := mcpserver.NewSSEServer(s.mcp,
 		mcpserver.WithStaticBasePath("/mcp"),
 		mcpserver.WithSSEContextFunc(requestActor),
+		mcpserver.WithSessionIDGenerator(sessionIDs.generate),
 	)
 	streamable := mcpserver.NewStreamableHTTPServer(s.mcp,
 		mcpserver.WithSessionIdManager(&noSessions{}),
@@ -337,11 +346,153 @@ func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/mcp", "/mcp/":
+			if !limitBody(w, r) {
+				return
+			}
 			streamable.ServeHTTP(w, r)
+		case "/mcp/message":
+			if r.Method == http.MethodPost {
+				if !sessionIDs.ownedBy(r) {
+					writeSessionRefused(w)
+					return
+				}
+				if !limitBody(w, r) {
+					return
+				}
+			}
+			sse.ServeHTTP(w, r)
+		case "/mcp/sse":
+			// Blocks for the life of the stream; the id is forgotten when it ends.
+			sessionIDs.serveStream(w, r, sse)
 		default:
 			sse.ServeHTTP(w, r)
 		}
 	})
+}
+
+// MaxRequestBody caps an MCP request body on both transports (#481). 1 MiB is
+// the REST API's cap (server.maxJSONBody) and is far above the largest
+// legitimate MCP request: a request is one JSON-RPC call, and the biggest
+// arguments any tool takes are a ticket description or reply body. MCP has no
+// attachment tool. Without a cap the body was read whole: a 100 MB POST
+// allocated 340 to 712 MB.
+const MaxRequestBody = 1 << 20
+
+// limitBody reads at most MaxRequestBody+1 bytes of the request body and puts
+// them back, or answers 413 and returns false. Doing it here rather than with
+// http.MaxBytesReader means an oversize body is refused with the server's JSON
+// error envelope on both transports: mcp-go turns a failed read into its own
+// 400 "parse error", which would hide the cause.
+func limitBody(w http.ResponseWriter, r *http.Request) bool {
+	if r.ContentLength > MaxRequestBody {
+		writeTooLarge(w)
+		return false
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, MaxRequestBody+1))
+	if err != nil {
+		// A client that hung up mid-body: nothing to answer.
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return false
+	}
+	if len(body) > MaxRequestBody {
+		writeTooLarge(w)
+		return false
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	return true
+}
+
+// writeError uses the REST API's envelope ({"error":{"code","message"}}).
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]string{"code": code, "message": message},
+	})
+}
+
+func writeTooLarge(w http.ResponseWriter) {
+	// The body is not drained; closing the connection is how the client learns
+	// to stop sending it.
+	w.Header().Set("Connection", "close")
+	writeError(w, http.StatusRequestEntityTooLarge, "request_too_large",
+		"MCP request body exceeds the 1 MiB limit")
+}
+
+// writeSessionRefused is the one answer for an unknown, closed, missing or
+// someone else's sessionId, so it cannot be used to learn which ids exist.
+func writeSessionRefused(w http.ResponseWriter) {
+	writeError(w, http.StatusForbidden, "forbidden", "session not available to this caller")
+}
+
+// sessionOwner is who opened an SSE stream: the account and the credential it
+// came in on. Comparable, so it can be checked with ==.
+type sessionOwner struct {
+	userID   uuid.UUID
+	apiKeyID uuid.UUID
+	clientID string
+	machine  bool
+}
+
+// ownerOf is the zero sessionOwner for a nil actor, which no real actor equals
+// (every real one has a user id).
+func ownerOf(a *authmw.Actor) sessionOwner {
+	if a == nil {
+		return sessionOwner{}
+	}
+	return sessionOwner{userID: a.UserID, apiKeyID: a.APIKeyID, clientID: a.ClientID, machine: a.Machine}
+}
+
+// sseSessionIDs records who opened each SSE stream (#495). mcp-go keys a
+// message POST by sessionId alone and authenticates nothing about it, so
+// without this any signed-in caller who learns an id can drive another
+// person's stream.
+type sseSessionIDs struct {
+	mu     sync.Mutex
+	owners map[string]sessionOwner
+}
+
+type pendingSession struct{ id string }
+type pendingSessionKey struct{}
+
+// generate is mcp-go's session id hook; it runs on the stream's own GET, so
+// the request still carries the actor ProtectMCP authenticated. Without one
+// (Handler mounted bare, which ProtectMCP exists to prevent) the stream opens
+// as before but is owned by nobody, so no message can ever be posted to it.
+func (ids *sseSessionIDs) generate(ctx context.Context, r *http.Request) (string, error) {
+	id := uuid.NewString()
+	ids.mu.Lock()
+	ids.owners[id] = ownerOf(authmw.GetActor(r))
+	ids.mu.Unlock()
+	if p, ok := ctx.Value(pendingSessionKey{}).(*pendingSession); ok {
+		p.id = id
+	}
+	return id, nil
+}
+
+func (ids *sseSessionIDs) serveStream(w http.ResponseWriter, r *http.Request, sse *mcpserver.SSEServer) {
+	p := &pendingSession{}
+	defer func() {
+		if p.id != "" {
+			ids.mu.Lock()
+			delete(ids.owners, p.id)
+			ids.mu.Unlock()
+		}
+	}()
+	sse.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), pendingSessionKey{}, p)))
+}
+
+// ownedBy reports whether the request's actor is the one who opened the
+// stream named by its sessionId. An unknown, missing or closed id is false.
+func (ids *sseSessionIDs) ownedBy(r *http.Request) bool {
+	a := authmw.GetActor(r)
+	if a == nil {
+		return false
+	}
+	ids.mu.Lock()
+	owner, ok := ids.owners[r.URL.Query().Get("sessionId")]
+	ids.mu.Unlock()
+	return ok && owner == ownerOf(a)
 }
 
 // maxListLimit bounds list_tickets. The documented ceiling is 100; requests

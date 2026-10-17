@@ -471,16 +471,20 @@ func TestMCPOrigin_SSEMessageCheckedWhereNothingElseStopsIt(t *testing.T) {
 	})
 	require.Equal(t, http.StatusOK, res.StatusCode)
 
-	// The attacker opens their own stream with any account they hold (here the
-	// reporting-role user's API key), so they can read its sessionId. The
-	// victim's tab never has to open one. A message POST takes its actor from
-	// the POST itself (the victim's cookie), while mcp-go delivers the result to
-	// whichever stream owns the sessionId.
+	// The stream is opened with the same staff session the POSTs carry. Until
+	// #495 it was opened with another account's key, because a message POST took
+	// its actor from the POST itself while mcp-go delivered the result to
+	// whichever stream owned the sessionId; the binding now refuses that (see
+	// TestMCPSSE_SessionBoundToActor). The Origin check is still what stops a
+	// same-site page that has learned the sessionId, so it is still what this
+	// test pins.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	t.Cleanup(cancel)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/mcp/sse", nil)
 	require.NoError(t, err)
-	req.Header.Set("Authorization", "ApiKey "+h.userKey)
+	for _, c := range s.jar {
+		req.AddCookie(c)
+	}
 	stream, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = stream.Body.Close() })
