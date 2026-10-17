@@ -2824,7 +2824,16 @@ on the existing webhook feature instead of as plugins.
   lists the event or whose URL no longer matches the stored hash (a queued
   retry for the old address is dropped rather than sent to the new one). This
   is checked on every attempt, so it also stops retries already waiting. The
-  secret is read at send time, so a rotated secret signs the retry. Each attempt updates the hook's
+  secret is read at send time, so a rotated secret signs the retry. A retry
+  dropped for any of these reasons (hook disabled, no longer subscribed, URL
+  changed, ticket filter no longer admits the ticket, body cannot be built)
+  turns its History entry from "retrying" into **dropped**, with the reason
+  (`result: dropped`, `drop_reason`: `disabled`, `unsubscribed`, `url_changed`,
+  `filter`, `unbuildable`; migration `000051`, #499). Only an entry that is
+  retrying changes, and a drop is not an attempt. A deleted hook takes its
+  history with it, so there is nothing to mark. A refused address
+  (`blocked_address`) is not a drop: it is a final result of its own attempt.
+  Each attempt updates the hook's
   latest result and its history (above), not the outbox row, whose `last_error`
   holds only a class and a status. Delivery is at least once, so a receiver can
   see the same event twice.
@@ -3264,7 +3273,13 @@ who is mailed is decided when the worker first takes the change's email row
 and each staff member's mail, then `outboxstore.Store.Split`
 (`internal/database/outboxstore/outboxstore.go`) queues them all and deletes
 the change's row in **one transaction**. A failure part way leaves nothing
-queued and the change's row to be tried again. The children's ids derive from
+queued and the change's row to be tried again. The transaction deletes the
+change's row **first**, and only the call that deleted it queues anything
+(#513): a split that outlasts the 300-second claim lease lets a second worker
+claim and split the same row, and the first split's children may be sent and
+deleted by then, so `ON CONFLICT` alone would queue them again and the mail go
+out twice. The second worker finds no row to delete, queues nothing and
+succeeds. The children's ids derive from
 the change's row id (`uuid.NewSHA1` of the parent and a key: `requester`, or
 `staff:` plus the user id), so a repeat after a crash does not queue anyone twice
 while their rows still wait. Without a database handle, or outside the worker

@@ -39,7 +39,7 @@ func (q *Queries) GetWebhookDeliveryEvent(ctx context.Context, arg GetWebhookDel
 }
 
 const listWebhookDeliveries = `-- name: ListWebhookDeliveries :many
-SELECT id, webhook_id, event_type, created_at, last_attempt_at, status, result, attempts, retrying
+SELECT id, webhook_id, event_type, created_at, last_attempt_at, status, result, attempts, retrying, drop_reason
 FROM webhook_deliveries
 WHERE webhook_id = $1
 ORDER BY created_at DESC, id DESC
@@ -55,6 +55,7 @@ type ListWebhookDeliveriesRow struct {
 	Result        string    `json:"result"`
 	Attempts      int32     `json:"attempts"`
 	Retrying      bool      `json:"retrying"`
+	DropReason    string    `json:"drop_reason"`
 }
 
 // No event column: the history shows outcomes, never content.
@@ -77,6 +78,7 @@ func (q *Queries) ListWebhookDeliveries(ctx context.Context, webhookID uuid.UUID
 			&i.Result,
 			&i.Attempts,
 			&i.Retrying,
+			&i.DropReason,
 		); err != nil {
 			return nil, err
 		}
@@ -89,6 +91,26 @@ func (q *Queries) ListWebhookDeliveries(ctx context.Context, webhookID uuid.UUID
 		return nil, err
 	}
 	return items, nil
+}
+
+const markWebhookDeliveryDropped = `-- name: MarkWebhookDeliveryDropped :exec
+UPDATE webhook_deliveries
+SET result = 'dropped', retrying = false, drop_reason = $1
+WHERE id = $2 AND webhook_id = $3 AND retrying
+`
+
+type MarkWebhookDeliveryDroppedParams struct {
+	Reason    string    `json:"reason"`
+	ID        uuid.UUID `json:"id"`
+	WebhookID uuid.UUID `json:"webhook_id"`
+}
+
+// A queued retry was dropped: its entry stops saying "retrying" (#499). Only a
+// retrying entry changes, so a finished result stays a fact and a drop with no
+// earlier entry marks nothing. attempts is left alone: a drop is not an attempt.
+func (q *Queries) MarkWebhookDeliveryDropped(ctx context.Context, arg MarkWebhookDeliveryDroppedParams) error {
+	_, err := q.db.ExecContext(ctx, markWebhookDeliveryDropped, arg.Reason, arg.ID, arg.WebhookID)
+	return err
 }
 
 const pruneWebhookDeliveries = `-- name: PruneWebhookDeliveries :exec
@@ -122,6 +144,7 @@ SET last_attempt_at = EXCLUDED.last_attempt_at,
     status          = EXCLUDED.status,
     result          = EXCLUDED.result,
     retrying        = EXCLUDED.retrying,
+    drop_reason     = '',
     attempts        = webhook_deliveries.attempts + 1
 WHERE webhook_deliveries.webhook_id = EXCLUDED.webhook_id
 `

@@ -193,3 +193,74 @@ func TestWebhookHistory_AcceptsEveryDeliveryClass(t *testing.T) {
 			attempt(hook, uuid.New(), time.Now().UTC(), 0, class, false)), class)
 	}
 }
+
+// A retry that is dropped turns its entry from "retrying" into "dropped" with
+// the reason (#499). A delivery that is not retrying is left alone: a finished
+// result is a fact, and a drop with no earlier entry has nothing to mark.
+func TestWebhookHistory_MarkDroppedOnlyChangesARetryingEntry(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+	ctx := context.Background()
+	as := authstore.New(q)
+	hook := newHistoryHook(t, as, "https://example.com/h")
+	other := newHistoryHook(t, as, "https://example.com/other")
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+
+	retrying, delivered := uuid.New(), uuid.New()
+	require.NoError(t, as.RecordWebhookAttempt(ctx, attempt(hook, retrying, t0, 503, notify.DeliveryHTTPStatus, true)))
+	require.NoError(t, as.RecordWebhookAttempt(ctx, attempt(hook, delivered, t0, 200, "", false)))
+
+	// Another hook's id, an id with no entry, and a delivered one: none changes.
+	require.NoError(t, as.MarkWebhookDeliveryDropped(ctx, other.ID, retrying, notify.DropDisabled))
+	require.NoError(t, as.MarkWebhookDeliveryDropped(ctx, hook.ID, uuid.New(), notify.DropDisabled))
+	require.NoError(t, as.MarkWebhookDeliveryDropped(ctx, hook.ID, delivered, notify.DropDisabled))
+	require.NoError(t, as.MarkWebhookDeliveryDropped(ctx, hook.ID, retrying, notify.DropURLChanged))
+
+	got, err := as.ListWebhookDeliveries(ctx, hook.ID)
+	require.NoError(t, err)
+	by := map[uuid.UUID]authstore.WebhookDeliveryRecord{}
+	for _, r := range got {
+		by[r.ID] = r
+	}
+	require.Len(t, by, 2, "nothing was added")
+	require.Equal(t, "dropped", by[retrying].Result)
+	require.Equal(t, notify.DropURLChanged, by[retrying].DropReason)
+	require.False(t, by[retrying].Retrying)
+	require.Equal(t, 503, by[retrying].Status, "the last status it saw stays")
+	require.Equal(t, 1, by[retrying].Attempts, "a drop is not an attempt")
+	require.Equal(t, "ok", by[delivered].Result)
+	require.Empty(t, by[delivered].DropReason)
+
+	// Dropping again changes nothing: it is no longer retrying.
+	require.NoError(t, as.MarkWebhookDeliveryDropped(ctx, hook.ID, retrying, notify.DropFilter))
+	got, err = as.ListWebhookDeliveries(ctx, hook.ID)
+	require.NoError(t, err)
+	for _, r := range got {
+		if r.ID == retrying {
+			require.Equal(t, notify.DropURLChanged, r.DropReason)
+		}
+	}
+}
+
+// The reasons the table accepts are exactly the ones Go sends, and free text
+// is refused, as for the result class.
+func TestWebhookHistory_DropReasonsMatchTheCheck(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+	ctx := context.Background()
+	as := authstore.New(q)
+	hook := newHistoryHook(t, as, "https://example.com/h")
+
+	for _, reason := range notify.DropReasons {
+		id := uuid.New()
+		require.NoError(t, as.RecordWebhookAttempt(ctx, attempt(hook, id, time.Now().UTC(), 503, notify.DeliveryHTTPStatus, true)))
+		require.NoError(t, as.MarkWebhookDeliveryDropped(ctx, hook.ID, id, reason), reason)
+	}
+	id := uuid.New()
+	require.NoError(t, as.RecordWebhookAttempt(ctx, attempt(hook, id, time.Now().UTC(), 503, notify.DeliveryHTTPStatus, true)))
+	require.Error(t, as.MarkWebhookDeliveryDropped(ctx, hook.ID, id, "https://example.com/?token=abc"))
+}

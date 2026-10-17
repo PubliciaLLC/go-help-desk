@@ -92,6 +92,27 @@ describe('delivery history', () => {
     expect(within(rows[1]).getByText(/delivered/i)).toBeTruthy()
   })
 
+  // A retry that was dropped (#499) must not keep saying "retrying".
+  it.each([
+    ['disabled', /hook switched off/i],
+    ['unsubscribed', /no longer subscribed/i],
+    ['url_changed', /url changed/i],
+    ['filter', /filter no longer admits/i],
+    ['unbuildable', /body could not be built/i],
+  ])('shows a dropped retry with its reason (%s)', async (reason, text) => {
+    await renderPage([{
+      id: 'd-3', event: 'ticket.replied', started_at: '2026-10-13T12:00:00Z',
+      last_attempt_at: '2026-10-13T12:01:30Z', status: 503, result: 'dropped', attempts: 1,
+      retrying: false, drop_reason: reason,
+    }])
+    const panel = await openHistory()
+    const row = within(panel).getAllByRole('row')[1]
+    expect(within(row).getByText(/dropped/i)).toBeTruthy()
+    expect(within(row).getByText(text)).toBeTruthy()
+    expect(within(row).queryByText(/retrying/i)).toBeNull()
+    expect(within(row).queryByText(/failed/i)).toBeNull()
+  })
+
   it('says so when a hook has no history', async () => {
     await renderPage([])
     const panel = await openHistory()

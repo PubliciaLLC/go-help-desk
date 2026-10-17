@@ -52,6 +52,21 @@ const (
 // DeliveryErrors lists every class, for the test that pins it to the CHECK.
 var DeliveryErrors = []string{DeliveryHTTPStatus, DeliveryTimeout, DeliveryDNS, DeliveryTLS, DeliveryBlockedAddress, DeliveryConnection, DeliveryOther}
 
+// Why a queued retry was dropped (#499). The history shows one of these beside
+// the "dropped" result. Like DeliveryErrors it is a class, never text, and the
+// list is pinned to the CHECK on webhook_deliveries.drop_reason (migration
+// 000051). A deleted hook is not here: its history goes with it.
+const (
+	DropDisabled     = "disabled"     // the hook was switched off
+	DropUnsubscribed = "unsubscribed" // the hook no longer lists the event
+	DropURLChanged   = "url_changed"  // the hook was pointed somewhere else
+	DropFilter       = "filter"       // the hook's ticket filter no longer admits the ticket
+	DropUnbuildable  = "unbuildable"  // the body cannot be built, and would not be next time either
+)
+
+// DropReasons lists every reason, for the test that pins it to the CHECK.
+var DropReasons = []string{DropDisabled, DropUnsubscribed, DropURLChanged, DropFilter, DropUnbuildable}
+
 // WebhookStore is the interface needed to load enabled webhook configs and record delivery results.
 type WebhookStore interface {
 	ListEnabledWebhooks(ctx context.Context) ([]authstore.WebhookConfig, error)
@@ -67,6 +82,9 @@ type WebhookLookup interface {
 // again (#448).
 type WebhookHistory interface {
 	RecordWebhookAttempt(ctx context.Context, a authstore.WebhookAttempt) error
+	// MarkWebhookDeliveryDropped turns a delivery's "retrying" entry into
+	// "dropped" (#499). A delivery that is not retrying is left as it is.
+	MarkWebhookDeliveryDropped(ctx context.Context, hookID, deliveryID uuid.UUID, reason string) error
 	GetWebhookDeliveryEvent(ctx context.Context, hookID, deliveryID uuid.UUID) ([]byte, error)
 }
 
@@ -325,11 +343,14 @@ func (d *WebhookDispatcher) deliverQueued(ctx context.Context, ev notification.E
 	hook, err := d.queue.Hooks.GetWebhook(ctx, ev.TargetWebhook)
 	switch {
 	case errors.Is(err, auth.ErrNotFound):
-		return nil // deleted since the event was queued
+		// Deleted since the event was queued. Its history went with it, so there
+		// is no "retrying" entry left to mark.
+		return nil
 	case err != nil:
 		return fmt.Errorf("loading webhook: %w", err)
 	}
 	if !hook.Enabled {
+		d.markDropped(ctx, hook.ID, DropDisabled)
 		return nil
 	}
 	// Settled, not failed, like a disabled or deleted hook: an administrator
@@ -344,11 +365,13 @@ func (d *WebhookDispatcher) deliverQueued(ctx context.Context, ev notification.E
 	// carries is sent that one.
 	ev, subscribed := forHook(hook, ev)
 	if !subscribed {
+		d.markDropped(ctx, hook.ID, DropUnsubscribed)
 		return nil
 	}
 	if ev.TargetURLHash != urlHash(hook.URL) {
 		d.log.InfoContext(ctx, "webhook delivery dropped: the hook's URL changed since it was queued",
 			"webhook_id", hook.ID, "event", ev.Type)
+		d.markDropped(ctx, hook.ID, DropURLChanged)
 		return nil
 	}
 	// The ticket filter as it is now (#413), against the attributes the row
@@ -360,12 +383,14 @@ func (d *WebhookDispatcher) deliverQueued(ctx context.Context, ev notification.E
 	if !d.admits(ctx, hook, ev) {
 		d.log.InfoContext(ctx, "webhook delivery dropped: the hook's filter no longer admits the ticket",
 			"webhook_id", hook.ID, "event", ev.Type)
+		d.markDropped(ctx, hook.ID, DropFilter)
 		return nil
 	}
 	raw, err := rawBody(ev)
 	if err != nil {
 		d.log.ErrorContext(ctx, "webhook skipped: event could not be marshalled",
 			"webhook_id", hook.ID, "event", ev.Type, "error", err)
+		d.markDropped(ctx, hook.ID, DropUnbuildable)
 		return nil // the same bytes would fail every time
 	}
 	body, err := bodyFor(hook, ev, raw, d.baseURL)
@@ -373,6 +398,7 @@ func (d *WebhookDispatcher) deliverQueued(ctx context.Context, ev notification.E
 		d.log.WarnContext(ctx, "webhook skipped: payload could not be built",
 			"webhook_id", hook.ID, "payload_format", hook.PayloadFormat,
 			"event", ev.Type, "error", err)
+		d.markDropped(ctx, hook.ID, DropUnbuildable)
 		return nil
 	}
 
@@ -750,6 +776,23 @@ func (d *WebhookDispatcher) recordAttempt(hook authstore.WebhookConfig, delivery
 		Result: r, Retrying: retrying,
 	}); err != nil {
 		d.log.Warn("webhook delivery history not recorded", "webhook_id", hook.ID, "error", err)
+	}
+}
+
+// markDropped turns the delivery's "retrying" history entry into "dropped"
+// (#499), so it does not say retrying for a retry that will never come. Like
+// recordAttempt, history is best effort: a failure is logged and the row is
+// settled all the same. A first attempt that was dropped has no entry, and the
+// store leaves it that way.
+func (d *WebhookDispatcher) markDropped(ctx context.Context, hookID uuid.UUID, reason string) {
+	deliveryID := RowID(ctx)
+	if d.queue == nil || deliveryID == uuid.Nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := d.queue.History.MarkWebhookDeliveryDropped(ctx, hookID, deliveryID, reason); err != nil {
+		d.log.Warn("webhook delivery history not updated", "webhook_id", hookID, "error", err)
 	}
 }
 

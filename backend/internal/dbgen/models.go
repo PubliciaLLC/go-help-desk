@@ -392,4 +392,5 @@ type WebhookDelivery struct {
 	Result        string          `json:"result"`
 	Attempts      int32           `json:"attempts"`
 	Retrying      bool            `json:"retrying"`
+	DropReason    string          `json:"drop_reason"`
 }

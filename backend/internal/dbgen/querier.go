@@ -773,6 +773,10 @@ type Querier interface {
 	// UnassignTicketsForGroup and the delete would lose its group silently, which
 	// is the gap this exists to close.
 	LockGroup(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
+	// A queued retry was dropped: its entry stops saying "retrying" (#499). Only a
+	// retrying entry changes, so a finished result stays a fact and a drop with no
+	// earlier entry marks nothing. attempts is left alone: a drop is not an attempt.
+	MarkWebhookDeliveryDropped(ctx context.Context, arg MarkWebhookDeliveryDroppedParams) error
 	NextTicketSeq(ctx context.Context) (int64, error)
 	// Keeps the newest keep_n deliveries of one hook (#448).
 	PruneWebhookDeliveries(ctx context.Context, arg PruneWebhookDeliveriesParams) error
