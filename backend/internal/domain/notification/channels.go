@@ -57,9 +57,15 @@ func Carries(channel string, ev Event) bool {
 		// event may have no recipient yet: the send-time step fills it in. So
 		// does a staff event, whose address is read when it is sent. A change
 		// that may mean staff mail is queued whole and split by the worker.
+		//
+		// A password reset request carries a Recipient and is still not for
+		// this channel: it has its own, with the signup mail (#451).
+		if ev.Type == EventPasswordResetRequested {
+			return false
+		}
 		return ev.Recipient != "" || ev.GuestLink || ev.StaffUserID != nil || (len(ev.Kinds) > 0 && ev.MailsStaff())
 	case "verification":
-		return ev.Type == EventRegistrationVerify
+		return ev.Type == EventRegistrationVerify || ev.Type == EventPasswordResetRequested
 	}
 	return true
 }

@@ -393,6 +393,121 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /api/v1/auth/forgot-password:
+    post:
+      operationId: forgotPassword
+      summary: Ask for a link to choose a new password.
+      description: >-
+        Queues a request to email the address a link to choose a new password and
+        always answers 202 to a well-formed request, whether or not the address has
+        an account: the request looks nothing up and writes nothing but one
+        queued row, so neither the answer nor the time it takes says who has an
+        account. Whether anything is mailed is decided when the mail would be sent,
+        off the request. Nothing is sent for an address with no account, a disabled
+        or deleted account, an account with no password (an identity-provider account, or a local account
+        created without one), or an account that cannot use a password because
+        saml_enabled limits password sign-in to administrators; and an account is
+        mailed at most once per five minutes however many requests arrive. A string
+        that is not an email address is answered 202 and queues nothing. The link
+        works once, for 30 minutes, and a newer link replaces an older one. The
+        link never signs anybody in. Needs email: answers 503 email_not_configured
+        while the server cannot send it (see password_reset on GET /auth/providers).
+        Each client address has a per-minute budget (AUTH_RATE_LIMIT_PER_MINUTE),
+        and a refused attempt answers 429. Public and needs no credential.
+      tags: ['Authentication']
+      x-ghd-handler: handleForgotPassword
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  description: The address of the account. Matched without regard to case.
+      responses:
+        '202':
+          description: Accepted. A link follows if the address has an account that may use it.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [message]
+                properties:
+                  message:
+                    type: string
+                    enum: ['If that address has an account, we have emailed it a link to choose a new password.']
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          description: The server cannot send email (email_not_configured). Sent as application/json.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/auth/reset-password:
+    post:
+      operationId: resetPassword
+      summary: Choose a new password with a mailed link.
+      description: >-
+        Spends a link from POST /auth/forgot-password and sets the password. In
+        one step it uses up the link, stores the new password, clears a pending
+        forced password change and ends every session the account holds. It
+        starts no session: the person goes back to the sign-in page and signs in
+        with the new password and, if the account has one, a second factor. A
+        password outside 8 to 72 bytes is refused (password_too_short or
+        password_too_long) before the link is touched, so it still works. A link
+        that is unknown, already used, replaced by a newer one, expired, or for an
+        account that has since been disabled, deleted or left with no password is refused with 422
+        token_invalid, the same answer for each. An audit entry
+        password_reset_by_email is written for the account, with no actor. Works
+        with email switched off, for a link already mailed. Each client address has
+        a per-minute budget, and a refused attempt answers 429. Public and needs no
+        credential.
+      tags: ['Authentication']
+      x-ghd-handler: handleResetPassword
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token:
+                  type: string
+                  description: The token from the email link (the token query parameter of /reset-password).
+                password:
+                  type: string
+                  description: The new password. Between 8 and 72 bytes.
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          description: >-
+            The body is not JSON (bad_request), or the password is too short
+            (password_too_short) or too long (password_too_long). The link still
+            works after the last two. Sent as application/json.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '422':
+          description: The link does not work (token_invalid). Sent as application/json.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          description: Password reset is not set up on this server (email_not_configured). Sent as application/json.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/auth/local/login:
     post:
       operationId: localLogin
@@ -480,7 +595,10 @@ paths:
             included. password_reset_required is only given for a correct
             password (a wrong one still answers 401 invalid_credentials and takes
             as long to refuse), leaves the hash as it is, and does not apply to
-            administrators. Sent as application/json.
+            administrators. Its message points at "Forgot password" (POST
+            /auth/forgot-password) when the server can send email, and at an
+            administrator when it cannot; nothing is sent by the refusal itself.
+            Sent as application/json.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -817,8 +935,18 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [providers, local_admin_only, passkeys]
+                required: [providers, local_admin_only, passkeys, password_reset]
                 properties:
+                  password_reset:
+                    type: boolean
+                    description: >-
+                      True when "Forgot password" can work: the server can send
+                      email and the feature is wired. The sign-in page shows its
+                      Forgot password link only then. POST /auth/forgot-password
+                      answers 503 email_not_configured when this is false. It does not
+                      say whether a given account may use it (SAML can exclude
+                      non-administrators), which the endpoint never reveals. Added in
+                      1.3.0 (#451).
                   passkeys:
                     type: boolean
                     description: >-

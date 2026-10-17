@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { api } from './client'
-import { changePassword, signup, login, verifyEmail, lookupVerification } from './auth'
+import { changePassword, signup, login, verifyEmail, lookupVerification, requestPasswordReset, resetPassword } from './auth'
 
 // auth.ts is mostly thin wrappers, and those are deliberately left alone —
 // asserting that api.post was called proves nothing. What is covered here is
@@ -98,5 +98,24 @@ describe('lookupVerification', () => {
     const get = vi.spyOn(api, 'get').mockResolvedValue({ data: { email: 'a@example.com' } })
     await expect(lookupVerification('tok-1')).resolves.toEqual({ email: 'a@example.com' })
     expect(get).toHaveBeenCalledWith('/auth/verify-email', { params: { token: 'tok-1' } })
+  })
+})
+
+describe('requestPasswordReset', () => {
+  it('sends the address and nothing else', async () => {
+    const post = vi.spyOn(api, 'post').mockResolvedValue({ data: {} })
+    await requestPasswordReset('someone@example.com')
+
+    expect(post).toHaveBeenCalledWith('/auth/forgot-password', { email: 'someone@example.com' })
+  })
+})
+
+describe('resetPassword', () => {
+  // Same-typed arguments again: swapping them sends the password as the token.
+  it('maps the token and the new password to the fields the server expects', async () => {
+    const post = vi.spyOn(api, 'post').mockResolvedValue({ data: undefined })
+    await resetPassword('tok-1', 'a-long-passphrase')
+
+    expect(post).toHaveBeenCalledWith('/auth/reset-password', { token: 'tok-1', password: 'a-long-passphrase' })
   })
 })

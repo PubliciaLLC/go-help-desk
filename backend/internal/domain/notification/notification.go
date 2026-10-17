@@ -42,6 +42,14 @@ const (
 	// webhook event, and no ticket.
 	EventRegistrationVerify EventType = "registration.verify"
 
+	// EventPasswordResetRequested queues a "forgot password" request (#451).
+	// It carries only the address that was typed, in Recipient; whether that
+	// address has an account that may be mailed is decided when the mail would
+	// be sent, and the link's token is made then, so it is never stored in the
+	// outbox. Never a webhook event, no ticket, and not for the email channel:
+	// it travels on "verification" with the signup mail.
+	EventPasswordResetRequested EventType = "password.reset_requested"
+
 	// EventStaffAssigned, EventStaffRequesterReplied and EventStaffReopened are
 	// the email a staff member gets about a ticket (#441, #464). They are made
 	// from EventTicketAssigned, a requester's EventTicketReplied and
