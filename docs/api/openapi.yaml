@@ -2889,8 +2889,8 @@ paths:
         one member of staff can file at most 40 such tickets an hour, then 429
         rate_limited with Retry-After and nothing is created. Only tickets
         that are filed count: a request that is refused or fails validation
-        does not. Only that case counts; a picked reporter_user_id, and a reporter_email that belongs
-        to an account, do not. The count is per user, not per address of the
+        does not. A picked reporter_user_id, and a reporter_email that belongs
+        to an account, do not count either. The count is per user, not per address of the
         request: a machine credential counts against the user it acts as, and
         another member of staff is unaffected. It is kept in memory, so it
         resets when the server restarts and each replica of a multi-instance

@@ -590,11 +590,12 @@ func (s *Server) fileOnBehalf(w http.ResponseWriter, r *http.Request, in *ticket
 		// in flight together cannot all pass a budget with one slot left; the
 		// caller gives it back if the ticket is not filed.
 		key := authmw.GetActor(r).UserID.String()
-		if !s.onBehalfMailLimiter.Allow(key) {
+		ok, window := s.onBehalfMailLimiter.Take(key)
+		if !ok {
 			tooManyAttempts(w, s.onBehalfMailLimiter.Remaining())
 			return false, nil
 		}
-		refund = func() { s.onBehalfMailLimiter.Refund(key) }
+		refund = func() { s.onBehalfMailLimiter.Refund(key, window) }
 		in.GuestEmail = &addr
 		in.GuestName = strings.TrimSpace(guestName)
 		in.GuestPhone = strings.TrimSpace(guestPhone)

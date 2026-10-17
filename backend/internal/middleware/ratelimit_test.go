@@ -43,18 +43,35 @@ func TestRateLimiter(t *testing.T) {
 	t.Run("a refund gives one attempt back", func(t *testing.T) {
 		rl := authmw.NewRateLimiter(2, time.Minute)
 		require.True(t, rl.Allow("k"))
-		require.True(t, rl.Allow("k"))
-		rl.Refund("k")
+		_, w := rl.Take("k")
+		rl.Refund("k", w)
 		require.True(t, rl.Allow("k"), "the refunded attempt is available again")
 		require.False(t, rl.Allow("k"))
 	})
 
+	// A refund belongs to the window it was spent in. If another caller's
+	// Allow rolled the window over while the work was in flight, the slot was
+	// never taken from the new window, and giving one back would let a key
+	// exceed its limit there.
+	t.Run("a refund is ignored once the window it was spent in has ended", func(t *testing.T) {
+		rl := authmw.NewRateLimiter(1, 30*time.Millisecond)
+		ok, w := rl.Take("k")
+		require.True(t, ok)
+		time.Sleep(60 * time.Millisecond)
+		ok2, _ := rl.Take("k") // rolls the window over and spends its one slot
+		require.True(t, ok2)
+		rl.Refund("k", w)
+		require.False(t, rl.Allow("k"), "the new window's slot was not refunded")
+	})
+
 	t.Run("a refund never goes below zero or touches another key", func(t *testing.T) {
 		rl := authmw.NewRateLimiter(1, time.Minute)
-		rl.Refund("k")
+		_, w := rl.Take("k")
+		rl.Refund("k", w) // takes the one spent slot back
+		rl.Refund("k", w) // nothing left to give back
 		require.True(t, rl.Allow("k"))
 		require.False(t, rl.Allow("k"), "a refund with nothing spent must not add budget")
-		rl.Refund("other")
+		rl.Refund("other", w)
 		require.False(t, rl.Allow("k"))
 	})
 

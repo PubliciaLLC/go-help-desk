@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
 // #444, ruling 2: a typed address with no account is mailed on the strength of
@@ -138,30 +141,115 @@ func TestCreateTicket_OnBehalf_BudgetFollowsTheCredentialsUser(t *testing.T) {
 	require.Equal(t, http.StatusTooManyRequests, res.StatusCode, "and so is the key")
 }
 
-// The budget is for tickets filed. A request that is refused, or that fails
-// validation inside Create, files nothing and mails nobody, so it must not use
-// the hour up: otherwise 40 bad requests lock a member of staff out without
-// anything having been sent.
+// The budget is for tickets filed. A request that is refused, whatever the
+// reason, files nothing and mails nobody, so it must not use the hour up:
+// otherwise 40 bad requests lock a member of staff out without anything having
+// been sent. Each row is one way of being refused. The refusals come first and
+// there are more of them than the budget; then a full budget of valid requests
+// must still all succeed and the next one be the 429.
+//
+// The rows that stop before the limiter (guest submission off, no name, a bad
+// address) are here to pin where the spend sits: put it ahead of those checks
+// and they go red. The rest are refused by Create, after the spend, and are
+// the ones that need the refund.
 func TestCreateTicket_OnBehalf_OnlyFiledTicketsSpendTheBudget(t *testing.T) {
-	h, cleanup := newLimitHarness(t)
-	defer cleanup()
+	type row struct {
+		name  string
+		setup func(t *testing.T, h *harness) // before the refusals
+		bad   func(i int) map[string]any     // the refused request's fields
+		after func(t *testing.T, h *harness) // before the valid ones
+	}
+	typed := func(i int, extra map[string]any) map[string]any {
+		m := map[string]any{"reporter_email": fmt.Sprintf("walk-in-%d@example.test", i), "guest_name": "Ada"}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
+	guest := func(t *testing.T, h *harness, on bool) {
+		t.Helper()
+		require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeyGuestSubmissionEnabled, on))
+	}
+	var tree archivedTree
+	buildTree := func(archive bool) func(t *testing.T, h *harness) {
+		return func(t *testing.T, h *harness) {
+			tree = buildArchivedTree(t, h)
+			if archive {
+				tree.archive(t, h)
+			}
+		}
+	}
 
-	// Refused by Create's own validation, after the limiter has been asked.
-	for i := 0; i < onBehalfMailBudget+5; i++ {
-		res := h.postOnBehalf(t, "staff", map[string]any{
-			"priority":       "urgent-ish",
-			"reporter_email": fmt.Sprintf("walk-in-%d@example.test", i), "guest_name": "Ada",
+	rows := []row{
+		{name: "guest submission off",
+			setup: func(t *testing.T, h *harness) { guest(t, h, false) },
+			bad:   func(i int) map[string]any { return typed(i, nil) },
+			after: func(t *testing.T, h *harness) { guest(t, h, true) }},
+		{name: "no name",
+			bad: func(i int) map[string]any { return typed(i, map[string]any{"guest_name": "   "}) }},
+		{name: "invalid email",
+			bad: func(i int) map[string]any {
+				return map[string]any{"reporter_email": "not-an-address", "guest_name": "Ada"}
+			}},
+		{name: "subject too long",
+			bad: func(i int) map[string]any {
+				return typed(i, map[string]any{"subject": strings.Repeat("s", ticket.MaxSubjectLength+1)})
+			}},
+		{name: "description too long",
+			bad: func(i int) map[string]any {
+				return typed(i, map[string]any{"description": strings.Repeat("d", ticket.MaxDescriptionLength+1)})
+			}},
+		{name: "bad priority",
+			bad: func(i int) map[string]any { return typed(i, map[string]any{"priority": "urgent-ish"}) }},
+		{name: "unknown category",
+			bad: func(i int) map[string]any { return typed(i, map[string]any{"category_id": uuid.NewString()}) }},
+		{name: "archived category", setup: buildTree(true),
+			bad: func(i int) map[string]any { return typed(i, map[string]any{"category_id": tree.catArchived.String()}) }},
+		{name: "archived type", setup: buildTree(true),
+			bad: func(i int) map[string]any {
+				return typed(i, map[string]any{"category_id": tree.catOpen.String(), "type_id": tree.typeArch.String()})
+			}},
+		{name: "archived item", setup: buildTree(true),
+			bad: func(i int) map[string]any {
+				return typed(i, map[string]any{
+					"category_id": tree.catOpen.String(), "type_id": tree.typeOpen.String(), "item_id": tree.itemArch.String()})
+			}},
+		{name: "type from another category", setup: buildTree(false),
+			bad: func(i int) map[string]any {
+				return typed(i, map[string]any{"category_id": tree.catOpen.String(), "type_id": tree.typeUnderArc.String()})
+			}},
+		{name: "item not under the type", setup: buildTree(false),
+			bad: func(i int) map[string]any {
+				return typed(i, map[string]any{
+					"category_id": tree.catOpen.String(), "type_id": tree.typeOpen.String(), "item_id": tree.itemUnderTA.String()})
+			}},
+	}
+
+	for _, tc := range rows {
+		t.Run(tc.name, func(t *testing.T) {
+			h, cleanup := newLimitHarness(t)
+			defer cleanup()
+			if tc.setup != nil {
+				tc.setup(t, h)
+			}
+
+			for i := 0; i < onBehalfMailBudget+5; i++ {
+				res := h.postOnBehalf(t, "staff", tc.bad(i))
+				require.Equal(t, http.StatusBadRequest, res.StatusCode, "refused #%d: %s", i, readBody(t, res))
+				res.Body.Close()
+			}
+			require.Equal(t, 0, ticketCount(t, h), "none of those filed anything")
+			if tc.after != nil {
+				tc.after(t, h)
+			}
+
+			for i := 0; i < onBehalfMailBudget; i++ {
+				res := typedNew(t, h, "staff", i)
+				require.Equal(t, http.StatusCreated, res.StatusCode, "valid #%d: %s", i, readBody(t, res))
+				res.Body.Close()
+			}
+			require.Equal(t, http.StatusTooManyRequests, typedNew(t, h, "staff", onBehalfMailBudget).StatusCode,
+				"and the forty-first filed ticket is the one that is refused")
 		})
-		require.Equal(t, http.StatusBadRequest, res.StatusCode, "bad #%d: %s", i, readBody(t, res))
-		res.Body.Close()
 	}
-	require.Equal(t, 0, ticketCount(t, h))
-
-	for i := 0; i < onBehalfMailBudget; i++ {
-		res := typedNew(t, h, "staff", i)
-		require.Equal(t, http.StatusCreated, res.StatusCode, "valid #%d: %s", i, readBody(t, res))
-		res.Body.Close()
-	}
-	require.Equal(t, http.StatusTooManyRequests, typedNew(t, h, "staff", onBehalfMailBudget).StatusCode,
-		"and the forty-first filed ticket is the one that is refused")
 }
