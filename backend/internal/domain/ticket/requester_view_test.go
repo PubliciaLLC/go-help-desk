@@ -205,6 +205,38 @@ func TestFilterForViewer_StaffAndAdminAreUntouched(t *testing.T) {
 	}
 }
 
+// #444: the staff-only Requester line (`requester`, the account's name and
+// address) is kept from requesters by TWO independent layers, each tested on its
+// own. This is the field filter's: it is not on the allowed list, so it is
+// dropped whatever the handler built. The handler's layer (it does not build
+// the line for a requester at all) is pinned in the server package; neither
+// test relies on the other.
+func TestFilterForViewer_DropsTheStaffOnlyRequesterKeyFromARequesterView(t *testing.T) {
+	type requesterLine struct {
+		Name  string `json:"name"`
+		Email string `json:"email"`
+	}
+	type view struct {
+		ticket.Ticket
+		Requester *requesterLine `json:"requester,omitempty"`
+	}
+	v := view{Ticket: filledTicket(t), Requester: &requesterLine{Name: "Ada", Email: "ada@example.test"}}
+	require.Contains(t, keysOf(t, v), "requester", "precondition: the view carries the line")
+
+	for _, role := range []user.Role{user.RoleUser, user.Role("auditor"), user.Role("")} {
+		got, err := ticket.FilterForViewer(role, v)
+		require.NoError(t, err)
+		require.NotContains(t, keysOf(t, got), "requester", "role %q", role)
+		b, _ := json.Marshal(got)
+		require.NotContains(t, string(b), "ada@example.test", "role %q", role)
+	}
+	for _, role := range []user.Role{user.RoleStaff, user.RoleAdmin} {
+		got, err := ticket.FilterForViewer(role, v)
+		require.NoError(t, err)
+		require.Contains(t, keysOf(t, got), "requester", "role %q", role)
+	}
+}
+
 // Values are not rewritten, only keys dropped; and nothing else is lost.
 func TestFilterForViewer_KeepsValuesAndNonTicketPayloadsAlone(t *testing.T) {
 	id := uuid.New()
