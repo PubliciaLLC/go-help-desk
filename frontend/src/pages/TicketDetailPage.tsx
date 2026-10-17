@@ -329,7 +329,7 @@ function CustomFieldsPanel({ ticketId, isStaffOrAdmin }: CustomFieldsPanelProps)
             {isStaffOrAdmin && editValues ? (
               renderInput(v)
             ) : (
-              <p className="text-sm">{v.value || <span className="text-gray-400">—</span>}</p>
+              <p className="text-sm wrap-anywhere">{v.value || <span className="text-gray-400">—</span>}</p>
             )}
           </div>
         ))}
@@ -541,14 +541,17 @@ export function TicketDetailPage() {
         <QuarantineBanner attachments={attachments} />
 
         {/* Header */}
-        <div className="flex items-start justify-between gap-4">
+        {/* Below md the action buttons wrap onto their own row under the title
+            block (#480): beside it they left the title and tracking number a
+            column of ~120px at 375px and ran the number under "Reopen". */}
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div className="min-w-0 space-y-1">
             <div className="flex flex-wrap items-center gap-x-2 text-sm text-gray-500">
               <span className="whitespace-nowrap">{ticket.tracking_number}</span>
               <span>·</span>
               <span>Opened {formatDate(ticket.created_at)}</span>
             </div>
-            <h1 className="text-2xl font-bold text-gray-900 break-words">{ticket.subject}</h1>
+            <h1 className="text-2xl font-bold text-gray-900 wrap-anywhere">{ticket.subject}</h1>
             <div className="flex items-center gap-2 flex-wrap">
               <span
                 className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium"
@@ -565,7 +568,7 @@ export function TicketDetailPage() {
             </div>
           </div>
 
-          <div className="flex gap-2 shrink-0">
+          <div className="flex flex-wrap gap-2 md:shrink-0">
             {canResolve && (
               <Button
                 variant="outline"
@@ -655,7 +658,7 @@ export function TicketDetailPage() {
                 <CardTitle className="text-sm text-gray-500">Description</CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="whitespace-pre-wrap text-sm break-words">
+                <p className="whitespace-pre-wrap text-sm wrap-anywhere">
                   {ticket.description || <span className="text-gray-400">No description provided.</span>}
                 </p>
               </CardContent>
@@ -689,7 +692,7 @@ export function TicketDetailPage() {
                           {formatDate(r.created_at)}
                         </span>
                       </div>
-                      <p className="whitespace-pre-wrap break-words">{r.body}</p>
+                      <p className="whitespace-pre-wrap wrap-anywhere">{r.body}</p>
                     </div>
                   )
                 }

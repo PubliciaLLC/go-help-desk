@@ -1373,6 +1373,14 @@ five-column table squeezed into a phone is not a mobile layout; where a table
 carries one row per thing, that becomes one card per thing. The end-to-end
 check `frontend/e2e/mobile-layout.spec.ts` pins it at 390×844.
 
+**Long text wraps; it is never shortened.** A token with no break point, such
+as a 300-character URL in a reply, is wrapped at the edge of its box
+(`overflow-wrap: anywhere`, Tailwind `wrap-anywhere`) on the guest ticket view
+and the ticket pages, down to 320 pixels. The text is not truncated, rewritten
+or linkified, so it stays whole and copyable (#479). On the ticket page below
+`md` the header's action buttons sit on their own row under the title and
+tracking number, which keep the full width (#480).
+
 **Not a claim of feature parity.** Everything a staff member can do to a ticket
 from a desk they can do from a phone, because those actions live on the ticket
 page. Bulk selection across a queue is the exception and stays desktop-only: it

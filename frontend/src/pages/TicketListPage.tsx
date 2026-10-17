@@ -534,7 +534,7 @@ export function TicketListPage() {
                           </span>
                         ) : '—'}
                       </div>
-                      <p className="mt-1.5 break-words font-medium text-gray-900">{t.subject}</p>
+                      <p className="mt-1.5 wrap-anywhere font-medium text-gray-900">{t.subject}</p>
                       <div className="mt-1.5 flex items-center gap-2">
                         <Badge variant={priorityVariant(t.priority) as never}>
                           {t.priority}

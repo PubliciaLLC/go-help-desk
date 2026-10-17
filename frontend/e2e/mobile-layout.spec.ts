@@ -6,6 +6,11 @@ import {
   ME_ADMIN,
   ME_REPORTER,
   ME_STAFF,
+  ATTACHMENTS,
+  CUSTOM_FIELDS,
+  LINKED_TICKET,
+  REPLIES,
+  TAGS,
   REPLY_PROSE,
   REPLY_URL,
   TICKET_DETAIL,
@@ -283,49 +288,66 @@ test.describe('#414: the tracking number never breaks inside itself', () => {
     expect(await lineCount(number), `${TICKET_DETAIL.tracking_number} wraps onto more than one line`).toBe(1)
     await noHorizontalScroll(page)
   })
+})
 
-  // The test above never squeezes the number: at 390 its column is wider
-  // than it, and a flex-wrap row gives an item that fits its full width
-  // whether or not the item may break. The case that needs the number to be
-  // unbreakable is a column narrower than the number, which the widest action
-  // group a phone shows (staff on a closed ticket: Reopen + Create follow-up)
-  // produces. The width is derived, not hard-coded, so it holds whatever font
-  // system-ui resolves to: the column ends up half a header gap narrower than
-  // the number, so a whole number still clears the buttons (around 375px with
-  // DejaVu Sans). Narrower than that the number runs under "Reopen" instead;
-  // that is the header's action group squeezing its column, not this.
-  test('stays whole when the header actions leave its column narrower than it', async ({ page }) => {
+// #480: the header's action buttons sat beside the title in a flex row, so a
+// group like Reopen + Create follow-up took ~250px and left the title and
+// tracking number a column of 123px at 375px and less below. Below md the
+// group now wraps onto its own row under the title block, and the title block
+// gets the full width.
+test.describe('#480: header actions get their own row below md', () => {
+  for (const width of [320, 360, 375, 414, 767]) {
+    test(`staff, closed ticket, can_reopen: ${width}px`, async ({ page }) => {
+      await mockApi(page)
+      await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}`, (route) =>
+        route.fulfill({ json: { ...TICKET_DETAIL, status_id: 'st-closed', can_reopen: true } }),
+      )
+      await page.setViewportSize({ width, height: 844 })
+      await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+      const number = page.getByText(TICKET_DETAIL.tracking_number, { exact: true })
+      const title = page.getByRole('heading', { level: 1 })
+      const buttons = [page.getByRole('button', { name: 'Reopen' }), page.getByRole('button', { name: 'Create follow-up' })]
+      await expect(number).toBeVisible()
+      for (const b of buttons) await expect(b).toBeVisible()
+
+      const n = await number.boundingBox()
+      const t = await title.boundingBox()
+      if (!n || !t) throw new Error('header not rendered')
+      const boxes = []
+      for (const b of buttons) {
+        const box = await b.boundingBox()
+        if (!box) throw new Error('button not rendered')
+        boxes.push(box)
+      }
+
+      // Full width: main has p-4 either side and the sidebar is a drawer.
+      expect(t.width, 'the title does not get the full width').toBeGreaterThanOrEqual(width - 32 - 1)
+      expect(await lineCount(number), 'the tracking number wraps').toBe(1)
+      for (const box of boxes) {
+        // Own row: entirely below both the number and the title.
+        expect(box.y, 'a button is not on a row below the number').toBeGreaterThanOrEqual(n.y + n.height)
+        expect(box.y, 'a button is not on a row below the title').toBeGreaterThanOrEqual(t.y + t.height)
+        // And the belt to that braces: no box intersects the number's.
+        const overlaps = n.x < box.x + box.width && box.x < n.x + n.width && n.y < box.y + box.height && box.y < n.y + n.height
+        expect(overlaps, 'the tracking number runs under a button').toBe(false)
+      }
+      await noHorizontalScroll(page)
+    })
+  }
+
+  // Unchanged from md up: the group still sits beside the title, at the right.
+  test('from md up the actions still sit beside the title (unchanged): 1024px', async ({ page }) => {
     await mockApi(page)
     await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}`, (route) =>
       route.fulfill({ json: { ...TICKET_DETAIL, status_id: 'st-closed', can_reopen: true } }),
     )
-    // 767: the widest viewport below md, so the phone layout with room to spare.
-    await page.setViewportSize({ width: 767, height: 844 })
+    await page.setViewportSize({ width: 1024, height: 800 })
     await page.goto(`/tickets/${TICKET_DETAIL.id}`)
-    const number = page.getByText(TICKET_DETAIL.tracking_number, { exact: true })
-    const title = page.getByRole('heading', { level: 1 }) // a block: as wide as the column
-    const reopen = page.getByRole('button', { name: 'Reopen' })
-    await expect(number).toBeVisible()
-    await expect(reopen).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Create follow-up' })).toBeVisible()
-
-    const wide = { number: await number.boundingBox(), title: await title.boundingBox(), reopen: await reopen.boundingBox() }
-    if (!wide.number || !wide.title || !wide.reopen) throw new Error('header not rendered')
-    const gap = wide.reopen.x - (wide.title.x + wide.title.width)
-    // Below md the column loses exactly what the viewport loses.
-    const width = Math.round(767 - wide.title.width + wide.number.width - gap / 2)
-    await page.setViewportSize({ width, height: 844 })
-
-    const title2 = await title.boundingBox()
-    const number2 = await number.boundingBox()
-    const reopen2 = await reopen.boundingBox()
-    if (!title2 || !number2 || !reopen2) throw new Error('header not rendered')
-    expect(title2.width, 'the column is not narrower than the number: nothing is being tested').toBeLessThan(
-      wide.number.width,
-    )
-    expect(await lineCount(number), `${TICKET_DETAIL.tracking_number} broke at ${width}px`).toBe(1)
-    expect(number2.x + number2.width, 'the number runs under the action buttons').toBeLessThanOrEqual(reopen2.x)
-    await noHorizontalScroll(page)
+    const t = await page.getByRole('heading', { level: 1 }).boundingBox()
+    const r = await page.getByRole('button', { name: 'Reopen' }).boundingBox()
+    if (!t || !r) throw new Error('header not rendered')
+    expect(r.x, 'actions no longer beside the title at desktop width').toBeGreaterThanOrEqual(t.x + t.width)
+    expect(r.y).toBeLessThan(t.y + t.height)
   })
 })
 
@@ -386,6 +408,137 @@ test.describe('#426: prose wraps at word boundaries; an unbroken URL still wraps
       const urlBroken = (await tokensBrokenAcrossLines(url)).some((t) => t.includes(c.url))
       expect(urlBroken, 'the 300-character URL was not wrapped').toBe(true)
       await noHorizontalScroll(page)
+    })
+  }
+})
+
+// #479: a long unbroken token (a URL) in user text must wrap at the box edge
+// on a phone rather than widen the page. The text itself stays whole.
+//
+// The URL has no `?` or `=`: Chromium offers a break after those even with no
+// wrap rule at all, which would let a broken page pass.
+const PHONE_WIDTHS = [320, 375, 414]
+const NOTE_URL = longUrlFor('internal')
+
+function longUrlFor(path: string) {
+  return `https://example.com/${path}/`.padEnd(300, '0123456789abcdef')
+}
+
+// Unlike noHorizontalScroll this reads the document: the guest pages have no
+// <main>, and for them the document is exactly what scrolls sideways.
+async function documentFits(page: Page, width: number) {
+  const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth)
+  expect(scrollWidth, `the page scrolls sideways at ${width}px`).toBeLessThanOrEqual(width)
+}
+
+// The whole URL is still in the DOM, unmodified and unshortened, so it can be
+// selected and copied.
+async function expectTextIntact(page: Page, url: string) {
+  await expect(page.getByText(url).first()).toHaveText(new RegExp(url))
+}
+
+test.describe('#479: long URLs wrap on a phone', () => {
+  const guestTicket = {
+    tracking_number: 'GHD-2026-000009',
+    subject: `Link ${longUrlFor('subject')}`,
+    description: `Please see ${longUrlFor('description')}`,
+    status: 'Open',
+    created_at: '2026-09-20T10:00:00Z',
+    replies: [
+      { id: 'g1', body: `Courier tracking ${longUrlFor('reply')}`, created_at: '2026-09-20T11:00:00Z', from_you: false },
+      { id: 'g2', body: `Mine ${longUrlFor('mine')}`, created_at: '2026-09-20T12:00:00Z', from_you: true },
+    ],
+  }
+
+  for (const width of PHONE_WIDTHS) {
+    test(`guest ticket page: ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 })
+      await page.route('**/api/v1/guest/ticket', (route) => route.fulfill({ json: guestTicket }))
+      await page.goto('/g#guest-token')
+      await expect(page.getByText(guestTicket.tracking_number)).toBeVisible()
+      await documentFits(page, width)
+      await expectTextIntact(page, longUrlFor('reply'))
+    })
+
+    test(`staff ticket page, every place user text renders: ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 })
+      await mockApi(page)
+      await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}`, (route) =>
+        route.fulfill({
+          json: { ...TICKET_DETAIL, subject: `Link ${longUrlFor('subject')}`, description: `See ${longUrlFor('description')}` },
+        }),
+      )
+      await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/replies`, (route) =>
+        route.fulfill({
+          json: [
+            ...REPLIES,
+            { ...REPLIES[0], id: 'rep-2', internal: true, body: `Internal ${NOTE_URL}` },
+          ],
+        }),
+      )
+      await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+      await expect(page.getByText(NOTE_URL)).toBeVisible()
+      await noHorizontalScroll(page)
+      await documentFits(page, width)
+      await expectTextIntact(page, NOTE_URL)
+    })
+
+    test(`linked tickets panel: ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 })
+      await mockApi(page)
+      await page.route(`**/api/v1/tickets/${LINKED_TICKET.id}`, (route) =>
+        route.fulfill({ json: { ...LINKED_TICKET, subject: `Dup ${longUrlFor('linked')}` } }),
+      )
+      await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+      await expect(page.getByText(longUrlFor('linked'))).toBeVisible()
+      await noHorizontalScroll(page)
+      await documentFits(page, width)
+    })
+
+    // Free text a person typed that is not the description or a reply: a tag,
+    // a custom field value, an attachment's filename, a reply author's name.
+    test(`tags, custom fields, attachment names, author names: ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 })
+      await mockApi(page)
+      const tag = longUrlFor('tag')
+      const value = longUrlFor('value')
+      const file = `${longUrlFor('file')}.pdf`
+      const author = longUrlFor('author')
+      await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/tags`, (route) =>
+        route.fulfill({ json: [{ ...TAGS[0], name: tag }] }),
+      )
+      await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/custom-fields`, (route) =>
+        route.fulfill({ json: [{ ...CUSTOM_FIELDS[0], value }] }),
+      )
+      await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/attachments`, (route) =>
+        route.fulfill({ json: [{ ...ATTACHMENTS[0], filename: file }] }),
+      )
+      await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/replies`, (route) =>
+        route.fulfill({ json: [{ ...REPLIES[0], author_name: author }] }),
+      )
+      await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+      await expect(page.getByText(value)).toBeVisible()
+      await noHorizontalScroll(page)
+      await documentFits(page, width)
+    })
+
+    test(`ticket list rows (staff): ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 })
+      await mockApi(page)
+      await page.route('**/api/v1/tickets?*', (route) =>
+        route.fulfill({
+          json: TICKETS.map((t, i) => (i === 2 ? { ...t, subject: `Deploy ${longUrlFor('list')}` } : t)),
+        }),
+      )
+      await page.route('**/api/v1/tickets', (route) =>
+        route.fulfill({
+          json: TICKETS.map((t, i) => (i === 2 ? { ...t, subject: `Deploy ${longUrlFor('list')}` } : t)),
+        }),
+      )
+      await page.goto('/tickets')
+      await expect(page.locator('li').filter({ hasText: longUrlFor('list') })).toBeVisible()
+      await noHorizontalScroll(page)
+      await documentFits(page, width)
     })
   }
 })
