@@ -83,6 +83,7 @@
       <li><a href="#client-errors">4xx, and 404 on DELETE</a></li>
       <li><a href="#smtp">Email encryption</a></li>
       <li><a href="#password-age">Old password hashes</a></li>
+      <li><a href="#forgot-password">Forgot password</a></li>
       <li><a href="#unlock">Unlock command</a></li>
       <li><a href="#passkeys-base-url">Passkeys need a domain</a></li>
       <li><a href="#mcp-origin">MCP origin check</a></li>
@@ -187,6 +188,7 @@
     <tr><td>Client mistakes get 4xx; DELETE of an unknown id is 404</td><td>API clients and scripts that call admin routes</td></tr>
     <tr><td>Email never sends a password unencrypted, and sends mail without a password unencrypted only to a private address; a mail setup that is off or failing is reported</td><td>Anyone whose mail server lacks STARTTLS, or who sets <code>SMTP_USER</code> for a server with no login</td></tr>
     <tr><td>Accounts on an old password hash must reset after 30 days</td><td>People who rarely sign in; API clients that sign in with a password</td></tr>
+    <tr><td>Forgot password by email on the sign-in page</td><td>Everyone who signs in with a password; needs email</td></tr>
     <tr><td><code>unlock &lt;email&gt;</code> on the server</td><td>Operators with a locked-out account</td></tr>
     <tr><td>An IP address or one-word <code>BASE_URL</code> turns passkeys off</td><td>Installs reached by IP address or a host with no dot</td></tr>
     <tr><td>MCP refuses requests from another origin; Streamable HTTP added</td><td>Browser-based MCP clients, proxies that add <code>Origin</code></td></tr>
@@ -236,6 +238,7 @@
   <li><strong>One delivery per change.</strong> A webhook gets one delivery for one change, however many things it changed, and nothing is sent for a change that failed. <a href="#one-event">Details</a></li>
   <li><strong>Webhook retries, history and a ticket filter.</strong> <a href="#webhooks">Details</a></li>
   <li><strong>MCP over Streamable HTTP.</strong> The server answers MCP at <code>/mcp</code>, and the older SSE routes stay. <a href="mcp.html">MCP Server</a></li>
+  <li><strong>Forgot password.</strong> The sign-in page can mail a one-time link to choose a new password, when email is set up. <a href="#forgot-password">Details</a></li>
   <li><strong>A way back in.</strong> <code>unlock &lt;email&gt;</code> on the server clears an account's lockouts and gives it a new one-time password. <a href="#unlock">Details</a></li>
   <li><strong>Notifications from an outbox.</strong> Email is queued in the database and retried with the same schedule as webhooks: 8 attempts, a wait that starts at 30 seconds and doubles each time, about an hour in all. Webhooks are queued too and are retried when a delivery fails (see <a href="#webhooks">Webhooks</a>); the Webhooks screen shows each hook's last delivery result and a History of the last 25.</li>
   <li><strong>Webhooks with chat formats.</strong> An Admin → Webhooks screen, with Slack, Teams, Discord and JIRA payload formats. <a href="admin-guide.html#admin-webhooks">Webhooks</a></li>
@@ -499,10 +502,24 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
   <li><strong>The clock</strong> starts when 1.3.0 first runs against the database. It is recorded once.</li>
   <li><strong>The number of days</strong> is under <strong>Admin → Settings → Authentication → Passwords</strong> (<code>password_rehash_grace_days</code>). The default is 30, and it can be 1 to 365. Changing it moves the deadline for everyone.</li>
   <li><strong>Administrators are exempt</strong>, so an instance cannot lock itself out. They are upgraded at their next sign-in like everyone else. Staff and requesters are refused. When SAML limits password sign-in to administrators, other people get the SAML refusal instead.</li>
-  <li><strong>How a person resets:</strong> an administrator sets a new password for them (<strong>Admin → Users</strong>, open the person, <strong>Reset password</strong>). The sign-in page cannot send a reset email in 1.3.0 (see <a href="#known-gaps">What is not in 1.3.0</a>).</li>
+  <li><strong>How a person resets:</strong> the person chooses <em>Forgot password?</em> on the sign-in page (see <a href="#forgot-password">Forgot password by email</a>; it needs email), or an administrator sets a new password for them (<strong>Admin → Users</strong>, open the person, <strong>Reset password</strong>). With email off only the administrator route works.</li>
 </ul>
 
 <p>Tell the people who sign in rarely, or have an administrator reset them, before day 30. New installs are not affected.</p>
+
+<h2 id="forgot-password">Forgot password by email</h2>
+
+<p><strong>Who notices:</strong> everyone who signs in with a password. This is new, and needs email.</p>
+
+<p>When the server can send email (<code>SMTP_HOST</code> and <code>SMTP_FROM</code> set), the sign-in page has a <strong>Forgot password?</strong> link. The person enters their address, is mailed a link, and chooses a new password. <code>GET /api/v1/auth/providers</code> reports <code>password_reset</code> so a client knows whether to offer it.</p>
+<ul>
+  <li><strong>The answer never depends on the address.</strong> <code>POST /api/v1/auth/forgot-password</code> always answers <code>202</code>, whether or not the address has an account, and it answers <code>429</code> when a client asks too often and <code>503 email_not_configured</code> while email is off. An administrator setting a password directly still works and is the route when email is off.</li>
+  <li><strong>The link</strong> works once, for 30 minutes, and a newer request replaces the older link. An account is mailed at most once every five minutes. Only a hash of each link is stored (a new table, added by migration 000049). The link is built from <code>BASE_URL</code>, never from the request.</li>
+  <li><strong>Choosing a new password ends every session of that account.</strong> The link does not sign anyone in: the person goes back to the sign-in page and signs in with the new password and their second factor, if they have one. Their API keys are not touched. <code>POST /api/v1/auth/reset-password</code> answers <code>204</code>, <code>400</code> for a password outside 8 to 72 bytes, and <code>422 token_invalid</code> for a link that does not work.</li>
+  <li><strong>Not for everyone.</strong> Nothing is mailed to a disabled or deleted account, to an account with no password (an SSO account, or a local account created without one), or, when SAML limits password sign-in to administrators, to anyone who is not an administrator.</li>
+  <li><strong>The 30-day refusal now points here.</strong> A person whose old password hash has expired (<a href="#password-age">see above</a>) is told to choose <em>Forgot password</em> when the server can send email, or to ask an administrator when it cannot.</li>
+  <li>Each reset is recorded in the audit log as <code>password_reset_by_email</code>, with no actor. Both requests count against <code>AUTH_RATE_LIMIT_PER_MINUTE</code> per client address.</li>
+</ul>
 
 <h2 id="unlock">Unlock an account from the server</h2>
 
@@ -786,7 +803,6 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
   <tr><td>Staff workflow</td><td>No filing a ticket on someone's behalf outside MCP.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/514" target="_blank" rel="noopener">#514</a></td></tr>
   <tr><td>Guest attachments</td><td>A guest can attach a file only through the API. The guest page has no upload control.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/445" target="_blank" rel="noopener">#445</a></td></tr>
   <tr><td>API keys</td><td>Only administrators can create them.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/450" target="_blank" rel="noopener">#450</a></td></tr>
-  <tr><td>Password reset</td><td>No reset by email.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/451" target="_blank" rel="noopener">#451</a></td></tr>
   <tr><td>Plugins</td><td>The plugin system is a v2 feature. 1.x has no working plugin system: plugins cannot be installed, and an enabled plugin record never receives events. Earlier pages promised it.</td><td><a href="../index.html#roadmap">v2 on the roadmap</a></td></tr>
   </tbody>
 </table>

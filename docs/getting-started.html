@@ -365,6 +365,7 @@ ln -sfn "$(brew --prefix)/opt/docker-buildx/bin/docker-buildx" ~/.docker/cli-plu
   <li>sets a new random password and prints it once. It is not stored anywhere in readable form, so copy it from the terminal.</li>
 </ul>
 <p>The person signs in with that password and is asked to choose their own before anything else. Until they do, the account can do nothing else. The unlock is recorded in the audit log as <code>account_unlock</code>, with the operating system user and host that ran it, and never the password. If the command cannot write that entry, nothing is changed. An address that matches no account, or an OAuth client's service account, is refused with a message.</p>
+<p>If the person only forgot their password and email is set up, they do not need this: <em>Forgot password?</em> on the sign-in page mails them a link (see <a href="authentication.html#auth-forgot-password">Forgot password</a>). The link does not help with a lost second factor, a disabled account or an account with no password, which is what this command is for.</p>
 <p>If SAML sign-in is required on the instance, the command says so: only administrators can use a password then, so the new password will not get anyone else in.</p>
 <p><code>docker compose exec app /app/server reset-factors you@example.com</code> does only the first part: it clears the second factors and ends the sessions, and changes nothing else. Use it when the person still knows their password. See <a href="authentication.html#auth-mfa">Authentication: second factor</a>.</p>
 

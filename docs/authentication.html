@@ -146,9 +146,20 @@
 <p>An older hash does not keep working forever. Once a set number of days has passed since 1.3.0 first started on your database, a correct password that is still stored in the old form is refused with <code>403 password_reset_required</code> and the message that it was saved in an older, weaker form and must be reset. The number of days is <em>Admin → Settings → Authentication → Passwords → Reset window for old passwords</em>: 30 by default, from 1 to 365, and changing it moves the deadline for everyone. Anyone who signs in before the deadline is upgraded automatically.</p>
 <ul>
   <li><strong>Administrators are exempt</strong>, so the instance cannot lock itself out. They are upgraded at their next sign-in like everyone else.</li>
-  <li>Staff and users past the deadline need an administrator to set a new password under <em>Admin → Users → [user] → Reset password</em>. Resetting a password by email is not available in 1.3.0.</li>
+  <li>Staff and users past the deadline choose a new password with <em>Forgot password?</em> on the sign-in page (when the server can send email; see <a href="#auth-forgot-password">Forgot password</a>), or an administrator sets one under <em>Admin → Users → [user] → Reset password</em>. With email off, only the administrator route works.</li>
   <li>People who sign in rarely, such as seasonal staff, are the ones affected. New installs are not.</li>
   <li>When SAML restricts password sign-in to administrators, other accounts get the SAML refusal instead.</li>
+</ul>
+
+<h3 id="auth-forgot-password">Forgot password</h3>
+<p>When the server can send email (<code>SMTP_HOST</code> and <code>SMTP_FROM</code> are set), the sign-in page shows a <em>Forgot password?</em> link. The person enters their address and is mailed a link to choose a new password.</p>
+<ul>
+  <li><strong>The answer is always the same.</strong> The page says "If that address has an account, we have emailed it a link to choose a new password", whether or not the address has an account, so it does not reveal who has one (<code>POST /api/v1/auth/forgot-password</code> always answers <code>202</code>).</li>
+  <li><strong>The link works once and for 30 minutes.</strong> A newer request replaces the older link. An account is mailed at most once every five minutes, however many requests arrive. A link is built from <code>BASE_URL</code>, never from the request, so make sure <code>BASE_URL</code> is the address people use.</li>
+  <li><strong>Choosing a new password ends every session of that account</strong>, so anyone holding an old session is signed out. A pending <em>must choose a new password</em> state (see the <code>unlock</code> command) is cleared. <strong>The link does not sign anyone in.</strong> The person goes back to the sign-in page and signs in with the new password and their second factor, if they have one. Their API keys are not touched.</li>
+  <li><strong>Who gets a link.</strong> Nothing is mailed to a disabled or deleted account, to an account with no password (an account that signs in only through SSO, or a local account created without one), or, when SAML limits password sign-in to administrators, to anyone who is not an administrator.</li>
+  <li><strong>Without email</strong> the link is not shown, and the request answers <code>503 email_not_configured</code>. An administrator setting a password directly still works. <code>GET /api/v1/auth/providers</code> reports <code>password_reset</code>, true when the link is offered.</li>
+  <li>A password outside 8 to 72 bytes is refused with <code>400</code>, and a link that is wrong, expired or already used with <code>422 token_invalid</code>. Each reset is recorded in the audit log as <code>password_reset_by_email</code>, with no actor. Both requests count against <code>AUTH_RATE_LIMIT_PER_MINUTE</code> for the client address.</li>
 </ul>
 
 <h3>Account creation</h3>
