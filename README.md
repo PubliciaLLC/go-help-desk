@@ -26,6 +26,7 @@ Go Help Desk is an open-source ticket management system. Staff submit and track 
 - Guest submission and self-service signup, both off by default
 - Custom fields, tags, canned responses, and full-text search
 - Optional SLA tracking; resolved tickets close automatically after a configurable reopen window
+- Staff can file a ticket for a requester, an existing user or a typed email address
 - Readable audit log with opt-in retention
 - Email notifications, queued with retries. Staff are emailed about their tickets and can follow a ticket
 - Reopened tickets are flagged, raised one priority level the first time, and get a fresh SLA clock; staff can change a ticket's priority
