@@ -406,7 +406,7 @@ func TestMeAPIKeys_DisablingTheOwnerStopsTheKey(t *testing.T) {
 	h.allowStaffKeys(t)
 	k := h.mintMine(t, h.session(t, asStaff), "tickets:read")
 
-	res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+h.staffID.String(), map[string]any{"disabled": true})
+	res := h.doAsAdminSession(t, http.MethodPatch, "/api/v1/admin/users/"+h.staffID.String(), map[string]any{"disabled": true})
 	res.Body.Close()
 	require.Equal(t, http.StatusOK, res.StatusCode)
 

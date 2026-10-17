@@ -31,35 +31,41 @@ func TestServiceAccount_CannotSignInWithAPassword(t *testing.T) {
 func TestServiceAccount_AdminCannotGiveItAPasswordOrMFAOrAdminRole(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
+	// One session up front: a refused write below can abort the harness
+	// transaction, after which no new session could be created.
+	admin := h.session(t, asAdmin)
 	c := h.newServiceClient(t, "Nagios", "tickets:read")
 	base := "/api/v1/admin/users/" + c.UserID.String()
 
-	t.Run("password", func(t *testing.T) {
-		resp := h.doAsAdminSession(t, http.MethodPost, base+"/password", map[string]string{"new_password": "a-long-enough-passphrase"})
-		require.Equal(t, http.StatusConflict, resp.StatusCode)
-		require.Equal(t, "service_account", errorCode(t, resp))
-	})
-	t.Run("reset MFA", func(t *testing.T) {
-		resp := h.doAsAdminSession(t, http.MethodPatch, base, map[string]any{"reset_mfa": true})
-		require.Equal(t, http.StatusConflict, resp.StatusCode)
-		require.Equal(t, "service_account", errorCode(t, resp))
-	})
-	t.Run("admin role", func(t *testing.T) {
-		resp := h.doAsAdmin(t, http.MethodPatch, base, map[string]any{"role": "admin"})
-		// The admin key here is a machine credential, which may not promote
-		// anybody to administrator at all; either refusal keeps it out. A
-		// session-driven promotion reaches the same constraint.
-		require.Contains(t, []int{http.StatusConflict, http.StatusForbidden}, resp.StatusCode)
-	})
+	// The allowed edits first: the refusals below reach database constraints,
+	// which abort the harness transaction and with it the session lookup.
 	t.Run("staff and reporting roles are allowed", func(t *testing.T) {
 		for _, role := range []string{"user", "staff"} {
-			resp := h.doAsAdmin(t, http.MethodPatch, base, map[string]any{"role": role})
+			resp := h.doSession(t, admin, http.MethodPatch, base, map[string]any{"role": role})
 			require.Equal(t, http.StatusOK, resp.StatusCode, role)
 		}
 	})
 	t.Run("rename is allowed", func(t *testing.T) {
-		resp := h.doAsAdmin(t, http.MethodPatch, base, map[string]any{"display_name": "Nagios (prod)"})
+		resp := h.doSession(t, admin, http.MethodPatch, base, map[string]any{"display_name": "Nagios (prod)"})
 		require.Equal(t, http.StatusOK, resp.StatusCode)
+	})
+
+	t.Run("password", func(t *testing.T) {
+		resp := h.doSession(t, admin, http.MethodPost, base+"/password", map[string]string{"new_password": "a-long-enough-passphrase"})
+		require.Equal(t, http.StatusConflict, resp.StatusCode)
+		require.Equal(t, "service_account", errorCode(t, resp))
+	})
+	t.Run("reset MFA", func(t *testing.T) {
+		resp := h.doSession(t, admin, http.MethodPatch, base, map[string]any{"reset_mfa": true})
+		require.Equal(t, http.StatusConflict, resp.StatusCode)
+		require.Equal(t, "service_account", errorCode(t, resp))
+	})
+	t.Run("admin role", func(t *testing.T) {
+		resp := h.doSession(t, admin, http.MethodPatch, base, map[string]any{"role": "admin"})
+		// The admin key here is a machine credential, which may not promote
+		// anybody to administrator at all; either refusal keeps it out. A
+		// session-driven promotion reaches the same constraint.
+		require.Contains(t, []int{http.StatusConflict, http.StatusForbidden}, resp.StatusCode)
 	})
 }
 

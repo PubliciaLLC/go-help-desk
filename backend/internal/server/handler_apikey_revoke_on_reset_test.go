@@ -188,3 +188,24 @@ func TestAdminPasswordReset_AFailedSessionEndIsNotReportedAsAFailedReset(t *test
 	require.Contains(t, string(b), "The password was reset, but existing sessions were NOT ended.")
 	require.NotContains(t, string(b), "API keys")
 }
+
+// The same, when keys were asked to go too: the answer says neither happened.
+func TestAdminPasswordReset_AFailedSessionEndSaysTheKeysWereNotRevokedEither(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	admin := h.session(t, asAdmin)
+	h.session(t, asStaff)
+
+	_, err := h.tx.Exec(`CREATE FUNCTION ghd_fail_session_delete() RETURNS trigger AS $$
+		BEGIN RAISE EXCEPTION 'injected'; END $$ LANGUAGE plpgsql`)
+	require.NoError(t, err)
+	_, err = h.tx.Exec(`CREATE TRIGGER ghd_fail_session_delete BEFORE DELETE ON sessions
+		FOR EACH ROW EXECUTE FUNCTION ghd_fail_session_delete()`)
+	require.NoError(t, err)
+
+	code, b := h.resetPassword(t, admin, h.staffID,
+		map[string]any{"new_password": "a-brand-new-password", "revoke_api_keys": true})
+	require.Equal(t, http.StatusInternalServerError, code, "body: %s", b)
+	require.Equal(t, "sessions_not_ended", errCode(t, b))
+	require.Contains(t, string(b), "The password was reset, but existing sessions were NOT ended and API keys were NOT revoked.")
+}

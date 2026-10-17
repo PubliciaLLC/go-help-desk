@@ -965,7 +965,7 @@ func TestUpdateUser_AsAdmin(t *testing.T) {
 	defer cleanup()
 
 	newName := "Staff Renamed"
-	resp := h.doAsAdmin(t, http.MethodPatch, fmt.Sprintf("/api/v1/admin/users/%s", h.staffID), map[string]any{
+	resp := h.doAsAdminSession(t, http.MethodPatch, fmt.Sprintf("/api/v1/admin/users/%s", h.staffID), map[string]any{
 		"display_name": newName,
 	})
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -990,7 +990,7 @@ func TestDeleteUser_AsAdmin(t *testing.T) {
 	var created user.User
 	decodeJSON(t, createResp, &created)
 
-	resp := h.doAsAdmin(t, http.MethodDelete, fmt.Sprintf("/api/v1/admin/users/%s", created.ID), nil)
+	resp := h.doAsAdminSession(t, http.MethodDelete, fmt.Sprintf("/api/v1/admin/users/%s", created.ID), nil)
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
 }
 

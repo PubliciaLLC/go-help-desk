@@ -2,7 +2,6 @@ package server_test
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"testing"
 
@@ -86,53 +85,6 @@ func TestMachineCredential_CannotTakeOverAnAccountThroughItsSecondFactor(t *test
 	u, err := h.userSvc.GetByID(context.Background(), h.staffID)
 	require.NoError(t, err)
 	require.Equal(t, "Staff", u.DisplayName)
-}
-
-// What a key may still do: provisioning and deprovisioning, without credentials.
-func TestMachineCredential_CanStillProvisionUsersWithoutAPassword(t *testing.T) {
-	h, cleanup := newHarness(t)
-	defer cleanup()
-
-	res := h.doAsAdmin(t, http.MethodPost, usersPath, map[string]any{
-		"email": "provisioned@test.local", "display_name": "Provisioned", "role": "staff",
-	})
-	b := readAll(t, res)
-	require.Equal(t, http.StatusCreated, res.StatusCode, "body: %s", b)
-	var created struct {
-		ID uuid.UUID `json:"id"`
-	}
-	require.NoError(t, json.Unmarshal(b, &created))
-
-	t.Run("it has no password to sign in with", func(t *testing.T) {
-		u, err := h.userSvc.GetByID(context.Background(), created.ID)
-		require.NoError(t, err)
-		require.Empty(t, u.PasswordHash)
-	})
-	t.Run("the other fields still work", func(t *testing.T) {
-		for _, body := range []map[string]any{
-			{"display_name": "Renamed"},
-			{"role": "user"},
-			{"disabled": true},
-			{"disabled": false},
-			{"reset_mfa": false},
-		} {
-			res := h.doAsAdmin(t, http.MethodPatch, usersPath+"/"+created.ID.String(), body)
-			out := readAll(t, res)
-			require.Equal(t, http.StatusOK, res.StatusCode, "%v: %s", body, out)
-		}
-	})
-	t.Run("it was created with the address it was given", func(t *testing.T) {
-		u, err := h.userSvc.GetByID(context.Background(), created.ID)
-		require.NoError(t, err)
-		require.Equal(t, "provisioned@test.local", u.Email)
-	})
-	t.Run("an empty password is not a password", func(t *testing.T) {
-		res := h.doAsAdmin(t, http.MethodPost, usersPath, map[string]any{
-			"email": "blank@test.local", "display_name": "Blank", "role": "staff", "password": "",
-		})
-		out := readAll(t, res)
-		require.Equal(t, http.StatusCreated, res.StatusCode, "body: %s", out)
-	})
 }
 
 // Any non-empty value is a password, whitespace included: it would otherwise be

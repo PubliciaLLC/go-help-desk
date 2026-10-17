@@ -140,7 +140,7 @@ func TestAdminIssueKey_TheNamedUserMustBeLive(t *testing.T) {
 	res, b := h.issueFor(t, admin, uuid.New(), "tickets:read")
 	require.Equal(t, http.StatusNotFound, res.StatusCode, "body: %s", b)
 
-	r := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+h.staffID.String(), map[string]any{"disabled": true})
+	r := h.doAsAdminSession(t, http.MethodPatch, "/api/v1/admin/users/"+h.staffID.String(), map[string]any{"disabled": true})
 	r.Body.Close()
 	res, b = h.issueFor(t, admin, h.staffID, "tickets:read")
 	require.Equal(t, http.StatusBadRequest, res.StatusCode, "body: %s", b)
@@ -150,7 +150,7 @@ func TestAdminIssueKey_TheNamedUserMustBeLive(t *testing.T) {
 		Email: "gone@test.local", DisplayName: "Gone", Role: user.RoleStaff, Password: "password",
 	})
 	require.NoError(t, err)
-	r = h.doAsAdmin(t, http.MethodDelete, "/api/v1/admin/users/"+gone.ID.String(), nil)
+	r = h.doAsAdminSession(t, http.MethodDelete, "/api/v1/admin/users/"+gone.ID.String(), nil)
 	r.Body.Close()
 	require.Equal(t, http.StatusNoContent, r.StatusCode)
 	res, b = h.issueFor(t, admin, gone.ID, "tickets:read")

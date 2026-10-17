@@ -123,7 +123,7 @@ func TestServiceAccount_RenameRenamesTheClient(t *testing.T) {
 	c := h.newServiceClient(t, "Nagios", "tickets:read")
 	other := h.newServiceClient(t, "Zapier", "tickets:read")
 
-	resp := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+c.UserID.String(),
+	resp := h.doAsAdminSession(t, http.MethodPatch, "/api/v1/admin/users/"+c.UserID.String(),
 		map[string]any{"display_name": "Nagios (prod)"})
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
@@ -146,7 +146,7 @@ func TestServiceAccount_CannotBeDeletedExceptThroughItsClient(t *testing.T) {
 	defer cleanup()
 	c := h.newServiceClient(t, "Nagios", "tickets:read")
 
-	resp := h.doAsAdmin(t, http.MethodDelete, "/api/v1/admin/users/"+c.UserID.String(), nil)
+	resp := h.doAsAdminSession(t, http.MethodDelete, "/api/v1/admin/users/"+c.UserID.String(), nil)
 	require.Equal(t, http.StatusConflict, resp.StatusCode)
 	var e struct {
 		Error struct {
@@ -175,10 +175,10 @@ func TestOAuthClients_DisablingTheUserStopsTheClient(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, h.doWithBearer(t, c.Token, "/api/v1/me").StatusCode)
 
-	require.Equal(t, http.StatusOK, h.doAsAdmin(t, http.MethodPatch, base, map[string]any{"disabled": true}).StatusCode)
+	require.Equal(t, http.StatusOK, h.doAsAdminSession(t, http.MethodPatch, base, map[string]any{"disabled": true}).StatusCode)
 	require.Equal(t, http.StatusUnauthorized, h.doWithBearer(t, c.Token, "/api/v1/me").StatusCode,
 		"a disabled service user's client is switched off")
 
-	require.Equal(t, http.StatusOK, h.doAsAdmin(t, http.MethodPatch, base, map[string]any{"disabled": false}).StatusCode)
+	require.Equal(t, http.StatusOK, h.doAsAdminSession(t, http.MethodPatch, base, map[string]any{"disabled": false}).StatusCode)
 	require.Equal(t, http.StatusOK, h.doWithBearer(t, c.Token, "/api/v1/me").StatusCode)
 }

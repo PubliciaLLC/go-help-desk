@@ -263,9 +263,9 @@ func deletedStaff(t *testing.T, h *harness) uuid.UUID {
 }
 
 // A session and an API key must get the same answer, in the same order: the
-// body is checked first (400), then the account (404). Except on the password
-// route, which is closed to keys altogether (2026-10-16): a key gets 403 there
-// whatever the body and whatever the account.
+// body is checked first (400), then the account (404). Except that keys can't
+// write users at all (2026-10-16): every case here is a 403 for a key, before
+// the body or the account is looked at.
 func TestDeletedAccount_SessionAndAPIKeySeeTheSameAnswers(t *testing.T) {
 	type send func(t *testing.T, h *harness, s *session, method, path string, body any) int
 	senders := map[string]send{
@@ -305,12 +305,9 @@ func TestDeletedAccount_SessionAndAPIKeySeeTheSameAnswers(t *testing.T) {
 				require.NoError(t, err)
 
 				want := tc.want
-				if who == "api key" && tc.tail == "/password" {
-					want = http.StatusForbidden
-				}
-				// And on an email change (2026-10-16), which a key may not make.
-				// A malformed address is still the 400 the body check gives first.
-				if who == "api key" && tc.name == "patch, new email" {
+				// Keys can't write users at all (2026-10-16), so every case here
+				// is 403 for a key, before the body or the account is looked at.
+				if who == "api key" {
 					want = http.StatusForbidden
 				}
 				got := do(t, h, s, tc.method, adminAPI+"/users/"+id.String()+tc.tail, tc.body)

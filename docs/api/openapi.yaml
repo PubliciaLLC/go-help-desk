@@ -6338,7 +6338,7 @@ paths:
       operationId: addGroupMember
       summary: Add a member to a group.
       description: >-
-        Administrators only (second factor required).
+        Administrators only, in a signed-in session (second factor required). Keys can't write users: an API key is refused with 403 session_required (an OAuth client, which is a staff identity, with 403 forbidden), whatever the body. A key may read.
         Adds a user to the group. Adding someone who is already a member answers
         204 and changes nothing. An unknown group id answers 404 not_found. A user_id that names no
         account answers 400 invalid_reference, and a missing or zero user_id answers
@@ -6348,7 +6348,6 @@ paths:
       x-ghd-handler: handleAddGroupMember
       security:
         - sessionCookie: []
-        - apiKey: ['groups:write']
       x-ghd-roles: [admin]
       x-ghd-mfa: true
       requestBody:
@@ -6405,14 +6404,13 @@ paths:
       operationId: removeGroupMember
       summary: Remove a member from a group.
       description: >-
-        Administrators only (second factor required).
+        Administrators only, in a signed-in session (second factor required). Keys can't write users: an API key is refused with 403 session_required (an OAuth client, which is a staff identity, with 403 forbidden), whatever the body. A key may read.
         Removes the user from the group. Removing someone who is not a member, or from a group that does
         not exist, answers 404 not_found.
       tags: ['Admin: Groups']
       x-ghd-handler: handleRemoveGroupMember
       security:
         - sessionCookie: []
-        - apiKey: ['groups:write']
       x-ghd-roles: [admin]
       x-ghd-mfa: true
       responses:
@@ -6492,7 +6490,7 @@ paths:
       operationId: addGroupScope
       summary: Add a category or type scope to a group.
       description: >-
-        Administrators only (second factor required).
+        Administrators only, in a signed-in session (second factor required). Keys can't write users: an API key is refused with 403 session_required (an OAuth client, which is a staff identity, with 403 forbidden), whatever the body. A key may read.
         Routes tickets in a category, or in one type of it, to this group. Omit
         type_id, or send null, to cover the whole category. Adding an entry that
         already exists answers 204. An unknown group id answers 404 not_found. A category that does not
@@ -6503,7 +6501,6 @@ paths:
       x-ghd-handler: handleAddGroupScope
       security:
         - sessionCookie: []
-        - apiKey: ['groups:write']
       x-ghd-roles: [admin]
       x-ghd-mfa: true
       requestBody:
@@ -6549,7 +6546,7 @@ paths:
       operationId: removeGroupScope
       summary: Remove a category or type scope from a group.
       description: >-
-        Administrators only (second factor required).
+        Administrators only, in a signed-in session (second factor required). Keys can't write users: an API key is refused with 403 session_required (an OAuth client, which is a staff identity, with 403 forbidden), whatever the body. A key may read.
         Removes the entry that matches category_id and type_id. A missing or null
         type_id matches the whole-category entry. The entry is named by the body,
         not by a path segment. Matching nothing, including a group that does not exist,
@@ -6558,7 +6555,6 @@ paths:
       x-ghd-handler: handleRemoveGroupScope
       security:
         - sessionCookie: []
-        - apiKey: ['groups:write']
       x-ghd-roles: [admin]
       x-ghd-mfa: true
       requestBody:
@@ -7064,23 +7060,17 @@ paths:
       operationId: createUser
       summary: Create a user.
       description: >-
-        Administrators only (second factor required).
+        Administrators only, in a signed-in session (second factor required). Keys can't write users: an API key is refused with 403 session_required (an OAuth client, which is a staff identity, with 403 forbidden), whatever the body. A key may read.
         Creates an account with the given role. The account has no second factor.
-        password is optional. When present it must be 8 to 72 bytes, and only a
-        signed-in session may send one: an API key or OAuth client that sends any
-        non-empty password is refused with 403 session_required (keys can't set
-        passwords; an account made by a key has no password and signs in through SSO
-        or sets one itself). An account
+        password is optional. When present it must be 8 to 72 bytes. An account
         created without a password has no local sign-in until one is set with
         POST /api/v1/admin/users/{id}/password. The email address is trimmed and
         lowercased. An address that any account holds, deleted accounts included,
-        answers 409 email_taken. An API key cannot create an administrator; that
-        answers 403 session_required.
+        answers 409 email_taken.
       tags: ['Admin: Users']
       x-ghd-handler: handleCreateUser
       security:
         - sessionCookie: []
-        - apiKey: ['users:write']
       x-ghd-roles: [admin]
       x-ghd-mfa: true
       requestBody:
@@ -7126,11 +7116,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           description: >-
-            Two sources. The authentication middleware refuses with text/plain:
-            forbidden (role), mfa_required (second factor not passed) or
-            insufficient_scope (the API key lacks users:write). The handler refuses
-            with application/json: session_required when an API key asks to create
-            an administrator, which needs a signed-in session.
+            The authentication middleware refuses with text/plain: forbidden (role),
+            mfa_required (second factor not passed) or session_required (an API key).
           content:
             text/plain:
               schema:
@@ -7199,13 +7186,13 @@ paths:
       operationId: updateUser
       summary: Update a user.
       description: >-
-        Administrators only (second factor required).
+        Administrators only, in a signed-in session (second factor required). Keys can't write users: an API key is refused with 403 session_required (an OAuth client, which is a staff identity, with 403 forbidden), whatever the body. A key may read.
         Applies the fields that are sent, in this order: disabled (disabling also
         ends the account's sessions), reset_mfa (clears the authenticator and every
         passkey, and ends sessions), role (ends sessions), then display_name and
         email. Absent fields are unchanged. Every field is checked before the first
         one is written, in this order: the body (an invalid role, an invalid email
-        or a blank display name answers 400), then the caller (see 403), then the
+        or a blank display name answers 400), then the
         account (an unknown or soft-deleted id answers 404, for every body, an empty
         one included). Two refusals that depend on the database are also checked
         first: a disable or demotion that would leave no active administrator
@@ -7216,20 +7203,12 @@ paths:
         still separate steps, so a request that loses a race with another
         administrator, or a failure of the database partway through, can leave the
         earlier ones applied. The last
-        active administrator cannot be disabled or demoted. An
-        API key cannot change an administrator's account or promote a user to
-        administrator, and cannot send reset_mfa (keys can't clear a second factor
-        for anyone) or email (keys can't change an address, because a reset link
-        goes to it; refused whenever the field is present, even unchanged, and
-        before any other field is applied). Those answer 403 session_required,
-        after the body checks. A key may still change display_name, role (not to
-        administrator) and disabled. The
+        active administrator cannot be disabled or demoted. The
         response is the same detail view GET returns, passkey_count included.
       tags: ['Admin: Users']
       x-ghd-handler: handleUpdateUser
       security:
         - sessionCookie: []
-        - apiKey: ['users:write']
       x-ghd-roles: [admin]
       x-ghd-mfa: true
       requestBody:
@@ -7275,11 +7254,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           description: >-
-            Two sources. The authentication middleware refuses with text/plain:
-            forbidden (role), mfa_required (second factor not passed) or
-            insufficient_scope (the API key lacks users:write). The handler refuses with
-            application/json: session_required when an API key targets an
-            administrator, or asks to promote a user to administrator.
+            The authentication middleware refuses with text/plain: forbidden (role),
+            mfa_required (second factor not passed) or session_required (an API key).
           content:
             text/plain:
               schema:
@@ -7312,18 +7288,16 @@ paths:
       operationId: deleteUser
       summary: Delete a user.
       description: >-
-        Administrators only (second factor required).
+        Administrators only, in a signed-in session (second factor required). Keys can't write users: an API key is refused with 403 session_required (an OAuth client, which is a staff identity, with 403 forbidden), whatever the body. A key may read.
         Soft-deletes the account. It is hidden from lists, its sign-in is refused, its
         sessions end, and its open tickets return to the unassigned queue. A failure to
         return the tickets is logged and does not change the answer. The row is kept,
         so the email address stays taken. The last active administrator cannot be
-        deleted, and that answers 400. An API key cannot delete an administrator;
-        that answers 403 session_required.
+        deleted, and that answers 400.
       tags: ['Admin: Users']
       x-ghd-handler: handleDeleteUser
       security:
         - sessionCookie: []
-        - apiKey: ['users:write']
       x-ghd-roles: [admin]
       x-ghd-mfa: true
       responses:
@@ -7434,11 +7408,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           description: >-
-            Two sources. The authentication middleware refuses with text/plain:
-            forbidden (role), mfa_required (second factor not passed) or
-            insufficient_scope (the API key lacks users:write). The handler refuses with
-            application/json: session_required when an API key targets an
-            administrator.
+            The authentication middleware refuses with text/plain: forbidden (role),
+            mfa_required (second factor not passed) or session_required (an API key).
           content:
             text/plain:
               schema:

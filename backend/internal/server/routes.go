@@ -153,16 +153,22 @@ func (s *Server) adminRouter() *chi.Mux {
 	r.Use(authmw.RequireRole(user.RoleAdmin))
 	r.Use(authmw.RequireMFA)
 
+	// Keys can't write users (Erik, 2026-10-16). An API key or OAuth client may
+	// only READ users; every write needs a signed-in administrator. A key that
+	// could write a user could make itself a person: set a password and sign in
+	// as them, promote a requester it knows the password of, re-address an
+	// account so a reset link comes to it, and from that session mint
+	// credentials that outlive the key. Closing those one field at a time left
+	// a door open each time, so the rule is the route, not the field. Group
+	// membership and scope writes are user writes too: they grant ticket
+	// visibility to users.
 	r.Route("/users", func(r chi.Router) {
 		r.Use(authmw.RequireResource(auth.ResourceUsers))
 		r.Get("/", s.handleListUsers)
-		r.Post("/", s.handleCreateUser)
+		r.With(authmw.DenyMachineCredentials).Post("/", s.handleCreateUser)
 		r.Get("/{id}", s.handleGetUser)
-		r.Patch("/{id}", s.handleUpdateUser)
-		r.Delete("/{id}", s.handleDeleteUser)
-		// Keys can't set passwords (Erik, 2026-10-16): only a signed-in
-		// administrator does. A key that could would set one, sign in as that
-		// person and, from that session, mint credentials of its own.
+		r.With(authmw.DenyMachineCredentials).Patch("/{id}", s.handleUpdateUser)
+		r.With(authmw.DenyMachineCredentials).Delete("/{id}", s.handleDeleteUser)
 		r.With(authmw.DenyMachineCredentials).Post("/{id}/password", s.handleAdminResetPassword)
 	})
 
@@ -174,10 +180,10 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.Patch("/{id}", s.handleUpdateGroup)
 		r.Delete("/{id}", s.handleDeleteGroup)
 		r.Get("/{id}/members", s.handleListGroupMembers)
-		r.Post("/{id}/members", s.handleAddGroupMember)
-		r.Delete("/{id}/members/{userId}", s.handleRemoveGroupMember)
-		r.Post("/{id}/scopes", s.handleAddGroupScope)
-		r.Delete("/{id}/scopes", s.handleRemoveGroupScope)
+		r.With(authmw.DenyMachineCredentials).Post("/{id}/members", s.handleAddGroupMember)
+		r.With(authmw.DenyMachineCredentials).Delete("/{id}/members/{userId}", s.handleRemoveGroupMember)
+		r.With(authmw.DenyMachineCredentials).Post("/{id}/scopes", s.handleAddGroupScope)
+		r.With(authmw.DenyMachineCredentials).Delete("/{id}/scopes", s.handleRemoveGroupScope)
 		r.Get("/{id}/scopes", s.handleListGroupScopes)
 	})
 

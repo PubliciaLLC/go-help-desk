@@ -212,7 +212,7 @@ func TestAdminPatchUser_ReportsPasskeyCount(t *testing.T) {
 	require.NoError(t, h.passkeyStore.Create(ctx, passkeyFor(h.userID, "one")))
 	require.NoError(t, h.passkeyStore.Create(ctx, passkeyFor(h.userID, "two")))
 
-	res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+h.userID.String(),
+	res := h.doAsAdminSession(t, http.MethodPatch, "/api/v1/admin/users/"+h.userID.String(),
 		map[string]any{"display_name": "Renamed"})
 	require.Equal(t, http.StatusOK, res.StatusCode)
 	got := respMap(t, res)

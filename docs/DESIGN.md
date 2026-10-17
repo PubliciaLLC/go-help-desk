@@ -2370,51 +2370,45 @@ category and status endpoints. The top-level `/tags` and `/statuses` reference
 endpoints are covered by `tickets:read` for the same reason.
 
 A machine credential is also refused the endpoints that change how an account
-authenticates: its own (`/me/password`, `/me/mfa/enroll*`, `/me/passkeys*`) and its owner's API keys (`/me/api-keys*`, #450), and — through the
-admin surface — **any administrator's**. It may not create an administrator,
-promote a user to administrator, or reset an administrator's password or MFA.
+authenticates: its own (`/me/password`, `/me/mfa/enroll*`, `/me/passkeys*`) and its owner's API keys (`/me/api-keys*`, #450).
 
-The rule is about administrators rather than about the credential's own owner
-because refusing only the owner closed the path and not the outcome: every key
-reaching `/admin` is administrator-owned, so `users:write` allowed creating a
-second administrator, signing in as them, and resetting the first one's
-password. Guarding only promotion left the reverse open too — demote an
-administrator, reset the now-staff account's password, sign in — so the rule
-covers the whole account in either direction.
+**Keys can't write users** (Erik, 2026-10-16). An API key or OAuth client may
+**read** users (`GET /admin/users`, `GET /admin/users/{id}`, the group member and
+scope lists, the assignee picker) and nothing more. **Every user write needs a
+signed-in administrator.** Each of these carries `DenyMachineCredentials` (an API
+key gets `403 session_required`; an OAuth client is a staff identity, so the
+admin role check refuses it first with `403 forbidden`):
 
-**Keys can't set passwords** (Erik, 2026-10-16). That rule was still not enough:
-a key could create a *staff* account with a password it chose, sign in as it
-(no second factor), and from that session create an API key
+| Route | Writes |
+|---|---|
+| `POST /admin/users` | creates an account |
+| `PATCH /admin/users/{id}` | role, disabled, name, email, MFA reset |
+| `DELETE /admin/users/{id}` | soft-deletes an account |
+| `POST /admin/users/{id}/password` | sets a password |
+| `POST /admin/groups/{id}/members`, `DELETE /admin/groups/{id}/members/{userId}` | group membership, which grants ticket visibility |
+| `POST /admin/groups/{id}/scopes`, `DELETE /admin/groups/{id}/scopes` | what a group's members can see |
+
+The rule is the route, not the field. It replaces a set of per-field rules (no
+administrators, no password on create, no `reset_mfa`, no email) that each closed
+one door of the same room and left another: a key could create a staff account
+with a password it chose, or promote a requester whose password it knew, sign in
+as that person (no second factor), and from that session create an API key
 (`POST /me/api-keys`) that survives the revocation of the key that started it;
-resetting an existing staff member's password or second factor gets there too.
-So for **every** account, administrator or not, an API key or OAuth client may
-not set a password or clear a second factor:
+re-addressing an account would send its reset link (#451) to whoever holds the
+key. A key that can write users can make itself a person, so it cannot write
+them. Group create, rename and delete, and the rest of the admin surface, are
+unchanged.
 
-- `POST /admin/users` with any non-empty `password` (whitespace included) is `403
-  session_required` for a machine credential. Accounts a key creates have no
-  password; they sign in through SSO, or set their own by the reset link.
-- `POST /admin/users/{id}/password` carries `DenyMachineCredentials`.
-- `PATCH /admin/users/{id}` with `reset_mfa` (the only field that clears a
-  second factor; it clears the authenticator and every passkey) is `403
-  session_required` for a machine credential, checked before anything in the
-  request is applied.
-
-- `PATCH /admin/users/{id}` with an `email` field is `403 session_required` for a
-  machine credential, **whoever the account is and whether or not it has a
-  password**, and even when the value is unchanged: the field being present is
-  enough. It is checked first, with `reset_mfa`, before anything else in the
-  request is applied. It is the only route that changes an address. The reason
-  is password reset by email (#451): the reset link goes to the account's
-  address, so re-addressing an account would send its link to whoever holds the
-  key.
-
-A key may still **create** users, with an email address and no password, and
-**rename**, **change role** (never to administrator) and **disable**
-non-administrators. Creating with an address of its choosing is safe because the
-new account has no password, and the reset-by-email flow (#451) sends no link to
-an account without one; an account only becomes usable when a signed-in
-administrator gives it a credential. Only a signed-in administrator can set
-passwords, clear factors or change addresses.
+What this does not change, and is not a hole this rule closes: **OIDC sign-in
+can adopt an existing account by email** (`canAdoptByEmail`): when a verified
+address matches an account that is active, not an administrator, not federated
+through SAML and not bound to another OIDC subject, the first OIDC sign-in with
+that address takes it over, whatever its password. That is how a locally
+provisioned account joins an identity provider, and it is how this behaved before
+#450. With keys unable to create or re-address accounts, a key can no longer
+create the account that would be adopted, but a signed-in administrator can, and
+so can self-signup. The adoption is gated by the identity provider verifying the
+address, and by `allowed_email_domains` (Authentication, OIDC).
 
 Four more things are off limits to a machine credential, for the same reason:
 
@@ -2554,7 +2548,7 @@ one is a permission decision with one switch and no per-user exceptions.
   `context.WithoutCancel`, like `user.Service.ResetMFA`: an audit entry here does
   not gate anything, and hanging up after the key is written cannot suppress it
   (`TestAPIKeyAudit_IsWrittenEvenIfTheRequestWasCancelled`).
-- `api_keys.created_by` (migration 000048) records who issued each new key. It
+- `api_keys.created_by` (migration 000050) records who issued each new key. It
   equals `user_id` when the owner made it and differs when it was issued on their
   behalf; NULL means unknown (a key made before 1.3, or an issuer deleted since).
   It is returned by both key lists, and the Account page says "Issued for you by

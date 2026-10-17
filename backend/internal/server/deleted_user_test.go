@@ -38,7 +38,7 @@ func TestDeleteUser_ReturnsTheirOpenTicketsToTheQueue(t *testing.T) {
 	_, err = h.ticketSvc.Assign(ctx, open.ID, &leaver.ID, nil, ticket.SystemActor)
 	require.NoError(t, err)
 
-	res := h.doAsAdmin(t, http.MethodDelete, "/api/v1/admin/users/"+leaver.ID.String(), nil)
+	res := h.doAsAdminSession(t, http.MethodDelete, "/api/v1/admin/users/"+leaver.ID.String(), nil)
 	res.Body.Close()
 	require.Equal(t, http.StatusNoContent, res.StatusCode)
 
