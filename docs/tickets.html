@@ -121,7 +121,22 @@
 
 <h2 id="tickets-create">Creating a ticket</h2>
 
-<p>Click <em>New ticket</em> from the dashboard or ticket list. A ticket is filed as the signed-in user. (Through the <a href="mcp.html">MCP server</a>, staff can name another user as the reporter.)</p>
+<p>Click <em>New ticket</em> from the dashboard or ticket list. A ticket is filed as the signed-in user. Staff and administrators can also file it for someone else (see <a href="#tickets-on-behalf">Filing for someone else</a>).</p>
+
+<h3 id="tickets-on-behalf">Filing for someone else</h3>
+<p>Staff and administrators see a <em>Requester</em> choice on the New ticket page, with three options:</p>
+<ul>
+  <li><strong>Me</strong> (the default): the ticket is yours.</li>
+  <li><strong>Another user</strong>: type at least two characters of a name or address and pick from the matches (at most ten). Disabled accounts, deleted accounts and the service accounts of OAuth clients are not offered.</li>
+  <li><strong>Email address</strong>: for someone with no account. A <strong>name is required</strong>, and a phone number is optional. The ticket is filed like a guest ticket, and the person is emailed the link to read and reply. This is refused while guest submission is off, because the link would not open. If the address belongs to an account, the ticket is filed for that account instead, and no name is needed.</li>
+</ul>
+<ul>
+  <li>The staff member is recorded as the one who filed it, in the ticket's history and in the audit log. The requester is its reporter.</li>
+  <li>An existing user who is filed for gets the usual "We have received your ticket" email with a link to the ticket, once per address. Nothing is emailed when you file for yourself.</li>
+  <li><strong>A staff member can file 40 tickets an hour for typed addresses that have no account.</strong> After that the request is refused with <code>429</code> and a <code>Retry-After</code> header, and nothing is filed. Each of these mails a stranger, so this caps it. Only tickets that are filed count; a request that is refused does not, and neither does filing for a user or for an address that has an account. The count is per staff member, is kept by each server in memory (it resets on a restart, and each server instance counts on its own), and is not configurable.</li>
+  <li>Requesters cannot file for anyone else; a requester who tries is refused with <code>403</code>.</li>
+  <li>Staff and administrators see a <em>Requester</em> line (name and email) on every ticket page. Requesters never see it.</li>
+</ul>
 
 <h3>Required fields</h3>
 <ul>

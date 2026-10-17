@@ -94,6 +94,7 @@
       <li><a href="#api-requesters">What a requester sees</a></li>
       <li><a href="#api-service-users">OAuth clients &amp; service users</a></li>
       <li><a href="#api-priority">Priority and following</a></li>
+      <li><a href="#api-on-behalf">Filing for someone else</a></li>
       <li><a href="#api-webhook-events">Webhook events</a></li>
       <li><a href="#api-errors">Errors &amp; pagination</a></li>
       <li><a href="api-reference.html">API Reference</a></li>
@@ -295,6 +296,16 @@ Cache-Control: private, max-age=3600</code></pre>
   <li><strong>Reopening.</strong> A move from Resolved or Closed back to an open status is a reopen: <code>reopen_count</code> goes up by one, the first reopen raises the priority one level, and the SLA starts over. This holds for <code>PATCH</code> with a <code>status_id</code>, for <code>POST /api/v1/tickets/{id}/reopen</code> and for a requester's reply to a Resolved ticket.</li>
   <li><strong>Followers.</strong> <code>PUT</code> and <code>DELETE /api/v1/tickets/{id}/follow</code> start and stop following a ticket for the signed-in staff member or administrator, and answer <code>204</code>. <code>GET /api/v1/tickets/{id}/followers</code> lists who follows it. Following is a personal choice, so an API key or OAuth client gets <code>403 session_required</code>.</li>
   <li><strong>Archived classification.</strong> Nobody, staff and administrators included, may file a new ticket into an archived category, type or item, or reclassify one into it: <code>400 bad_request</code>. A ticket already in an archived category, type or item can keep it.</li>
+</ul>
+
+<h2 id="api-on-behalf">Filing a ticket for someone else</h2>
+
+<p><code>POST /api/v1/tickets</code> takes <code>reporter_user_id</code> (an existing account) or <code>reporter_email</code> (a typed address), for staff and administrators only, and at most one of them. A requester who sends either is refused with <code>403</code>. The staff member is recorded as the actor.</p>
+<ul>
+  <li><strong>A typed address</strong> is filed like a guest ticket and the guest link is emailed to it. It needs <code>guest_name</code> (<code>guest_phone</code> is optional), and is refused with <code>400</code> while guest submission is off. If the address belongs to an account, the ticket is filed for that account and no name is needed.</li>
+  <li><strong>Rate limit:</strong> 40 tickets an hour per staff member for typed addresses with no account, then <code>429 rate_limited</code> with <code>Retry-After</code>. Only filed tickets count. An API key or OAuth client counts against the user it acts as. The limit is kept in memory by each server instance.</li>
+  <li><strong>Finding a user:</strong> <code>GET /api/v1/users/lookup?q=</code> returns at most ten accounts (<code>id</code>, <code>display_name</code>, <code>email</code>) whose name or address contains <code>q</code>. <code>q</code> must be at least two characters (<code>400</code> otherwise). It is for staff and administrators, and needs the <code>users:read</code> scope for an API key or OAuth client. Disabled, deleted and service accounts are not returned. Filing with <code>reporter_user_id</code> or <code>reporter_email</code> does not need <code>users:read</code>; only the lookup does.</li>
+  <li><code>GET /api/v1/tickets/{id}</code> carries <code>requester</code> (name and email) for staff and administrators, and never for requesters.</li>
 </ul>
 
 <h2 id="api-webhook-events">Webhook events</h2>

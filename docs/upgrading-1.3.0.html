@@ -101,6 +101,7 @@
       <li><a href="#admin-screens">Routing and paged Users</a></li>
       <li><a href="#saml-metadata">SAML metadata XML</a></li>
       <li><a href="#staff-search">Staff search</a></li>
+      <li><a href="#on-behalf">Filing for a requester</a></li>
       <li><a href="#known-gaps">Not in 1.3.0</a></li>
       <li><a href="#steps">Doing the upgrade</a></li>
     </ul>
@@ -206,6 +207,7 @@
     <tr><td>New Admin → Routing page; Admin → Users is paged</td><td>Administrators; scripts that save the auto-assignment settings</td></tr>
     <tr><td>SAML accepts pasted metadata XML and reads more name claims</td><td>Administrators who set up SAML; SAML users whose display name may change</td></tr>
     <tr><td>Staff search covers every ticket the person can see, with an <em>Only my tickets</em> chip</td><td>Staff and administrators; <code>scope=visible</code> is new</td></tr>
+    <tr><td>Staff can file a ticket for a requester; MCP <code>create_ticket</code> now records the caller as the actor</td><td>Staff and administrators; MCP clients that file for others</td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
@@ -234,6 +236,7 @@
   <li><strong>More on the ticket page.</strong> Staff can change a ticket's priority, take an unassigned ticket with Assign to me, and resolve all open child tickets at once. <a href="#ticket-page">Details</a></li>
   <li><strong>Archive from the admin screen.</strong> Categories, types and items can be archived and unarchived in <strong>Admin → Categories</strong>. <a href="#archived-nodes">Details</a></li>
   <li><strong>OAuth clients can write.</strong> Each client acts as a service user that is listed in Admin → Users. <a href="#service-users">Details</a></li>
+  <li><strong>File for a requester.</strong> Staff can file a ticket for an existing user or a typed address. <a href="#on-behalf">Details</a></li>
   <li><strong>Search finds more.</strong> Staff search covers every ticket they can see, with a chip to narrow it to the queue. <a href="#staff-search">Details</a></li>
   <li><strong>One delivery per change.</strong> A webhook gets one delivery for one change, however many things it changed, and nothing is sent for a change that failed. <a href="#one-event">Details</a></li>
   <li><strong>Webhook retries, history and a ticket filter.</strong> <a href="#webhooks">Details</a></li>
@@ -792,6 +795,20 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
   <li><strong>API:</strong> <code>GET /api/v1/tickets?scope=visible</code> for staff and administrators. An older server ignores an unknown scope and answers as <code>mine</code>. The existing scopes behave as before. There is no migration.</li>
 </ul>
 
+<h2 id="on-behalf">Staff can file a ticket for a requester</h2>
+
+<p><strong>Who notices:</strong> staff and administrators. This is new. Callers that send neither new field behave exactly as before, and there is no migration.</p>
+
+<p>On the New ticket page, staff and administrators get a <strong>Requester</strong> choice: <em>Me</em> (the default), <em>Another user</em> (search by name or address) or <em>Email address</em>. In the API, <code>POST /api/v1/tickets</code> takes <code>reporter_user_id</code> or <code>reporter_email</code> (at most one). A requester who sends either is refused with <code>403</code>.</p>
+<ul>
+  <li><strong>A typed address</strong> is filed like a guest ticket, and the person is emailed the link to read and reply. It needs a name (a phone number is optional) and is refused with <code>400</code> while guest submission is off, because the link would not open. If the address belongs to an account, the ticket is filed for that account.</li>
+  <li><strong>40 tickets an hour per staff member</strong> for typed addresses with no account, then <code>429 rate_limited</code> with <code>Retry-After</code>. Only filed tickets count. The count is kept in memory, so it resets when the server restarts and each server instance counts on its own. It is not configurable.</li>
+  <li><strong>An existing user who is filed for is emailed</strong> the usual "We have received your ticket" message, once per address. Filing for yourself sends nothing, as before.</li>
+  <li>The staff member is the actor in the ticket's history and audit entry. <strong>MCP <code>create_ticket</code> with <code>reporter_user_id</code> now does the same</strong>: it used to record the reporter as the actor, and it now emails the user as the REST API does.</li>
+  <li><strong>Staff see a Requester line</strong> (name and email) on every ticket page, and <code>GET /api/v1/tickets/{id}</code> carries <code>requester</code> for staff and administrators only.</li>
+  <li><code>GET /api/v1/users/lookup?q=</code> feeds the picker: staff and administrators only, <code>users:read</code> for an API key or OAuth client, at most ten results, <code>400</code> for fewer than two characters, and no disabled, deleted or service accounts. An API key does not need <code>users:read</code> to file for someone, only to use the lookup.</li>
+</ul>
+
 <h2 id="known-gaps">What is not in 1.3.0</h2>
 
 <p>Earlier versions of these pages described or implied some things that the product does not do. Each is tracked as an issue. These are gaps in the product, not changes in 1.3.0. The pages now say what the product does.</p>
@@ -800,7 +817,6 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
   <thead><tr><th>Area</th><th>What is missing</th><th>Issue</th></tr></thead>
   <tbody>
   <tr><td>Ticket detail</td><td>Markdown is shown as typed, not rendered. A reply cannot be edited or deleted by anyone: a correction is a new reply, by design.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/443" target="_blank" rel="noopener">#443</a></td></tr>
-  <tr><td>Staff workflow</td><td>No filing a ticket on someone's behalf outside MCP.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/514" target="_blank" rel="noopener">#514</a></td></tr>
   <tr><td>Guest attachments</td><td>A guest can attach a file only through the API. The guest page has no upload control.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/445" target="_blank" rel="noopener">#445</a></td></tr>
   <tr><td>API keys</td><td>Only administrators can create them.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/450" target="_blank" rel="noopener">#450</a></td></tr>
   <tr><td>Plugins</td><td>The plugin system is a v2 feature. 1.x has no working plugin system: plugins cannot be installed, and an enabled plugin record never receives events. Earlier pages promised it.</td><td><a href="../index.html#roadmap">v2 on the roadmap</a></td></tr>
