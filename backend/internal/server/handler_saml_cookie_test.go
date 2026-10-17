@@ -250,7 +250,7 @@ func TestSAMLComplete_CapturedCookieDoesNotSurviveRevocation(t *testing.T) {
 	// reset_mfa. This revokes existing sessions.
 	u, err := sh.userSvc.GetByEmail(context.Background(), "sso@test.local")
 	require.NoError(t, err)
-	r := sh.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+u.ID.String(), map[string]any{"reset_mfa": true})
+	r := sh.doAsAdminSession(t, http.MethodPatch, "/api/v1/admin/users/"+u.ID.String(), map[string]any{"reset_mfa": true})
 	r.Body.Close()
 	require.Equal(t, http.StatusOK, r.StatusCode)
 

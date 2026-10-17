@@ -236,6 +236,22 @@ const (
 	// only about the history of who followed and unfollowed when.
 	KeyStaffCanViewFollowAudit = "staff_can_view_follow_audit" // bool
 
+	// Whether staff may create their own API keys (#450). Administrators always
+	// can, and a requester never can: this is the one switch, with no per-user
+	// permission beside it. Off by default, because a key is a long-lived
+	// bearer credential that acts as its owner, and a release that quietly
+	// let every staff member mint one would be changing who holds such
+	// credentials without anyone deciding it. It governs creating a key only;
+	// see Service.StaffCanCreateAPIKeys.
+	KeyStaffCanCreateAPIKeys = "staff_can_create_api_keys" // bool
+
+	// The longest a new API key may live, in whole years (#450): 1 to 5, or
+	// APIKeyNoLimit (-1) for "Never". The admin slider has those six stops.
+	// 0 is refused rather than meaning either thing. Unset reads as APIKeyMaxLifetimeDefault. It is checked when a key
+	// is created and never when one is used, so lowering it does not break a key
+	// that already exists; those are marked in the key lists instead.
+	KeyAPIKeyMaxLifetimeYears = "api_key_max_lifetime_years" // int
+
 	// How many days an audit entry is kept before the retention sweep hard-
 	// deletes it. Unset, zero or negative means forever — see
 	// admin.Service.AuditRetentionDays for why the fallback points that way.
@@ -258,6 +274,19 @@ const (
 	// (see TestUpdateSettings_EveryMigrationSeededKeyIsKnown).
 	KeyPasswordRehashStartedAt = "password_rehash_started_at"
 )
+
+// Values of api_key_max_lifetime_years.
+const (
+	APIKeyMaxLifetimeDefault = 2
+	APIKeyMaxLifetimeMax     = 5
+	// APIKeyNoLimit is the "Never" stop: keys may be made without an expiry.
+	APIKeyNoLimit = -1
+)
+
+// ValidAPIKeyMaxLifetime reports whether v is one of the slider's six stops.
+func ValidAPIKeyMaxLifetime(v int) bool {
+	return v == APIKeyNoLimit || (v >= 1 && v <= APIKeyMaxLifetimeMax)
+}
 
 // The N in "after N days" for password_rehash_grace_days.
 const (
@@ -371,6 +400,7 @@ func KnownKeys() []string {
 		KeyTicketPrefix, KeyTicketScopeEnforced,
 		KeyAutoAssignGroupID, KeyAutoAssignUserIDs,
 		KeyStaffCanViewTicketChangeHistory, KeyAuditRetentionDays, KeyStaffCanViewFollowAudit,
+		KeyStaffCanCreateAPIKeys, KeyAPIKeyMaxLifetimeYears,
 		KeyStaffEmailAssignedOverride, KeyStaffEmailActivityOverride, KeyStaffEmailGroupOverride,
 		KeyPasswordRehashGraceDays, KeyPasswordRehashStartedAt,
 	}
@@ -441,6 +471,16 @@ func AuthCriticalKeys() []string {
 		// And the same for the follow entries (#441): a disclosure-widening
 		// toggle of the same family.
 		KeyStaffCanViewFollowAudit,
+		// Who may mint an API key (#450). A key is a long-lived bearer
+		// credential that acts as its owner, so widening the set of people who
+		// can hold one is a permission change, not configuration: a leaked
+		// administrator key must not be able to switch this on and then use
+		// it. Same reasoning as closed_reopen_policy above.
+		KeyStaffCanCreateAPIKeys,
+		// How long a new API key may live (#450). Raising it, or choosing
+		// Never, widens how long a stolen key stays useful, so a leaked key
+		// must not be able to do it and then mint one.
+		KeyAPIKeyMaxLifetimeYears,
 		// How long an old password hash keeps working. Pushing it out is a
 		// way to keep a weak hash alive, so it is not a call for a leaked key.
 		KeyPasswordRehashGraceDays,

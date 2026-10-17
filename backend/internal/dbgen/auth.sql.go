@@ -16,18 +16,19 @@ import (
 )
 
 const createAPIKey = `-- name: CreateAPIKey :exec
-INSERT INTO api_keys (id, name, hashed_token, user_id, scopes, expires_at, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO api_keys (id, name, hashed_token, user_id, scopes, expires_at, created_at, created_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 `
 
 type CreateAPIKeyParams struct {
-	ID          uuid.UUID    `json:"id"`
-	Name        string       `json:"name"`
-	HashedToken string       `json:"hashed_token"`
-	UserID      uuid.UUID    `json:"user_id"`
-	Scopes      []string     `json:"scopes"`
-	ExpiresAt   sql.NullTime `json:"expires_at"`
-	CreatedAt   time.Time    `json:"created_at"`
+	ID          uuid.UUID     `json:"id"`
+	Name        string        `json:"name"`
+	HashedToken string        `json:"hashed_token"`
+	UserID      uuid.UUID     `json:"user_id"`
+	Scopes      []string      `json:"scopes"`
+	ExpiresAt   sql.NullTime  `json:"expires_at"`
+	CreatedAt   time.Time     `json:"created_at"`
+	CreatedBy   uuid.NullUUID `json:"created_by"`
 }
 
 func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) error {
@@ -39,6 +40,7 @@ func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) erro
 		pq.Array(arg.Scopes),
 		arg.ExpiresAt,
 		arg.CreatedAt,
+		arg.CreatedBy,
 	)
 	return err
 }
@@ -128,6 +130,40 @@ func (q *Queries) DeleteAPIKey(ctx context.Context, id uuid.UUID) (int64, error)
 	return result.RowsAffected()
 }
 
+const deleteAPIKeyForUser = `-- name: DeleteAPIKeyForUser :execrows
+DELETE FROM api_keys WHERE id = $1 AND user_id = $2
+`
+
+type DeleteAPIKeyForUserParams struct {
+	ID     uuid.UUID `json:"id"`
+	UserID uuid.UUID `json:"user_id"`
+}
+
+// The self-service revoke (#450): the owner is part of the statement, so a key
+// that is somebody else's deletes nothing and is indistinguishable from one
+// that does not exist.
+func (q *Queries) DeleteAPIKeyForUser(ctx context.Context, arg DeleteAPIKeyForUserParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteAPIKeyForUser, arg.ID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteAllAPIKeysForUser = `-- name: DeleteAllAPIKeysForUser :execrows
+DELETE FROM api_keys WHERE user_id = $1
+`
+
+// Every key a user owns, for an administrator's password reset that asks to
+// revoke them too (#450). Returns how many, which the audit entry records.
+func (q *Queries) DeleteAllAPIKeysForUser(ctx context.Context, userID uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteAllAPIKeysForUser, userID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const deleteOAuthClient = `-- name: DeleteOAuthClient :execrows
 WITH soft AS (
     UPDATE users SET deleted_at = now(), updated_at = now()
@@ -161,7 +197,7 @@ func (q *Queries) DeleteWebhookConfig(ctx context.Context, id uuid.UUID) (int64,
 }
 
 const getAPIKeyByHash = `-- name: GetAPIKeyByHash :one
-SELECT id, name, hashed_token, user_id, scopes, last_used_at, expires_at, created_at FROM api_keys WHERE hashed_token = $1
+SELECT id, name, hashed_token, user_id, scopes, last_used_at, expires_at, created_at, created_by FROM api_keys WHERE hashed_token = $1
 `
 
 func (q *Queries) GetAPIKeyByHash(ctx context.Context, hashedToken string) (ApiKey, error) {
@@ -176,6 +212,7 @@ func (q *Queries) GetAPIKeyByHash(ctx context.Context, hashedToken string) (ApiK
 		&i.LastUsedAt,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.CreatedBy,
 	)
 	return i, err
 }
@@ -287,7 +324,7 @@ func (q *Queries) GetWebhookConfig(ctx context.Context, id uuid.UUID) (WebhookCo
 }
 
 const listAPIKeysByUser = `-- name: ListAPIKeysByUser :many
-SELECT id, name, hashed_token, user_id, scopes, last_used_at, expires_at, created_at FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC
+SELECT id, name, hashed_token, user_id, scopes, last_used_at, expires_at, created_at, created_by FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC
 `
 
 func (q *Queries) ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]ApiKey, error) {
@@ -308,6 +345,7 @@ func (q *Queries) ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]Ap
 			&i.LastUsedAt,
 			&i.ExpiresAt,
 			&i.CreatedAt,
+			&i.CreatedBy,
 		); err != nil {
 			return nil, err
 		}
@@ -323,7 +361,7 @@ func (q *Queries) ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]Ap
 }
 
 const listAPIKeysWithOwner = `-- name: ListAPIKeysWithOwner :many
-SELECT k.id, k.name, k.hashed_token, k.user_id, k.scopes, k.last_used_at, k.expires_at, k.created_at, u.email AS owner_email, u.display_name AS owner_name
+SELECT k.id, k.name, k.hashed_token, k.user_id, k.scopes, k.last_used_at, k.expires_at, k.created_at, k.created_by, u.email AS owner_email, u.display_name AS owner_name
 FROM api_keys k
 JOIN users u ON u.id = k.user_id
 WHERE ($1::uuid IS NULL OR k.id = $1::uuid)
@@ -331,16 +369,17 @@ ORDER BY k.created_at DESC
 `
 
 type ListAPIKeysWithOwnerRow struct {
-	ID          uuid.UUID    `json:"id"`
-	Name        string       `json:"name"`
-	HashedToken string       `json:"hashed_token"`
-	UserID      uuid.UUID    `json:"user_id"`
-	Scopes      []string     `json:"scopes"`
-	LastUsedAt  sql.NullTime `json:"last_used_at"`
-	ExpiresAt   sql.NullTime `json:"expires_at"`
-	CreatedAt   time.Time    `json:"created_at"`
-	OwnerEmail  string       `json:"owner_email"`
-	OwnerName   string       `json:"owner_name"`
+	ID          uuid.UUID     `json:"id"`
+	Name        string        `json:"name"`
+	HashedToken string        `json:"hashed_token"`
+	UserID      uuid.UUID     `json:"user_id"`
+	Scopes      []string      `json:"scopes"`
+	LastUsedAt  sql.NullTime  `json:"last_used_at"`
+	ExpiresAt   sql.NullTime  `json:"expires_at"`
+	CreatedAt   time.Time     `json:"created_at"`
+	CreatedBy   uuid.NullUUID `json:"created_by"`
+	OwnerEmail  string        `json:"owner_email"`
+	OwnerName   string        `json:"owner_name"`
 }
 
 // key_id NULL lists every key; a value lists that one key. The owner comes
@@ -363,6 +402,7 @@ func (q *Queries) ListAPIKeysWithOwner(ctx context.Context, keyID uuid.NullUUID)
 			&i.LastUsedAt,
 			&i.ExpiresAt,
 			&i.CreatedAt,
+			&i.CreatedBy,
 			&i.OwnerEmail,
 			&i.OwnerName,
 		); err != nil {

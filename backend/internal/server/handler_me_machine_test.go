@@ -127,23 +127,21 @@ func TestMachineCredential_CannotReachAdministratorCredentials(t *testing.T) {
 }
 
 // Ordinary automation must keep working: provisioning and deprovisioning
-// non-administrators, and resetting a forgotten password.
+// non-administrators. Not their credentials: keys can't set passwords
+// (2026-10-16), see handler_machine_cannot_set_credentials_test.go.
 func TestMachineCredential_CanStillAdministerNonAdmins(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
 	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
-		"email": "new-agent@test.local", "display_name": "Agent",
-		"role": "staff", "password": "a-password-123",
+		"email": "new-agent@test.local", "display_name": "Agent", "role": "staff",
 	})
 	require.Equal(t, http.StatusCreated, resp.StatusCode,
 		"creating a non-administrator is ordinary automation")
-
-	resp = h.doAsAdmin(t, http.MethodPost,
-		"/api/v1/admin/users/"+h.staffID.String()+"/password",
-		map[string]any{"new_password": "a-legitimate-reset-123"})
-	require.Equal(t, http.StatusNoContent, resp.StatusCode,
-		"resetting a non-administrator's password is ordinary automation")
+	resp = h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+h.staffID.String(),
+		map[string]any{"disabled": true})
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"and so is disabling one")
 }
 
 // A signed-in administrator must still be able to do all of it. A guard keyed on
@@ -301,29 +299,28 @@ func TestMachineCredential_CannotChangeAuthCriticalSettings(t *testing.T) {
 }
 
 // credentials:write was every scope: hold only that, mint a key with
-// users:write, use it.
+// users:write, use it. Keys can't make keys at all now (2026-10-16), so there is
+// no scope to escalate through: the narrow key is refused outright, whatever it
+// asks for.
 func TestMachineCredential_CannotMintABroaderCredential(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
 	narrow := mintKey(t, h, []string{"credentials:write", "credentials:read"})
 
-	resp := withKey(t, h, narrow, http.MethodPost, "/api/v1/admin/api-keys",
-		map[string]any{"name": "escalation", "scopes": []string{"users:write"}})
-	require.Equal(t, http.StatusForbidden, resp.StatusCode,
-		"a credential must not mint one broader than itself")
-
-	var body struct {
-		Error struct{ Code, Message string } `json:"error"`
+	for name, scopes := range map[string][]string{
+		"broader": {"users:write"},
+		"its own": {"credentials:read"},
+	} {
+		resp := withKey(t, h, narrow, http.MethodPost, "/api/v1/admin/api-keys",
+			map[string]any{"name": "escalation", "scopes": scopes, "expires_at": inYears(1)})
+		require.Equal(t, http.StatusForbidden, resp.StatusCode, name)
+		var body struct {
+			Error struct{ Code, Message string } `json:"error"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+		require.Equal(t, "session_required", body.Error.Code, name)
 	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
-	require.Equal(t, "insufficient_scope", body.Error.Code)
-	require.Contains(t, body.Error.Message, "users:write")
-
-	// Minting within its own scopes is still fine.
-	resp = withKey(t, h, narrow, http.MethodPost, "/api/v1/admin/api-keys",
-		map[string]any{"name": "sibling", "scopes": []string{"credentials:read"}})
-	require.Equal(t, http.StatusCreated, resp.StatusCode)
 }
 
 // A signed-in administrator is not escalating — they already hold everything a
@@ -338,7 +335,7 @@ func TestSession_CanStillMintAnyCredential(t *testing.T) {
 	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
 
 	res, body = sess.send(t, http.MethodPost, "/api/v1/admin/api-keys",
-		map[string]any{"name": "issued-by-a-human", "scopes": []string{"users:write", "settings:write"}})
+		map[string]any{"name": "issued-by-a-human", "scopes": []string{"users:write", "settings:write"}, "expires_at": inYears(1)})
 	require.Equal(t, http.StatusCreated, res.StatusCode, "body: %s", body)
 }
 

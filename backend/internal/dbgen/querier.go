@@ -259,6 +259,13 @@ type Querier interface {
 	CreateWebAuthnCredential(ctx context.Context, arg CreateWebAuthnCredentialParams) error
 	CreateWebhookConfig(ctx context.Context, arg CreateWebhookConfigParams) error
 	DeleteAPIKey(ctx context.Context, id uuid.UUID) (int64, error)
+	// The self-service revoke (#450): the owner is part of the statement, so a key
+	// that is somebody else's deletes nothing and is indistinguishable from one
+	// that does not exist.
+	DeleteAPIKeyForUser(ctx context.Context, arg DeleteAPIKeyForUserParams) (int64, error)
+	// Every key a user owns, for an administrator's password reset that asks to
+	// revoke them too (#450). Returns how many, which the audit entry records.
+	DeleteAllAPIKeysForUser(ctx context.Context, userID uuid.UUID) (int64, error)
 	DeleteAttachment(ctx context.Context, id uuid.UUID) error
 	// The retention sweep's hard delete. No archive table — see audit.Store's
 	// own comment on DeleteOlderThan for why.

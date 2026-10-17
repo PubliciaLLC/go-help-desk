@@ -919,7 +919,7 @@ func TestCreateUser_AsAdmin(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
+	resp := h.doAsAdminSession(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
 		"email":        "newuser@example.com",
 		"display_name": "New User",
 		"role":         "user",
@@ -965,7 +965,7 @@ func TestDeleteUser_AsAdmin(t *testing.T) {
 	defer cleanup()
 
 	// Create a user to delete.
-	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
+	createResp := h.doAsAdminSession(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
 		"email":        "todelete@example.com",
 		"display_name": "To Delete",
 		"role":         "user",
@@ -1771,7 +1771,7 @@ func TestLocalLogin_AnOverlongPasswordIsAnOrdinaryWrongPassword(t *testing.T) {
 	// a new user with exactly 72 bytes, then try to log in with that password
 	// plus 100 extra bytes. Login truncates at 72, so it should match.
 	fullPassword := strings.Repeat("a", 72)
-	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
+	createResp := h.doAsAdminSession(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
 		"email":        "test72@example.com",
 		"display_name": "Test 72 Byte",
 		"role":         "user",

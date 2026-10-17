@@ -2,6 +2,7 @@ package auth
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -172,4 +173,52 @@ func Subset(have, want []string) (string, bool) {
 		}
 	}
 	return "", true
+}
+
+// ScopesForRole is the most a key owned by role may carry: a key acts at its
+// owner's role, so a scope no route that role can reach uses is a scope that
+// can only mislead. role is user.Role's string value; this package cannot
+// import user.
+//
+// Written out, not computed, because the router is the source of truth and the
+// router lives in a package this one cannot import.
+// TestScopesForRole_MatchTheRouter (internal/server) derives the same table
+// from the router's own middleware and fails when the two differ in either
+// direction, so a route that is opened to staff, or a scope added for an admin
+// route, cannot leave this stale.
+//
+// Requesters and unknown roles get nothing.
+func ScopesForRole(role string) []Scope {
+	switch role {
+	case "admin":
+		return All()
+	case "staff":
+		return []Scope{
+			{ResourceTickets, ActionRead}, {ResourceTickets, ActionWrite},
+			// The assignee picker's group list, read only (groupsRouter).
+			{ResourceGroups, ActionRead},
+			// The admin-wide audit view, which staff may open (#129).
+			{ResourceAudit, ActionRead},
+		}
+	}
+	// A requester gets nothing: requesters never own a key (#450). That is a
+	// rule about who may hold a key, so it is stated here rather than derived
+	// from the router, which would say tickets:read|write.
+	return nil
+}
+
+// WithinRole returns an error naming the first scope in want that a key owned
+// by role may not carry. want must already have passed ValidateScopes.
+func WithinRole(role string, want []string) error {
+	offered := ScopesForRole(role)
+	for _, w := range want {
+		sc, err := ParseScope(w)
+		if err != nil {
+			return err
+		}
+		if !slices.Contains(offered, sc) {
+			return fmt.Errorf("scope %q is not available to a key owned by a %s account", w, role)
+		}
+	}
+	return nil
 }
