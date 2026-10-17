@@ -257,6 +257,19 @@ func (s *Service) SetPassword(ctx context.Context, userID uuid.UUID, plain strin
 	return s.store.SetPasswordHash(ctx, userID, string(hash))
 }
 
+// HashPassword hashes a password at the service's cost, for a caller that has to
+// hand the hash to a statement of its own. The password reset spends its link
+// and writes the new hash in one statement (#451), so it cannot go through
+// SetPassword. It applies no length rule: the caller does, before the link is
+// touched.
+func (s *Service) HashPassword(plain string) (string, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(plain), s.hashCost)
+	if err != nil {
+		return "", fmt.Errorf("hashing password: %w", err)
+	}
+	return string(hash), nil
+}
+
 // ErrLastAdmin is the refusal to remove the only administrator.
 //
 // Disabling, demoting or deleting a sole admin account all answered success,

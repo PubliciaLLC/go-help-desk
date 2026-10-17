@@ -26,6 +26,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/customfieldstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/groupstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/outboxstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/passwordresetstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/registrationstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/reputationstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/sessionstore"
@@ -42,6 +43,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/passwordreset"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
@@ -339,6 +341,13 @@ func run() error {
 	// the request.
 	registrationSvc := registration.NewService(regStore, userSvc, emailDisp, dispatcher, cfg.BaseURL)
 
+	// ── Password reset (#451) ─────────────────────────────────────────────────
+	// "Forgot password" queues its request on the same outbox channel as signup
+	// verification; the send-time step is the server's (SendPasswordReset), wired
+	// below once it exists. The link's host is BASE_URL, never the request's.
+	passwordResetSvc := passwordreset.NewService(passwordresetstore.New(q), userSvc, emailDisp, dispatcher, auStore,
+		adminSvc.SAMLEnabled, cfg.BaseURL, slog.Default())
+
 	// ── Plugin registry ───────────────────────────────────────────────────────
 	pluginRegistry := plugin.NewRegistry()
 
@@ -446,6 +455,7 @@ func run() error {
 		server.WithPasskeysUnavailable(passkeyReason),
 		server.WithEmailHealth(outboxStore),
 		server.WithWebhookRedeliverer(webhookDisp),
+		server.WithPasswordReset(passwordResetSvc),
 	)
 
 	srv.InitSAML(ctx)
@@ -494,7 +504,7 @@ func run() error {
 			outboxStore, func() { outboxWorker.Wake() },
 			userSvc, groupSvc, tStore, adminSvc.StaffEmailOverrides, slog.Default()),
 		webhookDisp,
-		notify.NewVerificationDispatcher(registrationSvc.SendVerification),
+		notify.NewVerificationDispatcher(registrationSvc.SendVerification).WithPasswordReset(srv.SendPasswordReset),
 	)
 	if err := checkOutboxWiring(dispatcher.Channels(), outboxSenders); err != nil {
 		return fmt.Errorf("wiring the notification outbox: %w", err)

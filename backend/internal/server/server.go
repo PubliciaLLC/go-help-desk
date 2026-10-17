@@ -27,6 +27,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/passwordreset"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
@@ -209,6 +210,13 @@ type Server struct {
 	// straight away, and turns a sustained lockout into an inconvenience.
 	guestResendLimiter *authmw.RateLimiter
 
+	// passwordResetLimiter is per account, charged when the reset mail is sent
+	// and not when it is asked for (SendPasswordReset): one mail per account
+	// per five minutes, however many requests arrive and from however many
+	// addresses, so the endpoint cannot be used to fill an inbox. Charged off
+	// the request, so it tells the requester nothing about the account.
+	passwordResetLimiter *authmw.RateLimiter
+
 	cfg      *config.Config
 	router   *chi.Mux
 	sessions SessionStore
@@ -221,7 +229,10 @@ type Server struct {
 	users        *user.Service
 	tickets      *ticket.Service
 	registration *registration.Service
-	categories   *category.Service
+	// passwordReset is nil unless WithPasswordReset gave one; see
+	// passwordResetAvailable.
+	passwordReset *passwordreset.Service
+	categories    *category.Service
 	// passkeys runs the two WebAuthn ceremonies; passkeyStore persists what
 	// they produce. Two fields because the ceremony service owns no storage —
 	// it is handed an account and returns a credential, and the caller decides
@@ -328,6 +339,16 @@ func WithAuditStore(store audit.Store) Option {
 	}
 }
 
+// WithPasswordReset turns on "forgot password" (#451). It is an Option rather
+// than another positional parameter for the reason Option gives. Without it, or
+// with email off, the feature reports itself unavailable (503 on the request,
+// password_reset false on /auth/providers).
+func WithPasswordReset(svc *passwordreset.Service) Option {
+	return func(s *Server) {
+		s.passwordReset = svc
+	}
+}
+
 // WithEmailHealth lets the admin security warnings say whether email is being
 // delivered (#456). Without it the warning reports configuration only.
 func WithEmailHealth(r notification.HealthReader) Option {
@@ -382,6 +403,8 @@ func New(
 		loginLimiter:       authmw.NewRateLimiter(cfg.AuthRateLimitPerMinute, time.Minute),
 		loginThrottleDelay: cfg.AuthThrottleDelay,
 		guestResendLimiter: authmw.NewRateLimiter(1, 5*time.Minute),
+		// The same shape and the same reasoning (#451).
+		passwordResetLimiter: authmw.NewRateLimiter(1, 5*time.Minute),
 		// One Budget for the life of the process, always — even when no
 		// lookup is wired, so that nothing has to check for nil later. A
 		// Budget built per request is a fresh allowance per request, which is

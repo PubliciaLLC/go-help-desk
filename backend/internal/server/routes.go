@@ -47,6 +47,10 @@ func (s *Server) authRouter() *chi.Mux {
 	r.Get("/verify-email", s.handleLookupVerification)
 	r.Post("/verify-email", s.handleVerifyEmail)
 
+	// Forgot password (#451). Both public: the person cannot sign in.
+	r.Post("/forgot-password", s.handleForgotPassword)
+	r.Post("/reset-password", s.handleResetPassword)
+
 	return r
 }
 

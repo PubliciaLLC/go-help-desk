@@ -63,6 +63,9 @@ export function LoginPage() {
   const [loading, setLoading] = useState(false)
   const [signupEnabled, setSignupEnabled] = useState(false)
   const [guestEnabled, setGuestEnabled] = useState(false)
+  // True when the server can email a reset link (#451); the link is offered
+  // only then, because it would lead to a page that cannot work.
+  const [resetOffered, setResetOffered] = useState(false)
   const [providers, setProviders] = useState({
     password: true,
     saml: false,
@@ -85,6 +88,7 @@ export function LoginPage() {
           data.providers.map((provider) => [provider.name, provider.enabled])
         )
 
+        setResetOffered(data.password_reset ?? false)
         setProviders({
           password: enabled.local ?? false,
           saml: enabled.saml ?? false,
@@ -225,6 +229,13 @@ export function LoginPage() {
                   autoComplete="current-password"
                 />
               </div>
+              {resetOffered && (
+                <p className="text-right text-sm">
+                  <Link to="/forgot-password" className="text-blue-600 hover:underline">
+                    Forgot password?
+                  </Link>
+                </p>
+              )}
               {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
               <Button type="submit" className="w-full" disabled={loading}>
                 {loading ? 'Signing in…' : 'Sign in'}
