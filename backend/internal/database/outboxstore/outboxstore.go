@@ -27,7 +27,8 @@ func New(q *dbgen.Queries) *Store { return &Store{q: q} }
 func NewWithDB(db *sql.DB) *Store { return &Store{q: dbgen.New(db), db: db} }
 
 // Split queues rows and deletes the parent row in one transaction: all or
-// nothing (notification.Splitter). Without a database handle it falls back to
+// nothing (notification.Splitter), and only if this call is the one that took
+// the parent. Without a database handle it falls back to
 // the same steps one by one, which is what a store already inside a
 // transaction (a test's) does anyway.
 func (s *Store) Split(ctx context.Context, parent uuid.UUID, rows []notification.NewRow) error {
@@ -49,16 +50,23 @@ func (s *Store) Split(ctx context.Context, parent uuid.UUID, rows []notification
 			return nil
 		}
 	}
-	var err error
+	// The parent goes first, and its deletion is the lock. A split that outlasts
+	// the claim lease lets a second worker claim and split the same parent, and
+	// the first split's children may be sent and gone by then, so ON CONFLICT
+	// alone would let the second queue them again (#513). Whoever deletes zero
+	// rows lost: another worker already split or settled it, so queue nothing.
+	// A concurrent loser waits on the winner's row lock and then sees zero rows.
+	took, err := q.TakeNotification(ctx, parent)
+	if err != nil {
+		return finish(fmt.Errorf("settling split row: %w", err))
+	}
+	if took == 0 {
+		return finish(nil)
+	}
 	for _, r := range rows {
 		if err = q.EnqueueNotification(ctx, dbgen.EnqueueNotificationParams{ID: r.ID, Channel: r.Channel, Event: r.Event}); err != nil {
 			err = fmt.Errorf("queueing split row: %w", err)
 			break
-		}
-	}
-	if err == nil {
-		if err = q.DeleteNotification(ctx, parent); err != nil {
-			err = fmt.Errorf("settling split row: %w", err)
 		}
 	}
 	return finish(err)

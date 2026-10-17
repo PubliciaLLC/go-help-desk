@@ -985,6 +985,10 @@ type Querier interface {
 	// will, so a demotion or a password reset landing in that window was written
 	// back by the next sign-in.
 	SyncFederatedUser(ctx context.Context, arg SyncFederatedUserParams) error
+	// Deletes a row and says whether this call was the one that did. Split uses it
+	// to take the parent before queueing its children: zero rows means another
+	// worker already split or settled it (#513).
+	TakeNotification(ctx context.Context, id uuid.UUID) (int64, error)
 	// First use stamps the row. Separate from the lookup so a read of the ticket
 	// is not also a write on the hot path when the column is already set.
 	TouchGuestAccessToken(ctx context.Context, tokenHash string) error

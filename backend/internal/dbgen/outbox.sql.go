@@ -189,3 +189,18 @@ func (q *Queries) RewriteNotificationEvent(ctx context.Context, arg RewriteNotif
 	_, err := q.db.ExecContext(ctx, rewriteNotificationEvent, arg.ID, arg.Event)
 	return err
 }
+
+const takeNotification = `-- name: TakeNotification :execrows
+DELETE FROM notification_outbox WHERE id = $1
+`
+
+// Deletes a row and says whether this call was the one that did. Split uses it
+// to take the parent before queueing its children: zero rows means another
+// worker already split or settled it (#513).
+func (q *Queries) TakeNotification(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, takeNotification, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
