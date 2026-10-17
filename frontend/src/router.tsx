@@ -29,6 +29,8 @@ import { GuestTicketViewPage } from '@/pages/GuestTicketViewPage'
 import { GuestTrackPage } from '@/pages/GuestTrackPage'
 import { SignupPage } from '@/pages/SignupPage'
 import { VerifyEmailPage } from '@/pages/VerifyEmailPage'
+import { ForgotPasswordPage } from '@/pages/ForgotPasswordPage'
+import { ResetPasswordPage } from '@/pages/ResetPasswordPage'
 
 async function requireAuth() {
   const { user, setUser } = useAuthStore.getState()
@@ -258,6 +260,18 @@ const verifyEmailRoute = createRoute({
   component: VerifyEmailPage,
 })
 
+const forgotPasswordRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/forgot-password',
+  component: ForgotPasswordPage,
+})
+
+const resetPasswordRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/reset-password',
+  component: ResetPasswordPage,
+})
+
 // ── Index redirect ────────────────────────────────────────────────────────────
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -276,6 +290,8 @@ export const router = createRouter({
     setupRoute,
     signupRoute,
     verifyEmailRoute,
+    forgotPasswordRoute,
+    resetPasswordRoute,
     dashboardRoute,
     submitRoute,
     guestViewRoute,

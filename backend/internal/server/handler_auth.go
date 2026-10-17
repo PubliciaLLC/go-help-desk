@@ -84,11 +84,11 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		// counted, and it does not reset the counter either. It costs the same
 		// as a wrong password (see VerifyPasswordForSignIn).
 		//
-		// Part D (#451) hooks in here: once "Forgot password" exists, send the
-		// person a reset link at this point and change the message to say so.
-		Error(w, http.StatusForbidden, "password_reset_required",
-			"Your password was saved in an older, weaker form and must be reset before you can sign in. "+
-				"Use \"Forgot password\" on the sign-in page, or ask an administrator to reset it for you.")
+		// Where the person goes from here depends on whether the server can send
+		// a reset link (#451): "Forgot password" on the sign-in page, which is
+		// shown only then, or an administrator. Nothing is sent from here: the
+		// person asks for the link, the same as anyone who forgot their password.
+		Error(w, http.StatusForbidden, "password_reset_required", passwordResetRequiredMessage(s.passwordResetAvailable()))
 		return
 	}
 	if err != nil {
@@ -185,6 +185,19 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		"mfa_enrollment_needed":    mfaEnrollmentNeeded,
 		"password_change_required": u.MustChangePassword,
 	})
+}
+
+// passwordResetRequiredMessage is what a person whose password hash is too old
+// to be used (#453) is told to do. Both wordings name "Forgot password"; only
+// one can offer it.
+func passwordResetRequiredMessage(resetByEmail bool) string {
+	const head = "Your password was saved in an older, weaker form and must be reset before you can sign in. "
+	if resetByEmail {
+		return head + "Choose \"Forgot password\" on the sign-in page and we will email you a link, " +
+			"or ask an administrator to reset it for you."
+	}
+	return head + "Ask an administrator to reset it for you. " +
+		"(\"Forgot password\" is not available because this server cannot send email.)"
 }
 
 // samlAuthnMethodsAttr and samlMultipleAuthn are how Entra ID says, in a
@@ -595,6 +608,9 @@ func (s *Server) handleAuthProviders(w http.ResponseWriter, r *http.Request) {
 		// (#494), so the page does not offer a key it cannot check. Public
 		// on purpose: the reason is not, and only goes to administrators.
 		Passkeys bool `json:"passkeys"`
+		// PasswordReset is true when "Forgot password" can work (#451): the
+		// server can send the link. The sign-in page shows the link only then.
+		PasswordReset bool `json:"password_reset"`
 	}{
 		Providers: []Provider{
 			{Name: "local", Enabled: true},
@@ -603,6 +619,7 @@ func (s *Server) handleAuthProviders(w http.ResponseWriter, r *http.Request) {
 		},
 		LocalAdminOnly: s.adminSvc.SAMLEnabled(r.Context()),
 		Passkeys:       s.passkeysAvailable(),
+		PasswordReset:  s.passwordResetAvailable(),
 	})
 }
 

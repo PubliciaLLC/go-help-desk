@@ -9,8 +9,8 @@ import (
 )
 
 // outboxChannels are the channels requests queue notifications for (#164).
-// "verification" carries signup verification email (#348); nothing else
-// queues for it.
+// "verification" carries the account email that holds a link to follow: signup
+// verification (#348) and password reset (#451); nothing else queues for it.
 func outboxChannels() []string {
 	return []string{"email", "webhook", "verification"}
 }
