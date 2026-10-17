@@ -392,12 +392,16 @@ func (d *GuestLinkDispatcher) Dispatch(ctx context.Context, ev notification.Even
 	return d.next.Dispatch(ctx, sent)
 }
 
-// VerificationDispatcher is the outbox channel for signup verification email
-// (#348). The event names a pending registration and nothing else; send reads
-// the row, decides whether anyone is to be mailed, and mails the address and
-// token stored on it.
+// VerificationDispatcher is the outbox channel for the account email that
+// carries a link to follow: signup verification (#348) and password reset
+// (#451). A signup event names a pending registration and nothing else; send
+// reads the row, decides whether anyone is to be mailed, and mails the address
+// and token stored on it. A reset event names only the address that was typed;
+// the step wired with WithPasswordReset decides whether that address is to be
+// mailed and makes the token.
 type VerificationDispatcher struct {
-	send func(context.Context, uuid.UUID) error
+	send  func(context.Context, uuid.UUID) error
+	reset func(context.Context, notification.Event) error
 }
 
 // NewVerificationDispatcher sends through send, normally
@@ -406,8 +410,23 @@ func NewVerificationDispatcher(send func(context.Context, uuid.UUID) error) *Ver
 	return &VerificationDispatcher{send: send}
 }
 
+// WithPasswordReset sends a password reset request through reset, normally the
+// server's SendPasswordReset. Without it a reset request fails rather than
+// being settled as sent, so a wiring that forgets it is not silent (#451).
+func (d *VerificationDispatcher) WithPasswordReset(reset func(context.Context, notification.Event) error) *VerificationDispatcher {
+	d.reset = reset
+	return d
+}
+
 func (d *VerificationDispatcher) Dispatch(ctx context.Context, ev notification.Event) error {
-	if ev.Type != notification.EventRegistrationVerify {
+	switch ev.Type {
+	case notification.EventPasswordResetRequested:
+		if d.reset == nil {
+			return errors.New("password reset event with no step to send it")
+		}
+		return d.reset(ctx, ev)
+	case notification.EventRegistrationVerify:
+	default:
 		return nil
 	}
 	raw, _ := ev.Payload["pending_id"].(string)

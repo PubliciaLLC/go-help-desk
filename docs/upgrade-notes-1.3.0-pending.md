@@ -313,7 +313,7 @@ Scripts and API keys that call the admin API can see these changes. Migration 00
 - **Clock:** starts when 1.3.0 first runs against the database (migration 000044 records it once).
 - **N:** Settings → Authentication → Passwords, default 30, 1 to 365. Changing it moves the deadline for everyone.
 - **Exempt:** all administrators, so an instance cannot lock itself out. They are upgraded at their next sign-in like everyone else. Staff and requesters are refused. When SAML restricts password sign-in to administrators, others get the SAML refusal instead.
-- **How people reset:** "Forgot password" on the sign-in page once password reset by email lands (#451), or an administrator sets a new password for them. Until then only the administrator route works.
+- **How people reset:** "Forgot password?" on the sign-in page (see the next section; it needs email), or an administrator sets a new password for them. With email off only the administrator route works.
 - **What to check:** people who sign in rarely (seasonal staff, requesters) are the ones affected. Tell them, or have an administrator reset them, before day 30.
 - **API clients:** sign-in with an old hash after the deadline answers 403 `password_reset_required` instead of 200. New installs are unaffected.
 
@@ -326,6 +326,21 @@ A search in the ticket list used to cover only the selected queue, so staff sear
 - Requesters are unchanged and see only their own tickets.
 - **API:** new `GET /api/v1/tickets?scope=visible` for staff and administrators. Older servers ignore an unknown scope and answer as `mine`. Existing scopes behave as before.
 - No migration and no new index: the query is the one the administrator's All queue and the staff scope list already use.
+
+## Forgot Password by Email (#451)
+
+The sign-in page has a **Forgot password?** link when the server can send email. The person enters their address, is mailed a link, and chooses a new password.
+
+- **Requires email.** With `SMTP_HOST` and `SMTP_FROM` unset the link is not shown, and the new endpoint answers `503 email_not_configured`. An administrator setting a password directly still works and is unchanged; it is the route when email is off.
+- **Migration 000049** adds `password_reset_tokens`. Only a hash of each link is stored. It does not touch existing data and the down migration drops the table.
+- **The link:** works **once**, for **30 minutes**, and a newer request replaces the older link. An account is mailed at most **once per five minutes**, however many requests arrive.
+- **Every session of that account is ended** when the password is changed, so anyone holding an old session is signed out.
+- **The link does not sign anyone in.** After choosing a password the person goes back to the sign-in page and signs in with the new password **and their second factor**, if they have one.
+- **Not for everyone:** nothing is mailed to a disabled or deleted account, to an account that has no password (an SSO account that signs in only through OIDC or SAML, or a local account created without one; "Forgot password" does not give either a password), or, when SAML limits password sign-in to administrators (`saml_enabled`), to anyone who is not an administrator. The page gives the same confirmation either way, so it does not reveal which addresses have accounts.
+- **Audit:** each reset writes a `password_reset_by_email` entry for the account, with no actor, next to the existing `password_reset_by_admin`.
+- **New endpoints** (public): `POST /api/v1/auth/forgot-password` (always `202`, `429` when asked too often, `503` without email) and `POST /api/v1/auth/reset-password` (`204`, `400` for a password outside 8 to 72 bytes, `422 token_invalid` for a link that does not work). `GET /api/v1/auth/providers` gains `password_reset`. See `docs/api/openapi.yaml`.
+- **Rate limits:** both endpoints are counted per client address against `AUTH_RATE_LIMIT_PER_MINUTE`.
+- **Link host:** built from `BASE_URL`, never from the request. Make sure it is the address people reach the help desk at.
 
 ## One Change, One Event: Webhooks and Staff Email (#506)
 

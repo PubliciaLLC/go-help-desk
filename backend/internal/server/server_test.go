@@ -25,6 +25,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/customfieldstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/groupstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/outboxstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/passwordresetstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/registrationstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/sessionstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/slastore"
@@ -40,6 +41,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/passwordreset"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
@@ -100,6 +102,8 @@ type harness struct {
 	dispatcher      *sendTimeDispatcher // see newHarnessWith
 	attachDir       string              // where uploads land, so a test can check the disk
 	verifyMail      *verifyMailbox      // the signup verification links sent, so a test can follow one
+	resetMail       *resetMailbox       // the password reset links sent, so a test can follow one
+	resetQueue      *lateDispatcher     // where a reset request goes; swap in the real outbox to drive it through the worker
 }
 
 func newHarness(t *testing.T) (*harness, func()) {
@@ -337,6 +341,13 @@ func newHarnessPasskeys(t *testing.T, authRateLimit int, clamAVAddr string, muta
 	verifyNow := &lateDispatcher{}
 	registrationSvc := registration.NewService(registrationstore.New(q), userSvc, verifyMail, verifyNow, "https://help.example.com")
 	verifyNow.Dispatcher = notify.NewVerificationDispatcher(registrationSvc.SendVerification)
+	// The same for "forgot password" (#451): sent at once through the channel
+	// the worker uses, with the send-time step the server provides.
+	resetMail := &resetMailbox{}
+	resetNow := &lateDispatcher{}
+	resetSvc := passwordreset.NewService(passwordresetstore.New(q), userSvc, resetMail, resetNow, auStore,
+		adminSvc.SAMLEnabled, "https://help.example.com", nil)
+	srvOpts = append(srvOpts, server.WithPasswordReset(resetSvc))
 	// The real webhook dispatcher over the harness transaction, so Redeliver
 	// writes a real outbox row a test can read.
 	webhookDisp := notify.NewWebhookDispatcher(authSt, "https://help.example.com", nil).
@@ -366,8 +377,12 @@ func newHarnessPasskeys(t *testing.T, authRateLimit int, clamAVAddr string, muta
 	)
 
 	dispatcher.prepare = srv.PrepareGuestLink
+	resetNow.Dispatcher = notify.NewVerificationDispatcher(registrationSvc.SendVerification).
+		WithPasswordReset(srv.SendPasswordReset)
 	h := &harness{
 		verifyMail:      verifyMail,
+		resetMail:       resetMail,
+		resetQueue:      resetNow,
 		dispatcher:      dispatcher,
 		srv:             srv,
 		q:               q,
