@@ -9,7 +9,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
 
 // failingGroupLookup makes GetByID fail with something other than "no such
@@ -104,4 +106,13 @@ func (s *Server) RoutesForTest() []RouteForTest {
 // test that takes turns concurrently.
 func (s *Server) RoundRobinFirst(uids []uuid.UUID) uuid.UUID {
 	return *s.roundRobin(uids)[0].UserID
+}
+
+// RequesterForTest is the Requester line the ticket read builds for this
+// viewer, before any field filter sees it.
+func (s *Server) RequesterForTest(ctx context.Context, a *authmw.Actor, t ticket.Ticket) any {
+	if r := s.requesterFor(ctx, a, t); r != nil {
+		return r
+	}
+	return nil
 }

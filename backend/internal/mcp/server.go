@@ -520,8 +520,8 @@ func (s *Server) registerTools() {
 		mcpgo.WithString("item_id", mcpgo.Description("Item UUID (optional; must belong to the type)")),
 		mcpgo.WithString("priority", mcpgo.Description("critical|high|medium|low (default: medium)")),
 		// reporter_user_id is the SUBJECT of the ticket, not the caller —
-		// staff legitimately open tickets on someone's behalf. It defaults to
-		// the caller when omitted.
+		// staff legitimately open tickets on someone's behalf (the caller is
+		// then the actor, #444). It defaults to the caller when omitted.
 		mcpgo.WithString("reporter_user_id", mcpgo.Description("Reporter user UUID (defaults to the authenticated caller)")),
 	), scoped(mcpWrite, s.handleCreateTicket))
 
@@ -706,6 +706,12 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 			return errResult("invalid reporter_user_id")
 		}
 		in.ReporterUserID = &rid
+		// Filing for somebody else: the caller is the actor, as on REST (#444).
+		// Naming yourself is filing your own ticket.
+		if rid != actor.UserID {
+			filer := actor.UserID
+			in.FiledBy = &filer
+		}
 	}
 	if in.ReporterUserID == nil {
 		// Default the subject of the ticket to the caller rather than refusing.

@@ -286,7 +286,12 @@ func TestTicketSLA_UserRoleNeverSeesSLA(t *testing.T) {
 	require.Contains(t, staffView, "updated_at")
 	require.NotContains(t, userView, "updated_at")
 	delete(staffView, "updated_at")
-	require.Equal(t, staffView, userView, "every field other than sla, sla_paused_seconds, reporter_user_id and updated_at must be identical between the two views")
+	// And who the ticket is for, staff's Requester line (#444): a requester is on
+	// their own ticket and is not sent it.
+	require.Contains(t, staffView, "requester")
+	require.NotContains(t, userView, "requester")
+	delete(staffView, "requester")
+	require.Equal(t, staffView, userView, "every field other than sla, sla_paused_seconds, reporter_user_id, updated_at and requester must be identical between the two views")
 
 	// The list endpoint must apply the same rule.
 	listResp := h.doAsUser(t, http.MethodGet, "/api/v1/tickets", nil)
