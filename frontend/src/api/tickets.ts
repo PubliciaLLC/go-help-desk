@@ -12,6 +12,26 @@ export interface CreateTicketInput {
   guest_name?: string
   guest_phone?: string
   custom_fields?: Record<string, string>
+  // Staff and administrators only (#444): who the ticket is for when it is not
+  // the caller. At most one; the server refuses both, and refuses either from
+  // a requester.
+  reporter_user_id?: string
+  reporter_email?: string
+}
+
+// A person the requester picker offers: all it draws, and no more.
+export interface RequesterHit {
+  id: string
+  display_name: string
+  email: string
+}
+
+// Accounts to file a ticket for, found by name or address. Staff and
+// administrators only; the server answers 400 under two characters and returns
+// at most ten.
+export async function lookupRequesters(q: string): Promise<RequesterHit[]> {
+  const res = await api.get<RequesterHit[]>('/users/lookup', { params: { q } })
+  return res.data ?? []
 }
 
 // 'visible' is every ticket the caller can see, for staff/admin search (#444).

@@ -549,6 +549,19 @@ export function TicketDetailPage() {
               <span>Opened {formatDate(ticket.created_at)}</span>
             </div>
             <h1 className="text-2xl font-bold text-gray-900 break-words">{ticket.subject}</h1>
+            {isStaffOrAdmin && (
+              <p data-testid="requester-line" className="text-sm text-gray-600 break-words">
+                Requester:{' '}
+                {ticket.requester ? (
+                  <>
+                    <span className="font-medium text-gray-900">{ticket.requester.name}</span>{' '}
+                    ({ticket.requester.email})
+                  </>
+                ) : (
+                  <span className="text-gray-400">unknown</span>
+                )}
+              </p>
+            )}
             <div className="flex items-center gap-2 flex-wrap">
               <span
                 className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium"
