@@ -436,8 +436,9 @@ Migrations are forward-only as far as the server is concerned: it never runs one
 
 1.2.0 does not have these 1.3.0 fixes, and a rollback runs without them. Weigh that before you start, and put the instance behind your own network controls until you move forward again:
 
-- **Postgres is published on every network interface.** 1.2.0's Compose file publishes the database as `5432:5432` with the password `helpdesk`. Docker handles a published port before the host firewall sees it, so closing the port in `ufw` or `firewalld` does not protect it. 1.3.0 binds it to `127.0.0.1`. **The procedure below binds it back to loopback before it starts 1.2.0; do not skip that step.**
+- **Postgres is published on every network interface.** 1.2.0's Compose file publishes the database as `5432:5432` with the password `helpdesk`. Docker handles a published port before the host firewall sees it, so closing the port in `ufw` or `firewalld` does not protect it. 1.3.0 binds it to `127.0.0.1`. **The procedure below edits 1.2.0's Compose file to bind it to loopback and checks the result before it starts anything; do not skip that step.**
 - Attachments: the download route refusing a request that is going to be rendered (`Sec-Fetch-Dest`), which is what stops an uploaded file being shown on the help desk's own origin.
+- **API keys:** the restrictions in *Staff Can Create Their Own API Keys* (a key can create keys and OAuth clients again, write users and group membership, and change the settings that decide who sees tickets), the expiry every new key needed, and the fix that stopped a key deleting another administrator's key.
 - SAML: hand-over cookies that can only be used once.
 - MCP: the `Origin` check, the 1 MiB request cap and the binding of an SSE session to the credential that opened it.
 - Others listed in these notes, among them the bcrypt cost, the 72-byte password limit, the 5-minute limit on a half-signed-in session, and the `404` for a ticket you may not see.
@@ -490,6 +491,10 @@ cd docker
    if [ "$current" -gt $((10#$top)) ]; then
      echo "database is at $current but this checkout stops at $top: check out the release you run (v1.3.0)"; exit 1
    fi
+   dirty=$($PSQL -Atc "SELECT dirty FROM schema_migrations")
+   if [ "$dirty" != f ]; then
+     echo "the database is marked dirty: a migration failed part-way; restore the backup, do not continue"; exit 1
+   fi
    echo "database is at version $current"
    for f in $(ls $MIG/*.down.sql | sort -r); do
      name=$(basename "$f")
@@ -504,30 +509,33 @@ cd docker
 
    There is no `000048`; the script skips it because there is no file. If it stops, the failed file made no change (it ran in a transaction) but the ones before it did: restore `backup-before-rollback.sql` rather than continue.
 
-3. **Bind Postgres to loopback.** 1.2.0's Compose file would publish it on every interface (see *Security* above). Before you start 1.2.0, put this in `docker/docker-compose.override.yml`, which Compose reads automatically and which `git checkout` leaves alone:
+3. **Check out 1.2.0 and bind Postgres to loopback, before anything starts.** 1.2.0's Compose file would publish the database on every interface (see *Security* above), so edit it first, then check it. Save this as `bind.sh` in `go-help-desk/docker` and run it with `bash bind.sh`, from the directory you ran `rollback.sh` in:
 
    ```sh
-   cat > docker-compose.override.yml <<'EOF'
-   services:
-     db:
-       ports: !override
-         - "127.0.0.1:5432:5432"
-   EOF
-   ```
-
-   `!override` needs Docker Compose 2.24 or newer (`docker compose version`). On an older one, edit the line `- "5432:5432"` in 1.2.0's `docker-compose.yml` to `- "127.0.0.1:5432:5432"` instead, and run `git checkout docker-compose.yml` before you go forward again. Check it either way: `docker compose config` must show `host_ip: 127.0.0.1` under `db`, and nothing else.
-
-4. **Start 1.2.0.** Check out the `v1.2.0` tag and bring the stack up the way 1.2.0 did (it builds the app from source):
-
-   ```sh
+   set -euo pipefail
    cd ..
    git checkout v1.2.0
    cd docker
+   sed -i.bak 's/"5432:5432"/"127.0.0.1:5432:5432"/' docker-compose.yml
+   rm -f docker-compose.yml.bak
+   cfg=$(docker compose config)
+   if [ "$(printf '%s\n' "$cfg" | grep -c 'target: 5432')" != 1 ] \
+      || ! printf '%s\n' "$cfg" | grep -B1 'target: 5432' | grep -q 'host_ip: 127.0.0.1'; then
+     echo "Postgres is not bound to 127.0.0.1 only: do NOT start the stack"; exit 1
+   fi
+   echo "ok: Postgres is bound to 127.0.0.1 only"
+   ```
+
+   `git checkout v1.2.0` needs a clean working tree, so it also stops you if you have changed tracked files. If the check fails, stop and fix `docker-compose.yml` by hand until `docker compose config` shows `host_ip: 127.0.0.1` on the `5432` binding and no other. Do not use a `docker-compose.override.yml` for this: Compose before 2.24.4 ignores the `!override` tag without a warning and publishes the port on both.
+
+4. **Start 1.2.0**, only once step 3 has printed `ok`. It builds the app from source, the way 1.2.0 did:
+
+   ```sh
    docker compose up -d --build
    ```
 
    Keep your `docker/.env`, and make sure it has a `JWT_SECRET` as described above: 1.2.0's Compose file refuses to start without one.
 
-5. **Check it.** Sign in as an administrator, open a few tickets, and download an attachment. `SELECT version, dirty FROM schema_migrations` should say `21 | f`. From the host, `docker compose port db 5432` should say `127.0.0.1:5432`.
+5. **Check it.** Sign in as an administrator, open a few tickets, and download an attachment. `SELECT version, dirty FROM schema_migrations` should say `21 | f`. `docker compose port db 5432` should say `127.0.0.1:5432`.
 
-To go forward again, delete `docker/docker-compose.override.yml`, check out 1.3.0 and start it: it runs every migration from 22, and says so in the log (`database migrated from 21 to 53`).
+To go forward again, run `git checkout -- docker-compose.yml` in `go-help-desk/docker` to drop the edit from step 3, then `git checkout v1.3.0` (it refuses while the file is changed) and start it: it runs every migration from 22, and says so in the log (`database migrated from 21 to 53`).
