@@ -185,9 +185,11 @@ func run() error {
 
 	// ── Database ─────────────────────────────────────────────────────────────
 	// Run migrations before opening the pool so the schema is always current.
-	if err := database.Migrate(ctx, database.MigrateURL(cfg.DatabaseURL)); err != nil {
+	migrated, err := database.MigrateReport(ctx, database.MigrateURL(cfg.DatabaseURL))
+	if err != nil {
 		return fmt.Errorf("running migrations: %w", err)
 	}
+	slog.Info(migrated.String(), "from", migrated.From, "to", migrated.To)
 
 	pool, err := database.New(ctx, cfg.DatabaseURL)
 	if err != nil {
