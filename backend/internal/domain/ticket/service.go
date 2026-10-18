@@ -223,6 +223,14 @@ type CreateInput struct {
 	GuestName      string // required when GuestEmail is set
 	GuestPhone     string // optional
 
+	// FiledBy is the member of staff filing the ticket on someone else's
+	// behalf (#444). The status history, the "created" audit entry and the
+	// "created" event name them as the actor; the requester above stays the
+	// ticket's reporter or guest. Nil means the requester filed it themselves,
+	// and is the actor, as before. Whether the caller may file for someone else
+	// is the caller's decision: the service cannot see a role here.
+	FiledBy *uuid.UUID
+
 	// TrackingPrefix is the instance's configured tracking-number prefix.
 	// Empty falls back to DefaultTrackingPrefix, so a caller that does not
 	// care — a test, a script — still produces well-formed numbers.
@@ -250,7 +258,11 @@ type Assignment struct {
 // Create opens a new ticket, fires the created event, and optionally attaches
 // an SLA policy.
 func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
-	return s.create(ctx, in, Actor{UserID: in.ReporterUserID}, nil)
+	actor := Actor{UserID: in.ReporterUserID}
+	if in.FiledBy != nil {
+		actor.UserID = in.FiledBy
+	}
+	return s.create(ctx, in, actor, nil)
 }
 
 // CreateFollowUp opens a NEW ticket from a Closed one, linked back to it
@@ -515,6 +527,7 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 
 	now := time.Now()
 	var guestLink bool
+	filedFor := s.filedForAddress(ctx, in)
 	t := Ticket{
 		ID:             uuid.New(),
 		TrackingNumber: GenerateTrackingNumber(in.TrackingPrefix, now.Year(), seq),
@@ -628,6 +641,9 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 		if stored, err := st.GetByID(ctx, t.ID); err == nil {
 			emailTracking = string(stored.TrackingNumber)
 			emailRecipient = guestRecipient(stored)
+			if emailRecipient == "" {
+				emailRecipient = filedFor
+			}
 		}
 
 		// The payload is what makes this email reachable at all. It shipped with
@@ -680,6 +696,24 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 	}
 
 	return t, nil
+}
+
+// filedForAddress is the address of the account somebody else has filed a
+// ticket for (#444), who is told with the ordinary "we have received your
+// ticket" mail. Empty for everyone else: a requester or a member of staff who
+// filed their own ticket (CreateInput.FiledBy nil, or themselves) is not mailed
+// about it, as before, and a guest's mail is addressed from the stored ticket.
+// Empty too when the address cannot be had (no lookup wired, an account that
+// cannot be read, a service account): the ticket is filed, only the mail is lost.
+func (s *Service) filedForAddress(ctx context.Context, in CreateInput) string {
+	if in.FiledBy == nil || in.ReporterUserID == nil || *in.FiledBy == *in.ReporterUserID || s.userEmail == nil {
+		return ""
+	}
+	email, err := s.userEmail(ctx, *in.ReporterUserID)
+	if err != nil {
+		return ""
+	}
+	return email
 }
 
 // UpdateStatus changes the ticket status after verifying the actor has

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -687,4 +688,46 @@ func (s *Server) handleListAssignableStaff(w http.ResponseWriter, r *http.Reques
 		staff = []user.AssignableStaff{}
 	}
 	JSON(w, http.StatusOK, staff)
+}
+
+// The requester picker's floor (#444). A query shorter than this is refused
+// rather than answered, and a broad one gets at most ten (the ceiling is the
+// query's own LIMIT), so the lookup is a way to find a person and not a way to
+// list everyone.
+const userLookupMinQuery = 2
+
+// userLookupHit is all the picker draws: who, and the address a typed
+// reporter_email would have been.
+type userLookupHit struct {
+	ID          uuid.UUID `json:"id"`
+	DisplayName string    `json:"display_name"`
+	Email       string    `json:"email"`
+}
+
+// GET /api/v1/users/lookup?q= — find accounts to file a ticket for.
+//
+// Staff and administrators only, behind the users:read scope that already
+// guards the user list. Any role of account can be a requester, so unlike
+// /staff it is not limited to staff; unlike /admin/users it returns three
+// fields, never pages, and never answers a short query. Service identities,
+// deleted accounts and disabled accounts are not found.
+func (s *Server) handleLookupUsers(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if utf8.RuneCountInString(q) < userLookupMinQuery {
+		Error(w, http.StatusBadRequest, "bad_request",
+			fmt.Sprintf("q must be at least %d characters", userLookupMinQuery))
+		return
+	}
+	// One bounded read: disabled, deleted and service accounts are excluded by
+	// the query, which also caps the answer at ten.
+	users, err := s.users.LookupRequesters(r.Context(), q)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	out := make([]userLookupHit, 0, len(users))
+	for _, u := range users {
+		out = append(out, userLookupHit{ID: u.ID, DisplayName: u.DisplayName, Email: u.Email})
+	}
+	JSON(w, http.StatusOK, out)
 }
