@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/database/authstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // A webhook a key made, or last re-pointed, stops firing when that key is
@@ -220,4 +222,131 @@ func TestWebhookKeyPause_TheListSaysWhyItIsPaused(t *testing.T) {
 		}
 	}
 	require.True(t, found)
+}
+
+// Every way a key can stop being a working credential must leave its webhooks
+// paused: fail CLOSED. The link is a plain column with no foreign key, so
+// deleting the key row cannot null it and make the hook look session-made; a
+// missing key is the same as a revoked one. And a key whose owner has been
+// deleted or disabled no longer authenticates, so it counts as gone too.
+func TestWebhookKeyPause_FailsClosedWhateverEndsTheKey(t *testing.T) {
+	// A second administrator owns the key, so ending the owner leaves the
+	// harness's own administrator alone.
+	cases := []struct {
+		name string
+		end  func(t *testing.T, h *harness, keyID, ownerID uuid.UUID)
+	}{
+		{"the key is revoked (row deleted)", func(t *testing.T, h *harness, keyID, _ uuid.UUID) {
+			require.NoError(t, h.authStore.Delete(context.Background(), keyID))
+		}},
+		{"the key expires", func(t *testing.T, h *harness, keyID, _ uuid.UUID) {
+			_, err := h.tx.Exec(`UPDATE api_keys SET expires_at = clock_timestamp() - interval '1 minute' WHERE id = $1`, keyID)
+			require.NoError(t, err)
+		}},
+		{"the owner is deleted for good and the key cascades", func(t *testing.T, h *harness, keyID, ownerID uuid.UUID) {
+			_, err := h.tx.Exec(`DELETE FROM users WHERE id = $1`, ownerID)
+			require.NoError(t, err)
+			_, err = h.authStore.GetByHash(context.Background(), "no such key")
+			require.Error(t, err) // the connection still works after the delete
+			var n int
+			require.NoError(t, h.tx.QueryRow(`SELECT count(*) FROM api_keys WHERE id = $1`, keyID).Scan(&n))
+			require.Zero(t, n, "precondition: the key went with its owner")
+		}},
+		{"the owner is soft-deleted", func(t *testing.T, h *harness, _, ownerID uuid.UUID) {
+			require.NoError(t, h.userSvc.Disable(context.Background(), ownerID))
+			require.NoError(t, h.userSvc.SoftDelete(context.Background(), ownerID))
+		}},
+		{"the owner is disabled", func(t *testing.T, h *harness, _, ownerID uuid.UUID) {
+			require.NoError(t, h.userSvc.Disable(context.Background(), ownerID))
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, cleanup := newHarness(t)
+			defer cleanup()
+			owner, err := h.userSvc.Create(context.Background(), user.CreateUserInput{
+				Email: "owner2@test.local", DisplayName: "Owner Two", Role: user.RoleAdmin, Password: "password",
+			})
+			require.NoError(t, err)
+			raw, _, err := auth.GenerateToken()
+			require.NoError(t, err)
+			raw = "GHD_" + raw
+			keyID := uuid.New()
+			future := time.Now().Add(24 * time.Hour)
+			require.NoError(t, h.authStore.CreateAPIKey(context.Background(), auth.APIKey{
+				ID: keyID, Name: "k", HashedToken: auth.HashToken(raw), UserID: owner.ID,
+				Scopes: []string{"webhooks:write", "webhooks:read"}, ExpiresAt: &future, CreatedAt: time.Now(),
+			}))
+			id := createHookWith(t, h, func(m, p string, b any) *http.Response { return keyDo(t, h, raw, m, p, b) })
+			require.True(t, h.firing(t, id), "fires while its key is live")
+
+			tc.end(t, h, keyID, owner.ID)
+
+			wh := h.hook(t, id)
+			require.NotNil(t, wh.APIKeyID, "the link is not forgotten when the key is")
+			require.True(t, wh.Paused)
+			require.False(t, h.firing(t, id))
+		})
+	}
+}
+
+// The link must stay a plain column: a foreign key with ON DELETE SET NULL
+// would turn "the key was deleted" into "this hook was never tied to a key".
+func TestWebhookKeyPause_TheLinkHasNoForeignKey(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	var n int
+	require.NoError(t, h.tx.QueryRow(`
+		SELECT count(*) FROM pg_constraint c
+		JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+		WHERE c.conrelid = 'webhook_configs'::regclass AND c.contype = 'f' AND a.attname = 'api_key_id'`).Scan(&n))
+	require.Zero(t, n)
+}
+
+// A key cannot lift a pause by editing the hook. Re-pointing a paused hook
+// would tie it to the editing key and so un-pause it without a person having
+// looked at it; keys are refused any edit of a paused hook until a signed-in
+// administrator re-approves it. (Deleting it stays open to a key.)
+func TestWebhookKeyPause_AKeyCannotUnpauseAHookByEditingIt(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	rawA, keyA := h.mintAdminKey(t, "webhooks:write")
+	id := createHookWith(t, h, func(m, p string, b any) *http.Response { return keyDo(t, h, rawA, m, p, b) })
+	require.NoError(t, h.authStore.Delete(context.Background(), keyA))
+	rawB, _ := h.mintAdminKey(t, "webhooks:write")
+
+	for name, body := range map[string]map[string]any{
+		"re-pointing it":      {"url": "https://example.com/mine"},
+		"changing its events": {"events": []string{"ticket.created"}},
+		"enabling it":         {"enabled": true},
+	} {
+		res := keyDo(t, h, rawB, http.MethodPatch, hooksPath+"/"+id.String(), body)
+		b := readAll(t, res)
+		require.Equal(t, http.StatusForbidden, res.StatusCode, "%s: %s", name, b)
+		require.Equal(t, "webhook_paused", errCode(t, b), name)
+	}
+	require.True(t, h.hook(t, id).Paused, "still paused")
+	require.False(t, h.firing(t, id))
+
+	res := keyDo(t, h, rawB, http.MethodDelete, hooksPath+"/"+id.String(), nil)
+	res.Body.Close()
+	require.Equal(t, http.StatusNoContent, res.StatusCode, "a key may still delete a paused hook")
+}
+
+// A session edit that does not change the address is not an approval of it.
+func TestWebhookKeyPause_ASessionEditOtherThanTheAddressKeepsItPaused(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	raw, keyID := h.mintAdminKey(t, "webhooks:write")
+	id := createHookWith(t, h, func(m, p string, b any) *http.Response { return keyDo(t, h, raw, m, p, b) })
+	require.NoError(t, h.authStore.Delete(context.Background(), keyID))
+
+	for _, body := range []map[string]any{
+		{"events": []string{"ticket.created"}}, {"enabled": false}, {"enabled": true},
+	} {
+		res := h.doSession(t, h.session(t, asAdmin), http.MethodPatch, hooksPath+"/"+id.String(), body)
+		res.Body.Close()
+		require.Equal(t, http.StatusOK, res.StatusCode)
+		require.True(t, h.hook(t, id).Paused, "%v must not re-approve it", body)
+	}
 }

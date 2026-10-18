@@ -676,8 +676,13 @@ type Querier interface {
 	// sees no ticket. A switched-off client is not one of them (it acts as
 	// nobody), which is what lets the warning clear by disabling it.
 	ListOAuthClientsWithoutGroups(ctx context.Context) ([]string, error)
-	// Hooks tied to an API key that is gone or has expired. Judged from the key's
-	// row on every call, so an expiry pauses a hook without any job having run.
+	// Hooks tied to an API key that is no longer a working credential: its row is
+	// gone (revoked, or deleted with its owner), it has expired, or its owner is
+	// disabled or deleted (APIKeyAuth refuses such a key on every request). Judged
+	// from the live rows on every call, so an expiry pauses a hook without any job
+	// having run, and a missing key counts the same as a revoked one: this fails
+	// CLOSED. webhook_configs.api_key_id is deliberately not a foreign key, or
+	// deleting the key would null the link and the hook would look session-made.
 	// clock_timestamp() and not now(): the latter is the start of the transaction.
 	ListPausedWebhookIDs(ctx context.Context) ([]uuid.UUID, error)
 	ListPlugins(ctx context.Context) ([]Plugin, error)

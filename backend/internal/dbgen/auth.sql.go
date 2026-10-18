@@ -578,13 +578,21 @@ SELECT w.id FROM webhook_configs w
 WHERE w.api_key_id IS NOT NULL
   AND NOT EXISTS (
       SELECT 1 FROM api_keys k
+      JOIN users u ON u.id = k.user_id
       WHERE k.id = w.api_key_id
         AND (k.expires_at IS NULL OR k.expires_at > clock_timestamp())
+        AND u.deleted_at IS NULL
+        AND u.disabled = FALSE
   )
 `
 
-// Hooks tied to an API key that is gone or has expired. Judged from the key's
-// row on every call, so an expiry pauses a hook without any job having run.
+// Hooks tied to an API key that is no longer a working credential: its row is
+// gone (revoked, or deleted with its owner), it has expired, or its owner is
+// disabled or deleted (APIKeyAuth refuses such a key on every request). Judged
+// from the live rows on every call, so an expiry pauses a hook without any job
+// having run, and a missing key counts the same as a revoked one: this fails
+// CLOSED. webhook_configs.api_key_id is deliberately not a foreign key, or
+// deleting the key would null the link and the hook would look session-made.
 // clock_timestamp() and not now(): the latter is the start of the transaction.
 func (q *Queries) ListPausedWebhookIDs(ctx context.Context) ([]uuid.UUID, error) {
 	rows, err := q.db.QueryContext(ctx, listPausedWebhookIDs)

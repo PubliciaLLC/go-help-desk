@@ -2608,9 +2608,17 @@ one is a permission decision with one switch and no per-user exceptions.
   expired API key") on every read, and the dispatcher sends it nothing. It is
   judged from the key's own row on every read and at every delivery attempt, so
   an expiry pauses a hook with no job running, a queued delivery is settled
-  rather than sent, and retries stop. Changing a hook's URL in a session takes it
-  over (the link is cleared); a key changing something else leaves the link as
-  it was. `POST /admin/webhooks/{id}/reapprove` (session only) clears the link,
+  rather than sent, and retries stop. The link is a plain column with **no
+  foreign key**, so deleting the key cannot null it and make the hook look
+  session-made: a missing key counts the same as a revoked one, and so does a
+  key whose owner is disabled or deleted (it no longer authenticates). Every one
+  of those fails closed. A key cannot lift the pause by editing: any `PATCH` of a
+  paused hook with a key is `403 webhook_paused` (re-pointing it would tie it to
+  the editing key and un-pause it unseen); a key may still delete it. Changing a hook's URL in a session is an
+  approval of that destination, by a person who typed it, so it clears the link;
+  any other session edit (events, filter, enabled) does not, and a paused hook
+  stays paused until it is re-approved explicitly. A key changing something else
+  leaves the link as it was. `POST /admin/webhooks/{id}/reapprove` (session only) clears the link,
   and the hook fires again; the Webhooks page shows a Paused badge with the
   reason and a Re-approve button. Nothing is written to the delivery history for
   a skipped delivery, as for a disabled hook; #518's dropped-delivery record was

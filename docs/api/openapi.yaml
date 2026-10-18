@@ -7705,7 +7705,11 @@ paths:
         required, and an OAuth client carries the staff role, so it cannot reach it).
         payload_format: an empty string means raw. The response is the record read back
         after the update, so after a url change last_delivery is null. An unknown id
-        answers 404 not_found.
+        answers 404 not_found. A webhook an API key created, or last re-pointed, is tied to that
+        key: a url change by a key ties the hook to it, a url change in a session clears the
+        link, and any other edit leaves it. While the hook is paused (its key revoked, expired,
+        or its owner disabled or deleted) an API key cannot edit it: 403 webhook_paused, until a
+        signed-in administrator re-approves it (POST /admin/webhooks/{id}/reapprove).
       tags: ['Admin: Webhooks']
       x-ghd-handler: handleUpdateWebhook
       security:

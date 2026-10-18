@@ -669,6 +669,14 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	// A paused hook is lifted by a person (POST .../reapprove), not by editing.
+	// A key re-pointing it would tie it to itself and so un-pause it with
+	// nobody having looked, which is the approval this exists to require.
+	if existing.Paused && callingKey(r) != nil {
+		Error(w, http.StatusForbidden, "webhook_paused",
+			"this webhook is paused because its API key was revoked or has expired; a signed-in administrator must re-approve it before it can be edited with a key")
+		return
+	}
 	var body struct {
 		URL           *string         `json:"url"`
 		Events        []string        `json:"events"`
@@ -768,6 +776,13 @@ func callingKey(r *http.Request) *uuid.UUID {
 // a key made or re-pointed: it clears the link, so the hook no longer depends
 // on that key. Keys are refused at the route.
 func (s *Server) handleReapproveWebhook(w http.ResponseWriter, r *http.Request) {
+	// The route already refuses machine credentials; this keeps the handler
+	// safe if it is ever mounted somewhere that does not.
+	if isMachine(r) {
+		Error(w, http.StatusForbidden, "session_required",
+			"an API key or OAuth client cannot re-approve a webhook; this requires a signed-in session")
+		return
+	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid ID")
