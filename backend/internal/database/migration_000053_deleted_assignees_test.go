@@ -73,6 +73,9 @@ func TestMigration053_UnassignsOpenTicketsHeldByDeletedUsers(t *testing.T) {
 	heldByGoneToo := mkTicket(&goneToo, false, false)
 	resolvedHeldByGone := mkTicket(&gone, true, false)
 	closedHeldByGone := mkTicket(&gone, true, true)
+	// closed_at without resolved_at exists on 1.2-shaped data; it is still
+	// closed, so still history.
+	closedUnresolvedHeldByGone := mkTicket(&gone, false, true)
 	heldByDisabled := mkTicket(&disabled, false, false)
 	heldByLive := mkTicket(&live, false, false)
 	unassigned := mkTicket(nil, false, false)
@@ -119,7 +122,8 @@ func TestMigration053_UnassignsOpenTicketsHeldByDeletedUsers(t *testing.T) {
 	// Resolved and closed tickets are history, as in UnassignForUser.
 	require.Equal(t, &gone, assignee(resolvedHeldByGone))
 	require.Equal(t, &gone, assignee(closedHeldByGone))
-	for _, id := range []uuid.UUID{resolvedHeldByGone, closedHeldByGone} {
+	require.Equal(t, &gone, assignee(closedUnresolvedHeldByGone), "closed is closed, resolved or not")
+	for _, id := range []uuid.UUID{resolvedHeldByGone, closedHeldByGone, closedUnresolvedHeldByGone} {
 		n, _, _, _ = auditRows(id)
 		require.Zero(t, n, "history is left alone and unaudited")
 	}

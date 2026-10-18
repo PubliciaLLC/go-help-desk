@@ -430,7 +430,17 @@ The line carries `from` and `to` fields as well. Use it to check that an upgrade
 
 ## Rolling Back to 1.2.0
 
-Migrations are forward-only as far as the server is concerned: it never runs one backwards, and there is no command for it. **A rollback is possible by hand, and it discards everything that only 1.3.0 has.** Take it only if you must. This procedure was run end to end: a database upgraded from 1.2.0 with 1.3.0 activity on it was taken back to version 21, its schema came out identical to a 1.2.0 database (columns, indexes and constraints), and the 1.2.0 server then started on it and signed people in, served tickets, attachments, API keys and OAuth tokens, and kept the replies and tickets written under 1.3.0.
+Migrations are forward-only as far as the server is concerned: it never runs one backwards, and there is no command for it. **A rollback is possible by hand. It discards everything that only 1.3.0 has, and it removes 1.3.0's security fixes.** Take it only if you must. This procedure was run end to end: a database upgraded from 1.2.0 with 1.3.0 activity on it was taken back to version 21, its schema matched a 1.2.0 database (same tables, columns, indexes and constraints; the one difference is below), and the 1.2.0 server then started on it and signed people in, served tickets, attachments, API keys and OAuth tokens, and kept the replies and tickets written under 1.3.0.
+
+### Security: what you give up
+
+1.2.0 does not have these 1.3.0 fixes, and a rollback runs without them. Weigh that before you start, and put the instance behind your own network controls until you move forward again:
+
+- **Postgres is published on every network interface.** 1.2.0's Compose file publishes the database as `5432:5432` with the password `helpdesk`. Docker handles a published port before the host firewall sees it, so closing the port in `ufw` or `firewalld` does not protect it. 1.3.0 binds it to `127.0.0.1`. **The procedure below binds it back to loopback before it starts 1.2.0; do not skip that step.**
+- Attachments: the download route refusing a request that is going to be rendered (`Sec-Fetch-Dest`), which is what stops an uploaded file being shown on the help desk's own origin.
+- SAML: hand-over cookies that can only be used once.
+- MCP: the `Origin` check, the 1 MiB request cap and the binding of an SSE session to the credential that opened it.
+- Others listed in these notes, among them the bcrypt cost, the 72-byte password limit, the 5-minute limit on a half-signed-in session, and the `404` for a ticket you may not see.
 
 ### What you lose
 
@@ -442,18 +452,28 @@ Each `down` migration undoes its `up`. These are dropped or deleted, and cannot 
 - **Attachment scan results** (hash, detected type, virus name, quarantine flags, 000023) and the **reputation cache** (000024).
 - **SLA**: pause bookkeeping (000025), the frozen elapsed times (000027), and every superseded SLA record (000043), the history a reopen kept.
 - **Reopen counts and restart points** (000047), **followers** (000046), **password reset links** (000049), the 30-day password clock (000044), the must-change-password flag (000045), **staff email preferences** (000042) and **API key issuer and webhook pause links** (000050).
-- **OAuth service users** (000041): the users made for each client are deleted. Tickets and replies they wrote stay, with no author link.
-- **The generated JWT signing key** (`instance_secrets`, 000036). With `JWT_SECRET` unset or under 32 bytes, every OAuth client fetches a new token on 1.2.0. Set a long `JWT_SECRET` to be sure of it.
+- **OAuth service users** (000041): the users made for each client are deleted, and the database removes what hangs off them by cascade: their group memberships (and any sessions or API keys they held, though a service user is not meant to have any). The clients keep working without a user, as in 1.2.0. Tickets and replies they wrote stay, with no author link, and a ticket assigned to one loses its assignee.
+- **The generated JWT signing key** (`instance_secrets`, 000036). 1.2.0 needs its own `JWT_SECRET` in `docker/.env`: set a random secret of at least 32 bytes (for example `openssl rand -base64 48`). 1.2.0 only warns about a weak or example secret and signs with whatever you give it, and 1.3.0 discarded published example values as well as short and unset ones, so a value that 1.3.0 ignored is not safe to reuse. Every OAuth client fetches a new token either way.
 - Pending signups that 1.3.0 created without a name or password (000032, 000033).
 
-Not undone: `000053` (above) and `000039` repair data and have no inverse. Settings rows 1.3.0 wrote stay in the table; 1.2.0 never reads them. Passwords hashed at the new cost still work on 1.2.0.
+**Not undone** (they repair or seed data and have no inverse; their `down` does nothing): `000028`, `000039`, `000052` and `000053`. The three staff-email overrides `000052` stored stay in the settings table, and the tickets `000053` returned to the queue stay unassigned. 1.2.0 never reads those settings. Settings rows 1.3.0 wrote stay in the table. Passwords hashed at the new cost still work on 1.2.0.
+
+**One difference from a 1.2.0 database:** `ticket_replies.guest_token` is the last column of the table instead of the fourth. Nothing reads columns by position.
 
 ### Procedure
+
+You need a checkout of the **1.3.0** release, because the `down` files live in it (`backend/internal/database/migrations`) and 1.3.0 is deployed from an image, so a checkout may not exist or may be at another version. Check out the release first, from the directory your Compose stack was started in:
+
+```sh
+cd go-help-desk
+git fetch --tags
+git checkout v1.3.0
+cd docker
+```
 
 1. **Stop the app and take a backup.** Do not skip this: the steps below delete data.
 
    ```sh
-   cd go-help-desk/docker                       # the 1.3.0 checkout
    docker compose stop app
    docker compose exec -T db pg_dump -U helpdesk helpdesk > ../backup-before-rollback.sql
    ```
@@ -461,16 +481,21 @@ Not undone: `000053` (above) and `000039` repair data and have no inverse. Setti
 2. **Run the down migrations**, newest first, each in its own transaction, starting from the version the database is at. Save this as `rollback.sh` in `go-help-desk/docker` and run `bash rollback.sh`:
 
    ```sh
-   set -u
+   set -euo pipefail
    MIG=../backend/internal/database/migrations
    PSQL="docker compose exec -T db psql -U helpdesk -d helpdesk -v ON_ERROR_STOP=1"
    current=$($PSQL -Atc "SELECT version FROM schema_migrations")
+   case "$current" in ''|*[!0-9]*) echo "database version '$current' is not a number: stop"; exit 1;; esac
+   top=$(ls $MIG/*.down.sql | sort | tail -1 | xargs basename | cut -c1-6)
+   if [ "$current" -gt $((10#$top)) ]; then
+     echo "database is at $current but this checkout stops at $top: check out the release you run (v1.3.0)"; exit 1
+   fi
    echo "database is at version $current"
    for f in $(ls $MIG/*.down.sql | sort -r); do
      name=$(basename "$f")
      v=$((10#${name:0:6}))
-     [ "$v" -gt "$current" ] && continue
-     [ "$v" -le 21 ] && break
+     if [ "$v" -gt "$current" ]; then continue; fi
+     if [ "$v" -le 21 ]; then break; fi
      echo "rolling back $name"
      $PSQL --single-transaction < "$f" || { echo "STOPPED at $name: restore the backup"; exit 1; }
    done
@@ -479,7 +504,20 @@ Not undone: `000053` (above) and `000039` repair data and have no inverse. Setti
 
    There is no `000048`; the script skips it because there is no file. If it stops, the failed file made no change (it ran in a transaction) but the ones before it did: restore `backup-before-rollback.sql` rather than continue.
 
-3. **Start 1.2.0.** Check out the `v1.2.0` tag and bring the stack up the way 1.2.0 did (it builds the app from source):
+3. **Bind Postgres to loopback.** 1.2.0's Compose file would publish it on every interface (see *Security* above). Before you start 1.2.0, put this in `docker/docker-compose.override.yml`, which Compose reads automatically and which `git checkout` leaves alone:
+
+   ```sh
+   cat > docker-compose.override.yml <<'EOF'
+   services:
+     db:
+       ports: !override
+         - "127.0.0.1:5432:5432"
+   EOF
+   ```
+
+   `!override` needs Docker Compose 2.24 or newer (`docker compose version`). On an older one, edit the line `- "5432:5432"` in 1.2.0's `docker-compose.yml` to `- "127.0.0.1:5432:5432"` instead, and run `git checkout docker-compose.yml` before you go forward again. Check it either way: `docker compose config` must show `host_ip: 127.0.0.1` under `db`, and nothing else.
+
+4. **Start 1.2.0.** Check out the `v1.2.0` tag and bring the stack up the way 1.2.0 did (it builds the app from source):
 
    ```sh
    cd ..
@@ -488,8 +526,8 @@ Not undone: `000053` (above) and `000039` repair data and have no inverse. Setti
    docker compose up -d --build
    ```
 
-   Keep your `docker/.env`. 1.2.0's Compose file refuses to start without `JWT_SECRET`, so set it if you had left it out for 1.3.0.
+   Keep your `docker/.env`, and make sure it has a `JWT_SECRET` as described above: 1.2.0's Compose file refuses to start without one.
 
-4. **Check it.** Sign in as an administrator, open a few tickets, and download an attachment. `SELECT version, dirty FROM schema_migrations` should say `21 | f`.
+5. **Check it.** Sign in as an administrator, open a few tickets, and download an attachment. `SELECT version, dirty FROM schema_migrations` should say `21 | f`. From the host, `docker compose port db 5432` should say `127.0.0.1:5432`.
 
-To go forward again, check out 1.3.0 and start it: it runs every migration from 22, and says so in the log (`database migrated from 21 to 53`).
+To go forward again, delete `docker/docker-compose.override.yml`, check out 1.3.0 and start it: it runs every migration from 22, and says so in the log (`database migrated from 21 to 53`).

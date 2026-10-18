@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/golang-migrate/migrate/v4"
@@ -93,4 +94,74 @@ func TestMigrateReport_NewDatabaseStartsFromZero(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, database.Migration{From: 0, To: latest}, got)
 	require.Equal(t, "database migrated from 0 to "+strconv.Itoa(int(latest)), got.String())
+}
+
+// Several replicas start at once and each runs Migrate. The one that takes the
+// lock does the work; the others wait, find nothing to do, and must say so. A
+// replica that read the version before it queued would otherwise log "migrated
+// from 21" for work it did not do.
+func TestMigrateReport_OnlyTheReplicaThatMigratedSaysSo(t *testing.T) {
+	ctx := context.Background()
+	latest := latestMigration(t)
+	dsn := database.MigrateURL(scratchDatabase(t))
+
+	src, err := iofs.New(database.MigrationFiles(), ".")
+	require.NoError(t, err)
+	m, err := migrate.NewWithSourceInstance("iofs", src, dsn)
+	require.NoError(t, err)
+	require.NoError(t, m.Migrate(21))
+	_, _ = m.Close()
+
+	const replicas = 6
+	results := make([]database.Migration, replicas)
+	errs := make([]error, replicas)
+	var wg sync.WaitGroup
+	for i := 0; i < replicas; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i], errs[i] = database.MigrateReport(ctx, dsn)
+		}()
+	}
+	wg.Wait()
+
+	migrated := 0
+	for i := range results {
+		require.NoError(t, errs[i])
+		require.Equal(t, latest, results[i].To)
+		if results[i].From != results[i].To {
+			migrated++
+			require.Equal(t, uint(21), results[i].From)
+		}
+	}
+	require.Equal(t, 1, migrated, "exactly one replica did the work and says so")
+}
+
+// A failed or interrupted migration leaves the database dirty. The server
+// refuses to start on it, with a message that names the problem once: main adds
+// "running migrations:" itself, and the error used to carry it as well.
+func TestMigrateReport_RefusesADirtyDatabase(t *testing.T) {
+	dsn := database.MigrateURL(scratchDatabase(t))
+
+	src, err := iofs.New(database.MigrationFiles(), ".")
+	require.NoError(t, err)
+	m, err := migrate.NewWithSourceInstance("iofs", src, dsn)
+	require.NoError(t, err)
+	require.NoError(t, m.Migrate(21))
+	_, _ = m.Close()
+	setDirty(t, dsn, 21)
+
+	_, err = database.MigrateReport(context.Background(), dsn)
+	require.Error(t, err)
+	require.Contains(t, strings.ToLower(err.Error()), "dirty")
+	require.NotContains(t, err.Error(), "running migrations", "the caller adds that prefix")
+}
+
+func setDirty(t *testing.T, migrateURL string, version int) {
+	t.Helper()
+	db, err := sql.Open("pgx", strings.Replace(migrateURL, "pgx5://", "postgres://", 1))
+	require.NoError(t, err)
+	defer db.Close()
+	_, err = db.Exec(`UPDATE schema_migrations SET version = $1, dirty = true`, version)
+	require.NoError(t, err)
 }

@@ -69,12 +69,22 @@ func MigrateReport(ctx context.Context, databaseURL string) (Migration, error) {
 	if err != nil {
 		return Migration{}, err
 	}
-	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
-		return Migration{}, fmt.Errorf("running migrations: %w", err)
+	upErr := m.Up()
+	noChange := errors.Is(upErr, migrate.ErrNoChange)
+	if upErr != nil && !noChange {
+		// No prefix of its own: the caller says "running migrations:", and
+		// golang-migrate's text already names what went wrong.
+		return Migration{}, upErr
 	}
 	to, err := schemaVersion(m)
 	if err != nil {
 		return Migration{}, err
+	}
+	if noChange {
+		// Nothing was applied by this call. With several replicas starting
+		// at once, the one that waited on the lock read its version before
+		// another finished the work; it did none of it and must not say so.
+		from = to
 	}
 	return Migration{From: from, To: to}, nil
 }
