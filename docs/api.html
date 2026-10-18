@@ -87,6 +87,7 @@
       <li><a href="#api-auth">Authentication</a></li>
       <li><a href="#api-scopes">Scopes</a></li>
       <li><a href="#api-session-only">Session-only settings</a></li>
+      <li><a href="#api-keys">API keys</a></li>
       <li><a href="#api-visibility">Visibility &amp; tracking numbers</a></li>
       <li><a href="#api-closed">Closed tickets</a></li>
       <li><a href="#api-attachments">Attachment downloads</a></li>
@@ -145,7 +146,7 @@
     </tr>
     <tr>
       <td><strong>API key</strong></td>
-      <td><code>Authorization: ApiKey GHD_&lt;64 hex characters&gt;</code>. The <code>GHD_</code> prefix is part of the token. It is shown once, when the key is created. The key acts at its owner's role, counts as having passed MFA, and is limited to its <a href="#api-scopes">scopes</a>.</td>
+      <td><code>Authorization: ApiKey GHD_&lt;64 hex characters&gt;</code>. The <code>GHD_</code> prefix is part of the token. It is shown once, when the key is created. The key acts at its owner's role, counts as having passed MFA, and is limited to its <a href="#api-scopes">scopes</a>. Administrators can make keys, and staff can make their own when an administrator allows it (see <a href="#api-keys">API keys</a>). A key cannot make keys.</td>
       <td>Scripts, CLI tools, CI pipelines, monitoring</td>
     </tr>
     <tr>
@@ -199,12 +200,28 @@
   <li><strong>Second factor:</strong> <code>mfa_enabled</code>, <code>mfa_enforced_roles</code>.</li>
   <li><strong>Accounts:</strong> <code>self_signup_enabled</code>, <code>open_registration_enabled</code>, <code>allowed_email_domains</code>.</li>
   <li><strong>Guests:</strong> <code>guest_submission_enabled</code>.</li>
+  <li><strong>API keys:</strong> <code>staff_can_create_api_keys</code> and <code>api_key_max_lifetime_years</code>.</li>
+  <li><strong>Who sees and who is handed tickets:</strong> <code>ticket_scope_enforced</code>, <code>auto_assign_group_id</code> and <code>auto_assign_user_ids</code>. A key that could switch scope enforcement off, or point auto-assignment at an account it controls, would widen what that account sees or is given.</li>
   <li><strong>Closed tickets and audit:</strong> <code>closed_reopen_policy</code>, <code>audit_mask_requester_names</code>, <code>audit_retention_days</code>, <code>staff_can_view_ticket_change_history</code>.</li>
   <li><strong>Attachment scanning:</strong> <code>attachment_scan_address</code>, <code>attachment_scan_policy</code>, <code>attachment_allowed_types</code>, <code>attachment_infected_handling</code>, <code>attachment_mismatch_handling</code>.</li>
   <li><strong>Reputation lookups:</strong> <code>attachment_reputation_refresh</code>, <code>attachment_reputation_virustotal_enabled</code>, <code>attachment_reputation_virustotal_key</code>, <code>attachment_reputation_metadefender_enabled</code>, <code>attachment_reputation_metadefender_key</code>, <code>attachment_reputation_polyswarm_enabled</code>, <code>attachment_reputation_polyswarm_key</code>, <code>attachment_reputation_circl_enabled</code>.</li>
   <li><strong>Deprecated, still writable:</strong> <code>attachment_vt_lookup</code>, <code>attachment_vt_api_key</code>, <code>attachment_reputation_provider</code>, <code>attachment_reputation_api_key</code>.</li>
 </ul>
 
+
+<h2 id="api-keys">API keys</h2>
+
+<p>An API key belongs to a person and acts at that person's current role. A key is created by a signed-in person: an administrator, or a staff member for their own key when <em>Staff may create their own API keys</em> is on. Requesters never own keys, and neither do service accounts.</p>
+<ul>
+  <li><strong>Where:</strong> <code>GET</code> and <code>POST /api/v1/me/api-keys</code>, <code>GET /api/v1/me/api-keys/scopes</code> and <code>DELETE /api/v1/me/api-keys/{id}</code> for your own keys (session only; a requester gets <code>403</code>), and <code>GET</code> and <code>POST /api/v1/admin/api-keys</code> for an administrator. <code>POST /api/v1/admin/api-keys</code> takes an optional <code>user_id</code> to issue a key for a staff member or for yourself, from a signed-in administrator only. It refuses another administrator (<code>400 cannot_issue_for_administrator</code>), a requester (<code>400 requester_cannot_own_key</code>) and a service account (<code>400 service_account_cannot_own_key</code>). Responses carry <code>user_id</code> and <code>created_by</code>.</li>
+  <li><strong>A key cannot make keys or OAuth clients.</strong> <code>POST /api/v1/admin/api-keys</code>, <code>POST /api/v1/admin/oauth-clients</code> and the <code>/me/api-keys</code> routes answer <code>403 session_required</code> to an API key and <code>403 forbidden</code> to an OAuth client. A key can still list and delete clients, and list and revoke itself.</li>
+  <li><strong>A key cannot write users.</strong> It can read users and groups. These answer <code>403 session_required</code> to an API key (<code>403 forbidden</code> to an OAuth client): <code>POST /admin/users</code>, <code>PATCH /admin/users/{id}</code>, <code>DELETE /admin/users/{id}</code>, <code>POST /admin/users/{id}/password</code>, <code>POST</code> and <code>DELETE</code> on <code>/admin/groups/{id}/members…</code>, and <code>POST</code> and <code>DELETE /admin/groups/{id}/scopes</code>. That covers creating, renaming, re-addressing, promoting, disabling and deleting accounts, password and second-factor resets, and group membership and scope. A key that could write a user could make itself a person: set a password, sign in, and create keys that outlive it.</li>
+  <li><strong>Scopes never exceed the owner's role.</strong> A staff key can carry <code>tickets:read</code>, <code>tickets:write</code>, <code>groups:read</code>, <code>audit:read</code> and <code>users:read</code>; an administrator's key can carry any scope. Anything else is <code>400 invalid_scope</code>. <code>GET /api/v1/admin/scopes?role=staff</code> lists what a staff key may carry. <code>users:write</code> is no longer offered and a new key cannot hold it; keys that already hold it keep it, and it opens nothing.</li>
+  <li><strong>Every new key must expire.</strong> While the maximum lifetime is a number of years (<code>api_key_max_lifetime_years</code>, 1 to 5, default 2), <code>expires_at</code> is required (<code>400 expires_at_required</code>) and may be no later than that many years from now (<code>400 expires_at_too_far</code>). Only when the setting is Never (<code>-1</code>) may it be omitted. The limit is checked when the key is created, not when it is used. Both key lists carry <code>beyond_limit</code> for a key with no expiry or one past the current limit.</li>
+  <li><code>GET /api/v1/me</code> gains <code>can_create_api_keys</code> and <code>api_key_max_lifetime_years</code>.</li>
+  <li><strong>Webhooks a key makes stop with the key.</strong> A webhook an API key created, or last changed the URL of, is paused once that key is revoked or expired, or its owner is disabled or deleted. A key cannot edit a paused hook (<code>403 webhook_paused</code>). A signed-in administrator re-approves it with <code>POST /api/v1/admin/webhooks/{id}/reapprove</code> (session only).</li>
+  <li><code>POST /api/v1/admin/users/{id}/password</code> takes <code>revoke_api_keys</code> (default false) to delete every key the account owns. If the keys cannot be revoked after the password was reset, the answer is <code>500 keys_not_revoked</code>; if the sessions cannot be ended, <code>500 sessions_not_ended</code>.</li>
+</ul>
 
 <h2 id="api-visibility">Visibility and tracking numbers</h2>
 

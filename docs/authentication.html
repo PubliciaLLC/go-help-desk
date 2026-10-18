@@ -133,7 +133,7 @@
     <tr><td>OIDC</td><td>All roles</td><td>Off: <em>OIDC / OpenID Connect → Enable OIDC login</em></td></tr>
     <tr><td>Self-service signup</td><td>New reporting users</td><td>Off: <em>Registration → Allow self-service signup</em></td></tr>
     <tr><td>Guest links</td><td>People without an account</td><td>Off: <em>General → Submissions → Guest submission</em></td></tr>
-    <tr><td>API keys and OAuth clients</td><td>Scripts and integrations</td><td>Created by an administrator</td></tr>
+    <tr><td>API keys and OAuth clients</td><td>Scripts and integrations</td><td>Keys: administrators, and staff for their own keys when allowed. OAuth clients: administrators</td></tr>
   </tbody>
 </table>
 
@@ -431,26 +431,35 @@
 
 <h2 id="auth-api-keys">API keys and OAuth clients</h2>
 
-<p>API keys are long-lived credentials for scripts, CI pipelines and tool integrations where a browser sign-in is impractical. OAuth clients do the same job with short-lived tokens. Both are created by an administrator.</p>
+<p>API keys are long-lived credentials for scripts, CI pipelines and tool integrations where a browser sign-in is impractical. OAuth clients do the same job with short-lived tokens. A key is created by a signed-in person; a key cannot create another key or an OAuth client.</p>
+
+<h3>Who can have a key</h3>
+<ul>
+  <li><strong>Administrators</strong> always. <strong>Staff</strong> only while <em>Staff may create their own API keys</em> is on (<em>Admin → Settings → Authentication → API keys</em>; off by default, and only a signed-in administrator can change it). Turning it off stops new keys only: existing keys keep working, and staff can still list and revoke their own.</li>
+  <li><strong>Requesters never own a key</strong>, and neither do service accounts. An administrator can issue a key on behalf of a staff member (or for themselves), never for another administrator.</li>
+  <li>A key acts within its owner's <em>current</em> role. Promoting a staff member who holds an administrator-issued key leaves an administrator holding it; revoke it if that is not wanted.</li>
+</ul>
 
 <h3>Creating a key</h3>
 <ol>
-  <li>Go to <em>Admin → API Keys</em> and use <em>Create new key</em>.</li>
-  <li>Give the key a descriptive name (e.g. <code>monitoring-script</code>), and choose its scopes. A key must have at least one scope. An expiry date can be set only through the API, as <code>expires_at</code>; the admin screen does not offer one.</li>
-  <li>The key is shown <strong>exactly once</strong> after creation. Copy it into a secret manager or CI secret store. It cannot be retrieved later.</li>
+  <li>An administrator goes to <em>Admin → API Keys</em> and uses <em>Create new key</em>, choosing the owner (themselves or a staff member). Staff go to <em>Account → API keys</em>.</li>
+  <li>Give the key a descriptive name (e.g. <code>monitoring-script</code>), choose its scopes and an expiry date. A key must have at least one scope. Staff keys can carry <code>tickets:read</code>, <code>tickets:write</code>, <code>groups:read</code>, <code>audit:read</code> and <code>users:read</code>.</li>
+  <li><strong>Every new key must expire</strong>, no later than the maximum lifetime: <em>Longest an API key may live</em>, a slider with stops of 1 to 5 years and Never (default 2 years; the settings page shows a red warning above 2). The form offers the longest allowed date by default. Only at Never may the date be left out. Keys made before the upgrade keep working; one with no expiry or one past the current limit is shown as "No expiry (longer than the current limit)" so it can be rotated.</li>
+  <li>The key is shown <strong>exactly once</strong> after creation. Copy it into a secret manager or CI secret store. It cannot be retrieved later. A key issued for you by an administrator is marked "Issued for you by an administrator" on your Account page.</li>
 </ol>
 
-<p>Keys are stored as SHA-256 hashes, so a copy of the database does not reveal them.</p>
+<p>Keys are stored as SHA-256 hashes, so a copy of the database does not reveal them. Every key issued or revoked is written to the audit log (<code>api_key_issued</code>, <code>api_key_revoked</code>).</p>
 
 <h3>Using a key</h3>
 <p>Send the key in the <code>Authorization</code> header with the <code>ApiKey</code> scheme:</p>
 <pre><code>curl https://helpdesk.example.com/api/v1/tickets \
   -H "Authorization: ApiKey GHD_3f8a…"</code></pre>
 
-<p>The REST API and the <a href="mcp.html">MCP server</a> accept API keys, except on the routes that change how an account signs in (password, second factors, passkeys) and the settings that need a signed-in administrator. Those refuse every API key and OAuth client.</p>
+<p>The REST API and the <a href="mcp.html">MCP server</a> accept API keys, except on the routes that change how an account signs in (password, second factors, passkeys), the routes that create keys or OAuth clients, the routes that write users or group membership, and the settings that need a signed-in administrator. Those refuse every API key and OAuth client.</p>
 
 <h3>Permissions</h3>
-<p>A key acts as the administrator who created it, but only within the scopes it was given. There is no wildcard scope. <code>GET /api/v1/admin/scopes</code> lists them. See <a href="api.html#api-scopes">REST API: Scopes</a>.</p>
+<p>A key acts as its owner, within the owner's role, and only within the scopes it was given. A key's scopes can never exceed its owner's role. Keys can read users and groups but cannot write them, cannot create keys or OAuth clients, and cannot change a few settings that decide who can sign in or who sees tickets (see <a href="api.html#api-keys">REST API: API keys</a>). The old <code>users:write</code> scope is no longer offered.</p>
+<p>Before 1.3.0 a key acted as the administrator who created it, but only within the scopes it was given. There is no wildcard scope. <code>GET /api/v1/admin/scopes</code> lists them. See <a href="api.html#api-scopes">REST API: Scopes</a>.</p>
 
 <h3>OAuth clients</h3>
 <p>Under <em>Admin → OAuth Clients</em>, an administrator creates a client with its scopes. The client also gets a service user, named after it. The client exchanges its ID and secret for a short-lived bearer token at <code>POST /api/v1/auth/oauth/token</code> and sends it as <code>Authorization: Bearer &lt;token&gt;</code>. The client acts as its service user, at that user's role: staff by default, or user, never administrator. A client holding <code>tickets:write</code> can create tickets and replies, recorded under the client's name.</p>
@@ -462,7 +471,8 @@
 </ul>
 
 <h3>Revoking a key</h3>
-<p>On <em>Admin → API Keys</em>, click <em>Revoke</em> next to the key. Revocation is immediate: the next request with that key gets <code>401</code>. Disabling the user who created a key also stops the key working.</p>
+<p>An administrator clicks <em>Revoke</em> next to the key on <em>Admin → API Keys</em>, and staff revoke their own under <em>Account → API keys</em>. Revocation is immediate: the next request with that key gets <code>401</code>. Disabling or deleting the key's owner also stops the key working. An administrator who resets someone's password can tick <em>Also revoke this person's API keys</em> to delete every key they own; a person changing their own password, <em>Forgot password</em>, <code>unlock</code> and <code>reset-factors</code> never touch keys.</p>
+<p>A webhook that a key created, or last changed the URL of, is paused when the key is revoked or expires (see <a href="admin-guide.html#admin-webhook-paused">the admin guide</a>).</p>
 
 <h3>Key naming conventions</h3>
 <p>Since the key value cannot be retrieved after creation, the name is your only way to identify a key later. Use names that describe the consumer: <code>pagerduty-webhook</code>, <code>ci-pipeline-prod</code>, <code>alex-cli-dev</code>. Include dates in names if you rotate keys on a schedule.</p>

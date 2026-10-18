@@ -103,6 +103,7 @@
       <li><a href="#staff-search">Staff search</a></li>
       <li><a href="#on-behalf">Filing for a requester</a></li>
       <li><a href="#mcp-limits">MCP size limit and sessions</a></li>
+      <li><a href="#api-keys">API keys</a></li>
       <li><a href="#known-gaps">Not in 1.3.0</a></li>
       <li><a href="#steps">Doing the upgrade</a></li>
     </ul>
@@ -210,6 +211,7 @@
     <tr><td>Staff search covers every ticket the person can see, with an <em>Only my tickets</em> chip</td><td>Staff and administrators; <code>scope=visible</code> is new</td></tr>
     <tr><td>Staff can file a ticket for a requester; MCP <code>create_ticket</code> now records the caller as the actor</td><td>Staff and administrators; MCP clients that file for others</td></tr>
     <tr><td>MCP requests over 1 MiB are refused; an SSE session is bound to the credential that opened it</td><td>MCP clients that send very large calls, or open a stream with one credential and post with another</td></tr>
+    <tr><td>Staff can have API keys; every new key expires; keys cannot create keys, create OAuth clients or write users; three more settings are session-only; webhooks made by a key pause with it</td><td>Administrators, staff, and every script that uses an API key</td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
@@ -238,6 +240,7 @@
   <li><strong>More on the ticket page.</strong> Staff can change a ticket's priority, take an unassigned ticket with Assign to me, and resolve all open child tickets at once. <a href="#ticket-page">Details</a></li>
   <li><strong>Archive from the admin screen.</strong> Categories, types and items can be archived and unarchived in <strong>Admin → Categories</strong>. <a href="#archived-nodes">Details</a></li>
   <li><strong>OAuth clients can write.</strong> Each client acts as a service user that is listed in Admin → Users. <a href="#service-users">Details</a></li>
+  <li><strong>API keys for staff.</strong> Staff can create their own API keys when an administrator allows it, every new key expires, and keys are limited in what they can do. Several scripts break; read <a href="#api-keys">the details</a>.</li>
   <li><strong>File for a requester.</strong> Staff can file a ticket for an existing user or a typed address. <a href="#on-behalf">Details</a></li>
   <li><strong>Search finds more.</strong> Staff search covers every ticket they can see, with a chip to narrow it to the queue. <a href="#staff-search">Details</a></li>
   <li><strong>One delivery per change.</strong> A webhook gets one delivery for one change, however many things it changed, and nothing is sent for a change that failed. <a href="#one-event">Details</a></li>
@@ -819,6 +822,33 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
   <li><strong>An SSE session now belongs to the user and credential that opened the stream.</strong> A message for its <code>sessionId</code> from a different user, a different API key of the same user, or a browser session where the stream was opened with a key (or the reverse), is refused with <code>403</code> and not processed. An unknown, missing or closed <code>sessionId</code> gets the same <code>403</code>. Clients that open the stream and post with the same credential are unaffected.</li>
 </ul>
 
+<h2 id="api-keys">API keys: staff can have them, keys can do less, and every new key expires</h2>
+
+<p><strong>Who notices:</strong> administrators, staff, and every script that uses an API key. Read the breaking changes below before you upgrade; several scripts will stop working.</p>
+
+<h3>New</h3>
+<ul>
+  <li><strong>Staff can create their own API keys</strong> when an administrator allows it: <strong>Admin → Settings → Authentication → API keys → Staff may create their own API keys</strong> (<code>staff_can_create_api_keys</code>, off by default, session only). Staff manage their keys under <strong>Account → API keys</strong> (<code>GET</code> and <code>POST /api/v1/me/api-keys</code>, <code>GET /api/v1/me/api-keys/scopes</code>, <code>DELETE /api/v1/me/api-keys/{id}</code>). Turning the setting off stops new keys only; existing keys keep working and staff can still list and revoke their own.</li>
+  <li><strong>Who can own a key.</strong> Administrators always, staff only while the setting is on. Requesters never (<code>/me/api-keys</code> is <code>403</code> for them, and an administrator cannot issue one for them: <code>400 requester_cannot_own_key</code>), and neither do service accounts. An administrator can issue a key on a staff member's behalf, or for themselves, with <code>user_id</code> on <code>POST /api/v1/admin/api-keys</code>, never for another administrator (<code>400 cannot_issue_for_administrator</code>).</li>
+  <li><strong>Maximum lifetime.</strong> A second setting, <strong>Longest an API key may live</strong> (<code>api_key_max_lifetime_years</code>, session only), is a slider with stops of 1 to 5 years and Never. The default is 2 years, and the page shows a red warning above 2. Every new key must expire, no later than that; only at Never may the expiry be left out. Keys that already exist keep working. A key with no expiry, or one past the current limit, is flagged (<code>beyond_limit</code>, shown as "No expiry (longer than the current limit)") so it can be rotated.</li>
+  <li><strong>A key's scopes never exceed its owner's role.</strong> A staff key can carry <code>tickets:read</code>, <code>tickets:write</code>, <code>groups:read</code>, <code>audit:read</code> and <code>users:read</code>. Anything else is <code>400 invalid_scope</code>. <code>users:write</code> is no longer offered; keys that hold it keep it, and it opens nothing.</li>
+  <li><strong>Webhooks a key makes stop with the key.</strong> A webhook that an API key created, or last changed the URL of, is paused when the key is revoked or expires, or its owner is disabled or deleted. It shows as Paused on <strong>Admin → Webhooks</strong> and receives nothing until a signed-in administrator clicks <strong>Re-approve</strong> (or changes its URL). While paused, a key cannot edit it (<code>403 webhook_paused</code>). Hooks that exist today, and any made or last re-pointed in the web UI, are unaffected.</li>
+  <li><strong>Password reset can revoke keys.</strong> The administrator's reset form has <em>Also revoke this person's API keys</em>, unticked by default (<code>revoke_api_keys</code> on <code>POST /api/v1/admin/users/{id}/password</code>). If the keys cannot be revoked after the password was reset, the answer is <code>500 keys_not_revoked</code>; <code>500 sessions_not_ended</code> if the sessions cannot be ended. A person's own password change, <em>Forgot password</em>, <code>unlock</code> and <code>reset-factors</code> never touch keys.</li>
+  <li>Every key issued or revoked is written to the audit log (<code>api_key_issued</code>, <code>api_key_revoked</code>; <code>api_keys_revoked</code> with a count when a reset revokes them). The key lists gain <code>created_by</code> and <code>beyond_limit</code>, and <code>GET /api/v1/me</code> gains <code>can_create_api_keys</code> and <code>api_key_max_lifetime_years</code>.</li>
+  <li>Changing someone's role keeps their keys. A key acts within its owner's current role, so promoting a staff member who holds an administrator-issued key leaves an administrator holding it. Revoke it if that is not wanted.</li>
+</ul>
+
+<h3>Breaking: scripts that stop working</h3>
+<ul>
+  <li><strong>A script that uses an API key to create API keys.</strong> <code>POST /api/v1/admin/api-keys</code> with a key now answers <code>403 session_required</code> (an OAuth client gets <code>403 forbidden</code>). That includes a script that rotated its own key by calling this route with the old one. Instead, create the next key in the web UI as a signed-in person. Listing and revoking with a key is unchanged (a key lists and revokes only itself).</li>
+  <li><strong>A script that uses a key to create OAuth clients.</strong> <code>POST /api/v1/admin/oauth-clients</code> with a key answers <code>403 session_required</code>. Create clients in the web UI. A key can still list and delete clients.</li>
+  <li><strong>A script that uses a key or OAuth client to write users or group membership.</strong> Keys may only read users. These now answer <code>403 session_required</code> for an API key (<code>403 forbidden</code> for an OAuth client): <code>POST /api/v1/admin/users</code>, <code>PATCH /api/v1/admin/users/{id}</code>, <code>DELETE /api/v1/admin/users/{id}</code>, <code>POST /api/v1/admin/users/{id}/password</code>, <code>POST</code> and <code>DELETE /api/v1/admin/groups/{id}/members…</code>, and <code>POST</code> and <code>DELETE /api/v1/admin/groups/{id}/scopes</code>. That covers provisioning scripts (create), offboarding scripts (disable, delete, remove from groups), directory sync (rename, email, role, group membership), password and second-factor resets, and anything that gives a group access to categories. Instead: a signed-in administrator makes the change, or use single sign-on just-in-time provisioning (SAML or OIDC creates the account at first sign-in; it creates only requester accounts, so staff still need a signed-in administrator to promote them). Listing users and groups with a key is unchanged. The reason: a key that can write a user can make itself a person, set a password, sign in, and create keys that outlive the key that started it.</li>
+  <li><strong>A script that creates keys without <code>expires_at</code>.</strong> While the limit is a number of years, <code>expires_at</code> is required (<code>400 expires_at_required</code>) and may be no later than that many years away (<code>400 expires_at_too_far</code>). Send one, or have an administrator choose Never.</li>
+  <li><strong>A script that changes <code>ticket_scope_enforced</code>, <code>auto_assign_group_id</code> or <code>auto_assign_user_ids</code> with a key.</strong> These settings now answer <code>403 session_required</code> to an API key or OAuth client, because they decide who sees tickets and who is handed them. A signed-in administrator makes the change.</li>
+  <li><strong>A script that gives a new key <code>users:write</code>,</strong> or a scope beyond its owner's role, gets <code>400 invalid_scope</code>.</li>
+  <li><strong>A script that creates webhooks with a short-lived key</strong> should expect them to pause when the key expires.</li>
+</ul>
+
 <h2 id="known-gaps">What is not in 1.3.0</h2>
 
 <p>Earlier versions of these pages described or implied some things that the product does not do. Each is tracked as an issue. These are gaps in the product, not changes in 1.3.0. The pages now say what the product does.</p>
@@ -828,7 +858,6 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
   <tbody>
   <tr><td>Ticket detail</td><td>Markdown is shown as typed, not rendered. A reply cannot be edited or deleted by anyone: a correction is a new reply, by design.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/443" target="_blank" rel="noopener">#443</a></td></tr>
   <tr><td>Guest attachments</td><td>A guest can attach a file only through the API. The guest page has no upload control.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/445" target="_blank" rel="noopener">#445</a></td></tr>
-  <tr><td>API keys</td><td>Only administrators can create them.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/450" target="_blank" rel="noopener">#450</a></td></tr>
   <tr><td>Plugins</td><td>The plugin system is a v2 feature. 1.x has no working plugin system: plugins cannot be installed, and an enabled plugin record never receives events. Earlier pages promised it.</td><td><a href="../index.html#roadmap">v2 on the roadmap</a></td></tr>
   </tbody>
 </table>
@@ -850,6 +879,7 @@ docker compose up -d</code></pre>
   <li><strong>Check your mail server</strong> against <a href="#smtp">the new encryption rule</a>, and decide whether staff should start getting <a href="#staff-email">staff email</a>. To keep their inboxes as they were, set the three overrides under <strong>Admin → Settings → Email</strong> to <em>Off for everyone</em> before you turn email on.</li>
   <li><strong>If you have webhook receivers,</strong> read <a href="#webhooks">the raw payload and note-event changes</a>, and make receivers cope with a repeated delivery.</li>
   <li><strong>If you have MCP agents,</strong> note that <a href="#mcp-reply">their public replies now email the requester</a>.</li>
+  <li><strong>If you have scripts that use API keys,</strong> read <a href="#api-keys">API keys</a> first: keys can no longer create keys or OAuth clients, write users or group membership, or change three settings, and new keys need an expiry.</li>
   <li><strong>Tell people who rarely sign in</strong> about <a href="#password-age">the 30-day password reset</a>.</li>
   <li><strong>If you have API clients that drive signup,</strong> update them for <a href="#signup">the new verification request</a>.</li>
   <li><strong>If you have scripts that call admin DELETE routes,</strong> or that drive sign-in in two requests, or that fetch OAuth tokens, see <a href="#client-errors">the 404 and 4xx changes</a>, <a href="#pending-session">the 5-minute session</a> and <a href="#jwt-secret">the JWT key</a>.</li>

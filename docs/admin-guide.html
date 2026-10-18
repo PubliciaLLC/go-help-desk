@@ -90,6 +90,7 @@
       <li><a href="#admin-email-tpl">Email Templates</a></li>
       <li><a href="#admin-webhooks">Webhooks</a></li>
       <li><a href="#admin-oauth-clients">OAuth Clients</a></li>
+      <li><a href="#admin-api-keys">API Keys</a></li>
       <li><a href="#admin-audit">Audit Log</a></li>
       <li><a href="#admin-attachments">Attachments</a></li>
       <li><a href="#admin-plugins">Plugins</a></li>
@@ -259,7 +260,7 @@ Facilities
   <li><strong>View account info</strong> — member since date, login type (Local / SSO / Local + SSO), and MFA enrollment status.</li>
   <li><strong>Reset MFA</strong>, clears the user's authenticator and every passkey, and ends all of their sessions. The user signs in with their password and enrols again. Only shown when the user has a second factor, an authenticator or a passkey.</li>
   <li><strong>Enable / Disable account</strong> — disabled accounts cannot log in. All tickets and history are preserved. Re-enable at any time.</li>
-  <li><strong>Reset password</strong> — set a new password directly from the admin panel. Only shown for accounts that have a local password (not SSO-only accounts).</li>
+  <li><strong>Reset password</strong> — set a new password directly from the admin panel. Only shown for accounts that have a local password (not SSO-only accounts). The form has a checkbox, <em>Also revoke this person's API keys</em>, unticked by default; ticked, it deletes every key the account owns after the password is set and the sessions are ended, and the audit log records <code>api_keys_revoked</code> with the number of keys. It is a separate step from the reset: if the keys cannot be revoked after the password was reset, the page shows "The password was reset, but the API keys were NOT revoked" (<code>keys_not_revoked</code>), and if the sessions cannot be ended the answer is <code>sessions_not_ended</code>. A person changing or resetting their own password never touches their keys.</li>
   <li><strong>Manage group membership</strong> — add the user to or remove them from any group.</li>
   <li><strong>Delete account</strong>, a soft delete. The account is kept but can no longer sign in, and its tickets and replies are preserved. The confirmation says they will show as a removed user. Requires a second confirmation click. Prefer disabling instead when there is any chance the account may need to be re-activated.</li>
   <li>The last active administrator cannot be disabled, demoted or deleted. The request is refused with <code>400 bad_request</code>.</li>
@@ -826,6 +827,9 @@ function verifySignature(secret, body, header) {
 </table>
 <p>The list keeps only the latest result per hook, as a class, never as the error text or the response body, because a webhook URL can carry a secret. A hook that has never been delivered to shows <em>No deliveries yet</em>.</p>
 
+<h3 id="admin-webhook-paused">Webhooks made by an API key</h3>
+<p>A webhook that an API key created, or last changed the URL of, is tied to that key. When the key is revoked or expires, or its owner is disabled or deleted, the hook is <strong>paused</strong>: the list shows a <em>Paused</em> badge with the reason, and it receives nothing, including deliveries already queued. A key cannot lift the pause by editing the hook (<code>403 webhook_paused</code>). A signed-in administrator clicks <em>Re-approve</em>, or changes the hook's URL (a URL edited in a session counts as approving the new address). Hooks made or last re-pointed in the web UI are not tied to a key, and neither are the hooks that existed before the upgrade.</p>
+
 <h3 id="admin-webhook-history">History and Redeliver</h3>
 <p>Each hook has a <em>History</em> button that opens its last 25 deliveries. Each row shows the event, the result (<em>Delivered</em>, <em>Retrying</em> or <em>Failed</em>, with the status or failure class), the number of attempts and the time of the last attempt. No payloads and no error text are kept.</p>
 <p><em>Redeliver</em> on a row sends that delivery's event again as a new delivery, with a new <code>X-GHD-Delivery</code> id so a receiver that drops repeats by id does not discard it. It is queued and sent in the background, and retried like any delivery; the page says it is queued, and the row appears in History once it has been attempted. A raw hook gets the same ids-only body as the original. A Slack, Teams, Discord or Jira message is rebuilt from the ticket as it is now, so it can differ from the original, and a reply's text is included only if the reply still exists and is public.</p>
@@ -852,6 +856,27 @@ function verifySignature(secret, body, header) {
   <li>Service users never sign in, are hidden from assignee pickers and round-robin, do not count as administrators, and are never mailed. Upgrading creates one for each existing client, named after the client, with the staff role and no groups.</li>
 </ul>
 
+
+<h2 id="admin-api-keys">API keys</h2>
+
+<p>API keys are for scripts and integrations. Administrators manage them under <em>Admin → API Keys</em>. Staff can manage their own under <em>Account → API keys</em> when you allow it.</p>
+<h3>Settings</h3>
+<p>Both are under <em>Admin → Settings → Authentication → API keys</em>, and both are session-only: an API key or OAuth client cannot change them.</p>
+<table class="param-table">
+  <thead><tr><th>Setting</th><th>Default</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr><td><em>Staff may create their own API keys</em> (<code>staff_can_create_api_keys</code>)</td><td>off</td><td>Lets staff create keys for themselves under Account. Turning it off stops new keys only: existing keys keep working, and staff can still list and revoke their own.</td></tr>
+    <tr><td><em>Longest an API key may live</em> (<code>api_key_max_lifetime_years</code>)</td><td>2 years</td><td>A slider with stops of 1 to 5 years and Never. The page shows a red warning above 2 years. Every new key must expire, no later than this; only at Never may the date be left out. The limit is checked when a key is created, so lowering it does not break existing keys. A key with no expiry, or one past the limit, shows "No expiry (longer than the current limit)" so you can rotate it.</td></tr>
+  </tbody>
+</table>
+<h3>Who owns a key, and what it can do</h3>
+<ul>
+  <li>Administrators always can own keys. Staff can while the first setting is on. Requesters and service accounts never own one.</li>
+  <li>You can issue a key on a staff member's behalf (or for yourself) when you create it. Not for another administrator. The key list shows "Issued on their behalf", and the owner sees "Issued for you by an administrator".</li>
+  <li>A key acts within its owner's current role, and its scopes never exceed it. A staff key can carry <code>tickets:read</code>, <code>tickets:write</code>, <code>groups:read</code>, <code>audit:read</code> and <code>users:read</code>. Promoting a staff member who holds an administrator-issued key leaves an administrator holding it; revoke it if you do not want that.</li>
+  <li><strong>A key cannot create keys or OAuth clients</strong>, and <strong>cannot write users</strong>: it can read users and groups, but cannot create, change, disable or delete an account, set a password, clear a second factor, change an email, or change group membership or scope. It also cannot change <code>ticket_scope_enforced</code> or the auto-assignment settings. These need you, signed in. The scope <code>users:write</code> is no longer offered.</li>
+  <li>Every key issued or revoked is written to the audit log (<code>api_key_issued</code>, <code>api_key_revoked</code>).</li>
+</ul>
 
 <h2 id="admin-audit">Audit log</h2>
 
