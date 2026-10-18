@@ -2831,7 +2831,10 @@ on the existing webhook feature instead of as plugins.
   (`result: dropped`, `drop_reason`: `disabled`, `unsubscribed`, `url_changed`,
   `filter`, `unbuildable`; migration `000051`, #499). Only an entry that is
   retrying changes, and a drop is not an attempt. A deleted hook takes its
-  history with it, so there is nothing to mark. A refused address
+  history with it, so there is nothing to mark. Changing a hook's URL also
+  clears its whole history (`UpdateWebhook`), so `url_changed` is seen only on
+  an attempt that was in flight and recorded after the clear; in practice the
+  admin sees an empty history, not a "Dropped" row, after a URL change. A refused address
   (`blocked_address`) is not a drop: it is a final result of its own attempt.
   Each attempt updates the hook's
   latest result and its history (above), not the outbox row, whose `last_error`
@@ -3282,8 +3285,11 @@ out twice. The second worker finds no row to delete, queues nothing and
 succeeds. The children's ids derive from
 the change's row id (`uuid.NewSHA1` of the parent and a key: `requester`, or
 `staff:` plus the user id), so a repeat after a crash does not queue anyone twice
-while their rows still wait. Without a database handle, or outside the worker
-(no row id), it falls back to queueing one by one. A failed read of the staff
+while their rows still wait. Outside the worker (no row id) it queues one by
+one. `Split` on a store built without a database handle (`outboxstore.New`)
+returns an error rather than queue and delete as separate commits, which would
+lose mail when an insert failed after the parent was gone; production builds
+the store with `NewWithDB`. A failed read of the staff
 accounts, of the followers or of a group's members returns an error and the row
 is retried with nothing queued (ruling 15). This is deliberate: a requester's
 mail queued before that error would by then have been sent and deleted, and sent

@@ -377,7 +377,8 @@ func (d *WebhookDispatcher) deliverQueued(ctx context.Context, ev notification.E
 	// The ticket filter as it is now (#413), against the attributes the row
 	// took from the ticket when the event was raised. An administrator who
 	// tightened the filter has stopped what is still queued, retries included.
-	// Settled exactly like a URL change above: no history entry, no failure. A
+	// Settled exactly like a URL change above: no failure, and a retrying
+	// history entry is marked dropped. A
 	// row with no attributes (queued before #413) cannot be judged and is sent;
 	// admits logs that.
 	if !d.admits(ctx, hook, ev) {
@@ -386,6 +387,9 @@ func (d *WebhookDispatcher) deliverQueued(ctx context.Context, ev notification.E
 		d.markDropped(ctx, hook.ID, DropFilter)
 		return nil
 	}
+	// rawBody re-marshals an event that was just decoded from JSON, so this
+	// cannot fail in practice and has no test; the mark is here so that if it
+	// ever does, the entry does not stay on "retrying".
 	raw, err := rawBody(ev)
 	if err != nil {
 		d.log.ErrorContext(ctx, "webhook skipped: event could not be marshalled",

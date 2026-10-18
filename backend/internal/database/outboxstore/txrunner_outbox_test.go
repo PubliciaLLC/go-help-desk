@@ -14,6 +14,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/auditstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/outboxstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/txrunner"
+	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
@@ -267,4 +268,24 @@ func TestStore_ConcurrentSplitsOfOneParentQueueOnce(t *testing.T) {
 	var n int
 	require.NoError(t, db.SQL.QueryRow(`SELECT count(*) FROM notification_outbox`).Scan(&n))
 	require.Equal(t, 2, n, "one split's children, not %d splits' worth", workers)
+}
+
+// Without a database handle Split cannot be atomic, and queueing the children
+// and deleting the parent as separate commits loses mail when an insert fails.
+// So it refuses, and leaves the parent where it was.
+func TestStore_SplitWithoutADatabaseHandleRefuses(t *testing.T) {
+	db, closeDB := testutil.NewIsolatedDB(t)
+	defer closeDB()
+	ctx := context.Background()
+	s := outboxstore.New(dbgen.New(db.SQL))
+	parent := uuid.New()
+	require.NoError(t, s.Enqueue(ctx, parent, "email", []byte(`{"type":"ticket.created"}`)))
+
+	err := s.Split(ctx, parent, []notification.NewRow{
+		{ID: uuid.New(), Channel: "email", Event: []byte(`{"type":"staff.assigned"}`)},
+	})
+	require.Error(t, err)
+	var n int
+	require.NoError(t, db.SQL.QueryRow(`SELECT count(*) FROM notification_outbox`).Scan(&n))
+	require.Equal(t, 1, n, "the parent is still there and no child was queued")
 }
