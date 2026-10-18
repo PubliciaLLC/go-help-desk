@@ -443,10 +443,17 @@ function EditRow({
 
 // ── Delivery history ──────────────────────────────────────────────────────────
 
+const DROP_LABEL: Record<string, string> = {
+  disabled: 'hook switched off', unsubscribed: 'no longer subscribed to the event',
+  url_changed: 'URL changed', filter: 'filter no longer admits the ticket',
+  paused: 'its API key was revoked or expired', unbuildable: 'body could not be built',
+}
+
 // What a delivery's outcome is called: "ok" or a failure class, nothing more.
 // The server keeps no error text (#448).
 function outcome(d: WebhookDeliveryRecord): string {
   if (d.result === 'ok') return `Delivered · ${d.status}`
+  if (d.result === 'dropped') return `Dropped · ${DROP_LABEL[d.drop_reason ?? ''] ?? 'no longer wanted'}`
   const what = d.result === 'http_status' ? String(d.status) : (FAILURE_LABEL[d.result] ?? 'error')
   return d.retrying ? `Retrying · ${what}` : `Failed · ${what}`
 }

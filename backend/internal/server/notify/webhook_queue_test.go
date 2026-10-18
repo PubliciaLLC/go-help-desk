@@ -30,6 +30,13 @@ type queueStore struct {
 	hooks    map[uuid.UUID]authstore.WebhookConfig
 	attempts []authstore.WebhookAttempt
 	events   map[uuid.UUID][]byte
+	dropped  []droppedMark
+}
+
+// droppedMark is a call to MarkWebhookDeliveryDropped.
+type droppedMark struct {
+	HookID, DeliveryID uuid.UUID
+	Reason             string
 }
 
 func newQueueStore(hooks ...authstore.WebhookConfig) *queueStore {
@@ -71,6 +78,13 @@ func (s *queueStore) RecordWebhookAttempt(_ context.Context, a authstore.Webhook
 	defer s.mu.Unlock()
 	s.attempts = append(s.attempts, a)
 	s.events[a.DeliveryID] = a.Event
+	return nil
+}
+
+func (s *queueStore) MarkWebhookDeliveryDropped(_ context.Context, hookID, deliveryID uuid.UUID, reason string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dropped = append(s.dropped, droppedMark{hookID, deliveryID, reason})
 	return nil
 }
 
