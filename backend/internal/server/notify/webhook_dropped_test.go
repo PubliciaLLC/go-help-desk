@@ -43,6 +43,14 @@ func TestQueue_DroppedRetryMarksItsHistoryEntry(t *testing.T) {
 		{"filter no longer admits", func(rig *queueRig, id uuid.UUID) {
 			setFilter(rig.hooks, id, notification.WebhookFilter{Priorities: []string{"critical"}})
 		}, DropFilter},
+		// Its API key was revoked or expired (#450): the retry is settled.
+		{"paused", func(rig *queueRig, id uuid.UUID) {
+			rig.hooks.mu.Lock()
+			defer rig.hooks.mu.Unlock()
+			h := rig.hooks.hooks[id]
+			h.Paused = true
+			rig.hooks.hooks[id] = h
+		}, DropPaused},
 		// A body that cannot be built would fail the same way every time.
 		{"body cannot be built", func(rig *queueRig, id uuid.UUID) {
 			rig.hooks.mu.Lock()

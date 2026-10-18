@@ -580,7 +580,7 @@ export interface WebhookDeliveryRecord {
   drop_reason?: WebhookDropReason
 }
 
-export type WebhookDropReason = 'disabled' | 'unsubscribed' | 'url_changed' | 'filter' | 'unbuildable'
+export type WebhookDropReason = 'disabled' | 'unsubscribed' | 'url_changed' | 'filter' | 'paused' | 'unbuildable'
 
 export interface WebhookConfig {
   id: string

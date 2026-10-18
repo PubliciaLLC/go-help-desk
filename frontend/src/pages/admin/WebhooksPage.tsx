@@ -446,7 +446,7 @@ function EditRow({
 const DROP_LABEL: Record<string, string> = {
   disabled: 'hook switched off', unsubscribed: 'no longer subscribed to the event',
   url_changed: 'URL changed', filter: 'filter no longer admits the ticket',
-  unbuildable: 'body could not be built',
+  paused: 'its API key was revoked or expired', unbuildable: 'body could not be built',
 }
 
 // What a delivery's outcome is called: "ok" or a failure class, nothing more.

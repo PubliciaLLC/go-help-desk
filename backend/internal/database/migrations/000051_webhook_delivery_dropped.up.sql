@@ -1,6 +1,6 @@
 -- A queued webhook retry that is dropped (the hook was disabled, unsubscribed
--- from the event, pointed at a new URL, its ticket filter tightened, or the body
--- can no longer be built) used to leave its history entry saying "retrying"
+-- from the event, pointed at a new URL, its ticket filter tightened,
+-- its API key revoked or expired (paused), or the body can no longer be built) used to leave its history entry saying "retrying"
 -- for ever (#499). It now becomes result 'dropped', with the reason beside it.
 --
 -- Like result, drop_reason is a CLASS, never text, and the CHECK makes text
@@ -13,6 +13,6 @@ ALTER TABLE webhook_deliveries ADD CONSTRAINT webhook_deliveries_result_check
 
 ALTER TABLE webhook_deliveries
     ADD COLUMN drop_reason text NOT NULL DEFAULT ''
-        CHECK (drop_reason IN ('', 'disabled', 'unsubscribed', 'url_changed', 'filter', 'unbuildable')),
+        CHECK (drop_reason IN ('', 'disabled', 'unsubscribed', 'url_changed', 'filter', 'paused', 'unbuildable')),
     ADD CONSTRAINT webhook_deliveries_drop_reason_matches_result
         CHECK ((result = 'dropped') = (drop_reason <> ''));

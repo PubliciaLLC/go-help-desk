@@ -61,11 +61,12 @@ const (
 	DropUnsubscribed = "unsubscribed" // the hook no longer lists the event
 	DropURLChanged   = "url_changed"  // the hook was pointed somewhere else
 	DropFilter       = "filter"       // the hook's ticket filter no longer admits the ticket
+	DropPaused       = "paused"       // its API key was revoked or has expired (#450)
 	DropUnbuildable  = "unbuildable"  // the body cannot be built, and would not be next time either
 )
 
 // DropReasons lists every reason, for the test that pins it to the CHECK.
-var DropReasons = []string{DropDisabled, DropUnsubscribed, DropURLChanged, DropFilter, DropUnbuildable}
+var DropReasons = []string{DropDisabled, DropUnsubscribed, DropURLChanged, DropFilter, DropPaused, DropUnbuildable}
 
 // WebhookStore is the interface needed to load enabled webhook configs and record delivery results.
 type WebhookStore interface {
@@ -272,10 +273,10 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event notification.Eve
 }
 
 // paused reports whether the hook is paused because the API key that made or
-// last re-pointed it was revoked or has expired (#450). Nothing is sent and no
-// history is written, which is how a disabled hook is treated; #518's
-// dropped-delivery record was not merged when this was written, so this does
-// not depend on it. The reason shows on the admin page, and here as a log line.
+// last re-pointed it was revoked or has expired (#450). Nothing is sent, which
+// is how a disabled hook is treated; a queued retry that finds the hook paused
+// is marked dropped (DropPaused) by deliverQueued. The reason shows on the
+// admin page, and here as a log line.
 func (d *WebhookDispatcher) paused(ctx context.Context, hook authstore.WebhookConfig) bool {
 	if !hook.Paused {
 		return false
@@ -376,6 +377,7 @@ func (d *WebhookDispatcher) deliverQueued(ctx context.Context, ev notification.E
 	// Settled, like a disabled hook: its key was revoked or expired since the
 	// event was queued. Judged on every attempt, so it stops retries too.
 	if d.paused(ctx, hook) {
+		d.markDropped(ctx, hook.ID, DropPaused)
 		return nil
 	}
 	// Settled, not failed, like a disabled or deleted hook: an administrator

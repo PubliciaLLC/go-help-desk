@@ -98,6 +98,7 @@ describe('delivery history', () => {
     ['unsubscribed', /no longer subscribed/i],
     ['url_changed', /url changed/i],
     ['filter', /filter no longer admits/i],
+    ['paused', /api key was revoked or expired/i],
     ['unbuildable', /body could not be built/i],
   ])('shows a dropped retry with its reason (%s)', async (reason, text) => {
     await renderPage([{

@@ -11044,12 +11044,12 @@ components:
             dropped: a queued retry that was never sent because the hook changed; see drop_reason.
         drop_reason:
           type: string
-          enum: [disabled, unsubscribed, url_changed, filter, unbuildable]
+          enum: [disabled, unsubscribed, url_changed, filter, paused, unbuildable]
           description: >-
             Present only when result is dropped. disabled: the hook was switched off.
             unsubscribed: the hook no longer lists the event. url_changed: the hook was
             pointed at another URL. filter: the hook's ticket filter no longer admits the
-            ticket. unbuildable: the body cannot be built.
+            ticket. paused: the hook's API key was revoked or has expired. unbuildable: the body cannot be built.
         attempts:
           type: integer
           minimum: 1

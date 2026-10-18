@@ -3099,10 +3099,11 @@ on the existing webhook feature instead of as plugins.
   is checked on every attempt, so it also stops retries already waiting. The
   secret is read at send time, so a rotated secret signs the retry. A retry
   dropped for any of these reasons (hook disabled, no longer subscribed, URL
-  changed, ticket filter no longer admits the ticket, body cannot be built)
+  changed, ticket filter no longer admits the ticket, hook paused because its
+  API key was revoked or expired, body cannot be built)
   turns its History entry from "retrying" into **dropped**, with the reason
   (`result: dropped`, `drop_reason`: `disabled`, `unsubscribed`, `url_changed`,
-  `filter`, `unbuildable`; migration `000051`, #499). Only an entry that is
+  `filter`, `paused`, `unbuildable`; migration `000051`, #499). Only an entry that is
   retrying changes, and a drop is not an attempt. A deleted hook takes its
   history with it, so there is nothing to mark. Changing a hook's URL also
   clears its whole history (`UpdateWebhook`), so `url_changed` is seen only on
