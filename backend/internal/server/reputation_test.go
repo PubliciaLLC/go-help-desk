@@ -348,9 +348,12 @@ func TestAddReputation_ACancelledRequestDoesNotHang(t *testing.T) {
 // line or an error string carrying it undoes that, and both of those are
 // written by the code under test rather than by internal/reputation.
 func TestAddReputation_NeverLogsTheAPIKey(t *testing.T) {
-	var gotHeader string
+	// Written by the server's handler goroutine and read by this one; the
+	// round trip over the socket is not a synchronisation the race detector
+	// can see, so it needs to be atomic.
+	var gotHeader atomic.Value
 	rig := newRepRig(t, func(w http.ResponseWriter, r *http.Request) {
-		gotHeader = r.Header.Get("x-apikey")
+		gotHeader.Store(r.Header.Get("x-apikey"))
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":{"code":"WrongCredentialsError"}}`))
 	})
@@ -364,7 +367,7 @@ func TestAddReputation_NeverLogsTheAPIKey(t *testing.T) {
 	att := quarantinedAttachment(repTestHash)
 	rig.srv.addReputation(context.Background(), &att)
 
-	require.Equal(t, repTestKey, gotHeader, "the key travels in the header, or nothing works")
+	require.Equal(t, repTestKey, gotHeader.Load(), "the key travels in the header, or nothing works")
 	require.NotContains(t, logged.String(), repTestKey,
 		"a write-only setting that appears in the log is not write-only")
 	require.NotEmpty(t, logged.String(),

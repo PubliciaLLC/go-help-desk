@@ -3,8 +3,11 @@ package server
 import (
 	"context"
 	"net/http"
+	"runtime"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/singleflight"
@@ -30,27 +33,29 @@ import (
 // so it is added here, the same way Server.New wires one for the life of the
 // process.
 func TestAddReputation_ConcurrentLookupsOfTheSameHashCollapse(t *testing.T) {
-	// Blocks the first request to arrive until every goroutine has started,
-	// so all ten calls are guaranteed to be in flight together rather than
-	// racing a fast handler that might answer #1 before #2 even reaches
-	// GetOrLookup.
+	// Every outbound request is held until the test lets it go, and the test
+	// lets it go only once all ten callers are inside the singleflight Group.
+	//
+	// Holding back only the first request was not enough: nothing made the
+	// other nine be there yet. A caller scheduled late reached the Group after
+	// the leader had answered and the Group had forgotten the key, found no
+	// call to join, and spent a second lookup — a gap in the test, not in the
+	// product, and one that only showed on a loaded runner.
 	const n = 10
 	release := make(chan struct{})
-	var arrived sync.WaitGroup
-	arrived.Add(1)
-	var once sync.Once
 
 	rig := newRepRig(t, func(w http.ResponseWriter, r *http.Request) {
-		once.Do(func() {
-			arrived.Done()
-			<-release
-		})
+		<-release
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(vtCleanBody))
 	})
 	rig.setKey(t, repTestKey)
 	rig.srv.repGroup = new(singleflight.Group)
+	// Safety net for a failed assertion: never leave handlers parked.
+	var releaseOnce sync.Once
+	letGo := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(letGo)
 
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
@@ -62,15 +67,51 @@ func TestAddReputation_ConcurrentLookupsOfTheSameHashCollapse(t *testing.T) {
 		}()
 	}
 
-	// Confirm one request is genuinely blocked inside the handler before
-	// releasing it, so the other nine really did have to wait on it rather
-	// than each having already fired and returned.
-	arrived.Wait()
-	close(release)
+	// One caller leads the call; the other n-1 must be parked waiting on it.
+	// If collapse were broken the extra callers would each fire their own
+	// request into the held handler instead, so a second hit ends the wait
+	// too and the assertion below reports it.
+	require.Eventually(t, func() bool {
+		return rig.hits.Load() > 1 || singleflightWaiters() == n-1
+	}, 10*time.Second, time.Millisecond,
+		"the other callers never all joined the in-flight lookup")
+	letGo()
 	wg.Wait()
 
 	require.Equal(t, int64(1), rig.hits.Load(),
 		"ten concurrent misses on the same hash must produce one outbound lookup")
+}
+
+// singleflightWaiters counts goroutines of the collapse test that are blocked
+// waiting on somebody else's in-flight singleflight call.
+//
+// singleflight exposes no count of its waiters, and a goroutine "about to
+// call Do" is indistinguishable from one that has joined, so this reads the
+// goroutine stacks: a caller that has joined sits in WaitGroup.Wait inside
+// Group.Do, which it reaches only after registering as a duplicate of the
+// leader's call. The leader is inside Do too but running the lookup, not in
+// Wait, so it is not counted. If the runtime ever renders those frames
+// differently the count stays at zero and the test times out — loudly,
+// rather than passing without having held anyone.
+func singleflightWaiters() int {
+	buf := make([]byte, 1<<16)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+	count := 0
+	for _, g := range strings.Split(string(buf), "\n\n") {
+		if strings.Contains(g, "TestAddReputation_ConcurrentLookupsOfTheSameHashCollapse") &&
+			strings.Contains(g, "singleflight.(*Group).Do") &&
+			strings.Contains(g, "sync.(*WaitGroup).Wait") {
+			count++
+		}
+	}
+	return count
 }
 
 // TestReputationServices_CachedOncePerRequest pins the second: a request-scoped
