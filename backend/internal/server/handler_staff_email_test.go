@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -282,5 +283,30 @@ func TestStaffEmail_StaffRepliesAndInternalNotesMailNobody(t *testing.T) {
 		res.Body.Close()
 		require.Equal(t, http.StatusCreated, res.StatusCode)
 	}
+	require.Empty(t, m.recipients(t))
+}
+
+// An upgraded install (it has users) starts with staff email off for everyone:
+// migration 000052 stores the three overrides as off, and an assignment then
+// mails nobody even though every person's own switch is on (#441).
+func TestStaffEmail_MigrationSwitchesAnUpgradedInstallOff(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	m := wireStaffMail(t, h)
+	tk := newStaffTicket(t, h)
+
+	sqlBytes, err := os.ReadFile("../database/migrations/000052_staff_email_off_on_upgrade.up.sql")
+	require.NoError(t, err)
+	// The harness has users, so this is the upgrade case. Clear any override
+	// first so the migration's own insert is what is observed.
+	_, err = h.tx.Exec(`DELETE FROM settings WHERE key LIKE 'staff_email_%_override'`)
+	require.NoError(t, err)
+	_, err = h.tx.Exec(string(sqlBytes))
+	require.NoError(t, err)
+
+	res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/tickets/"+tk.ID.String(), map[string]any{"assignee_user_id": h.staffID})
+	res.Body.Close()
+	require.Equal(t, http.StatusOK, res.StatusCode)
+
 	require.Empty(t, m.recipients(t))
 }

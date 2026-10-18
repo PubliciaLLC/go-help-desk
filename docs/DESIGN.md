@@ -2916,6 +2916,16 @@ on the existing webhook feature instead of as plugins.
   whether an override forces it, and the account page shows a forced switch
   locked with "Set by your administrator".
 
+  **An upgraded install starts with staff email off.** Migration `000052`
+  stores all three overrides as `off` when the users table already holds a
+  person (a service account does not count), so a 1.2 install that already has
+  SMTP configured does not begin mailing staff on first boot. A fresh install
+  migrates with no users, gets no stored override, and the defaults apply. An
+  override already stored is kept (`ON CONFLICT DO NOTHING`). The down step is a
+  no-op: it cannot tell its rows from an administrator's own `off`, and deleting
+  them would turn mail back on. The administrator turns staff email on under
+  **Admin → Settings → Email**.
+
   The rules that hold whatever the switches say:
   - **Nobody is mailed about their own action.** The person who made the
     assignment is skipped even when an override forces the switch on.

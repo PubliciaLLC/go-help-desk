@@ -93,6 +93,14 @@ describe('Settings -> Email', () => {
     expect(text).toMatch(/requester replies/i)
   })
 
+  it('tells an upgraded install that staff email starts off, and no longer claims all three are on', async () => {
+    await openEmailTab()
+    const text = (document.body.textContent ?? '').replace(/\s+/g, ' ')
+    expect(text).toMatch(/their own switches start on/i)
+    expect(text).toMatch(/upgraded from 1\.2 all three start as "Off for everyone", so no staff email is sent until you change them/i)
+    expect(text).not.toMatch(/all three are on by default/i)
+  })
+
   it('sends only the override that was changed', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const patch = vi.spyOn(api, 'patch').mockResolvedValue({ data: undefined } as any)

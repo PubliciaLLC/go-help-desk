@@ -3,6 +3,7 @@ package server_test
 import (
 	"context"
 	"net/http"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -86,4 +87,36 @@ func TestStaffEmailOverride_StaffCannotChangeIt(t *testing.T) {
 	res.Body.Close()
 	require.Equal(t, http.StatusForbidden, res.StatusCode)
 	require.Equal(t, leftToUsers, h.adminSvc.StaffEmailOverrides(context.Background()))
+}
+
+// After migration 000052 on an upgraded install, Settings -> Email has what it
+// needs to show the three overrides as Off, and an administrator can turn them on.
+func TestStaffEmailOverride_AfterUpgradeMigrationShowsOffAndCanBeSwitchedOn(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	sess := adminSession(t, h)
+
+	sqlBytes, err := os.ReadFile("../database/migrations/000052_staff_email_off_on_upgrade.up.sql")
+	require.NoError(t, err)
+	_, err = h.tx.Exec(`DELETE FROM settings WHERE key LIKE 'staff_email_%_override'`)
+	require.NoError(t, err)
+	_, err = h.tx.Exec(string(sqlBytes))
+	require.NoError(t, err)
+
+	got := settingsDump(t, sess)
+	for _, key := range staffOverrideKeys {
+		require.Contains(t, got, key)
+		require.JSONEq(t, `"off"`, string(got[key]), key)
+	}
+
+	res, body := sess.send(t, http.MethodPatch, "/api/v1/admin/settings", map[string]any{
+		admin.KeyStaffEmailAssignedOverride: "on",
+		admin.KeyStaffEmailActivityOverride: "user",
+	})
+	require.Equal(t, http.StatusNoContent, res.StatusCode, "body: %s", body)
+	require.Equal(t, notification.StaffOverrides{
+		Assigned: notification.OverrideOn,
+		Activity: notification.OverrideUser,
+		Group:    notification.OverrideOff,
+	}, h.adminSvc.StaffEmailOverrides(context.Background()))
 }
