@@ -344,7 +344,11 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		TypeID      *uuid.UUID `json:"type_id"`
 		ItemID      *uuid.UUID `json:"item_id"`
 		Priority    string     `json:"priority"`
-		// Guest-only fields
+		// Staff and administrators only (#444): who the ticket is for when it
+		// is not the caller. At most one; neither means the caller.
+		ReporterUserID *uuid.UUID `json:"reporter_user_id"`
+		ReporterEmail  *string    `json:"reporter_email"`
+		// Guest-only fields (also read for a typed reporter_email)
 		GuestEmail string `json:"guest_email"`
 		GuestName  string `json:"guest_name"`
 		GuestPhone string `json:"guest_phone"`
@@ -370,6 +374,15 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	//   - User (authenticated non-staff): category + type only, no item
 	//   - Staff/Admin: full CTI, no restrictions
 	isStaffOrAdmin := !isGuest && (a.Role == user.RoleAdmin || a.Role == user.RoleStaff)
+
+	// Filing for someone else is staff work. A requester who sends either field
+	// is refused rather than ignored: a ticket quietly filed under their own
+	// name is not what they asked for.
+	onBehalf := body.ReporterUserID != nil || body.ReporterEmail != nil
+	if onBehalf && !isStaffOrAdmin {
+		Error(w, http.StatusForbidden, "forbidden", "only staff can file a ticket for someone else")
+		return
+	}
 
 	if isGuest {
 		body.TypeID = nil
@@ -433,6 +446,7 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	created := false
 	in := ticket.CreateInput{
 		Subject:     body.Subject,
 		Description: body.Description,
@@ -450,7 +464,24 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		if !s.requireUserIdentity(w, r) {
 			return
 		}
-		in.ReporterUserID = &a.UserID
+		if onBehalf {
+			ok, refund := s.fileOnBehalf(w, r, &in, body.ReporterUserID, body.ReporterEmail, body.GuestName, body.GuestPhone)
+			if !ok {
+				return
+			}
+			if refund != nil {
+				// Nothing is filed if Create fails, so nothing was mailed
+				// and the budget is not spent.
+				defer func() {
+					if !created {
+						refund()
+					}
+				}()
+			}
+			in.FiledBy = &a.UserID
+		} else {
+			in.ReporterUserID = &a.UserID
+		}
 	} else {
 		email := body.GuestEmail
 		in.GuestEmail = &email
@@ -470,6 +501,7 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	created = true
 
 	// Set any custom field values supplied on creation.
 	//
@@ -503,6 +535,75 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		t = fresh
 	}
 	JSON(w, http.StatusCreated, viewerJSON(authmw.GetActor(r), t))
+}
+
+// onBehalfMailPerHour is the most tickets one member of staff can file for
+// addresses that have no account in an hour (#444).
+const onBehalfMailPerHour = 40
+
+// fileOnBehalf sets who a staff-filed ticket is for on in, from the picked
+// user (reporter_user_id) or the typed address (reporter_email), and reports
+// whether the request may go on. When it returns false it has answered.
+//
+// A picked id is checked by the ticket service, the same check MCP's
+// create_ticket gets. A typed address that belongs to an account files for that
+// account; any other is filed exactly like a guest ticket (the guest creation
+// path, so the same address rules and the same link by email), which is a
+// dead end while guest submission is off, so it is refused then (#424). Like
+// the guest form it needs a name (the phone number stays optional).
+//
+// That last case mails a stranger, so it is the one that is capped: at most
+// onBehalfMailPerHour filed tickets a staff member, then 429 (see
+// Server.onBehalfMailLimiter).
+func (s *Server) fileOnBehalf(w http.ResponseWriter, r *http.Request, in *ticket.CreateInput,
+	id *uuid.UUID, email *string, guestName, guestPhone string) (ok bool, refund func()) {
+	if id != nil && email != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "only one of reporter_user_id and reporter_email may be given")
+		return false, nil
+	}
+	if id != nil {
+		in.ReporterUserID = id
+		return true, nil
+	}
+	addr, err := user.ValidateEmail(*email)
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "reporter_email: "+err.Error())
+		return false, nil
+	}
+	u, err := s.users.GetByEmail(r.Context(), addr)
+	switch {
+	case err == nil:
+		in.ReporterUserID = &u.ID
+	case errors.Is(err, user.ErrNotFound):
+		if !s.adminSvc.GuestSubmissionEnabled(r.Context()) {
+			Error(w, http.StatusBadRequest, "bad_request",
+				"reporter_email has no account, and guest submission is off, so the link to the ticket could not be used")
+			return false, nil
+		}
+		// The guest form's rule: a name is required, a phone number is not.
+		if strings.TrimSpace(guestName) == "" {
+			Error(w, http.StatusBadRequest, "bad_request", "name is required for an address with no account")
+			return false, nil
+		}
+		// Last, so a request that was going to be refused anyway spends nothing.
+		// Spent now rather than checked now and spent after Create, so requests
+		// in flight together cannot all pass a budget with one slot left; the
+		// caller gives it back if the ticket is not filed.
+		key := authmw.GetActor(r).UserID.String()
+		ok, window := s.onBehalfMailLimiter.Take(key)
+		if !ok {
+			tooManyAttempts(w, s.onBehalfMailLimiter.Remaining())
+			return false, nil
+		}
+		refund = func() { s.onBehalfMailLimiter.Refund(key, window) }
+		in.GuestEmail = &addr
+		in.GuestName = strings.TrimSpace(guestName)
+		in.GuestPhone = strings.TrimSpace(guestPhone)
+	default:
+		handleError(w, err)
+		return false, nil
+	}
+	return true, refund
 }
 
 // GET /api/v1/tickets/{id}
@@ -554,6 +655,10 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 		}
 		views[0].SLA.Earlier = earlier
 	}
+	// The Requester line is staff's. A requester's response is filtered anyway
+	// (it is not on their allowed list); not building it for them avoids the
+	// lookup too.
+	views[0].Requester = s.requesterFor(r.Context(), authmw.GetActor(r), t)
 	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), views[0]))
 }
 

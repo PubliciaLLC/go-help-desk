@@ -224,6 +224,11 @@ export interface Ticket {
   // open status (#464). Never reset. Staff and administrators only: absent for a requester, and when 0. Absent on a response that does not carry
   // it, which reads as never.
   reopen_count?: number
+  // Who the ticket is for: the reporting account's name and address, or the
+  // guest's (#444). Sent on the single-ticket read to staff and administrators
+  // only, on every ticket; absent for a requester, on a list, and when the
+  // account could not be read.
+  requester?: { name: string; email: string }
 }
 
 export interface Attachment {
