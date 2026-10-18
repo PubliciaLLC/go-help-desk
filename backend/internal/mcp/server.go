@@ -1,6 +1,9 @@
 // Package mcp exposes help desk operations as an MCP (Model Context Protocol)
 // server for AI tool integration, on top of the existing service layer.
 //
+// It serves two transports from one handler: Streamable HTTP at /mcp and
+// HTTP+SSE at /mcp/sse and /mcp/message.
+//
 // This package does NOT authenticate anything itself. The handler it returns
 // must be wrapped by Server.ProtectMCP in internal/server, which applies the
 // same middleware chain as /api/. Mounting Handler() bare leaves every tool
@@ -19,12 +22,15 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"github.com/google/uuid"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -145,13 +151,17 @@ func assignArgumentProblem(args map[string]any) (string, bool) {
 // hasUserIdentity reports whether this caller is somebody, rather than merely
 // something.
 //
-// An OAuth client actor carries no user id. Every write tool records who
-// acted — a ticket's reporter, a reply's author, an audit entry, a
-// status-history row — and all of those are foreign keys to users, so a nil
-// id reached the insert and came back as a constraint violation: the caller
-// was told "create ticket failed" and the operator's log filled with table
-// and column names. create_ticket also took a tracking number from the
-// sequence first, so every attempt left a hole in the numbering.
+// Every write tool records who acted — a ticket's reporter, a reply's author,
+// an audit entry, a status-history row — and all of those are foreign keys to
+// users, so an actor with a nil id reached the insert and came back as a
+// constraint violation: the caller was told "create ticket failed" and the
+// operator's log filled with table and column names. create_ticket also took a
+// tracking number from the sequence first, so every attempt left a hole in the
+// numbering.
+//
+// An OAuth client used to be that actor. Since #420 it acts as its service
+// user and carries that user's id, so this passes for it; it stays as the
+// refusal for any credential that still arrives without one.
 //
 // The REST API refuses the same thing plainly. This is that rule on the other
 // surface, which is the point of there being one rule — the transport does not
@@ -276,23 +286,221 @@ func New(
 	return s
 }
 
-// Handler returns the SSE HTTP handler for MCP clients.
+// requestActor copies the actor ProtectMCP authenticated onto the context the
+// tools read it from. Both transports run it for every POST, so each tool call
+// sees the actor of the request that made it.
+func requestActor(ctx context.Context, r *http.Request) context.Context {
+	if a := authmw.GetActor(r); a != nil {
+		return context.WithValue(ctx, actorCtxKey{}, a)
+	}
+	return ctx
+}
+
+// noSessions is mcp-go's stateless session manager (no id issued, any id
+// accepted and ignored) that also refuses to terminate a session, so DELETE
+// /mcp answers 405. There is nothing to terminate, and terminating is not a
+// no-op: mcp-go unregisters the given id from the MCP server both transports
+// share, so any signed-in caller could unregister an SSE stream that is not
+// theirs (the stream stays open but stops receiving server notifications).
+type noSessions struct {
+	mcpserver.StatelessSessionIdManager
+}
+
+func (*noSessions) Terminate(string) (isNotAllowed bool, err error) { return true, nil }
+
+// Handler returns the MCP HTTP handler: Streamable HTTP at /mcp (and /mcp/,
+// the URL the 1.2 documentation gave), HTTP+SSE at /mcp/sse and /mcp/message.
 //
 // Must be wrapped by Server.ProtectMCP; see the package comment.
 //
-// The context func runs in the message handler, not only at SSE connect, so
-// each tool call sees the actor of the request that made it rather than the
-// actor that happened to open the stream.
-func (s *Server) Handler() *mcpserver.SSEServer {
-	return mcpserver.NewSSEServer(s.mcp,
+// Every POST body is capped at MaxRequestBody (413 over it), and an SSE stream
+// belongs to the actor and credential that opened it: a /mcp/message POST for
+// its sessionId from anyone else is refused with 403 before the body is read.
+//
+// The context func runs on every POST of both transports, not only when a
+// stream opens, so each tool call sees the actor of the request that made it
+// rather than the actor that happened to open the stream or initialize.
+//
+// Streamable HTTP is stateless with its GET stream disabled. Every POST is one
+// complete JSON-RPC exchange answered with application/json, no Mcp-Session-Id
+// is issued, and GET and DELETE answer 405 (see noSessions). Nothing here
+// needs a session: the tools are request/response and the server sends
+// nothing unprompted. mcp-go's session-issuing mode keeps every initialized
+// session in memory until the client deletes it, so a caller looping on
+// initialize would grow the heap without bound; and in its stateless mode an
+// enabled GET stream shares one session between every caller. Do not add WithSessionIdleTTL or
+// WithHeartbeatInterval either: the first starts a goroutine nothing stops,
+// the second applies to the GET stream that is off.
+func (s *Server) Handler() http.Handler {
+	sessionIDs := &sseSessionIDs{owners: map[string]sessionOwner{}}
+	sse := mcpserver.NewSSEServer(s.mcp,
 		mcpserver.WithStaticBasePath("/mcp"),
-		mcpserver.WithSSEContextFunc(func(ctx context.Context, r *http.Request) context.Context {
-			if a := authmw.GetActor(r); a != nil {
-				return context.WithValue(ctx, actorCtxKey{}, a)
-			}
-			return ctx
-		}),
+		mcpserver.WithSSEContextFunc(requestActor),
+		mcpserver.WithSessionIDGenerator(sessionIDs.generate),
 	)
+	streamable := mcpserver.NewStreamableHTTPServer(s.mcp,
+		mcpserver.WithSessionIdManager(&noSessions{}),
+		mcpserver.WithDisableStreaming(true),
+		mcpserver.WithHTTPContextFunc(requestActor),
+	)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/mcp", "/mcp/":
+			if !limitBody(w, r) {
+				return
+			}
+			streamable.ServeHTTP(w, r)
+		case "/mcp/message":
+			if r.Method == http.MethodPost {
+				if !sessionIDs.ownedBy(r) {
+					writeSessionRefused(w)
+					return
+				}
+				if !limitBody(w, r) {
+					return
+				}
+			}
+			sse.ServeHTTP(w, r)
+		case "/mcp/sse":
+			// Blocks for the life of the stream; the id is forgotten when it ends.
+			sessionIDs.serveStream(w, r, sse)
+		default:
+			sse.ServeHTTP(w, r)
+		}
+	})
+}
+
+// MaxRequestBody caps an MCP request body on both transports (#481). 1 MiB is
+// the REST API's cap (server.maxJSONBody) and is far above the largest
+// legitimate MCP request: a request is one JSON-RPC call, and the biggest
+// arguments any tool takes are a ticket description or reply body. MCP has no
+// attachment tool. Without a cap the body was read whole: a 100 MB POST
+// allocated 340 to 712 MB.
+const MaxRequestBody = 1 << 20
+
+// limitBody reads at most MaxRequestBody+1 bytes of the request body and puts
+// them back, or answers 413 and returns false. Doing it here rather than with
+// http.MaxBytesReader means an oversize body is refused with the server's JSON
+// error envelope on both transports: mcp-go turns a failed read into its own
+// 400 "parse error", which would hide the cause.
+func limitBody(w http.ResponseWriter, r *http.Request) bool {
+	if r.ContentLength > MaxRequestBody {
+		writeTooLarge(w)
+		return false
+	}
+	// Sized from the declared length so a normal request is one allocation
+	// rather than io.ReadAll's repeated growth (the +512 is ReadFrom's own
+	// minimum free space).
+	var buf bytes.Buffer
+	if r.ContentLength > 0 {
+		buf.Grow(int(r.ContentLength) + 512)
+	}
+	_, err := buf.ReadFrom(io.LimitReader(r.Body, MaxRequestBody+1))
+	body := buf.Bytes()
+	if err != nil {
+		// A client that hung up mid-body: nothing to answer.
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return false
+	}
+	if len(body) > MaxRequestBody {
+		writeTooLarge(w)
+		return false
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	return true
+}
+
+// writeError uses the REST API's envelope ({"error":{"code","message"}}).
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]string{"code": code, "message": message},
+	})
+}
+
+func writeTooLarge(w http.ResponseWriter) {
+	// The body is not drained; closing the connection is how the client learns
+	// to stop sending it.
+	w.Header().Set("Connection", "close")
+	writeError(w, http.StatusRequestEntityTooLarge, "request_too_large",
+		"MCP request body exceeds the 1 MiB limit")
+}
+
+// writeSessionRefused is the one answer for an unknown, closed, missing or
+// someone else's sessionId, so it cannot be used to learn which ids exist.
+func writeSessionRefused(w http.ResponseWriter) {
+	writeError(w, http.StatusForbidden, "forbidden", "session not available to this caller")
+}
+
+// sessionOwner is who opened an SSE stream: the account and the credential it
+// came in on. Comparable, so it can be checked with ==.
+type sessionOwner struct {
+	userID   uuid.UUID
+	apiKeyID uuid.UUID
+	clientID string
+	machine  bool
+}
+
+// ownerOf is the zero sessionOwner for a nil actor, which no real actor equals
+// (every real one has a user id).
+func ownerOf(a *authmw.Actor) sessionOwner {
+	if a == nil {
+		return sessionOwner{}
+	}
+	return sessionOwner{userID: a.UserID, apiKeyID: a.APIKeyID, clientID: a.ClientID, machine: a.Machine}
+}
+
+// sseSessionIDs records who opened each SSE stream (#495). mcp-go keys a
+// message POST by sessionId alone and authenticates nothing about it, so
+// without this any signed-in caller who learns an id can drive another
+// person's stream.
+type sseSessionIDs struct {
+	mu     sync.Mutex
+	owners map[string]sessionOwner
+}
+
+type pendingSession struct{ id string }
+type pendingSessionKey struct{}
+
+// generate is mcp-go's session id hook; it runs on the stream's own GET, so
+// the request still carries the actor ProtectMCP authenticated. Without one
+// (Handler mounted bare, which ProtectMCP exists to prevent) the stream opens
+// as before but is owned by nobody, so no message can ever be posted to it.
+func (ids *sseSessionIDs) generate(ctx context.Context, r *http.Request) (string, error) {
+	id := uuid.NewString()
+	ids.mu.Lock()
+	ids.owners[id] = ownerOf(authmw.GetActor(r))
+	ids.mu.Unlock()
+	if p, ok := ctx.Value(pendingSessionKey{}).(*pendingSession); ok {
+		p.id = id
+	}
+	return id, nil
+}
+
+func (ids *sseSessionIDs) serveStream(w http.ResponseWriter, r *http.Request, sse *mcpserver.SSEServer) {
+	p := &pendingSession{}
+	defer func() {
+		if p.id != "" {
+			ids.mu.Lock()
+			delete(ids.owners, p.id)
+			ids.mu.Unlock()
+		}
+	}()
+	sse.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), pendingSessionKey{}, p)))
+}
+
+// ownedBy reports whether the request's actor is the one who opened the
+// stream named by its sessionId. An unknown, missing or closed id is false.
+func (ids *sseSessionIDs) ownedBy(r *http.Request) bool {
+	a := authmw.GetActor(r)
+	if a == nil {
+		return false
+	}
+	ids.mu.Lock()
+	owner, ok := ids.owners[r.URL.Query().Get("sessionId")]
+	ids.mu.Unlock()
+	return ok && owner == ownerOf(a)
 }
 
 // maxListLimit bounds list_tickets. The documented ceiling is 100; requests
@@ -320,14 +528,14 @@ func (s *Server) registerTools() {
 		mcpgo.WithString("item_id", mcpgo.Description("Item UUID (optional; must belong to the type)")),
 		mcpgo.WithString("priority", mcpgo.Description("critical|high|medium|low (default: medium)")),
 		// reporter_user_id is the SUBJECT of the ticket, not the caller —
-		// staff legitimately open tickets on someone's behalf. It defaults to
-		// the caller when omitted.
+		// staff legitimately open tickets on someone's behalf (the caller is
+		// then the actor, #444). It defaults to the caller when omitted.
 		mcpgo.WithString("reporter_user_id", mcpgo.Description("Reporter user UUID (defaults to the authenticated caller)")),
 	), scoped(mcpWrite, s.handleCreateTicket))
 
 	s.mcp.AddTool(mcpgo.NewTool(
 		"add_reply",
-		mcpgo.WithDescription("Add a reply to a ticket"),
+		mcpgo.WithDescription("Add a reply to a ticket. A public reply emails the requester; an internal note does not."),
 		mcpgo.WithString("ticket_id", mcpgo.Required(), mcpgo.Description("Ticket UUID")),
 		mcpgo.WithString("body", mcpgo.Required(), mcpgo.Description("Reply body")),
 		mcpgo.WithBoolean("internal", mcpgo.Description("Internal note, not visible to the reporter (default false)")),
@@ -444,7 +652,7 @@ func (s *Server) handleGetTicket(ctx context.Context, req mcpgo.CallToolRequest)
 		}
 		out.Links = links
 	}
-	return jsonResult(out)
+	return ticketResult(caller.Role, out)
 }
 
 func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -506,6 +714,12 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 			return errResult("invalid reporter_user_id")
 		}
 		in.ReporterUserID = &rid
+		// Filing for somebody else: the caller is the actor, as on REST (#444).
+		// Naming yourself is filing your own ticket.
+		if rid != actor.UserID {
+			filer := actor.UserID
+			in.FiledBy = &filer
+		}
 	}
 	if in.ReporterUserID == nil {
 		// Default the subject of the ticket to the caller rather than refusing.
@@ -519,7 +733,7 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 	if err != nil {
 		return storeErr(ctx, "create ticket", err)
 	}
-	return jsonResult(t)
+	return ticketResult(actor.Role, t)
 }
 
 func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -555,13 +769,14 @@ func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) 
 
 	isInternal, _ := args["internal"].(bool)
 
-	const (
-		reporterEmail    = "" // no address looked up here, so no mail is sent
-		reopenWindowDays = 7
-	)
+	const reopenWindowDays = 7
 	// An internal note is a note to colleagues, so it never notifies the
-	// reporter; a public reply does.
+	// reporter; a public reply does, to the same address the REST reply uses.
 	notifyRequester := !isInternal
+	var reporterEmail string
+	if notifyRequester {
+		reporterEmail = s.tickets.ReplyRecipient(ctx, t, actor)
+	}
 
 	// reopenTargetStatusID is only consulted when a RoleUser replies to a
 	// Resolved ticket, and add_reply is staff-and-admin only — so the
@@ -653,7 +868,7 @@ func (s *Server) handleListTickets(ctx context.Context, req mcpgo.CallToolReques
 	if err != nil {
 		return storeErr(ctx, "list tickets", err)
 	}
-	return jsonResult(tickets)
+	return ticketResult(caller.Role, tickets)
 }
 
 func (s *Server) handleAssignTicket(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -727,7 +942,7 @@ func (s *Server) handleAssignTicket(ctx context.Context, req mcpgo.CallToolReque
 	if err != nil {
 		return storeErr(ctx, "assign ticket", err)
 	}
-	return jsonResult(t)
+	return ticketResult(caller.Role, t)
 }
 
 func (s *Server) handleUpdateTicketStatus(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -766,7 +981,7 @@ func (s *Server) handleUpdateTicketStatus(ctx context.Context, req mcpgo.CallToo
 	if err != nil {
 		return storeErr(ctx, "update ticket status", err)
 	}
-	return jsonResult(t)
+	return ticketResult(caller.Role, t)
 }
 
 // handleCreateFollowUp is create_follow_up (#349). The rule — staff and admin
@@ -800,7 +1015,7 @@ func (s *Server) handleCreateFollowUp(ctx context.Context, req mcpgo.CallToolReq
 	if err != nil {
 		return storeErr(ctx, "create follow-up", err)
 	}
-	return jsonResult(t)
+	return ticketResult(caller.Role, t)
 }
 
 // catalogCategory is the Category/Type/Item tree as list_categories returns it.
@@ -864,6 +1079,17 @@ func (s *Server) handleListStatuses(ctx context.Context, _ mcpgo.CallToolRequest
 func str(args map[string]any, key string) string {
 	v, _ := args[key].(string)
 	return v
+}
+
+// ticketResult is the exit point for every tool that returns tickets: the same
+// allowed list as the HTTP views (ticket.FilterForViewer), so a requester over
+// MCP is shown what a requester over HTTP is shown.
+func ticketResult(role user.Role, v any) (*mcpgo.CallToolResult, error) {
+	filtered, err := ticket.FilterForViewer(role, v)
+	if err != nil {
+		return errResult("could not encode the ticket")
+	}
+	return jsonResult(filtered)
 }
 
 func jsonResult(v any) (*mcpgo.CallToolResult, error) {

@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { Ticket, Reply, TicketLink, LinkType, Tag, Attachment, Category, TicketType, TicketItem, StatusHistoryEntry, TicketAuditEntry, Assignment, TicketFieldValue, CannedResponse } from './types'
+import type { Ticket, Reply, TicketLink, LinkType, Tag, Attachment, Category, TicketType, TicketItem, StatusHistoryEntry, TicketAuditEntry, TicketFollower, Assignment, TicketFieldValue, CannedResponse, Priority } from './types'
 
 export interface CreateTicketInput {
   subject: string
@@ -12,9 +12,30 @@ export interface CreateTicketInput {
   guest_name?: string
   guest_phone?: string
   custom_fields?: Record<string, string>
+  // Staff and administrators only (#444): who the ticket is for when it is not
+  // the caller. At most one; the server refuses both, and refuses either from
+  // a requester.
+  reporter_user_id?: string
+  reporter_email?: string
 }
 
-export type TicketScope = 'mine' | 'unassigned' | 'all'
+// A person the requester picker offers: all it draws, and no more.
+export interface RequesterHit {
+  id: string
+  display_name: string
+  email: string
+}
+
+// Accounts to file a ticket for, found by name or address. Staff and
+// administrators only; the server answers 400 under two characters and returns
+// at most ten.
+export async function lookupRequesters(q: string): Promise<RequesterHit[]> {
+  const res = await api.get<RequesterHit[]>('/users/lookup', { params: { q } })
+  return res.data ?? []
+}
+
+// 'visible' is every ticket the caller can see, for staff/admin search (#444).
+export type TicketScope = 'mine' | 'unassigned' | 'all' | 'visible'
 
 export async function listTickets(params?: {
   assignee_group_id?: string
@@ -51,6 +72,9 @@ export async function updateTicket(
     category_id?: string
     type_id?: string | null
     item_id?: string | null
+    // Staff and admin only; refused (409 ticket_closed) on a Resolved or
+    // Closed ticket. The server re-matches the SLA policy (#443).
+    priority?: Priority
   }
 ): Promise<Ticket> {
   const res = await api.patch<Ticket>(`/tickets/${id}`, patch)
@@ -91,6 +115,20 @@ export async function listReplies(ticketId: string): Promise<Reply[]> {
 export async function listStatusHistory(ticketId: string): Promise<StatusHistoryEntry[]> {
   const res = await api.get<StatusHistoryEntry[]>(`/tickets/${ticketId}/history`)
   return res.data
+}
+
+export async function listTicketFollowers(ticketId: string): Promise<TicketFollower[]> {
+  const res = await api.get<TicketFollower[]>(`/tickets/${ticketId}/followers`)
+  return res.data ?? []
+}
+
+// Both are idempotent and answer 204 (#441).
+export async function followTicket(ticketId: string): Promise<void> {
+  await api.put(`/tickets/${ticketId}/follow`)
+}
+
+export async function unfollowTicket(ticketId: string): Promise<void> {
+  await api.delete(`/tickets/${ticketId}/follow`)
 }
 
 export async function listTicketAudit(ticketId: string): Promise<TicketAuditEntry[]> {

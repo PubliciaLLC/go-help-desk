@@ -7,7 +7,7 @@ import { useSiteBranding } from '@/hooks/useSiteBranding'
 import { InsecureConfigBanner } from '@/components/InsecureConfigBanner'
 import { BrandLogo } from '@/components/BrandLogo'
 import { Button } from '@/components/ui/button'
-import { TicketIcon, UsersIcon, SettingsIcon, LogOutIcon, HomeIcon, FolderIcon, CircleDotIcon, ShieldIcon, UsersRoundIcon, TagIcon, SlidersIcon, KeyIcon, MessageSquareTextIcon, PlugIcon, WebhookIcon, MenuIcon,
+import { TicketIcon, UsersIcon, SettingsIcon, LogOutIcon, HomeIcon, FolderIcon, CircleDotIcon, ShieldIcon, UsersRoundIcon, TagIcon, SlidersIcon, KeyIcon, MessageSquareTextIcon, PlugIcon, WebhookIcon, RouteIcon, MenuIcon,
   UserIcon, HistoryIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -56,7 +56,7 @@ function SidebarContent({ user, branding, onNavigate, onLogout }: SidebarContent
         <BrandLogo
           {...branding}
           imgClassName="h-8 max-w-[160px] object-contain"
-          fallbackClassName="text-lg font-semibold text-gray-900"
+          fallbackClassName="text-lg font-semibold text-gray-900 wrap-anywhere"
         />
       </div>
 
@@ -89,13 +89,14 @@ function SidebarContent({ user, branding, onNavigate, onLogout }: SidebarContent
             <NavItem to="/admin/api-keys" icon={<KeyIcon className="h-4 w-4" />} label="API Keys" onNavigate={onNavigate} />
             <NavItem to="/admin/oauth-clients" icon={<PlugIcon className="h-4 w-4" />} label="OAuth Clients" onNavigate={onNavigate} />
             <NavItem to="/admin/webhooks" icon={<WebhookIcon className="h-4 w-4" />} label="Webhooks" onNavigate={onNavigate} />
+            <NavItem to="/admin/routing" icon={<RouteIcon className="h-4 w-4" />} label="Routing" onNavigate={onNavigate} />
             <NavItem to="/admin/settings" icon={<SettingsIcon className="h-4 w-4" />} label="Settings" onNavigate={onNavigate} />
           </>
         )}
       </nav>
 
       <div className="border-t p-3 space-y-2">
-        <div className="px-3 text-xs text-gray-500 truncate">{user?.email}</div>
+        <div className="px-3 text-xs text-gray-500 truncate" title={user?.email}>{user?.email}</div>
         {/* Your own account, not an admin screen: it sits with the identity
             it belongs to rather than in the nav list above. */}
         <NavItem

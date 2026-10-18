@@ -1,4 +1,6 @@
-import type { SLAColor, SLATargetStatus, TicketSLA } from '@/api/types'
+import { useEffect, useRef, useState } from 'react'
+
+import type { SLAColor, SLAEarlierRecord, SLATargetStatus, TicketSLA } from '@/api/types'
 import { slaTargetText } from '@/lib/format'
 
 // Renders the response and resolution targets of a ticket's live SLA status.
@@ -23,7 +25,68 @@ export function SLAIndicator({
     <>
       <SLATarget label="Response" target={sla.response} compact={compact} />
       <SLATarget label="Resolution" target={sla.resolution} compact={compact} />
+      {!compact && sla.earlier != null && <SLARestarted earlier={sla.earlier} />}
     </>
+  )
+}
+
+// "SLA restarted" (#443): the SLA clock really restarted, which only a reopen
+// does (a staff priority change keeps the clock and never shows this). The
+// badge opens a small panel with the earlier record's facts; the record itself
+// stays on the server. Escape closes the panel and gives focus back to the
+// badge.
+function SLARestarted({ earlier }: { earlier: SLAEarlierRecord }) {
+  const [open, setOpen] = useState(false)
+  const badge = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      setOpen(false)
+      badge.current?.focus()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [open])
+
+  return (
+    <span className="relative inline-block">
+      <button
+        ref={badge}
+        type="button"
+        data-testid="sla-restarted"
+        aria-expanded={open}
+        title="The SLA clock restarted when this ticket was reopened. The earlier record is kept; select to see it."
+        onClick={() => setOpen((o) => !o)}
+        className="inline-flex items-center rounded-full border border-gray-300 px-2 py-0.5 text-xs font-medium text-gray-700 underline decoration-dotted underline-offset-2 hover:bg-gray-50"
+      >
+        SLA restarted
+      </button>
+      {open && (
+        <dl
+          data-testid="sla-earlier"
+          className="absolute left-0 z-10 mt-1 w-64 space-y-1 rounded-md border border-gray-200 bg-white p-3 text-xs text-gray-700 shadow-md"
+        >
+          <div>
+            <dt className="font-medium text-gray-900">Earlier SLA record</dt>
+            <dd>{earlier.policy_name}</dd>
+          </div>
+          <div>
+            <dt className="text-gray-500">Started</dt>
+            <dd>{new Date(earlier.started_at).toLocaleString()}</dd>
+          </div>
+          <div>
+            <dt className="text-gray-500">Replaced</dt>
+            <dd>{new Date(earlier.superseded_at).toLocaleString()}</dd>
+          </div>
+          <div>
+            <dt className="text-gray-500">Outcome</dt>
+            <dd>{earlier.outcome === 'breached' ? 'Breached' : 'Met'}</dd>
+          </div>
+        </dl>
+      )}
+    </span>
   )
 }
 

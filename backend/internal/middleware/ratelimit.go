@@ -60,8 +60,15 @@ func NewRateLimiter(limit int, window time.Duration) *RateLimiter {
 
 // Allow records an attempt against key and reports whether it may proceed.
 func (rl *RateLimiter) Allow(key string) bool {
+	ok, _ := rl.Take(key)
+	return ok
+}
+
+// Take is Allow that also says which window the attempt was counted in, for a
+// caller that may need to give it back with Refund.
+func (rl *RateLimiter) Take(key string) (ok bool, window time.Time) {
 	if rl.limit <= 0 {
-		return true
+		return true, time.Time{}
 	}
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
@@ -75,7 +82,39 @@ func (rl *RateLimiter) Allow(key string) bool {
 		rl.resetAt = now.Add(rl.window)
 	}
 	rl.counts[key]++
-	return rl.counts[key] <= rl.limit
+	return rl.counts[key] <= rl.limit, rl.resetAt
+}
+
+// Refund gives back one attempt Take counted against key, for a caller that
+// spends before the work and then finds the work did not happen. It never takes
+// the count below zero. window is what Take returned: if the window has since
+// rolled over, the attempt was counted in a window that no longer exists, and
+// giving one back would take a slot the new window never lost.
+func (rl *RateLimiter) Refund(key string, window time.Time) {
+	if rl.limit <= 0 {
+		return
+	}
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	if !rl.resetAt.Equal(window) {
+		return
+	}
+	if rl.counts[key] > 0 {
+		rl.counts[key]--
+	}
+}
+
+// Remaining is the time until the current window ends, which is when every
+// counter is cleared. It is what a 429's Retry-After should say: the window is
+// shared by all keys and fixed, so a caller refused 40 seconds in can retry in
+// 20, not 60. Zero for a disabled limiter, and never negative.
+func (rl *RateLimiter) Remaining() time.Duration {
+	if rl.limit <= 0 {
+		return 0
+	}
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	return max(0, time.Until(rl.resetAt))
 }
 
 // Exceeded reports whether a key has already spent its budget, WITHOUT

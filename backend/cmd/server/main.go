@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/gob"
 	"errors"
 	"fmt"
@@ -25,6 +26,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/customfieldstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/groupstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/outboxstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/passwordresetstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/registrationstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/reputationstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/sessionstore"
@@ -41,13 +43,13 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/passwordreset"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/tag"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
-	"github.com/publiciallc/go-help-desk/backend/internal/domain/webauthn"
 	"github.com/publiciallc/go-help-desk/backend/internal/mcp"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 	"github.com/publiciallc/go-help-desk/backend/internal/server"
@@ -66,6 +68,17 @@ func main() {
 		}
 		if err := resetFactors(context.Background(), email); err != nil {
 			slog.Error("reset-factors", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "unlock" {
+		var email string
+		if len(os.Args) > 2 {
+			email = os.Args[2]
+		}
+		if err := unlock(context.Background(), email, os.Stdout); err != nil {
+			slog.Error("unlock", "error", err)
 			os.Exit(1)
 		}
 		return
@@ -144,6 +157,20 @@ func run() error {
 	}
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})))
 
+	// APP_ENV is set but has no effect; the message helps developers understand that.
+	_, appEnvSet := os.LookupEnv("APP_ENV")
+	if msg, shouldLog := appEnvNotice(appEnvSet); shouldLog {
+		slog.Info(msg)
+	}
+
+	// Uploads are refused (503) while this directory cannot be written, and
+	// the admin panel says so; everything else runs. The check repeats on
+	// every upload, so fixing the directory needs no restart.
+	if err := server.CheckAttachmentDir(cfg.AttachmentDir); err != nil {
+		slog.Warn("ATTACHMENT_DIR is not writable: attachment uploads are disabled until it is fixed",
+			"dir", cfg.AttachmentDir, "error", err)
+	}
+
 	// A copied .env.example starts cleanly and is entirely forgeable: the
 	// example SESSION_SECRET is 47 characters, so the 32-character minimum
 	// does not catch it. Refusing to boot would be hostile to anyone kicking
@@ -172,6 +199,24 @@ func run() error {
 	sqlDB := stdlib.OpenDBFromPool(pool)
 	q := dbgen.New(sqlDB)
 
+	// ── JWT Secret ─────────────────────────────────────────────────────────────
+	// Resolve the JWT signing key. If cfg.JWTSecret is 32+ bytes, use it as-is.
+	// Otherwise, generate a random 32-byte key, store it in the database
+	// (insert-if-absent), and use that. After resolution, cfg.JWTSecret holds
+	// the effective key.
+	secretStore := database.NewSecretStore(q)
+	jwtSecret, source, discarded, err := resolveJWTSecret(ctx, cfg.JWTSecret, secretStore, rand.Reader)
+	if err != nil {
+		return fmt.Errorf("resolving jwt signing key: %w", err)
+	}
+	if discarded {
+		slog.Warn("JWT_SECRET is an example value from the repository and was ignored; using a generated key instead")
+	}
+	cfg.JWTSecret = jwtSecret
+	if source == "database" {
+		slog.Info("jwt signing key: using generated key stored in the database (JWT_SECRET unset or under 32 bytes)")
+	}
+
 	// ── Stores ────────────────────────────────────────────────────────────────
 	uStore := userstore.New(q)
 	tStore := ticketstore.New(q)
@@ -189,11 +234,13 @@ func run() error {
 	// ── Domain services ───────────────────────────────────────────────────────
 	tagStore := tagstore.New(q)
 
-	userSvc := user.NewService(uStore, user.WithAuditStore(auStore))
+	// adminSvc supplies the deadline after which an old password hash is
+	// refused at sign-in (#453).
+	adminSvc := admin.NewService(aStore)
+	userSvc := user.NewService(uStore, user.WithAuditStore(auStore), user.WithPasswordExpiry(adminSvc))
 	categorySvc := category.NewService(cStore)
 	groupSvc := group.NewService(gStore)
 	tagSvc := tag.NewService(tagStore)
-	adminSvc := admin.NewService(aStore)
 
 	// Say so when attachments are not being scanned.
 	//
@@ -258,13 +305,30 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("initialising email dispatcher: %w", err)
 	}
-	webhookDisp := notify.NewWebhookDispatcher(authStore, cfg.BaseURL, slog.Default())
+	// Said once at startup so "why did nobody get an email" has an answer in
+	// the log (#456). Half a configuration is a warning, not a quiet off.
+	if msg, misconfigured := cfg.EmailStatus(); misconfigured {
+		slog.Warn(msg)
+	} else {
+		slog.Info(msg)
+	}
 	// Requests queue notifications in the outbox and return; outboxWorker,
 	// started once the server exists, sends them (#164). The worker needs the
 	// server for the send-time guest-link step, and the ticket service needs a
 	// dispatcher before the server can be built, hence the late assignment.
-	outboxStore := outboxstore.New(q)
+	outboxStore := outboxstore.NewWithDB(sqlDB)
 	var outboxWorker *notify.Worker
+	// Each subscribed hook gets its own queued, retried delivery (#448); the
+	// worker below sends them.
+	webhookDisp := notify.NewWebhookDispatcher(authStore, cfg.BaseURL, slog.Default()).
+		WithQueue(notify.WebhookQueue{
+			Outbox: outboxStore, Hooks: authStore, History: authStore,
+			Wake: func() {
+				if outboxWorker != nil {
+					outboxWorker.Wake()
+				}
+			},
+		})
 	dispatcher := notify.NewOutboxDispatcher(outboxStore, outboxChannels(), func() {
 		if outboxWorker != nil {
 			outboxWorker.Wake()
@@ -277,14 +341,36 @@ func run() error {
 	// the request.
 	registrationSvc := registration.NewService(regStore, userSvc, emailDisp, dispatcher, cfg.BaseURL)
 
+	// ── Password reset (#451) ─────────────────────────────────────────────────
+	// "Forgot password" queues its request on the same outbox channel as signup
+	// verification; the send-time step is the server's (SendPasswordReset), wired
+	// below once it exists. The link's host is BASE_URL, never the request's.
+	passwordResetSvc := passwordreset.NewService(passwordresetstore.New(q), userSvc, emailDisp, dispatcher, auStore,
+		adminSvc.SAMLEnabled, cfg.BaseURL, slog.Default())
+
 	// ── Plugin registry ───────────────────────────────────────────────────────
 	pluginRegistry := plugin.NewRegistry()
 
 	// ── Ticket service ────────────────────────────────────────────────────────
 	// txRunner groups each composite ticket write — the ticket row, its status
-	// history, its audit entry — into a single transaction.
-	txRunner := txrunner.New(sqlDB)
+	// history, its audit entry — into a single transaction, and writes the
+	// outbox rows for the change's event in that same transaction (#506). The
+	// staff fan-out (#441) happens in the worker, on the change's email row
+	// (see outboxSenders below), not on the request.
+	txRunner := txrunner.New(sqlDB, outboxChannels(), func() {
+		if outboxWorker != nil {
+			outboxWorker.Wake()
+		}
+	})
+	// The dispatcher is for what is not a change to a ticket: the guest's link
+	// resend.
 	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, txRunner, slaSvc)
+	// The SLA re-match a priority change makes is gated on the same live
+	// toggle as AttachPolicy (#443).
+	ticketSvc.SetSLAEnabled(slaToggle(adminSvc, slog.Default()))
+	// The ticket service needs the dispatcher and the dispatcher's redelivery
+	// needs the ticket service: this closes the loop.
+	webhookDisp.SetSource(server.NewWebhookEventSource(ticketSvc))
 	if err := ticketSvc.LoadSystemStatuses(ctx); err != nil {
 		return fmt.Errorf("loading system statuses: %w", err)
 	}
@@ -335,13 +421,10 @@ func run() error {
 	// Passkeys. The relying party is derived from BASE_URL: a credential is
 	// bound to its origin, so that setting decides whether passkey
 	// authentication works at all rather than only how links are built. An
-	// unusable value is refused here rather than defaulted, because a default
-	// would produce an instance whose passkeys silently never verify.
+	// unusable value turns passkeys off with a warning instead of stopping
+	// startup (#494); see configurePasskeys.
 	passkeyStore := webauthnstore.New(q)
-	passkeySvc, err := webauthn.NewService(cfg.BaseURL, adminSvc.SiteName(ctx), slog.Default())
-	if err != nil {
-		return fmt.Errorf("configuring passkeys: %w", err)
-	}
+	passkeySvc, passkeyReason := configurePasskeys(cfg.BaseURL, adminSvc.SiteName(ctx), slog.Default())
 
 	srv := server.New(
 		cfg,
@@ -369,6 +452,10 @@ func run() error {
 		// that must not be per request.
 		server.WithReputationLookup(repStore),
 		server.WithAuditStore(auStore),
+		server.WithPasskeysUnavailable(passkeyReason),
+		server.WithEmailHealth(outboxStore),
+		server.WithWebhookRedeliverer(webhookDisp),
+		server.WithPasswordReset(passwordResetSvc),
 	)
 
 	srv.InitSAML(ctx)
@@ -385,7 +472,14 @@ func run() error {
 	// Wrapped, never bare: Handler() authenticates nothing on its own, and this
 	// mux sits outside srv's middleware chain. Mounted directly, every MCP tool
 	// was reachable with no credentials.
-	mux.Handle("/mcp/", srv.ProtectMCP(mcpSrv.Handler()))
+	mcpHandler := srv.ProtectMCP(mcpSrv.Handler())
+	// "/mcp" must be registered as well as "/mcp/": the mux answers an exact
+	// "/mcp" with a 307 to "/mcp/" before any handler runs, so without this line
+	// the Streamable HTTP endpoint is redirected ahead of the auth chain, and
+	// clients that do not re-POST across a redirect cannot connect. The CI smoke
+	// check on /mcp reads 307 instead of 401 if it goes missing.
+	mux.Handle("/mcp", mcpHandler)  // Streamable HTTP
+	mux.Handle("/mcp/", mcpHandler) // /mcp/ (Streamable HTTP alias), /mcp/sse, /mcp/message
 	mux.Handle("/api/", srv)
 	mux.Handle("/health", srv)
 	mux.Handle("/", server.NewSPAHandler(ui.FS()))
@@ -402,9 +496,15 @@ func run() error {
 	// it gets the send-time step that creates them. Rows still queued at
 	// shutdown stay queued and are sent after the next start.
 	outboxSenders := outboxSenderMap(
-		notify.NewGuestLinkDispatcher(emailDisp, srv.PrepareGuestLink),
+		// A staff row gets its address here, at send time (#441).
+		// A change's row is split here, first, into the requester's mail and
+		// one mail per staff member (#506); every other row goes on to be sent.
+		notify.NewChangeSplitter(
+			notify.NewStaffMailDispatcher(notify.NewGuestLinkDispatcher(emailDisp, srv.PrepareGuestLink), userSvc, srv),
+			outboxStore, func() { outboxWorker.Wake() },
+			userSvc, groupSvc, tStore, adminSvc.StaffEmailOverrides, slog.Default()),
 		webhookDisp,
-		notify.NewVerificationDispatcher(registrationSvc.SendVerification),
+		notify.NewVerificationDispatcher(registrationSvc.SendVerification).WithPasswordReset(srv.SendPasswordReset),
 	)
 	if err := checkOutboxWiring(dispatcher.Channels(), outboxSenders); err != nil {
 		return fmt.Errorf("wiring the notification outbox: %w", err)
@@ -572,4 +672,18 @@ func emitScanWarning(log *slog.Logger, envAddr, settingAddr string) {
 			"scanner", addr,
 			"why", "clamav/clamav is published for linux/amd64 only")
 	}
+}
+
+// appEnvNotice returns a message and a flag indicating whether to log it.
+// The message is returned whenever APP_ENV is present in the environment,
+// whatever its value. Setting APP_ENV is harmless
+// but has no effect; the message helps developers understand that.
+func appEnvNotice(set bool) (string, bool) {
+	// Takes whether the variable is present in the environment, not the
+	// config value: Config.AppEnv defaults to "production", so the value
+	// cannot tell "unset" from "set to production".
+	if !set {
+		return "", false
+	}
+	return "APP_ENV is set but has no effect; it is ignored", true
 }

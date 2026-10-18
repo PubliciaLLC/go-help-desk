@@ -96,8 +96,34 @@ func (q *Queries) DeleteNotification(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
+const emailOutboxHealth = `-- name: EmailOutboxHealth :one
+SELECT count(*)::bigint AS failing,
+       COALESCE((array_agg(last_error ORDER BY COALESCE(failed_at, created_at) DESC))[1], '')::text AS last_error
+FROM notification_outbox
+WHERE channel IN ('email', 'verification')
+  AND last_error IS NOT NULL
+  AND (failed_at IS NULL OR failed_at > now() - interval '24 hours')
+`
+
+type EmailOutboxHealthRow struct {
+	Failing   int64  `json:"failing"`
+	LastError string `json:"last_error"`
+}
+
+// What the admin email warning reads (#456): email and signup-verification rows that are retrying after
+// an error, or gave up in the last day, and the newest of their error texts.
+// Delivered rows are deleted, so a healthy mailer leaves nothing to count, and
+// a failed row older than a day no longer says anything about now.
+func (q *Queries) EmailOutboxHealth(ctx context.Context) (EmailOutboxHealthRow, error) {
+	row := q.db.QueryRowContext(ctx, emailOutboxHealth)
+	var i EmailOutboxHealthRow
+	err := row.Scan(&i.Failing, &i.LastError)
+	return i, err
+}
+
 const enqueueNotification = `-- name: EnqueueNotification :exec
 INSERT INTO notification_outbox (id, channel, event) VALUES ($1, $2, $3)
+ON CONFLICT (id) DO NOTHING
 `
 
 type EnqueueNotificationParams struct {
@@ -106,6 +132,9 @@ type EnqueueNotificationParams struct {
 	Event   json.RawMessage `json:"event"`
 }
 
+// A repeat of an id is ignored, so the webhook fan-out, whose row ids derive
+// from the fan-out row, can be re-run after a crash without queueing a hook
+// twice (#448).
 func (q *Queries) EnqueueNotification(ctx context.Context, arg EnqueueNotificationParams) error {
 	_, err := q.db.ExecContext(ctx, enqueueNotification, arg.ID, arg.Channel, arg.Event)
 	return err
@@ -142,4 +171,36 @@ type RetryNotificationParams struct {
 func (q *Queries) RetryNotification(ctx context.Context, arg RetryNotificationParams) error {
 	_, err := q.db.ExecContext(ctx, retryNotification, arg.ID, arg.AvailableAt, arg.LastError)
 	return err
+}
+
+const rewriteNotificationEvent = `-- name: RewriteNotificationEvent :exec
+UPDATE notification_outbox SET event = $2 WHERE id = $1
+`
+
+type RewriteNotificationEventParams struct {
+	ID    uuid.UUID       `json:"id"`
+	Event json.RawMessage `json:"event"`
+}
+
+// Replaces a row's event. The webhook dispatcher clears the content of a row
+// whose delivery has finally failed, so it does not sit for the 30 days failed
+// rows are kept (#448).
+func (q *Queries) RewriteNotificationEvent(ctx context.Context, arg RewriteNotificationEventParams) error {
+	_, err := q.db.ExecContext(ctx, rewriteNotificationEvent, arg.ID, arg.Event)
+	return err
+}
+
+const takeNotification = `-- name: TakeNotification :execrows
+DELETE FROM notification_outbox WHERE id = $1
+`
+
+// Deletes a row and says whether this call was the one that did. Split uses it
+// to take the parent before queueing its children: zero rows means another
+// worker already split or settled it (#513).
+func (q *Queries) TakeNotification(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, takeNotification, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

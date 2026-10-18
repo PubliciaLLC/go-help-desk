@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
@@ -109,21 +110,24 @@ func (s *Store) UpdateCTI(ctx context.Context, id, categoryID uuid.UUID, typeID,
 
 func (s *Store) Update(ctx context.Context, t ticket.Ticket) error {
 	return s.q.UpdateTicket(ctx, dbgen.UpdateTicketParams{
-		ID:               t.ID,
-		Subject:          t.Subject,
-		Description:      t.Description,
-		TypeID:           database.NullUUID(t.TypeID),
-		ItemID:           database.NullUUID(t.ItemID),
-		Priority:         string(t.Priority),
-		StatusID:         t.StatusID,
-		AssigneeUserID:   database.NullUUID(t.AssigneeUserID),
-		AssigneeGroupID:  database.NullUUID(t.AssigneeGroupID),
-		ResolutionNotes:  database.NullString(t.ResolutionNotes),
-		ResolvedAt:       database.NullTime(t.ResolvedAt),
-		ClosedAt:         database.NullTime(t.ClosedAt),
-		UpdatedAt:        time.Now(),
-		PendingSince:     database.NullTime(t.PendingSince),
-		SlaPausedSeconds: t.SLAPausedSeconds,
+		ID:                        t.ID,
+		Subject:                   t.Subject,
+		Description:               t.Description,
+		TypeID:                    database.NullUUID(t.TypeID),
+		ItemID:                    database.NullUUID(t.ItemID),
+		Priority:                  string(t.Priority),
+		StatusID:                  t.StatusID,
+		AssigneeUserID:            database.NullUUID(t.AssigneeUserID),
+		AssigneeGroupID:           database.NullUUID(t.AssigneeGroupID),
+		ResolutionNotes:           database.NullString(t.ResolutionNotes),
+		ResolvedAt:                database.NullTime(t.ResolvedAt),
+		ClosedAt:                  database.NullTime(t.ClosedAt),
+		UpdatedAt:                 time.Now(),
+		PendingSince:              database.NullTime(t.PendingSince),
+		SlaPausedSeconds:          t.SLAPausedSeconds,
+		ReopenCount:               int32(t.ReopenCount),
+		LastReopenedAt:            database.NullTime(t.LastReopenedAt),
+		PausedSecondsAtLastReopen: t.PausedSecondsAtLastReopen,
 	})
 }
 
@@ -457,6 +461,20 @@ func (s *Store) CTIIsCoherent(ctx context.Context, categoryID uuid.UUID, typeID,
 	return ok.Bool, nil
 }
 
+// ArchivedCTINode names the first archived level among the ids given
+// ("category", "type" or "item"), or "" when none is. A nil id is not checked.
+func (s *Store) ArchivedCTINode(ctx context.Context, categoryID, typeID, itemID *uuid.UUID) (string, error) {
+	level, err := s.q.ArchivedCTINode(ctx, dbgen.ArchivedCTINodeParams{
+		CategoryID: database.NullUUID(categoryID),
+		TypeID:     database.NullUUID(typeID),
+		ItemID:     database.NullUUID(itemID),
+	})
+	if err != nil {
+		return "", fmt.Errorf("checking for archived classification: %w", err)
+	}
+	return level, nil
+}
+
 // CategoryExists reports whether a category id is real.
 func (s *Store) CategoryExists(ctx context.Context, categoryID uuid.UUID) (bool, error) {
 	ok, err := s.q.CategoryExists(ctx, categoryID)
@@ -495,6 +513,36 @@ func (s *Store) UnassignForUser(ctx context.Context, userID uuid.UUID) ([]uuid.U
 		return nil, fmt.Errorf("unassigning tickets: %w", err)
 	}
 	return ids, nil
+}
+
+// UnassignForGroup takes every ticket off a group, and returns their ids.
+// The group row is locked first (LockGroup), so the unassign and the delete
+// that follows in the same transaction see the same set of tickets.
+func (s *Store) UnassignForGroup(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID, error) {
+	if _, err := s.q.LockGroup(ctx, groupID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("group %s: %w", groupID, group.ErrNotFound)
+		}
+		return nil, fmt.Errorf("locking group %s: %w", groupID, err)
+	}
+	ids, err := s.q.UnassignTicketsForGroup(ctx, database.NullUUID(&groupID))
+	if err != nil {
+		return nil, fmt.Errorf("unassigning tickets from group %s: %w", groupID, err)
+	}
+	return ids, nil
+}
+
+// DeleteGroup removes the group row. See ticket.Service.DeleteGroup for why a
+// group is deleted from the ticket store.
+func (s *Store) DeleteGroup(ctx context.Context, groupID uuid.UUID) error {
+	n, err := s.q.DeleteGroup(ctx, groupID)
+	if err != nil {
+		return fmt.Errorf("deleting group %s: %w", groupID, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("group %s: %w", groupID, group.ErrNotFound)
+	}
+	return nil
 }
 
 func (s *Store) ListReplies(ctx context.Context, ticketID uuid.UUID) ([]ticket.Reply, error) {
@@ -538,7 +586,7 @@ func (s *Store) CreateAttachment(ctx context.Context, a ticket.Attachment) error
 func (s *Store) GetAttachmentByID(ctx context.Context, id uuid.UUID) (ticket.Attachment, error) {
 	r, err := s.q.GetAttachmentByID(ctx, id)
 	if err != nil {
-		return ticket.Attachment{}, fmt.Errorf("getting attachment %s: %w", id, err)
+		return ticket.Attachment{}, wrapNotFound(err, "attachment", id.String())
 	}
 	return ticket.Attachment{
 		ID:          r.ID,
@@ -554,6 +602,14 @@ func (s *Store) GetAttachmentByID(ctx context.Context, id uuid.UUID) (ticket.Att
 		VirusName:       database.StringPtr(r.VirusName),
 		ContentMismatch: database.BoolPtr(r.ContentMismatch),
 	}, nil
+}
+
+func (s *Store) AnyAttachmentExists(ctx context.Context) (bool, error) {
+	ok, err := s.q.AnyAttachmentExists(ctx)
+	if err != nil {
+		return false, fmt.Errorf("checking for attachments: %w", err)
+	}
+	return ok, nil
 }
 
 func (s *Store) ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]ticket.Attachment, error) {
@@ -816,54 +872,60 @@ func (s *Store) CountByStatusForAssignee(ctx context.Context, statusID, userID u
 // underlying types, tags ignored). That lets fromRow's mapping logic live
 // in exactly one place instead of being duplicated per query.
 type ticketRow struct {
-	ID               uuid.UUID
-	TrackingNumber   string
-	Subject          string
-	Description      string
-	CategoryID       uuid.UUID
-	TypeID           uuid.NullUUID
-	ItemID           uuid.NullUUID
-	Priority         string
-	StatusID         uuid.UUID
-	AssigneeUserID   uuid.NullUUID
-	AssigneeGroupID  uuid.NullUUID
-	ReporterUserID   uuid.NullUUID
-	GuestEmail       sql.NullString
-	ResolutionNotes  sql.NullString
-	ResolvedAt       sql.NullTime
-	ClosedAt         sql.NullTime
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-	GuestName        string
-	GuestPhone       string
-	PendingSince     sql.NullTime
-	SlaPausedSeconds int64
+	ID                        uuid.UUID
+	TrackingNumber            string
+	Subject                   string
+	Description               string
+	CategoryID                uuid.UUID
+	TypeID                    uuid.NullUUID
+	ItemID                    uuid.NullUUID
+	Priority                  string
+	StatusID                  uuid.UUID
+	AssigneeUserID            uuid.NullUUID
+	AssigneeGroupID           uuid.NullUUID
+	ReporterUserID            uuid.NullUUID
+	GuestEmail                sql.NullString
+	ResolutionNotes           sql.NullString
+	ResolvedAt                sql.NullTime
+	ClosedAt                  sql.NullTime
+	CreatedAt                 time.Time
+	UpdatedAt                 time.Time
+	GuestName                 string
+	GuestPhone                string
+	PendingSince              sql.NullTime
+	SlaPausedSeconds          int64
+	ReopenCount               int32
+	LastReopenedAt            sql.NullTime
+	PausedSecondsAtLastReopen int64
 }
 
 func fromRow(r ticketRow) ticket.Ticket {
 	return ticket.Ticket{
-		ID:               r.ID,
-		TrackingNumber:   ticket.TrackingNumber(r.TrackingNumber),
-		Subject:          r.Subject,
-		Description:      r.Description,
-		CategoryID:       r.CategoryID,
-		TypeID:           database.UUIDPtr(r.TypeID),
-		ItemID:           database.UUIDPtr(r.ItemID),
-		Priority:         ticket.Priority(r.Priority),
-		StatusID:         r.StatusID,
-		AssigneeUserID:   database.UUIDPtr(r.AssigneeUserID),
-		AssigneeGroupID:  database.UUIDPtr(r.AssigneeGroupID),
-		ReporterUserID:   database.UUIDPtr(r.ReporterUserID),
-		GuestEmail:       database.StringPtr(r.GuestEmail),
-		GuestName:        r.GuestName,
-		GuestPhone:       r.GuestPhone,
-		ResolutionNotes:  database.StringPtr(r.ResolutionNotes),
-		ResolvedAt:       database.TimePtr(r.ResolvedAt),
-		ClosedAt:         database.TimePtr(r.ClosedAt),
-		CreatedAt:        r.CreatedAt,
-		UpdatedAt:        r.UpdatedAt,
-		PendingSince:     database.TimePtr(r.PendingSince),
-		SLAPausedSeconds: r.SlaPausedSeconds,
+		ID:                        r.ID,
+		TrackingNumber:            ticket.TrackingNumber(r.TrackingNumber),
+		Subject:                   r.Subject,
+		Description:               r.Description,
+		CategoryID:                r.CategoryID,
+		TypeID:                    database.UUIDPtr(r.TypeID),
+		ItemID:                    database.UUIDPtr(r.ItemID),
+		Priority:                  ticket.Priority(r.Priority),
+		StatusID:                  r.StatusID,
+		AssigneeUserID:            database.UUIDPtr(r.AssigneeUserID),
+		AssigneeGroupID:           database.UUIDPtr(r.AssigneeGroupID),
+		ReporterUserID:            database.UUIDPtr(r.ReporterUserID),
+		GuestEmail:                database.StringPtr(r.GuestEmail),
+		GuestName:                 r.GuestName,
+		GuestPhone:                r.GuestPhone,
+		ResolutionNotes:           database.StringPtr(r.ResolutionNotes),
+		ResolvedAt:                database.TimePtr(r.ResolvedAt),
+		ClosedAt:                  database.TimePtr(r.ClosedAt),
+		CreatedAt:                 r.CreatedAt,
+		UpdatedAt:                 r.UpdatedAt,
+		PendingSince:              database.TimePtr(r.PendingSince),
+		SLAPausedSeconds:          r.SlaPausedSeconds,
+		ReopenCount:               int(r.ReopenCount),
+		LastReopenedAt:            database.TimePtr(r.LastReopenedAt),
+		PausedSecondsAtLastReopen: r.PausedSecondsAtLastReopen,
 	}
 }
 

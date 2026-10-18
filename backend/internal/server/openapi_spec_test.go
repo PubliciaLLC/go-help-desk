@@ -26,6 +26,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -167,7 +168,13 @@ func (probeSessionStore) Get(r *http.Request, name string) (*sessions.Session, e
 		return s, nil // IsNew: no session
 	}
 	s.IsNew = false
-	s.Values[auth.SessionDataKey] = auth.SessionData{UserID: uuid.New(), Role: user.Role(role), MFAPassed: mfa == "mfa"}
+	// A half-signed-in session needs a live deadline: without one it counts as
+	// saved before the upgrade and is expired (#452), which would turn every
+	// "nomfa" probe into "no session".
+	s.Values[auth.SessionDataKey] = auth.SessionData{
+		UserID: uuid.New(), Role: user.Role(role), MFAPassed: mfa == "mfa",
+		PendingUntil: time.Now().Add(time.Hour),
+	}
 	return s, nil
 }
 
@@ -178,6 +185,16 @@ func (probeOAuthClients) GetByClientID(_ context.Context, id string) (auth.OAuth
 		return auth.OAuthClient{}, errors.New("unknown client")
 	}
 	return auth.OAuthClient{ClientID: id}, nil
+}
+
+// GetWithUser is what BearerAuth calls (#420): the client and the staff-role
+// service user it acts as.
+func (p probeOAuthClients) GetWithUser(ctx context.Context, id string) (auth.OAuthClient, user.User, error) {
+	c, err := p.GetByClientID(ctx, id)
+	if err != nil {
+		return auth.OAuthClient{}, user.User{}, err
+	}
+	return c, user.User{ID: uuid.New(), DisplayName: "probe", Role: user.RoleStaff, ServiceAccount: true}, nil
 }
 
 type probeKey struct {
@@ -895,8 +912,11 @@ type routeAuth struct {
 
 // Middleware the probe does not need to run: not authentication.
 var probeIgnored = []string{
-	"chi/v5/middleware.RequestID", "chi/v5/middleware.Recoverer",
+	"chi/v5/middleware.RequestID", "server.jsonRecoverer",
 	"server.requestLogger", "server.securityHeaders", "server.reputationDeadline",
+	// Answers 503 when the instance has no passkey service (#494); says
+	// nothing about who may call the route.
+	"Server).requirePasskeys",
 }
 
 // minimalScopes shrinks all to a smallest set that admits still accepts,

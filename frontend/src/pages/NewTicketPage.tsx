@@ -13,6 +13,8 @@ import { extractError } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
 import { Layout } from '@/components/Layout'
 import { AttachmentUpload, type UploadState } from '@/components/AttachmentUpload'
+import { RequesterPicker } from '@/components/ticket/RequesterPicker'
+import { ME, reporterFields, type Requester } from '@/components/ticket/requester'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -22,6 +24,14 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import type { Assignment } from '@/api/types'
 
 const PRIORITIES = ['critical', 'high', 'medium', 'low'] as const
+
+// Staff and administrators are sent archived rows too, so they can recognise a
+// classification they know from older tickets. Nobody may newly pick one (the
+// server answers 400, #421), so they are listed but disabled, with the reason in
+// the label rather than leaving a greyed row unexplained.
+function optionLabel(row: { name: string; active: boolean }): string {
+  return row.active ? row.name : `${row.name} (archived)`
+}
 
 function CustomFieldInput({
   field,
@@ -92,6 +102,7 @@ export function NewTicketPage() {
   const [customFieldValues, setCustomFieldValues] = useState<Record<string, string>>({})
   const [files, setFiles] = useState<File[]>([])
   const [uploadStates, setUploadStates] = useState<Record<string, UploadState> | undefined>()
+  const [requester, setRequester] = useState<Requester>(ME)
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [createdTicketId, setCreatedTicketId] = useState<string | null>(null)
@@ -150,9 +161,15 @@ export function NewTicketPage() {
       }
     }
 
+    // Only staff and administrators choose a requester; the server refuses it
+    // from anybody else, so a requester's form never sends one.
+    const who = isStaffOrAdmin ? reporterFields(requester) : { fields: {} }
+    if ('error' in who) { setError(who.error); return }
+
     setSubmitting(true)
     try {
       const t = await createTicket({
+        ...who.fields,
         subject,
         description,
         category_id: categoryId,
@@ -214,6 +231,10 @@ export function NewTicketPage() {
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-5">
+              {isStaffOrAdmin && (
+                <RequesterPicker value={requester} onChange={setRequester} disabled={isUploading} />
+              )}
+
               <div className="space-y-1">
                 <Label htmlFor="subject">Subject *</Label>
                 <Input
@@ -254,7 +275,7 @@ export function NewTicketPage() {
                   >
                     <option value="">Select…</option>
                     {categories.map((c) => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
+                      <option key={c.id} value={c.id} disabled={!c.active}>{optionLabel(c)}</option>
                     ))}
                   </Select>
                 </div>
@@ -273,7 +294,7 @@ export function NewTicketPage() {
                   >
                     <option value="">Select…</option>
                     {types.map((t) => (
-                      <option key={t.id} value={t.id}>{t.name}</option>
+                      <option key={t.id} value={t.id} disabled={!t.active}>{optionLabel(t)}</option>
                     ))}
                   </Select>
                 </div>
@@ -289,7 +310,7 @@ export function NewTicketPage() {
                     >
                       <option value="">Select…</option>
                       {items.map((i) => (
-                        <option key={i.id} value={i.id}>{i.name}</option>
+                        <option key={i.id} value={i.id} disabled={!i.active}>{optionLabel(i)}</option>
                       ))}
                     </Select>
                   </div>

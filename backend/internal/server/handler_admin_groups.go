@@ -1,6 +1,7 @@
 package server
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -8,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
+	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
 
 // Admin group management: groups, their members, and their CTI scopes.
@@ -95,9 +97,21 @@ func (s *Server) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid group ID")
 		return
 	}
-	if err := s.groups.Delete(r.Context(), id); err != nil {
+	// The group's tickets go back to the queue in the same transaction as the
+	// delete, one audit entry each (#419). s.groups.Delete on its own let the
+	// foreign key clear them with nothing in the trail.
+	var actorID *uuid.UUID
+	if actor := authmw.GetActor(r); actor != nil {
+		actorID = &actor.UserID
+	}
+	moved, err := s.tickets.DeleteGroup(r.Context(), actorID, id)
+	if err != nil {
 		handleError(w, err)
 		return
+	}
+	if moved > 0 {
+		slog.InfoContext(r.Context(), "returned the deleted group's tickets to the queue",
+			"group_id", id, "tickets", moved)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -115,6 +129,10 @@ func (s *Server) handleAddGroupMember(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
+	if body.UserID == uuid.Nil {
+		Error(w, http.StatusBadRequest, "bad_request", "user_id is required")
+		return
+	}
 	if err := s.groups.AddMember(r.Context(), groupID, body.UserID); err != nil {
 		handleError(w, err)
 		return
@@ -126,6 +144,11 @@ func (s *Server) handleListGroupMembers(w http.ResponseWriter, r *http.Request) 
 	groupID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid group ID")
+		return
+	}
+	// An unknown group is a 404, not an empty list (#418).
+	if _, err := s.groups.GetByID(r.Context(), groupID); err != nil {
+		handleError(w, err)
 		return
 	}
 	memberIDs, err := s.groups.ListMembers(r.Context(), groupID)
@@ -168,6 +191,10 @@ func (s *Server) handleListGroupScopes(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid group ID")
 		return
 	}
+	if _, err := s.groups.GetByID(r.Context(), groupID); err != nil {
+		handleError(w, err)
+		return
+	}
 	scopes, err := s.groups.ListScopes(r.Context(), groupID)
 	if err != nil {
 		handleError(w, err)
@@ -188,6 +215,10 @@ func (s *Server) handleAddGroupScope(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+	if body.CategoryID == uuid.Nil {
+		Error(w, http.StatusBadRequest, "bad_request", "category_id is required")
 		return
 	}
 	if err := s.groups.AddScope(r.Context(), group.GroupScope{

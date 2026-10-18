@@ -13,6 +13,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/antivirus"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
@@ -138,10 +139,11 @@ func (s *Service) GetOIDCConfig(ctx context.Context) auth.OIDCConfig {
 	}
 }
 
-// SAMLConfigured returns true when all three SAML fields are non-empty.
+// SAMLConfigured returns true when the IdP metadata (a URL or XML), the
+// certificate and the key are all non-empty.
 func (s *Service) SAMLConfigured(ctx context.Context) bool {
 	u, c, k := s.GetSAMLConfig(ctx)
-	return u != "" && c != "" && k != ""
+	return (u != "" || s.GetSAMLMetadataXML(ctx) != "") && c != "" && k != ""
 }
 
 // OIDCConfigured returns true when required OIDC settings exist.
@@ -197,6 +199,21 @@ func (s *Service) SetSAMLConfig(ctx context.Context, metadataURL, certPEM, keyPE
 	return nil
 }
 
+// GetSAMLMetadataXML returns the pasted IdP metadata, or "" when the metadata
+// is given by URL or not at all.
+func (s *Service) GetSAMLMetadataXML(ctx context.Context) string {
+	v, _ := s.GetString(ctx, KeySAMLMetadataXML)
+	return v
+}
+
+// SetSAMLMetadataXML persists the pasted IdP metadata. "" clears it.
+func (s *Service) SetSAMLMetadataXML(ctx context.Context, xml string) error {
+	if err := s.SetString(ctx, KeySAMLMetadataXML, xml); err != nil {
+		return fmt.Errorf("saving saml_metadata_xml: %w", err)
+	}
+	return nil
+}
+
 // GuestSubmissionEnabled returns whether unauthenticated ticket submission is allowed.
 func (s *Service) GuestSubmissionEnabled(ctx context.Context) bool {
 	v, _ := s.GetBool(ctx, KeyGuestSubmissionEnabled)
@@ -231,6 +248,34 @@ func (s *Service) TicketScopeEnforced(ctx context.Context) bool {
 // action/actor/timestamp every staff member already sees. Off by default.
 func (s *Service) StaffCanViewTicketChangeHistory(ctx context.Context) bool {
 	v, _ := s.GetBool(ctx, KeyStaffCanViewTicketChangeHistory)
+	return v
+}
+
+// StaffCanViewFollowAudit returns whether staff may see the entries recording
+// who followed and unfollowed a ticket (#441). Off by default; administrators
+// always see them and requesters never do.
+func (s *Service) StaffCanViewFollowAudit(ctx context.Context) bool {
+	v, _ := s.GetBool(ctx, KeyStaffCanViewFollowAudit)
+	return v
+}
+
+// StaffCanCreateAPIKeys returns whether staff may create their own API keys
+// (#450). Off by default. Administrators do not consult it, and a requester is
+// refused whatever it says. Turning it off does not touch keys that already
+// exist: it stops new ones being made.
+func (s *Service) StaffCanCreateAPIKeys(ctx context.Context) bool {
+	v, _ := s.GetBool(ctx, KeyStaffCanCreateAPIKeys)
+	return v
+}
+
+// APIKeyMaxLifetimeYears is the longest a new API key may live, in years (1 to
+// 5), or APIKeyNoLimit (#450). Unset, unreadable or not one of those reads as
+// the default of 2: a damaged row must not quietly lift the cap.
+func (s *Service) APIKeyMaxLifetimeYears(ctx context.Context) int {
+	v, err := s.GetInt(ctx, KeyAPIKeyMaxLifetimeYears)
+	if err != nil || !ValidAPIKeyMaxLifetime(v) {
+		return APIKeyMaxLifetimeDefault
+	}
 	return v
 }
 
@@ -269,6 +314,34 @@ func (s *Service) AuditRetentionDays(ctx context.Context) int {
 		return AuditRetentionMaxDays
 	}
 	return v
+}
+
+// PasswordRehashGraceDays returns N, the days an account may stay on a password
+// hash below the current cost. Unset, unreadable or out of range is the
+// default: an unreadable row must neither refuse everyone now nor never.
+func (s *Service) PasswordRehashGraceDays(ctx context.Context) int {
+	v, err := s.GetInt(ctx, KeyPasswordRehashGraceDays)
+	if err != nil || v < PasswordRehashGraceMin || v > PasswordRehashGraceMax {
+		return PasswordRehashGraceDefault
+	}
+	return v
+}
+
+// PasswordRehashDeadline is when sign-in starts refusing hashes below the
+// current cost: the recorded first run of 1.3.0 plus N days. It reports false
+// when no start is recorded or it cannot be read, in which case nothing is
+// refused. Failing open is deliberate: the alternative is locking everyone out
+// over a damaged row. Implements user.PasswordExpiry.
+func (s *Service) PasswordRehashDeadline(ctx context.Context) (time.Time, bool) {
+	raw, err := s.GetString(ctx, KeyPasswordRehashStartedAt)
+	if err != nil {
+		return time.Time{}, false
+	}
+	started, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return started.AddDate(0, 0, s.PasswordRehashGraceDays(ctx)), true
 }
 
 // SLAEnabled returns whether SLA tracking is active, and any error reading
@@ -475,6 +548,14 @@ func (s *Service) AttachmentScanPolicy(ctx context.Context, addrConfigured bool)
 		return antivirus.PolicyRequired
 	}
 	return antivirus.PolicyOff
+}
+
+// AttachmentScanPolicyExplicit reports whether an administrator has saved a
+// scan policy. Absent and invalid values both mean no: neither is a choice,
+// and AttachmentScanPolicy derives a default for each.
+func (s *Service) AttachmentScanPolicyExplicit(ctx context.Context) bool {
+	v, _ := s.GetString(ctx, KeyAttachmentScanPolicy)
+	return antivirus.ValidPolicy(v)
 }
 
 // AttachmentScanAddress is the operator's override for where the scanner
@@ -693,5 +774,24 @@ func (s *Service) ReputationRefreshInterval(ctx context.Context) time.Duration {
 		return 0
 	default:
 		return 14 * day
+	}
+}
+
+// StaffEmailOverrides reads the administrator's override of each staff-email
+// switch (#441). Read on every call, never cached, so a change applies to the
+// next email. Unset, unreadable or unrecognised is "user": the person's own
+// switch, never a forced one.
+func (s *Service) StaffEmailOverrides(ctx context.Context) notification.StaffOverrides {
+	mode := func(key string) notification.OverrideMode {
+		v, err := s.GetString(ctx, key)
+		if err != nil || !notification.ValidOverrideMode(v) {
+			return notification.OverrideUser
+		}
+		return notification.OverrideMode(v)
+	}
+	return notification.StaffOverrides{
+		Assigned: mode(KeyStaffEmailAssignedOverride),
+		Activity: mode(KeyStaffEmailActivityOverride),
+		Group:    mode(KeyStaffEmailGroupOverride),
 	}
 }

@@ -16,6 +16,12 @@ import (
 // was answered with 500 "an internal error occurred" and logged as one.
 var ErrValidation = errors.New("invalid input")
 
+// ErrServiceAccount marks a refusal to give a service account a way to sign
+// in: a password, a second factor, an SSO identity, or the admin role. The
+// database refuses the same writes (users_service_account_inert); this is the
+// answer a caller can act on.
+var ErrServiceAccount = errors.New("a service account cannot sign in, hold a password or second factor, or be an administrator")
+
 // Role names the three access tiers. Order matters: do not change values.
 type Role string
 
@@ -25,27 +31,62 @@ const (
 	RoleUser  Role = "user"
 )
 
+// Valid reports whether r is one of the three roles.
+func (r Role) Valid() bool {
+	return r == RoleAdmin || r == RoleStaff || r == RoleUser
+}
+
 // User is the canonical representation of an identity in the system.
 // It is auth-method-agnostic: PasswordHash is empty for SAML-only accounts;
 // SAMLSubject is empty for local-only accounts.
 type User struct {
-	ID           uuid.UUID  `json:"id"`
-	Email        string     `json:"email"`
-	DisplayName  string     `json:"display_name"`
-	Role         Role       `json:"role"`
-	PasswordHash string     `json:"-"`
-	MFASecret    string     `json:"-"`
-	MFAEnabled   bool       `json:"mfa_enabled"`
-	SAMLSubject  string     `json:"-"`
-	OIDCSubject  string     `json:"-"`
-	Disabled     bool       `json:"disabled"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
-	DeletedAt    *time.Time `json:"-"`
+	ID           uuid.UUID `json:"id"`
+	Email        string    `json:"email"`
+	DisplayName  string    `json:"display_name"`
+	Role         Role      `json:"role"`
+	PasswordHash string    `json:"-"`
+	MFASecret    string    `json:"-"`
+	MFAEnabled   bool      `json:"mfa_enabled"`
+	SAMLSubject  string    `json:"-"`
+	OIDCSubject  string    `json:"-"`
+	Disabled     bool      `json:"disabled"`
+	// ServiceAccount marks the identity an OAuth client acts as. It can never
+	// sign in: the database refuses a password, a second factor, an SSO
+	// identity or the admin role on such a row.
+	ServiceAccount bool `json:"service_account"`
+	// MustChangePassword is set by the server console's unlock command and
+	// cleared when the account holder sets a password of their own (#497).
+	MustChangePassword bool       `json:"must_change_password"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	DeletedAt          *time.Time `json:"-"`
+
+	// The person's own staff-email switches (#441); see
+	// notification.StaffPrefs for what each means and how an administrator's
+	// override applies. All on for a new account and for every account that
+	// existed before the columns did.
+	EmailNotifyAssigned bool `json:"email_notify_assigned"`
+	EmailNotifyActivity bool `json:"email_notify_activity"`
+	EmailNotifyGroup    bool `json:"email_notify_group"`
 }
 
 // IsActive returns true when the user is neither disabled nor soft-deleted.
 func (u User) IsActive() bool { return !u.Disabled && u.DeletedAt == nil }
+
+// CanReceiveStaffMail reports whether this account may be sent staff email
+// about tickets (#441): staff or admin, active, with an address.
+//
+// Every staff-mail recipient is filtered through here, at the moment of
+// sending as well as when the mail is queued. A service account (#434, #490:
+// the identity an OAuth client acts as) is never mailed.
+func (u User) CanReceiveStaffMail() bool {
+	return u.IsActive() && !u.ServiceAccount && u.Email != "" && (u.Role == RoleStaff || u.Role == RoleAdmin)
+}
+
+// EmailPreferencesPatch changes only the switches that are set.
+type EmailPreferencesPatch struct {
+	Assigned, Activity, Group *bool
+}
 
 // Validate returns an error if the user is structurally invalid.
 // It does not validate the password hash or MFA secret — those are set by

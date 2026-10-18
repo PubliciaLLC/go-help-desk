@@ -1,0 +1,428 @@
+package notify
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"slices"
+	"strings"
+
+	"github.com/google/uuid"
+
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+)
+
+// Staff email (#441), in two halves around the outbox.
+//
+//   - StaffFanout runs when the worker first picks up a change's email row
+//     (#506), not on the request. It turns "this ticket was assigned", "was
+//     reopened" or "the requester replied" into one staff.* event per person
+//     to be mailed, applying the three switches, the administrator's override,
+//     and the rule that nobody is mailed about their own action.
+//   - StaffMailDispatcher runs when the worker sends one of those rows. It
+//     looks the person up again and fills in their address.
+//
+// Each person gets their own outbox row, so one person's failing mail never
+// resends anyone else's, and none of it touches the requester's mail, which
+// travels as a row of its own.
+//
+// It runs in the worker because the change's events are written inside its
+// transaction, where the reads below would not see the transaction's own
+// writes: Assign drops the previous assignee's follow in the same transaction,
+// so a read there would still mail them as a follower.
+
+// StaffUsers is the part of the user service staff mail reads.
+type StaffUsers interface {
+	GetByIDs(ctx context.Context, ids []uuid.UUID) ([]user.User, error)
+}
+
+// StaffGroups is the part of the group service staff mail reads.
+type StaffGroups interface {
+	// ListMailableMembers, not ListMembers: the people staff email can go to.
+	ListMailableMembers(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID, error)
+}
+
+// StaffFollowers is the part of the ticket service staff mail reads to find a
+// ticket's followers (#441).
+type StaffFollowers interface {
+	// ListMailableFollowerIDs: followers who are active staff or admin and not
+	// a service account. Whether each can still see the ticket is the
+	// send-time check's question (StaffAccess), not this one's.
+	ListMailableFollowerIDs(ctx context.Context, ticketID uuid.UUID) ([]uuid.UUID, error)
+}
+
+// StaffFanout splits one change's email event into the mail it calls for.
+type StaffFanout struct {
+	next      notification.Dispatcher
+	users     StaffUsers
+	groups    StaffGroups
+	followers StaffFollowers
+	overrides func(context.Context) notification.StaffOverrides
+	log       *slog.Logger
+}
+
+// NewStaffFanout returns a Dispatcher that hands next the requester's mail (one
+// event, when the change has one) and then one staff.* event for each person to
+// be mailed. overrides is read on every event, so a change applies to the next
+// email.
+func NewStaffFanout(next notification.Dispatcher, users StaffUsers, groups StaffGroups, followers StaffFollowers,
+	overrides func(context.Context) notification.StaffOverrides, log *slog.Logger) *StaffFanout {
+	return &StaffFanout{next: next, users: users, groups: groups, followers: followers, overrides: overrides, log: log}
+}
+
+// requesterTemplates are the kinds that have a mail for the requester, in the
+// order the first of them present decides the template (#506).
+var requesterTemplates = []notification.EventType{
+	notification.EventTicketCreated,
+	notification.EventTicketReopened,
+	notification.EventTicketResolved,
+	notification.EventTicketReplied,
+	notification.EventTicketStatusChanged,
+}
+
+// requesterMail is the event the requester's mail is sent from: the change with
+// its Type set to the first kind that has a template, and no Kinds, so it is
+// sent as it is and not split again. ok is false when the change has nobody to
+// mail or no kind with a template. Who is mailed was decided when the change was
+// raised (the reporter for a reply with "notify customer" on, a guest for a
+// creation, a status change other than closing, a resolution and a force-reopen,
+// nobody for a close).
+func requesterMail(ev notification.Event) (notification.Event, bool) {
+	if ev.Recipient == "" && !ev.GuestLink {
+		return notification.Event{}, false
+	}
+	kinds := ev.AllKinds()
+	for _, k := range requesterTemplates {
+		if slices.Contains(kinds, k) {
+			ev.Type, ev.Kinds = k, nil
+			return ev, true
+		}
+	}
+	return notification.Event{}, false
+}
+
+func (f *StaffFanout) Dispatch(ctx context.Context, ev notification.Event) error {
+	req, hasReq := requesterMail(ev)
+
+	cands, ok, cerr := f.candidates(ctx, ev)
+	if cerr != nil {
+		// Same as a failed read of the accounts below: nothing is queued and the
+		// change is tried again. Mailing who was found and dropping the rest
+		// would lose the followers' or the group's mail with no retry.
+		f.log.ErrorContext(ctx, "staff email: could not work out who to notify",
+			"event", ev.Type, "ticket_id", ev.TicketID, "error", cerr)
+		return cerr
+	}
+	var recips []notification.StaffRecipient
+	var emails map[uuid.UUID]string
+	if ok {
+		var lerr error
+		recips, emails, lerr = f.recipients(ctx, ev, cands)
+		if lerr != nil {
+			f.log.ErrorContext(ctx, "staff email: could not work out who to notify",
+				"event", ev.Type, "ticket_id", ev.TicketID, "error", lerr)
+			// Nothing is queued until everyone is resolved. The worker tries the
+			// change again, and a requester's mail queued before this error would
+			// by then have been sent and deleted, its derived id free, and be
+			// queued and sent a second time (a new guest link each time).
+			return lerr
+		}
+	}
+
+	// One mail per recipient address per change. The address is compared without
+	// case or surrounding space.
+	//
+	// WHY the staff mail wins when the requester's and a staff member's resolve to
+	// the same address (a staff member who filed the ticket for themselves, or
+	// whose address a guest used): the staff mail carries the staff link, behind
+	// sign-in, and the more specific reason (assigned to you, reopened); the
+	// requester's mail is generic, and its guest link would be a second credential
+	// in the same inbox. The person is staff, so they lose nothing by it.
+	//
+	// Between two staff accounts that share an address, the one kept is the first
+	// in candidate order, which is strongest reason first (holding the ticket,
+	// then its group, then following it). The send-time check drops a mail whose
+	// reason has stopped holding, so keeping the strongest makes it least likely
+	// that the address is left with nothing. It cannot be ruled out: the check
+	// runs later, per row, and rows know nothing of each other. A staff mail kept
+	// over a requester's is dropped by it only if the person stops being entitled
+	// in the seconds between the split and the send.
+	seen := map[string]bool{}
+	var out []notification.Event
+	for _, r := range recips {
+		if addr := normalAddress(emails[r.UserID]); addr != "" {
+			if seen[addr] {
+				continue
+			}
+			seen[addr] = true
+		}
+		out = append(out, notification.Event{
+			Type: r.Mail, TicketID: ev.TicketID, ActorID: ev.ActorID,
+			TrackingNumber: ev.TrackingNumber, OccurredAt: ev.OccurredAt,
+			StaffUserID: &r.UserID, StaffReason: r.Reason,
+		})
+	}
+	var err error
+	if hasReq && !seen[normalAddress(req.Recipient)] {
+		err = f.next.Dispatch(ctx, req)
+	}
+	for _, e := range out {
+		if derr := f.next.Dispatch(ctx, e); derr != nil && err == nil {
+			err = derr
+		}
+	}
+	return err
+}
+
+// normalAddress is an address as compared for "one mail per address". "" stays
+// "" (a guest-link mail whose address is read at send time cannot be compared).
+func normalAddress(a string) string { return strings.ToLower(strings.TrimSpace(a)) }
+
+// candidate is a person with a reason to hear about an event, before their
+// account is read. mail is the staff.* event they would be mailed with.
+type candidate struct {
+	id     uuid.UUID
+	reason notification.StaffSwitch
+	mail   notification.EventType
+}
+
+// holders is who holds the ticket as of the change, read off the ticket state
+// the event carries (the commit's, not a later read).
+func holders(ev notification.Event) (user, group *uuid.UUID) {
+	if ev.Ticket == nil {
+		return nil, nil
+	}
+	return ev.Ticket.AssigneeUserID, ev.Ticket.AssigneeGroupID
+}
+
+// candidates says who might get staff mail for a change, across every kind it
+// carries. A person who qualifies for more than one kind is one entry in the
+// result of recipients, with the mail of the first kind (in the order assigned,
+// reopened, requester replied) whose switch is on. ok is false for a change that
+// calls for none; an empty slice with ok true means it calls for some but nobody
+// holds the ticket. A failed lookup of followers or of a group's members is an
+// error, so the change is retried whole.
+func (f *StaffFanout) candidates(ctx context.Context, ev notification.Event) ([]candidate, bool, error) {
+	kinds := ev.AllKinds()
+	assignee, _ := holders(ev)
+	var cands []candidate
+	called := false
+
+	if slices.Contains(kinds, notification.EventTicketAssigned) {
+		called = true
+		if assignee != nil {
+			cands = append(cands, candidate{*assignee, notification.SwitchAssigned, notification.EventStaffAssigned})
+		}
+		gm, err := f.groupMembers(ctx, ev, notification.SwitchGroup, notification.EventStaffAssigned)
+		if err != nil {
+			return nil, false, err
+		}
+		cands = append(cands, gm...)
+		// An assignment mails the assigned group, so its members are left out
+		// of follower mail.
+		fc, err := f.followerCandidates(ctx, ev, true, notification.EventStaffAssigned)
+		if err != nil {
+			return nil, false, err
+		}
+		cands = append(cands, fc...)
+	}
+
+	if slices.Contains(kinds, notification.EventTicketReopened) {
+		called = true
+		// The reply rule (Erik, 2026-10-14): the assignee hears about a reopen,
+		// and the group only while nobody personally holds the ticket. The
+		// assignee's mail answers to the same switch as a requester's reply
+		// ("requester replied on my tickets"). Followers hear about it whoever
+		// holds the ticket; a group member who follows is mailed as a follower
+		// only when the group itself is not mailed.
+		rr, err := f.replyRule(ctx, ev, notification.EventStaffReopened)
+		if err != nil {
+			return nil, false, err
+		}
+		cands = append(cands, rr...)
+	}
+
+	if slices.Contains(kinds, notification.EventTicketReplied) && ev.FromRequester {
+		called = true
+		// The assignee hears about it. A group hears about it only while
+		// nobody personally holds the ticket: a group member whose colleague
+		// has the ticket would otherwise get mail for every reply on work
+		// that is not theirs.
+		//
+		// Followers hear about every reply, whoever holds the ticket.
+		rr, err := f.replyRule(ctx, ev, notification.EventStaffRequesterReplied)
+		if err != nil {
+			return nil, false, err
+		}
+		cands = append(cands, rr...)
+	}
+	return cands, called, nil
+}
+
+// replyRule is who is a candidate for a requester's reply and for a reopen,
+// which follow one rule.
+func (f *StaffFanout) replyRule(ctx context.Context, ev notification.Event, mail notification.EventType) ([]candidate, error) {
+	assignee, _ := holders(ev)
+	var cands []candidate
+	if assignee != nil {
+		cands = append(cands, candidate{*assignee, notification.SwitchActivity, mail})
+	} else {
+		gm, err := f.groupMembers(ctx, ev, notification.SwitchGroup, mail)
+		if err != nil {
+			return nil, err
+		}
+		cands = append(cands, gm...)
+	}
+	// The group is mailed only while nobody holds the ticket.
+	fc, err := f.followerCandidates(ctx, ev, assignee == nil, mail)
+	if err != nil {
+		return nil, err
+	}
+	return append(cands, fc...), nil
+}
+
+// followerCandidates are the ticket's followers, except the assignee always,
+// and the assigned group's members when the group itself is mailed for this
+// event (groupMailed: an assignment, or a reply on a ticket nobody holds).
+// Those people are told through their own switches (Erik, 2026-10-14), and
+// following on top must not bring back mail they turned off. When the group is
+// not mailed (a reply while somebody holds the ticket) a member's follow
+// counts, so a member who follows hears about it. A lookup that fails is an
+// error: the change is retried whole rather than mailed without its followers.
+func (f *StaffFanout) followerCandidates(ctx context.Context, ev notification.Event, groupMailed bool, mail notification.EventType) ([]candidate, error) {
+	ids, err := f.followers.ListMailableFollowerIDs(ctx, ev.TicketID)
+	if err != nil {
+		return nil, fmt.Errorf("listing the ticket's followers: %w", err)
+	}
+	left := map[uuid.UUID]bool{}
+	if assignee, _ := holders(ev); assignee != nil {
+		left[*assignee] = true
+	}
+	if groupMailed {
+		gm, err := f.groupMembers(ctx, ev, notification.SwitchGroup, mail)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range gm {
+			left[m.id] = true
+		}
+	}
+	out := make([]candidate, 0, len(ids))
+	for _, id := range ids {
+		if !left[id] {
+			out = append(out, candidate{id, notification.SwitchFollow, mail})
+		}
+	}
+	return out, nil
+}
+
+func (f *StaffFanout) groupMembers(ctx context.Context, ev notification.Event, reason notification.StaffSwitch, mail notification.EventType) ([]candidate, error) {
+	_, group := holders(ev)
+	if group == nil {
+		return nil, nil
+	}
+	members, err := f.groups.ListMailableMembers(ctx, *group)
+	if err != nil {
+		return nil, fmt.Errorf("listing the group's members: %w", err)
+	}
+	out := make([]candidate, len(members))
+	for i, m := range members {
+		out[i] = candidate{m, reason, mail}
+	}
+	return out, nil
+}
+
+// recipients reads the candidates' accounts and applies the rule.
+func (f *StaffFanout) recipients(ctx context.Context, ev notification.Event, cands []candidate) ([]notification.StaffRecipient, map[uuid.UUID]string, error) {
+	if len(cands) == 0 {
+		return nil, nil, nil
+	}
+	ids := make([]uuid.UUID, len(cands))
+	for i, c := range cands {
+		ids[i] = c.id
+	}
+	users, err := f.users.GetByIDs(ctx, ids)
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading staff accounts: %w", err)
+	}
+	byID := make(map[uuid.UUID]user.User, len(users))
+	for _, u := range users {
+		byID[u.ID] = u
+	}
+	var eligible []notification.StaffCandidate
+	emails := make(map[uuid.UUID]string, len(users))
+	for _, u := range users {
+		emails[u.ID] = u.Email
+	}
+	for _, c := range cands {
+		u, ok := byID[c.id]
+		if !ok || !u.CanReceiveStaffMail() {
+			continue
+		}
+		eligible = append(eligible, notification.StaffCandidate{
+			UserID: u.ID, Reason: c.reason, Mail: c.mail,
+			Prefs: notification.StaffPrefs{Assigned: u.EmailNotifyAssigned, Activity: u.EmailNotifyActivity, Group: u.EmailNotifyGroup},
+		})
+	}
+	// "Nobody is mailed about their own action" does not apply to an assignment
+	// routing made inside a create: the creator did not choose it (as in 1.2.x,
+	// when routing was a second, system-made write).
+	actor := ev.ActorID
+	if ev.RoutedAssignment {
+		actor = nil
+	}
+	return notification.StaffRecipients(eligible, actor, f.overrides(ctx)), emails, nil
+}
+
+// StaffAccess is the send-time check that a person should still hear about a
+// ticket. Mail can wait in the queue and be retried for an hour, and the
+// ticket moves meanwhile.
+type StaffAccess interface {
+	// StillEntitled reports whether u still holds the ticket (or is still in
+	// the group that does), or, for a follower, can still see it under the
+	// ticket-scope rule (#391). A ticket that no longer exists is not an error:
+	// there is nothing to tell anyone about.
+	StillEntitled(ctx context.Context, u user.User, ticketID uuid.UUID, reason notification.StaffSwitch) (bool, error)
+}
+
+// StaffMailDispatcher is the send-time half, wrapped around the email channel.
+type StaffMailDispatcher struct {
+	next   notification.Dispatcher
+	users  StaffUsers
+	access StaffAccess
+}
+
+// NewStaffMailDispatcher fills in a staff.* event's recipient from the account
+// as it is when the mail is sent, then hands it to next.
+func NewStaffMailDispatcher(next notification.Dispatcher, users StaffUsers, access StaffAccess) *StaffMailDispatcher {
+	return &StaffMailDispatcher{next: next, users: users, access: access}
+}
+
+func (d *StaffMailDispatcher) Dispatch(ctx context.Context, ev notification.Event) error {
+	if ev.StaffUserID == nil {
+		return d.next.Dispatch(ctx, ev)
+	}
+	us, err := d.users.GetByIDs(ctx, []uuid.UUID{*ev.StaffUserID})
+	if err != nil {
+		return fmt.Errorf("reading staff account: %w", err) // retried by the worker
+	}
+	// Queued mail for an account that has since been disabled, deleted or
+	// made a requester is dropped: there is nobody to send it to, and retrying
+	// would not change that. Mail already queued also stops the moment the
+	// account does, which is what disabling someone should mean.
+	if len(us) != 1 || !us[0].CanReceiveStaffMail() {
+		return nil
+	}
+	// And mail for a ticket the person no longer holds or can no longer see:
+	// reassigned, taken out of the group, or moved out of their scope since.
+	ok, err := d.access.StillEntitled(ctx, us[0], ev.TicketID, ev.StaffReason)
+	if err != nil {
+		return fmt.Errorf("checking access to the ticket: %w", err) // retried by the worker
+	}
+	if !ok {
+		return nil
+	}
+	ev.Recipient = us[0].Email
+	return d.next.Dispatch(ctx, ev)
+}

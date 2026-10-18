@@ -98,27 +98,18 @@ func TestListTicketAudit_WithholdsAssignmentActorFromReportingUser(t *testing.T)
 	resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
+	// Since 2026-10-15 a requester gets no audit feed at all (403), so there is
+	// no actor left to withhold; the staff and admin half below is unchanged.
 	resp = h.doAsUser(t, http.MethodGet, "/api/v1/tickets/"+created.ID+"/audit", nil)
 	body, _ = readAllBody(resp)
 	resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
+	require.Equal(t, http.StatusForbidden, resp.StatusCode, "body: %s", body)
 
 	var entries []struct {
 		Action    string  `json:"action"`
 		ActorID   *string `json:"actor_id"`
 		ActorName string  `json:"actor_name"`
 	}
-	require.NoError(t, json.Unmarshal([]byte(body), &entries))
-
-	var sawAssigned bool
-	for _, e := range entries {
-		if e.Action == "assigned" {
-			sawAssigned = true
-			require.Nil(t, e.ActorID, "a reporting user must not learn who assigned their ticket")
-			require.Empty(t, e.ActorName, "a reporting user must not learn who assigned their ticket")
-		}
-	}
-	require.True(t, sawAssigned, "expected an assigned entry from the admin's PATCH")
 
 	// Staff/admin get the full picture: the same feed, unwithheld.
 	resp = h.doAsAdmin(t, http.MethodGet, "/api/v1/tickets/"+created.ID+"/audit", nil)
@@ -126,12 +117,15 @@ func TestListTicketAudit_WithholdsAssignmentActorFromReportingUser(t *testing.T)
 	resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.NoError(t, json.Unmarshal([]byte(body), &entries))
+	var sawAssigned bool
 	for _, e := range entries {
 		if e.Action == "assigned" {
+			sawAssigned = true
 			require.NotNil(t, e.ActorID)
 			require.Equal(t, "Admin", e.ActorName)
 		}
 	}
+	require.True(t, sawAssigned, "expected an assigned entry from the admin's PATCH")
 }
 
 // The withholding added for #129's assigned/unassigned gap is a denylist
@@ -170,40 +164,43 @@ func TestListTicketAudit_WithholdsUnassignedTooButNotOtherActions(t *testing.T) 
 	_, err = h.ticketSvc.Assign(ctx, ticketID, &leaver.ID, nil, ticket.SystemActor)
 	require.NoError(t, err)
 
-	resp = h.doAsAdmin(t, http.MethodDelete, "/api/v1/admin/users/"+leaver.ID.String(), nil)
+	resp = h.doAsAdminSession(t, http.MethodDelete, "/api/v1/admin/users/"+leaver.ID.String(), nil)
 	resp.Body.Close()
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
 
 	// Resolving is a non-assignment, staff/admin-only action with no
-	// disclosure restriction — a reporting user must still see who did it,
-	// same as /history already shows them. This is what "withhold too much"
-	// would break.
+	// disclosure restriction: the administrator below must still see who did it
+	// (a requester gets no feed at all since 2026-10-15). This is what
+	// "withhold too much" would break.
 	resp = h.do(t, http.MethodPost, "/api/v1/tickets/"+created.ID+"/resolve", map[string]any{})
 	resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
+	// A requester gets no audit feed at all since 2026-10-15 (403). The entries
+	// themselves are still written and an administrator reads them.
 	resp = h.doAsUser(t, http.MethodGet, "/api/v1/tickets/"+created.ID+"/audit", nil)
 	body, _ = readAllBody(resp)
 	resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
+	require.Equal(t, http.StatusForbidden, resp.StatusCode, "body: %s", body)
 
+	resp = h.doAsAdmin(t, http.MethodGet, "/api/v1/tickets/"+created.ID+"/audit", nil)
+	body, _ = readAllBody(resp)
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
 	var entries []struct {
 		Action    string  `json:"action"`
 		ActorID   *string `json:"actor_id"`
 		ActorName string  `json:"actor_name"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(body), &entries))
-
 	var sawResolved, sawUnassigned bool
 	for _, e := range entries {
 		switch e.Action {
 		case "resolved":
 			sawResolved = true
-			require.NotEmpty(t, e.ActorName, "a reporting user must still see who resolved their ticket")
+			require.NotEmpty(t, e.ActorName)
 		case "unassigned":
 			sawUnassigned = true
-			require.Nil(t, e.ActorID, "a reporting user must not learn who unassigned their ticket either")
-			require.Empty(t, e.ActorName, "a reporting user must not learn who unassigned their ticket either")
 		}
 	}
 	require.True(t, sawResolved, "expected a resolved entry")
@@ -272,11 +269,26 @@ func TestListTicketAudit_DiffNeverShownToReporterEvenWithSettingOn(t *testing.T)
 	defer cleanup()
 	require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeyStaffCanViewTicketChangeHistory, true))
 
-	entries := resolveAndFetchAudit(t, h, h.doAsUser, h.doAsUser)
-	before, after, found := findAction(entries, "resolved")
-	require.True(t, found, "expected a resolved entry")
-	require.Nil(t, before, "a reporter must never see the before diff")
-	require.Nil(t, after, "a reporter must never see the after diff")
+	resp := h.doAsUser(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject": "diff visibility", "description": "x", "category_id": h.catID.String(),
+	})
+	body, _ := readAllBody(resp)
+	resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode, "body: %s", body)
+	var created struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &created))
+	resp = h.do(t, http.MethodPost, "/api/v1/tickets/"+created.ID+"/resolve", map[string]any{})
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// Refused outright since 2026-10-15, so there is no diff to show.
+	resp = h.doAsUser(t, http.MethodGet, "/api/v1/tickets/"+created.ID+"/audit", nil)
+	body, _ = readAllBody(resp)
+	resp.Body.Close()
+	require.Equal(t, http.StatusForbidden, resp.StatusCode, "body: %s", body)
+	require.NotContains(t, body, "status_id")
 }
 
 // Off by default (the setting's own zero value): staff see exactly what

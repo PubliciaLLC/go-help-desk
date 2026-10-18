@@ -17,7 +17,9 @@ import {
 import { TagInput } from '@/components/TagInput'
 import { ClassificationPanel } from '@/components/ticket/ClassificationPanel'
 import { LinkedTicketsPanel } from '@/components/ticket/LinkedTicketsPanel'
+import { PriorityControl } from '@/components/ticket/PriorityControl'
 import { AuditFeed } from '@/components/ticket/AuditFeed'
+import { FollowersPanel } from '@/components/ticket/FollowersPanel'
 import { ReplyComposer } from '@/components/ticket/ReplyComposer'
 import { AttachmentList, QuarantineBanner } from '@/components/ticket/AttachmentList'
 import { listAssignableStaff, listStatuses, type AssignableStaff } from '@/api/admin'
@@ -35,6 +37,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import type { Group, StatusHistoryEntry, TicketFieldValue } from '@/api/types'
 import { priorityVariant } from '@/lib/format'
+import { ReopenedBadge } from '@/components/ticket/ReopenedBadge'
 import { SLAIndicator } from '@/components/ticket/SLAIndicator'
 
 function formatDate(iso: string) {
@@ -61,10 +64,14 @@ interface AssigneePanelProps {
   // having left.
   haveStaffList: boolean
   groups: Group[]
+  // meId and closed drive "Assign to me": offered only on an unassigned ticket
+  // that is not Resolved or Closed.
+  meId?: string
+  closed: boolean
   onUpdated: () => void
 }
 
-function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, haveStaffList, groups, onUpdated }: AssigneePanelProps) {
+function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, haveStaffList, groups, meId, closed, onUpdated }: AssigneePanelProps) {
   const [mode, setMode] = useState<'user' | 'group'>('user')
   const [selectedId, setSelectedId] = useState('')
   const [error, setError] = useState('')
@@ -82,6 +89,20 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, haveS
       setError('')
       onUpdated()
     },
+    onError: (err) => setError(extractError(err)),
+  })
+
+  // The ticket's group is sent back with the user. The server's Assign sets
+  // both assignee fields from the request, so a user-only PATCH would clear the
+  // group; "Assign to me" keeps it (#444). The key is left out when there is no
+  // group, so the body is exactly {assignee_user_id} then.
+  const assignToMeMutation = useMutation({
+    mutationFn: () =>
+      updateTicket(ticketId, {
+        assignee_user_id: meId,
+        ...(assigneeGroupId ? { assignee_group_id: assigneeGroupId } : {}),
+      }),
+    onSuccess: () => { setError(''); onUpdated() },
     onError: (err) => setError(extractError(err)),
   })
 
@@ -105,7 +126,7 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, haveS
   return (
     <div className="space-y-2">
       {/* Current assignee */}
-      <div className="text-sm">
+      <div className="text-sm wrap-anywhere">
         {currentUser ? (
           <span className="font-medium">{currentUser.display_name}</span>
         ) : currentGroup ? (
@@ -131,6 +152,16 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, haveS
           <span className="text-gray-400">Unassigned</span>
         )}
       </div>
+
+      {!assigneeUserId && !closed && meId && (
+        <button
+          className="min-h-6 rounded px-1 py-1 text-xs text-blue-600 hover:underline"
+          onClick={() => assignToMeMutation.mutate()}
+          disabled={assignToMeMutation.isPending}
+        >
+          Assign to me
+        </button>
+      )}
 
       {/* Assignment controls */}
       <div className="flex gap-1 text-xs">
@@ -294,11 +325,11 @@ function CustomFieldsPanel({ ticketId, isStaffOrAdmin }: CustomFieldsPanelProps)
       <CardContent className="space-y-3 text-sm">
         {displayValues.map((v) => (
           <div key={v.field_def_id} className="space-y-0.5">
-            <Label className="text-xs text-gray-500">{v.field_name}</Label>
+            <Label className="text-xs text-gray-500 wrap-anywhere">{v.field_name}</Label>
             {isStaffOrAdmin && editValues ? (
               renderInput(v)
             ) : (
-              <p className="text-sm">{v.value || <span className="text-gray-400">—</span>}</p>
+              <p className="text-sm wrap-anywhere">{v.value || <span className="text-gray-400">—</span>}</p>
             )}
           </div>
         ))}
@@ -355,7 +386,9 @@ export function TicketDetailPage() {
   const { data: statusHistory = [] } = useQuery({
     queryKey: ['statusHistory', id],
     queryFn: () => listStatusHistory(id),
-    enabled: !!ticket,
+    // History is for staff (Erik, 2026-10-15): the API refuses a requester, and
+    // the thread shows them the conversation only.
+    enabled: !!ticket && (user?.role === 'staff' || user?.role === 'admin'),
   })
 
   type TimelineItem =
@@ -508,30 +541,47 @@ export function TicketDetailPage() {
         <QuarantineBanner attachments={attachments} />
 
         {/* Header */}
-        <div className="flex items-start justify-between gap-4">
+        {/* Below md the action buttons wrap onto their own row under the title
+            block (#480): beside it they left the title and tracking number a
+            column of ~120px at 375px and ran the number under "Reopen". */}
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div className="min-w-0 space-y-1">
-            <div className="flex items-center gap-2 text-sm text-gray-500">
-              <span>{ticket.tracking_number}</span>
+            <div className="flex flex-wrap items-center gap-x-2 text-sm text-gray-500">
+              <span className="whitespace-nowrap">{ticket.tracking_number}</span>
               <span>·</span>
               <span>Opened {formatDate(ticket.created_at)}</span>
             </div>
-            <h1 className="text-2xl font-bold text-gray-900 break-words">{ticket.subject}</h1>
+            <h1 className="text-2xl font-bold text-gray-900 wrap-anywhere">{ticket.subject}</h1>
+            {isStaffOrAdmin && (
+              <p data-testid="requester-line" className="text-sm text-gray-600 wrap-anywhere">
+                Requester:{' '}
+                {ticket.requester ? (
+                  <>
+                    <span className="font-medium text-gray-900">{ticket.requester.name}</span>{' '}
+                    ({ticket.requester.email})
+                  </>
+                ) : (
+                  <span className="text-gray-400">unknown</span>
+                )}
+              </p>
+            )}
             <div className="flex items-center gap-2 flex-wrap">
               <span
-                className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium"
+                className="inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium"
                 style={{ borderColor: statusColor, color: statusColor }}
               >
-                <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: statusColor }} />
-                {statusName}
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: statusColor }} />
+                <span className="min-w-0 wrap-anywhere">{statusName}</span>
               </span>
               <Badge variant={priorityVariant(ticket.priority) as never}>
                 {ticket.priority}
               </Badge>
+              {isStaffOrAdmin && <ReopenedBadge reopenCount={ticket.reopen_count} statusName={statuses.find((s) => s.id === ticket.status_id)?.name} />}
               <SLAIndicator sla={ticket.sla} />
             </div>
           </div>
 
-          <div className="flex gap-2 shrink-0">
+          <div className="flex flex-wrap gap-2 md:shrink-0">
             {canResolve && (
               <Button
                 variant="outline"
@@ -621,7 +671,7 @@ export function TicketDetailPage() {
                 <CardTitle className="text-sm text-gray-500">Description</CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="whitespace-pre-wrap text-sm break-all">
+                <p className="whitespace-pre-wrap text-sm wrap-anywhere">
                   {ticket.description || <span className="text-gray-400">No description provided.</span>}
                 </p>
               </CardContent>
@@ -641,13 +691,13 @@ export function TicketDetailPage() {
                       key={r.id}
                       className={`rounded-lg border p-4 text-sm ${r.internal ? 'border-yellow-200 bg-yellow-50' : 'bg-white'}`}
                     >
-                      <div className="mb-1 flex items-center justify-between text-xs text-gray-500">
+                      <div className="mb-1 flex items-center justify-between gap-2 text-xs text-gray-500">
                         {/* The name, not the id. This printed r.author_id,
                             so every reply from a registered account showed as
                             a bare UUID and nobody could tell who had said
                             what. A reply with no author came from a guest —
                             that is the only way it is null. */}
-                        <span className="min-w-0 truncate" title={r.author_name || undefined}>
+                        <span className="min-w-0 wrap-anywhere" title={r.author_name || (r.author_id ? 'Unknown user' : 'Customer')}>
                           {r.author_name || (r.author_id ? 'Unknown user' : 'Customer')}
                         </span>
                         <span className="flex items-center gap-2">
@@ -655,7 +705,7 @@ export function TicketDetailPage() {
                           {formatDate(r.created_at)}
                         </span>
                       </div>
-                      <p className="whitespace-pre-wrap break-words">{r.body}</p>
+                      <p className="whitespace-pre-wrap wrap-anywhere">{r.body}</p>
                     </div>
                   )
                 }
@@ -664,7 +714,7 @@ export function TicketDetailPage() {
                 return (
                   <div key={h.id} className="flex items-center gap-3 py-1 text-xs text-gray-400">
                     <div className="flex-1 border-t border-gray-100" />
-                    <span className="shrink-0 text-center">
+                    <span className="min-w-0 text-center wrap-anywhere">
                       {h.from_status_id ? (
                         <>
                           <span style={{ color: h.from_status_color || undefined }} className="font-medium">
@@ -716,6 +766,8 @@ export function TicketDetailPage() {
                     users={allUsers}
                     haveStaffList={haveStaffList}
                     groups={groups}
+                    meId={user?.id}
+                    closed={statusName === 'Resolved' || statusName === 'Closed'}
                     onUpdated={() => {
                       qc.invalidateQueries({ queryKey: ['ticket', id] })
                       qc.invalidateQueries({ queryKey: ['ticketAudit', id] })
@@ -743,7 +795,10 @@ export function TicketDetailPage() {
                     onChange={(e) => statusMutation.mutate(e.target.value)}
                     disabled={statusMutation.isPending}
                   >
-                    {statuses.map((s) => (
+                    {/* An inactive status is retired: the server refuses a move
+                        into it, so it is not offered. The ticket's own status
+                        stays listed or the select would show the wrong one. */}
+                    {statuses.filter((s) => s.active || s.id === ticket.status_id).map((s) => (
                       <option key={s.id} value={s.id}>{s.name}</option>
                     ))}
                   </Select>
@@ -772,13 +827,13 @@ export function TicketDetailPage() {
 
             {isStaffOrAdmin && <LinkedTicketsPanel ticketId={id} />}
 
-            {/* Staff-only display, not the only guard: the API gates on the
-                ticket's own visibility (#129), same as /history, but also
-                withholds the actor on assigned/unassigned entries from a
-                RoleUser caller specifically (assignment is staff/admin-only,
-                and nothing else discloses that identity to a reporter). This
-                hides the whole feed from that role anyway, since none of it
-                is this page's job to show them. */}
+            {/* Staff always see who follows (#441); the API refuses a requester. */}
+            {isStaffOrAdmin && <FollowersPanel ticketId={id} />}
+
+            {/* Staff-only display and a staff-only route: the API refuses the
+                audit feed (and /history) to a requester with 403, since
+                requesters see the ticket's current state and conversation,
+                not its history. This keeps the page from asking. */}
             {isStaffOrAdmin && <AuditFeed ticketId={id} />}
 
             {attachments.length > 0 && (
@@ -809,10 +864,25 @@ export function TicketDetailPage() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Priority</span>
-                  <Badge variant={priorityVariant(ticket.priority) as never}>{ticket.priority}</Badge>
-                </div>
+                {isStaffOrAdmin ? (
+                  // Staff and admin change it here; the header badge stays.
+                  // Stacked rather than side by side so the select has the
+                  // card's full width at 390px. Resolved and Closed lock it:
+                  // the server answers 409 ticket_closed there.
+                  <div className="space-y-1">
+                    <span className="text-gray-500">Priority</span>
+                    <PriorityControl
+                      ticketId={id}
+                      priority={ticket.priority}
+                      locked={statusName === 'Resolved' || statusName === 'Closed'}
+                    />
+                  </div>
+                ) : (
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Priority</span>
+                    <Badge variant={priorityVariant(ticket.priority) as never}>{ticket.priority}</Badge>
+                  </div>
+                )}
                 <div className="flex justify-between">
                   <span className="text-gray-500">Created</span>
                   <span className="text-right text-xs">{formatDate(ticket.created_at)}</span>

@@ -575,11 +575,7 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	ticketID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "invalid_id", "invalid ticket id")
-		return
-	}
+	ticketID := ticketIDFrom(r)
 
 	// The same ownership-and-lifecycle rule a reply is authorised by (#315: a
 	// reporter could previously attach to their own Closed ticket, because
@@ -611,6 +607,17 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 // that wins the race is answered (the generic 404 for a guest, 409 for a
 // signed-in reporter).
 func (s *Server) storeUploadedAttachment(w http.ResponseWriter, r *http.Request, ticketID uuid.UUID, actor ticket.Actor) {
+	// Before the body is read: a directory that cannot be written to would
+	// otherwise be discovered after the file was parsed, scanned and hashed,
+	// as a 500 (#458). Probed on every attempt, so a fixed directory works
+	// on the next upload.
+	if problem := attachmentStorageProblem(s.cfg.AttachmentDir); problem != "" {
+		slog.WarnContext(r.Context(), "attachment upload refused: storage directory is not writable", "reason", problem)
+		Error(w, http.StatusServiceUnavailable, "attachments_unavailable",
+			"attachments are temporarily unavailable: the server cannot write to its attachment storage ("+problem+"). Ask an administrator.")
+		return
+	}
+
 	if err := http.NewResponseController(w).SetReadDeadline(time.Now().Add(bodyTransferTimeout)); err != nil {
 		slog.DebugContext(r.Context(), "could not extend the upload read deadline", "error", err)
 	}
@@ -1023,11 +1030,7 @@ func (s *Server) storeUploadedAttachment(w http.ResponseWriter, r *http.Request,
 // GET /api/v1/tickets/{id}/attachments
 func (s *Server) handleListAttachments(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
-	ticketID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "invalid_id", "invalid ticket id")
-		return
-	}
+	ticketID := ticketIDFrom(r)
 
 	t, err := s.tickets.GetByID(r.Context(), ticketID)
 	if err != nil {
@@ -1075,11 +1078,7 @@ func (s *Server) handleListAttachments(w http.ResponseWriter, r *http.Request) {
 // reputation.Service, which is where the same rules already govern the
 // automatic half.
 func (s *Server) handleRecheckAttachmentReputation(w http.ResponseWriter, r *http.Request) {
-	ticketID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "invalid_id", "invalid ticket id")
-		return
-	}
+	ticketID := ticketIDFrom(r)
 	attID, err := uuid.Parse(chi.URLParam(r, "attachId"))
 	if err != nil {
 		Error(w, http.StatusBadRequest, "invalid_id", "invalid attachment id")
@@ -1279,11 +1278,7 @@ func reputationUnavailable(w http.ResponseWriter, message string) {
 // Streams the file with the original filename in Content-Disposition.
 func (s *Server) handleDownloadAttachment(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
-	ticketID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "invalid_id", "invalid ticket id")
-		return
-	}
+	ticketID := ticketIDFrom(r)
 	attID, err := uuid.Parse(chi.URLParam(r, "attachId"))
 	if err != nil {
 		Error(w, http.StatusBadRequest, "invalid_id", "invalid attachment id")

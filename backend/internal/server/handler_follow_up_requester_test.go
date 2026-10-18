@@ -72,7 +72,12 @@ func TestRequesterFollowUp_AnAccountHolderOpensOneFromTheirClosedTicket(t *testi
 	require.NotEqual(t, orig.ID, got.ID)
 	require.Equal(t, orig.Subject, got.Subject)
 	require.Equal(t, orig.Description, got.Description)
-	require.Equal(t, &h.userID, got.ReporterUserID, "owned by them: a normal requester-created ticket")
+	// Read from the store: the response a requester gets no longer carries
+	// reporter_user_id (not on the requester allowed list, 2026-10-15).
+	stored, err := h.ticketSvc.GetByID(ctx, got.ID)
+	require.NoError(t, err)
+	require.Equal(t, &h.userID, stored.ReporterUserID, "owned by them: a normal requester-created ticket")
+	require.Nil(t, got.ReporterUserID, "and the response does not say so")
 	require.Equal(t, ticket.PriorityMedium, got.Priority,
 		"the critical priority staff gave the original is not theirs to carry over")
 	require.Equal(t, "New", statusOf(t, h, got.ID))
@@ -353,15 +358,17 @@ func TestGuestFollowUp_EveryRefusalIsTheGenericNotFound(t *testing.T) {
 func TestGuestFollowUp_NeedsGuestSubmissionOn(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
+	ctx := context.Background()
 	tk, token := seedGuestTicket(t, h)
 	closeGuestTicket(t, h, tk)
-	require.False(t, h.adminSvc.GuestSubmissionEnabled(context.Background()), "precondition")
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, false))
+	require.False(t, h.adminSvc.GuestSubmissionEnabled(ctx), "precondition")
 
 	res := h.doGuest(t, http.MethodPost, "/api/v1/guest/follow-up", token, nil)
 	body := readBody(t, res)
 	require.Equal(t, http.StatusNotFound, res.StatusCode)
 	require.Equal(t, `{"error":{"code":"not_found","message":"not found"}}`+"\n", body)
-	links, _ := h.ticketSvc.ListLinks(context.Background(), tk.ID)
+	links, _ := h.ticketSvc.ListLinks(ctx, tk.ID)
 	require.Empty(t, links)
 }
 

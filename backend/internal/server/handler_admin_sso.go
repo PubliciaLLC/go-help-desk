@@ -21,6 +21,10 @@ import (
 //
 // Returns the persisted OIDC configuration.
 // The client secret is intentionally never returned to the browser.
+//
+// `configured` says the saved settings are complete; `live` says the provider
+// is loaded and can sign someone in now. They differ when the identity
+// provider did not answer at startup or at the last save (#421).
 func (s *Server) handleGetOIDCConfig(w http.ResponseWriter, r *http.Request) {
 	cfg := s.adminSvc.GetOIDCConfig(r.Context())
 
@@ -31,6 +35,7 @@ func (s *Server) handleGetOIDCConfig(w http.ResponseWriter, r *http.Request) {
 		"client_secret": "",
 		"redirect_url":  cfg.RedirectURL,
 		"configured":    s.adminSvc.OIDCConfigured(r.Context()),
+		"live":          s.oidcReachableNow(),
 	})
 }
 
@@ -140,22 +145,28 @@ func (s *Server) handleSaveOIDCConfig(w http.ResponseWriter, r *http.Request) {
 // ── SAML ──────────────────────────────────────────────────────────────────────
 
 // GET /api/v1/admin/saml
+//
+// `configured` is "the saved settings are complete", `live` is "the SAML
+// middleware is loaded" (see handleGetOIDCConfig).
 func (s *Server) handleGetSAMLConfig(w http.ResponseWriter, r *http.Request) {
 	metadataURL, certPEM, _ := s.adminSvc.GetSAMLConfig(r.Context())
 	configured := s.adminSvc.SAMLConfigured(r.Context())
 	JSON(w, http.StatusOK, map[string]any{
 		"configured":      configured,
+		"live":            s.samlReachableNow(),
 		"metadata_url":    metadataURL,
+		"metadata_xml":    s.adminSvc.GetSAMLMetadataXML(r.Context()),
 		"cert_pem":        certPEM,
 		"sp_metadata_url": s.cfg.BaseURL + "/api/v1/auth/saml/metadata",
 	})
 }
 
 // PUT /api/v1/admin/saml
-// Accepts metadata_url, cert_pem, key_pem. A field OMITTED from the request
+// Accepts metadata_url or metadata_xml (alternatives: a save that leaves both
+// set is refused), cert_pem, key_pem. A field OMITTED from the request
 // retains the existing value from the database, so callers never need to
 // re-upload a key they did not change. To clear a field, send it as an
-// explicit empty string; to clear all SAML config, send all three that way.
+// explicit empty string; to clear all SAML config, send all four that way.
 func (s *Server) handleSaveSAMLConfig(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		// Pointers, not plain strings: JSON has no way to tell "omitted" from
@@ -169,6 +180,7 @@ func (s *Server) handleSaveSAMLConfig(w http.ResponseWriter, r *http.Request) {
 		// omission does. Nil means omitted; a non-nil pointer to "" is a
 		// deliberate clear.
 		MetadataURL *string `json:"metadata_url"`
+		MetadataXML *string `json:"metadata_xml"`
 		CertPEM     *string `json:"cert_pem"`
 		KeyPEM      *string `json:"key_pem"`
 	}
@@ -181,33 +193,44 @@ func (s *Server) handleSaveSAMLConfig(w http.ResponseWriter, r *http.Request) {
 
 	// Omitted fields retain the existing saved value; a field present in the
 	// body, even as "", is the caller's explicit answer.
-	existingURL, existingCert, existingKey := s.adminSvc.GetSAMLConfig(ctx)
-	metadataURL := existingURL
+	c := s.storedSAMLSettings(ctx)
 	if body.MetadataURL != nil {
-		metadataURL = *body.MetadataURL
+		c.MetadataURL = *body.MetadataURL
 	}
-	certPEM := existingCert
+	if body.MetadataXML != nil {
+		c.MetadataXML = *body.MetadataXML
+	}
 	if body.CertPEM != nil {
-		certPEM = *body.CertPEM
+		c.CertPEM = *body.CertPEM
 	}
-	keyPEM := existingKey
 	if body.KeyPEM != nil {
-		keyPEM = *body.KeyPEM
+		c.KeyPEM = *body.KeyPEM
 	}
 
 	// Validate the cert/key pair when either is present.
-	if certPEM != "" || keyPEM != "" {
-		if _, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM)); err != nil {
+	if c.CertPEM != "" || c.KeyPEM != "" {
+		if _, err := tls.X509KeyPair([]byte(c.CertPEM), []byte(c.KeyPEM)); err != nil {
 			Error(w, http.StatusBadRequest, "invalid_cert_key",
 				"certificate and private key do not match or are invalid: "+err.Error())
 			return
 		}
 	}
 
+	// Refused before anything is built or saved. Otherwise an unparseable
+	// paste would take the build's fail-safe path below ("saved, but could not
+	// be loaded": 200 plus a warning), and a value that can never work would
+	// be accepted and then ignored. The echoed parse error describes the
+	// admin's own input, never anything the server fetched, unlike the URL
+	// path's, which is why it is safe to return here.
+	if code, msg := c.metadataRefusal(); code != "" {
+		Error(w, http.StatusBadRequest, code, msg)
+		return
+	}
+
 	// Built against the CANDIDATE fields, before anything is persisted — same
 	// reasoning as handleSaveOIDCConfig: the guard needs to know whether SAML
 	// will really answer, not just whether the fields are non-empty.
-	reachable, mw, commit, buildErr := s.buildSAMLMiddleware(ctx, metadataURL, certPEM, keyPEM)
+	reachable, mw, commit, buildErr := s.buildSAMLMiddleware(ctx, c)
 
 	warning, err := s.refuseIfOrphaning(ctx, reachable, s.oidcReachableNow())
 	if err != nil {
@@ -215,7 +238,11 @@ func (s *Server) handleSaveSAMLConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.adminSvc.SetSAMLConfig(ctx, metadataURL, certPEM, keyPEM); err != nil {
+	if err := s.adminSvc.SetSAMLConfig(ctx, c.MetadataURL, c.CertPEM, c.KeyPEM); err != nil {
+		handleError(w, err)
+		return
+	}
+	if err := s.adminSvc.SetSAMLMetadataXML(ctx, c.MetadataXML); err != nil {
 		handleError(w, err)
 		return
 	}
@@ -245,7 +272,7 @@ func (s *Server) handleSaveSAMLConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if mw != nil {
-		slog.Info("SAML middleware loaded", "metadata_url", metadataURL)
+		slog.Info("SAML middleware loaded", "metadata_url", c.MetadataURL, "metadata_xml", c.MetadataXML != "")
 	}
 
 	if warning != "" {

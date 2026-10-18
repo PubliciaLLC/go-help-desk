@@ -25,8 +25,8 @@ func (s *Server) authRouter() *chi.Mux {
 	r.With(authmw.DenyMachineCredentials).Post("/local/mfa/verify", s.handleMFAVerify)
 	// The passkey half of the same gate. Both re-issue the session with
 	// MFAPassed true on success, so nothing downstream learns a new idea.
-	r.With(authmw.DenyMachineCredentials).Post("/local/passkey/start", s.handlePasskeyLoginStart)
-	r.With(authmw.DenyMachineCredentials).Post("/local/passkey/finish", s.handlePasskeyLoginFinish)
+	r.With(authmw.DenyMachineCredentials, s.requirePasskeys).Post("/local/passkey/start", s.handlePasskeyLoginStart)
+	r.With(authmw.DenyMachineCredentials, s.requirePasskeys).Post("/local/passkey/finish", s.handlePasskeyLoginFinish)
 
 	r.Post("/oauth/token", s.handleOAuthToken)
 	r.Get("/providers", s.handleAuthProviders)
@@ -46,6 +46,10 @@ func (s *Server) authRouter() *chi.Mux {
 	r.Post("/signup", s.handleSignup)
 	r.Get("/verify-email", s.handleLookupVerification)
 	r.Post("/verify-email", s.handleVerifyEmail)
+
+	// Forgot password (#451). Both public: the person cannot sign in.
+	r.Post("/forgot-password", s.handleForgotPassword)
+	r.Post("/reset-password", s.handleResetPassword)
 
 	return r
 }
@@ -88,8 +92,16 @@ func (s *Server) ticketRouter() *chi.Mux {
 		r.Delete("/links/{targetId}/{linkType}", s.handleRemoveLink)
 		r.Get("/links", s.handleListLinks)
 
-		r.Get("/history", s.handleListStatusHistory)
-		r.Get("/audit", s.handleListTicketAudit)
+		// The status timeline and the audit feed are history, which a requester
+		// does not get (Erik, 2026-10-15: requesters see the current state of
+		// the ticket and its conversation, not its history). Staff and
+		// administrators only, like tags and followers; the ticket-access check
+		// above still answers first, so a ticket out of reach is a 404.
+		r.Group(func(r chi.Router) {
+			r.Use(authmw.RequireRole(user.RoleAdmin, user.RoleStaff))
+			r.Get("/history", s.handleListStatusHistory)
+			r.Get("/audit", s.handleListTicketAudit)
+		})
 
 		// Tags are how staff mark a ticket for other staff — "fraud-suspect",
 		// "legal-hold", "difficult-customer". DESIGN.md gives them to Staff and
@@ -101,6 +113,16 @@ func (s *Server) ticketRouter() *chi.Mux {
 			r.Get("/tags", s.handleListTicketTags)
 			r.Post("/tags", s.handleAddTicketTag)
 			r.Delete("/tags/{tagId}", s.handleRemoveTicketTag)
+		})
+
+		// Followers (#441). Staff and admin only. Following is a person's own
+		// choice, so a machine credential may read the list but not change
+		// whether somebody follows.
+		r.Group(func(r chi.Router) {
+			r.Use(authmw.RequireRole(user.RoleAdmin, user.RoleStaff))
+			r.Get("/followers", s.handleListFollowers)
+			r.With(authmw.DenyMachineCredentials).Put("/follow", s.handleFollowTicket)
+			r.With(authmw.DenyMachineCredentials).Delete("/follow", s.handleUnfollowTicket)
 		})
 
 		// Canned responses are for staff/admin composing replies, not the
@@ -131,14 +153,23 @@ func (s *Server) adminRouter() *chi.Mux {
 	r.Use(authmw.RequireRole(user.RoleAdmin))
 	r.Use(authmw.RequireMFA)
 
+	// Keys can't write users (Erik, 2026-10-16). An API key or OAuth client may
+	// only READ users; every write needs a signed-in administrator. A key that
+	// could write a user could make itself a person: set a password and sign in
+	// as them, promote a requester it knows the password of, re-address an
+	// account so a reset link comes to it, and from that session mint
+	// credentials that outlive the key. Closing those one field at a time left
+	// a door open each time, so the rule is the route, not the field. Group
+	// membership and scope writes are user writes too: they grant ticket
+	// visibility to users.
 	r.Route("/users", func(r chi.Router) {
 		r.Use(authmw.RequireResource(auth.ResourceUsers))
 		r.Get("/", s.handleListUsers)
-		r.Post("/", s.handleCreateUser)
+		r.With(authmw.DenyMachineCredentials).Post("/", s.handleCreateUser)
 		r.Get("/{id}", s.handleGetUser)
-		r.Patch("/{id}", s.handleUpdateUser)
-		r.Delete("/{id}", s.handleDeleteUser)
-		r.Post("/{id}/password", s.handleAdminResetPassword)
+		r.With(authmw.DenyMachineCredentials).Patch("/{id}", s.handleUpdateUser)
+		r.With(authmw.DenyMachineCredentials).Delete("/{id}", s.handleDeleteUser)
+		r.With(authmw.DenyMachineCredentials).Post("/{id}/password", s.handleAdminResetPassword)
 	})
 
 	r.Route("/groups", func(r chi.Router) {
@@ -149,10 +180,10 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.Patch("/{id}", s.handleUpdateGroup)
 		r.Delete("/{id}", s.handleDeleteGroup)
 		r.Get("/{id}/members", s.handleListGroupMembers)
-		r.Post("/{id}/members", s.handleAddGroupMember)
-		r.Delete("/{id}/members/{userId}", s.handleRemoveGroupMember)
-		r.Post("/{id}/scopes", s.handleAddGroupScope)
-		r.Delete("/{id}/scopes", s.handleRemoveGroupScope)
+		r.With(authmw.DenyMachineCredentials).Post("/{id}/members", s.handleAddGroupMember)
+		r.With(authmw.DenyMachineCredentials).Delete("/{id}/members/{userId}", s.handleRemoveGroupMember)
+		r.With(authmw.DenyMachineCredentials).Post("/{id}/scopes", s.handleAddGroupScope)
+		r.With(authmw.DenyMachineCredentials).Delete("/{id}/scopes", s.handleRemoveGroupScope)
 		r.Get("/{id}/scopes", s.handleListGroupScopes)
 	})
 
@@ -277,14 +308,24 @@ func (s *Server) adminRouter() *chi.Mux {
 	r.Route("/api-keys", func(r chi.Router) {
 		r.Use(authmw.RequireResource(auth.ResourceCredentials))
 		r.Get("/", s.handleListAPIKeys)
-		r.Post("/", s.handleCreateAPIKey)
+		// Keys can't make keys (Erik, 2026-10-16): only a signed-in person
+		// creates an API key. A key that could would mint a successor before
+		// it expired, and that one another, so the lifetime limit would mean
+		// nothing and revoking the first would remove none of the rest. Listing
+		// and revoking stay open to a key. An OAuth client never gets this far:
+		// it is staff, and the role check above has already refused it.
+		r.With(authmw.DenyMachineCredentials).Post("/", s.handleCreateAPIKey)
 		r.Delete("/{id}", s.handleDeleteAPIKey)
 	})
 
 	r.Route("/oauth-clients", func(r chi.Router) {
 		r.Use(authmw.RequireResource(auth.ResourceCredentials))
 		r.Get("/", s.handleListOAuthClients)
-		r.Post("/", s.handleCreateOAuthClient)
+		// An OAuth client is a credential like an API key: keys can't make
+		// keys (Erik, 2026-10-16). A client made by a leaked key would outlive
+		// it. Listing and deleting stay open. There is no route that rotates
+		// a client's secret, so this is the only creating path.
+		r.With(authmw.DenyMachineCredentials).Post("/", s.handleCreateOAuthClient)
 		r.Delete("/{id}", s.handleDeleteOAuthClient)
 	})
 
@@ -294,6 +335,10 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.Post("/", s.handleCreateWebhook)
 		r.Patch("/{id}", s.handleUpdateWebhook)
 		r.Delete("/{id}", s.handleDeleteWebhook)
+		// A hook whose key died is paused; only a person lifts that (#450).
+		r.With(authmw.DenyMachineCredentials).Post("/{id}/reapprove", s.handleReapproveWebhook)
+		r.Get("/{id}/deliveries", s.handleListWebhookDeliveries)
+		r.Post("/{id}/deliveries/{delivery}/redeliver", s.handleRedeliverWebhook)
 	})
 
 	r.Route("/tags", func(r chi.Router) {
@@ -348,25 +393,59 @@ func (s *Server) meRouter() *chi.Mux {
 		// reachable by top-level navigation from any site — the session cookie
 		// is SameSite=Lax — so a single link could start enrolment for a
 		// logged-in victim.
-		r.Post("/mfa/enroll", s.handleMFAEnrollStart)
-		r.Post("/mfa/enroll/confirm", s.handleMFAEnrollConfirm)
+		//
+		// RequirePasswordCurrent on all of them: a session that owes the
+		// password change the console's unlock command imposed (#497) may do
+		// that and nothing else, enrolment included. The change itself is
+		// reachable without MFA (below), so this cannot strand anyone.
+		r.Group(func(r chi.Router) {
+			r.Use(authmw.RequirePasswordCurrent)
+			r.Post("/mfa/enroll", s.handleMFAEnrollStart)
+			r.Post("/mfa/enroll/confirm", s.handleMFAEnrollConfirm)
 
-		// Passkeys sit beside TOTP enrolment and inherit both placements
-		// deliberately: refused to machine credentials, because a key must
-		// not be able to add a way of becoming its owner; and outside
-		// RequireMFA, because somebody compelled to enrol has to be able to
-		// finish. The second is what lets a sole administrator with no
-		// working factor recover alone, pinned by
-		// TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor.
-		r.Get("/passkeys", s.handleListPasskeys)
-		r.Post("/passkeys/register/start", s.handlePasskeyRegisterStart)
-		r.Post("/passkeys/register/finish", s.handlePasskeyRegisterFinish)
-		r.Delete("/passkeys/{id}", s.handleDeletePasskey)
+			// Passkeys sit beside TOTP enrolment and inherit both placements
+			// deliberately: refused to machine credentials, because a key must
+			// not be able to add a way of becoming its owner; and outside
+			// RequireMFA, because somebody compelled to enrol has to be able to
+			// finish. The second is what lets a sole administrator with no
+			// working factor recover alone, pinned by
+			// TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor.
+			//
+			// All but delete answer 503 while passkeys are unavailable (#494).
+			// Delete never touches the ceremony service, and a person should be
+			// able to remove a key from an account whatever BASE_URL is.
+			r.With(s.requirePasskeys).Get("/passkeys", s.handleListPasskeys)
+			r.With(s.requirePasskeys).Post("/passkeys/register/start", s.handlePasskeyRegisterStart)
+			r.With(s.requirePasskeys).Post("/passkeys/register/finish", s.handlePasskeyRegisterFinish)
+			r.Delete("/passkeys/{id}", s.handleDeletePasskey)
+		})
+
+		r.With(authmw.RequireMFAOrPasswordChange).Patch("/password", s.handleChangePassword)
 
 		r.Group(func(r chi.Router) {
 			r.Use(authmw.RequireMFA)
-			r.Patch("/password", s.handleChangePassword)
+			// Staff only: a requester account is never sent staff mail. Refused
+			// to machine credentials with the rest of this group; a key has no
+			// inbox of its own to choose for.
+			r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff)).
+				Patch("/email-preferences", s.handleUpdateEmailPreferences)
 		})
+	})
+
+	// Self-service API keys (#450). Refused to machine credentials, as the
+	// routes above are and for a stronger reason: a key that could mint keys
+	// outlives its own revocation. RequireMFA because a half-signed-in session
+	// must not be able to mint a long-lived credential. Requesters are
+	// excluded here; whether staff may create is decided by the setting inside
+	// the handler, so that listing and revoking stay available to them.
+	r.Group(func(r chi.Router) {
+		r.Use(authmw.DenyMachineCredentials)
+		r.Use(authmw.RequireMFA)
+		r.Use(authmw.RequireRole(user.RoleAdmin, user.RoleStaff))
+		r.Get("/api-keys", s.handleListMyAPIKeys)
+		r.Get("/api-keys/scopes", s.handleListMyAPIKeyScopes)
+		r.Post("/api-keys", s.handleCreateMyAPIKey)
+		r.Delete("/api-keys/{id}", s.handleDeleteMyAPIKey)
 	})
 
 	// Reading your own identity is left to machine credentials: an integration
@@ -383,9 +462,12 @@ func (s *Server) meRouter() *chi.Mux {
 // guestRouter is the whole surface a per-ticket token reaches.
 //
 // Mounted at /api/v1/guest, outside ticketRouter. Submission and re-request are
-// public and throttled; the other two require a token, which the middleware
+// public and throttled; the token routes require a token, which the middleware
 // resolves to exactly one ticket. There is no id parameter anywhere below, so
 // there is nothing for a guest to change in order to reach a different ticket.
+// All routes, public and token-based, are gated on guest_submission_enabled: when
+// off, the instance answers 404 to all guest routes rather than advertising
+// routes it will not serve, suspending existing links until the setting is on again (#424).
 func (s *Server) guestRouter() *chi.Mux {
 	r := chi.NewRouter()
 

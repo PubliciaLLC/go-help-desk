@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,12 +47,35 @@ func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (user.User, error) {
 	return fromRow(row), nil
 }
 
+func (s *Store) GetByIDs(ctx context.Context, ids []uuid.UUID) ([]user.User, error) {
+	rows, err := s.q.GetUsersByIDs(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("getting users by id: %w", err)
+	}
+	out := make([]user.User, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(r)
+	}
+	return out, nil
+}
+
 func (s *Store) GetByEmail(ctx context.Context, email string) (user.User, error) {
 	row, err := s.q.GetUserByEmail(ctx, email)
 	if err != nil {
 		return user.User{}, wrapNotFound(err, "user by email", email)
 	}
 	return fromRow(row), nil
+}
+
+// ServiceAccountName returns the display name (the OAuth client's name) of the
+// service account with this address, or ErrNotFound. GetByEmail never finds one;
+// this exists so go-help-desk unlock can refuse it by name (#497).
+func (s *Store) ServiceAccountName(ctx context.Context, email string) (string, error) {
+	name, err := s.q.GetServiceAccountNameByEmail(ctx, email)
+	if err != nil {
+		return "", wrapNotFound(err, "service account by email", email)
+	}
+	return name, nil
 }
 
 func (s *Store) GetBySAMLSubject(ctx context.Context, subject string) (user.User, error) {
@@ -74,7 +98,7 @@ func (s *Store) GetByOIDCSubject(ctx context.Context, subject string) (user.User
 }
 
 func (s *Store) Update(ctx context.Context, u user.User) error {
-	return s.q.UpdateUser(ctx, dbgen.UpdateUserParams{
+	err := s.q.UpdateUser(ctx, dbgen.UpdateUserParams{
 		ID:           u.ID,
 		Email:        u.Email,
 		DisplayName:  u.DisplayName,
@@ -86,6 +110,18 @@ func (s *Store) Update(ctx context.Context, u user.User) error {
 		OidcSubject:  u.OIDCSubject,
 		UpdatedAt:    time.Now(),
 	})
+	return inertViolation(err)
+}
+
+// inertViolation turns the database's refusal to give a service account a way
+// to sign in (users_service_account_inert) into user.ErrServiceAccount, so a
+// caller can answer it. Any other error, and nil, come back unchanged.
+func inertViolation(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == "users_service_account_inert" {
+		return user.ErrServiceAccount
+	}
+	return err
 }
 
 func (s *Store) GetByIDAdmin(ctx context.Context, id uuid.UUID) (user.User, error) {
@@ -188,7 +224,7 @@ func (s *Store) GetMFALock(ctx context.Context, id uuid.UUID) (int, *time.Time, 
 func (s *Store) AdminSetPassword(ctx context.Context, id uuid.UUID, hash string) error {
 	n, err := s.q.AdminSetPassword(ctx, dbgen.AdminSetPasswordParams{ID: id, PasswordHash: hash})
 	if err != nil {
-		return fmt.Errorf("setting password for user %s: %w", id, err)
+		return fmt.Errorf("setting password for user %s: %w", id, inertViolation(err))
 	}
 	if n == 0 {
 		return fmt.Errorf("%w: user %s", ErrNotFound, id)
@@ -218,6 +254,52 @@ func (s *Store) ListAdmin(ctx context.Context, limit, offset int) ([]user.User, 
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing users (admin): %w", err)
+	}
+	out := make([]user.User, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(r)
+	}
+	return out, nil
+}
+
+// likeEscaper makes %, _ and the escape character itself match literally in
+// an ILIKE pattern, so searching for "50%" finds "50%" rather than everyone.
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+func (s *Store) SearchAdmin(ctx context.Context, role, q string, serviceAccount *bool, limit, offset int) ([]user.User, int64, error) {
+	pattern := likeEscaper.Replace(q)
+	svc := sql.NullBool{}
+	if serviceAccount != nil {
+		svc = sql.NullBool{Bool: *serviceAccount, Valid: true}
+	}
+	rows, err := s.q.SearchUsersAdmin(ctx, dbgen.SearchUsersAdminParams{
+		Role:           role,
+		ServiceAccount: svc,
+		Q:              pattern,
+		PageLimit:      int32(limit),
+		PageOffset:     int32(offset),
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("searching users (admin): %w", err)
+	}
+	total, err := s.q.CountSearchUsersAdmin(ctx, dbgen.CountSearchUsersAdminParams{Role: role, Q: pattern, ServiceAccount: svc})
+	if err != nil {
+		return nil, 0, fmt.Errorf("counting users (admin): %w", err)
+	}
+	out := make([]user.User, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(r)
+	}
+	return out, total, nil
+}
+
+// LookupRequesters is the requester picker's search: up to ten accounts a
+// ticket can be filed for (not disabled, deleted or a service identity) whose
+// name or address contains q, by display name. One query.
+func (s *Store) LookupRequesters(ctx context.Context, q string) ([]user.User, error) {
+	rows, err := s.q.LookupRequesters(ctx, likeEscaper.Replace(q))
+	if err != nil {
+		return nil, fmt.Errorf("looking up requesters: %w", err)
 	}
 	out := make([]user.User, len(rows))
 	for i, r := range rows {
@@ -281,7 +363,7 @@ func (s *Store) guardedWrite(write func() (uuid.UUID, error)) (bool, error) {
 	case errors.Is(err, sql.ErrNoRows):
 		return false, nil
 	}
-	return false, fmt.Errorf("guarded write: %w", err)
+	return false, fmt.Errorf("guarded write: %w", inertViolation(err))
 }
 
 // isDeadlock reports whether Postgres killed this statement to break a lock
@@ -325,14 +407,24 @@ func (s *Store) EmailIsTaken(ctx context.Context, email string) (bool, error) {
 // name, so a slow caller cannot write a stale copy of everything else back.
 func (s *Store) SetPasswordHash(ctx context.Context, id uuid.UUID, hash string) error {
 	if err := s.q.SetUserPasswordHash(ctx, dbgen.SetUserPasswordHashParams{ID: id, PasswordHash: hash}); err != nil {
-		return fmt.Errorf("setting password: %w", err)
+		return fmt.Errorf("setting password: %w", inertViolation(err))
 	}
 	return nil
 }
 
+// RehashPassword swaps oldHash for newHash only while oldHash is still stored,
+// and reports whether it did. See the RehashUserPassword query.
+func (s *Store) RehashPassword(ctx context.Context, id uuid.UUID, oldHash, newHash string) (bool, error) {
+	n, err := s.q.RehashUserPassword(ctx, dbgen.RehashUserPasswordParams{ID: id, PasswordHash: oldHash, PasswordHash_2: newHash})
+	if err != nil {
+		return false, fmt.Errorf("rehashing password: %w", err)
+	}
+	return n == 1, nil
+}
+
 func (s *Store) SetMFA(ctx context.Context, id uuid.UUID, secret string, enabled bool) error {
 	if err := s.q.SetUserMFA(ctx, dbgen.SetUserMFAParams{ID: id, MfaSecret: secret, MfaEnabled: enabled}); err != nil {
-		return fmt.Errorf("setting MFA: %w", err)
+		return fmt.Errorf("setting MFA: %w", inertViolation(err))
 	}
 	return nil
 }
@@ -340,7 +432,7 @@ func (s *Store) SetMFA(ctx context.Context, id uuid.UUID, secret string, enabled
 func (s *Store) SetFirstMFA(ctx context.Context, id uuid.UUID, secret string) (bool, error) {
 	n, err := s.q.SetFirstUserMFA(ctx, dbgen.SetFirstUserMFAParams{ID: id, MfaSecret: secret})
 	if err != nil {
-		return false, fmt.Errorf("setting first MFA: %w", err)
+		return false, fmt.Errorf("setting first MFA: %w", inertViolation(err))
 	}
 	return n == 1, nil
 }
@@ -397,9 +489,27 @@ func (s *Store) EnableMFAIfStillEnrolled(ctx context.Context, id uuid.UUID) (boo
 	return false, fmt.Errorf("enabling MFA: %w", err)
 }
 
+// nullBool is NULL for an unset switch, which the statement reads as "leave it".
+func nullBool(b *bool) sql.NullBool {
+	if b == nil {
+		return sql.NullBool{}
+	}
+	return sql.NullBool{Bool: *b, Valid: true}
+}
+
+// SetEmailPreferences writes only the switches the patch names.
+func (s *Store) SetEmailPreferences(ctx context.Context, id uuid.UUID, p user.EmailPreferencesPatch) error {
+	if err := s.q.SetUserEmailPreferences(ctx, dbgen.SetUserEmailPreferencesParams{
+		ID: id, Assigned: nullBool(p.Assigned), Activity: nullBool(p.Activity), Grp: nullBool(p.Group),
+	}); err != nil {
+		return fmt.Errorf("setting email preferences: %w", err)
+	}
+	return nil
+}
+
 // UpdateProfile writes only the address and the name.
 func (s *Store) UpdateProfile(ctx context.Context, id uuid.UUID, email, displayName string) error {
-	err := s.q.UpdateUserProfile(ctx, dbgen.UpdateUserProfileParams{
+	n, err := s.q.UpdateUserProfile(ctx, dbgen.UpdateUserProfileParams{
 		ID: id, Email: email, DisplayName: displayName,
 	})
 	if err != nil {
@@ -408,6 +518,11 @@ func (s *Store) UpdateProfile(ctx context.Context, id uuid.UUID, email, displayN
 			return user.ErrEmailTaken
 		}
 		return fmt.Errorf("updating profile: %w", err)
+	}
+	// The statement skips deleted accounts, so no row means the account is
+	// gone or never existed, not that the write succeeded (#419).
+	if n == 0 {
+		return fmt.Errorf("%w: user %s", ErrNotFound, id)
 	}
 	return nil
 }
@@ -431,22 +546,47 @@ func (s *Store) CountAll(ctx context.Context) (int64, error) {
 	return s.q.CountAllUsers(ctx)
 }
 
+// FromRow is fromRow for a store that reads a user row as part of a larger
+// query (authstore's client-with-user lookup) and must not copy the mapping.
+func FromRow(r dbgen.User) user.User { return fromRow(r) }
+
 // fromRow converts a dbgen.User to domain user.User.
+// Unlock re-enables the account, clears its MFA lockout and installs hash as
+// its password, marked to be changed at the next sign-in. It is the account
+// half of /app/server unlock (#497); factors and sessions are ClearFactors'.
+// Deliberately not on user.Store: only the console command calls it.
+func (s *Store) Unlock(ctx context.Context, id uuid.UUID, hash string) error {
+	n, err := s.q.UnlockUser(ctx, dbgen.UnlockUserParams{ID: id, PasswordHash: hash})
+	if err != nil {
+		return fmt.Errorf("unlocking user %s: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("%w: user %s", ErrNotFound, id)
+	}
+	return nil
+}
+
 func fromRow(r dbgen.User) user.User {
 	return user.User{
-		ID:           r.ID,
-		Email:        r.Email,
-		DisplayName:  r.DisplayName,
-		Role:         user.Role(r.Role),
-		PasswordHash: r.PasswordHash,
-		MFASecret:    r.MfaSecret,
-		MFAEnabled:   r.MfaEnabled,
-		SAMLSubject:  r.SamlSubject,
-		OIDCSubject:  r.OidcSubject,
-		Disabled:     r.Disabled,
-		CreatedAt:    r.CreatedAt,
-		UpdatedAt:    r.UpdatedAt,
-		DeletedAt:    database.TimePtr(r.DeletedAt),
+		ID:                 r.ID,
+		Email:              r.Email,
+		DisplayName:        r.DisplayName,
+		Role:               user.Role(r.Role),
+		PasswordHash:       r.PasswordHash,
+		MFASecret:          r.MfaSecret,
+		MFAEnabled:         r.MfaEnabled,
+		SAMLSubject:        r.SamlSubject,
+		OIDCSubject:        r.OidcSubject,
+		Disabled:           r.Disabled,
+		ServiceAccount:     r.ServiceAccount,
+		MustChangePassword: r.MustChangePassword,
+		CreatedAt:          r.CreatedAt,
+		UpdatedAt:          r.UpdatedAt,
+		DeletedAt:          database.TimePtr(r.DeletedAt),
+
+		EmailNotifyAssigned: r.EmailNotifyAssigned,
+		EmailNotifyActivity: r.EmailNotifyActivity,
+		EmailNotifyGroup:    r.EmailNotifyGroup,
 	}
 }
 

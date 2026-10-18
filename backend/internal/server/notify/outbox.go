@@ -2,7 +2,6 @@ package notify
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -20,51 +19,12 @@ import (
 // the answer through its timing (#164). Requests now enqueue; Worker sends.
 
 // ErrRawGuestToken refuses to queue an event carrying a guest's raw access
-// token. The guest token table holds only hashes; a copy in the outbox would
-// undo that. Guest links are created by the worker at send time instead.
-var ErrRawGuestToken = errors.New("refusing to queue a raw guest token")
+// token. The row encoding lives in the notification package (#506), so the
+// transaction runner can write rows without importing this one.
+var ErrRawGuestToken = notification.ErrRawGuestToken
 
-// outboxRecord is how an event is stored. Spelled out field by field rather
-// than json.Marshal(event), because Event's own JSON is the webhook body and
-// deliberately omits the email-only fields this needs.
-//
-// GuestToken is absent on purpose. TestOutboxRecord_CoversEveryEventField
-// fails when a field is added to Event without a decision here.
-type outboxRecord struct {
-	Type           notification.EventType `json:"type"`
-	TicketID       uuid.UUID              `json:"ticket_id"`
-	ActorID        *uuid.UUID             `json:"actor_id,omitempty"`
-	Payload        map[string]any         `json:"payload,omitempty"`
-	OccurredAt     time.Time              `json:"occurred_at"`
-	TrackingNumber string                 `json:"tracking_number,omitempty"`
-	Recipient      string                 `json:"recipient,omitempty"`
-	Subject        string                 `json:"subject,omitempty"`
-	StatusName     string                 `json:"status_name,omitempty"`
-	GuestLink      bool                   `json:"guest_link,omitempty"`
-}
-
-func encodeEvent(ev notification.Event) ([]byte, error) {
-	if ev.GuestToken != "" {
-		return nil, ErrRawGuestToken
-	}
-	return json.Marshal(outboxRecord{
-		Type: ev.Type, TicketID: ev.TicketID, ActorID: ev.ActorID, Payload: ev.Payload,
-		OccurredAt: ev.OccurredAt, TrackingNumber: ev.TrackingNumber, Recipient: ev.Recipient,
-		Subject: ev.Subject, StatusName: ev.StatusName, GuestLink: ev.GuestLink,
-	})
-}
-
-func decodeEvent(b []byte) (notification.Event, error) {
-	var r outboxRecord
-	if err := json.Unmarshal(b, &r); err != nil {
-		return notification.Event{}, err
-	}
-	return notification.Event{
-		Type: r.Type, TicketID: r.TicketID, ActorID: r.ActorID, Payload: r.Payload,
-		OccurredAt: r.OccurredAt, TrackingNumber: r.TrackingNumber, Recipient: r.Recipient,
-		Subject: r.Subject, StatusName: r.StatusName, GuestLink: r.GuestLink,
-	}, nil
-}
+func encodeEvent(ev notification.Event) ([]byte, error) { return notification.EncodeEvent(ev) }
+func decodeEvent(b []byte) (notification.Event, error)  { return notification.DecodeEvent(b) }
 
 type attemptKey struct{}
 
@@ -76,8 +36,31 @@ func Attempt(ctx context.Context) int {
 	return n
 }
 
-// OutboxDispatcher is the Dispatcher requests call: it queues one row per
-// channel and returns without contacting any of them.
+type (
+	rowKey         struct{}
+	lastAttemptKey struct{}
+)
+
+// RowID reports the id of the queued row being delivered, or uuid.Nil outside
+// the worker. It is stable across a row's retries, which is what makes it the
+// webhook delivery id (#448).
+func RowID(ctx context.Context) uuid.UUID {
+	id, _ := ctx.Value(rowKey{}).(uuid.UUID)
+	return id
+}
+
+// LastAttempt reports whether the worker will give up on the row if this
+// attempt fails.
+func LastAttempt(ctx context.Context) bool {
+	b, _ := ctx.Value(lastAttemptKey{}).(bool)
+	return b
+}
+
+// OutboxDispatcher queues one row per channel for an event and returns without
+// contacting any of them. Ticket changes no longer come through it: they are
+// written in the change's own transaction (txrunner, #506). It remains for the
+// two events that are not changes to a ticket, the guest link resend and the
+// signup verification, which have no transaction to join.
 type OutboxDispatcher struct {
 	store    notification.Outbox
 	channels []string
@@ -97,24 +80,6 @@ func (d *OutboxDispatcher) Channels() []string {
 	return slices.Clone(d.channels)
 }
 
-// carries reports whether a channel can deliver an event type at all. A row
-// for an event its channel would discard is a write, a claim and a delete for
-// nothing — and guest resend, which queues on every unauthenticated request,
-// wrote one webhook row per request that way (#164 round 1).
-func carries(channel string, ev notification.Event) bool {
-	switch channel {
-	case "webhook":
-		return IsWebhookEvent(string(ev.Type))
-	case "email":
-		// An account holder's status change has nobody to mail. A guest-link
-		// event may have no recipient yet: the send-time step fills it in.
-		return ev.Recipient != "" || ev.GuestLink
-	case "verification":
-		return ev.Type == notification.EventRegistrationVerify
-	}
-	return true
-}
-
 func (d *OutboxDispatcher) Dispatch(ctx context.Context, ev notification.Event) error {
 	body, err := encodeEvent(ev)
 	if err != nil {
@@ -125,7 +90,7 @@ func (d *OutboxDispatcher) Dispatch(ctx context.Context, ev notification.Event) 
 	ctx = context.WithoutCancel(ctx)
 	var first error
 	for _, ch := range d.channels {
-		if !carries(ch, ev) {
+		if !notification.Carries(ch, ev) {
 			continue
 		}
 		if err := d.store.Enqueue(ctx, uuid.New(), ch, body); err != nil {
@@ -189,6 +154,10 @@ func NewWorker(store notification.Outbox, channels map[string]notification.Dispa
 		wakeCh:         make(chan struct{}, 1),
 	}
 }
+
+// maxRetryAfter is the longest a receiver's Retry-After can delay a retry:
+// the longest wait defaultBackoff ever produces.
+const maxRetryAfter = time.Hour
 
 // defaultBackoff doubles from 30 seconds, capped at an hour: eight attempts
 // span a little over an hour, long enough to ride out a mail server restart.
@@ -301,7 +270,10 @@ func (w *Worker) deliver(ctx context.Context, row notification.OutboxRow) {
 		return
 	}
 
-	sendCtx, cancel := context.WithTimeout(context.WithValue(settle, attemptKey{}, row.Attempts), w.SendTimeout)
+	rowCtx := context.WithValue(settle, attemptKey{}, row.Attempts)
+	rowCtx = context.WithValue(rowCtx, rowKey{}, row.ID)
+	rowCtx = context.WithValue(rowCtx, lastAttemptKey{}, row.Attempts >= w.MaxAttempts)
+	sendCtx, cancel := context.WithTimeout(rowCtx, w.SendTimeout)
 	err = d.Dispatch(sendCtx, ev)
 	cancel()
 	if err == nil {
@@ -313,11 +285,22 @@ func (w *Worker) deliver(ctx context.Context, row notification.OutboxRow) {
 	}
 	// fail redacts the raw error itself, so it is redacted exactly once on
 	// either path (redaction is not idempotent; see TestWorker_RedactsTheRawErrorExactlyOnce).
-	if row.Attempts >= w.MaxAttempts {
+	//
+	// A permanent error (a template that will not render) gets no retries:
+	// the eighth attempt would fail exactly as the first did, an hour later.
+	if errors.Is(err, ErrPermanent) || row.Attempts >= w.MaxAttempts {
 		w.fail(settle, row, err.Error())
 		return
 	}
-	if rerr := w.store.Retry(settle, row.ID, time.Now().Add(w.Backoff(row.Attempts)), redactAddresses(err.Error())); rerr != nil {
+	delay := w.Backoff(row.Attempts)
+	// A receiver that said how long to wait (Retry-After) is obeyed when that
+	// is longer than the schedule, but never past the longest wait in it: a
+	// header must not be able to park a row for a year.
+	var ra *notification.RetryAfterError
+	if errors.As(err, &ra) && ra.After > delay {
+		delay = min(ra.After, maxRetryAfter)
+	}
+	if rerr := w.store.Retry(settle, row.ID, time.Now().Add(delay), redactAddresses(err.Error())); rerr != nil {
 		w.log.ErrorContext(ctx, "notification outbox: could not reschedule", "id", row.ID, "error", rerr)
 	}
 }
@@ -409,12 +392,16 @@ func (d *GuestLinkDispatcher) Dispatch(ctx context.Context, ev notification.Even
 	return d.next.Dispatch(ctx, sent)
 }
 
-// VerificationDispatcher is the outbox channel for signup verification email
-// (#348). The event names a pending registration and nothing else; send reads
-// the row, decides whether anyone is to be mailed, and mails the address and
-// token stored on it.
+// VerificationDispatcher is the outbox channel for the account email that
+// carries a link to follow: signup verification (#348) and password reset
+// (#451). A signup event names a pending registration and nothing else; send
+// reads the row, decides whether anyone is to be mailed, and mails the address
+// and token stored on it. A reset event names only the address that was typed;
+// the step wired with WithPasswordReset decides whether that address is to be
+// mailed and makes the token.
 type VerificationDispatcher struct {
-	send func(context.Context, uuid.UUID) error
+	send  func(context.Context, uuid.UUID) error
+	reset func(context.Context, notification.Event) error
 }
 
 // NewVerificationDispatcher sends through send, normally
@@ -423,8 +410,23 @@ func NewVerificationDispatcher(send func(context.Context, uuid.UUID) error) *Ver
 	return &VerificationDispatcher{send: send}
 }
 
+// WithPasswordReset sends a password reset request through reset, normally the
+// server's SendPasswordReset. Without it a reset request fails rather than
+// being settled as sent, so a wiring that forgets it is not silent (#451).
+func (d *VerificationDispatcher) WithPasswordReset(reset func(context.Context, notification.Event) error) *VerificationDispatcher {
+	d.reset = reset
+	return d
+}
+
 func (d *VerificationDispatcher) Dispatch(ctx context.Context, ev notification.Event) error {
-	if ev.Type != notification.EventRegistrationVerify {
+	switch ev.Type {
+	case notification.EventPasswordResetRequested:
+		if d.reset == nil {
+			return errors.New("password reset event with no step to send it")
+		}
+		return d.reset(ctx, ev)
+	case notification.EventRegistrationVerify:
+	default:
 		return nil
 	}
 	raw, _ := ev.Payload["pending_id"].(string)

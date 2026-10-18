@@ -104,6 +104,8 @@ func (s *Store) searchUnscoped(ctx context.Context, p searchParamValues, limit, 
 		Q:          p.q,
 		PageLimit:  int32(limit + 1),
 		PageOffset: int32(offset),
+
+		ExcludeActions: p.excludeActions,
 	})
 	if err != nil {
 		return nil, 0, fmt.Errorf("searching audit entries: %w", err)
@@ -116,6 +118,8 @@ func (s *Store) searchUnscoped(ctx context.Context, p searchParamValues, limit, 
 		ToTs:       p.to,
 		Q:          p.q,
 		CountCap:   audit.TotalCap + 1,
+
+		ExcludeActions: p.excludeActions,
 	})
 	if err != nil {
 		return nil, 0, fmt.Errorf("counting audit entries: %w", err)
@@ -162,6 +166,7 @@ func (s *Store) searchScoped(ctx context.Context, p searchParamValues, userID uu
 		TypeIds:          sc.TypeIds,
 		PageLimit:        int32(limit + 1),
 		PageOffset:       int32(offset),
+		ExcludeActions:   p.excludeActions,
 	})
 	if err != nil {
 		return nil, 0, fmt.Errorf("searching audit entries: %w", err)
@@ -179,6 +184,7 @@ func (s *Store) searchScoped(ctx context.Context, p searchParamValues, userID uu
 		TypedCategoryIds: sc.TypedCategoryIds,
 		TypeIds:          sc.TypeIds,
 		CountCap:         audit.TotalCap + 1,
+		ExcludeActions:   p.excludeActions,
 	})
 	if err != nil {
 		return nil, 0, fmt.Errorf("counting audit entries: %w", err)
@@ -215,10 +221,12 @@ type searchParamValues struct {
 	entityType, action, q sql.NullString
 	actorID               uuid.NullUUID
 	from, to              sql.NullTime
+	// nil, not empty, when nothing is excluded: SQL NULL means "no exclusion".
+	excludeActions []string
 }
 
 func searchParams(f audit.Filter) searchParamValues {
-	return searchParamValues{
+	p := searchParamValues{
 		entityType: database.NullString(nonEmpty(f.EntityType)),
 		action:     database.NullString(nonEmpty(f.Action)),
 		q:          database.NullString(nonEmpty(f.Q)),
@@ -226,6 +234,10 @@ func searchParams(f audit.Filter) searchParamValues {
 		from:       database.NullTime(f.From),
 		to:         database.NullTime(f.To),
 	}
+	if len(f.ExcludeActions) > 0 {
+		p.excludeActions = f.ExcludeActions
+	}
+	return p
 }
 
 // nonEmpty turns an empty filter string into a nil pointer, so an unset

@@ -121,13 +121,13 @@ export function GuestTicketViewPage() {
       <Card>
         <CardHeader>
           <div className="flex items-baseline justify-between gap-3 flex-wrap">
-            <CardTitle className="text-lg">{ticket.subject}</CardTitle>
+            <CardTitle className="text-lg wrap-anywhere">{ticket.subject}</CardTitle>
             <span className="text-xs font-mono text-gray-500">{ticket.tracking_number}</span>
           </div>
-          <p className="text-sm text-gray-500 mt-1">Status: {ticket.status}</p>
+          <p className="text-sm text-gray-500 mt-1 wrap-anywhere">Status: {ticket.status}</p>
         </CardHeader>
         <CardContent className="space-y-4">
-          <p className="text-sm whitespace-pre-wrap text-gray-800">{ticket.description}</p>
+          <p className="text-sm whitespace-pre-wrap wrap-anywhere text-gray-800">{ticket.description}</p>
 
           <div className="space-y-3 border-t pt-4">
             {ticket.replies.length === 0 && (
@@ -148,7 +148,7 @@ export function GuestTicketViewPage() {
                   {r.from_you ? 'You' : 'Support'} ·{' '}
                   {new Date(r.created_at).toLocaleString()}
                 </p>
-                <p className="whitespace-pre-wrap text-gray-800">{r.body}</p>
+                <p className="whitespace-pre-wrap wrap-anywhere text-gray-800">{r.body}</p>
               </div>
             ))}
           </div>

@@ -177,7 +177,7 @@ func TestUpdateStatus_Authorisation(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, target.ID, got.StatusID)
 			require.Equal(t, 1, h.store.historyCreates)
-			require.Contains(t, h.dispatcher.types(), notification.EventTicketStatusChanged)
+			require.Contains(t, h.dispatcher.kinds(), notification.EventTicketStatusChanged)
 		})
 	}
 }

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"fmt"
+	"os"
 	"time"
 
 	"github.com/kelseyhightower/envconfig"
@@ -49,11 +51,16 @@ type Config struct {
 	// later — which is the property the ordering of this handler exists to
 	// protect.
 	//
-	// 0 disables it, which the test harness uses.
+	// 0 is refused at startup for safety; Load() returns an error unless
+	// GHD_ALLOW_ZERO_AUTH_THROTTLE=1 (test-only, undocumented).
 	AuthThrottleDelay time.Duration `envconfig:"AUTH_THROTTLE_DELAY" default:"1s"`
 
 	SessionSecret string `envconfig:"SESSION_SECRET" required:"true"`
-	JWTSecret     string `envconfig:"JWT_SECRET" required:"true"`
+	// JWTSecret is the JWT signing key. If unset or under 32 bytes, a random
+	// 32-byte key is generated once and stored in the database. A long env
+	// value still wins. After resolution in main.go, this field holds the
+	// effective key from that point on.
+	JWTSecret string `envconfig:"JWT_SECRET"`
 
 	// Email (optional — notifications disabled if not set)
 	SMTPHost     string `envconfig:"SMTP_HOST"`
@@ -81,6 +88,15 @@ func Load() (*Config, error) {
 	if err := envconfig.Process("", &cfg); err != nil {
 		return nil, err
 	}
+
+	// Validate AUTH_THROTTLE_DELAY: must be > 0 unless the test-only switch is set.
+	if cfg.AuthThrottleDelay <= 0 {
+		allowZero := os.Getenv("GHD_ALLOW_ZERO_AUTH_THROTTLE") == "1"
+		if !allowZero {
+			return nil, fmt.Errorf("AUTH_THROTTLE_DELAY must be a positive duration such as 1s; 0 removes the sign-in delay for accounts that have used up their failed-attempt budget, which makes online password guessing much faster")
+		}
+	}
+
 	return &cfg, nil
 }
 
@@ -92,4 +108,19 @@ func (c *Config) IsDevelopment() bool {
 // EmailEnabled returns true when SMTP is configured.
 func (c *Config) EmailEnabled() bool {
 	return c.SMTPHost != "" && c.SMTPFrom != ""
+}
+
+// EmailStatus says in one line whether email is on and, if not, what is
+// missing. misconfigured is true when exactly one of SMTP_HOST and SMTP_FROM is
+// set: that is a mistake, where neither set is a choice.
+func (c *Config) EmailStatus() (msg string, misconfigured bool) {
+	switch {
+	case c.EmailEnabled():
+		return "email enabled", false
+	case c.SMTPHost != "":
+		return "email disabled: SMTP_HOST is set but SMTP_FROM is not", true
+	case c.SMTPFrom != "":
+		return "email disabled: SMTP_FROM is set but SMTP_HOST is not", true
+	}
+	return "email disabled: SMTP_HOST and SMTP_FROM are not set", false
 }

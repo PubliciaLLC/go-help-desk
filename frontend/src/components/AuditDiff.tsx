@@ -3,6 +3,10 @@
 // rule (see TicketAuditEntry / AdminAuditEntry's own comments), so the
 // rendering lives once rather than drifting between two copies.
 
+import type { ReactNode } from 'react'
+import { EyeOffIcon } from 'lucide-react'
+import type { AuditNames } from '@/api/types'
+
 function formatValue(v: unknown): string {
   if (v === null || v === undefined) return '—'
   return typeof v === 'string' ? v : JSON.stringify(v)
@@ -27,16 +31,35 @@ function isChanged(b: unknown, a: unknown): boolean {
   return JSON.stringify(b) !== JSON.stringify(a) || (containsRedacted(b) && containsRedacted(a))
 }
 
+// #422: a value that is an id the server resolved shows as its name, with the
+// id as the tooltip. A value with no name (the row is gone, an older server)
+// is the raw id, exactly as before. A masked user is the mask label with the
+// same eye-off icon as the actor column, so a display name cannot copy it.
+function renderValue(v: unknown, names?: AuditNames): ReactNode {
+  const resolved = typeof v === 'string' ? names?.[v] : undefined
+  if (!resolved) return formatValue(v)
+  if (resolved.masked) {
+    return (
+      <span title={v as string} className="italic">
+        <EyeOffIcon aria-hidden="true" className="mr-0.5 inline h-3 w-3" />
+        Requester (name hidden)
+      </span>
+    )
+  }
+  return <span title={v as string}>{resolved.name}</span>
+}
+
 interface AuditDiffProps {
   before?: Record<string, unknown> | null
   after?: Record<string, unknown> | null
+  names?: AuditNames
 }
 
 // Only rendered when both sides are present: a create action's before is
 // null, and "subject: — → Printer broken" reads as a change when it is
 // really the initial value, so that case is left to the plain action label
 // instead.
-export function AuditDiff({ before, after }: AuditDiffProps) {
+export function AuditDiff({ before, after, names }: AuditDiffProps) {
   if (!before || !after) return null
 
   const keys = Array.from(new Set([...Object.keys(before), ...Object.keys(after)]))
@@ -46,10 +69,10 @@ export function AuditDiff({ before, after }: AuditDiffProps) {
   return (
     <ul className="mt-1 space-y-0.5 border-l-2 border-gray-100 pl-2">
       {changed.map((k) => (
-        <li key={k} className="text-gray-500">
+        <li key={k} className="text-gray-500 wrap-anywhere">
           <span className="font-mono">{k}</span>
           {': '}
-          {formatValue(before[k])} → {formatValue(after[k])}
+          {renderValue(before[k], names)} → {renderValue(after[k], names)}
         </li>
       ))}
     </ul>

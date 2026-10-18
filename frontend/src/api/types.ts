@@ -10,9 +10,49 @@ export interface User {
   mfa_enabled: boolean
   created_at: string
   updated_at: string
+  /** Staff-email switches (#441). Optional so a profile from before they
+   *  existed reads as on, which is also what the server defaults them to. */
+  email_notify_assigned?: boolean
+  email_notify_activity?: boolean
+  email_notify_group?: boolean
+  /** What the switches amount to for this person, with whether an administrator
+   *  forced each one (#441). Only on /me and the preferences answer, and only
+   *  for staff and administrators. */
+  email_notifications?: {
+    assigned: EmailSwitchState
+    activity: EmailSwitchState
+    group: EmailSwitchState
+  }
+  /** Whether Account should offer to make an API key (#450): always for an
+   *  administrator, for staff only while an administrator allows it. Only on
+   *  /me; absent reads as no. */
+  can_create_api_keys?: boolean
+  /** The longest a new API key may live, in years (1 to 5), or -1 for no limit
+   *  (#450). Only on /me; absent reads as the default of 2. */
+  api_key_max_lifetime_years?: number
 }
 
-export type AuthType = 'local' | 'saml' | 'both'
+export interface EmailSwitchState {
+  enabled: boolean
+  forced: boolean
+}
+
+export type EmailPreferencesPatch = Partial<
+  Pick<User, 'email_notify_assigned' | 'email_notify_activity' | 'email_notify_group'>
+>
+
+// How an account signs in, from the credentials it holds. 'both' is local plus
+// SAML; combinations that include OIDC are joined with '+'. 'service' is an
+// OAuth client's service user (#420), which never signs in.
+export type AuthType =
+  | 'service'
+  | 'local'
+  | 'saml'
+  | 'oidc'
+  | 'both'
+  | 'local+oidc'
+  | 'saml+oidc'
+  | 'local+saml+oidc'
 
 export interface AdminUser {
   id: string
@@ -21,6 +61,10 @@ export interface AdminUser {
   role: Role
   disabled: boolean
   auth_type: AuthType
+  // The identity an OAuth client acts as (#420). Never signs in, so it has no
+  // password, second factor or admin role. Optional so older fixtures read as
+  // an ordinary account.
+  service_account?: boolean
   has_password: boolean
   mfa_enabled: boolean
   // Registered passkeys. Sent on the detail response only; mfa_enabled is the
@@ -68,6 +112,11 @@ export interface StatusHistoryEntry {
   created_at: string
 }
 
+// #422: what the ids in a diff's before/after name now, keyed by the id as it
+// appears there. An id with no entry no longer resolves (the row is gone) and
+// is shown as the id. `masked` is true when name is the "Requester" mask.
+export type AuditNames = Record<string, { name: string; masked?: boolean }>
+
 // The admin-wide audit view (#129) — see handleListAdminAudit. Same shape as
 // TicketAuditEntry plus the entity a per-ticket feed doesn't need to say.
 export interface AdminAuditEntry {
@@ -83,6 +132,7 @@ export interface AdminAuditEntry {
   created_at: string
   before?: Record<string, unknown> | null
   after?: Record<string, unknown> | null
+  names?: AuditNames
 }
 
 export interface AdminAuditListResponse {
@@ -104,6 +154,13 @@ export interface AdminAuditListResponse {
   has_more: boolean
 }
 
+// Someone following a ticket (#441), as GET /tickets/{id}/followers lists them.
+export interface TicketFollower {
+  user_id: string
+  display_name: string
+  created_at: string
+}
+
 export interface TicketAuditEntry {
   id: string
   action: string
@@ -123,6 +180,7 @@ export interface TicketAuditEntry {
   // recorded"; this type cannot tell them apart.
   before?: Record<string, unknown> | null
   after?: Record<string, unknown> | null
+  names?: AuditNames
 }
 
 export interface Status {
@@ -153,9 +211,9 @@ export interface Ticket {
   guest_phone?: string
   resolution_notes?: string
   resolved_at?: string
-  closed_at?: string
+  closed_at?: string // staff and admin only: a requester does not receive it
   created_at: string
-  updated_at: string
+  updated_at?: string // staff and admin only: a requester does not receive it
   // The ticket's live SLA read, computed by the server on every GET /tickets
   // and GET /tickets/{id} response. null means no matching policy or SLA
   // tracking is off for this instance — render nothing, not green. The color
@@ -169,6 +227,15 @@ export interface Ticket {
   // the Reopen button; the server decides again when it is clicked. Absent on
   // a response that does not carry it, which reads as no.
   can_reopen?: boolean
+  // How many times the ticket has been moved from Resolved or Closed back to an
+  // open status (#464). Never reset. Staff and administrators only: absent for a requester, and when 0. Absent on a response that does not carry
+  // it, which reads as never.
+  reopen_count?: number
+  // Who the ticket is for: the reporting account's name and address, or the
+  // guest's (#444). Sent on the single-ticket read to staff and administrators
+  // only, on every ticket; absent for a requester, on a list, and when the
+  // account could not be read.
+  requester?: { name: string; email: string }
 }
 
 export interface Attachment {
@@ -425,6 +492,29 @@ export interface APIKey {
   id: string
   name: string
   user_id: string
+  // Who issued it (#450). Different from user_id when an administrator issued
+  // the key on the owner's behalf; null when not known.
+  created_by?: string | null
+  // Longer than the current maximum lifetime, or no expiry at all under a
+  // limit (#450). Marked so it can be rotated; it still works.
+  beyond_limit?: boolean
+  // Whose key it is. A signed-in administrator is sent every key, so the list
+  // has to say.
+  owner_name?: string
+  owner_email?: string
+  scopes: string[]
+  last_used_at?: string
+  expires_at?: string
+  created_at: string
+}
+
+/** One of the caller's own keys, from GET /me/api-keys. */
+export interface MyAPIKey {
+  id: string
+  name: string
+  user_id: string
+  created_by?: string | null
+  beyond_limit?: boolean
   scopes: string[]
   last_used_at?: string
   expires_at?: string
@@ -443,11 +533,16 @@ export interface OAuthClient {
   name: string
   scopes: string[]
   created_at: string
+  // The client's service user (#420) and the groups it is in, which are the
+  // client's ticket scope. Optional so a server that predates them reads as
+  // "unknown" rather than "none".
+  user_id?: string
+  groups?: { id: string; name: string }[]
 }
 
 // payload_format reshapes the same lifecycle event for a chat/ITSM service's
 // incoming-webhook endpoint before it is POSTed. 'raw' (the default) is
-// today's full event payload; the others are Slack, Teams, Discord and JIRA
+// ids-only JSON; the others are Slack, Teams, Discord and JIRA
 // Automation shapes. See docs/DESIGN.md "Notifications" and #187.
 export type WebhookPayloadFormat = 'raw' | 'slack' | 'teams' | 'discord' | 'jira'
 
@@ -461,16 +556,50 @@ export interface WebhookDelivery {
   error: WebhookDeliveryError
 }
 
+// A webhook's ticket filter (#413). Empty lists are no condition. All
+// conditions must match. invert sends for the tickets that do not.
+export interface WebhookFilter {
+  category_ids: string[]
+  priorities: Priority[]
+  group_ids: string[]
+  invert: boolean
+}
+
+// One row of a hook's history (#448): an outcome, never content. result is 'ok'
+// or a class; there is no error text.
+export interface WebhookDeliveryRecord {
+  id: string
+  event: string
+  started_at: string
+  last_attempt_at: string
+  status: number
+  result: 'ok' | 'dropped' | Exclude<WebhookDeliveryError, ''>
+  attempts: number
+  retrying: boolean
+  // Why a queued retry was dropped (#499); only when result is 'dropped'.
+  drop_reason?: WebhookDropReason
+}
+
+export type WebhookDropReason = 'disabled' | 'unsubscribed' | 'url_changed' | 'filter' | 'paused' | 'unbuildable'
+
 export interface WebhookConfig {
   id: string
   url: string
   events: string[]
+  // Optional only because fixtures written before #413 omit it; the server
+  // always sends it.
+  filter?: WebhookFilter
   // No `secret`: it is write-only. The API accepts one on create and update
   // and never returns it, so a client has nothing to show or prefill.
   enabled: boolean
   created_at: string
   payload_format: WebhookPayloadFormat
   last_delivery?: WebhookDelivery | null
+  // True when the API key that made the hook or last changed its URL has been
+  // revoked or has expired (#450): it receives nothing until a signed-in
+  // administrator re-approves it.
+  paused?: boolean
+  paused_reason?: string
 }
 
 export interface Settings {
@@ -542,9 +671,21 @@ export interface SLATargetStatus {
   met_at: string | null // set: the numbers above are frozen and color is final
 }
 
+// The SLA record a restart replaced (#443): the clock restarted when the ticket
+// was reopened, and this is the record it replaced. Never sent after a staff or
+// admin priority change, which keeps the clock. One-ticket read only.
+export interface SLAEarlierRecord {
+  policy_id: string
+  policy_name: string
+  started_at: string
+  superseded_at: string
+  outcome: 'met' | 'breached'
+}
+
 export interface TicketSLA {
   policy_id: string
   policy_name: string
   response: SLATargetStatus
   resolution: SLATargetStatus
+  earlier?: SLAEarlierRecord
 }

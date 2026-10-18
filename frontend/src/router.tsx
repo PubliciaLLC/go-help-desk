@@ -23,11 +23,14 @@ import { APIKeysPage } from '@/pages/admin/APIKeysPage'
 import { AdminAuditPage } from '@/pages/admin/AdminAuditPage'
 import { OAuthClientsPage } from '@/pages/admin/OAuthClientsPage'
 import { WebhooksPage } from '@/pages/admin/WebhooksPage'
+import { RoutingPage } from '@/pages/admin/RoutingPage'
 import { GuestTicketPage } from '@/pages/GuestTicketPage'
 import { GuestTicketViewPage } from '@/pages/GuestTicketViewPage'
 import { GuestTrackPage } from '@/pages/GuestTrackPage'
 import { SignupPage } from '@/pages/SignupPage'
 import { VerifyEmailPage } from '@/pages/VerifyEmailPage'
+import { ForgotPasswordPage } from '@/pages/ForgotPasswordPage'
+import { ResetPasswordPage } from '@/pages/ResetPasswordPage'
 
 async function requireAuth() {
   const { user, setUser } = useAuthStore.getState()
@@ -217,6 +220,13 @@ const adminWebhooksRoute = createRoute({
   component: WebhooksPage,
 })
 
+const adminRoutingRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/routing',
+  beforeLoad: requireAdmin,
+  component: RoutingPage,
+})
+
 // ── Guest ─────────────────────────────────────────────────────────────────────
 const guestViewRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -250,6 +260,18 @@ const verifyEmailRoute = createRoute({
   component: VerifyEmailPage,
 })
 
+const forgotPasswordRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/forgot-password',
+  component: ForgotPasswordPage,
+})
+
+const resetPasswordRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/reset-password',
+  component: ResetPasswordPage,
+})
+
 // ── Index redirect ────────────────────────────────────────────────────────────
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -268,6 +290,8 @@ export const router = createRouter({
     setupRoute,
     signupRoute,
     verifyEmailRoute,
+    forgotPasswordRoute,
+    resetPasswordRoute,
     dashboardRoute,
     submitRoute,
     guestViewRoute,
@@ -288,6 +312,7 @@ export const router = createRouter({
     adminAPIKeysRoute,
   adminOAuthClientsRoute,
   adminWebhooksRoute,
+  adminRoutingRoute,
     adminSettingsRoute,
     adminAuditRoute,
   ]),

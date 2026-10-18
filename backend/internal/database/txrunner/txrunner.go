@@ -15,24 +15,41 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 
 	"errors"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Runner implements ticket.Atomic against a *sql.DB.
 type Runner struct {
-	db *sql.DB
+	db       *sql.DB
+	channels []string
+	wake     func()
 }
 
-// New returns a Runner over the given database handle.
-func New(db *sql.DB) *Runner { return &Runner{db: db} }
+// New returns a Runner over the given database handle. channels are the outbox
+// channels a change's events are written for (the same list the request-side
+// OutboxDispatcher queues for); none writes no rows, for a caller that does not
+// announce. wake, if not nil, is called after a commit that wrote rows, so a
+// worker in this process need not wait for its next poll.
+func New(db *sql.DB, channels []string, wake func()) *Runner {
+	return &Runner{db: db, channels: channels, wake: wake}
+}
 
 // InTx runs fn inside one transaction, passing it stores bound to that
-// transaction. It commits when fn returns nil and rolls back otherwise.
-func (r *Runner) InTx(ctx context.Context, fn func(ticket.Store, audit.Store) error) error {
+// transaction and a collector for the change's events. It commits when fn
+// returns nil and rolls back otherwise.
+//
+// The events fn raised are written to the outbox in the same transaction, just
+// before the commit (#506): a rollback leaves no row, and a commit cannot leave
+// a change unannounced. Before this the rows were written after the commit, on
+// a context that could not be cancelled, and a crash between the two lost the
+// notification.
+func (r *Runner) InTx(ctx context.Context, fn func(ticket.Store, audit.Store, *notification.Changes) error) error {
 	// Retried once on a deadlock, and only on a deadlock.
 	//
 	// Two transactions can take the same two row locks in opposite orders,
@@ -59,7 +76,7 @@ func (r *Runner) InTx(ctx context.Context, fn func(ticket.Store, audit.Store) er
 	return err
 }
 
-func (r *Runner) runOnce(ctx context.Context, fn func(ticket.Store, audit.Store) error) error {
+func (r *Runner) runOnce(ctx context.Context, fn func(ticket.Store, audit.Store, *notification.Changes) error) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
@@ -71,14 +88,46 @@ func (r *Runner) runOnce(ctx context.Context, fn func(ticket.Store, audit.Store)
 	defer func() { _ = tx.Rollback() }()
 
 	q := dbgen.New(tx)
-	if err := fn(ticketstore.New(q), auditstore.New(q)); err != nil {
+	// Created anew for every attempt, so a deadlock retry announces what the
+	// attempt that succeeded did and nothing of the one that was rolled back.
+	changes := &notification.Changes{}
+	if err := fn(ticketstore.New(q), auditstore.New(q), changes); err != nil {
+		return err
+	}
+	queued, err := r.enqueue(ctx, q, changes)
+	if err != nil {
 		return err
 	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("committing transaction: %w", err)
 	}
+	if queued && r.wake != nil {
+		r.wake()
+	}
 	return nil
+}
+
+// enqueue writes one row per channel for each event the change raised, on the
+// transaction's own connection. It reports whether it wrote any.
+func (r *Runner) enqueue(ctx context.Context, q *dbgen.Queries, changes *notification.Changes) (bool, error) {
+	var queued bool
+	for _, ev := range changes.Events() {
+		body, err := notification.EncodeEvent(ev)
+		if err != nil {
+			return false, fmt.Errorf("encoding %s event: %w", ev.Type, err)
+		}
+		for _, ch := range r.channels {
+			if !notification.Carries(ch, ev) {
+				continue
+			}
+			if err := q.EnqueueNotification(ctx, dbgen.EnqueueNotificationParams{ID: uuid.New(), Channel: ch, Event: body}); err != nil {
+				return false, fmt.Errorf("queueing %s notification: %w", ch, err)
+			}
+			queued = true
+		}
+	}
+	return queued, nil
 }
 
 // isDeadlock reports whether Postgres killed this transaction to break a

@@ -16,6 +16,9 @@ import (
 type Querier interface {
 	AddGroupMember(ctx context.Context, arg AddGroupMemberParams) error
 	AddGroupScope(ctx context.Context, arg AddGroupScopeParams) error
+	// Rows affected is 1 for a new follower and 0 for one already following, which
+	// is how the service tells a change worth an audit entry from a repeat.
+	AddTicketFollower(ctx context.Context, arg AddTicketFollowerParams) (int64, error)
 	AddTicketTag(ctx context.Context, arg AddTicketTagParams) error
 	// :execrows, for the same reason as ClearMFA above: a nonexistent id
 	// reported success (204, no error) and still wrote an audit entry.
@@ -38,6 +41,17 @@ type Querier interface {
 	// The Go-side check still runs first, because it is what tells the person
 	// WHICH rule refused them. This one is what binds.
 	AdoptUserByOIDCSubject(ctx context.Context, arg AdoptUserByOIDCSubjectParams) (uuid.UUID, error)
+	AnyAttachmentExists(ctx context.Context) (bool, error)
+	// Which level of a classification being NEWLY picked is archived: 'category',
+	// 'type', 'item', or '' when none is. Highest level first, so a ticket aimed at
+	// an archived category is told about the category, not the type under it.
+	//
+	// A NULL argument means "not being picked" and is skipped; the caller passes
+	// only the levels that differ from what the ticket already holds, because a
+	// ticket already sitting in an archived node keeps it (#421). An id that does
+	// not exist matches nothing here: CategoryExists and CTIIsCoherent refuse
+	// those.
+	ArchivedCTINode(ctx context.Context, arg ArchivedCTINodeParams) (string, error)
 	// Whether a category/type/item triple exists and hangs together: the type
 	// belongs to the category, and the item belongs to the type.
 	//
@@ -168,20 +182,32 @@ type Querier interface {
 	// and setup does not reopen (HasUsers counts every row, deliberately). The
 	// instance was then left with no way in at all short of editing the database.
 	CountOtherActiveAdmins(ctx context.Context, id uuid.UUID) (int64, error)
+	// Deleting a category cascades to its SLA policies, and sla_records.policy_id
+	// is ON DELETE RESTRICT, so a record left behind by a ticket that has since
+	// moved to another category still blocks the delete (#418).
+	CountSLARecordsByCategory(ctx context.Context, categoryID uuid.NullUUID) (int64, error)
 	// sla_records.policy_id is ON DELETE RESTRICT: a record's targets and breach
 	// stamps only mean something against the policy that set them. Counting first
 	// turns the raw foreign-key 500 into a refusal naming how many tickets depend
 	// on the policy (#261) -- the same reason CountStatusHistoryByStatus exists.
 	CountSLARecordsByPolicy(ctx context.Context, policyID uuid.UUID) (int64, error)
+	CountSearchUsersAdmin(ctx context.Context, arg CountSearchUsersAdminParams) (int64, error)
 	// Rows in ticket_status_history that reference a status, in either direction.
 	// ticket_status_history has foreign keys to statuses with no ON DELETE action,
 	// so a status with zero CURRENT tickets can still be undeletable because a past
 	// transition mentions it. Counting first turns a raw foreign-key 500 into an
 	// explanation the administrator can act on.
 	CountStatusHistoryByStatus(ctx context.Context, toStatusID uuid.UUID) (int64, error)
+	// tickets.category_id is ON DELETE RESTRICT. Counting first turns the raw
+	// foreign-key 500 into a 409 that says how many tickets are in the way (#418).
+	CountTicketsByCategory(ctx context.Context, categoryID uuid.UUID) (int64, error)
+	CountTicketsByItem(ctx context.Context, itemID uuid.NullUUID) (int64, error)
 	CountTicketsByStatus(ctx context.Context, statusID uuid.UUID) (int64, error)
 	CountTicketsByStatusForAssignee(ctx context.Context, arg CountTicketsByStatusForAssigneeParams) (int64, error)
 	CountTicketsByStatusForReporter(ctx context.Context, arg CountTicketsByStatusForReporterParams) (int64, error)
+	// A ticket that holds an item also holds that item's type, so this covers
+	// the type's items too.
+	CountTicketsByType(ctx context.Context, typeID uuid.NullUUID) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
 	// Whether this account has a passkey at all.
 	//
@@ -201,6 +227,15 @@ type Querier interface {
 	CreateGroup(ctx context.Context, arg CreateGroupParams) error
 	CreateGuestAccessToken(ctx context.Context, arg CreateGuestAccessTokenParams) error
 	CreateItem(ctx context.Context, arg CreateItemParams) error
+	// Creates the client AND its service user (#420) as one statement, so a
+	// failure on either leaves neither: a client with no user cannot act, and a
+	// user with no client is an orphan nobody can see the reason for.
+	//
+	// The user is named after the client, staff, with no password, no factor and
+	// no SSO identity (the users_service_account_inert constraint insists). Its
+	// address is made from the client's id: it only has to be unique, and
+	// ".invalid" (RFC 2606) can never receive mail. The oauth_clients foreign key
+	// is checked at the end of the statement, so inserting both here is fine.
 	CreateOAuthClient(ctx context.Context, arg CreateOAuthClientParams) error
 	CreatePlugin(ctx context.Context, arg CreatePluginParams) error
 	// author_id is NULL for a reply written by a guest, who has no account. That is
@@ -223,28 +258,44 @@ type Querier interface {
 	// ConfirmMFAEnrollmentWith in place of the older EnrollMFA.
 	CreateWebAuthnCredential(ctx context.Context, arg CreateWebAuthnCredentialParams) error
 	CreateWebhookConfig(ctx context.Context, arg CreateWebhookConfigParams) error
-	DeleteAPIKey(ctx context.Context, id uuid.UUID) error
+	DeleteAPIKey(ctx context.Context, id uuid.UUID) (int64, error)
+	// The self-service revoke (#450): the owner is part of the statement, so a key
+	// that is somebody else's deletes nothing and is indistinguishable from one
+	// that does not exist.
+	DeleteAPIKeyForUser(ctx context.Context, arg DeleteAPIKeyForUserParams) (int64, error)
+	// Every key a user owns, for an administrator's password reset that asks to
+	// revoke them too (#450). Returns how many, which the audit entry records.
+	DeleteAllAPIKeysForUser(ctx context.Context, userID uuid.UUID) (int64, error)
 	DeleteAttachment(ctx context.Context, id uuid.UUID) error
 	// The retention sweep's hard delete. No archive table — see audit.Store's
 	// own comment on DeleteOlderThan for why.
 	DeleteAuditLogBefore(ctx context.Context, createdAt time.Time) (int64, error)
 	DeleteCannedResponse(ctx context.Context, id uuid.UUID) error
-	DeleteCategory(ctx context.Context, id uuid.UUID) error
-	DeleteCustomFieldAssignment(ctx context.Context, id uuid.UUID) error
+	// Takes the custom-field assignments of the category, of its types and of
+	// their items with it (#419). custom_field_assignments.scope_id has no foreign
+	// key, so they were left pointing at nothing. One statement, so the assignments
+	// and the node go together or not at all: if the delete is refused (a ticket
+	// arrived meanwhile), the assignments stay.
+	DeleteCategory(ctx context.Context, id uuid.UUID) (int64, error)
+	DeleteCustomFieldAssignment(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteCustomFieldValue(ctx context.Context, arg DeleteCustomFieldValueParams) error
 	DeleteExpiredSessions(ctx context.Context) (int64, error)
 	DeleteFailedNotificationsBefore(ctx context.Context, failedAt sql.NullTime) (int64, error)
-	DeleteGroup(ctx context.Context, id uuid.UUID) error
+	DeleteGroup(ctx context.Context, id uuid.UUID) (int64, error)
 	// Rotation: remove what the ticket has, then insert a replacement in the same
 	// transaction. Used only for a ticket that is not Closed — closing no longer
 	// revokes (#349), and a Closed ticket's links are added to, never replaced.
 	DeleteGuestAccessTokensForTicket(ctx context.Context, ticketID uuid.UUID) error
-	DeleteItem(ctx context.Context, id uuid.UUID) error
+	// As DeleteCategory: the item's field assignments go in the same statement.
+	DeleteItem(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteNotification(ctx context.Context, id uuid.UUID) error
-	DeleteOAuthClient(ctx context.Context, id uuid.UUID) error
+	// Deletes the client and soft-deletes its service user in one statement, still
+	// reporting rows affected so an unknown id stays a 404 (#431). The user is
+	// kept, not removed: tickets and replies it wrote keep their author's name.
+	DeleteOAuthClient(ctx context.Context, id uuid.UUID) (int64, error)
 	DeletePendingRegistration(ctx context.Context, id uuid.UUID) error
 	DeletePlugin(ctx context.Context, id string) error
-	DeleteSLAPolicy(ctx context.Context, id uuid.UUID) error
+	DeleteSLAPolicy(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteSession(ctx context.Context, id string) error
 	// Every session a user holds. Used for disable, role change, password change
 	// and MFA reset — the events after which a cookie minted under the old state
@@ -257,7 +308,9 @@ type Querier interface {
 	DeleteStaleSAMLHandovers(ctx context.Context) error
 	DeleteStatus(ctx context.Context, id uuid.UUID) error
 	DeleteTicketLink(ctx context.Context, arg DeleteTicketLinkParams) error
-	DeleteType(ctx context.Context, id uuid.UUID) error
+	// As DeleteCategory: the type's own and its items' field assignments go in the
+	// same statement.
+	DeleteType(ctx context.Context, id uuid.UUID) (int64, error)
 	// Removes one credential, and reports whether it was this user's to remove.
 	//
 	// Scoped by user_id as well as id, in the statement rather than by a check in
@@ -265,7 +318,8 @@ type Querier interface {
 	// moment ago is the read-then-write shape the rest of this codebase has spent
 	// several rounds removing.
 	DeleteWebAuthnCredential(ctx context.Context, arg DeleteWebAuthnCredentialParams) (uuid.UUID, error)
-	DeleteWebhookConfig(ctx context.Context, id uuid.UUID) error
+	DeleteWebhookConfig(ctx context.Context, id uuid.UUID) (int64, error)
+	DeleteWebhookDeliveries(ctx context.Context, webhookID uuid.UUID) error
 	DisableUser(ctx context.Context, id uuid.UUID) error
 	// Disables a user, refusing if that would leave the instance with no active
 	// administrator. Returns the id when it applied, nothing when it did not.
@@ -323,6 +377,11 @@ type Querier interface {
 	// the link failed at the end with "invalid or already used token" — which is
 	// exactly the dead end that check was added to prevent.
 	EmailIsTaken(ctx context.Context, email string) (bool, error)
+	// What the admin email warning reads (#456): email and signup-verification rows that are retrying after
+	// an error, or gave up in the last day, and the newest of their error texts.
+	// Delivered rows are deleted, so a healthy mailer leaves nothing to count, and
+	// a failed row older than a day no longer says anything about now.
+	EmailOutboxHealth(ctx context.Context) (EmailOutboxHealthRow, error)
 	// Turns MFA on using whatever secret the row still holds, and reports whether
 	// it applied.
 	//
@@ -339,6 +398,9 @@ type Querier interface {
 	// reset rather than silently turning MFA on against an empty secret.
 	EnableMFAIfStillEnrolled(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
 	EnableUser(ctx context.Context, id uuid.UUID) error
+	// A repeat of an id is ignored, so the webhook fan-out, whose row ids derive
+	// from the fan-out row, can be re-run after a crash without queueing a hook
+	// twice (#448).
 	EnqueueNotification(ctx context.Context, arg EnqueueNotificationParams) error
 	FailNotification(ctx context.Context, arg FailNotificationParams) error
 	// The four tiers DESIGN.md documents, most specific first:
@@ -368,12 +430,27 @@ type Querier interface {
 	GetAuditTicketScope(ctx context.Context, userID uuid.UUID) (GetAuditTicketScopeRow, error)
 	GetCannedResponse(ctx context.Context, id uuid.UUID) (CannedResponse, error)
 	GetCategory(ctx context.Context, id uuid.UUID) (Category, error)
+	// The ticket's current record, locked for the duration of a re-match.
+	GetCurrentSLARecordForUpdate(ctx context.Context, ticketID uuid.UUID) (SlaRecord, error)
 	GetCustomFieldAssignment(ctx context.Context, id uuid.UUID) (CustomFieldAssignment, error)
 	GetCustomFieldDef(ctx context.Context, id uuid.UUID) (CustomFieldDef, error)
 	GetGroup(ctx context.Context, id uuid.UUID) (Group, error)
+	GetInstanceSecret(ctx context.Context, name string) ([]byte, error)
 	GetItem(ctx context.Context, id uuid.UUID) (Item, error)
+	// The record a ticket most recently stopped having. Read, in the same
+	// transaction that holds the ticket's row lock, when a ticket with no current
+	// record gets one back, so the new clock resumes where the last one ran.
+	GetLatestSupersededSLARecord(ctx context.Context, ticketID uuid.UUID) (SlaRecord, error)
 	GetMFALock(ctx context.Context, id uuid.UUID) (GetMFALockRow, error)
 	GetOAuthClientByClientID(ctx context.Context, clientID string) (OauthClient, error)
+	// The client a service user belongs to, for the message that says to delete
+	// the client instead.
+	GetOAuthClientNameByUser(ctx context.Context, userID uuid.UUID) (string, error)
+	// The client and the service user it acts as, in one round trip: BearerAuth
+	// runs this on every request. A deleted client matches nothing, which is what
+	// revokes its outstanding tokens; the user's own state (disabled, deleted)
+	// comes back for the caller to judge.
+	GetOAuthClientWithUser(ctx context.Context, clientID string) (GetOAuthClientWithUserRow, error)
 	// The send-time read for a queued verification email (#348): the row is read
 	// when the mail goes out, so the token and address are the current ones and
 	// the token is never copied into the outbox.
@@ -381,7 +458,14 @@ type Querier interface {
 	GetPendingRegistrationByToken(ctx context.Context, token uuid.UUID) (PendingRegistration, error)
 	GetPlugin(ctx context.Context, id string) (Plugin, error)
 	GetSLAPolicy(ctx context.Context, id uuid.UUID) (SlaPolicy, error)
+	// The CURRENT record: a superseded row (000043) is history and is never read
+	// as "the ticket's SLA". Every statement below that addresses a ticket's
+	// record carries the same filter.
 	GetSLARecord(ctx context.Context, ticketID uuid.UUID) (SlaRecord, error)
+	// Only for go-help-desk unlock (#497), which must say WHY it refuses a service
+	// account rather than report "no such account" (GetUserByEmail below hides
+	// them on purpose). Returns the display name, which is the OAuth client's.
+	GetServiceAccountNameByEmail(ctx context.Context, email string) (string, error)
 	// Only unexpired rows: an expired session must behave exactly like a missing
 	// one, so a stale row cannot authenticate anybody between sweeps.
 	//
@@ -392,6 +476,10 @@ type Querier interface {
 	// it here instead means there is no window to lose — the row simply does not
 	// load. This costs no extra round trip, since the session lookup already
 	// queries the database on every authenticated request.
+	//
+	// A service user (an OAuth client's identity, #420) never signs in, so no
+	// session for one loads either. Nothing writes such a session; this keeps the
+	// guarantee from depending on that.
 	//
 	// LEFT JOIN, and user_id IS NULL passes: the OIDC flow writes state (nonce,
 	// PKCE verifier) into a session before anybody has authenticated, and an inner
@@ -460,20 +548,37 @@ type Querier interface {
 	// a read-only link beside the existing ones rather than rotating them.
 	GetTicketIDByTrackingAndGuestEmail(ctx context.Context, arg GetTicketIDByTrackingAndGuestEmailParams) (uuid.UUID, error)
 	GetType(ctx context.Context, id uuid.UUID) (Type, error)
+	// This is the lookup behind password login, OIDC adoption by address and
+	// password reset, so it is where a service account (an OAuth client's
+	// identity, #420) is kept from ever signing in: it simply is not found. A miss
+	// already spends the dummy bcrypt hash, so there is no timing difference to
+	// tell it from an unknown address. The two subject lookups below carry the
+	// same filter; the database already refuses a service account a subject, so
+	// that one is belt and braces.
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByIDAdmin(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByOIDCSubject(ctx context.Context, oidcSubject string) (User, error)
 	GetUserBySAMLSubject(ctx context.Context, samlSubject string) (User, error)
+	GetUsersByIDs(ctx context.Context, dollar_1 []uuid.UUID) ([]User, error)
 	// The assertion arrives carrying a credential id and nothing else, so this is
 	// the lookup sign-in depends on. The unique index on credential_id serves it.
 	GetWebAuthnCredentialByCredentialID(ctx context.Context, credentialID []byte) (WebauthnCredential, error)
 	GetWebhookConfig(ctx context.Context, id uuid.UUID) (WebhookConfig, error)
+	GetWebhookDeliveryEvent(ctx context.Context, arg GetWebhookDeliveryEventParams) (json.RawMessage, error)
+	InsertInstanceSecretIfAbsent(ctx context.Context, arg InsertInstanceSecretIfAbsentParams) error
+	// A record started by a re-match: its own id, an explicit clock start (NULL
+	// reads as the ticket's creation) and the ticket's pause total as of that
+	// start. A staff re-match also carries the old record's facts onto it, so a
+	// target already met stays met; a restart passes none.
+	InsertSLARecord(ctx context.Context, arg InsertSLARecordParams) error
 	// Whether a group can be given a ticket. An unknown id used to reach the
 	// foreign key and answer 500 for what is a caller's typo.
 	IsAssignableGroup(ctx context.Context, id uuid.UUID) (bool, error)
 	// Whether a user can be given a ticket: the account exists, is not deleted,
-	// is not disabled, and is staff. A reporting user is not a queue.
+	// is not disabled, and is staff. A reporting user is not a queue, and neither
+	// is a service user (#420): an OAuth client's identity cannot work a ticket,
+	// which also keeps it out of round-robin without a check of its own.
 	//
 	// Asked inside the assignment transaction rather than by the caller, because
 	// the caller is not the only caller. The REST handler checked this and MCP
@@ -489,7 +594,17 @@ type Querier interface {
 	// the unassign-on-delete work exists to prevent. The share lock makes the
 	// delete wait for this transaction instead.
 	IsAssignableUser(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
+	// Makes the hash the account's one live token, replacing any earlier. Only the
+	// hash is stored (#451).
+	//
+	// The lifetime is a duration in seconds, and the deadline is computed by the
+	// database from clock_timestamp(), for the reason UpsertSession spells out: one
+	// clock decides the lifetime, and now() would be the start of the transaction.
+	IssuePasswordResetToken(ctx context.Context, arg IssuePasswordResetTokenParams) error
 	ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]ApiKey, error)
+	// key_id NULL lists every key; a value lists that one key. The owner comes
+	// from the same row set so the admin page can show whose each key is.
+	ListAPIKeysWithOwner(ctx context.Context, keyID uuid.NullUUID) ([]ListAPIKeysWithOwnerRow, error)
 	// Every active administrator, in full — not a count, because #300's guard has
 	// to know WHICH of them still has a way to authenticate after an SSO
 	// settings change, not just how many there are. See handler_admin_sso_guard.go.
@@ -513,12 +628,21 @@ type Querier interface {
 	// statement about somebody having left, and it was not true. Re-enabling them
 	// would have made the name reappear.
 	//
+	// Not the service users (#420): an OAuth client's identity is not a colleague
+	// and cannot be given work. Nothing can be assigned to one, so there is no
+	// assigned ticket whose name this list would have to resolve.
+	//
 	// Deliberately narrow: an id, a display name and that flag. No email, no
 	// role, no login state — that is the administrator's view.
 	ListAssignableStaff(ctx context.Context) ([]ListAssignableStaffRow, error)
 	ListAssignmentsForScope(ctx context.Context, arg ListAssignmentsForScopeParams) ([]ListAssignmentsForScopeRow, error)
 	ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]Attachment, error)
 	ListAuditByEntity(ctx context.Context, arg ListAuditByEntityParams) ([]AuditLog, error)
+	// ListAuditByEntity narrowed by action: only_actions keeps just those actions,
+	// exclude_actions drops them. Either may be NULL for "no narrowing". It is how
+	// a ticket's feed keeps follow and unfollow entries (#441) from counting
+	// toward its cap, so a flood of them cannot push real history off the feed.
+	ListAuditByEntityActions(ctx context.Context, arg ListAuditByEntityActionsParams) ([]AuditLog, error)
 	ListCannedResponses(ctx context.Context) ([]CannedResponse, error)
 	ListCategories(ctx context.Context, dollar_1 bool) ([]Category, error)
 	ListCustomFieldDefs(ctx context.Context) ([]CustomFieldDef, error)
@@ -532,7 +656,35 @@ type Querier interface {
 	ListGroupsForUser(ctx context.Context, userID uuid.UUID) ([]Group, error)
 	ListGroupsInScope(ctx context.Context, arg ListGroupsInScopeParams) ([]Group, error)
 	ListItems(ctx context.Context, arg ListItemsParams) ([]Item, error)
+	// The members of a group that staff email can go to (#441): active staff and
+	// administrators, never a service account (#490), a disabled or deleted
+	// account, or somebody moved to a requester role. The mail path checks each
+	// person again in Go (User.CanReceiveStaffMail); this keeps them from being
+	// offered as candidates in the first place.
+	ListMailableGroupMembers(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID, error)
+	// Followers staff email can go to (#441): active staff and administrators,
+	// never a service account, a disabled or deleted account, or somebody moved
+	// to a requester role. Whether they can still SEE the ticket is not a
+	// question for SQL; the send-time check asks it (Server.StillEntitled).
+	ListMailableTicketFollowers(ctx context.Context, ticketID uuid.UUID) ([]uuid.UUID, error)
+	// Every client's groups in one query, for the client list: a client's groups
+	// are its service user's, and asking per row would be a query per client.
+	ListOAuthClientGroups(ctx context.Context) ([]ListOAuthClientGroupsRow, error)
 	ListOAuthClients(ctx context.Context) ([]OauthClient, error)
+	// The clients that will act and see nothing once ticket scope is enforced: a
+	// staff member's scope is their groups', so a client whose user is in none
+	// sees no ticket. A switched-off client is not one of them (it acts as
+	// nobody), which is what lets the warning clear by disabling it.
+	ListOAuthClientsWithoutGroups(ctx context.Context) ([]string, error)
+	// Hooks tied to an API key that is no longer a working credential: its row is
+	// gone (revoked, or deleted with its owner), it has expired, or its owner is
+	// disabled or deleted (APIKeyAuth refuses such a key on every request). Judged
+	// from the live rows on every call, so an expiry pauses a hook without any job
+	// having run, and a missing key counts the same as a revoked one: this fails
+	// CLOSED. webhook_configs.api_key_id is deliberately not a foreign key, or
+	// deleting the key would null the link and the hook would look session-made.
+	// clock_timestamp() and not now(): the latter is the start of the transaction.
+	ListPausedWebhookIDs(ctx context.Context) ([]uuid.UUID, error)
 	ListPlugins(ctx context.Context) ([]Plugin, error)
 	// The author's display name comes back with the reply.
 	//
@@ -554,8 +706,11 @@ type Querier interface {
 	ListResolvedTicketsBefore(ctx context.Context, arg ListResolvedTicketsBeforeParams) ([]ListResolvedTicketsBeforeRow, error)
 	// Tickets the breach sweep must evaluate: open, under a policy, with at least
 	// one target that is neither met nor already stamped, using the same
-	// pause-aware elapsed time as sla.Elapsed (see that function's doc comment;
-	// the two must change together). LEAST(COALESCE(pending_since, now), now) is
+	// pause-aware elapsed time as sla.Record.Elapsed (see sla.ElapsedFrom's doc
+	// comment; the two must change together). The clock starts at the record's
+	// started_at (the ticket's creation when NULL) and counts the ticket's pause
+	// total from the record's paused_seconds_at_start. Superseded records are
+	// history and are never evaluated. LEAST(COALESCE(pending_since, now), now) is
 	// the instant the SLA clock stopped: pending_since while the ticket is
 	// currently Pending, clipped to now the same way Elapsed clips with
 	// at.After(*PendingSince), and now otherwise. A Pending ticket whose frozen
@@ -565,6 +720,9 @@ type Querier interface {
 	// instant on a fresh read of the row — see
 	// TestSLAStore_ListBreachCandidates's superset invariant check.
 	ListSLABreachCandidates(ctx context.Context, now time.Time) ([]uuid.UUID, error)
+	// Severity order, most urgent first, the catch-all (no priority) last. Sorting
+	// the text gave critical, high, low, medium: "low" ahead of "medium", and a
+	// catch-all (NULL) wherever the database put it.
 	ListSLAPolicies(ctx context.Context) ([]SlaPolicy, error)
 	// Batch lookup for the per-ticket SLA status embedded on GET /tickets and
 	// GET /tickets/{id} (#183): one query for the whole page, after it is
@@ -572,8 +730,17 @@ type Querier interface {
 	// queries that would compute SLA for limit×(1+groups) rows and throw most
 	// of them away. See sla.Service.StatusesFor.
 	ListSLARecordsByTicketIDs(ctx context.Context, ticketIds []uuid.UUID) ([]SlaRecord, error)
+	// Every record a ticket has had, current and superseded, newest clock first.
+	// A record that a re-match replaced while it was running inherits its
+	// predecessor's started_at, so ties are broken by superseded_at, current row
+	// first. A NULL started_at is the ticket's creation.
+	ListSLARecordsForTicket(ctx context.Context, ticketID uuid.UUID) ([]SlaRecord, error)
 	ListSettings(ctx context.Context) ([]Setting, error)
 	ListStatuses(ctx context.Context) ([]Status, error)
+	// The list staff see on the ticket. Soft-deleted accounts are left out: there
+	// is nobody to show. A disabled account is shown, because the row is still
+	// there and following resumes if it is re-enabled.
+	ListTicketFollowers(ctx context.Context, ticketID uuid.UUID) ([]ListTicketFollowersRow, error)
 	ListTicketLinks(ctx context.Context, sourceTicketID uuid.UUID) ([]TicketLink, error)
 	ListTicketStatusHistory(ctx context.Context, ticketID uuid.UUID) ([]ListTicketStatusHistoryRow, error)
 	ListTicketTags(ctx context.Context, ticketID uuid.UUID) ([]Tag, error)
@@ -614,7 +781,32 @@ type Querier interface {
 	// The admin view: every subscription, enabled or not. The dispatcher keeps
 	// using ListEnabledWebhookConfigs.
 	ListWebhookConfigs(ctx context.Context) ([]WebhookConfig, error)
+	// No event column: the history shows outcomes, never content.
+	ListWebhookDeliveries(ctx context.Context, webhookID uuid.UUID) ([]ListWebhookDeliveriesRow, error)
+	// Locks the group row so nothing can be assigned to it until the transaction
+	// ends. A ticket's assignee_group_id takes a share lock on the group it names,
+	// and this conflicts with that. Without it a ticket assigned between
+	// UnassignTicketsForGroup and the delete would lose its group silently, which
+	// is the gap this exists to close.
+	LockGroup(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
+	// The requester picker's lookup (#444): the accounts a ticket can be filed
+	// for whose name or address contains q, at most ten. Matches the way
+	// SearchUsersAdmin does (q is already LIKE-escaped by the caller; backslash is
+	// the escape character) but leaves out, in the query itself, the accounts that
+	// cannot be requesters: disabled, deleted and service identities. Filtering
+	// here is what keeps it one bounded read however many matches are disabled; the
+	// admin search had to be paged and filtered in the caller. display_name, id is
+	// a total order, so an account is neither repeated nor missed.
+	LookupRequesters(ctx context.Context, q_ string) ([]User, error)
+	// A queued retry was dropped: its entry stops saying "retrying" (#499). Only a
+	// retrying entry changes, so a finished result stays a fact and a drop with no
+	// earlier entry marks nothing. attempts is left alone: a drop is not an attempt.
+	MarkWebhookDeliveryDropped(ctx context.Context, arg MarkWebhookDeliveryDroppedParams) error
 	NextTicketSeq(ctx context.Context) (int64, error)
+	// Keeps the newest keep_n deliveries of one hook (#448).
+	PruneWebhookDeliveries(ctx context.Context, arg PruneWebhookDeliveriesParams) error
+	// A signed-in administrator vouching for a hook a key made: clears the link.
+	ReapproveWebhookConfig(ctx context.Context, id uuid.UUID) (int64, error)
 	// Counts a failed TOTP attempt and locks the account once the threshold is
 	// reached. Returns the resulting lock time so the caller can refuse
 	// immediately without a second round trip.
@@ -627,12 +819,45 @@ type Querier interface {
 	// newer success. Matching on url drops a result for a URL the hook no longer
 	// has. A deleted hook matches nothing, which is fine.
 	RecordWebhookDelivery(ctx context.Context, arg RecordWebhookDeliveryParams) error
-	RemoveGroupMember(ctx context.Context, arg RemoveGroupMemberParams) error
-	RemoveGroupScope(ctx context.Context, arg RemoveGroupScopeParams) error
+	// Spends a reset link and applies it, as one statement (#451).
+	//
+	// Three things must happen together or not at all: the link is used up, the
+	// password changes, and every session the account holds ends. Done as three
+	// statements, a failure between them leaves a spent link and an old password,
+	// or a new password with the old sessions still signed in. A data-modifying CTE
+	// commits or rolls back as a whole (see ClearFactors for the same shape).
+	//
+	// The link is deleted whether or not the account can take the change, so a
+	// link for an account that was disabled or deleted after the mail went out is
+	// spent and does nothing. No row back means the link did not work for any
+	// reason: unknown, used, replaced, expired, or an account that cannot have its
+	// password set. The caller does not tell those apart.
+	//
+	// An account with an empty password_hash has no password to replace and is not
+	// given one: it signs in through an identity provider, or was created without a
+	// password. A link made before it lost its password, or for one that never had
+	// it, spends itself and changes nothing.
+	//
+	// Also clears must_change_password: this is the account holder choosing a
+	// password, which is what that flag is waiting for (#497).
+	RedeemPasswordResetToken(ctx context.Context, arg RedeemPasswordResetTokenParams) (uuid.UUID, error)
+	// Sign-in upgrade of a hash made at a lower bcrypt cost (#453). The new hash
+	// was computed from the old one's password, so it is written only while the
+	// row still holds that old hash: a password changed during the ~250 ms of
+	// hashing wins, and zero rows means exactly that. updated_at is left alone;
+	// the account did not change.
+	RehashUserPassword(ctx context.Context, arg RehashUserPasswordParams) (int64, error)
+	RemoveGroupMember(ctx context.Context, arg RemoveGroupMemberParams) (int64, error)
+	RemoveGroupScope(ctx context.Context, arg RemoveGroupScopeParams) (int64, error)
+	RemoveTicketFollower(ctx context.Context, arg RemoveTicketFollowerParams) (int64, error)
 	RemoveTicketTag(ctx context.Context, arg RemoveTicketTagParams) error
 	RestoreTag(ctx context.Context, id uuid.UUID) error
 	RestoreUser(ctx context.Context, id uuid.UUID) error
 	RetryNotification(ctx context.Context, arg RetryNotificationParams) error
+	// Replaces a row's event. The webhook dispatcher clears the content of a row
+	// whose delivery has finally failed, so it does not sit for the 30 days failed
+	// rows are kept (#448).
+	RewriteNotificationEvent(ctx context.Context, arg RewriteNotificationEventParams) error
 	SearchActiveTags(ctx context.Context, name string) ([]Tag, error)
 	SearchAllTickets(ctx context.Context, arg SearchAllTicketsParams) ([]SearchAllTicketsRow, error)
 	// The admin-wide audit view (#129), unscoped: an administrator, or staff while
@@ -653,6 +878,12 @@ type Querier interface {
 	// ranking used by the other ticket searches.
 	SearchTicketsVisibleToStaff(ctx context.Context, arg SearchTicketsVisibleToStaffParams) ([]SearchTicketsVisibleToStaffRow, error)
 	SearchUnassignedTickets(ctx context.Context, arg SearchUnassignedTicketsParams) ([]SearchUnassignedTicketsRow, error)
+	// The paged admin list (#449). role = '' means any role; q is already
+	// LIKE-escaped by the caller (backslash is the escape character), and an empty
+	// q matches everyone. id breaks created_at ties so a page boundary never
+	// repeats or drops an account. ListUsersAdmin, above, is the unpaged list and
+	// is left alone.
+	SearchUsersAdmin(ctx context.Context, arg SearchUsersAdminParams) ([]User, error)
 	// First enrolment only: adopts the secret if, and only if, the account still
 	// has no TOTP when the row is written (#338). The handler's "no factor yet"
 	// check and the write used to be two statements, so concurrent first
@@ -724,6 +955,11 @@ type Querier interface {
 	// of two.
 	SetSLAResolvedAndFirstResponse(ctx context.Context, arg SetSLAResolvedAndFirstResponseParams) error
 	SetSetting(ctx context.Context, arg SetSettingParams) error
+	// The person's staff-email switches (#441), each changed only when given.
+	// Narrow for the reason UpdateUserProfile is: UpdateUser writes a whole row
+	// from an earlier read, and must not be the way a choice made a moment ago is
+	// put back. updated_at is left alone; the account itself did not change.
+	SetUserEmailPreferences(ctx context.Context, arg SetUserEmailPreferencesParams) error
 	// Writes only the TOTP secret and whether it is enabled. Same reason: the
 	// enrolment confirmation read the whole row, checked a code, and wrote every
 	// column back over whatever had happened in between.
@@ -741,6 +977,9 @@ type Querier interface {
 	//
 	// AdminSetPassword has always been a narrow statement. This is the same thing
 	// for the self-service path, which is the one an attacker can drive.
+	//
+	// Also clears must_change_password (#497): this is the account holder choosing
+	// a password, which is what that flag is waiting for.
 	SetUserPasswordHash(ctx context.Context, arg SetUserPasswordHashParams) error
 	// The same guard for a role change. See DisableUserUnlessLastAdmin.
 	//
@@ -752,6 +991,9 @@ type Querier interface {
 	SoftDeleteTag(ctx context.Context, id uuid.UUID) error
 	SoftDeleteUser(ctx context.Context, id uuid.UUID) error
 	// The same guard for deletion. See DisableUserUnlessLastAdmin.
+	//
+	// Never a service user (#420): it goes when its OAuth client does, in
+	// DeleteOAuthClient. Deleting it alone would leave the client listed and dead.
 	SoftDeleteUserUnlessLastAdmin(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
 	// One row affected: this is the cookie's first use. Zero: it was spent before.
 	// ON CONFLICT rather than SELECT-then-INSERT, so that two concurrent requests
@@ -762,6 +1004,9 @@ type Querier interface {
 	// request path's first_response_at / resolved_at. A stamp, once set, is a
 	// fact about what happened (DESIGN.md) and is never cleared here.
 	StampSLABreaches(ctx context.Context, arg StampSLABreachesParams) error
+	// The only write a re-match ever makes to an existing record. Every fact on
+	// the row stays as it was; the row simply stops being current.
+	SupersedeSLARecord(ctx context.Context, arg SupersedeSLARecordParams) (int64, error)
 	// What a federated login is allowed to change about an account it recognises:
 	// the address, the name, and nothing else.
 	//
@@ -771,6 +1016,10 @@ type Querier interface {
 	// will, so a demotion or a password reset landing in that window was written
 	// back by the next sign-in.
 	SyncFederatedUser(ctx context.Context, arg SyncFederatedUserParams) error
+	// Deletes a row and says whether this call was the one that did. Split uses it
+	// to take the parent before queueing its children: zero rows means another
+	// worker already split or settled it (#513).
+	TakeNotification(ctx context.Context, id uuid.UUID) (int64, error)
 	// First use stamps the row. Separate from the lookup so a read of the ticket
 	// is not also a write on the hot path when the column is already set.
 	TouchGuestAccessToken(ctx context.Context, tokenHash string) error
@@ -783,6 +1032,10 @@ type Querier interface {
 	// for nothing, and why a previously-non-zero counter going backwards is worth
 	// logging and worth refusing nothing over.
 	TouchWebAuthnCredential(ctx context.Context, arg TouchWebAuthnCredentialParams) error
+	// Takes every ticket off a group that is about to be deleted, and says which.
+	// All of them, resolved and closed too: the foreign key (ON DELETE SET NULL)
+	// would clear those anyway, and the audit trail should record it.
+	UnassignTicketsForGroup(ctx context.Context, assigneeGroupID uuid.NullUUID) ([]uuid.UUID, error)
 	// Takes a departing user off every ticket still assigned to them, and says
 	// which ones.
 	//
@@ -796,6 +1049,12 @@ type Querier interface {
 	// ticket assigned to somebody who has left is history, and history should
 	// record who actually handled it.
 	UnassignTicketsForUser(ctx context.Context, assigneeUserID uuid.NullUUID) ([]uuid.UUID, error)
+	// The account half of /app/server unlock (#497), run in the same transaction
+	// as ClearFactors: re-enable, clear the TOTP lockout, install the generated
+	// password and require it to be changed. Not for a deleted account. The
+	// in-memory sign-in throttle is another process's memory and only ever delays,
+	// never refuses, so there is nothing of it to clear here.
+	UnlockUser(ctx context.Context, arg UnlockUserParams) (int64, error)
 	UpdateAPIKeyLastUsed(ctx context.Context, arg UpdateAPIKeyLastUsedParams) error
 	UpdateCannedResponse(ctx context.Context, arg UpdateCannedResponseParams) error
 	UpdateCategory(ctx context.Context, arg UpdateCategoryParams) error
@@ -823,7 +1082,11 @@ type Querier interface {
 	//
 	// A rename should rename. Everything else has its own path, and the role has
 	// a guarded one.
-	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error
+	//
+	// Renaming a service user (#420) renames its OAuth client in the same
+	// statement, so the two names cannot drift. For anyone else no client has
+	// user_id = $1 and the first part touches nothing.
+	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (int64, error)
 	// A new URL clears the last delivery result: it described a different target.
 	// (On the right-hand side of SET, "url" is the OLD value.)
 	UpdateWebhookConfig(ctx context.Context, arg UpdateWebhookConfigParams) error
@@ -882,6 +1145,9 @@ type Querier interface {
 	// reason inverted: a frozen, earlier now() would keep an expired session
 	// loading.
 	UpsertSession(ctx context.Context, arg UpsertSessionParams) error
+	// One row per delivery; each attempt updates it. attempts counts them here
+	// rather than trusting the caller, so two replicas cannot disagree.
+	UpsertWebhookDelivery(ctx context.Context, arg UpsertWebhookDeliveryParams) error
 	// Whether a live account holds this id. Used for a supplied reporter, which
 	// unlike an assignee may be any role — a ticket is filed on behalf of whoever
 	// it is about.

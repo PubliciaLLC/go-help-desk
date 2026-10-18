@@ -13,12 +13,20 @@ import (
 )
 
 // GET /api/v1/auth/signup/status — public; tells the frontend whether to show signup.
+//
+// open_registration is what Register will do, not the setting: a non-empty
+// domain list overrides open registration (registration.isEmailDomainAllowed),
+// so the setting alone claimed "anyone may sign up" for an instance that only
+// admitted listed domains (#421). restricted_by_domain_list is that override,
+// reported so the admin page can say why. Who may sign up is unchanged.
 func (s *Server) handleSignupStatus(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	restricted := len(s.adminSvc.AllowedEmailDomains(ctx)) > 0
 	JSON(w, http.StatusOK, map[string]any{
-		"enabled":           s.adminSvc.SelfSignupEnabled(ctx),
-		"open_registration": s.adminSvc.OpenRegistrationEnabled(ctx),
-		"saml_enabled":      s.adminSvc.SAMLEnabled(ctx),
+		"enabled":                   s.adminSvc.SelfSignupEnabled(ctx),
+		"open_registration":         s.adminSvc.OpenRegistrationEnabled(ctx) && !restricted,
+		"restricted_by_domain_list": restricted,
+		"saml_enabled":              s.adminSvc.SAMLEnabled(ctx),
 	})
 }
 
@@ -36,7 +44,7 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 	// guessing, and a shared bucket behind a proxy throttles registrations
 	// rather than locking anyone out of their own account.
 	if !s.loginLimiter.Allow("signup:" + authmw.ClientAddr(r)) {
-		tooManyAttempts(w, time.Minute)
+		tooManyAttempts(w, s.loginLimiter.Remaining())
 		return
 	}
 
@@ -177,11 +185,17 @@ func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 	mfaEnabled := s.adminSvc.MFAEnabled(r.Context())
 	mfaEnrollmentNeeded := mfaEnabled && s.adminSvc.MFARequiredFor(r.Context(), string(u.Role))
 
-	if err := s.writeSession(w, r, auth.SessionData{
+	sd := auth.SessionData{
 		UserID:    u.ID,
 		Role:      u.Role,
 		MFAPassed: !mfaEnrollmentNeeded,
-	}); err != nil {
+	}
+	// Only enrolment can be owed here: a new account has no factor yet.
+	if mfaEnrollmentNeeded {
+		sd.PendingUntil = auth.PendingDeadline(time.Now(), true)
+	}
+
+	if err := s.writeSession(w, r, sd); err != nil {
 		handleError(w, err)
 		return
 	}

@@ -5,11 +5,12 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
+	"time"
 
 	qrcode "github.com/skip2/go-qrcode"
 
-	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
@@ -26,7 +27,11 @@ func (s *Server) handleGetMe(w http.ResponseWriter, r *http.Request) {
 	//
 	// What it can honestly say is what the credential is: its role and the
 	// scopes it holds, which is the part an integration checks.
-	if a.UserID == uuid.Nil {
+	//
+	// Keyed on the client id and not the user id: since #420 a client's actor
+	// does carry a user id (its service user's), and the shape this route
+	// answers for a client must not change just because of that.
+	if a.ClientID != "" {
 		JSON(w, http.StatusOK, map[string]any{
 			"machine": true,
 			"role":    a.Role,
@@ -40,7 +45,85 @@ func (s *Server) handleGetMe(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, u)
+	JSON(w, http.StatusOK, s.meView(r.Context(), u))
+}
+
+// meUser is the signed-in account as /me reports it: the user itself, plus for
+// staff and administrators what their email switches actually amount to.
+type meUser struct {
+	user.User
+	EmailNotifications *emailNotifications `json:"email_notifications,omitempty"`
+	// CanCreateAPIKeys is whether the Account page should offer to make a key
+	// (#450). Always present, so a client can tell false from an old server.
+	CanCreateAPIKeys bool `json:"can_create_api_keys"`
+	// APIKeyMaxLifetimeYears is the longest a new key may live: 1 to 5, or -1
+	// for no limit (#450). The create forms cap the expiry with it.
+	APIKeyMaxLifetimeYears int `json:"api_key_max_lifetime_years"`
+}
+
+// switchState is one email switch as it applies to this person: whether they
+// get that mail, and whether an administrator decided that for everyone (so
+// their own choice is not what applies).
+type switchState struct {
+	Enabled bool `json:"enabled"`
+	Forced  bool `json:"forced"`
+}
+
+type emailNotifications struct {
+	Assigned switchState `json:"assigned"`
+	Activity switchState `json:"activity"`
+	Group    switchState `json:"group"`
+}
+
+// meView adds the effective email state (#441). A requester is never sent
+// staff mail, so has none to report.
+func (s *Server) meView(ctx context.Context, u user.User) meUser {
+	v := meUser{User: u, APIKeyMaxLifetimeYears: s.adminSvc.APIKeyMaxLifetimeYears(ctx)}
+	v.CanCreateAPIKeys = u.Role == user.RoleAdmin || (u.Role == user.RoleStaff && s.adminSvc.StaffCanCreateAPIKeys(ctx))
+	if u.Role == user.RoleUser {
+		return v
+	}
+	ov := s.adminSvc.StaffEmailOverrides(ctx)
+	prefs := notification.StaffPrefs{Assigned: u.EmailNotifyAssigned, Activity: u.EmailNotifyActivity, Group: u.EmailNotifyGroup}
+	state := func(sw notification.StaffSwitch) switchState {
+		return switchState{Enabled: ov.Allows(sw, prefs), Forced: ov.Forced(sw)}
+	}
+	v.EmailNotifications = &emailNotifications{
+		Assigned: state(notification.SwitchAssigned),
+		Activity: state(notification.SwitchActivity),
+		Group:    state(notification.SwitchGroup),
+	}
+	return v
+}
+
+// PATCH /api/v1/me/email-preferences
+//
+// The caller's own staff-email switches (#441). Each is optional; only the ones
+// sent change. An administrator's override can still force a switch on or off
+// for everyone, whatever is saved here.
+func (s *Server) handleUpdateEmailPreferences(w http.ResponseWriter, r *http.Request) {
+	a := authmw.GetActor(r)
+	var body struct {
+		Assigned *bool `json:"email_notify_assigned"`
+		Activity *bool `json:"email_notify_activity"`
+		Group    *bool `json:"email_notify_group"`
+	}
+	if err := DecodeJSON(r, &body); err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "the email switches must be true or false")
+		return
+	}
+	if err := s.users.SetEmailPreferences(r.Context(), a.UserID, user.EmailPreferencesPatch{
+		Assigned: body.Assigned, Activity: body.Activity, Group: body.Group,
+	}); err != nil {
+		handleError(w, err)
+		return
+	}
+	u, err := s.users.GetByID(r.Context(), a.UserID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, s.meView(r.Context(), u))
 }
 
 // PATCH /api/v1/me/password
@@ -103,12 +186,19 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	if err := s.writeSession(w, r, auth.SessionData{
+	sd := auth.SessionData{
 		UserID:         a.UserID,
 		Role:           a.Role,
 		MFAPassed:      a.MFAPassed,
 		FactorVerified: a.FactorVerified,
-	}); err != nil {
+	}
+	// Only a session that owed the change can get here without having passed
+	// MFA (RequireMFAOrPasswordChange), and it still owes the enrolment, so
+	// it gets the enrolment window rather than an already-expired one.
+	if !sd.MFAPassed {
+		sd.PendingUntil = auth.PendingDeadline(time.Now(), true)
+	}
+	if err := s.writeSession(w, r, sd); err != nil {
 		handleError(w, err)
 		return
 	}
@@ -225,7 +315,13 @@ func (s *Server) handleMFAEnrollConfirm(w http.ResponseWriter, r *http.Request) 
 					"or ask an administrator to reset it.")
 			return
 		}
-		Error(w, http.StatusBadRequest, "invalid_code", err.Error())
+		// What the person got wrong is a 400; a storage fault is the server's
+		// and used to land here too, telling them their code was bad (#421).
+		if errors.Is(err, user.ErrMFANotStarted) || errors.Is(err, user.ErrMFAInvalidCode) {
+			Error(w, http.StatusBadRequest, "invalid_code", err.Error())
+			return
+		}
+		handleError(w, err)
 		return
 	}
 	if err := s.users.ClearMFAFailures(r.Context(), a.UserID); err != nil {

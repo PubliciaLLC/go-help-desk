@@ -4,13 +4,19 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/cannedresponse"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
@@ -59,8 +65,15 @@ func handleError(w http.ResponseWriter, err error) {
 	// user.ErrNotFound as well as userstore.ErrNotFound: the store sentinel
 	// WRAPS the domain one, so errors.Is does not run the other way, and a
 	// domain method returning the bare sentinel fell through to 500.
-	if errors.Is(err, userstore.ErrNotFound) || errors.Is(err, user.ErrNotFound) || errors.Is(err, ticketstore.ErrNotFound) || errors.Is(err, cannedresponse.ErrNotFound) || errors.Is(err, ticket.ErrStatusNotFound) {
+	if errors.Is(err, userstore.ErrNotFound) || errors.Is(err, user.ErrNotFound) || errors.Is(err, ticketstore.ErrNotFound) || errors.Is(err, cannedresponse.ErrNotFound) || errors.Is(err, ticket.ErrStatusNotFound) || errors.Is(err, group.ErrNotFound) || errors.Is(err, auth.ErrNotFound) || errors.Is(err, plugin.ErrNotFound) || errors.Is(err, category.ErrNotFound) || errors.Is(err, customfield.ErrNotFound) || errors.Is(err, sla.ErrNotFound) {
 		Error(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	// 409: the account's nature refuses the change, whoever asks. A service
+	// account (an OAuth client's identity) has no password, no second factor
+	// and no admin role, ever (#420).
+	if errors.Is(err, user.ErrServiceAccount) {
+		Error(w, http.StatusConflict, "service_account", err.Error())
 		return
 	}
 	// The caller sent a value that is not one. Not a server fault, and it
@@ -105,6 +118,20 @@ func handleError(w http.ResponseWriter, err error) {
 		Error(w, http.StatusConflict, "reopen_window_closed", ticket.ErrReopenWindowClosed.Error())
 		return
 	}
+	// Custom fields (#419). The messages on these were written for the
+	// caller by the service and the store, never taken from the database.
+	if errors.Is(err, customfield.ErrValidation) {
+		Error(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if errors.Is(err, customfield.ErrConflict) {
+		Error(w, http.StatusConflict, "conflict", err.Error())
+		return
+	}
+	if errors.Is(err, customfield.ErrInvalidReference) {
+		Error(w, http.StatusBadRequest, "invalid_reference", err.Error())
+		return
+	}
 	// 409 Conflict: link already exists
 	if errors.Is(err, ticket.ErrLinkAlreadyExists) {
 		Error(w, http.StatusConflict, "link_already_exists", "this link already exists")
@@ -125,6 +152,13 @@ func handleError(w http.ResponseWriter, err error) {
 		Error(w, http.StatusConflict, "status_in_use", err.Error())
 		return
 	}
+	// 409: the status has been retired. Hidden from the picker, and refused
+	// here for every role so an old tab or an API client cannot walk around
+	// the picker.
+	if errors.Is(err, ticket.ErrStatusInactive) {
+		Error(w, http.StatusConflict, "status_inactive", err.Error())
+		return
+	}
 	// 409, not 500: statuses.name is TEXT NOT NULL UNIQUE, and creating or
 	// renaming a status to a name that already exists is the schema working
 	// as designed, not a server fault. See #278.
@@ -138,6 +172,31 @@ func handleError(w http.ResponseWriter, err error) {
 	// layer down from its HTTP-handler check. See #269.
 	if errors.Is(err, ticket.ErrSystemStatusImmutable) {
 		Error(w, http.StatusForbidden, "forbidden", err.Error())
+		return
+	}
+	// 400: group member or scope reference does not exist.
+	if errors.Is(err, group.ErrInvalidReference) {
+		Error(w, http.StatusBadRequest, "invalid_reference", err.Error())
+		return
+	}
+	// 409, not 500: group.name is TEXT NOT NULL UNIQUE, and creating or
+	// renaming a group to a name that already exists is the schema working
+	// as designed, not a server fault.
+	if errors.Is(err, group.ErrNameTaken) {
+		Error(w, http.StatusConflict, "group_name_taken", err.Error())
+		return
+	}
+	// 409: category, type, or item is referenced by tickets or SLA records.
+	if errors.Is(err, category.ErrCategoryInUse) {
+		Error(w, http.StatusConflict, "category_in_use", err.Error())
+		return
+	}
+	if errors.Is(err, category.ErrTypeInUse) {
+		Error(w, http.StatusConflict, "type_in_use", err.Error())
+		return
+	}
+	if errors.Is(err, category.ErrItemInUse) {
+		Error(w, http.StatusConflict, "item_in_use", err.Error())
 		return
 	}
 	// Checked before the general validation arm below, which it is a kind of:
@@ -158,7 +217,7 @@ func handleError(w http.ResponseWriter, err error) {
 	// wrong. ticket.ErrValidation is caught by its own arm above.
 	if errors.Is(err, user.ErrValidation) || errors.Is(err, registration.ErrInvalidEmail) ||
 		errors.Is(err, ticket.ErrInvalidLinkType) || errors.Is(err, ticket.ErrInvalidStatusName) ||
-		errors.Is(err, sla.ErrValidation) || errors.Is(err, sla.ErrUnknownCategory) {
+		errors.Is(err, sla.ErrValidation) || errors.Is(err, sla.ErrUnknownCategory) || errors.Is(err, group.ErrValidation) || errors.Is(err, category.ErrValidation) {
 		Error(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
@@ -185,10 +244,13 @@ func handleError(w http.ResponseWriter, err error) {
 // budget was spent, or how much remains, tells an attacker whether an account
 // exists and how close they are.
 func tooManyAttempts(w http.ResponseWriter, retryAfter time.Duration) {
-	// The header has to match the limit that actually refused: the login
-	// budget is a minute, the MFA lock is fifteen, and telling a locked-out
-	// user to come back in sixty seconds is simply wrong.
-	w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
+	// The header has to match the limit that actually refused: for the shared
+	// window it is the time left in it (RateLimiter.Remaining), for the MFA
+	// lock the lock's length, and telling a locked-out user to come back in
+	// sixty seconds is simply wrong. Whole seconds, rounded up so waiting that
+	// long is enough, and never 0, which a client reads as "retry now".
+	secs := max(1, int(math.Ceil(retryAfter.Seconds())))
+	w.Header().Set("Retry-After", strconv.Itoa(secs))
 	Error(w, http.StatusTooManyRequests, "rate_limited",
 		"too many attempts; please wait and try again")
 }

@@ -3,10 +3,10 @@ package server
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -60,7 +60,7 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 	// Keyed on the source address, like signup, which is the only key there is
 	// when there is no account to key on.
 	if !s.loginLimiter.Allow("guest-submit:" + authmw.ClientAddr(r)) {
-		tooManyAttempts(w, time.Minute)
+		tooManyAttempts(w, s.loginLimiter.Remaining())
 		return
 	}
 
@@ -145,13 +145,18 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 	// the token goes by email, so possession of the mailbox is the credential.
 	// Answering with it here would hand access to whoever sent the request,
 	// which is not necessarily whoever owns the address.
-	JSON(w, http.StatusCreated, map[string]string{
+	JSON(w, http.StatusCreated, guestJSON(map[string]string{
 		"tracking_number": string(t.TrackingNumber),
-	})
+	}))
 }
 
 // GET /api/v1/guest/ticket
 func (s *Server) handleGuestGetTicket(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if !s.adminSvc.GuestSubmissionEnabled(ctx) {
+		Error(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
 	t, ok := s.guestTicketFromRequest(r)
 	if !ok {
 		Error(w, http.StatusNotFound, "not_found", "not found")
@@ -179,15 +184,26 @@ func (s *Server) handleGuestGetTicket(w http.ResponseWriter, r *http.Request) {
 	// Marshalling ticket.Ticket would ship assignee ids, group ids, the
 	// reporter id and the resolution notes to someone with no account, and
 	// would keep doing so as fields are added.
-	JSON(w, http.StatusOK, map[string]any{
+	JSON(w, http.StatusOK, guestJSON(map[string]any{
 		"tracking_number": t.TrackingNumber,
 		"subject":         t.Subject,
 		"description":     t.Description,
 		"status":          statusName,
 		"created_at":      t.CreatedAt,
-		"updated_at":      t.UpdatedAt,
 		"replies":         guestReplyView(ticket.VisibleReplies(replies, user.RoleUser)),
-	})
+	}))
+}
+
+// guestJSON runs a guest's ticket response through the guest allowed list, the
+// subset of the requester's (ticket.FilterForGuest): there is one definition of
+// what a requester or guest may see of a ticket, and a key added to a map above
+// is hidden until it is added there on purpose.
+func guestJSON(v any) any {
+	out, err := ticket.FilterForGuest(v)
+	if err != nil {
+		return map[string]string{} // never the unfiltered value
+	}
+	return out
 }
 
 // guestReplyView strips a reply to what a guest may see. RoleUser has already
@@ -224,6 +240,11 @@ func guestWriteError(w http.ResponseWriter, err error) {
 
 // POST /api/v1/guest/replies
 func (s *Server) handleGuestAddReply(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if !s.adminSvc.GuestSubmissionEnabled(ctx) {
+		Error(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
 	t, ok := s.guestTicketFromRequest(r)
 	if !ok {
 		Error(w, http.StatusNotFound, "not_found", "not found")
@@ -241,7 +262,6 @@ func (s *Server) handleGuestAddReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
 	reopenStatusID, err := s.reopenTargetStatusID(ctx)
 	if err != nil {
 		handleError(w, err)
@@ -275,12 +295,14 @@ func (s *Server) handleGuestAddReply(w http.ResponseWriter, r *http.Request) {
 // guestRouter's own comment for why every route here takes its ticket from
 // the token and nothing else.
 //
-// Not gated on guest_submission_enabled. That setting governs whether a NEW
-// guest ticket is accepted — handleGuestCreateTicket and handleGuestResend
-// check it, handleGuestAddReply deliberately does not, and this follows the
-// same rule for the same reason: switching submission off must not sever a
-// conversation somebody already holds a working token for.
+// Gated on guest_submission_enabled. When the setting is off, existing guest
+// links are revoked and cannot upload until the setting is turned back on (#424).
 func (s *Server) handleGuestUploadAttachment(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if !s.adminSvc.GuestSubmissionEnabled(ctx) {
+		Error(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
 	t, ok := s.guestTicketFromRequest(r)
 	if !ok {
 		Error(w, http.StatusNotFound, "not_found", "not found")
@@ -336,11 +358,12 @@ func (s *Server) handleGuestFollowUp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.loginLimiter.Allow("guest-submit:" + authmw.ClientAddr(r)) {
-		tooManyAttempts(w, time.Minute)
+		tooManyAttempts(w, s.loginLimiter.Remaining())
 		return
 	}
 	created, err := s.tickets.CreateRequesterFollowUp(ctx, t.ID, s.adminSvc.TicketPrefix(ctx),
-		ticket.Actor{Role: user.RoleUser}, s.requesterClassificationOpen)
+		ticket.Actor{Role: user.RoleUser}, s.requesterClassificationOpen,
+		s.routing(ctx, t.CategoryID, nil)...) // a guest's follow-up carries no type
 	if err != nil {
 		switch {
 		case errors.Is(err, ticket.ErrNotClosed), errors.Is(err, ticket.ErrFollowUpExists),
@@ -354,10 +377,9 @@ func (s *Server) handleGuestFollowUp(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	s.autoAssign(ctx, created)
-	JSON(w, http.StatusCreated, map[string]string{
+	JSON(w, http.StatusCreated, guestJSON(map[string]string{
 		"tracking_number": string(created.TrackingNumber),
-	})
+	}))
 }
 
 // POST /api/v1/guest/resend
@@ -371,14 +393,16 @@ func (s *Server) handleGuestResend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.loginLimiter.Allow("guest-resend:" + authmw.ClientAddr(r)) {
-		tooManyAttempts(w, time.Minute)
+		tooManyAttempts(w, s.loginLimiter.Remaining())
 		return
 	}
 	var body struct {
 		TrackingNumber string `json:"tracking_number"`
 		Email          string `json:"email"`
 	}
-	if err := DecodeJSON(r, &body); err != nil {
+	// No body is the same as {}: this route answers 202 whatever it is asked,
+	// so an empty request is not a malformed one (#421).
+	if err := DecodeJSON(r, &body); err != nil && !errors.Is(err, io.EOF) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}

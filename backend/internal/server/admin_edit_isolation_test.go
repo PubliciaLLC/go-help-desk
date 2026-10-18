@@ -42,12 +42,28 @@ func TestUpdateUser_ADemotionRevokesEvenWhenTheRestFails(t *testing.T) {
 	res, _ = theirs.send(t, http.MethodGet, "/api/v1/me", nil)
 	require.Equal(t, http.StatusOK, res.StatusCode, "precondition: the session works")
 
-	// Demote them, with a profile change that will be refused.
+	// Demote them, with a profile change that fails AFTER the role is written.
+	//
+	// It used to be a blank display name. That is now refused before any write
+	// (#419), so a demotion sent with one changes nothing and has nothing to
+	// revoke; the case that is left is a failure the handler cannot see coming.
+	// A statement that errors would poison the harness's single transaction,
+	// so the failure is staged instead: this trigger swallows the profile
+	// write, which then matches no row and is refused, with the role already
+	// committed.
+	_, err = h.tx.ExecContext(ctx, `
+		CREATE FUNCTION ghd_test_refuse_profile() RETURNS trigger LANGUAGE plpgsql
+		AS $$ BEGIN RETURN NULL; END $$`)
+	require.NoError(t, err)
+	_, err = h.tx.ExecContext(ctx, `
+		CREATE TRIGGER ghd_test_refuse_profile BEFORE UPDATE OF email ON users
+		FOR EACH ROW EXECUTE FUNCTION ghd_test_refuse_profile()`)
+	require.NoError(t, err)
 	admin := loggedInAdmin(t, h)
 	res, body = admin.send(t, http.MethodPatch, "/api/v1/admin/users/"+victim.ID.String(),
-		map[string]any{"role": "user", "display_name": "   "})
-	require.Equal(t, http.StatusBadRequest, res.StatusCode,
-		"the blank name should be refused: %s", body)
+		map[string]any{"role": "user", "email": "second-admin-renamed@test.local"})
+	require.Equal(t, http.StatusNotFound, res.StatusCode,
+		"the profile write should have been refused: %s", body)
 
 	// The demotion happened...
 	stored, err := h.userSvc.GetByIDAdmin(ctx, victim.ID)
@@ -204,8 +220,8 @@ func TestUpdateTicket_ReclassificationIsCheckedToo(t *testing.T) {
 // confident statement about a different account's situation.
 //
 // Asserted against the service rather than over HTTP. The delete route has
-// its own lookup in front of it (denyMachineTargetingAdmin), which answers
-// 404 for a missing row before the guarded write is ever reached — so an
+// its own lookup in front of it (the handler reads the account first), which
+// answers 404 for a missing row before the guarded write is ever reached — so an
 // HTTP test passes whatever the service returns, and the first version of
 // this test did exactly that: it went green against the unfixed code.
 func TestUserService_ARefusalNamesTheRightReason(t *testing.T) {

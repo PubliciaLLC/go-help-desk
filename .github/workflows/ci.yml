@@ -390,6 +390,35 @@ jobs:
           # that actually ships. /mcp/ was mounted outside the auth chain and
           # served every tool to anyone who could reach the port.
           check /mcp/sse         401 "MCP must reject unauthenticated callers"
+          # /mcp is registered on the mux apart from /mcp/. Without that line
+          # the mux answers 307 here, ahead of the auth chain.
+          check /mcp             401 "Streamable HTTP MCP must reject unauthenticated callers"
+
+          # The Origin check on every MCP route, against the BASE_URL this container was
+          # given: Go tests build their own Config, so this is the only place
+          # the shipped binary's BASE_URL meets the check. Its own origin gets
+          # as far as authentication (401); another page's is refused (403)
+          # before it. These requests carry no credential, so the 401s show
+          # where the own-origin ones stopped, and the 403s that the check
+          # comes first.
+          check_origin() { # path, Origin, expected status, description
+            actual="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Origin: $2" "http://127.0.0.1:8088$1")"
+            if [ "$actual" != "$3" ]; then
+              echo "::error::$4: GET $1 with Origin $2 returned $actual, expected $3"
+              docker logs ghd-ci-app
+              exit 1
+            fi
+            echo "ok  $1 Origin $2 -> $actual  ($4)"
+          }
+          check_origin /mcp  "http://localhost:8088" 401 "BASE_URL's own origin reaches authentication"
+          check_origin /mcp  "https://evil.example"  403 "a foreign Origin is refused on /mcp"
+          check_origin /mcp/ "https://evil.example"  403 "a foreign Origin is refused on /mcp/"
+          # The legacy SSE transport is covered too (#460): the check has no path
+          # condition, so a route added behind ProtectMCP is covered with it.
+          check_origin /mcp/sse "http://localhost:8088" 401 "BASE_URL's own origin reaches authentication on /mcp/sse"
+          check_origin /mcp/sse "https://evil.example"  403 "a foreign Origin is refused on /mcp/sse"
+          check_origin /mcp/message "http://localhost:8088" 401 "BASE_URL's own origin reaches authentication on /mcp/message"
+          check_origin /mcp/message "https://evil.example" 403 "a foreign Origin is refused on /mcp/message"
 
           # The embedded SPA must be the real build, not the placeholder that
           # exists so //go:embed resolves in a fresh checkout.
@@ -505,6 +534,7 @@ jobs:
             [ "$(status /health)" = "200" ]      || fail "/health stopped responding at ${i}s"
             [ "$(status /api/v1/tickets)" = "401" ] || fail "/api/v1/tickets stopped requiring auth at ${i}s"
             [ "$(status /mcp/sse)" = "401" ]     || fail "/mcp/sse stopped requiring auth at ${i}s"
+            [ "$(status /mcp)" = "401" ]         || fail "/mcp stopped requiring auth at ${i}s"
             sleep 1
           done
 
@@ -530,7 +560,6 @@ jobs:
             -e DATABASE_URL="postgres://helpdesk:helpdesk@ghd-ci-db:5432/helpdesk?sslmode=disable" \
             -e BASE_URL="http://localhost:8099" \
             -e SESSION_SECRET="$(grep '^SESSION_SECRET=' docker/.env | cut -d= -f2-)" \
-            -e JWT_SECRET="$(grep '^JWT_SECRET=' docker/.env | cut -d= -f2-)" \
             ghd:ci
           sleep 10
           logs="$(docker logs ghd-ci-example 2>&1)"

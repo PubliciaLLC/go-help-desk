@@ -24,6 +24,8 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/categorystore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/customfieldstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/groupstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/outboxstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/passwordresetstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/registrationstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/sessionstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/slastore"
@@ -39,6 +41,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/passwordreset"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
@@ -66,7 +69,10 @@ func allScopes() []string {
 	for i, s := range all {
 		out[i] = s.String()
 	}
-	return out
+	// users:write is no longer offered (keys can't write users), but a key
+	// stored before that still holds it, and the harness key stands for the
+	// most privileged one there is. The routes it would have opened refuse it.
+	return append(out, "users:write")
 }
 
 // harness is a test server wired against a real (rolled-back) DB transaction.
@@ -99,6 +105,8 @@ type harness struct {
 	dispatcher      *sendTimeDispatcher // see newHarnessWith
 	attachDir       string              // where uploads land, so a test can check the disk
 	verifyMail      *verifyMailbox      // the signup verification links sent, so a test can follow one
+	resetMail       *resetMailbox       // the password reset links sent, so a test can follow one
+	resetQueue      *lateDispatcher     // where a reset request goes; swap in the real outbox to drive it through the worker
 }
 
 func newHarness(t *testing.T) (*harness, func()) {
@@ -129,6 +137,25 @@ func newHarnessWithThrottle(t *testing.T, authRateLimit int, delay time.Duration
 // "an address is configured" apart from "a scanner answers" — which is the
 // whole difference between reporting scanner health and reporting settings.
 func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harness, func()) {
+	t.Helper()
+	return newHarnessCfg(t, authRateLimit, clamAVAddr, nil)
+}
+
+// newHarnessCfg is newHarnessWith with a hook to adjust the config before the
+// server is built, for tests about what the configuration itself produces.
+func newHarnessCfg(t *testing.T, authRateLimit int, clamAVAddr string, mutate func(*config.Config)) (*harness, func()) {
+	t.Helper()
+	return newHarnessPasskeys(t, authRateLimit, clamAVAddr, mutate, true)
+}
+
+// newHarnessPasskeysOff is a harness started as main.go starts when BASE_URL
+// cannot be a relying-party id (#494): no passkey service at all.
+func newHarnessPasskeysOff(t *testing.T) (*harness, func()) {
+	t.Helper()
+	return newHarnessPasskeys(t, 0, "", nil, false)
+}
+
+func newHarnessPasskeys(t *testing.T, authRateLimit int, clamAVAddr string, mutate func(*config.Config), passkeysOn bool) (*harness, func()) {
 	t.Helper()
 	db, closeDB := testutil.NewDB(t)
 	q, tx, rollback := testutil.TxQueriesTx(t, db)
@@ -174,7 +201,7 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 	dispatcher := &sendTimeDispatcher{next: notify.NewMulti()}
 	// Joins the harness transaction rather than beginning a second one; see
 	// testutil.JoiningTxRunner for why a real runner cannot work here.
-	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, testutil.NewJoiningTxRunner(q), slaPolicySvc)
+	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, testutil.NewJoiningTxRunner(q, dispatcher), slaPolicySvc)
 	require.NoError(t, ticketSvc.LoadSystemStatuses(ctx))
 
 	// Seed an admin user.
@@ -284,6 +311,9 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 		// TestLoginTarpit_SlowsAnOverBudgetAccount sets a measurable one.
 		AuthThrottleDelay: time.Millisecond,
 	}
+	if mutate != nil {
+		mutate(cfg)
+	}
 	// Derived exactly as main.go does, so tests exercise the real store rather
 	// than a shape production never uses.
 	sessionHashKey, sessionBlockKey, err := auth.DeriveSessionKeys(cfg.SessionSecret)
@@ -302,6 +332,11 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 	})
 
 	passkeySvc, passkeyStore := testPasskeys(q)
+	srvOpts := []server.Option{server.WithAuditStore(auStore)}
+	if !passkeysOn {
+		passkeySvc = nil
+		srvOpts = append(srvOpts, server.WithPasskeysUnavailable(passkeysOffReason))
+	}
 	verifyMail := &verifyMailbox{}
 	// Verification email is sent at once, through the same channel the outbox
 	// worker uses, so a test can follow the link straight after signing up.
@@ -309,6 +344,19 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 	verifyNow := &lateDispatcher{}
 	registrationSvc := registration.NewService(registrationstore.New(q), userSvc, verifyMail, verifyNow, "https://help.example.com")
 	verifyNow.Dispatcher = notify.NewVerificationDispatcher(registrationSvc.SendVerification)
+	// The same for "forgot password" (#451): sent at once through the channel
+	// the worker uses, with the send-time step the server provides.
+	resetMail := &resetMailbox{}
+	resetNow := &lateDispatcher{}
+	resetSvc := passwordreset.NewService(passwordresetstore.New(q), userSvc, resetMail, resetNow, auStore,
+		adminSvc.SAMLEnabled, "https://help.example.com", nil)
+	srvOpts = append(srvOpts, server.WithPasswordReset(resetSvc))
+	// The real webhook dispatcher over the harness transaction, so Redeliver
+	// writes a real outbox row a test can read.
+	webhookDisp := notify.NewWebhookDispatcher(authSt, "https://help.example.com", nil).
+		WithQueue(notify.WebhookQueue{Outbox: outboxstore.New(q), Hooks: authSt, History: authSt, Source: server.NewWebhookEventSource(ticketSvc)})
+	srvOpts = append(srvOpts, server.WithWebhookRedeliverer(webhookDisp))
+	srvOpts = append(srvOpts, server.WithEmailHealth(outboxstore.New(q)))
 	srv := server.New(
 		cfg,
 		sessionStore,
@@ -328,12 +376,16 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 		authSt,
 		registrationSvc,
 		cannedResponseSvc,
-		server.WithAuditStore(auStore),
+		srvOpts...,
 	)
 
 	dispatcher.prepare = srv.PrepareGuestLink
+	resetNow.Dispatcher = notify.NewVerificationDispatcher(registrationSvc.SendVerification).
+		WithPasswordReset(srv.SendPasswordReset)
 	h := &harness{
 		verifyMail:      verifyMail,
+		resetMail:       resetMail,
+		resetQueue:      resetNow,
 		dispatcher:      dispatcher,
 		srv:             srv,
 		q:               q,
@@ -885,7 +937,7 @@ func TestCreateUser_AsAdmin(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
+	resp := h.doAsAdminSession(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
 		"email":        "newuser@example.com",
 		"display_name": "New User",
 		"role":         "user",
@@ -916,7 +968,7 @@ func TestUpdateUser_AsAdmin(t *testing.T) {
 	defer cleanup()
 
 	newName := "Staff Renamed"
-	resp := h.doAsAdmin(t, http.MethodPatch, fmt.Sprintf("/api/v1/admin/users/%s", h.staffID), map[string]any{
+	resp := h.doAsAdminSession(t, http.MethodPatch, fmt.Sprintf("/api/v1/admin/users/%s", h.staffID), map[string]any{
 		"display_name": newName,
 	})
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -931,7 +983,7 @@ func TestDeleteUser_AsAdmin(t *testing.T) {
 	defer cleanup()
 
 	// Create a user to delete.
-	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
+	createResp := h.doAsAdminSession(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
 		"email":        "todelete@example.com",
 		"display_name": "To Delete",
 		"role":         "user",
@@ -941,7 +993,7 @@ func TestDeleteUser_AsAdmin(t *testing.T) {
 	var created user.User
 	decodeJSON(t, createResp, &created)
 
-	resp := h.doAsAdmin(t, http.MethodDelete, fmt.Sprintf("/api/v1/admin/users/%s", created.ID), nil)
+	resp := h.doAsAdminSession(t, http.MethodDelete, fmt.Sprintf("/api/v1/admin/users/%s", created.ID), nil)
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
 }
 
@@ -1737,7 +1789,7 @@ func TestLocalLogin_AnOverlongPasswordIsAnOrdinaryWrongPassword(t *testing.T) {
 	// a new user with exactly 72 bytes, then try to log in with that password
 	// plus 100 extra bytes. Login truncates at 72, so it should match.
 	fullPassword := strings.Repeat("a", 72)
-	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
+	createResp := h.doAsAdminSession(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
 		"email":        "test72@example.com",
 		"display_name": "Test 72 Byte",
 		"role":         "user",
@@ -1799,7 +1851,7 @@ func newBareHarness(t *testing.T) (*harness, func()) {
 	dispatcher := notify.NewMulti()
 	// Joins the harness transaction rather than beginning a second one; see
 	// testutil.JoiningTxRunner for why a real runner cannot work here.
-	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, testutil.NewJoiningTxRunner(q), nil)
+	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, testutil.NewJoiningTxRunner(q, dispatcher), nil)
 	require.NoError(t, ticketSvc.LoadSystemStatuses(ctx))
 
 	apiKeyLookup := authmw.APIKeyAuthFunc(func(ctx context.Context, hashed string) (auth.APIKey, user.User, error) {

@@ -1,10 +1,12 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getSettings, updateSettings, getSAMLConfig, saveSAMLConfig, getOIDCConfig, saveOIDCConfig, getSiteConfig, uploadLogo, deleteLogo, listStatuses, listCategories, listSLAPolicies, createSLAPolicy, updateSLAPolicy, deleteSLAPolicy } from '@/api/admin'
+import { Link } from '@tanstack/react-router'
+import { getSettings, updateSettings, getSAMLConfig, saveSAMLConfig, getOIDCConfig, saveOIDCConfig, getSiteConfig, uploadLogo, deleteLogo, listStatuses, listCategories, listSLAPolicies, getSecurityWarnings, createSLAPolicy, updateSLAPolicy, deleteSLAPolicy } from '@/api/admin'
 import type { SLAPolicy } from '@/api/types'
-import { extractError } from '@/api/client'
+import { extractError, extractErrorCode } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { LifetimeSlider } from '@/components/admin/LifetimeSlider'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Spinner } from '@/components/ui/spinner'
@@ -51,6 +53,21 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   )
 }
 
+/** Where email stands, shown beside the settings that send mail. The banner
+ *  stays quiet for an install that runs without email on purpose. */
+function EmailStatusNote({ on }: { on: boolean }) {
+  const { data } = useQuery({ queryKey: ['security-warnings'], queryFn: getSecurityWarnings, retry: false })
+  const email = data?.email
+  if (!email || email.enabled) return null
+  return (
+    <p role="note" className="px-5 pb-4 text-sm text-amber-800">
+      Email is not set up ({email.missing.join(' and ')} not set in docker/.env)
+      {on ? ": people using this aren't getting their mail." : ', so this cannot be turned on until it is.'} Set{' '}
+      {email.missing.length === 1 ? 'it' : 'both'} and restart the server.
+    </p>
+  )
+}
+
 function SettingRow({
   label,
   description,
@@ -94,8 +111,11 @@ function SAMLSection() {
   const qc = useQueryClient()
   const certFileRef = useRef<HTMLInputElement>(null)
   const keyFileRef = useRef<HTMLInputElement>(null)
+  const metadataFileRef = useRef<HTMLInputElement>(null)
 
+  const [metadataSource, setMetadataSource] = useState<'url' | 'xml'>('url')
   const [metadataURL, setMetadataURL] = useState('')
+  const [metadataXML, setMetadataXML] = useState('')
   const [certPEM, setCertPEM] = useState('')
   const [keyPEM, setKeyPEM] = useState('')
   const [saveError, setSaveError] = useState('')
@@ -118,6 +138,8 @@ function SAMLSection() {
   useEffect(() => {
     if (saml) {
       setMetadataURL(saml.metadata_url)
+      setMetadataXML(saml.metadata_xml)
+      setMetadataSource(saml.metadata_xml ? 'xml' : 'url')
       setCertPEM(saml.cert_pem)
     }
   }, [saml])
@@ -139,7 +161,10 @@ function SAMLSection() {
     // clear the working key on every ordinary save that isn't also a key
     // rotation.
     mutationFn: () => saveSAMLConfig({
-      metadata_url: metadataURL,
+      // One source or the other, never both: the server refuses a save that
+      // leaves both set, so the unchosen one is cleared explicitly.
+      metadata_url: metadataSource === 'url' ? metadataURL : '',
+      metadata_xml: metadataSource === 'xml' ? metadataXML : '',
       cert_pem: certPEM,
       ...(keyPEM ? { key_pem: keyPEM } : {}),
     }),
@@ -180,15 +205,61 @@ function SAMLSection() {
         )}
       </div>
 
-      <div className="space-y-1">
-        <label className="block text-sm font-medium text-gray-700">IdP metadata URL</label>
-        <Input
-          placeholder="https://idp.example.com/saml/metadata"
-          value={metadataURL}
-          onChange={(e) => setMetadataURL(e.target.value)}
-          className="max-w-lg font-mono text-sm"
-        />
-      </div>
+      <fieldset className="space-y-2">
+        <legend className="text-sm font-medium text-gray-700">IdP metadata</legend>
+        <div className="flex items-center gap-4 text-sm text-gray-700">
+          <label className="flex items-center gap-1.5">
+            <input type="radio" name="saml-metadata-source" checked={metadataSource === 'url'}
+              onChange={() => setMetadataSource('url')} />
+            URL
+          </label>
+          <label className="flex items-center gap-1.5">
+            <input type="radio" name="saml-metadata-source" checked={metadataSource === 'xml'}
+              onChange={() => setMetadataSource('xml')} />
+            XML
+          </label>
+        </div>
+        {metadataSource === 'url' ? (
+          <div className="space-y-1">
+            <label htmlFor="saml-metadata-url" className="block text-sm text-gray-600">IdP metadata URL</label>
+            <Input
+              id="saml-metadata-url"
+              placeholder="https://idp.example.com/saml/metadata"
+              value={metadataURL}
+              onChange={(e) => setMetadataURL(e.target.value)}
+              className="max-w-lg font-mono text-sm"
+            />
+          </div>
+        ) : (
+          <div className="space-y-1">
+            <label htmlFor="saml-metadata-xml" className="block text-sm text-gray-600">IdP metadata XML</label>
+            <textarea
+              id="saml-metadata-xml"
+              rows={10}
+              placeholder="<EntityDescriptor …>"
+              className="w-full max-w-lg rounded border border-gray-300 p-2 font-mono text-xs text-gray-600"
+              value={metadataXML}
+              onChange={(e) => setMetadataXML(e.target.value)}
+            />
+            <div>
+              <Button variant="outline" size="sm" onClick={() => metadataFileRef.current?.click()}>Upload .xml</Button>
+            </div>
+            <input ref={metadataFileRef} type="file" accept=".xml,application/xml,text/xml"
+              aria-label="IdP metadata XML file" className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                if (f) readFile(f, setMetadataXML)
+                // So the same file can be chosen again after an edit.
+                e.target.value = ''
+              }} />
+            <p className="max-w-lg text-xs text-gray-500">
+              Paste the metadata XML, or upload the file your identity provider gave you. It is checked when you save,
+              and shown here again afterwards. It is not refreshed: when your identity provider&apos;s signing
+              certificate changes, paste its new metadata.
+            </p>
+          </div>
+        )}
+      </fieldset>
 
       <div className="space-y-1">
         <label className="block text-sm font-medium text-gray-700">
@@ -422,13 +493,14 @@ function OIDCSection() {
 
 // ── Tab definitions ───────────────────────────────────────────────────────────
 
-type Tab = 'general' | 'branding' | 'auth' | 'features' | 'attachments'
+type Tab = 'general' | 'branding' | 'auth' | 'features' | 'email' | 'attachments'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'general',     label: 'General' },
   { id: 'branding',    label: 'Branding' },
   { id: 'auth',        label: 'Authentication' },
   { id: 'features',    label: 'Features' },
+  { id: 'email',       label: 'Email' },
   { id: 'attachments', label: 'Attachments' },
 ]
 
@@ -475,10 +547,11 @@ function GeneralPanel({
       <Section title="Submissions">
         <SettingRow
           label="Guest submission"
-          description="Allow unauthenticated users to submit a ticket using only their email address. They receive a tracking number to follow up without creating an account."
+          description="Allow unauthenticated users to submit a ticket using only their email address. They receive a tracking number to follow up without creating an account. Switching this off also suspends all active guest links until the setting is enabled again."
         >
           <Toggle checked={bool('guest_submission_enabled')} onChange={(v) => setBool('guest_submission_enabled', v)} />
         </SettingRow>
+        <EmailStatusNote on={bool('guest_submission_enabled')} />
       </Section>
 
       <Section title="Ticket lifecycle">
@@ -548,6 +621,16 @@ function GeneralPanel({
             label="Staff can view ticket change history"
             checked={bool('staff_can_view_ticket_change_history')}
             onChange={(v) => setBool('staff_can_view_ticket_change_history', v)}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Staff can view follow history"
+          description="When on, staff also see the entries recording who started and stopped following a ticket, on its Activity feed and in the admin-wide audit view. Admins always see them; reporters never do. Staff always see the current list of followers on a ticket, whatever this is set to. Off by default."
+        >
+          <Toggle
+            label="Staff can view follow history"
+            checked={bool('staff_can_view_follow_audit')}
+            onChange={(v) => setBool('staff_can_view_follow_audit', v)}
           />
         </SettingRow>
         <SettingRow
@@ -765,13 +848,16 @@ function BrandingPanel({
 }
 
 function AuthPanel({
-  bool, strArr,
-  setBool, toggleStrArr, setStrArr,
+  bool, num, has, strArr,
+  setBool, setNum, toggleStrArr, setStrArr,
   onSave, isPending, error, saved,
 }: {
   bool: (k: string) => boolean
+  num: (k: string) => number
+  has: (k: string) => boolean
   strArr: (k: string) => string[]
   setBool: (k: string, v: boolean) => void
+  setNum: (k: string, v: number) => void
   toggleStrArr: (k: string, item: string, checked: boolean) => void
   setStrArr: (k: string, v: string[]) => void
   onSave: () => void
@@ -840,6 +926,52 @@ function AuthPanel({
         )}
       </Section>
 
+      <Section title="Passwords">
+        <SettingRow
+          label="Reset window for old passwords"
+          description="Releases before 1.3.0 saved passwords in a weaker form. An account is upgraded the next time its owner signs in. Once this many days have passed since 1.3.0 first started, anyone whose password is still in the old form must reset it before they can sign in. Administrators are exempt, so the instance cannot lock itself out. New installs are not affected."
+        >
+          <div className="flex items-center gap-2">
+            <Input
+              type="number" min={1} max={365} className="w-24 text-right"
+              aria-label="Days before an old password must be reset"
+              // 30 until the operator edits it, because 30 is what the server
+              // uses when nothing is stored. The upper clamp keeps a typo from
+              // being a value the server refuses; there is no lower clamp, so
+              // clearing the field to retype does not re-inject a minimum
+              // between digits (see the audit retention field).
+              value={has('password_rehash_grace_days') ? num('password_rehash_grace_days') : 30}
+              onChange={(e) => setNum('password_rehash_grace_days', Math.min(365, Math.max(0, parseInt(e.target.value, 10) || 0)))}
+            />
+            <span className="text-sm text-gray-500">days</span>
+          </div>
+        </SettingRow>
+      </Section>
+
+      <Section title="API keys">
+        <SettingRow
+          label="Staff may create their own API keys"
+          description="When on, staff can create their own API keys under Account. Turning it off only stops staff creating new keys: keys that already exist keep working, and staff can still list and revoke their own. Administrators can always create keys, and can issue one on behalf of a staff member from Admin → API Keys. Requesters never own keys. A key acts as its owner and can carry only permissions that owner's role has. Off by default."
+        >
+          <Toggle
+            label="Staff may create their own API keys"
+            checked={bool('staff_can_create_api_keys')}
+            onChange={(v) => setBool('staff_can_create_api_keys', v)}
+          />
+        </SettingRow>
+        <div className="border-t px-5 py-4 space-y-2">
+          <div className="text-sm text-gray-500">
+            Every new API key must expire, and no later than this. It is checked when a key is created, so lowering it
+            does not break keys that already exist; they are marked in the key lists so they can be rotated. Choosing
+            Never lets keys be made with no expiry.
+          </div>
+          <LifetimeSlider
+            value={has('api_key_max_lifetime_years') ? num('api_key_max_lifetime_years') : undefined}
+            onChange={(v) => setNum('api_key_max_lifetime_years', v)}
+          />
+        </div>
+      </Section>
+
       <Section title="Registration">
         <SettingRow
           label="Allow self-service signup"
@@ -847,6 +979,7 @@ function AuthPanel({
         >
           <Toggle checked={bool('self_signup_enabled')} onChange={(v) => setBool('self_signup_enabled', v)} />
         </SettingRow>
+        <EmailStatusNote on={bool('self_signup_enabled')} />
         {bool('self_signup_enabled') && (
           <>
             <div className="border-t px-5 py-4 space-y-2">
@@ -1617,6 +1750,70 @@ function ReputationProviderRow({
   )
 }
 
+// ── Email ────────────────────────────────────────────────────────────────────
+
+// The three per-user staff-email switches live on each person's profile (#441).
+// These override them for everyone: leave it to each person (the default),
+// force it on, or force it off.
+const STAFF_EMAIL_SWITCHES: { key: string; name: string; help: string }[] = [
+  {
+    key: 'staff_email_assigned_override',
+    name: 'Tickets assigned to me',
+    help: 'A ticket is assigned to a person.',
+  },
+  {
+    key: 'staff_email_activity_override',
+    name: "Activity on tickets I'm assigned to or follow",
+    help: 'A requester replies on a ticket assigned to a person, or it is reopened; or a ticket a person follows is assigned, gets a reply or is reopened.',
+  },
+  {
+    key: 'staff_email_group_override',
+    name: "My groups' tickets",
+    help: 'A ticket is assigned to a group, a requester replies on a group ticket nobody has taken yet, or a group ticket nobody has taken yet is reopened. Goes to every member of the group.',
+  },
+]
+
+function EmailPanel({
+  str, setStr,
+  onSave, isPending, error, saved,
+}: {
+  str: (k: string) => string
+  setStr: (k: string, v: string) => void
+  onSave: () => void
+  isPending: boolean
+  error: string
+  saved: boolean
+}) {
+  return (
+    <div className="space-y-6">
+      <Section title="Staff email about tickets">
+        <div className="px-5 py-4 text-sm text-gray-500">
+          Staff are emailed when a ticket is assigned to them or their group, and when a requester replies on a ticket
+          that is theirs. Each person chooses on their profile, and all three are on by default. Nobody is emailed about
+          their own action. Use these to force a choice for everyone: "Use each person's choice" leaves it to them,
+          "On for everyone" and "Off for everyone" ignore what they chose. Only has an effect once email is set up.
+        </div>
+        {STAFF_EMAIL_SWITCHES.map(({ key, name, help }) => (
+          <SettingRow key={key} label={name} description={help}>
+            <Select
+              className="w-52"
+              aria-label={`${name}: administrator override`}
+              value={str(key) || 'user'}
+              onChange={(e) => setStr(key, e.target.value)}
+            >
+              <option value="user">Use each person's choice</option>
+              <option value="on">On for everyone</option>
+              <option value="off">Off for everyone</option>
+            </Select>
+          </SettingRow>
+        ))}
+      </Section>
+
+      <SaveBar onSave={onSave} isPending={isPending} error={error} saved={saved} />
+    </div>
+  )
+}
+
 function AttachmentsPanel({
   bool, str, strArr, has,
   setBool, setStr, setStrArr,
@@ -1644,6 +1841,16 @@ function AttachmentsPanel({
     (typesSet ? strArr('attachment_allowed_types') : DEFAULT_ALLOWED_TYPES).join('\n'),
   )
 
+  // Same query and key as InsecureConfigBanner, so the page costs no extra
+  // request; absent while loading or if the call fails, and the section simply
+  // omits the status block.
+  const { data: warnings } = useQuery({
+    queryKey: ['security-warnings'],
+    queryFn: getSecurityWarnings,
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  })
+  const scanning = warnings?.attachment_scanning
   const scanPolicy = str('attachment_scan_policy')
   const scanAddress = str('attachment_scan_address')
   const handling = str('attachment_infected_handling') || 'refuse'
@@ -1721,6 +1928,24 @@ function AttachmentsPanel({
       </Section>
 
       <Section title="Malware scanning">
+        {scanning && (
+          <div
+            role="group"
+            aria-label="Scanner status"
+            className="mb-3 rounded border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900"
+          >
+            <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1">
+              <dt className="text-gray-600">Policy</dt>
+              <dd className="font-mono">{scanning.policy}</dd>
+              <dt className="text-gray-600">Configured</dt>
+              <dd>{scanning.configured ? 'Yes' : 'No'}</dd>
+              <dt className="text-gray-600">Reachable</dt>
+              <dd>{scanning.reachable ? 'Yes' : 'No'}</dd>
+            </dl>
+            <p className="mt-2">{scanning.effect}</p>
+          </div>
+        )}
+
         <SettingRow
           label="Scanner address"
           description={`Overrides CLAMAV_ADDR, the environment variable this instance starts with. Accepts "tcp://host:port" or "unix:///path/to/socket". Leave blank to use the environment variable instead.`}
@@ -1859,6 +2084,10 @@ export function SettingsPage() {
   const [local, setLocal] = useState<Record<string, unknown>>({})
   const [saveError, setSaveError] = useState('')
   const [saved, setSaved] = useState(false)
+  // What the server said about a save that went through (the PATCH answers 200
+  // with a warning instead of 204). Kept until the next save, not timed out:
+  // it is something to act on, such as OAuth clients left seeing no tickets.
+  const [saveWarning, setSaveWarning] = useState<{ text: string; aboutClients: boolean } | null>(null)
 
   /* The reputation API keys are write-only, so none of them is ever in `local`
      and none travels with an ordinary save. One is sent only when the operator
@@ -1891,7 +2120,7 @@ export function SettingsPage() {
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const saveMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       /* The dump's "<key>_set" entries are the server describing secrets it
          will not send, not settings. Sending one back writes a settings row by
          that name which nothing ever reads. */
@@ -1913,11 +2142,15 @@ export function SettingsPage() {
           patch[p.keySetting] = apiKeys[p.keySetting].trim()
         }
       }
-      return updateSettings(patch)
+      const res = await updateSettings(patch)
+      // The save that turned ticket scope on is the one whose warning is about
+      // OAuth clients; an SSO warning shares the field and gets no such link.
+      return { ...res, aboutClients: patch.ticket_scope_enforced === true }
     },
-    onSuccess: () => {
+    onSuccess: (res) => {
       setSaved(true)
       setSaveError('')
+      setSaveWarning(res.warning ? { text: res.warning, aboutClients: res.aboutClients } : null)
       // Only on success: a refused save leaves every edit where it was,
       // including a key typed but not yet accepted.
       setApiKeys({})
@@ -1925,8 +2158,17 @@ export function SettingsPage() {
       setTimeout(() => setSaved(false), 2500)
       qc.invalidateQueries({ queryKey: ['admin', 'settings'] })
       qc.invalidateQueries({ queryKey: ['site-config'] })
+      // The scan policy and address feed the banner and the scanner status;
+      // without this a saved "Do not scan" keeps warning for five minutes.
+      qc.invalidateQueries({ queryKey: ['security-warnings'] })
     },
-    onError: (err) => setSaveError(extractError(err)),
+    onError: (err) =>
+      setSaveError(
+        // The server's text names the raw setting; say what an admin can do.
+        extractErrorCode(err) === 'email_required'
+          ? 'Email is not set up, so signup and guest submission cannot be turned on: both send an email the person needs. Set SMTP_HOST and SMTP_FROM in docker/.env, restart the server, then try again.'
+          : extractError(err),
+      ),
   })
 
   function bool(key: string) { return Boolean(local[key]) }
@@ -1999,12 +2241,27 @@ export function SettingsPage() {
           </nav>
         </div>
 
+        {saveWarning && (
+          <div role="status" className="max-w-2xl rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <p>{saveWarning.text}</p>
+            {saveWarning.aboutClients && (
+              <p className="mt-1">
+                <Link to="/admin/oauth-clients" className="font-medium underline">
+                  Open OAuth clients
+                </Link>{' '}
+                to see which clients have no groups.
+              </p>
+            )}
+          </div>
+        )}
+
         {/* Active panel */}
         <div className="max-w-2xl">
           {activeTab === 'general'  && <GeneralPanel  {...panelProps} />}
           {activeTab === 'branding' && <BrandingPanel {...panelProps} />}
           {activeTab === 'auth'     && <AuthPanel     {...panelProps} />}
           {activeTab === 'features' && <FeaturesPanel {...panelProps} />}
+          {activeTab === 'email'    && <EmailPanel    {...panelProps} />}
           {activeTab === 'attachments' && <AttachmentsPanel {...panelProps} />}
         </div>
       </div>

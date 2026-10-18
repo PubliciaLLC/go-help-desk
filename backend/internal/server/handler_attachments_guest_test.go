@@ -251,20 +251,34 @@ func TestGuestUploadAttachment_RefusedPastTheReopenWindow(t *testing.T) {
 	require.Empty(t, atts)
 }
 
-// guest_submission_enabled governs whether a NEW guest ticket is accepted,
-// not whether an existing token still works — handleGuestAddReply already
-// does not gate on it, and this follows the same rule for the same reason:
-// switching submission off must not sever a conversation somebody already
-// holds a working token for. The harness leaves the setting at its default
-// (off), so this is the ordinary path, not a special case.
-func TestGuestUploadAttachment_NotGatedOnGuestSubmissionEnabled(t *testing.T) {
+// guest_submission_enabled gates the attachment upload. When the setting is off,
+// existing tokens are suspended and answer 404 until the setting is turned back on.
+// This matches the behavior of the public routes and the other token routes (#424).
+func TestGuestUploadAttachment_GatedOnGuestSubmissionEnabled(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
-	require.False(t, h.adminSvc.GuestSubmissionEnabled(context.Background()),
-		"precondition: guest submission is off by default")
+	ctx := context.Background()
 	_, token := seedGuestTicket(t, h)
 
+	// With the setting ON, upload works.
 	res := uploadGuestAttachment(t, h, token, "photo.txt", []byte("x"))
+	defer res.Body.Close()
+	require.Equal(t, http.StatusCreated, res.StatusCode)
+
+	// Turn the setting OFF.
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, false))
+
+	// Upload is now refused with 404, same as a bad token.
+	res = uploadGuestAttachment(t, h, token, "photo.txt", []byte("y"))
+	body := readBody(t, res)
+	require.Equal(t, http.StatusNotFound, res.StatusCode)
+	require.Equal(t, `{"error":{"code":"not_found","message":"not found"}}`+"\n", body)
+
+	// Turn the setting back ON.
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, true))
+
+	// Upload works again.
+	res = uploadGuestAttachment(t, h, token, "photo.txt", []byte("z"))
 	defer res.Body.Close()
 	require.Equal(t, http.StatusCreated, res.StatusCode)
 }
