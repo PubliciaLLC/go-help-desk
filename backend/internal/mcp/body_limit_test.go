@@ -1,11 +1,16 @@
 package mcp
 
 import (
+	"bufio"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -45,4 +50,46 @@ func TestHandler_BodyAtTheLimitIsStillProcessed(t *testing.T) {
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	s.Handler().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+}
+
+// failingBody fails the test if anything reads it.
+type failingBody struct{ t *testing.T }
+
+func (b failingBody) Read([]byte) (int, error) {
+	b.t.Helper()
+	b.t.Error("the body was read although Content-Length already exceeds the limit")
+	return 0, io.EOF
+}
+func (failingBody) Close() error { return nil }
+
+// A declared length over the limit is refused without reading a byte. Without
+// this check the body is still capped by the read, so only this test notices it
+// going missing.
+func TestHandler_DeclaredLengthOverLimitIsRefusedUnread(t *testing.T) {
+	s := New(nil, nil, nil, nil)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req.Body = failingBody{t}
+	req.ContentLength = MaxRequestBody + 1
+	s.Handler().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+	require.Contains(t, rec.Body.String(), `"request_too_large"`)
+}
+
+// With Expect: 100-continue the client waits for the server before sending the
+// body. The first response must be the 413, not "100 Continue".
+func TestHandler_Expect100ContinueGets413NotContinue(t *testing.T) {
+	ts := httptest.NewServer(New(nil, nil, nil, nil).Handler())
+	t.Cleanup(ts.Close)
+	conn, err := net.Dial("tcp", ts.Listener.Addr().String())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	_, err = fmt.Fprintf(conn, "POST /mcp HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: %d\r\nExpect: 100-continue\r\n\r\n", MaxRequestBody+1)
+	require.NoError(t, err)
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	require.NoError(t, err)
+	require.Contains(t, line, "413", line)
 }

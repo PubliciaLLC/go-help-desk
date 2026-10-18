@@ -388,7 +388,15 @@ func limitBody(w http.ResponseWriter, r *http.Request) bool {
 		writeTooLarge(w)
 		return false
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, MaxRequestBody+1))
+	// Sized from the declared length so a normal request is one allocation
+	// rather than io.ReadAll's repeated growth (the +512 is ReadFrom's own
+	// minimum free space).
+	var buf bytes.Buffer
+	if r.ContentLength > 0 {
+		buf.Grow(int(r.ContentLength) + 512)
+	}
+	_, err := buf.ReadFrom(io.LimitReader(r.Body, MaxRequestBody+1))
+	body := buf.Bytes()
 	if err != nil {
 		// A client that hung up mid-body: nothing to answer.
 		http.Error(w, "bad request", http.StatusBadRequest)

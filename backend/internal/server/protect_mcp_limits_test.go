@@ -208,7 +208,7 @@ func TestMCPSSE_SessionBoundToActor(t *testing.T) {
 	})
 	t.Run("an unauthenticated caller is refused", func(t *testing.T) {
 		resp := ping(t, owner.messageURL, "")
-		require.Contains(t, []int{http.StatusUnauthorized, http.StatusForbidden}, resp.StatusCode)
+		require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 	})
 	t.Run("an unknown sessionId is refused, with the same body as a mismatch", func(t *testing.T) {
 		unknown := strings.Split(owner.messageURL, "sessionId=")[0] + "sessionId=00000000-0000-0000-0000-000000000000"
