@@ -118,7 +118,7 @@ func TestAdminIssueKey_ScopesFollowTheOwnersRole(t *testing.T) {
 		want   int
 	}{
 		{"staff, a staff scope", h.staffID, []string{"tickets:write", "audit:read"}, http.StatusCreated},
-		{"staff, an admin-only scope", h.staffID, []string{"users:read"}, http.StatusBadRequest},
+		{"staff, an admin-only scope", h.staffID, []string{"settings:read"}, http.StatusBadRequest},
 		{"administrator, anything", h.adminID, []string{"settings:write"}, http.StatusCreated},
 	}
 	for _, tc := range cases {

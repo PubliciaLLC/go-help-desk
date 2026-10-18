@@ -380,6 +380,7 @@ type WebhookConfig struct {
 	LastDeliveryStatus int32           `json:"last_delivery_status"`
 	LastDeliveryError  string          `json:"last_delivery_error"`
 	TicketFilter       json.RawMessage `json:"ticket_filter"`
+	ApiKeyID           uuid.NullUUID   `json:"api_key_id"`
 }
 
 type WebhookDelivery struct {

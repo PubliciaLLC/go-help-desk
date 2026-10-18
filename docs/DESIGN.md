@@ -2419,8 +2419,8 @@ only `read`.
 |----------|--------|
 | `tickets` | Tickets and everything under `/tickets/{id}` — replies, links, tags, attachments, custom fields, status transitions — plus the staff picker (`/staff`) |
 | `audit` | The admin-wide audit view (`/admin/audit`). A session needs no scope; an API key or OAuth client needs `audit:read`, which an administrator grants on purpose and which `tickets:read` does not imply. There is no `audit:write`: only the running server writes audit entries, so granting it to an API key or OAuth client is refused like an unknown scope, and one stored before the refusal ([#371](https://github.com/PubliciaLLC/go-help-desk/issues/371)) grants nothing, not even `audit:read` |
-| `users` | User administration, and the requester lookup (`GET /users/lookup`, #444) |
-| `groups` | Groups, their members, and their category/type scopes |
+| `users` | Reading users, and the requester lookup (`GET /users/lookup`, #444). **Read only for keys:** keys can't write users, so `users:write` is no longer offered by the catalogue or the pickers (it still parses, so a stored key or a script that names it keeps working, and it opens nothing) |
+| `groups` | Groups, their members, and their category/type scopes. `groups:write` covers creating, renaming and deleting groups; **membership and scope writes are session-only** (keys can't write users), so it opens neither |
 | `categories` | Categories, types, items, and custom-field assignments |
 | `tags` | Tag administration |
 | `canned_responses` | Canned response templates |
@@ -2493,8 +2493,8 @@ unchanged.
 
 What this does not change, and is not a hole this rule closes: **OIDC sign-in
 can adopt an existing account by email** (`canAdoptByEmail`): when a verified
-address matches an account that is active, not an administrator, not federated
-through SAML and not bound to another OIDC subject, the first OIDC sign-in with
+address matches an account that is active, not a service account, not an administrator, not federated
+through SAML, not a service account and not bound to another OIDC subject, the first OIDC sign-in with
 that address takes it over, whatever its password. That is how a locally
 provisioned account joins an identity provider, and it is how this behaved before
 #450. With keys unable to create or re-address accounts, a key can no longer
@@ -2523,7 +2523,7 @@ Four more things are off limits to a machine credential, for the same reason:
   address and policy, allowed types, infected and mismatch handling, the
   reputation toggles, keys and refresh interval); and audit retention, staff
   visibility of change history and whether requester names are masked in audit
-  views; who may create API keys (`staff_can_create_api_keys`) and how long a new one may live (`api_key_max_lifetime_years`, #450).
+  views; who may create API keys (`staff_can_create_api_keys`) and how long a new one may live (`api_key_max_lifetime_years`, #450); and who sees tickets and who is handed them (`ticket_scope_enforced`, `auto_assign_group_id`, `auto_assign_user_ids`, #450): a key that could switch scope enforcement off, or point auto-assign at an account it controls, would widen what that account sees or is given.
   Ordinary configuration such as the site name
   stays automatable.
 - **Verifying a second factor** (`POST /auth/local/mfa/verify` and
@@ -2599,6 +2599,22 @@ one is a permission decision with one switch and no per-user exceptions.
   forbidden`). A client made by a leaked key would outlive it. A key can still
   list and delete clients. There is no route that rotates a client's secret, so
   creation is the only path that mints one.
+- **A webhook dies with the key that made it** (Erik, 2026-10-16). A key may
+  still create and edit webhooks. The hook records the API key that created it
+  or last changed its URL (`webhook_configs.api_key_id`, no foreign key, so
+  deleting the key does not forget it); a hook made or last re-pointed in a
+  session has none. When that key is revoked or has expired, the hook is
+  **paused**: `paused: true` and `paused_reason` ("Created by a revoked or
+  expired API key") on every read, and the dispatcher sends it nothing. It is
+  judged from the key's own row on every read and at every delivery attempt, so
+  an expiry pauses a hook with no job running, a queued delivery is settled
+  rather than sent, and retries stop. Changing a hook's URL in a session takes it
+  over (the link is cleared); a key changing something else leaves the link as
+  it was. `POST /admin/webhooks/{id}/reapprove` (session only) clears the link,
+  and the hook fires again; the Webhooks page shows a Paused badge with the
+  reason and a Re-approve button. Nothing is written to the delivery history for
+  a skipped delivery, as for a disabled hook; #518's dropped-delivery record was
+  not merged when this was built, so this does not use it.
 - **A change of role keeps the person's keys** (Erik, 2026-10-16). A key acts
   within its owner's *current* role: the role check runs on every request, and
   the scope table only limits what can be put on a key at creation. Demoting an
@@ -2617,7 +2633,7 @@ one is a permission decision with one switch and no per-user exceptions.
   *make*, so it takes the stricter reading.)
 - **A key's scopes never exceed its owner's role.** `auth.ScopesForRole` is the
   table: an administrator may carry any scope; staff `tickets:read|write`,
-  `groups:read` and `audit:read`; a requester none, since requesters never own a
+  `groups:read`, `audit:read` and `users:read` (the requester lookup); a requester none, since requesters never own a
   key (an existing requester key still acts within the role check). It is checked
   against the key's *owner*, so an administrator issuing a key for a staff member is
   limited by what staff can do; a scope outside it is `400 invalid_scope`.

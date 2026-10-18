@@ -77,12 +77,20 @@ var resources = []string{
 // none: no credential may write it (#371).
 func writable(resource string) bool { return resource != ResourceAudit }
 
-// All returns every valid scope, for validation and for the admin UI's picker.
+// offeredWritable reports whether the catalogue and the pickers offer a write
+// scope for a resource. users:write is not offered: keys can't write users
+// (2026-10-16), so it opens nothing to a key. ParseScope still accepts it, so a
+// stored key or a script that names it keeps working.
+func offeredWritable(resource string) bool { return writable(resource) && resource != ResourceUsers }
+
+// All returns every scope the catalogue offers, for the admin UI's picker.
+// Every one of them is also valid to ParseScope; the reverse is not quite true
+// (users:write is accepted but no longer offered).
 func All() []Scope {
 	out := make([]Scope, 0, len(resources)*2)
 	for _, r := range resources {
 		out = append(out, Scope{r, ActionRead})
-		if writable(r) {
+		if offeredWritable(r) {
 			out = append(out, Scope{r, ActionWrite})
 		}
 	}
@@ -199,6 +207,9 @@ func ScopesForRole(role string) []Scope {
 			{ResourceGroups, ActionRead},
 			// The admin-wide audit view, which staff may open (#129).
 			{ResourceAudit, ActionRead},
+			// The requester lookup staff use when filing a ticket for someone
+			// (#514, GET /users/lookup). Read only: keys can't write users.
+			{ResourceUsers, ActionRead},
 		}
 	}
 	// A requester gets nothing: requesters never own a key (#450). That is a

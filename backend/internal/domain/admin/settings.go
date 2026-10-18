@@ -471,6 +471,11 @@ func AuthCriticalKeys() []string {
 		// And the same for the follow entries (#441): a disclosure-widening
 		// toggle of the same family.
 		KeyStaffCanViewFollowAudit,
+		// Who sees tickets and who is handed them (#450, Erik 2026-10-16).
+		// Switching scope enforcement off, or pointing auto-assign at an
+		// account a key controls, widens what that account sees or is given,
+		// so a leaked key must not do it.
+		KeyTicketScopeEnforced, KeyAutoAssignGroupID, KeyAutoAssignUserIDs,
 		// Who may mint an API key (#450). A key is a long-lived bearer
 		// credential that acts as its owner, so widening the set of people who
 		// can hold one is a permission change, not configuration: a leaked

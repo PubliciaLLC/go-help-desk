@@ -85,11 +85,12 @@ func TestAdminScopes_CanBeNarrowedToARole(t *testing.T) {
 	}
 	code, all := list("")
 	require.Equal(t, http.StatusOK, code)
-	require.Contains(t, all, "users:write")
+	require.Contains(t, all, "users:read")
+	require.NotContains(t, all, "users:write", "retired for keys; ParseScope still reads stored ones")
 
 	code, staff := list("?role=staff")
 	require.Equal(t, http.StatusOK, code)
-	require.ElementsMatch(t, []string{"tickets:read", "tickets:write", "groups:read", "audit:read"}, staff)
+	require.ElementsMatch(t, []string{"tickets:read", "tickets:write", "groups:read", "audit:read", "users:read"}, staff)
 
 	code, adm := list("?role=admin")
 	require.Equal(t, http.StatusOK, code)

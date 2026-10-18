@@ -676,6 +676,10 @@ type Querier interface {
 	// sees no ticket. A switched-off client is not one of them (it acts as
 	// nobody), which is what lets the warning clear by disabling it.
 	ListOAuthClientsWithoutGroups(ctx context.Context) ([]string, error)
+	// Hooks tied to an API key that is gone or has expired. Judged from the key's
+	// row on every call, so an expiry pauses a hook without any job having run.
+	// clock_timestamp() and not now(): the latter is the start of the transaction.
+	ListPausedWebhookIDs(ctx context.Context) ([]uuid.UUID, error)
 	ListPlugins(ctx context.Context) ([]Plugin, error)
 	// The author's display name comes back with the reply.
 	//
@@ -792,6 +796,8 @@ type Querier interface {
 	NextTicketSeq(ctx context.Context) (int64, error)
 	// Keeps the newest keep_n deliveries of one hook (#448).
 	PruneWebhookDeliveries(ctx context.Context, arg PruneWebhookDeliveriesParams) error
+	// A signed-in administrator vouching for a hook a key made: clears the link.
+	ReapproveWebhookConfig(ctx context.Context, id uuid.UUID) (int64, error)
 	// Counts a failed TOTP attempt and locks the account once the threshold is
 	// reached. Returns the resulting lock time so the caller can refuse
 	// immediately without a second round trip.

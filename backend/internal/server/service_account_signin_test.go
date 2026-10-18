@@ -62,10 +62,10 @@ func TestServiceAccount_AdminCannotGiveItAPasswordOrMFAOrAdminRole(t *testing.T)
 	})
 	t.Run("admin role", func(t *testing.T) {
 		resp := h.doSession(t, admin, http.MethodPatch, base, map[string]any{"role": "admin"})
-		// The admin key here is a machine credential, which may not promote
-		// anybody to administrator at all; either refusal keeps it out. A
-		// session-driven promotion reaches the same constraint.
-		require.Contains(t, []int{http.StatusConflict, http.StatusForbidden}, resp.StatusCode)
+		// A signed-in administrator reaches the account's own constraint: a
+		// service account is never an administrator (users_service_account_inert).
+		require.Equal(t, http.StatusConflict, resp.StatusCode)
+		require.Equal(t, "service_account", errorCode(t, resp))
 	})
 }
 

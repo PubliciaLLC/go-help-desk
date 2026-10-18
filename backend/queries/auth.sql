@@ -108,8 +108,8 @@ WHERE u.deleted_at IS NULL
 ORDER BY c.name;
 
 -- name: CreateWebhookConfig :exec
-INSERT INTO webhook_configs (id, url, events, secret, enabled, created_at, payload_format, ticket_filter)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+INSERT INTO webhook_configs (id, url, events, secret, enabled, created_at, payload_format, ticket_filter, api_key_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 
 -- name: GetWebhookConfig :one
 SELECT * FROM webhook_configs WHERE id = $1;
@@ -119,10 +119,27 @@ SELECT * FROM webhook_configs WHERE id = $1;
 -- (On the right-hand side of SET, "url" is the OLD value.)
 UPDATE webhook_configs
 SET url = $2, events = $3, secret = $4, enabled = $5, payload_format = $6, ticket_filter = $7,
+    api_key_id = $8,
     last_delivery_at     = CASE WHEN url = $2 THEN last_delivery_at END,
     last_delivery_status = CASE WHEN url = $2 THEN last_delivery_status ELSE 0 END,
     last_delivery_error  = CASE WHEN url = $2 THEN last_delivery_error ELSE '' END
 WHERE id = $1;
+
+-- name: ReapproveWebhookConfig :execrows
+-- A signed-in administrator vouching for a hook a key made: clears the link.
+UPDATE webhook_configs SET api_key_id = NULL WHERE id = $1;
+
+-- name: ListPausedWebhookIDs :many
+-- Hooks tied to an API key that is gone or has expired. Judged from the key's
+-- row on every call, so an expiry pauses a hook without any job having run.
+-- clock_timestamp() and not now(): the latter is the start of the transaction.
+SELECT w.id FROM webhook_configs w
+WHERE w.api_key_id IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM api_keys k
+      WHERE k.id = w.api_key_id
+        AND (k.expires_at IS NULL OR k.expires_at > clock_timestamp())
+  );
 
 -- name: DeleteWebhookConfig :execrows
 DELETE FROM webhook_configs WHERE id = $1;

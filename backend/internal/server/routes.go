@@ -335,6 +335,8 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.Post("/", s.handleCreateWebhook)
 		r.Patch("/{id}", s.handleUpdateWebhook)
 		r.Delete("/{id}", s.handleDeleteWebhook)
+		// A hook whose key died is paused; only a person lifts that (#450).
+		r.With(authmw.DenyMachineCredentials).Post("/{id}/reapprove", s.handleReapproveWebhook)
 		r.Get("/{id}/deliveries", s.handleListWebhookDeliveries)
 		r.Post("/{id}/deliveries/{delivery}/redeliver", s.handleRedeliverWebhook)
 	})

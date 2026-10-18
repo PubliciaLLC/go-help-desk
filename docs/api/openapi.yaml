@@ -2377,7 +2377,7 @@ paths:
       description: |
         Staff and administrators only, in a signed-in session (second factor required).
         The scopes POST /me/api-keys accepts for this caller: the whole catalogue for an
-        administrator, tickets, groups:read and audit:read for staff. A key acts at its
+        administrator, tickets, groups:read, audit:read and users:read (the requester lookup) for staff. A key acts at its
         owner's role, so a scope outside that role would only look like access it does not have.
       tags: ['Account']
       x-ghd-handler: handleListMyAPIKeyScopes
@@ -5094,7 +5094,8 @@ paths:
         attachment_infected_handling, attachment_mismatch_handling,
         audit_retention_days, staff_can_view_ticket_change_history,
         staff_can_view_follow_audit, staff_can_create_api_keys,
-        api_key_max_lifetime_years, password_rehash_grace_days, password_rehash_started_at,
+        api_key_max_lifetime_years, ticket_scope_enforced, auto_assign_group_id,
+        auto_assign_user_ids, password_rehash_grace_days, password_rehash_started_at,
         attachment_vt_lookup, attachment_vt_api_key, attachment_reputation_provider,
         attachment_reputation_api_key, attachment_reputation_virustotal_enabled,
         attachment_reputation_virustotal_key, attachment_reputation_metadefender_enabled,
@@ -5902,7 +5903,7 @@ paths:
         this response, and cannot be shown again. It has the form GHD_ followed by 64
         hexadecimal characters. scopes is required: a non-empty list of
         resource:action values from GET /api/v1/admin/scopes, and none may exceed
-        the owner's role (for staff, tickets, groups:read and audit:read; for
+        the owner's role (for staff, tickets, groups:read, audit:read and users:read; for
         an administrator, any): invalid_scope otherwise. expires_at is required unless
         the api_key_max_lifetime_years setting is Never (-1): 400 expires_at_required
         without it, and it must be a future RFC 3339 timestamp no later than that many
@@ -7227,7 +7228,8 @@ paths:
         '403':
           description: >-
             The authentication middleware refuses with text/plain: forbidden (role),
-            mfa_required (second factor not passed) or session_required (an API key).
+            mfa_required (second factor not passed), insufficient_scope (an API key without the
+            route's scope, which is checked first) or session_required (an API key).
           content:
             text/plain:
               schema:
@@ -7365,7 +7367,8 @@ paths:
         '403':
           description: >-
             The authentication middleware refuses with text/plain: forbidden (role),
-            mfa_required (second factor not passed) or session_required (an API key).
+            mfa_required (second factor not passed), insufficient_scope (an API key without the
+            route's scope, which is checked first) or session_required (an API key).
           content:
             text/plain:
               schema:
@@ -7427,7 +7430,8 @@ paths:
         '403':
           description: >-
             The authentication middleware refuses with text/plain: forbidden (role),
-            mfa_required (second factor not passed) or session_required (an API key).
+            mfa_required (second factor not passed), insufficient_scope (an API key without the
+            route's scope, which is checked first) or session_required (an API key).
           content:
             text/plain:
               schema:
@@ -7519,7 +7523,8 @@ paths:
         '403':
           description: >-
             The authentication middleware refuses with text/plain: forbidden (role),
-            mfa_required (second factor not passed) or session_required (an API key).
+            mfa_required (second factor not passed), insufficient_scope (an API key without the
+            route's scope, which is checked first) or session_required (an API key).
           content:
             text/plain:
               schema:
@@ -7805,6 +7810,53 @@ paths:
         '404':
           description: >-
             not_found, for an id that names no webhook.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/admin/webhooks/{id}/reapprove:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The webhook's id.
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: reapproveWebhook
+      summary: Re-approve a webhook paused because its API key is gone.
+      description: >-
+        Administrators only, in a signed-in session (second factor required).
+        A webhook that an API key created, or last re-pointed the URL of, is
+        paused (paused true, with a paused_reason) once that key is revoked or has
+        expired, and nothing is sent to it. This clears the link to the key: the
+        administrator vouches for the destination, and the hook fires again and no
+        longer depends on any key. An API key is refused with 403 session_required
+        (an OAuth client with 403 forbidden). Calling it on a hook that is not
+        paused simply clears the link. An unknown id answers 404 not_found.
+      tags: ['Admin: Webhooks']
+      x-ghd-handler: handleReapproveWebhook
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          description: >-
+            bad_request, message "invalid ID", when the path id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: not_found, for an id that names no webhook.
           content:
             application/json:
               schema:
@@ -10891,7 +10943,7 @@ components:
         An outbound webhook subscription. The secret is write-only and is never
         returned.
       type: object
-      required: [id, url, events, enabled, created_at, payload_format, last_delivery, filter]
+      required: [id, url, events, enabled, created_at, payload_format, last_delivery, paused, filter]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
         url: {type: string}
@@ -10914,6 +10966,16 @@ components:
           anyOf:
             - $ref: '#/components/schemas/WebhookDelivery'
             - type: 'null'
+        paused:
+          type: boolean
+          description: >-
+            True when the API key that created the hook, or last changed its url, has
+            been revoked or has expired. A paused hook receives nothing, whether or not it
+            is enabled, until a signed-in administrator re-approves it
+            (POST /admin/webhooks/{id}/reapprove). Worked out on every read, not stored.
+        paused_reason:
+          type: string
+          description: Why it is paused. Present only when paused is true.
         filter: {$ref: '#/components/schemas/WebhookFilter'}
     WebhookDelivery:
       description: >-

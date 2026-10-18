@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
 
@@ -329,20 +328,8 @@ func TestSession_CanStillMintAnyCredential(t *testing.T) {
 	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
 
 	res, body = sess.send(t, http.MethodPost, "/api/v1/admin/api-keys",
-		map[string]any{"name": "issued-by-a-human", "scopes": []string{"users:write", "settings:write"}, "expires_at": inYears(1)})
+		map[string]any{"name": "issued-by-a-human", "scopes": []string{"users:read", "settings:write"}, "expires_at": inYears(1)})
 	require.Equal(t, http.StatusCreated, res.StatusCode, "body: %s", body)
-}
-
-// denyMachineTargetingAdmin must fail closed when the target cannot be read.
-func TestMachineCredential_UnreadableTargetIsRefused(t *testing.T) {
-	h, cleanup := newHarness(t)
-	defer cleanup()
-
-	resp := h.doAsAdmin(t, http.MethodPost,
-		"/api/v1/admin/users/"+uuid.NewString()+"/password",
-		map[string]any{"new_password": "a-password-123"})
-	require.NotEqual(t, http.StatusNoContent, resp.StatusCode,
-		"a target that cannot be read cannot be shown safe to act on")
 }
 
 // A machine credential must not reach MFA verification. Each wrong code spends

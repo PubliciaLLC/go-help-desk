@@ -97,7 +97,7 @@ func TestMeAPIKeys_AdministratorsDoNotNeedTheSetting(t *testing.T) {
 	defer cleanup()
 	cookie := h.session(t, asAdmin)
 
-	k := h.mintMine(t, cookie, "users:write", "tickets:read")
+	k := h.mintMine(t, cookie, "users:read", "settings:write", "tickets:read")
 
 	// It is the administrator's own key, and it works as one.
 	res := requestWithKey(t, h, k.Token, "/api/v1/admin/users")
@@ -210,8 +210,8 @@ func TestMeAPIKeys_ScopeListIsTheCallersRole(t *testing.T) {
 		}
 		return out
 	}
-	require.ElementsMatch(t, []string{"tickets:read", "tickets:write", "groups:read", "audit:read"}, scopesOf(h.session(t, asStaff)))
-	require.Contains(t, scopesOf(h.session(t, asAdmin)), "users:write")
+	require.ElementsMatch(t, []string{"tickets:read", "tickets:write", "groups:read", "audit:read", "users:read"}, scopesOf(h.session(t, asStaff)))
+	require.Contains(t, scopesOf(h.session(t, asAdmin)), "settings:write")
 }
 
 func TestMeAPIKeys_Expiry(t *testing.T) {

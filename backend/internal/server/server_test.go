@@ -69,7 +69,10 @@ func allScopes() []string {
 	for i, s := range all {
 		out[i] = s.String()
 	}
-	return out
+	// users:write is no longer offered (keys can't write users), but a key
+	// stored before that still holds it, and the harness key stands for the
+	// most privileged one there is. The routes it would have opened refuse it.
+	return append(out, "users:write")
 }
 
 // harness is a test server wired against a real (rolled-back) DB transaction.

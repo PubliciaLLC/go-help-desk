@@ -591,6 +591,11 @@ export interface WebhookConfig {
   created_at: string
   payload_format: WebhookPayloadFormat
   last_delivery?: WebhookDelivery | null
+  // True when the API key that made the hook or last changed its URL has been
+  // revoked or has expired (#450): it receives nothing until a signed-in
+  // administrator re-approves it.
+  paused?: boolean
+  paused_reason?: string
 }
 
 export interface Settings {

@@ -170,6 +170,8 @@ type AuthStoreIface interface {
 	GetWebhook(ctx context.Context, id uuid.UUID) (authstore.WebhookConfig, error)
 	UpdateWebhook(ctx context.Context, wh authstore.WebhookConfig) error
 	DeleteWebhook(ctx context.Context, id uuid.UUID) error
+	// ReapproveWebhook clears the hook's link to the API key that made it.
+	ReapproveWebhook(ctx context.Context, id uuid.UUID) error
 	ListEnabledWebhooks(ctx context.Context) ([]authstore.WebhookConfig, error)
 	ListWebhooks(ctx context.Context) ([]authstore.WebhookConfig, error)
 	ListWebhookDeliveries(ctx context.Context, hookID uuid.UUID) ([]authstore.WebhookDeliveryRecord, error)

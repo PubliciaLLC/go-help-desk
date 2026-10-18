@@ -641,6 +641,7 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		enabled = *body.Enabled
 	}
 	wh := authstore.WebhookConfig{
+		APIKeyID:      callingKey(r),
 		ID:            uuid.New(),
 		URL:           body.URL,
 		Events:        body.Events,
@@ -680,6 +681,12 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
+	// Who last pointed the hook (#450): a key that changes the URL owns the
+	// destination from then on, and the hook dies with the key; a signed-in
+	// administrator who changes it takes it over. Anything else leaves the link
+	// as it was, so a key editing the events of a session-made hook does not
+	// tie it.
+	repointed := body.URL != nil && *body.URL != existing.URL
 	if body.URL != nil {
 		// Checked here for the same reason as on create, and it was missing:
 		// an existing hook could be repointed at a private address and accepted
@@ -692,6 +699,9 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		existing.URL = *body.URL
+	}
+	if repointed {
+		existing.APIKeyID = callingKey(r)
 	}
 	if body.Events != nil {
 		// Validated only when sent, like url above: a PATCH of {"enabled":
@@ -742,6 +752,32 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	JSON(w, http.StatusOK, saved)
+}
+
+// callingKey is the API key making this request, or nil for a session. An
+// OAuth client is not a key and never reaches the webhook routes.
+func callingKey(r *http.Request) *uuid.UUID {
+	if a := authmw.GetActor(r); a != nil && a.APIKeyID != uuid.Nil {
+		id := a.APIKeyID
+		return &id
+	}
+	return nil
+}
+
+// handleReapproveWebhook lets a signed-in administrator vouch for a hook that
+// a key made or re-pointed: it clears the link, so the hook no longer depends
+// on that key. Keys are refused at the route.
+func (s *Server) handleReapproveWebhook(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid ID")
+		return
+	}
+	if err := s.authStore.ReapproveWebhook(r.Context(), id); err != nil {
+		handleError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {

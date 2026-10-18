@@ -85,13 +85,6 @@ func scopesTheRouterGives(t *testing.T, role user.Role) []string {
 	return out
 }
 
-// inertScopes are scopes the catalogue and the admin table still carry although
-// no route a key can reach needs them: keys can't write users (2026-10-16), so
-// users:write opens nothing to a key. It stays valid so a stored key that holds
-// it, and a script that asks for it, do not start failing; the list is here so a
-// NEW scope that opens nothing is still caught.
-var inertScopes = []string{"users:write"}
-
 func offeredTo(role user.Role) []string {
 	var out []string
 	for _, sc := range auth.ScopesForRole(string(role)) {
@@ -120,7 +113,7 @@ func TestScopesForRole_MatchTheRouter(t *testing.T) {
 			offered := offeredTo(role)
 
 			for _, sc := range offered {
-				if !slices.Contains(derived, sc) && !slices.Contains(inertScopes, sc) {
+				if !slices.Contains(derived, sc) {
 					t.Errorf("%s is offered to %s keys, but no route a %s key can reach needs it", sc, role, role)
 				}
 			}

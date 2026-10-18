@@ -467,6 +467,11 @@ export async function updateWebhook(
   return res.data
 }
 
+/** Clears a paused hook's link to the API key that made it, so it fires again. */
+export async function reapproveWebhook(id: string): Promise<void> {
+  await api.post(`/admin/webhooks/${id}/reapprove`)
+}
+
 export async function deleteWebhook(id: string): Promise<void> {
   await api.delete(`/admin/webhooks/${id}`)
 }
