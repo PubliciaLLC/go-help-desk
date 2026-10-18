@@ -409,3 +409,133 @@ A change to a ticket is now **one event**, written to the notification queue in 
 
 - **MCP request bodies are capped at 1 MiB** on `/mcp`, `/mcp/` and `/mcp/message`. Over the cap the server answers **413** (`request_too_large`). Before, there was no cap. A client sending a single tool call larger than 1 MiB (a reply body of over a million characters; ticket descriptions are already capped at 50,000 bytes) is now refused; nothing in normal use comes near it.
 - **An SSE session now belongs to the user and credential that opened the stream.** A `POST /mcp/message` for a `sessionId` from a different user, a different API key of the same user, or a browser session where the stream was opened with a key (or the reverse), is refused with **403** and not processed. An unknown, missing or closed `sessionId` gets the same 403. Clients that open the stream and post with the same credential (every ordinary MCP client) are unaffected. A client that opens the stream with one credential and posts with another must use one.
+
+## Tickets Left Assigned to a Deleted User Go Back to the Queue (#524)
+
+In 1.2.x, deleting a user left their open tickets pointing at them. Such a ticket showed as "Unassigned" on its page, was not in the unassigned queue, and was in nobody's "assigned to me". 1.3.0's delete returns the user's open tickets to the queue (and writes an `unassigned` audit entry for each); **migration `000053` does the same, once, for the tickets a 1.2.x delete had already stranded.**
+
+- **Which tickets:** open ones (neither Resolved nor Closed) whose assignee is a deleted user. Resolved and Closed tickets are history and keep the person who handled them. A **disabled** user is still in the user list, so their tickets are left alone.
+- **What you see afterwards:** those tickets are in the unassigned queue, and each has an `unassigned` entry on its Activity feed and in the admin audit view, naming the deleted user it had. The entry has **no actor**, because no person ran the migration. Their `updated_at` is set to the time of the upgrade.
+- **Nothing else changes.** No mail is sent, no webhook or event is raised, and no SLA clock moves. A group assignment needs nothing: deleting a group has always cleared it.
+- **Rolling back:** the `down` migration does nothing. The tickets stay unassigned; the audit entries record who they had.
+
+## The Server Logs Which Migrations Ran (#525)
+
+The server now says what it did to the schema, once, at startup, before it opens the port:
+
+- `database migrated from 21 to 53`: an upgrade from 1.2.0 (the first number is the version the database was at, the second the version it is at now). A new database says `from 0`.
+- `database schema at 53, no migrations needed`: an ordinary restart.
+
+The line carries `from` and `to` fields as well. Use it to check that an upgrade ran before you look anywhere else. Migrations still run on their own, before the server accepts traffic, and a failed one still stops the start with `running migrations: ...`.
+
+## Rolling Back to 1.2.0
+
+Migrations are forward-only as far as the server is concerned: it never runs one backwards, and there is no command for it. **A rollback is possible by hand. It discards everything that only 1.3.0 has, and it removes 1.3.0's security fixes.** Take it only if you must. This procedure was run end to end: a database upgraded from 1.2.0 with 1.3.0 activity on it was taken back to version 21, its schema matched a 1.2.0 database (same tables, columns, indexes and constraints; the one difference is below), and the 1.2.0 server then started on it and signed people in, served tickets, attachments, API keys and OAuth tokens, and kept the replies and tickets written under 1.3.0.
+
+### Security: what you give up
+
+1.2.0 does not have these 1.3.0 fixes, and a rollback runs without them. Weigh that before you start, and put the instance behind your own network controls until you move forward again:
+
+- **Postgres is published on every network interface.** 1.2.0's Compose file publishes the database as `5432:5432` with the password `helpdesk`. Docker handles a published port before the host firewall sees it, so closing the port in `ufw` or `firewalld` does not protect it. 1.3.0 binds it to `127.0.0.1`. **The procedure below edits 1.2.0's Compose file to bind it to loopback and checks the result before it starts anything; do not skip that step.**
+- Attachments: the download route refusing a request that is going to be rendered (`Sec-Fetch-Dest`), which is what stops an uploaded file being shown on the help desk's own origin.
+- **API keys:** the restrictions in *Staff Can Create Their Own API Keys* (a key can create keys and OAuth clients again, write users and group membership, and change the settings that decide who sees tickets), the expiry every new key needed, and the fix that stopped a key deleting another administrator's key.
+- SAML: hand-over cookies that can only be used once.
+- MCP: the `Origin` check, the 1 MiB request cap and the binding of an SSE session to the credential that opened it.
+- Others listed in these notes, among them the bcrypt cost, the 72-byte password limit, the 5-minute limit on a half-signed-in session, and the `404` for a ticket you may not see.
+
+### What you lose
+
+Each `down` migration undoes its `up`. These are dropped or deleted, and cannot be brought back except from the backup you take first:
+
+- **Passkeys** (`webauthn_credentials`, 000029) and **guest links** (`guest_access_tokens`, 000022). People re-register their passkeys; a guest needs a new link.
+- **The notification queue** (`notification_outbox`, 000031): any mail or webhook delivery still waiting is gone.
+- **Webhook delivery history** (000037), each hook's **payload format** (Slack, Teams, Discord, Jira, 000026), its **ticket filter** (000038) and its last-delivery status (000034). Hooks go back to plain JSON.
+- **Attachment scan results** (hash, detected type, virus name, quarantine flags, 000023) and the **reputation cache** (000024).
+- **SLA**: pause bookkeeping (000025), the frozen elapsed times (000027), and every superseded SLA record (000043), the history a reopen kept.
+- **Reopen counts and restart points** (000047), **followers** (000046), **password reset links** (000049), the 30-day password clock (000044), the must-change-password flag (000045), **staff email preferences** (000042) and **API key issuer and webhook pause links** (000050).
+- **OAuth service users** (000041): the users made for each client are deleted, and the database removes what hangs off them by cascade: their group memberships (and any sessions or API keys they held, though a service user is not meant to have any). The clients keep working without a user, as in 1.2.0. Tickets and replies they wrote stay, with no author link, and a ticket assigned to one loses its assignee.
+- **The generated JWT signing key** (`instance_secrets`, 000036). 1.2.0 needs its own `JWT_SECRET` in `docker/.env`: set a random secret of at least 32 bytes (for example `openssl rand -base64 48`). 1.2.0 only warns about a weak or example secret and signs with whatever you give it, and 1.3.0 discarded published example values as well as short and unset ones, so a value that 1.3.0 ignored is not safe to reuse. Every OAuth client fetches a new token either way.
+- Pending signups that 1.3.0 created without a name or password (000032, 000033).
+
+**Not undone** (they repair or seed data and have no inverse; their `down` does nothing): `000028`, `000039`, `000052` and `000053`. The three staff-email overrides `000052` stored stay in the settings table, and the tickets `000053` returned to the queue stay unassigned. 1.2.0 never reads those settings. Settings rows 1.3.0 wrote stay in the table. Passwords hashed at the new cost still work on 1.2.0.
+
+**One difference from a 1.2.0 database:** `ticket_replies.guest_token` is the last column of the table instead of the fourth. Nothing reads columns by position.
+
+### Procedure
+
+You need a checkout of the **1.3.0** release, because the `down` files live in it (`backend/internal/database/migrations`) and 1.3.0 is deployed from an image, so a checkout may not exist or may be at another version. Check out the release first, from the directory your Compose stack was started in:
+
+```sh
+cd go-help-desk
+git fetch --tags
+git checkout v1.3.0
+cd docker
+```
+
+1. **Stop the app and take a backup.** Do not skip this: the steps below delete data.
+
+   ```sh
+   docker compose stop app
+   docker compose exec -T db pg_dump -U helpdesk helpdesk > ../backup-before-rollback.sql
+   ```
+
+2. **Run the down migrations**, newest first, each in its own transaction, starting from the version the database is at. Save this as `rollback.sh` in `go-help-desk/docker` and run `bash rollback.sh`:
+
+   ```sh
+   set -euo pipefail
+   MIG=../backend/internal/database/migrations
+   PSQL="docker compose exec -T db psql -U helpdesk -d helpdesk -v ON_ERROR_STOP=1"
+   current=$($PSQL -Atc "SELECT version FROM schema_migrations")
+   case "$current" in ''|*[!0-9]*) echo "database version '$current' is not a number: stop"; exit 1;; esac
+   top=$(ls $MIG/*.down.sql | sort | tail -1 | xargs basename | cut -c1-6)
+   if [ "$current" -gt $((10#$top)) ]; then
+     echo "database is at $current but this checkout stops at $top: check out the release you run (v1.3.0)"; exit 1
+   fi
+   dirty=$($PSQL -Atc "SELECT dirty FROM schema_migrations")
+   if [ "$dirty" != f ]; then
+     echo "the database is marked dirty: a migration failed part-way; restore the backup, do not continue"; exit 1
+   fi
+   echo "database is at version $current"
+   for f in $(ls $MIG/*.down.sql | sort -r); do
+     name=$(basename "$f")
+     v=$((10#${name:0:6}))
+     if [ "$v" -gt "$current" ]; then continue; fi
+     if [ "$v" -le 21 ]; then break; fi
+     echo "rolling back $name"
+     $PSQL --single-transaction < "$f" || { echo "STOPPED at $name: restore the backup"; exit 1; }
+   done
+   $PSQL -c "UPDATE schema_migrations SET version = 21, dirty = false"
+   ```
+
+   There is no `000048`; the script skips it because there is no file. If it stops, the failed file made no change (it ran in a transaction) but the ones before it did: restore `backup-before-rollback.sql` rather than continue.
+
+3. **Check out 1.2.0 and bind Postgres to loopback, before anything starts.** 1.2.0's Compose file would publish the database on every interface (see *Security* above), so edit it first, then check it. Save this as `bind.sh` in `go-help-desk/docker` and run it with `bash bind.sh`, from the directory you ran `rollback.sh` in:
+
+   ```sh
+   set -euo pipefail
+   cd ..
+   git checkout v1.2.0
+   cd docker
+   sed -i.bak 's/"5432:5432"/"127.0.0.1:5432:5432"/' docker-compose.yml
+   rm -f docker-compose.yml.bak
+   cfg=$(docker compose config)
+   if [ "$(printf '%s\n' "$cfg" | grep -c 'target: 5432')" != 1 ] \
+      || ! printf '%s\n' "$cfg" | grep -B1 'target: 5432' | grep -q 'host_ip: 127.0.0.1'; then
+     echo "Postgres is not bound to 127.0.0.1 only: do NOT start the stack"; exit 1
+   fi
+   echo "ok: Postgres is bound to 127.0.0.1 only"
+   ```
+
+   `git checkout v1.2.0` needs a clean working tree, so it also stops you if you have changed tracked files. If the check fails, stop and fix `docker-compose.yml` by hand until `docker compose config` shows `host_ip: 127.0.0.1` on the `5432` binding and no other. Do not use a `docker-compose.override.yml` for this: Compose before 2.24.4 ignores the `!override` tag without a warning and publishes the port on both.
+
+4. **Start 1.2.0**, only once step 3 has printed `ok`. It builds the app from source, the way 1.2.0 did:
+
+   ```sh
+   docker compose up -d --build
+   ```
+
+   Keep your `docker/.env`, and make sure it has a `JWT_SECRET` as described above: 1.2.0's Compose file refuses to start without one.
+
+5. **Check it.** Sign in as an administrator, open a few tickets, and download an attachment. `SELECT version, dirty FROM schema_migrations` should say `21 | f`. `docker compose port db 5432` should say `127.0.0.1:5432`.
+
+To go forward again, run `git checkout -- docker-compose.yml` in `go-help-desk/docker` to drop the edit from step 3, then `git checkout v1.3.0` (it refuses while the file is changed) and start it: it runs every migration from 22, and says so in the log (`database migrated from 21 to 53`).

@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"strings"
@@ -27,24 +28,77 @@ func MigrateURL(dsn string) string {
 	return dsn
 }
 
+// Migration says what a Migrate call found and where it left the schema.
+// From is 0 for a database that had never been migrated.
+type Migration struct {
+	From, To uint
+}
+
+// String is the line the server logs at startup (#525): without it an operator
+// could only learn that an upgrade had applied migrations by querying
+// schema_migrations.
+func (m Migration) String() string {
+	if m.From == m.To {
+		return fmt.Sprintf("database schema at %d, no migrations needed", m.To)
+	}
+	return fmt.Sprintf("database migrated from %d to %d", m.From, m.To)
+}
+
 // Migrate runs all pending up migrations against the given database URL.
 // It uses an advisory lock internally, so it is safe to call concurrently
 // from multiple replicas at startup.
 func Migrate(ctx context.Context, databaseURL string) error {
+	_, err := MigrateReport(ctx, databaseURL)
+	return err
+}
+
+// MigrateReport is Migrate, and also reports the schema version it started at
+// and the one it ended on. Domain-free code does not log; the caller does.
+func MigrateReport(ctx context.Context, databaseURL string) (Migration, error) {
 	src, err := iofs.New(migrationsFS, "migrations")
 	if err != nil {
-		return fmt.Errorf("loading migration source: %w", err)
+		return Migration{}, fmt.Errorf("loading migration source: %w", err)
 	}
 	m, err := migrate.NewWithSourceInstance("iofs", src, databaseURL)
 	if err != nil {
-		return fmt.Errorf("creating migrator: %w", err)
+		return Migration{}, fmt.Errorf("creating migrator: %w", err)
 	}
 	defer m.Close()
 
-	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
-		return fmt.Errorf("running migrations: %w", err)
+	from, err := schemaVersion(m)
+	if err != nil {
+		return Migration{}, err
 	}
-	return nil
+	upErr := m.Up()
+	noChange := errors.Is(upErr, migrate.ErrNoChange)
+	if upErr != nil && !noChange {
+		// No prefix of its own: the caller says "running migrations:", and
+		// golang-migrate's text already names what went wrong.
+		return Migration{}, upErr
+	}
+	to, err := schemaVersion(m)
+	if err != nil {
+		return Migration{}, err
+	}
+	if noChange {
+		// Nothing was applied by this call. With several replicas starting
+		// at once, the one that waited on the lock read its version before
+		// another finished the work; it did none of it and must not say so.
+		from = to
+	}
+	return Migration{From: from, To: to}, nil
+}
+
+// schemaVersion is the version the database is at, 0 when it has none yet.
+func schemaVersion(m *migrate.Migrate) (uint, error) {
+	v, _, err := m.Version()
+	if errors.Is(err, migrate.ErrNilVersion) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("reading schema version: %w", err)
+	}
+	return v, nil
 }
 
 // MigrationFiles returns the embedded migration files, rooted at the
