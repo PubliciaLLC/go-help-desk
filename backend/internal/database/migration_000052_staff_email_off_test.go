@@ -45,6 +45,25 @@ func seedUser052(t *testing.T, ctx context.Context, tx *sql.Tx, service bool) {
 	require.NoError(t, err)
 }
 
+// A soft-deleted person still means the install was set up: /setup counts
+// every row, deleted or not, so this must too.
+func TestMigration052_SoftDeletedUserStillMeansUpgraded(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	ctx := context.Background()
+	tx, err := db.SQL.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	shadow052(t, ctx, tx)
+	seedUser052(t, ctx, tx, false)
+	_, err = tx.ExecContext(ctx, `UPDATE users SET deleted_at = now()`)
+	require.NoError(t, err)
+
+	execMigrationFile(t, ctx, tx, migration052, nil)
+
+	require.Len(t, overrides052(t, ctx, tx), 3)
+}
+
 func overrides052(t *testing.T, ctx context.Context, tx *sql.Tx) map[string]string {
 	t.Helper()
 	rows, err := tx.QueryContext(ctx, `SELECT key, value::text FROM settings WHERE key LIKE 'staff_email_%_override'`)

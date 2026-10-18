@@ -162,6 +162,13 @@ func newHarnessPasskeys(t *testing.T, authRateLimit int, clamAVAddr string, muta
 
 	ctx := context.Background()
 
+	// Migration 000052 stores the staff-email overrides as off when it runs
+	// against a database that already has users, and the suite can be pointed at
+	// one (CLAUDE.md: the development database). Every test starts from the
+	// unset state; the delete rolls back with the rest.
+	_, err := tx.ExecContext(ctx, `DELETE FROM settings WHERE key LIKE 'staff_email_%_override'`)
+	require.NoError(t, err)
+
 	// Stores
 	uStore := userstore.New(q)
 	tStore := ticketstore.New(q)
