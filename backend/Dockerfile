@@ -103,6 +103,15 @@ RUN set -eu; \
 # unlike the compilers above.
 FROM alpine:3.23.5
 
+# The source label is what lets GHCR link the published package to this
+# repository (#530). Without it a package that a workflow creates for the first
+# time is unlinked and private, and `docker pull` of the quick start fails with
+# "unauthorized" for everyone. It does not make an existing package public:
+# that is a setting on the package itself.
+LABEL org.opencontainers.image.source="https://github.com/PubliciaLLC/go-help-desk" \
+      org.opencontainers.image.description="Go Help Desk, a self-hosted help desk." \
+      org.opencontainers.image.licenses="AGPL-3.0-only"
+
 # ca-certificates only, and it is required: the server makes outbound HTTPS
 # calls to the identity provider for OIDC discovery and JWKS, and Alpine ships
 # no root store for Go's TLS stack to verify against.

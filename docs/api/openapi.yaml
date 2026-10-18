@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Go Help Desk API
-  version: 1.3.0-beta
+  version: 1.3.0
   summary: REST API of Go Help Desk, served under /api/v1 beside the SPA.
   description: |
     Every endpoint under /api/v1, written by hand and checked in the project's
