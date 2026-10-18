@@ -1,12 +1,12 @@
-# Upgrade Notes for v1.3.0
+# Upgrade Notes for v1.3.0: API, Integration and Admin Changes
 
-Read **Breaking changes** before you upgrade: they list what existing scripts, integrations and receivers will see fail or change. **Security** lists the fixes that make the upgrade advisable. **New features** and **Changed behaviour** describe the rest, and **Upgrade steps** (at the end) gives the order to work in. The user-facing version of these notes is on the website: https://gohelpdesk.org/docs/upgrading-1.3.0.
+These notes cover the API, integration and admin changes in this release. They are not the complete list of what is new: the website upgrade page is. Read **Breaking changes** before you upgrade: they list what existing scripts, integrations and receivers will see fail or change. **Security** lists the fixes that make the upgrade advisable. **New features** and **Changed behaviour** describe the rest, and **Upgrade steps** (at the end) gives the order to work in. The complete upgrade page, including the changes to the web interface, is on the website: https://gohelpdesk.org/docs/upgrading-1.3.0.
 
 ## Breaking changes (read first)
 
 Each item below either makes a request that used to succeed fail, or changes what a script, receiver or user sees. The sections that follow give the detail and the fix.
 
-### Staff and Administrators Can No Longer File Into an Archived Category, Type or Item (#421)
+### Nobody Can Newly File Into an Archived Category, Type or Item (#421)
 
 Previously the server let staff and administrators create tickets under, and reclassify tickets into, categories and types an administrator had archived, and never checked items for anybody. That is reversed: **nobody, staff and administrators included, can newly pick an archived category, type or item.**
 
@@ -19,16 +19,16 @@ What to check: scripts or integrations that file or reclassify tickets as staff 
 
 ### Old Password Hashes Must Be Reset After 30 Days (#453)
 
-1.3.0 hashes passwords at bcrypt cost 12 (earlier releases used 10). An account is upgraded automatically the next time its owner signs in. **Accounts that have not signed in within 30 days of the first start of 1.3.0 must reset their password:** a correct password on an old hash is refused with 403 `password_reset_required` and the message "Your password was saved in an older, weaker form and must be reset before you can sign in." until it is reset.
+Passwords are now stored more strongly (bcrypt cost 12; earlier releases used 10). Each password is upgraded automatically the next time its owner signs in. **Anyone who has not signed in by 30 days after you first start 1.3.0 (change this under Settings → Authentication → Passwords) must reset their password before they can sign in again, using Forgot password or with an administrator's help.** Administrators are never blocked. A correct password on an old hash is refused with 403 `password_reset_required` and the message "Your password was saved in an older, weaker form and must be reset before you can sign in." until it is reset.
 
 - **Clock:** starts when 1.3.0 first runs against the database (migration 000044 records it once).
 - **N:** Settings → Authentication → Passwords, default 30, 1 to 365. Changing it moves the deadline for everyone.
 - **Exempt:** all administrators, so an instance cannot lock itself out. They are upgraded at their next sign-in like everyone else. Staff and requesters are refused. When SAML restricts password sign-in to administrators, others get the SAML refusal instead.
-- **How people reset:** "Forgot password?" on the sign-in page (see the next section; it needs email), or an administrator sets a new password for them. With email off only the administrator route works.
+- **How people reset:** "Forgot password?" on the sign-in page (see *Forgot Password by Email (#451)* under New features; it needs email), or an administrator sets a new password for them. With email off only the administrator route works.
 - **What to check:** people who sign in rarely (seasonal staff, requesters) are the ones affected. Tell them, or have an administrator reset them, before day 30.
 - **API clients:** sign-in with an old hash after the deadline answers 403 `password_reset_required` instead of 200. New installs are unaffected.
 
-### Email: SMTP Encryption and Honesty
+### Email: SMTP Encryption and Setup Rules
 
 Email (SMTP) now fails loudly instead of quietly. Several setups that used to "work" now fail, and the failure shows in the admin panel. Check these before upgrading. Nothing needs changing if your mail server offers STARTTLS (or you use port 465) and, when `SMTP_USER` is set, offers AUTH.
 
@@ -62,7 +62,7 @@ These come with the new staff API key feature (see *Staff Can Create Their Own A
 - **Webhooks made by a key stop when the key does.** A webhook that an API key created, or last changed the URL of, is paused once that key is revoked or has expired: it shows as Paused (with the reason) on Admin → Webhooks and receives nothing until a signed-in administrator clicks Re-approve (`POST /api/v1/admin/webhooks/{id}/reapprove`, session only). Webhooks that exist today, and any made or last re-pointed in the web UI, are not tied to a key and are unaffected. A key whose owner is disabled or deleted counts as gone too. While a hook is paused an API key cannot edit it (403 `webhook_paused`); a signed-in administrator re-approves it, or changes its URL, first. A script that creates webhooks with a short-lived key should expect them to pause.
 - **`users:write` is no longer offered.** The scope catalogue and the pickers leave it out, and a new key can no longer be given it (400 `invalid_scope`). Keys that already hold it keep it; it opens nothing, since keys can't write users.
 
-### An IP or Single-Label `BASE_URL` Disables Passkeys (#494)
+### An IP Address, Single-Label or Non-ASCII `BASE_URL` Disables Passkeys (#494)
 
 Passkeys are bound to a domain name, so they work only when the host in `BASE_URL` is a domain name (`help.example.com`) or `localhost`. **If `BASE_URL` is an IP address (`http://192.168.1.10:8080`, `http://[::1]:8080`), a single-label host (`http://helpdesk:8080`) or contains non-ASCII characters, passkeys are disabled.** The server still starts. It logs `passkeys unavailable` once at startup, and administrators see a warning banner explaining that `BASE_URL` must be a domain name.
 
@@ -72,9 +72,9 @@ Passkeys are bound to a domain name, so they work only when the host in `BASE_UR
 
 What to check: if your instance is on an IP or single-word host and you want passkeys, give it a DNS name and set `BASE_URL` to it. Changing the domain invalidates passkeys registered under the old one.
 
-These affect scripts and integrations that call the API. Three can make a request that used to succeed now fail; the rest change what an answer says.
-
 ### API requests that now fail (#421)
+
+These affect scripts and integrations that call the API. Three can make a request that used to succeed now fail:
 
 - **Unknown settings keys are refused.** `PATCH /api/v1/admin/settings` with a key that is not a real setting now answers `400 unknown_setting`, names the key, and writes nothing (not even the valid keys in the same request). Before, any key was stored, so a typo such as `mfa_enabld` answered 204 and changed nothing. Fix: use the exact setting names from `GET /api/v1/admin/settings` (the `_set` presence flags are still refused with `readonly_setting`).
 - **`POST /api/v1/tickets/{id}/resolve` with a body that is not valid JSON is `400`.** Before, it resolved the ticket and dropped the notes. An empty body still resolves with no notes.
@@ -112,15 +112,18 @@ Slack, Teams, Discord and Jira Automation hooks are not affected: their messages
 
 - A ticket-changing webhook delivers one event per change, and a receiver that switches on `Type` can miss a kind: see *One Change, One Event* under Changed behaviour.
 - If `JWT_SECRET` is unset or short, OAuth clients must fetch a new access token once: see *JWT Secret* under Security.
-- Staff email starts flowing to every staff member once email is configured: see *Staff Email About Tickets (#441)* under New features.
 - MCP `add_reply` now emails the requester: see *MCP `add_reply`* under Changed behaviour.
 - `PATCH /admin/settings` null and error-code changes: see *Ticket and Settings API Responses (#420)* under Changed behaviour.
 
 ## Security
 
+### Cross-site request forgery on the MCP routes (1.1.1 to 1.2.x), GHSA-3jmq-7vm4-cc7p
+
+A web page on a sibling site could send MCP requests that the server accepted under a signed-in staff member's session. 1.3.0 refuses any MCP request whose Origin is not your `BASE_URL`, and binds each SSE session to the user and credential that opened it. Upgrade if you expose MCP. Advisory: https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-3jmq-7vm4-cc7p. Detail is in the two MCP sections below.
+
 ### API key delete is scoped to its owner (#450)
 
-An API key could delete another administrator's key if it knew the id. That has been possible since 1.0.0 (1.0.0 to 1.2.0 are affected). It is revoke-only, needs an administrator's key and the other key's id, and is low severity; upgrading is advised. There is no GitHub security advisory for it.
+An API key could delete another administrator's key if it knew the id. That has been possible since 1.0.0 (1.0.0 to 1.2.0 are affected). It is revoke-only, needs an administrator's key and the other key's id, and is low severity; upgrading is advised. There is no GitHub security advisory for this API key item.
 
 Now an API key lists and revokes **only itself**: not its owner's other keys and not anyone else's (any other id answers `404`). An administrator signed in through the browser lists and revokes **every** key, so `GET /admin/api-keys` for a browser session now returns all keys instead of the caller's own, and each entry carries `owner_name` and `owner_email`. A script that used one key to list or revoke the others now needs a browser session.
 
@@ -129,8 +132,8 @@ Now an API key lists and revokes **only itself**: not its owner's other keys and
 Every MCP route (`/mcp`, `/mcp/sse`, `/mcp/message` and anything else under `/mcp/`) now answers `403 origin_not_allowed` when the request carries an `Origin` header that is not your `BASE_URL`'s origin, before authentication is looked at. Requests with no `Origin` header, which is what SDKs, editors and `curl` send, are unaffected.
 
 - A browser-based MCP client served from a different origin, or a reverse proxy that injects an `Origin` header, is now refused. Serve the client from `BASE_URL`'s origin or stop the proxy adding the header.
-- 1.2.x accepted these requests on the SSE routes. This closes a path by which a web page on a sibling site could act through a signed-in user's session cookie. Upgrade if you expose MCP over SSE.
-- A `BASE_URL` with a non-ASCII host stops the server from starting (passkeys refuse it); write it in punycode.
+- 1.1.1 to 1.2.x accepted these requests on the SSE routes. This closes a path by which a web page on a sibling site could act through a signed-in user's session cookie. Upgrade if you expose MCP over SSE.
+- A `BASE_URL` with a non-ASCII host does not stop the server: passkeys are turned off (see the passkeys section under Breaking changes). Write it in punycode if you want them. Browser requests to the MCP routes that carry an `Origin` are refused (`403 origin_not_allowed`) while `BASE_URL` has a non-ASCII host, because no origin can be built from it; requests with no `Origin` header are unaffected.
 
 ### MCP: Request Body Cap and SSE Sessions Bound to Their Actor (#481, #495)
 
@@ -145,7 +148,7 @@ Every MCP route (`/mcp`, `/mcp/sse`, `/mcp/message` and anything else under `/mc
 - If **32+ bytes**: The environment value is used as-is (the long value wins over the generated key).
 - If it is **exactly one of the example secrets published in this repository** (for example `change-me-in-production-this-is-really-insecure`): it is discarded, a generated key is used, and the server logs one warning. Anyone can read the example, so it must never sign anything. (`SESSION_SECRET` is different: an example value there is still flagged in the admin panel, not discarded.)
 - **Upgrade path**: If you set `JWT_SECRET` to a long value in `.env`, it remains in use and nothing changes. If you unset it or provide a short value, a new key is generated on first boot. **OAuth clients must fetch a new access token once** (sessions are unaffected; they use `SESSION_SECRET`).
-- **Backup implications**: Database backups now contain the JWT signing key. Restoring a backup onto another instance carries the key with it (tokens remain valid there).
+- **Backup implications**: If the server generates its JWT signing key (`JWT_SECRET` unset, shorter than 32 bytes, or an example value), the key is stored in the database, so every backup contains it: protect backups accordingly. Restoring a backup onto another instance carries the key with it (tokens remain valid there).
 - **Rotation**: To rotate the key, delete the row from `instance_secrets` and restart. All OAuth tokens issued with the old key become invalid.
 
 ## New features
@@ -186,7 +189,7 @@ API keys can now be made by staff, issued by an administrator on a staff member'
 - **Where:** Account → API keys (list, create with an expiry, revoke), and `GET/POST /api/v1/me/api-keys`, `GET /api/v1/me/api-keys/scopes`, `DELETE /api/v1/me/api-keys/{id}`. Session only: an API key or OAuth client gets 403 `session_required`, so a key cannot create more keys.
 - **Issuing on behalf:** `POST /api/v1/admin/api-keys` takes an optional `user_id`, from a signed-in administrator only. They can issue for a staff member or for themselves. Not for another administrator (400 `cannot_issue_for_administrator`), a requester, or a service account (400 `service_account_cannot_own_key`). Responses now include `user_id` and `created_by`.
 - **Changing someone's role keeps their keys.** A key acts within its owner's current role. Promoting a staff member who holds an administrator-issued key leaves an administrator holding it; revoke it if that is not wanted.
-- **A key's scopes never exceed its owner's role.** Staff keys can carry `tickets:read|write`, `groups:read` and `audit:read`; an administrator's any scope. Anything else is 400 `invalid_scope`, on both routes. `GET /api/v1/admin/scopes?role=staff` lists what a staff key may carry.
+- **A key's scopes never exceed its owner's role.** Staff keys can carry `tickets:read|write`, `groups:read`, `audit:read` and `users:read`; an administrator's any scope. Anything else is 400 `invalid_scope`, on both routes. `GET /api/v1/admin/scopes?role=staff` lists what a staff key may carry.
 - **Marked for rotation:** both key lists carry `beyond_limit`. A key with no expiry, or one beyond the current limit (for example after the limit is lowered), is shown as "No expiry (longer than the current limit)" so it can be rotated.
 - **Password reset can revoke keys:** `POST /api/v1/admin/users/{id}/password` takes `revoke_api_keys` (default false); the admin form has "Also revoke this person's API keys", unticked. It deletes every key the account owns and audits the count; if the keys cannot be revoked after the password was reset, the answer is 500 `keys_not_revoked` ("The password was reset, but the API keys were NOT revoked."). A person's own password change, a password reset by email ("Forgot password", #451), `server unlock` and `server reset-factors` never touch keys.
 - **Audit:** every key issued or revoked, own or on someone's behalf, writes `api_key_issued` / `api_key_revoked` (entity type `api_key`) to the admin audit log; a revoke-on-reset writes `api_keys_revoked` on the account with the number of keys.
@@ -236,12 +239,12 @@ If you downgrade, the `down` migration deletes the service users. Tickets they w
 
 ### Staff Email About Tickets (#441)
 
-Staff are now emailed about their tickets, which 1.2 never did. **Once email is configured (`SMTP_HOST` and `SMTP_FROM`), every existing staff member and administrator starts receiving it, because all three switches are on by default.** Nothing is sent while email is not configured.
+Staff are now emailed about their tickets, which 1.2 never did. **On an upgraded install, staff email starts switched off for everyone; turn it on under Settings → Email when ready.** Nothing is sent while email is not configured (`SMTP_HOST` and `SMTP_FROM`).
 
 - **When:** a ticket is assigned to you, a ticket is assigned to a group you belong to, and a requester (an account holder or a guest) replies on a ticket assigned to you. A requester's reply on a group ticket that nobody personally holds goes to the group's members.
 - **Not when:** you did it yourself, a colleague replies, or someone adds an internal note. A staff member who filed a ticket and replies on it counts as the requester. A reopen is mailed too: see *Reopening a Ticket (#464)* below.
 - **Your choice:** three switches under **Your account → Email about tickets**: *Tickets assigned to me*, *Activity on tickets I'm assigned to or follow* and *My groups' tickets*. The middle switch was called *Activity on my tickets* before followers existed; it is the same setting (`email_notify_activity`) with a new label.
-- **Administrators can force a switch on or off for everyone** under **Settings → Email** (`staff_email_assigned_override`, `staff_email_activity_override`, `staff_email_group_override`: `user`, `on` or `off`, `user` by default). To keep your staff's inboxes as they were, set all three to **Off for everyone** before turning email on.
+- **Administrators can force a switch on or off for everyone** under **Settings → Email** (`staff_email_assigned_override`, `staff_email_activity_override`, `staff_email_group_override`: `user`, `on` or `off`, `user` by default).
 - OAuth clients' service users are never emailed, even when they are members of a group.
 - The emails carry only the ticket's tracking number and a link, like every other email from the help desk.
 - Database migration `000042` adds three columns to `users`. It is safe to apply on a running instance.
@@ -271,9 +274,9 @@ A retry that is dropped (the hook was disabled, paused because its API key was r
 
 A hook can now be limited to tickets in chosen categories, priorities or assigned groups (Admin, Webhooks, Ticket filter), or inverted to send for every ticket that does not match. A hook with no filter, which is every hook after the upgrade, behaves exactly as before. The raw payload is not changed by a filter.
 
-It works together with the retries and history above, as follows. An event a hook's filter turns away is not a delivery for that hook: no `X-GHD-Delivery`, no retry, no History entry. The filter is read as it is now, not once. It is tested when an event is fanned out to the hooks, again at every attempt of a queued delivery, and again at Redeliver. If you tighten a filter, deliveries already waiting for a retry that it no longer admits are dropped at their next attempt, without a send or a History entry, the same way a retry is dropped when the hook is disabled, unsubscribed from the event or given a new URL. If you widen it, they still go out. A retry is tested against the ticket as it was when the event happened; a delivery queued before this upgrade has no ticket to test and is sent whatever the filter says. Redeliver tests the ticket as it is now, and is refused with `409 webhook_filter_excludes` when the filter does not admit it (if the hook has a filter and the ticket is gone, the filter cannot be checked and it is refused with `409 webhook_filter_unverifiable`; a hook with no filter is still sent). Nothing about this changes what a hook is sent: the raw payload and the chat messages are the same, and the ticket details used for the test are never put in a body or kept in the History.
+It works together with the history above and the retries under Changed behaviour, as follows. An event a hook's filter turns away is not a delivery for that hook: no `X-GHD-Delivery`, no retry, no History entry. The filter is read as it is now, not once. It is tested when an event is fanned out to the hooks, again at every attempt of a queued delivery, and again at Redeliver. If you tighten a filter, deliveries already waiting for a retry that it no longer admits are dropped at their next attempt, without a send or a History entry, the same way a retry is dropped when the hook is disabled, unsubscribed from the event or given a new URL. If you widen it, they still go out. A retry is tested against the ticket as it was when the event happened; a delivery queued before this upgrade has no ticket to test and is sent whatever the filter says. Redeliver tests the ticket as it is now, and is refused with `409 webhook_filter_excludes` when the filter does not admit it (if the hook has a filter and the ticket is gone, the filter cannot be checked and it is refused with `409 webhook_filter_unverifiable`; a hook with no filter is still sent). Nothing about this changes what a hook is sent: the raw payload and the chat messages are the same, and the ticket details used for the test are never put in a body or kept in the History.
 
-`ticket.created` is raised before auto-assignment, so a group condition never matches it; subscribe to `ticket.assigned` to hear about tickets landing in a group.
+Since #506, auto-assignment happens in the create's own transaction, so `ticket.created` carries the routed group and a group condition can match it.
 
 This adds a column to `webhook_configs` through a migration that runs at start-up.
 
@@ -302,7 +305,7 @@ A reopen is any move from Resolved or Closed back to an open status: a requester
 - **The ticket is flagged.** `reopen_count` (new on the ticket JSON for staff and administrators only, omitted when 0, never reset) counts reopens, and staff and administrators see a **Reopened** badge on the ticket and in the queue while the ticket is open. It goes away when the ticket is resolved again. Tickets reopened before the upgrade start at 0.
 - **The priority goes up one level on the first reopen only** (low, medium, high, critical; critical stays). This is a behaviour change on an existing action: a ticket that used to keep its priority through a reopen now gets a `priority_changed` entry and a new priority, and can match a different SLA policy. Later reopens do not raise it again.
 - **The SLA starts over**, on every reopen (the priority rise is the first reopen only). The earlier record is kept, the ticket shows the **SLA restarted** badge (staff and administrators), and the audit log gets `sla_restarted`. Nothing happens to the SLA while SLA tracking is switched off. Before this, a reopened ticket kept its old record, which could already be met or breached.
-- **Staff are emailed**: the assignee (under *Activity on tickets I'm assigned to or follow*), the assigned group's members (under *My groups' tickets*, only while nobody personally holds the ticket, as for a reply) and the ticket's followers (under the activity switch, whoever holds it), once each, and never the person who reopened it. A group member of a held ticket hears about a reopen only if they follow it. The administrator's overrides apply. **Once email is configured, staff who already receive staff email start receiving these.** Set the overrides to Off for everyone to keep their inboxes as they were.
+- **Staff are emailed**: the assignee (under *Activity on tickets I'm assigned to or follow*), the assigned group's members (under *My groups' tickets*, only while nobody personally holds the ticket, as for a reply) and the ticket's followers (under the activity switch, whoever holds it), once each, and never the person who reopened it. A group member of a held ticket hears about a reopen only if they follow it. The administrator's overrides apply.
 - **A status change out of Resolved or Closed is now audited as `reopened`** beside `status_changed`, and **raises the `ticket.reopened` webhook event**, which it did not before. A webhook subscribed to `ticket.reopened` will see it for those changes as well as for a requester's reply and `POST /reopen`.
 
 - **A priority change can no longer undo a restart.** If a ticket's priority is moved to one with no SLA policy and later to one with a policy, the new SLA record resumes from the clock it left, or from the ticket's last reopen if that is later (it used to start from the ticket's creation, which could erase a restart). A reopen is remembered as a restart point even when it lands on a priority with no policy. The older record's met and breach marks are not copied. A ticket that never had an SLA record still starts from creation.
@@ -372,6 +375,8 @@ Scripts and API keys that call the admin API can see these changes. Nothing need
 
 ### Answers that now say something different (#421)
 
+The rest of the #421 changes to scripts and integrations change what an answer says.
+
 - **`GET /api/v1/auth/providers`** is served as `application/json` (it had no content type). `oidc` and `saml` now mean "loaded and working", not "switched on": an identity provider that did not answer shows `false`, and SAML shows `true` whenever it is loaded, whatever `saml_enabled` says. `local` is still always `true`; the new `local_admin_only` is `true` when `saml_enabled` limits password sign-in to administrators.
 - **`GET /api/v1/admin/oidc` and `/admin/saml`** gain `live`. `configured: true, live: false` means "saved, not working". `configured` is unchanged.
 - **`GET /api/v1/auth/signup/status`**: `open_registration` is now what is in force, so it reads `false` when an allowed-domains list limits signup, even with the open-registration setting on. The new `restricted_by_domain_list` says why. Who can sign up is unchanged.
@@ -437,17 +442,17 @@ Before this, an unwritable directory showed up as a failed upload partway throug
 
 ## Upgrade steps
 
-1. **Take a database backup.** Backups now contain the JWT signing key (see Security).
+1. **Take a database backup.** If the server generates its JWT signing key (`JWT_SECRET` unset, shorter than 32 bytes, or an example value), the key is stored in the database, so every backup contains it: protect backups accordingly.
 2. **Check your scripts and receivers against Breaking changes.** In particular: anything that uses an API key to create keys or OAuth clients, write users or groups, set passwords or change emails; any key-creating script that sends no `expires_at`; any raw-JSON webhook receiver that reads more than ids; any SMTP setup that sends a password without TLS or sets `SMTP_USER` against a server with no AUTH; any script that files or reclassifies tickets into an archived category, type or item.
-3. **Before you configure email, decide on staff email.** Once `SMTP_HOST` and `SMTP_FROM` are set, every existing staff member and administrator starts receiving staff email. To keep inboxes as they were, set the three overrides under Settings → Email to *Off for everyone* first.
+3. **Staff email:** on an upgraded install, staff email starts switched off for everyone; turn it on under Settings → Email when ready.
 4. **Restart on 1.3.0** (`docker compose up -d` from the `docker/` directory). Migrations run automatically at start-up, in number order.
 5. **After the first start:** OAuth clients fetch a new access token once if the JWT key was replaced; give each OAuth client a group before turning ticket scope enforcement on; tell people who rarely sign in that passwords on an old hash must be reset within 30 days of the first start of 1.3.0 (administrators are exempt).
 
 ### Migrations
 
-1.2.x ends at migration 000021. Going straight to 1.3.0 applies 000022 to 000051 in number order, with **no 000048**. The gap is deliberate: #450 first planned 000048, but #451 merged with 000049 first, and the migration runner never applies a version below the one a database is already at, so a database at 49 would have skipped 048 silently. 048 stays unused for good.
+1.2.x ends at migration 000021. Going straight to 1.3.0 applies 000022 to 000051 in number order, and **there is no migration 000048.** The number was retired while 1.3.0 was being built, so that no pre-release database could skip a migration. Nothing is missing: your database goes from 000047 straight to 000049. (#450 first planned 000048, but #451 merged with 000049 first, and the migration runner never applies a version below the one a database is already at.)
 
-The ones these notes describe: 000038 (webhook ticket filter column), 000039 (removes orphaned custom-field assignments, once, irreversibly), 000040 (`visible_on_new` column default becomes false; existing rows untouched), 000041 (OAuth client service users), 000042 (three staff email columns on `users`), 000043 to 000045 (SLA rematch, the password-rehash clock, `users.must_change_password`), 000046 (`ticket_followers`), 000047 (`tickets.reopen_count`, `last_reopened_at`, `paused_seconds_at_last_reopen`), 000049 (`password_reset_tokens`), 000050 (`api_keys.created_by`, `webhook_configs.api_key_id`) and 000051 (the `dropped` webhook result and `drop_reason`). Those that say so are safe to apply on a running instance.
+The ones these notes describe: 000038 (webhook ticket filter column), 000039 (removes orphaned custom-field assignments, once, irreversibly), 000040 (`visible_on_new` column default becomes false; existing rows untouched), 000041 (OAuth client service users), 000042 (three staff email columns on `users`), 000043 to 000045 (SLA rematch, the password-rehash clock, `users.must_change_password`), 000046 (`ticket_followers`), 000047 (`tickets.reopen_count`, `last_reopened_at`, `paused_seconds_at_last_reopen`), 000049 (`password_reset_tokens`), 000050 (`api_keys.created_by`, `webhook_configs.api_key_id`; the new #450 settings are rows in the settings table and need no migration) and 000051 (the `dropped` webhook result and `drop_reason`). Those that say so are safe to apply on a running instance.
 
 A database that ran a 1.3.0 beta build containing `000046` before `000043` to `000045` were merged would skip them: see *Ticket Followers (#441)*.
 
