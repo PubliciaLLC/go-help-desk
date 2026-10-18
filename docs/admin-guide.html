@@ -140,7 +140,7 @@
     <li><a href="#admin-users">Account recovery</a>: an identity-provider lockout guard, and a <code>reset-factors</code> command for an account that has lost every second factor. MFA reset also clears passkeys.</li>
     <li><a href="tickets.html#tickets-create">Guest submission</a> works. <code>guest_submission_enabled</code> needs a signed-in administrator, and switching it off also suspends every existing guest link until it is switched on again.</li>
     <li><a href="#admin-attachments">Attachment security</a>: content detection, malware scanning and reputation lookup, all configured under <em>Admin → Settings → Attachments</em>.</li>
-    <li><a href="#admin-staff-email">Staff email</a>: assignments, requester replies and reopens are emailed to staff, with three switches each person controls and an administrator override. Check the overrides before you turn email on. Staff can also <a href="tickets.html#tickets-follow">follow tickets</a>.</li>
+    <li><a href="#admin-staff-email">Staff email</a>: assignments, requester replies and reopens are emailed to staff, with three switches each person controls and an administrator override. On an upgraded install the overrides start as Off for everyone, so turn staff email on under Settings → Email when you are ready. Staff can also <a href="tickets.html#tickets-follow">follow tickets</a>.</li>
     <li><a href="#admin-email-setup">Email setup rules</a>: SMTP must use TLS when a password is set, and a missing or failing mail setup shows as a banner instead of failing silently.</li>
     <li><a href="#admin-oauth-clients">OAuth clients</a> act as service users, so they can write tickets, and are managed from Users and OAuth Clients.</li>
     <li><a href="#admin-auto-assign">Routing</a> and a paged <a href="#admin-users-list">Users</a> list, <a href="#admin-cti-archive">archive and restore</a> for categories, types and items, and <a href="#admin-webhook-history">webhook History and Redeliver</a>, with <a href="#admin-webhook-filter">ticket filters</a> and retries.</li>
@@ -620,12 +620,12 @@ Facilities
 
 <h2 id="admin-staff-email">Staff email about tickets</h2>
 
-<p>Staff and administrators are emailed about their own tickets, which earlier releases never did. <strong>Once email is configured, every existing staff member and administrator starts receiving it, because all three switches are on by default.</strong> Nothing is sent while email is not configured. Each person chooses what they get under <em>Your account → Email about tickets</em>; see <a href="tickets.html#tickets-staff-email">Email to staff</a> for what each switch covers.</p>
+<p>Staff and administrators are emailed about their own tickets, which earlier releases never did. <strong>On an install upgraded from an earlier version (one that already has users), all three staff email overrides start as <em>Off for everyone</em>, so no staff email is sent until an administrator changes them under <em>Settings → Email</em>.</strong> A fresh install is unchanged: each person's own switches start on and the overrides use each person's choice. Nothing is sent while email is not configured. Each person chooses what they get under <em>Your account → Email about tickets</em>; see <a href="tickets.html#tickets-staff-email">Email to staff</a> for what each switch covers.</p>
 
 <p><strong>One mail per person per change.</strong> A change is queued in the same step as the change itself, so a change that fails sends nothing. The server works out who is mailed a moment after the change commits. At most one mail goes to any address for one change (addresses are compared without regard to case). A person who qualifies for several reasons in one change, such as being assigned and following the ticket, gets one mail, for the first of assigned, reopened, and requester replied whose switch is on. When a guest's address is also a staff member's, the staff mail is the one sent. A person who files a ticket that auto-assignment then assigns to them gets one mail. If the server cannot look up a ticket's followers or a group's members, the whole change is retried and no mail for it goes out until everyone is known, the requester's included. It is tried 8 times over about an hour and then marked failed; the log says "staff email: could not work out who to notify". Assigning a ticket to who and what it already has sends no mail. Mail queued before the upgrade is sent as it was.</p>
 
 <h3>Overriding the switches for everyone</h3>
-<p>Under <em>Admin → Settings → Email</em>, the <em>Staff email about tickets</em> section has one drop-down for each switch. Each offers <em>Use each person's choice</em> (the default), <em>On for everyone</em> and <em>Off for everyone</em>; the last two ignore what people chose.</p>
+<p>Under <em>Admin → Settings → Email</em>, the <em>Staff email about tickets</em> section has one drop-down for each switch. Each offers <em>Use each person's choice</em> (the default on a fresh install), <em>On for everyone</em> and <em>Off for everyone</em>; the last two ignore what people chose. On an upgraded install all three start as <em>Off for everyone</em>; an override you had already stored is kept. To turn staff email on, set them to <em>Use each person's choice</em> or <em>On for everyone</em>.</p>
 <table>
   <thead><tr><th>Switch</th><th>Setting</th></tr></thead>
   <tbody>
@@ -635,7 +635,7 @@ Facilities
   </tbody>
 </table>
 <ul>
-  <li><strong>To keep your staff's inboxes as they were</strong>, set all three to <em>Off for everyone</em> before you turn email on.</li>
+  <li><strong>On an upgraded install</strong> these start as <em>Off for everyone</em>, so nobody is mailed until you change them. Change them when you are ready for staff to start getting mail.</li>
   <li>The override of the activity switch also covers people <a href="tickets.html#tickets-follow">following</a> a ticket, and mail about <a href="tickets.html#tickets-reopen">reopened tickets</a>.</li>
   <li>The mail goes to staff and administrators only. An OAuth client's service user is never emailed, even when it is in a group. Nobody is emailed about their own action.</li>
   <li>These emails carry only the ticket's tracking number and a link, like every other email from the help desk. Their wording changes with why the person is being told: assigned to you, assigned to your group, or a ticket you follow.</li>
