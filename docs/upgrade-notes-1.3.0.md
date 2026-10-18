@@ -239,12 +239,12 @@ If you downgrade, the `down` migration deletes the service users. Tickets they w
 
 ### Staff Email About Tickets (#441)
 
-Staff are now emailed about their tickets, which 1.2 never did. **On an upgraded install, staff email starts switched off for everyone; turn it on under Settings → Email when ready.** Nothing is sent while email is not configured (`SMTP_HOST` and `SMTP_FROM`).
+Staff are now emailed about their tickets, which 1.2 never did. **On an upgraded install, staff email starts switched off for everyone. Turn it on under Settings → Email when you're ready.** Migration `000052` stores all three administrator overrides as Off when it finds existing users; a fresh install is unchanged (all three switches on by default). Nothing is sent while email is not configured (`SMTP_HOST` and `SMTP_FROM`).
 
 - **When:** a ticket is assigned to you, a ticket is assigned to a group you belong to, and a requester (an account holder or a guest) replies on a ticket assigned to you. A requester's reply on a group ticket that nobody personally holds goes to the group's members.
 - **Not when:** you did it yourself, a colleague replies, or someone adds an internal note. A staff member who filed a ticket and replies on it counts as the requester. A reopen is mailed too: see *Reopening a Ticket (#464)* below.
 - **Your choice:** three switches under **Your account → Email about tickets**: *Tickets assigned to me*, *Activity on tickets I'm assigned to or follow* and *My groups' tickets*. The middle switch was called *Activity on my tickets* before followers existed; it is the same setting (`email_notify_activity`) with a new label.
-- **Administrators can force a switch on or off for everyone** under **Settings → Email** (`staff_email_assigned_override`, `staff_email_activity_override`, `staff_email_group_override`: `user`, `on` or `off`, `user` by default).
+- **Administrators can force a switch on or off for everyone** under **Settings → Email** (`staff_email_assigned_override`, `staff_email_activity_override`, `staff_email_group_override`: `user`, `on` or `off`, `user` by default). On an upgraded install they start as **Off for everyone** (migration `000052`); an override an administrator had already stored is kept. Turn email on by setting them back to *Use each person's choice* or *On for everyone*.
 - OAuth clients' service users are never emailed, even when they are members of a group.
 - The emails carry only the ticket's tracking number and a link, like every other email from the help desk.
 - Database migration `000042` adds three columns to `users`. It is safe to apply on a running instance.
@@ -305,7 +305,7 @@ A reopen is any move from Resolved or Closed back to an open status: a requester
 - **The ticket is flagged.** `reopen_count` (new on the ticket JSON for staff and administrators only, omitted when 0, never reset) counts reopens, and staff and administrators see a **Reopened** badge on the ticket and in the queue while the ticket is open. It goes away when the ticket is resolved again. Tickets reopened before the upgrade start at 0.
 - **The priority goes up one level on the first reopen only** (low, medium, high, critical; critical stays). This is a behaviour change on an existing action: a ticket that used to keep its priority through a reopen now gets a `priority_changed` entry and a new priority, and can match a different SLA policy. Later reopens do not raise it again.
 - **The SLA starts over**, on every reopen (the priority rise is the first reopen only). The earlier record is kept, the ticket shows the **SLA restarted** badge (staff and administrators), and the audit log gets `sla_restarted`. Nothing happens to the SLA while SLA tracking is switched off. Before this, a reopened ticket kept its old record, which could already be met or breached.
-- **Staff are emailed**: the assignee (under *Activity on tickets I'm assigned to or follow*), the assigned group's members (under *My groups' tickets*, only while nobody personally holds the ticket, as for a reply) and the ticket's followers (under the activity switch, whoever holds it), once each, and never the person who reopened it. A group member of a held ticket hears about a reopen only if they follow it. The administrator's overrides apply.
+- **Staff are emailed**: the assignee (under *Activity on tickets I'm assigned to or follow*), the assigned group's members (under *My groups' tickets*, only while nobody personally holds the ticket, as for a reply) and the ticket's followers (under the activity switch, whoever holds it), once each, and never the person who reopened it. A group member of a held ticket hears about a reopen only if they follow it. The administrator's overrides apply. On an upgraded install nobody receives these until an administrator turns staff email on under Settings → Email.
 - **A status change out of Resolved or Closed is now audited as `reopened`** beside `status_changed`, and **raises the `ticket.reopened` webhook event**, which it did not before. A webhook subscribed to `ticket.reopened` will see it for those changes as well as for a requester's reply and `POST /reopen`.
 
 - **A priority change can no longer undo a restart.** If a ticket's priority is moved to one with no SLA policy and later to one with a policy, the new SLA record resumes from the clock it left, or from the ticket's last reopen if that is later (it used to start from the ticket's creation, which could erase a restart). A reopen is remembered as a restart point even when it lands on a priority with no policy. The older record's met and breach marks are not copied. A ticket that never had an SLA record still starts from creation.
@@ -440,11 +440,29 @@ At startup the server checks that `ATTACHMENT_DIR` (default `/data/attachments`,
 
 Before this, an unwritable directory showed up as a failed upload partway through.
 
+### Tickets Left Assigned to a Deleted User Go Back to the Queue (#524)
+
+In 1.2.x, deleting a user left their open tickets pointing at them. Such a ticket showed as "Unassigned" on its page, was not in the unassigned queue, and was in nobody's "assigned to me". 1.3.0's delete returns the user's open tickets to the queue (and writes an `unassigned` audit entry for each); **migration `000053` does the same, once, for the tickets a 1.2.x delete had already stranded.**
+
+- **Which tickets:** open ones (neither Resolved nor Closed) whose assignee is a deleted user. Resolved and Closed tickets are history and keep the person who handled them. A **disabled** user is still in the user list, so their tickets are left alone.
+- **What you see afterwards:** those tickets are in the unassigned queue, and each has an `unassigned` entry on its Activity feed and in the admin audit view, naming the deleted user it had. The entry has **no actor**, because no person ran the migration. Their `updated_at` is set to the time of the upgrade.
+- **Nothing else changes.** No mail is sent, no webhook or event is raised, and no SLA clock moves. A group assignment needs nothing: deleting a group has always cleared it.
+- **Rolling back:** the `down` migration does nothing. The tickets stay unassigned; the audit entries record who they had.
+
+### The Server Logs Which Migrations Ran (#525)
+
+The server now says what it did to the schema, once, at startup, before it opens the port:
+
+- `database migrated from 21 to 53`: an upgrade from 1.2.0 (the first number is the version the database was at, the second the version it is at now). A new database says `from 0`.
+- `database schema at 53, no migrations needed`: an ordinary restart.
+
+The line carries `from` and `to` fields as well. Use it to check that an upgrade ran before you look anywhere else. Migrations still run on their own, before the server accepts traffic, and a failed one still stops the start with `running migrations: ...`.
+
 ## Upgrade steps
 
 1. **Take a database backup.** If the server generates its JWT signing key (`JWT_SECRET` unset, shorter than 32 bytes, or an example value), the key is stored in the database, so every backup contains it: protect backups accordingly.
 2. **Check your scripts and receivers against Breaking changes.** In particular: anything that uses an API key to create keys or OAuth clients, write users or groups, set passwords or change emails; any key-creating script that sends no `expires_at`; any raw-JSON webhook receiver that reads more than ids; any SMTP setup that sends a password without TLS or sets `SMTP_USER` against a server with no AUTH; any script that files or reclassifies tickets into an archived category, type or item.
-3. **Staff email:** on an upgraded install, staff email starts switched off for everyone; turn it on under Settings → Email when ready.
+3. **Staff email:** on an upgraded install, staff email starts switched off for everyone (migration 000052); turn it on under Settings → Email when ready.
 4. **Restart on 1.3.0** (`docker compose up -d` from the `docker/` directory). Migrations run automatically at start-up, in number order.
 5. **After the first start:** OAuth clients fetch a new access token once if the JWT key was replaced; give each OAuth client a group before turning ticket scope enforcement on; tell people who rarely sign in that passwords on an old hash must be reset within 30 days of the first start of 1.3.0 (administrators are exempt).
 
@@ -452,8 +470,120 @@ Before this, an unwritable directory showed up as a failed upload partway throug
 
 1.2.x ends at migration 000021. Going straight to 1.3.0 applies every later migration in number order, and **there is no migration 000048.** The number was retired while 1.3.0 was being built, so that no pre-release database could skip a migration. Nothing is missing: your database goes from 000047 straight to 000049. (#450 first planned 000048, but #451 merged with 000049 first, and the migration runner never applies a version below the one a database is already at.)
 
-The ones these notes describe: 000038 (webhook ticket filter column), 000039 (removes orphaned custom-field assignments, once, irreversibly), 000040 (`visible_on_new` column default becomes false; existing rows untouched), 000041 (OAuth client service users), 000042 (three staff email columns on `users`), 000043 to 000045 (SLA rematch, the password-rehash clock, `users.must_change_password`), 000046 (`ticket_followers`), 000047 (`tickets.reopen_count`, `last_reopened_at`, `paused_seconds_at_last_reopen`), 000049 (`password_reset_tokens`), 000050 (`api_keys.created_by`, `webhook_configs.api_key_id`; the new #450 settings are rows in the settings table and need no migration) and 000051 (the `dropped` webhook result and `drop_reason`). Those that say so are safe to apply on a running instance.
+The ones these notes describe: 000038 (webhook ticket filter column), 000039 (removes orphaned custom-field assignments, once, irreversibly), 000040 (`visible_on_new` column default becomes false; existing rows untouched), 000041 (OAuth client service users), 000042 (three staff email columns on `users`), 000043 to 000045 (SLA rematch, the password-rehash clock, `users.must_change_password`), 000046 (`ticket_followers`), 000047 (`tickets.reopen_count`, `last_reopened_at`, `paused_seconds_at_last_reopen`), 000049 (`password_reset_tokens`), 000050 (`api_keys.created_by`, `webhook_configs.api_key_id`; the new #450 settings are rows in the settings table and need no migration) and 000051 (the `dropped` webhook result and `drop_reason`), 000052 (stores the three staff email administrator overrides as Off on an install that already has users) and 000053 (open tickets still assigned to deleted users go back to the queue; see *Tickets Left Assigned to a Deleted User Go Back to the Queue (#524)*). Those that say so are safe to apply on a running instance.
 
 A database that ran a 1.3.0 beta build containing `000046` before `000043` to `000045` were merged would skip them: see *Ticket Followers (#441)*.
 
 If you downgrade, the `down` migration of 000041 deletes the OAuth service users; see *OAuth Clients Now Act Through a Service User*.
+
+## Rolling Back to 1.2.0
+
+Migrations are forward-only as far as the server is concerned: it never runs one backwards, and there is no command for it. **A rollback is possible by hand. It discards everything that only 1.3.0 has, and it removes 1.3.0's security fixes.** Take it only if you must. This procedure was run end to end: a database upgraded from 1.2.0 with 1.3.0 activity on it was taken back to version 21, its schema matched a 1.2.0 database (same tables, columns, indexes and constraints; the one difference is below), and the 1.2.0 server then started on it and signed people in, served tickets, attachments, API keys and OAuth tokens, and kept the replies and tickets written under 1.3.0.
+
+### Security: what you give up
+
+1.2.0 does not have these 1.3.0 fixes, and a rollback runs without them. Weigh that before you start, and put the instance behind your own network controls until you move forward again:
+
+- **Postgres is published on every network interface.** 1.2.0's Compose file publishes the database as `5432:5432` with the password `helpdesk`. Docker handles a published port before the host firewall sees it, so closing the port in `ufw` or `firewalld` does not protect it. 1.3.0 binds it to `127.0.0.1`. **The procedure below edits 1.2.0's Compose file to bind it to loopback and checks the result before it starts anything; do not skip that step.**
+- Attachments: the download route refusing a request that is going to be rendered (`Sec-Fetch-Dest`), which is what stops an uploaded file being shown on the help desk's own origin.
+- **API keys:** the restrictions in *Staff Can Create Their Own API Keys* (a key can create keys and OAuth clients again, write users and group membership, and change the settings that decide who sees tickets), the expiry every new key needed, and the fix that stopped a key deleting another administrator's key.
+- SAML: hand-over cookies that can only be used once.
+- MCP: the `Origin` check, the 1 MiB request cap and the binding of an SSE session to the credential that opened it.
+- Others listed in these notes, among them the bcrypt cost, the 72-byte password limit, the 5-minute limit on a half-signed-in session, and the `404` for a ticket you may not see.
+
+### What you lose
+
+Each `down` migration undoes its `up`. These are dropped or deleted, and cannot be brought back except from the backup you take first:
+
+- **Passkeys** (`webauthn_credentials`, 000029) and **guest links** (`guest_access_tokens`, 000022). People re-register their passkeys; a guest needs a new link.
+- **The notification queue** (`notification_outbox`, 000031): any mail or webhook delivery still waiting is gone.
+- **Webhook delivery history** (000037), each hook's **payload format** (Slack, Teams, Discord, Jira, 000026), its **ticket filter** (000038) and its last-delivery status (000034). Hooks go back to plain JSON.
+- **Attachment scan results** (hash, detected type, virus name, quarantine flags, 000023) and the **reputation cache** (000024).
+- **SLA**: pause bookkeeping (000025), the frozen elapsed times (000027), and every superseded SLA record (000043), the history a reopen kept.
+- **Reopen counts and restart points** (000047), **followers** (000046), **password reset links** (000049), the 30-day password clock (000044), the must-change-password flag (000045), **staff email preferences** (000042) and **API key issuer and webhook pause links** (000050).
+- **OAuth service users** (000041): the users made for each client are deleted, and the database removes what hangs off them by cascade: their group memberships (and any sessions or API keys they held, though a service user is not meant to have any). The clients keep working without a user, as in 1.2.0. Tickets and replies they wrote stay, with no author link, and a ticket assigned to one loses its assignee.
+- **The generated JWT signing key** (`instance_secrets`, 000036). 1.2.0 needs its own `JWT_SECRET` in `docker/.env`: set a random secret of at least 32 bytes (for example `openssl rand -base64 48`). 1.2.0 only warns about a weak or example secret and signs with whatever you give it, and 1.3.0 discarded published example values as well as short and unset ones, so a value that 1.3.0 ignored is not safe to reuse. Every OAuth client fetches a new token either way.
+- Pending signups that 1.3.0 created without a name or password (000032, 000033).
+
+**Not undone** (they repair or seed data and have no inverse; their `down` does nothing): `000028`, `000039`, `000052` and `000053`. The three staff-email overrides `000052` stored stay in the settings table, and the tickets `000053` returned to the queue stay unassigned. 1.2.0 never reads those settings. Settings rows 1.3.0 wrote stay in the table. Passwords hashed at the new cost still work on 1.2.0.
+
+**One difference from a 1.2.0 database:** `ticket_replies.guest_token` is the last column of the table instead of the fourth. Nothing reads columns by position.
+
+### Procedure
+
+You need a checkout of the **1.3.0** release, because the `down` files live in it (`backend/internal/database/migrations`) and 1.3.0 is deployed from an image, so a checkout may not exist or may be at another version. Check out the release first, from the directory your Compose stack was started in:
+
+```sh
+cd go-help-desk
+git fetch --tags
+git checkout v1.3.0
+cd docker
+```
+
+1. **Stop the app and take a backup.** Do not skip this: the steps below delete data.
+
+   ```sh
+   docker compose stop app
+   docker compose exec -T db pg_dump -U helpdesk helpdesk > ../backup-before-rollback.sql
+   ```
+
+2. **Run the down migrations**, newest first, each in its own transaction, starting from the version the database is at. Save this as `rollback.sh` in `go-help-desk/docker` and run `bash rollback.sh`:
+
+   ```sh
+   set -euo pipefail
+   MIG=../backend/internal/database/migrations
+   PSQL="docker compose exec -T db psql -U helpdesk -d helpdesk -v ON_ERROR_STOP=1"
+   current=$($PSQL -Atc "SELECT version FROM schema_migrations")
+   case "$current" in ''|*[!0-9]*) echo "database version '$current' is not a number: stop"; exit 1;; esac
+   top=$(ls $MIG/*.down.sql | sort | tail -1 | xargs basename | cut -c1-6)
+   if [ "$current" -gt $((10#$top)) ]; then
+     echo "database is at $current but this checkout stops at $top: check out the release you run (v1.3.0)"; exit 1
+   fi
+   dirty=$($PSQL -Atc "SELECT dirty FROM schema_migrations")
+   if [ "$dirty" != f ]; then
+     echo "the database is marked dirty: a migration failed part-way; restore the backup, do not continue"; exit 1
+   fi
+   echo "database is at version $current"
+   for f in $(ls $MIG/*.down.sql | sort -r); do
+     name=$(basename "$f")
+     v=$((10#${name:0:6}))
+     if [ "$v" -gt "$current" ]; then continue; fi
+     if [ "$v" -le 21 ]; then break; fi
+     echo "rolling back $name"
+     $PSQL --single-transaction < "$f" || { echo "STOPPED at $name: restore the backup"; exit 1; }
+   done
+   $PSQL -c "UPDATE schema_migrations SET version = 21, dirty = false"
+   ```
+
+   There is no `000048`; the script skips it because there is no file. If it stops, the failed file made no change (it ran in a transaction) but the ones before it did: restore `backup-before-rollback.sql` rather than continue.
+
+3. **Check out 1.2.0 and bind Postgres to loopback, before anything starts.** 1.2.0's Compose file would publish the database on every interface (see *Security* above), so edit it first, then check it. Save this as `bind.sh` in `go-help-desk/docker` and run it with `bash bind.sh`, from the directory you ran `rollback.sh` in:
+
+   ```sh
+   set -euo pipefail
+   cd ..
+   git checkout v1.2.0
+   cd docker
+   sed -i.bak 's/"5432:5432"/"127.0.0.1:5432:5432"/' docker-compose.yml
+   rm -f docker-compose.yml.bak
+   cfg=$(docker compose config)
+   if [ "$(printf '%s\n' "$cfg" | grep -c 'target: 5432')" != 1 ] \
+      || ! printf '%s\n' "$cfg" | grep -B1 'target: 5432' | grep -q 'host_ip: 127.0.0.1'; then
+     echo "Postgres is not bound to 127.0.0.1 only: do NOT start the stack"; exit 1
+   fi
+   echo "ok: Postgres is bound to 127.0.0.1 only"
+   ```
+
+   `git checkout v1.2.0` needs a clean working tree, so it also stops you if you have changed tracked files. If the check fails, stop and fix `docker-compose.yml` by hand until `docker compose config` shows `host_ip: 127.0.0.1` on the `5432` binding and no other. Do not use a `docker-compose.override.yml` for this: Compose before 2.24.4 ignores the `!override` tag without a warning and publishes the port on both.
+
+4. **Start 1.2.0**, only once step 3 has printed `ok`. It builds the app from source, the way 1.2.0 did:
+
+   ```sh
+   docker compose up -d --build
+   ```
+
+   Keep your `docker/.env`, and make sure it has a `JWT_SECRET` as described above: 1.2.0's Compose file refuses to start without one.
+
+5. **Check it.** Sign in as an administrator, open a few tickets, and download an attachment. `SELECT version, dirty FROM schema_migrations` should say `21 | f`. `docker compose port db 5432` should say `127.0.0.1:5432`.
+
+To go forward again, run `git checkout -- docker-compose.yml` in `go-help-desk/docker` to drop the edit from step 3, then `git checkout v1.3.0` (it refuses while the file is changed) and start it: it runs every migration from 22, and says so in the log (`database migrated from 21 to 53`).
