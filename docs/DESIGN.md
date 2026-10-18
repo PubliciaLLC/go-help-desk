@@ -2496,7 +2496,7 @@ unchanged.
 What this does not change, and is not a hole this rule closes: **OIDC sign-in
 can adopt an existing account by email** (`canAdoptByEmail`): when a verified
 address matches an account that is active, not a service account, not an administrator, not federated
-through SAML, not a service account and not bound to another OIDC subject, the first OIDC sign-in with
+through SAML and not bound to another OIDC subject, the first OIDC sign-in with
 that address takes it over, whatever its password. That is how a locally
 provisioned account joins an identity provider, and it is how this behaved before
 #450. With keys unable to create or re-address accounts, a key can no longer

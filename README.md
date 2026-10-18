@@ -26,6 +26,7 @@ Go Help Desk is an open-source ticket management system. Staff submit and track 
 - Guest submission and self-service signup, both off by default
 - Custom fields, tags, canned responses, and full-text search
 - Optional SLA tracking; resolved tickets close automatically after a configurable reopen window
+- API keys for administrators, and for staff when an administrator allows it. Every new key expires, and keys cannot create keys or write users
 - Staff can file a ticket for a requester, an existing user or a typed email address
 - Readable audit log with opt-in retention
 - Email notifications, queued with retries. Staff are emailed about their tickets and can follow a ticket
@@ -78,6 +79,7 @@ Read the full notes before upgrading: [1.3.0](https://gohelpdesk.org/docs/upgrad
 - Accounts that have not signed in within 30 days of the first 1.3.0 start must reset their password. Administrators are exempt. They can use "Forgot password?" on the sign-in page when email is set up. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#password-age)
 - Raw JSON webhooks now carry ids only, and internal notes are their own event. A hook now gets one delivery per change, not one per kind of change. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#one-event)
 - Staff and administrators start receiving email about their tickets once email is configured. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#staff-email)
+- API keys: a key can no longer create API keys or OAuth clients, write users or group membership, or change the ticket-scope and auto-assignment settings, and a new key needs an expiry. Scripts that do these break. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#api-keys)
 - Locked out? `docker compose exec app /app/server unlock you@example.com` on the server. [Details](https://gohelpdesk.org/docs/getting-started#locked-out)
 
 **1.2.0**
