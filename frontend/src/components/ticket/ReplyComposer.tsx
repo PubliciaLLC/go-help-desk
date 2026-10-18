@@ -70,7 +70,7 @@ function CannedResponsePicker({ responses, onSelect, onClose, containerRef }: Ca
               onClick={() => onSelect(r.body)}
             >
               <div className="text-sm font-medium text-gray-900">{r.name}</div>
-              <div className="truncate text-xs text-gray-400">{r.body}</div>
+              <div className="truncate text-xs text-gray-400" title={r.body}>{r.body}</div>
             </button>
           ))
         )}

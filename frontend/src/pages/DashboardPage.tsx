@@ -31,7 +31,7 @@ export function DashboardPage() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-            <p className="text-sm text-gray-500">Welcome back, {user?.display_name}</p>
+            <p className="text-sm text-gray-500 wrap-anywhere">Welcome back, {user?.display_name}</p>
           </div>
           <Link to="/tickets/new">
             <Button>
@@ -80,8 +80,8 @@ export function DashboardPage() {
                         <UserIcon className="h-4 w-4" />
                       </div>
                       <div className="min-w-0">
-                        <p className="truncate text-sm font-medium text-gray-900">{c.display_name}</p>
-                        <p className="truncate text-xs text-gray-500">{c.email}</p>
+                        <p className="truncate text-sm font-medium text-gray-900" title={c.display_name}>{c.display_name}</p>
+                        <p className="truncate text-xs text-gray-500" title={c.email}>{c.email}</p>
                       </div>
                     </CardContent>
                   </Card>

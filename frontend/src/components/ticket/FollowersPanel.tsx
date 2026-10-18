@@ -74,7 +74,7 @@ export function FollowersPanel({ ticketId }: { ticketId: string }) {
         )}
         <ul className="space-y-1">
           {followers.map((f) => (
-            <li key={f.user_id} className="text-xs text-gray-700">
+            <li key={f.user_id} className="text-xs text-gray-700 wrap-anywhere">
               <span className="font-medium">{f.display_name}</span>
               {me?.id === f.user_id && <span className="text-gray-400"> (you)</span>}
             </li>

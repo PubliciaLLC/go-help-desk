@@ -95,7 +95,7 @@ export function AttachmentUpload({ files, onChange, uploadStates, disabled, maxF
             const state = uploadStates?.[f.name]
             return (
               <li key={i} className="flex items-center gap-2 px-3 py-2">
-                <span className="flex-1 truncate text-gray-800">{f.name}</span>
+                <span className="flex-1 truncate text-gray-800" title={f.name}>{f.name}</span>
                 <span className="shrink-0 text-xs text-gray-400">{formatBytes(f.size)}</span>
                 {isUploading ? (
                   statusIcon(state)
