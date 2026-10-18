@@ -115,7 +115,7 @@ func TestEndToEnd_AChangeIsAnnouncedOnceAndMailedOncePerPerson(t *testing.T) {
 
 	// Staff mail is read by the worker, with the real follower and account reads.
 	recorder := &mailRecorder{}
-	splitter := notify.NewChangeSplitter(recorder, outboxstore.New(q), nil, us, members, ts,
+	splitter := notify.NewChangeSplitter(recorder, outboxstore.NewWithDB(db.SQL), nil, us, members, ts,
 		func(context.Context) notification.StaffOverrides { return notification.StaffOverrides{} },
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	worker := notify.NewWorker(outboxstore.New(q), map[string]notification.Dispatcher{
@@ -215,5 +215,6 @@ func TestEndToEnd_AChangeIsAnnouncedOnceAndMailedOncePerPerson(t *testing.T) {
 	require.NoError(t, err)
 	drain()
 	require.Equal(t, map[uuid.UUID]int{routedTo.ID: 1}, staffMailTo())
+	require.Empty(t, requesterMails(), "the reporter is staff, so no requester mail goes to anyone else")
 	_ = mine
 }

@@ -555,6 +555,9 @@ type WebhookDeliveryRecord struct {
 	Result        string    `json:"result"`          // "ok", or one of notify.DeliveryErrors
 	Attempts      int       `json:"attempts"`
 	Retrying      bool      `json:"retrying"`
+	// DropReason is set only when Result is "dropped" (#499): one of
+	// notify.DropReasons. Absent from the JSON otherwise.
+	DropReason string `json:"drop_reason,omitempty"`
 }
 
 // RecordWebhookAttempt stores an attempt on its delivery's row and trims the
@@ -578,6 +581,17 @@ func (s *Store) RecordWebhookAttempt(ctx context.Context, a WebhookAttempt) erro
 	return nil
 }
 
+// MarkWebhookDeliveryDropped turns a delivery's "retrying" entry into
+// "dropped" with the reason (#499). Any other entry, or none, is left as it is.
+func (s *Store) MarkWebhookDeliveryDropped(ctx context.Context, hookID, deliveryID uuid.UUID, reason string) error {
+	if err := s.q.MarkWebhookDeliveryDropped(ctx, dbgen.MarkWebhookDeliveryDroppedParams{
+		ID: deliveryID, WebhookID: hookID, Reason: reason,
+	}); err != nil {
+		return fmt.Errorf("marking webhook delivery %s dropped: %w", deliveryID, err)
+	}
+	return nil
+}
+
 // ListWebhookDeliveries returns a hook's history, newest first.
 func (s *Store) ListWebhookDeliveries(ctx context.Context, hookID uuid.UUID) ([]WebhookDeliveryRecord, error) {
 	rows, err := s.q.ListWebhookDeliveries(ctx, hookID)
@@ -588,7 +602,7 @@ func (s *Store) ListWebhookDeliveries(ctx context.Context, hookID uuid.UUID) ([]
 	for i, r := range rows {
 		out[i] = WebhookDeliveryRecord{ID: r.ID, Event: r.EventType,
 			StartedAt: r.CreatedAt.UTC(), LastAttemptAt: r.LastAttemptAt.UTC(),
-			Status: int(r.Status), Result: r.Result, Attempts: int(r.Attempts), Retrying: r.Retrying}
+			Status: int(r.Status), Result: r.Result, Attempts: int(r.Attempts), Retrying: r.Retrying, DropReason: r.DropReason}
 	}
 	return out, nil
 }

@@ -798,6 +798,10 @@ type Querier interface {
 	// admin search had to be paged and filtered in the caller. display_name, id is
 	// a total order, so an account is neither repeated nor missed.
 	LookupRequesters(ctx context.Context, q_ string) ([]User, error)
+	// A queued retry was dropped: its entry stops saying "retrying" (#499). Only a
+	// retrying entry changes, so a finished result stays a fact and a drop with no
+	// earlier entry marks nothing. attempts is left alone: a drop is not an attempt.
+	MarkWebhookDeliveryDropped(ctx context.Context, arg MarkWebhookDeliveryDroppedParams) error
 	NextTicketSeq(ctx context.Context) (int64, error)
 	// Keeps the newest keep_n deliveries of one hook (#448).
 	PruneWebhookDeliveries(ctx context.Context, arg PruneWebhookDeliveriesParams) error
@@ -1012,6 +1016,10 @@ type Querier interface {
 	// will, so a demotion or a password reset landing in that window was written
 	// back by the next sign-in.
 	SyncFederatedUser(ctx context.Context, arg SyncFederatedUserParams) error
+	// Deletes a row and says whether this call was the one that did. Split uses it
+	// to take the parent before queueing its children: zero rows means another
+	// worker already split or settled it (#513).
+	TakeNotification(ctx context.Context, id uuid.UUID) (int64, error)
 	// First use stamps the row. Separate from the lookup so a read of the ticket
 	// is not also a write on the hot path when the column is already set.
 	TouchGuestAccessToken(ctx context.Context, tokenHash string) error

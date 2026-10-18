@@ -238,6 +238,8 @@ Admin, Webhooks has a History button per hook: its last 25 deliveries with the o
 
 This adds a database table through a migration that runs at start-up.
 
+A retry that is dropped (the hook was disabled, paused because its API key was revoked or expired, or unsubscribed from the event, its ticket filter no longer admits the ticket, or the body cannot be built) now shows in History as **Dropped** with the reason. Before, its entry stayed on "Retrying" for ever. **Migration 000051** adds the `dropped` result and a `drop_reason` column to the history table; existing entries are unchanged, and the down migration turns dropped entries into `other`. The history API adds `result: "dropped"` and a `drop_reason` field, present only on dropped entries. Changing a hook's URL still clears the whole history, as before, so after a URL change you see an empty History rather than a dropped entry (`url_changed` appears only for an attempt that was in flight at that moment).
+
 ## Email: SMTP Encryption and Honesty (Breaking, Read First)
 
 Email (SMTP) now fails loudly instead of quietly. Several setups that used to "work" now fail, and the failure shows in the admin panel. Check these before upgrading. Nothing needs changing if your mail server offers STARTTLS (or you use port 465) and, when `SMTP_USER` is set, offers AUTH.
@@ -400,6 +402,7 @@ A change to a ticket is now **one event**, written to the notification queue in 
 
 - Who is mailed is decided by the server when it first picks the change up, a moment after the commit, not on the request. At most one mail goes to any address in one change (compared without case); when a guest's address is also a staff member's, the staff mail is the one sent. A person who qualifies for several reasons in one change gets one mail: the first of assigned, reopened, requester replied whose switch is on. Mail queued before the upgrade is sent as it is.
 - **A failed lookup of a ticket's followers or of a group's members retries the whole change.** Before, the mail to those people was dropped without a retry, and only a failed read of staff accounts was retried. Nobody is mailed from a partial answer, so a retry does not mail anyone twice. A lookup that keeps failing holds back every mail for that change, the requester's included: the change is tried 8 times in all over about an hour, then the row is marked failed. The error in the log is "staff email: could not work out who to notify".
+- **A slow split can no longer send the same mail twice.** If working out who to mail took longer than the 5-minute claim, a second worker could split the same change again after the first one's mail had gone out. The second now finds the change already taken and queues nothing.
 - A guest may get a different template: the first of created, reopened, resolved, replied, status changed that the change carries. A `PATCH` to Resolved now says "We have resolved", and a status change that reopens says "We have reopened".
 
 ## MCP: Request Body Cap and SSE Sessions Bound to Their Actor (#481, #495)

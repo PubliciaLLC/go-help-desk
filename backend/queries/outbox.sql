@@ -28,6 +28,12 @@ RETURNING id, channel, event, attempts;
 -- name: DeleteNotification :exec
 DELETE FROM notification_outbox WHERE id = $1;
 
+-- name: TakeNotification :execrows
+-- Deletes a row and says whether this call was the one that did. Split uses it
+-- to take the parent before queueing its children: zero rows means another
+-- worker already split or settled it (#513).
+DELETE FROM notification_outbox WHERE id = $1;
+
 -- name: RetryNotification :exec
 UPDATE notification_outbox
 SET available_at = $2, last_error = $3, claimed_until = NULL

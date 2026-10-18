@@ -73,6 +73,31 @@ func TestWebhookHistory_ListShowsOutcomesOnly(t *testing.T) {
 	require.Equal(t, "ok", list[1]["result"])
 }
 
+// A dropped retry shows as "dropped" with its reason (#499); the reason key is
+// absent on every other entry, so the shape other entries had does not change.
+func TestWebhookHistory_ListShowsADroppedRetry(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	hook := historyHook(t, h, true)
+	now := time.Now().UTC()
+	id := uuid.New()
+	require.NoError(t, h.authStore.RecordWebhookAttempt(context.Background(), authstore.WebhookAttempt{
+		DeliveryID: id, HookID: hook.ID, EventType: "ticket.replied", Event: []byte(`{"Type":"ticket.replied"}`),
+		Result: authstore.WebhookDelivery{At: now, Status: 503, Error: "http_status"}, Retrying: true,
+	}))
+	require.NoError(t, h.authStore.MarkWebhookDeliveryDropped(context.Background(), hook.ID, id, "disabled"))
+
+	res := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/webhooks/"+hook.ID.String()+"/deliveries", nil)
+	defer res.Body.Close()
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	var list []map[string]any
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&list))
+	require.Len(t, list, 1)
+	require.Equal(t, "dropped", list[0]["result"])
+	require.Equal(t, "disabled", list[0]["drop_reason"])
+	require.Equal(t, false, list[0]["retrying"])
+}
+
 func keysOf(m map[string]any) []string {
 	var out []string
 	for k := range m {
