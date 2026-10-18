@@ -30,7 +30,7 @@ func TestServiceAccount_RefusedInAutoAssignUserIDs(t *testing.T) {
 	status, body := patchSettings(t, h, map[string]any{"auto_assign_user_ids": []string{h.staffID.String()}})
 	require.Equal(t, http.StatusNoContent, status, body)
 
-	res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/settings",
+	res := h.doAsAdminSession(t, http.MethodPatch, "/api/v1/admin/settings",
 		map[string]any{"auto_assign_user_ids": []string{h.staffID.String(), c.UserID.String()}})
 	defer res.Body.Close()
 	require.Equal(t, http.StatusBadRequest, res.StatusCode)

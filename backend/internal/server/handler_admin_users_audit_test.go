@@ -19,7 +19,7 @@ func TestAdminResetMFA_WritesAnAuditEntryNamingTheAdmin(t *testing.T) {
 	ctx := context.Background()
 	enrollMFA(t, ctx, h.userSvc, h.staffID)
 
-	res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+h.staffID.String(),
+	res := h.doAsAdminSession(t, http.MethodPatch, "/api/v1/admin/users/"+h.staffID.String(),
 		map[string]any{"reset_mfa": true})
 	res.Body.Close()
 	require.Equal(t, http.StatusOK, res.StatusCode)
@@ -37,7 +37,7 @@ func TestAdminPasswordReset_WritesAnAuditEntryNamingTheAdmin(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	res := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/users/"+h.staffID.String()+"/password",
+	res := h.doAsAdminSession(t, http.MethodPost, "/api/v1/admin/users/"+h.staffID.String()+"/password",
 		map[string]any{"new_password": "a-brand-new-password"})
 	res.Body.Close()
 	require.Equal(t, http.StatusNoContent, res.StatusCode)
@@ -104,11 +104,10 @@ func TestAdminSetPassword_SucceedsAndIsAuditedEvenIfTheCallerHasAlreadyDisconnec
 // A rejected reset attempt (bad target, wrong shape) must not still leave
 // something in the trail claiming it happened.
 //
-// Deliberately a logged-in SESSION, not h.doAsAdmin's API key: an API key
-// hits denyMachineTargetingAdmin's own GetByID 404 before ResetMFA is ever
-// called, which made an earlier version of this test pass without
-// exercising ResetMFA's nonexistent-target behavior at all. A real session
-// reaches the handler's ResetMFA call directly. Found by adversarial review
+// Deliberately a logged-in SESSION, not h.doAsAdmin's API key: a key is refused
+// at the route (keys can't write users), which would make this test pass
+// without exercising ResetMFA's nonexistent-target behavior at all. A real
+// session reaches the handler's ResetMFA call directly. Found by adversarial review
 // of #306: ClearMFA/AdminSetPassword were sqlc :exec queries, so an UPDATE
 // matching zero rows reported no error, and the audit entry was written
 // unconditionally — a permanent, falsely-attributed row for an account that

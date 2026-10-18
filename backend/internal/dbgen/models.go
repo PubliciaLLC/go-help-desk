@@ -14,14 +14,15 @@ import (
 )
 
 type ApiKey struct {
-	ID          uuid.UUID    `json:"id"`
-	Name        string       `json:"name"`
-	HashedToken string       `json:"hashed_token"`
-	UserID      uuid.UUID    `json:"user_id"`
-	Scopes      []string     `json:"scopes"`
-	LastUsedAt  sql.NullTime `json:"last_used_at"`
-	ExpiresAt   sql.NullTime `json:"expires_at"`
-	CreatedAt   time.Time    `json:"created_at"`
+	ID          uuid.UUID     `json:"id"`
+	Name        string        `json:"name"`
+	HashedToken string        `json:"hashed_token"`
+	UserID      uuid.UUID     `json:"user_id"`
+	Scopes      []string      `json:"scopes"`
+	LastUsedAt  sql.NullTime  `json:"last_used_at"`
+	ExpiresAt   sql.NullTime  `json:"expires_at"`
+	CreatedAt   time.Time     `json:"created_at"`
+	CreatedBy   uuid.NullUUID `json:"created_by"`
 }
 
 type Attachment struct {
@@ -379,6 +380,7 @@ type WebhookConfig struct {
 	LastDeliveryStatus int32           `json:"last_delivery_status"`
 	LastDeliveryError  string          `json:"last_delivery_error"`
 	TicketFilter       json.RawMessage `json:"ticket_filter"`
+	ApiKeyID           uuid.NullUUID   `json:"api_key_id"`
 }
 
 type WebhookDelivery struct {

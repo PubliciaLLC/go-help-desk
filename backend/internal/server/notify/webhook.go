@@ -226,6 +226,9 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event notification.Eve
 	}
 
 	for _, hook := range hooks {
+		if d.paused(ctx, hook) {
+			continue
+		}
 		// One delivery per change, labelled with the first kind this hook
 		// subscribes to (#506, ruling 6).
 		ev, ok := forHook(hook, event)
@@ -268,6 +271,20 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event notification.Eve
 	return nil
 }
 
+// paused reports whether the hook is paused because the API key that made or
+// last re-pointed it was revoked or has expired (#450). Nothing is sent and no
+// history is written, which is how a disabled hook is treated; #518's
+// dropped-delivery record was not merged when this was written, so this does
+// not depend on it. The reason shows on the admin page, and here as a log line.
+func (d *WebhookDispatcher) paused(ctx context.Context, hook authstore.WebhookConfig) bool {
+	if !hook.Paused {
+		return false
+	}
+	d.log.InfoContext(ctx, "webhook not sent: its API key was revoked or has expired",
+		"webhook_id", hook.ID)
+	return true
+}
+
 // admits reports whether the hook's ticket filter lets the event through. An
 // event with no ticket state (queued before #413) is let through and logged: an
 // extra message beats a missed one.
@@ -304,6 +321,9 @@ func (d *WebhookDispatcher) fanOut(ctx context.Context, ev notification.Event) e
 	parent := RowID(ctx)
 	var first error
 	for _, hook := range hooks {
+		if d.paused(ctx, hook) {
+			continue
+		}
 		if _, ok := subscribedKind(hook, ev); !ok {
 			continue
 		}
@@ -351,6 +371,11 @@ func (d *WebhookDispatcher) deliverQueued(ctx context.Context, ev notification.E
 	}
 	if !hook.Enabled {
 		d.markDropped(ctx, hook.ID, DropDisabled)
+		return nil
+	}
+	// Settled, like a disabled hook: its key was revoked or expired since the
+	// event was queued. Judged on every attempt, so it stops retries too.
+	if d.paused(ctx, hook) {
 		return nil
 	}
 	// Settled, not failed, like a disabled or deleted hook: an administrator
@@ -477,7 +502,7 @@ func (d *WebhookDispatcher) Redeliver(ctx context.Context, hookID, deliveryID uu
 	case err != nil:
 		return fmt.Errorf("loading webhook: %w", err)
 	}
-	if !hook.Enabled {
+	if !hook.Enabled || hook.Paused {
 		return ErrWebhookDisabled
 	}
 	stored, err := d.queue.History.GetWebhookDeliveryEvent(ctx, hookID, deliveryID)

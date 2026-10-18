@@ -38,7 +38,7 @@ func TestDeleteUser_ReturnsTheirOpenTicketsToTheQueue(t *testing.T) {
 	_, err = h.ticketSvc.Assign(ctx, open.ID, &leaver.ID, nil, ticket.SystemActor)
 	require.NoError(t, err)
 
-	res := h.doAsAdmin(t, http.MethodDelete, "/api/v1/admin/users/"+leaver.ID.String(), nil)
+	res := h.doAsAdminSession(t, http.MethodDelete, "/api/v1/admin/users/"+leaver.ID.String(), nil)
 	res.Body.Close()
 	require.Equal(t, http.StatusNoContent, res.StatusCode)
 
@@ -81,7 +81,7 @@ func TestCreateUser_ATakenAddressIsAConflict(t *testing.T) {
 		_, err := h.userSvc.Create(context.Background(), userInput("taken@test.local", "Already Here"))
 		require.NoError(t, err)
 
-		res := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
+		res := h.doAsAdminSession(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
 			"email": "taken@test.local", "display_name": "Someone Else",
 			"role": "user", "password": "a-real-passphrase",
 		})
@@ -98,7 +98,7 @@ func TestCreateUser_ATakenAddressIsAConflict(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, h.userSvc.SoftDelete(ctx, existing.ID))
 
-		res := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
+		res := h.doAsAdminSession(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
 			"email": "taken@test.local", "display_name": "The Returner",
 			"role": "user", "password": "a-real-passphrase",
 		})
@@ -121,7 +121,7 @@ func TestCreateUser_StoresTheBareAddress(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	res := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
+	res := h.doAsAdminSession(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
 		"email": "<bracketed@test.local>", "display_name": "Bracketed",
 		"role": "user", "password": "a-real-passphrase",
 	})

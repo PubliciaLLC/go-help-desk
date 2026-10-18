@@ -41,7 +41,7 @@ func TestSessionRevocation(t *testing.T) {
 		defer cleanup()
 		s := loggedIn(t, h)
 
-		res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+h.staffID.String(),
+		res := h.doAsAdminSession(t, http.MethodPatch, "/api/v1/admin/users/"+h.staffID.String(),
 			map[string]any{"disabled": true})
 		res.Body.Close()
 		require.Equal(t, http.StatusOK, res.StatusCode)
@@ -56,7 +56,7 @@ func TestSessionRevocation(t *testing.T) {
 		defer cleanup()
 		s := loggedIn(t, h)
 
-		res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+h.staffID.String(),
+		res := h.doAsAdminSession(t, http.MethodPatch, "/api/v1/admin/users/"+h.staffID.String(),
 			map[string]any{"role": string(user.RoleUser)})
 		res.Body.Close()
 		require.Equal(t, http.StatusOK, res.StatusCode)
@@ -72,7 +72,7 @@ func TestSessionRevocation(t *testing.T) {
 		defer cleanup()
 		s := loggedIn(t, h)
 
-		res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+h.staffID.String(),
+		res := h.doAsAdminSession(t, http.MethodPatch, "/api/v1/admin/users/"+h.staffID.String(),
 			map[string]any{"display_name": "Renamed Person"})
 		res.Body.Close()
 		require.Equal(t, http.StatusOK, res.StatusCode)
@@ -92,7 +92,7 @@ func TestSessionRevocation(t *testing.T) {
 		enrollMFA(t, ctx, h.userSvc, h.staffID)
 		s := loggedIn(t, h)
 
-		res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+h.staffID.String(),
+		res := h.doAsAdminSession(t, http.MethodPatch, "/api/v1/admin/users/"+h.staffID.String(),
 			map[string]any{"reset_mfa": true})
 		res.Body.Close()
 		require.Equal(t, http.StatusOK, res.StatusCode)
@@ -114,7 +114,7 @@ func TestSessionRevocation(t *testing.T) {
 		defer cleanup()
 		s := loggedIn(t, h)
 
-		res := h.doAsAdmin(t, http.MethodDelete, "/api/v1/admin/users/"+h.staffID.String(), nil)
+		res := h.doAsAdminSession(t, http.MethodDelete, "/api/v1/admin/users/"+h.staffID.String(), nil)
 		res.Body.Close()
 		require.Equal(t, http.StatusNoContent, res.StatusCode)
 
@@ -128,7 +128,7 @@ func TestSessionRevocation(t *testing.T) {
 		defer cleanup()
 		s := loggedIn(t, h)
 
-		res := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/users/"+h.staffID.String()+"/password",
+		res := h.doAsAdminSession(t, http.MethodPost, "/api/v1/admin/users/"+h.staffID.String()+"/password",
 			map[string]any{"new_password": "a-brand-new-password"})
 		res.Body.Close()
 		require.Equal(t, http.StatusNoContent, res.StatusCode)

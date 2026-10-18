@@ -67,12 +67,12 @@ func TestServiceAccount_CanBeRenamedGivenGroupsAndSwitchedOff(t *testing.T) {
 	c := h.newServiceClient(t, "Nagios", "tickets:read")
 	base := "/api/v1/admin/users/" + c.UserID.String()
 
-	require.Equal(t, http.StatusOK, h.doAsAdmin(t, http.MethodPatch, base,
+	require.Equal(t, http.StatusOK, h.doAsAdminSession(t, http.MethodPatch, base,
 		map[string]any{"display_name": "Nagios (prod)"}).StatusCode)
 
 	g, err := h.groupSvc.Create(context.Background(), "Monitoring", "")
 	require.NoError(t, err)
-	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/groups/"+g.ID.String()+"/members",
+	resp := h.doAsAdminSession(t, http.MethodPost, "/api/v1/admin/groups/"+g.ID.String()+"/members",
 		map[string]any{"user_id": c.UserID.String()})
 	require.Less(t, resp.StatusCode, 300, "a service user can be put in a group")
 
@@ -88,7 +88,7 @@ func TestServiceAccount_CanBeRenamedGivenGroupsAndSwitchedOff(t *testing.T) {
 	require.Len(t, detail.Groups, 1)
 	require.Equal(t, g.ID, detail.Groups[0].ID)
 
-	require.Equal(t, http.StatusOK, h.doAsAdmin(t, http.MethodPatch, base,
+	require.Equal(t, http.StatusOK, h.doAsAdminSession(t, http.MethodPatch, base,
 		map[string]any{"disabled": true}).StatusCode)
 }
 
@@ -117,7 +117,7 @@ func TestServiceAccount_CannotBeGivenATicket(t *testing.T) {
 	c := h.newServiceClient(t, "Nagios", "tickets:read")
 	id := createTicketID(t, h, "Assign me to a client")
 
-	resp := h.doAsAdmin(t, http.MethodPatch, "/api/v1/tickets/"+id.String(),
+	resp := h.doAsAdminSession(t, http.MethodPatch, "/api/v1/tickets/"+id.String(),
 		map[string]any{"assignee_user_id": c.UserID.String()})
 	require.GreaterOrEqual(t, resp.StatusCode, 400, "a service user cannot be an assignee")
 	require.Less(t, resp.StatusCode, 500)

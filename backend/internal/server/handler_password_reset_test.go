@@ -612,7 +612,7 @@ func TestResetPassword_IsRecordedInTheAuditTrail(t *testing.T) {
 func TestResetPassword_LeavesTheAdministratorsResetAlone(t *testing.T) {
 	h, cleanup := newHarness(t) // email off
 	defer cleanup()
-	res := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/users/"+h.userID.String()+"/password",
+	res := h.doAsAdminSession(t, http.MethodPost, "/api/v1/admin/users/"+h.userID.String()+"/password",
 		map[string]any{"new_password": "set-by-an-administrator"})
 	res.Body.Close()
 	require.Equal(t, http.StatusNoContent, res.StatusCode)

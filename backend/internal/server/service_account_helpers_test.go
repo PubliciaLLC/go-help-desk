@@ -28,7 +28,7 @@ type serviceClient struct {
 // is how the admin page learns it.
 func (h *harness) newServiceClient(t *testing.T, name string, scopes ...string) serviceClient {
 	t.Helper()
-	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/oauth-clients", map[string]any{
+	resp := h.createCredential(t, "/api/v1/admin/oauth-clients", map[string]any{
 		"name": name, "scopes": scopes,
 	})
 	require.Equal(t, http.StatusCreated, resp.StatusCode)

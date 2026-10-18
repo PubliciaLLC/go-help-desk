@@ -1582,6 +1582,77 @@ func TestAuthStore_APIKeys(t *testing.T) {
 	require.Error(t, err)
 }
 
+// created_by records who issued a key (#450): the owner for a key they made
+// themselves, an administrator for one issued on their behalf. DeleteForUser is
+// the self-service revoke; it must not be able to touch somebody else's key.
+func TestAuthStore_APIKeys_CreatedByAndOwnerScopedDelete(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	as := authstore.New(q)
+	us := userstore.New(q)
+
+	mk := func(email string, role user.Role) user.User {
+		u := user.User{
+			ID: uuid.New(), Email: email, DisplayName: email,
+			Role: role, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		}
+		require.NoError(t, us.Create(ctx, u))
+		return u
+	}
+	owner := mk("owner-450@example.com", user.RoleStaff)
+	other := mk("other-450@example.com", user.RoleStaff)
+	admin := mk("admin-450@example.com", user.RoleAdmin)
+
+	newKey := func(userID uuid.UUID, createdBy *uuid.UUID) auth.APIKey {
+		_, hashed, err := auth.GenerateToken()
+		require.NoError(t, err)
+		k := auth.APIKey{
+			ID: uuid.New(), Name: "k", HashedToken: hashed, UserID: userID,
+			CreatedBy: createdBy, Scopes: []string{"tickets:read"},
+			CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
+		}
+		require.NoError(t, as.CreateAPIKey(ctx, k))
+		return k
+	}
+
+	issued := newKey(owner.ID, &admin.ID)
+	legacy := newKey(owner.ID, nil)
+
+	got, err := as.GetByHash(ctx, issued.HashedToken)
+	require.NoError(t, err)
+	require.NotNil(t, got.CreatedBy)
+	require.Equal(t, admin.ID, *got.CreatedBy)
+
+	got, err = as.GetByHash(ctx, legacy.HashedToken)
+	require.NoError(t, err)
+	require.Nil(t, got.CreatedBy, "a key with no recorded issuer reads back as nil, not as the zero UUID")
+
+	list, err := as.ListByUser(ctx, owner.ID)
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+
+	withOwner, err := as.ListWithOwner(ctx, &issued.ID)
+	require.NoError(t, err)
+	require.Len(t, withOwner, 1)
+	require.NotNil(t, withOwner[0].CreatedBy)
+	require.Equal(t, admin.ID, *withOwner[0].CreatedBy)
+
+	// Somebody else's key is "not found", the same answer as a key that does
+	// not exist, and it is still there afterwards.
+	err = as.DeleteForUser(ctx, issued.ID, other.ID)
+	require.ErrorIs(t, err, auth.ErrNotFound)
+	_, err = as.GetByHash(ctx, issued.HashedToken)
+	require.NoError(t, err)
+
+	require.NoError(t, as.DeleteForUser(ctx, issued.ID, owner.ID))
+	_, err = as.GetByHash(ctx, issued.HashedToken)
+	require.Error(t, err)
+}
+
 func TestAuthStore_OAuthClients(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()

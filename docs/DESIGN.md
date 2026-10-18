@@ -2346,7 +2346,9 @@ in this beta's bug-fix branch rather than deferred to a major version — see
 - If `BASE_URL` has no usable origin, every request that carries an `Origin` is refused (fail closed). The server does not start without a usable host in `BASE_URL` (passkeys refuse it), but it does start on other unusable values, such as a scheme other than `http`/`https` or a port out of range, and those get this. A host written with non-ASCII characters is not one of them: passkeys refuse it too (the host is the relying-party ID, and go-webauthn rejects a non-ASCII one), so the server does not start. Write `BASE_URL` with the punycode host, which is also what a browser sends in `Origin`.
 - The check applies to **every** request that reaches `ProtectMCP`: `/mcp`, `/mcp/`, and the older SSE transport (`/mcp/sse`, `/mcp/message`), and an unknown path under `/mcp/` as well, so a route added later is covered without anyone remembering to list it. The SSE transport is deprecated but not harmless: a browser page can open its stream and post to its message endpoint exactly as it can reach `/mcp`, and a DNS-rebound page reaches both alike, so leaving it open would leave the very hole the check closes on the other routes. An earlier draft of this release exempted SSE to keep existing configurations working; that was reversed (#460) because no legitimate client is affected: SDKs, editors and `curl` send no `Origin`, and a browser client served from `BASE_URL` itself sends the right one. `TestMCPOrigin_SSEIsChecked` pins it.
 
-On the SSE transport a message `POST` takes its actor from the `POST` itself (its cookie or key), while its reply goes to whichever stream owns the `sessionId`; nothing binds the `sessionId` to the actor that opened the stream. Binding it is tracked as issue #495.
+**SSE sessions are bound to their actor** (#495). The stream `GET /mcp/sse` records who opened it: the user and the credential it came in on (the API key, the OAuth client, or the browser session). A `POST /mcp/message` for that `sessionId` is processed only when its own authenticated actor is the same user on the same credential. Anyone else, an unknown or missing `sessionId`, and a stream that has closed all get the same `403` (`forbidden`, "session not available to this caller"), so the answer does not reveal which ids exist, and the body is not read. The same person on a different key is a different actor. The record is held in memory and dropped when the stream ends. Tests: `TestMCPSSE_SessionBoundToActor`, `TestOwnerOf`.
+
+**Request body size** (#481). Every `POST` body on both transports (`/mcp`, `/mcp/`, `/mcp/message`) is capped at 1 MiB, the same as the REST API's JSON cap. A request is one JSON-RPC call and the largest arguments any tool takes are a ticket description or a reply body; MCP has no attachment tool. Over the cap the server answers `413` with `{"error":{"code":"request_too_large",...}}` and closes the connection; it reads no more than 1 MiB + 1 byte to decide, whether or not the client declared a length (before, a 100 MB body allocated 340 to 712 MB). `mcp.MaxRequestBody` is the constant. Tests: `TestMCPBodyLimit`, `TestHandler_OversizeBodyIs413WithJSONEnvelope`.
 
 A browser-based MCP client served from an origin other than `BASE_URL` cannot use any MCP route. It could not before either: the MCP routes grant no CORS preflight, so the browser never sent the request.
 
@@ -2419,8 +2421,8 @@ only `read`.
 |----------|--------|
 | `tickets` | Tickets and everything under `/tickets/{id}` — replies, links, tags, attachments, custom fields, status transitions — plus the staff picker (`/staff`) |
 | `audit` | The admin-wide audit view (`/admin/audit`). A session needs no scope; an API key or OAuth client needs `audit:read`, which an administrator grants on purpose and which `tickets:read` does not imply. There is no `audit:write`: only the running server writes audit entries, so granting it to an API key or OAuth client is refused like an unknown scope, and one stored before the refusal ([#371](https://github.com/PubliciaLLC/go-help-desk/issues/371)) grants nothing, not even `audit:read` |
-| `users` | User administration, and the requester lookup (`GET /users/lookup`, #444) |
-| `groups` | Groups, their members, and their category/type scopes |
+| `users` | Reading users, and the requester lookup (`GET /users/lookup`, #444). **Read only for keys:** keys can't write users, so `users:write` is no longer offered by the catalogue or the pickers (it still parses, so a stored key or a script that names it keeps working, and it opens nothing) |
+| `groups` | Groups, their members, and their category/type scopes. `groups:write` covers creating, renaming and deleting groups; **membership and scope writes are session-only** (keys can't write users), so it opens neither |
 | `categories` | Categories, types, items, and custom-field assignments |
 | `tags` | Tag administration |
 | `canned_responses` | Canned response templates |
@@ -2462,18 +2464,45 @@ category and status endpoints. The top-level `/tags` and `/statuses` reference
 endpoints are covered by `tickets:read` for the same reason.
 
 A machine credential is also refused the endpoints that change how an account
-authenticates: its own (`/me/password`, `/me/mfa/enroll*`, `/me/passkeys*`), and — through the
-admin surface — **any administrator's**. It may not create an administrator,
-promote a user to administrator, or reset an administrator's password or MFA.
+authenticates: its own (`/me/password`, `/me/mfa/enroll*`, `/me/passkeys*`) and its owner's API keys (`/me/api-keys*`, #450).
 
-The rule is about administrators rather than about the credential's own owner
-because refusing only the owner closed the path and not the outcome: every key
-reaching `/admin` is administrator-owned, so `users:write` allowed creating a
-second administrator, signing in as them, and resetting the first one's
-password. Guarding only promotion left the reverse open too — demote an
-administrator, reset the now-staff account's password, sign in — so the rule
-covers the whole account in either direction. Managing non-administrator users
-stays available.
+**Keys can't write users** (Erik, 2026-10-16). An API key or OAuth client may
+**read** users (`GET /admin/users`, `GET /admin/users/{id}`, the group member and
+scope lists, the assignee picker) and nothing more. **Every user write needs a
+signed-in administrator.** Each of these carries `DenyMachineCredentials` (an API
+key gets `403 session_required`; an OAuth client is a staff identity, so the
+admin role check refuses it first with `403 forbidden`):
+
+| Route | Writes |
+|---|---|
+| `POST /admin/users` | creates an account |
+| `PATCH /admin/users/{id}` | role, disabled, name, email, MFA reset |
+| `DELETE /admin/users/{id}` | soft-deletes an account |
+| `POST /admin/users/{id}/password` | sets a password |
+| `POST /admin/groups/{id}/members`, `DELETE /admin/groups/{id}/members/{userId}` | group membership, which grants ticket visibility |
+| `POST /admin/groups/{id}/scopes`, `DELETE /admin/groups/{id}/scopes` | what a group's members can see |
+
+The rule is the route, not the field. It replaces a set of per-field rules (no
+administrators, no password on create, no `reset_mfa`, no email) that each closed
+one door of the same room and left another: a key could create a staff account
+with a password it chose, or promote a requester whose password it knew, sign in
+as that person (no second factor), and from that session create an API key
+(`POST /me/api-keys`) that survives the revocation of the key that started it;
+re-addressing an account would send its reset link (#451) to whoever holds the
+key. A key that can write users can make itself a person, so it cannot write
+them. Group create, rename and delete, and the rest of the admin surface, are
+unchanged.
+
+What this does not change, and is not a hole this rule closes: **OIDC sign-in
+can adopt an existing account by email** (`canAdoptByEmail`): when a verified
+address matches an account that is active, not a service account, not an administrator, not federated
+through SAML, not a service account and not bound to another OIDC subject, the first OIDC sign-in with
+that address takes it over, whatever its password. That is how a locally
+provisioned account joins an identity provider, and it is how this behaved before
+#450. With keys unable to create or re-address accounts, a key can no longer
+create the account that would be adopted, but a signed-in administrator can, and
+so can self-signup. The adoption is gated by the identity provider verifying the
+address, and by `allowed_email_domains` (Authentication, OIDC).
 
 Four more things are off limits to a machine credential, for the same reason:
 
@@ -2496,17 +2525,19 @@ Four more things are off limits to a machine credential, for the same reason:
   address and policy, allowed types, infected and mismatch handling, the
   reputation toggles, keys and refresh interval); and audit retention, staff
   visibility of change history and whether requester names are masked in audit
-  views. Ordinary configuration such as the site name
+  views; who may create API keys (`staff_can_create_api_keys`) and how long a new one may live (`api_key_max_lifetime_years`, #450); and who sees tickets and who is handed them (`ticket_scope_enforced`, `auto_assign_group_id`, `auto_assign_user_ids`, #450): a key that could switch scope enforcement off, or point auto-assign at an account it controls, would widen what that account sees or is given.
+  Ordinary configuration such as the site name
   stays automatable.
 - **Verifying a second factor** (`POST /auth/local/mfa/verify` and
   `POST /auth/local/passkey/start|finish`). A machine credential reaching the
   code check could spend the account's durable failed-attempt budget and lock
   the owner out repeatedly; the passkey routes sit beside it and answer to the
   same rule.
-- **Issuing a credential broader than itself.** Otherwise `credentials:write` is
-  every scope: hold only that, mint a key with `users:write`, use it. A
-  signed-in administrator is exempt — they already hold everything a credential
-  could be granted, so they are not escalating.
+- **Creating an API key** (#450). Keys can't make keys: only a signed-in person
+  creates one. (It used to be allowed within the key's own scopes, which still
+  let `credentials:write` mint a successor before the first expired, and that one
+  another.) See Who can create API keys, below. A key can still list and revoke
+  keys.
 
 Scopes cannot express any of this. The narrowest possible key still belongs to
 its owner, so any scope reaching those routes reaches account takeover.
@@ -2524,6 +2555,156 @@ so a leaked key held by an administrator cannot revoke the owner's other keys,
 which are what would let the owner recover.
 Before 1.3, revoking ignored the owner while listing did not, so any admin
 credential that knew a key id could revoke another administrator's key.
+
+**Who can create API keys** ([#450](https://github.com/PubliciaLLC/go-help-desk/issues/450)).
+A key is a long-lived bearer credential that acts as its owner, so who may make
+one is a permission decision with one switch and no per-user exceptions.
+
+- **Administrators** can always create their own keys.
+- **Staff** can create their own only while the admin setting
+  `staff_can_create_api_keys` ("Staff may create their own API keys", Admin →
+  Settings → Authentication → API keys) is on. It is off by default. It governs
+  *creating* a key: turning it off revokes nothing, and staff can still list
+  and revoke their own keys whatever it says, including a key an administrator
+  issued for them. Revoking only ever removes access, and a person must be able
+  to remove a credential that acts as them.
+- **Requesters never own keys.** `/me/api-keys` answers them `403`, and an
+  administrator cannot issue one for them either (`400 requester_cannot_own_key`).
+  A requester's integration uses an OAuth client or a staff member's key.
+- **An administrator can issue a key for a staff member, or for themselves**
+  (`user_id` on `POST /admin/api-keys`, a signed-in session only, or `user_id`
+  equal to their own id). The key belongs to that account and acts as it. Not for
+  another administrator (`400 cannot_issue_for_administrator`: one administrator
+  minting another's credential), not for a requester, and not for a service
+  account, the identity an OAuth client acts as (`400
+  service_account_cannot_own_key`; the client has its own credential and the
+  admin "issue for" search leaves service accounts out). A deleted account is
+  `404`, a disabled one `400 user_disabled`. The owner is judged before the
+  scopes, so the refusal gives the real reason.
+- **Keys can't make keys** (Erik, 2026-10-16). Only a signed-in person creates an
+  API key, on `/me/api-keys` or `POST /admin/api-keys`. A key that could would
+  mint a successor that expires up to the full lifetime limit later, and that
+  one another, so the limit would mean nothing, and revoking the first would
+  remove none of the rest. `GET/POST /me/api-keys`, `GET /me/api-keys/scopes` and
+  `DELETE /me/api-keys/{id}` sit inside `meRouter` behind
+  `DenyMachineCredentials`, `RequireMFA` and `RequireRole(admin, staff)`;
+  `POST /admin/api-keys` carries `DenyMachineCredentials` too. An administrator's
+  API key gets `403 session_required` on both; an OAuth client is a staff
+  identity, so on the admin route the role check refuses it first (`403
+  forbidden`). Listing and revoking stay open to a key on the admin routes (a key
+  lists and revokes only itself, #466). This also makes the "a machine
+  credential naming another user" and "broader than itself" cases unreachable,
+  so those checks are gone rather than left as dead code.
+  **OAuth clients are covered by the same rule** ("API keys cannot create oauth",
+  Erik, 2026-10-16): `POST /admin/oauth-clients` carries
+  `DenyMachineCredentials` (an API key `403 session_required`, an OAuth client `403
+  forbidden`). A client made by a leaked key would outlive it. A key can still
+  list and delete clients. There is no route that rotates a client's secret, so
+  creation is the only path that mints one.
+- **A webhook dies with the key that made it** (Erik, 2026-10-16). A key may
+  still create and edit webhooks. The hook records the API key that created it
+  or last changed its URL (`webhook_configs.api_key_id`, no foreign key, so
+  deleting the key does not forget it); a hook made or last re-pointed in a
+  session has none. When that key is revoked or has expired, the hook is
+  **paused**: `paused: true` and `paused_reason` ("Created by a revoked or
+  expired API key") on every read, and the dispatcher sends it nothing. It is
+  judged from the key's own row on every read and at every delivery attempt, so
+  an expiry pauses a hook with no job running, a queued delivery is settled
+  rather than sent, and retries stop. The link is a plain column with **no
+  foreign key**, so deleting the key cannot null it and make the hook look
+  session-made: a missing key counts the same as a revoked one, and so does a
+  key whose owner is disabled or deleted (it no longer authenticates). Every one
+  of those fails closed. A key cannot lift the pause by editing: any `PATCH` of a
+  paused hook with a key is `403 webhook_paused` (re-pointing it would tie it to
+  the editing key and un-pause it unseen); a key may still delete it. Changing a hook's URL in a session is an
+  approval of that destination, by a person who typed it, so it clears the link;
+  any other session edit (events, filter, enabled) does not, and a paused hook
+  stays paused until it is re-approved explicitly. A key changing something else
+  leaves the link as it was. `POST /admin/webhooks/{id}/reapprove` (session only) clears the link,
+  and the hook fires again; the Webhooks page shows a Paused badge with the
+  reason and a Re-approve button. Nothing is written to the delivery history for
+  a skipped delivery, as for a disabled hook; #518's dropped-delivery record was
+  not merged when this was built, so this does not use it.
+- **A change of role keeps the person's keys** (Erik, 2026-10-16). A key acts
+  within its owner's *current* role: the role check runs on every request, and
+  the scope table only limits what can be put on a key at creation. Demoting an
+  administrator leaves their keys alive but able to reach only what staff can.
+  Promoting a staff member leaves their keys alive and, by the same rule, able to
+  reach what an administrator can reach, so "issue a key for a staff member, then
+  promote them" leaves an administrator holding a key another administrator
+  issued. That is an accepted consequence, not an oversight; revoke the keys, or
+  use the password-reset checkbox, if it is not wanted.
+- **`staff_can_create_api_keys` is auth-critical** (`admin.AuthCriticalKeys`), so
+  a machine credential cannot change it. Switching it on widens who may hold a
+  bearer credential, the same kind of change as `closed_reopen_policy`, and a
+  leaked administrator key must not be able to switch it on and then use it.
+  (The alternative, session-gated detail for settings that only widen what staff
+  *see*, is the `staff_can_view_*` family. This one widens what staff can
+  *make*, so it takes the stricter reading.)
+- **A key's scopes never exceed its owner's role.** `auth.ScopesForRole` is the
+  table: an administrator may carry any scope; staff `tickets:read|write`,
+  `groups:read`, `audit:read` and `users:read` (the requester lookup); a requester none, since requesters never own a
+  key (an existing requester key still acts within the role check). It is checked
+  against the key's *owner*, so an administrator issuing a key for a staff member is
+  limited by what staff can do; a scope outside it is `400 invalid_scope`.
+  `GET /admin/scopes?role=staff` serves that list, and the admin picker offers
+  only it once an owner is chosen.
+  Scopes only narrow, so this is defence in depth and not the boundary: the role
+  check still refuses a staff key every admin route. What it prevents is a key
+  that looks as though it can edit users and cannot. The table is written out
+  and `TestScopesForRole_MatchTheRouter` derives the same answer from the
+  router's own middleware for administrators and staff, fails if an
+  administrator-only scope is offered to staff, and fails if a scope the router lets a role use is
+  missing from the table.
+- **Every issue and revoke is audited**, a person's own keys and keys issued or
+  revoked on someone's behalf alike (`entity_type` `api_key`; actions
+  `api_key_issued` and `api_key_revoked`; the entry carries the owner's id,
+  `on_behalf`, the scopes and the expiry, and never the key's name, which is
+  free text). A revoke-on-reset is a different entry: `entity_type` `user` (the
+  account whose keys went), action `api_keys_revoked`, with `keys_revoked`, the
+  count. The write is best effort and detached from the request with
+  `context.WithoutCancel`, like `user.Service.ResetMFA`: an audit entry here does
+  not gate anything, and hanging up after the key is written cannot suppress it
+  (`TestAPIKeyAudit_IsWrittenEvenIfTheRequestWasCancelled`).
+- `api_keys.created_by` (migration 000050) records who issued each new key. It
+  equals `user_id` when the owner made it and differs when it was issued on their
+  behalf; NULL means unknown (a key made before 1.3, or an issuer deleted since).
+  It is returned by both key lists, and the Account page says "Issued for you by
+  an administrator" and the admin page "Issued on their behalf".
+- **Maximum key lifetime** (`api_key_max_lifetime_years`, Admin → Settings →
+  Authentication → API keys). Every key made through `/me/api-keys` or
+  `POST /admin/api-keys`, own or on someone's behalf, must expire, and no later
+  than this: **2 years by default**, set on a slider with six stops, 1 to 5 years
+  and Never. Stored as the integer 1 to 5, or `-1` for Never; `0`, `6`, a
+  fraction, a string and null are refused with 400, and an unreadable stored
+  value reads as 2. With a limit, a missing expiry is `400 expires_at_required`
+  and one past it `400 expires_at_too_far`, naming the limit; only with Never may
+  `expires_at` be omitted. The setting is **auth-critical** (session only),
+  because raising it, or choosing Never, widens how long a stolen key stays
+  useful; the panel shows a red warning whenever it is above 2. The check is made
+  **when the key is created, never when it is used**. A key that already exists
+  with no expiry, or an expiry beyond the current limit (after the limit is
+  lowered), keeps working and is returned with `beyond_limit: true` in both key
+  lists, which the screens show as "No expiry (longer than the current limit)" so
+  it can be rotated. The create forms default the date to the longest allowed,
+  require one while there is a limit, and refuse a later one; the server enforces
+  the same. The UI sends the end of the chosen day, but never later than an hour
+  before the limit, so the last day the form offers is not refused.
+- **An administrator's password reset can revoke the person's keys.** The reset
+  form has "Also revoke this person's API keys", unticked; `revoke_api_keys` on
+  `POST /admin/users/{id}/password`. When true the server deletes every key the
+  account owns after the password is set and the sessions are ended, and records
+  `api_keys_revoked` on the account's audit entries with `keys_revoked`, the
+  count. It is a separate step from the reset, not one transaction, and it is
+  detached from the request (`context.WithoutCancel`) like the audit write. If
+  the revoke fails after the reset succeeded, the answer is `500 keys_not_revoked`
+  with "The password was reset, but the API keys were NOT revoked.", which the
+  page shows as it is. A person
+  changing or resetting their own password never touches keys, and neither
+  `server unlock` nor `server reset-factors` does.
+- Both screens take the expiry as a date. `GET /me` reports `can_create_api_keys`
+  and `api_key_max_lifetime_years` so the Account page knows whether to offer the
+  form and what to cap it at.
 
 **A blank webhook `secret` clears it, by design.** `PATCH /api/v1/admin/webhooks/{id}`
 with `"secret": ""` removes the stored secret, and deliveries to that hook are

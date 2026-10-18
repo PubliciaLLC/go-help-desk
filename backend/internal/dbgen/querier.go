@@ -259,6 +259,13 @@ type Querier interface {
 	CreateWebAuthnCredential(ctx context.Context, arg CreateWebAuthnCredentialParams) error
 	CreateWebhookConfig(ctx context.Context, arg CreateWebhookConfigParams) error
 	DeleteAPIKey(ctx context.Context, id uuid.UUID) (int64, error)
+	// The self-service revoke (#450): the owner is part of the statement, so a key
+	// that is somebody else's deletes nothing and is indistinguishable from one
+	// that does not exist.
+	DeleteAPIKeyForUser(ctx context.Context, arg DeleteAPIKeyForUserParams) (int64, error)
+	// Every key a user owns, for an administrator's password reset that asks to
+	// revoke them too (#450). Returns how many, which the audit entry records.
+	DeleteAllAPIKeysForUser(ctx context.Context, userID uuid.UUID) (int64, error)
 	DeleteAttachment(ctx context.Context, id uuid.UUID) error
 	// The retention sweep's hard delete. No archive table — see audit.Store's
 	// own comment on DeleteOlderThan for why.
@@ -669,6 +676,15 @@ type Querier interface {
 	// sees no ticket. A switched-off client is not one of them (it acts as
 	// nobody), which is what lets the warning clear by disabling it.
 	ListOAuthClientsWithoutGroups(ctx context.Context) ([]string, error)
+	// Hooks tied to an API key that is no longer a working credential: its row is
+	// gone (revoked, or deleted with its owner), it has expired, or its owner is
+	// disabled or deleted (APIKeyAuth refuses such a key on every request). Judged
+	// from the live rows on every call, so an expiry pauses a hook without any job
+	// having run, and a missing key counts the same as a revoked one: this fails
+	// CLOSED. webhook_configs.api_key_id is deliberately not a foreign key, or
+	// deleting the key would null the link and the hook would look session-made.
+	// clock_timestamp() and not now(): the latter is the start of the transaction.
+	ListPausedWebhookIDs(ctx context.Context) ([]uuid.UUID, error)
 	ListPlugins(ctx context.Context) ([]Plugin, error)
 	// The author's display name comes back with the reply.
 	//
@@ -789,6 +805,8 @@ type Querier interface {
 	NextTicketSeq(ctx context.Context) (int64, error)
 	// Keeps the newest keep_n deliveries of one hook (#448).
 	PruneWebhookDeliveries(ctx context.Context, arg PruneWebhookDeliveriesParams) error
+	// A signed-in administrator vouching for a hook a key made: clears the link.
+	ReapproveWebhookConfig(ctx context.Context, id uuid.UUID) (int64, error)
 	// Counts a failed TOTP attempt and locks the account once the threshold is
 	// reached. Returns the resulting lock time so the caller can refuse
 	// immediately without a second round trip.

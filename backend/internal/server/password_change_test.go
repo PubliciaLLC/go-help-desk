@@ -74,7 +74,7 @@ func TestPassword_TheMinimumAppliesEverywhere(t *testing.T) {
 	defer cleanup()
 
 	t.Run("admin create", func(t *testing.T) {
-		res := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
+		res := h.doAsAdminSession(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
 			"email": "shortpw@test.local", "display_name": "Short", "role": "user",
 			"password": "a",
 		})
@@ -83,7 +83,7 @@ func TestPassword_TheMinimumAppliesEverywhere(t *testing.T) {
 	})
 
 	t.Run("admin reset", func(t *testing.T) {
-		res := h.doAsAdmin(t, http.MethodPost,
+		res := h.doAsAdminSession(t, http.MethodPost,
 			"/api/v1/admin/users/"+h.userID.String()+"/password", map[string]any{"new_password": "b"})
 		defer res.Body.Close()
 		require.Equal(t, http.StatusBadRequest, res.StatusCode)
@@ -99,7 +99,7 @@ func TestPassword_TheMaximumAppliesEverywhere(t *testing.T) {
 		h, cleanup := newHarness(t)
 		defer cleanup()
 
-		res := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
+		res := h.doAsAdminSession(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
 			"email": "longpw@test.local", "display_name": "Long", "role": "user",
 			"password": long,
 		})
@@ -121,7 +121,7 @@ func TestPassword_TheMaximumAppliesEverywhere(t *testing.T) {
 		h, cleanup := newHarness(t)
 		defer cleanup()
 
-		res := h.doAsAdmin(t, http.MethodPost,
+		res := h.doAsAdminSession(t, http.MethodPost,
 			"/api/v1/admin/users/"+h.userID.String()+"/password", map[string]any{"new_password": long})
 		defer res.Body.Close()
 		require.Equal(t, http.StatusBadRequest, res.StatusCode)

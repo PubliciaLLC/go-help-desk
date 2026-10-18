@@ -35,7 +35,9 @@ func runClientErrorCases(t *testing.T, cases []clientErrorCase) {
 			h, cleanup := newHarness(t)
 			defer cleanup()
 			path, body := tc.build(t, h)
-			res := h.doAsAdmin(t, tc.method, path, body)
+			// A session: group membership and scope writes are session-only, and
+			// these cases are about the answers to a bad request, not the caller.
+			res := h.doAsAdminSession(t, tc.method, path, body)
 			defer res.Body.Close()
 			require.Equal(t, tc.status, res.StatusCode)
 			require.Equal(t, tc.code, errorCode(t, res))
@@ -136,12 +138,12 @@ func TestAdminGroups_SuccessPathsUnchanged(t *testing.T) {
 	res = h.doAsAdmin(t, http.MethodGet, base+"/"+g.ID.String(), nil)
 	require.Equal(t, http.StatusOK, res.StatusCode)
 
-	res = h.doAsAdmin(t, http.MethodPost, base+"/"+g.ID.String()+"/members", map[string]any{"user_id": h.staffID})
+	res = h.doAsAdminSession(t, http.MethodPost, base+"/"+g.ID.String()+"/members", map[string]any{"user_id": h.staffID})
 	require.Equal(t, http.StatusNoContent, res.StatusCode)
 	res = h.doAsAdmin(t, http.MethodGet, base+"/"+g.ID.String()+"/members", nil)
 	require.Equal(t, http.StatusOK, res.StatusCode)
 
-	res = h.doAsAdmin(t, http.MethodPost, base+"/"+g.ID.String()+"/scopes", map[string]any{"category_id": h.catID})
+	res = h.doAsAdminSession(t, http.MethodPost, base+"/"+g.ID.String()+"/scopes", map[string]any{"category_id": h.catID})
 	require.Equal(t, http.StatusNoContent, res.StatusCode)
 	res = h.doAsAdmin(t, http.MethodGet, base+"/"+g.ID.String()+"/scopes", nil)
 	require.Equal(t, http.StatusOK, res.StatusCode)

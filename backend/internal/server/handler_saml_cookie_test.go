@@ -192,7 +192,7 @@ func TestSAMLComplete_SpendsTheLibraryCookieEvenWhenRefused(t *testing.T) {
 
 	u, err := sh.userSvc.GetByEmail(context.Background(), "sso@test.local")
 	require.NoError(t, err)
-	r := sh.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+u.ID.String(), map[string]any{"disabled": true})
+	r := sh.doAsAdminSession(t, http.MethodPatch, "/api/v1/admin/users/"+u.ID.String(), map[string]any{"disabled": true})
 	r.Body.Close()
 	require.Equal(t, http.StatusOK, r.StatusCode)
 
@@ -250,7 +250,7 @@ func TestSAMLComplete_CapturedCookieDoesNotSurviveRevocation(t *testing.T) {
 	// reset_mfa. This revokes existing sessions.
 	u, err := sh.userSvc.GetByEmail(context.Background(), "sso@test.local")
 	require.NoError(t, err)
-	r := sh.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+u.ID.String(), map[string]any{"reset_mfa": true})
+	r := sh.doAsAdminSession(t, http.MethodPatch, "/api/v1/admin/users/"+u.ID.String(), map[string]any{"reset_mfa": true})
 	r.Body.Close()
 	require.Equal(t, http.StatusOK, r.StatusCode)
 
@@ -281,7 +281,7 @@ func TestSAMLComplete_RefusedSignInStillSpendsTheCookie(t *testing.T) {
 	// Disable it through doAsAdmin PATCH.
 	u, err := sh.userSvc.GetByEmail(context.Background(), "sso@test.local")
 	require.NoError(t, err)
-	r := sh.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+u.ID.String(), map[string]any{"disabled": true})
+	r := sh.doAsAdminSession(t, http.MethodPatch, "/api/v1/admin/users/"+u.ID.String(), map[string]any{"disabled": true})
 	r.Body.Close()
 	require.Equal(t, http.StatusOK, r.StatusCode)
 
@@ -293,7 +293,7 @@ func TestSAMLComplete_RefusedSignInStillSpendsTheCookie(t *testing.T) {
 	require.Equal(t, "/login?error=account_disabled", res.Header.Get("Location"))
 
 	// Re-enable the account.
-	r = sh.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+u.ID.String(), map[string]any{"disabled": false})
+	r = sh.doAsAdminSession(t, http.MethodPatch, "/api/v1/admin/users/"+u.ID.String(), map[string]any{"disabled": false})
 	r.Body.Close()
 	require.Equal(t, http.StatusOK, r.StatusCode)
 

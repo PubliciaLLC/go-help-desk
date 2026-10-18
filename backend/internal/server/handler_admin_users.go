@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
@@ -199,10 +201,6 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	if user.Role(body.Role) == user.RoleAdmin &&
-		denyMachineAdminTakeover(w, r, "create an administrator") {
-		return
-	}
 	u, err := s.users.Create(r.Context(), user.CreateUserInput{
 		Email:       body.Email,
 		DisplayName: body.DisplayName,
@@ -293,27 +291,6 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if body.DisplayName != nil {
 		if _, err := user.ValidateDisplayName(*body.DisplayName); err != nil {
 			handleError(w, err)
-			return
-		}
-	}
-
-	// Administrators are managed by administrators, not by automation.
-	//
-	// Before any mutation, because the disable below used to be applied before
-	// the promotion guard further down — a refused request that had already
-	// disabled the account.
-	//
-	// Guarding only promotion left the reverse open: demote an administrator,
-	// then reset the password of what is now a staff account, then sign in.
-	// Three requests. The rule is therefore the whole account, in either
-	// direction: a machine credential may not change an administrator's role,
-	// email, enabled state, password or MFA, and may not create or promote one.
-	if isMachine(r) {
-		if s.denyMachineTargetingAdmin(w, r, id, "modify an administrator") {
-			return
-		}
-		if body.Role != nil && user.Role(*body.Role) == user.RoleAdmin {
-			denyMachineAdminTakeover(w, r, "promote a user to administrator")
 			return
 		}
 	}
@@ -521,50 +498,6 @@ func isMachine(r *http.Request) bool {
 	return a != nil && a.Machine
 }
 
-// denyMachineAdminTakeover refuses a machine credential that is reaching for
-// administrator credentials.
-//
-// Refusing only the credential's own owner closed the path and not the outcome.
-// Every API key that reaches /admin is administrator-owned, because only an
-// administrator can mint one and it acts at its owner's role — so with
-// users:write the long way round was four requests: create a second
-// administrator, sign in as them, reset the original owner's password. Promoting
-// an existing user to administrator gets there too.
-//
-// So the rule is about administrators rather than about self: a machine
-// credential may not create one, promote to one, or reset one's credentials.
-// That closes every route to holding an administrator's password, including the
-// self-target that started this.
-//
-// Managing non-administrator users — provisioning, deprovisioning, resetting a
-// forgotten password — is ordinary automation and stays available.
-func denyMachineAdminTakeover(w http.ResponseWriter, r *http.Request, why string) bool {
-	if !isMachine(r) {
-		return false
-	}
-	Error(w, http.StatusForbidden, "session_required",
-		"an API key or OAuth client cannot "+why+"; this requires a signed-in session")
-	return true
-}
-
-// denyMachineTargetingAdmin refuses when the target account is an administrator.
-func (s *Server) denyMachineTargetingAdmin(w http.ResponseWriter, r *http.Request, target uuid.UUID, why string) bool {
-	if !isMachine(r) {
-		return false
-	}
-	u, err := s.users.GetByID(r.Context(), target)
-	if err != nil {
-		// Fail closed: if the target cannot be read, it cannot be shown to be
-		// safe to act on.
-		handleError(w, err)
-		return true
-	}
-	if u.Role != user.RoleAdmin {
-		return false
-	}
-	return denyMachineAdminTakeover(w, r, why)
-}
-
 func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -573,6 +506,10 @@ func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request
 	}
 	var body struct {
 		NewPassword string `json:"new_password"`
+		// Also revoke every API key the account owns (#450). Off unless sent:
+		// a reset is often a routine one, and a script's key is not the thing
+		// being fixed. Someone resetting because a credential leaked ticks it.
+		RevokeAPIKeys bool `json:"revoke_api_keys"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -586,9 +523,6 @@ func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request
 		handleError(w, err)
 		return
 	}
-	if s.denyMachineTargetingAdmin(w, r, id, "reset an administrator's password") {
-		return
-	}
 	actor := authmw.GetActor(r)
 	var actorID *uuid.UUID
 	if actor != nil {
@@ -598,22 +532,92 @@ func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request
 		handleError(w, err)
 		return
 	}
-	// An administrator resetting someone's password is usually responding to a
-	// compromise, so any session opened with the old one has to go.
-	if err := s.sessions.DeleteForUser(r.Context(), id); err != nil {
+	if err := s.finishAdminReset(r.Context(), actorID, id, body.RevokeAPIKeys); err != nil {
+		var notEnded *sessionsNotEndedError
+		if errors.As(err, &notEnded) {
+			slog.ErrorContext(r.Context(), "ending sessions after a password reset failed", "user_id", id, "error", notEnded.err)
+			msg := "The password was reset, but existing sessions were NOT ended."
+			if body.RevokeAPIKeys {
+				msg = "The password was reset, but existing sessions were NOT ended and API keys were NOT revoked."
+			}
+			Error(w, http.StatusInternalServerError, "sessions_not_ended", msg)
+			return
+		}
+		var notRevoked *keysNotRevokedError
+		if errors.As(err, &notRevoked) {
+			// Said exactly: the reset is done, the keys are not gone. A plain
+			// 500 would read as "nothing happened", and the administrator
+			// asked for the keys to go because they feared a leak.
+			slog.ErrorContext(r.Context(), "revoking API keys after a password reset failed", "user_id", id, "error", notRevoked.err)
+			Error(w, http.StatusInternalServerError, "keys_not_revoked",
+				"The password was reset, but the API keys were NOT revoked. Revoke them from Admin → API Keys.")
+			return
+		}
 		handleError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// sessionsNotEndedError marks a failure to end the account's sessions after
+// the password changed: the old sessions are still live, and so are any keys the
+// caller asked to have revoked.
+type sessionsNotEndedError struct{ err error }
+
+func (e *sessionsNotEndedError) Error() string { return "ending sessions: " + e.err.Error() }
+func (e *sessionsNotEndedError) Unwrap() error { return e.err }
+
+// keysNotRevokedError marks the one failure that happens after the password has
+// changed and the sessions are gone.
+type keysNotRevokedError struct{ err error }
+
+func (e *keysNotRevokedError) Error() string { return "revoking API keys: " + e.err.Error() }
+func (e *keysNotRevokedError) Unwrap() error { return e.err }
+
+// finishAdminReset is what follows AdminSetPassword: the account's sessions end
+// (a reset usually answers a compromise) and, when asked, its API keys go.
+//
+// All of it is detached from the request, from the moment the password has
+// changed. The sessions come first, so a client that hangs up there would
+// otherwise stop the keys it asked to have revoked from ever being revoked.
+// Not one transaction with the password: that is already changed.
+func (s *Server) finishAdminReset(reqCtx context.Context, actorID *uuid.UUID, id uuid.UUID, revokeKeys bool) error {
+	ctx := context.WithoutCancel(reqCtx)
+	if err := s.sessions.DeleteForUser(ctx, id); err != nil {
+		return &sessionsNotEndedError{err}
+	}
+	if revokeKeys {
+		if err := s.revokeUserAPIKeys(ctx, actorID, id); err != nil {
+			return &keysNotRevokedError{err}
+		}
+	}
+	return nil
+}
+
+// revokeUserAPIKeys deletes every key the user owns and audits how many.
+//
+// Detached from the request with context.WithoutCancel, as the audit write is:
+// the password has already changed, and a client that hangs up now must not
+// decide whether the keys it asked to have revoked are still there.
+func (s *Server) revokeUserAPIKeys(reqCtx context.Context, actorID *uuid.UUID, id uuid.UUID) error {
+	ctx := context.WithoutCancel(reqCtx)
+	n, err := s.authStore.DeleteAllForUser(ctx, id)
+	if err != nil {
+		return err
+	}
+	if actorID != nil && s.auditStore != nil {
+		s.writeAudit(ctx, audit.Entry{
+			ID: uuid.New(), ActorID: actorID, EntityType: "user", EntityID: id,
+			Action: "api_keys_revoked", After: map[string]any{"keys_revoked": n}, CreatedAt: time.Now(),
+		})
+	}
+	return nil
+}
+
 func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid user ID")
-		return
-	}
-	if s.denyMachineTargetingAdmin(w, r, id, "delete an administrator") {
 		return
 	}
 	// A service user is deleted by deleting its OAuth client. Deleting it alone
