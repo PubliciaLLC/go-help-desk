@@ -58,8 +58,11 @@ info:
     MCP route (/mcp, /mcp/, /mcp/sse, /mcp/message and any unknown path
     under /mcp/) answers 403 (code origin_not_allowed) to a request whose
     Origin header is present and is not the origin of BASE_URL; a request
-    with no Origin header is not affected. See docs/DESIGN.md, "MCP
-    Interface". It is not described here.
+    with no Origin header is not affected. A POST body on any MCP route is
+    capped at 1 MiB (413, code request_too_large), and a POST to
+    /mcp/message is processed only for the user and credential that opened
+    the stream for its sessionId (403, code forbidden, otherwise). See
+    docs/DESIGN.md, "MCP Interface". It is not described here.
   license:
     name: GNU Affero General Public License v3.0
     url: https://github.com/PubliciaLLC/go-help-desk/blob/main/LICENSE
