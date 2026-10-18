@@ -342,7 +342,7 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
                       params={{ id: other.ticket.id }}
                       className="flex min-h-6 min-w-0 items-center"
                     >
-                      <span className="block truncate text-xs font-medium text-blue-600 hover:underline" title={other.ticket.subject}>
+                      <span className="block truncate text-xs font-medium text-blue-600 hover:underline" title={`${other.ticket.tracking_number} · ${other.ticket.subject}`}>
                         {other.ticket.tracking_number} · {other.ticket.subject}
                       </span>
                     </Link>

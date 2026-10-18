@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { api } from './client'
-import { addReply, listTickets, updateTicket, duplicateResolutionNotes } from './tickets'
+import { addReply, listTickets, lookupRequesters, updateTicket, duplicateResolutionNotes } from './tickets'
 
 // tickets.ts is mostly thin wrappers, and those are deliberately not tested —
 // asserting that `api.get` gets called proves nothing. What is covered here is
@@ -123,5 +123,20 @@ describe('duplicateResolutionNotes', () => {
     const trackingNumber = 'GHD-2026-000042'
     const notes = duplicateResolutionNotes(trackingNumber)
     expect(notes).toMatch(/^Duplicate of GHD-2026-000042$/)
+  })
+})
+
+describe('lookupRequesters', () => {
+  it('sends the query as q and returns the hits', async () => {
+    const hits = [{ id: 'u-1', display_name: 'Ada', email: 'ada@example.com' }]
+    const get = vi.spyOn(api, 'get').mockResolvedValue({ data: hits })
+
+    await expect(lookupRequesters('ada')).resolves.toEqual(hits)
+    expect(get).toHaveBeenCalledWith('/users/lookup', { params: { q: 'ada' } })
+  })
+
+  it('returns an empty array when the server sends null', async () => {
+    vi.spyOn(api, 'get').mockResolvedValue({ data: null })
+    await expect(lookupRequesters('ada')).resolves.toEqual([])
   })
 })

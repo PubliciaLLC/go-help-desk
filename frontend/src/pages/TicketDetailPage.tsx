@@ -126,7 +126,7 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, haveS
   return (
     <div className="space-y-2">
       {/* Current assignee */}
-      <div className="text-sm">
+      <div className="text-sm wrap-anywhere">
         {currentUser ? (
           <span className="font-medium">{currentUser.display_name}</span>
         ) : currentGroup ? (
@@ -552,13 +552,26 @@ export function TicketDetailPage() {
               <span>Opened {formatDate(ticket.created_at)}</span>
             </div>
             <h1 className="text-2xl font-bold text-gray-900 wrap-anywhere">{ticket.subject}</h1>
+            {isStaffOrAdmin && (
+              <p data-testid="requester-line" className="text-sm text-gray-600 wrap-anywhere">
+                Requester:{' '}
+                {ticket.requester ? (
+                  <>
+                    <span className="font-medium text-gray-900">{ticket.requester.name}</span>{' '}
+                    ({ticket.requester.email})
+                  </>
+                ) : (
+                  <span className="text-gray-400">unknown</span>
+                )}
+              </p>
+            )}
             <div className="flex items-center gap-2 flex-wrap">
               <span
-                className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium"
+                className="inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium"
                 style={{ borderColor: statusColor, color: statusColor }}
               >
-                <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: statusColor }} />
-                {statusName}
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: statusColor }} />
+                <span className="min-w-0 wrap-anywhere">{statusName}</span>
               </span>
               <Badge variant={priorityVariant(ticket.priority) as never}>
                 {ticket.priority}
@@ -684,7 +697,7 @@ export function TicketDetailPage() {
                             a bare UUID and nobody could tell who had said
                             what. A reply with no author came from a guest —
                             that is the only way it is null. */}
-                        <span className="min-w-0 truncate" title={r.author_name || undefined}>
+                        <span className="min-w-0 truncate" title={r.author_name || (r.author_id ? 'Unknown user' : 'Customer')}>
                           {r.author_name || (r.author_id ? 'Unknown user' : 'Customer')}
                         </span>
                         <span className="flex items-center gap-2">
@@ -701,7 +714,7 @@ export function TicketDetailPage() {
                 return (
                   <div key={h.id} className="flex items-center gap-3 py-1 text-xs text-gray-400">
                     <div className="flex-1 border-t border-gray-100" />
-                    <span className="shrink-0 text-center">
+                    <span className="min-w-0 text-center wrap-anywhere">
                       {h.from_status_id ? (
                         <>
                           <span style={{ color: h.from_status_color || undefined }} className="font-medium">

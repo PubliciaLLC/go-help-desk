@@ -6,7 +6,9 @@ import {
   ME_ADMIN,
   ME_REPORTER,
   ME_STAFF,
+  ASSIGNABLE_STAFF,
   ATTACHMENTS,
+  STATUSES,
   CUSTOM_FIELDS,
   LINKED_TICKET,
   REPLIES,
@@ -323,6 +325,9 @@ test.describe('#480: header actions get their own row below md', () => {
       // Full width: main has p-4 either side and the sidebar is a drawer.
       expect(t.width, 'the title does not get the full width').toBeGreaterThanOrEqual(width - 32 - 1)
       expect(await lineCount(number), 'the tracking number wraps').toBe(1)
+      // Pinned, not left to the room it happens to have: whitespace-nowrap is
+      // what keeps the number whole if the column is ever narrower than it.
+      expect(await number.evaluate((el) => getComputedStyle(el).whiteSpace), 'tracking number may break').toBe('nowrap')
       for (const box of boxes) {
         // Own row: entirely below both the number and the title.
         expect(box.y, 'a button is not on a row below the number').toBeGreaterThanOrEqual(n.y + n.height)
@@ -336,12 +341,16 @@ test.describe('#480: header actions get their own row below md', () => {
   }
 
   // Unchanged from md up: the group still sits beside the title, at the right.
-  test('from md up the actions still sit beside the title (unchanged): 1024px', async ({ page }) => {
+  // 768 is md itself (Tailwind md = min-width 768px): the first width at
+  // which the row layout applies. 767 above is the last stacked width, so the
+  // pair pins the boundary from both sides.
+  for (const width of [768, 1024]) {
+  test(`from md up the actions still sit beside the title (unchanged): ${width}px`, async ({ page }) => {
     await mockApi(page)
     await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}`, (route) =>
       route.fulfill({ json: { ...TICKET_DETAIL, status_id: 'st-closed', can_reopen: true } }),
     )
-    await page.setViewportSize({ width: 1024, height: 800 })
+    await page.setViewportSize({ width, height: 800 })
     await page.goto(`/tickets/${TICKET_DETAIL.id}`)
     const t = await page.getByRole('heading', { level: 1 }).boundingBox()
     const r = await page.getByRole('button', { name: 'Reopen' }).boundingBox()
@@ -349,6 +358,7 @@ test.describe('#480: header actions get their own row below md', () => {
     expect(r.x, 'actions no longer beside the title at desktop width').toBeGreaterThanOrEqual(t.x + t.width)
     expect(r.y).toBeLessThan(t.y + t.height)
   })
+  }
 })
 
 test.describe('#414: "Opened …" moves below the number instead of being crushed beside it', () => {
@@ -442,7 +452,7 @@ test.describe('#479: long URLs wrap on a phone', () => {
     tracking_number: 'GHD-2026-000009',
     subject: `Link ${longUrlFor('subject')}`,
     description: `Please see ${longUrlFor('description')}`,
-    status: 'Open',
+    status: 'S'.repeat(300),
     created_at: '2026-09-20T10:00:00Z',
     replies: [
       { id: 'g1', body: `Courier tracking ${longUrlFor('reply')}`, created_at: '2026-09-20T11:00:00Z', from_you: false },
@@ -476,8 +486,49 @@ test.describe('#479: long URLs wrap on a phone', () => {
           ],
         }),
       )
+      // The rest of the page's user text: status history, the activity feed
+      // (actor name and a subject change holding a URL), followers, the
+      // assignee and a status name. A long word, not only a URL, for names.
+      const word = 'W'.repeat(300)
+      await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/history`, (route) =>
+        route.fulfill({
+          json: [
+            {
+              id: 'h1', ticket_id: TICKET_DETAIL.id, from_status_id: 'st-new', from_status_name: word,
+              from_status_color: '#3b82f6', to_status_id: 'st-resolved', to_status_name: 'Resolved',
+              to_status_color: '#22c55e', changed_by_user_id: 'u-staff', changed_by_name: word,
+              created_at: '2026-09-20T12:00:00Z',
+            },
+          ],
+        }),
+      )
+      await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/audit`, (route) =>
+        route.fulfill({
+          json: [
+            {
+              id: 'a1', action: 'updated', actor_id: 'u-staff', actor_name: word,
+              created_at: '2026-09-20T12:00:00Z',
+              before: { subject: longUrlFor('before') }, after: { subject: longUrlFor('after') },
+            },
+          ],
+        }),
+      )
+      await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/followers`, (route) =>
+        route.fulfill({ json: [{ user_id: 'u-f', display_name: word, created_at: '2026-09-20T12:00:00Z' }] }),
+      )
+      await page.route('**/api/v1/staff', (route) =>
+        route.fulfill({ json: [{ ...ASSIGNABLE_STAFF[0], display_name: word }] }),
+      )
+      await page.route('**/api/v1/statuses', (route) =>
+        route.fulfill({ json: STATUSES.map((st) => (st.id === 'st-new' ? { ...st, name: word } : st)) }),
+      )
       await page.goto(`/tickets/${TICKET_DETAIL.id}`)
       await expect(page.getByText(NOTE_URL)).toBeVisible()
+      // Each of these is present on the page, so a zero-width miss is not a pass.
+      for (const text of [longUrlFor('after'), 'Followers']) {
+        await expect(page.getByText(text).first()).toBeVisible()
+      }
+      await expect(page.getByText(word).first()).toBeVisible()
       await noHorizontalScroll(page)
       await documentFits(page, width)
       await expectTextIntact(page, NOTE_URL)
@@ -541,4 +592,55 @@ test.describe('#479: long URLs wrap on a phone', () => {
       await documentFits(page, width)
     })
   }
+})
+
+// Ellipsis is allowed only in compact rows and chips, and only where the full
+// text is still reachable: a title attribute (hover, long-press) and a click
+// through to where it is shown in full. Ticket content itself always wraps.
+test.describe('truncated text exposes its full text in a title', () => {
+  const long = longUrlFor('truncated')
+
+  test('reply author name, attachment filename, linked ticket subject', async ({ page }) => {
+    await mockApi(page)
+    await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/replies`, (route) =>
+      route.fulfill({
+        json: [
+          { ...REPLIES[0], id: 'r-named', author_name: long },
+          // No name: the fallback label is what is shown, and what the title must be.
+          { ...REPLIES[0], id: 'r-anon', author_id: null, author_name: '' },
+        ],
+      }),
+    )
+    await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/attachments`, (route) =>
+      route.fulfill({ json: [{ ...ATTACHMENTS[0], filename: `${long}.pdf` }] }),
+    )
+    await page.route(`**/api/v1/tickets/${LINKED_TICKET.id}`, (route) =>
+      route.fulfill({ json: { ...LINKED_TICKET, subject: long } }),
+    )
+    await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+    await expect(page.getByText('Customer', { exact: true })).toBeVisible()
+
+    const truncated = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('main .truncate')).map((el) => ({
+        // The attachment row's "↓" is an icon glyph, not part of the name.
+        text: (el.textContent ?? '').replace(/^↓/, '').trim(),
+        title: el.getAttribute('title') ?? (el.closest('[title]') as HTMLElement | null)?.title ?? null,
+      })),
+    )
+    expect(truncated.length, 'no truncated elements found').toBeGreaterThanOrEqual(4)
+    for (const t of truncated) expect(t.title, `"${t.text.slice(0, 40)}" is cut with no title`).toBe(t.text)
+  })
+
+  test('ticket list table subject (desktop width)', async ({ page }) => {
+    await page.setViewportSize({ width: 1024, height: 800 })
+    await mockApi(page)
+    const tickets = TICKETS.map((t, i) => (i === 2 ? { ...t, subject: `Deploy ${long}` } : t))
+    await page.route('**/api/v1/tickets', (route) => route.fulfill({ json: tickets }))
+    await page.route('**/api/v1/tickets?*', (route) => route.fulfill({ json: tickets }))
+    await page.goto('/tickets')
+    const cell = page.locator('td').filter({ hasText: long })
+    await expect(cell).toBeVisible()
+    const link = cell.getByRole('link')
+    await expect(link).toHaveAttribute('title', `Deploy ${long}`)
+  })
 })

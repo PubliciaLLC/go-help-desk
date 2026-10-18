@@ -470,6 +470,7 @@ export function TicketListPage() {
                             to="/tickets/$id"
                             params={{ id: t.id }}
                             className="block truncate rounded-sm text-inherit hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                            title={t.subject}
                           >
                             {t.subject}
                           </Link>

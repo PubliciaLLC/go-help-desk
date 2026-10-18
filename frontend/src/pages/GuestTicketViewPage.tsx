@@ -124,7 +124,7 @@ export function GuestTicketViewPage() {
             <CardTitle className="text-lg wrap-anywhere">{ticket.subject}</CardTitle>
             <span className="text-xs font-mono text-gray-500">{ticket.tracking_number}</span>
           </div>
-          <p className="text-sm text-gray-500 mt-1">Status: {ticket.status}</p>
+          <p className="text-sm text-gray-500 mt-1 wrap-anywhere">Status: {ticket.status}</p>
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-sm whitespace-pre-wrap wrap-anywhere text-gray-800">{ticket.description}</p>

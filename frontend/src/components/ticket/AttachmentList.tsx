@@ -217,6 +217,7 @@ function OrdinaryRow({ ticketId, attachment }: RowProps) {
         href={attachmentDownloadUrl(ticketId, attachment.id)}
         className="flex min-h-6 items-center gap-2 text-sm text-blue-600 hover:underline truncate"
         download={attachment.filename}
+        title={attachment.filename}
       >
         <span className="shrink-0 text-gray-400">↓</span>
         <span className="truncate">{attachment.filename}</span>
