@@ -108,6 +108,24 @@ func (s *Server) RoundRobinFirst(uids []uuid.UUID) uuid.UUID {
 	return *s.roundRobin(uids)[0].UserID
 }
 
+// AuditAPIKeyForTest writes a key audit entry with the context it is given, so
+// a test can hand it one that is already cancelled.
+func (s *Server) AuditAPIKeyForTest(ctx context.Context, actor uuid.UUID, action string, keyID, ownerID uuid.UUID) {
+	s.auditAPIKey(ctx, actor, action, keyID, ownerID, []string{"tickets:read"}, nil)
+}
+
+// RevokeUserKeysForTest runs the revoke-on-reset step with the context it is
+// given, so a test can hand it one that is already cancelled.
+func (s *Server) RevokeUserKeysForTest(ctx context.Context, actor, target uuid.UUID) error {
+	return s.revokeUserAPIKeys(ctx, &actor, target)
+}
+
+// FinishAdminResetForTest runs what follows a successful admin password reset
+// (sessions ended, keys optionally revoked) with the context it is given.
+func (s *Server) FinishAdminResetForTest(ctx context.Context, actor, target uuid.UUID, revoke bool) error {
+	return s.finishAdminReset(ctx, &actor, target, revoke)
+}
+
 // RequesterForTest is the Requester line the ticket read builds for this
 // viewer, before any field filter sees it.
 func (s *Server) RequesterForTest(ctx context.Context, a *authmw.Actor, t ticket.Ticket) any {

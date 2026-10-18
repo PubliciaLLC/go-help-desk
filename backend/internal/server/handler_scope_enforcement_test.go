@@ -19,8 +19,8 @@ import (
 // credential is built the way a real one is.
 func mintKey(t *testing.T, h *harness, scopes []string) string {
 	t.Helper()
-	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/api-keys", map[string]any{
-		"name": "scoped-test-key", "scopes": scopes,
+	resp := h.createCredential(t, "/api/v1/admin/api-keys", map[string]any{
+		"name": "scoped-test-key", "scopes": scopes, "expires_at": inYears(1),
 	})
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 	var out struct {
@@ -218,7 +218,7 @@ func TestScopeEnforcement_UnknownScopeRejectedAtCreation(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/api-keys", map[string]any{
+	resp := h.createCredential(t, "/api/v1/admin/api-keys", map[string]any{
 		"name": "typo", "scopes": []string{"tickets:reed"},
 	})
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -257,8 +257,8 @@ func TestScopeCatalogue_MatchesWhatIsEnforced(t *testing.T) {
 
 	// Every advertised scope must be one a credential can actually be created
 	// with, and there must be no wildcard among them.
-	resp = h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/api-keys",
-		map[string]any{"name": "every-scope", "scopes": served})
+	resp = h.createCredential(t, "/api/v1/admin/api-keys",
+		map[string]any{"name": "every-scope", "scopes": served, "expires_at": inYears(1)})
 	require.Equal(t, http.StatusCreated, resp.StatusCode,
 		"every scope the catalogue advertises must be accepted at creation")
 
@@ -282,7 +282,7 @@ func TestCredentialCreation_RequiresScopes(t *testing.T) {
 	for _, path := range []string{"/api/v1/admin/api-keys", "/api/v1/admin/oauth-clients"} {
 		t.Run(path, func(t *testing.T) {
 			t.Run("omitted entirely", func(t *testing.T) {
-				resp := h.doAsAdmin(t, http.MethodPost, path, map[string]any{"name": "no-scopes"})
+				resp := h.createCredential(t, path, map[string]any{"name": "no-scopes"})
 				require.Equal(t, http.StatusBadRequest, resp.StatusCode,
 					"an omitted scopes field must be a 400, not a 500")
 
@@ -296,14 +296,14 @@ func TestCredentialCreation_RequiresScopes(t *testing.T) {
 			})
 
 			t.Run("present but empty", func(t *testing.T) {
-				resp := h.doAsAdmin(t, http.MethodPost, path,
+				resp := h.createCredential(t, path,
 					map[string]any{"name": "empty-scopes", "scopes": []string{}})
 				require.Equal(t, http.StatusBadRequest, resp.StatusCode)
 			})
 
 			t.Run("with scopes still works", func(t *testing.T) {
-				resp := h.doAsAdmin(t, http.MethodPost, path,
-					map[string]any{"name": "fine", "scopes": []string{"tickets:read"}})
+				resp := h.createCredential(t, path,
+					map[string]any{"name": "fine", "scopes": []string{"tickets:read"}, "expires_at": inYears(1)})
 				require.Equal(t, http.StatusCreated, resp.StatusCode)
 			})
 		})
@@ -318,7 +318,7 @@ func TestCredentialCreation_RefusesAuditWrite(t *testing.T) {
 
 	for _, path := range []string{"/api/v1/admin/api-keys", "/api/v1/admin/oauth-clients"} {
 		t.Run(path, func(t *testing.T) {
-			resp := h.doAsAdmin(t, http.MethodPost, path,
+			resp := h.createCredential(t, path,
 				map[string]any{"name": "audit-writer", "scopes": []string{"audit:read", "audit:write"}})
 			require.Equal(t, http.StatusBadRequest, resp.StatusCode)
 			var body struct {
@@ -328,8 +328,8 @@ func TestCredentialCreation_RefusesAuditWrite(t *testing.T) {
 			require.Equal(t, "invalid_scope", body.Error.Code)
 			require.Contains(t, body.Error.Message, "audit:write")
 
-			resp = h.doAsAdmin(t, http.MethodPost, path,
-				map[string]any{"name": "audit-reader", "scopes": []string{"audit:read"}})
+			resp = h.createCredential(t, path,
+				map[string]any{"name": "audit-reader", "scopes": []string{"audit:read"}, "expires_at": inYears(1)})
 			require.Equal(t, http.StatusCreated, resp.StatusCode, "audit:read alone must still be grantable")
 		})
 	}

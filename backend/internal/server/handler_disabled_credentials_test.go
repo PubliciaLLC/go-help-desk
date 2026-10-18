@@ -25,7 +25,7 @@ func TestDisabledUser_APIKeyStopsWorking(t *testing.T) {
 	resp := h.do(t, http.MethodGet, "/api/v1/tickets", nil)
 	require.Equal(t, http.StatusOK, resp.StatusCode, "staff API key should work before disable")
 
-	resp = h.doAsAdmin(t, http.MethodPatch,
+	resp = h.doAsAdminSession(t, http.MethodPatch,
 		fmt.Sprintf("/api/v1/admin/users/%s", h.staffID),
 		map[string]any{"disabled": true})
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -49,7 +49,7 @@ func TestReEnabledUser_APIKeyWorksAgain(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	resp := h.doAsAdmin(t, http.MethodPatch,
+	resp := h.doAsAdminSession(t, http.MethodPatch,
 		fmt.Sprintf("/api/v1/admin/users/%s", h.staffID),
 		map[string]any{"disabled": true})
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -57,7 +57,7 @@ func TestReEnabledUser_APIKeyWorksAgain(t *testing.T) {
 	resp = h.do(t, http.MethodGet, "/api/v1/tickets", nil)
 	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 
-	resp = h.doAsAdmin(t, http.MethodPatch,
+	resp = h.doAsAdminSession(t, http.MethodPatch,
 		fmt.Sprintf("/api/v1/admin/users/%s", h.staffID),
 		map[string]any{"disabled": false})
 	require.Equal(t, http.StatusOK, resp.StatusCode)

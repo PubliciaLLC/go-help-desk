@@ -16,7 +16,7 @@ import (
 
 func patchScope(t *testing.T, h *harness, on bool) (int, map[string]any) {
 	t.Helper()
-	resp := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/settings", map[string]any{"ticket_scope_enforced": on})
+	resp := h.doAsAdminSession(t, http.MethodPatch, "/api/v1/admin/settings", map[string]any{"ticket_scope_enforced": on})
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)

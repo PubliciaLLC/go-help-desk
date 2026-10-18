@@ -16,18 +16,19 @@ import (
 )
 
 const createAPIKey = `-- name: CreateAPIKey :exec
-INSERT INTO api_keys (id, name, hashed_token, user_id, scopes, expires_at, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO api_keys (id, name, hashed_token, user_id, scopes, expires_at, created_at, created_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 `
 
 type CreateAPIKeyParams struct {
-	ID          uuid.UUID    `json:"id"`
-	Name        string       `json:"name"`
-	HashedToken string       `json:"hashed_token"`
-	UserID      uuid.UUID    `json:"user_id"`
-	Scopes      []string     `json:"scopes"`
-	ExpiresAt   sql.NullTime `json:"expires_at"`
-	CreatedAt   time.Time    `json:"created_at"`
+	ID          uuid.UUID     `json:"id"`
+	Name        string        `json:"name"`
+	HashedToken string        `json:"hashed_token"`
+	UserID      uuid.UUID     `json:"user_id"`
+	Scopes      []string      `json:"scopes"`
+	ExpiresAt   sql.NullTime  `json:"expires_at"`
+	CreatedAt   time.Time     `json:"created_at"`
+	CreatedBy   uuid.NullUUID `json:"created_by"`
 }
 
 func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) error {
@@ -39,6 +40,7 @@ func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) erro
 		pq.Array(arg.Scopes),
 		arg.ExpiresAt,
 		arg.CreatedAt,
+		arg.CreatedBy,
 	)
 	return err
 }
@@ -87,8 +89,8 @@ func (q *Queries) CreateOAuthClient(ctx context.Context, arg CreateOAuthClientPa
 }
 
 const createWebhookConfig = `-- name: CreateWebhookConfig :exec
-INSERT INTO webhook_configs (id, url, events, secret, enabled, created_at, payload_format, ticket_filter)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO webhook_configs (id, url, events, secret, enabled, created_at, payload_format, ticket_filter, api_key_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 `
 
 type CreateWebhookConfigParams struct {
@@ -100,6 +102,7 @@ type CreateWebhookConfigParams struct {
 	CreatedAt     time.Time       `json:"created_at"`
 	PayloadFormat string          `json:"payload_format"`
 	TicketFilter  json.RawMessage `json:"ticket_filter"`
+	ApiKeyID      uuid.NullUUID   `json:"api_key_id"`
 }
 
 func (q *Queries) CreateWebhookConfig(ctx context.Context, arg CreateWebhookConfigParams) error {
@@ -112,6 +115,7 @@ func (q *Queries) CreateWebhookConfig(ctx context.Context, arg CreateWebhookConf
 		arg.CreatedAt,
 		arg.PayloadFormat,
 		arg.TicketFilter,
+		arg.ApiKeyID,
 	)
 	return err
 }
@@ -122,6 +126,40 @@ DELETE FROM api_keys WHERE id = $1
 
 func (q *Queries) DeleteAPIKey(ctx context.Context, id uuid.UUID) (int64, error) {
 	result, err := q.db.ExecContext(ctx, deleteAPIKey, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteAPIKeyForUser = `-- name: DeleteAPIKeyForUser :execrows
+DELETE FROM api_keys WHERE id = $1 AND user_id = $2
+`
+
+type DeleteAPIKeyForUserParams struct {
+	ID     uuid.UUID `json:"id"`
+	UserID uuid.UUID `json:"user_id"`
+}
+
+// The self-service revoke (#450): the owner is part of the statement, so a key
+// that is somebody else's deletes nothing and is indistinguishable from one
+// that does not exist.
+func (q *Queries) DeleteAPIKeyForUser(ctx context.Context, arg DeleteAPIKeyForUserParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteAPIKeyForUser, arg.ID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteAllAPIKeysForUser = `-- name: DeleteAllAPIKeysForUser :execrows
+DELETE FROM api_keys WHERE user_id = $1
+`
+
+// Every key a user owns, for an administrator's password reset that asks to
+// revoke them too (#450). Returns how many, which the audit entry records.
+func (q *Queries) DeleteAllAPIKeysForUser(ctx context.Context, userID uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteAllAPIKeysForUser, userID)
 	if err != nil {
 		return 0, err
 	}
@@ -161,7 +199,7 @@ func (q *Queries) DeleteWebhookConfig(ctx context.Context, id uuid.UUID) (int64,
 }
 
 const getAPIKeyByHash = `-- name: GetAPIKeyByHash :one
-SELECT id, name, hashed_token, user_id, scopes, last_used_at, expires_at, created_at FROM api_keys WHERE hashed_token = $1
+SELECT id, name, hashed_token, user_id, scopes, last_used_at, expires_at, created_at, created_by FROM api_keys WHERE hashed_token = $1
 `
 
 func (q *Queries) GetAPIKeyByHash(ctx context.Context, hashedToken string) (ApiKey, error) {
@@ -176,6 +214,7 @@ func (q *Queries) GetAPIKeyByHash(ctx context.Context, hashedToken string) (ApiK
 		&i.LastUsedAt,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.CreatedBy,
 	)
 	return i, err
 }
@@ -264,7 +303,7 @@ func (q *Queries) GetOAuthClientWithUser(ctx context.Context, clientID string) (
 }
 
 const getWebhookConfig = `-- name: GetWebhookConfig :one
-SELECT id, url, events, secret, enabled, created_at, payload_format, last_delivery_at, last_delivery_status, last_delivery_error, ticket_filter FROM webhook_configs WHERE id = $1
+SELECT id, url, events, secret, enabled, created_at, payload_format, last_delivery_at, last_delivery_status, last_delivery_error, ticket_filter, api_key_id FROM webhook_configs WHERE id = $1
 `
 
 func (q *Queries) GetWebhookConfig(ctx context.Context, id uuid.UUID) (WebhookConfig, error) {
@@ -282,12 +321,13 @@ func (q *Queries) GetWebhookConfig(ctx context.Context, id uuid.UUID) (WebhookCo
 		&i.LastDeliveryStatus,
 		&i.LastDeliveryError,
 		&i.TicketFilter,
+		&i.ApiKeyID,
 	)
 	return i, err
 }
 
 const listAPIKeysByUser = `-- name: ListAPIKeysByUser :many
-SELECT id, name, hashed_token, user_id, scopes, last_used_at, expires_at, created_at FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC
+SELECT id, name, hashed_token, user_id, scopes, last_used_at, expires_at, created_at, created_by FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC
 `
 
 func (q *Queries) ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]ApiKey, error) {
@@ -308,6 +348,7 @@ func (q *Queries) ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]Ap
 			&i.LastUsedAt,
 			&i.ExpiresAt,
 			&i.CreatedAt,
+			&i.CreatedBy,
 		); err != nil {
 			return nil, err
 		}
@@ -323,7 +364,7 @@ func (q *Queries) ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]Ap
 }
 
 const listAPIKeysWithOwner = `-- name: ListAPIKeysWithOwner :many
-SELECT k.id, k.name, k.hashed_token, k.user_id, k.scopes, k.last_used_at, k.expires_at, k.created_at, u.email AS owner_email, u.display_name AS owner_name
+SELECT k.id, k.name, k.hashed_token, k.user_id, k.scopes, k.last_used_at, k.expires_at, k.created_at, k.created_by, u.email AS owner_email, u.display_name AS owner_name
 FROM api_keys k
 JOIN users u ON u.id = k.user_id
 WHERE ($1::uuid IS NULL OR k.id = $1::uuid)
@@ -331,16 +372,17 @@ ORDER BY k.created_at DESC
 `
 
 type ListAPIKeysWithOwnerRow struct {
-	ID          uuid.UUID    `json:"id"`
-	Name        string       `json:"name"`
-	HashedToken string       `json:"hashed_token"`
-	UserID      uuid.UUID    `json:"user_id"`
-	Scopes      []string     `json:"scopes"`
-	LastUsedAt  sql.NullTime `json:"last_used_at"`
-	ExpiresAt   sql.NullTime `json:"expires_at"`
-	CreatedAt   time.Time    `json:"created_at"`
-	OwnerEmail  string       `json:"owner_email"`
-	OwnerName   string       `json:"owner_name"`
+	ID          uuid.UUID     `json:"id"`
+	Name        string        `json:"name"`
+	HashedToken string        `json:"hashed_token"`
+	UserID      uuid.UUID     `json:"user_id"`
+	Scopes      []string      `json:"scopes"`
+	LastUsedAt  sql.NullTime  `json:"last_used_at"`
+	ExpiresAt   sql.NullTime  `json:"expires_at"`
+	CreatedAt   time.Time     `json:"created_at"`
+	CreatedBy   uuid.NullUUID `json:"created_by"`
+	OwnerEmail  string        `json:"owner_email"`
+	OwnerName   string        `json:"owner_name"`
 }
 
 // key_id NULL lists every key; a value lists that one key. The owner comes
@@ -363,6 +405,7 @@ func (q *Queries) ListAPIKeysWithOwner(ctx context.Context, keyID uuid.NullUUID)
 			&i.LastUsedAt,
 			&i.ExpiresAt,
 			&i.CreatedAt,
+			&i.CreatedBy,
 			&i.OwnerEmail,
 			&i.OwnerName,
 		); err != nil {
@@ -380,7 +423,7 @@ func (q *Queries) ListAPIKeysWithOwner(ctx context.Context, keyID uuid.NullUUID)
 }
 
 const listEnabledWebhookConfigs = `-- name: ListEnabledWebhookConfigs :many
-SELECT id, url, events, secret, enabled, created_at, payload_format, last_delivery_at, last_delivery_status, last_delivery_error, ticket_filter FROM webhook_configs WHERE enabled = TRUE ORDER BY created_at
+SELECT id, url, events, secret, enabled, created_at, payload_format, last_delivery_at, last_delivery_status, last_delivery_error, ticket_filter, api_key_id FROM webhook_configs WHERE enabled = TRUE ORDER BY created_at
 `
 
 func (q *Queries) ListEnabledWebhookConfigs(ctx context.Context) ([]WebhookConfig, error) {
@@ -404,6 +447,7 @@ func (q *Queries) ListEnabledWebhookConfigs(ctx context.Context) ([]WebhookConfi
 			&i.LastDeliveryStatus,
 			&i.LastDeliveryError,
 			&i.TicketFilter,
+			&i.ApiKeyID,
 		); err != nil {
 			return nil, err
 		}
@@ -529,8 +573,52 @@ func (q *Queries) ListOAuthClientsWithoutGroups(ctx context.Context) ([]string, 
 	return items, nil
 }
 
+const listPausedWebhookIDs = `-- name: ListPausedWebhookIDs :many
+SELECT w.id FROM webhook_configs w
+WHERE w.api_key_id IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM api_keys k
+      JOIN users u ON u.id = k.user_id
+      WHERE k.id = w.api_key_id
+        AND (k.expires_at IS NULL OR k.expires_at > clock_timestamp())
+        AND u.deleted_at IS NULL
+        AND u.disabled = FALSE
+  )
+`
+
+// Hooks tied to an API key that is no longer a working credential: its row is
+// gone (revoked, or deleted with its owner), it has expired, or its owner is
+// disabled or deleted (APIKeyAuth refuses such a key on every request). Judged
+// from the live rows on every call, so an expiry pauses a hook without any job
+// having run, and a missing key counts the same as a revoked one: this fails
+// CLOSED. webhook_configs.api_key_id is deliberately not a foreign key, or
+// deleting the key would null the link and the hook would look session-made.
+// clock_timestamp() and not now(): the latter is the start of the transaction.
+func (q *Queries) ListPausedWebhookIDs(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := q.db.QueryContext(ctx, listPausedWebhookIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWebhookConfigs = `-- name: ListWebhookConfigs :many
-SELECT id, url, events, secret, enabled, created_at, payload_format, last_delivery_at, last_delivery_status, last_delivery_error, ticket_filter FROM webhook_configs ORDER BY created_at
+SELECT id, url, events, secret, enabled, created_at, payload_format, last_delivery_at, last_delivery_status, last_delivery_error, ticket_filter, api_key_id FROM webhook_configs ORDER BY created_at
 `
 
 // The admin view: every subscription, enabled or not. The dispatcher keeps
@@ -556,6 +644,7 @@ func (q *Queries) ListWebhookConfigs(ctx context.Context) ([]WebhookConfig, erro
 			&i.LastDeliveryStatus,
 			&i.LastDeliveryError,
 			&i.TicketFilter,
+			&i.ApiKeyID,
 		); err != nil {
 			return nil, err
 		}
@@ -568,6 +657,19 @@ func (q *Queries) ListWebhookConfigs(ctx context.Context) ([]WebhookConfig, erro
 		return nil, err
 	}
 	return items, nil
+}
+
+const reapproveWebhookConfig = `-- name: ReapproveWebhookConfig :execrows
+UPDATE webhook_configs SET api_key_id = NULL WHERE id = $1
+`
+
+// A signed-in administrator vouching for a hook a key made: clears the link.
+func (q *Queries) ReapproveWebhookConfig(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, reapproveWebhookConfig, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const recordWebhookDelivery = `-- name: RecordWebhookDelivery :exec
@@ -620,6 +722,7 @@ func (q *Queries) UpdateAPIKeyLastUsed(ctx context.Context, arg UpdateAPIKeyLast
 const updateWebhookConfig = `-- name: UpdateWebhookConfig :exec
 UPDATE webhook_configs
 SET url = $2, events = $3, secret = $4, enabled = $5, payload_format = $6, ticket_filter = $7,
+    api_key_id = $8,
     last_delivery_at     = CASE WHEN url = $2 THEN last_delivery_at END,
     last_delivery_status = CASE WHEN url = $2 THEN last_delivery_status ELSE 0 END,
     last_delivery_error  = CASE WHEN url = $2 THEN last_delivery_error ELSE '' END
@@ -634,6 +737,7 @@ type UpdateWebhookConfigParams struct {
 	Enabled       bool            `json:"enabled"`
 	PayloadFormat string          `json:"payload_format"`
 	TicketFilter  json.RawMessage `json:"ticket_filter"`
+	ApiKeyID      uuid.NullUUID   `json:"api_key_id"`
 }
 
 // A new URL clears the last delivery result: it described a different target.
@@ -647,6 +751,7 @@ func (q *Queries) UpdateWebhookConfig(ctx context.Context, arg UpdateWebhookConf
 		arg.Enabled,
 		arg.PayloadFormat,
 		arg.TicketFilter,
+		arg.ApiKeyID,
 	)
 	return err
 }

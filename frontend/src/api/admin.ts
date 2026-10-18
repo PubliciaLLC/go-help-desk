@@ -86,8 +86,13 @@ export async function updateUser(id: string, patch: {
   return res.data
 }
 
-export async function adminResetPassword(id: string, newPassword: string): Promise<void> {
-  await api.post(`/admin/users/${id}/password`, { new_password: newPassword })
+/**
+ * Sets someone's password. revokeAPIKeys also deletes every API key they own
+ * (#450); it is always sent, false included, so what was asked for is visible
+ * on the wire.
+ */
+export async function adminResetPassword(id: string, newPassword: string, revokeAPIKeys = false): Promise<void> {
+  await api.post(`/admin/users/${id}/password`, { new_password: newPassword, revoke_api_keys: revokeAPIKeys })
 }
 
 export async function deleteUser(id: string): Promise<void> {
@@ -331,8 +336,11 @@ export async function updateSettings(patch: Record<string, unknown>): Promise<{ 
 
 // ── API Keys ─────────────────────────────────────────────────────────────────
 
-export async function listScopes(): Promise<ScopeInfo[]> {
-  const res = await api.get<ScopeInfo[]>('/admin/scopes')
+/** The scope catalogue, or with role the scopes a key owned by that role may carry. */
+export async function listScopes(role?: 'admin' | 'staff'): Promise<ScopeInfo[]> {
+  const res = role
+    ? await api.get<ScopeInfo[]>('/admin/scopes', { params: { role } })
+    : await api.get<ScopeInfo[]>('/admin/scopes')
   return res.data
 }
 
@@ -365,6 +373,8 @@ export async function createAPIKey(input: {
   name: string
   scopes?: string[]
   expires_at?: string
+  // Issue the key for this account instead of the caller (#450).
+  user_id?: string
 }): Promise<{ id: string; name: string; token: string }> {
   const res = await api.post<{ id: string; name: string; token: string }>('/admin/api-keys', input)
   return res.data
@@ -455,6 +465,11 @@ export async function updateWebhook(
 ): Promise<WebhookConfig> {
   const res = await api.patch<WebhookConfig>(`/admin/webhooks/${id}`, patch)
   return res.data
+}
+
+/** Clears a paused hook's link to the API key that made it, so it fires again. */
+export async function reapproveWebhook(id: string): Promise<void> {
+  await api.post(`/admin/webhooks/${id}/reapprove`)
 }
 
 export async function deleteWebhook(id: string): Promise<void> {

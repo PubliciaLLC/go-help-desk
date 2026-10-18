@@ -191,7 +191,7 @@ const redactedPlaceholder = "[redacted]"
 // (normaliseKey). Each is an id, a status, a flag or a count, written by
 // ticketMap and the ticket audit paths (including the priority change's
 // reason, SLA outcome and record ids), UnassignForUser, DeleteGroup,
-// user.ResetMFA and
+// user.ResetMFA, the API key audit paths in handler_admin_credentials.go and
 // cmd/server/resetfactors.go (whose os_user and host say who ran it, as
 // actor_name does for everyone else).
 //
@@ -213,6 +213,12 @@ var shownKeys = map[string]bool{
 	// ids before and after.
 	"prioritychangereason": true, "slaoutcome": true,
 	"slapolicyid": true, "slarecordid": true, "previousslarecordid": true,
+	// An API key being issued or revoked (#450): whose it is, whether the actor
+	// was acting on someone else's account, the scopes (a fixed vocabulary) and
+	// the expiry. The key's name is free text and is not written.
+	"owneruserid": true, "onbehalf": true, "scopes": true, "expiresat": true,
+	// How many keys an administrator's password reset revoked with it (#450).
+	"keysrevoked": true,
 }
 
 // Redact returns copies of before/after showing only allow-listed keys

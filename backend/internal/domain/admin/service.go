@@ -259,6 +259,26 @@ func (s *Service) StaffCanViewFollowAudit(ctx context.Context) bool {
 	return v
 }
 
+// StaffCanCreateAPIKeys returns whether staff may create their own API keys
+// (#450). Off by default. Administrators do not consult it, and a requester is
+// refused whatever it says. Turning it off does not touch keys that already
+// exist: it stops new ones being made.
+func (s *Service) StaffCanCreateAPIKeys(ctx context.Context) bool {
+	v, _ := s.GetBool(ctx, KeyStaffCanCreateAPIKeys)
+	return v
+}
+
+// APIKeyMaxLifetimeYears is the longest a new API key may live, in years (1 to
+// 5), or APIKeyNoLimit (#450). Unset, unreadable or not one of those reads as
+// the default of 2: a damaged row must not quietly lift the cap.
+func (s *Service) APIKeyMaxLifetimeYears(ctx context.Context) int {
+	v, err := s.GetInt(ctx, KeyAPIKeyMaxLifetimeYears)
+	if err != nil || !ValidAPIKeyMaxLifetime(v) {
+		return APIKeyMaxLifetimeDefault
+	}
+	return v
+}
+
 // AuditRetentionDays returns the audit-log retention window in days, or
 // AuditRetentionForever when entries are kept indefinitely.
 //

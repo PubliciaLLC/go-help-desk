@@ -2,6 +2,7 @@ package auth
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -76,12 +77,20 @@ var resources = []string{
 // none: no credential may write it (#371).
 func writable(resource string) bool { return resource != ResourceAudit }
 
-// All returns every valid scope, for validation and for the admin UI's picker.
+// offeredWritable reports whether the catalogue and the pickers offer a write
+// scope for a resource. users:write is not offered: keys can't write users
+// (2026-10-16), so it opens nothing to a key. ParseScope still accepts it, so a
+// stored key or a script that names it keeps working.
+func offeredWritable(resource string) bool { return writable(resource) && resource != ResourceUsers }
+
+// All returns every scope the catalogue offers, for the admin UI's picker.
+// Every one of them is also valid to ParseScope; the reverse is not quite true
+// (users:write is accepted but no longer offered).
 func All() []Scope {
 	out := make([]Scope, 0, len(resources)*2)
 	for _, r := range resources {
 		out = append(out, Scope{r, ActionRead})
-		if writable(r) {
+		if offeredWritable(r) {
 			out = append(out, Scope{r, ActionWrite})
 		}
 	}
@@ -172,4 +181,55 @@ func Subset(have, want []string) (string, bool) {
 		}
 	}
 	return "", true
+}
+
+// ScopesForRole is the most a key owned by role may carry: a key acts at its
+// owner's role, so a scope no route that role can reach uses is a scope that
+// can only mislead. role is user.Role's string value; this package cannot
+// import user.
+//
+// Written out, not computed, because the router is the source of truth and the
+// router lives in a package this one cannot import.
+// TestScopesForRole_MatchTheRouter (internal/server) derives the same table
+// from the router's own middleware and fails when the two differ in either
+// direction, so a route that is opened to staff, or a scope added for an admin
+// route, cannot leave this stale.
+//
+// Requesters and unknown roles get nothing.
+func ScopesForRole(role string) []Scope {
+	switch role {
+	case "admin":
+		return All()
+	case "staff":
+		return []Scope{
+			{ResourceTickets, ActionRead}, {ResourceTickets, ActionWrite},
+			// The assignee picker's group list, read only (groupsRouter).
+			{ResourceGroups, ActionRead},
+			// The admin-wide audit view, which staff may open (#129).
+			{ResourceAudit, ActionRead},
+			// The requester lookup staff use when filing a ticket for someone
+			// (#514, GET /users/lookup). Read only: keys can't write users.
+			{ResourceUsers, ActionRead},
+		}
+	}
+	// A requester gets nothing: requesters never own a key (#450). That is a
+	// rule about who may hold a key, so it is stated here rather than derived
+	// from the router, which would say tickets:read|write.
+	return nil
+}
+
+// WithinRole returns an error naming the first scope in want that a key owned
+// by role may not carry. want must already have passed ValidateScopes.
+func WithinRole(role string, want []string) error {
+	offered := ScopesForRole(role)
+	for _, w := range want {
+		sc, err := ParseScope(w)
+		if err != nil {
+			return err
+		}
+		if !slices.Contains(offered, sc) {
+			return fmt.Errorf("scope %q is not available to a key owned by a %s account", w, role)
+		}
+	}
+	return nil
 }
