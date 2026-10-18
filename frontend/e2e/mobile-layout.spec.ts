@@ -475,7 +475,13 @@ test.describe('#479: long URLs wrap on a phone', () => {
       await mockApi(page)
       await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}`, (route) =>
         route.fulfill({
-          json: { ...TICKET_DETAIL, subject: `Link ${longUrlFor('subject')}`, description: `See ${longUrlFor('description')}` },
+          json: {
+            ...TICKET_DETAIL,
+            subject: `Link ${longUrlFor('subject')}`,
+            description: `See ${longUrlFor('description')}`,
+            // #514's Requester line: a long name and an address with no break point.
+            requester: { name: 'R'.repeat(300), email: `${'q'.repeat(300)}@example.com` },
+          },
         }),
       )
       await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/replies`, (route) =>
@@ -600,37 +606,177 @@ test.describe('#479: long URLs wrap on a phone', () => {
 test.describe('truncated text exposes its full text in a title', () => {
   const long = longUrlFor('truncated')
 
-  test('reply author name, attachment filename, linked ticket subject', async ({ page }) => {
-    await mockApi(page)
-    await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/replies`, (route) =>
-      route.fulfill({
-        json: [
-          { ...REPLIES[0], id: 'r-named', author_name: long },
-          // No name: the fallback label is what is shown, and what the title must be.
-          { ...REPLIES[0], id: 'r-anon', author_id: null, author_name: '' },
-        ],
-      }),
-    )
-    await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/attachments`, (route) =>
-      route.fulfill({ json: [{ ...ATTACHMENTS[0], filename: `${long}.pdf` }] }),
-    )
+  test('linked ticket line and the desktop-only truncations', async ({ page }) => {
+    await page.setViewportSize({ width: 1024, height: 800 })
+    await mockApi(page, { me: { ...ME_STAFF, email: `${'e'.repeat(80)}@example.com` } })
     await page.route(`**/api/v1/tickets/${LINKED_TICKET.id}`, (route) =>
       route.fulfill({ json: { ...LINKED_TICKET, subject: long } }),
     )
+    await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/canned-responses`, (route) =>
+      route.fulfill({ json: [{ id: 'c1', name: 'Greeting', body: `Hello ${long}`, sort_order: 1, created_at: '2026-09-20T10:00:00Z' }] }),
+    )
     await page.goto(`/tickets/${TICKET_DETAIL.id}`)
-    await expect(page.getByText('Customer', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: 'Insert canned response' }).click()
+    await expect(page.getByText(`Hello ${long}`)).toBeVisible()
 
     const truncated = await page.evaluate(() =>
-      Array.from(document.querySelectorAll('main .truncate')).map((el) => ({
-        // The attachment row's "↓" is an icon glyph, not part of the name.
-        text: (el.textContent ?? '').replace(/^↓/, '').trim(),
+      Array.from(document.querySelectorAll('.truncate')).map((el) => ({
+        text: (el.textContent ?? '').trim(),
         title: el.getAttribute('title') ?? (el.closest('[title]') as HTMLElement | null)?.title ?? null,
       })),
     )
-    expect(truncated.length, 'no truncated elements found').toBeGreaterThanOrEqual(4)
-    for (const t of truncated) expect(t.title, `"${t.text.slice(0, 40)}" is cut with no title`).toBe(t.text)
+    const texts = truncated.map((t) => t.text)
+    // Not vacuous: the linked line, the canned preview and the sidebar email are all there.
+    expect(texts.some((t) => t.includes(`${LINKED_TICKET.tracking_number} · ${long}`))).toBe(true)
+    expect(texts.some((t) => t === `Hello ${long}`), 'canned preview not found').toBe(true)
+    expect(texts.some((t) => t.startsWith('eeee')), 'sidebar email not found').toBe(true)
+    const named = truncated.filter((t) => t.text.includes(long) || t.text.startsWith('eeee'))
+    expect(named.length).toBeGreaterThanOrEqual(3)
+    for (const t of named) expect(t.title, `"${t.text.slice(0, 40)}" is cut with no title`).toBe(t.text)
   })
 
+  test('pending upload filename', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await mockApi(page)
+    await page.goto('/tickets/new')
+    const name = `${'f'.repeat(120)}.txt`
+    await page.locator('input[type="file"]').setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from('x') })
+    const row = page.locator('li span.truncate', { hasText: name })
+    await expect(row).toBeVisible()
+    await expect(row).toHaveAttribute('title', name)
+  })
+
+  test('a reply author name and an attachment filename wrap in full instead of being cut', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 844 })
+    await mockApi(page)
+    const author = longUrlFor('author')
+    const file = `${longUrlFor('file')}.pdf`
+    await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/replies`, (route) =>
+      route.fulfill({ json: [{ ...REPLIES[0], author_name: author }] }),
+    )
+    await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/attachments`, (route) =>
+      route.fulfill({ json: [{ ...ATTACHMENTS[0], filename: file }] }),
+    )
+    await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+    for (const text of [author, file]) {
+      const el = page.getByText(text, { exact: true })
+      await expect(el).toBeVisible()
+      const m = await el.evaluate((e) => ({
+        ellipsis: getComputedStyle(e).textOverflow,
+        cut: e.scrollWidth > e.clientWidth,
+        title: e.getAttribute('title') ?? (e.closest('[title]') as HTMLElement | null)?.title ?? null,
+      }))
+      expect(m.ellipsis, `${text.slice(0, 30)} is ellipsised, so its full text is nowhere in the app`).not.toBe('ellipsis')
+      expect(m.cut).toBe(false)
+      expect(await lineCount(el), 'a long name was not wrapped over several lines').toBeGreaterThan(1)
+      expect(m.title).toBe(text)
+    }
+    // The download glyph is decoration.
+    await expect(page.locator('a[download] [aria-hidden="true"]', { hasText: '↓' })).toHaveCount(1)
+  })
+})
+
+test.describe('#517 review: more places at 320px', () => {
+  test('admin audit page: a diff value with a long URL and a long word', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 844 })
+    await mockApi(page, { me: ME_ADMIN })
+    const word = 'W'.repeat(300)
+    await page.route(/\/api\/v1\/admin\/audit/, (route) =>
+      route.fulfill({
+        json: {
+          entries: [
+            {
+              id: 'ad1', entity_type: 'ticket', entity_id: 'tk-1', action: 'updated', actor_id: 'u-admin',
+              actor_name: 'Ada Admin', created_at: '2026-09-20T12:00:00Z',
+              before: { subject: longUrlFor('before'), note: word }, after: { subject: longUrlFor('after'), note: `${word}x` },
+            },
+          ],
+          total: 1,
+          total_capped: false,
+        },
+      }),
+    )
+    await page.goto('/admin/audit')
+    const item = page.locator('li', { hasText: 'subject' }).first()
+    await expect(item).toBeVisible()
+    // The diff's own width, not the page: the table's other columns set the
+    // page width here. What has to hold is that the diff itself wraps, on the
+    // one page where nothing above it in the tree wraps for it.
+    const widest = await page.locator('li', { hasText: 'subject' }).evaluateAll((els) => Math.max(...els.map((e) => e.getBoundingClientRect().width)))
+    expect(widest, 'an audit diff value is wider than the viewport: it is not wrapping').toBeLessThanOrEqual(320)
+  })
+
+  const STATUS_NAMES = ['Waiting on third-party vendor response', 'S'.repeat(300)]
+  for (const name of STATUS_NAMES) {
+    test(`list card status chip: ${name.length} characters`, async ({ page }) => {
+      await page.setViewportSize({ width: 320, height: 844 })
+      await mockApi(page)
+      await page.route('**/api/v1/statuses', (route) =>
+        route.fulfill({ json: STATUSES.map((st) => (st.id === 'st-new' ? { ...st, name } : st)) }),
+      )
+      await page.goto('/tickets')
+      const card = page.locator('li').filter({ hasText: 'Printer on fire, second floor' })
+      await expect(card).toBeVisible()
+      await noHorizontalScroll(page)
+      await documentFits(page, 320)
+      const chipRight = await card.getByText(name, { exact: true }).evaluate((e) => e.getBoundingClientRect().right)
+      const cardRight = await card.evaluate((e) => e.getBoundingClientRect().right)
+      expect(chipRight, 'the status chip runs outside its card').toBeLessThanOrEqual(cardRight)
+    })
+  }
+
+  test('desktop table: a long status name has a title', async ({ page }) => {
+    await page.setViewportSize({ width: 1024, height: 800 })
+    await mockApi(page)
+    const name = 'Waiting on third-party vendor response'
+    await page.route('**/api/v1/statuses', (route) =>
+      route.fulfill({ json: STATUSES.map((st) => (st.id === 'st-new' ? { ...st, name } : st)) }),
+    )
+    await page.goto('/tickets')
+    await expect(page.locator('td').getByText(name).first()).toHaveAttribute('title', name)
+  })
+
+  test('requester picker: hit list and "Filing for" line with a realistic 59-character email', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 844 })
+    await mockApi(page)
+    const email = `${'firstname.lastname.department'.padEnd(47, 'x')}@example.com`
+    expect(email.length).toBe(59)
+    const hit = { id: 'u-h', display_name: 'Firstname Lastname of the Facilities Department', email }
+    await page.route(/\/api\/v1\/users\/lookup/, (route) => route.fulfill({ json: [hit] }))
+    await page.goto('/tickets/new')
+    await page.getByLabel('Another user').check()
+    await page.getByLabel('Search users').fill('first')
+    const result = page.getByRole('list', { name: 'Matching users' })
+    await expect(result).toBeVisible()
+    await noHorizontalScroll(page)
+    await documentFits(page, 320)
+    await result.getByRole('button').click()
+    await expect(page.getByText('Filing for')).toBeVisible()
+    await noHorizontalScroll(page)
+    await documentFits(page, 320)
+  })
+
+  test('category name and custom-field label in the sidebar', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 844 })
+    await mockApi(page)
+    const category = 'C'.repeat(300)
+    const label = 'L'.repeat(300)
+    await page.route('**/api/v1/categories', (route) =>
+      route.fulfill({ json: [{ id: 'cat-1', name: category, active: true }] }),
+    )
+    await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/custom-fields`, (route) =>
+      route.fulfill({ json: [{ ...CUSTOM_FIELDS[0], field_name: label }] }),
+    )
+    await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+    await expect(page.getByText(label)).toBeVisible()
+    await expect(page.getByText(category).first()).toBeVisible()
+    await noHorizontalScroll(page)
+    await documentFits(page, 320)
+  })
+})
+
+test.describe('truncated text, continued', () => {
+  const long = longUrlFor('truncated')
   test('ticket list table subject (desktop width)', async ({ page }) => {
     await page.setViewportSize({ width: 1024, height: 800 })
     await mockApi(page)

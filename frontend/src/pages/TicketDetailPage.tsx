@@ -325,7 +325,7 @@ function CustomFieldsPanel({ ticketId, isStaffOrAdmin }: CustomFieldsPanelProps)
       <CardContent className="space-y-3 text-sm">
         {displayValues.map((v) => (
           <div key={v.field_def_id} className="space-y-0.5">
-            <Label className="text-xs text-gray-500">{v.field_name}</Label>
+            <Label className="text-xs text-gray-500 wrap-anywhere">{v.field_name}</Label>
             {isStaffOrAdmin && editValues ? (
               renderInput(v)
             ) : (
@@ -691,13 +691,13 @@ export function TicketDetailPage() {
                       key={r.id}
                       className={`rounded-lg border p-4 text-sm ${r.internal ? 'border-yellow-200 bg-yellow-50' : 'bg-white'}`}
                     >
-                      <div className="mb-1 flex items-center justify-between text-xs text-gray-500">
+                      <div className="mb-1 flex items-center justify-between gap-2 text-xs text-gray-500">
                         {/* The name, not the id. This printed r.author_id,
                             so every reply from a registered account showed as
                             a bare UUID and nobody could tell who had said
                             what. A reply with no author came from a guest —
                             that is the only way it is null. */}
-                        <span className="min-w-0 truncate" title={r.author_name || (r.author_id ? 'Unknown user' : 'Customer')}>
+                        <span className="min-w-0 wrap-anywhere" title={r.author_name || (r.author_id ? 'Unknown user' : 'Customer')}>
                           {r.author_name || (r.author_id ? 'Unknown user' : 'Customer')}
                         </span>
                         <span className="flex items-center gap-2">

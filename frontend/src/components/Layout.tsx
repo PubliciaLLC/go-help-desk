@@ -96,7 +96,7 @@ function SidebarContent({ user, branding, onNavigate, onLogout }: SidebarContent
       </nav>
 
       <div className="border-t p-3 space-y-2">
-        <div className="px-3 text-xs text-gray-500 truncate">{user?.email}</div>
+        <div className="px-3 text-xs text-gray-500 truncate" title={user?.email}>{user?.email}</div>
         {/* Your own account, not an admin screen: it sits with the identity
             it belongs to rather than in the nav list above. */}
         <NavItem

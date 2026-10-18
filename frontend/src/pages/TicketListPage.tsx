@@ -479,6 +479,7 @@ export function TicketListPage() {
                           {status ? (
                             <span
                               className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium"
+                              title={status.name}
                               style={{ borderColor: status.color, color: status.color }}
                             >
                               <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: status.color }} />
@@ -527,11 +528,11 @@ export function TicketListPage() {
                         <span className="font-mono text-xs text-gray-500">{t.tracking_number}</span>
                         {status ? (
                           <span
-                            className="inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium"
+                            className="inline-flex min-w-0 items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium"
                             style={{ borderColor: status.color, color: status.color }}
                           >
-                            <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: status.color }} />
-                            {status.name}
+                            <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: status.color }} />
+                            <span className="min-w-0 wrap-anywhere">{status.name}</span>
                           </span>
                         ) : '—'}
                       </div>

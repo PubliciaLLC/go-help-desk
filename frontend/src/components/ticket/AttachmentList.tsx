@@ -215,12 +215,12 @@ function OrdinaryRow({ ticketId, attachment }: RowProps) {
     <div className="space-y-1">
       <a
         href={attachmentDownloadUrl(ticketId, attachment.id)}
-        className="flex min-h-6 items-center gap-2 text-sm text-blue-600 hover:underline truncate"
+        className="flex min-h-6 items-start gap-2 text-sm text-blue-600 hover:underline"
         download={attachment.filename}
         title={attachment.filename}
       >
-        <span className="shrink-0 text-gray-400">↓</span>
-        <span className="truncate">{attachment.filename}</span>
+        <span aria-hidden="true" className="shrink-0 text-gray-400">↓</span>
+        <span className="min-w-0 wrap-anywhere">{attachment.filename}</span>
       </a>
       <ContentLine attachment={attachment} />
       <HashLine attachment={attachment} />

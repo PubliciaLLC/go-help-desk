@@ -1377,17 +1377,21 @@ check `frontend/e2e/mobile-layout.spec.ts` pins it at 390×844.
 such as a 300-character URL in a reply, is wrapped at the edge of its box
 (`overflow-wrap: anywhere`, Tailwind `wrap-anywhere`) down to 320 pixels. This
 holds for everything a person wrote on a ticket: the subject heading, the
-description, replies and internal notes, the activity feed and its diffs, the
-status history, followers, the assignee, status names, custom-field values and
-tags. It is never truncated, rewritten or linkified, so it stays whole and
-copyable (#479). The one exception is a compact row or chip, where an ellipsis
-is allowed: a reply's author name, an attachment's filename, a linked ticket's
-line, and the subject in the desktop ticket table. Each of those carries a
-`title` attribute with its full text (hover, long-press), and the full text is
-one click away: the row or link opens the ticket, the file or the reply where it
-is shown whole. On the ticket page below `md` the header's action buttons sit on
-their own row under the title and tracking number, which keep the full width
-(#480).
+description, replies and internal notes, reply author names, attachment
+filenames, the requester line, the activity feed and its diffs, the status
+history, followers, the assignee, status names, category, type and item names,
+custom-field labels and values, tags, and the requester picker. It is never
+truncated, rewritten or linkified, so it stays whole and copyable (#479).
+
+Five compact places still end in an ellipsis, because they are one-line rows
+where wrapping would break the row: the linked ticket line in the Linked tickets
+panel, the subject in the desktop ticket table, a pending upload's filename
+before it is sent, the canned-response preview in its picker, and the signed-in
+email at the foot of the sidebar. Each carries a `title` attribute with its full
+text, which a pointer shows on hover; touch browsers do not show one, so the
+two ticket rows also open the ticket, where the text wraps in full. On the
+ticket page below `md` the header's action buttons sit on their own row under
+the title and tracking number, which keep the full width (#480).
 
 **Not a claim of feature parity.** Everything a staff member can do to a ticket
 from a desk they can do from a phone, because those actions live on the ticket
