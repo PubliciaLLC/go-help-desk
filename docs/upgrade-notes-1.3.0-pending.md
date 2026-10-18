@@ -409,3 +409,87 @@ A change to a ticket is now **one event**, written to the notification queue in 
 
 - **MCP request bodies are capped at 1 MiB** on `/mcp`, `/mcp/` and `/mcp/message`. Over the cap the server answers **413** (`request_too_large`). Before, there was no cap. A client sending a single tool call larger than 1 MiB (a reply body of over a million characters; ticket descriptions are already capped at 50,000 bytes) is now refused; nothing in normal use comes near it.
 - **An SSE session now belongs to the user and credential that opened the stream.** A `POST /mcp/message` for a `sessionId` from a different user, a different API key of the same user, or a browser session where the stream was opened with a key (or the reverse), is refused with **403** and not processed. An unknown, missing or closed `sessionId` gets the same 403. Clients that open the stream and post with the same credential (every ordinary MCP client) are unaffected. A client that opens the stream with one credential and posts with another must use one.
+
+## Tickets Left Assigned to a Deleted User Go Back to the Queue (#524)
+
+In 1.2.x, deleting a user left their open tickets pointing at them. Such a ticket showed as "Unassigned" on its page, was not in the unassigned queue, and was in nobody's "assigned to me". 1.3.0's delete returns the user's open tickets to the queue (and writes an `unassigned` audit entry for each); **migration `000053` does the same, once, for the tickets a 1.2.x delete had already stranded.**
+
+- **Which tickets:** open ones (neither Resolved nor Closed) whose assignee is a deleted user. Resolved and Closed tickets are history and keep the person who handled them. A **disabled** user is still in the user list, so their tickets are left alone.
+- **What you see afterwards:** those tickets are in the unassigned queue, and each has an `unassigned` entry on its Activity feed and in the admin audit view, naming the deleted user it had. The entry has **no actor**, because no person ran the migration. Their `updated_at` is set to the time of the upgrade.
+- **Nothing else changes.** No mail is sent, no webhook or event is raised, and no SLA clock moves. A group assignment needs nothing: deleting a group has always cleared it.
+- **Rolling back:** the `down` migration does nothing. The tickets stay unassigned; the audit entries record who they had.
+
+## The Server Logs Which Migrations Ran (#525)
+
+The server now says what it did to the schema, once, at startup, before it opens the port:
+
+- `database migrated from 21 to 53`: an upgrade from 1.2.0 (the first number is the version the database was at, the second the version it is at now). A new database says `from 0`.
+- `database schema at 53, no migrations needed`: an ordinary restart.
+
+The line carries `from` and `to` fields as well. Use it to check that an upgrade ran before you look anywhere else. Migrations still run on their own, before the server accepts traffic, and a failed one still stops the start with `running migrations: ...`.
+
+## Rolling Back to 1.2.0
+
+Migrations are forward-only as far as the server is concerned: it never runs one backwards, and there is no command for it. **A rollback is possible by hand, and it discards everything that only 1.3.0 has.** Take it only if you must. This procedure was run end to end: a database upgraded from 1.2.0 with 1.3.0 activity on it was taken back to version 21, its schema came out identical to a 1.2.0 database (columns, indexes and constraints), and the 1.2.0 server then started on it and signed people in, served tickets, attachments, API keys and OAuth tokens, and kept the replies and tickets written under 1.3.0.
+
+### What you lose
+
+Each `down` migration undoes its `up`. These are dropped or deleted, and cannot be brought back except from the backup you take first:
+
+- **Passkeys** (`webauthn_credentials`, 000029) and **guest links** (`guest_access_tokens`, 000022). People re-register their passkeys; a guest needs a new link.
+- **The notification queue** (`notification_outbox`, 000031): any mail or webhook delivery still waiting is gone.
+- **Webhook delivery history** (000037), each hook's **payload format** (Slack, Teams, Discord, Jira, 000026), its **ticket filter** (000038) and its last-delivery status (000034). Hooks go back to plain JSON.
+- **Attachment scan results** (hash, detected type, virus name, quarantine flags, 000023) and the **reputation cache** (000024).
+- **SLA**: pause bookkeeping (000025), the frozen elapsed times (000027), and every superseded SLA record (000043), the history a reopen kept.
+- **Reopen counts and restart points** (000047), **followers** (000046), **password reset links** (000049), the 30-day password clock (000044), the must-change-password flag (000045), **staff email preferences** (000042) and **API key issuer and webhook pause links** (000050).
+- **OAuth service users** (000041): the users made for each client are deleted. Tickets and replies they wrote stay, with no author link.
+- **The generated JWT signing key** (`instance_secrets`, 000036). With `JWT_SECRET` unset or under 32 bytes, every OAuth client fetches a new token on 1.2.0. Set a long `JWT_SECRET` to be sure of it.
+- Pending signups that 1.3.0 created without a name or password (000032, 000033).
+
+Not undone: `000053` (above) and `000039` repair data and have no inverse. Settings rows 1.3.0 wrote stay in the table; 1.2.0 never reads them. Passwords hashed at the new cost still work on 1.2.0.
+
+### Procedure
+
+1. **Stop the app and take a backup.** Do not skip this: the steps below delete data.
+
+   ```sh
+   cd go-help-desk/docker                       # the 1.3.0 checkout
+   docker compose stop app
+   docker compose exec -T db pg_dump -U helpdesk helpdesk > ../backup-before-rollback.sql
+   ```
+
+2. **Run the down migrations**, newest first, each in its own transaction, starting from the version the database is at. Save this as `rollback.sh` in `go-help-desk/docker` and run `bash rollback.sh`:
+
+   ```sh
+   set -u
+   MIG=../backend/internal/database/migrations
+   PSQL="docker compose exec -T db psql -U helpdesk -d helpdesk -v ON_ERROR_STOP=1"
+   current=$($PSQL -Atc "SELECT version FROM schema_migrations")
+   echo "database is at version $current"
+   for f in $(ls $MIG/*.down.sql | sort -r); do
+     name=$(basename "$f")
+     v=$((10#${name:0:6}))
+     [ "$v" -gt "$current" ] && continue
+     [ "$v" -le 21 ] && break
+     echo "rolling back $name"
+     $PSQL --single-transaction < "$f" || { echo "STOPPED at $name: restore the backup"; exit 1; }
+   done
+   $PSQL -c "UPDATE schema_migrations SET version = 21, dirty = false"
+   ```
+
+   There is no `000048`; the script skips it because there is no file. If it stops, the failed file made no change (it ran in a transaction) but the ones before it did: restore `backup-before-rollback.sql` rather than continue.
+
+3. **Start 1.2.0.** Check out the `v1.2.0` tag and bring the stack up the way 1.2.0 did (it builds the app from source):
+
+   ```sh
+   cd ..
+   git checkout v1.2.0
+   cd docker
+   docker compose up -d --build
+   ```
+
+   Keep your `docker/.env`. 1.2.0's Compose file refuses to start without `JWT_SECRET`, so set it if you had left it out for 1.3.0.
+
+4. **Check it.** Sign in as an administrator, open a few tickets, and download an attachment. `SELECT version, dirty FROM schema_migrations` should say `21 | f`.
+
+To go forward again, check out 1.3.0 and start it: it runs every migration from 22, and says so in the log (`database migrated from 21 to 53`).
