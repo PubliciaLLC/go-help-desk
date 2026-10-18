@@ -6,6 +6,13 @@ import {
   ME_ADMIN,
   ME_REPORTER,
   ME_STAFF,
+  ASSIGNABLE_STAFF,
+  ATTACHMENTS,
+  STATUSES,
+  CUSTOM_FIELDS,
+  LINKED_TICKET,
+  REPLIES,
+  TAGS,
   REPLY_PROSE,
   REPLY_URL,
   TICKET_DETAIL,
@@ -283,50 +290,75 @@ test.describe('#414: the tracking number never breaks inside itself', () => {
     expect(await lineCount(number), `${TICKET_DETAIL.tracking_number} wraps onto more than one line`).toBe(1)
     await noHorizontalScroll(page)
   })
+})
 
-  // The test above never squeezes the number: at 390 its column is wider
-  // than it, and a flex-wrap row gives an item that fits its full width
-  // whether or not the item may break. The case that needs the number to be
-  // unbreakable is a column narrower than the number, which the widest action
-  // group a phone shows (staff on a closed ticket: Reopen + Create follow-up)
-  // produces. The width is derived, not hard-coded, so it holds whatever font
-  // system-ui resolves to: the column ends up half a header gap narrower than
-  // the number, so a whole number still clears the buttons (around 375px with
-  // DejaVu Sans). Narrower than that the number runs under "Reopen" instead;
-  // that is the header's action group squeezing its column, not this.
-  test('stays whole when the header actions leave its column narrower than it', async ({ page }) => {
+// #480: the header's action buttons sat beside the title in a flex row, so a
+// group like Reopen + Create follow-up took ~250px and left the title and
+// tracking number a column of 123px at 375px and less below. Below md the
+// group now wraps onto its own row under the title block, and the title block
+// gets the full width.
+test.describe('#480: header actions get their own row below md', () => {
+  for (const width of [320, 360, 375, 414, 767]) {
+    test(`staff, closed ticket, can_reopen: ${width}px`, async ({ page }) => {
+      await mockApi(page)
+      await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}`, (route) =>
+        route.fulfill({ json: { ...TICKET_DETAIL, status_id: 'st-closed', can_reopen: true } }),
+      )
+      await page.setViewportSize({ width, height: 844 })
+      await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+      const number = page.getByText(TICKET_DETAIL.tracking_number, { exact: true })
+      const title = page.getByRole('heading', { level: 1 })
+      const buttons = [page.getByRole('button', { name: 'Reopen' }), page.getByRole('button', { name: 'Create follow-up' })]
+      await expect(number).toBeVisible()
+      for (const b of buttons) await expect(b).toBeVisible()
+
+      const n = await number.boundingBox()
+      const t = await title.boundingBox()
+      if (!n || !t) throw new Error('header not rendered')
+      const boxes = []
+      for (const b of buttons) {
+        const box = await b.boundingBox()
+        if (!box) throw new Error('button not rendered')
+        boxes.push(box)
+      }
+
+      // Full width: main has p-4 either side and the sidebar is a drawer.
+      expect(t.width, 'the title does not get the full width').toBeGreaterThanOrEqual(width - 32 - 1)
+      expect(await lineCount(number), 'the tracking number wraps').toBe(1)
+      // Pinned, not left to the room it happens to have: whitespace-nowrap is
+      // what keeps the number whole if the column is ever narrower than it.
+      expect(await number.evaluate((el) => getComputedStyle(el).whiteSpace), 'tracking number may break').toBe('nowrap')
+      for (const box of boxes) {
+        // Own row: entirely below both the number and the title.
+        expect(box.y, 'a button is not on a row below the number').toBeGreaterThanOrEqual(n.y + n.height)
+        expect(box.y, 'a button is not on a row below the title').toBeGreaterThanOrEqual(t.y + t.height)
+        // And the belt to that braces: no box intersects the number's.
+        const overlaps = n.x < box.x + box.width && box.x < n.x + n.width && n.y < box.y + box.height && box.y < n.y + n.height
+        expect(overlaps, 'the tracking number runs under a button').toBe(false)
+      }
+      await noHorizontalScroll(page)
+    })
+  }
+
+  // Unchanged from md up: the group still sits beside the title, at the right.
+  // 768 is md itself (Tailwind md = min-width 768px): the first width at
+  // which the row layout applies. 767 above is the last stacked width, so the
+  // pair pins the boundary from both sides.
+  for (const width of [768, 1024]) {
+  test(`from md up the actions still sit beside the title (unchanged): ${width}px`, async ({ page }) => {
     await mockApi(page)
     await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}`, (route) =>
       route.fulfill({ json: { ...TICKET_DETAIL, status_id: 'st-closed', can_reopen: true } }),
     )
-    // 767: the widest viewport below md, so the phone layout with room to spare.
-    await page.setViewportSize({ width: 767, height: 844 })
+    await page.setViewportSize({ width, height: 800 })
     await page.goto(`/tickets/${TICKET_DETAIL.id}`)
-    const number = page.getByText(TICKET_DETAIL.tracking_number, { exact: true })
-    const title = page.getByRole('heading', { level: 1 }) // a block: as wide as the column
-    const reopen = page.getByRole('button', { name: 'Reopen' })
-    await expect(number).toBeVisible()
-    await expect(reopen).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Create follow-up' })).toBeVisible()
-
-    const wide = { number: await number.boundingBox(), title: await title.boundingBox(), reopen: await reopen.boundingBox() }
-    if (!wide.number || !wide.title || !wide.reopen) throw new Error('header not rendered')
-    const gap = wide.reopen.x - (wide.title.x + wide.title.width)
-    // Below md the column loses exactly what the viewport loses.
-    const width = Math.round(767 - wide.title.width + wide.number.width - gap / 2)
-    await page.setViewportSize({ width, height: 844 })
-
-    const title2 = await title.boundingBox()
-    const number2 = await number.boundingBox()
-    const reopen2 = await reopen.boundingBox()
-    if (!title2 || !number2 || !reopen2) throw new Error('header not rendered')
-    expect(title2.width, 'the column is not narrower than the number: nothing is being tested').toBeLessThan(
-      wide.number.width,
-    )
-    expect(await lineCount(number), `${TICKET_DETAIL.tracking_number} broke at ${width}px`).toBe(1)
-    expect(number2.x + number2.width, 'the number runs under the action buttons').toBeLessThanOrEqual(reopen2.x)
-    await noHorizontalScroll(page)
+    const t = await page.getByRole('heading', { level: 1 }).boundingBox()
+    const r = await page.getByRole('button', { name: 'Reopen' }).boundingBox()
+    if (!t || !r) throw new Error('header not rendered')
+    expect(r.x, 'actions no longer beside the title at desktop width').toBeGreaterThanOrEqual(t.x + t.width)
+    expect(r.y).toBeLessThan(t.y + t.height)
   })
+  }
 })
 
 test.describe('#414: "Opened …" moves below the number instead of being crushed beside it', () => {
@@ -386,6 +418,473 @@ test.describe('#426: prose wraps at word boundaries; an unbroken URL still wraps
       const urlBroken = (await tokensBrokenAcrossLines(url)).some((t) => t.includes(c.url))
       expect(urlBroken, 'the 300-character URL was not wrapped').toBe(true)
       await noHorizontalScroll(page)
+    })
+  }
+})
+
+// #479: a long unbroken token (a URL) in user text must wrap at the box edge
+// on a phone rather than widen the page. The text itself stays whole.
+//
+// The URL has no `?` or `=`: Chromium offers a break after those even with no
+// wrap rule at all, which would let a broken page pass.
+const PHONE_WIDTHS = [320, 375, 414]
+const NOTE_URL = longUrlFor('internal')
+
+function longUrlFor(path: string) {
+  return `https://example.com/${path}/`.padEnd(300, '0123456789abcdef')
+}
+
+// Unlike noHorizontalScroll this reads the document: the guest pages have no
+// <main>, and for them the document is exactly what scrolls sideways.
+async function documentFits(page: Page, width: number) {
+  const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth)
+  expect(scrollWidth, `the page scrolls sideways at ${width}px`).toBeLessThanOrEqual(width)
+}
+
+// The whole URL is still in the DOM, unmodified and unshortened, so it can be
+// selected and copied.
+async function expectTextIntact(page: Page, url: string) {
+  await expect(page.getByText(url).first()).toHaveText(new RegExp(url))
+}
+
+test.describe('#479: long URLs wrap on a phone', () => {
+  const guestTicket = {
+    tracking_number: 'GHD-2026-000009',
+    subject: `Link ${longUrlFor('subject')}`,
+    description: `Please see ${longUrlFor('description')}`,
+    status: 'S'.repeat(300),
+    created_at: '2026-09-20T10:00:00Z',
+    replies: [
+      { id: 'g1', body: `Courier tracking ${longUrlFor('reply')}`, created_at: '2026-09-20T11:00:00Z', from_you: false },
+      { id: 'g2', body: `Mine ${longUrlFor('mine')}`, created_at: '2026-09-20T12:00:00Z', from_you: true },
+    ],
+  }
+
+  for (const width of PHONE_WIDTHS) {
+    test(`guest ticket page: ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 })
+      await page.route('**/api/v1/guest/ticket', (route) => route.fulfill({ json: guestTicket }))
+      await page.goto('/g#guest-token')
+      await expect(page.getByText(guestTicket.tracking_number)).toBeVisible()
+      await documentFits(page, width)
+      await expectTextIntact(page, longUrlFor('reply'))
+    })
+
+    test(`staff ticket page, every place user text renders: ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 })
+      await mockApi(page)
+      await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}`, (route) =>
+        route.fulfill({
+          json: {
+            ...TICKET_DETAIL,
+            subject: `Link ${longUrlFor('subject')}`,
+            description: `See ${longUrlFor('description')}`,
+            // #514's Requester line: a long name and an address with no break point.
+            requester: { name: 'R'.repeat(300), email: `${'q'.repeat(300)}@example.com` },
+            type_id: 'ty-1',
+            item_id: 'it-1',
+          },
+        }),
+      )
+      await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/replies`, (route) =>
+        route.fulfill({
+          json: [
+            ...REPLIES,
+            { ...REPLIES[0], id: 'rep-2', internal: true, body: `Internal ${NOTE_URL}` },
+          ],
+        }),
+      )
+      // The rest of the page's user text: status history, the activity feed
+      // (actor name and a subject change holding a URL), followers, the
+      // assignee and a status name. A long word, not only a URL, for names.
+      const word = 'W'.repeat(300)
+      await page.route('**/api/v1/categories/cat-1/types', (route) =>
+        route.fulfill({ json: [{ id: 'ty-1', category_id: 'cat-1', name: 'T'.repeat(300), sort_order: 1, active: true }] }),
+      )
+      await page.route('**/api/v1/categories/cat-1/types/ty-1/items', (route) =>
+        route.fulfill({ json: [{ id: 'it-1', type_id: 'ty-1', name: 'I'.repeat(300), sort_order: 1, active: true }] }),
+      )
+      await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/history`, (route) =>
+        route.fulfill({
+          json: [
+            {
+              id: 'h1', ticket_id: TICKET_DETAIL.id, from_status_id: 'st-new', from_status_name: word,
+              from_status_color: '#3b82f6', to_status_id: 'st-resolved', to_status_name: 'Resolved',
+              to_status_color: '#22c55e', changed_by_user_id: 'u-staff', changed_by_name: word,
+              created_at: '2026-09-20T12:00:00Z',
+            },
+          ],
+        }),
+      )
+      await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/audit`, (route) =>
+        route.fulfill({
+          json: [
+            {
+              id: 'a1', action: 'updated', actor_id: 'u-staff', actor_name: word,
+              created_at: '2026-09-20T12:00:00Z',
+              before: { subject: longUrlFor('before') }, after: { subject: longUrlFor('after') },
+            },
+          ],
+        }),
+      )
+      await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/followers`, (route) =>
+        route.fulfill({ json: [{ user_id: 'u-f', display_name: word, created_at: '2026-09-20T12:00:00Z' }] }),
+      )
+      await page.route('**/api/v1/staff', (route) =>
+        route.fulfill({ json: [{ ...ASSIGNABLE_STAFF[0], display_name: word }] }),
+      )
+      await page.route('**/api/v1/statuses', (route) =>
+        route.fulfill({ json: STATUSES.map((st) => (st.id === 'st-new' ? { ...st, name: word } : st)) }),
+      )
+      await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+      await expect(page.getByText(NOTE_URL)).toBeVisible()
+      // Each of these is present on the page, so a zero-width miss is not a pass.
+      for (const text of [longUrlFor('after'), 'Followers']) {
+        await expect(page.getByText(text).first()).toBeVisible()
+      }
+      await expect(page.getByText(word).first()).toBeVisible()
+      await expect(page.getByText('T'.repeat(300))).toBeVisible()
+      await expect(page.getByText('I'.repeat(300))).toBeVisible()
+      await noHorizontalScroll(page)
+      await documentFits(page, width)
+      await expectTextIntact(page, NOTE_URL)
+    })
+
+    test(`linked tickets panel: ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 })
+      await mockApi(page)
+      await page.route(`**/api/v1/tickets/${LINKED_TICKET.id}`, (route) =>
+        route.fulfill({ json: { ...LINKED_TICKET, subject: `Dup ${longUrlFor('linked')}` } }),
+      )
+      await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+      await expect(page.getByText(longUrlFor('linked'))).toBeVisible()
+      await noHorizontalScroll(page)
+      await documentFits(page, width)
+    })
+
+    // Free text a person typed that is not the description or a reply: a tag,
+    // a custom field value, an attachment's filename, a reply author's name.
+    test(`tags, custom fields, attachment names, author names: ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 })
+      await mockApi(page)
+      const tag = longUrlFor('tag')
+      const value = longUrlFor('value')
+      const file = `${longUrlFor('file')}.pdf`
+      const author = longUrlFor('author')
+      await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/tags`, (route) =>
+        route.fulfill({ json: [{ ...TAGS[0], name: tag }] }),
+      )
+      await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/custom-fields`, (route) =>
+        route.fulfill({ json: [{ ...CUSTOM_FIELDS[0], value }] }),
+      )
+      await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/attachments`, (route) =>
+        route.fulfill({ json: [{ ...ATTACHMENTS[0], filename: file }] }),
+      )
+      await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/replies`, (route) =>
+        route.fulfill({ json: [{ ...REPLIES[0], author_name: author }] }),
+      )
+      await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+      await expect(page.getByText(value)).toBeVisible()
+      await noHorizontalScroll(page)
+      await documentFits(page, width)
+    })
+
+    test(`ticket list rows (staff): ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 })
+      await mockApi(page)
+      await page.route('**/api/v1/tickets?*', (route) =>
+        route.fulfill({
+          json: TICKETS.map((t, i) => (i === 2 ? { ...t, subject: `Deploy ${longUrlFor('list')}` } : t)),
+        }),
+      )
+      await page.route('**/api/v1/tickets', (route) =>
+        route.fulfill({
+          json: TICKETS.map((t, i) => (i === 2 ? { ...t, subject: `Deploy ${longUrlFor('list')}` } : t)),
+        }),
+      )
+      await page.goto('/tickets')
+      await expect(page.locator('li').filter({ hasText: longUrlFor('list') })).toBeVisible()
+      await noHorizontalScroll(page)
+      await documentFits(page, width)
+    })
+  }
+})
+
+// Ellipsis is allowed only in compact rows and chips, and only where the full
+// text is still reachable: a title attribute (hover, long-press) and a click
+// through to where it is shown in full. Ticket content itself always wraps.
+test.describe('truncated text exposes its full text in a title', () => {
+  const long = longUrlFor('truncated')
+
+  test('linked ticket line and the desktop-only truncations', async ({ page }) => {
+    await page.setViewportSize({ width: 1024, height: 800 })
+    await mockApi(page, { me: { ...ME_STAFF, email: `${'e'.repeat(80)}@example.com` } })
+    await page.route(`**/api/v1/tickets/${LINKED_TICKET.id}`, (route) =>
+      route.fulfill({ json: { ...LINKED_TICKET, subject: long } }),
+    )
+    await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/canned-responses`, (route) =>
+      route.fulfill({ json: [{ id: 'c1', name: 'Greeting', body: `Hello ${long}`, sort_order: 1, created_at: '2026-09-20T10:00:00Z' }] }),
+    )
+    await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+    await page.getByRole('button', { name: 'Insert canned response' }).click()
+    await expect(page.getByText(`Hello ${long}`)).toBeVisible()
+
+    const truncated = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('.truncate')).map((el) => ({
+        text: (el.textContent ?? '').trim(),
+        title: el.getAttribute('title') ?? (el.closest('[title]') as HTMLElement | null)?.title ?? null,
+      })),
+    )
+    const texts = truncated.map((t) => t.text)
+    // Not vacuous: the linked line, the canned preview and the sidebar email are all there.
+    expect(texts.some((t) => t.includes(`${LINKED_TICKET.tracking_number} · ${long}`))).toBe(true)
+    expect(texts.some((t) => t === `Hello ${long}`), 'canned preview not found').toBe(true)
+    expect(texts.some((t) => t.startsWith('eeee')), 'sidebar email not found').toBe(true)
+    // Every truncated element in the document, unfiltered: the sidebar and
+    // top-bar brand included.
+    expect(truncated.length).toBeGreaterThanOrEqual(4)
+    for (const t of truncated) expect(t.title, `"${t.text.slice(0, 40)}" is cut with no title`).toBe(t.text)
+  })
+
+  test('pending upload filename', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await mockApi(page)
+    await page.goto('/tickets/new')
+    const name = `${'f'.repeat(120)}.txt`
+    await page.locator('input[type="file"]').setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from('x') })
+    const row = page.locator('li span.truncate', { hasText: name })
+    await expect(row).toBeVisible()
+    await expect(row).toHaveAttribute('title', name)
+  })
+
+  test('a reply author name and an attachment filename wrap in full instead of being cut', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 844 })
+    await mockApi(page)
+    const author = longUrlFor('author')
+    const file = `${longUrlFor('file')}.pdf`
+    await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/replies`, (route) =>
+      route.fulfill({ json: [{ ...REPLIES[0], author_name: author }] }),
+    )
+    await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/attachments`, (route) =>
+      route.fulfill({ json: [{ ...ATTACHMENTS[0], filename: file }] }),
+    )
+    await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+    for (const text of [author, file]) {
+      const el = page.getByText(text, { exact: true })
+      await expect(el).toBeVisible()
+      const m = await el.evaluate((e) => ({
+        ellipsis: getComputedStyle(e).textOverflow,
+        cut: e.scrollWidth > e.clientWidth,
+        title: e.getAttribute('title') ?? (e.closest('[title]') as HTMLElement | null)?.title ?? null,
+      }))
+      expect(m.ellipsis, `${text.slice(0, 30)} is ellipsised, so its full text is nowhere in the app`).not.toBe('ellipsis')
+      expect(m.cut).toBe(false)
+      expect(await lineCount(el), 'a long name was not wrapped over several lines').toBeGreaterThan(1)
+      expect(m.title).toBe(text)
+    }
+    // The download glyph is decoration.
+    await expect(page.locator('a[download] [aria-hidden="true"]', { hasText: '↓' })).toHaveCount(1)
+  })
+})
+
+test.describe('#517 review: more places at 320px', () => {
+  test('admin audit page: a diff value with a long URL and a long word', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 844 })
+    await mockApi(page, { me: ME_ADMIN })
+    const word = 'W'.repeat(300)
+    await page.route(/\/api\/v1\/admin\/audit/, (route) =>
+      route.fulfill({
+        json: {
+          entries: [
+            {
+              id: 'ad1', entity_type: 'ticket', entity_id: 'tk-1', action: 'updated', actor_id: 'u-admin',
+              actor_name: 'Ada Admin', created_at: '2026-09-20T12:00:00Z',
+              before: { subject: longUrlFor('before'), note: word }, after: { subject: longUrlFor('after'), note: `${word}x` },
+            },
+          ],
+          total: 1,
+          total_capped: false,
+        },
+      }),
+    )
+    await page.goto('/admin/audit')
+    const item = page.locator('li', { hasText: 'subject' }).first()
+    await expect(item).toBeVisible()
+    // The diff's own width, not the page: the table's other columns set the
+    // page width here. What has to hold is that the diff itself wraps, on the
+    // one page where nothing above it in the tree wraps for it.
+    const widest = await page.locator('li', { hasText: 'subject' }).evaluateAll((els) => Math.max(...els.map((e) => e.getBoundingClientRect().width)))
+    expect(widest, 'an audit diff value is wider than the viewport: it is not wrapping').toBeLessThanOrEqual(320)
+  })
+
+  const STATUS_NAMES = ['Waiting on third-party vendor response', 'S'.repeat(300)]
+  for (const name of STATUS_NAMES) {
+    test(`list card status chip: ${name.length} characters`, async ({ page }) => {
+      await page.setViewportSize({ width: 320, height: 844 })
+      await mockApi(page)
+      await page.route('**/api/v1/statuses', (route) =>
+        route.fulfill({ json: STATUSES.map((st) => (st.id === 'st-new' ? { ...st, name } : st)) }),
+      )
+      await page.goto('/tickets')
+      const card = page.locator('li').filter({ hasText: 'Printer on fire, second floor' })
+      await expect(card).toBeVisible()
+      await noHorizontalScroll(page)
+      await documentFits(page, 320)
+      const chipRight = await card.getByText(name, { exact: true }).evaluate((e) => e.getBoundingClientRect().right)
+      const cardRight = await card.evaluate((e) => e.getBoundingClientRect().right)
+      expect(chipRight, 'the status chip runs outside its card').toBeLessThanOrEqual(cardRight)
+    })
+  }
+
+  test('desktop table: a long status name has a title', async ({ page }) => {
+    await page.setViewportSize({ width: 1024, height: 800 })
+    await mockApi(page)
+    const name = 'Waiting on third-party vendor response'
+    await page.route('**/api/v1/statuses', (route) =>
+      route.fulfill({ json: STATUSES.map((st) => (st.id === 'st-new' ? { ...st, name } : st)) }),
+    )
+    await page.goto('/tickets')
+    await expect(page.locator('td').getByText(name).first()).toHaveAttribute('title', name)
+  })
+
+  test('requester picker: hit list and "Filing for" line with a realistic 59-character email', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 844 })
+    await mockApi(page)
+    const email = `${'firstname.lastname.department'.padEnd(47, 'x')}@example.com`
+    expect(email.length).toBe(59)
+    const hit = { id: 'u-h', display_name: 'N'.repeat(300), email }
+    await page.route(/\/api\/v1\/users\/lookup/, (route) => route.fulfill({ json: [hit] }))
+    await page.goto('/tickets/new')
+    await page.getByLabel('Another user').check()
+    await page.getByLabel('Search users').fill('first')
+    const result = page.getByRole('list', { name: 'Matching users' })
+    await expect(result).toBeVisible()
+    await noHorizontalScroll(page)
+    await documentFits(page, 320)
+    await result.getByRole('button').click()
+    await expect(page.getByText('Filing for')).toBeVisible()
+    await noHorizontalScroll(page)
+    await documentFits(page, 320)
+  })
+
+  test('category name and custom-field label in the sidebar', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 844 })
+    await mockApi(page)
+    const category = 'C'.repeat(300)
+    const label = 'L'.repeat(300)
+    await page.route('**/api/v1/categories', (route) =>
+      route.fulfill({ json: [{ id: 'cat-1', name: category, active: true }] }),
+    )
+    await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/custom-fields`, (route) =>
+      route.fulfill({ json: [{ ...CUSTOM_FIELDS[0], field_name: label }] }),
+    )
+    await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+    await expect(page.getByText(label)).toBeVisible()
+    await expect(page.getByText(category).first()).toBeVisible()
+    await noHorizontalScroll(page)
+    await documentFits(page, 320)
+  })
+})
+
+test.describe('truncated text, continued', () => {
+  const long = longUrlFor('truncated')
+  test('ticket list table subject (desktop width)', async ({ page }) => {
+    await page.setViewportSize({ width: 1024, height: 800 })
+    await mockApi(page)
+    const tickets = TICKETS.map((t, i) => (i === 2 ? { ...t, subject: `Deploy ${long}` } : t))
+    await page.route('**/api/v1/tickets', (route) => route.fulfill({ json: tickets }))
+    await page.route('**/api/v1/tickets?*', (route) => route.fulfill({ json: tickets }))
+    await page.goto('/tickets')
+    const cell = page.locator('td').filter({ hasText: long })
+    await expect(cell).toBeVisible()
+    const link = cell.getByRole('link')
+    await expect(link).toHaveAttribute('title', `Deploy ${long}`)
+  })
+})
+
+// #517 round 3: the remaining ellipsis places outside ticket content each
+// carry a title, and two pre-existing overflows wrap.
+async function truncatedWithTitle(page: Page) {
+  return page.evaluate(() =>
+    Array.from(document.querySelectorAll('.truncate')).map((el) => ({
+      text: (el.textContent ?? '').trim(),
+      title: el.getAttribute('title') ?? (el.closest('[title]') as HTMLElement | null)?.title ?? null,
+    })),
+  )
+}
+
+test.describe('#517 round 3: titles on the remaining truncations', () => {
+  test('dashboard client name and email', async ({ page }) => {
+    await page.setViewportSize({ width: 1024, height: 800 })
+    await mockApi(page, { me: ME_ADMIN })
+    await page.route(/\/api\/v1\/admin\/users/, (route) =>
+      route.fulfill({
+        json: [{ ...ME_REPORTER, id: 'u-c', display_name: 'D'.repeat(80), email: `${'m'.repeat(80)}@example.com`, disabled: false }],
+      }),
+    )
+    await page.goto('/dashboard')
+    await expect(page.getByText('D'.repeat(80))).toBeVisible()
+    const t = await truncatedWithTitle(page)
+    expect(t.length).toBeGreaterThanOrEqual(3)
+    for (const x of t) expect(x.title, `"${x.text.slice(0, 40)}" is cut with no title`).toBe(x.text)
+  })
+
+  test('account page passkey label', async ({ page }) => {
+    await page.setViewportSize({ width: 1024, height: 800 })
+    await mockApi(page)
+    const name = 'K'.repeat(120)
+    await page.route('**/api/v1/me/passkeys', (route) =>
+      route.fulfill({
+        json: [{ id: 'pk1', name, transports: ['usb'], backup_eligible: false, backup_state: false, created_at: '2026-09-20T10:00:00Z', last_used_at: null }],
+      }),
+    )
+    await page.goto('/account')
+    await expect(page.getByText(name)).toBeVisible()
+    const t = await truncatedWithTitle(page)
+    for (const x of t) expect(x.title, `"${x.text.slice(0, 40)}" is cut with no title`).toBe(x.text)
+  })
+})
+
+test.describe('#517 round 3: two long names that ran the page sideways', () => {
+  const name = 'B'.repeat(300)
+
+  test('the drawer sidebar brand wraps', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 844 })
+    await mockApi(page)
+    await page.route('**/api/v1/site', (route) =>
+      route.fulfill({ json: { name, logo_url: '', version: '1.3.0' } }),
+    )
+    await page.goto('/dashboard')
+    await page.getByRole('button', { name: /menu|navigation/i }).click()
+    const brand = page.getByRole('dialog').getByText(name)
+    await expect(brand).toBeVisible()
+    const right = await brand.evaluate((e) => e.getBoundingClientRect().right)
+    expect(right, 'the drawer brand runs off the screen').toBeLessThanOrEqual(320)
+  })
+
+  test('the dashboard "Welcome back" line wraps', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 844 })
+    await mockApi(page, { me: { ...ME_STAFF, display_name: name } })
+    await page.goto('/dashboard')
+    await expect(page.getByText(`Welcome back, ${name}`)).toBeVisible()
+    await noHorizontalScroll(page)
+  })
+})
+
+// #517 round 4: the sign-in card's title is the site name, which an operator
+// sets and which can be long. /setup redirects to /login once an account
+// exists, so this is the page it lands on too.
+test.describe('#517 round 4: sign-in page with a long site name', () => {
+  const names = { url: longUrlFor('site'), word: 'S'.repeat(300) }
+  for (const [kind, name] of Object.entries(names)) {
+    test(`/login at 320px: ${kind}`, async ({ page }) => {
+      await page.setViewportSize({ width: 320, height: 844 })
+      await mockApi(page)
+      await page.route('**/api/v1/me', (route) => route.fulfill({ status: 401, json: { error: { code: 'unauthorized', message: 'no session' } } }))
+      await page.route('**/api/v1/site', (route) => route.fulfill({ json: { name, logo_url: '', version: '1.3.0' } }))
+      await page.goto('/login')
+      await expect(page.getByText(`Sign in to ${name}`)).toBeVisible()
+      await documentFits(page, 320)
     })
   }
 })

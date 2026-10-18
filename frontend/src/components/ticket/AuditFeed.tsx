@@ -65,7 +65,7 @@ export function AuditFeed({ ticketId }: AuditFeedProps) {
         )}
         <ul className="space-y-2">
           {entries.map((e) => (
-            <li key={e.id} className="text-xs text-gray-700">
+            <li key={e.id} className="text-xs text-gray-700 wrap-anywhere">
               <span className="font-medium">{labelForEntry(e)}</span>
               {e.actor_name && (
                 <>
