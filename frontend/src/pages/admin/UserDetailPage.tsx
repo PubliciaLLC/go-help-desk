@@ -66,6 +66,9 @@ export function UserDetailPage() {
   // button and swallowed on the next.
   const [actionError, setActionError] = useState('')
   const [passwordSaved, setPasswordSaved] = useState(false)
+  // Unticked every time: revoking someone's keys is a decision made for this
+  // reset, not a preference that carries over to the next one (#450).
+  const [revokeKeys, setRevokeKeys] = useState(false)
 
   // ── Group state ─────────────────────────────────────────────────────────────
   const [addGroupId, setAddGroupId] = useState('')
@@ -142,9 +145,10 @@ export function UserDetailPage() {
 
   // ── Password reset ──────────────────────────────────────────────────────────
   const passwordMutation = useMutation({
-    mutationFn: () => adminResetPassword(id, newPassword),
+    mutationFn: () => adminResetPassword(id, newPassword, revokeKeys),
     onSuccess: () => {
       setNewPassword('')
+      setRevokeKeys(false)
       setPasswordSaved(true)
       setPasswordError('')
       setTimeout(() => setPasswordSaved(false), 2500)
@@ -383,6 +387,15 @@ export function UserDetailPage() {
                       {passwordMutation.isPending ? 'Setting…' : 'Set password'}
                     </Button>
                   </div>
+                  <label className="flex items-center gap-2 text-sm text-gray-600">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-gray-300"
+                      checked={revokeKeys}
+                      onChange={(e) => setRevokeKeys(e.target.checked)}
+                    />
+                    Also revoke this person&apos;s API keys
+                  </label>
                   {passwordError && <p role="alert" className="text-sm text-red-600">{passwordError}</p>}
                   {passwordSaved && <p className="text-sm text-green-600">Password updated.</p>}
                 </div>

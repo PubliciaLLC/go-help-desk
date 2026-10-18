@@ -56,7 +56,7 @@ function SidebarContent({ user, branding, onNavigate, onLogout }: SidebarContent
         <BrandLogo
           {...branding}
           imgClassName="h-8 max-w-[160px] object-contain"
-          fallbackClassName="text-lg font-semibold text-gray-900"
+          fallbackClassName="text-lg font-semibold text-gray-900 wrap-anywhere"
         />
       </div>
 
@@ -96,7 +96,7 @@ function SidebarContent({ user, branding, onNavigate, onLogout }: SidebarContent
       </nav>
 
       <div className="border-t p-3 space-y-2">
-        <div className="px-3 text-xs text-gray-500 truncate">{user?.email}</div>
+        <div className="px-3 text-xs text-gray-500 truncate" title={user?.email}>{user?.email}</div>
         {/* Your own account, not an admin screen: it sits with the identity
             it belongs to rather than in the nav list above. */}
         <NavItem

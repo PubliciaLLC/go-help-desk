@@ -164,7 +164,7 @@ func TestListTicketAudit_WithholdsUnassignedTooButNotOtherActions(t *testing.T) 
 	_, err = h.ticketSvc.Assign(ctx, ticketID, &leaver.ID, nil, ticket.SystemActor)
 	require.NoError(t, err)
 
-	resp = h.doAsAdmin(t, http.MethodDelete, "/api/v1/admin/users/"+leaver.ID.String(), nil)
+	resp = h.doAsAdminSession(t, http.MethodDelete, "/api/v1/admin/users/"+leaver.ID.String(), nil)
 	resp.Body.Close()
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
 

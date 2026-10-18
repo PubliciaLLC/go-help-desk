@@ -1,6 +1,6 @@
 import { Fragment, useId, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { listWebhooks, createWebhook, updateWebhook, deleteWebhook, listWebhookDeliveries, redeliverWebhook, listCategories, listGroups } from '@/api/admin'
+import { listWebhooks, createWebhook, updateWebhook, deleteWebhook, reapproveWebhook, listWebhookDeliveries, redeliverWebhook, listCategories, listGroups } from '@/api/admin'
 import { extractError, extractErrorCode } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
@@ -568,6 +568,15 @@ export function WebhooksPage() {
     onError: (err) => setRowError(describe(err)),
   })
 
+  const reapproveMutation = useMutation({
+    mutationFn: (id: string) => reapproveWebhook(id),
+    onSuccess: () => {
+      setRowError('')
+      refresh()
+    },
+    onError: (err) => setRowError(describe(err)),
+  })
+
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteWebhook(id),
     onSuccess: () => {
@@ -714,10 +723,30 @@ export function WebhooksPage() {
                         >
                           {h.enabled ? 'Enabled' : 'Disabled'}
                         </span>
+                        {h.paused && (
+                          <div className="mt-1">
+                            <span className="rounded bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-800">
+                              Paused
+                            </span>
+                            <div className="mt-0.5 text-xs text-amber-700">
+                              {h.paused_reason ?? 'Its API key was revoked or has expired'}
+                            </div>
+                          </div>
+                        )}
                       </td>
                       <td className="px-4 py-3"><LastDelivery d={h.last_delivery} /></td>
                       <td className="px-4 py-3 text-right">
                         <div className="flex justify-end gap-2">
+                          {h.paused && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => reapproveMutation.mutate(h.id)}
+                              disabled={reapproveMutation.isPending}
+                            >
+                              Re-approve
+                            </Button>
+                          )}
                           <Button
                             size="sm"
                             variant="outline"

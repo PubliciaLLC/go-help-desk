@@ -1,6 +1,6 @@
 -- name: CreateAPIKey :exec
-INSERT INTO api_keys (id, name, hashed_token, user_id, scopes, expires_at, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7);
+INSERT INTO api_keys (id, name, hashed_token, user_id, scopes, expires_at, created_at, created_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
 -- name: GetAPIKeyByHash :one
 SELECT * FROM api_keys WHERE hashed_token = $1;
@@ -10,6 +10,17 @@ UPDATE api_keys SET last_used_at = $2 WHERE id = $1;
 
 -- name: DeleteAPIKey :execrows
 DELETE FROM api_keys WHERE id = $1;
+
+-- name: DeleteAPIKeyForUser :execrows
+-- The self-service revoke (#450): the owner is part of the statement, so a key
+-- that is somebody else's deletes nothing and is indistinguishable from one
+-- that does not exist.
+DELETE FROM api_keys WHERE id = $1 AND user_id = $2;
+
+-- name: DeleteAllAPIKeysForUser :execrows
+-- Every key a user owns, for an administrator's password reset that asks to
+-- revoke them too (#450). Returns how many, which the audit entry records.
+DELETE FROM api_keys WHERE user_id = $1;
 
 -- name: ListAPIKeysByUser :many
 SELECT * FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC;
@@ -97,8 +108,8 @@ WHERE u.deleted_at IS NULL
 ORDER BY c.name;
 
 -- name: CreateWebhookConfig :exec
-INSERT INTO webhook_configs (id, url, events, secret, enabled, created_at, payload_format, ticket_filter)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+INSERT INTO webhook_configs (id, url, events, secret, enabled, created_at, payload_format, ticket_filter, api_key_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 
 -- name: GetWebhookConfig :one
 SELECT * FROM webhook_configs WHERE id = $1;
@@ -108,10 +119,35 @@ SELECT * FROM webhook_configs WHERE id = $1;
 -- (On the right-hand side of SET, "url" is the OLD value.)
 UPDATE webhook_configs
 SET url = $2, events = $3, secret = $4, enabled = $5, payload_format = $6, ticket_filter = $7,
+    api_key_id = $8,
     last_delivery_at     = CASE WHEN url = $2 THEN last_delivery_at END,
     last_delivery_status = CASE WHEN url = $2 THEN last_delivery_status ELSE 0 END,
     last_delivery_error  = CASE WHEN url = $2 THEN last_delivery_error ELSE '' END
 WHERE id = $1;
+
+-- name: ReapproveWebhookConfig :execrows
+-- A signed-in administrator vouching for a hook a key made: clears the link.
+UPDATE webhook_configs SET api_key_id = NULL WHERE id = $1;
+
+-- name: ListPausedWebhookIDs :many
+-- Hooks tied to an API key that is no longer a working credential: its row is
+-- gone (revoked, or deleted with its owner), it has expired, or its owner is
+-- disabled or deleted (APIKeyAuth refuses such a key on every request). Judged
+-- from the live rows on every call, so an expiry pauses a hook without any job
+-- having run, and a missing key counts the same as a revoked one: this fails
+-- CLOSED. webhook_configs.api_key_id is deliberately not a foreign key, or
+-- deleting the key would null the link and the hook would look session-made.
+-- clock_timestamp() and not now(): the latter is the start of the transaction.
+SELECT w.id FROM webhook_configs w
+WHERE w.api_key_id IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM api_keys k
+      JOIN users u ON u.id = k.user_id
+      WHERE k.id = w.api_key_id
+        AND (k.expires_at IS NULL OR k.expires_at > clock_timestamp())
+        AND u.deleted_at IS NULL
+        AND u.disabled = FALSE
+  );
 
 -- name: DeleteWebhookConfig :execrows
 DELETE FROM webhook_configs WHERE id = $1;

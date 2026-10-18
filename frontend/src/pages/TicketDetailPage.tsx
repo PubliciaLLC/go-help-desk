@@ -126,7 +126,7 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, haveS
   return (
     <div className="space-y-2">
       {/* Current assignee */}
-      <div className="text-sm">
+      <div className="text-sm wrap-anywhere">
         {currentUser ? (
           <span className="font-medium">{currentUser.display_name}</span>
         ) : currentGroup ? (
@@ -325,11 +325,11 @@ function CustomFieldsPanel({ ticketId, isStaffOrAdmin }: CustomFieldsPanelProps)
       <CardContent className="space-y-3 text-sm">
         {displayValues.map((v) => (
           <div key={v.field_def_id} className="space-y-0.5">
-            <Label className="text-xs text-gray-500">{v.field_name}</Label>
+            <Label className="text-xs text-gray-500 wrap-anywhere">{v.field_name}</Label>
             {isStaffOrAdmin && editValues ? (
               renderInput(v)
             ) : (
-              <p className="text-sm">{v.value || <span className="text-gray-400">—</span>}</p>
+              <p className="text-sm wrap-anywhere">{v.value || <span className="text-gray-400">—</span>}</p>
             )}
           </div>
         ))}
@@ -541,16 +541,19 @@ export function TicketDetailPage() {
         <QuarantineBanner attachments={attachments} />
 
         {/* Header */}
-        <div className="flex items-start justify-between gap-4">
+        {/* Below md the action buttons wrap onto their own row under the title
+            block (#480): beside it they left the title and tracking number a
+            column of ~120px at 375px and ran the number under "Reopen". */}
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div className="min-w-0 space-y-1">
             <div className="flex flex-wrap items-center gap-x-2 text-sm text-gray-500">
               <span className="whitespace-nowrap">{ticket.tracking_number}</span>
               <span>·</span>
               <span>Opened {formatDate(ticket.created_at)}</span>
             </div>
-            <h1 className="text-2xl font-bold text-gray-900 break-words">{ticket.subject}</h1>
+            <h1 className="text-2xl font-bold text-gray-900 wrap-anywhere">{ticket.subject}</h1>
             {isStaffOrAdmin && (
-              <p data-testid="requester-line" className="text-sm text-gray-600 break-words">
+              <p data-testid="requester-line" className="text-sm text-gray-600 wrap-anywhere">
                 Requester:{' '}
                 {ticket.requester ? (
                   <>
@@ -564,11 +567,11 @@ export function TicketDetailPage() {
             )}
             <div className="flex items-center gap-2 flex-wrap">
               <span
-                className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium"
+                className="inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium"
                 style={{ borderColor: statusColor, color: statusColor }}
               >
-                <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: statusColor }} />
-                {statusName}
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: statusColor }} />
+                <span className="min-w-0 wrap-anywhere">{statusName}</span>
               </span>
               <Badge variant={priorityVariant(ticket.priority) as never}>
                 {ticket.priority}
@@ -578,7 +581,7 @@ export function TicketDetailPage() {
             </div>
           </div>
 
-          <div className="flex gap-2 shrink-0">
+          <div className="flex flex-wrap gap-2 md:shrink-0">
             {canResolve && (
               <Button
                 variant="outline"
@@ -668,7 +671,7 @@ export function TicketDetailPage() {
                 <CardTitle className="text-sm text-gray-500">Description</CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="whitespace-pre-wrap text-sm break-words">
+                <p className="whitespace-pre-wrap text-sm wrap-anywhere">
                   {ticket.description || <span className="text-gray-400">No description provided.</span>}
                 </p>
               </CardContent>
@@ -688,13 +691,13 @@ export function TicketDetailPage() {
                       key={r.id}
                       className={`rounded-lg border p-4 text-sm ${r.internal ? 'border-yellow-200 bg-yellow-50' : 'bg-white'}`}
                     >
-                      <div className="mb-1 flex items-center justify-between text-xs text-gray-500">
+                      <div className="mb-1 flex items-center justify-between gap-2 text-xs text-gray-500">
                         {/* The name, not the id. This printed r.author_id,
                             so every reply from a registered account showed as
                             a bare UUID and nobody could tell who had said
                             what. A reply with no author came from a guest —
                             that is the only way it is null. */}
-                        <span className="min-w-0 truncate" title={r.author_name || undefined}>
+                        <span className="min-w-0 wrap-anywhere" title={r.author_name || (r.author_id ? 'Unknown user' : 'Customer')}>
                           {r.author_name || (r.author_id ? 'Unknown user' : 'Customer')}
                         </span>
                         <span className="flex items-center gap-2">
@@ -702,7 +705,7 @@ export function TicketDetailPage() {
                           {formatDate(r.created_at)}
                         </span>
                       </div>
-                      <p className="whitespace-pre-wrap break-words">{r.body}</p>
+                      <p className="whitespace-pre-wrap wrap-anywhere">{r.body}</p>
                     </div>
                   )
                 }
@@ -711,7 +714,7 @@ export function TicketDetailPage() {
                 return (
                   <div key={h.id} className="flex items-center gap-3 py-1 text-xs text-gray-400">
                     <div className="flex-1 border-t border-gray-100" />
-                    <span className="shrink-0 text-center">
+                    <span className="min-w-0 text-center wrap-anywhere">
                       {h.from_status_id ? (
                         <>
                           <span style={{ color: h.from_status_color || undefined }} className="font-medium">

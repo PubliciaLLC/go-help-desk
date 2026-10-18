@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { listAPIKeys, createAPIKey, deleteAPIKey, listScopes } from '@/api/admin'
+import { listAPIKeys, createAPIKey, deleteAPIKey, listScopes, listUsersPage } from '@/api/admin'
 import { extractError } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
@@ -8,36 +8,80 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import { ScopePicker } from '@/components/admin/ScopePicker'
-import { PlusIcon, CopyIcon, KeyIcon } from 'lucide-react'
-import type { APIKey } from '@/api/types'
+import { ExpiryField } from '@/components/admin/ExpiryField'
+import { expiryToISO, maxExpiryDate, pastLimit, DEFAULT_MAX_YEARS } from '@/lib/expiry'
+import { useAuthStore } from '@/store/auth'
+import { ExpiryCell } from '@/components/admin/ExpiryCell'
+import { TokenBanner } from '@/components/admin/TokenBanner'
+import { PlusIcon, KeyIcon } from 'lucide-react'
+import type { AdminUser, APIKey } from '@/api/types'
 
-function TokenBanner({ token, onDismiss }: { token: string; onDismiss: () => void }) {
-  const [copied, setCopied] = useState(false)
+// Pick the account a key is issued for (#450). Searched rather than listed: a
+// help desk can have thousands of requesters, and the user list is paged.
+function OwnerPicker({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: AdminUser | null
+  onChange: (u: AdminUser | null) => void
+  disabled?: boolean
+}) {
+  const [text, setText] = useState('')
+  const [q, setQ] = useState('')
 
-  function copy() {
-    navigator.clipboard.writeText(token)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+  // Waits for a pause in typing so each keystroke is not a request.
+  useEffect(() => {
+    const t = setTimeout(() => setQ(text.trim()), 250)
+    return () => clearTimeout(t)
+  }, [text])
+
+  const { data } = useQuery({
+    queryKey: ['admin', 'users', 'issue-for', q],
+    queryFn: () => listUsersPage(1, { q, role: 'staff', serviceAccount: false }),
+    enabled: q.length >= 2 && value === null,
+  })
+  // Staff only, and people only (#450): an administrator issues for a staff
+  // member or for themselves (leave this empty); a requester or a service
+  // account cannot own a key. The query says so, and the server enforces it.
+  // A disabled account's keys are refused on every request, so it is not a
+  // sensible owner, and the server refuses it.
+  const matches = (data?.users ?? []).filter((u) => !u.disabled)
+
+  if (value) {
+    return (
+      <div className="text-sm text-gray-700">
+        <span className="font-medium">Issue for</span>{' '}
+        {value.display_name} ({value.email}, {value.role}){' '}
+        <button type="button" className="text-xs text-blue-600 hover:underline" onClick={() => { onChange(null); setText('') }}>
+          Change
+        </button>
+      </div>
+    )
   }
-
   return (
-    <div className="rounded-lg border border-green-200 bg-green-50 p-4 space-y-3">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <p className="text-sm font-medium text-green-800">API key created — copy it now</p>
-          <p className="text-xs text-green-700 mt-0.5">This token will not be shown again.</p>
-        </div>
-        <button onClick={onDismiss} className="text-green-600 hover:text-green-800 text-xs">Dismiss</button>
-      </div>
-      <div className="flex items-center gap-2">
-        <code className="flex-1 rounded border border-green-200 bg-white px-3 py-2 font-mono text-xs text-gray-800 break-all">
-          {token}
-        </code>
-        <Button size="sm" variant="outline" onClick={copy} className="shrink-0">
-          <CopyIcon className="h-3.5 w-3.5 mr-1" />
-          {copied ? 'Copied!' : 'Copy'}
-        </Button>
-      </div>
+    <div className="space-y-1">
+      <label className="block text-sm text-gray-700">
+        <span className="font-medium">Issue for</span>
+        <span className="ml-2 text-xs text-gray-500">optional — search by name or email; leave empty to make a key for yourself</span>
+        <Input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          disabled={disabled}
+          className="mt-1 max-w-xs"
+        />
+      </label>
+      {matches.length > 0 && (
+        <ul role="listbox" aria-label="Matching accounts" className="max-w-xs rounded border bg-white divide-y text-sm">
+          {matches.map((u) => (
+            <li key={u.id} role="presentation">
+              <button type="button" role="option" aria-selected={false} className="w-full px-3 py-1.5 text-left hover:bg-gray-50" onClick={() => onChange(u)}>
+                {u.display_name} <span className="text-xs text-gray-500">{u.email} · {u.role}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   )
 }
@@ -46,6 +90,11 @@ export function APIKeysPage() {
   const qc = useQueryClient()
   const [newName, setNewName] = useState('')
   const [newScopes, setNewScopes] = useState<string[]>([])
+  const maxYears = useAuthStore((s) => s.user?.api_key_max_lifetime_years) ?? DEFAULT_MAX_YEARS
+  // Starts at the longest allowed, so the usual key needs no thought and a
+  // longer one is a choice. Empty when there is no limit: never expires.
+  const [newExpires, setNewExpires] = useState(() => maxExpiryDate(maxYears))
+  const [issueFor, setIssueFor] = useState<AdminUser | null>(null)
   const [createError, setCreateError] = useState('')
   const [newToken, setNewToken] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<APIKey | null>(null)
@@ -57,16 +106,29 @@ export function APIKeysPage() {
 
   // Served by the API rather than hard-coded here, so the picker cannot offer a
   // scope the server does not enforce, or omit one it does.
+  // The scopes the key's owner could use: all of them for the administrator,
+  // staff's for a staff member (#450). The server checks again.
+  const ownerRole = issueFor ? 'staff' : undefined
   const { data: catalogue = [] } = useQuery({
-    queryKey: ['admin', 'scopes'],
-    queryFn: listScopes,
+    queryKey: ['admin', 'scopes', ownerRole ?? 'all'],
+    queryFn: () => listScopes(ownerRole),
   })
+  // Whatever was ticked for a different owner and this one cannot carry goes.
+  const offered = new Set(catalogue.map((c) => c.scope))
+  const scopesShown = newScopes.filter((sc) => offered.size === 0 || offered.has(sc))
 
   const createMutation = useMutation({
-    mutationFn: () => createAPIKey({ name: newName.trim(), scopes: newScopes }),
+    mutationFn: () => createAPIKey({
+      name: newName.trim(),
+      scopes: scopesShown,
+      expires_at: expiryToISO(newExpires, maxYears),
+      user_id: issueFor?.id,
+    }),
     onSuccess: (res) => {
       setNewName('')
       setNewScopes([])
+      setNewExpires(maxExpiryDate(maxYears))
+      setIssueFor(null)
       setCreateError('')
       setNewToken(res.token)
       qc.invalidateQueries({ queryKey: ['admin', 'api-keys'] })
@@ -111,16 +173,23 @@ export function APIKeysPage() {
               className="max-w-xs"
             />
 
+            <OwnerPicker value={issueFor} onChange={setIssueFor} disabled={createMutation.isPending} />
+
             <ScopePicker
               catalogue={catalogue}
-              selected={newScopes}
+              selected={scopesShown}
               onChange={setNewScopes}
               disabled={createMutation.isPending}
             />
 
+            <ExpiryField value={newExpires} onChange={setNewExpires} maxYears={maxYears} disabled={createMutation.isPending} />
+
             <Button
               onClick={() => createMutation.mutate()}
-              disabled={!newName.trim() || newScopes.length === 0 || createMutation.isPending}
+              disabled={
+                !newName.trim() || scopesShown.length === 0 || createMutation.isPending ||
+                (maxYears !== -1 && !newExpires) || pastLimit(newExpires, maxYears)
+              }
             >
               <PlusIcon className="mr-2 h-4 w-4" />
               {createMutation.isPending ? 'Creating…' : 'Create'}
@@ -155,6 +224,9 @@ export function APIKeysPage() {
                     <td className="px-4 py-3">
                       <div className="text-gray-900">{k.owner_name}</div>
                       <div className="text-xs text-gray-500">{k.owner_email}</div>
+                      {k.created_by && k.created_by !== k.user_id && (
+                        <div className="text-xs text-gray-500">Issued on their behalf</div>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       {k.scopes?.length ? (
@@ -173,7 +245,9 @@ export function APIKeysPage() {
                     </td>
                     <td className="px-4 py-3 text-gray-500">{fmt(k.created_at)}</td>
                     <td className="px-4 py-3 text-gray-500">{fmt(k.last_used_at)}</td>
-                    <td className="px-4 py-3 text-gray-500">{fmt(k.expires_at)}</td>
+                    <td className="px-4 py-3 text-gray-500">
+                      <ExpiryCell expiresAt={k.expires_at} beyondLimit={k.beyond_limit} />
+                    </td>
                     <td className="px-4 py-3 text-right">
                       <Button
                         size="sm"

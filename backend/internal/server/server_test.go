@@ -69,7 +69,10 @@ func allScopes() []string {
 	for i, s := range all {
 		out[i] = s.String()
 	}
-	return out
+	// users:write is no longer offered (keys can't write users), but a key
+	// stored before that still holds it, and the harness key stands for the
+	// most privileged one there is. The routes it would have opened refuse it.
+	return append(out, "users:write")
 }
 
 // harness is a test server wired against a real (rolled-back) DB transaction.
@@ -934,7 +937,7 @@ func TestCreateUser_AsAdmin(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
+	resp := h.doAsAdminSession(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
 		"email":        "newuser@example.com",
 		"display_name": "New User",
 		"role":         "user",
@@ -965,7 +968,7 @@ func TestUpdateUser_AsAdmin(t *testing.T) {
 	defer cleanup()
 
 	newName := "Staff Renamed"
-	resp := h.doAsAdmin(t, http.MethodPatch, fmt.Sprintf("/api/v1/admin/users/%s", h.staffID), map[string]any{
+	resp := h.doAsAdminSession(t, http.MethodPatch, fmt.Sprintf("/api/v1/admin/users/%s", h.staffID), map[string]any{
 		"display_name": newName,
 	})
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -980,7 +983,7 @@ func TestDeleteUser_AsAdmin(t *testing.T) {
 	defer cleanup()
 
 	// Create a user to delete.
-	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
+	createResp := h.doAsAdminSession(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
 		"email":        "todelete@example.com",
 		"display_name": "To Delete",
 		"role":         "user",
@@ -990,7 +993,7 @@ func TestDeleteUser_AsAdmin(t *testing.T) {
 	var created user.User
 	decodeJSON(t, createResp, &created)
 
-	resp := h.doAsAdmin(t, http.MethodDelete, fmt.Sprintf("/api/v1/admin/users/%s", created.ID), nil)
+	resp := h.doAsAdminSession(t, http.MethodDelete, fmt.Sprintf("/api/v1/admin/users/%s", created.ID), nil)
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
 }
 
@@ -1786,7 +1789,7 @@ func TestLocalLogin_AnOverlongPasswordIsAnOrdinaryWrongPassword(t *testing.T) {
 	// a new user with exactly 72 bytes, then try to log in with that password
 	// plus 100 extra bytes. Login truncates at 72, so it should match.
 	fullPassword := strings.Repeat("a", 72)
-	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
+	createResp := h.doAsAdminSession(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
 		"email":        "test72@example.com",
 		"display_name": "Test 72 Byte",
 		"role":         "user",

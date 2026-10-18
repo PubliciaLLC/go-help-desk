@@ -35,6 +35,7 @@ func (s *Store) CreateAPIKey(ctx context.Context, k auth.APIKey) error {
 		Scopes:      k.Scopes,
 		ExpiresAt:   database.NullTime(k.ExpiresAt),
 		CreatedAt:   k.CreatedAt,
+		CreatedBy:   database.NullUUID(k.CreatedBy),
 	})
 }
 
@@ -52,6 +53,7 @@ func (s *Store) GetByHash(ctx context.Context, hashed string) (auth.APIKey, erro
 		LastUsedAt:  database.TimePtr(r.LastUsedAt),
 		ExpiresAt:   database.TimePtr(r.ExpiresAt),
 		CreatedAt:   r.CreatedAt,
+		CreatedBy:   database.UUIDPtr(r.CreatedBy),
 	}, nil
 }
 
@@ -73,6 +75,26 @@ func (s *Store) Delete(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+func (s *Store) DeleteForUser(ctx context.Context, id, userID uuid.UUID) error {
+	n, err := s.q.DeleteAPIKeyForUser(ctx, dbgen.DeleteAPIKeyForUserParams{ID: id, UserID: userID})
+	if err != nil {
+		return fmt.Errorf("deleting API key %s: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("API key %s: %w", id, auth.ErrNotFound)
+	}
+	return nil
+}
+
+// DeleteAllForUser removes every key the user owns and says how many there were.
+func (s *Store) DeleteAllForUser(ctx context.Context, userID uuid.UUID) (int64, error) {
+	n, err := s.q.DeleteAllAPIKeysForUser(ctx, userID)
+	if err != nil {
+		return 0, fmt.Errorf("deleting all API keys of %s: %w", userID, err)
+	}
+	return n, nil
+}
+
 func (s *Store) ListByUser(ctx context.Context, userID uuid.UUID) ([]auth.APIKey, error) {
 	rows, err := s.q.ListAPIKeysByUser(ctx, userID)
 	if err != nil {
@@ -89,6 +111,7 @@ func (s *Store) ListByUser(ctx context.Context, userID uuid.UUID) ([]auth.APIKey
 			LastUsedAt:  database.TimePtr(r.LastUsedAt),
 			ExpiresAt:   database.TimePtr(r.ExpiresAt),
 			CreatedAt:   r.CreatedAt,
+			CreatedBy:   database.UUIDPtr(r.CreatedBy),
 		}
 	}
 	return out, nil
@@ -113,6 +136,7 @@ func (s *Store) ListWithOwner(ctx context.Context, keyID *uuid.UUID) ([]auth.API
 				LastUsedAt:  database.TimePtr(r.LastUsedAt),
 				ExpiresAt:   database.TimePtr(r.ExpiresAt),
 				CreatedAt:   r.CreatedAt,
+				CreatedBy:   database.UUIDPtr(r.CreatedBy),
 			},
 			OwnerEmail: r.OwnerEmail,
 			OwnerName:  r.OwnerName,
@@ -270,6 +294,16 @@ type WebhookConfig struct {
 	// was created or its URL last changed.
 	LastDelivery *WebhookDelivery `json:"last_delivery"`
 
+	// APIKeyID is the API key that created the hook or last re-pointed its URL
+	// (#450); nil for a hook made or last re-pointed in a session. A hook tied
+	// to a key that has been deleted or has expired is Paused.
+	APIKeyID *uuid.UUID `json:"-"`
+
+	// Paused and PausedReason are worked out when the hook is read, never
+	// stored: a hook whose key died is paused without any job having run.
+	Paused       bool   `json:"paused"`
+	PausedReason string `json:"paused_reason,omitempty"`
+
 	// Filter narrows which tickets the hook fires for (#413). The zero value
 	// is no filter, which is what every hook created before #413 has.
 	Filter notification.WebhookFilter `json:"filter"`
@@ -291,7 +325,7 @@ func webhookFromRow(r dbgen.WebhookConfig) (WebhookConfig, error) {
 	}
 	wh := WebhookConfig{ID: r.ID, URL: r.Url, Events: r.Events, Secret: r.Secret,
 		Enabled: r.Enabled, CreatedAt: r.CreatedAt, PayloadFormat: r.PayloadFormat,
-		Filter: filter}
+		Filter: filter, APIKeyID: database.UUIDPtr(r.ApiKeyID)}
 	if r.LastDeliveryAt.Valid {
 		wh.LastDelivery = &WebhookDelivery{At: r.LastDeliveryAt.Time.UTC(),
 			Status: int(r.LastDeliveryStatus), Error: r.LastDeliveryError}
@@ -326,6 +360,7 @@ func (s *Store) CreateWebhook(ctx context.Context, wh WebhookConfig) error {
 		CreatedAt:     wh.CreatedAt,
 		PayloadFormat: format,
 		TicketFilter:  filter,
+		ApiKeyID:      database.NullUUID(wh.APIKeyID),
 	})
 }
 
@@ -337,7 +372,52 @@ func (s *Store) GetWebhook(ctx context.Context, id uuid.UUID) (WebhookConfig, er
 		}
 		return WebhookConfig{}, fmt.Errorf("getting webhook %s: %w", id, err)
 	}
-	return webhookFromRow(r)
+	wh, err := webhookFromRow(r)
+	if err != nil {
+		return WebhookConfig{}, err
+	}
+	paused, err := s.pausedSet(ctx)
+	if err != nil {
+		return WebhookConfig{}, err
+	}
+	markPaused(&wh, paused)
+	return wh, nil
+}
+
+// PausedReason is what the admin page and the API say about a hook whose key
+// died.
+const PausedReason = "Created by a revoked or expired API key"
+
+func markPaused(wh *WebhookConfig, paused map[uuid.UUID]bool) {
+	if paused[wh.ID] {
+		wh.Paused, wh.PausedReason = true, PausedReason
+	}
+}
+
+// pausedSet is the ids of hooks tied to a key that is gone or expired.
+func (s *Store) pausedSet(ctx context.Context) (map[uuid.UUID]bool, error) {
+	ids, err := s.q.ListPausedWebhookIDs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("finding paused webhooks: %w", err)
+	}
+	out := make(map[uuid.UUID]bool, len(ids))
+	for _, id := range ids {
+		out[id] = true
+	}
+	return out, nil
+}
+
+// ReapproveWebhook clears a hook's link to the API key that made it, so it no
+// longer depends on that key. Only a signed-in administrator reaches it.
+func (s *Store) ReapproveWebhook(ctx context.Context, id uuid.UUID) error {
+	n, err := s.q.ReapproveWebhookConfig(ctx, id)
+	if err != nil {
+		return fmt.Errorf("re-approving webhook %s: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("webhook %s: %w", id, auth.ErrNotFound)
+	}
+	return nil
 }
 
 func (s *Store) UpdateWebhook(ctx context.Context, wh WebhookConfig) error {
@@ -366,6 +446,7 @@ func (s *Store) UpdateWebhook(ctx context.Context, wh WebhookConfig) error {
 		Enabled:       wh.Enabled,
 		PayloadFormat: format,
 		TicketFilter:  filter,
+		ApiKeyID:      database.NullUUID(wh.APIKeyID),
 	}); err != nil {
 		return err
 	}
@@ -393,12 +474,19 @@ func (s *Store) ListEnabledWebhooks(ctx context.Context) ([]WebhookConfig, error
 	if err != nil {
 		return nil, fmt.Errorf("listing enabled webhooks: %w", err)
 	}
+	paused, err := s.pausedSet(ctx)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]WebhookConfig, len(rows))
 	for i, r := range rows {
 		wh, err := webhookFromRow(r)
 		if err != nil {
 			return nil, fmt.Errorf("listing enabled webhooks: %w", err)
 		}
+		// Returned, not filtered out: the dispatcher is the one place that
+		// decides not to send, so there is a single decision to read.
+		markPaused(&wh, paused)
 		out[i] = wh
 	}
 	return out, nil
@@ -412,12 +500,17 @@ func (s *Store) ListWebhooks(ctx context.Context) ([]WebhookConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listing webhooks: %w", err)
 	}
+	paused, err := s.pausedSet(ctx)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]WebhookConfig, len(rows))
 	for i, r := range rows {
 		wh, err := webhookFromRow(r)
 		if err != nil {
 			return nil, fmt.Errorf("listing webhooks: %w", err)
 		}
+		markPaused(&wh, paused)
 		out[i] = wh
 	}
 	return out, nil

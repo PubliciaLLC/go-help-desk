@@ -74,7 +74,7 @@ export function RequesterPicker({
       </div>
 
       {value.mode === 'user' && value.picked && (
-        <p className="text-sm text-gray-700">
+        <p className="text-sm text-gray-700 wrap-anywhere">
           Filing for <strong>{value.picked.display_name}</strong> ({value.picked.email}){' '}
           <Button
             type="button"
@@ -111,8 +111,8 @@ export function RequesterPicker({
                     className="flex w-full flex-col px-3 py-2 text-left text-sm hover:bg-gray-50 focus-visible:bg-gray-50 focus-visible:outline-none sm:flex-row sm:items-baseline sm:gap-2"
                     onClick={() => onChange({ mode: 'user', picked: h })}
                   >
-                    <span className="font-medium text-gray-900">{h.display_name}</span>
-                    <span className="text-gray-500">{h.email}</span>
+                    <span className="font-medium text-gray-900 wrap-anywhere">{h.display_name}</span>
+                    <span className="text-gray-500 wrap-anywhere">{h.email}</span>
                   </button>
                 </li>
               ))}

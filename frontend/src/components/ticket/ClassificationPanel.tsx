@@ -201,20 +201,20 @@ export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canE
           </div>
         ) : (
           <>
-            <div className="flex justify-between">
+            <div className="flex justify-between gap-2">
               <span className="text-gray-500">Category</span>
-              <span className="text-right text-xs font-medium">{categoryName ?? '—'}</span>
+              <span className="min-w-0 text-right text-xs font-medium wrap-anywhere">{categoryName ?? '—'}</span>
             </div>
             {typeId && (
-              <div className="flex justify-between">
+              <div className="flex justify-between gap-2">
                 <span className="text-gray-500">Type</span>
-                <span className="text-right text-xs">{typeName ?? '—'}</span>
+                <span className="min-w-0 text-right text-xs wrap-anywhere">{typeName ?? '—'}</span>
               </div>
             )}
             {itemId && (
-              <div className="flex justify-between">
+              <div className="flex justify-between gap-2">
                 <span className="text-gray-500">Item</span>
-                <span className="text-right text-xs">{itemName ?? '—'}</span>
+                <span className="min-w-0 text-right text-xs wrap-anywhere">{itemName ?? '—'}</span>
               </div>
             )}
           </>

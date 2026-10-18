@@ -149,6 +149,11 @@ type OAuthClientLookup interface {
 type AuthStoreIface interface {
 	CreateAPIKey(ctx context.Context, k auth.APIKey) error
 	Delete(ctx context.Context, id uuid.UUID) error
+	// DeleteForUser is Delete limited to a key the user owns (#450).
+	DeleteForUser(ctx context.Context, id, userID uuid.UUID) error
+	ListByUser(ctx context.Context, userID uuid.UUID) ([]auth.APIKey, error)
+	// DeleteAllForUser revokes every key the user owns and returns how many.
+	DeleteAllForUser(ctx context.Context, userID uuid.UUID) (int64, error)
 	ListWithOwner(ctx context.Context, keyID *uuid.UUID) ([]auth.APIKeyWithOwner, error)
 	CreateOAuthClient(ctx context.Context, c auth.OAuthClient) error
 	DeleteOAuthClient(ctx context.Context, id uuid.UUID) error
@@ -165,6 +170,8 @@ type AuthStoreIface interface {
 	GetWebhook(ctx context.Context, id uuid.UUID) (authstore.WebhookConfig, error)
 	UpdateWebhook(ctx context.Context, wh authstore.WebhookConfig) error
 	DeleteWebhook(ctx context.Context, id uuid.UUID) error
+	// ReapproveWebhook clears the hook's link to the API key that made it.
+	ReapproveWebhook(ctx context.Context, id uuid.UUID) error
 	ListEnabledWebhooks(ctx context.Context) ([]authstore.WebhookConfig, error)
 	ListWebhooks(ctx context.Context) ([]authstore.WebhookConfig, error)
 	ListWebhookDeliveries(ctx context.Context, hookID uuid.UUID) ([]authstore.WebhookDeliveryRecord, error)

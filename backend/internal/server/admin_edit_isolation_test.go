@@ -220,8 +220,8 @@ func TestUpdateTicket_ReclassificationIsCheckedToo(t *testing.T) {
 // confident statement about a different account's situation.
 //
 // Asserted against the service rather than over HTTP. The delete route has
-// its own lookup in front of it (denyMachineTargetingAdmin), which answers
-// 404 for a missing row before the guarded write is ever reached — so an
+// its own lookup in front of it (the handler reads the account first), which
+// answers 404 for a missing row before the guarded write is ever reached — so an
 // HTTP test passes whatever the service returns, and the first version of
 // this test did exactly that: it went green against the unfixed code.
 func TestUserService_ARefusalNamesTheRightReason(t *testing.T) {

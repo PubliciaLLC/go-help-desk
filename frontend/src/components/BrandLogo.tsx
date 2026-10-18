@@ -26,6 +26,6 @@ export function BrandLogo({
   return showLogo ? (
     <img src={logoURL} alt={siteName} className={imgClassName} onError={onLogoError} />
   ) : (
-    <span className={fallbackClassName}>{siteName}</span>
+    <span className={fallbackClassName} title={siteName}>{siteName}</span>
   )
 }
