@@ -315,7 +315,7 @@ function PasskeyRow({ p, onRemove }: { p: Passkey; onRemove: (p: Passkey) => voi
     <li className="flex flex-wrap items-center gap-x-3 gap-y-1 py-3">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-medium text-gray-900">{labelFor(p)}</span>
+          <span className="truncate text-sm font-medium text-gray-900" title={labelFor(p)}>{labelFor(p)}</span>
           {/* backup_eligible, not backup_state: a key that CAN sync and
               currently is not is still a synced credential, and that is the
               distinction the phishing-resistance claim turns on. */}
