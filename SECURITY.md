@@ -6,10 +6,12 @@ Security fixes are issued for the **1.3 release line only**: 1.3.0 and its
 patch releases. Earlier versions, 1.2 included, are not backported, and
 pre-1.0 development builds were never supported.
 
-1.2 has no published advisory against it, but it receives no fixes once
-1.3.0 ships. Below 1.2 is not merely unsupported: every published advisory
-affects at least one of those versions, four of them rated critical, and none
-affects 1.2.0 — see
+One weakness reaches back into 1.2: cross-site request forgery on the MCP
+routes, GHSA-3jmq-7vm4-cc7p. It affects 1.1.1 to 1.2.x and is fixed in 1.3.0.
+Apart from that one, no published advisory affects 1.2.0, and 1.2 receives no
+further fixes once 1.3.0 ships: upgrade. Below 1.2 is not merely unsupported:
+every published advisory affects at least one of those versions, four of them
+rated critical. See
 [the advisories](https://github.com/PubliciaLLC/go-help-desk/security/advisories)
 for what each one allowed.
 
