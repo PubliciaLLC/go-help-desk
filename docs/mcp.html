@@ -105,6 +105,7 @@
       <li><a href="#mcp-tools">Available Tools</a></li>
       <li><a href="#mcp-connect">Connecting Clients</a></li>
       <li><a href="#mcp-auth">Authentication</a></li>
+      <li><a href="#mcp-limits">Size &amp; Sessions</a></li>
       <li><a href="#mcp-permissions">Permissions</a></li>
     </ul>
   </div>
@@ -352,6 +353,13 @@ mcpServers:
   <p><strong>One credential per integration.</strong> Create a dedicated API key for each assistant or integration, with only the scopes it needs: <code>tickets:read</code> for the read tools, plus <code>tickets:write</code> to let it change tickets. Revoking one then leaves the others working.</p>
 </div>
 
+
+<h2 id="mcp-limits">Request size and sessions</h2>
+
+<ul>
+  <li><strong>A request body is capped at 1 MiB</strong> on <code>/mcp</code>, <code>/mcp/</code> and <code>/mcp/message</code>. A larger one is refused with <code>413</code> and the code <code>request_too_large</code>, on both transports. A declared <code>Content-Length</code> over the limit is refused before any of the body is read. Nothing in normal use comes near it: ticket descriptions are already capped at 50,000 bytes.</li>
+  <li><strong>An SSE session belongs to whoever opened the stream.</strong> A message posted to <code>/mcp/message</code> for it by anyone else, by a different API key of the same user, or by a browser session when the stream was opened with a key (or the reverse), is refused with <code>403</code> and not processed. A missing, unknown or closed <code>sessionId</code> gets the same <code>403</code>, and the answer is the same in every case, so it does not reveal which sessions exist. A client that opens the stream and posts with the same credential, which is every ordinary MCP client, is unaffected. Streamable HTTP at <code>/mcp</code> keeps no session.</li>
+</ul>
 
 <h2 id="mcp-permissions">Permissions</h2>
 
