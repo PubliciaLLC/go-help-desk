@@ -831,7 +831,17 @@ function verifySignature(secret, body, header) {
 <p>A webhook that an API key created, or last changed the URL of, is tied to that key. When the key is revoked or expires, or its owner is disabled or deleted, the hook is <strong>paused</strong>: the list shows a <em>Paused</em> badge with the reason, and it receives nothing, including deliveries already queued. A key cannot lift the pause by editing the hook (<code>403 webhook_paused</code>). A signed-in administrator clicks <em>Re-approve</em>, or changes the hook's URL (a URL edited in a session counts as approving the new address). Hooks made or last re-pointed in the web UI are not tied to a key, and neither are the hooks that existed before the upgrade.</p>
 
 <h3 id="admin-webhook-history">History and Redeliver</h3>
-<p>Each hook has a <em>History</em> button that opens its last 25 deliveries. Each row shows the event, the result (<em>Delivered</em>, <em>Retrying</em> or <em>Failed</em>, with the status or failure class), the number of attempts and the time of the last attempt. No payloads and no error text are kept.</p>
+<p>Each hook has a <em>History</em> button that opens its last 25 deliveries. Each row shows the event, the result (<em>Delivered</em>, <em>Retrying</em>, <em>Failed</em> or <em>Dropped</em>, with the status, failure class or reason), the number of attempts and the time of the last attempt. No payloads and no error text are kept.</p>
+<p><strong>Dropped</strong> means a queued retry was never sent because the hook changed, and it says why:</p>
+<ul>
+  <li><em>hook switched off</em>: the hook was disabled;</li>
+  <li><em>its API key was revoked or expired</em>: the hook is <a href="#admin-webhook-paused">paused</a>. The same reason covers a key whose owner was disabled or deleted, although the label on the page names only a revoked or expired key;</li>
+  <li><em>no longer subscribed to the event</em>: the hook stopped listing the event;</li>
+  <li><em>filter no longer admits the ticket</em>: the hook's ticket filter was tightened;</li>
+  <li><em>body could not be built</em>: the message could not be put together;</li>
+  <li><em>URL changed</em>: the hook was pointed at another address. A change of URL also clears the hook's history, so you rarely see this one.</li>
+</ul>
+<p>A blocked address is not a drop: it is a failed attempt.</p>
 <p><em>Redeliver</em> on a row sends that delivery's event again as a new delivery, with a new <code>X-GHD-Delivery</code> id so a receiver that drops repeats by id does not discard it. It is queued and sent in the background, and retried like any delivery; the page says it is queued, and the row appears in History once it has been attempted. A raw hook gets the same ids-only body as the original. A Slack, Teams, Discord or Jira message is rebuilt from the ticket as it is now, so it can differ from the original, and a reply's text is included only if the reply still exists and is public.</p>
 <p>Redeliver is refused, with a message, when:</p>
 <ul>

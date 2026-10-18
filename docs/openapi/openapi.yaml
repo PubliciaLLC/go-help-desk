@@ -11038,9 +11038,18 @@ components:
           description: The HTTP status of the latest attempt. 0 when no response came back.
         result:
           type: string
-          enum: [ok, http_status, timeout, dns, tls, blocked_address, connection, other]
+          enum: [ok, http_status, timeout, dns, tls, blocked_address, connection, other, dropped]
           description: >-
             The latest attempt's outcome: ok, or a failure class as in WebhookDelivery.error.
+            dropped: a queued retry that was never sent because the hook changed; see drop_reason.
+        drop_reason:
+          type: string
+          enum: [disabled, unsubscribed, url_changed, filter, paused, unbuildable]
+          description: >-
+            Present only when result is dropped. disabled: the hook was switched off.
+            unsubscribed: the hook no longer lists the event. url_changed: the hook was
+            pointed at another URL. filter: the hook's ticket filter no longer admits the
+            ticket. paused: the hook's API key was revoked or has expired. unbuildable: the body cannot be built.
         attempts:
           type: integer
           minimum: 1
