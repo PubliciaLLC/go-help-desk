@@ -117,13 +117,16 @@ func seedStaff(t *testing.T, store *userstore.Store) uuid.UUID {
 // and the disable's retry then walks into the second one, which closes
 // another. Each of those is the shape that failed in CI (#508) — a retry
 // killed because another transaction was still queued for a row it wanted —
-// but staged here by ordering instead of by a slow wake-up, which cannot be
+// but staged by ordering instead of by a slow wake-up, which cannot be
 // provoked without freezing a Postgres backend.
 //
-// Every step waits for the state the next one needs (a backend seen waiting
-// on a lock) rather than for a delay, so it does not depend on timing. The
-// first cycle is closed while the disable is the oldest waiter, the second
-// while the retry is, and Postgres kills the oldest each time. The old single
+// Two things make the ordering hold. Each cycle is closed once the guarded
+// statement is seen waiting on the held row, so it is the one whose
+// deadlock_timeout fires first and Postgres aborts it. And the pause before
+// each retry is replaced (Store.SetRetryPause) with a wait for the partner
+// that closed the cycle to finish and roll back, so a retry cannot start while
+// that partner is still queued for the administrator row and take it first,
+// which is how #508 failed. Nothing here rests on a delay. The old single
 // retry fails here with 40P01; three attempts pass.
 func TestGuardedWrite_SurvivesTwoDeadlocks(t *testing.T) {
 	db, closeDB := freshDatabase(t)
@@ -155,15 +158,27 @@ func TestGuardedWrite_SurvivesTwoDeadlocks(t *testing.T) {
 	}
 	// closeCycle reaches for an administrator row from a partner transaction
 	// and lets go of everything once it has it.
-	closeCycle := func(tx *sql.Tx) <-chan struct{} {
-		done := make(chan struct{})
+	closeCycle := func(tx *sql.Tx, done chan struct{}) {
 		go func() {
 			defer close(done)
 			_, _ = tx.ExecContext(ctx, `SELECT id FROM users WHERE id = $1 FOR UPDATE`, adminA)
 			_ = tx.Rollback()
 		}()
-		return done
 	}
+
+	// Attempt N+1 waits for partner N to be completely gone.
+	partnerDone := [2]chan struct{}{make(chan struct{}), make(chan struct{})}
+	pauses := 0
+	store.SetRetryPause(func(ctx context.Context) error {
+		done := partnerDone[pauses]
+		pauses++
+		select {
+		case <-done:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
 
 	type answer struct {
 		applied bool
@@ -176,11 +191,13 @@ func TestGuardedWrite_SurvivesTwoDeadlocks(t *testing.T) {
 	}()
 
 	require.Eventually(t, guardedWaiting, 30*time.Second, 5*time.Millisecond, "the disable never reached the held row")
-	firstDone := closeCycle(first)
-	<-firstDone // the disable was killed once and the first partner has finished
+	closeCycle(first, partnerDone[0])
+	// Not before the first partner is gone: until then the waiter seen below
+	// could still be the attempt that is about to be killed.
+	<-partnerDone[0]
 
 	require.Eventually(t, guardedWaiting, 30*time.Second, 5*time.Millisecond, "the retry never reached the held row")
-	secondDone := closeCycle(second)
+	closeCycle(second, partnerDone[1])
 
 	select {
 	case a := <-disabled:
@@ -189,7 +206,7 @@ func TestGuardedWrite_SurvivesTwoDeadlocks(t *testing.T) {
 	case <-time.After(60 * time.Second):
 		t.Fatal("the disable never finished")
 	}
-	<-secondDone
+	<-partnerDone[1]
 
 	var off bool
 	require.NoError(t, db.SQL.QueryRow(`SELECT disabled FROM users WHERE id = $1`, victim).Scan(&off))

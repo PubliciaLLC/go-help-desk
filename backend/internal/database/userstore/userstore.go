@@ -19,7 +19,15 @@ import (
 )
 
 // Store implements user.Store.
-type Store struct{ q *dbgen.Queries }
+type Store struct {
+	q *dbgen.Queries
+
+	// retryPause replaces the wait between guardedWrite attempts. Nil in
+	// production, which waits a jittered 10-50 ms; a test sets it to hold the
+	// next attempt until the transaction that killed the last one has
+	// finished, because a fixed delay cannot promise that on a loaded runner.
+	retryPause func(ctx context.Context) error
+}
 
 // New returns a Store backed by the given Queries.
 func New(q *dbgen.Queries) *Store { return &Store{q: q} }
@@ -383,10 +391,12 @@ func (s *Store) guardedWrite(ctx context.Context, write func() (uuid.UUID, error
 		if attempt == guardedWriteAttempts {
 			break
 		}
-		select {
-		case <-time.After(10*time.Millisecond + rand.N(40*time.Millisecond)):
-		case <-ctx.Done():
-			return false, fmt.Errorf("guarded write: %w", ctx.Err())
+		pause := s.retryPause
+		if pause == nil {
+			pause = jitteredPause
+		}
+		if perr := pause(ctx); perr != nil {
+			return false, fmt.Errorf("guarded write: %w", perr)
 		}
 	}
 	switch {
@@ -396,6 +406,16 @@ func (s *Store) guardedWrite(ctx context.Context, write func() (uuid.UUID, error
 		return false, nil
 	}
 	return false, fmt.Errorf("guarded write: %w", inertViolation(err))
+}
+
+// jitteredPause waits 10-50 ms, or until ctx is done.
+func jitteredPause(ctx context.Context) error {
+	select {
+	case <-time.After(10*time.Millisecond + rand.N(40*time.Millisecond)):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // isDeadlock reports whether Postgres killed this statement to break a lock
