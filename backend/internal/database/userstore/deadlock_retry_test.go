@@ -2,6 +2,7 @@ package userstore_test
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
@@ -107,4 +108,122 @@ func seedStaff(t *testing.T, store *userstore.Store) uuid.UUID {
 	}
 	require.NoError(t, store.Create(context.Background(), u))
 	return u.ID
+}
+
+// A second deadlock, on the retry itself.
+//
+// One transaction was not the only thing that could be late. Two transactions
+// hold the target row; the first closes a cycle with the disable and kills it,
+// and the disable's retry then walks into the second one, which closes
+// another. Each of those is the shape that failed in CI (#508) — a retry
+// killed because another transaction was still queued for a row it wanted —
+// but staged by ordering instead of by a slow wake-up, which cannot be
+// provoked without freezing a Postgres backend.
+//
+// Postgres aborts whichever backend's deadlock_timeout fires first, which can
+// be a partner rather than the guarded statement, and the test would then
+// pass with fewer kills than it claims. So the partners' deadlock detector is
+// switched off (SET LOCAL deadlock_timeout = '1h', which needs a superuser
+// role: the test role is one, and the test fails loudly if it is not), and the
+// guarded statement is always the victim. Each partner's own statement error
+// is required to be nil, and the number of retries is counted and required to
+// be exactly two, so the test cannot pass without both kills.
+//
+// The pause before each retry is replaced (Store.SetRetryPause) with a wait
+// for the partner that closed the cycle to finish and roll back, so a retry
+// cannot start while that partner is still queued for the administrator row
+// and take it first, which is how #508 failed. The old single retry fails
+// here with 40P01; three attempts pass.
+func TestGuardedWrite_SurvivesTwoDeadlocks(t *testing.T) {
+	db, closeDB := freshDatabase(t)
+	defer closeDB()
+	store := userstore.New(dbgen.New(db.SQL))
+	ctx := context.Background()
+
+	adminA := seedAdmin(t, store)
+	seedAdmin(t, store)
+	victim := seedStaff(t, store)
+
+	holdVictim := func() *sql.Tx {
+		tx, err := db.SQL.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = tx.Rollback() })
+		_, err = tx.ExecContext(ctx, `SET LOCAL deadlock_timeout = '1h'`)
+		require.NoError(t, err, "setting deadlock_timeout needs a superuser role")
+		_, err = tx.ExecContext(ctx, `SELECT id FROM users WHERE id = $1 FOR SHARE`, victim)
+		require.NoError(t, err)
+		return tx
+	}
+	first, second := holdVictim(), holdVictim()
+
+	// The guarded statements are the only ones that mention the CTE.
+	guardedWaiting := func() bool {
+		var n int
+		require.NoError(t, db.SQL.QueryRow(`
+			SELECT count(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%admins%'`).Scan(&n))
+		return n == 1
+	}
+	// closeCycle reaches for an administrator row from a partner transaction
+	// and lets go of everything once it has it.
+	// Attempt N+1 waits for partner N to be completely gone.
+	partnerDone := [2]chan struct{}{make(chan struct{}), make(chan struct{})}
+	var partnerErr [2]error
+	closeCycle := func(i int, tx *sql.Tx) {
+		go func() {
+			defer close(partnerDone[i])
+			_, partnerErr[i] = tx.ExecContext(ctx, `SELECT id FROM users WHERE id = $1 FOR UPDATE`, adminA)
+			_ = tx.Rollback()
+		}()
+	}
+
+	pauses := 0
+	store.SetRetryPause(func(ctx context.Context) error {
+		done := partnerDone[pauses]
+		pauses++
+		select {
+		case <-done:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+
+	type answer struct {
+		applied bool
+		err     error
+	}
+	disabled := make(chan answer, 1)
+	go func() {
+		applied, err := store.DisableUnlessLastAdmin(ctx, victim)
+		disabled <- answer{applied, err}
+	}()
+
+	require.Eventually(t, guardedWaiting, 30*time.Second, 5*time.Millisecond, "the disable never reached the held row")
+	closeCycle(0, first)
+	// Not before the first partner is gone: until then the waiter seen below
+	// could still be the attempt that is about to be killed.
+	<-partnerDone[0]
+
+	require.Eventually(t, guardedWaiting, 30*time.Second, 5*time.Millisecond, "the retry never reached the held row")
+	closeCycle(1, second)
+
+	select {
+	case a := <-disabled:
+		require.NoError(t, a.err, "the disable was killed twice and reported as a failure")
+		require.True(t, a.applied, "the disable should have applied on the third attempt")
+	case <-time.After(60 * time.Second):
+		t.Fatal("the disable never finished")
+	}
+	<-partnerDone[1]
+
+	// A partner that was killed means the guarded statement was not the
+	// victim, and the kill this test is about did not happen.
+	require.NoError(t, partnerErr[0], "the first partner was killed instead of the disable")
+	require.NoError(t, partnerErr[1], "the second partner was killed instead of the retry")
+	require.Equal(t, 2, pauses, "the disable should have been killed twice, and so retried twice")
+
+	var off bool
+	require.NoError(t, db.SQL.QueryRow(`SELECT disabled FROM users WHERE id = $1`, victim).Scan(&off))
+	require.True(t, off, "the account is still enabled, so the disable was lost")
 }

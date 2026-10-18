@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"strings"
 	"time"
 
@@ -18,7 +19,15 @@ import (
 )
 
 // Store implements user.Store.
-type Store struct{ q *dbgen.Queries }
+type Store struct {
+	q *dbgen.Queries
+
+	// retryPause replaces the wait between guardedWrite attempts. Nil in
+	// production, which waits a jittered 10-50 ms; a test sets it to hold the
+	// next attempt until the transaction that killed the last one has
+	// finished, because a fixed delay cannot promise that on a loaded runner.
+	retryPause func(ctx context.Context) error
+}
 
 // New returns a Store backed by the given Queries.
 func New(q *dbgen.Queries) *Store { return &Store{q: q} }
@@ -316,29 +325,33 @@ func (s *Store) Count(ctx context.Context) (int64, error) {
 // each do their check and their write in one statement, so two of them racing
 // cannot both decide they are allowed. Each reports whether it applied.
 func (s *Store) DisableUnlessLastAdmin(ctx context.Context, id uuid.UUID) (bool, error) {
-	return s.guardedWrite(func() (uuid.UUID, error) {
+	return s.guardedWrite(ctx, func() (uuid.UUID, error) {
 		return s.q.DisableUserUnlessLastAdmin(ctx, id)
 	})
 }
 
 func (s *Store) SoftDeleteUnlessLastAdmin(ctx context.Context, id uuid.UUID) (bool, error) {
-	return s.guardedWrite(func() (uuid.UUID, error) {
+	return s.guardedWrite(ctx, func() (uuid.UUID, error) {
 		return s.q.SoftDeleteUserUnlessLastAdmin(ctx, id)
 	})
 }
 
 func (s *Store) SetRoleUnlessLastAdmin(ctx context.Context, id uuid.UUID, role string) (bool, error) {
-	return s.guardedWrite(func() (uuid.UUID, error) {
+	return s.guardedWrite(ctx, func() (uuid.UUID, error) {
 		return s.q.SetUserRoleUnlessLastAdmin(ctx, dbgen.SetUserRoleUnlessLastAdminParams{
 			ID: id, Role: role,
 		})
 	})
 }
 
+// guardedWriteAttempts is how many times a guarded statement is tried in all
+// when Postgres keeps killing it to break a lock cycle.
+const guardedWriteAttempts = 3
+
 // guardedWrite runs one of the three statements above and reads its answer.
 //
-// It retries once on a deadlock, for the same reason txrunner.InTx does, and
-// this is the side that needs it more. Each of these statements locks every
+// It retries on a deadlock, for the same reason txrunner.InTx does, and this
+// is the side that needs it more. Each of these statements locks every
 // administrator row before touching the target; an assignment running at the
 // same time share-locks the assignee first and then writes an audit row whose
 // actor may be an administrator. When those two orders cross, Postgres kills
@@ -347,15 +360,44 @@ func (s *Store) SetRoleUnlessLastAdmin(ctx context.Context, id uuid.UUID, role s
 // retry the assignment commits and the administrator gets "an internal error
 // occurred" for a disable that did nothing.
 //
-// Once, not in a loop, for the reason given in txrunner.
+// Up to three attempts, not one, and not unbounded. One was not enough
+// (#508): the killed statement releases the administrator row the other
+// transaction was queued for, and a retry that arrives before that
+// transaction wakes takes the row first. That forms a second cycle in which
+// the retry is the one that has waited longest, so it is killed again. On a
+// loaded CI runner that happened often enough to fail the suite; it was
+// reproduced by delaying the other transaction's wake-up by under a second.
+// The pause between attempts is what lets the other transaction wake, take
+// the row and finish, and it is jittered so two retries do not meet again in
+// step. Three because a cycle needs a second transaction that is both late
+// and still unfinished, and each extra attempt needs another such
+// transaction; a third deadlock in a row is not that, it is a lock-order bug,
+// and it is returned rather than hidden behind more waiting.
+//
+// Safe to repeat: each attempt is one autocommit statement, and a statement
+// Postgres kills for a deadlock has changed nothing. The three callers
+// (Disable, SoftDelete, SetRole in domain/user) run it outside any
+// transaction of their own.
 //
 // "No row came back" is not an error: these statements return the id when
 // they applied and nothing when the guard stopped them, which database/sql
 // reports as ErrNoRows.
-func (s *Store) guardedWrite(write func() (uuid.UUID, error)) (bool, error) {
-	_, err := write()
-	if isDeadlock(err) {
-		_, err = write()
+func (s *Store) guardedWrite(ctx context.Context, write func() (uuid.UUID, error)) (bool, error) {
+	var err error
+	for attempt := 1; attempt <= guardedWriteAttempts; attempt++ {
+		if _, err = write(); !isDeadlock(err) {
+			break
+		}
+		if attempt == guardedWriteAttempts {
+			break
+		}
+		pause := s.retryPause
+		if pause == nil {
+			pause = jitteredPause
+		}
+		if perr := pause(ctx); perr != nil {
+			return false, fmt.Errorf("guarded write: %w", perr)
+		}
 	}
 	switch {
 	case err == nil:
@@ -364,6 +406,16 @@ func (s *Store) guardedWrite(write func() (uuid.UUID, error)) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("guarded write: %w", inertViolation(err))
+}
+
+// jitteredPause waits 10-50 ms, or until ctx is done.
+func jitteredPause(ctx context.Context) error {
+	select {
+	case <-time.After(10*time.Millisecond + rand.N(40*time.Millisecond)):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // isDeadlock reports whether Postgres killed this statement to break a lock
