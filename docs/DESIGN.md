@@ -3397,7 +3397,7 @@ under: `new_status_id` for `ticket.status_changed`, `target_id` for
 `notify/webhook_body.go`). Headers: `X-GHD-Delivery` and `X-GHD-Event` (the same
 name as `Type`), plus the signature. The OpenAPI `WebhookEvent` enum lists `*`
 and the eleven names. The raw body already changed during the 1.3 betas
-(#448), and `docs/upgrade-notes-1.3.0-pending.md` describes both changes to
+(#448), and `docs/upgrade-notes-1.3.0.md` describes both changes to
 1.2.x users.
 
 #### One action, what a `*` hook receives
