@@ -191,7 +191,7 @@ func TestFullAccessRequiresEveryScopeListed(t *testing.T) {
 		auth.Scope{Resource: auth.ResourceTickets, Action: auth.ActionWrite}),
 		"removing one scope must remove exactly that access")
 	require.True(t, auth.Allows(withoutTicketsWrite,
-		auth.Scope{Resource: auth.ResourceUsers, Action: auth.ActionWrite}),
+		auth.Scope{Resource: auth.ResourceGroups, Action: auth.ActionWrite}),
 		"and must leave the rest alone")
 }
 
@@ -210,4 +210,63 @@ func TestAuditHasNoWriteScope(t *testing.T) {
 
 	_, ok := auth.Subset([]string{"audit:write"}, []string{"audit:write"})
 	require.False(t, ok, "a credential holding audit:write must not pass it on")
+}
+
+// ScopesForRole is the most a key owned by that role may carry (#450). The
+// router-derived check lives in internal/server; this pins the shape.
+func TestScopesForRole(t *testing.T) {
+	has := func(scopes []auth.Scope, want string) bool {
+		for _, s := range scopes {
+			if s.String() == want {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("an administrator may carry every scope", func(t *testing.T) {
+		require.Equal(t, auth.All(), auth.ScopesForRole("admin"))
+	})
+
+	for _, role := range []string{"staff"} {
+		t.Run(role+" gets no administrative scope", func(t *testing.T) {
+			got := auth.ScopesForRole(role)
+			require.NotEmpty(t, got)
+			require.NoError(t, auth.ValidateScopes(scopeStrings(got)), "an offered scope must be one ParseScope accepts")
+			for _, adminOnly := range []string{
+				"users:write", "settings:read", "settings:write",
+				"credentials:read", "credentials:write", "webhooks:write", "plugins:write",
+				"categories:write", "sla:write", "tags:write", "canned_responses:write",
+			} {
+				require.False(t, has(got, adminOnly), "%s must not be offered to %s", adminOnly, role)
+			}
+		})
+	}
+
+	// Requesters never own a key (#450), so there is nothing to offer them.
+	t.Run("a reporting user is offered nothing", func(t *testing.T) {
+		require.Empty(t, auth.ScopesForRole("user"))
+		require.Error(t, auth.WithinRole("user", []string{"tickets:read"}))
+	})
+
+	t.Run("a role it does not know gets nothing", func(t *testing.T) {
+		require.Empty(t, auth.ScopesForRole(""))
+		require.Empty(t, auth.ScopesForRole("superuser"))
+	})
+}
+
+// users:write opens nothing to a key since keys can't write users (2026-10-16),
+// so the pickers and the catalogue no longer offer it. ParseScope still accepts
+// it, so a stored key or a script that names it keeps working.
+func TestUsersWriteIsNotOfferedButStillParses(t *testing.T) {
+	require.NotContains(t, scopeStrings(auth.All()), "users:write")
+	require.Contains(t, scopeStrings(auth.All()), "users:read")
+	for _, role := range []string{"admin", "staff"} {
+		require.NotContains(t, scopeStrings(auth.ScopesForRole(role)), "users:write", role)
+	}
+	_, err := auth.ParseScope("users:write")
+	require.NoError(t, err, "stored keys and scripts that name it must keep working")
+	require.NoError(t, auth.ValidateScopes([]string{"users:write"}))
+	require.True(t, auth.Allows([]string{"users:write"}, auth.Scope{Resource: auth.ResourceUsers, Action: auth.ActionRead}),
+		"and write still implies read")
 }

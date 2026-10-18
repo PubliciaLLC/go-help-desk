@@ -15,7 +15,8 @@ import (
 
 func patchSettings(t *testing.T, h *harness, body map[string]any) (int, string) {
 	t.Helper()
-	res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/settings", body)
+	// A session: who gets tickets is a setting a key may not change (2026-10-16).
+	res := h.doAsAdminSession(t, http.MethodPatch, "/api/v1/admin/settings", body)
 	defer res.Body.Close()
 	return res.StatusCode, readBody(t, res)
 }

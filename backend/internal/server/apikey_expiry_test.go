@@ -58,7 +58,7 @@ func TestCreateAPIKey_HonoursTheExpiryItWasGiven(t *testing.T) {
 	})
 
 	t.Run("an expiry in the past is refused at creation", func(t *testing.T) {
-		res := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/api-keys", map[string]any{
+		res := h.createCredential(t, "/api/v1/admin/api-keys", map[string]any{
 			"name": "already dead", "scopes": []string{"tickets:read"},
 			"expires_at": "2020-01-01T00:00:00Z",
 		})
@@ -68,7 +68,7 @@ func TestCreateAPIKey_HonoursTheExpiryItWasGiven(t *testing.T) {
 	})
 
 	t.Run("an unreadable expiry is refused rather than ignored", func(t *testing.T) {
-		res := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/api-keys", map[string]any{
+		res := h.createCredential(t, "/api/v1/admin/api-keys", map[string]any{
 			"name": "typo", "scopes": []string{"tickets:read"},
 			"expires_at": "next tuesday",
 		})
@@ -79,7 +79,7 @@ func TestCreateAPIKey_HonoursTheExpiryItWasGiven(t *testing.T) {
 
 	t.Run("a future expiry is recorded and returned", func(t *testing.T) {
 		want := time.Now().Add(72 * time.Hour).UTC().Truncate(time.Second)
-		res := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/api-keys", map[string]any{
+		res := h.createCredential(t, "/api/v1/admin/api-keys", map[string]any{
 			"name": "short lived", "scopes": []string{"tickets:read"},
 			"expires_at": want.Format(time.RFC3339),
 		})

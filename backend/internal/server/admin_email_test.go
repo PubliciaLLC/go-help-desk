@@ -18,7 +18,7 @@ func TestAdminUpdateUser_NormalisesTheEmail(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+h.staffID.String(),
+	res := h.doAsAdminSession(t, http.MethodPatch, "/api/v1/admin/users/"+h.staffID.String(),
 		map[string]any{"email": "  Staff@Test.Local  "})
 	defer res.Body.Close()
 	require.Equal(t, http.StatusOK, res.StatusCode)

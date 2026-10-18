@@ -176,7 +176,7 @@ func TestAdminDelete_UnknownIDIs404(t *testing.T) {
 			h, cleanup := newHarness(t)
 			defer cleanup()
 			path, body := tc.unknown(t, h)
-			res := h.doAsAdmin(t, http.MethodDelete, path, body)
+			res := h.doAsAdminSession(t, http.MethodDelete, path, body)
 			defer res.Body.Close()
 			require.Equal(t, http.StatusNotFound, res.StatusCode)
 			require.Equal(t, "not_found", errorCode(t, res))
@@ -193,7 +193,7 @@ func TestAdminDelete_ExistingIs204ThenSecondDeleteIs404(t *testing.T) {
 
 			// An API key can revoke only itself, so removing some other key
 			// takes a signed-in administrator.
-			do := h.doAsAdmin
+			do := h.doAsAdminSession
 			if tc.name == "api key" {
 				sess := adminSession(t, h)
 				do = func(t *testing.T, method, path string, body any) *http.Response {

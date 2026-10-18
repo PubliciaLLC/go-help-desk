@@ -15,6 +15,7 @@ import { extractError, extractErrorCode } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { ApiKeysSection } from '@/components/ApiKeysSection'
 import { EmailNotificationsSection } from '@/components/EmailNotificationsSection'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
@@ -584,6 +585,7 @@ export function AccountPage() {
         <PasswordSection />
         <PasskeySection />
         <AuthenticatorSection />
+        <ApiKeysSection />
       </div>
     </Layout>
   )
