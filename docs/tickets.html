@@ -93,6 +93,7 @@
       <li><a href="#tickets-custom-fields">Custom Fields</a></li>
       <li><a href="#tickets-attachments">Attachments</a></li>
       <li><a href="#tickets-search">Search</a></li>
+      <li><a href="#tickets-phone">On a Phone</a></li>
     </ul>
   </div>
   <div class="sidebar-group">
@@ -557,11 +558,18 @@
 </ul>
 
 <h3>On a phone</h3>
-<p>On a narrow screen the search box takes a full row of its own, so it is no longer squeezed. The tracking number on a ticket stays on one line, and a long description wraps at spaces rather than in the middle of words.</p>
+<p>On a narrow screen the search box takes a full row of its own, so it is no longer squeezed. The tracking number on a ticket stays on one line. Long text on a ticket is covered under <a href="#tickets-phone">Tickets on a phone</a>.</p>
 
 <h3>Jump to ticket (staff and admin)</h3>
 <p>Staff and admins can submit the search form (press Enter or click <em>Jump to ticket</em>) to navigate directly to a ticket by its exact tracking number or UUID. If no match is found, an inline error is shown.</p>
 
+<h2 id="tickets-phone">Tickets on a phone</h2>
+
+<ul>
+  <li><strong>Long text wraps and is never cut.</strong> A word or link with no break in it, such as a 300-character URL in a reply, wraps at the edge of its box, down to a 320-pixel-wide screen. This holds for everything a person wrote on a ticket: the subject, description, replies and internal notes, author names, attachment filenames, the requester line, the activity feed and its diffs, the status history, followers, the assignee, status names, category, type and item names, custom-field labels and values, tags, and the requester picker. The text is never shortened, rewritten or turned into a link, so it stays whole and can be copied.</li>
+  <li><strong>Ten compact places still end in "…"</strong> because they are one-line rows or chips where wrapping would break the row. None is ticket content, and each shows its full text when you hover over it: in the Linked tickets panel, the linked ticket line; in the desktop ticket table, the subject; in the reply box, a pending upload's filename and the preview in the canned-response picker; in the page frame, the signed-in email at the foot of the sidebar and the brand name in the mobile top bar; on the Dashboard, each client's name and email in the By Client cards; on the Account page, a passkey's label; and in the authenticator-app setup, the secret under the QR code. A touch screen shows no hover text, so the two ticket rows also open the ticket, where the text wraps in full.</li>
+  <li><strong>The header buttons get their own row.</strong> On a narrow screen (below tablet width) the ticket page's action buttons sit on a row under the title and tracking number, which keep the full width.</li>
+</ul>
 
 <div style="display:flex; justify-content:space-between; margin-top:3rem; padding-top:2rem; border-top:1px solid var(--border);">
   <a href="admin-guide.html" class="btn btn-outline">← Admin Guide</a>
