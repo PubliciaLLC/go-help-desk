@@ -34,6 +34,14 @@ describe('the enrolment form', () => {
     expect(screen.getByText(/SECRET/)).toBeTruthy()
   })
 
+  // The secret is cut with an ellipsis on a narrow screen (DESIGN.md, Small
+  // screens); the title is how the whole of it stays reachable.
+  it('gives the secret a title holding all of it', async () => {
+    renderWithQuery(<MFAEnrollForm onEnrolled={vi.fn()} />)
+    const code = await screen.findByText(/SECRET/)
+    expect(code.getAttribute('title')).toBe('SECRET')
+  })
+
   it('confirms the code, then calls onEnrolled', async () => {
     vi.mocked(enrollMFAConfirm).mockResolvedValue(undefined)
     const onEnrolled = vi.fn().mockResolvedValue(undefined)

@@ -201,7 +201,7 @@ export function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-gray-50">
       <Card className="w-full max-w-sm">
         <CardHeader>
-          <CardTitle className="text-xl">{title}</CardTitle>
+          <CardTitle className="text-xl wrap-anywhere">{title}</CardTitle>
         </CardHeader>
         <CardContent>
           {step === 'credentials' && (

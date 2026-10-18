@@ -870,3 +870,21 @@ test.describe('#517 round 3: two long names that ran the page sideways', () => {
     await noHorizontalScroll(page)
   })
 })
+
+// #517 round 4: the sign-in card's title is the site name, which an operator
+// sets and which can be long. /setup redirects to /login once an account
+// exists, so this is the page it lands on too.
+test.describe('#517 round 4: sign-in page with a long site name', () => {
+  const names = { url: longUrlFor('site'), word: 'S'.repeat(300) }
+  for (const [kind, name] of Object.entries(names)) {
+    test(`/login at 320px: ${kind}`, async ({ page }) => {
+      await page.setViewportSize({ width: 320, height: 844 })
+      await mockApi(page)
+      await page.route('**/api/v1/me', (route) => route.fulfill({ status: 401, json: { error: { code: 'unauthorized', message: 'no session' } } }))
+      await page.route('**/api/v1/site', (route) => route.fulfill({ json: { name, logo_url: '', version: '1.3.0' } }))
+      await page.goto('/login')
+      await expect(page.getByText(`Sign in to ${name}`)).toBeVisible()
+      await documentFits(page, 320)
+    })
+  }
+})
