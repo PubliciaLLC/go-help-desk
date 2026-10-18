@@ -2,6 +2,7 @@ package userstore_test
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
@@ -107,4 +108,90 @@ func seedStaff(t *testing.T, store *userstore.Store) uuid.UUID {
 	}
 	require.NoError(t, store.Create(context.Background(), u))
 	return u.ID
+}
+
+// A second deadlock, on the retry itself.
+//
+// One transaction was not the only thing that could be late. Two transactions
+// hold the target row; the first closes a cycle with the disable and kills it,
+// and the disable's retry then walks into the second one, which closes
+// another. Each of those is the shape that failed in CI (#508) — a retry
+// killed because another transaction was still queued for a row it wanted —
+// but staged here by ordering instead of by a slow wake-up, which cannot be
+// provoked without freezing a Postgres backend.
+//
+// Every step waits for the state the next one needs (a backend seen waiting
+// on a lock) rather than for a delay, so it does not depend on timing. The
+// first cycle is closed while the disable is the oldest waiter, the second
+// while the retry is, and Postgres kills the oldest each time. The old single
+// retry fails here with 40P01; three attempts pass.
+func TestGuardedWrite_SurvivesTwoDeadlocks(t *testing.T) {
+	db, closeDB := freshDatabase(t)
+	defer closeDB()
+	store := userstore.New(dbgen.New(db.SQL))
+	ctx := context.Background()
+
+	adminA := seedAdmin(t, store)
+	seedAdmin(t, store)
+	victim := seedStaff(t, store)
+
+	holdVictim := func() *sql.Tx {
+		tx, err := db.SQL.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = tx.Rollback() })
+		_, err = tx.ExecContext(ctx, `SELECT id FROM users WHERE id = $1 FOR SHARE`, victim)
+		require.NoError(t, err)
+		return tx
+	}
+	first, second := holdVictim(), holdVictim()
+
+	// The guarded statements are the only ones that mention the CTE.
+	guardedWaiting := func() bool {
+		var n int
+		require.NoError(t, db.SQL.QueryRow(`
+			SELECT count(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%admins%'`).Scan(&n))
+		return n == 1
+	}
+	// closeCycle reaches for an administrator row from a partner transaction
+	// and lets go of everything once it has it.
+	closeCycle := func(tx *sql.Tx) <-chan struct{} {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_, _ = tx.ExecContext(ctx, `SELECT id FROM users WHERE id = $1 FOR UPDATE`, adminA)
+			_ = tx.Rollback()
+		}()
+		return done
+	}
+
+	type answer struct {
+		applied bool
+		err     error
+	}
+	disabled := make(chan answer, 1)
+	go func() {
+		applied, err := store.DisableUnlessLastAdmin(ctx, victim)
+		disabled <- answer{applied, err}
+	}()
+
+	require.Eventually(t, guardedWaiting, 30*time.Second, 5*time.Millisecond, "the disable never reached the held row")
+	firstDone := closeCycle(first)
+	<-firstDone // the disable was killed once and the first partner has finished
+
+	require.Eventually(t, guardedWaiting, 30*time.Second, 5*time.Millisecond, "the retry never reached the held row")
+	secondDone := closeCycle(second)
+
+	select {
+	case a := <-disabled:
+		require.NoError(t, a.err, "the disable was killed twice and reported as a failure")
+		require.True(t, a.applied, "the disable should have applied on the third attempt")
+	case <-time.After(60 * time.Second):
+		t.Fatal("the disable never finished")
+	}
+	<-secondDone
+
+	var off bool
+	require.NoError(t, db.SQL.QueryRow(`SELECT disabled FROM users WHERE id = $1`, victim).Scan(&off))
+	require.True(t, off, "the account is still enabled, so the disable was lost")
 }
