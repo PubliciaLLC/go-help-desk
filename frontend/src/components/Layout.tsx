@@ -56,7 +56,7 @@ function SidebarContent({ user, branding, onNavigate, onLogout }: SidebarContent
         <BrandLogo
           {...branding}
           imgClassName="h-8 max-w-[160px] object-contain"
-          fallbackClassName="text-lg font-semibold text-gray-900"
+          fallbackClassName="text-lg font-semibold text-gray-900 wrap-anywhere"
         />
       </div>
 

@@ -481,6 +481,8 @@ test.describe('#479: long URLs wrap on a phone', () => {
             description: `See ${longUrlFor('description')}`,
             // #514's Requester line: a long name and an address with no break point.
             requester: { name: 'R'.repeat(300), email: `${'q'.repeat(300)}@example.com` },
+            type_id: 'ty-1',
+            item_id: 'it-1',
           },
         }),
       )
@@ -496,6 +498,12 @@ test.describe('#479: long URLs wrap on a phone', () => {
       // (actor name and a subject change holding a URL), followers, the
       // assignee and a status name. A long word, not only a URL, for names.
       const word = 'W'.repeat(300)
+      await page.route('**/api/v1/categories/cat-1/types', (route) =>
+        route.fulfill({ json: [{ id: 'ty-1', category_id: 'cat-1', name: 'T'.repeat(300), sort_order: 1, active: true }] }),
+      )
+      await page.route('**/api/v1/categories/cat-1/types/ty-1/items', (route) =>
+        route.fulfill({ json: [{ id: 'it-1', type_id: 'ty-1', name: 'I'.repeat(300), sort_order: 1, active: true }] }),
+      )
       await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/history`, (route) =>
         route.fulfill({
           json: [
@@ -535,6 +543,8 @@ test.describe('#479: long URLs wrap on a phone', () => {
         await expect(page.getByText(text).first()).toBeVisible()
       }
       await expect(page.getByText(word).first()).toBeVisible()
+      await expect(page.getByText('T'.repeat(300))).toBeVisible()
+      await expect(page.getByText('I'.repeat(300))).toBeVisible()
       await noHorizontalScroll(page)
       await documentFits(page, width)
       await expectTextIntact(page, NOTE_URL)
@@ -630,9 +640,10 @@ test.describe('truncated text exposes its full text in a title', () => {
     expect(texts.some((t) => t.includes(`${LINKED_TICKET.tracking_number} · ${long}`))).toBe(true)
     expect(texts.some((t) => t === `Hello ${long}`), 'canned preview not found').toBe(true)
     expect(texts.some((t) => t.startsWith('eeee')), 'sidebar email not found').toBe(true)
-    const named = truncated.filter((t) => t.text.includes(long) || t.text.startsWith('eeee'))
-    expect(named.length).toBeGreaterThanOrEqual(3)
-    for (const t of named) expect(t.title, `"${t.text.slice(0, 40)}" is cut with no title`).toBe(t.text)
+    // Every truncated element in the document, unfiltered: the sidebar and
+    // top-bar brand included.
+    expect(truncated.length).toBeGreaterThanOrEqual(4)
+    for (const t of truncated) expect(t.title, `"${t.text.slice(0, 40)}" is cut with no title`).toBe(t.text)
   })
 
   test('pending upload filename', async ({ page }) => {
@@ -741,7 +752,7 @@ test.describe('#517 review: more places at 320px', () => {
     await mockApi(page)
     const email = `${'firstname.lastname.department'.padEnd(47, 'x')}@example.com`
     expect(email.length).toBe(59)
-    const hit = { id: 'u-h', display_name: 'Firstname Lastname of the Facilities Department', email }
+    const hit = { id: 'u-h', display_name: 'N'.repeat(300), email }
     await page.route(/\/api\/v1\/users\/lookup/, (route) => route.fulfill({ json: [hit] }))
     await page.goto('/tickets/new')
     await page.getByLabel('Another user').check()
@@ -788,5 +799,74 @@ test.describe('truncated text, continued', () => {
     await expect(cell).toBeVisible()
     const link = cell.getByRole('link')
     await expect(link).toHaveAttribute('title', `Deploy ${long}`)
+  })
+})
+
+// #517 round 3: the remaining ellipsis places outside ticket content each
+// carry a title, and two pre-existing overflows wrap.
+async function truncatedWithTitle(page: Page) {
+  return page.evaluate(() =>
+    Array.from(document.querySelectorAll('.truncate')).map((el) => ({
+      text: (el.textContent ?? '').trim(),
+      title: el.getAttribute('title') ?? (el.closest('[title]') as HTMLElement | null)?.title ?? null,
+    })),
+  )
+}
+
+test.describe('#517 round 3: titles on the remaining truncations', () => {
+  test('dashboard client name and email', async ({ page }) => {
+    await page.setViewportSize({ width: 1024, height: 800 })
+    await mockApi(page, { me: ME_ADMIN })
+    await page.route(/\/api\/v1\/admin\/users/, (route) =>
+      route.fulfill({
+        json: [{ ...ME_REPORTER, id: 'u-c', display_name: 'D'.repeat(80), email: `${'m'.repeat(80)}@example.com`, disabled: false }],
+      }),
+    )
+    await page.goto('/dashboard')
+    await expect(page.getByText('D'.repeat(80))).toBeVisible()
+    const t = await truncatedWithTitle(page)
+    expect(t.length).toBeGreaterThanOrEqual(3)
+    for (const x of t) expect(x.title, `"${x.text.slice(0, 40)}" is cut with no title`).toBe(x.text)
+  })
+
+  test('account page passkey label', async ({ page }) => {
+    await page.setViewportSize({ width: 1024, height: 800 })
+    await mockApi(page)
+    const name = 'K'.repeat(120)
+    await page.route('**/api/v1/me/passkeys', (route) =>
+      route.fulfill({
+        json: [{ id: 'pk1', name, transports: ['usb'], backup_eligible: false, backup_state: false, created_at: '2026-09-20T10:00:00Z', last_used_at: null }],
+      }),
+    )
+    await page.goto('/account')
+    await expect(page.getByText(name)).toBeVisible()
+    const t = await truncatedWithTitle(page)
+    for (const x of t) expect(x.title, `"${x.text.slice(0, 40)}" is cut with no title`).toBe(x.text)
+  })
+})
+
+test.describe('#517 round 3: two long names that ran the page sideways', () => {
+  const name = 'B'.repeat(300)
+
+  test('the drawer sidebar brand wraps', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 844 })
+    await mockApi(page)
+    await page.route('**/api/v1/site', (route) =>
+      route.fulfill({ json: { name, logo_url: '', version: '1.3.0' } }),
+    )
+    await page.goto('/dashboard')
+    await page.getByRole('button', { name: /menu|navigation/i }).click()
+    const brand = page.getByRole('dialog').getByText(name)
+    await expect(brand).toBeVisible()
+    const right = await brand.evaluate((e) => e.getBoundingClientRect().right)
+    expect(right, 'the drawer brand runs off the screen').toBeLessThanOrEqual(320)
+  })
+
+  test('the dashboard "Welcome back" line wraps', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 844 })
+    await mockApi(page, { me: { ...ME_STAFF, display_name: name } })
+    await page.goto('/dashboard')
+    await expect(page.getByText(`Welcome back, ${name}`)).toBeVisible()
+    await noHorizontalScroll(page)
   })
 })

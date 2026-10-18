@@ -1383,13 +1383,23 @@ history, followers, the assignee, status names, category, type and item names,
 custom-field labels and values, tags, and the requester picker. It is never
 truncated, rewritten or linkified, so it stays whole and copyable (#479).
 
-Five compact places still end in an ellipsis, because they are one-line rows
-where wrapping would break the row: the linked ticket line in the Linked tickets
-panel, the subject in the desktop ticket table, a pending upload's filename
-before it is sent, the canned-response preview in its picker, and the signed-in
-email at the foot of the sidebar. Each carries a `title` attribute with its full
-text, which a pointer shows on hover; touch browsers do not show one, so the
-two ticket rows also open the ticket, where the text wraps in full. On the
+Ten compact places still end in an ellipsis, because they are one-line rows or
+chips where wrapping would break the row, and none of them is ticket content:
+
+- in the Linked tickets panel, the linked ticket line;
+- in the desktop ticket table, the subject;
+- in the reply composer, a pending upload's filename before it is sent, and the
+  canned-response preview in its picker;
+- in the shell, the signed-in email at the foot of the sidebar and the brand
+  name in the mobile top bar;
+- on the Dashboard, each client's name and email in the By Client cards;
+- on the Account page, a passkey's label;
+- in the authenticator-app setup, the secret under the QR code.
+
+Each carries a `title` attribute with its full text, which a pointer shows on
+hover; touch browsers do not show one, so the two ticket rows also open the
+ticket, where the text wraps in full. Everything else wraps, including the
+sidebar brand in the drawer and the Dashboard's "Welcome back" line. On the
 ticket page below `md` the header's action buttons sit on their own row under
 the title and tracking number, which keep the full width (#480).
 
