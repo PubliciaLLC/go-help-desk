@@ -6,12 +6,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/dbretry"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 
@@ -344,10 +344,6 @@ func (s *Store) SetRoleUnlessLastAdmin(ctx context.Context, id uuid.UUID, role s
 	})
 }
 
-// guardedWriteAttempts is how many times a guarded statement is tried in all
-// when Postgres keeps killing it to break a lock cycle.
-const guardedWriteAttempts = 3
-
 // guardedWrite runs one of the three statements above and reads its answer.
 //
 // It retries on a deadlock, for the same reason txrunner.InTx does, and this
@@ -360,19 +356,11 @@ const guardedWriteAttempts = 3
 // retry the assignment commits and the administrator gets "an internal error
 // occurred" for a disable that did nothing.
 //
-// Up to three attempts, not one, and not unbounded. One was not enough
-// (#508): the killed statement releases the administrator row the other
-// transaction was queued for, and a retry that arrives before that
-// transaction wakes takes the row first. That forms a second cycle in which
-// the retry is the one that has waited longest, so it is killed again. On a
-// loaded CI runner that happened often enough to fail the suite; it was
-// reproduced by delaying the other transaction's wake-up by under a second.
-// The pause between attempts is what lets the other transaction wake, take
-// the row and finish, and it is jittered so two retries do not meet again in
-// step. Three because a cycle needs a second transaction that is both late
-// and still unfinished, and each extra attempt needs another such
-// transaction; a third deadlock in a row is not that, it is a lock-order bug,
-// and it is returned rather than hidden behind more waiting.
+// The attempts, the pause and which errors count (a deadlock or a
+// serialization failure) are dbretry's, shared with txrunner.InTx. One attempt
+// was not enough (#508): on a loaded CI runner the retry arrived before the
+// other transaction woke and was killed again, reproduced by delaying that
+// wake-up by under a second.
 //
 // Safe to repeat: each attempt is one autocommit statement, and a statement
 // Postgres kills for a deadlock has changed nothing. The three callers
@@ -383,22 +371,10 @@ const guardedWriteAttempts = 3
 // they applied and nothing when the guard stopped them, which database/sql
 // reports as ErrNoRows.
 func (s *Store) guardedWrite(ctx context.Context, write func() (uuid.UUID, error)) (bool, error) {
-	var err error
-	for attempt := 1; attempt <= guardedWriteAttempts; attempt++ {
-		if _, err = write(); !isDeadlock(err) {
-			break
-		}
-		if attempt == guardedWriteAttempts {
-			break
-		}
-		pause := s.retryPause
-		if pause == nil {
-			pause = jitteredPause
-		}
-		if perr := pause(ctx); perr != nil {
-			return false, fmt.Errorf("guarded write: %w", perr)
-		}
-	}
+	err := dbretry.Do(ctx, s.retryPause, func() error {
+		_, err := write()
+		return err
+	})
 	switch {
 	case err == nil:
 		return true, nil
@@ -406,23 +382,6 @@ func (s *Store) guardedWrite(ctx context.Context, write func() (uuid.UUID, error
 		return false, nil
 	}
 	return false, fmt.Errorf("guarded write: %w", inertViolation(err))
-}
-
-// jitteredPause waits 10-50 ms, or until ctx is done.
-func jitteredPause(ctx context.Context) error {
-	select {
-	case <-time.After(10*time.Millisecond + rand.N(40*time.Millisecond)):
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-// isDeadlock reports whether Postgres killed this statement to break a lock
-// cycle. SQLSTATE 40P01, matched on the code rather than the message.
-func isDeadlock(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "40P01"
 }
 
 // CountOtherActiveAdmins counts the administrators this instance would still
