@@ -1617,7 +1617,13 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 	var guestLink bool
 	rotateFor := t.GuestEmail != nil && *t.GuestEmail != "" && reporterEmail != ""
 
+	// t, reopened and guestLink are rewritten inside the closure, so each
+	// attempt starts from the values decided above and not from what the
+	// attempt that was rolled back left in them.
+	t0, reopened0 := t, reopened
+
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store, ch *notification.Changes) error {
+		t, reopened, guestLink = t0, reopened0, false
 		// A requester's reply is decided AGAIN here, on the locked row (#349).
 		// The check above read the ticket without a lock, and the insert below
 		// takes none unless the reply reopens, so a close that committed in
@@ -1659,7 +1665,7 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 			} else {
 				before := ticketMap(locked)
 				now := time.Now() // under the row lock, like ChangePriority's
-				locked.StatusID = t.StatusID
+				locked.StatusID = reopenTargetStatusID
 				locked.UpdatedAt = now
 				// Through the shared rule, so this door agrees with the others about
 				// resolved_at and closed_at rather than clearing one and forgetting
@@ -1978,8 +1984,9 @@ func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uui
 		}
 
 		// Apply default notes if empty.
-		if strings.TrimSpace(notes) == "" {
-			notes = DuplicateResolutionNotes(target.TrackingNumber)
+		resolution := notes
+		if strings.TrimSpace(resolution) == "" {
+			resolution = DuplicateResolutionNotes(target.TrackingNumber)
 		}
 
 		// Check for the exact link before inserting, rather than attempting the
@@ -2051,7 +2058,7 @@ func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uui
 		// created) is exactly "this call's target is the one already on
 		// record."
 		var txErr error
-		t, alreadyResolved, txErr = s.resolveInTx(ctx, st, au, ch, sourceID, notes, actor, now, alreadyLinked)
+		t, alreadyResolved, txErr = s.resolveInTx(ctx, st, au, ch, sourceID, resolution, actor, now, alreadyLinked)
 		return txErr
 	}); err != nil {
 		return Ticket{}, err

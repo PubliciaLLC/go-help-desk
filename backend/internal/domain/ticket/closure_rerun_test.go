@@ -25,11 +25,17 @@ import (
 var errKilled = errors.New("killed to break a lock cycle")
 
 type rerunAtomic struct {
-	inner   *fakeAtomic
+	inner *fakeAtomic
+	// before runs once the service has read the ticket and is about to open the
+	// transaction; between runs after the first attempt is rolled back.
+	before  func()
 	between func()
 }
 
 func (a *rerunAtomic) InTx(ctx context.Context, fn func(ticket.Store, audit.Store, *notification.Changes) error) error {
+	if a.before != nil {
+		a.before()
+	}
 	err := a.inner.InTx(ctx, func(st ticket.Store, au audit.Store, ch *notification.Changes) error {
 		if err := fn(st, au, ch); err != nil {
 			return err
@@ -46,8 +52,13 @@ func (a *rerunAtomic) InTx(ctx context.Context, fn func(ticket.Store, audit.Stor
 // rerunService is the harness's service, run through rerunAtomic.
 func (h *harness) rerunService(t *testing.T, between func()) *ticket.Service {
 	t.Helper()
+	return h.rerunServiceWith(t, nil, between)
+}
+
+func (h *harness) rerunServiceWith(t *testing.T, before, between func()) *ticket.Service {
+	t.Helper()
 	svc := ticket.NewService(h.store, h.statuses, h.dispatcher, h.auditStore,
-		&rerunAtomic{inner: h.atomic, between: between}, h.sla)
+		&rerunAtomic{inner: h.atomic, before: before, between: between}, h.sla)
 	require.NoError(t, svc.LoadSystemStatuses(context.Background()))
 	return svc
 }
@@ -108,4 +119,53 @@ func TestClose_RetryDoesNotKeepTheAlreadyClosedOfTheRolledBackAttempt(t *testing
 
 	require.Equal(t, h.closedStatus.ID, h.store.tickets[tk.ID].StatusID)
 	require.Equal(t, 1, h.sla.resolutions, "the retry closed the ticket and reported that it did not")
+}
+
+// A requester replies to a Resolved ticket. Staff move it to In Progress after
+// the service read it, so attempt 1 sees the reopen's condition gone and
+// leaves the status alone; the attempt is then killed, and the ticket is
+// Resolved again for the retry. The retry must reopen it, with the status, the
+// history and the reopen count all agreeing.
+func TestAddReply_RetryDoesNotKeepTheLockedRowOfTheRolledBackAttempt(t *testing.T) {
+	h := newHarness(t)
+	reporter := uuid.New()
+	tk := h.seedResolved(reporter)
+	setStatus := func(id uuid.UUID) {
+		moved := h.store.tickets[tk.ID]
+		moved.StatusID = id
+		h.store.tickets[tk.ID] = moved
+	}
+	svc := h.rerunServiceWith(t,
+		func() { setStatus(h.inProgressStatus.ID) },
+		func() { setStatus(h.resolvedStatus.ID) })
+
+	_, err := svc.AddReply(context.Background(), tk.ID, "Still broken", false, true, "reporter@example.com",
+		ticket.Actor{UserID: &reporter, Role: user.RoleUser}, 30, h.newStatus.ID)
+	require.NoError(t, err)
+
+	stored := h.store.tickets[tk.ID]
+	require.Equal(t, h.newStatus.ID, stored.StatusID, "the reply reopened nothing: the ticket is still Resolved")
+	require.Equal(t, 1, stored.ReopenCount)
+	require.Len(t, h.store.history, 1)
+	require.Equal(t, h.resolvedStatus.ID, *h.store.history[0].FromStatusID)
+	require.Equal(t, stored.StatusID, h.store.history[0].ToStatusID, "the history does not match the status")
+}
+
+// The first attempt issued a link; the guest's address was removed before the
+// retry, which finds no recipient and has nothing to return. It used to return
+// the first attempt's "ok" and dereference the address that was gone.
+func TestIssueGuestLink_RetryDoesNotKeepTheTokenOfTheRolledBackAttempt(t *testing.T) {
+	h := newHarness(t)
+	tk, _ := guestTicket(t, h)
+	svc := h.rerunService(t, func() {
+		gone := h.store.tickets[tk.ID]
+		gone.GuestEmail = nil
+		h.store.tickets[tk.ID] = gone
+	})
+
+	ev, ok, err := svc.IssueGuestLink(context.Background(),
+		notification.Event{Type: notification.EventTicketReplied, TicketID: tk.ID, GuestLink: true})
+	require.NoError(t, err)
+	require.False(t, ok, "a ticket with no guest address has no link to send")
+	require.Empty(t, ev.GuestToken)
 }
