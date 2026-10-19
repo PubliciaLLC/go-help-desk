@@ -726,12 +726,24 @@ func (s *Server) handleGetSiteConfig(w http.ResponseWriter, r *http.Request) {
 	// /submit, and offering a dead end is worse than offering nothing. It says
 	// only whether the instance accepts guest tickets — the same thing an
 	// unauthenticated POST to /guest/tickets would reveal by answering 404.
-	JSON(w, http.StatusOK, map[string]any{
-		"name":                     s.adminSvc.SiteName(r.Context()),
-		"logo_url":                 s.adminSvc.SiteLogoURL(r.Context()),
-		"version":                  version.Version,
-		"guest_submission_enabled": s.adminSvc.GuestSubmissionEnabled(r.Context()),
-	})
+	//
+	// guest_attachments_enabled and guest_attachment_max_bytes (#445) are here
+	// for the same reason: the guest page has no session, and offering an
+	// attach button that can only fail is worse than not offering one. They
+	// reveal what an unauthenticated upload would reveal by answering 404. The
+	// size is the EFFECTIVE limit (the lower of the setting and the
+	// instance-wide maximum), omitted while uploads are off.
+	cfg := map[string]any{
+		"name":                      s.adminSvc.SiteName(r.Context()),
+		"logo_url":                  s.adminSvc.SiteLogoURL(r.Context()),
+		"version":                   version.Version,
+		"guest_submission_enabled":  s.adminSvc.GuestSubmissionEnabled(r.Context()),
+		"guest_attachments_enabled": s.adminSvc.GuestAttachmentsEnabled(r.Context()),
+	}
+	if cfg["guest_attachments_enabled"] == true {
+		cfg["guest_attachment_max_bytes"] = s.guestAttachmentMaxBytes(r.Context())
+	}
+	JSON(w, http.StatusOK, cfg)
 }
 
 // InitSAML reads SAML config from the database and initialises the SP

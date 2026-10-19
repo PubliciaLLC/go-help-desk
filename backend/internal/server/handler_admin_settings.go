@@ -490,6 +490,30 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Guest uploads (#445). The size is a slider of 1 to 100 MB; a value off it
+	// is refused, not clamped, because the reader would replace it with the
+	// default and the number typed would not be the number in force. The
+	// switch is checked for type for the same reason: "yes" stored as a
+	// string reads as off, and the administrator would think it was on.
+	if raw, ok := body[admin.KeyGuestAttachmentMaxMB]; ok {
+		var mb int
+		if err := unmarshalSetting(raw, admin.KeyGuestAttachmentMaxMB, &mb); err != nil {
+			handleError(w, err)
+			return
+		}
+		if !admin.ValidGuestAttachmentMaxMB(mb) {
+			Error(w, http.StatusBadRequest, "bad_request", "guest_attachment_max_mb must be between 1 and 100")
+			return
+		}
+	}
+	if raw, ok := body[admin.KeyGuestAttachmentsEnabled]; ok {
+		var on bool
+		if err := unmarshalSetting(raw, admin.KeyGuestAttachmentsEnabled, &on); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+
 	// Same reasoning as the prefix above: a value that is accepted and then
 	// ignored is worse than a refusal, and here the ignored value is a
 	// security control. An unrecognised policy falls back to "required", so a

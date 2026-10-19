@@ -108,6 +108,19 @@ Slack, Teams, Discord and Jira Automation hooks are not affected: their messages
 
 - **API keys list and revoke only themselves.** See *API key delete is scoped to its owner* under Security.
 
+### Guests Can No Longer Upload Until You Turn It On (#445)
+
+Before this release a guest could attach a file through `POST /api/v1/guest/attachments` whenever guest submission was on. **That is now off by default, including on an upgraded install.** A new setting, **Guests may attach files** (`guest_attachments_enabled`, Admin → Settings → General → Submissions, under guest submission), controls it. Until an administrator turns it on, the route answers the generic `404 not_found` a bad link gets, and a script that uploads as a guest will see that.
+
+- **Dependent on guest submission.** It only takes effect while guest submission is on.
+- **Per-file limit.** `guest_attachment_max_mb`, a slider from 1 to 100 MB, 5 MB by default. A guest is held to the lower of it and the instance-wide 25 MB maximum. Over the limit is `413 too_large`, and the message names the limit.
+- **Session only.** Both settings need a signed-in administrator; an API key or OAuth client sending either is refused with `403 session_required`.
+- **The guest page now has an Add files button** while the setting is on. Uploads get the same type, scanning and reputation rules as everyone else's, and are download-only. The submission form (`/submit`) has none: the link to attach from is emailed once the ticket exists.
+- **`GET /api/v1/site`** gains `guest_attachments_enabled` and, while it is on, `guest_attachment_max_bytes`.
+- **No migration.** Nothing to run; the settings are read with their defaults.
+
+What to check: if your guests attach files today, turn the setting on after you upgrade.
+
 ### Also breaking, described elsewhere
 
 - A ticket-changing webhook delivers one event per change, and a receiver that switches on `Type` can miss a kind: see *One Change, One Event* under Changed behaviour.

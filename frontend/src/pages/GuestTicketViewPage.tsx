@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
+import { getSiteConfig } from '@/api/admin'
 import {
   addGuestReply,
   createGuestFollowUp,
   getGuestTicket,
   GuestFollowUpRateLimited,
   GuestLinkInvalid,
+  uploadGuestAttachment,
 } from '@/api/guest'
+import { AttachmentUpload, type UploadState } from '@/components/AttachmentUpload'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -46,6 +49,38 @@ export function GuestTicketViewPage() {
     // who lost the fragment, and the error branch below is the right answer.
     enabled: token !== '',
   })
+
+  // Whether this instance lets guests attach (#445), and the per-file limit
+  // that applies. A failed or slow lookup leaves the control hidden: offering a
+  // button that can only fail is worse than not offering one.
+  const { data: site } = useQuery({ queryKey: ['site-config'], queryFn: getSiteConfig, retry: false })
+  const canAttach = site?.guest_attachments_enabled === true && typeof site.guest_attachment_max_bytes === 'number'
+
+  const [uploadStates, setUploadStates] = useState<Record<string, UploadState> | undefined>()
+  const [uploading, setUploading] = useState<File[]>([])
+  const [attached, setAttached] = useState<string[]>([])
+  const [uploadErrors, setUploadErrors] = useState<string[]>([])
+
+  // Each chosen file is sent as soon as it is chosen, one after another. There
+  // is no draft to submit: a guest attachment belongs to the ticket, not to a
+  // reply. The server's reason is shown for a refusal, never the file's content.
+  async function sendFiles(files: File[]) {
+    if (files.length === 0) return
+    setUploading(files)
+    setUploadErrors([])
+    setUploadStates(Object.fromEntries(files.map((f) => [f.name, { status: 'pending' as const }])))
+    for (const f of files) {
+      setUploadStates((s) => ({ ...s, [f.name]: { status: 'uploading' } }))
+      try {
+        await uploadGuestAttachment(token, f)
+        setAttached((a) => [...a, f.name])
+      } catch (err) {
+        setUploadErrors((e) => [...e, `${f.name}: ${err instanceof Error ? err.message : 'The file could not be uploaded.'}`])
+      }
+    }
+    setUploading([])
+    setUploadStates(undefined)
+  }
 
   const send = useMutation({
     mutationFn: () => addGuestReply(token, reply.trim()),
@@ -212,6 +247,25 @@ export function GuestTicketViewPage() {
                 {send.isPending ? 'Sending…' : 'Send reply'}
               </Button>
             </form>
+          )}
+
+          {ticket.status !== 'Closed' && canAttach && (
+            <div className="space-y-2 border-t pt-4">
+              <AttachmentUpload
+                files={uploading}
+                onChange={(next) => sendFiles(next.slice(uploading.length))}
+                uploadStates={uploadStates}
+                maxBytes={site!.guest_attachment_max_bytes}
+              />
+              {attached.length > 0 && (
+                <p role="status" className="text-sm text-green-700 wrap-anywhere">
+                  Attached: {attached.join(', ')}
+                </p>
+              )}
+              {uploadErrors.map((m) => (
+                <p key={m} role="alert" className="text-sm text-red-600 wrap-anywhere">{m}</p>
+              ))}
+            </div>
           )}
         </CardContent>
       </Card>

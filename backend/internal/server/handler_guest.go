@@ -297,9 +297,15 @@ func (s *Server) handleGuestAddReply(w http.ResponseWriter, r *http.Request) {
 //
 // Gated on guest_submission_enabled. When the setting is off, existing guest
 // links are revoked and cannot upload until the setting is turned back on (#424).
+//
+// And on guest_attachments_enabled (#445), off by default. It refuses with the
+// same 404 body as a bad link and as guest submission being off, like every
+// other guest refusal: a different answer would tell an anonymous caller which
+// setting is in force. The per-file limit is the lower of the guest setting and
+// the instance-wide maximum.
 func (s *Server) handleGuestUploadAttachment(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	if !s.adminSvc.GuestSubmissionEnabled(ctx) {
+	if !s.adminSvc.GuestAttachmentsEnabled(ctx) { // includes guest submission
 		Error(w, http.StatusNotFound, "not_found", "not found")
 		return
 	}
@@ -318,7 +324,7 @@ func (s *Server) handleGuestUploadAttachment(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	s.storeUploadedAttachment(w, r, t.ID, ticket.Actor{Role: user.RoleUser})
+	s.storeUploadedAttachment(w, r, t.ID, ticket.Actor{Role: user.RoleUser}, s.guestAttachmentMaxBytes(ctx))
 }
 
 // POST /api/v1/guest/follow-up
@@ -462,4 +468,10 @@ func (s *Server) PrepareGuestLink(ctx context.Context, ev notification.Event) (n
 		ev.TicketID = id
 	}
 	return s.tickets.IssueGuestLink(ctx, ev)
+}
+
+// guestAttachmentMaxBytes is what a guest may upload per file: the
+// administrator's figure, never above the instance-wide maximum (#445).
+func (s *Server) guestAttachmentMaxBytes(ctx context.Context) int64 {
+	return min(int64(s.adminSvc.GuestAttachmentMaxMB(ctx))<<20, attachMaxBytes)
 }

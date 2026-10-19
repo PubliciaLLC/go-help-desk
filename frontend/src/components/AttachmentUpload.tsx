@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button'
 
 const ACCEPTED = '.pdf,.docx,.xlsx,.txt,.log,.jpg,.jpeg,.png,.bmp'
 const MAX_SIZE_BYTES = 25 * 1024 * 1024
+const MB = 1024 * 1024
 
 export interface UploadState {
   status: 'pending' | 'uploading' | 'done' | 'error'
@@ -15,6 +16,8 @@ interface AttachmentUploadProps {
   uploadStates?: Record<string, UploadState>
   disabled?: boolean
   maxFiles?: number
+  /** Per-file limit; the instance-wide 25 MB unless the caller has a lower one (a guest, #445). */
+  maxBytes?: number
 }
 
 function formatBytes(bytes: number): string {
@@ -35,7 +38,7 @@ function statusIcon(state?: UploadState) {
   return <span className="text-xs text-gray-400 shrink-0">Queued</span>
 }
 
-export function AttachmentUpload({ files, onChange, uploadStates, disabled, maxFiles = 5 }: AttachmentUploadProps) {
+export function AttachmentUpload({ files, onChange, uploadStates, disabled, maxFiles = 5, maxBytes = MAX_SIZE_BYTES }: AttachmentUploadProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const isUploading = !!uploadStates
   const atLimit = files.length >= maxFiles
@@ -46,8 +49,8 @@ export function AttachmentUpload({ files, onChange, uploadStates, disabled, maxF
     const toAdd: File[] = []
     for (const f of Array.from(fl)) {
       if (toAdd.length >= remaining) break
-      if (f.size > MAX_SIZE_BYTES) {
-        alert(`"${f.name}" exceeds the 25 MB limit and was not added.`)
+      if (f.size > maxBytes) {
+        alert(`"${f.name}" exceeds the ${Math.floor(maxBytes / MB)} MB limit and was not added.`)
         continue
       }
       toAdd.push(f)
@@ -85,7 +88,7 @@ export function AttachmentUpload({ files, onChange, uploadStates, disabled, maxF
         <span className="text-xs text-gray-500">
           {atLimit
             ? `${maxFiles} file limit reached`
-            : `PDF, DOCX, XLSX, TXT, LOG, JPEG, PNG, BMP \u00b7 max 25\u00a0MB \u00b7 up to ${maxFiles} files`}
+            : `PDF, DOCX, XLSX, TXT, LOG, JPEG, PNG, BMP \u00b7 max ${Math.floor(maxBytes / MB)}\u00a0MB \u00b7 up to ${maxFiles} files`}
         </span>
       </div>
 

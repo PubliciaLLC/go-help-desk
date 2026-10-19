@@ -163,7 +163,11 @@ describe('attachments are never rendered inline', () => {
     const builders = files
       .filter(({ source }) => /['"`][^'"`]*\/attachments\b/.test(source))
       .map(({ path }) => path)
-    expect(builders).toEqual(['src/api/tickets.ts'])
+    // guest.ts is the guest UPLOAD route (#445): a POST the page makes with
+    // axios and never a URL it renders or links, and it has no GET at all
+    // (the guest read has no attachment list). It is listed by name so a
+    // second file, or a download path in this one, still fails.
+    expect(builders).toEqual(['src/api/guest.ts', 'src/api/tickets.ts'])
   })
 
   // And the one place that uses it has to ask the browser to save. The

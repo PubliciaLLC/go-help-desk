@@ -136,6 +136,7 @@ func TestGuestUploadAttachment_WorksWithAValidToken(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	tk, token := seedGuestTicket(t, h)
+	setGuestUploads(t, h, true) // off by default (#445)
 
 	res := uploadGuestAttachment(t, h, token, "photo.txt", []byte("what it looks like"))
 	defer res.Body.Close()
@@ -152,6 +153,7 @@ func TestGuestUploadAttachment_ReachesOneTicketAndNoOther(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	tk, token := seedGuestTicket(t, h)
+	setGuestUploads(t, h, true) // off by default (#445)
 
 	res := uploadGuestAttachment(t, h, token, "photo.txt", []byte("mine"))
 	res.Body.Close()
@@ -228,6 +230,7 @@ func TestGuestUploadAttachment_RefusedPastTheReopenWindow(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 	tk, _ := seedGuestTicket(t, h)
+	setGuestUploads(t, h, true) // off by default (#445)
 
 	staff := ticket.Actor{UserID: &h.staffID, Role: user.RoleStaff}
 	_, err := h.ticketSvc.Resolve(ctx, tk.ID, "fixed", staff)
@@ -259,6 +262,7 @@ func TestGuestUploadAttachment_GatedOnGuestSubmissionEnabled(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 	_, token := seedGuestTicket(t, h)
+	setGuestUploads(t, h, true) // off by default (#445)
 
 	// With the setting ON, upload works.
 	res := uploadGuestAttachment(t, h, token, "photo.txt", []byte("x"))

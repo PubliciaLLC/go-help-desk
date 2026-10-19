@@ -25,6 +25,11 @@ export interface SiteConfig {
   version: string
   // Whether the instance accepts tickets from visitors with no account.
   guest_submission_enabled?: boolean
+  // Whether a guest may attach files (#445), and the limit that actually
+  // applies per file in bytes: the lower of the guest setting and the
+  // instance-wide maximum. The size is absent while attaching is off.
+  guest_attachments_enabled?: boolean
+  guest_attachment_max_bytes?: number
 }
 
 export async function getSiteConfig(): Promise<SiteConfig> {

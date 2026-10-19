@@ -587,7 +587,12 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	s.storeUploadedAttachment(w, r, ticketID, actor)
+	s.storeUploadedAttachment(w, r, ticketID, actor, attachMaxBytes)
+}
+
+// tooLargeMessage names the limit that applied, which for a guest is not 25 MB.
+func tooLargeMessage(maxBytes int64) string {
+	return fmt.Sprintf("file exceeds %d MB limit", maxBytes>>20)
 }
 
 // storeUploadedAttachment is the multipart handling, validation, scanning and
@@ -602,11 +607,16 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 // transport. Failing the upload over it would be worse than keeping the
 // shorter deadline.
 //
+// maxBytes is the per-file limit for this caller: attachMaxBytes for an
+// authenticated user, the lower of that and the guest setting for a guest
+// (#445). It is a parameter rather than read here so the instance-wide maximum
+// stays the one place a limit can be raised.
+//
 // actor is who is uploading, for the last check before the row is written: a
 // guest is Actor{Role: RoleUser} with a nil UserID, which is also how a close
 // that wins the race is answered (the generic 404 for a guest, 409 for a
 // signed-in reporter).
-func (s *Server) storeUploadedAttachment(w http.ResponseWriter, r *http.Request, ticketID uuid.UUID, actor ticket.Actor) {
+func (s *Server) storeUploadedAttachment(w http.ResponseWriter, r *http.Request, ticketID uuid.UUID, actor ticket.Actor, maxBytes int64) {
 	// Before the body is read: a directory that cannot be written to would
 	// otherwise be discovered after the file was parsed, scanned and hashed,
 	// as a 500 (#458). Probed on every attempt, so a fixed directory works
@@ -632,19 +642,19 @@ func (s *Server) storeUploadedAttachment(w http.ResponseWriter, r *http.Request,
 	// at the limit instead, which is what the logo handler already does.
 	//
 	// The extra megabyte is for the multipart framing — boundaries, part
-	// headers, the field name — so that a file of exactly attachMaxBytes is
+	// headers, the field name — so that a file of exactly maxBytes is
 	// refused by the size check below, with the message about the size, and
 	// not by the reader with a parse error.
-	r.Body = http.MaxBytesReader(w, r.Body, attachMaxBytes+(1<<20))
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes+(1<<20))
 
-	if err := r.ParseMultipartForm(attachMaxBytes); err != nil {
+	if err := r.ParseMultipartForm(maxBytes); err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
 			// The same status, code and message the two size checks further
 			// down already return, so a client that handles one handles all
 			// three. The only difference is where it is decided: here, before
 			// the body has been read, rather than after.
-			Error(w, http.StatusRequestEntityTooLarge, "too_large", "file exceeds 25 MB limit")
+			Error(w, http.StatusRequestEntityTooLarge, "too_large", tooLargeMessage(maxBytes))
 			return
 		}
 		Error(w, http.StatusBadRequest, "bad_request", "could not parse upload")
@@ -658,8 +668,8 @@ func (s *Server) storeUploadedAttachment(w http.ResponseWriter, r *http.Request,
 	}
 	defer file.Close()
 
-	if header.Size > attachMaxBytes {
-		Error(w, http.StatusRequestEntityTooLarge, "too_large", "file exceeds 25 MB limit")
+	if header.Size > maxBytes {
+		Error(w, http.StatusRequestEntityTooLarge, "too_large", tooLargeMessage(maxBytes))
 		return
 	}
 
@@ -754,13 +764,13 @@ func (s *Server) storeUploadedAttachment(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	data, err := io.ReadAll(io.LimitReader(file, attachMaxBytes+1))
+	data, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
 	if err != nil {
 		Error(w, http.StatusInternalServerError, "read_error", "failed to read upload")
 		return
 	}
-	if int64(len(data)) > attachMaxBytes {
-		Error(w, http.StatusRequestEntityTooLarge, "too_large", "file exceeds 25 MB limit")
+	if int64(len(data)) > maxBytes {
+		Error(w, http.StatusRequestEntityTooLarge, "too_large", tooLargeMessage(maxBytes))
 		return
 	}
 
