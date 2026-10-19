@@ -686,8 +686,11 @@ type Querier interface {
 	// having run, and a missing key counts the same as a revoked one: this fails
 	// CLOSED. webhook_configs.api_key_id is deliberately not a foreign key, or
 	// deleting the key would null the link and the hook would look session-made.
-	// clock_timestamp() and not now(): the latter is the start of the transaction.
-	ListPausedWebhookIDs(ctx context.Context) ([]uuid.UUID, error)
+	// The instant is passed in, not read from the database: APIKeyAuth judges a
+	// key's expiry by the application's clock (auth.APIKey.Expired), and a second
+	// clock here would let a dead key's hooks keep firing for as long as the two
+	// disagree (#523). One clock, one rule.
+	ListPausedWebhookIDs(ctx context.Context, now time.Time) ([]uuid.UUID, error)
 	ListPlugins(ctx context.Context) ([]Plugin, error)
 	// The author's display name comes back with the reply.
 	//

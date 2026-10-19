@@ -74,14 +74,14 @@ export function StatusesPage() {
   return (
     <Layout>
       <div className="space-y-6">
-        <div className="flex items-start justify-between">
-          <div>
+        <div className="flex flex-col items-start gap-3 sm:flex-row sm:justify-between sm:gap-0">
+          <div className="min-w-0">
             <h1 className="text-2xl font-bold text-gray-900">Ticket Statuses</h1>
             <p className="mt-1 text-sm text-gray-500">
               Add custom intermediate statuses for your workflow. The three system statuses — New, Resolved, and Closed — have fixed lifecycle rules and cannot be renamed, removed, or deactivated.
             </p>
           </div>
-          <Button onClick={() => { setFormError(''); setAddingStatus(true) }} className="ml-6 shrink-0">
+          <Button onClick={() => { setFormError(''); setAddingStatus(true) }} className="shrink-0 sm:ml-6">
             <PlusIcon className="mr-2 h-4 w-4" />
             New Status
           </Button>
@@ -143,7 +143,7 @@ export function StatusesPage() {
         {isLoading ? (
           <div className="flex justify-center py-12"><Spinner /></div>
         ) : (
-          <div className="overflow-hidden rounded-lg border bg-white">
+          <div className="overflow-x-auto rounded-lg border bg-white">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 text-xs uppercase tracking-wide text-gray-500">
                 <tr>
@@ -164,7 +164,7 @@ export function StatusesPage() {
                         style={{ backgroundColor: s.color || DEFAULT_COLOR }}
                       />
                     </td>
-                    <td className="px-4 py-3 font-medium text-gray-900">
+                    <td className="px-4 py-3 font-medium text-gray-900 wrap-anywhere">
                       {s.name}
                       {!s.active && (
                         <span className="ml-2 rounded bg-gray-100 px-1.5 py-0.5 text-xs font-normal text-gray-500">

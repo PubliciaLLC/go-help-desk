@@ -7885,8 +7885,8 @@ paths:
       description: >-
         Administrators only, in a signed-in session (second factor required).
         A webhook that an API key created, or last re-pointed the URL of, is
-        paused (paused true, with a paused_reason) once that key is revoked or has
-        expired, and nothing is sent to it. This clears the link to the key: the
+        paused (paused true, with a paused_reason) once that key is no longer
+        active (revoked, expired, or its owner disabled or deleted), and nothing is sent to it. This clears the link to the key: the
         administrator vouches for the destination, and the hook fires again and no
         longer depends on any key. An API key is refused with 403 session_required
         (an OAuth client with 403 forbidden). Calling it on a hook that is not
@@ -11053,8 +11053,8 @@ components:
         paused:
           type: boolean
           description: >-
-            True when the API key that created the hook, or last changed its url, has
-            been revoked or has expired. A paused hook receives nothing, whether or not it
+            True when the API key that created the hook, or last changed its url, is
+            no longer active: revoked, expired, or its owner disabled or deleted. A paused hook receives nothing, whether or not it
             is enabled, until a signed-in administrator re-approves it
             (POST /admin/webhooks/{id}/reapprove). Worked out on every read, not stored.
         paused_reason:
@@ -11126,7 +11126,7 @@ components:
             Present only when result is dropped. disabled: the hook was switched off.
             unsubscribed: the hook no longer lists the event. url_changed: the hook was
             pointed at another URL. filter: the hook's ticket filter no longer admits the
-            ticket. paused: the hook's API key was revoked or has expired. unbuildable: the body cannot be built.
+            ticket. paused: the hook's API key, or that key's owner, is no longer active. unbuildable: the body cannot be built.
         attempts:
           type: integer
           minimum: 1

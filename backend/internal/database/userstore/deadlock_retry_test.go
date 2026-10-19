@@ -3,6 +3,7 @@ package userstore_test
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 	"time"
 
@@ -136,7 +137,11 @@ func seedStaff(t *testing.T, store *userstore.Store) uuid.UUID {
 // here with 40P01; three attempts pass.
 func TestGuardedWrite_SurvivesTwoDeadlocks(t *testing.T) {
 	db, closeDB := freshDatabase(t)
-	defer closeDB()
+	// Cleanup, not defer: the held transactions below are rolled back by
+	// cleanups registered after this one, and closing the database waits for the
+	// guarded statement, which waits for them. A deferred close would run first
+	// and, on any failure, hang there instead of reporting it.
+	t.Cleanup(closeDB)
 	store := userstore.New(dbgen.New(db.SQL))
 	ctx := context.Background()
 
@@ -177,16 +182,26 @@ func TestGuardedWrite_SurvivesTwoDeadlocks(t *testing.T) {
 		}()
 	}
 
-	pauses := 0
-	store.SetRetryPause(func(ctx context.Context) error {
-		done := partnerDone[pauses]
-		pauses++
+	// A bounded wait for a partner. Closing a cycle can take longer than a
+	// second on a loaded runner, and an unbounded receive would then hold the
+	// run until the go test timeout instead of failing here (#523).
+	const partnerWait = 60 * time.Second
+	awaitPartner := func(ctx context.Context, i int) error {
 		select {
-		case <-done:
+		case <-partnerDone[i]:
 			return nil
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-time.After(partnerWait):
+			return fmt.Errorf("partner %d never finished within %s", i, partnerWait)
 		}
+	}
+
+	pauses := 0
+	store.SetRetryPause(func(ctx context.Context) error {
+		i := pauses
+		pauses++
+		return awaitPartner(ctx, i)
 	})
 
 	type answer struct {
@@ -203,7 +218,7 @@ func TestGuardedWrite_SurvivesTwoDeadlocks(t *testing.T) {
 	closeCycle(0, first)
 	// Not before the first partner is gone: until then the waiter seen below
 	// could still be the attempt that is about to be killed.
-	<-partnerDone[0]
+	require.NoError(t, awaitPartner(ctx, 0))
 
 	require.Eventually(t, guardedWaiting, 30*time.Second, 5*time.Millisecond, "the retry never reached the held row")
 	closeCycle(1, second)
@@ -215,7 +230,7 @@ func TestGuardedWrite_SurvivesTwoDeadlocks(t *testing.T) {
 	case <-time.After(60 * time.Second):
 		t.Fatal("the disable never finished")
 	}
-	<-partnerDone[1]
+	require.NoError(t, awaitPartner(ctx, 1))
 
 	// A partner that was killed means the guarded statement was not the
 	// victim, and the kill this test is about did not happen.
