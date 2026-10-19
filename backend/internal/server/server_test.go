@@ -1828,9 +1828,13 @@ func TestLogout(t *testing.T) {
 
 // newBareHarness builds a test server with no seeded users, for testing the
 // first-run setup flow.
+//
+// On a database of its own (#543). /setup counts every row in users, and the
+// database package's tests commit real users to the shared one; a transaction
+// that is rolled back says nothing about rows other connections committed.
 func newBareHarness(t *testing.T) (*harness, func()) {
 	t.Helper()
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	q, rollback := testutil.TxQueries(t, db)
 
 	ctx := context.Background()

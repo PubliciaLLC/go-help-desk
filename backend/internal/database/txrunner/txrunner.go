@@ -12,16 +12,14 @@ import (
 	"fmt"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/database/auditstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/dbretry"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 
-	"errors"
-
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Runner implements ticket.Atomic against a *sql.DB.
@@ -50,30 +48,27 @@ func New(db *sql.DB, channels []string, wake func()) *Runner {
 // a context that could not be cancelled, and a crash between the two lost the
 // notification.
 func (r *Runner) InTx(ctx context.Context, fn func(ticket.Store, audit.Store, *notification.Changes) error) error {
-	// Retried once on a deadlock, and only on a deadlock.
+	// Retried when Postgres aborts the transaction to break a lock cycle or
+	// refuse a serialization conflict, and only then (dbretry holds the rules
+	// and the reasoning; guardedWrite in userstore follows the same ones).
 	//
 	// Two transactions can take the same two row locks in opposite orders,
 	// and Postgres breaks the tie by killing one of them. The measured case:
 	// an administrator assigns a ticket, which share-locks the assignee and
-	// then writes an audit row whose actor is the administrator — while
+	// then writes an audit row whose actor is the administrator, while
 	// another request disables or deletes somebody, which locks every
 	// administrator row first and then the target. Each holds what the other
 	// wants.
 	//
-	// A deadlock is not a fault in either transaction; it is the database
-	// telling one of them to go again, and the one that goes again succeeds
-	// because the other has finished. Reporting it as "an internal error
-	// occurred" to somebody who assigned a ticket is the wrong answer to a
-	// question that has a right one.
+	// That is not a fault in either transaction; it is the database telling
+	// one of them to go again, and reporting it as "an internal error
+	// occurred" to somebody who assigned a ticket is the wrong answer.
 	//
-	// Once, not in a loop: a second deadlock on the retry means something
-	// structural, and hiding that behind repeated attempts would turn a bug
-	// into a slow mystery.
-	err := r.runOnce(ctx, fn)
-	if isDeadlock(err) {
-		return r.runOnce(ctx, fn)
-	}
-	return err
+	// fn runs again from the start, so it must not carry anything from an
+	// attempt that was rolled back: declare per-attempt state inside it, or
+	// reset it at the top (see Create, ResolveAsDuplicate and close in the
+	// ticket service).
+	return dbretry.Do(ctx, nil, func() error { return r.runOnce(ctx, fn) })
 }
 
 func (r *Runner) runOnce(ctx context.Context, fn func(ticket.Store, audit.Store, *notification.Changes) error) error {
@@ -128,11 +123,4 @@ func (r *Runner) enqueue(ctx context.Context, q *dbgen.Queries, changes *notific
 		}
 	}
 	return queued, nil
-}
-
-// isDeadlock reports whether Postgres killed this transaction to break a
-// lock cycle. SQLSTATE 40P01, matched on the code rather than the message.
-func isDeadlock(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "40P01"
 }

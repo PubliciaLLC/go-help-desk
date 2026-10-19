@@ -56,6 +56,10 @@ func (s *Server) handleAdminDeleteTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.tags.Delete(r.Context(), id); err != nil {
+		if errors.Is(err, tag.ErrNotFound) {
+			handleError(w, err)
+			return
+		}
 		Error(w, http.StatusInternalServerError, "delete_failed", err.Error())
 		return
 	}
@@ -70,6 +74,10 @@ func (s *Server) handleAdminRestoreTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.tags.Restore(r.Context(), id); err != nil {
+		if errors.Is(err, tag.ErrNotFound) {
+			handleError(w, err)
+			return
+		}
 		Error(w, http.StatusInternalServerError, "restore_failed", err.Error())
 		return
 	}
