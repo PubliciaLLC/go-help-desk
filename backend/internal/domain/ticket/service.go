@@ -569,6 +569,10 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 		// round-robin list) is skipped for the next, as the handler did when
 		// routing was a second write after the create. Any other error is the
 		// database's, which has aborted this transaction anyway.
+		// t is captured, so a retry starts from what the rolled-back attempt
+		// left in it: routed to a colleague who has since gone, the retry
+		// would find nobody and keep the old assignee.
+		t.AssigneeUserID, t.AssigneeGroupID = nil, nil
 		unrouted := ticketMap(t)
 		unrouted["assignee_user_id"], unrouted["assignee_group_id"] = nil, nil
 		var routed *Assignment
@@ -1991,6 +1995,9 @@ func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uui
 		// conflicts with the FOR UPDATE this transaction already holds, so no
 		// concurrent link insert on this exact pair can land between this
 		// check and this transaction's commit.
+		// Captured, so decided afresh on every attempt: a retry must not
+		// inherit "found" from an attempt that was rolled back.
+		alreadyLinked = false
 		existingLinks, err := st.ListLinks(ctx, sourceID)
 		if err != nil {
 			return fmt.Errorf("checking for an existing duplicate link: %w", err)
@@ -2127,6 +2134,9 @@ func (s *Service) close(ctx context.Context, ticketID uuid.UUID, actor Actor, el
 	now := time.Now()
 
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store, ch *notification.Changes) error {
+		// Captured, so decided afresh on every attempt: a retry must not
+		// inherit a verdict from an attempt that was rolled back.
+		closed, alreadyClosed, skipped = 0, false, false
 		var err error
 		t, err = st.GetByIDForUpdate(ctx, ticketID)
 		if err != nil {
