@@ -228,7 +228,7 @@ ln -sfn "$(brew --prefix)/opt/docker-buildx/bin/docker-buildx" ~/.docker/cli-plu
 
 <p>Released versions are published as <code>1.3.0</code> and <code>1.3</code>, and the newest stable release is also <code>latest</code>. A prerelease is published under its exact name only, such as <code>1.4.0-beta</code>, and never moves <code>latest</code>, so following <code>latest</code> will not put you on a beta. Images live at <a href="https://github.com/PubliciaLLC/go-help-desk/pkgs/container/go-help-desk">ghcr.io/publiciallc/go-help-desk</a>.</p>
 
-<p>Do not run <code>edge</code>. It is rebuilt on every push to the release branch and overwritten in place, so two machines pulling it on the same day can be running different code.</p>
+<p>Do not run <code>edge</code>. It is published only from the beta branch (never from the main branch), rebuilt on every push there and overwritten in place, so two machines pulling it on the same day can be running different code.</p>
 
 
 <h2 id="configuration">Configuration reference</h2>
