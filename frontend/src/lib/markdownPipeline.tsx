@@ -73,6 +73,8 @@ function imagesToLinks() {
 
 /** Bidi controls and zero-width characters in link text can reorder or hide
  *  what a link claims to be. They are removed from text inside links. */
+// The class deliberately lists combining and variation-selector characters: they are the point.
+// eslint-disable-next-line no-misleading-character-class
 const INVISIBLE = /[\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180E\u200B-\u200F\u202A-\u202E\u2060-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0]/g
 function stripInvisibleInLinks() {
   return (tree: Root) => {
