@@ -16,6 +16,12 @@ import (
 // map them to 400 instead of 500.
 var ErrValidation = errors.New("validation failed")
 
+// ErrUnknownScope is returned when the category or type a response is scoped
+// to does not exist, or the type belongs to another category. The Postgres
+// store wraps the foreign-key violation with this sentinel; like
+// ErrValidation it is the caller's value, so the handler answers 400.
+var ErrUnknownScope = errors.New("unknown category or type")
+
 // ErrNotFound is returned when a requested canned response does not exist.
 // The Postgres store wraps sql.ErrNoRows with this sentinel.
 var ErrNotFound = errors.New("canned response not found")

@@ -270,7 +270,7 @@ type Querier interface {
 	// The retention sweep's hard delete. No archive table — see audit.Store's
 	// own comment on DeleteOlderThan for why.
 	DeleteAuditLogBefore(ctx context.Context, createdAt time.Time) (int64, error)
-	DeleteCannedResponse(ctx context.Context, id uuid.UUID) error
+	DeleteCannedResponse(ctx context.Context, id uuid.UUID) (int64, error)
 	// Takes the custom-field assignments of the category, of its types and of
 	// their items with it (#419). custom_field_assignments.scope_id has no foreign
 	// key, so they were left pointing at nothing. One statement, so the assignments
@@ -851,7 +851,7 @@ type Querier interface {
 	RemoveGroupScope(ctx context.Context, arg RemoveGroupScopeParams) (int64, error)
 	RemoveTicketFollower(ctx context.Context, arg RemoveTicketFollowerParams) (int64, error)
 	RemoveTicketTag(ctx context.Context, arg RemoveTicketTagParams) error
-	RestoreTag(ctx context.Context, id uuid.UUID) error
+	RestoreTag(ctx context.Context, id uuid.UUID) (int64, error)
 	RestoreUser(ctx context.Context, id uuid.UUID) error
 	RetryNotification(ctx context.Context, arg RetryNotificationParams) error
 	// Replaces a row's event. The webhook dispatcher clears the content of a row
@@ -988,7 +988,9 @@ type Querier interface {
 	// machine credentials, and it is the one that can leave an instance with no
 	// administrator.
 	SetUserRoleUnlessLastAdmin(ctx context.Context, arg SetUserRoleUnlessLastAdminParams) (uuid.UUID, error)
-	SoftDeleteTag(ctx context.Context, id uuid.UUID) error
+	// A tag that is already deleted keeps its original deleted_at but still counts
+	// as found, so only an unknown id reports zero rows.
+	SoftDeleteTag(ctx context.Context, id uuid.UUID) (int64, error)
 	SoftDeleteUser(ctx context.Context, id uuid.UUID) error
 	// The same guard for deletion. See DisableUserUnlessLastAdmin.
 	//

@@ -48,13 +48,16 @@ func (q *Queries) CreateCannedResponse(ctx context.Context, arg CreateCannedResp
 	return i, err
 }
 
-const deleteCannedResponse = `-- name: DeleteCannedResponse :exec
+const deleteCannedResponse = `-- name: DeleteCannedResponse :execrows
 DELETE FROM canned_responses WHERE id = $1
 `
 
-func (q *Queries) DeleteCannedResponse(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.ExecContext(ctx, deleteCannedResponse, id)
-	return err
+func (q *Queries) DeleteCannedResponse(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteCannedResponse, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const getCannedResponse = `-- name: GetCannedResponse :one
