@@ -166,7 +166,7 @@
 <p>Accounts are created in one of four ways:</p>
 <ul>
   <li><strong>Admin-created</strong>: an administrator clicks <em>Add User</em> under <em>Admin → Users</em> and assigns any role.</li>
-  <li><strong>Self-service signup</strong>: only when <em>Allow self-service signup</em> is on, which it is not by default. Signup is limited to the <em>Allowed email domains</em> unless <em>Allow open registration</em> is on. A signup page at <code>/signup</code> asks only for an email address and sends a verification link, valid for 24 hours. The display name and password are chosen when the link is opened. A self-registered account gets the <em>User</em> role. Email must be configured, or no link is sent.</li>
+  <li><strong>Self-service signup</strong>: only when <em>Allow self-service signup</em> is on, which it is not by default. Signup is limited to the <em>Allowed email domains</em> (judged by the domain of the address as it will be stored, so <code>&lt;a@x.com&gt;</code> and <code>A@X.COM</code> both count as <code>x.com</code>) unless <em>Allow open registration</em> is on. A signup page at <code>/signup</code> asks only for an email address and sends a verification link, valid for 24 hours. The display name and password are chosen when the link is opened. A self-registered account gets the <em>User</em> role. Email must be configured, or no link is sent.</li>
   <li><strong>SAML or OIDC</strong>: an account is created at the first sign-in through the identity provider. See <a href="#auth-saml">SAML 2.0</a> and <a href="#auth-oidc">OIDC</a>.</li>
   <li><strong>First-run setup</strong>: the first administrator, created at <code>/setup</code> on an empty database.</li>
 </ul>
