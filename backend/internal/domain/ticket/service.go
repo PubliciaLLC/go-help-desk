@@ -426,6 +426,74 @@ func (s *Service) refuseSecondFollowUp(ctx context.Context, st Store, closedID u
 	return nil
 }
 
+// ValidateCreate refuses what create would refuse for the ticket's own fields
+// and classification (subject, lengths, priority, category, type, item,
+// archived picks), without writing anything and without looking at who the
+// ticket is for.
+//
+// It exists so a caller that resolves the requester can do it AFTER these
+// checks: filing for a typed address answers differently for an address with
+// an account and one without, and if that came before a refusal the address
+// does not affect, a bad category would tell the caller which addresses have
+// accounts, for free (#290, "no enumeration surface").
+func (s *Service) ValidateCreate(ctx context.Context, in CreateInput) error {
+	if strings.TrimSpace(in.Subject) == "" {
+		return fmt.Errorf("subject is required: %w", ErrValidation)
+	}
+	if len(in.Subject) > MaxSubjectLength {
+		return fmt.Errorf("subject must be %d characters or fewer: %w", MaxSubjectLength, ErrValidation)
+	}
+	if len(in.Description) > MaxDescriptionLength {
+		return fmt.Errorf("description must be %d characters or fewer: %w", MaxDescriptionLength, ErrValidation)
+	}
+	if in.Priority != "" && !in.Priority.Valid() {
+		return fmt.Errorf("priority must be one of critical, high, medium, low: %w", ErrValidation)
+	}
+	return s.validateClassification(ctx, in, nil)
+}
+
+// validateClassification is the category, type and item part of create's
+// checks, shared with ValidateCreate.
+func (s *Service) validateClassification(ctx context.Context, in CreateInput, followUpOf *Ticket) error {
+	// The category, checked for the same reason as everything else here:
+	// after this point a tracking number has been taken, and an id the
+	// foreign key refuses costs a 500 and a permanent gap in the sequence.
+	// Only a reporting user's category was checked, and that check asks
+	// whether it is OPEN to them — not whether it exists at all, which is
+	// what staff and MCP needed.
+	if ok, err := s.store.CategoryExists(ctx, in.CategoryID); err != nil {
+		return err
+	} else if !ok {
+		return fmt.Errorf("%w: category_id is not a category on this help desk", ErrValidation)
+	}
+
+	// And the rest of the classification: that the type belongs to the
+	// category, and the item to the type.
+	//
+	// Verified before this existed: five refused creates advanced the
+	// sequence by five. The REST handler checked type-against-category and
+	// MCP checked nothing, and nobody checked the item — there is no
+	// composite key for item-to-type, so a ticket could carry a type and an
+	// item that do not go together and then be routed on that pairing.
+	if ok, err := s.store.CTIIsCoherent(ctx, in.CategoryID, in.TypeID, in.ItemID); err != nil {
+		return err
+	} else if !ok {
+		return fmt.Errorf(
+			"%w: type_id and item_id must belong to the category and to each other", ErrValidation)
+	}
+
+	// Nobody newly picks an archived node (#421). A follow-up is exempt: it
+	// copies the closed ticket's classification, which may have been retired
+	// since, and that is not a new pick. A requester's follow-up is held to
+	// the active-only rule by its own caller (see CreateRequesterFollowUp).
+	if followUpOf == nil {
+		if err := s.refuseArchivedPick(ctx, in.CategoryID, in.TypeID, in.ItemID, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // create is the one path that opens a ticket. actor is who did it, for the
 // status history, the audit entry and the event: the reporter for an ordinary
 // create (Create passes them), the member of staff for a follow-up. followUpOf
@@ -468,41 +536,8 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 		return Ticket{}, fmt.Errorf("priority must be one of critical, high, medium, low: %w", ErrValidation)
 	}
 
-	// The category, checked for the same reason as everything else here:
-	// after this point a tracking number has been taken, and an id the
-	// foreign key refuses costs a 500 and a permanent gap in the sequence.
-	// Only a reporting user's category was checked, and that check asks
-	// whether it is OPEN to them — not whether it exists at all, which is
-	// what staff and MCP needed.
-	if ok, err := s.store.CategoryExists(ctx, in.CategoryID); err != nil {
+	if err := s.validateClassification(ctx, in, followUpOf); err != nil {
 		return Ticket{}, err
-	} else if !ok {
-		return Ticket{}, fmt.Errorf("%w: category_id is not a category on this help desk", ErrValidation)
-	}
-
-	// And the rest of the classification: that the type belongs to the
-	// category, and the item to the type.
-	//
-	// Verified before this existed: five refused creates advanced the
-	// sequence by five. The REST handler checked type-against-category and
-	// MCP checked nothing, and nobody checked the item — there is no
-	// composite key for item-to-type, so a ticket could carry a type and an
-	// item that do not go together and then be routed on that pairing.
-	if ok, err := s.store.CTIIsCoherent(ctx, in.CategoryID, in.TypeID, in.ItemID); err != nil {
-		return Ticket{}, err
-	} else if !ok {
-		return Ticket{}, fmt.Errorf(
-			"%w: type_id and item_id must belong to the category and to each other", ErrValidation)
-	}
-
-	// Nobody newly picks an archived node (#421). A follow-up is exempt: it
-	// copies the closed ticket's classification, which may have been retired
-	// since, and that is not a new pick. A requester's follow-up is held to
-	// the active-only rule by its own caller (see CreateRequesterFollowUp).
-	if followUpOf == nil {
-		if err := s.refuseArchivedPick(ctx, in.CategoryID, in.TypeID, in.ItemID, nil); err != nil {
-			return Ticket{}, err
-		}
 	}
 
 	// A supplied reporter, checked for the same reason the priority above is:

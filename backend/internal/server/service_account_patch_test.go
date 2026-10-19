@@ -9,10 +9,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Erik (#434): a service user can be renamed, given groups and disabled, and
-// it is deleted by deleting its client. Everything else on PATCH is refused by
-// the server, not just hidden by the page: the API is the only enforcement a
-// script or a second admin tab respects.
+// Erik (#434): a service user can be renamed, given groups, disabled, and set
+// to staff or user (Q2, 2026-10-13: "admin is never allowed"); it is deleted by
+// deleting its client. Its address, the admin role and an MFA reset are refused
+// by the server, not just hidden by the page: the API is the only enforcement
+// a script or a second admin tab respects.
 func TestServiceAccount_PatchRefusesEveryOtherField(t *testing.T) {
 	cases := []struct {
 		name string
@@ -20,12 +21,11 @@ func TestServiceAccount_PatchRefusesEveryOtherField(t *testing.T) {
 		want []string // fields the message names
 	}{
 		{"email", map[string]any{"email": "someone@example.test"}, []string{"email"}},
-		{"role staff to user", map[string]any{"role": "user"}, []string{"role"}},
-		{"role to the role it already has", map[string]any{"role": "staff"}, []string{"role"}},
 		{"role to admin", map[string]any{"role": "admin"}, []string{"role"}},
 		{"reset_mfa", map[string]any{"reset_mfa": true}, []string{"reset_mfa"}},
 		{"email with an allowed field beside it", map[string]any{"email": "x@example.test", "display_name": "Renamed"}, []string{"email"}},
-		{"disable with a refused field beside it", map[string]any{"disabled": true, "email": "x@example.test", "role": "user"}, []string{"email", "role"}},
+		{"rename and role beside a refused email", map[string]any{"display_name": "Renamed", "role": "user", "email": "x@example.test"}, []string{"email"}},
+		{"disable with a refused field beside it", map[string]any{"disabled": true, "role": "admin"}, []string{"role"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -60,6 +60,24 @@ func TestServiceAccount_PatchRefusesEveryOtherField(t *testing.T) {
 			require.False(t, after.Disabled, "the disable beside the refused field was not applied")
 		})
 	}
+}
+
+func TestServiceAccount_PatchAllowsStaffAndUserRoleButNeverAdmin(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	c := h.newServiceClient(t, "Nagios", "tickets:read")
+	base := "/api/v1/admin/users/" + c.UserID.String()
+
+	for _, role := range []string{"user", "staff"} {
+		require.Equal(t, http.StatusOK, h.doAsAdminSession(t, http.MethodPatch, base,
+			map[string]any{"role": role}).StatusCode, role)
+		u, err := h.userSvc.GetByID(context.Background(), c.UserID)
+		require.NoError(t, err)
+		require.Equal(t, role, string(u.Role))
+	}
+	// reset_mfa:false asks for nothing, so it is not a refusal; true is.
+	require.Equal(t, http.StatusOK, h.doAsAdminSession(t, http.MethodPatch, base,
+		map[string]any{"reset_mfa": false, "display_name": "Nagios 2"}).StatusCode)
 }
 
 func TestServiceAccount_PatchStillAllowsNameAndDisabled(t *testing.T) {

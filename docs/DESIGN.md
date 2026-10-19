@@ -630,7 +630,7 @@ did.
 |---|---|
 | **Role** | `staff` or `user`, set by an administrator on the Users page; the actor's role is the stored one. Never `admin` (CHECK, and a 409 `service_account` before it). |
 | **Signs in** | Never. Password login, SSO adoption by address, password reset, passkeys and MFA enrolment all refuse it, and no session for one loads. The login lookups (`GetUserByEmail` and the two subject lookups) do not return it; the session lookup skips it. |
-| **Seen** | Listed on **Admin → Users** with `service_account: true` and `auth_type: "service"` (the page shows a "Service" badge and a filter for it). It can be renamed, given groups and disabled, and nothing else: `PATCH /admin/users/{id}` answers `409 service_account` to a body carrying `email`, `role` or `reset_mfa`, whatever the value, and applies none of it (the page never sent them; now the server refuses them too, #434). Renaming it renames its OAuth client in the same statement, so the two names cannot drift. The password route (`POST /admin/users/{id}/password`), MFA reset and API keys issued on its behalf are refused as well. Disabling it stops its client on the next request, and enabling it again restores it. It **cannot be deleted on its own**: `DELETE /admin/users/{id}` answers `409 service_account` with "This is the service account for OAuth client <name>. Delete the client instead.", because a client left listed with a dead user is worse than a refusal. It is left out of assignee pickers (`GET /staff`), assignment (`IsAssignableUser`, so round-robin skips it) and the plain user list. |
+| **Seen** | Listed on **Admin → Users** with `service_account: true` and `auth_type: "service"` (the page shows a "Service" badge and a filter for it). It can be renamed, given groups, disabled and set to staff or user, and nothing else: `PATCH /admin/users/{id}` answers `409 service_account` to a body carrying `email`, a `role` of `admin`, or `reset_mfa: true`, and applies none of it (a `reset_mfa: false` asks for nothing and is accepted; a `role` of `staff` or `user` is accepted, Q2 on #434). The page never sent the refused ones; the server now refuses them too. Renaming it renames its OAuth client in the same statement, so the two names cannot drift. The password route (`POST /admin/users/{id}/password`), MFA reset and API keys issued on its behalf are refused as well. Disabling it stops its client on the next request, and enabling it again restores it. It **cannot be deleted on its own**: `DELETE /admin/users/{id}` answers `409 service_account` with "This is the service account for OAuth client <name>. Delete the client instead.", because a client left listed with a dead user is worse than a refusal. It is left out of assignee pickers (`GET /staff`), assignment (`IsAssignableUser`, so round-robin skips it) and the plain user list. |
 | **Writes** | Under its scopes, a client creates tickets and replies **as its user**. The audit trail and authorship show the client's name. |
 | **Mail** | Never. A service user's address is made up (`oauth-<client id>@service-account.invalid`, which can never receive mail), and requester mail is not queued for a ticket it reported. Staff notifications go out as normal. |
 | **Scope** | Ticket scope enforcement (`ticket_scope_enforced`) applies to its user like any staff member's: it sees what its groups cover. Turning enforcement on warns, on that save, which clients have a user in no group; the Security warnings banner (`oauth_clients_without_groups`) keeps saying so until each has a group or is disabled. |
@@ -1543,9 +1543,23 @@ an account if one exists, otherwise a guest ticket. That leaves no endpoint
 that confirms whether an address has an account or lists the directory. The
 `201` does carry `reporter_user_id` (the response of a ticket the caller filed
 shows who it was filed for), which tells a key that an address has an account.
-Erik accepted that on 2026-10-16 ("leak accepted"): the cost is bounded by the
-caller needing `tickets:write` and filing a real ticket per probe, and a typed
-address with no account is capped at 40 an hour per staff member.
+Erik accepted that on 2026-10-16 ("leak accepted").
+
+What the server does to keep that the only leak: `Server.ResolveOnBehalf` runs
+every check that does not depend on the address (subject and description,
+priority, the category, type and item existing, belonging together and being
+open: `ticket.Service.ValidateCreate`) **before** it looks the address up, so a
+request that was going to fail anyway gets the same answer for every address,
+over REST and MCP, with guest submission on or off. Only a request that
+would otherwise be filed reaches the address, and then the answer is the
+ticket (`201`, with `reporter_user_id` when there is an account) or, for an
+address with no account, one of three things only that case can hit: `name is
+required for an address with no account`, `guest submission is off`, or `429`
+once 40 such tickets have been filed in the hour. So a "yes" costs a filed
+ticket, and an address with no account is told so without one only when the
+caller leaves the name out or guest submission is off. That residue is
+inherent in "an account if one exists, otherwise a guest": the two outcomes
+differ, and it is what the "leak accepted" ruling covers.
 
 MCP `create_ticket` takes `reporter_user_id` or `reporter_email` (never both),
 `guest_name` and `guest_phone`, with the REST rule, from the same code

@@ -230,9 +230,9 @@ type Server struct {
 	// ticket service this server already holds.
 	categories CategoryLister
 
-	// onBehalf resolves reporter_email. Taken from the Authorizer when it is
-	// one (the server is), so there is one wiring point; nil means
-	// reporter_email is refused rather than guessed at.
+	// onBehalf resolves reporter_email. An explicit constructor argument, not
+	// something sniffed from the Authorizer; nil means reporter_email is
+	// refused rather than guessed at.
 	onBehalf OnBehalfResolver
 }
 
@@ -282,6 +282,7 @@ func New(
 	prefix func(context.Context) string,
 	authz Authorizer,
 	categories CategoryLister,
+	onBehalf OnBehalfResolver,
 ) *Server {
 	if prefix == nil {
 		// Tests and any caller that does not care still mint well-formed
@@ -297,9 +298,7 @@ func New(
 		prefix:     prefix,
 		authz:      authz,
 		categories: categories,
-	}
-	if r, ok := authz.(OnBehalfResolver); ok {
-		s.onBehalf = r
+		onBehalf:   onBehalf,
 	}
 	s.registerTools()
 	return s

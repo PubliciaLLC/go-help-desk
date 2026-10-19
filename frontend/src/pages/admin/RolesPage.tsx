@@ -53,22 +53,18 @@ function RoleRow({ user, currentUserRole }: { user: AdminUser; currentUserRole: 
         {mutation.isError && (
           <span role="alert" className="mr-2 text-xs text-red-500">{extractError(mutation.error)}</span>
         )}
-        {/* A service user's role is its OAuth client's, and the server refuses a
-            change (409 service_account, #434): so no control to offer. */}
-        {user.service_account ? (
-          <span className="text-sm text-gray-500">{user.role} (service)</span>
-        ) : (
-          <Select
-            value={user.role}
-            disabled={mutation.isPending || isCurrentAdmin}
-            onChange={(e) => mutation.mutate(e.target.value as Role)}
-            className="text-sm"
-          >
-            <option value="admin">admin</option>
-            <option value="staff">staff</option>
-            <option value="user">user</option>
-          </Select>
-        )}
+        {/* A service user is never an administrator (409 service_account, #434
+            Q2), so its dropdown does not offer the role. */}
+        <Select
+          value={user.role}
+          disabled={mutation.isPending || isCurrentAdmin}
+          onChange={(e) => mutation.mutate(e.target.value as Role)}
+          className="text-sm"
+        >
+          {!user.service_account && <option value="admin">admin</option>}
+          <option value="staff">staff</option>
+          <option value="user">user</option>
+        </Select>
       </td>
     </tr>
   )

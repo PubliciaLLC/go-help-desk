@@ -20,6 +20,7 @@ import type { Role } from '@/api/types'
 
 const ROLES: Role[] = ['admin', 'staff', 'user']
 // A service user is never an administrator: the database refuses it (#420).
+const SERVICE_ROLES: Role[] = ['staff', 'user']
 
 function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -114,12 +115,10 @@ export function UserDetailPage() {
 
   // ── Profile mutation ────────────────────────────────────────────────────────
   const profileMutation = useMutation({
-    // A service user is renamed and nothing else: its address is made by the
-    // system and its role is its client's, and the server refuses both (409
-    // service_account, #434), so neither is sent.
+    // A service user's address is made by the system, so it is never sent back.
     mutationFn: () =>
       updateUser(id, user?.service_account
-        ? { display_name: displayName }
+        ? { display_name: displayName, role }
         : { display_name: displayName, email, role }),
     onSuccess: () => {
       setProfileSaved(true)
@@ -248,19 +247,17 @@ export function UserDetailPage() {
                 />
               </FieldRow>
             )}
-            {!isService && (
-              <FieldRow label="Role">
-                <Select
-                  value={role}
-                  onChange={(e) => setRole(e.target.value as Role)}
-                  disabled={user.disabled}
-                >
-                  {ROLES.map((r) => (
-                    <option key={r} value={r} className="capitalize">{r}</option>
-                  ))}
-                </Select>
-              </FieldRow>
-            )}
+            <FieldRow label="Role">
+              <Select
+                value={role}
+                onChange={(e) => setRole(e.target.value as Role)}
+                disabled={user.disabled}
+              >
+                {(isService ? SERVICE_ROLES : ROLES).map((r) => (
+                  <option key={r} value={r} className="capitalize">{r}</option>
+                ))}
+              </Select>
+            </FieldRow>
             {user.disabled && (
               <p className="text-xs text-amber-600">Enable the account to edit profile fields.</p>
             )}

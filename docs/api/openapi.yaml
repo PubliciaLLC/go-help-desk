@@ -5809,7 +5809,7 @@ paths:
         client likewise, whatever scopes it holds, users:read included: there
         is no user lookup for machine credentials, so a key cannot enumerate
         accounts. A key files a ticket for someone with reporter_email on
-        POST /tickets and lets the server resolve it. Before 1.3.0 a credential
+        POST /tickets and lets the server resolve it. In the 1.3.0 betas a credential
         holding users:read could call this. The New ticket page's requester picker.
         Returns accounts whose display name or email contains q, ignoring case
         (% and _ match themselves), as a bare array of id, display_name and
@@ -7394,11 +7394,12 @@ paths:
           description: >-
             email_taken, when the new address belongs to another account, deleted accounts
             included. service_account, when the account is a service account (an
-            OAuth client's identity) and the body carries email, role or reset_mfa,
-            whatever the value: the whole request is refused and nothing in it is
+            OAuth client's identity) and the body carries email, a role of admin,
+            or reset_mfa true (reset_mfa false is accepted: it asks for nothing):
+            the whole request is refused and nothing in it is
             applied, and the message names the client and the refused fields. A
             service account can be renamed, given groups (through the group
-            routes) and disabled, and only that. Renaming it (display_name) also
+            routes), disabled and set to staff or user (Q2 on #434), and only that. Renaming it (display_name) also
             renames its OAuth client, in the same statement. It cannot be deleted
             here either (DELETE answers 409 service_account).
           content:

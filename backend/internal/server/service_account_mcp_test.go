@@ -31,7 +31,7 @@ type mcpSession struct {
 
 func newMCPSession(t *testing.T, h *harness, token string) *mcpSession {
 	t.Helper()
-	m := mcp.New(h.ticketSvc, nil, h.srv, h.categorySvc)
+	m := mcp.New(h.ticketSvc, nil, h.srv, h.categorySvc, h.srv)
 	ts := httptest.NewServer(h.srv.ProtectMCP(m.Handler()))
 	t.Cleanup(ts.Close)
 

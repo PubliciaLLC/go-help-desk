@@ -35,9 +35,9 @@ describe('RolesPage', () => {
     expect(screen.queryByText(/plugin/i)).toBeNull()
   })
 
-  // The server refuses a role change on a service user (409 service_account,
-  // #434), so the row offers none: a person's row keeps its dropdown.
-  it('gives a service user no role dropdown', async () => {
+  // A service user is never an administrator (409 service_account, #434 Q2):
+  // its dropdown offers staff and user only; a person's offers all three.
+  it('does not offer a service user the admin role', async () => {
     const row = (id: string, name: string, service: boolean) => ({
       id, email: `${id}@example.com`, display_name: name, role: 'staff', disabled: false,
       service_account: service, created_at: '2026-01-01T00:00:00Z',
@@ -46,7 +46,10 @@ describe('RolesPage', () => {
     renderWithQuery(<RolesPage />)
 
     await waitFor(() => expect(screen.getByText('Nagios')).toBeTruthy())
-    expect(screen.getAllByRole('combobox')).toHaveLength(1)
-    expect(screen.getByText('staff (service)')).toBeTruthy()
+    const selects = screen.getAllByRole('combobox')
+    expect(selects).toHaveLength(2)
+    const options = (el: HTMLElement) => Array.from(el.querySelectorAll('option')).map((o) => o.value)
+    expect(options(selects[0])).toEqual(['admin', 'staff', 'user'])
+    expect(options(selects[1])).toEqual(['staff', 'user'])
   })
 })

@@ -579,6 +579,18 @@ func (s *Server) ResolveOnBehalf(ctx context.Context, actorID uuid.UUID, in *tic
 	if id != nil && email != nil {
 		return bad("only one of reporter_user_id and reporter_email may be given")
 	}
+	// Everything Create would refuse that the address does not decide, BEFORE
+	// the address is looked at. What follows answers differently for an
+	// address with an account and one without (a name wanted, guest submission
+	// off), so reaching it with a request that was going to fail anyway would
+	// let a caller learn which addresses have accounts without filing anything.
+	// After this, the only way to learn about an address is to file a ticket.
+	if err := s.tickets.ValidateCreate(ctx, *in); err != nil {
+		if errors.Is(err, ticket.ErrValidation) {
+			return bad(err.Error())
+		}
+		return nil, err
+	}
 	in.FiledBy = &actorID
 	if id != nil {
 		in.ReporterUserID = id

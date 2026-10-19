@@ -310,19 +310,21 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// A service user follows its OAuth client (#434, Erik): it can be renamed
-	// (the client takes the name), given groups and disabled, and nothing else.
-	// Refused here, whole and before the first write, because the page hiding
-	// the fields stops nobody who sends the request. Its address is made up and
-	// not for a person to change, its role is the client's, and an MFA reset is
-	// for a factor it can never hold. 409 service_account, as the delete
-	// refusal answers. Groups are not on this route (group membership is).
+	// (the client takes the name), given groups, disabled, and set to staff or
+	// user (Q2, 2026-10-13: "admin is never allowed"). Refused here, whole and
+	// before the first write, because the page hiding the fields stops nobody
+	// who sends the request: its address (made up, not for a person to
+	// change), the admin role, and an MFA reset (for a factor it can never
+	// hold; reset_mfa:false asks for nothing and is not refused). 409
+	// service_account, as the delete refusal answers. Groups are not on this
+	// route (group membership is).
 	if target.ServiceAccount {
 		var refused []string
 		if body.Email != nil {
 			refused = append(refused, "email")
 		}
-		if body.Role != nil {
-			refused = append(refused, "role")
+		if body.Role != nil && user.Role(*body.Role) == user.RoleAdmin {
+			refused = append(refused, "role admin")
 		}
 		if body.ResetMFA {
 			refused = append(refused, "reset_mfa")
@@ -332,7 +334,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			if name, err := s.authStore.OAuthClientNameForUser(r.Context(), id); err == nil {
 				msg = "This is the service account for OAuth client " + name + "."
 			}
-			Error(w, http.StatusConflict, "service_account", msg+" Only its name, groups and disabled state can be changed; refused: "+
+			Error(w, http.StatusConflict, "service_account", msg+" Only its name, groups, disabled state and a role of staff or user can be changed; refused: "+
 				strings.Join(refused, ", ")+".")
 			return
 		}
@@ -735,8 +737,10 @@ type userLookupHit struct {
 
 // GET /api/v1/users/lookup?q= — find accounts to file a ticket for.
 //
-// Staff and administrators only, behind the users:read scope that already
-// guards the user list. Any role of account can be a requester, so unlike
+// Staff and administrators in a signed-in session only: an API key or OAuth
+// client is refused whatever scopes it holds (#290, no user lookup for
+// machine credentials; an administrator's key reads accounts with GET
+// /admin/users?page=1&q=). Any role of account can be a requester, so unlike
 // /staff it is not limited to staff; unlike /admin/users it returns three
 // fields, never pages, and never answers a short query. Service identities,
 // deleted accounts and disabled accounts are not found.
