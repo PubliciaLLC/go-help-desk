@@ -39,7 +39,7 @@ func (s *Server) handleAdminCreateCannedResponse(w http.ResponseWriter, r *http.
 	}
 	cr, err := s.cannedResponses.Create(r.Context(), body.Name, body.Body, body.CategoryID, body.TypeID, body.SortOrder)
 	if err != nil {
-		if errors.Is(err, cannedresponse.ErrValidation) {
+		if errors.Is(err, cannedresponse.ErrValidation) || errors.Is(err, cannedresponse.ErrUnknownScope) {
 			Error(w, http.StatusBadRequest, "bad_request", err.Error())
 			return
 		}
@@ -71,7 +71,7 @@ func (s *Server) handleAdminUpdateCannedResponse(w http.ResponseWriter, r *http.
 	}
 	updated, err := s.cannedResponses.Update(r.Context(), cr)
 	if err != nil {
-		if errors.Is(err, cannedresponse.ErrValidation) {
+		if errors.Is(err, cannedresponse.ErrValidation) || errors.Is(err, cannedresponse.ErrUnknownScope) {
 			Error(w, http.StatusBadRequest, "bad_request", err.Error())
 			return
 		}
@@ -89,6 +89,10 @@ func (s *Server) handleAdminDeleteCannedResponse(w http.ResponseWriter, r *http.
 		return
 	}
 	if err := s.cannedResponses.Delete(r.Context(), id); err != nil {
+		if errors.Is(err, cannedresponse.ErrNotFound) {
+			handleError(w, err)
+			return
+		}
 		Error(w, http.StatusInternalServerError, "delete_failed", err.Error())
 		return
 	}

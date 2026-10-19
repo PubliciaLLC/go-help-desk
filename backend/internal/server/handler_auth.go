@@ -85,10 +85,25 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		// as a wrong password (see VerifyPasswordForSignIn).
 		//
 		// Where the person goes from here depends on whether the server can send
-		// a reset link (#451): "Forgot password" on the sign-in page, which is
-		// shown only then, or an administrator. Nothing is sent from here: the
-		// person asks for the link, the same as anyone who forgot their password.
-		Error(w, http.StatusForbidden, "password_reset_required", passwordResetRequiredMessage(s.passwordResetAvailable()))
+		// a reset link (#451). If it can, the link is sent now, by the same
+		// request the "Forgot password" page makes (#453, Erik 2026-10-19), so
+		// they are not left to find the page; if it cannot, an administrator
+		// has to do it.
+		//
+		// Only here, after the password was verified: a wrong password never
+		// reaches this branch, so this cannot be used to mail somebody else.
+		// Timing: the work added is one queue insert; the mail itself is sent
+		// by the outbox worker, off the request. The 403 already tells the
+		// caller the password was right, so there is nothing for timing to hide.
+		//
+		// Counted against the same per-address budget as "Forgot password", and
+		// the per-account budget applies when the worker sends. Over the budget
+		// nothing more is queued, and neither is anything when the queue insert
+		// fails; the message then says so rather than claiming a mail was sent.
+		resetByEmail := s.passwordResetAvailable()
+		queued := resetByEmail && s.loginLimiter.Allow(forgotPasswordKey(r)) &&
+			s.requestPasswordReset(r.Context(), u.Email)
+		Error(w, http.StatusForbidden, "password_reset_required", passwordResetRequiredMessage(resetByEmail, queued))
 		return
 	}
 	if err != nil {
@@ -188,12 +203,17 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 // passwordResetRequiredMessage is what a person whose password hash is too old
-// to be used (#453) is told to do. Both wordings name "Forgot password"; only
-// one can offer it.
-func passwordResetRequiredMessage(resetByEmail bool) string {
+// to be used (#453) is told to do. With email on, the reset link has just been
+// sent; with email on but nothing queued (budget spent, or the queue failed) it
+// says so; without email, only an administrator can help.
+func passwordResetRequiredMessage(resetByEmail, queued bool) string {
 	const head = "Your password was saved in an older, weaker form and must be reset before you can sign in. "
+	if resetByEmail && !queued {
+		return head + "We could not send a reset link just now. Try again in a minute, or ask an administrator."
+	}
 	if resetByEmail {
-		return head + "Choose \"Forgot password\" on the sign-in page and we will email you a link, " +
+		return head + "We have emailed you a link to choose a new password: check your email. " +
+			"If it does not arrive, choose \"Forgot password\" on the sign-in page to be sent another, " +
 			"or ask an administrator to reset it for you."
 	}
 	return head + "Ask an administrator to reset it for you. " +

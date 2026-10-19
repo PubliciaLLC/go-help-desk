@@ -84,6 +84,40 @@ describe('the password reset grace period setting', () => {
     })
   })
 
+  it('holds the field at the least the server accepts once the operator leaves it', async () => {
+    const patch = await renderAuthTab({ password_rehash_grace_days: 30 })
+    await userEvent.clear(graceField())
+    await userEvent.type(graceField(), '0')
+    await userEvent.tab()
+    expect(graceField().value).toBe('1')
+    await userEvent.click(screen.getAllByRole('button', { name: /save changes/i }).at(-1)!)
+
+    await waitFor(() => {
+      const sent = patch.mock.calls[patch.mock.calls.length - 1][1] as Record<string, unknown>
+      expect(sent).toMatchObject({ password_rehash_grace_days: 1 })
+    })
+  })
+
+  it('does not put a minimum between digits while the operator is still typing', async () => {
+    await renderAuthTab({ password_rehash_grace_days: 30 })
+    await userEvent.clear(graceField())
+    expect(graceField().value).toBe('0')
+    await userEvent.type(graceField(), '14')
+    expect(graceField().value).toBe('14')
+  })
+
+  it('leaves an unstored value alone when the field is only visited', async () => {
+    const patch = await renderAuthTab({})
+    graceField().focus()
+    await userEvent.tab()
+    expect(graceField().value).toBe('30')
+    await userEvent.click(screen.getAllByRole('button', { name: /save changes/i }).at(-1)!)
+    await waitFor(() => {
+      const calls = patch.mock.calls
+      for (const c of calls) expect(c[1]).not.toHaveProperty('password_rehash_grace_days')
+    })
+  })
+
   it('holds the field at the most the server accepts', async () => {
     const patch = await renderAuthTab({ password_rehash_grace_days: 30 })
     await userEvent.clear(graceField())

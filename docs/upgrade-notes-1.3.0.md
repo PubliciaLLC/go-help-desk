@@ -19,14 +19,14 @@ What to check: scripts or integrations that file or reclassify tickets as staff 
 
 ### Old Password Hashes Must Be Reset After 30 Days (#453)
 
-Passwords are now stored more strongly (bcrypt cost 12; earlier releases used 10). Each password is upgraded automatically the next time its owner signs in. **Anyone who has not signed in by 30 days after you first start 1.3.0 (change this under Settings → Authentication → Passwords) must reset their password before they can sign in again, using Forgot password or with an administrator's help.** Administrators are never blocked. A correct password on an old hash is refused with 403 `password_reset_required` and the message "Your password was saved in an older, weaker form and must be reset before you can sign in." until it is reset.
+Passwords are now stored more strongly (bcrypt cost 12; earlier releases used 10). Each password is upgraded automatically the next time its owner signs in. **Anyone who has not signed in by 30 days after you first start 1.3.0 (change this under Settings → Authentication → Passwords) must reset their password before they can sign in again, using Forgot password or with an administrator's help.** Administrators are never blocked. A correct password on an old hash is refused with 403 `password_reset_required` and the message "Your password was saved in an older, weaker form and must be reset before you can sign in." until it is reset. With email on, that refusal also emails the person the same reset link "Forgot password" sends, and the message says to check their email; with email off it says to ask an administrator.
 
 - **Clock:** starts when 1.3.0 first runs against the database (migration 000044 records it once).
 - **N:** Settings → Authentication → Passwords, default 30, 1 to 365. Changing it moves the deadline for everyone.
 - **Exempt:** all administrators, so an instance cannot lock itself out. They are upgraded at their next sign-in like everyone else. Staff and requesters are refused. When SAML restricts password sign-in to administrators, others get the SAML refusal instead.
 - **How people reset:** "Forgot password?" on the sign-in page (see *Forgot Password by Email (#451)* under New features; it needs email), or an administrator sets a new password for them. With email off only the administrator route works.
 - **What to check:** people who sign in rarely (seasonal staff, requesters) are the ones affected. Tell them, or have an administrator reset them, before day 30.
-- **API clients:** sign-in with an old hash after the deadline answers 403 `password_reset_required` instead of 200. New installs are unaffected.
+- **API clients:** sign-in with an old hash after the deadline answers 403 `password_reset_required` instead of 200, and, when the server can send email, mails the person a reset link (limited per address like "Forgot password"). New installs are unaffected.
 
 ### Email: SMTP Encryption and Setup Rules
 

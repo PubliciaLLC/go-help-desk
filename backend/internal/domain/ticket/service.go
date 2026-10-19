@@ -651,6 +651,10 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 		// round-robin list) is skipped for the next, as the handler did when
 		// routing was a second write after the create. Any other error is the
 		// database's, which has aborted this transaction anyway.
+		// t is captured, so a retry starts from what the rolled-back attempt
+		// left in it: routed to a colleague who has since gone, the retry
+		// would find nobody and keep the old assignee.
+		t.AssigneeUserID, t.AssigneeGroupID = nil, nil
 		unrouted := ticketMap(t)
 		unrouted["assignee_user_id"], unrouted["assignee_group_id"] = nil, nil
 		var routed *Assignment
@@ -1698,7 +1702,13 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 	var guestLink bool
 	rotateFor := t.GuestEmail != nil && *t.GuestEmail != "" && reporterEmail != ""
 
+	// t, reopened and guestLink are rewritten inside the closure, so each
+	// attempt starts from the values decided above and not from what the
+	// attempt that was rolled back left in them.
+	t0, reopened0 := t, reopened
+
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store, ch *notification.Changes) error {
+		t, reopened, guestLink = t0, reopened0, false
 		// A requester's reply is decided AGAIN here, on the locked row (#349).
 		// The check above read the ticket without a lock, and the insert below
 		// takes none unless the reply reopens, so a close that committed in
@@ -1740,7 +1750,7 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 			} else {
 				before := ticketMap(locked)
 				now := time.Now() // under the row lock, like ChangePriority's
-				locked.StatusID = t.StatusID
+				locked.StatusID = reopenTargetStatusID
 				locked.UpdatedAt = now
 				// Through the shared rule, so this door agrees with the others about
 				// resolved_at and closed_at rather than clearing one and forgetting
@@ -2059,8 +2069,9 @@ func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uui
 		}
 
 		// Apply default notes if empty.
-		if strings.TrimSpace(notes) == "" {
-			notes = DuplicateResolutionNotes(target.TrackingNumber)
+		resolution := notes
+		if strings.TrimSpace(resolution) == "" {
+			resolution = DuplicateResolutionNotes(target.TrackingNumber)
 		}
 
 		// Check for the exact link before inserting, rather than attempting the
@@ -2076,6 +2087,9 @@ func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uui
 		// conflicts with the FOR UPDATE this transaction already holds, so no
 		// concurrent link insert on this exact pair can land between this
 		// check and this transaction's commit.
+		// Captured, so decided afresh on every attempt: a retry must not
+		// inherit "found" from an attempt that was rolled back.
+		alreadyLinked = false
 		existingLinks, err := st.ListLinks(ctx, sourceID)
 		if err != nil {
 			return fmt.Errorf("checking for an existing duplicate link: %w", err)
@@ -2129,7 +2143,7 @@ func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uui
 		// created) is exactly "this call's target is the one already on
 		// record."
 		var txErr error
-		t, alreadyResolved, txErr = s.resolveInTx(ctx, st, au, ch, sourceID, notes, actor, now, alreadyLinked)
+		t, alreadyResolved, txErr = s.resolveInTx(ctx, st, au, ch, sourceID, resolution, actor, now, alreadyLinked)
 		return txErr
 	}); err != nil {
 		return Ticket{}, err
@@ -2212,6 +2226,9 @@ func (s *Service) close(ctx context.Context, ticketID uuid.UUID, actor Actor, el
 	now := time.Now()
 
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store, ch *notification.Changes) error {
+		// Captured, so decided afresh on every attempt: a retry must not
+		// inherit a verdict from an attempt that was rolled back.
+		closed, alreadyClosed, skipped = 0, false, false
 		var err error
 		t, err = st.GetByIDForUpdate(ctx, ticketID)
 		if err != nil {

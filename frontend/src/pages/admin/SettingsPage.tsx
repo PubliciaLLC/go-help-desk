@@ -939,11 +939,15 @@ function AuthPanel({
               aria-label="Days before an old password must be reset"
               // 30 until the operator edits it, because 30 is what the server
               // uses when nothing is stored. The upper clamp keeps a typo from
-              // being a value the server refuses; there is no lower clamp, so
-              // clearing the field to retype does not re-inject a minimum
-              // between digits (see the audit retention field).
+              // being a value the server refuses. The lower clamp (1) waits for
+              // the operator to leave the field: clamping on every keystroke
+              // would re-inject a minimum between digits when the field is
+              // cleared to retype (see the audit retention field).
               value={has('password_rehash_grace_days') ? num('password_rehash_grace_days') : 30}
               onChange={(e) => setNum('password_rehash_grace_days', Math.min(365, Math.max(0, parseInt(e.target.value, 10) || 0)))}
+              onBlur={() => {
+                if (has('password_rehash_grace_days') && num('password_rehash_grace_days') < 1) setNum('password_rehash_grace_days', 1)
+              }}
             />
             <span className="text-sm text-gray-500">days</span>
           </div>

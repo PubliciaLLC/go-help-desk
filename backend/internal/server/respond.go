@@ -19,6 +19,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/tag"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
@@ -65,7 +66,7 @@ func handleError(w http.ResponseWriter, err error) {
 	// user.ErrNotFound as well as userstore.ErrNotFound: the store sentinel
 	// WRAPS the domain one, so errors.Is does not run the other way, and a
 	// domain method returning the bare sentinel fell through to 500.
-	if errors.Is(err, userstore.ErrNotFound) || errors.Is(err, user.ErrNotFound) || errors.Is(err, ticketstore.ErrNotFound) || errors.Is(err, cannedresponse.ErrNotFound) || errors.Is(err, ticket.ErrStatusNotFound) || errors.Is(err, group.ErrNotFound) || errors.Is(err, auth.ErrNotFound) || errors.Is(err, plugin.ErrNotFound) || errors.Is(err, category.ErrNotFound) || errors.Is(err, customfield.ErrNotFound) || errors.Is(err, sla.ErrNotFound) {
+	if errors.Is(err, userstore.ErrNotFound) || errors.Is(err, user.ErrNotFound) || errors.Is(err, ticketstore.ErrNotFound) || errors.Is(err, cannedresponse.ErrNotFound) || errors.Is(err, tag.ErrNotFound) || errors.Is(err, ticket.ErrStatusNotFound) || errors.Is(err, group.ErrNotFound) || errors.Is(err, auth.ErrNotFound) || errors.Is(err, plugin.ErrNotFound) || errors.Is(err, category.ErrNotFound) || errors.Is(err, customfield.ErrNotFound) || errors.Is(err, sla.ErrNotFound) {
 		Error(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
