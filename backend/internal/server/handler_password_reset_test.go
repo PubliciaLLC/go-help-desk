@@ -647,16 +647,20 @@ func TestAuthProviders_SaysWhetherPasswordResetIsAvailable(t *testing.T) {
 	})
 }
 
-// #493's refusal points somewhere real now: with email on it offers the link,
-// with email off it says an administrator has to do it, and either way it still
-// names "Forgot password" (the wording handler_password_expiry_test.go pins).
+// The #493 refusal has three wordings (#453 follow-up). This test pins two:
+// email on, where the link has been sent and the message says to check email,
+// and email off, where an administrator has to do it. Both name "Forgot
+// password" (the wording handler_password_expiry_test.go pins). The third,
+// "could not send a reset link just now" (budget spent or queue failed), does
+// not name it on purpose, because forgot-password would answer 429 for the rest
+// of the minute; handler_password_expiry_test.go pins that one.
 func TestLogin_OldHashRefusalPointsAtTheResetThatExists(t *testing.T) {
 	cases := []struct {
 		name  string
 		mod   func(*config.Config)
 		wants []string
 	}{
-		{"email on", emailOn, []string{"Forgot password", "email you a link"}},
+		{"email on", emailOn, []string{"Forgot password", "check your email"}},
 		{"email off", nil, []string{"Forgot password", "administrator", "cannot send email"}},
 	}
 	for _, tc := range cases {

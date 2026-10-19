@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
@@ -188,4 +190,142 @@ func TestUpdateSettings_PasswordRehashGraceDaysNeedsASession(t *testing.T) {
 		map[string]any{admin.KeyPasswordRehashGraceDays: 365},
 		map[string]string{"Authorization": "ApiKey " + h.adminKey})
 	require.Equal(t, http.StatusForbidden, res.StatusCode)
+}
+
+// resetCounter counts the reset requests that reach the queue, in front of
+// whatever the harness does with them.
+type resetCounter struct {
+	notification.Dispatcher
+	n int
+	// err, when set, makes the insert fail as a down database would.
+	err error
+}
+
+func (c *resetCounter) Dispatch(ctx context.Context, ev notification.Event) error {
+	if c.err != nil {
+		return c.err
+	}
+	c.n++
+	return c.Dispatcher.Dispatch(ctx, ev)
+}
+
+func countResets(h *harness) *resetCounter {
+	c := &resetCounter{Dispatcher: h.resetQueue.Dispatcher}
+	h.resetQueue.Dispatcher = c
+	return c
+}
+
+// #453, Erik 2026-10-19: refusing a correct password on an old hash also sends
+// the #451 reset link, through the same queue, so the person is not left to
+// find "Forgot password" themselves.
+func TestLogin_OldHashRefusalSendsTheResetLinkWhenEmailIsOn(t *testing.T) {
+	h, cleanup := newHarnessCfg(t, 0, "", emailOn)
+	defer cleanup()
+	withExpiry(t, h, 31)
+	queued := countResets(h)
+
+	res, body := signInRequest(t, h, "user@test.local")
+
+	require.Equal(t, http.StatusForbidden, res.StatusCode, "%s", body)
+	require.Contains(t, string(body), "password_reset_required")
+	require.Contains(t, string(body), "check your email")
+	require.Equal(t, 1, queued.n, "one request queued")
+	require.Len(t, h.resetMail.sent, 1, "one reset email sent")
+	require.Equal(t, "user@test.local", h.resetMail.sent[0].to)
+
+	// The mailed link works, which is what makes it the same flow as #451.
+	rr, rb := resetPassword(t, h, h.resetMail.latest(t).token, "a-new-long-password")
+	require.Equal(t, http.StatusNoContent, rr.StatusCode, "%s", rb)
+}
+
+func TestLogin_OldHashRefusalSendsNothingWhenEmailIsOff(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	withExpiry(t, h, 31)
+	queued := countResets(h)
+
+	res, body := signInRequest(t, h, "user@test.local")
+
+	require.Equal(t, http.StatusForbidden, res.StatusCode, "%s", body)
+	require.Contains(t, string(body), "Ask an administrator")
+	require.NotContains(t, string(body), "check your email")
+	require.Zero(t, queued.n)
+	require.Empty(t, h.resetMail.sent)
+}
+
+// Anyone can type an address into the sign-in form. Only the right password may
+// cause mail to that address.
+func TestLogin_WrongPasswordOnAnOldHashSendsNothing(t *testing.T) {
+	h, cleanup := newHarnessCfg(t, 0, "", emailOn)
+	defer cleanup()
+	withExpiry(t, h, 90)
+	queued := countResets(h)
+
+	s := &session{h: h}
+	res, body := s.send(t, http.MethodPost, "/api/v1/auth/local/login",
+		map[string]any{"email": "user@test.local", "password": "not it"})
+
+	require.Equal(t, http.StatusUnauthorized, res.StatusCode, "%s", body)
+	require.Zero(t, queued.n)
+	require.Empty(t, h.resetMail.sent)
+}
+
+// Same budget as "Forgot password": per source address, shared with it. Repeated
+// sign-ins cannot queue more than the limit, whoever the account is.
+func TestLogin_OldHashRefusalIsRateLimitedLikeForgotPassword(t *testing.T) {
+	h, cleanup := newHarnessCfg(t, 2, "", emailOn)
+	defer cleanup()
+	withExpiry(t, h, 31)
+	queued := countResets(h)
+
+	for i := 0; i < 5; i++ {
+		res, body := signInRequest(t, h, "user@test.local")
+		require.Equal(t, http.StatusForbidden, res.StatusCode, "attempt %d: %s", i+1, body)
+		require.Contains(t, string(body), "password_reset_required")
+		if i < 2 {
+			require.Contains(t, string(body), "check your email", "attempt %d", i+1)
+		} else {
+			// Nothing was queued, so the message must not claim it was.
+			require.Contains(t, string(body), "could not send a reset link just now", "attempt %d", i+1)
+			require.NotContains(t, string(body), "check your email", "attempt %d", i+1)
+		}
+	}
+	require.Equal(t, 2, queued.n, "only the limit's worth of requests were queued")
+
+	// The budget is the forgot-password one: it is spent for that endpoint too.
+	status, _ := forgot(t, h, "user@test.local")
+	require.Equal(t, http.StatusTooManyRequests, status)
+}
+
+func TestLogin_OldHashSAMLRefusalSendsNothing(t *testing.T) {
+	h, cleanup := newHarnessCfg(t, 0, "", emailOn)
+	defer cleanup()
+	withExpiry(t, h, 90)
+	require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeySAMLEnabled, true))
+	queued := countResets(h)
+
+	res, body := signInRequest(t, h, "user@test.local")
+
+	require.Equal(t, http.StatusForbidden, res.StatusCode, "%s", body)
+	require.Contains(t, string(body), "saml_required")
+	require.Zero(t, queued.n)
+	require.Empty(t, h.resetMail.sent)
+}
+
+// A failed queue insert is not a sent link either.
+func TestLogin_OldHashRefusalAdmitsWhenTheLinkCouldNotBeQueued(t *testing.T) {
+	h, cleanup := newHarnessCfg(t, 0, "", emailOn)
+	defer cleanup()
+	withExpiry(t, h, 31)
+	queued := countResets(h)
+	queued.err = errors.New("db down")
+
+	res, body := signInRequest(t, h, "user@test.local")
+
+	require.Equal(t, http.StatusForbidden, res.StatusCode, "%s", body)
+	require.Contains(t, string(body), "password_reset_required")
+	require.Contains(t, string(body), "could not send a reset link just now")
+	require.Contains(t, string(body), "ask an administrator")
+	require.NotContains(t, string(body), "check your email")
+	require.Empty(t, h.resetMail.sent)
 }

@@ -14,7 +14,9 @@ name: Release image
 # pushed. The case that matters: a prerelease tag must never move :latest.
 on:
   push:
-    branches: [main, v1.3.0-beta]
+    # Only the beta branch publishes (:edge); a push to main publishes nothing.
+    # Same pattern as scripts/image-tags.sh, which refuses any other branch.
+    branches: ['v[0-9]*-beta']
     tags: ['v*']
 
 # Two runs publishing the same tag would race to decide which image that tag
