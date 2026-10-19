@@ -26,6 +26,21 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
+      testIgnore: /markdown-dos\.spec\.ts/,
+      use: {
+        ...devices['Desktop Chrome'],
+        launchOptions: executablePath ? { executablePath } : {},
+      },
+    },
+    {
+      // The hostile-Markdown timing tests assert wall-clock bounds (the page keeps
+      // answering within 1.5 s; a post settles within 8 s). They run after every
+      // other test and one at a time, so another worker's CPU load cannot make
+      // them fail, and the bounds stay as tight as they are.
+      name: 'markdown-dos',
+      testMatch: /markdown-dos\.spec\.ts/,
+      dependencies: ['chromium'],
+      fullyParallel: false,
       use: {
         ...devices['Desktop Chrome'],
         launchOptions: executablePath ? { executablePath } : {},

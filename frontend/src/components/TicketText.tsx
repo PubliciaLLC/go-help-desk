@@ -1,9 +1,10 @@
-import { Component, useEffect, useState } from 'react'
+import { Component, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 import type { Root } from 'hast'
 import { renderHast } from '@/lib/markdownComponents'
 import { formatMarkdown, type FormatResult } from '@/lib/markdownRunner'
+import { pageBudget } from '@/lib/pageBudget'
 import type { TextFormat } from '@/api/types'
 
 interface Props {
@@ -48,32 +49,85 @@ function Formatted({ tree, className }: { tree: Root; className?: string }) {
  * lib/markdownPipeline. The toggle is the reader's: it swaps to the other view
  * of the same text and stores nothing.
  */
+const NOTES: Record<string, string> = {
+  long: 'too long to format',
+  complex: 'too complex to format',
+  timeout: 'too complex to format',
+  error: 'too complex to format',
+  unavailable: 'formatting unavailable',
+  budget: 'this page already shows a lot of formatted text',
+}
+
+// Far enough around the screen that a post is formatted before it is reached.
+const NEAR = '1500px 0px'
+
+// The page scrolls inside <main>, not the window, and a scrolling ancestor clips
+// what an observer rooted at the window can see: rootMargin would not reach
+// below it. So the observer is rooted at the nearest scrolling ancestor.
+function scrollParent(el: Element): Element | null {
+  for (let p = el.parentElement; p; p = p.parentElement) {
+    const { overflowY } = getComputedStyle(p)
+    if (overflowY === 'auto' || overflowY === 'scroll') return p
+  }
+  return null
+}
+
+/** True once the element has been within NEAR of the screen. Stays true. */
+function useNearScreen(enabled: boolean) {
+  const ref = useRef<HTMLDivElement>(null)
+  // No IntersectionObserver (tests): everything counts as near.
+  const [near, setNear] = useState(typeof IntersectionObserver === 'undefined')
+  useEffect(() => {
+    const el = ref.current
+    if (!enabled || near || !el) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) setNear(true)
+      },
+      { root: scrollParent(el), rootMargin: NEAR },
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [enabled, near])
+  return [ref, near] as const
+}
+
 export function TicketText({ text, format, className }: Props) {
   const [flipped, setFlipped] = useState(false)
   const wantsRendered = (format === 'markdown') !== flipped
+  // A long page is not formatted all at once: a post waits until it is near the
+  // screen. Until then, and past the page budget, it is shown as written.
+  const [boxRef, near] = useNearScreen(wantsRendered)
   // The result is kept with the text it is for, so a new text is never shown
   // with the previous text's formatting.
   const [done, setDone] = useState<{ text: string; result: FormatResult } | null>(null)
 
   useEffect(() => {
-    if (!wantsRendered) return
+    if (!wantsRendered || !near) return
     let alive = true
+    let held = 0
     void formatMarkdown(text).then((result) => {
-      if (alive) setDone({ text, result })
+      if (!alive) return
+      if (result.ok) {
+        if (pageBudget.reserve(result.nodes)) held = result.nodes
+        else result = { ok: false, reason: 'budget' }
+      }
+      setDone({ text, result })
     })
     return () => {
       alive = false
+      pageBudget.release(held)
     }
-  }, [text, wantsRendered])
+  }, [text, wantsRendered, near])
 
   // Until the worker answers (and whenever it refuses), the text is shown as
   // written: the post is readable at once and never blocks the page.
   const result = wantsRendered && done?.text === text ? done.result : null
   const tree = result?.ok ? result.tree : null
-  const refusal = result && !result.ok ? (result.reason === 'long' ? 'too long' : 'too complex') : null
+  const refusal = result && !result.ok ? NOTES[result.reason] : null
 
   return (
-    <div className="min-w-0">
+    <div ref={boxRef} className="min-w-0">
       {tree ? (
         <FallbackToSource key={text} text={text} className={className}>
           <Formatted tree={tree} className={className} />
@@ -81,7 +135,7 @@ export function TicketText({ text, format, className }: Props) {
       ) : (
         <p className={cn(plainClass, className)}>{text}</p>
       )}
-      {refusal && <p className="mt-1 text-xs text-gray-500">Shown as plain text: {refusal} to format.</p>}
+      {refusal && <p className="mt-1 text-xs text-gray-500">Shown as plain text: {refusal}.</p>}
       {text.trim() !== '' && (
         <button
           type="button"

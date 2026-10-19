@@ -83,3 +83,41 @@ test('a normal post is still formatted, and soon', async ({ page }) => {
   await page.goto(`/tickets/${TICKET_DETAIL.id}`)
   await expect(page.locator('[data-md-body] strong').first()).toHaveText('bold', { timeout: 3000 })
 })
+
+// Memory: every formatted post holds a tree and its elements. 220 replies of
+// 50 KB each took 3.76 GB of heap when all were formatted. Posts now format only
+// near the screen and the page has a budget, so the heap stays bounded however
+// many there are, and whatever is scrolled past.
+const lines = (seed: number) => Array.from({ length: 12_400 }, (_, i) => `${String.fromCharCode(97 + ((i + seed) % 26))}  `).join('\n')
+const heapMB = (page: Page) =>
+  page.evaluate(() => ((performance as unknown as { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? 0) / 1e6)
+
+test('220 hostile replies keep the heap bounded, on open and after jumping through them', async ({ page }) => {
+  test.setTimeout(180_000)
+  let crashed = false
+  page.on('crash', () => (crashed = true))
+  const replies = Array.from({ length: 220 }, (_, i) => ({ ...REPLIES[0], id: `r-${i}`, body: lines(i), body_format: 'markdown' }))
+  await mockApi(page, { replies })
+  await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+  await expect(page.locator('[data-md-body]').first()).toBeVisible({ timeout: 15_000 })
+  await page.waitForTimeout(3000)
+
+  expect(await page.locator('[data-md-body]').count(), 'posts far below the screen were formatted').toBeLessThan(25)
+  expect(await heapMB(page)).toBeLessThan(500)
+
+  // Each reply is hundreds of thousands of pixels tall as plain text, so jump
+  // from one to the next (then back to the top) instead of scrolling a screen
+  // at a time: every post that comes near tries to format.
+  const height = await page.evaluate(() => document.querySelector('main')!.scrollHeight)
+  for (let i = 1; i <= 60 && !crashed; i++) {
+    await page.evaluate((y) => document.querySelector('main')!.scrollTo(0, y), Math.floor((height / 60) * i))
+    await page.waitForTimeout(400)
+  }
+  await page.evaluate(() => document.querySelector('main')!.scrollTo(0, 0))
+  await page.waitForTimeout(1500)
+  expect(crashed).toBe(false)
+  // Past the budget the rest stay as written, with the note.
+  expect(await page.locator('[data-md-body]').count()).toBeLessThan(40)
+  await expect(page.getByText(/Shown as plain text: this page already shows a lot of formatted text/).first()).toBeAttached()
+  expect(await heapMB(page)).toBeLessThan(900)
+})

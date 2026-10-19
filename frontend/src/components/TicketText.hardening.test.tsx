@@ -35,6 +35,26 @@ describe('mailto links', () => {
     expect(container.textContent).toContain('x')
   })
 
+  // A mail client splits an address on ';' as well as ',', and decodes %-escapes,
+  // so each of these can name a recipient the label does not show.
+  it.each([
+    ['a semicolon', 'mailto:support@b\u0430nk.example;x@evil.example'],
+    ['an encoded semicolon', 'mailto:support@b\u0430nk.example%3Bx@evil.example'],
+    ['an encoded @ in the local part', 'mailto:x@evil.example%40b\u0430nk.example'],
+    ['a carriage return and line feed', 'mailto:support@bank.example%0D%0Abcc:attacker@evil.example'],
+    ['a line feed', 'mailto:support@bank.example%0A'],
+    ['a tab', 'mailto:support@bank.example%09'],
+    ['a quoted local part', 'mailto:%22a@b%22@evil.example'],
+    ['a literal quote', 'mailto:"a"@evil.example'],
+    ['a double-encoded escape', 'mailto:support@bank.example%253Bx@evil.example'],
+    ['a space', 'mailto:support%20x@bank.example'],
+    ['a backslash', 'mailto:a%5C@evil.example'],
+  ])('with %s are not linked at all', async (_n, url) => {
+    const { container } = render(<TicketText text={`[mail](<${url}>)`} format="markdown" />)
+    await waitFor(() => expect(container.querySelector('[data-md-body]')).not.toBeNull(), { timeout: 5000 })
+    expect(container.querySelector('a')).toBeNull()
+  })
+
   it('with several addresses show every one of them', async () => {
     const c = await md('[x](mailto:a@one.example,b@two.example)')
     expect(c.textContent).toContain('a@one.example')
@@ -67,6 +87,32 @@ describe("links into the help desk's own attachment routes", () => {
     await waitFor(() => expect(container.querySelector('[data-md-body]')).not.toBeNull(), { timeout: 5000 })
     expect(container.querySelector('a')).toBeNull()
     expect(container.textContent).toContain('attachment: open it from the attachments list')
+  })
+
+  // The server treats these as the same route (a doubled slash is redirected to
+  // the download), so the rule has to as well.
+  it.each([
+    ['a doubled slash', () => `${own()}//api/v1/tickets/3f2a/attachments/9b1c`],
+    ['many slashes', () => `${own()}///api//v1/tickets/3f2a///attachments/9b1c`],
+    ['the other scheme', () => `${own().startsWith('https') ? 'http' : 'https'}://${window.location.host}/api/v1/tickets/1/attachments/2`],
+    ['a trailing-dot host', () => `http://${window.location.hostname}.:${window.location.port}/api/v1/tickets/1/attachments/2`],
+    ['an upper-case host and path', () => `${own().toUpperCase().replace('HTTP', 'http')}/API/v1/tickets/1/ATTACHMENTS/2`],
+    ['a percent-encoded segment', () => `${own()}/api/v1/tickets/1/%61ttachments/2`],
+    ['an encoded slash', () => `${own()}/api/v1/tickets/1/attachments%2F2`],
+    ['a path parameter', () => `${own()}/api/v1/tickets/1/attachments;x=1/2`],
+    ['userinfo', () => `http://user:pw@${window.location.host}/api/v1/tickets/1/attachments/2`],
+    ['a dot segment', () => `${own()}/x/../api/v1/tickets/1/attachments/2`],
+  ])('is not linked: %s', async (_n, url) => {
+    const { container } = render(<TicketText text={`[the logs](<${url()}>)`} format="markdown" />)
+    await waitFor(() => expect(container.querySelector('[data-md-body]')).not.toBeNull(), { timeout: 5000 })
+    expect(container.querySelector('a')).toBeNull()
+    expect(container.textContent).toContain('attachment: open it from the attachments list')
+  })
+
+  it('a backslash in place of a slash is not a link either (the markdown layer escapes it into an invalid host)', async () => {
+    const { container } = render(<TicketText text={`[the logs](<${own()}\\api/v1/tickets/1/attachments/2>)`} format="markdown" />)
+    await waitFor(() => expect(container.querySelector('[data-md-body]')).not.toBeNull(), { timeout: 5000 })
+    expect(container.querySelector('a')).toBeNull()
   })
 
   it('another site with the same path is an ordinary link', async () => {

@@ -153,15 +153,24 @@ export function mailtoAddresses(u: URL): string[] | null {
   } catch {
     return null
   }
+  // Real addresses need none of these, and each lets a recipient hide from the
+  // label: a mail client splits on ';' as well as ',', a quote or a control
+  // character (CR, LF, tab) can start a header or a quoted local part, and a
+  // '%' left after decoding is a second layer of escaping the label cannot show.
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f"\\;%\s]/.test(path)) return null
   const out: string[] = []
   for (const addr of path.split(',')) {
     const at = addr.lastIndexOf('@')
-    const local = addr.slice(0, at).replace(INVISIBLE, '')
-    const host = at > 0 ? parseAbsoluteUrl(`http://${addr.slice(at + 1)}`) : null
-    if (!local || !host || host.hostname === '' || host.pathname !== '/' || host.search || host.hash || host.username || host.password || host.port) {
+    const local = addr.slice(0, at)
+    // A second '@' in the local part (written as %40) would be read as the
+    // separator by one parser and as part of the name by another.
+    if (at < 1 || local.includes('@')) return null
+    const host = parseAbsoluteUrl(`http://${addr.slice(at + 1)}`)
+    if (!host || host.hostname === '' || host.pathname !== '/' || host.search || host.hash || host.username || host.password || host.port) {
       return null
     }
-    out.push(`${local}@${host.hostname}`)
+    out.push(`${local.replace(INVISIBLE, '')}@${host.hostname}`)
   }
   return out.length > 0 ? out : null
 }

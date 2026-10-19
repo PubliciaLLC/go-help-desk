@@ -46,9 +46,19 @@ function assertSafe(body: Element, input: string) {
   }
 }
 
+// The formatted body, which must exist: a silent fall-back to plain text would
+// make every "nothing dangerous in here" check below pass for the wrong reason.
 async function renderBody(text: string, format: 'markdown' | 'plain' = 'markdown') {
   const { container } = await renderNow(<TicketText text={text} format={format} />)
-  return container.querySelector('[data-md-body]') ?? container
+  const body = container.querySelector('[data-md-body]')
+  expect(body, `no formatted body for ${JSON.stringify(text.slice(0, 40))}`).not.toBeNull()
+  return body!
+}
+
+// Whatever it ends up as, for inputs that are expected to be refused.
+async function renderAny(text: string) {
+  const { container } = await renderNow(<TicketText text={text} format="markdown" />)
+  return container
 }
 
 const long = (s: string, n: number) => s.repeat(n)
@@ -164,7 +174,7 @@ describe('TicketText: hostile input', () => {
     for (const unit of ['>', '*', '[', '- ', '>*']) {
       const input = long(unit, 65536 / unit.length)
       const t0 = performance.now()
-      await renderBody(input)
+      await renderAny(input)
       expect(performance.now() - t0, `unit ${JSON.stringify(unit)}`).toBeLessThan(1000)
     }
   })

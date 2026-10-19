@@ -1472,19 +1472,30 @@ guarantee. `dangerouslySetInnerHTML` and `rehype-raw` are banned by lint.
   a reply has no length cap. So text over 50,000 characters is never formatted,
   a table is limited to 5,000 cells, and everything else is parsed in a Web Worker
   with a one-second budget; past it the worker is terminated. In every such case
-  the post is shown as plain text with a note ("too long to format" or "too
-  complex to format"), and its **Plain text** button stays reachable. The page
+  the post is shown as plain text with a note ("too long to format", "too
+  complex to format", or "formatting unavailable" when the worker could not
+  start), and its **Plain text** button stays reachable. A failure that may be a
+  slow moment is not remembered, so the next view tries again.
+- **A page of long posts is formatted only where it is read.** A post is formatted
+  when it comes within about 1,500 px of the screen (measured in the scrolling
+  area that holds it), and the page as a whole has a budget of 300,000 formatted
+  nodes; past it, further posts stay as written with the note "this page already
+  shows a lot of formatted text". Without this, 220 replies of 50 KB each took
+  3.76 GB of heap. The page
   itself only turns the worker's sanitized result into elements from the
   component map, after checking it again, inside an error boundary per post. The
   worker is same-origin, so `script-src 'self'` covers it (pinned by
   `TestDefaultCSP_AllowsTheSameOriginMarkdownWorker` and `frontend/e2e-csp`).
 - **Two kinds of link are not links.** A `mailto:` with any query (`?bcc=`,
-  `?cc=`, `?subject=`, `?body=` can add recipients or write the message) or with
-  a domain that is not a host; its addresses are otherwise shown with the domain
-  in `xn--` form. And a link to one of this help desk's own attachment routes
-  (same origin, `/api/.../attachments/...`), which would skip the "content looks
-  like..." and reputation warnings of the attachments list: it reads "(attachment:
-  open it from the attachments list)".
+  `?cc=`, `?subject=`, `?body=` can add recipients or write the message), with a
+  `;`, a quote, a backslash, whitespace or control character, an `@` or a `%` left
+  in a local part, or a domain that is not a host; its addresses are otherwise
+  shown with the domain in `xn--` form. And a link to one of this help desk's own
+  attachment routes, which would skip the "content looks like..." and reputation
+  warnings of the attachments list: it reads "(attachment: open it from the
+  attachments list)". That rule compares what the server compares: the host
+  without scheme, port, case or trailing dot, and the path with repeated slashes
+  collapsed, decoded once and lower-cased.
 - **Long text** (#479, #517): prose and links wrap; a code block or table scrolls
   inside its own box (focusable by keyboard); the page itself never scrolls
   sideways at 320 px.

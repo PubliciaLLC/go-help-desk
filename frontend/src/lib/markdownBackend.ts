@@ -1,6 +1,6 @@
 import type { Root } from 'hast'
 import MarkdownWorker from './markdown.worker?worker'
-import type { FormatResult } from './markdownRunner'
+import type { BackendResult } from './markdownRunner'
 
 // #443: the real backend: formatting in a Web Worker under a time budget. Tests
 // run markdownBackend.inthread.ts instead (jsdom has no Worker); see vite.config.ts.
@@ -13,7 +13,7 @@ const STARTUP_MS = 10_000
 interface Job {
   id: number
   text: string
-  resolve: (r: FormatResult) => void
+  resolve: (r: BackendResult) => void
 }
 
 // One shared worker, one job at a time: a page of replies does not start a
@@ -27,7 +27,7 @@ class WorkerClient {
   private timer: ReturnType<typeof setTimeout> | null = null
   private nextId = 1
 
-  format(text: string): Promise<FormatResult> {
+  format(text: string): Promise<BackendResult> {
     return new Promise((resolve) => {
       this.queue.push({ id: this.nextId++, text, resolve })
       this.pump()
@@ -43,6 +43,7 @@ class WorkerClient {
       const data = e.data as { type?: string; id?: number; ok?: boolean; tree?: Root; reason?: string }
       if (data.type === 'ready') {
         this.ready = true
+        this.clearTimer()
         this.pump()
         return
       }
@@ -56,13 +57,17 @@ class WorkerClient {
     }
     worker.onerror = () => {
       if (this.worker !== worker) return
+      const started = this.ready
       this.kill()
-      this.failAll('error')
+      // Before it said ready the worker never started (blocked, a bad load);
+      // after, a job broke it.
+      if (started) this.finish({ ok: false, reason: 'error' })
+      else this.failAll('unavailable')
     }
-    this.startTimer(STARTUP_MS, 'error')
+    this.startTimer(STARTUP_MS, 'unavailable')
   }
 
-  private startTimer(ms: number, reason: 'timeout' | 'error') {
+  private startTimer(ms: number, reason: 'timeout' | 'unavailable') {
     this.clearTimer()
     this.timer = setTimeout(() => {
       this.kill()
@@ -86,13 +91,13 @@ class WorkerClient {
     this.ready = false
   }
 
-  private failAll(reason: 'error' | 'timeout') {
+  private failAll(reason: 'unavailable' | 'timeout') {
     const jobs = [...(this.current ? [this.current] : []), ...this.queue.splice(0)]
     this.current = null
     for (const j of jobs) j.resolve({ ok: false, reason })
   }
 
-  private finish(result: FormatResult) {
+  private finish(result: BackendResult) {
     this.clearTimer()
     const job = this.current
     this.current = null
@@ -107,7 +112,7 @@ class WorkerClient {
         this.spawn()
       } catch {
         // No worker (blocked, or not supported): every post is shown as written.
-        for (const j of this.queue.splice(0)) j.resolve({ ok: false, reason: 'error' })
+        for (const j of this.queue.splice(0)) j.resolve({ ok: false, reason: 'unavailable' })
         return
       }
     }
@@ -120,7 +125,7 @@ class WorkerClient {
 
 let client: WorkerClient | null = null
 
-export function runFormat(text: string): Promise<FormatResult> {
+export function runFormat(text: string): Promise<BackendResult> {
   client ??= new WorkerClient()
   return client.format(text)
 }

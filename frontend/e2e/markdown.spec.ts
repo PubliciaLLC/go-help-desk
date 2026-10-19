@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { mockApi, MARKDOWN_DETAIL, MARKDOWN_REPLIES, TICKET_DETAIL, ME_REPORTER } from './mock'
+import { mockApi, MARKDOWN_DETAIL, MARKDOWN_REPLIES, REPLIES, TICKET_DETAIL, ME_REPORTER } from './mock'
 
 // #443: Markdown in ticket text, in a real browser. jsdom cannot compute
 // layout and cannot fetch an image, so these are the two things it can't say:
@@ -21,7 +21,8 @@ for (const width of [320, 390]) {
     test('a 300-character link, a wide table and a long code line do not widen the page', async ({ page }) => {
       await mockApi(page, { ticket: MARKDOWN_DETAIL, replies: MARKDOWN_REPLIES })
       await page.goto(`/tickets/${TICKET_DETAIL.id}`)
-      await expect(page.locator('[data-md-body]').first()).toBeVisible()
+      // Both the description and the reply, formatted (a lone first() could pass on one).
+      await expect(page.locator('[data-md-body]')).toHaveCount(2)
       await mainFits(page)
 
       // The table and the code box scroll inside themselves, and can be focused to do it.
@@ -145,4 +146,14 @@ test.describe('the editor in a real browser', () => {
     await page.goto('/tickets/new')
     await expect(page.getByRole('toolbar', { name: 'Formatting' })).toBeVisible()
   })
+})
+
+test('when the formatting worker cannot start, the post is plain and says why', async ({ page }) => {
+  // The worker's own script (dev: ?worker_file; build: assets/markdown.worker-*.js).
+  await page.route(/markdown\.worker\.ts\?worker_file|assets\/markdown\.worker-/, (route) => route.abort())
+  await mockApi(page, { replies: [{ ...REPLIES[0], body: 'a **bold** word', body_format: 'markdown' }] })
+  await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+  await expect(page.getByText('Shown as plain text: formatting unavailable.').first()).toBeVisible({ timeout: 8000 })
+  await expect(page.getByRole('button', { name: 'Plain text' }).first()).toBeVisible()
+  await expect(page.locator('[data-md-body] strong')).toHaveCount(0)
 })

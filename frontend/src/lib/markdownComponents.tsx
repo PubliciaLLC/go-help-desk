@@ -73,15 +73,37 @@ function describeTarget(href: string): string {
   return u.host.replace(INVISIBLE, '')
 }
 
+/** The same host, whatever the scheme, port, case or trailing dot. */
+function sameHost(a: string, b: string): boolean {
+  const norm = (h: string) => h.toLowerCase().replace(/\.+$/, '')
+  return norm(a) === norm(b)
+}
+
 /** A link to one of this help desk's own attachment routes. Its label shows
  *  this site's own host, and a click skips the "content looks like..." and
  *  reputation warnings the attachments list shows, so a requester could hide
- *  their own upload behind friendly text. It is not a link. */
+ *  their own upload behind friendly text. It is not a link.
+ *
+ *  Compared the way the server reads the path, not the way it was typed: empty
+ *  segments collapsed (a doubled slash is redirected to the real route), the
+ *  path decoded once, case ignored, path parameters (;x) dropped. The host is
+ *  compared without scheme, port or trailing dot: the other scheme is redirected
+ *  too. */
 function isOwnAttachmentRoute(href: string): boolean {
   const u = parseAbsoluteUrl(href)
-  if (!u || typeof window === 'undefined' || u.origin !== window.location.origin) return false
-  const parts = u.pathname.toLowerCase().split('/')
-  return parts[1] === 'api' && parts.slice(2).some((seg) => seg === 'attachment' || seg === 'attachments')
+  if (!u || typeof window === 'undefined' || !sameHost(u.hostname, window.location.hostname)) return false
+  let path = u.pathname
+  try {
+    path = decodeURIComponent(path)
+  } catch {
+    /* keep the undecoded path */
+  }
+  const parts = path
+    .toLowerCase()
+    .split(/[/\\]+/)
+    .filter(Boolean)
+    .map((seg) => seg.split(';')[0])
+  return parts[0] === 'api' && parts.slice(1).some((seg) => seg === 'attachment' || seg === 'attachments')
 }
 
 type Tag<K extends keyof React.JSX.IntrinsicElements> = ComponentProps<K> & { node?: unknown }
