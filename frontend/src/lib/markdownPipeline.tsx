@@ -71,6 +71,20 @@ function imagesToLinks() {
   }
 }
 
+/** Bidi controls and zero-width characters in link text can reorder or hide
+ *  what a link claims to be. They are removed from text inside links. */
+const INVISIBLE = /[\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180E\u200B-\u200F\u202A-\u202E\u2060-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0]/g
+function stripInvisibleInLinks() {
+  return (tree: Root) => {
+    visit(tree, 'element', (a) => {
+      if (a.tagName !== 'a') return
+      visit(a, 'text', (t: Text) => {
+        t.value = t.value.replace(INVISIBLE, '')
+      })
+    })
+  }
+}
+
 // lowlight directly, not rehype-highlight: that always bundles its 37-language
 // "common" set (+65 KB gzipped) however few languages it is asked for. This is
 // 13 languages and the same tree. The output is hast nodes, never an HTML string.
@@ -110,9 +124,19 @@ function flatten(children: ReactNode): string {
     .join('')
 }
 
-function sameAddress(text: string, href: string): boolean {
-  const norm = (s: string) => s.trim().toLowerCase().replace(/^(https?:\/\/|mailto:)/, '').replace(/\/$/, '')
-  return norm(text) === norm(href)
+/** True only when the visible text cannot mislead: it is exactly the URL being
+ *  linked (or the bare `www.` form GFM autolinks to http://www...), it is plain
+ *  ASCII (no look-alike letters), and the URL has no user:password@ part (which
+ *  makes `https://bank.example@evil.example` read as bank.example). Anything
+ *  else gets the real host beside it. No case folding, no dropped slash, no
+ *  protocol swap: each of those is a way to look like a URL you are not. */
+function textIsExactDestination(text: string, href: string): boolean {
+  if (!/^[\x21-\x7e]+$/.test(text)) return false
+  const u = parseAbsoluteUrl(href)
+  if (!u || u.username || u.password) return false
+  if (text === href) return true
+  if (u.protocol === 'mailto:') return text === href.slice('mailto:'.length)
+  return /^www\./.test(text) && href === `http://${text}`
 }
 
 /** The host a link really goes to, shown beside link text that does not say
@@ -145,7 +169,7 @@ function renderLink({ href, children }: Tag<'a'>) {
       >
         {children}
       </a>
-      {!sameAddress(text, safe) && (
+      {!textIsExactDestination(text, safe) && (
         <span className="ml-1 text-xs text-gray-500 wrap-anywhere">({describeTarget(safe)})</span>
       )}
     </>
@@ -220,7 +244,7 @@ export const markdownProps: Pick<
   remarkPlugins: [remarkGfm],
   // Order matters (each point measured): raw to text and images to links
   // before sanitize; highlight before sanitize so it checks what highlighting made.
-  rehypePlugins: [rawToText, imagesToLinks, highlightFences, [rehypeSanitize, markdownSanitizeSchema]],
+  rehypePlugins: [rawToText, imagesToLinks, stripInvisibleInLinks, highlightFences, [rehypeSanitize, markdownSanitizeSchema]],
   allowedElements: [...ALLOWED_ELEMENTS],
   unwrapDisallowed: true,
   urlTransform: (value) => safeUrl(value),
