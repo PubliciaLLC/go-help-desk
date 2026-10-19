@@ -940,15 +940,15 @@ export function CategoriesPage() {
   return (
     <Layout>
       <div className="space-y-6">
-        <div className="flex items-start justify-between">
-          <div>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
             <h1 className="text-2xl font-bold text-gray-900">Categories</h1>
             <p className="mt-1 text-sm text-gray-500">
               Define the three-level classification hierarchy: Category → Type → Item.
               Expand any node to manage its linked groups and custom field assignments.
             </p>
           </div>
-          <Button onClick={() => setAddingCategory(true)} className="ml-6 shrink-0">
+          <Button onClick={() => setAddingCategory(true)} className="shrink-0">
             <PlusIcon className="mr-2 h-4 w-4" />
             New Category
           </Button>
