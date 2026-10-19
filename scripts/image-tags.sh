@@ -13,7 +13,19 @@ ref_name="$3"   # v1.3.0 | v1.3.0-beta | the branch name
 if [ "$ref_type" = "branch" ]; then
   # A moving build for testers. Unversioned on purpose: it is overwritten by
   # every push, so it is not a thing to run an instance on.
-  echo "${image}:edge"
+  #
+  # Only the beta branch owns it. main used to publish :edge as well, so the
+  # last branch pushed decided what :edge was. The branch is renamed each
+  # cycle (v1.3.0-beta, v1.4.0-beta, ...), so this is a pattern rather than a
+  # name; keep it identical to the `branches:` filter in release.yml. Any other
+  # branch is refused, so nothing can publish by reaching here.
+  case "$ref_name" in
+    v[0-9]*-beta) echo "${image}:edge" ;;
+    *)
+      echo "image-tags: branch '${ref_name}' does not publish; only v*-beta owns :edge." >&2
+      exit 1
+      ;;
+  esac
   exit 0
 fi
 

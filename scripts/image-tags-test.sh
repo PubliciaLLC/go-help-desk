@@ -35,6 +35,24 @@ check "a release candidate likewise" \
 check "a branch push publishes only the moving edge tag" \
   "${image}:edge" "$image" branch v1.3.0-beta
 
+# :edge belongs to the beta branch alone (Erik, 2026-09-27: "push to
+# v1.3.0-beta -> :edge"). main used to publish it too, so whichever branch was
+# pushed last owned the tag. The branch name changes each cycle, hence a
+# pattern; anything else is refused so it can never publish.
+check "the next cycle's beta branch publishes edge too" \
+  "${image}:edge" "$image" branch v1.4.0-beta
+for br in main master develop v1.3.0 beta v-beta feature/v1.3.0-beta; do
+  if out="$("$here/image-tags.sh" "$image" branch "$br" 2>/dev/null)"; then
+    printf '  FAIL branch %s published [%s]\n' "$br" "$out"
+    fail=1
+  elif [ -n "$out" ]; then
+    printf '  FAIL branch %s printed tags while refusing\n' "$br"
+    fail=1
+  else
+    printf '  ok   branch %s publishes nothing\n' "$br"
+  fi
+done
+
 # A tag whose shape we do not recognise is refused, not guessed at.
 #
 # These are the cases the first version got wrong, and the reason it got them
