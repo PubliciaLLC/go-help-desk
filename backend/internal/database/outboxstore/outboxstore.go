@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/database/dbretry"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 )
@@ -36,6 +37,15 @@ func (s *Store) Split(ctx context.Context, parent uuid.UUID, rows []notification
 	if s.db == nil {
 		return errors.New("splitting a notification needs a store built with NewWithDB")
 	}
+	// Run again if Postgres aborts the transaction to break a lock cycle (it
+	// holds the parent's row lock while it inserts, so a transaction holding a
+	// child's key can close one). Safe to repeat: every attempt opens a new
+	// transaction and keeps nothing from the last; parent and rows are
+	// arguments, and a retry that finds the parent already taken queues nothing.
+	return dbretry.Do(ctx, nil, func() error { return s.splitOnce(ctx, parent, rows) })
+}
+
+func (s *Store) splitOnce(ctx context.Context, parent uuid.UUID, rows []notification.NewRow) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("beginning split: %w", err)
