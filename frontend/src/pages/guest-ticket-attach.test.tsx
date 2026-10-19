@@ -136,4 +136,16 @@ describe('attaching files from the guest page', () => {
     await userEvent.upload(input, new File(['x'], 'a.txt', { type: 'text/plain' }))
     expect((await screen.findByRole('alert')).textContent).toMatch(/at most 3 files an hour/)
   })
+
+  it('with the defaults, picking five offers three: the hour allows fewer than the ticket', async () => {
+    getSiteConfig.mockResolvedValue({ name: 'x', logo_url: '', version: '1', guest_submission_enabled: true, guest_attachments_enabled: true, guest_attachment_max_bytes: 5 * 1024 * 1024, guest_attachment_max_per_ticket: 5, guest_attachment_uploads_per_hour: 3 })
+    uploadGuestAttachment.mockResolvedValue(undefined)
+    const { container } = renderWithQuery(<GuestTicketViewPage />)
+    await screen.findByRole('button', { name: 'Add files' })
+    expect(document.body.textContent).toMatch(/up to 3 files now \(5 per ticket\)/)
+    const input = container.querySelector('input[type=file]') as HTMLInputElement
+    const five = ['a', 'b', 'c', 'd', 'e'].map((n) => new File([n], `${n}.txt`, { type: 'text/plain' }))
+    await userEvent.upload(input, five)
+    await waitFor(() => expect(uploadGuestAttachment).toHaveBeenCalledTimes(3))
+  })
 })

@@ -587,7 +587,7 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	s.storeUploadedAttachment(w, r, ticketID, actor, attachMaxBytes)
+	s.storeUploadedAttachment(w, r, ticketID, actor, attachMaxBytes, 0)
 }
 
 // tooLargeMessage names the limit that applied, which for a guest is not 25 MB.
@@ -612,11 +612,15 @@ func tooLargeMessage(maxBytes int64) string {
 // (#445). It is a parameter rather than read here so the instance-wide maximum
 // stays the one place a limit can be raised.
 //
+// guestCap, when above zero, is the guest per-ticket file cap, enforced inside
+// the insert's transaction (#445) so uploads racing for the last slot cannot all
+// get in. Zero for everyone else.
+//
 // actor is who is uploading, for the last check before the row is written: a
 // guest is Actor{Role: RoleUser} with a nil UserID, which is also how a close
 // that wins the race is answered (the generic 404 for a guest, 409 for a
 // signed-in reporter).
-func (s *Server) storeUploadedAttachment(w http.ResponseWriter, r *http.Request, ticketID uuid.UUID, actor ticket.Actor, maxBytes int64) {
+func (s *Server) storeUploadedAttachment(w http.ResponseWriter, r *http.Request, ticketID uuid.UUID, actor ticket.Actor, maxBytes int64, guestCap int) {
 	// Before the body is read: a directory that cannot be written to would
 	// otherwise be discovered after the file was parsed, scanned and hashed,
 	// as a 500 (#458). Probed on every attempt, so a fixed directory works
@@ -1020,8 +1024,18 @@ func (s *Server) storeUploadedAttachment(w http.ResponseWriter, r *http.Request,
 	if virusName != "" {
 		att.VirusName = &virusName
 	}
-	if err := s.tickets.CreateAttachment(r.Context(), att, actor); err != nil {
+	var createErr error
+	if guestCap > 0 {
+		createErr = s.tickets.CreateGuestAttachment(r.Context(), att, actor, guestCap)
+	} else {
+		createErr = s.tickets.CreateAttachment(r.Context(), att, actor)
+	}
+	if err := createErr; err != nil {
 		_ = os.Remove(diskPath)
+		if errors.Is(err, ticket.ErrGuestAttachmentLimit) {
+			Error(w, http.StatusConflict, "guest_attachment_limit", guestLimitMessage(guestCap))
+			return
+		}
 		if errors.Is(err, ticket.ErrClosed) {
 			// The ticket closed while the file was being read and scanned.
 			if actor.UserID == nil {

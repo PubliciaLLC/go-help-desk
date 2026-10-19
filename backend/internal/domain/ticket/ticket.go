@@ -549,6 +549,10 @@ var (
 	// can already see it); never used to answer for a ticket the caller may not
 	// see, which gets the not-found refusal first.
 	ErrClosed = errors.New("ticket is closed")
+
+	// ErrGuestAttachmentLimit: the ticket already holds the most files a guest
+	// may attach (#445). 409.
+	ErrGuestAttachmentLimit = errors.New("ticket already has the most files a guest can attach")
 	// ErrReopenWindowClosed is separate from ErrForbidden on purpose: the
 	// caller owns the ticket and has the right to reopen it in general. What
 	// expired is the window, and telling them "you do not have permission"

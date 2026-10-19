@@ -756,6 +756,7 @@ func (s *Server) handleGetSiteConfig(w http.ResponseWriter, r *http.Request) {
 	if cfg["guest_attachments_enabled"] == true {
 		cfg["guest_attachment_max_bytes"] = s.guestAttachmentMaxBytes(r.Context())
 		cfg["guest_attachment_max_per_ticket"] = s.adminSvc.GuestAttachmentMaxPerTicket(r.Context())
+		cfg["guest_attachment_uploads_per_hour"] = s.adminSvc.GuestAttachmentUploadsPerHour(r.Context())
 	}
 	JSON(w, http.StatusOK, cfg)
 }

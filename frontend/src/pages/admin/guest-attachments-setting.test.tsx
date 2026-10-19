@@ -103,6 +103,8 @@ describe('the guest attachments settings', () => {
       await userEvent.type(cap(), '12')
       await userEvent.clear(rate())
       await userEvent.type(rate(), '99') // above 30: held at the top of the range
+      expect(rate().getAttribute('aria-invalid')).toBe('true') // 99 is typed, 30 is what is kept
+      expect(cap().getAttribute('aria-invalid')).not.toBe('true')
       await userEvent.click(screen.getAllByRole('button', { name: /save changes/i }).at(-1)!)
       await waitFor(() => expect(patch).toHaveBeenCalled())
       expect(patch.mock.calls.at(-1)![1]).toMatchObject({

@@ -32,6 +32,8 @@ export interface SiteConfig {
   guest_attachment_max_bytes?: number
   // The most files guests may attach to one ticket (#445), present with the size.
   guest_attachment_max_per_ticket?: number
+  // Uploads one guest link may make per hour (#445), present with the size.
+  guest_attachment_uploads_per_hour?: number
 }
 
 export async function getSiteConfig(): Promise<SiteConfig> {

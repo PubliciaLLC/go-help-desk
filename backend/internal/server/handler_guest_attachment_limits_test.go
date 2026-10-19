@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"slices"
@@ -180,4 +181,94 @@ func TestSiteConfig_CarriesThePerTicketCap(t *testing.T) {
 	_, _ = guestUploadsOn(t, h, 7, 3)
 	cfg := siteConfig(t, h)
 	require.EqualValues(t, 7, cfg["guest_attachment_max_per_ticket"])
+}
+
+func TestSiteConfig_CarriesTheHourlyFigureWhileUploadsAreOn(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	_, _ = guestUploadsOn(t, h, 7, 4)
+	require.EqualValues(t, 4, siteConfig(t, h)["guest_attachment_uploads_per_hour"])
+	setGuestUploads(t, h, false)
+	require.NotContains(t, siteConfig(t, h), "guest_attachment_uploads_per_hour")
+}
+
+// A guest's own mistakes do not cost them their hour; a malware verdict or a
+// server fault does. The budget is 1 so a spent unit shows at once.
+func TestGuestUploadLimits_AValidationMistakeIsRefunded(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	_, token := guestUploadsOn(t, h, 50, 1)
+	setGuestMaxMB(t, h, 1)
+
+	garbagePNG := []byte("this is not a png")
+	cases := []struct {
+		name    string
+		file    string
+		content []byte
+		status  int
+		code    string
+	}{
+		{"wrong type", "evil.exe", []byte("x"), http.StatusUnsupportedMediaType, "unsupported_type"},
+		{"over the size", "big.txt", bytes.Repeat([]byte("a"), 1<<20+1), http.StatusRequestEntityTooLarge, "too_large"},
+		{"an image that is not one", "bad.png", garbagePNG, http.StatusUnprocessableEntity, "invalid_image"},
+		{"a request the form parser refuses", "a\x01b.txt", []byte("x"), http.StatusBadRequest, "bad_request"},
+	}
+	for _, c := range cases {
+		for range 3 { // three refusals in a row against a budget of one
+			res := uploadGuestAttachment(t, h, token, c.file, c.content)
+			body := readBody(t, res)
+			require.Equal(t, c.status, res.StatusCode, "%s: %s", c.name, body)
+			require.Equal(t, c.code, errCode(t, []byte(body)), c.name)
+		}
+	}
+	ok := uploadGuestAttachment(t, h, token, "fine.txt", []byte("x"))
+	require.Equal(t, http.StatusCreated, ok.StatusCode, "the hour was never spent: "+readBody(t, ok))
+	// And the accepted one does spend it.
+	again := uploadGuestAttachment(t, h, token, "second.txt", []byte("x"))
+	require.Equal(t, http.StatusTooManyRequests, again.StatusCode)
+}
+
+func TestGuestUploadLimits_AMalwareVerdictIsNotRefunded(t *testing.T) {
+	h, cleanup := newHarnessWith(t, 0, fakeInfectedScanner(t))
+	defer cleanup()
+	_, token := guestUploadsOn(t, h, 50, 1)
+
+	first := uploadGuestAttachment(t, h, token, "nasty.txt", []byte("pretend this is nasty"))
+	require.Equal(t, http.StatusUnprocessableEntity, first.StatusCode, readBody(t, first))
+	second := uploadGuestAttachment(t, h, token, "nasty2.txt", []byte("again"))
+	require.Equal(t, http.StatusTooManyRequests, second.StatusCode, "an infected upload spends the hour: "+readBody(t, second))
+}
+
+func TestGuestUploadLimits_AServerFaultIsNotRefunded(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	_, token := guestUploadsOn(t, h, 50, 1)
+
+	breakStorage(t, h)
+	down := uploadGuestAttachment(t, h, token, "a.txt", []byte("x"))
+	require.Equal(t, http.StatusServiceUnavailable, down.StatusCode, readBody(t, down))
+	fixStorage(t, h)
+	next := uploadGuestAttachment(t, h, token, "b.txt", []byte("x"))
+	require.Equal(t, http.StatusTooManyRequests, next.StatusCode, readBody(t, next))
+}
+
+// A reporter with an account is not a guest: their file never counts toward the
+// guest cap.
+func TestGuestUploadLimits_AReportersFileIsNotAGuestFile(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+		Subject: "Mine", Description: "x", CategoryID: h.catID, ReporterUserID: &h.userID,
+	})
+	require.NoError(t, err)
+
+	res := uploadAttachmentAs(t, h, h.userKey, tk.ID.String(), "mine.txt", []byte("x"))
+	require.Equal(t, http.StatusCreated, res.StatusCode, readBody(t, res))
+	atts, err := h.ticketSvc.ListAttachments(context.Background(), tk.ID)
+	require.NoError(t, err)
+	require.Len(t, atts, 1)
+
+	n, err := h.ticketSvc.CountGuestAttachments(context.Background(), tk.ID)
+	require.NoError(t, err)
+	require.Zero(t, n)
 }

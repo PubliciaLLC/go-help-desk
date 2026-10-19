@@ -114,12 +114,12 @@ Before this release a guest could attach a file through `POST /api/v1/guest/atta
 
 - **Dependent on guest submission.** It only takes effect while guest submission is on.
 - **Per-file limit.** `guest_attachment_max_mb`, a slider from 1 to 100 MB, 5 MB by default. A guest is held to the lower of it and the instance-wide 25 MB maximum. Over the limit is `413 too_large`, and the message names the limit.
-- **Two more limits, with small defaults.** `guest_attachment_max_per_ticket` (1 to 50, default 5) caps the files guests can attach to one ticket, and `guest_attachment_uploads_per_hour` (1 to 30, default 3) caps uploads per guest link per hour. Over the cap is `409 guest_attachment_limit`; over the rate is `429 rate_limited` with `Retry-After`. Both are on the same settings page, under the switch. The rate is in memory and per process, so a restart clears it.
+- **Two more limits, with small defaults.** `guest_attachment_max_per_ticket` (1 to 50, default 5) caps the files guests can attach to one ticket, and `guest_attachment_uploads_per_hour` (1 to 30, default 3) caps uploads per guest link per hour. Over the cap is `409 guest_attachment_limit`; over the rate is `429 rate_limited` with `Retry-After`. Both are on the same settings page, under the switch. The rate is in memory and per process, so a restart clears it. A guest's own mistakes (wrong type, too big, not an image) do not use up their hour; a malware verdict or a server fault does.
 - **Migration 000054** adds `attachments.uploaded_by_guest` (default false) so the cap can count only guest uploads. Files guests attached before the upgrade are not counted toward it.
 - **Session only.** All of these settings need a signed-in administrator; an API key or OAuth client sending either is refused with `403 session_required`.
 - **The guest page now has an Add files button** while the setting is on. Uploads get the same type, scanning and reputation rules as everyone else's, and are download-only. The submission form (`/submit`) has none: the link to attach from is emailed once the ticket exists.
-- **`GET /api/v1/site`** gains `guest_attachments_enabled` and, while it is on, `guest_attachment_max_bytes`.
-- **No migration.** Nothing to run; the settings are read with their defaults.
+- **`GET /api/v1/site`** gains `guest_attachments_enabled` and, while it is on, `guest_attachment_max_bytes`, `guest_attachment_max_per_ticket` and `guest_attachment_uploads_per_hour`.
+- **Migration 000054** (runs on start, nothing to do) adds `attachments.uploaded_by_guest`, default false, so the cap counts only guest uploads. Files guests attached before the upgrade are not counted toward it. The settings themselves need no migration; they are read with their defaults.
 
 What to check: if your guests attach files today, turn the setting on after you upgrade.
 

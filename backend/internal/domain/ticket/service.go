@@ -2870,6 +2870,29 @@ func (s *Service) CreateAttachment(ctx context.Context, a Attachment, actor Acto
 	})
 }
 
+// CreateGuestAttachment is CreateAttachment for a guest, and the authority on the
+// per-ticket cap (#445): the count is taken inside the transaction that holds
+// the ticket's row lock, so uploads racing for the last slot cannot all pass.
+// Returns ErrGuestAttachmentLimit when the ticket already holds max guest files.
+func (s *Service) CreateGuestAttachment(ctx context.Context, a Attachment, actor Actor, max int) error {
+	return s.atomic.InTx(ctx, func(st Store, _ audit.Store, _ *notification.Changes) error {
+		// Takes the ticket's row lock (a guest is a requester), which is what
+		// serialises concurrent uploads: the second one's count below waits
+		// for the first to commit and sees its row.
+		if _, err := s.refuseRequesterOnClosed(ctx, st, a.TicketID, actor); err != nil {
+			return err
+		}
+		n, err := st.CountGuestAttachments(ctx, a.TicketID)
+		if err != nil {
+			return err
+		}
+		if n >= max {
+			return ErrGuestAttachmentLimit
+		}
+		return st.CreateAttachment(ctx, a)
+	})
+}
+
 // refuseRequesterOnClosed is closedRefusal for a write that is about to
 // happen: it takes the ticket's row lock and refuses a requester when the
 // locked row is Closed, returning the locked row for the caller to reuse. A

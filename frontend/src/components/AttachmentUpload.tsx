@@ -19,6 +19,8 @@ interface AttachmentUploadProps {
   /** Per-file limit; the instance-wide 25 MB unless the caller has a lower one (a guest, #445). */
   maxBytes?: number
   /** Key of a file in uploadStates. The file name unless the caller can have two of the same name. */
+  /** Replaces the "up to N files" wording, for a caller whose limit has two parts. */
+  maxFilesNote?: string
   stateKey?: (file: File, index: number) => string
 }
 
@@ -40,7 +42,7 @@ function statusIcon(state?: UploadState) {
   return <span className="text-xs text-gray-400 shrink-0">Queued</span>
 }
 
-export function AttachmentUpload({ files, onChange, uploadStates, disabled, maxFiles = 5, maxBytes = MAX_SIZE_BYTES, stateKey }: AttachmentUploadProps) {
+export function AttachmentUpload({ files, onChange, uploadStates, disabled, maxFiles = 5, maxBytes = MAX_SIZE_BYTES, stateKey, maxFilesNote }: AttachmentUploadProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const isUploading = !!uploadStates
   const atLimit = files.length >= maxFiles
@@ -90,7 +92,7 @@ export function AttachmentUpload({ files, onChange, uploadStates, disabled, maxF
         <span className="text-xs text-gray-500">
           {atLimit
             ? `${maxFiles} file limit reached`
-            : `PDF, DOCX, XLSX, TXT, LOG, JPEG, PNG, BMP \u00b7 max ${Math.floor(maxBytes / MB)}\u00a0MB \u00b7 up to ${maxFiles} files`}
+            : `PDF, DOCX, XLSX, TXT, LOG, JPEG, PNG, BMP \u00b7 max ${Math.floor(maxBytes / MB)}\u00a0MB \u00b7 ${maxFilesNote ?? `up to ${maxFiles} files`}`}
         </span>
       </div>
 

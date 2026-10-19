@@ -18,6 +18,8 @@ export function BoundedNumberInput({ label, hint, value, min, max, onChange, dis
   const id = useId()
   const hintId = useId()
   const [draft, setDraft] = useState<string | null>(null)
+  const typed = draft === null ? NaN : parseInt(draft, 10)
+  const outOfRange = draft !== null && (!Number.isFinite(typed) || typed < min || typed > max)
   const clamp = (n: number) => Math.min(max, Math.max(min, n))
 
   return (
@@ -33,6 +35,7 @@ export function BoundedNumberInput({ label, hint, value, min, max, onChange, dis
         value={draft ?? String(value)}
         disabled={disabled}
         aria-describedby={hintId}
+        aria-invalid={outOfRange || undefined}
         onChange={(e) => {
           setDraft(e.target.value)
           const n = parseInt(e.target.value, 10)

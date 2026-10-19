@@ -56,7 +56,11 @@ export function GuestTicketViewPage() {
   const { data: site } = useQuery({ queryKey: ['site-config'], queryFn: getSiteConfig, retry: false })
   const canAttach = site?.guest_attachments_enabled === true && typeof site.guest_attachment_max_bytes === 'number'
 
-  const maxFiles = site?.guest_attachment_max_per_ticket ?? 5
+  // Two limits, and the page offers only what both allow at once: the ticket's
+  // cap, less what this visit has attached, and the hour's uploads. Offering
+  // five when the hour allows three would hand the guest two refusals.
+  const perTicket = site?.guest_attachment_max_per_ticket ?? 5
+  const perHour = site?.guest_attachment_uploads_per_hour ?? perTicket
 
   const [uploadStates, setUploadStates] = useState<Record<string, UploadState> | undefined>()
   const [uploading, setUploading] = useState<File[]>([])
@@ -260,11 +264,16 @@ export function GuestTicketViewPage() {
               {/* The page cannot see files from an earlier visit (the guest read
                   has no attachment list), so this counts this visit's only. The
                   server holds the real cap and says so when it is reached. */}
-              {attached.length >= maxFiles ? (
+              {attached.length >= perTicket ? (
                 <p className="text-sm text-gray-600">You have attached the most files that can be added to this ticket.</p>
               ) : (
               <AttachmentUpload
-                maxFiles={maxFiles - attached.length}
+                maxFiles={Math.min(perTicket - attached.length, perHour)}
+                maxFilesNote={
+                  perHour < perTicket - attached.length
+                    ? `up to ${perHour} files now (${perTicket} per ticket)`
+                    : undefined
+                }
                 files={uploading}
                 onChange={(next) => sendFiles(next.slice(uploading.length))}
                 uploadStates={uploadStates}

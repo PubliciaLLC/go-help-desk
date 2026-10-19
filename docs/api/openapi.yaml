@@ -1621,6 +1621,11 @@ paths:
                       guest_attachment_max_mb and the instance-wide 25 MB maximum.
                       Present only while guest_attachments_enabled is true. Public,
                       like the flag; disclosing the limit was accepted.
+                  guest_attachment_uploads_per_hour:
+                    type: integer
+                    description: |
+                      Uploads one guest link may make per hour (#445). Present
+                      only while guest_attachments_enabled is true.
                   guest_attachment_max_per_ticket:
                     type: integer
                     description: |

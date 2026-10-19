@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -338,12 +339,12 @@ func (s *Server) handleGuestUploadAttachment(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if have >= maxFiles {
-		Error(w, http.StatusConflict, "guest_attachment_limit",
-			fmt.Sprintf("This ticket already has the most files a guest can attach (%d).", maxFiles))
+		Error(w, http.StatusConflict, "guest_attachment_limit", guestLimitMessage(maxFiles))
 		return
 	}
 	perHour := s.adminSvc.GuestAttachmentUploadsPerHour(ctx)
-	if ok, _ := s.guestUploadLimiter.TakeWithLimit(t.ID.String(), perHour); !ok {
+	ok, window := s.guestUploadLimiter.TakeWithLimit(t.ID.String(), perHour)
+	if !ok {
 		secs := max(1, int(math.Ceil(s.guestUploadLimiter.Remaining().Seconds())))
 		w.Header().Set("Retry-After", strconv.Itoa(secs))
 		Error(w, http.StatusTooManyRequests, "rate_limited",
@@ -351,7 +352,17 @@ func (s *Server) handleGuestUploadAttachment(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	s.storeUploadedAttachment(w, r, t.ID, ticket.Actor{Role: user.RoleUser}, s.guestAttachmentMaxBytes(ctx))
+	// The unit is spent before the work, so parallel uploads cannot all pass a
+	// budget with one slot left; it is given back when the guest's own file was
+	// refused for being the wrong thing (see refundable), which should not cost
+	// them their hour. A malware verdict and a server fault are not refunded:
+	// the first is the abuse this limit exists for, the second is not the
+	// guest's mistake but also not a reason to let a retry storm through.
+	rec := &refusalRecorder{ResponseWriter: w}
+	s.storeUploadedAttachment(rec, r, t.ID, ticket.Actor{Role: user.RoleUser}, s.guestAttachmentMaxBytes(ctx), maxFiles)
+	if refundable(rec.status, rec.code()) {
+		s.guestUploadLimiter.Refund(t.ID.String(), window)
+	}
 }
 
 // POST /api/v1/guest/follow-up
@@ -501,4 +512,60 @@ func (s *Server) PrepareGuestLink(ctx context.Context, ev notification.Event) (n
 // administrator's figure, never above the instance-wide maximum (#445).
 func (s *Server) guestAttachmentMaxBytes(ctx context.Context) int64 {
 	return min(int64(s.adminSvc.GuestAttachmentMaxMB(ctx))<<20, attachMaxBytes)
+}
+
+func guestLimitMessage(maxFiles int) string {
+	return fmt.Sprintf("This ticket already has the most files a guest can attach (%d).", maxFiles)
+}
+
+// refusalRecorder remembers the status and error code of what the upload
+// pipeline answered, so the handler can tell a validation refusal from a fault.
+// It passes everything through untouched.
+type refusalRecorder struct {
+	http.ResponseWriter
+	status int
+	body   []byte
+}
+
+func (r *refusalRecorder) WriteHeader(code int) {
+	if r.status == 0 {
+		r.status = code
+	}
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *refusalRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	if len(r.body) < 1024 { // an error body is tiny; a success body is not read
+		r.body = append(r.body, b...)
+	}
+	return r.ResponseWriter.Write(b)
+}
+
+// Unwrap lets http.NewResponseController reach the real writer.
+func (r *refusalRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
+func (r *refusalRecorder) code() string {
+	var e errResponse
+	if json.Unmarshal(r.body, &e) != nil {
+		return ""
+	}
+	return e.Error.Code
+}
+
+// refundable: the codes that mean the guest sent the wrong thing, and nothing
+// about the server or the file's safety. Everything else, "infected" and every
+// 5xx included, keeps its unit.
+func refundable(status int, code string) bool {
+	if status < 400 || status >= 500 {
+		return false
+	}
+	switch code {
+	case "too_large", "bad_request", "invalid_filename", "unsupported_type", "invalid_file", "invalid_image",
+		"guest_attachment_limit":
+		return true
+	}
+	return false
 }
