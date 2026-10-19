@@ -71,14 +71,14 @@ export function CustomFieldsPage() {
   return (
     <Layout>
       <div className="space-y-6">
-        <div className="flex items-start justify-between">
-          <div>
+        <div className="flex flex-col items-start gap-3 sm:flex-row sm:justify-between sm:gap-0">
+          <div className="min-w-0">
             <h1 className="text-2xl font-bold text-gray-900">Custom Fields</h1>
             <p className="mt-1 text-sm text-gray-500">
               Define reusable fields that can be assigned to categories, types, and items. Once created, fields cannot be deleted — only deactivated.
             </p>
           </div>
-          <Button onClick={() => setAdding(true)} className="ml-6 shrink-0">
+          <Button onClick={() => setAdding(true)} className="shrink-0 sm:ml-6">
             <PlusIcon className="mr-2 h-4 w-4" />
             New Field
           </Button>

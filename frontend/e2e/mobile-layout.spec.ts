@@ -1030,3 +1030,27 @@ test.describe('#522: the truncated SAML certificate line carries its full text',
     await expect(line).not.toHaveAttribute('title')
   })
 })
+
+// #522: the phone fix to these headers must not move the desktop layout. With
+// flex-wrap the button dropped under the description at every width, because
+// the description's natural width is always wider than the room beside it.
+test.describe('#522: the admin header button stays beside the heading on a desktop', () => {
+  const headers = [
+    { path: '/admin/categories', button: 'New Category' },
+    { path: '/admin/statuses', button: 'New Status' },
+    { path: '/admin/custom-fields', button: 'New Field' },
+  ]
+  for (const h of headers) {
+    for (const width of [1280, 1920]) {
+      test(`${h.path}: ${width}px`, async ({ page }) => {
+        await mockAdminApi(page)
+        await page.setViewportSize({ width, height: 900 })
+        await page.goto(h.path)
+        const title = await page.getByRole('heading', { level: 1 }).boundingBox()
+        const button = await page.getByRole('button', { name: h.button }).boundingBox()
+        if (!title || !button) throw new Error('header not rendered')
+        expect(Math.abs(button.y - title.y), `${h.button} is not on the heading's row`).toBeLessThanOrEqual(4)
+      })
+    }
+  }
+})

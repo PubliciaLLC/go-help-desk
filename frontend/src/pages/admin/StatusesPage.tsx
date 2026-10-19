@@ -74,14 +74,14 @@ export function StatusesPage() {
   return (
     <Layout>
       <div className="space-y-6">
-        <div className="flex items-start justify-between">
-          <div>
+        <div className="flex flex-col items-start gap-3 sm:flex-row sm:justify-between sm:gap-0">
+          <div className="min-w-0">
             <h1 className="text-2xl font-bold text-gray-900">Ticket Statuses</h1>
             <p className="mt-1 text-sm text-gray-500">
               Add custom intermediate statuses for your workflow. The three system statuses — New, Resolved, and Closed — have fixed lifecycle rules and cannot be renamed, removed, or deactivated.
             </p>
           </div>
-          <Button onClick={() => { setFormError(''); setAddingStatus(true) }} className="ml-6 shrink-0">
+          <Button onClick={() => { setFormError(''); setAddingStatus(true) }} className="shrink-0 sm:ml-6">
             <PlusIcon className="mr-2 h-4 w-4" />
             New Status
           </Button>

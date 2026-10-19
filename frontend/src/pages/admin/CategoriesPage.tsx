@@ -940,7 +940,7 @@ export function CategoriesPage() {
   return (
     <Layout>
       <div className="space-y-6">
-        <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex flex-col items-start gap-3 sm:flex-row sm:justify-between sm:gap-0">
           <div className="min-w-0">
             <h1 className="text-2xl font-bold text-gray-900">Categories</h1>
             <p className="mt-1 text-sm text-gray-500">
@@ -948,7 +948,7 @@ export function CategoriesPage() {
               Expand any node to manage its linked groups and custom field assignments.
             </p>
           </div>
-          <Button onClick={() => setAddingCategory(true)} className="shrink-0">
+          <Button onClick={() => setAddingCategory(true)} className="shrink-0 sm:ml-6">
             <PlusIcon className="mr-2 h-4 w-4" />
             New Category
           </Button>
