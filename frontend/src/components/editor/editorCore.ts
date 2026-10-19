@@ -34,10 +34,10 @@ const dropped = new Set<unknown>(
   flat(extendListItemSchemaForTask, footnoteDefinitionSchema, footnoteReferenceSchema, wrapInTaskListInputRule, insertImageInputRule),
 )
 
-// An image is never a live <img>. A plain-text paste is parsed as Markdown and
+// An image is never a live image element. A plain-text paste is parsed as Markdown and
 // then serialised to DOM in the live document, so a stock image node would make
 // the browser fetch its source. Here it is a span that reads "[image: alt]";
-// nothing parses an <img> into it either.
+// nothing parses an image element into it either.
 const imageAsText = imageSchema.extendSchema((prev) => (ctx) => ({
   ...prev(ctx),
   parseDOM: [],

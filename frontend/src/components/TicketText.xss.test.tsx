@@ -12,7 +12,7 @@ import { ALLOWED_ELEMENTS, ALLOWED_PROTOCOLS } from '@/lib/markdownAllowList'
 // The attributes an element in the rendered body may carry. href, start and
 // class are the only ones that can be influenced by the input; the rest are
 // ours and are never read from the Markdown.
-const OK_ATTRS = new Set(['href', 'rel', 'target', 'tabindex', 'start', 'class'])
+const OK_ATTRS = new Set(['href', 'rel', 'target', 'tabindex', 'start', 'class', 'dir'])
 const OK_CLASS = /^(hljs-[a-z_]+|language-[a-z0-9]+)$/
 
 function assertSafe(body: Element, input: string) {

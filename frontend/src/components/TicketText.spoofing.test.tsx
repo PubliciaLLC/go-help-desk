@@ -76,3 +76,46 @@ describe('invisible and bidi characters in link text', () => {
     expect(c.textContent).not.toMatch(/[‪-‮⁦-⁩]/)
   })
 })
+
+// Every invisible or direction-changing character, one at a time, in the link
+// text, in the host and in a mailto address: none may reach the screen, and the
+// host label is forced left-to-right so a right-to-left page cannot reorder it.
+const INVISIBLES: [string, string][] = [
+  ['U+202A LRE', '‪'], ['U+202B RLE', '‫'], ['U+202C PDF', '‬'],
+  ['U+202D LRO', '‭'], ['U+202E RLO', '‮'],
+  ['U+2066 LRI', '⁦'], ['U+2067 RLI', '⁧'], ['U+2068 FSI', '⁨'], ['U+2069 PDI', '⁩'],
+  ['U+200E LRM', '‎'], ['U+200F RLM', '‏'], ['U+061C ALM', '؜'],
+  ['U+200B ZWSP', '​'], ['U+200C ZWNJ', '‌'], ['U+200D ZWJ', '‍'],
+  ['U+2060 word joiner', '⁠'], ['U+FEFF BOM', '﻿'], ['U+00AD soft hyphen', '­'],
+]
+const ANY = /[‪-‮⁦-⁩​-‏؜⁠﻿­]/
+
+describe.each(INVISIBLES)('invisible character %s', (_n, ch) => {
+  it('is removed from link text', () => {
+    const c = view(`[ab${ch}cd](https://evil.example)`, 'markdown')
+    expect(c.querySelector('a')!.textContent).toBe('abcd')
+    expect(c.textContent).not.toMatch(ANY)
+  })
+
+  it('never reaches the host label of a mailto link', () => {
+    const enc = encodeURIComponent(ch)
+    const c = view(`[x](mailto:a${enc}b@evil.example)`, 'markdown')
+    expect(c.textContent).not.toMatch(ANY)
+    expect(c.textContent).toContain('ab@evil.example')
+  })
+
+  it('does not survive in a URL host', () => {
+    const c = view(`[x](https://evil${ch}.example/)`, 'markdown')
+    expect(c.textContent).not.toMatch(ANY)
+    const label = Array.from(c.querySelectorAll('span')).find((s) => /\(/.test(s.textContent ?? ''))
+    // Either the link is refused (text only) or the host is shown clean.
+    if (label) expect(label.textContent).toMatch(/^\([a-z0-9.-]+\)$/)
+  })
+})
+
+it('the host label is forced left-to-right and is isolated from the text around it', () => {
+  const c = view('[אב bank](https://evil.example)', 'markdown')
+  const label = Array.from(c.querySelectorAll('span')).find((s) => s.textContent === '(evil.example)')!
+  expect(label.getAttribute('dir')).toBe('ltr')
+  expect(label.className).toContain('unicode-bidi:isolate')
+})

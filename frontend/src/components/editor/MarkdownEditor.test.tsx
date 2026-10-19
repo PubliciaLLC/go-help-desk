@@ -20,7 +20,7 @@ afterEach(() => vi.resetModules())
 describe('MarkdownEditor', () => {
   it('loads the rich editor and labels it', async () => {
     render(<Form onSubmit={() => {}} />)
-    await screen.findByRole('toolbar')
+    await waitFor(() => expect(document.querySelector('[contenteditable="true"]')).not.toBeNull())
     const box = screen.getByRole('textbox', { name: 'Description' })
     expect(box.getAttribute('contenteditable')).toBe('true')
     expect(box.getAttribute('aria-multiline')).toBe('true')

@@ -146,11 +146,11 @@ function textIsExactDestination(text: string, href: string): boolean {
 function describeTarget(href: string): string {
   const u = parseAbsoluteUrl(href)
   if (!u) return ''
-  if (u.protocol !== 'mailto:') return u.host
+  if (u.protocol !== 'mailto:') return u.host.replace(INVISIBLE, '')
   try {
-    return decodeURIComponent(u.pathname)
+    return decodeURIComponent(u.pathname).replace(INVISIBLE, '')
   } catch {
-    return u.pathname
+    return u.pathname.replace(INVISIBLE, '')
   }
 }
 
@@ -172,7 +172,11 @@ function renderLink({ href, children }: Tag<'a'>) {
         {children}
       </a>
       {!textIsExactDestination(text, safe) && (
-        <span className="ml-1 text-xs text-gray-500 wrap-anywhere">({describeTarget(safe)})</span>
+        // dir=ltr and isolate: the label reads left to right and cannot be
+        // reordered by the right-to-left text before it.
+        <span dir="ltr" className="ml-1 text-xs [unicode-bidi:isolate] text-gray-500 wrap-anywhere">
+          ({describeTarget(safe)})
+        </span>
       )}
     </>
   )

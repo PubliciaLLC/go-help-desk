@@ -8,19 +8,23 @@
 // in about 0.1 s, and nobody nests quotes or lists twenty deep.
 export const MAX_DELIMITER_RUNS = 4000
 export const MAX_CONTAINER_DEPTH = 20
+// Each "[" opens a possible link label even in a run, so these count one by one.
+export const MAX_OPEN_BRACKETS = 3000
 
 const DELIMITERS = new Set(['*', '_', '~', '[', ']', '!', '`', '<'])
 
 /** True when rendering the text as Markdown could be slow or exhaust the stack. */
 export function isTooComplexToFormat(text: string): boolean {
   let runs = 0
+  let brackets = 0
   let prev = ''
   for (let i = 0; i < text.length; i++) {
     const c = text[i]
     if (DELIMITERS.has(c) && c !== prev) runs++
+    if (c === '[') brackets++
     prev = c
   }
-  if (runs > MAX_DELIMITER_RUNS) return true
+  if (runs > MAX_DELIMITER_RUNS || brackets > MAX_OPEN_BRACKETS) return true
 
   // Leading block markers per line: ">" quotes and "-", "*", "+", "1." list markers.
   for (const line of text.split('\n')) {
