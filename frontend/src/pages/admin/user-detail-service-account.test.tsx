@@ -8,7 +8,7 @@ import { useAuthStore } from '@/store/auth'
 
 // A service user's detail page (#420). It never has a password, a second
 // factor or the admin role, so the page offers none of them. It can be
-// renamed, given groups, set to staff or user, and disabled. It can only be
+// renamed, given groups, and disabled; the server refuses a role or address change. It can only be
 // deleted by deleting its OAuth client, and the server says so with a 409.
 
 vi.mock('@tanstack/react-router', () => ({
@@ -103,13 +103,14 @@ describe('a service user on the user page', () => {
     expect(screen.getAllByRole('textbox')).toHaveLength(1) // display name only
   })
 
-  it('can be set to staff or user, never admin', async () => {
+  it('has no role control: the server refuses a role change (#434)', async () => {
     renderWithQuery(<UserDetailPage />)
     await screen.findByRole('heading', { name: 'JIRA sync' })
-    expect(roleOptions()).toEqual(['staff', 'user'])
+    expect(screen.queryByText('Role')).toBeNull()
+    expect(screen.queryAllByRole('combobox')).toHaveLength(0)
   })
 
-  it('saves a rename without sending its system-made email address', async () => {
+  it('saves a rename without sending its system-made email address or its role', async () => {
     const user = userEvent.setup()
     const patch = vi.spyOn(api, 'patch').mockResolvedValue({ data: {} })
     renderWithQuery(<UserDetailPage />)
@@ -119,7 +120,7 @@ describe('a service user on the user page', () => {
     await user.type(name, 'JIRA two')
     await user.click(screen.getByRole('button', { name: 'Save profile' }))
     await waitFor(() => expect(patch).toHaveBeenCalled())
-    expect(patch).toHaveBeenCalledWith('/admin/users/u-2', { display_name: 'JIRA two', role: 'staff' })
+    expect(patch).toHaveBeenCalledWith('/admin/users/u-2', { display_name: 'JIRA two' })
   })
 
   it('can still be disabled', async () => {

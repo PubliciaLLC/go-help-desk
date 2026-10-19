@@ -627,10 +627,14 @@ func (s *Server) buildRouter() *chi.Mux {
 			With(authmw.RequireResource(auth.ResourceTickets)).
 			Get("/staff", s.handleListAssignableStaff)
 		// Who a ticket can be filed for (#444): the New ticket page's
-		// requester picker. The scope is users:read, the one that guards the
-		// user list, because this returns addresses.
+		// requester picker. Signed-in sessions only (#290, Erik 2026-10-14):
+		// "there is no user lookup endpoint, so no enumeration surface". A key
+		// or OAuth client files for someone with reporter_email and lets the
+		// server resolve it; it gets no way to search the directory, however
+		// many scopes it holds, so this is DenyMachineCredentials, not a
+		// scope.
 		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff), authmw.RequireMFA).
-			With(authmw.RequireResource(auth.ResourceUsers)).
+			With(authmw.DenyMachineCredentials).
 			Get("/users/lookup", s.handleLookupUsers)
 		// The admin-wide audit view (#129). Staff and admin only. A signed-in
 		// session needs no scope; a machine credential needs audit:read

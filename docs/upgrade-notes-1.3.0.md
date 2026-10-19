@@ -108,6 +108,12 @@ Slack, Teams, Discord and Jira Automation hooks are not affected: their messages
 
 - **API keys list and revoke only themselves.** See *API key delete is scoped to its owner* under Security.
 
+### `GET /users/lookup` is closed to API keys and OAuth clients (#290)
+
+`GET /api/v1/users/lookup` now answers `403 session_required` to an API key or an OAuth client, whatever scopes it holds. In the 1.3.0 betas it opened to any credential with `users:read`, which a staff key could be given, so a key could search the user directory by name or address. It is for the New ticket page's requester picker, in a signed-in session, and nothing else. Staff keys can no longer be given `users:read` (it opened nothing else for them); keys that already hold it keep it and it does nothing.
+
+What to do: a script that filed tickets for other people by looking the person up first sends `reporter_email` on `POST /api/v1/tickets` (or MCP `create_ticket`) and lets the server resolve it: the ticket goes to the account with that address if there is one, otherwise it is a guest ticket (`guest_name` required, guest submission on). `reporter_user_id` still works for ids you already have. The scripts that used the lookup for anything else have no replacement.
+
 ### Also breaking, described elsewhere
 
 - A ticket-changing webhook delivers one event per change, and a receiver that switches on `Type` can miss a kind: see *One Change, One Event* under Changed behaviour.
@@ -162,10 +168,12 @@ Every MCP route (`/mcp`, `/mcp/sse`, `/mcp/message` and anything else under `/mc
 - **An existing user who is filed for is emailed.** Someone picked from the list, or a typed address that matches an account, gets the ordinary "We have received your ticket" email with a link to the ticket, through the notification outbox. A member of staff filing their own ticket is not emailed, as before.
 - The member of staff is the actor in the ticket's history and audit entry; the requester is its reporter or guest. **MCP `create_ticket` with `reporter_user_id` now does the same**: it used to record the reporter as the actor of a ticket the caller filed for them. It also emails an account filed for this way, as REST does. Creating your own ticket over MCP is unchanged.
 - **Staff see a Requester line** on the ticket page (the account's name and email, or the guest's), on every ticket. `GET /api/v1/tickets/{id}` carries it as `requester` for staff and administrators only; requesters do not receive it.
-- New `GET /api/v1/users/lookup?q=` feeds the picker: staff and administrators only, `users:read` for an API key or OAuth client, at most ten results (`id`, `display_name`, `email`), `400` for a query under two characters. Disabled accounts are not offered (MCP `create_ticket` still accepts one by id).
+- New `GET /api/v1/users/lookup?q=` feeds the picker: staff and administrators **in a signed-in session only** (an API key or OAuth client gets `403 session_required`; see Breaking changes), at most ten results (`id`, `display_name`, `email`), `400` for a query under two characters. Disabled accounts are not offered (MCP `create_ticket` still accepts one by id).
 - No migration. Existing callers that send neither field behave exactly as before.
 
-What to check: an API key that files tickets does not need `users:read` to use `reporter_user_id` or `reporter_email`; only the lookup does.
+- **MCP `create_ticket` takes `reporter_email` too** (with `guest_name` and `guest_phone`), by the same code as REST: an account if the address has one, otherwise a guest ticket, with the same 40-an-hour cap (one budget per staff member across REST and MCP), the same mail and the same actor. `reporter_user_id` still works.
+
+What to check: an API key that files tickets does not need `users:read` to use `reporter_user_id` or `reporter_email`, and cannot use the lookup at all.
 
 ### `unlock <email>` on the Server Console (#497)
 
@@ -189,7 +197,7 @@ API keys can now be made by staff, issued by an administrator on a staff member'
 - **Where:** Account → API keys (list, create with an expiry, revoke), and `GET/POST /api/v1/me/api-keys`, `GET /api/v1/me/api-keys/scopes`, `DELETE /api/v1/me/api-keys/{id}`. Session only: an API key or OAuth client gets 403 `session_required`, so a key cannot create more keys.
 - **Issuing on behalf:** `POST /api/v1/admin/api-keys` takes an optional `user_id`, from a signed-in administrator only. They can issue for a staff member or for themselves. Not for another administrator (400 `cannot_issue_for_administrator`), a requester, or a service account (400 `service_account_cannot_own_key`). Responses now include `user_id` and `created_by`.
 - **Changing someone's role keeps their keys.** A key acts within its owner's current role. Promoting a staff member who holds an administrator-issued key leaves an administrator holding it; revoke it if that is not wanted.
-- **A key's scopes never exceed its owner's role.** Staff keys can carry `tickets:read|write`, `groups:read`, `audit:read` and `users:read`; an administrator's any scope. Anything else is 400 `invalid_scope`, on both routes. `GET /api/v1/admin/scopes?role=staff` lists what a staff key may carry.
+- **A key's scopes never exceed its owner's role.** Staff keys can carry `tickets:read|write`, `groups:read` and `audit:read` (`users:read` is no longer offered: its one staff route, the requester lookup, is session-only); an administrator's any scope. Anything else is 400 `invalid_scope`, on both routes. `GET /api/v1/admin/scopes?role=staff` lists what a staff key may carry.
 - **Marked for rotation:** both key lists carry `beyond_limit`. A key with no expiry, or one beyond the current limit (for example after the limit is lowered), is shown as "No expiry (longer than the current limit)" so it can be rotated.
 - **Password reset can revoke keys:** `POST /api/v1/admin/users/{id}/password` takes `revoke_api_keys` (default false); the admin form has "Also revoke this person's API keys", unticked. It deletes every key the account owns and audits the count; if the keys cannot be revoked after the password was reset, the answer is 500 `keys_not_revoked` ("The password was reset, but the API keys were NOT revoked."). A person's own password change, a password reset by email ("Forgot password", #451), `server unlock` and `server reset-factors` never touch keys.
 - **Audit:** every key issued or revoked, own or on someone's behalf, writes `api_key_issued` / `api_key_revoked` (entity type `api_key`) to the admin audit log; a revoke-on-reset writes `api_keys_revoked` on the account with the number of keys.
@@ -228,7 +236,7 @@ Every OAuth client now has a **service user**: an account made with the client, 
 What changes:
 
 - **Clients can now write.** A client holding `tickets:write` creates tickets and replies as its service user, and the audit trail shows the client's name. Before, those calls were refused with `403 user_identity_required`. Nothing else about the scopes changed; a client with only `tickets:read` is still refused.
-- **Service users are listed on Admin → Users**, with `service_account: true` and `auth_type: "service"` in the API. They can be renamed (which renames the client too), set to staff or user (never admin), given groups, and disabled. **Disabling the user stops the client**; enabling it restores it. A service user cannot be deleted on its own: `DELETE /admin/users/{id}` answers `409 service_account` and says to delete the client instead. Deleting the client soft-deletes its user; tickets it wrote keep its name.
+- **Service users are listed on Admin → Users**, with `service_account: true` and `auth_type: "service"` in the API. They can be renamed (which renames the client too), given groups, and disabled; the server refuses anything else on `PATCH /admin/users/{id}` with `409 service_account` (`email`, `role` and `reset_mfa` in the body, whatever the value; none of the request is applied). This is stricter than the first 1.3.0 betas, which accepted a change of address or a switch between staff and user. **Disabling the user stops the client**; enabling it restores it. A service user cannot be deleted on its own: `DELETE /admin/users/{id}` answers `409 service_account` and says to delete the client instead. Deleting the client soft-deletes its user; tickets it wrote keep its name.
 - **They never sign in.** No password, no MFA, no passkey, no SSO, no admin role. The database enforces it, and the API answers `409 service_account` to an attempt.
 - **They are hidden from assignee pickers and round-robin, do not count as administrators, and are never mailed.** A ticket a client opens sends no requester email.
 - **`POST /admin/oauth-clients` returns `user_id`**; `GET /admin/oauth-clients` returns `user_id` and `groups` for each client.

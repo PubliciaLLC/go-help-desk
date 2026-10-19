@@ -23,6 +23,20 @@ type lookupHit struct {
 	Email       string `json:"email"`
 }
 
+// staffLookup is a GET /users/lookup on a signed-in staff session.
+func staffLookup(t *testing.T, h *harness, path string) *http.Response {
+	t.Helper()
+	return h.doSession(t, h.session(t, asStaff), http.MethodGet, path, nil)
+}
+
+// lookupAsSession is the same for a chosen role, shaped like harness.do.
+func lookupAsSession(h *harness, w who) func(*testing.T, string, string, any) *http.Response {
+	return func(t *testing.T, method, path string, body any) *http.Response {
+		t.Helper()
+		return h.doSession(t, h.session(t, w), method, path, body)
+	}
+}
+
 func lookupPath(q string) string { return "/api/v1/users/lookup?q=" + url.QueryEscape(q) }
 
 func decodeLookup(t *testing.T, res *http.Response) []lookupHit {
@@ -39,9 +53,11 @@ func TestUserLookup_StaffAndAdminFindAccounts(t *testing.T) {
 		t.Run(caller, func(t *testing.T) {
 			h, cleanup := newHarness(t)
 			defer cleanup()
-			do := h.do
+			// The picker is a staff-session feature (#290): a key is refused,
+			// see TestUserLookup_RefusesMachineCredentials.
+			do := lookupAsSession(h, asStaff)
 			if caller == "admin" {
-				do = h.doAsAdmin
+				do = lookupAsSession(h, asAdmin)
 			}
 
 			// By name, and by address, in any case.
@@ -67,7 +83,7 @@ func TestUserLookup_ReturnsOnlyWhatThePickerNeeds(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	res := h.do(t, http.MethodGet, lookupPath("Reporting"), nil)
+	res := staffLookup(t, h, lookupPath("Reporting"))
 	body := readBody(t, res)
 	require.Equal(t, http.StatusOK, res.StatusCode, body)
 	var rows []map[string]any
@@ -96,22 +112,44 @@ func TestUserLookup_RequesterAndAnonymousAreRefused(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, res.StatusCode)
 }
 
-// A credential needs users:read, the scope that already guards the user list;
-// tickets:write alone (enough to file a ticket by id) does not open a directory
-// of addresses.
-func TestUserLookup_NeedsTheUsersReadScope(t *testing.T) {
+// #290, Erik's ruling: there is no user lookup endpoint for machine credentials,
+// so there is no way to enumerate accounts with a key. users:read is no help:
+// staff keys carry it by default. An API key and an OAuth client are both
+// refused with 403 session_required, and a staff session still gets 200.
+func TestUserLookup_RefusesMachineCredentials(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	for scopes, want := range map[string]int{
-		"tickets:write": http.StatusForbidden,
-		"tickets:read":  http.StatusForbidden,
-		"users:read":    http.StatusOK,
-	} {
-		res := withKey(t, h, mintKey(t, h, []string{scopes}), http.MethodGet, lookupPath("Reporting"), nil)
-		res.Body.Close()
-		require.Equal(t, want, res.StatusCode, scopes)
+	client := h.newServiceClient(t, "Directory scraper", "users:read")
+	cases := []struct {
+		name string
+		res  func() *http.Response
+	}{
+		{"staff key with every default scope", func() *http.Response {
+			return withKey(t, h, h.apiKey, http.MethodGet, lookupPath("Reporting"), nil)
+		}},
+		{"admin key", func() *http.Response {
+			return withKey(t, h, h.adminKey, http.MethodGet, lookupPath("Reporting"), nil)
+		}},
+		{"key with users:read", func() *http.Response {
+			return withKey(t, h, mintKey(t, h, []string{"users:read"}), http.MethodGet, lookupPath("Reporting"), nil)
+		}},
+		{"OAuth client with users:read", func() *http.Response {
+			return h.doBearer(t, client.Token, http.MethodGet, lookupPath("Reporting"), nil)
+		}},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := tc.res()
+			body := readBody(t, res)
+			require.Equal(t, http.StatusForbidden, res.StatusCode, body)
+			require.Contains(t, body, "session_required")
+			require.NotContains(t, body, "user@test.local", "the refusal leaks nothing")
+		})
+	}
+
+	res := staffLookup(t, h, lookupPath("Reporting"))
+	require.Equal(t, http.StatusOK, res.StatusCode, readBody(t, res))
 }
 
 // Search-as-you-type with a floor and a ceiling: no query, or a one-character
@@ -136,17 +174,17 @@ func TestUserLookup_IsBounded(t *testing.T) {
 		lookupPath("   "),
 		lookupPath(" b "),
 	} {
-		res := h.do(t, http.MethodGet, path, nil)
+		res := staffLookup(t, h, path)
 		res.Body.Close()
 		require.Equal(t, http.StatusBadRequest, res.StatusCode, path)
 	}
 
-	hits := decodeLookup(t, h.do(t, http.MethodGet, lookupPath("bulk"), nil))
+	hits := decodeLookup(t, staffLookup(t, h, lookupPath("bulk")))
 	require.Len(t, hits, 10, "a broad query is capped")
 
 	// LIKE wildcards are text, not a way to match everyone.
 	for _, q := range []string{"%%", "__", `\\`} {
-		require.Empty(t, decodeLookup(t, h.do(t, http.MethodGet, lookupPath(q), nil)), "q=%q", q)
+		require.Empty(t, decodeLookup(t, staffLookup(t, h, lookupPath(q))), "q=%q", q)
 	}
 }
 
@@ -162,13 +200,13 @@ func TestUserLookup_LeavesOutDeletedAccountsAndServiceIdentities(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NoError(t, h.userSvc.SoftDelete(ctx, gone.ID))
-	require.Empty(t, decodeLookup(t, h.do(t, http.MethodGet, lookupPath("Zed Gone"), nil)))
+	require.Empty(t, decodeLookup(t, staffLookup(t, h, lookupPath("Zed Gone"))))
 
 	// A service identity, built the way an OAuth client's is.
 	_, err = h.tx.ExecContext(ctx, `INSERT INTO users (id, email, display_name, role, service_account)
 		VALUES (gen_random_uuid(), 'svc-zed@test.local', 'Zed Service', 'staff', true)`)
 	require.NoError(t, err)
-	require.Empty(t, decodeLookup(t, h.do(t, http.MethodGet, lookupPath("Zed Service"), nil)))
+	require.Empty(t, decodeLookup(t, staffLookup(t, h, lookupPath("Zed Service"))))
 }
 
 // A disabled account cannot sign in, so it is not a sensible requester and is
@@ -191,7 +229,7 @@ func TestUserLookup_LeavesOutDisabledAccounts(t *testing.T) {
 		}
 	}
 
-	hits := decodeLookup(t, h.do(t, http.MethodGet, lookupPath("crowd"), nil))
+	hits := decodeLookup(t, staffLookup(t, h, lookupPath("crowd")))
 	require.Len(t, hits, 10, "twelve are enabled, so the cap is reached")
 	for _, hit := range hits {
 		var n int
@@ -226,7 +264,7 @@ func TestUserLookup_MostlyDisabledMatchesStillAnswerTenInOrderWithoutRepeats(t *
 		WHERE email LIKE 'mass%@test.local' AND (substring(email from 5 for 3))::int % 9 <> 0`)
 	require.NoError(t, err)
 
-	hits := decodeLookup(t, h.do(t, http.MethodGet, lookupPath("mass"), nil))
+	hits := decodeLookup(t, staffLookup(t, h, lookupPath("mass")))
 
 	var got []string
 	seen := map[string]bool{}

@@ -309,6 +309,35 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A service user follows its OAuth client (#434, Erik): it can be renamed
+	// (the client takes the name), given groups and disabled, and nothing else.
+	// Refused here, whole and before the first write, because the page hiding
+	// the fields stops nobody who sends the request. Its address is made up and
+	// not for a person to change, its role is the client's, and an MFA reset is
+	// for a factor it can never hold. 409 service_account, as the delete
+	// refusal answers. Groups are not on this route (group membership is).
+	if target.ServiceAccount {
+		var refused []string
+		if body.Email != nil {
+			refused = append(refused, "email")
+		}
+		if body.Role != nil {
+			refused = append(refused, "role")
+		}
+		if body.ResetMFA {
+			refused = append(refused, "reset_mfa")
+		}
+		if len(refused) > 0 {
+			msg := "This is the service account for an OAuth client."
+			if name, err := s.authStore.OAuthClientNameForUser(r.Context(), id); err == nil {
+				msg = "This is the service account for OAuth client " + name + "."
+			}
+			Error(w, http.StatusConflict, "service_account", msg+" Only its name, groups and disabled state can be changed; refused: "+
+				strings.Join(refused, ", ")+".")
+			return
+		}
+	}
+
 	// The two refusals that depend on what the database holds, asked now for
 	// the same reason: an MFA reset followed by a refused demotion had already
 	// cleared the factors, and a disable followed by a taken address had

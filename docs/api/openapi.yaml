@@ -2380,7 +2380,7 @@ paths:
       description: |
         Staff and administrators only, in a signed-in session (second factor required).
         The scopes POST /me/api-keys accepts for this caller: the whole catalogue for an
-        administrator, tickets, groups:read, audit:read and users:read (the requester lookup) for staff. A key acts at its
+        administrator, tickets, groups:read and audit:read for staff. A key acts at its
         owner's role, so a scope outside that role would only look like access it does not have.
       tags: ['Account']
       x-ghd-handler: handleListMyAPIKeyScopes
@@ -3199,7 +3199,8 @@ paths:
         outbox, unless it is the caller. Either way the caller, not the requester, is the
         actor in the ticket's history, its created audit entry and the created
         event. A reporting user who sends either field gets 403 forbidden; the
-        field is never ignored. GET /users/lookup finds an account to pick.
+        field is never ignored. GET /users/lookup finds an account to pick, in a
+        signed-in session only; a key sends reporter_email instead.
 
         Mail limit: each reporter_email with no account mails a stranger, so
         one member of staff can file at most 40 such tickets an hour, then 429
@@ -5804,9 +5805,12 @@ paths:
       operationId: lookupUsers
       summary: Find accounts to file a ticket for.
       description: |
-        Staff and administrators only (second factor required). A machine
-        credential (an API key, or an OAuth client acting as a staff service
-        user) needs users:read. The New ticket page's requester picker.
+        Staff and administrators only, in a signed-in session (second factor required). An API key is refused with 403 session_required and an OAuth
+        client likewise, whatever scopes it holds, users:read included: there
+        is no user lookup for machine credentials, so a key cannot enumerate
+        accounts. A key files a ticket for someone with reporter_email on
+        POST /tickets and lets the server resolve it. Before 1.3.0 a credential
+        holding users:read could call this. The New ticket page's requester picker.
         Returns accounts whose display name or email contains q, ignoring case
         (% and _ match themselves), as a bare array of id, display_name and
         email, ordered by display name (then id), at most 10. The disabled, deleted
@@ -5820,8 +5824,6 @@ paths:
       x-ghd-handler: handleLookupUsers
       security:
         - sessionCookie: []
-        - apiKey: ['users:read']
-        - oauthClient: ['users:read']
       x-ghd-roles: [admin, staff]
       x-ghd-mfa: true
       parameters:
@@ -5906,7 +5908,7 @@ paths:
         this response, and cannot be shown again. It has the form GHD_ followed by 64
         hexadecimal characters. scopes is required: a non-empty list of
         resource:action values from GET /api/v1/admin/scopes, and none may exceed
-        the owner's role (for staff, tickets, groups:read, audit:read and users:read; for
+        the owner's role (for staff, tickets, groups:read and audit:read; for
         an administrator, any): invalid_scope otherwise. expires_at is required unless
         the api_key_max_lifetime_years setting is Never (-1): 400 expires_at_required
         without it, and it must be a future RFC 3339 timestamp no later than that many
@@ -7391,11 +7393,14 @@ paths:
         '409':
           description: >-
             email_taken, when the new address belongs to another account, deleted accounts
-            included. service_account, when the account is a service account and the
-            change would give it a way to sign in: reset_mfa, or a role of admin. A
-            service account can be renamed, set to staff or user, given groups, and
-            disabled. Renaming it (display_name) also renames its OAuth client, in
-            the same statement. It cannot be deleted here (DELETE answers 409).
+            included. service_account, when the account is a service account (an
+            OAuth client's identity) and the body carries email, role or reset_mfa,
+            whatever the value: the whole request is refused and nothing in it is
+            applied, and the message names the client and the refused fields. A
+            service account can be renamed, given groups (through the group
+            routes) and disabled, and only that. Renaming it (display_name) also
+            renames its OAuth client, in the same statement. It cannot be deleted
+            here either (DELETE answers 409 service_account).
           content:
             application/json:
               schema:

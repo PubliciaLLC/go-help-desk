@@ -37,13 +37,18 @@ func TestServiceAccount_AdminCannotGiveItAPasswordOrMFAOrAdminRole(t *testing.T)
 	c := h.newServiceClient(t, "Nagios", "tickets:read")
 	base := "/api/v1/admin/users/" + c.UserID.String()
 
-	// The allowed edits first: the refusals below reach database constraints,
-	// which abort the harness transaction and with it the session lookup.
-	t.Run("staff and reporting roles are allowed", func(t *testing.T) {
+	// Erik (#434): "rename, groups, disable". A switch between staff and user
+	// was allowed by the first 1.3.0 betas; the server now refuses it, whatever
+	// the value, without writing anything.
+	t.Run("staff and reporting roles are refused too", func(t *testing.T) {
 		for _, role := range []string{"user", "staff"} {
 			resp := h.doSession(t, admin, http.MethodPatch, base, map[string]any{"role": role})
-			require.Equal(t, http.StatusOK, resp.StatusCode, role)
+			require.Equal(t, http.StatusConflict, resp.StatusCode, role)
+			require.Equal(t, "service_account", errorCode(t, resp))
 		}
+		u, err := h.userSvc.GetByID(t.Context(), c.UserID)
+		require.NoError(t, err)
+		require.Equal(t, user.RoleStaff, u.Role, "unchanged")
 	})
 	t.Run("rename is allowed", func(t *testing.T) {
 		resp := h.doSession(t, admin, http.MethodPatch, base, map[string]any{"display_name": "Nagios (prod)"})

@@ -34,4 +34,19 @@ describe('RolesPage', () => {
     await waitFor(() => expect(screen.getByText(/Full system access/)).toBeTruthy())
     expect(screen.queryByText(/plugin/i)).toBeNull()
   })
+
+  // The server refuses a role change on a service user (409 service_account,
+  // #434), so the row offers none: a person's row keeps its dropdown.
+  it('gives a service user no role dropdown', async () => {
+    const row = (id: string, name: string, service: boolean) => ({
+      id, email: `${id}@example.com`, display_name: name, role: 'staff', disabled: false,
+      service_account: service, created_at: '2026-01-01T00:00:00Z',
+    })
+    vi.spyOn(api, 'get').mockResolvedValue({ data: [row('p1', 'Pat Person', false), row('s1', 'Nagios', true)] })
+    renderWithQuery(<RolesPage />)
+
+    await waitFor(() => expect(screen.getByText('Nagios')).toBeTruthy())
+    expect(screen.getAllByRole('combobox')).toHaveLength(1)
+    expect(screen.getByText('staff (service)')).toBeTruthy()
+  })
 })
