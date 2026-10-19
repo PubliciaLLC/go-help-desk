@@ -50,7 +50,9 @@ export async function listTickets(params?: {
 }
 
 export async function createTicket(input: CreateTicketInput): Promise<Ticket> {
-  const res = await api.post<Ticket>('/tickets', input)
+  // The description comes from the Markdown editor (or its textarea fallback),
+  // so it is Markdown. A REST client that says nothing gets plain; this one says.
+  const res = await api.post<Ticket>('/tickets', { ...input, format: 'markdown' })
   return res.data
 }
 
@@ -146,6 +148,8 @@ export async function addReply(
     body,
     internal,
     notify_customer: notifyCustomer,
+    // Written in the Markdown editor; see createTicket.
+    format: 'markdown',
   })
   return res.data
 }

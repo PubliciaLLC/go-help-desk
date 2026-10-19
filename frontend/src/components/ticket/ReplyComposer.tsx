@@ -4,7 +4,7 @@ import { addReply, uploadAttachment, listTicketCannedResponses } from '@/api/tic
 import { extractError } from '@/api/client'
 import { AttachmentUpload, type UploadState } from '@/components/AttachmentUpload'
 import { Button } from '@/components/ui/button'
-import { Textarea } from '@/components/ui/textarea'
+import { MarkdownEditor } from '@/components/editor/MarkdownEditor'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { MessageSquareTextIcon } from 'lucide-react'
@@ -108,7 +108,6 @@ export function ReplyComposer({ ticketId, isStaffOrAdmin }: ReplyComposerProps) 
   const [uploadStates, setUploadStates] = useState<Record<string, UploadState> | undefined>()
   const [error, setError] = useState('')
   const [pickerOpen, setPickerOpen] = useState(false)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
   const pickerContainerRef = useRef<HTMLDivElement>(null)
 
   const { data: cannedResponses = [] } = useQuery({
@@ -156,18 +155,12 @@ export function ReplyComposer({ ticketId, isStaffOrAdmin }: ReplyComposerProps) 
     onError: (err) => setError(extractError(err)),
   })
 
+  // The editor has no cursor offset to hand back, so a canned response is
+  // added after what is already written, as its own paragraph, and the editor
+  // is given the new Markdown through its value.
   function insertCannedResponse(text: string) {
-    const textarea = textareaRef.current
-    const start = textarea?.selectionStart ?? body.length
-    const end = textarea?.selectionEnd ?? body.length
-    const newValue = body.slice(0, start) + text + body.slice(end)
-    const cursorPos = start + text.length
-    setBody(newValue)
+    setBody(body.trim() === '' ? text : `${body.replace(/\s+$/, '')}\n\n${text}`)
     setPickerOpen(false)
-    requestAnimationFrame(() => {
-      textarea?.focus()
-      textarea?.setSelectionRange(cursorPos, cursorPos)
-    })
   }
 
   const busy = !!uploadStates
@@ -204,12 +197,14 @@ export function ReplyComposer({ ticketId, isStaffOrAdmin }: ReplyComposerProps) 
           </div>
         )}
 
-        <Textarea
-          ref={textareaRef}
+        <span id={`reply-label-${ticketId}`} className="sr-only">
+          {isStaffOrAdmin ? 'Work log entry' : 'Reply'}
+        </span>
+        <MarkdownEditor
+          labelId={`reply-label-${ticketId}`}
           placeholder={isStaffOrAdmin ? 'Describe the work performed or add a note…' : 'Type your reply…'}
-          rows={4}
           value={body}
-          onChange={(e) => setBody(e.target.value)}
+          onChange={setBody}
           disabled={busy}
         />
 

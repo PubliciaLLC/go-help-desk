@@ -1,4 +1,5 @@
 import axios from 'axios'
+import type { TextFormat } from './types'
 
 // A separate axios instance, not the shared `api`.
 //
@@ -11,6 +12,7 @@ const guestApi = axios.create({ baseURL: '/api/v1/guest' })
 export interface GuestReply {
   id: string
   body: string
+  body_format: TextFormat
   created_at: string
   // True for the guest's own messages. The server derives it from the reply
   // having no author and sends no identity, so staff are never named.
@@ -21,6 +23,7 @@ export interface GuestTicket {
   tracking_number: string
   subject: string
   description: string
+  description_format: TextFormat
   status: string
   created_at: string
   updated_at?: string // no longer sent (2026-10-15); nothing reads it
@@ -47,7 +50,7 @@ export async function getGuestTicket(token: string): Promise<GuestTicket> {
 }
 
 export async function addGuestReply(token: string, body: string): Promise<GuestReply> {
-  const res = await guestApi.post<GuestReply>('/replies', { body }, auth(token))
+  const res = await guestApi.post<GuestReply>('/replies', { body, format: 'markdown' }, auth(token))
   return res.data
 }
 
@@ -65,7 +68,7 @@ export interface GuestTicketInput {
 // Returns the tracking number, which is all the server gives. The link arrives
 // by email, because the mailbox is the credential.
 export async function createGuestTicket(input: GuestTicketInput): Promise<string> {
-  const res = await guestApi.post<{ tracking_number: string }>('/tickets', input)
+  const res = await guestApi.post<{ tracking_number: string }>('/tickets', { ...input, format: 'markdown' })
   return res.data.tracking_number
 }
 

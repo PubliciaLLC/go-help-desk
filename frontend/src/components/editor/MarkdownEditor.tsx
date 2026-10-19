@@ -60,7 +60,7 @@ export function MarkdownEditor({ value, onChange, labelId, disabled, placeholder
         <button
           type="button"
           onClick={() => setChosenPlain((p) => !p)}
-          className="text-xs text-gray-500 underline hover:text-gray-700"
+          className="inline-flex min-h-6 items-center py-1 text-xs text-gray-500 underline hover:text-gray-700"
         >
           {chosenPlain ? 'Switch to rich editor' : 'Switch to plain editor'}
         </button>

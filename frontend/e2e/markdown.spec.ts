@@ -1,0 +1,148 @@
+import { test, expect, type Page } from '@playwright/test'
+import { mockApi, MARKDOWN_DETAIL, MARKDOWN_REPLIES, TICKET_DETAIL, ME_REPORTER } from './mock'
+
+// #443: Markdown in ticket text, in a real browser. jsdom cannot compute
+// layout and cannot fetch an image, so these are the two things it can't say:
+// the page never scrolls sideways, and a paste never makes the browser request
+// anything.
+
+async function mainFits(page: Page) {
+  const { scrollWidth, clientWidth } = await page.evaluate(() => {
+    const main = document.querySelector('main')!
+    return { scrollWidth: main.scrollWidth, clientWidth: main.clientWidth }
+  })
+  expect(scrollWidth, 'main is wider than its own box').toBeLessThanOrEqual(clientWidth)
+}
+
+for (const width of [320, 390]) {
+  test.describe(`Markdown text at ${width}px`, () => {
+    test.use({ viewport: { width, height: 844 } })
+
+    test('a 300-character link, a wide table and a long code line do not widen the page', async ({ page }) => {
+      await mockApi(page, { ticket: MARKDOWN_DETAIL, replies: MARKDOWN_REPLIES })
+      await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+      await expect(page.locator('[data-md-body]').first()).toBeVisible()
+      await mainFits(page)
+
+      // The table and the code box scroll inside themselves, and can be focused to do it.
+      const scrollers = page.locator('[data-md-body] pre, [data-md-body] div[tabindex="0"]')
+      expect(await scrollers.count()).toBeGreaterThanOrEqual(2)
+      const overflowing = await scrollers.evaluateAll((els) =>
+        els.map((e) => ({ scrolls: e.scrollWidth > e.clientWidth, x: getComputedStyle(e).overflowX })),
+      )
+      expect(overflowing.every((o) => o.x === 'auto')).toBe(true)
+      expect(overflowing.some((o) => o.scrolls), 'something should have needed to scroll').toBe(true)
+
+      // The long link wraps rather than widening anything.
+      const link = page.locator('[data-md-body] a').first()
+      await expect(link).toBeVisible()
+    })
+
+    test('a plain record with the same text still wraps (unchanged)', async ({ page }) => {
+      await mockApi(page)
+      await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+      await expect(page.getByText('Vendor thread:')).toBeVisible()
+      await mainFits(page)
+    })
+
+    test('the editor and its toolbar fit on the new ticket form', async ({ page }) => {
+      await mockApi(page)
+      await page.goto('/tickets/new')
+      await expect(page.getByRole('toolbar', { name: 'Formatting' })).toBeVisible()
+      await mainFits(page)
+      const tb = await page.getByRole('toolbar', { name: 'Formatting' }).boundingBox()
+      expect(tb!.x + tb!.width).toBeLessThanOrEqual(width)
+      // Eight buttons wrapped over more than one row at 320, never cut off.
+      for (const b of await page.getByRole('toolbar').getByRole('button').all()) {
+        const box = await b.boundingBox()
+        expect(box!.x + box!.width).toBeLessThanOrEqual(width)
+      }
+    })
+  })
+}
+
+test.describe('the editor in a real browser', () => {
+  test.use({ viewport: { width: 1000, height: 800 } })
+
+  // Nothing pasted may make the browser request anything. An HTML paste of an
+  // <img> is parsed in a detached document; a plain-text paste of Markdown is
+  // parsed and then serialised into the LIVE document, where a stock image
+  // node would become an <img> and be fetched. Both must stay silent.
+  test('pasting an image or a script makes no network request and saves neither', async ({ page }) => {
+    await mockApi(page)
+    const requested: string[] = []
+    await page.route(/t\.example/, (route) => {
+      requested.push(route.request().url())
+      return route.abort()
+    })
+    page.on('request', (r) => {
+      if (/t\.example/.test(r.url())) requested.push(r.url())
+    })
+    await page.goto('/tickets/new')
+    const editor = page.locator('.md-editor [contenteditable="true"]')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    const paste = (data: Record<string, string>) =>
+      page.evaluate((d) => {
+        const dt = new DataTransfer()
+        for (const [k, v] of Object.entries(d)) dt.setData(k, v)
+        document
+          .querySelector('.md-editor [contenteditable="true"]')!
+          .dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }))
+      }, data)
+
+    await paste({ 'text/html': '<p>before</p><img src="//t.example/html.gif"><script>window.__x=1</script><p>after</p>', 'text/plain': 'before after' })
+    await paste({ 'text/plain': 'see ![tracker](https://t.example/plain.gif) here' })
+    await page.waitForTimeout(500)
+
+    // The paste did happen (the text is there), so the silence below means something.
+    await expect(editor).toContainText('before')
+    await expect(editor).toContainText('tracker')
+    expect(await editor.locator('img, script').count()).toBe(0)
+    expect(await page.evaluate(() => (window as unknown as { __x?: number }).__x)).toBeUndefined()
+    expect(requested, 'the browser asked for something it should not have').toEqual([])
+
+    // What would be saved is the Markdown the editor holds, which the plain
+    // editor shows: neither the script nor the pasted <img> is in it.
+    await page.getByRole('button', { name: /switch to plain editor/i }).click()
+    const saved = await page.getByRole('textbox', { name: 'Description' }).inputValue()
+    expect(saved).not.toMatch(/<script|<img|html\.gif|__x/)
+    expect(saved).toContain('before')
+  })
+
+  test('Tab leaves the editor, from a list item too', async ({ page }) => {
+    await mockApi(page)
+    await page.goto('/tickets/new')
+    const editor = page.locator('.md-editor [contenteditable="true"]')
+    await expect(editor).toBeVisible()
+    await editor.click()
+    await page.keyboard.type('- one')
+    await page.keyboard.press('Enter')
+    await page.keyboard.type('two')
+    await expect(editor.locator('li')).toHaveCount(2)
+    await page.keyboard.press('Tab')
+    const stillInside = await page.evaluate(() => !!document.activeElement?.closest('.md-editor'))
+    expect(stillInside, 'Tab must move focus out of the editor').toBe(false)
+    // The list was not indented by the Tab.
+    await expect(editor.locator('li li')).toHaveCount(0)
+  })
+
+  test('typed Markdown rules become structure and a literal escape stays literal', async ({ page }) => {
+    await mockApi(page)
+    await page.goto('/tickets/new')
+    const editor = page.locator('.md-editor [contenteditable="true"]')
+    await editor.click()
+    await page.keyboard.type('# Title')
+    await page.keyboard.press('Enter')
+    await page.keyboard.type('**bold** and `code`')
+    await expect(editor.locator('h1')).toHaveText('Title')
+    await expect(editor.locator('strong')).toHaveText('bold')
+  })
+
+  test('a reporter sees the editor too', async ({ page }) => {
+    await mockApi(page, { me: ME_REPORTER })
+    await page.goto('/tickets/new')
+    await expect(page.getByRole('toolbar', { name: 'Formatting' })).toBeVisible()
+  })
+})

@@ -4,8 +4,7 @@ import ReactMarkdown from 'react-markdown'
 import { cn } from '@/lib/utils'
 import { markdownProps } from '@/lib/markdownPipeline'
 import { isTooComplexToFormat } from '@/lib/markdownLimits'
-
-export type TextFormat = 'plain' | 'markdown'
+import type { TextFormat } from '@/api/types'
 
 interface Props {
   text: string
@@ -64,7 +63,7 @@ export function TicketText({ text, format, className }: Props) {
           type="button"
           aria-pressed={flipped}
           onClick={() => setFlipped((f) => !f)}
-          className="mt-1 text-xs text-gray-500 underline hover:text-gray-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+          className="mt-1 inline-flex min-h-6 items-center py-1 text-xs text-gray-500 underline hover:text-gray-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
         >
           {format === 'markdown' ? 'Plain text' : 'Show formatted'}
         </button>

@@ -254,6 +254,10 @@ describe('a ticket that is not closed', () => {
   it('still lets a requester reply', async () => {
     signInAs('user')
     await renderTicket(ticketWithStatus('st-resolved'))
-    expect(screen.queryByPlaceholderText(/type your reply/i)).not.toBeNull()
+    // The field is a textarea (placeholder attribute) until the rich editor
+    // has loaded, then an editor that shows the same words as a hint (#443).
+    expect(
+      screen.queryByPlaceholderText(/type your reply/i) ?? screen.queryByText(/type your reply/i),
+    ).not.toBeNull()
   })
 })
