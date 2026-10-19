@@ -46,8 +46,8 @@ function RoleRow({ user, currentUserRole }: { user: User; currentUserRole: Role 
 
   return (
     <tr className="hover:bg-gray-50">
-      <td className="px-4 py-3 font-medium text-gray-900">{user.display_name}</td>
-      <td className="px-4 py-3 text-gray-500">{user.email}</td>
+      <td className="px-4 py-3 font-medium text-gray-900 wrap-anywhere">{user.display_name}</td>
+      <td className="px-4 py-3 text-gray-500 wrap-anywhere">{user.email}</td>
       <td className="px-4 py-3 text-gray-400">{new Date(user.created_at).toLocaleDateString()}</td>
       <td className="px-4 py-3 text-right">
         {mutation.isError && (
@@ -82,7 +82,7 @@ function RoleCard({
   currentUserRole: Role
 }) {
   return (
-    <div className="rounded-lg border bg-white overflow-hidden">
+    <div className="rounded-lg border bg-white overflow-x-auto">
       <div className="flex items-start gap-3 border-b px-5 py-4">
         <Badge variant={badgeVariant(role) as never} className="mt-0.5 shrink-0 capitalize">
           {label}

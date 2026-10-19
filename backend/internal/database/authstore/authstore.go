@@ -19,10 +19,14 @@ import (
 )
 
 // Store implements both auth.APIKeyStore and auth.OAuthClientStore.
-type Store struct{ q *dbgen.Queries }
+type Store struct {
+	q *dbgen.Queries
+	// now is the application clock, the one APIKeyAuth judges expiry by.
+	now func() time.Time
+}
 
 // New returns a Store backed by the given Queries.
-func New(q *dbgen.Queries) *Store { return &Store{q: q} }
+func New(q *dbgen.Queries) *Store { return &Store{q: q, now: time.Now} }
 
 // ── APIKeyStore ──────────────────────────────────────────────────────────────
 
@@ -385,8 +389,10 @@ func (s *Store) GetWebhook(ctx context.Context, id uuid.UUID) (WebhookConfig, er
 }
 
 // PausedReason is what the admin page and the API say about a hook whose key
-// died.
-const PausedReason = "Created by a revoked or expired API key"
+// stopped working. It covers every way that happens: the key was revoked or
+// expired, or its owner was disabled or deleted. Keep it in step with the
+// "paused" drop label in WebhooksPage.tsx.
+const PausedReason = "Its API key, or that key's owner, is no longer active"
 
 func markPaused(wh *WebhookConfig, paused map[uuid.UUID]bool) {
 	if paused[wh.ID] {
@@ -396,7 +402,7 @@ func markPaused(wh *WebhookConfig, paused map[uuid.UUID]bool) {
 
 // pausedSet is the ids of hooks tied to a key that is gone or expired.
 func (s *Store) pausedSet(ctx context.Context) (map[uuid.UUID]bool, error) {
-	ids, err := s.q.ListPausedWebhookIDs(ctx)
+	ids, err := s.q.ListPausedWebhookIDs(ctx, s.now())
 	if err != nil {
 		return nil, fmt.Errorf("finding paused webhooks: %w", err)
 	}

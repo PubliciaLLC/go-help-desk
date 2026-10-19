@@ -72,7 +72,7 @@ function InlineName({
 
   if (editing) {
     return (
-      <div className="flex flex-1 items-center gap-1" onClick={(e) => e.stopPropagation()}>
+      <div className="flex min-w-0 flex-1 items-center gap-1" onClick={(e) => e.stopPropagation()}>
         <Input
           ref={inputRef}
           value={draft}
@@ -100,11 +100,11 @@ function InlineName({
   }
 
   return (
-    <span className={`group/name flex flex-1 items-center gap-1 ${className ?? ''}`}>
-      <span>{value}</span>
+    <span className={`group/name flex min-w-0 flex-1 items-center gap-1 ${className ?? ''}`}>
+      <span className="min-w-0 wrap-anywhere">{value}</span>
       <button
         onClick={(e) => { e.stopPropagation(); setDraft(value); setEditing(true) }}
-        className="opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 hover:text-gray-600 group-hover/name:visible"
+        className="shrink-0 opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 hover:text-gray-600 group-hover/name:visible"
         title="Rename"
       >
         <PencilIcon className="h-3 w-3" />
@@ -250,12 +250,12 @@ function GroupsSubsection({
         {assignedGroups.map((g) => (
           <span
             key={g.id}
-            className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-medium text-blue-700"
+            className="inline-flex max-w-full items-center gap-1 rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-medium text-blue-700"
           >
-            {g.name}
+            <span className="min-w-0 wrap-anywhere">{g.name}</span>
             <button
               onClick={() => removeMutation.mutate(g.id)}
-              className="text-blue-400 hover:text-blue-700"
+              className="shrink-0 text-blue-400 hover:text-blue-700"
               title="Remove group"
             >
               <XIcon className="h-3 w-3" />
@@ -940,15 +940,15 @@ export function CategoriesPage() {
   return (
     <Layout>
       <div className="space-y-6">
-        <div className="flex items-start justify-between">
-          <div>
+        <div className="flex flex-col items-start gap-3 sm:flex-row sm:justify-between sm:gap-0">
+          <div className="min-w-0">
             <h1 className="text-2xl font-bold text-gray-900">Categories</h1>
             <p className="mt-1 text-sm text-gray-500">
               Define the three-level classification hierarchy: Category → Type → Item.
               Expand any node to manage its linked groups and custom field assignments.
             </p>
           </div>
-          <Button onClick={() => setAddingCategory(true)} className="ml-6 shrink-0">
+          <Button onClick={() => setAddingCategory(true)} className="shrink-0 sm:ml-6">
             <PlusIcon className="mr-2 h-4 w-4" />
             New Category
           </Button>
@@ -985,7 +985,7 @@ export function CategoriesPage() {
             <p className="text-sm text-gray-500">No categories yet. Add one to get started.</p>
           </div>
         ) : (
-          <div className="rounded-lg border bg-white overflow-hidden">
+          <div className="rounded-lg border bg-white overflow-x-auto">
             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleCategoryDragEnd}>
               <SortableContext items={sorted.map((c) => c.id)} strategy={verticalListSortingStrategy}>
                 {sorted.map((cat) => (

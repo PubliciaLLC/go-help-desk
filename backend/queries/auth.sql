@@ -137,14 +137,17 @@ UPDATE webhook_configs SET api_key_id = NULL WHERE id = $1;
 -- having run, and a missing key counts the same as a revoked one: this fails
 -- CLOSED. webhook_configs.api_key_id is deliberately not a foreign key, or
 -- deleting the key would null the link and the hook would look session-made.
--- clock_timestamp() and not now(): the latter is the start of the transaction.
+-- The instant is passed in, not read from the database: APIKeyAuth judges a
+-- key's expiry by the application's clock (auth.APIKey.Expired), and a second
+-- clock here would let a dead key's hooks keep firing for as long as the two
+-- disagree (#523). One clock, one rule.
 SELECT w.id FROM webhook_configs w
 WHERE w.api_key_id IS NOT NULL
   AND NOT EXISTS (
       SELECT 1 FROM api_keys k
       JOIN users u ON u.id = k.user_id
       WHERE k.id = w.api_key_id
-        AND (k.expires_at IS NULL OR k.expires_at > clock_timestamp())
+        AND (k.expires_at IS NULL OR k.expires_at > sqlc.arg(now)::timestamptz)
         AND u.deleted_at IS NULL
         AND u.disabled = FALSE
   );

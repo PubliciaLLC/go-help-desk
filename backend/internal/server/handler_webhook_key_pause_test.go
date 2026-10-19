@@ -86,7 +86,7 @@ func TestWebhookKeyPause_ARevokedKeysWebhookStopsFiring(t *testing.T) {
 
 	wh := h.hook(t, id)
 	require.True(t, wh.Paused)
-	require.Contains(t, wh.PausedReason, "revoked or expired API key")
+	require.Equal(t, "Its API key, or that key's owner, is no longer active", wh.PausedReason)
 	require.False(t, h.firing(t, id), "and stops when it is revoked")
 }
 
@@ -218,7 +218,7 @@ func TestWebhookKeyPause_TheListSaysWhyItIsPaused(t *testing.T) {
 		if e.ID == id {
 			found = true
 			require.True(t, e.Paused)
-			require.Equal(t, "Created by a revoked or expired API key", e.PausedReason)
+			require.Equal(t, "Its API key, or that key's owner, is no longer active", e.PausedReason)
 		}
 	}
 	require.True(t, found)

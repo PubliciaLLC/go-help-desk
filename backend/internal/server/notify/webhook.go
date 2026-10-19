@@ -61,7 +61,7 @@ const (
 	DropUnsubscribed = "unsubscribed" // the hook no longer lists the event
 	DropURLChanged   = "url_changed"  // the hook was pointed somewhere else
 	DropFilter       = "filter"       // the hook's ticket filter no longer admits the ticket
-	DropPaused       = "paused"       // its API key was revoked or has expired (#450)
+	DropPaused       = "paused"       // its API key, or that key's owner, is no longer active (#450)
 	DropUnbuildable  = "unbuildable"  // the body cannot be built, and would not be next time either
 )
 
@@ -273,7 +273,7 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event notification.Eve
 }
 
 // paused reports whether the hook is paused because the API key that made or
-// last re-pointed it was revoked or has expired (#450). Nothing is sent, which
+// last re-pointed it is no longer active: revoked, expired, or its owner disabled or deleted (#450). Nothing is sent, which
 // is how a disabled hook is treated; a queued retry that finds the hook paused
 // is marked dropped (DropPaused) by deliverQueued. The reason shows on the
 // admin page, and here as a log line.
@@ -281,7 +281,7 @@ func (d *WebhookDispatcher) paused(ctx context.Context, hook authstore.WebhookCo
 	if !hook.Paused {
 		return false
 	}
-	d.log.InfoContext(ctx, "webhook not sent: its API key was revoked or has expired",
+	d.log.InfoContext(ctx, "webhook not sent: its API key, or that key's owner, is no longer active",
 		"webhook_id", hook.ID)
 	return true
 }
