@@ -201,7 +201,7 @@ export function APIKeysPage() {
         {isLoading ? (
           <div className="flex justify-center py-12"><Spinner /></div>
         ) : (
-          <div className="rounded-lg border bg-white overflow-hidden">
+          <div className="rounded-lg border bg-white overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 text-xs text-gray-500 uppercase">
                 <tr>
@@ -217,13 +217,15 @@ export function APIKeysPage() {
               <tbody className="divide-y">
                 {keys.map((k) => (
                   <tr key={k.id} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 font-medium text-gray-900 flex items-center gap-2">
-                      <KeyIcon className="h-3.5 w-3.5 text-gray-400 shrink-0" />
-                      {k.name}
+                    <td className="px-4 py-3 font-medium text-gray-900">
+                      <span className="flex items-center gap-2">
+                        <KeyIcon className="h-3.5 w-3.5 text-gray-400 shrink-0" />
+                        <span className="min-w-0 wrap-anywhere">{k.name}</span>
+                      </span>
                     </td>
                     <td className="px-4 py-3">
-                      <div className="text-gray-900">{k.owner_name}</div>
-                      <div className="text-xs text-gray-500">{k.owner_email}</div>
+                      <div className="text-gray-900 wrap-anywhere">{k.owner_name}</div>
+                      <div className="text-xs text-gray-500 wrap-anywhere">{k.owner_email}</div>
                       {k.created_by && k.created_by !== k.user_id && (
                         <div className="text-xs text-gray-500">Issued on their behalf</div>
                       )}
