@@ -3211,8 +3211,8 @@ paths:
         about, and learning is bounded at 40 an hour. Validation comes first
         and costs nothing: the subject, priority, category, type and item, the
         address's form, and guest_name are all checked before, and refused the
-        same way for every address. The unit is given back only when the create
-        itself then fails. A picked reporter_user_id is not counted. The count is per user, not per address of the
+        same way for every address. A unit is never given back once taken,
+        not even when the create itself then fails. A picked reporter_user_id is not counted. The count is per user, not per address of the
         request: a machine credential counts against the user it acts as, and
         another member of staff is unaffected. It is kept in memory, so it
         resets when the server restarts and each replica of a multi-instance

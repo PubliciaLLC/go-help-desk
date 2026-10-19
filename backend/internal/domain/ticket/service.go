@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
@@ -426,6 +428,45 @@ func (s *Service) refuseSecondFollowUp(ctx context.Context, st Store, closedID u
 	return nil
 }
 
+// CheckFreeText refuses text Postgres would refuse or that has no business in
+// a text field: invalid UTF-8 (which it rejects) and control characters (NUL,
+// which it rejects, and the rest of C0 and C1). multiline allows tab, carriage
+// return and line feed, for a description or a reply; a subject, name or phone
+// number is one line. It is validation, so the answer is a 400 before a
+// tracking number is taken, rather than a 500 and a gap in the sequence.
+func CheckFreeText(field, v string, multiline bool) error {
+	if !utf8.ValidString(v) {
+		return fmt.Errorf("%s: is not valid UTF-8: %w", field, ErrValidation)
+	}
+	for _, r := range v {
+		if multiline && (r == '\t' || r == '\r' || r == '\n') {
+			continue
+		}
+		if unicode.IsControl(r) {
+			return fmt.Errorf("%s: contains a control character: %w", field, ErrValidation)
+		}
+	}
+	return nil
+}
+
+// checkCreateText is CheckFreeText over a create's free-text fields.
+func checkCreateText(in CreateInput) error {
+	for _, f := range []struct {
+		name, v   string
+		multiline bool
+	}{
+		{"subject", in.Subject, false},
+		{"description", in.Description, true},
+		{"guest_name", in.GuestName, false},
+		{"guest_phone", in.GuestPhone, false},
+	} {
+		if err := CheckFreeText(f.name, f.v, f.multiline); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ValidateCreate refuses what create would refuse for the ticket's own fields
 // and classification (subject, lengths, priority, category, type, item,
 // archived picks), without writing anything and without looking at who the
@@ -437,6 +478,9 @@ func (s *Service) refuseSecondFollowUp(ctx context.Context, st Store, closedID u
 // does not affect, a bad category would tell the caller which addresses have
 // accounts, for free (#290, "no enumeration surface").
 func (s *Service) ValidateCreate(ctx context.Context, in CreateInput) error {
+	if err := checkCreateText(in); err != nil {
+		return err
+	}
 	if strings.TrimSpace(in.Subject) == "" {
 		return fmt.Errorf("subject is required: %w", ErrValidation)
 	}
@@ -499,6 +543,9 @@ func (s *Service) validateClassification(ctx context.Context, in CreateInput, fo
 // create (Create passes them), the member of staff for a follow-up. followUpOf
 // is the closed ticket a follow-up continues, or nil.
 func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, followUpOf *Ticket) (Ticket, error) {
+	if err := checkCreateText(in); err != nil {
+		return Ticket{}, err
+	}
 	if strings.TrimSpace(in.Subject) == "" {
 		return Ticket{}, fmt.Errorf("subject is required: %w", ErrValidation)
 	}
@@ -1557,6 +1604,9 @@ func (s *Service) ticketAndStatus(ctx context.Context, ticketID uuid.UUID) (Tick
 // check when non-nil; everything after it — the reopen, the write, the audit,
 // the dispatch — is shared, so a guest reply cannot drift from a user's.
 func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string, internal bool, notifyCustomer bool, reporterEmail string, actor Actor, reopenWindowDays int, reopenTargetStatusID uuid.UUID, authorize func(Ticket, Status) error) (Reply, error) {
+	if err := CheckFreeText("body", body, true); err != nil {
+		return Reply{}, err
+	}
 	t, err := s.store.GetByID(ctx, ticketID)
 	if err != nil {
 		return Reply{}, err

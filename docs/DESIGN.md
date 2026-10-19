@@ -1498,8 +1498,10 @@ member**, and the 41st is `429 rate_limited` with `Retry-After` (the time left
 in the window) and files nothing. Every `reporter_email` that passes validation
 takes a unit before the address is looked up, account or not, and the refusal
 for guest submission being off is not given back. A request refused by
-validation spends nothing, and a unit is given back only when `Create` itself
-then fails (a database error). A picked `reporter_user_id` is not counted and
+validation spends nothing. **A unit is never given back once taken**, not for
+the guest-submission refusal and not when `Create` then fails: a refund after
+the address is known makes a miss free whenever a failure can be provoked for
+one kind of address only. A genuine database error costs one of the 40. A picked `reporter_user_id` is not counted and
 is not stopped by a spent budget. The key is the authenticated user, not the
 address of the request, so an API key or OAuth client counts against the user it
 acts as (the same budget as that person's own session), and another staff

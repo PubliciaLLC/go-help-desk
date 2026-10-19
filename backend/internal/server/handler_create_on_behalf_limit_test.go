@@ -136,18 +136,17 @@ func TestCreateTicket_OnBehalf_BudgetFollowsTheCredentialsUser(t *testing.T) {
 	require.Equal(t, http.StatusTooManyRequests, res.StatusCode, "and so is the key")
 }
 
-// The budget is for tickets filed. A request that is refused, whatever the
-// reason, files nothing and mails nobody, so it must not use the hour up:
-// otherwise 40 bad requests lock a member of staff out without anything having
-// been sent. Each row is one way of being refused. The refusals come first and
-// there are more of them than the budget; then a full budget of valid requests
-// must still all succeed and the next one be the 429.
+// A request refused by validation spends nothing: it taught the caller nothing
+// about any address, so 40 bad requests must not lock a member of staff out.
+// Each row is one way of being refused before the address is looked at. The
+// refusals come first and there are more of them than the budget; then a full
+// budget of valid requests must still all succeed and the next one be the 429.
 //
-// The rows that stop before the limiter (no name, a bad address, every
-// validation) are here to pin where the spend sits: put it ahead of those
-// checks and they go red. Guest submission being off is deliberately not a row:
-// that refusal is NOT refunded (#290, see TestOnBehalf_GuestSubmissionOff_ProbesAreCappedAt40).
-func TestCreateTicket_OnBehalf_OnlyFiledTicketsSpendTheBudget(t *testing.T) {
+// These rows pin where the spend sits: put it ahead of any of those checks and
+// they go red. Once a unit IS taken it is never refunded, and guest submission
+// being off is deliberately not a row (see
+// TestOnBehalf_GuestSubmissionOff_ProbesAreCappedAt40).
+func TestCreateTicket_OnBehalf_RefusalsBeforeTheUnitSpendNothing(t *testing.T) {
 	type row struct {
 		name  string
 		setup func(t *testing.T, h *harness) // before the refusals

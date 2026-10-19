@@ -31,7 +31,12 @@ type mcpSession struct {
 
 func newMCPSession(t *testing.T, h *harness, token string) *mcpSession {
 	t.Helper()
-	m := mcp.New(h.ticketSvc, nil, h.srv, h.categorySvc, h.srv)
+	return newMCPSessionWith(t, h, token, mcp.New(h.ticketSvc, nil, h.srv, h.categorySvc, h.srv))
+}
+
+// newMCPSessionWith is newMCPSession for an MCP server the test built itself.
+func newMCPSessionWith(t *testing.T, h *harness, token string, m *mcp.Server) *mcpSession {
+	t.Helper()
 	ts := httptest.NewServer(h.srv.ProtectMCP(m.Handler()))
 	t.Cleanup(ts.Close)
 

@@ -446,7 +446,6 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	created := false
 	in := ticket.CreateInput{
 		Subject:     body.Subject,
 		Description: body.Description,
@@ -465,18 +464,8 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if onBehalf {
-			ok, refund := s.fileOnBehalf(w, r, &in, body.ReporterUserID, body.ReporterEmail, body.GuestName, body.GuestPhone)
-			if !ok {
+			if !s.fileOnBehalf(w, r, &in, body.ReporterUserID, body.ReporterEmail, body.GuestName, body.GuestPhone) {
 				return
-			}
-			if refund != nil {
-				// Nothing is filed if Create fails, so nothing was mailed
-				// and the budget is not spent.
-				defer func() {
-					if !created {
-						refund()
-					}
-				}()
 			}
 		} else {
 			in.ReporterUserID = &a.UserID
@@ -500,7 +489,6 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	created = true
 
 	// Set any custom field values supplied on creation.
 	//
@@ -568,101 +556,95 @@ func (e *OnBehalfError) Refusal() string { return e.Message }
 //
 // Every typed address that passes validation takes one of the caller's
 // onBehalfMailPerHour units an hour before it is resolved, then a 429 refusal
-// (see Server.onBehalfMailLimiter). The caller must call refund if Create then
-// fails. Failures that are not the caller's doing come back as plain errors.
+// (see Server.onBehalfMailLimiter). A unit is NEVER given back once taken, not
+// when the guest-submission refusal follows and not when Create fails: a
+// refund after the address is known makes a miss free whenever a failure can
+// be provoked for one kind of address only (a NUL in guest_name was one). A
+// genuine database error costs one of 40, which is fine. Refusals before the
+// unit is taken (validation) cost nothing and are the same for every address.
 func (s *Server) ResolveOnBehalf(ctx context.Context, actorID uuid.UUID, in *ticket.CreateInput,
-	id *uuid.UUID, email *string, guestName, guestPhone string) (refund func(), err error) {
-	bad := func(msg string) (func(), error) {
-		return nil, &OnBehalfError{Status: http.StatusBadRequest, Code: "bad_request", Message: msg}
+	id *uuid.UUID, email *string, guestName, guestPhone string) error {
+	bad := func(msg string) error {
+		return &OnBehalfError{Status: http.StatusBadRequest, Code: "bad_request", Message: msg}
 	}
 	if id != nil && email != nil {
 		return bad("only one of reporter_user_id and reporter_email may be given")
 	}
 	// Everything Create would refuse that the address does not decide, BEFORE
 	// the address is looked at. What follows answers differently for an
-	// address with an account and one without (a name wanted, guest submission
-	// off), so reaching it with a request that was going to fail anyway would
-	// let a caller learn which addresses have accounts without filing anything.
-	// After this, the only way to learn about an address is to file a ticket.
+	// address with an account and one without (guest submission off), so
+	// reaching it with a request that was going to fail anyway would let a
+	// caller learn which addresses have accounts without spending anything.
 	if err := s.tickets.ValidateCreate(ctx, *in); err != nil {
 		if errors.Is(err, ticket.ErrValidation) {
 			return bad(err.Error())
 		}
-		return nil, err
+		return err
 	}
 	in.FiledBy = &actorID
 	if id != nil {
 		in.ReporterUserID = id
-		return nil, nil
+		return nil
 	}
 	addr, err := user.ValidateEmail(*email)
 	if err != nil {
 		return bad("reporter_email: " + err.Error())
 	}
-	// A name is required whether or not the address has an account (it is
-	// ignored for one), so that its absence says nothing about the address.
-	// Checked here, with the other validation and before the address is
-	// resolved or a unit is spent.
+	// The guest fields are validated for every address, though an account's
+	// ignores them: otherwise a value only the no-account path would refuse
+	// (Postgres refuses NUL) tells the two apart.
 	if strings.TrimSpace(guestName) == "" {
 		return bad("guest_name: name is required with reporter_email")
 	}
-	// From here on the answer depends on the address, so each attempt costs a
-	// unit of the caller's hourly budget, account or not, and the refusal for
-	// guest submission being off is not refunded: with it off an address with
-	// no account costs a unit and an address with one files a ticket and costs
-	// a unit, so learning about an address is bounded at onBehalfMailPerHour an
-	// hour per staff member either way. Spent now rather than checked now and
-	// spent after Create, so requests in flight together cannot all pass a
-	// budget with one slot left. The caller gives it back only if Create
-	// itself fails, which does not depend on the address.
+	for _, f := range []struct{ name, v string }{{"guest_name", guestName}, {"guest_phone", guestPhone}} {
+		if err := ticket.CheckFreeText(f.name, f.v, false); err != nil {
+			return bad(err.Error())
+		}
+	}
 	key := actorID.String()
-	taken, window := s.onBehalfMailLimiter.Take(key)
-	if !taken {
-		return nil, &OnBehalfError{
+	if taken, _ := s.onBehalfMailLimiter.Take(key); !taken {
+		return &OnBehalfError{
 			Status: http.StatusTooManyRequests, Code: "rate_limited",
 			Message:    "too many tickets filed with reporter_email; please wait and try again",
 			RetryAfter: s.onBehalfMailLimiter.Remaining(),
 		}
 	}
-	refund = func() { s.onBehalfMailLimiter.Refund(key, window) }
 	u, err := s.users.GetByEmail(ctx, addr)
 	switch {
 	case err == nil:
 		in.ReporterUserID = &u.ID
 	case errors.Is(err, user.ErrNotFound):
 		if !s.adminSvc.GuestSubmissionEnabled(ctx) {
-			return nil, &OnBehalfError{Status: http.StatusBadRequest, Code: "bad_request",
+			return &OnBehalfError{Status: http.StatusBadRequest, Code: "bad_request",
 				Message: "reporter_email has no account, and guest submission is off, so the link to the ticket could not be used"}
 		}
 		in.GuestEmail = &addr
 		in.GuestName = strings.TrimSpace(guestName)
 		in.GuestPhone = strings.TrimSpace(guestPhone)
 	default:
-		// Our failure, not an answer about the address.
-		refund()
-		return nil, err
+		return err
 	}
-	return refund, nil
+	return nil
 }
 
 // fileOnBehalf is ResolveOnBehalf for the REST handler: it reports whether the
 // request may go on, and when it returns false it has answered.
 func (s *Server) fileOnBehalf(w http.ResponseWriter, r *http.Request, in *ticket.CreateInput,
-	id *uuid.UUID, email *string, guestName, guestPhone string) (ok bool, refund func()) {
-	refund, err := s.ResolveOnBehalf(r.Context(), authmw.GetActor(r).UserID, in, id, email, guestName, guestPhone)
+	id *uuid.UUID, email *string, guestName, guestPhone string) bool {
+	err := s.ResolveOnBehalf(r.Context(), authmw.GetActor(r).UserID, in, id, email, guestName, guestPhone)
 	var refusal *OnBehalfError
 	switch {
 	case errors.As(err, &refusal) && refusal.Status == http.StatusTooManyRequests:
 		tooManyAttempts(w, refusal.RetryAfter)
-		return false, nil
+		return false
 	case errors.As(err, &refusal):
 		Error(w, refusal.Status, refusal.Code, refusal.Message)
-		return false, nil
+		return false
 	case err != nil:
 		handleError(w, err)
-		return false, nil
+		return false
 	}
-	return true, refund
+	return true
 }
 
 // GET /api/v1/tickets/{id}

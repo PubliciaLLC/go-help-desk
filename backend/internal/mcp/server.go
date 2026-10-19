@@ -239,12 +239,12 @@ type Server struct {
 // OnBehalfResolver is the REST handler's rule for filing a ticket for someone
 // else, exposed so create_ticket applies the same one (#290): the address
 // resolves to an account if one exists, otherwise to a guest ticket, under the
-// same hourly cap. It sets the reporter, guest fields and FiledBy on in, and
-// returns a refund to call if the ticket is then not filed. A refusal carries
-// its message in Refusal(); any other error is ours.
+// same hourly budget, which is never refunded. It sets the reporter, guest
+// fields and FiledBy on in. A refusal carries its message in Refusal(); any
+// other error is ours.
 type OnBehalfResolver interface {
 	ResolveOnBehalf(ctx context.Context, actorID uuid.UUID, in *ticket.CreateInput,
-		id *uuid.UUID, email *string, guestName, guestPhone string) (refund func(), err error)
+		id *uuid.UUID, email *string, guestName, guestPhone string) error
 }
 
 // CategoryLister is the slice of the category service MCP needs. Narrow on
@@ -749,8 +749,6 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 		reporterEmail = &str
 	}
 
-	// Spent by the resolver, given back below if the ticket is not filed.
-	var refund func()
 	switch {
 	case reporterEmail != nil:
 		// The REST rule, from the REST code (#290): an account if there is one,
@@ -760,9 +758,7 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 		}
 		guestName, _ := args["guest_name"].(string)
 		guestPhone, _ := args["guest_phone"].(string)
-		var err error
-		refund, err = s.onBehalf.ResolveOnBehalf(ctx, actor.UserID, &in, reporterID, reporterEmail, guestName, guestPhone)
-		if err != nil {
+		if err := s.onBehalf.ResolveOnBehalf(ctx, actor.UserID, &in, reporterID, reporterEmail, guestName, guestPhone); err != nil {
 			var refusal interface{ Refusal() string }
 			if errors.As(err, &refusal) {
 				return errResult(refusal.Refusal())
@@ -787,10 +783,8 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 
 	t, err := s.tickets.Create(ctx, in)
 	if err != nil {
-		// Nothing was filed, so nothing was mailed and the budget is not spent.
-		if refund != nil {
-			refund()
-		}
+		// No refund of the reporter_email unit, whatever failed: see
+		// Server.ResolveOnBehalf.
 		return storeErr(ctx, "create ticket", err)
 	}
 	return ticketResult(actor.Role, t)

@@ -10,6 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
+	"github.com/publiciallc/go-help-desk/backend/internal/mcp"
 )
 
 // #290, "no enumeration surface": reporter_email must not tell a caller
@@ -205,4 +207,81 @@ func TestOnBehalf_ValidationRefusalsSpendNothing(t *testing.T) {
 	}
 	res := h.postOnBehalf(t, "staff", map[string]any{"reporter_email": "user@test.local", "guest_name": "Ada"})
 	require.Equal(t, http.StatusCreated, res.StatusCode, readBody(t, res))
+}
+
+// A control character in guest_name or guest_phone is refused as validation,
+// for every address. Before, an account's address ignored the fields (201) and
+// an address with no account hit Postgres's refusal of NUL (500, and the unit
+// refunded), so a miss was free.
+func TestOnBehalf_ControlCharacterInGuestFieldsIsRefusedAlike(t *testing.T) {
+	for _, field := range []string{"guest_name", "guest_phone"} {
+		for _, bad := range []string{"a\x00b", "a\x07b"} {
+			body := func(email string) map[string]any {
+				m := map[string]any{"reporter_email": email, "guest_name": "Ada"}
+				m[field] = bad
+				return m
+			}
+			t.Run(fmt.Sprintf("REST/%s/%q", field, bad), func(t *testing.T) {
+				h, cleanup := newHarness(t)
+				defer cleanup()
+				require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeyGuestSubmissionEnabled, true))
+
+				a := h.postOnBehalf(t, "staff", body("user@test.local"))
+				aBody := readBody(t, a)
+				s := h.postOnBehalf(t, "staff", body("stranger@example.test"))
+				sBody := readBody(t, s)
+
+				require.Equal(t, http.StatusBadRequest, a.StatusCode, aBody)
+				require.Equal(t, a.StatusCode, s.StatusCode)
+				require.Equal(t, aBody, sBody)
+			})
+			t.Run(fmt.Sprintf("MCP/%s/%q", field, bad), func(t *testing.T) {
+				h, c, cleanup := newMCPHarness(t)
+				defer cleanup()
+
+				_, aErr := mcpCreate(t, c, body("user@test.local"), h)
+				_, sErr := mcpCreate(t, c, body("stranger@example.test"), h)
+
+				require.NotEmpty(t, aErr)
+				require.Equal(t, aErr, sErr)
+			})
+		}
+	}
+}
+
+// Once a unit is taken it is never given back, not even when Create then
+// fails: a refund after the address is resolved makes a miss free whenever the
+// failure can be provoked for one kind of address only. 39 units, then a
+// create that fails inside Create (the MCP server below has a ticket service
+// whose store is down), then the next attempt is the 41st and gets 429.
+type downStore struct{ ticket.Store }
+
+func (downStore) CategoryExists(context.Context, uuid.UUID) (bool, error) {
+	return false, fmt.Errorf("database is down")
+}
+
+func TestOnBehalf_ACreateThatFailsAfterTheUnitStillCostsIt(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeyGuestSubmissionEnabled, true))
+	c := h.newServiceClient(t, "Filer", "tickets:read", "tickets:write")
+
+	good := newMCPSession(t, h, c.Token)
+	broken := newMCPSessionWith(t, h, c.Token, mcp.New(
+		ticket.NewService(downStore{}, nil, nil, nil, nil, nil), nil, h.srv, h.categorySvc, h.srv))
+	file := func(s *mcpSession, i int) (string, bool) {
+		return s.tool("create_ticket", map[string]any{
+			"subject": "x", "category_id": h.catID.String(),
+			"reporter_email": fmt.Sprintf("walk-in-%d@example.test", i), "guest_name": "Ada"})
+	}
+
+	for i := 0; i < onBehalfMailBudget-1; i++ {
+		text, isErr := file(good, i)
+		require.False(t, isErr, "filing %d: %s", i, text)
+	}
+	_, isErr := file(broken, 1000)
+	require.True(t, isErr, "the create was meant to fail")
+	text, isErr := file(good, 1001)
+	require.True(t, isErr)
+	require.Contains(t, text, "too many", "the failed attempt kept its unit, so this is the 41st")
 }
