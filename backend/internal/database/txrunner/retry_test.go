@@ -44,6 +44,13 @@ type outcome struct {
 // which needs a superuser role: the test role is one) so the closure is
 // always the victim.
 //
+// Order matters, because Postgres checks for a cycle once, a deadlock_timeout
+// after a transaction starts to wait. The closure is therefore held before its
+// insert of Y until the partner is visibly waiting on X (pg_stat_activity), so
+// the closure's check always runs on a cycle that exists. Without that, a
+// partner that is slow to arrive makes the closure's check find nothing and
+// never run again, and the test hangs.
+//
 // Each attempt waits at a gate until the test has put a fresh partner in
 // place, so a retry cannot start while the previous partner still holds
 // anything, whatever the pause between attempts is. Only rows with this
@@ -67,10 +74,22 @@ func runWithDeadlocks(t *testing.T, kills int, finalAttempt bool) outcome {
 		return e
 	}
 	insert := `INSERT INTO audit_log (id, entity_type, entity_id, action) VALUES ($1, 'txrunner-test', $2, 'partner')`
+	// The partner's second insert carries the entity id as a comment, so the
+	// test can find that backend in pg_stat_activity and no other.
+	insertX := "/* " + entityID.String() + " */ " + insert
+	partnerWaiting := func() bool {
+		var n int
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `
+			SELECT count(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%' || $1 || '%'`,
+			entityID.String()).Scan(&n))
+		return n == 1
+	}
 
 	var attempts int
 	gate := make(chan struct{})
 	holdsX := make(chan struct{}, 1)
+	goOn := make(chan struct{})
 	done := make(chan outcome, 1)
 
 	go func() {
@@ -85,6 +104,11 @@ func runWithDeadlocks(t *testing.T, kills int, finalAttempt bool) outcome {
 				return err
 			}
 			holdsX <- struct{}{}
+			select {
+			case <-goOn:
+			case <-time.After(testLimit):
+				return errors.New("the test never let the closure go on")
+			}
 			return au.Create(ctx, row(idY))
 		})
 		done <- outcome{attempts, err}
@@ -101,6 +125,14 @@ func runWithDeadlocks(t *testing.T, kills int, finalAttempt bool) outcome {
 		case <-time.After(testLimit):
 			t.Fatal("the closure never reached its gate")
 			return outcome{}, true
+		}
+	}
+
+	letGo := func() {
+		select {
+		case goOn <- struct{}{}:
+		case <-time.After(testLimit):
+			t.Fatal("the closure never waited to go on")
 		}
 	}
 
@@ -121,10 +153,27 @@ func runWithDeadlocks(t *testing.T, kills int, finalAttempt bool) outcome {
 		case <-time.After(testLimit):
 			t.Fatal("the closure never wrote its first row")
 		}
-		// Closes the cycle. Returns when Postgres has killed the closure and
-		// the closure's transaction is gone.
-		_, err = partner.ExecContext(ctx, insert, idX, entityID)
-		require.NoError(t, err, "the partner was killed instead of the closure")
+		// Reach for X from the partner. It waits on the closure, so it is run
+		// in the background, and bounded: it ends when Postgres kills the
+		// closure, or fails the test at the limit.
+		partnerCtx, cancelPartner := context.WithTimeout(ctx, testLimit)
+		partnerDone := make(chan error, 1)
+		go func() {
+			_, err := partner.ExecContext(partnerCtx, insertX, idX, entityID)
+			partnerDone <- err
+		}()
+		require.Eventually(t, partnerWaiting, testLimit, 5*time.Millisecond, "the partner never waited on the closure")
+		// The cycle can now be completed; the closure's wait on Y starts the
+		// deadlock timer.
+		letGo()
+		select {
+		case err := <-partnerDone:
+			require.NoError(t, err, "the partner was killed (or timed out) instead of the closure")
+		case <-time.After(testLimit):
+			cancelPartner()
+			t.Fatal("no deadlock was detected")
+		}
+		cancelPartner()
 		require.NoError(t, partner.Rollback())
 	}
 	if finalAttempt {
@@ -137,6 +186,7 @@ func runWithDeadlocks(t *testing.T, kills int, finalAttempt bool) outcome {
 		case <-time.After(testLimit):
 			t.Fatal("the final attempt never wrote its first row")
 		}
+		letGo()
 	}
 	select {
 	case o := <-done:
