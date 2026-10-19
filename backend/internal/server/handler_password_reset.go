@@ -21,6 +21,23 @@ func (s *Server) passwordResetAvailable() bool {
 	return s.passwordReset != nil && s.cfg.EmailEnabled()
 }
 
+// forgotPasswordKey is the per-address budget for asking for a reset link. The
+// #453 sign-in refusal spends the same one, so the two cannot be alternated to
+// double it.
+func forgotPasswordKey(r *http.Request) string {
+	return "forgot-password:" + authmw.ClientAddr(r)
+}
+
+// requestPasswordReset queues a reset request for an address; the one path
+// "Forgot password" and the #453 sign-in refusal share. A fault queueing is
+// ours, and answering anything but the usual answer would say something about
+// the address, so it is logged and the caller's answer stands.
+func (s *Server) requestPasswordReset(ctx context.Context, email string) {
+	if err := s.passwordReset.Request(ctx, email); err != nil {
+		slog.ErrorContext(ctx, "password reset request could not be queued", "error", err)
+	}
+}
+
 // POST /api/v1/auth/forgot-password — ask for a link to choose a new password.
 //
 // Always 202 to a well-formed request, whether or not the address has an
@@ -37,7 +54,7 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 	// Counted per source address, as signup is: there is no account to key on,
 	// because whether there is one must not be learned. The per-account limit is
 	// on the send, where it costs the requester no information.
-	if !s.loginLimiter.Allow("forgot-password:" + authmw.ClientAddr(r)) {
+	if !s.loginLimiter.Allow(forgotPasswordKey(r)) {
 		tooManyAttempts(w, s.loginLimiter.Remaining())
 		return
 	}
@@ -48,11 +65,7 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	if err := s.passwordReset.Request(r.Context(), body.Email); err != nil {
-		// A fault queueing is ours, and answering anything but 202 would say
-		// something about the address, so it is logged and the answer stands.
-		slog.ErrorContext(r.Context(), "password reset request could not be queued", "error", err)
-	}
+	s.requestPasswordReset(r.Context(), body.Email)
 	JSON(w, http.StatusAccepted, map[string]string{
 		"message": "If that address has an account, we have emailed it a link to choose a new password.",
 	})

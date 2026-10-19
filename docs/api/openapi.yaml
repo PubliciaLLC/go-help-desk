@@ -598,9 +598,13 @@ paths:
             included. password_reset_required is only given for a correct
             password (a wrong one still answers 401 invalid_credentials and takes
             as long to refuse), leaves the hash as it is, and does not apply to
-            administrators. Its message points at "Forgot password" (POST
-            /auth/forgot-password) when the server can send email, and at an
-            administrator when it cannot; nothing is sent by the refusal itself.
+            administrators. When the server can send email, the refusal itself
+            queues the same reset email POST /auth/forgot-password does (counted
+            against the same per-address budget, and the per-account limit
+            applies when it is sent) and the message says to check email; when
+            it cannot, nothing is sent and the message says to ask an
+            administrator. A wrong password, and the saml_required refusal,
+            send nothing.
             Sent as application/json.
           content:
             application/json:
