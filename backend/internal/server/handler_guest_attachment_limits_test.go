@@ -181,4 +181,3 @@ func TestSiteConfig_CarriesThePerTicketCap(t *testing.T) {
 	cfg := siteConfig(t, h)
 	require.EqualValues(t, 7, cfg["guest_attachment_max_per_ticket"])
 }
-

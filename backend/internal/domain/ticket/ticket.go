@@ -219,8 +219,8 @@ type Attachment struct {
 	// UploadedByGuest is true for a file a guest attached through their link
 	// (#445). The guest cap counts these and nothing else. Never sent to
 	// clients.
-	UploadedByGuest bool `json:"-"`
-	CreatedAt   time.Time `json:"created_at"`
+	UploadedByGuest bool      `json:"-"`
+	CreatedAt       time.Time `json:"created_at"`
 
 	// What the upload actually was, recorded when it arrived. All three are
 	// pointers because nil is a fact: the file predates the inspection, and
