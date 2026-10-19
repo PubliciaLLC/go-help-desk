@@ -3190,10 +3190,11 @@ paths:
         types an address: if it belongs to an account the ticket is filed for
         that account, otherwise it is filed exactly like a guest ticket, so the
         person is sent the guest link at that address. That needs guest
-        submission to be on (400 otherwise, because the link would not open),
-        and guest_name is required (400 without a non-blank one), as on the
-        guest form; guest_phone is kept and optional. An address that belongs to
-        an account needs no name. An account that is filed for (picked, or
+        submission to be on (400 otherwise, because the link would not open).
+        guest_name is required with every reporter_email (400 without a
+        non-blank one), whether or not the address has an account, so its
+        absence says nothing about the address; it is ignored for an account.
+        guest_phone is kept and optional. An account that is filed for (picked, or
         matched by its typed address) is sent the ordinary "We have received
         your ticket" email with a link to the ticket, through the notification
         outbox, unless it is the caller. Either way the caller, not the requester, is the
@@ -3202,12 +3203,16 @@ paths:
         field is never ignored. GET /users/lookup finds an account to pick, in a
         signed-in session only; a key sends reporter_email instead.
 
-        Mail limit: each reporter_email with no account mails a stranger, so
-        one member of staff can file at most 40 such tickets an hour, then 429
-        rate_limited with Retry-After and nothing is created. Only tickets
-        that are filed count: a request that is refused or fails validation
-        does not. A picked reporter_user_id, and a reporter_email that belongs
-        to an account, do not count either. The count is per user, not per address of the
+        Address limit (#290): every reporter_email that passes validation uses
+        one of the caller's 40 an hour before the address is looked up, whether
+        or not it has an account, then 429 rate_limited with Retry-After and
+        nothing is created. That includes the refusal for guest submission
+        being off, which is not refunded: it is how an address is learned
+        about, and learning is bounded at 40 an hour. Validation comes first
+        and costs nothing: the subject, priority, category, type and item, the
+        address's form, and guest_name are all checked before, and refused the
+        same way for every address. The unit is given back only when the create
+        itself then fails. A picked reporter_user_id is not counted. The count is per user, not per address of the
         request: a machine credential counts against the user it acts as, and
         another member of staff is unaffected. It is kept in memory, so it
         resets when the server restarts and each replica of a multi-instance
@@ -3258,7 +3263,7 @@ paths:
                   description: Staff and administrators only. An address the ticket is for. An account's address files for the account; any other makes a guest ticket and mails the guest link there (guest submission must be on). Not with reporter_user_id.
                 guest_name:
                   type: string
-                  description: With reporter_email and no account behind it, the guest's name. Required (400 when missing or blank); not used when the address belongs to an account.
+                  description: With reporter_email, the name. Required (400 when missing or blank), whether or not the address has an account; used only for an address with no account.
                 guest_phone:
                   type: string
                   description: With reporter_email and no account behind it, the guest's phone. Optional.
@@ -3282,8 +3287,9 @@ paths:
             staff and administrators also: both reporter_user_id and
             reporter_email were sent, reporter_user_id is not a live account,
             reporter_email is not a plain address (reporter_email: ...), or
-            reporter_email has no account and guest submission is off, or it has
-            no account and guest_name is missing or blank.
+            reporter_email has no account and guest submission is off, or
+            guest_name is missing or blank with reporter_email. 429
+            rate_limited when the caller's 40 an hour for reporter_email are used.
           content:
             application/json:
               schema:

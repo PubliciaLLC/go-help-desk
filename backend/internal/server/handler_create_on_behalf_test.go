@@ -143,7 +143,7 @@ func TestCreateTicket_OnBehalf_TypedAddressOfAnAccountFilesForTheAccount(t *test
 	defer cleanup()
 	h.dispatcher.record = true
 
-	tk := decodeTicket(t, h.postOnBehalf(t, "staff", map[string]any{"reporter_email": "User@Test.local"}))
+	tk := decodeTicket(t, h.postOnBehalf(t, "staff", map[string]any{"reporter_email": "User@Test.local", "guest_name": "Ada"}))
 
 	require.NotNil(t, tk.ReporterUserID)
 	require.Equal(t, h.userID, *tk.ReporterUserID)
@@ -166,13 +166,13 @@ func TestCreateTicket_OnBehalf_TypedAddressNeedsGuestSubmission(t *testing.T) {
 	require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeyGuestSubmissionEnabled, false))
 	before := ticketCount(t, h)
 
-	res := h.postOnBehalf(t, "staff", map[string]any{"reporter_email": "nobody@example.test"})
+	res := h.postOnBehalf(t, "staff", map[string]any{"reporter_email": "nobody@example.test", "guest_name": "Ada"})
 	body := readBody(t, res)
 	require.Equal(t, http.StatusBadRequest, res.StatusCode, body)
 	require.Contains(t, body, "guest submission")
 	require.Equal(t, before, ticketCount(t, h), "nothing was filed")
 
-	tk := decodeTicket(t, h.postOnBehalf(t, "staff", map[string]any{"reporter_email": "user@test.local"}))
+	tk := decodeTicket(t, h.postOnBehalf(t, "staff", map[string]any{"reporter_email": "user@test.local", "guest_name": "Ada"}))
 	require.NotNil(t, tk.ReporterUserID, "an account's address still works")
 }
 
@@ -333,7 +333,7 @@ func TestCreateTicket_OnBehalf_NotifiesTheAccountFiledFor(t *testing.T) {
 			return map[string]any{"reporter_user_id": h.userID.String()}
 		}, "user@test.local"},
 		{"a typed address that matches an account", "staff", func(*harness) map[string]any {
-			return map[string]any{"reporter_email": " User@Test.local "}
+			return map[string]any{"reporter_email": " User@Test.local ", "guest_name": "Ada"}
 		}, "user@test.local"},
 		{"staff file their own ticket", "staff", func(*harness) map[string]any { return nil }, ""},
 		{"staff pick themselves", "staff", func(h *harness) map[string]any {
@@ -371,7 +371,10 @@ func TestCreateTicket_OnBehalf_TypedAddressNeedsAName(t *testing.T) {
 		{"a blank name", map[string]any{"reporter_email": "new@example.test", "guest_name": "  \t"}, http.StatusBadRequest, "name is required"},
 		{"a name, no phone", map[string]any{"reporter_email": "new@example.test", "guest_name": "Ada"}, http.StatusCreated, ""},
 		{"a name and a phone", map[string]any{"reporter_email": "new@example.test", "guest_name": "Ada", "guest_phone": "555-0100"}, http.StatusCreated, ""},
-		{"an account's address, no name", map[string]any{"reporter_email": "user@test.local"}, http.StatusCreated, ""},
+		// Required for every typed address (#290), so its absence says nothing
+		// about whether the address has an account.
+		{"an account's address, no name", map[string]any{"reporter_email": "user@test.local"}, http.StatusBadRequest, "name is required"},
+		{"an account's address, with a name", map[string]any{"reporter_email": "user@test.local", "guest_name": "Ada"}, http.StatusCreated, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

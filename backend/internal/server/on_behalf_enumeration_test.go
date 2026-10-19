@@ -99,3 +99,110 @@ func TestOnBehalf_MCP_BadRequestAnswersTheSameForEveryAddress(t *testing.T) {
 		}
 	}
 }
+
+// The rest of the bound (#290): once a request passes validation, an address
+// is only ever learned by spending one of the caller's 40 units an hour. A
+// missing guest_name is refused for every address alike, an account's included.
+
+func TestOnBehalf_NoGuestNameIsRefusedAlikeForEveryAddress(t *testing.T) {
+	for _, guestOn := range []bool{true, false} {
+		t.Run(fmt.Sprintf("REST/guest_submission=%v", guestOn), func(t *testing.T) {
+			h, cleanup := newHarness(t)
+			defer cleanup()
+			require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeyGuestSubmissionEnabled, guestOn))
+			account, stranger := twoAddresses()
+
+			a := h.postOnBehalf(t, "staff", account)
+			aBody := readBody(t, a)
+			s := h.postOnBehalf(t, "staff", stranger)
+			sBody := readBody(t, s)
+
+			require.Equal(t, http.StatusBadRequest, a.StatusCode, aBody)
+			require.Contains(t, aBody, "name is required")
+			require.Equal(t, a.StatusCode, s.StatusCode)
+			require.Equal(t, aBody, sBody)
+		})
+		t.Run(fmt.Sprintf("MCP/guest_submission=%v", guestOn), func(t *testing.T) {
+			h, c, cleanup := newMCPHarness(t)
+			defer cleanup()
+			require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeyGuestSubmissionEnabled, guestOn))
+			account, stranger := twoAddresses()
+
+			_, aErr := mcpCreate(t, c, account, h)
+			_, sErr := mcpCreate(t, c, stranger, h)
+
+			require.Contains(t, aErr, "name is required")
+			require.Equal(t, aErr, sErr)
+		})
+	}
+}
+
+// With guest submission off an address with no account is refused, and the
+// refusal still costs a unit: 41 probes, the 41st is 429.
+func TestOnBehalf_GuestSubmissionOff_ProbesAreCappedAt40(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeyGuestSubmissionEnabled, false))
+
+	for i := 0; i < onBehalfMailBudget; i++ {
+		res := h.postOnBehalf(t, "staff", map[string]any{
+			"reporter_email": fmt.Sprintf("probe-%d@example.test", i), "guest_name": "Ada"})
+		body := readBody(t, res)
+		require.Equal(t, http.StatusBadRequest, res.StatusCode, "probe %d: %s", i, body)
+		require.Contains(t, body, "guest submission")
+	}
+	res := h.postOnBehalf(t, "staff", map[string]any{"reporter_email": "probe-41@example.test", "guest_name": "Ada"})
+	require.Equal(t, http.StatusTooManyRequests, res.StatusCode, readBody(t, res))
+}
+
+func TestOnBehalf_MCP_GuestSubmissionOff_ProbesAreCappedAt40(t *testing.T) {
+	h, c, cleanup := newMCPHarness(t)
+	defer cleanup()
+	require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeyGuestSubmissionEnabled, false))
+
+	for i := 0; i < onBehalfMailBudget; i++ {
+		_, errText := mcpCreate(t, c, map[string]any{
+			"reporter_email": fmt.Sprintf("probe-%d@example.test", i), "guest_name": "Ada"}, h)
+		require.Contains(t, errText, "guest submission", "probe %d", i)
+	}
+	_, errText := mcpCreate(t, c, map[string]any{"reporter_email": "probe-41@example.test", "guest_name": "Ada"}, h)
+	require.Contains(t, errText, "too many")
+}
+
+// Filing for an address that has an account spends a unit too.
+func TestOnBehalf_AccountAddressSpendsAUnit(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeyGuestSubmissionEnabled, true))
+
+	for i := 0; i < onBehalfMailBudget; i++ {
+		res := h.postOnBehalf(t, "staff", map[string]any{"reporter_email": "user@test.local", "guest_name": "Ada"})
+		require.Equal(t, http.StatusCreated, res.StatusCode, "filing %d: %s", i, readBody(t, res))
+		res.Body.Close()
+	}
+	res := h.postOnBehalf(t, "staff", map[string]any{"reporter_email": "user@test.local", "guest_name": "Ada"})
+	require.Equal(t, http.StatusTooManyRequests, res.StatusCode, readBody(t, res))
+	// A picked id is not an address probe and is not counted.
+	res = h.postOnBehalf(t, "staff", map[string]any{"reporter_user_id": h.userID.String()})
+	require.Equal(t, http.StatusCreated, res.StatusCode, readBody(t, res))
+}
+
+// A request refused by validation spends nothing: it taught the caller
+// nothing about any address.
+func TestOnBehalf_ValidationRefusalsSpendNothing(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeyGuestSubmissionEnabled, true))
+
+	for i := 0; i < onBehalfMailBudget+5; i++ {
+		res := h.postOnBehalf(t, "staff", map[string]any{
+			"reporter_email": "user@test.local", "guest_name": "Ada", "category_id": uuid.NewString()})
+		require.Equal(t, http.StatusBadRequest, res.StatusCode, "bad category %d", i)
+		res.Body.Close()
+		res = h.postOnBehalf(t, "staff", map[string]any{"reporter_email": "user@test.local"})
+		require.Equal(t, http.StatusBadRequest, res.StatusCode, "no name %d", i)
+		res.Body.Close()
+	}
+	res := h.postOnBehalf(t, "staff", map[string]any{"reporter_email": "user@test.local", "guest_name": "Ada"})
+	require.Equal(t, http.StatusCreated, res.StatusCode, readBody(t, res))
+}

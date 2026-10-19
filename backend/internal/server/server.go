@@ -212,13 +212,14 @@ type Server struct {
 	// straight away, and turns a sustained lockout into an inconvenience.
 	guestResendLimiter *authmw.RateLimiter
 
-	// onBehalfMailLimiter caps how many tickets one member of staff can file
-	// for an address that has no account (#444): each one mails a stranger the
-	// "we have received your ticket" message with a link, so without a cap a
-	// compromised or careless staff session is a way to send mail to anyone.
-	// Keyed on the authenticated user, never on the address of the request: a
-	// machine credential is its owner. Only that path spends it; a picked user
-	// or a typed address that belongs to an account does not.
+	// onBehalfMailLimiter caps how many times one member of staff can use
+	// reporter_email in an hour (#290, #444): each one may mail a stranger the
+	// "we have received your ticket" message with a link, and each answers
+	// differently for an address with an account, so unbounded it is both a way
+	// to send mail to anyone and a way to learn who has an account. Every
+	// attempt that passes validation spends a unit, account or not; a picked
+	// reporter_user_id does not. Keyed on the authenticated user, never on the
+	// address of the request: a machine credential is its owner.
 	//
 	// INTERIM, like loginLimiter: in memory and per process, so a restart
 	// clears every count and N replicas multiply the cap by N. Its window is

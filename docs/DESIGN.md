@@ -1466,9 +1466,10 @@ ticket for someone else, which is how a phone-in request is recorded. `POST
   can sign in. **Otherwise it is filed exactly like a guest ticket**: the same
   creation path, the person is sent the same guest link at that address (read
   and reply, read-only once the ticket closes, replaced when the ticket changes
-  in a way they are told about). **`guest_name` is required, exactly as on the
-  guest form** (`400` without a non-blank one); `guest_phone` is optional and
-  kept. An address that matches an account needs no name. Guest links
+  in a way they are told about). **`guest_name` is required with every
+  `reporter_email`** (`400` without a non-blank one), whether or not the address
+  has an account, so that its absence says nothing about the address; it is
+  ignored for an account. `guest_phone` is optional and kept. Guest links
   are suspended while guest submission is off (#424), so a typed address with no
   account behind it is `400` then, and nothing is filed; an address that belongs
   to an account is not affected. Only the requester's identity follows the guest
@@ -1490,14 +1491,16 @@ mailed about it, as before; nor is a requester who files theirs. A typed
 address with no account is filed as a guest ticket and gets the guest link, as
 above.
 
-**Mail limit on the typed-address path.** A typed address with no account mails
-a stranger on a staff member's say-so alone, so those are capped: **40 per
-hour per staff member**, and the 41st is `429 rate_limited` with `Retry-After`
-(the time left in the window) and files nothing. What is counted is tickets
-filed: a request refused for any other reason, or that fails validation, is not
-counted. Filing for an existing account is not counted either: a picked user,
-and a typed address that matches an account, spend nothing and are not stopped
-by a spent budget. The key is the authenticated user, not the
+**Budget on the typed-address path (#290).** A typed address mails a stranger
+on a staff member's say-so alone, and is also the one way to learn whether an
+address has an account, so every attempt is capped: **40 per hour per staff
+member**, and the 41st is `429 rate_limited` with `Retry-After` (the time left
+in the window) and files nothing. Every `reporter_email` that passes validation
+takes a unit before the address is looked up, account or not, and the refusal
+for guest submission being off is not given back. A request refused by
+validation spends nothing, and a unit is given back only when `Create` itself
+then fails (a database error). A picked `reporter_user_id` is not counted and
+is not stopped by a spent budget. The key is the authenticated user, not the
 address of the request, so an API key or OAuth client counts against the user it
 acts as (the same budget as that person's own session), and another staff
 member is unaffected. The figure is fixed, not configurable. Like the credential
@@ -1550,23 +1553,22 @@ every check that does not depend on the address (subject and description,
 priority, the category, type and item existing, belonging together and being
 open: `ticket.Service.ValidateCreate`) **before** it looks the address up, so a
 request that was going to fail anyway gets the same answer for every address,
-over REST and MCP, with guest submission on or off. Only a request that
-would otherwise be filed reaches the address, and then the answer is the
-ticket (`201`, with `reporter_user_id` when there is an account) or, for an
-address with no account, one of three things only that case can hit: `name is
-required for an address with no account`, `guest submission is off`, or `429`
-once 40 such tickets have been filed in the hour. So a "yes" costs a filed
-ticket, and an address with no account is told so without one only when the
-caller leaves the name out or guest submission is off. That residue is
-inherent in "an account if one exists, otherwise a guest": the two outcomes
-differ, and it is what the "leak accepted" ruling covers.
+over REST and MCP, with guest submission on or off. `guest_name` is required with every
+`reporter_email`, checked with the rest, so leaving it out is refused the same
+way for every address. Only after all that does the address take a unit of the
+40-an-hour budget and get looked up. The answer is then the ticket (`201`, with
+`reporter_user_id` when there is an account) or, for an address with no
+account, `guest submission is off` (the unit is not given back). So every
+probe that learns anything costs a unit, or a filed ticket and a unit, and
+probing is bounded at 40 an hour per staff member, over REST and MCP together.
+That is what the "leak accepted" ruling covers.
 
 MCP `create_ticket` takes `reporter_user_id` or `reporter_email` (never both),
 `guest_name` and `guest_phone`, with the REST rule, from the same code
 (`Server.ResolveOnBehalf`, which REST's handler calls too): the same address
 rules, the same account-or-guest resolution, the same refusal while guest
-submission is off, the same name requirement, the same 40-an-hour cap (one
-budget per staff member across REST and MCP), the same created mail. A refusal
+submission is off, the same name requirement (always), the same 40-an-hour budget (one
+per staff member across REST and MCP), the same created mail. A refusal
 comes back as the tool's error text. `reporter_user_id` stays, because existing
 callers send it. **When either names someone other than the caller, the caller
 is the actor** of the creation, as on REST (`CreateInput.FiledBy`), and the
@@ -2404,7 +2406,7 @@ Exposes help desk operations as an MCP server for AI tool integration, over two 
 | `list_tickets` | any signed-in user | Optional `assignee_user_id`, `status_id`, `priority`, `category_id`, `q` filters. `limit` defaults to 20 and is clamped to 100; `offset` pages the full result set. |
 | `list_categories` | any signed-in user | The Category/Type/Item tree, nested, for filling in CTI. Active entries only; `include_inactive: true` adds retired ones (the tool applies no role check to it, unlike the REST catalogue, which shows archived entries to staff and administrators only). |
 | `list_statuses` | any signed-in user | The statuses this instance defines. |
-| `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` or `reporter_email` (with `guest_name` for an address with no account) names the subject of the ticket; both are absent by default and the caller is the subject. |
+| `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` or `reporter_email` (with `guest_name`, always required with the address) names the subject of the ticket; both are absent by default and the caller is the subject. |
 | `add_reply` | staff, admin | A public reply emails the requester exactly as the REST reply does (#442): the guest's address (with a guest link) or the reporting account's, through one shared rule, `ticket.Service.ReplyRecipient`. No mail is sent when the requester has no address on record or the account is gone, or when the requester is a staff member or administrator writing the reply on a ticket they filed (they are not mailed a copy of their own reply, over REST or MCP; an ordinary requester replying on their own ticket still is); the reply is still saved. `internal: true` posts a staff-only note and never notifies the requester. There is no `notify_customer` option over MCP: a public reply always notifies. |
 | `assign_ticket` | staff, admin | To a user (`assignee_user_id`) or a group (`assignee_group_id`). To take the ticket off whoever has it, pass `clear_assignee: true` (the audit entry is `unassigned`); it cannot be combined with an assignee id, and omitting everything is refused rather than read as unassigning, because that silently took tickets off the people working them. |
 | `update_ticket_status` | staff, admin | Target status must be one the caller's role may transition to. A ticket in Closed cannot be moved out of it unless `closed_reopen_policy` lets the caller's role (#349; off by default): the result says reopening is disabled or restricted and points at `create_follow_up`. There is no separate reopen tool and never was; this is MCP's path out of Closed, through the same service rule as REST. A move out of Resolved or Closed is a reopen like any other (flagged, priority raised on the first, SLA restarted, staff mailed), with the caller as the actor. |

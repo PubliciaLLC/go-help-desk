@@ -563,14 +563,13 @@ func (e *OnBehalfError) Refusal() string { return e.Message }
 // create_ticket gets. A typed address that belongs to an account files for that
 // account; any other is filed exactly like a guest ticket (the guest creation
 // path, so the same address rules and the same link by email), which is a
-// dead end while guest submission is off, so it is refused then (#424). Like
-// the guest form it needs a name (the phone number stays optional).
+// dead end while guest submission is off, so it is refused then (#424). A name
+// (guest_name) is required for every typed address, an account's included.
 //
-// That last case mails a stranger, so it is the one that is capped: at most
-// onBehalfMailPerHour filed tickets a staff member, then a 429 refusal (see
-// Server.onBehalfMailLimiter). The limiter is spent here, so the caller must
-// call refund if the ticket is then not filed. Failures that are not the
-// caller's doing come back as plain errors.
+// Every typed address that passes validation takes one of the caller's
+// onBehalfMailPerHour units an hour before it is resolved, then a 429 refusal
+// (see Server.onBehalfMailLimiter). The caller must call refund if Create then
+// fails. Failures that are not the caller's doing come back as plain errors.
 func (s *Server) ResolveOnBehalf(ctx context.Context, actorID uuid.UUID, in *ticket.CreateInput,
 	id *uuid.UUID, email *string, guestName, guestPhone string) (refund func(), err error) {
 	bad := func(msg string) (func(), error) {
@@ -600,36 +599,47 @@ func (s *Server) ResolveOnBehalf(ctx context.Context, actorID uuid.UUID, in *tic
 	if err != nil {
 		return bad("reporter_email: " + err.Error())
 	}
+	// A name is required whether or not the address has an account (it is
+	// ignored for one), so that its absence says nothing about the address.
+	// Checked here, with the other validation and before the address is
+	// resolved or a unit is spent.
+	if strings.TrimSpace(guestName) == "" {
+		return bad("guest_name: name is required with reporter_email")
+	}
+	// From here on the answer depends on the address, so each attempt costs a
+	// unit of the caller's hourly budget, account or not, and the refusal for
+	// guest submission being off is not refunded: with it off an address with
+	// no account costs a unit and an address with one files a ticket and costs
+	// a unit, so learning about an address is bounded at onBehalfMailPerHour an
+	// hour per staff member either way. Spent now rather than checked now and
+	// spent after Create, so requests in flight together cannot all pass a
+	// budget with one slot left. The caller gives it back only if Create
+	// itself fails, which does not depend on the address.
+	key := actorID.String()
+	taken, window := s.onBehalfMailLimiter.Take(key)
+	if !taken {
+		return nil, &OnBehalfError{
+			Status: http.StatusTooManyRequests, Code: "rate_limited",
+			Message:    "too many tickets filed with reporter_email; please wait and try again",
+			RetryAfter: s.onBehalfMailLimiter.Remaining(),
+		}
+	}
+	refund = func() { s.onBehalfMailLimiter.Refund(key, window) }
 	u, err := s.users.GetByEmail(ctx, addr)
 	switch {
 	case err == nil:
 		in.ReporterUserID = &u.ID
 	case errors.Is(err, user.ErrNotFound):
 		if !s.adminSvc.GuestSubmissionEnabled(ctx) {
-			return bad("reporter_email has no account, and guest submission is off, so the link to the ticket could not be used")
+			return nil, &OnBehalfError{Status: http.StatusBadRequest, Code: "bad_request",
+				Message: "reporter_email has no account, and guest submission is off, so the link to the ticket could not be used"}
 		}
-		// The guest form's rule: a name is required, a phone number is not.
-		if strings.TrimSpace(guestName) == "" {
-			return bad("name is required for an address with no account")
-		}
-		// Last, so a request that was going to be refused anyway spends nothing.
-		// Spent now rather than checked now and spent after Create, so requests
-		// in flight together cannot all pass a budget with one slot left; the
-		// caller gives it back if the ticket is not filed.
-		key := actorID.String()
-		ok, window := s.onBehalfMailLimiter.Take(key)
-		if !ok {
-			return nil, &OnBehalfError{
-				Status: http.StatusTooManyRequests, Code: "rate_limited",
-				Message:    "too many tickets filed for addresses with no account; please wait and try again",
-				RetryAfter: s.onBehalfMailLimiter.Remaining(),
-			}
-		}
-		refund = func() { s.onBehalfMailLimiter.Refund(key, window) }
 		in.GuestEmail = &addr
 		in.GuestName = strings.TrimSpace(guestName)
 		in.GuestPhone = strings.TrimSpace(guestPhone)
 	default:
+		// Our failure, not an answer about the address.
+		refund()
 		return nil, err
 	}
 	return refund, nil

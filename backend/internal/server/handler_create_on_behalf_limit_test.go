@@ -61,21 +61,18 @@ func TestCreateTicket_OnBehalf_TypedAddressIsCappedPerHour(t *testing.T) {
 	require.Equal(t, before, ticketCount(t, h), "the refused one created nothing")
 }
 
-// Only an address that would be mailed fresh counts. A picked user and a typed
-// address that matches an account neither spend the budget nor are stopped by
-// it.
-func TestCreateTicket_OnBehalf_AccountsDoNotSpendTheBudget(t *testing.T) {
+// A picked user is not an address probe: it neither spends the budget nor is
+// stopped by it. (A typed address spends a unit whether or not it has an
+// account: see TestOnBehalf_AccountAddressSpendsAUnit.)
+func TestCreateTicket_OnBehalf_PickedUsersDoNotSpendTheBudget(t *testing.T) {
 	h, cleanup := newLimitHarness(t)
 	defer cleanup()
 	picked := map[string]any{"reporter_user_id": h.userID.String()}
-	matching := map[string]any{"reporter_email": "user@test.local"}
 
-	for i := 0; i < 5; i++ {
-		for _, extra := range []map[string]any{picked, matching} {
-			res := h.postOnBehalf(t, "staff", extra)
-			require.Equal(t, http.StatusCreated, res.StatusCode, readBody(t, res))
-			res.Body.Close()
-		}
+	for i := 0; i < 10; i++ {
+		res := h.postOnBehalf(t, "staff", picked)
+		require.Equal(t, http.StatusCreated, res.StatusCode, readBody(t, res))
+		res.Body.Close()
 	}
 	// If those ten had counted, the last of these would be refused.
 	for i := 0; i < onBehalfMailBudget; i++ {
@@ -86,11 +83,9 @@ func TestCreateTicket_OnBehalf_AccountsDoNotSpendTheBudget(t *testing.T) {
 	require.Equal(t, http.StatusTooManyRequests, typedNew(t, h, "staff", onBehalfMailBudget).StatusCode)
 
 	// And a spent budget does not stop them.
-	for _, extra := range []map[string]any{picked, matching} {
-		res := h.postOnBehalf(t, "staff", extra)
-		require.Equal(t, http.StatusCreated, res.StatusCode, readBody(t, res))
-		res.Body.Close()
-	}
+	res := h.postOnBehalf(t, "staff", picked)
+	require.Equal(t, http.StatusCreated, res.StatusCode, readBody(t, res))
+	res.Body.Close()
 }
 
 // The budget belongs to the staff member: another one is unaffected.
@@ -148,10 +143,10 @@ func TestCreateTicket_OnBehalf_BudgetFollowsTheCredentialsUser(t *testing.T) {
 // there are more of them than the budget; then a full budget of valid requests
 // must still all succeed and the next one be the 429.
 //
-// The rows that stop before the limiter (guest submission off, no name, a bad
-// address) are here to pin where the spend sits: put it ahead of those checks
-// and they go red. The rest are refused by Create, after the spend, and are
-// the ones that need the refund.
+// The rows that stop before the limiter (no name, a bad address, every
+// validation) are here to pin where the spend sits: put it ahead of those
+// checks and they go red. Guest submission being off is deliberately not a row:
+// that refusal is NOT refunded (#290, see TestOnBehalf_GuestSubmissionOff_ProbesAreCappedAt40).
 func TestCreateTicket_OnBehalf_OnlyFiledTicketsSpendTheBudget(t *testing.T) {
 	type row struct {
 		name  string
@@ -166,10 +161,6 @@ func TestCreateTicket_OnBehalf_OnlyFiledTicketsSpendTheBudget(t *testing.T) {
 		}
 		return m
 	}
-	guest := func(t *testing.T, h *harness, on bool) {
-		t.Helper()
-		require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeyGuestSubmissionEnabled, on))
-	}
 	var tree archivedTree
 	buildTree := func(archive bool) func(t *testing.T, h *harness) {
 		return func(t *testing.T, h *harness) {
@@ -181,10 +172,6 @@ func TestCreateTicket_OnBehalf_OnlyFiledTicketsSpendTheBudget(t *testing.T) {
 	}
 
 	rows := []row{
-		{name: "guest submission off",
-			setup: func(t *testing.T, h *harness) { guest(t, h, false) },
-			bad:   func(i int) map[string]any { return typed(i, nil) },
-			after: func(t *testing.T, h *harness) { guest(t, h, true) }},
 		{name: "no name",
 			bad: func(i int) map[string]any { return typed(i, map[string]any{"guest_name": "   "}) }},
 		{name: "invalid email",

@@ -552,8 +552,8 @@ func (s *Server) registerTools() {
 		// reporter_email is how a key files for someone it cannot look up
 		// (#290): there is no user lookup for machine credentials. The server
 		// resolves it, the same way REST's reporter_email does.
-		mcpgo.WithString("reporter_email", mcpgo.Description("Email address of the person the ticket is for. Files for their account if one exists, otherwise as a guest ticket (then guest_name is required, and the guest is emailed a link). Max 40 tickets an hour per staff member for addresses with no account. Not with reporter_user_id.")),
-		mcpgo.WithString("guest_name", mcpgo.Description("With reporter_email and no account behind it: the guest's name. Required in that case.")),
+		mcpgo.WithString("reporter_email", mcpgo.Description("Email address of the person the ticket is for. Files for their account if one exists, otherwise as a guest ticket (guest submission must be on, and the guest is emailed a link). guest_name is always required with reporter_email, whether or not the address has an account. Each attempt that passes validation uses one of 40 an hour per staff member. Not with reporter_user_id.")),
+		mcpgo.WithString("guest_name", mcpgo.Description("With reporter_email: the name. Required, whether or not the address has an account (ignored for an account).")),
 		mcpgo.WithString("guest_phone", mcpgo.Description("With reporter_email and no account behind it: the guest's phone (optional).")),
 	), scoped(mcpWrite, s.handleCreateTicket))
 

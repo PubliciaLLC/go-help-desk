@@ -57,7 +57,7 @@ func TestMCPCreateTicket_ReporterEmailOfAnAccountFilesForTheAccount(t *testing.T
 	h, c, cleanup := newMCPHarness(t)
 	defer cleanup()
 
-	tk, errText := mcpCreate(t, c, map[string]any{"reporter_email": " User@Test.local "}, h)
+	tk, errText := mcpCreate(t, c, map[string]any{"reporter_email": " User@Test.local ", "guest_name": "Ada"}, h)
 	require.Empty(t, errText)
 	require.NotNil(t, tk.ReporterUserID)
 	require.Equal(t, h.userID, *tk.ReporterUserID)
@@ -96,7 +96,7 @@ func TestMCPCreateTicket_ReporterEmailWithNoAccountIsAGuestTicket(t *testing.T) 
 // Same outcome as REST for the same request: same created mail, same actor.
 func TestMCPCreateTicket_ReporterEmailMatchesREST(t *testing.T) {
 	for name, extra := range map[string]map[string]any{
-		"an account":            {"reporter_email": "user@test.local"},
+		"an account":            {"reporter_email": "user@test.local", "guest_name": "Ada"},
 		"an address no account": {"reporter_email": "walk-in@example.test", "guest_name": "Ada"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -157,15 +157,15 @@ func TestMCPCreateTicket_ReporterEmailRefusals(t *testing.T) {
 		require.Contains(t, errText, "guest submission")
 		require.Equal(t, before, ticketCount(t, h))
 
-		tk, errText := mcpCreate(t, c, map[string]any{"reporter_email": "user@test.local"}, h)
+		tk, errText := mcpCreate(t, c, map[string]any{"reporter_email": "user@test.local", "guest_name": "Ada"}, h)
 		require.Empty(t, errText, "an account's address still works")
 		require.NotNil(t, tk.ReporterUserID)
 	})
 }
 
-// The 40-an-hour cap on addresses with no account is one budget per staff
-// member across both surfaces: MCP spends REST's, and neither is a way round
-// the other. Accounts spend nothing.
+// The 40-an-hour budget is one per staff member across both surfaces: MCP
+// spends REST's, and neither is a way round the other. An address spends a unit
+// whether or not it has an account.
 func TestMCPCreateTicket_ReporterEmailIsCappedWithRESTsBudget(t *testing.T) {
 	h, c, cleanup := newMCPHarness(t)
 	defer cleanup()
@@ -175,8 +175,8 @@ func TestMCPCreateTicket_ReporterEmailIsCappedWithRESTsBudget(t *testing.T) {
 			"reporter_email": fmt.Sprintf("walk-in-%d@example.test", i), "guest_name": "Ada"}, h)
 		require.Empty(t, errText, "typed #%d", i)
 	}
-	// The last slot goes to REST...
-	res := typedNew(t, h, "staff", 1000)
+	// The last slot goes to REST, for an account...
+	res := h.postOnBehalf(t, "staff", map[string]any{"reporter_email": "user@test.local", "guest_name": "Ada"})
 	require.Equal(t, http.StatusCreated, res.StatusCode, readBody(t, res))
 	before := ticketCount(t, h)
 
@@ -185,9 +185,11 @@ func TestMCPCreateTicket_ReporterEmailIsCappedWithRESTsBudget(t *testing.T) {
 	require.Contains(t, errText, "too many")
 	require.Equal(t, before, ticketCount(t, h), "the refused one created nothing")
 	require.Equal(t, http.StatusTooManyRequests, typedNew(t, h, "staff", 1001).StatusCode, "and REST agrees")
+	_, errText = mcpCreate(t, c, map[string]any{"reporter_email": "user@test.local", "guest_name": "Ada"}, h)
+	require.Contains(t, errText, "too many", "an account's address is held to it too")
 
-	// An account is not what the cap is for.
-	_, errText = mcpCreate(t, c, map[string]any{"reporter_email": "user@test.local"}, h)
+	// A picked id is not an address probe.
+	_, errText = mcpCreate(t, c, map[string]any{"reporter_user_id": h.userID.String()}, h)
 	require.Empty(t, errText)
 }
 
