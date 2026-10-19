@@ -240,7 +240,7 @@
   <li><strong>The lifecycle runs itself.</strong> An auto-close sweep runs every five minutes. A reopen window of 0 closes a resolved ticket on the next sweep.</li>
   <li><strong>SLA tracking end to end.</strong> Timers pause while a ticket is Pending, a breach sweep runs, and the indicators are colour-coded. The switch is under <strong>Admin → Settings</strong>.</li>
   <li><strong>Reporters can attach files to replies.</strong> <a href="#reporter-attachments">Details</a></li>
-  <li><strong>Works on a phone.</strong> Staff triage and reporters can use the app on a phone. Administration stays on the desktop. <a href="https://github.com/PubliciaLLC/go-help-desk/blob/v1.3.0/docs/DESIGN.md#small-screens">Design notes</a></li>
+  <li><strong>Works on a phone.</strong> Staff triage and reporters can use the app on a phone. The admin pages fit a phone too, though they are designed for a desk. <a href="https://github.com/PubliciaLLC/go-help-desk/blob/v1.3.0/docs/DESIGN.md#small-screens">Design notes</a></li>
   <li><strong>First-run setup creates a category.</strong> A new instance can file a ticket straight away. <a href="getting-started.html#first-run">First-run setup</a></li>
   <li><strong>A readable audit log.</strong> A per-ticket activity feed and an admin-wide searchable view. <a href="admin-guide.html#admin-audit">Audit log</a></li>
   <li><strong>Staff email and followers.</strong> Staff are emailed when a ticket is assigned to them or their group, when a requester replies, and when a ticket is reopened, and can follow any ticket to get the same mail. <a href="#staff-email">Staff email</a>, <a href="#followers">Followers</a></li>
@@ -861,7 +861,7 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 <h2 id="phone-text">Long text wraps on phones</h2>
 
 <p><strong>Who notices:</strong> staff and requesters on phones. Nothing to change.</p>
-<p>A long word or link in ticket content now wraps at the edge of its box down to 320 pixels wide and is never shortened, so it stays whole and copyable. Ten compact places still end in "…", each showing its full text on hover. On a narrow screen the ticket header's action buttons sit on their own row under the title. <a href="tickets.html#tickets-phone">Details</a></p>
+<p>A long word or link in ticket content now wraps at the edge of its box down to 320 pixels wide and is never shortened, so it stays whole and copyable. Fourteen compact places still end in "…", each showing its full text on hover (the exception is the SAML private key line, which is never shown in full). On a narrow screen the ticket header's action buttons sit on their own row under the title. Every admin page also fits a phone now: nothing scrolls sideways at 320 pixels, a wide table scrolls inside its own box with every column and button reachable, and long names, descriptions and URLs wrap. <a href="tickets.html#tickets-phone">Details</a></p>
 
 <h2 id="deleted-user-tickets">Tickets left assigned to a deleted user go back to the queue</h2>
 
