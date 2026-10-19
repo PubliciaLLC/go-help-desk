@@ -894,22 +894,44 @@ test.describe('#517 round 4: sign-in page with a long site name', () => {
 })
 
 // #522: the admin pages, at the narrowest phone (320) and a common one (375),
-// with 300-character unbroken names, descriptions and URLs. Short data is
-// tested too where a page already overflowed without long data.
+// with 300-character unbroken names, descriptions and URLs, and with short data
+// (several pages overflowed with nothing long in them).
 //
-// Measures main AND the document: #522 saw main at 2433px and the document at
-// 557px on Webhooks, and either one scrolling sideways is the bug.
+// Three checks, because each catches what the others cannot:
+//  - main's scrollWidth: #522 saw main at 2433px on Webhooks.
+//  - the document's scrollWidth: it saw the document at 557px there.
+//  - no element sticks out past main's right edge unless an overflow-x
+//    auto/scroll box sits between it and main. scrollWidth alone is blind to
+//    overflow-hidden: a table inside one reports a fine width while its
+//    action buttons are cut off and cannot be reached on a phone.
 async function noSidewaysScroll(page: Page, width: number) {
   const m = await page.evaluate(() => {
     const main = document.querySelector('main')
     if (!main) throw new Error('no <main> element found')
+    const edge = main.getBoundingClientRect().right
+    const clipped: string[] = []
+    for (const el of Array.from(main.querySelectorAll('*'))) {
+      const r = el.getBoundingClientRect()
+      // Zero-size and 1px boxes are display:none / sr-only, not visible content.
+      if (r.width <= 1 || r.height <= 1 || r.right <= edge + 1) continue
+      let reachable = false
+      for (let p = el.parentElement; p && p !== main; p = p.parentElement) {
+        const ox = getComputedStyle(p).overflowX
+        if (ox === 'auto' || ox === 'scroll') { reachable = true; break }
+      }
+      if (!reachable) {
+        clipped.push(`<${el.tagName.toLowerCase()} class="${(el.getAttribute('class') ?? '').slice(0, 60)}"> right=${Math.round(r.right)} "${(el.textContent ?? '').trim().slice(0, 20)}"`)
+      }
+    }
     return {
       main: main.scrollWidth, mainBox: main.clientWidth,
       doc: document.documentElement.scrollWidth, docBox: document.documentElement.clientWidth,
+      clipped: clipped.slice(0, 5),
     }
   })
   expect(m.main, `main is ${m.main}px wide in a ${m.mainBox}px box at ${width}px`).toBeLessThanOrEqual(m.mainBox)
   expect(m.doc, `the document is ${m.doc}px wide in a ${m.docBox}px viewport at ${width}px`).toBeLessThanOrEqual(m.docBox)
+  expect(m.clipped, `elements past main's right edge with no scrolling box around them at ${width}px`).toEqual([])
 }
 
 // Opens every node of the category tree, one level per pass.
@@ -938,6 +960,16 @@ const ADMIN_PAGES: { name: string; path: string; ready: string | RegExp; short?:
   { name: 'webhooks', path: '/admin/webhooks', ready: /Webhooks/ },
   { name: 'routing', path: '/admin/routing', ready: /Routing/ },
   { name: 'audit', path: '/admin/audit', ready: /Audit/ },
+  { name: 'statuses (short data)', path: '/admin/statuses', ready: 'Statuses', short: true },
+  { name: 'tags (short data)', path: '/admin/tags', ready: 'Tags', short: true },
+  { name: 'canned responses (short data)', path: '/admin/canned-responses', ready: /Canned/, short: true },
+  { name: 'custom fields (short data)', path: '/admin/custom-fields', ready: /Custom/, short: true },
+  { name: 'API keys (short data)', path: '/admin/api-keys', ready: /API keys/i, short: true },
+  { name: 'OAuth clients (short data)', path: '/admin/oauth-clients', ready: /OAuth/, short: true },
+  { name: 'audit (short data)', path: '/admin/audit', ready: /Audit/, short: true },
+  { name: 'roles (short data)', path: '/admin/roles', ready: 'Roles', short: true },
+  { name: 'categories (short data)', path: '/admin/categories', ready: 'Categories', short: true },
+  { name: 'categories (short data): tree expanded', path: '/admin/categories', ready: 'Categories', short: true, act: expandTree },
   { name: 'users: add form', path: '/admin/users', ready: 'Users', act: (p) => p.getByRole('button', { name: 'Add User' }).click() },
   { name: 'groups: members open', path: '/admin/groups', ready: 'Groups', act: (p) => p.getByRole('button', { name: 'Members' }).first().click() },
   { name: 'groups: name editor open', path: '/admin/groups', ready: 'Groups', act: (p) => p.getByTitle('Edit group').first().click() },
@@ -971,8 +1003,9 @@ test.describe('#522: admin pages fit a phone', () => {
 })
 
 // #522: the SAML certificate line is cut to its first line and ends in an
-// ellipsis, so the full PEM has to be on hover. It is the one compact place on
-// the admin pages that stays truncated.
+// ellipsis, so the full PEM has to be on hover. The private key line beside it
+// also shows only its first line and ends in "...", but gets no title: its full
+// text is the secret and must not sit in an attribute.
 test.describe('#522: the truncated SAML certificate line carries its full text', () => {
   test('title holds the whole PEM', async ({ page }) => {
     await mockAdminApi(page)
@@ -981,5 +1014,19 @@ test.describe('#522: the truncated SAML certificate line carries its full text',
     const line = page.getByText('-----BEGIN CERTIFICATE-----…', { exact: true })
     await expect(line).toBeVisible()
     await expect(line).toHaveAttribute('title', SAML_CERT)
+  })
+
+  test('the private key line has no title', async ({ page }) => {
+    await mockAdminApi(page)
+    await page.goto('/admin/settings')
+    await page.getByRole('button', { name: 'Authentication', exact: true }).click()
+    await page.locator('input[type="file"][accept=".pem,.key"]').setInputFiles({
+      name: 'sp.key',
+      mimeType: 'application/x-pem-file',
+      buffer: Buffer.from('-----BEGIN PRIVATE KEY-----\nc2VjcmV0\n-----END PRIVATE KEY-----\n'),
+    })
+    const line = page.getByText('-----BEGIN PRIVATE KEY-----…', { exact: true })
+    await expect(line).toBeVisible()
+    await expect(line).not.toHaveAttribute('title')
   })
 })

@@ -356,7 +356,7 @@ export async function mockAdminApi(page: Page, opts: { short?: boolean } = {}) {
     ],
     '/api/v1/admin/api-keys': [
       {
-        id: 'key-1', name: n, user_id: LONG_USER.id, owner_name: n, owner_email: LONG_EMAIL,
+        id: 'key-1', name: n, user_id: LONG_USER.id, owner_name: n, owner_email: opts.short ? 'a@b.co' : LONG_EMAIL,
         scopes: ['tickets:read'], created_at: '2026-09-20T10:05:00Z',
       },
     ],
@@ -387,7 +387,7 @@ export async function mockAdminApi(page: Page, opts: { short?: boolean } = {}) {
       ],
       total: 1, total_capped: false, has_more: false,
     },
-    '/api/v1/staff': [{ id: LONG_USER.id, display_name: n, email: LONG_EMAIL }],
+    '/api/v1/staff': [{ id: LONG_USER.id, display_name: n, email: opts.short ? 'a@b.co' : LONG_EMAIL }],
     '/api/v1/groups': [group],
   }
   await page.route('**/api/v1/**', async (route) => {

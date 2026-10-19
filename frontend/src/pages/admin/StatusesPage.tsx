@@ -143,7 +143,7 @@ export function StatusesPage() {
         {isLoading ? (
           <div className="flex justify-center py-12"><Spinner /></div>
         ) : (
-          <div className="overflow-hidden rounded-lg border bg-white">
+          <div className="overflow-x-auto rounded-lg border bg-white">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 text-xs uppercase tracking-wide text-gray-500">
                 <tr>
@@ -164,7 +164,7 @@ export function StatusesPage() {
                         style={{ backgroundColor: s.color || DEFAULT_COLOR }}
                       />
                     </td>
-                    <td className="px-4 py-3 font-medium text-gray-900">
+                    <td className="px-4 py-3 font-medium text-gray-900 wrap-anywhere">
                       {s.name}
                       {!s.active && (
                         <span className="ml-2 rounded bg-gray-100 px-1.5 py-0.5 text-xs font-normal text-gray-500">
