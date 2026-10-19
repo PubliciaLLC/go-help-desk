@@ -1380,8 +1380,11 @@ holds for everything a person wrote on a ticket: the subject heading, the
 description, replies and internal notes, reply author names, attachment
 filenames, the requester line, the activity feed and its diffs, the status
 history, followers, the assignee, status names, category, type and item names,
-custom-field labels and values, tags, and the requester picker. It is never
-truncated, rewritten or linkified, so it stays whole and copyable (#479).
+custom-field labels and values, tags, and the requester picker. Plain-format text
+and the other fields listed here are never truncated, rewritten or linkified, so
+they stay whole and copyable (#479). Markdown-format text is linked as described
+under *Ticket text formatting*; its code blocks and tables scroll inside their
+own box, which does not count as cutting text.
 
 Ten compact places still end in an ellipsis, because they are one-line rows or
 chips where wrapping would break the row, and none of them is ticket content:
@@ -1409,6 +1412,82 @@ page. Bulk selection across a queue is the exception and stays desktop-only: it
 is a multi-select over a table, which is the shape that does not translate.
 
 Tracked as [#296](https://github.com/PubliciaLLC/go-help-desk/issues/296); shipped in #299.
+
+### Ticket text formatting
+
+Markdown in ticket descriptions, replies and internal notes ([#443](https://github.com/PubliciaLLC/go-help-desk/issues/443)).
+
+**The format is stored.** Every description and every reply carries `plain` or
+`markdown` (`tickets.description_format`, `ticket_replies.body_format`,
+migration 000054). Nothing is guessed from the text. Every record written before
+1.3.0 is `plain`: 1.2 promised Markdown but never rendered it, so older text
+stays as it was typed. The columns have no default after the migration, so a
+write path that forgets the format fails instead of choosing one.
+
+| Writer | No `format` sent | Accepts |
+|---|---|---|
+| REST `POST /tickets`, `/tickets/{id}/replies`, `/guest/tickets`, `/guest/replies` | `plain`, so existing integrations are unchanged | `plain`, `markdown` |
+| The web app (every form with the editor, staff, requester and guest) | always sends `markdown` | |
+| MCP `create_ticket`, `add_reply` | `markdown` (the tool descriptions say so, and say to escape characters meant literally) | `plain`, `markdown` |
+| Follow-ups | copy the original's format with its text | |
+
+Anything else (an explicit `""`, `"Markdown"`, `"html"`, a number) is `400
+invalid_format` on REST and a tool error on MCP, and nothing is written. Both
+fields are on every ticket and reply object, on the requester and guest views
+too. Notes and resolution notes, canned responses and settings are not
+descriptions or replies: they stay plain text.
+
+**The renderer cannot output script, raw HTML, images or anything outside one
+list.** The guarantee is how the page is built, not filtering. Every element is
+created by React from our own component map; all user text is a React text node;
+the only attribute that carries user data is `href`, checked against `http`,
+`https` and `mailto`. `rehype-sanitize` runs last as a second, independent
+check, and the content security policy is a third line of defence, not the
+guarantee. `dangerouslySetInnerHTML` and `rehype-raw` are banned by lint.
+
+- **One allow-list** (`frontend/src/lib/markdownAllowList.ts`) drives the
+  sanitize schema, the renderer's elements and the editor's node and mark list;
+  a test fails when the three disagree. Allowed: paragraphs, quotes, lists
+  (numbered lists keep `start`), code blocks, rules, tables, emphasis, strong,
+  strike-through, inline code, line breaks, links. All six heading levels render
+  as one small bold line, so a requester cannot post a page-sized banner.
+  Not allowed: images, task-list checkboxes, footnotes, `style`, `id`, `on*`.
+- **Raw HTML is shown as text**, so `<server01>` and `<b>x</b>` read as written.
+- **Images are never loaded.** An image shows as the link "[image: alt]", which
+  follows the link rules (no tracking pixels, no `data:` images).
+- **Links** open in a new tab with `rel="noopener noreferrer nofollow ugc"`.
+  The real host is shown after the link unless the link text is exactly the URL
+  (plain ASCII, no `user:password@`); a look-alike international domain shows in
+  its `xn--` form, and invisible and direction-changing characters are removed
+  from link text and the host. Bare URLs and `www.` addresses are linked, but
+  only in Markdown text. Relative links, `#fragment`, `javascript:`, `data:`,
+  `vbscript:` and `tel:` render as plain text.
+- **Code** in a fenced block is highlighted for 13 languages (bash, powershell,
+  json, yaml, xml/html, sql, javascript, typescript, python, go, ini, diff,
+  plaintext) by `lowlight`, which yields a tree of elements, never an HTML
+  string. A fence in another language, or with none, is not guessed at.
+- **Very heavy text is shown as written.** Text with thousands of emphasis or
+  bracket markers, or quotes and lists nested more than twenty deep, would make
+  the parser slow or exhaust the stack, so it is shown as plain text with a note.
+- **Long text** (#479, #517): prose and links wrap; a code block or table scrolls
+  inside its own box (focusable by keyboard); the page itself never scrolls
+  sideways at 320 px.
+
+**Reader toggles.** Every Markdown post has a **Plain text** button that shows the
+stored characters, to copy them exactly or check a suspicious link. Every plain
+post has **Show formatted**, which shows the same text through the same strict
+renderer. Both are the reader's choice, change nothing stored and send nothing to
+the server; the default is the stored format. Both buttons use `aria-pressed`.
+
+**The editor.** The web app's forms use a Milkdown WYSIWYG editor that writes
+Markdown, loaded on demand; it is built from the same allow-list (no task lists,
+footnotes or images; an image node is the text "[image: alt]"). A paste is parsed
+against that schema, so a pasted image or script is dropped and nothing is
+requested from the network. Tab always leaves the editor (list indent is
+`Mod-]`). While it loads, if it fails, or by the writer's choice ("Switch to plain
+editor"), a plain textarea holds the same Markdown. The webhook and email
+formats are unchanged: Markdown source reaches a chat as literal characters, and
+email carries no ticket text.
 
 ### Ticket Submission by Role
 
@@ -1617,7 +1696,8 @@ the same status (policy, configured, reachable, and the `effect` sentence) so an
 administrator can check it without waiting for an upload to fail.
 
 **Attachments are download-only. There is no previewer, and there will not be
-one.**
+one.** (Markdown text follows the same rule for images: an image in a post is a
+link, never loaded. See *Ticket text formatting*.)
 
 No inline rendering of any attachment, images included: no lightbox, no
 thumbnail, no `<img>` pointing at the download route, no PDF viewer. Every link
@@ -2344,8 +2424,8 @@ Exposes help desk operations as an MCP server for AI tool integration, over two 
 | `list_tickets` | any signed-in user | Optional `assignee_user_id`, `status_id`, `priority`, `category_id`, `q` filters. `limit` defaults to 20 and is clamped to 100; `offset` pages the full result set. |
 | `list_categories` | any signed-in user | The Category/Type/Item tree, nested, for filling in CTI. Active entries only; `include_inactive: true` adds retired ones (the tool applies no role check to it, unlike the REST catalogue, which shows archived entries to staff and administrators only). |
 | `list_statuses` | any signed-in user | The statuses this instance defines. |
-| `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` names the subject of the ticket and defaults to the caller. |
-| `add_reply` | staff, admin | A public reply emails the requester exactly as the REST reply does (#442): the guest's address (with a guest link) or the reporting account's, through one shared rule, `ticket.Service.ReplyRecipient`. No mail is sent when the requester has no address on record or the account is gone, or when the requester is a staff member or administrator writing the reply on a ticket they filed (they are not mailed a copy of their own reply, over REST or MCP; an ordinary requester replying on their own ticket still is); the reply is still saved. `internal: true` posts a staff-only note and never notifies the requester. There is no `notify_customer` option over MCP: a public reply always notifies. |
+| `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` names the subject of the ticket and defaults to the caller. `description` is Markdown unless `format: "plain"` is passed (#443); an invalid `format` is a tool error. |
+| `add_reply` | staff, admin | A public reply emails the requester exactly as the REST reply does (#442): the guest's address (with a guest link) or the reporting account's, through one shared rule, `ticket.Service.ReplyRecipient`. No mail is sent when the requester has no address on record or the account is gone, or when the requester is a staff member or administrator writing the reply on a ticket they filed (they are not mailed a copy of their own reply, over REST or MCP; an ordinary requester replying on their own ticket still is); the reply is still saved. `internal: true` posts a staff-only note and never notifies the requester. There is no `notify_customer` option over MCP: a public reply always notifies. `body` is Markdown unless `format: "plain"` is passed (#443). |
 | `assign_ticket` | staff, admin | To a user (`assignee_user_id`) or a group (`assignee_group_id`). To take the ticket off whoever has it, pass `clear_assignee: true` (the audit entry is `unassigned`); it cannot be combined with an assignee id, and omitting everything is refused rather than read as unassigning, because that silently took tickets off the people working them. |
 | `update_ticket_status` | staff, admin | Target status must be one the caller's role may transition to. A ticket in Closed cannot be moved out of it unless `closed_reopen_policy` lets the caller's role (#349; off by default): the result says reopening is disabled or restricted and points at `create_follow_up`. There is no separate reopen tool and never was; this is MCP's path out of Closed, through the same service rule as REST. A move out of Resolved or Closed is a reopen like any other (flagged, priority raised on the first, SLA restarted, staff mailed), with the caller as the actor. |
 | `create_follow_up` | staff, admin | `ticket_id` of a **Closed** ticket. Opens a new, linked ticket (see Closed is terminal); refused for a ticket that is not closed. |
