@@ -506,6 +506,31 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	for _, c := range []struct {
+		key    string
+		valid  func(int) bool
+		lo, hi int
+	}{
+		{admin.KeyGuestAttachmentMaxPerTicket, admin.ValidGuestAttachmentMaxPerTicket,
+			admin.GuestAttachmentMaxPerTicketMin, admin.GuestAttachmentMaxPerTicketMax},
+		{admin.KeyGuestAttachmentUploadsPerHour, admin.ValidGuestAttachmentUploadsPerHour,
+			admin.GuestAttachmentUploadsPerHourMin, admin.GuestAttachmentUploadsPerHourMax},
+	} {
+		raw, ok := body[c.key]
+		if !ok {
+			continue
+		}
+		var n int
+		if err := unmarshalSetting(raw, c.key, &n); err != nil {
+			handleError(w, err)
+			return
+		}
+		if !c.valid(n) {
+			Error(w, http.StatusBadRequest, "bad_request",
+				fmt.Sprintf("%s must be between %d and %d", c.key, c.lo, c.hi))
+			return
+		}
+	}
 	if raw, ok := body[admin.KeyGuestAttachmentsEnabled]; ok {
 		var on bool
 		if err := unmarshalSetting(raw, admin.KeyGuestAttachmentsEnabled, &on); err != nil {

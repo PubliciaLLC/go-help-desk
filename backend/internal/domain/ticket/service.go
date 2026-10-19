@@ -2899,6 +2899,12 @@ func (s *Service) AnyAttachmentExists(ctx context.Context) (bool, error) {
 	return s.store.AnyAttachmentExists(ctx)
 }
 
+// CountGuestAttachments is how many files a guest has attached to the ticket
+// (#445); staff and reporter uploads are not counted.
+func (s *Service) CountGuestAttachments(ctx context.Context, ticketID uuid.UUID) (int, error) {
+	return s.store.CountGuestAttachments(ctx, ticketID)
+}
+
 // ListAttachments returns all attachments for a ticket.
 func (s *Service) ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]Attachment, error) {
 	return s.store.ListAttachments(ctx, ticketID)

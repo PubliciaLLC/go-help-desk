@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { LifetimeSlider } from '@/components/admin/LifetimeSlider'
 import { GuestSizeSlider } from '@/components/admin/GuestSizeSlider'
+import { BoundedNumberInput } from '@/components/admin/BoundedNumberInput'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Spinner } from '@/components/ui/spinner'
@@ -581,6 +582,32 @@ function GeneralPanel({
           {!bool('guest_submission_enabled') && (
             <p className="text-xs text-gray-500">Unavailable while guest submission is off.</p>
           )}
+        </div>
+        <div className="border-t px-5 py-4 space-y-4">
+          <div className="text-sm text-gray-500">
+            How much one guest can put on a ticket. The cap counts only files guests attached; staff files do not count
+            toward it. The hourly figure is per guest link, so one guest does not use up another&apos;s.
+          </div>
+          <div className="flex flex-wrap gap-8">
+            <BoundedNumberInput
+              label="Most files a guest can attach to one ticket"
+              hint="1 to 50. Default 5."
+              min={1}
+              max={50}
+              value={has('guest_attachment_max_per_ticket') ? num('guest_attachment_max_per_ticket') : 5}
+              onChange={(v) => setNum('guest_attachment_max_per_ticket', v)}
+              disabled={!bool('guest_submission_enabled') || !bool('guest_attachments_enabled')}
+            />
+            <BoundedNumberInput
+              label="Uploads per guest link per hour"
+              hint="1 to 30. Default 3."
+              min={1}
+              max={30}
+              value={has('guest_attachment_uploads_per_hour') ? num('guest_attachment_uploads_per_hour') : 3}
+              onChange={(v) => setNum('guest_attachment_uploads_per_hour', v)}
+              disabled={!bool('guest_submission_enabled') || !bool('guest_attachments_enabled')}
+            />
+          </div>
         </div>
       </Section>
 

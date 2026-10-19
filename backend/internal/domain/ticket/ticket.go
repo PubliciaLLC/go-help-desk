@@ -215,6 +215,11 @@ type Attachment struct {
 	MimeType    string    `json:"mime_type"`
 	SizeBytes   int64     `json:"size_bytes"`
 	StoragePath string    `json:"-"` // never sent to clients
+
+	// UploadedByGuest is true for a file a guest attached through their link
+	// (#445). The guest cap counts these and nothing else. Never sent to
+	// clients.
+	UploadedByGuest bool `json:"-"`
 	CreatedAt   time.Time `json:"created_at"`
 
 	// What the upload actually was, recorded when it arrived. All three are

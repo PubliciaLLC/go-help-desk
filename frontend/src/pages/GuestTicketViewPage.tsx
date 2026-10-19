@@ -56,6 +56,8 @@ export function GuestTicketViewPage() {
   const { data: site } = useQuery({ queryKey: ['site-config'], queryFn: getSiteConfig, retry: false })
   const canAttach = site?.guest_attachments_enabled === true && typeof site.guest_attachment_max_bytes === 'number'
 
+  const maxFiles = site?.guest_attachment_max_per_ticket ?? 5
+
   const [uploadStates, setUploadStates] = useState<Record<string, UploadState> | undefined>()
   const [uploading, setUploading] = useState<File[]>([])
   const [attached, setAttached] = useState<string[]>([])
@@ -255,13 +257,21 @@ export function GuestTicketViewPage() {
 
           {ticket.status !== 'Closed' && canAttach && (
             <div className="space-y-2 border-t pt-4">
+              {/* The page cannot see files from an earlier visit (the guest read
+                  has no attachment list), so this counts this visit's only. The
+                  server holds the real cap and says so when it is reached. */}
+              {attached.length >= maxFiles ? (
+                <p className="text-sm text-gray-600">You have attached the most files that can be added to this ticket.</p>
+              ) : (
               <AttachmentUpload
+                maxFiles={maxFiles - attached.length}
                 files={uploading}
                 onChange={(next) => sendFiles(next.slice(uploading.length))}
                 uploadStates={uploadStates}
                 stateKey={stateKey}
                 maxBytes={site!.guest_attachment_max_bytes}
               />
+              )}
               {attached.length > 0 && (
                 <p role="status" className="text-sm text-green-700 wrap-anywhere">
                   Attached: {attached.join(', ')}

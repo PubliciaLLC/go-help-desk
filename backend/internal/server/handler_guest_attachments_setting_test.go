@@ -213,3 +213,13 @@ func TestSiteConfig_SaysWhetherGuestsMayAttachAndTheEffectiveLimit(t *testing.T)
 	require.Equal(t, false, cfg["guest_attachments_enabled"], "dependent on guest submission")
 	require.NotContains(t, cfg, "guest_attachment_max_bytes", "nothing to say when it is off")
 }
+
+func siteConfig(t *testing.T, h *harness) map[string]any {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	h.srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/site", nil))
+	b, _ := io.ReadAll(rec.Result().Body)
+	var out map[string]any
+	require.NoError(t, json.Unmarshal(b, &out), string(b))
+	return out
+}

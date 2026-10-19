@@ -3,9 +3,12 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -321,6 +324,30 @@ func (s *Server) handleGuestUploadAttachment(w http.ResponseWriter, r *http.Requ
 	reopenDays := s.adminSvc.ReopenWindowDays(r.Context())
 	if err := s.tickets.CanGuestUploadAttachment(r.Context(), t.ID, reopenDays); err != nil {
 		guestWriteError(w, err)
+		return
+	}
+
+	// The per-ticket cap, then the hourly rate. The cap first, so a refusal
+	// for a full ticket does not also spend the guest's hour. Neither is a
+	// transaction with the insert: two uploads racing can both pass the cap by
+	// the number in flight, which the rate bounds (at most the hourly figure).
+	maxFiles := s.adminSvc.GuestAttachmentMaxPerTicket(ctx)
+	have, err := s.tickets.CountGuestAttachments(ctx, t.ID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	if have >= maxFiles {
+		Error(w, http.StatusConflict, "guest_attachment_limit",
+			fmt.Sprintf("This ticket already has the most files a guest can attach (%d).", maxFiles))
+		return
+	}
+	perHour := s.adminSvc.GuestAttachmentUploadsPerHour(ctx)
+	if ok, _ := s.guestUploadLimiter.TakeWithLimit(t.ID.String(), perHour); !ok {
+		secs := max(1, int(math.Ceil(s.guestUploadLimiter.Remaining().Seconds())))
+		w.Header().Set("Retry-After", strconv.Itoa(secs))
+		Error(w, http.StatusTooManyRequests, "rate_limited",
+			fmt.Sprintf("You can attach at most %d files an hour to this ticket. Please try again later.", perHour))
 		return
 	}
 

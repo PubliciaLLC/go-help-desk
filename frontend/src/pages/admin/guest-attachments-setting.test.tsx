@@ -75,4 +75,40 @@ describe('the guest attachments settings', () => {
     await waitFor(() => expect(patch).toHaveBeenCalled())
     expect(patch.mock.calls.at(-1)![1]).toMatchObject({ guest_attachments_enabled: true, guest_attachment_max_mb: 6 })
   })
+
+  describe('the per-ticket cap and the hourly rate', () => {
+    const cap = () => screen.getByRole('spinbutton', { name: /most files a guest can attach to one ticket/i }) as HTMLInputElement
+    const rate = () => screen.getByRole('spinbutton', { name: /uploads per guest link per hour/i }) as HTMLInputElement
+
+    it('start at 5 and 3, with their ranges', async () => {
+      await renderSettings({ guest_submission_enabled: true, guest_attachments_enabled: true })
+      expect(cap().value).toBe('5')
+      expect([cap().min, cap().max]).toEqual(['1', '50'])
+      expect(rate().value).toBe('3')
+      expect([rate().min, rate().max]).toEqual(['1', '30'])
+    })
+
+    it('are unavailable while guest uploads are off', async () => {
+      await renderSettings({ guest_submission_enabled: true, guest_attachments_enabled: false })
+      expect(cap().disabled).toBe(true)
+      expect(rate().disabled).toBe(true)
+      await userEvent.click(toggle())
+      expect(cap().disabled).toBe(false)
+      expect(rate().disabled).toBe(false)
+    })
+
+    it('save under their setting names, and stay inside their ranges', async () => {
+      const patch = await renderSettings({ guest_submission_enabled: true, guest_attachments_enabled: true })
+      await userEvent.clear(cap())
+      await userEvent.type(cap(), '12')
+      await userEvent.clear(rate())
+      await userEvent.type(rate(), '99') // above 30: held at the top of the range
+      await userEvent.click(screen.getAllByRole('button', { name: /save changes/i }).at(-1)!)
+      await waitFor(() => expect(patch).toHaveBeenCalled())
+      expect(patch.mock.calls.at(-1)![1]).toMatchObject({
+        guest_attachment_max_per_ticket: 12,
+        guest_attachment_uploads_per_hour: 30,
+      })
+    })
+  })
 })

@@ -30,6 +30,8 @@ export interface SiteConfig {
   // instance-wide maximum. The size is absent while attaching is off.
   guest_attachments_enabled?: boolean
   guest_attachment_max_bytes?: number
+  // The most files guests may attach to one ticket (#445), present with the size.
+  guest_attachment_max_per_ticket?: number
 }
 
 export async function getSiteConfig(): Promise<SiteConfig> {

@@ -1012,6 +1012,8 @@ func (s *Server) storeUploadedAttachment(w http.ResponseWriter, r *http.Request,
 		DetectedMime:    &detectedMime,
 		SHA256:          &sha,
 		ContentMismatch: judged,
+		// A guest is a requester with no account (#445).
+		UploadedByGuest: actor.Role == user.RoleUser && actor.UserID == nil,
 	}
 	// NULL on everything else, and there it is a fact rather than an absence:
 	// it means this file was not identified as malicious.

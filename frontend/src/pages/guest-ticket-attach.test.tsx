@@ -113,4 +113,27 @@ describe('attaching files from the guest page', () => {
     release()
     await waitFor(() => expect(uploadGuestAttachment).toHaveBeenCalledTimes(2))
   })
+
+  it('says how many files the ticket takes, and stops offering once they are attached', async () => {
+    getSiteConfig.mockResolvedValue({ name: 'x', logo_url: '', version: '1', guest_submission_enabled: true, guest_attachments_enabled: true, guest_attachment_max_bytes: 5 * 1024 * 1024, guest_attachment_max_per_ticket: 2 })
+    uploadGuestAttachment.mockResolvedValue(undefined)
+    const { container } = renderWithQuery(<GuestTicketViewPage />)
+    await screen.findByRole('button', { name: 'Add files' })
+    expect(document.body.textContent).toMatch(/up to 2 files/)
+    const input = container.querySelector('input[type=file]') as HTMLInputElement
+    await userEvent.upload(input, [new File(['1'], 'a.txt', { type: 'text/plain' }), new File(['2'], 'b.txt', { type: 'text/plain' })])
+    await waitFor(() => expect(uploadGuestAttachment).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Add files' })).toBeNull())
+    expect(document.body.textContent).toMatch(/most files that can be added/)
+  })
+
+  it("shows the server's words when the ticket is full or the hour's uploads are spent", async () => {
+    getSiteConfig.mockResolvedValue({ name: 'x', logo_url: '', version: '1', guest_submission_enabled: true, guest_attachments_enabled: true, guest_attachment_max_bytes: 5 * 1024 * 1024, guest_attachment_max_per_ticket: 5 })
+    uploadGuestAttachment.mockRejectedValue(new GuestUploadRefused('You can attach at most 3 files an hour to this ticket. Please try again later.'))
+    const { container } = renderWithQuery(<GuestTicketViewPage />)
+    await screen.findByRole('button', { name: 'Add files' })
+    const input = container.querySelector('input[type=file]') as HTMLInputElement
+    await userEvent.upload(input, new File(['x'], 'a.txt', { type: 'text/plain' }))
+    expect((await screen.findByRole('alert')).textContent).toMatch(/at most 3 files an hour/)
+  })
 })

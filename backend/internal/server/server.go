@@ -188,6 +188,13 @@ type Server struct {
 	// six-digit secret.
 	loginLimiter *authmw.RateLimiter
 
+	// guestUploadLimiter spends one unit per guest upload attempt, keyed by the
+	// ticket the guest link names (#445). The key is the ticket and not the
+	// address for the reason RateLimiter's comment gives, and because one guest
+	// behind a shared address must not use up another's. INTERIM like the
+	// others: in memory and per process.
+	guestUploadLimiter *authmw.RateLimiter
+
 	// loginThrottleDelay is how long an over-budget login waits before the
 	// password is checked. See config.AuthThrottleDelay.
 	loginThrottleDelay time.Duration
@@ -421,6 +428,9 @@ func New(
 		loginLimiter:       authmw.NewRateLimiter(cfg.AuthRateLimitPerMinute, time.Minute),
 		loginThrottleDelay: cfg.AuthThrottleDelay,
 		guestResendLimiter: authmw.NewRateLimiter(1, 5*time.Minute),
+		// Keyed by ticket, with the figure read from the setting on each use
+		// (TakeWithLimit): the constructor's limit is not consulted.
+		guestUploadLimiter: authmw.NewRateLimiter(1, time.Hour),
 		// Not configurable: the figure is the ruling on #444, not a tuning knob.
 		onBehalfMailLimiter: authmw.NewRateLimiter(onBehalfMailPerHour, time.Hour),
 		// The same shape and the same reasoning (#451).
@@ -745,6 +755,7 @@ func (s *Server) handleGetSiteConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if cfg["guest_attachments_enabled"] == true {
 		cfg["guest_attachment_max_bytes"] = s.guestAttachmentMaxBytes(r.Context())
+		cfg["guest_attachment_max_per_ticket"] = s.adminSvc.GuestAttachmentMaxPerTicket(r.Context())
 	}
 	JSON(w, http.StatusOK, cfg)
 }
@@ -961,4 +972,10 @@ func (s *Server) requireSignedInOrGuestsEnabled(next http.Handler) http.Handler 
 		}
 		Error(w, http.StatusUnauthorized, "unauthorized", "authentication required")
 	})
+}
+
+// SetGuestUploadClockForTest moves the guest upload limiter onto a clock the
+// test controls, so the hourly window can pass without waiting an hour.
+func (s *Server) SetGuestUploadClockForTest(now func() time.Time) {
+	s.guestUploadLimiter.SetClock(now)
 }

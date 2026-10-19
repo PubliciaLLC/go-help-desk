@@ -249,6 +249,27 @@ func (s *Service) GuestAttachmentMaxMB(ctx context.Context) int {
 	return v
 }
 
+// GuestAttachmentMaxPerTicket is the most files guests may attach to one ticket
+// (#445), 1 to 50, 5 by default. Unset, unreadable or out of range reads as the
+// default: a damaged row must not quietly lift the cap.
+func (s *Service) GuestAttachmentMaxPerTicket(ctx context.Context) int {
+	v, err := s.GetInt(ctx, KeyGuestAttachmentMaxPerTicket)
+	if err != nil || !ValidGuestAttachmentMaxPerTicket(v) {
+		return GuestAttachmentMaxPerTicketDefault
+	}
+	return v
+}
+
+// GuestAttachmentUploadsPerHour is how many uploads one guest link may make in
+// an hour (#445), 1 to 30, 3 by default, with the same fallback.
+func (s *Service) GuestAttachmentUploadsPerHour(ctx context.Context) int {
+	v, err := s.GetInt(ctx, KeyGuestAttachmentUploadsPerHour)
+	if err != nil || !ValidGuestAttachmentUploadsPerHour(v) {
+		return GuestAttachmentUploadsPerHourDefault
+	}
+	return v
+}
+
 // TicketPrefix returns the configured tracking-number prefix, falling back to
 // the default when unset or invalid.
 func (s *Service) TicketPrefix(ctx context.Context) string {
