@@ -1347,10 +1347,11 @@ in 1.2.0.
 
 Two jobs are supported on a phone: **a staff member triaging away from their
 desk**, and **a reporter filing a request and following it**. Administration is
-not. An operator configuring categories, editing roles or managing API keys is
-at a desk, and the admin tables are built for one. That boundary is stated
-rather than implied, because the alternative is a product that appears to work
-on a phone until somebody reaches a page that does not.
+not a job the product is designed around: an operator configuring categories,
+editing roles or managing API keys is at a desk, and the admin tables are built
+for one. The admin pages do still **fit** a phone: no sideways scroll at 320
+pixels, whatever the data (#522). They are not redesigned for it. A wide admin
+table stays a table and scrolls inside its own box; the page never does.
 
 **What each job covers.** The staff path is the queue, a ticket, and the
 actions taken on it: read, reply, reassign, change status, resolve. The
@@ -1383,7 +1384,20 @@ history, followers, the assignee, status names, category, type and item names,
 custom-field labels and values, tags, and the requester picker. It is never
 truncated, rewritten or linkified, so it stays whole and copyable (#479).
 
-Ten compact places still end in an ellipsis, because they are one-line rows or
+**Admin pages (#522).** The same treatment, applied to every page under Admin
+(Users and a user's page, Groups, Roles, Categories, Statuses, Tags, Canned
+responses, Custom fields, API keys, OAuth clients, Webhooks, Routing, Audit and
+each Settings tab): `wrap-anywhere` on what an administrator typed (names,
+descriptions, URLs, email addresses), `min-w-0` on flex and grid children so
+they can shrink to it, and a table in an `overflow-x-auto` box so a wide one
+scrolls there. On Settings, the tab bar scrolls inside its own row, and a
+setting's control sits under its label below `sm` instead of beside it, because
+a select or number box that cannot shrink does not fit beside a label at 320
+pixels. The end-to-end check pins every admin page, with a 300-character name,
+description and URL, at 320 and 375 pixels, and also opens the forms and
+expanded rows on Users, Groups, Categories and Webhooks.
+
+Eleven compact places still end in an ellipsis, because they are one-line rows or
 chips where wrapping would break the row, and none of them is ticket content:
 
 - in the Linked tickets panel, the linked ticket line;
@@ -1394,11 +1408,15 @@ chips where wrapping would break the row, and none of them is ticket content:
   name in the mobile top bar;
 - on the Dashboard, each client's name and email in the By Client cards;
 - on the Account page, a passkey's label;
-- in the authenticator-app setup, the secret under the QR code.
+- in the authenticator-app setup, the secret under the QR code;
+- on the Settings Authentication tab, the SAML certificate: its first line, with
+  the whole PEM in the `title`. The private key beside it shows its first line
+  the same way and has no `title`, on purpose: its full text must not sit in an
+  attribute.
 
-Each carries a `title` attribute with its full text, which a pointer shows on
-hover; touch browsers do not show one, so the two ticket rows also open the
-ticket, where the text wraps in full. Everything else wraps, including the
+Each, except the private key line, carries a `title` attribute with its full
+text, which a pointer shows on hover; touch browsers do not show one, so the two
+ticket rows also open the ticket, where the text wraps in full. Everything else wraps, including the
 sidebar brand in the drawer and the Dashboard's "Welcome back" line. On the
 ticket page below `md` the header's action buttons sit on their own row under
 the title and tracking number, which keep the full width (#480).

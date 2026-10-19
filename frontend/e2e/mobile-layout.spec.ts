@@ -1,6 +1,9 @@
 import { test, expect, type Locator, type Page } from '@playwright/test'
 import {
   mockApi,
+  mockAdminApi,
+  LONG_USER,
+  SAML_CERT,
   DESCRIPTION_PROSE,
   DESCRIPTION_URL,
   ME_ADMIN,
@@ -24,7 +27,8 @@ import {
 // viewport. DESIGN.md's Small screens section states the rule this pins:
 // no horizontal scrolling at 390 CSS pixels, and tap targets large enough
 // to hit with a thumb, on the four in-scope pages (Dashboard, TicketList,
-// TicketDetail, NewTicket). Admin pages are explicitly out of scope.
+// TicketDetail, NewTicket). The admin pages are covered by the #522 blocks at
+// the end of this file, at 320 and 375 rather than 390.
 //
 // iPhone 13: 390x844 CSS pixels. This is the exact viewport DESIGN.md and
 // issue #296 measured against.
@@ -887,4 +891,95 @@ test.describe('#517 round 4: sign-in page with a long site name', () => {
       await documentFits(page, 320)
     })
   }
+})
+
+// #522: the admin pages, at the narrowest phone (320) and a common one (375),
+// with 300-character unbroken names, descriptions and URLs. Short data is
+// tested too where a page already overflowed without long data.
+//
+// Measures main AND the document: #522 saw main at 2433px and the document at
+// 557px on Webhooks, and either one scrolling sideways is the bug.
+async function noSidewaysScroll(page: Page, width: number) {
+  const m = await page.evaluate(() => {
+    const main = document.querySelector('main')
+    if (!main) throw new Error('no <main> element found')
+    return {
+      main: main.scrollWidth, mainBox: main.clientWidth,
+      doc: document.documentElement.scrollWidth, docBox: document.documentElement.clientWidth,
+    }
+  })
+  expect(m.main, `main is ${m.main}px wide in a ${m.mainBox}px box at ${width}px`).toBeLessThanOrEqual(m.mainBox)
+  expect(m.doc, `the document is ${m.doc}px wide in a ${m.docBox}px viewport at ${width}px`).toBeLessThanOrEqual(m.docBox)
+}
+
+// Opens every node of the category tree, one level per pass.
+async function expandTree(page: Page) {
+  for (let pass = 0; pass < 4; pass++) {
+    const closed = page.getByRole('button', { name: 'Expand' })
+    if ((await closed.count()) === 0) return
+    await closed.first().click()
+    await page.waitForLoadState('networkidle')
+  }
+}
+
+const ADMIN_PAGES: { name: string; path: string; ready: string | RegExp; short?: boolean; tab?: string; act?: (page: Page) => Promise<void> }[] = [
+  { name: 'users', path: '/admin/users', ready: 'Users' },
+  { name: 'users (short data)', path: '/admin/users', ready: 'Users', short: true },
+  { name: 'user detail', path: `/admin/users/${LONG_USER.id}`, ready: 'NNNNNNNN' },
+  { name: 'groups', path: '/admin/groups', ready: 'Groups' },
+  { name: 'roles', path: '/admin/roles', ready: 'Roles' },
+  { name: 'categories', path: '/admin/categories', ready: 'Categories' },
+  { name: 'statuses', path: '/admin/statuses', ready: 'Statuses' },
+  { name: 'tags', path: '/admin/tags', ready: 'Tags' },
+  { name: 'canned responses', path: '/admin/canned-responses', ready: /Canned/ },
+  { name: 'custom fields', path: '/admin/custom-fields', ready: /Custom/ },
+  { name: 'API keys', path: '/admin/api-keys', ready: /API keys/i },
+  { name: 'OAuth clients', path: '/admin/oauth-clients', ready: /OAuth/ },
+  { name: 'webhooks', path: '/admin/webhooks', ready: /Webhooks/ },
+  { name: 'routing', path: '/admin/routing', ready: /Routing/ },
+  { name: 'audit', path: '/admin/audit', ready: /Audit/ },
+  { name: 'users: add form', path: '/admin/users', ready: 'Users', act: (p) => p.getByRole('button', { name: 'Add User' }).click() },
+  { name: 'groups: members open', path: '/admin/groups', ready: 'Groups', act: (p) => p.getByRole('button', { name: 'Members' }).first().click() },
+  { name: 'groups: name editor open', path: '/admin/groups', ready: 'Groups', act: (p) => p.getByTitle('Edit group').first().click() },
+  { name: 'categories: tree expanded', path: '/admin/categories', ready: 'Categories', act: expandTree },
+  { name: 'webhooks: edit form', path: '/admin/webhooks', ready: /Webhooks/, act: (p) => p.getByRole('button', { name: 'Edit' }).first().click() },
+  { name: 'webhooks: history open', path: '/admin/webhooks', ready: /Webhooks/, act: (p) => p.getByRole('button', { name: 'History' }).first().click() },
+  { name: 'settings: general', path: '/admin/settings', ready: 'Settings' },
+  { name: 'settings: branding', path: '/admin/settings', ready: 'Settings', tab: 'Branding' },
+  { name: 'settings: authentication', path: '/admin/settings', ready: 'Settings', tab: 'Authentication' },
+  { name: 'settings: features (SLA)', path: '/admin/settings', ready: 'Settings', tab: 'Features' },
+  { name: 'settings: email', path: '/admin/settings', ready: 'Settings', tab: 'Email' },
+  { name: 'settings: attachments', path: '/admin/settings', ready: 'Settings', tab: 'Attachments' },
+]
+
+test.describe('#522: admin pages fit a phone', () => {
+  for (const width of [320, 375]) {
+    for (const p of ADMIN_PAGES) {
+      test(`${p.name}: ${width}px`, async ({ page }) => {
+        await mockAdminApi(page, { short: p.short })
+        await page.setViewportSize({ width, height: 844 })
+        await page.goto(p.path)
+        await expect(page.getByRole('heading', { level: 1 }).filter({ hasText: p.ready })).toBeVisible()
+        if (p.tab) await page.getByRole('button', { name: p.tab, exact: true }).click()
+        // Let the queries settle so the long data is on screen before measuring.
+        await page.waitForLoadState('networkidle')
+        if (p.act) await p.act(page)
+        await noSidewaysScroll(page, width)
+      })
+    }
+  }
+})
+
+// #522: the SAML certificate line is cut to its first line and ends in an
+// ellipsis, so the full PEM has to be on hover. It is the one compact place on
+// the admin pages that stays truncated.
+test.describe('#522: the truncated SAML certificate line carries its full text', () => {
+  test('title holds the whole PEM', async ({ page }) => {
+    await mockAdminApi(page)
+    await page.goto('/admin/settings')
+    await page.getByRole('button', { name: 'Authentication', exact: true }).click()
+    const line = page.getByText('-----BEGIN CERTIFICATE-----…', { exact: true })
+    await expect(line).toBeVisible()
+    await expect(line).toHaveAttribute('title', SAML_CERT)
+  })
 })

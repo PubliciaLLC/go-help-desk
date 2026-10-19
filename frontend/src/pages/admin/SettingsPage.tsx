@@ -78,12 +78,14 @@ function SettingRow({
   children: React.ReactNode
 }) {
   return (
-    <div className="flex items-center justify-between gap-8 px-5 py-4">
+    // Stacked below sm: a control that cannot shrink (a select, a number box)
+    // beside its label is wider than a phone's content box (#522).
+    <div className="flex flex-col gap-2 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-8">
       <div className="min-w-0 flex-1">
         <div className="text-sm font-medium text-gray-900">{label}</div>
         {description && <div className="mt-0.5 text-sm text-gray-500">{description}</div>}
       </div>
-      <div className="shrink-0">{children}</div>
+      <div className="min-w-0 max-w-full sm:shrink-0">{children}</div>
     </div>
   )
 }
@@ -184,7 +186,7 @@ function SAMLSection() {
 
   return (
     <div className="space-y-4 px-5 py-4">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <span className={cn(
           'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium',
           saml?.configured ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'
@@ -195,7 +197,7 @@ function SAMLSection() {
           <span className="text-xs text-gray-500">
             SP metadata:{' '}
             <button
-              className="font-mono text-blue-600 underline decoration-dotted hover:decoration-solid"
+              className="font-mono text-left text-blue-600 underline decoration-dotted hover:decoration-solid wrap-anywhere"
               onClick={() => navigator.clipboard.writeText(spMetadataURL)}
               title="Copy to clipboard"
             >
@@ -268,7 +270,7 @@ function SAMLSection() {
         </label>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={() => certFileRef.current?.click()}>Upload .pem / .crt</Button>
-          {certPEM && <span className="text-xs text-gray-500 truncate max-w-xs font-mono">{certPEM.split('\n')[0]}…</span>}
+          {certPEM && <span title={certPEM} className="text-xs text-gray-500 truncate max-w-xs font-mono">{certPEM.split('\n')[0]}…</span>}
         </div>
         <input ref={certFileRef} type="file" accept=".pem,.crt,.cer" className="hidden"
           onChange={(e) => { const f = e.target.files?.[0]; if (f) readFile(f, setCertPEM) }} />
@@ -370,7 +372,7 @@ function OIDCSection() {
 
   return (
     <div className="space-y-4 px-5 py-4">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <span className={cn(
           'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium',
           configured ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'
@@ -383,7 +385,7 @@ function OIDCSection() {
             Redirect URL:{' '}
             <button
               type="button"
-              className="font-mono text-blue-600 underline decoration-dotted hover:decoration-solid"
+              className="font-mono text-left text-blue-600 underline decoration-dotted hover:decoration-solid wrap-anywhere"
               onClick={() => navigator.clipboard.writeText(redirectURL)}
               title="Copy to clipboard"
             >
@@ -451,7 +453,7 @@ function OIDCSection() {
             Redirect URL
           </label>
           <div className="flex items-center gap-2">
-            <div className="w-full max-w-lg rounded border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-sm text-gray-600">
+            <div className="min-w-0 w-full max-w-lg rounded border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-sm text-gray-600 wrap-anywhere">
               {redirectURL}
             </div>
             <Button
@@ -1915,7 +1917,7 @@ function AttachmentsPanel({
           description="Every upload is compared against the extension it claims. A file that turns out to be a type this instance does not accept is either turned away or stored wrapped in a ZIP named suspicious-<crc32>.zip and flagged on the ticket. One whose real type is on the list above is flagged and stored under its own name whichever you choose."
         >
           <Select
-            className="w-72"
+            className="w-72 max-w-full"
             aria-label="When a file’s content contradicts its name"
             value={mismatchHandling}
             onChange={(e) => setStr('attachment_mismatch_handling', e.target.value)}
@@ -1956,7 +1958,7 @@ function AttachmentsPanel({
             value={scanAddress}
             onChange={(e) => setStr('attachment_scan_address', e.target.value)}
             placeholder="tcp://clamav:3310"
-            className="w-72 font-mono"
+            className="w-72 max-w-full font-mono"
             aria-label="Scanner address"
           />
         </SettingRow>
@@ -1966,7 +1968,7 @@ function AttachmentsPanel({
           description="Uploads are passed to the configured ClamAV daemon before they are stored."
         >
           <Select
-            className="w-72"
+            className="w-72 max-w-full"
             aria-label="Scan attachments for malware"
             value={scanPolicy}
             onChange={(e) => setStr('attachment_scan_policy', e.target.value)}
@@ -1992,7 +1994,7 @@ function AttachmentsPanel({
           description="Quarantined files are stored inside a password-protected ZIP (password: infected), labelled on the ticket, and confirmed before download. For an IT security team triaging a reported sample; an ordinary help desk should leave this on Refuse."
         >
           <Select
-            className="w-72"
+            className="w-72 max-w-full"
             aria-label="When a scan finds malware"
             value={handling}
             onChange={(e) => setStr('attachment_infected_handling', e.target.value)}
@@ -2059,7 +2061,7 @@ function AttachmentsPanel({
           description="How long a clean, never-seen or unscanned verdict is trusted before it is looked up again. A detection is never re-checked — engines do not un-flag a file — and staff can ask again by hand once every seven days whatever this says."
         >
           <Select
-            className="w-64"
+            className="w-64 max-w-full"
             aria-label="Re-check stored verdicts"
             value={refresh}
             onChange={(e) => setStr('attachment_reputation_refresh', e.target.value)}
@@ -2225,7 +2227,7 @@ export function SettingsPage() {
 
         {/* Tab bar */}
         <div className="border-b">
-          <nav className="-mb-px flex gap-6">
+          <nav className="-mb-px flex gap-6 overflow-x-auto">
             {TABS.map((tab) => (
               <button
                 key={tab.id}
