@@ -15,7 +15,7 @@ import {
 } from '@milkdown/kit/preset/gfm'
 import { history } from '@milkdown/kit/plugin/history'
 import { clipboard } from '@milkdown/kit/plugin/clipboard'
-import { $prose, $remark, getMarkdown, replaceAll } from '@milkdown/kit/utils'
+import { $prose, $remark, getMarkdown, insert, replaceAll } from '@milkdown/kit/utils'
 import { Plugin } from '@milkdown/kit/prose/state'
 import { visit } from 'unist-util-visit'
 import type { Root } from 'mdast'
@@ -144,6 +144,11 @@ export async function createEditor(opts: EditorOptions): Promise<Editor> {
 
 export function setMarkdown(editor: Editor, markdown: string) {
   editor.action(replaceAll(markdown))
+}
+
+/** Puts Markdown at the caret (replacing a selection), leaving the caret after it. */
+export function insertAtCursor(editor: Editor, markdown: string) {
+  editor.action(insert(markdown, true))
 }
 
 export function markdownOf(editor: Editor): string {

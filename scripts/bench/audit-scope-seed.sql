@@ -89,12 +89,14 @@ FROM generate_series(1, 30000) g;
 -- their generated search_vector) are about as wide as real ones: the cost of
 -- building a visible-ticket set is a scan of this table, so its width matters.
 INSERT INTO tickets (id, tracking_number, subject, description, category_id, type_id, status_id,
-                     assignee_user_id, assignee_group_id, reporter_user_id, created_at, updated_at)
+                     assignee_user_id, assignee_group_id, reporter_user_id, created_at, updated_at,
+                     description_format)
 SELECT tk.id, 'BENCH-' || tk.n, 'Ticket ' || tk.n,
        (SELECT string_agg(md5(random()::text || g || x.n), ' ') FROM generate_series(1, 18) g, (SELECT tk.n) x),
        c.id, ty.id,
        (SELECT id FROM statuses WHERE name = 'New'),
-       ua.id, gi.id, ur.id, tk.created_at, tk.created_at
+       ua.id, gi.id, ur.id, tk.created_at, tk.created_at,
+       'plain'
 FROM tk
 JOIN cat_ix c ON c.ix = tk.cat
 LEFT JOIN type_ix ty ON ty.category_id = c.id AND ty.n = tk.typ

@@ -6,6 +6,8 @@
 //
 // The limits are far above anything written by hand: 4000 delimiter runs parse
 // in about 0.1 s, and nobody nests quotes or lists twenty deep.
+/** Longer text is never formatted: shown as plain text. The description limit. */
+export const MAX_FORMATTED_CHARS = 50_000
 export const MAX_DELIMITER_RUNS = 4000
 export const MAX_CONTAINER_DEPTH = 20
 // Each "[" opens a possible link label even in a run, so these count one by one.

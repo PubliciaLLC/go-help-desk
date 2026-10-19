@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
+import { renderNow } from '@/test/formatted'
 import { TicketText } from './TicketText'
 import { ALLOWED_ELEMENTS, ALLOWED_PROTOCOLS } from '@/lib/markdownAllowList'
 
@@ -45,8 +46,8 @@ function assertSafe(body: Element, input: string) {
   }
 }
 
-function renderBody(text: string, format: 'markdown' | 'plain' = 'markdown') {
-  const { container } = render(<TicketText text={text} format={format} />)
+async function renderBody(text: string, format: 'markdown' | 'plain' = 'markdown') {
+  const { container } = await renderNow(<TicketText text={text} format={format} />)
   return container.querySelector('[data-md-body]') ?? container
 }
 
@@ -100,17 +101,19 @@ const corpus: [string, string, string?][] = [
 ]
 
 describe('TicketText: hostile input', () => {
-  it.each(corpus)('markdown: %s', (_name, input, literal) => {
-    const body = renderBody(input)
+  it.each(corpus)('markdown: %s', async (_name, input, literal) => {
+    const body = await renderBody(input)
     assertSafe(body, input)
     if (literal) expect(body.textContent).toContain(literal)
   })
 
   // Same component, same pipeline: a plain post shown formatted goes through
   // the identical renderer, so the corpus must hold on that path too.
-  it.each(corpus)('plain post, shown formatted: %s', (_name, input, literal) => {
+  it.each(corpus)('plain post, shown formatted: %s', async (_name, input, literal) => {
     const { container } = render(<TicketText text={input} format="plain" />)
-    fireEvent.click(screen.getByRole('button', { name: /show formatted/i }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /show formatted/i }))
+    })
     const body = container.querySelector('[data-md-body]')!
     expect(body).not.toBeNull()
     assertSafe(body, input)
@@ -123,54 +126,53 @@ describe('TicketText: hostile input', () => {
     expect(container.textContent).toContain('[x](https://a.example) **b** <i>x</i>')
   })
 
-  it('the link refused by the allow-list is shown as its text, not as a link', () => {
-    const body = renderBody('[click me](javascript:alert(1))')
+  it('the link refused by the allow-list is shown as its text, not as a link', async () => {
+    const body = await renderBody('[click me](javascript:alert(1))')
     expect(body.querySelector('a')).toBeNull()
     expect(body.textContent).toContain('click me')
   })
 
-  it('an image is never loaded: it becomes the link "[image: alt]"', () => {
-    const body = renderBody('![a cat](https://t.example/p.gif)')
+  it('an image is never loaded: it becomes the link "[image: alt]"', async () => {
+    const body = await renderBody('![a cat](https://t.example/p.gif)')
     expect(body.querySelector('img')).toBeNull()
     const a = body.querySelector('a')!
     expect(a.getAttribute('href')).toBe('https://t.example/p.gif')
     expect(a.textContent).toBe('[image: a cat]')
   })
 
-  it('an image with a hostile src is not a link at all', () => {
-    const body = renderBody('![a](javascript:alert(1))')
+  it('an image with a hostile src is not a link at all', async () => {
+    const body = await renderBody('![a](javascript:alert(1))')
     expect(body.querySelector('img, a')).toBeNull()
   })
 
-  it('a code fence info string cannot set attributes', () => {
-    const body = renderBody('```evil onclick=1\ncode\n```')
+  it('a code fence info string cannot set attributes', async () => {
+    const body = await renderBody('```evil onclick=1\ncode\n```')
     for (const el of Array.from(body.querySelectorAll('*'))) {
       expect(el.getAttributeNames().some((n) => n.startsWith('on'))).toBe(false)
     }
     expect(body.querySelector('code')!.getAttributeNames().filter((n) => n !== 'class')).toEqual([])
   })
 
-  it('links open in a new tab with a restrictive rel', () => {
-    const body = renderBody('[x](https://a.example)')
+  it('links open in a new tab with a restrictive rel', async () => {
+    const body = await renderBody('[x](https://a.example)')
     const a = body.querySelector('a')!
     expect(a.getAttribute('target')).toBe('_blank')
     expect(a.getAttribute('rel')).toBe('noopener noreferrer nofollow ugc')
   })
 
-  it('64 KB of nesting renders in under a second without throwing', () => {
+  it('64 KB of nesting renders in under a second without throwing', async () => {
     for (const unit of ['>', '*', '[', '- ', '>*']) {
       const input = long(unit, 65536 / unit.length)
       const t0 = performance.now()
-      expect(() => renderBody(input)).not.toThrow()
+      await renderBody(input)
       expect(performance.now() - t0, `unit ${JSON.stringify(unit)}`).toBeLessThan(1000)
-      document.body.innerHTML = ''
     }
   })
 })
 
 describe('TicketText: text too complex to format', () => {
-  it('is shown as plain text with a note, not parsed', () => {
-    const { container } = render(<TicketText text={'a*'.repeat(30000)} format="markdown" />)
+  it('is shown as plain text with a note, not parsed', async () => {
+    const { container } = await renderNow(<TicketText text={'a*'.repeat(20000)} format="markdown" />)
     expect(container.querySelector('[data-md-body]')).toBeNull()
     expect(container.textContent).toContain('too complex to format')
     expect(container.textContent).toContain('a*a*a*')

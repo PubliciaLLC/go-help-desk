@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { render } from '@testing-library/react'
+import { renderNow } from '@/test/formatted'
 import type { Editor } from '@milkdown/kit/core'
 import { DOMParser as PMDOMParser, DOMSerializer } from '@milkdown/kit/prose/model'
 import { TextSelection } from '@milkdown/kit/prose/state'
-import { createEditor, markdownOf, setMarkdown, viewOf } from './editorCore'
+import { createEditor, insertAtCursor, markdownOf, setMarkdown, viewOf } from './editorCore'
 import { EDITOR_MARKS, EDITOR_NODES } from '@/lib/markdownAllowList'
 import { TicketText } from '@/components/TicketText'
 
@@ -181,7 +181,7 @@ describe('round trip: what is typed literally is what is shown', () => {
     // The paragraph's text becomes the document, with no input rule involved.
     view.dispatch(view.state.tr.insertText(text, 1))
     const saved = markdownOf(editor!).replace(/\n+$/, '')
-    const { container } = render(<TicketText text={saved} format="markdown" />)
+    const { container } = await renderNow(<TicketText text={saved} format="markdown" />)
     const body = container.querySelector('[data-md-body]')!
     expect(body.textContent).toBe(text.replace(/ +$/, ''))
     // And it is one paragraph of text: nothing became a list, heading or quote.
@@ -232,5 +232,38 @@ describe('accessibility', () => {
     expect(area.getAttribute('role')).toBe('textbox')
     expect(area.getAttribute('aria-multiline')).toBe('true')
     expect(area.getAttribute('aria-labelledby')).toBe('lbl')
+  })
+})
+
+describe('inserting at the caret (a canned response)', () => {
+  it('lands in the middle of existing text and leaves the caret after it', async () => {
+    const view = await start()
+    setMarkdown(editor!, 'hello world')
+    placeCursorIn(view, 'hello world') // start of the text
+    view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, 1 + 5)))
+    insertAtCursor(editor!, 'Hi **there**')
+    expect(markdownOf(editor!).trim()).toBe('helloHi **there** world')
+    // Caret: directly after the inserted text, before " world".
+    const after = viewOf(editor!).state.selection
+    expect(viewOf(editor!).state.doc.textBetween(after.from, after.to + 6)).toBe(' world')
+  })
+
+  it('replaces a selection', async () => {
+    const view = await start()
+    setMarkdown(editor!, 'hello big world')
+    view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, 1 + 5, 1 + 9)))
+    insertAtCursor(editor!, 'X')
+    expect(markdownOf(editor!).trim()).toBe('helloX world')
+  })
+
+  it('puts several paragraphs where the caret is', async () => {
+    const view = await start()
+    setMarkdown(editor!, 'start')
+    view.dispatch(view.state.tr.setSelection(TextSelection.atEnd(view.state.doc)))
+    insertAtCursor(editor!, 'one\n\ntwo')
+    const out = markdownOf(editor!)
+    expect(out).toContain('one')
+    expect(out).toContain('two')
+    expect(out.indexOf('start')).toBeLessThan(out.indexOf('two'))
   })
 })

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
+import type { Ref } from 'react'
 import type { Editor } from '@milkdown/kit/core'
 import { callCommand } from '@milkdown/kit/utils'
 import {
@@ -13,12 +14,17 @@ import {
 import { Bold, Code, Italic, Link as LinkIcon, List, ListOrdered, Quote, SquareCode } from 'lucide-react'
 import { safeUrl } from '@/lib/markdownAllowList'
 import { cn } from '@/lib/utils'
-import { createEditor, setMarkdown, viewOf } from './editorCore'
+import { createEditor, insertAtCursor, setMarkdown, viewOf } from './editorCore'
 
 // The lazily loaded half of the editor: the Milkdown instance and its toolbar.
 // MarkdownEditor.tsx (the adapter the forms use) imports this with import().
 
+export interface MilkdownViewHandle {
+  insertAtCursor: (markdown: string) => void
+}
+
 export interface MilkdownViewProps {
+  ref?: Ref<MilkdownViewHandle>
   value: string
   onChange: (markdown: string) => void
   labelId: string
@@ -33,7 +39,7 @@ const noneActive: Active = { strong: false, em: false, code: false, link: false,
 
 const normalise = (md: string) => md.replace(/\n+$/, '')
 
-export function MilkdownView({ value, onChange, labelId, disabled, placeholder, onFail }: MilkdownViewProps) {
+export function MilkdownView({ ref, value, onChange, labelId, disabled, placeholder, onFail }: MilkdownViewProps) {
   const rootRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<Editor | null>(null)
   const lastEmitted = useRef(value)
@@ -50,6 +56,15 @@ export function MilkdownView({ value, onChange, labelId, disabled, placeholder, 
     onChangeRef.current = onChange
     onFailRef.current = onFail
   })
+
+  useImperativeHandle(ref, () => ({
+    insertAtCursor: (markdown: string) => {
+      const editor = editorRef.current
+      if (!editor || disabledRef.current) return
+      insertAtCursor(editor, markdown)
+      viewOf(editor).focus()
+    },
+  }))
 
   const readActive = useCallback(() => {
     const editor = editorRef.current

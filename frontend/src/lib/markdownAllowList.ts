@@ -115,16 +115,55 @@ export const markdownSanitizeSchema: SanitizeSchema = {
   required: {},
 }
 
+/** Bidi controls, zero-width and other invisible characters. Removed from link
+ *  text and from anything shown as a link's destination: they can reorder or
+ *  hide what a link claims to be. */
+// The class deliberately lists combining and variation-selector characters: they are the point.
+// eslint-disable-next-line no-misleading-character-class
+export const INVISIBLE = /[\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180E\u200B-\u200F\u202A-\u202E\u2060-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0]/g
+
 /**
  * The one URL check. Returns the URL only when it parses as an absolute
  * http(s) or mailto URL; relative URLs, fragments, javascript:, data: and
- * anything unparseable return null. Used by the renderer and by the editor's
- * link button, so the two cannot disagree.
+ * anything unparseable return null. A mailto: must name only real addresses
+ * and carry no query at all (?bcc=, ?cc=, ?subject=, ?body= can add recipients
+ * or write the message). Used by the renderer and by the editor's link button,
+ * so the two cannot disagree.
  */
 export function safeUrl(value: string): string | null {
   const u = parseAbsoluteUrl(value)
   if (!u) return null
-  return (ALLOWED_PROTOCOLS as readonly string[]).includes(u.protocol.replace(/:$/, '')) ? value : null
+  const proto = u.protocol.replace(/:$/, '')
+  if (!(ALLOWED_PROTOCOLS as readonly string[]).includes(proto)) return null
+  if (proto === 'mailto' && !mailtoAddresses(u)) return null
+  return value
+}
+
+/**
+ * The addresses a mailto: URL names, each with its domain in the form the
+ * browser will really use (look-alike letters appear as xn--, a fullwidth dot
+ * as the dot it is), or null when the URL is not acceptable: it has a query, an
+ * address has no local part, or a domain is not a host.
+ */
+export function mailtoAddresses(u: URL): string[] | null {
+  if (u.protocol !== 'mailto:' || u.href.includes('?')) return null
+  let path: string
+  try {
+    path = decodeURIComponent(u.pathname)
+  } catch {
+    return null
+  }
+  const out: string[] = []
+  for (const addr of path.split(',')) {
+    const at = addr.lastIndexOf('@')
+    const local = addr.slice(0, at).replace(INVISIBLE, '')
+    const host = at > 0 ? parseAbsoluteUrl(`http://${addr.slice(at + 1)}`) : null
+    if (!local || !host || host.hostname === '' || host.pathname !== '/' || host.search || host.hash || host.username || host.password || host.port) {
+      return null
+    }
+    out.push(`${local}@${host.hostname}`)
+  }
+  return out.length > 0 ? out : null
 }
 
 /** The only place this module family parses a URL. Null for anything that is not absolute. */

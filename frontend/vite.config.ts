@@ -8,6 +8,13 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      // The Markdown parser runs in a Web Worker, which has no document. This
+      // package's "browser" build decodes character references with one, so the
+      // worker would die on load; its plain build has the same table in a string.
+      'decode-named-character-reference': path.resolve(
+        __dirname,
+        './node_modules/decode-named-character-reference/index.js',
+      ),
     },
   },
   server: {
@@ -17,6 +24,8 @@ export default defineConfig({
     },
   },
   test: {
+    // jsdom has no Worker, so tests format in this thread (see markdownRunner.ts).
+    alias: [{ find: /^@\/lib\/markdownBackend$/, replacement: path.resolve(__dirname, './src/lib/markdownBackend.inthread.ts') }],
     // jsdom, not node: the API client's 401 interceptor reads
     // window.location, so the code under test needs a document.
     environment: 'jsdom',

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
+import { renderNow } from '@/test/formatted'
 import { TicketText } from './TicketText'
 
 // #443: a link's visible text can lie about where it goes. The rule: the real
@@ -7,10 +8,12 @@ import { TicketText } from './TicketText'
 // being linked, is plain ASCII, and the URL carries no user:password@ part.
 // The label is ordinary visible text, never hover-only and never CSS-hidden.
 
-function view(md: string, path: 'markdown' | 'plain-toggled') {
-  if (path === 'markdown') return render(<TicketText text={md} format="markdown" />).container
+async function view(md: string, path: 'markdown' | 'plain-toggled') {
+  if (path === 'markdown') return (await renderNow(<TicketText text={md} format="markdown" />)).container
   const { container } = render(<TicketText text={md} format="plain" />)
-  fireEvent.click(screen.getByRole('button', { name: /show formatted/i }))
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: /show formatted/i }))
+  })
   return container
 }
 
@@ -45,8 +48,8 @@ const noLabel: [string, string][] = [
 ]
 
 describe.each(['markdown', 'plain-toggled'] as const)('link spoofing (%s path)', (path) => {
-  it.each(mustLabel)('%s', (_n, md, label) => {
-    const c = view(md, path)
+  it.each(mustLabel)('%s', async (_n, md, label) => {
+    const c = await view(md, path)
     expect(c.textContent).toContain(label)
     const a = c.querySelector('a')!
     // The label is a visible sibling of the link: plain text, no hiding classes.
@@ -57,21 +60,21 @@ describe.each(['markdown', 'plain-toggled'] as const)('link spoofing (%s path)',
     expect(a.getAttribute('href')).toBeTruthy()
   })
 
-  it.each(noLabel)('%s needs no label', (_n, md) => {
-    const c = view(md, path)
+  it.each(noLabel)('%s needs no label', async (_n, md) => {
+    const c = await view(md, path)
     expect(c.querySelector('a')).not.toBeNull()
     expect(c.textContent).not.toMatch(/\(\S+\)/)
   })
 })
 
 describe('invisible and bidi characters in link text', () => {
-  it('are removed from what is shown', () => {
-    const c = view('[‮abc​⁦def⁩](https://evil.example)', 'markdown')
+  it('are removed from what is shown', async () => {
+    const c = await view('[‮abc​⁦def⁩](https://evil.example)', 'markdown')
     expect(c.querySelector('a')!.textContent).toBe('abcdef')
   })
 
-  it('the host label never contains them', () => {
-    const c = view('[x](https://evil.example/‮path)', 'markdown')
+  it('the host label never contains them', async () => {
+    const c = await view('[x](https://evil.example/‮path)', 'markdown')
     expect(c.textContent).toMatch(/\(evil\.example\)/)
     expect(c.textContent).not.toMatch(/[‪-‮⁦-⁩]/)
   })
@@ -92,21 +95,21 @@ const INVISIBLES: [string, string][] = [
 const ANY = /[‪-‮⁦-⁩​-‏؜⁠﻿­]/
 
 describe.each(INVISIBLES)('invisible character %s', (_n, ch) => {
-  it('is removed from link text', () => {
-    const c = view(`[ab${ch}cd](https://evil.example)`, 'markdown')
+  it('is removed from link text', async () => {
+    const c = await view(`[ab${ch}cd](https://evil.example)`, 'markdown')
     expect(c.querySelector('a')!.textContent).toBe('abcd')
     expect(c.textContent).not.toMatch(ANY)
   })
 
-  it('never reaches the host label of a mailto link', () => {
+  it('never reaches the host label of a mailto link', async () => {
     const enc = encodeURIComponent(ch)
-    const c = view(`[x](mailto:a${enc}b@evil.example)`, 'markdown')
+    const c = await view(`[x](mailto:a${enc}b@evil.example)`, 'markdown')
     expect(c.textContent).not.toMatch(ANY)
     expect(c.textContent).toContain('ab@evil.example')
   })
 
-  it('does not survive in a URL host', () => {
-    const c = view(`[x](https://evil${ch}.example/)`, 'markdown')
+  it('does not survive in a URL host', async () => {
+    const c = await view(`[x](https://evil${ch}.example/)`, 'markdown')
     expect(c.textContent).not.toMatch(ANY)
     const label = Array.from(c.querySelectorAll('span')).find((s) => /\(/.test(s.textContent ?? ''))
     // Either the link is refused (text only) or the host is shown clean.
@@ -114,8 +117,8 @@ describe.each(INVISIBLES)('invisible character %s', (_n, ch) => {
   })
 })
 
-it('the host label is forced left-to-right and is isolated from the text around it', () => {
-  const c = view('[אב bank](https://evil.example)', 'markdown')
+it('the host label is forced left-to-right and is isolated from the text around it', async () => {
+  const c = await view('[אב bank](https://evil.example)', 'markdown')
   const label = Array.from(c.querySelectorAll('span')).find((s) => s.textContent === '(evil.example)')!
   expect(label.getAttribute('dir')).toBe('ltr')
   expect(label.className).toContain('unicode-bidi:isolate')

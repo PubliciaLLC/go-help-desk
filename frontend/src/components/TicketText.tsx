@@ -1,9 +1,9 @@
-import { Component, useState } from 'react'
+import { Component, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
-import ReactMarkdown from 'react-markdown'
 import { cn } from '@/lib/utils'
-import { markdownProps } from '@/lib/markdownPipeline'
-import { isTooComplexToFormat } from '@/lib/markdownLimits'
+import type { Root } from 'hast'
+import { renderHast } from '@/lib/markdownComponents'
+import { formatMarkdown, type FormatResult } from '@/lib/markdownRunner'
 import type { TextFormat } from '@/api/types'
 
 interface Props {
@@ -29,6 +29,17 @@ class FallbackToSource extends Component<{ text: string; className?: string; chi
   }
 }
 
+// Turning the tree into elements happens here, inside the boundary, so a tree
+// that fails the page's own check falls back to the source instead of taking
+// the page down.
+function Formatted({ tree, className }: { tree: Root; className?: string }) {
+  return (
+    <div data-md-body className={cn('min-w-0 space-y-2', className)}>
+      {renderHast(tree)}
+    </div>
+  )
+}
+
 /**
  * Ticket text: a description, a reply or an internal note.
  *
@@ -40,24 +51,37 @@ class FallbackToSource extends Component<{ text: string; className?: string; chi
 export function TicketText({ text, format, className }: Props) {
   const [flipped, setFlipped] = useState(false)
   const wantsRendered = (format === 'markdown') !== flipped
-  // Text that would make the parser slow is shown as written, and says so.
-  const tooComplex = wantsRendered && isTooComplexToFormat(text)
-  const rendered = wantsRendered && !tooComplex
+  // The result is kept with the text it is for, so a new text is never shown
+  // with the previous text's formatting.
+  const [done, setDone] = useState<{ text: string; result: FormatResult } | null>(null)
+
+  useEffect(() => {
+    if (!wantsRendered) return
+    let alive = true
+    void formatMarkdown(text).then((result) => {
+      if (alive) setDone({ text, result })
+    })
+    return () => {
+      alive = false
+    }
+  }, [text, wantsRendered])
+
+  // Until the worker answers (and whenever it refuses), the text is shown as
+  // written: the post is readable at once and never blocks the page.
+  const result = wantsRendered && done?.text === text ? done.result : null
+  const tree = result?.ok ? result.tree : null
+  const refusal = result && !result.ok ? (result.reason === 'long' ? 'too long' : 'too complex') : null
 
   return (
     <div className="min-w-0">
-      {rendered ? (
-        <FallbackToSource text={text} className={className}>
-          <div data-md-body className={cn('min-w-0 space-y-2', className)}>
-            <ReactMarkdown {...markdownProps}>{text}</ReactMarkdown>
-          </div>
+      {tree ? (
+        <FallbackToSource key={text} text={text} className={className}>
+          <Formatted tree={tree} className={className} />
         </FallbackToSource>
       ) : (
         <p className={cn(plainClass, className)}>{text}</p>
       )}
-      {tooComplex && (
-        <p className="mt-1 text-xs text-gray-500">Shown as plain text: too complex to format.</p>
-      )}
+      {refusal && <p className="mt-1 text-xs text-gray-500">Shown as plain text: {refusal} to format.</p>}
       {text.trim() !== '' && (
         <button
           type="button"

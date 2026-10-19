@@ -1466,9 +1466,25 @@ guarantee. `dangerouslySetInnerHTML` and `rehype-raw` are banned by lint.
   json, yaml, xml/html, sql, javascript, typescript, python, go, ini, diff,
   plaintext) by `lowlight`, which yields a tree of elements, never an HTML
   string. A fence in another language, or with none, is not guessed at.
-- **Very heavy text is shown as written.** Text with thousands of emphasis or
-  bracket markers, or quotes and lists nested more than twenty deep, would make
-  the parser slow or exhaust the stack, so it is shown as plain text with a note.
+- **Formatting is bounded, not guessed.** Parsing Markdown is not linear in the
+  size of the input (a table header's width multiplies every short row, unclosed
+  brackets rescan the rest of the text, hard breaks and nested lists add up), and
+  a reply has no length cap. So text over 50,000 characters is never formatted,
+  a table is limited to 5,000 cells, and everything else is parsed in a Web Worker
+  with a one-second budget; past it the worker is terminated. In every such case
+  the post is shown as plain text with a note ("too long to format" or "too
+  complex to format"), and its **Plain text** button stays reachable. The page
+  itself only turns the worker's sanitized result into elements from the
+  component map, after checking it again, inside an error boundary per post. The
+  worker is same-origin, so `script-src 'self'` covers it (pinned by
+  `TestDefaultCSP_AllowsTheSameOriginMarkdownWorker` and `frontend/e2e-csp`).
+- **Two kinds of link are not links.** A `mailto:` with any query (`?bcc=`,
+  `?cc=`, `?subject=`, `?body=` can add recipients or write the message) or with
+  a domain that is not a host; its addresses are otherwise shown with the domain
+  in `xn--` form. And a link to one of this help desk's own attachment routes
+  (same origin, `/api/.../attachments/...`), which would skip the "content looks
+  like..." and reputation warnings of the attachments list: it reads "(attachment:
+  open it from the attachments list)".
 - **Long text** (#479, #517): prose and links wrap; a code block or table scrolls
   inside its own box (focusable by keyboard); the page itself never scrolls
   sideways at 320 px.

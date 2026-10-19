@@ -15,24 +15,49 @@ beforeEach(() => {
 })
 
 describe('ReplyComposer with the editor', () => {
-  it('a canned response is added after what is written, as its own paragraph', async () => {
+  // The textarea has always put a canned response at the caret and left the caret
+  // after it; "No breaking changes" says that stays true in the plain editor.
+  it('in the plain editor a canned response lands at the caret, which ends after it', async () => {
     const user = userEvent.setup()
     renderWithQuery(<ReplyComposer ticketId="t" isStaffOrAdmin />)
     await waitFor(() => expect(document.querySelector('[contenteditable="true"]')).not.toBeNull())
     await user.click(screen.getByRole('button', { name: /switch to plain editor/i }))
-    await user.type(screen.getByRole('textbox'), 'first')
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    await user.type(ta, 'hello world')
+    ta.setSelectionRange(5, 5)
     await user.click(screen.getByRole('button', { name: /insert canned response/i }))
     await user.click(await screen.findByRole('button', { name: /greeting/i }))
-    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('first\n\nHello **there**')
+    const after = screen.getByRole('textbox') as HTMLTextAreaElement
+    expect(after.value).toBe('helloHello **there** world')
+    await waitFor(() => {
+      expect(after.selectionStart).toBe('helloHello **there**'.length)
+      expect(after.selectionEnd).toBe('helloHello **there**'.length)
+    })
   })
 
-  it('a canned response reaches the rich editor through its value', async () => {
+  it('in the plain editor a selection is replaced by the canned response', async () => {
     const user = userEvent.setup()
+    renderWithQuery(<ReplyComposer ticketId="t" isStaffOrAdmin />)
+    await waitFor(() => expect(document.querySelector('[contenteditable="true"]')).not.toBeNull())
+    await user.click(screen.getByRole('button', { name: /switch to plain editor/i }))
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    await user.type(ta, 'hello big world')
+    ta.setSelectionRange(5, 9)
+    await user.click(screen.getByRole('button', { name: /insert canned response/i }))
+    await user.click(await screen.findByRole('button', { name: /greeting/i }))
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('helloHello **there** world')
+  })
+
+  it('in the rich editor a canned response is formatted and reaches the form value', async () => {
+    const user = userEvent.setup()
+    const add = vi.spyOn(ticketsApi, 'addReply').mockResolvedValue({} as never)
     renderWithQuery(<ReplyComposer ticketId="t" isStaffOrAdmin />)
     await waitFor(() => expect(document.querySelector('[contenteditable="true"]')).not.toBeNull())
     await user.click(screen.getByRole('button', { name: /insert canned response/i }))
     await user.click(await screen.findByRole('button', { name: /greeting/i }))
     await waitFor(() => expect(document.querySelector('.md-editor strong')?.textContent).toBe('there'))
+    await user.click(screen.getByRole('button', { name: 'Save entry' }))
+    expect(add).toHaveBeenCalledWith('t', 'Hello **there**', false, true)
   })
 
   it('sends the reply as Markdown', async () => {

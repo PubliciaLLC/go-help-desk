@@ -2074,7 +2074,13 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/AccountGuestReply'}
         '400':
-          $ref: '#/components/responses/BadRequest'
+          description: |
+            `bad_request`: malformed body or a failed check; `invalid_format`: format is present and is not
+            exactly plain or markdown (an empty string, "Markdown", "html", a number and `null` are all
+            refused). Nothing is written.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
         '404':
           $ref: '#/components/responses/GuestNotFound'
         '409':
@@ -2215,7 +2221,13 @@ paths:
                 properties:
                   tracking_number: {type: string}
         '400':
-          $ref: '#/components/responses/BadRequest'
+          description: |
+            `bad_request`: malformed body or a failed check; `invalid_format`: format is present and is not
+            exactly plain or markdown (an empty string, "Markdown", "html", a number and `null` are all
+            refused). Nothing is written.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
         '404':
           description: Guest submission is switched off (not_found).
           content:
@@ -3280,7 +3292,9 @@ paths:
                 $ref: '#/components/schemas/Ticket'
         '400':
           description: |
-            `bad_request`, with a message naming the field. Covers invalid JSON,
+            `invalid_format` when format is present and is not exactly plain or markdown
+            (an empty string, "Markdown", "html", a number and `null` are all refused; nothing is
+            written). `bad_request`, with a message naming the field. Covers invalid JSON,
             subject is required, category_id is required, a category, type or
             item that is archived, for staff, administrators and reporting users
             alike (category_id is not an active category; type_id is not an active

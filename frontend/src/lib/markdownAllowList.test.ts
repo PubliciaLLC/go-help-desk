@@ -8,15 +8,21 @@ import {
   MARKDOWN_ALLOW_LIST,
   markdownSanitizeSchema,
 } from './markdownAllowList'
-import { markdownProps } from './markdownPipeline'
+import { markdownToHast } from './markdownCore'
+import { markdownComponents, renderHast } from './markdownComponents'
 import { TicketText } from '@/components/TicketText'
 
 // #443: one constant, three consumers (the sanitizer, the renderer, the
 // editor's schema). These tests are what stops them drifting apart: adding an
 // element in one place fails until it is added in all of them.
 
+// The Markdown path is the real pipeline (core, then the page's component map),
+// rendered to static markup. TicketText itself formats asynchronously, so it is
+// used here only for the plain path, which has nothing to wait for.
 const html = (text: string, format: 'markdown' | 'plain' = 'markdown') =>
-  renderToStaticMarkup(createElement(TicketText, { text, format }))
+  format === 'plain'
+    ? renderToStaticMarkup(createElement(TicketText, { text, format }))
+    : renderToStaticMarkup(createElement('div', { 'data-md-body': '' }, renderHast(markdownToHast(text))))
 
 // Every construct the allow-list admits, once.
 const FIXTURE = [
@@ -34,8 +40,7 @@ describe('markdown allow-list agreement', () => {
   it('the sanitize schema, the renderer and the constant name the same elements', () => {
     const fromConstant = [...ALLOWED_ELEMENTS].sort()
     expect([...(markdownSanitizeSchema.tagNames ?? [])].sort()).toEqual(fromConstant)
-    expect([...(markdownProps.allowedElements ?? [])].sort()).toEqual(fromConstant)
-    expect(Object.keys(markdownProps.components ?? {}).sort()).toEqual(fromConstant)
+    expect(Object.keys(markdownComponents).sort()).toEqual(fromConstant)
   })
 
   it('the sanitize schema allows exactly the attributes in the constant', () => {
