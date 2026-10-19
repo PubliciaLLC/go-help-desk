@@ -3332,8 +3332,19 @@ What happens to a change, step by step:
    verification mail and password-reset mail, never any other event)
    (`notification.Carries`, `channels.go`). The channel list is
    `email`, `webhook`, `verification` (`cmd/server/outbox_wiring.go`).
-   On a deadlock, `InTx` runs the function again once, with a new collector, so
-   the rolled-back attempt's events are discarded with its writes.
+   When Postgres aborts the transaction for a deadlock (`40P01`) or a
+   serialization failure (`40001`), `InTx` runs the function again with a new
+   collector, so the rolled-back attempt's events are discarded with its
+   writes. Three attempts in all, with a 10-50 ms pause between them, and
+   none after the request's context ends (`internal/database/dbretry`, #508).
+   The same rule covers `outboxstore.Split` and the user store's guarded
+   writes. A function given to `InTx` must start from a clean slate on every
+   run: nothing it captured may carry over from an attempt that was rolled
+   back. **Not covered, on purpose:** the `unlock` command, which is run by
+   hand and shows its error to the person running it, and a single
+   autocommit statement, which is not wrapped and returns the error if it is
+   aborted (the three guarded last-administrator statements are the one
+   exception, because the deadlock was measured there).
 3. **The worker** runs in every server process. Each turn it claims rows that
    are due (`FOR UPDATE SKIP LOCKED`, ten-minute lease) and hands each to the
    sender registered for the row's channel (`internal/server/notify/outbox.go`).

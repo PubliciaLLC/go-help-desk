@@ -611,6 +611,41 @@ func TestOIDCCallback_DomainNotAllowed(t *testing.T) {
 	requireLoginRefused(t, oh.harness, resp, "domain_not_allowed")
 }
 
+// #402: the allow-list reads the address the way the account will be stored,
+// so an IdP that sends it in angle brackets is judged by its real domain.
+func TestOIDCCallback_BracketedAddressIsJudgedByItsDomain(t *testing.T) {
+	cases := []struct {
+		name   string
+		email  string
+		stored string // empty: refused, nobody provisioned
+	}{
+		{"allowed domain", "<newbie@allowed.test>", "newbie@allowed.test"},
+		{"other domain", "<outsider@notallowed.test>", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			oh, cleanup := newOIDCHarness(t)
+			defer cleanup()
+			require.NoError(t, oh.adminSvc.SetRaw(context.Background(),
+				admin.KeyAllowedEmailDomains, []byte(`["allowed.test"]`)))
+
+			resp := oh.login(t, fakeOIDCClaims{
+				Subject:       "bracketed-sub",
+				Email:         tc.email,
+				EmailVerified: true,
+				Name:          "Bracketed",
+			})
+
+			if tc.stored == "" {
+				requireLoginRefused(t, oh.harness, resp, "domain_not_allowed")
+				return
+			}
+			_, ok := findUser(t, oh.harness, tc.stored)
+			require.True(t, ok, "%s should have been provisioned as %s", tc.email, tc.stored)
+		})
+	}
+}
+
 // TestOIDCCallback_UnverifiedEmailDoesNotLink pins defect 3.
 //
 // OIDCClaims.EmailVerified is decoded and then never read. When the sub is

@@ -11,6 +11,10 @@ import (
 // ErrDeleted is returned when a staff member tries to use a soft-deleted tag.
 var ErrDeleted = errors.New("tag has been deleted and can only be restored by an admin")
 
+// ErrNotFound is returned when a tag id names no tag. The Postgres store
+// reports it when a delete or restore touches no row.
+var ErrNotFound = errors.New("tag not found")
+
 // Service encapsulates tag business logic.
 type Service struct {
 	store Store

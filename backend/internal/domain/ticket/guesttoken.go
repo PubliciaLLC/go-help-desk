@@ -119,6 +119,10 @@ func (s *Service) IssueGuestLink(ctx context.Context, ev notification.Event) (no
 		ok    bool
 	)
 	err := s.atomic.InTx(ctx, func(st Store, _ audit.Store, _ *notification.Changes) error {
+		// Captured, so decided afresh on every attempt: a retry must not
+		// inherit a token, or the "ok" that goes with it, from an attempt that
+		// was rolled back.
+		t, token, ok = Ticket{}, "", false
 		var err error
 		t, err = st.GetByIDForUpdate(ctx, ev.TicketID)
 		if err != nil {
