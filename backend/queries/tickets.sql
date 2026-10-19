@@ -266,7 +266,7 @@ LIMIT $3;
 -- name: CreateReply :exec
 -- author_id is NULL for a reply written by a guest, who has no account. That is
 -- the only way it is NULL: every other path passes the acting user.
--- body_format has no column default (migration 000054), so every writer names it.
+-- body_format has no column default (migration 000055), so every writer names it.
 INSERT INTO ticket_replies (id, ticket_id, author_id, body, internal, notify_customer, created_at, body_format)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 

@@ -1419,7 +1419,7 @@ Markdown in ticket descriptions, replies and internal notes ([#443](https://gith
 
 **The format is stored.** Every description and every reply carries `plain` or
 `markdown` (`tickets.description_format`, `ticket_replies.body_format`,
-migration 000054). Nothing is guessed from the text. Every record written before
+migration 000055). Nothing is guessed from the text. Every record written before
 1.3.0 is `plain`: 1.2 promised Markdown but never rendered it, so older text
 stays as it was typed. The columns have no default after the migration, so a
 write path that forgets the format fails instead of choosing one.

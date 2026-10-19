@@ -167,7 +167,7 @@ type CreateReplyParams struct {
 
 // author_id is NULL for a reply written by a guest, who has no account. That is
 // the only way it is NULL: every other path passes the acting user.
-// body_format has no column default (migration 000054), so every writer names it.
+// body_format has no column default (migration 000055), so every writer names it.
 func (q *Queries) CreateReply(ctx context.Context, arg CreateReplyParams) error {
 	_, err := q.db.ExecContext(ctx, createReply,
 		arg.ID,

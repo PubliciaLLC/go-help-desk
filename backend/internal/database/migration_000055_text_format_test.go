@@ -10,11 +10,11 @@ import (
 )
 
 const (
-	migration054Up   = "migrations/000054_text_format.up.sql"
-	migration054Down = "migrations/000054_text_format.down.sql"
+	migration055Up   = "migrations/000055_text_format.up.sql"
+	migration055Down = "migrations/000055_text_format.down.sql"
 )
 
-// Migration 000054 adds the format columns (#443). It runs here against TEMP
+// Migration 000055 adds the format columns (#443). It runs here against TEMP
 // stand-ins for the two tables, verbatim, so the test sees exactly the rows it
 // seeds and takes no lock on the shared tables.
 //
@@ -23,7 +23,7 @@ const (
 //   - the default is gone afterwards, so an INSERT that forgets the format fails;
 //   - the CHECK refuses any other value;
 //   - the down migration removes the columns again.
-func TestMigration054_TextFormat(t *testing.T) {
+func TestMigration055_TextFormat(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
 	ctx := context.Background()
@@ -47,7 +47,7 @@ func TestMigration054_TextFormat(t *testing.T) {
 	}
 	tBefore, rBefore := filenode("tickets"), filenode("ticket_replies")
 
-	execMigrationFile(t, ctx, tx, migration054Up, nil)
+	execMigrationFile(t, ctx, tx, migration055Up, nil)
 
 	require.Equal(t, tBefore, filenode("tickets"), "adding the column must not rewrite tickets")
 	require.Equal(t, rBefore, filenode("ticket_replies"), "adding the column must not rewrite ticket_replies")
@@ -77,7 +77,7 @@ func TestMigration054_TextFormat(t *testing.T) {
 	_, err = tx.ExecContext(ctx, `INSERT INTO ticket_replies VALUES (2, 'x', 'markdown')`)
 	require.NoError(t, err)
 
-	execMigrationFile(t, ctx, tx, migration054Down, nil)
+	execMigrationFile(t, ctx, tx, migration055Down, nil)
 	var n int
 	require.NoError(t, tx.QueryRowContext(ctx, `SELECT count(*) FROM information_schema.columns
 		WHERE table_schema = (SELECT nspname FROM pg_namespace WHERE oid = pg_my_temp_schema())
@@ -86,7 +86,7 @@ func TestMigration054_TextFormat(t *testing.T) {
 }
 
 // The real tables, after every migration has run: NOT NULL and no default.
-func TestMigration054_RealTablesHaveNoDefault(t *testing.T) {
+func TestMigration055_RealTablesHaveNoDefault(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
 	for _, c := range []struct{ table, col string }{
