@@ -169,7 +169,8 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	email := strings.ToLower(strings.TrimSpace(claims.Email))
+	// Not lower-cased here: ValidateEmail does that, after refusing non-ASCII.
+	email := strings.TrimSpace(claims.Email)
 
 	// An unverified address proves nothing about who owns it, so it must not be
 	// used to adopt an existing account or to provision a new one. Dropping it

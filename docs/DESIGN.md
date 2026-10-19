@@ -1230,6 +1230,21 @@ existing single sign-on user keeps their stored address when the identity
 provider sends one that needs quotes; their other details still sync and
 sign-in succeeds.
 
+**Email addresses must be ASCII.** `user.ValidateEmail` refuses any address
+containing a non-ASCII character with `400`, before it lower-cases anything,
+and so does every path that takes an address: signup, administrator create and
+edit, a typed `reporter_email`, a guest submission, and a first-time SAML or
+OIDC sign-in (`/login?error=invalid_email`, or `domain_not_allowed` when an
+allowed-domains list is set). Go's `strings.ToLower` and Postgres `lower()`
+fold some non-ASCII letters into ASCII ones, so a non-ASCII address cannot be
+compared reliably. The guest re-request lookup and a password-reset request
+match nothing for such an address. The allowed-domains check compares only
+ASCII letters case-insensitively, so a non-ASCII domain never matches. An
+existing account keeps signing in by its identity provider subject; it cannot
+be newly linked by email, and a sync that carries a non-ASCII address keeps the
+stored one. Check for stored ones with
+`SELECT count(*) FROM users WHERE email ~ '[^\x01-\x7f]'`.
+
 **Closed means read-only, not revoked** (#349). Closing, a status change to
 Closed and the auto-close sweep **stop rotating** the guest's link; they do not
 delete it. The last link sent keeps reading the ticket until it expires
