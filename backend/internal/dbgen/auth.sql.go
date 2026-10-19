@@ -580,7 +580,7 @@ WHERE w.api_key_id IS NOT NULL
       SELECT 1 FROM api_keys k
       JOIN users u ON u.id = k.user_id
       WHERE k.id = w.api_key_id
-        AND (k.expires_at IS NULL OR k.expires_at > clock_timestamp())
+        AND (k.expires_at IS NULL OR k.expires_at > $1::timestamptz)
         AND u.deleted_at IS NULL
         AND u.disabled = FALSE
   )
@@ -593,9 +593,12 @@ WHERE w.api_key_id IS NOT NULL
 // having run, and a missing key counts the same as a revoked one: this fails
 // CLOSED. webhook_configs.api_key_id is deliberately not a foreign key, or
 // deleting the key would null the link and the hook would look session-made.
-// clock_timestamp() and not now(): the latter is the start of the transaction.
-func (q *Queries) ListPausedWebhookIDs(ctx context.Context) ([]uuid.UUID, error) {
-	rows, err := q.db.QueryContext(ctx, listPausedWebhookIDs)
+// The instant is passed in, not read from the database: APIKeyAuth judges a
+// key's expiry by the application's clock (auth.APIKey.Expired), and a second
+// clock here would let a dead key's hooks keep firing for as long as the two
+// disagree (#523). One clock, one rule.
+func (q *Queries) ListPausedWebhookIDs(ctx context.Context, now time.Time) ([]uuid.UUID, error) {
+	rows, err := q.db.QueryContext(ctx, listPausedWebhookIDs, now)
 	if err != nil {
 		return nil, err
 	}
