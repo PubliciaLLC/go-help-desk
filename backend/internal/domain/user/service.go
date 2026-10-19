@@ -736,21 +736,43 @@ var (
 
 // IsEmailDomainAllowed returns true when the email domain matches one of the
 // allowed domains, or when the allowed list is empty (unrestricted).
+//
+// The domain is the one of the address as it will be stored, which is
+// ValidateEmail's answer: "<a@x.com>" is judged by x.com, not by "x.com>". An
+// address ValidateEmail will not store (a display name, a second address, a
+// quoted local part that needs its quotes) keeps the judgement it always had,
+// the text after the first at sign, because OIDC runs this on every login and
+// an existing account must not be locked out over its IdP's spelling (#389).
+// A new account with such an address is refused when it is created.
+//
+// Only ever a gate: nothing here can admit an address whose domain is not on
+// the list.
 func IsEmailDomainAllowed(email string, allowed []string) bool {
 	if len(allowed) == 0 {
 		return true
 	}
-	parts := strings.SplitN(strings.ToLower(strings.TrimSpace(email)), "@", 2)
-	if len(parts) != 2 || parts[1] == "" {
+	domain, ok := emailDomain(email)
+	if !ok {
 		return false
 	}
-	domain := parts[1]
 	for _, d := range allowed {
 		if strings.ToLower(strings.TrimSpace(d)) == domain {
 			return true
 		}
 	}
 	return false
+}
+
+// emailDomain is the lower-cased domain of email, and false when there is none.
+func emailDomain(email string) (string, bool) {
+	if addr, err := ValidateEmail(email); err == nil {
+		email = addr
+	}
+	parts := strings.SplitN(strings.ToLower(strings.TrimSpace(email)), "@", 2)
+	if len(parts) != 2 || parts[1] == "" {
+		return "", false
+	}
+	return parts[1], true
 }
 
 // UpsertSAMLUser creates or updates a user record based on a SAML assertion.
