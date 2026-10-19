@@ -729,9 +729,12 @@ func (s *Server) handleGetSiteConfig(w http.ResponseWriter, r *http.Request) {
 	//
 	// guest_attachments_enabled and guest_attachment_max_bytes (#445) are here
 	// for the same reason: the guest page has no session, and offering an
-	// attach button that can only fail is worse than not offering one. They
-	// reveal what an unauthenticated upload would reveal by answering 404. The
-	// size is the EFFECTIVE limit (the lower of the setting and the
+	// attach button that can only fail is worse than not offering one. Unlike
+	// guest_submission_enabled this DOES disclose something the guest routes
+	// do not: the upload route answers the same 404 whether the setting or the
+	// token is what failed, so it never says whether uploads are on. Here
+	// anyone can read it, with the effective limit. Accepted (low sensitivity,
+	// and the guest ticket's allow-list stays untouched). The size is the EFFECTIVE limit (the lower of the setting and the
 	// instance-wide maximum), omitted while uploads are off.
 	cfg := map[string]any{
 		"name":                      s.adminSvc.SiteName(r.Context()),

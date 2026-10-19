@@ -1609,14 +1609,18 @@ paths:
                     type: boolean
                     description: |
                       Whether a guest may attach files from the web page (#445).
-                      True only while guest submission is also on.
+                      True only while guest submission is also on. This is
+                      public: unlike the upload route, which answers the same
+                      404 whether the setting or the token failed, this tells
+                      anyone whether uploads are on. Accepted as low sensitivity.
                   guest_attachment_max_bytes:
                     type: integer
                     format: int64
                     description: |
                       The per-file limit that applies to a guest: the lower of
                       guest_attachment_max_mb and the instance-wide 25 MB maximum.
-                      Present only while guest_attachments_enabled is true.
+                      Present only while guest_attachments_enabled is true. Public,
+                      like the flag; disclosing the limit was accepted.
   /health:
     get:
       operationId: health

@@ -175,6 +175,11 @@ func TestGuestUploadAttachment_ReachesOneTicketAndNoOther(t *testing.T) {
 func TestGuestUploadAttachment_RefusedWithoutAValidToken(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
+	// Both switches on, so the 404 below can only come from the token. With the
+	// uploads setting off (its default) it would be the setting answering.
+	require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeyGuestSubmissionEnabled, true))
+	setGuestUploads(t, h, true)
+	require.True(t, h.adminSvc.GuestAttachmentsEnabled(context.Background()), "the setting must be on for this test to mean anything")
 
 	cases := []struct {
 		name  string
@@ -202,6 +207,7 @@ func TestGuestUploadAttachment_AClosedTicketRefusesLikeABadToken(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	tk, token := seedGuestTicket(t, h)
+	setGuestUploads(t, h, true) // or the 404 is the setting's, not the closed ticket's
 
 	staff := ticket.Actor{UserID: &h.staffID, Role: user.RoleStaff}
 	require.NoError(t, h.ticketSvc.Close(context.Background(), tk.ID, staff))

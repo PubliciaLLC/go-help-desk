@@ -18,6 +18,8 @@ interface AttachmentUploadProps {
   maxFiles?: number
   /** Per-file limit; the instance-wide 25 MB unless the caller has a lower one (a guest, #445). */
   maxBytes?: number
+  /** Key of a file in uploadStates. The file name unless the caller can have two of the same name. */
+  stateKey?: (file: File, index: number) => string
 }
 
 function formatBytes(bytes: number): string {
@@ -38,7 +40,7 @@ function statusIcon(state?: UploadState) {
   return <span className="text-xs text-gray-400 shrink-0">Queued</span>
 }
 
-export function AttachmentUpload({ files, onChange, uploadStates, disabled, maxFiles = 5, maxBytes = MAX_SIZE_BYTES }: AttachmentUploadProps) {
+export function AttachmentUpload({ files, onChange, uploadStates, disabled, maxFiles = 5, maxBytes = MAX_SIZE_BYTES, stateKey }: AttachmentUploadProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const isUploading = !!uploadStates
   const atLimit = files.length >= maxFiles
@@ -95,7 +97,7 @@ export function AttachmentUpload({ files, onChange, uploadStates, disabled, maxF
       {files.length > 0 && (
         <ul className="divide-y divide-gray-100 rounded-md border border-gray-200 text-sm">
           {files.map((f, i) => {
-            const state = uploadStates?.[f.name]
+            const state = uploadStates?.[stateKey ? stateKey(f, i) : f.name]
             return (
               <li key={i} className="flex items-center gap-2 px-3 py-2">
                 <span className="flex-1 truncate text-gray-800" title={f.name}>{f.name}</span>

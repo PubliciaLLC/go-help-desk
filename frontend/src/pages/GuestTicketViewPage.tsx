@@ -61,6 +61,10 @@ export function GuestTicketViewPage() {
   const [attached, setAttached] = useState<string[]>([])
   const [uploadErrors, setUploadErrors] = useState<string[]>([])
 
+  // Position plus name: two files may share a name, and a state keyed by name
+  // alone would show one row's progress on both.
+  const stateKey = (f: File, i: number) => `${i}:${f.name}`
+
   // Each chosen file is sent as soon as it is chosen, one after another. There
   // is no draft to submit: a guest attachment belongs to the ticket, not to a
   // reply. The server's reason is shown for a refusal, never the file's content.
@@ -68,9 +72,9 @@ export function GuestTicketViewPage() {
     if (files.length === 0) return
     setUploading(files)
     setUploadErrors([])
-    setUploadStates(Object.fromEntries(files.map((f) => [f.name, { status: 'pending' as const }])))
-    for (const f of files) {
-      setUploadStates((s) => ({ ...s, [f.name]: { status: 'uploading' } }))
+    setUploadStates(Object.fromEntries(files.map((f, i) => [stateKey(f, i), { status: 'pending' as const }])))
+    for (const [i, f] of files.entries()) {
+      setUploadStates((s) => ({ ...s, [stateKey(f, i)]: { status: 'uploading' } }))
       try {
         await uploadGuestAttachment(token, f)
         setAttached((a) => [...a, f.name])
@@ -255,6 +259,7 @@ export function GuestTicketViewPage() {
                 files={uploading}
                 onChange={(next) => sendFiles(next.slice(uploading.length))}
                 uploadStates={uploadStates}
+                stateKey={stateKey}
                 maxBytes={site!.guest_attachment_max_bytes}
               />
               {attached.length > 0 && (
@@ -262,8 +267,8 @@ export function GuestTicketViewPage() {
                   Attached: {attached.join(', ')}
                 </p>
               )}
-              {uploadErrors.map((m) => (
-                <p key={m} role="alert" className="text-sm text-red-600 wrap-anywhere">{m}</p>
+              {uploadErrors.map((m, i) => (
+                <p key={i} role="alert" className="text-sm text-red-600 wrap-anywhere">{m}</p>
               ))}
             </div>
           )}

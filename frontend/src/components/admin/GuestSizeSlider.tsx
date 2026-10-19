@@ -72,7 +72,6 @@ export function GuestSizeSlider({ value, onChange, instanceMaxMB, disabled }: {
         <p
           id={noteId}
           role="note"
-          aria-label="Above the instance-wide maximum"
           className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
         >
           This instance accepts at most {instanceMaxMB} MB per file, so guests are held to {instanceMaxMB} MB whatever is chosen here.

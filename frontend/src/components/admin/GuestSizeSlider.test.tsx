@@ -42,9 +42,11 @@ describe('the guest file size slider', () => {
 
   it('says so when the figure is above what the instance accepts, and announces the real limit', () => {
     const { rerender } = render(<GuestSizeSlider value={25} onChange={() => {}} instanceMaxMB={25} />)
-    expect(screen.queryByRole('note', { name: /instance-wide maximum/i })).toBeNull()
+    expect(screen.queryByRole('note')).toBeNull()
     rerender(<GuestSizeSlider value={60} onChange={() => {}} instanceMaxMB={25} />)
-    const note = screen.getByRole('note', { name: /instance-wide maximum/i })
+    const note = screen.getByRole('note')
+    // No aria-label: it would replace the sentence, and its 25 MB, for a screen reader.
+    expect(note.getAttribute('aria-label')).toBeNull()
     expect(note.textContent).toMatch(/25 MB/)
     expect(slider().getAttribute('aria-valuetext')).toBe('60 MB, limited to 25 MB by the instance-wide maximum')
   })

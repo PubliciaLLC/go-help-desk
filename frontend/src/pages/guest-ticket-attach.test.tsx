@@ -97,4 +97,20 @@ describe('attaching files from the guest page', () => {
     await userEvent.upload(input, new File(['x'], 'a.txt', { type: 'text/plain' }))
     expect((await screen.findByRole('alert')).textContent).toMatch(/does not accept \.exe files/)
   })
+
+  it('tracks two files with the same name separately', async () => {
+    getSiteConfig.mockResolvedValue({ name: 'x', logo_url: '', version: '1', guest_submission_enabled: true, guest_attachments_enabled: true, guest_attachment_max_bytes: 5 * 1024 * 1024 })
+    let release!: () => void
+    uploadGuestAttachment.mockReturnValueOnce(new Promise<void>((r) => { release = r })).mockResolvedValue(undefined)
+    const { container } = renderWithQuery(<GuestTicketViewPage />)
+    await screen.findByRole('button', { name: 'Add files' })
+    const input = container.querySelector('input[type=file]') as HTMLInputElement
+    await userEvent.upload(input, [new File(['1'], 'a.txt', { type: 'text/plain' }), new File(['2'], 'a.txt', { type: 'text/plain' })])
+    // The first is in flight and the second waits: one "Uploading", one "Queued".
+    await screen.findByText('Uploading…')
+    expect(screen.getAllByText('Uploading…')).toHaveLength(1)
+    expect(screen.getAllByText('Queued')).toHaveLength(1)
+    release()
+    await waitFor(() => expect(uploadGuestAttachment).toHaveBeenCalledTimes(2))
+  })
 })
