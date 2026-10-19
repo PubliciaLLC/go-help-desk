@@ -116,6 +116,11 @@ describe('attachments are never rendered inline', () => {
     'src/components/MFAEnrollForm.tsx': 1,
     'src/pages/AccountPage.tsx': 1,
     'src/pages/admin/SettingsPage.tsx': 1,
+    // #443: not a renderer. This is the `new URL(value)` that parses a link's
+    // target in safeUrl, which the regex above reads as a CSS url(). Markdown
+    // images are never loaded: the pipeline turns each into a link (see
+    // TicketText.xss.test.tsx), and nothing else in the file renders anything.
+    'src/lib/markdownAllowList.ts': 1,
   }
 
   it('renders nothing that is not on the list', () => {

@@ -60,3 +60,29 @@
     -webkit-font-smoothing: antialiased;
   }
 }
+
+/* #443: code highlighting. highlight.js token classes only; no theme
+   stylesheet is imported, so the colours here are all there is. Contrast is
+   at least 4.5:1 on the code box's gray-100 background. */
+[data-md-body] code .hljs-comment,
+[data-md-body] code .hljs-quote { color: #4b5563; font-style: italic; }
+[data-md-body] code .hljs-keyword,
+[data-md-body] code .hljs-selector-tag,
+[data-md-body] code .hljs-meta { color: #7c1d8f; }
+[data-md-body] code .hljs-string,
+[data-md-body] code .hljs-regexp,
+[data-md-body] code .hljs-addition { color: #0b6b2d; }
+[data-md-body] code .hljs-number,
+[data-md-body] code .hljs-literal,
+[data-md-body] code .hljs-symbol { color: #0b5cad; }
+[data-md-body] code .hljs-built_in,
+[data-md-body] code .hljs-type,
+[data-md-body] code .hljs-class { color: #8a4600; }
+[data-md-body] code .hljs-title,
+[data-md-body] code .hljs-section { color: #1d4ed8; font-weight: 600; }
+[data-md-body] code .hljs-variable,
+[data-md-body] code .hljs-attr,
+[data-md-body] code .hljs-attribute,
+[data-md-body] code .hljs-name { color: #9a1b1b; }
+[data-md-body] code .hljs-deletion { color: #9a1b1b; background: #fee2e2; }
+[data-md-body] code .hljs-addition { background: #dcfce7; }
