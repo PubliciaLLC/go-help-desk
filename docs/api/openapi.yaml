@@ -601,7 +601,9 @@ paths:
             administrators. When the server can send email, the refusal itself
             queues the same reset email POST /auth/forgot-password does (counted
             against the same per-address budget, and the per-account limit
-            applies when it is sent) and the message says to check email; when
+            applies when it is sent) and the message says to check email; if nothing
+            could be queued (budget spent, or a queue failure) the message says
+            it could not send a link just now; when
             it cannot, nothing is sent and the message says to ask an
             administrator. A wrong password, and the saml_required refusal,
             send nothing.

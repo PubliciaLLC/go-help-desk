@@ -41,7 +41,7 @@ check "a branch push publishes only the moving edge tag" \
 # pattern; anything else is refused so it can never publish.
 check "the next cycle's beta branch publishes edge too" \
   "${image}:edge" "$image" branch v1.4.0-beta
-for br in main master develop v1.3.0 beta v-beta feature/v1.3.0-beta; do
+for br in main master develop v1.3.0 beta v-beta feature/v1.3.0-beta v1/x-beta; do
   if out="$("$here/image-tags.sh" "$image" branch "$br" 2>/dev/null)"; then
     printf '  FAIL branch %s published [%s]\n' "$br" "$out"
     fail=1

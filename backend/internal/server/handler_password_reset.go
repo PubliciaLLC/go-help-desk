@@ -31,11 +31,14 @@ func forgotPasswordKey(r *http.Request) string {
 // requestPasswordReset queues a reset request for an address; the one path
 // "Forgot password" and the #453 sign-in refusal share. A fault queueing is
 // ours, and answering anything but the usual answer would say something about
-// the address, so it is logged and the caller's answer stands.
-func (s *Server) requestPasswordReset(ctx context.Context, email string) {
+// the address, so it is logged and the caller's answer stands. It reports
+// whether the request was queued, for the one caller (sign-in) that says so.
+func (s *Server) requestPasswordReset(ctx context.Context, email string) bool {
 	if err := s.passwordReset.Request(ctx, email); err != nil {
 		slog.ErrorContext(ctx, "password reset request could not be queued", "error", err)
+		return false
 	}
+	return true
 }
 
 // POST /api/v1/auth/forgot-password — ask for a link to choose a new password.

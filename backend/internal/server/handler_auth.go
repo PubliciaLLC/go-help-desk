@@ -98,13 +98,12 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		//
 		// Counted against the same per-address budget as "Forgot password", and
 		// the per-account budget applies when the worker sends. Over the budget
-		// nothing more is queued and the answer is unchanged: the link already
-		// sent is the one to use.
+		// nothing more is queued, and neither is anything when the queue insert
+		// fails; the message then says so rather than claiming a mail was sent.
 		resetByEmail := s.passwordResetAvailable()
-		if resetByEmail && s.loginLimiter.Allow(forgotPasswordKey(r)) {
+		queued := resetByEmail && s.loginLimiter.Allow(forgotPasswordKey(r)) &&
 			s.requestPasswordReset(r.Context(), u.Email)
-		}
-		Error(w, http.StatusForbidden, "password_reset_required", passwordResetRequiredMessage(resetByEmail))
+		Error(w, http.StatusForbidden, "password_reset_required", passwordResetRequiredMessage(resetByEmail, queued))
 		return
 	}
 	if err != nil {
@@ -205,9 +204,13 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 
 // passwordResetRequiredMessage is what a person whose password hash is too old
 // to be used (#453) is told to do. With email on, the reset link has just been
-// sent; without it, only an administrator can help. Both name "Forgot password".
-func passwordResetRequiredMessage(resetByEmail bool) string {
+// sent; with email on but nothing queued (budget spent, or the queue failed) it
+// says so; without email, only an administrator can help.
+func passwordResetRequiredMessage(resetByEmail, queued bool) string {
 	const head = "Your password was saved in an older, weaker form and must be reset before you can sign in. "
+	if resetByEmail && !queued {
+		return head + "We could not send a reset link just now. Try again in a minute, or ask an administrator."
+	}
 	if resetByEmail {
 		return head + "We have emailed you a link to choose a new password: check your email. " +
 			"If it does not arrive, choose \"Forgot password\" on the sign-in page to be sent another, " +

@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -196,9 +197,14 @@ func TestUpdateSettings_PasswordRehashGraceDaysNeedsASession(t *testing.T) {
 type resetCounter struct {
 	notification.Dispatcher
 	n int
+	// err, when set, makes the insert fail as a down database would.
+	err error
 }
 
 func (c *resetCounter) Dispatch(ctx context.Context, ev notification.Event) error {
+	if c.err != nil {
+		return c.err
+	}
 	c.n++
 	return c.Dispatcher.Dispatch(ctx, ev)
 }
@@ -275,6 +281,14 @@ func TestLogin_OldHashRefusalIsRateLimitedLikeForgotPassword(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		res, body := signInRequest(t, h, "user@test.local")
 		require.Equal(t, http.StatusForbidden, res.StatusCode, "attempt %d: %s", i+1, body)
+		require.Contains(t, string(body), "password_reset_required")
+		if i < 2 {
+			require.Contains(t, string(body), "check your email", "attempt %d", i+1)
+		} else {
+			// Nothing was queued, so the message must not claim it was.
+			require.Contains(t, string(body), "could not send a reset link just now", "attempt %d", i+1)
+			require.NotContains(t, string(body), "check your email", "attempt %d", i+1)
+		}
 	}
 	require.Equal(t, 2, queued.n, "only the limit's worth of requests were queued")
 
@@ -295,5 +309,23 @@ func TestLogin_OldHashSAMLRefusalSendsNothing(t *testing.T) {
 	require.Equal(t, http.StatusForbidden, res.StatusCode, "%s", body)
 	require.Contains(t, string(body), "saml_required")
 	require.Zero(t, queued.n)
+	require.Empty(t, h.resetMail.sent)
+}
+
+// A failed queue insert is not a sent link either.
+func TestLogin_OldHashRefusalAdmitsWhenTheLinkCouldNotBeQueued(t *testing.T) {
+	h, cleanup := newHarnessCfg(t, 0, "", emailOn)
+	defer cleanup()
+	withExpiry(t, h, 31)
+	queued := countResets(h)
+	queued.err = errors.New("db down")
+
+	res, body := signInRequest(t, h, "user@test.local")
+
+	require.Equal(t, http.StatusForbidden, res.StatusCode, "%s", body)
+	require.Contains(t, string(body), "password_reset_required")
+	require.Contains(t, string(body), "could not send a reset link just now")
+	require.Contains(t, string(body), "ask an administrator")
+	require.NotContains(t, string(body), "check your email")
 	require.Empty(t, h.resetMail.sent)
 }

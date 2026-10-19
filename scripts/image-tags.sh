@@ -19,7 +19,10 @@ if [ "$ref_type" = "branch" ]; then
   # cycle (v1.3.0-beta, v1.4.0-beta, ...), so this is a pattern rather than a
   # name; keep it identical to the `branches:` filter in release.yml. Any other
   # branch is refused, so nothing can publish by reaching here.
+  # `case` globs let * match "/", which the workflow's branch filter does not
+  # (v1/x-beta fails there), so a slash is refused first to keep them equal.
   case "$ref_name" in
+    */*) echo "image-tags: branch '${ref_name}' does not publish." >&2; exit 1 ;;
     v[0-9]*-beta) echo "${image}:edge" ;;
     *)
       echo "image-tags: branch '${ref_name}' does not publish; only v*-beta owns :edge." >&2
