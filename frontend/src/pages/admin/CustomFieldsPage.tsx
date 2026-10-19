@@ -71,14 +71,14 @@ export function CustomFieldsPage() {
   return (
     <Layout>
       <div className="space-y-6">
-        <div className="flex items-start justify-between">
-          <div>
+        <div className="flex flex-col items-start gap-3 sm:flex-row sm:justify-between sm:gap-0">
+          <div className="min-w-0">
             <h1 className="text-2xl font-bold text-gray-900">Custom Fields</h1>
             <p className="mt-1 text-sm text-gray-500">
               Define reusable fields that can be assigned to categories, types, and items. Once created, fields cannot be deleted — only deactivated.
             </p>
           </div>
-          <Button onClick={() => setAdding(true)} className="ml-6 shrink-0">
+          <Button onClick={() => setAdding(true)} className="shrink-0 sm:ml-6">
             <PlusIcon className="mr-2 h-4 w-4" />
             New Field
           </Button>
@@ -147,7 +147,7 @@ export function CustomFieldsPage() {
         {isLoading ? (
           <div className="flex justify-center py-12"><Spinner /></div>
         ) : (
-          <div className="overflow-hidden rounded-lg border bg-white">
+          <div className="overflow-x-auto rounded-lg border bg-white">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 text-xs uppercase tracking-wide text-gray-500">
                 <tr>
@@ -162,9 +162,9 @@ export function CustomFieldsPage() {
               <tbody className="divide-y">
                 {defs.map((def: FieldDef) => (
                   <tr key={def.id} className={`group hover:bg-gray-50 ${!def.active ? 'opacity-50' : ''}`}>
-                    <td className="px-4 py-3 font-medium text-gray-900">{def.name}</td>
+                    <td className="px-4 py-3 font-medium text-gray-900 wrap-anywhere">{def.name}</td>
                     <td className="px-4 py-3 text-gray-600">{labelForType(def.field_type)}</td>
-                    <td className="px-4 py-3 text-gray-500 text-xs">
+                    <td className="px-4 py-3 text-gray-500 text-xs wrap-anywhere">
                       {def.field_type === 'select' && def.options?.length
                         ? def.options.join(', ')
                         : <span className="text-gray-300">—</span>}
