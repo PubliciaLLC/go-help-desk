@@ -259,7 +259,7 @@ func TestCreate_PriorityValidation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			reporter := uuid.New()
-			got, err := h.svc.Create(context.Background(), ticket.CreateInput{
+			got, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 				Subject:        "Printer offline",
 				CategoryID:     uuid.New(),
 				Priority:       tc.priority,

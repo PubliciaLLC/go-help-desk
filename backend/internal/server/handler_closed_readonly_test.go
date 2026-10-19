@@ -25,7 +25,7 @@ import (
 func reporterClosedTicket(t *testing.T, h *harness) ticket.Ticket {
 	t.Helper()
 	ctx := context.Background()
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Laptop will not boot", Description: "black screen", CategoryID: h.catID,
 		ReporterUserID: &h.userID,
 	})
@@ -128,7 +128,7 @@ func TestGuest_AWriteRacingTheCloseIsStillRefusedByTheService(t *testing.T) {
 		ticket.Actor{UserID: &h.adminID, Role: user.RoleAdmin}))
 
 	// Past the middleware, straight at the service: what the handler maps.
-	_, err := h.ticketSvc.AddGuestReply(context.Background(), tk.ID, "late", 7, uuid.New())
+	_, err := h.ticketSvc.AddGuestReply(context.Background(), tk.ID, "late", ticket.TextFormatPlain, 7, uuid.New())
 	require.ErrorIs(t, err, ticket.ErrClosed, "the service still refuses, as defence in depth")
 }
 
@@ -207,7 +207,7 @@ func TestReporter_EveryWriteIsRefusedOnTheirClosedTicket(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 	tk := reporterClosedTicket(t, h)
-	other, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	other, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Another of mine", Description: "x", CategoryID: h.catID, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)
@@ -280,7 +280,7 @@ func TestReporter_ClosedRefusalIsNotAnOracleForTicketsTheyCannotSee(t *testing.T
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	ctx := context.Background()
-	foreign, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	foreign, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Not theirs", Description: "x", CategoryID: h.catID, ReporterUserID: &h.adminID,
 	})
 	require.NoError(t, err)
@@ -307,7 +307,7 @@ func TestReporter_ResolvedReopensInsideTheWindowAndNotOutsideIt(t *testing.T) {
 	staff := ticket.Actor{UserID: &h.staffID, Role: user.RoleStaff}
 
 	newResolved := func() ticket.Ticket {
-		tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 			Subject: "Resolved one", Description: "x", CategoryID: h.catID, ReporterUserID: &h.userID,
 		})
 		require.NoError(t, err)
@@ -394,7 +394,7 @@ func TestClosedIsTerminalOverREST(t *testing.T) {
 	}
 
 	t.Run("duplicate-of with auto-resolve cannot take a closed ticket out of Closed", func(t *testing.T) {
-		target, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+		target, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 			Subject: "Original", Description: "x", CategoryID: h.catID, ReporterUserID: &h.userID,
 		})
 		require.NoError(t, err)
@@ -477,7 +477,7 @@ func TestFollowUp_Refusals(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 	closed := reporterClosedTicket(t, h)
-	open, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	open, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Still open", Description: "x", CategoryID: h.catID, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)

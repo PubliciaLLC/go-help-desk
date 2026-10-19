@@ -76,37 +76,37 @@ func TestReply_FromRequesterFlag(t *testing.T) {
 	}{
 		{"an account holder's public reply", func(h *harness) error {
 			tk := h.seedOpenTicket(reporter)
-			_, err := h.svc.AddReply(ctx, tk.ID, "hi", false, false, "", ticket.Actor{UserID: &reporter, Role: user.RoleUser}, 30, h.newStatus.ID)
+			_, err := h.svc.AddReply(ctx, tk.ID, "hi", ticket.TextFormatPlain, false, false, "", ticket.Actor{UserID: &reporter, Role: user.RoleUser}, 30, h.newStatus.ID)
 			return err
 		}, true},
 		{"a guest's reply", func(h *harness) error {
 			tk, _ := guestTicket(t, h)
-			_, err := h.svc.AddGuestReply(ctx, tk.ID, "hi", 30, h.newStatus.ID)
+			_, err := h.svc.AddGuestReply(ctx, tk.ID, "hi", ticket.TextFormatPlain, 30, h.newStatus.ID)
 			return err
 		}, true},
 		{"a staff member replying on a ticket they filed", func(h *harness) error {
 			tk := h.seedOpenTicket(staffID)
-			_, err := h.svc.AddReply(ctx, tk.ID, "hi", false, false, "", ticket.Actor{UserID: &staffID, Role: user.RoleStaff}, 30, h.newStatus.ID)
+			_, err := h.svc.AddReply(ctx, tk.ID, "hi", ticket.TextFormatPlain, false, false, "", ticket.Actor{UserID: &staffID, Role: user.RoleStaff}, 30, h.newStatus.ID)
 			return err
 		}, true},
 		{"an administrator replying on a ticket they filed", func(h *harness) error {
 			tk := h.seedOpenTicket(staffID)
-			_, err := h.svc.AddReply(ctx, tk.ID, "hi", false, false, "", ticket.Actor{UserID: &staffID, Role: user.RoleAdmin}, 30, h.newStatus.ID)
+			_, err := h.svc.AddReply(ctx, tk.ID, "hi", ticket.TextFormatPlain, false, false, "", ticket.Actor{UserID: &staffID, Role: user.RoleAdmin}, 30, h.newStatus.ID)
 			return err
 		}, true},
 		{"a staff reply on somebody else's ticket", func(h *harness) error {
 			tk := h.seedOpen()
-			_, err := h.svc.AddReply(ctx, tk.ID, "hi", false, false, "", ticket.Actor{UserID: &staffID, Role: user.RoleStaff}, 30, h.newStatus.ID)
+			_, err := h.svc.AddReply(ctx, tk.ID, "hi", ticket.TextFormatPlain, false, false, "", ticket.Actor{UserID: &staffID, Role: user.RoleStaff}, 30, h.newStatus.ID)
 			return err
 		}, false},
 		{"a staff internal note on somebody else's ticket", func(h *harness) error {
 			tk := h.seedOpen()
-			_, err := h.svc.AddReply(ctx, tk.ID, "hi", true, false, "", ticket.Actor{UserID: &staffID, Role: user.RoleStaff}, 30, h.newStatus.ID)
+			_, err := h.svc.AddReply(ctx, tk.ID, "hi", ticket.TextFormatPlain, true, false, "", ticket.Actor{UserID: &staffID, Role: user.RoleStaff}, 30, h.newStatus.ID)
 			return err
 		}, false},
 		{"an internal note by the staff member who filed the ticket", func(h *harness) error {
 			tk := h.seedOpenTicket(staffID)
-			_, err := h.svc.AddReply(ctx, tk.ID, "hi", true, false, "", ticket.Actor{UserID: &staffID, Role: user.RoleStaff}, 30, h.newStatus.ID)
+			_, err := h.svc.AddReply(ctx, tk.ID, "hi", ticket.TextFormatPlain, true, false, "", ticket.Actor{UserID: &staffID, Role: user.RoleStaff}, 30, h.newStatus.ID)
 			return err
 		}, false},
 	}
@@ -135,7 +135,7 @@ func TestReply_EventNamesTheAssignee(t *testing.T) {
 	tk.AssigneeUserID, tk.AssigneeGroupID = &assignee, &group
 	h.store.seed(tk)
 
-	_, err := h.svc.AddReply(context.Background(), tk.ID, "hi", false, false, "",
+	_, err := h.svc.AddReply(context.Background(), tk.ID, "hi", ticket.TextFormatPlain, false, false, "",
 		ticket.Actor{UserID: &reporter, Role: user.RoleUser}, 30, h.newStatus.ID)
 	require.NoError(t, err)
 

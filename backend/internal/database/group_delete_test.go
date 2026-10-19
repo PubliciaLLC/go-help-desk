@@ -56,7 +56,7 @@ func newGroupFixture(t *testing.T) *groupFixture {
 
 	newSt, err := ts.GetStatusByName(ctx, ticket.StatusNameNew)
 	require.NoError(t, err)
-	f.ticket = ticket.Ticket{
+	f.ticket = ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("GDEL-" + uuid.NewString()[:8]),
 		Subject: "Held by a group", Description: "x", CategoryID: cat.ID,
 		Priority: ticket.PriorityMedium, StatusID: newSt.ID, ReporterUserID: &f.reporter.ID,

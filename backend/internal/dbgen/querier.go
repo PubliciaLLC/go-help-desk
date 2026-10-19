@@ -240,6 +240,7 @@ type Querier interface {
 	CreatePlugin(ctx context.Context, arg CreatePluginParams) error
 	// author_id is NULL for a reply written by a guest, who has no account. That is
 	// the only way it is NULL: every other path passes the acting user.
+	// body_format has no column default (migration 000054), so every writer names it.
 	CreateReply(ctx context.Context, arg CreateReplyParams) error
 	CreateSLAPolicy(ctx context.Context, arg CreateSLAPolicyParams) error
 	CreateSLARecord(ctx context.Context, arg CreateSLARecordParams) error

@@ -237,7 +237,7 @@ func TestReplyMail_AnAccountHolderStillGetsIt(t *testing.T) {
 	email := &recordingChannel{}
 	h.dispatcher.next = email
 
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Laptop will not boot", CategoryID: h.catID,
 		Priority: ticket.PriorityMedium, ReporterUserID: &h.userID,
 	})

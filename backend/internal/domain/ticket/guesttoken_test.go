@@ -17,7 +17,7 @@ import (
 func guestTicket(t *testing.T, h *harness) (ticket.Ticket, string) {
 	t.Helper()
 	email := "guest@example.test"
-	tk, err := h.svc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Printer broken", Description: "it is", CategoryID: uuid.New(),
 		GuestEmail: &email, GuestName: "Ada",
 	})
@@ -65,7 +65,7 @@ func TestGuestToken_IsStoredHashedNotRaw(t *testing.T) {
 func TestGuestToken_NotMintedForAnAccountHoldersTicket(t *testing.T) {
 	h := newHarness(t)
 	reporter := uuid.New()
-	_, err := h.svc.Create(context.Background(), ticket.CreateInput{
+	_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Laptop", Description: "broken", CategoryID: uuid.New(),
 		ReporterUserID: &reporter,
 	})
@@ -85,7 +85,7 @@ func TestGuestToken_RotatesOnlyOnWhatTheGuestIsTold(t *testing.T) {
 	t.Run("a public reply rotates", func(t *testing.T) {
 		h := newHarness(t)
 		tk, first := guestTicket(t, h)
-		_, err := h.svc.AddReply(context.Background(), tk.ID, "looking into it",
+		_, err := h.svc.AddReply(context.Background(), tk.ID, "looking into it", ticket.TextFormatPlain,
 			false, true, "guest@example.test", staff, 7, h.newStatus.ID)
 		require.NoError(t, err)
 
@@ -103,7 +103,7 @@ func TestGuestToken_RotatesOnlyOnWhatTheGuestIsTold(t *testing.T) {
 	t.Run("an internal note does not rotate", func(t *testing.T) {
 		h := newHarness(t)
 		tk, first := guestTicket(t, h)
-		_, err := h.svc.AddReply(context.Background(), tk.ID, "cost code 4471",
+		_, err := h.svc.AddReply(context.Background(), tk.ID, "cost code 4471", ticket.TextFormatPlain,
 			true, false, "", staff, 7, h.newStatus.ID)
 		require.NoError(t, err)
 
@@ -271,7 +271,7 @@ func TestGuestReply_HasNoAuthorAndIsNeverInternal(t *testing.T) {
 	h := newHarness(t)
 	tk, _ := guestTicket(t, h)
 
-	r, err := h.svc.AddGuestReply(context.Background(), tk.ID, "still broken", 7, h.newStatus.ID)
+	r, err := h.svc.AddGuestReply(context.Background(), tk.ID, "still broken", ticket.TextFormatPlain, 7, h.newStatus.ID)
 	require.NoError(t, err)
 	require.Nil(t, r.AuthorID, "a guest has no account to be the author")
 	require.False(t, r.Internal, "a guest cannot write a staff-only note")
@@ -289,7 +289,7 @@ func TestGuestReply_ObeysTheLifecycleItDidNotAuthor(t *testing.T) {
 		_, err := h.svc.Resolve(context.Background(), tk.ID, "done", staff)
 		require.NoError(t, err)
 
-		_, err = h.svc.AddGuestReply(context.Background(), tk.ID, "not fixed", 7, h.newStatus.ID)
+		_, err = h.svc.AddGuestReply(context.Background(), tk.ID, "not fixed", ticket.TextFormatPlain, 7, h.newStatus.ID)
 		require.NoError(t, err)
 
 		after, err := h.store.GetByID(context.Background(), tk.ID)
@@ -304,7 +304,7 @@ func TestGuestReply_ObeysTheLifecycleItDidNotAuthor(t *testing.T) {
 		_, err := h.svc.Resolve(context.Background(), tk.ID, "done", staff)
 		require.NoError(t, err)
 
-		_, err = h.svc.AddGuestReply(context.Background(), tk.ID, "too late", 0, h.newStatus.ID)
+		_, err = h.svc.AddGuestReply(context.Background(), tk.ID, "too late", ticket.TextFormatPlain, 0, h.newStatus.ID)
 		require.ErrorIs(t, err, ticket.ErrReopenWindowClosed,
 			"the window does not widen because the reply arrived by link")
 	})
@@ -314,7 +314,7 @@ func TestGuestReply_ObeysTheLifecycleItDidNotAuthor(t *testing.T) {
 		tk, _ := guestTicket(t, h)
 		require.NoError(t, h.svc.Close(context.Background(), tk.ID, staff))
 
-		_, err := h.svc.AddGuestReply(context.Background(), tk.ID, "hello", 7, h.newStatus.ID)
+		_, err := h.svc.AddGuestReply(context.Background(), tk.ID, "hello", ticket.TextFormatPlain, 7, h.newStatus.ID)
 		require.ErrorIs(t, err, ticket.ErrClosed)
 	})
 }
@@ -331,7 +331,7 @@ func TestGuestToken_SurvivesEveryReplyThatMailsNothing(t *testing.T) {
 		h := newHarness(t)
 		tk, token := guestTicket(t, h)
 
-		_, err := h.svc.AddGuestReply(context.Background(), tk.ID, "still broken", 7, h.newStatus.ID)
+		_, err := h.svc.AddGuestReply(context.Background(), tk.ID, "still broken", ticket.TextFormatPlain, 7, h.newStatus.ID)
 		require.NoError(t, err)
 
 		_, err = h.svc.TicketForGuestToken(context.Background(), token)
@@ -343,7 +343,7 @@ func TestGuestToken_SurvivesEveryReplyThatMailsNothing(t *testing.T) {
 		h := newHarness(t)
 		tk, token := guestTicket(t, h)
 
-		_, err := h.svc.AddReply(context.Background(), tk.ID, "noting this",
+		_, err := h.svc.AddReply(context.Background(), tk.ID, "noting this", ticket.TextFormatPlain,
 			false, false, "", staff, 7, h.newStatus.ID)
 		require.NoError(t, err)
 
@@ -355,7 +355,7 @@ func TestGuestToken_SurvivesEveryReplyThatMailsNothing(t *testing.T) {
 		h := newHarness(t)
 		tk, token := guestTicket(t, h)
 
-		_, err := h.svc.AddReply(context.Background(), tk.ID, "cost code 4471",
+		_, err := h.svc.AddReply(context.Background(), tk.ID, "cost code 4471", ticket.TextFormatPlain,
 			true, false, "", staff, 7, h.newStatus.ID)
 		require.NoError(t, err)
 
@@ -371,11 +371,11 @@ func TestGuestToken_IsNeverMintedWithoutARecipient(t *testing.T) {
 	tk, _ := guestTicket(t, h)
 	ctx := context.Background()
 
-	_, err := h.svc.AddGuestReply(ctx, tk.ID, "one", 7, h.newStatus.ID)
+	_, err := h.svc.AddGuestReply(ctx, tk.ID, "one", ticket.TextFormatPlain, 7, h.newStatus.ID)
 	require.NoError(t, err)
-	_, err = h.svc.AddReply(ctx, tk.ID, "two", false, false, "", staff, 7, h.newStatus.ID)
+	_, err = h.svc.AddReply(ctx, tk.ID, "two", ticket.TextFormatPlain, false, false, "", staff, 7, h.newStatus.ID)
 	require.NoError(t, err)
-	_, err = h.svc.AddReply(ctx, tk.ID, "three", false, true, "guest@example.test", staff, 7, h.newStatus.ID)
+	_, err = h.svc.AddReply(ctx, tk.ID, "three", ticket.TextFormatPlain, false, true, "guest@example.test", staff, 7, h.newStatus.ID)
 	require.NoError(t, err)
 
 	for _, ev := range h.dispatcher.events {
@@ -448,7 +448,7 @@ func TestGuestLink_AChangeMarksTheEventAndCreatesNoToken(t *testing.T) {
 	h := newHarness(t)
 	h.dispatcher.sendTime = nil // the queue only, no send
 	email := "guest@example.test"
-	_, err := h.svc.Create(context.Background(), ticket.CreateInput{
+	_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Printer broken", Description: "it is", CategoryID: uuid.New(),
 		GuestEmail: &email, GuestName: "Ada",
 	})
@@ -503,13 +503,13 @@ func TestGuestLink_ReplyThenCloseDeliversAWorkingLink(t *testing.T) {
 	staff := ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff}
 	email := "guest@example.test"
 	ctx := context.Background()
-	tk, err := h.svc.Create(ctx, ticket.CreateInput{
+	tk, err := h.svc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Printer broken", Description: "it is", CategoryID: uuid.New(),
 		GuestEmail: &email, GuestName: "Ada",
 	})
 	require.NoError(t, err)
 
-	_, err = h.svc.AddReply(ctx, tk.ID, "fixed, replaced the drum",
+	_, err = h.svc.AddReply(ctx, tk.ID, "fixed, replaced the drum", ticket.TextFormatPlain,
 		false, true, email, staff, 7, h.newStatus.ID)
 	require.NoError(t, err)
 	require.NoError(t, h.svc.Close(ctx, tk.ID, staff))

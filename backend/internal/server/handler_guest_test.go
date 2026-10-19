@@ -62,7 +62,7 @@ func seedGuestTicket(t *testing.T, h *harness) (ticket.Ticket, string) {
 	ctx := context.Background()
 	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, true))
 	email := "guest@test.local"
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Printer jammed", Description: "again", CategoryID: h.catID,
 		GuestEmail: &email, GuestName: "Ada",
 	})
@@ -146,9 +146,9 @@ func TestGuest_ViewHidesInternalNotesAndStaffIdentities(t *testing.T) {
 
 	newStatus := statusIDNamed(t, h, ticket.StatusNameNew)
 	staff := ticket.Actor{UserID: &h.staffID, Role: user.RoleStaff}
-	_, err := h.ticketSvc.AddReply(ctx, tk.ID, "We are on it", false, true, "guest@test.local", staff, 7, newStatus)
+	_, err := h.ticketSvc.AddReply(ctx, tk.ID, "We are on it", ticket.TextFormatPlain, false, true, "guest@test.local", staff, 7, newStatus)
 	require.NoError(t, err)
-	_, err = h.ticketSvc.AddReply(ctx, tk.ID, "INTERNAL: cost code 4471", true, false, "", staff, 7, newStatus)
+	_, err = h.ticketSvc.AddReply(ctx, tk.ID, "INTERNAL: cost code 4471", ticket.TextFormatPlain, true, false, "", staff, 7, newStatus)
 	require.NoError(t, err)
 
 	// The reply rotated the link, so fetch a current one.
@@ -315,7 +315,7 @@ func TestGuest_CanReplyToTheirOwnTicketOnly(t *testing.T) {
 
 	// A second guest ticket's token must not reach the first.
 	other := "other@test.local"
-	tk2, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk2, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Other", Description: "x", CategoryID: h.catID,
 		GuestEmail: &other, GuestName: "Bo",
 	})
@@ -455,10 +455,10 @@ func TestGuest_FromYouDistinguishesTheTwoSides(t *testing.T) {
 	tk, token := seedGuestTicket(t, h)
 
 	staff := ticket.Actor{UserID: &h.staffID, Role: user.RoleStaff}
-	_, err := h.ticketSvc.AddReply(ctx, tk.ID, "We are on it", false, true,
+	_, err := h.ticketSvc.AddReply(ctx, tk.ID, "We are on it", ticket.TextFormatPlain, false, true,
 		"guest@test.local", staff, 7, statusIDNamed(t, h, ticket.StatusNameNew))
 	require.NoError(t, err)
-	_, err = h.ticketSvc.AddGuestReply(ctx, tk.ID, "thank you", 7, statusIDNamed(t, h, ticket.StatusNameNew))
+	_, err = h.ticketSvc.AddGuestReply(ctx, tk.ID, "thank you", ticket.TextFormatPlain, 7, statusIDNamed(t, h, ticket.StatusNameNew))
 	require.NoError(t, err)
 
 	// The staff reply rotated the link, so use a current one.

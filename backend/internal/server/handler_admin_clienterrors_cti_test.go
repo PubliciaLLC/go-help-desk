@@ -34,7 +34,7 @@ func mkCTI(t *testing.T, h *harness) (category.Category, category.Type, category
 // ticketAt files a ticket at the given place in the CTI tree.
 func ticketAt(t *testing.T, h *harness, c category.Category, tp *category.Type, it *category.Item) {
 	t.Helper()
-	in := ticket.CreateInput{
+	in := ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "t", Description: "x", CategoryID: c.ID,
 		ReporterUserID: &h.staffID,
 	}

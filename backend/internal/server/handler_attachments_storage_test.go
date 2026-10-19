@@ -95,7 +95,7 @@ func TestAttachmentStorage_UnwritableRefusesStaffUploadsAndTellsAdmins(t *testin
 func TestAttachmentStorage_UnwritableRefusesRequesterUploads(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Mine", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.userID,
 	})

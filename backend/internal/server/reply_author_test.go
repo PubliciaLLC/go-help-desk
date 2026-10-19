@@ -25,7 +25,7 @@ func TestListReplies_CarryTheAuthorsName(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Who said this", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})
@@ -57,13 +57,13 @@ func TestListReplies_AGuestReplyHasNoAuthorName(t *testing.T) {
 	ctx := context.Background()
 
 	email := "visitor@example.com"
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "From a visitor", Description: "x", CategoryID: h.catID,
 		GuestEmail: &email, GuestName: "A Visitor",
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, h.ticketStore.CreateReply(ctx, ticket.Reply{
+	require.NoError(t, h.ticketStore.CreateReply(ctx, ticket.Reply{BodyFormat: ticket.TextFormatPlain,
 		ID: uuid.New(), TicketID: tk.ID, Body: "Any news?", CreatedAt: time.Now().UTC(),
 	}))
 

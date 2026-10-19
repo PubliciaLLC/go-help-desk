@@ -79,6 +79,10 @@ func handleError(w http.ResponseWriter, err error) {
 	// The caller sent a value that is not one. Not a server fault, and it
 	// used to fall through to 500 "an internal error occurred" — which
 	// tells somebody their own ordinary mistake is a bug here.
+	if errors.Is(err, ticket.ErrInvalidTextFormat) {
+		Error(w, http.StatusBadRequest, "invalid_format", err.Error())
+		return
+	}
 	if errors.Is(err, ticket.ErrValidation) {
 		Error(w, http.StatusBadRequest, "bad_request", err.Error())
 		return

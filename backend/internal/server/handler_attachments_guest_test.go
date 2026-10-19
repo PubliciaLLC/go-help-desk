@@ -75,7 +75,7 @@ func TestUploadAttachment_ReporterRefusedOnTheirOwnClosedTicket(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Needs a screenshot", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.userID,
 	})
@@ -98,7 +98,7 @@ func TestUploadAttachment_StaffMayStillAttachToAClosedTicket(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Documenting the fix", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.userID,
 	})
@@ -117,7 +117,7 @@ func TestUploadAttachment_ReporterStillRefusedOnSomeoneElsesTicket(t *testing.T)
 	defer cleanup()
 	ctx := context.Background()
 
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Not yours", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.staffID, // owned by someone other than h.userID
 	})
@@ -158,7 +158,7 @@ func TestGuestUploadAttachment_ReachesOneTicketAndNoOther(t *testing.T) {
 	require.Equal(t, http.StatusCreated, res.StatusCode)
 
 	other := "other@test.local"
-	tk2, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk2, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Other", Description: "x", CategoryID: h.catID,
 		GuestEmail: &other, GuestName: "Bo",
 	})

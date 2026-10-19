@@ -172,7 +172,7 @@ func TestChangePriority_RacingStaffReply(t *testing.T) {
 		race(t,
 			func() { _, cpErr = svc.ChangePriority(f.ctx, tk.ID, ticket.PriorityHigh, f.staff) },
 			func() {
-				_, replyErr = svc.AddReply(f.ctx, tk.ID, "on it", false, false, "", f.staff, 0, uuid.Nil)
+				_, replyErr = svc.AddReply(f.ctx, tk.ID, "on it", ticket.TextFormatPlain, false, false, "", f.staff, 0, uuid.Nil)
 			},
 		)
 		require.NoError(t, cpErr, "round %d", i)

@@ -89,7 +89,7 @@ func TestUpload_AClaimedTextExtensionIsNeverRefusedOrWrapped(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+			tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 				Subject: tc.name, Description: "x", CategoryID: h.catID,
 				ReporterUserID: &h.staffID,
 			})

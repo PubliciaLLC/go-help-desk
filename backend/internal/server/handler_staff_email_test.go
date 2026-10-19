@@ -67,7 +67,7 @@ func (m *staffMail) recipients(t *testing.T) []string {
 
 func newStaffTicket(t *testing.T, h *harness) ticket.Ticket {
 	t.Helper()
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Printer", Description: "jammed", CategoryID: h.catID, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)

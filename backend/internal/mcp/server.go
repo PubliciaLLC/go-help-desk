@@ -520,7 +520,8 @@ func (s *Server) registerTools() {
 		"create_ticket",
 		mcpgo.WithDescription("Open a new help desk ticket"),
 		mcpgo.WithString("subject", mcpgo.Required(), mcpgo.Description("Short summary")),
-		mcpgo.WithString("description", mcpgo.Description("Full description")),
+		mcpgo.WithString("description", mcpgo.Description("Full description. Rendered as Markdown (CommonMark plus GitHub tables, strikethrough and autolinks; no images, no raw HTML). Escape characters you mean literally (\\*, \\#, \\_). Pass format: \"plain\" to store plain text instead.")),
+		mcpgo.WithString("format", mcpgo.Description("How description is shown: markdown (default) or plain"), mcpgo.Enum("plain", "markdown")),
 		// Category is required; Type and Item are the optional lower tiers of
 		// the CTI hierarchy. list_categories returns all three.
 		mcpgo.WithString("category_id", mcpgo.Required(), mcpgo.Description("Category UUID")),
@@ -537,7 +538,8 @@ func (s *Server) registerTools() {
 		"add_reply",
 		mcpgo.WithDescription("Add a reply to a ticket. A public reply emails the requester; an internal note does not."),
 		mcpgo.WithString("ticket_id", mcpgo.Required(), mcpgo.Description("Ticket UUID")),
-		mcpgo.WithString("body", mcpgo.Required(), mcpgo.Description("Reply body")),
+		mcpgo.WithString("body", mcpgo.Required(), mcpgo.Description("Reply body. Rendered as Markdown (CommonMark plus GitHub tables, strikethrough and autolinks; no images, no raw HTML). Escape characters you mean literally (\\*, \\#, \\_). Pass format: \"plain\" to store plain text instead.")),
+		mcpgo.WithString("format", mcpgo.Description("How body is shown: markdown (default) or plain"), mcpgo.Enum("plain", "markdown")),
 		mcpgo.WithBoolean("internal", mcpgo.Description("Internal note, not visible to the reporter (default false)")),
 		// No author parameter: the author is the authenticated caller.
 	), scoped(mcpWrite, s.handleAddReply))
@@ -682,11 +684,16 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 	}
 
 	desc, _ := args["description"].(string)
+	format, err := mcpTextFormat(args)
+	if err != nil {
+		return errResult(err.Error())
+	}
 	in := ticket.CreateInput{
-		Subject:     subject,
-		Description: desc,
-		CategoryID:  catID,
-		Priority:    priority,
+		Subject:           subject,
+		Description:       desc,
+		DescriptionFormat: format,
+		CategoryID:        catID,
+		Priority:          priority,
 	}
 
 	// Type and Item are the optional lower tiers of CTI. Only Category is
@@ -736,6 +743,19 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 	return ticketResult(actor.Role, t)
 }
 
+// mcpTextFormat reads the optional "format" argument. Absent means markdown
+// (#443): an agent is told its text renders as Markdown, and the REST default
+// of plain would make that description false. Present but not exactly "plain"
+// or "markdown" is a tool error and nothing is written.
+func mcpTextFormat(args map[string]any) (ticket.TextFormat, error) {
+	v, present := args["format"]
+	if !present {
+		return ticket.TextFormatMarkdown, nil
+	}
+	s, _ := v.(string)
+	return ticket.ParseTextFormat(s)
+}
+
 func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	caller := actorFrom(ctx)
 	if caller == nil {
@@ -754,6 +774,10 @@ func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) 
 		return errResult("invalid ticket_id")
 	}
 	body, _ := args["body"].(string)
+	format, err := mcpTextFormat(args)
+	if err != nil {
+		return errResult(err.Error())
+	}
 
 	t, err := s.tickets.GetByID(ctx, tid)
 	if err != nil {
@@ -784,7 +808,7 @@ func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) 
 	// today and would become a bug the moment that changes, hence the comment.
 	reopenTargetStatusID := uuid.Nil
 
-	reply, err := s.tickets.AddReply(ctx, tid, body, isInternal, notifyRequester, reporterEmail, actor, reopenWindowDays, reopenTargetStatusID)
+	reply, err := s.tickets.AddReply(ctx, tid, body, format, isInternal, notifyRequester, reporterEmail, actor, reopenWindowDays, reopenTargetStatusID)
 	if err != nil {
 		return storeErr(ctx, "add reply", err)
 	}

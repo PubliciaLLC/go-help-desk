@@ -71,7 +71,7 @@ func TestDeleteStatus_TicketReferencingIt_ReturnsErrStatusInUse(t *testing.T) {
 	}
 	require.NoError(t, ts.CreateStatus(ctx, custom))
 
-	tk := ticket.Ticket{
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID:             uuid.New(),
 		TrackingNumber: ticket.TrackingNumber("SV-" + uuid.NewString()[:8]),
 		Subject:        "status violation test",

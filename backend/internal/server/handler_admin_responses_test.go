@@ -223,7 +223,7 @@ func TestAdminPatchUser_ReportsPasskeyCount(t *testing.T) {
 
 func mkTicketInStatus(t *testing.T, h *harness, statusID uuid.UUID) {
 	t.Helper()
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "s", Description: "d", CategoryID: h.catID, ReporterUserID: &h.staffID,
 	})
 	require.NoError(t, err)
@@ -554,7 +554,7 @@ func TestInactiveStatus_RefusesMovesInForEveryRoleAndLetsTicketsOut(t *testing.T
 	retired := mkStatus(t, h, "Retired")
 	live := mkStatus(t, h, "Live")
 	newTicket := func() ticket.Ticket {
-		tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 			Subject: "s", Description: "d", CategoryID: h.catID, ReporterUserID: &h.staffID,
 		})
 		require.NoError(t, err)

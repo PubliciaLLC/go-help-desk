@@ -91,7 +91,7 @@ func TestUpload_AGuestUploadLosingTheRaceToTheCloseIsTheGenericNotFound(t *testi
 func TestUpload_AReporterUploadLosingTheRaceToTheCloseIsConflict(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Needs a screenshot", Description: "x", CategoryID: h.catID, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)
@@ -114,7 +114,7 @@ func TestUpload_AReporterUploadLosingTheRaceToTheCloseIsConflict(t *testing.T) {
 func TestUpload_AStaffUploadRacingTheCloseStillLands(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Documenting the fix", Description: "x", CategoryID: h.catID, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)

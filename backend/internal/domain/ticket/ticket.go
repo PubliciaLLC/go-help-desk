@@ -128,6 +128,29 @@ type TicketLink struct {
 	LinkType       LinkType  `json:"link_type"`
 }
 
+// TextFormat says how a stored piece of ticket text is displayed. Every
+// description and reply carries one; nothing is guessed from the text.
+type TextFormat string
+
+const (
+	TextFormatPlain    TextFormat = "plain"
+	TextFormatMarkdown TextFormat = "markdown"
+)
+
+// ErrInvalidTextFormat is returned for any format that is not exactly "plain"
+// or "markdown", an empty one included: the domain never fills in a default
+// because the right default differs by caller (REST plain, MCP markdown).
+var ErrInvalidTextFormat = errors.New("format must be \"plain\" or \"markdown\"")
+
+// ParseTextFormat accepts only the two exact lower-case values.
+func ParseTextFormat(s string) (TextFormat, error) {
+	switch f := TextFormat(s); f {
+	case TextFormatPlain, TextFormatMarkdown:
+		return f, nil
+	}
+	return "", ErrInvalidTextFormat
+}
+
 // TrackingNumber is the human-readable identifier for a ticket, e.g.
 // "GHD-2024-000001". It is unique across all tickets and never reused.
 type TrackingNumber string
@@ -135,26 +158,29 @@ type TrackingNumber string
 // Ticket is the central entity of the system. All business state lives here.
 // Optional foreign keys are represented as pointers to make "not set" explicit.
 type Ticket struct {
-	ID              uuid.UUID      `json:"id"`
-	TrackingNumber  TrackingNumber `json:"tracking_number"`
-	Subject         string         `json:"subject"`
-	Description     string         `json:"description"`
-	CategoryID      uuid.UUID      `json:"category_id"`
-	TypeID          *uuid.UUID     `json:"type_id,omitempty"`
-	ItemID          *uuid.UUID     `json:"item_id,omitempty"`
-	Priority        Priority       `json:"priority"`
-	StatusID        uuid.UUID      `json:"status_id"`
-	AssigneeUserID  *uuid.UUID     `json:"assignee_user_id,omitempty"`
-	AssigneeGroupID *uuid.UUID     `json:"assignee_group_id,omitempty"`
-	ReporterUserID  *uuid.UUID     `json:"reporter_user_id,omitempty"`
-	GuestEmail      *string        `json:"guest_email,omitempty"`
-	GuestName       string         `json:"guest_name,omitempty"`
-	GuestPhone      string         `json:"guest_phone,omitempty"`
-	ResolutionNotes *string        `json:"resolution_notes,omitempty"`
-	ResolvedAt      *time.Time     `json:"resolved_at,omitempty"`
-	ClosedAt        *time.Time     `json:"closed_at,omitempty"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
+	ID             uuid.UUID      `json:"id"`
+	TrackingNumber TrackingNumber `json:"tracking_number"`
+	Subject        string         `json:"subject"`
+	Description    string         `json:"description"`
+	// DescriptionFormat says how Description is shown: plain or markdown
+	// (#443). Stored with the text, never guessed from it.
+	DescriptionFormat TextFormat `json:"description_format"`
+	CategoryID        uuid.UUID  `json:"category_id"`
+	TypeID            *uuid.UUID `json:"type_id,omitempty"`
+	ItemID            *uuid.UUID `json:"item_id,omitempty"`
+	Priority          Priority   `json:"priority"`
+	StatusID          uuid.UUID  `json:"status_id"`
+	AssigneeUserID    *uuid.UUID `json:"assignee_user_id,omitempty"`
+	AssigneeGroupID   *uuid.UUID `json:"assignee_group_id,omitempty"`
+	ReporterUserID    *uuid.UUID `json:"reporter_user_id,omitempty"`
+	GuestEmail        *string    `json:"guest_email,omitempty"`
+	GuestName         string     `json:"guest_name,omitempty"`
+	GuestPhone        string     `json:"guest_phone,omitempty"`
+	ResolutionNotes   *string    `json:"resolution_notes,omitempty"`
+	ResolvedAt        *time.Time `json:"resolved_at,omitempty"`
+	ClosedAt          *time.Time `json:"closed_at,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
 
 	// PendingSince is when the ticket entered its current Pending interval; nil
 	// when it is not Pending. SLAPausedSeconds is the sum of every Pending
@@ -199,11 +225,13 @@ type Reply struct {
 	// the thread had nothing to render but the id — and rendered it, as a
 	// bare UUID against every message from a registered account. Empty for a
 	// guest's reply, which has no account behind it.
-	AuthorName     string    `json:"author_name,omitempty"`
-	Body           string    `json:"body"`
-	Internal       bool      `json:"internal"`
-	NotifyCustomer bool      `json:"notify_customer"`
-	CreatedAt      time.Time `json:"created_at"`
+	AuthorName string `json:"author_name,omitempty"`
+	Body       string `json:"body"`
+	// BodyFormat is the Body's TextFormat (#443).
+	BodyFormat     TextFormat `json:"body_format"`
+	Internal       bool       `json:"internal"`
+	NotifyCustomer bool       `json:"notify_customer"`
+	CreatedAt      time.Time  `json:"created_at"`
 }
 
 // Attachment stores file metadata. Bytes live on disk at StoragePath.
