@@ -2635,9 +2635,10 @@ one is a permission decision with one switch and no per-user exceptions.
   still create and edit webhooks. The hook records the API key that created it
   or last changed its URL (`webhook_configs.api_key_id`, no foreign key, so
   deleting the key does not forget it); a hook made or last re-pointed in a
-  session has none. When that key is revoked or has expired, the hook is
-  **paused**: `paused: true` and `paused_reason` ("Created by a revoked or
-  expired API key") on every read, and the dispatcher sends it nothing. It is
+  session has none. When that key is no longer active (revoked, expired, or its owner disabled or
+  deleted), the hook is
+  **paused**: `paused: true` and `paused_reason` ("Its API key, or that key's
+  owner, is no longer active") on every read, and the dispatcher sends it nothing. It is
   judged from the key's own row on every read and at every delivery attempt, so
   an expiry pauses a hook with no job running, a queued delivery is settled
   rather than sent, and retries stop. The link is a plain column with **no
@@ -3140,7 +3141,7 @@ on the existing webhook feature instead of as plugins.
   secret is read at send time, so a rotated secret signs the retry. A retry
   dropped for any of these reasons (hook disabled, no longer subscribed, URL
   changed, ticket filter no longer admits the ticket, hook paused because its
-  API key was revoked or expired, body cannot be built)
+  API key, or that key's owner, is no longer active, body cannot be built)
   turns its History entry from "retrying" into **dropped**, with the reason
   (`result: dropped`, `drop_reason`: `disabled`, `unsubscribed`, `url_changed`,
   `filter`, `paused`, `unbuildable`; migration `000051`, #499). Only an entry that is

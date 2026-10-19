@@ -24,7 +24,7 @@ const LIVE = {
 const PAUSED = {
   id: 'wh-2', url: 'https://example.com/orphan', events: ['*'], enabled: true,
   created_at: '2026-01-02T00:00:00Z', payload_format: 'raw', paused: true,
-  paused_reason: 'Created by a revoked or expired API key',
+  paused_reason: "Its API key, or that key's owner, is no longer active",
 }
 
 beforeEach(() => {
@@ -37,9 +37,9 @@ beforeEach(() => {
   })
 })
 
-async function renderPage() {
+async function renderPage(paused: object = PAUSED) {
   vi.spyOn(api, 'get').mockImplementation(((url: string) => {
-    if (url === '/admin/webhooks') return Promise.resolve({ data: [LIVE, PAUSED] })
+    if (url === '/admin/webhooks') return Promise.resolve({ data: [LIVE, paused] })
     return Promise.resolve({ data: [] })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   }) as any)
@@ -53,11 +53,22 @@ async function renderPage() {
 const rowOf = async (url: string) => (await screen.findByText(url)).closest('tr') as HTMLElement
 
 describe('a paused webhook', () => {
+  // The badge's fallback (a server that sent no reason) and the History label
+  // for a dropped retry both say what the server's reason says, so the two
+  // places a person reads it cannot drift apart (#523).
+  it('says the same thing without a server reason as the History label does', async () => {
+    const { paused_reason: _omit, ...noReason } = PAUSED
+    void _omit
+    await renderPage(noReason)
+    const paused = await rowOf(PAUSED.url)
+    expect(within(paused).getByText(/^its api key, or that key's owner, is no longer active$/i)).toBeTruthy()
+  })
+
   it('shows a Paused badge with the reason, and only on the paused one', async () => {
     await renderPage()
     const paused = await rowOf(PAUSED.url)
     expect(within(paused).getByText('Paused')).toBeTruthy()
-    expect(within(paused).getByText(/created by a revoked or expired api key/i)).toBeTruthy()
+    expect(within(paused).getByText(/its api key, or that key's owner, is no longer active/i)).toBeTruthy()
     expect(within(await rowOf(LIVE.url)).queryByText('Paused')).toBeNull()
   })
 

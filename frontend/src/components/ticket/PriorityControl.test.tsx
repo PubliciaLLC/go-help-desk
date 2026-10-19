@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { act, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AxiosError } from 'axios'
 import { useQuery } from '@tanstack/react-query'
@@ -111,6 +111,27 @@ describe('PriorityControl while the ticket reloads', () => {
     await waitFor(() => expect(select().value).toBe('critical'))
     // And it is the server's value now, so a later change from elsewhere shows.
     await waitFor(() => expect(select().disabled).toBe(false))
+  })
+
+  it('lets go of the choice once the reload has it, so a later change from elsewhere shows (#509)', async () => {
+    vi.spyOn(ticketsApi, 'getTicket').mockImplementation(async () => ({ id: 't1', priority: 'critical' } as Ticket))
+    vi.spyOn(ticketsApi, 'updateTicket').mockResolvedValue({} as Ticket)
+    // First load says high; every reload after the change says critical.
+    vi.mocked(ticketsApi.getTicket).mockResolvedValueOnce({ id: 't1', priority: 'high' } as Ticket)
+    const { queryClient } = renderWithQuery(<Harness />)
+    await screen.findByLabelText('Ticket priority')
+
+    await userEvent.selectOptions(select(), 'critical')
+    await waitFor(() => expect(ticketsApi.updateTicket).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(select().disabled).toBe(false))
+    expect(select().value).toBe('critical')
+
+    // Another tab or staff member changes it. Nothing here is a mutation of ours.
+    act(() => {
+      queryClient.setQueryData<Ticket>(['ticket', 't1'], { id: 't1', priority: 'low' } as Ticket)
+    })
+
+    await waitFor(() => expect(select().value).toBe('low'))
   })
 
   it('shows what the server says if the reload disagrees with the change', async () => {

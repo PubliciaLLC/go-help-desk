@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// A hook whose API key was revoked or has expired is paused (#450): nothing is
+// A hook whose API key, or that key's owner, is no longer active is paused (#450): nothing is
 // sent, and nothing is recorded as a failure, as for a disabled hook. The store
 // says so when it hands the hook over; this is the dispatcher acting on it.
 
@@ -27,6 +27,11 @@ func TestQueue_PausedHookGetsNothing(t *testing.T) {
 	t.Run("paused before the event: no row is queued", func(t *testing.T) {
 		setPaused(true)
 		require.NoError(t, rig.front.Dispatch(context.Background(), fixtureReplyEvent(false)))
+		_, err := rig.worker.RunOnce(context.Background()) // fan-out: the channel's one row becomes one per hook
+		require.NoError(t, err)
+		// Draining alone would pass if a row were queued and then settled at
+		// send time; this is the check that none was queued.
+		require.Empty(t, rig.store.channelsQueued(), "a paused hook is not fanned out to")
 		rig.drain(t)
 		require.Equal(t, 0, rc.count())
 		require.Empty(t, rig.store.failed)
