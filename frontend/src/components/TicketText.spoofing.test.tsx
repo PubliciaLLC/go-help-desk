@@ -88,6 +88,7 @@ const INVISIBLES: [string, string][] = [
   ['U+200B ZWSP', '​'], ['U+200C ZWNJ', '‌'], ['U+200D ZWJ', '‍'],
   ['U+2060 word joiner', '⁠'], ['U+FEFF BOM', '﻿'], ['U+00AD soft hyphen', '­'],
 ]
+// eslint-disable-next-line no-irregular-whitespace, no-misleading-character-class
 const ANY = /[‪-‮⁦-⁩​-‏؜⁠﻿­]/
 
 describe.each(INVISIBLES)('invisible character %s', (_n, ch) => {
