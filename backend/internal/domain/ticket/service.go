@@ -2891,6 +2891,9 @@ func (s *Service) CreateAttachment(ctx context.Context, a Attachment, actor Acto
 // per-ticket cap (#445): the count is taken inside the transaction that holds
 // the ticket's row lock, so uploads racing for the last slot cannot all pass.
 // Returns ErrGuestAttachmentLimit when the ticket already holds max guest files.
+//
+// The closure is safe to run again (the transaction runner retries a deadlock,
+// #541): it captures nothing it writes to; n and err are its own.
 func (s *Service) CreateGuestAttachment(ctx context.Context, a Attachment, actor Actor, max int) error {
 	return s.atomic.InTx(ctx, func(st Store, _ audit.Store, _ *notification.Changes) error {
 		// Takes the ticket's row lock (a guest is a requester), which is what

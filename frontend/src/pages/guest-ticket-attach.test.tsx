@@ -148,4 +148,20 @@ describe('attaching files from the guest page', () => {
     await userEvent.upload(input, five)
     await waitFor(() => expect(uploadGuestAttachment).toHaveBeenCalledTimes(3))
   })
+
+  it("counts this visit's uploads against the hour as well as the ticket", async () => {
+    getSiteConfig.mockResolvedValue({ name: 'x', logo_url: '', version: '1', guest_submission_enabled: true, guest_attachments_enabled: true, guest_attachment_max_bytes: 5 * 1024 * 1024, guest_attachment_max_per_ticket: 5, guest_attachment_uploads_per_hour: 3 })
+    uploadGuestAttachment.mockResolvedValue(undefined)
+    const { container } = renderWithQuery(<GuestTicketViewPage />)
+    await screen.findByRole('button', { name: 'Add files' })
+    const input = container.querySelector('input[type=file]') as HTMLInputElement
+    await userEvent.upload(input, [new File(['a'], 'a.txt', { type: 'text/plain' }), new File(['b'], 'b.txt', { type: 'text/plain' })])
+    await waitFor(() => expect(uploadGuestAttachment).toHaveBeenCalledTimes(2))
+    // Two of this hour's three are used; the ticket still has room for three.
+    await waitFor(() => expect(document.body.textContent).toMatch(/up to 1 file now \(5 per ticket\)/))
+    await userEvent.upload(input, new File(['c'], 'c.txt', { type: 'text/plain' }))
+    await waitFor(() => expect(uploadGuestAttachment).toHaveBeenCalledTimes(3))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Add files' })).toBeNull())
+    expect(document.body.textContent).toMatch(/used this hour/i)
+  })
 })

@@ -352,6 +352,16 @@ func (s *Server) handleGuestUploadAttachment(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Refused attempts have a budget of their own. Checked before any work, and
+	// charged below for every refusal whether or not its hourly unit comes back.
+	refusalKey := t.ID.String()
+	if s.guestRefusalLimiter.Exceeded(refusalKey) {
+		w.Header().Set("Retry-After", strconv.Itoa(max(1, int(math.Ceil(s.guestRefusalLimiter.Remaining().Seconds())))))
+		Error(w, http.StatusTooManyRequests, "rate_limited",
+			"Too many of this ticket's uploads were refused. Please try again later.")
+		return
+	}
+
 	// The unit is spent before the work, so parallel uploads cannot all pass a
 	// budget with one slot left; it is given back when the guest's own file was
 	// refused for being the wrong thing (see refundable), which should not cost
@@ -360,6 +370,9 @@ func (s *Server) handleGuestUploadAttachment(w http.ResponseWriter, r *http.Requ
 	// guest's mistake but also not a reason to let a retry storm through.
 	rec := &refusalRecorder{ResponseWriter: w}
 	s.storeUploadedAttachment(rec, r, t.ID, ticket.Actor{Role: user.RoleUser}, s.guestAttachmentMaxBytes(ctx), maxFiles)
+	if rec.status >= 400 {
+		s.guestRefusalLimiter.Allow(refusalKey)
+	}
 	if refundable(rec.status, rec.code()) {
 		s.guestUploadLimiter.Refund(t.ID.String(), window)
 	}
@@ -555,16 +568,21 @@ func (r *refusalRecorder) code() string {
 	return e.Error.Code
 }
 
-// refundable: the codes that mean the guest sent the wrong thing, and nothing
-// about the server or the file's safety. Everything else, "infected" and every
-// 5xx included, keeps its unit.
+// guestRefusalsPerHour is the fixed budget of refused guest uploads per ticket
+// per hour. Not a setting: it exists to bound abuse of the refund, not to tune.
+const guestRefusalsPerHour = 20
+
+// refundable: refusals decided BEFORE the scanner, which cost the server
+// nothing but reading a body. Refusals after the scan (invalid_image,
+// invalid_file) are not refundable: the scan is the expensive part, and
+// refunding them lets a guest make the server scan without limit. A malware
+// verdict, a 5xx and the in-transaction cap keep their unit too.
 func refundable(status int, code string) bool {
 	if status < 400 || status >= 500 {
 		return false
 	}
 	switch code {
-	case "too_large", "bad_request", "invalid_filename", "unsupported_type", "invalid_file", "invalid_image",
-		"guest_attachment_limit":
+	case "too_large", "bad_request", "invalid_filename", "unsupported_type":
 		return true
 	}
 	return false

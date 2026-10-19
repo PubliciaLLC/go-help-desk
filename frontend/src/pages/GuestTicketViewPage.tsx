@@ -266,12 +266,14 @@ export function GuestTicketViewPage() {
                   server holds the real cap and says so when it is reached. */}
               {attached.length >= perTicket ? (
                 <p className="text-sm text-gray-600">You have attached the most files that can be added to this ticket.</p>
+              ) : attached.length >= perHour ? (
+                <p className="text-sm text-gray-600">You have used this hour&apos;s uploads. Reload this page later to add more.</p>
               ) : (
               <AttachmentUpload
-                maxFiles={Math.min(perTicket - attached.length, perHour)}
+                maxFiles={Math.min(perTicket - attached.length, perHour - attached.length)}
                 maxFilesNote={
-                  perHour < perTicket - attached.length
-                    ? `up to ${perHour} files now (${perTicket} per ticket)`
+                  perHour < perTicket
+                    ? `up to ${perHour - attached.length} ${perHour - attached.length === 1 ? 'file' : 'files'} now (${perTicket} per ticket)`
                     : undefined
                 }
                 files={uploading}

@@ -193,7 +193,8 @@ type Server struct {
 	// address for the reason RateLimiter's comment gives, and because one guest
 	// behind a shared address must not use up another's. INTERIM like the
 	// others: in memory and per process.
-	guestUploadLimiter *authmw.RateLimiter
+	guestUploadLimiter  *authmw.RateLimiter
+	guestRefusalLimiter *authmw.RateLimiter
 
 	// loginThrottleDelay is how long an over-budget login waits before the
 	// password is checked. See config.AuthThrottleDelay.
@@ -431,6 +432,10 @@ func New(
 		// Keyed by ticket, with the figure read from the setting on each use
 		// (TakeWithLimit): the constructor's limit is not consulted.
 		guestUploadLimiter: authmw.NewRateLimiter(1, time.Hour),
+		// Every REFUSED guest upload, refunded or not, against a fixed budget
+		// (guestRefusalsPerHour): a refusal decided before the scan is free of
+		// the hourly upload budget, so this is what stops a stream of them.
+		guestRefusalLimiter: authmw.NewRateLimiter(guestRefusalsPerHour, time.Hour),
 		// Not configurable: the figure is the ruling on #444, not a tuning knob.
 		onBehalfMailLimiter: authmw.NewRateLimiter(onBehalfMailPerHour, time.Hour),
 		// The same shape and the same reasoning (#451).
@@ -979,4 +984,5 @@ func (s *Server) requireSignedInOrGuestsEnabled(next http.Handler) http.Handler 
 // test controls, so the hourly window can pass without waiting an hour.
 func (s *Server) SetGuestUploadClockForTest(now func() time.Time) {
 	s.guestUploadLimiter.SetClock(now)
+	s.guestRefusalLimiter.SetClock(now)
 }

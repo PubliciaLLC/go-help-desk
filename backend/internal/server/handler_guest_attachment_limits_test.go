@@ -1,11 +1,16 @@
 package server_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
+	"io"
+	"net"
 	"net/http"
 	"slices"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -192,15 +197,16 @@ func TestSiteConfig_CarriesTheHourlyFigureWhileUploadsAreOn(t *testing.T) {
 	require.NotContains(t, siteConfig(t, h), "guest_attachment_uploads_per_hour")
 }
 
-// A guest's own mistakes do not cost them their hour; a malware verdict or a
-// server fault does. The budget is 1 so a spent unit shows at once.
-func TestGuestUploadLimits_AValidationMistakeIsRefunded(t *testing.T) {
+// A refusal decided BEFORE the scanner (wrong type, over the size, a request the
+// parser refuses) does not cost the guest their hour. One decided after the scan
+// does: the scan is the expensive part, and refunding it would let a guest make
+// the server scan without limit. The budget is 1 so a spent unit shows at once.
+func TestGuestUploadLimits_APreScanMistakeIsRefunded(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	_, token := guestUploadsOn(t, h, 50, 1)
 	setGuestMaxMB(t, h, 1)
 
-	garbagePNG := []byte("this is not a png")
 	cases := []struct {
 		name    string
 		file    string
@@ -210,7 +216,6 @@ func TestGuestUploadLimits_AValidationMistakeIsRefunded(t *testing.T) {
 	}{
 		{"wrong type", "evil.exe", []byte("x"), http.StatusUnsupportedMediaType, "unsupported_type"},
 		{"over the size", "big.txt", bytes.Repeat([]byte("a"), 1<<20+1), http.StatusRequestEntityTooLarge, "too_large"},
-		{"an image that is not one", "bad.png", garbagePNG, http.StatusUnprocessableEntity, "invalid_image"},
 		{"a request the form parser refuses", "a\x01b.txt", []byte("x"), http.StatusBadRequest, "bad_request"},
 	}
 	for _, c := range cases {
@@ -223,9 +228,107 @@ func TestGuestUploadLimits_AValidationMistakeIsRefunded(t *testing.T) {
 	}
 	ok := uploadGuestAttachment(t, h, token, "fine.txt", []byte("x"))
 	require.Equal(t, http.StatusCreated, ok.StatusCode, "the hour was never spent: "+readBody(t, ok))
-	// And the accepted one does spend it.
 	again := uploadGuestAttachment(t, h, token, "second.txt", []byte("x"))
-	require.Equal(t, http.StatusTooManyRequests, again.StatusCode)
+	require.Equal(t, http.StatusTooManyRequests, again.StatusCode, "the accepted one does spend it")
+}
+
+// The probe that found the hole: refunded refusals that come after the scan let
+// a guest make the scanner work for nothing. Twenty bad PNGs at a budget of one
+// are one scan and nineteen 429s.
+func TestGuestUploadLimits_PostScanRefusalsCannotMakeTheServerScanWithoutLimit(t *testing.T) {
+	addr, scans := countingCleanScanner(t)
+	h, cleanup := newHarnessWith(t, 0, addr)
+	defer cleanup()
+	_, token := guestUploadsOn(t, h, 50, 1)
+
+	var statuses []int
+	for range 20 {
+		res := uploadGuestAttachment(t, h, token, "bad.png", []byte("this is not a png"))
+		statuses = append(statuses, res.StatusCode)
+		res.Body.Close()
+	}
+	require.Equal(t, http.StatusUnprocessableEntity, statuses[0], "the first is decided after the scan")
+	for i, st := range statuses[1:] {
+		require.Equal(t, http.StatusTooManyRequests, st, "attempt %d", i+2)
+	}
+	require.EqualValues(t, 1, scans.Load(), "the scanner was asked once, not twenty times")
+}
+
+// Refusals before the scan are free of the hour but not free: a second, fixed
+// budget per ticket counts every refused attempt, so they cannot stream bodies
+// forever either.
+func TestGuestUploadLimits_RefusedAttemptsHaveTheirOwnBudget(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	now := time.Now()
+	h.srv.SetGuestUploadClockForTest(func() time.Time { return now })
+	_, token := guestUploadsOn(t, h, 50, 30)
+	_, other := seedGuestTicketFor(t, h, "other-refusals@test.local")
+
+	for i := range 20 {
+		res := uploadGuestAttachment(t, h, token, "evil.exe", []byte("x"))
+		require.Equal(t, http.StatusUnsupportedMediaType, res.StatusCode, "refusal %d: %s", i+1, readBody(t, res))
+	}
+	over := uploadGuestAttachment(t, h, token, "evil.exe", []byte("x"))
+	body := readBody(t, over)
+	require.Equal(t, http.StatusTooManyRequests, over.StatusCode, body)
+	require.Equal(t, "rate_limited", errCode(t, []byte(body)))
+	require.NotEmpty(t, over.Header.Get("Retry-After"))
+	good := uploadGuestAttachment(t, h, token, "fine.txt", []byte("x"))
+	require.Equal(t, http.StatusTooManyRequests, good.StatusCode, "the same budget stops a good file too, until the hour passes")
+
+	ok := uploadGuestAttachment(t, h, other, "fine.txt", []byte("x"))
+	require.Equal(t, http.StatusCreated, ok.StatusCode, "another link is not held up: "+readBody(t, ok))
+
+	now = now.Add(time.Hour + time.Second)
+	later := uploadGuestAttachment(t, h, token, "fine.txt", []byte("x"))
+	require.Equal(t, http.StatusCreated, later.StatusCode, "recovers after the window: "+readBody(t, later))
+}
+
+// countingCleanScanner is a clamd that says OK and counts the files it was
+// asked to scan (PINGs are not scans).
+func countingCleanScanner(t *testing.T) (string, *atomic.Int32) {
+	t.Helper()
+	var scans atomic.Int32
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				r := bufio.NewReader(conn)
+				cmd, err := r.ReadString(0)
+				if err != nil {
+					return
+				}
+				if cmd == "zPING\x00" {
+					_, _ = conn.Write([]byte("PONG\x00"))
+					return
+				}
+				scans.Add(1)
+				for {
+					var size [4]byte
+					if _, err := io.ReadFull(r, size[:]); err != nil {
+						return
+					}
+					n := binary.BigEndian.Uint32(size[:])
+					if n == 0 {
+						break
+					}
+					if _, err := io.CopyN(io.Discard, r, int64(n)); err != nil {
+						return
+					}
+				}
+				_, _ = conn.Write([]byte("stream: OK\x00"))
+			}()
+		}
+	}()
+	return "tcp://" + ln.Addr().String(), &scans
 }
 
 func TestGuestUploadLimits_AMalwareVerdictIsNotRefunded(t *testing.T) {
