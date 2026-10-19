@@ -597,7 +597,7 @@ func (s *Server) ResolveOnBehalf(ctx context.Context, actorID uuid.UUID, in *tic
 		return bad("guest_name: name is required with reporter_email")
 	}
 	for _, f := range []struct{ name, v string }{{"guest_name", guestName}, {"guest_phone", guestPhone}} {
-		if err := ticket.CheckFreeText(f.name, f.v, false); err != nil {
+		if err := ticket.CheckFreeText(f.name, f.v); err != nil {
 			return bad(err.Error())
 		}
 	}

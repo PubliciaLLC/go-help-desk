@@ -2,7 +2,6 @@ package server_test
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"testing"
 
@@ -51,14 +50,17 @@ func createdAuditActor(t *testing.T, h *harness, id uuid.UUID) *uuid.UUID {
 	return actors[0]
 }
 
+// ticketCount is how many tickets THIS test has written. It counts rows written
+// by the harness transaction (xmin is the writing transaction's id), not what
+// the API can see: the database is shared, and a test in another package or one
+// that commits (ticket_concurrency, reputation_concurrency) puts tickets in the
+// list for a moment, which made a count by listing flaky.
 func ticketCount(t *testing.T, h *harness) int {
 	t.Helper()
-	res := h.doAsAdmin(t, http.MethodGet, "/api/v1/tickets?scope=all&limit=200", nil)
-	defer res.Body.Close()
-	require.Equal(t, http.StatusOK, res.StatusCode)
-	var all []json.RawMessage
-	require.NoError(t, json.NewDecoder(res.Body).Decode(&all))
-	return len(all)
+	var n int
+	require.NoError(t, h.tx.QueryRowContext(context.Background(),
+		`SELECT count(*) FROM tickets WHERE xmin::text = (txid_current() % 4294967296)::text`).Scan(&n))
+	return n
 }
 
 func TestCreateTicket_OnBehalf_PickedUser(t *testing.T) {

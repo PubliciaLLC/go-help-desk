@@ -209,13 +209,13 @@ func TestOnBehalf_ValidationRefusalsSpendNothing(t *testing.T) {
 	require.Equal(t, http.StatusCreated, res.StatusCode, readBody(t, res))
 }
 
-// A control character in guest_name or guest_phone is refused as validation,
+// A NUL in guest_name or guest_phone is refused as validation,
 // for every address. Before, an account's address ignored the fields (201) and
 // an address with no account hit Postgres's refusal of NUL (500, and the unit
 // refunded), so a miss was free.
 func TestOnBehalf_ControlCharacterInGuestFieldsIsRefusedAlike(t *testing.T) {
 	for _, field := range []string{"guest_name", "guest_phone"} {
-		for _, bad := range []string{"a\x00b", "a\x07b"} {
+		for _, bad := range []string{"a\x00b"} {
 			body := func(email string) map[string]any {
 				m := map[string]any{"reporter_email": email, "guest_name": "Ada"}
 				m[field] = bad

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -428,39 +427,32 @@ func (s *Service) refuseSecondFollowUp(ctx context.Context, st Store, closedID u
 	return nil
 }
 
-// CheckFreeText refuses text Postgres would refuse or that has no business in
-// a text field: invalid UTF-8 (which it rejects) and control characters (NUL,
-// which it rejects, and the rest of C0 and C1). multiline allows tab, carriage
-// return and line feed, for a description or a reply; a subject, name or phone
-// number is one line. It is validation, so the answer is a 400 before a
-// tracking number is taken, rather than a 500 and a gap in the sequence.
-func CheckFreeText(field, v string, multiline bool) error {
+// CheckFreeText refuses what Postgres refuses in a text column, and nothing
+// else: NUL and invalid UTF-8. Either was a 500 (and, on a create, a tracking
+// number already taken, so a gap in the sequence); it is a 400 before anything
+// is written. Every other character, tabs, newlines, ESC and the rest, was
+// accepted and stored as given in 1.2, and a follow-up copies a stored subject
+// and description into a create, so refusing any of them would make a ticket
+// that holds one impossible to follow up.
+func CheckFreeText(field, v string) error {
 	if !utf8.ValidString(v) {
 		return fmt.Errorf("%s: is not valid UTF-8: %w", field, ErrValidation)
 	}
-	for _, r := range v {
-		if multiline && (r == '\t' || r == '\r' || r == '\n') {
-			continue
-		}
-		if unicode.IsControl(r) {
-			return fmt.Errorf("%s: contains a control character: %w", field, ErrValidation)
-		}
+	if strings.ContainsRune(v, 0) {
+		return fmt.Errorf("%s: must not contain a NUL character: %w", field, ErrValidation)
 	}
 	return nil
 }
 
 // checkCreateText is CheckFreeText over a create's free-text fields.
 func checkCreateText(in CreateInput) error {
-	for _, f := range []struct {
-		name, v   string
-		multiline bool
-	}{
-		{"subject", in.Subject, false},
-		{"description", in.Description, true},
-		{"guest_name", in.GuestName, false},
-		{"guest_phone", in.GuestPhone, false},
+	for _, f := range []struct{ name, v string }{
+		{"subject", in.Subject},
+		{"description", in.Description},
+		{"guest_name", in.GuestName},
+		{"guest_phone", in.GuestPhone},
 	} {
-		if err := CheckFreeText(f.name, f.v, f.multiline); err != nil {
+		if err := CheckFreeText(f.name, f.v); err != nil {
 			return err
 		}
 	}
@@ -1608,7 +1600,7 @@ func (s *Service) ticketAndStatus(ctx context.Context, ticketID uuid.UUID) (Tick
 // check when non-nil; everything after it — the reopen, the write, the audit,
 // the dispatch — is shared, so a guest reply cannot drift from a user's.
 func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string, internal bool, notifyCustomer bool, reporterEmail string, actor Actor, reopenWindowDays int, reopenTargetStatusID uuid.UUID, authorize func(Ticket, Status) error) (Reply, error) {
-	if err := CheckFreeText("body", body, true); err != nil {
+	if err := CheckFreeText("body", body); err != nil {
 		return Reply{}, err
 	}
 	t, err := s.store.GetByID(ctx, ticketID)
