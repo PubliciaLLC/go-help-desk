@@ -155,7 +155,7 @@ func APIKeyAuth(lookup APIKeyAuthFunc) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			if key.ExpiresAt != nil && time.Now().After(*key.ExpiresAt) {
+			if key.Expired(time.Now()) {
 				next.ServeHTTP(w, r)
 				return
 			}

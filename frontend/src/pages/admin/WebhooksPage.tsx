@@ -446,7 +446,7 @@ function EditRow({
 const DROP_LABEL: Record<string, string> = {
   disabled: 'hook switched off', unsubscribed: 'no longer subscribed to the event',
   url_changed: 'URL changed', filter: 'filter no longer admits the ticket',
-  paused: 'its API key was revoked or expired', unbuildable: 'body could not be built',
+  paused: "its API key, or that key's owner, is no longer active", unbuildable: 'body could not be built',
 }
 
 // What a delivery's outcome is called: "ok" or a failure class, nothing more.
@@ -736,7 +736,7 @@ export function WebhooksPage() {
                               Paused
                             </span>
                             <div className="mt-0.5 text-xs text-amber-700">
-                              {h.paused_reason ?? 'Its API key was revoked or has expired'}
+                              {h.paused_reason ?? "Its API key, or that key's owner, is no longer active"}
                             </div>
                           </div>
                         )}
