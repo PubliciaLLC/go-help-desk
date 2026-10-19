@@ -75,12 +75,12 @@ export function UsersPage() {
   return (
     <Layout>
       <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
             <h1 className="text-2xl font-bold text-gray-900">Users</h1>
             <p className="mt-1 text-sm text-gray-500">Click a user to edit their profile, groups, and account settings.</p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <Select
               aria-label="Show"
               value={show}
@@ -176,7 +176,7 @@ export function UsersPage() {
         {isLoading ? (
           <div className="flex justify-center py-12"><Spinner /></div>
         ) : (
-          <div className="rounded-lg border bg-white overflow-hidden">
+          <div className="rounded-lg border bg-white overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 text-xs text-gray-500 uppercase">
                 <tr>
@@ -195,7 +195,7 @@ export function UsersPage() {
                     onClick={() => navigate({ to: '/admin/users/$id', params: { id: u.id } })}
                   >
                     <td className="px-4 py-3">
-                      <span className="font-medium text-gray-900">{u.display_name}</span>
+                      <span className="font-medium text-gray-900 wrap-anywhere">{u.display_name}</span>
                       {u.service_account && (
                         <Badge variant="secondary" className="ml-2 text-[10px]">Service</Badge>
                       )}
@@ -203,7 +203,7 @@ export function UsersPage() {
                         <Badge variant="secondary" className="ml-2 text-[10px]">Disabled</Badge>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-gray-600">{u.email}</td>
+                    <td className="px-4 py-3 text-gray-600 wrap-anywhere">{u.email}</td>
                     <td className="px-4 py-3">
                       <Badge variant={roleBadge(u.role) as never}>{u.role}</Badge>
                     </td>

@@ -674,7 +674,7 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	// nobody having looked, which is the approval this exists to require.
 	if existing.Paused && callingKey(r) != nil {
 		Error(w, http.StatusForbidden, "webhook_paused",
-			"this webhook is paused because its API key was revoked or has expired; a signed-in administrator must re-approve it before it can be edited with a key")
+			"this webhook is paused because its API key, or that key's owner, is no longer active; a signed-in administrator must re-approve it before it can be edited with a key")
 		return
 	}
 	var body struct {

@@ -23,7 +23,7 @@ const ROLES: Role[] = ['admin', 'staff', 'user']
 
 function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-lg border bg-white">
+    <div className="min-w-0 rounded-lg border bg-white">
       <div className="border-b px-5 py-3">
         <h2 className="text-sm font-semibold text-gray-700">{title}</h2>
       </div>
@@ -206,8 +206,8 @@ export function UserDetailPage() {
             <ArrowLeftIcon className="h-3.5 w-3.5" />
             Back to Users
           </button>
-          <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-bold text-gray-900">{user.display_name}</h1>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="min-w-0 text-2xl font-bold text-gray-900 wrap-anywhere">{user.display_name}</h1>
             {isService && <Badge variant="secondary" className="text-xs">Service</Badge>}
             {user.disabled && (
               <Badge variant="secondary" className="text-xs">Disabled</Badge>
@@ -224,7 +224,7 @@ export function UserDetailPage() {
               page.
             </p>
           ) : (
-            <p className="mt-1 text-sm text-gray-500">{user.email}</p>
+            <p className="mt-1 text-sm text-gray-500 wrap-anywhere">{user.email}</p>
           )}
         </div>
 
@@ -414,8 +414,8 @@ export function UserDetailPage() {
           ) : (
             <div className="divide-y rounded-md border">
               {user.groups.map((g) => (
-                <div key={g.id} className="flex items-center justify-between px-4 py-2.5">
-                  <div>
+                <div key={g.id} className="flex items-center justify-between gap-2 px-4 py-2.5">
+                  <div className="min-w-0 wrap-anywhere">
                     <span className="text-sm font-medium text-gray-800">{g.name}</span>
                     {g.description && (
                       <span className="ml-2 text-xs text-gray-400">{g.description}</span>
@@ -424,7 +424,7 @@ export function UserDetailPage() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="text-gray-400 hover:text-red-600"
+                    className="shrink-0 text-gray-400 hover:text-red-600"
                     onClick={() => removeFromGroupMutation.mutate(g.id)}
                     disabled={removeFromGroupMutation.isPending}
                   >
@@ -440,7 +440,7 @@ export function UserDetailPage() {
               <Select
                 value={addGroupId}
                 onChange={(e) => setAddGroupId(e.target.value)}
-                className="flex-1"
+                className="min-w-0 flex-1"
               >
                 <option value="">Add to group…</option>
                 {availableGroups.map((g) => (

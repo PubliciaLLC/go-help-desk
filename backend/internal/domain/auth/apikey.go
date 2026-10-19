@@ -30,6 +30,16 @@ type APIKey struct {
 	CreatedBy *uuid.UUID `json:"created_by"`
 }
 
+// Expired reports whether the key is dead at now: from the instant of its
+// expiry on, not after it, so the stored instant itself is already too late
+// (the same strictness as sessions and guest links, expires_at > now). A key
+// with no expiry never is. This is the one rule for "is this key dead": the request
+// check and the webhook pause check both use the application's clock through
+// it, so they cannot disagree about a key (#523).
+func (k APIKey) Expired(now time.Time) bool {
+	return k.ExpiresAt != nil && !now.Before(*k.ExpiresAt)
+}
+
 // APIKeyWithOwner is a key with the account it belongs to, for the admin list.
 // The embedded key flattens into the same JSON object.
 type APIKeyWithOwner struct {

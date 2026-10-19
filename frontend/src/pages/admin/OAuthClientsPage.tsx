@@ -166,7 +166,7 @@ export function OAuthClientsPage() {
             <Spinner />
           </div>
         ) : (
-          <div className="rounded-lg border bg-white overflow-hidden">
+          <div className="rounded-lg border bg-white overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 text-xs text-gray-500 uppercase">
                 <tr>
@@ -185,10 +185,10 @@ export function OAuthClientsPage() {
                     <td className="px-4 py-3 font-medium text-gray-900">
                       <span className="flex items-center gap-2">
                         <PlugIcon className="h-3.5 w-3.5 text-gray-400 shrink-0" />
-                        {c.name}
+                        <span className="min-w-0 wrap-anywhere">{c.name}</span>
                       </span>
                     </td>
-                    <td className="px-4 py-3 font-mono text-xs text-gray-600">{c.client_id}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-gray-600 wrap-anywhere">{c.client_id}</td>
                     <td className="px-4 py-3">
                       {c.scopes?.length ? (
                         <div className="flex flex-wrap gap-1">
@@ -212,7 +212,7 @@ export function OAuthClientsPage() {
                         <Link
                           to="/admin/users/$id"
                           params={{ id: c.user_id }}
-                          className="text-blue-600 hover:underline"
+                          className="text-blue-600 hover:underline wrap-anywhere"
                         >
                           {c.name} (service user)
                         </Link>
@@ -224,7 +224,7 @@ export function OAuthClientsPage() {
                       {c.groups?.length ? (
                         <div className="flex flex-wrap gap-1">
                           {c.groups.map((g) => (
-                            <span key={g.id} className="rounded bg-blue-50 px-1.5 py-0.5 text-xs text-blue-800">
+                            <span key={g.id} className="rounded bg-blue-50 px-1.5 py-0.5 text-xs text-blue-800 wrap-anywhere">
                               {g.name}
                             </span>
                           ))}
