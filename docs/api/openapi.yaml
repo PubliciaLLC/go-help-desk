@@ -1674,7 +1674,7 @@ paths:
         without a category_id is refused with 400.
         name and body are trimmed and must not be blank. sort_order must fit in a 32-bit integer. A
         category_id or type_id that names nothing, or a type_id that does not belong to its category, is
-        refused by the database and answered with 500 internal_error, not with 400 or 404.
+        refused with 400 bad_request.
       tags: ['Admin: Canned responses']
       x-ghd-handler: handleAdminCreateCannedResponse
       security:
@@ -1723,7 +1723,7 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '500':
-          description: The database refused the row, for example an unknown category_id or type_id (internal_error).
+          description: The database refused the row (internal_error).
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -1796,7 +1796,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
-          description: The database refused the row, for example an unknown category_id or type_id (internal_error).
+          description: The database refused the row (internal_error).
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -1806,7 +1806,7 @@ paths:
       description: |
         Administrators only (second factor required).
         Hard-deletes the response. Replies that already contain its text are not affected, because the body
-        was copied into the reply when it was inserted. Deleting an id that does not exist also answers 204.
+        was copied into the reply when it was inserted. An unknown id answers 404 not_found.
       tags: ['Admin: Canned responses']
       x-ghd-handler: handleAdminDeleteCannedResponse
       security:
@@ -1823,6 +1823,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '500':
           description: The delete failed in storage (delete_failed).
           content:
@@ -1923,7 +1925,7 @@ paths:
       description: |
         Administrators only (second factor required).
         Soft-deletes the tag. It disappears from autocomplete and stays on every ticket that already carries
-        it. Deactivating an unknown or already deactivated id also answers 204.
+        it. An unknown id answers 404 not_found; an id that is already deactivated answers 204.
       tags: ['Admin: Tags']
       x-ghd-handler: handleAdminDeleteTag
       security:
@@ -1940,6 +1942,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '500':
           description: The deactivation failed in storage (delete_failed).
           content:
@@ -1959,8 +1963,8 @@ paths:
       summary: Restore a deactivated tag.
       description: |
         Administrators only (second factor required).
-        Clears the deactivation, so the tag is usable again. Restoring an unknown id, or a tag that is already
-        active, also answers 204.
+        Clears the deactivation, so the tag is usable again. An unknown id answers 404 not_found; restoring a
+        tag that is already active answers 204.
       tags: ['Admin: Tags']
       x-ghd-handler: handleAdminRestoreTag
       security:
@@ -1977,6 +1981,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '500':
           description: The restore failed in storage (restore_failed).
           content:
