@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
+import { getSiteConfig } from '@/api/admin'
 import {
   addGuestReply,
   createGuestFollowUp,
   getGuestTicket,
   GuestFollowUpRateLimited,
   GuestLinkInvalid,
+  uploadGuestAttachment,
 } from '@/api/guest'
+import { AttachmentUpload, type UploadState } from '@/components/AttachmentUpload'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -46,6 +49,48 @@ export function GuestTicketViewPage() {
     // who lost the fragment, and the error branch below is the right answer.
     enabled: token !== '',
   })
+
+  // Whether this instance lets guests attach (#445), and the per-file limit
+  // that applies. A failed or slow lookup leaves the control hidden: offering a
+  // button that can only fail is worse than not offering one.
+  const { data: site } = useQuery({ queryKey: ['site-config'], queryFn: getSiteConfig, retry: false })
+  const canAttach = site?.guest_attachments_enabled === true && typeof site.guest_attachment_max_bytes === 'number'
+
+  // Two limits, and the page offers only what both allow at once: the ticket's
+  // cap, less what this visit has attached, and the hour's uploads. Offering
+  // five when the hour allows three would hand the guest two refusals.
+  const perTicket = site?.guest_attachment_max_per_ticket ?? 5
+  const perHour = site?.guest_attachment_uploads_per_hour ?? perTicket
+
+  const [uploadStates, setUploadStates] = useState<Record<string, UploadState> | undefined>()
+  const [uploading, setUploading] = useState<File[]>([])
+  const [attached, setAttached] = useState<string[]>([])
+  const [uploadErrors, setUploadErrors] = useState<string[]>([])
+
+  // Position plus name: two files may share a name, and a state keyed by name
+  // alone would show one row's progress on both.
+  const stateKey = (f: File, i: number) => `${i}:${f.name}`
+
+  // Each chosen file is sent as soon as it is chosen, one after another. There
+  // is no draft to submit: a guest attachment belongs to the ticket, not to a
+  // reply. The server's reason is shown for a refusal, never the file's content.
+  async function sendFiles(files: File[]) {
+    if (files.length === 0) return
+    setUploading(files)
+    setUploadErrors([])
+    setUploadStates(Object.fromEntries(files.map((f, i) => [stateKey(f, i), { status: 'pending' as const }])))
+    for (const [i, f] of files.entries()) {
+      setUploadStates((s) => ({ ...s, [stateKey(f, i)]: { status: 'uploading' } }))
+      try {
+        await uploadGuestAttachment(token, f)
+        setAttached((a) => [...a, f.name])
+      } catch (err) {
+        setUploadErrors((e) => [...e, `${f.name}: ${err instanceof Error ? err.message : 'The file could not be uploaded.'}`])
+      }
+    }
+    setUploading([])
+    setUploadStates(undefined)
+  }
 
   const send = useMutation({
     mutationFn: () => addGuestReply(token, reply.trim()),
@@ -212,6 +257,41 @@ export function GuestTicketViewPage() {
                 {send.isPending ? 'Sending…' : 'Send reply'}
               </Button>
             </form>
+          )}
+
+          {ticket.status !== 'Closed' && canAttach && (
+            <div className="space-y-2 border-t pt-4">
+              {/* The page cannot see files from an earlier visit (the guest read
+                  has no attachment list), so this counts this visit's only. The
+                  server holds the real cap and says so when it is reached. */}
+              {attached.length >= perTicket ? (
+                <p className="text-sm text-gray-600">You have attached the most files that can be added to this ticket.</p>
+              ) : attached.length >= perHour ? (
+                <p className="text-sm text-gray-600">You have used this hour&apos;s uploads. Reload this page later to add more.</p>
+              ) : (
+              <AttachmentUpload
+                maxFiles={Math.min(perTicket - attached.length, perHour - attached.length)}
+                maxFilesNote={
+                  perHour < perTicket
+                    ? `up to ${perHour - attached.length} ${perHour - attached.length === 1 ? 'file' : 'files'} now (${perTicket} per ticket)`
+                    : undefined
+                }
+                files={uploading}
+                onChange={(next) => sendFiles(next.slice(uploading.length))}
+                uploadStates={uploadStates}
+                stateKey={stateKey}
+                maxBytes={site!.guest_attachment_max_bytes}
+              />
+              )}
+              {attached.length > 0 && (
+                <p role="status" className="text-sm text-green-700 wrap-anywhere">
+                  Attached: {attached.join(', ')}
+                </p>
+              )}
+              {uploadErrors.map((m, i) => (
+                <p key={i} role="alert" className="text-sm text-red-600 wrap-anywhere">{m}</p>
+              ))}
+            </div>
           )}
         </CardContent>
       </Card>

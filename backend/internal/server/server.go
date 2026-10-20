@@ -188,6 +188,14 @@ type Server struct {
 	// six-digit secret.
 	loginLimiter *authmw.RateLimiter
 
+	// guestUploadLimiter spends one unit per guest upload attempt, keyed by the
+	// ticket the guest link names (#445). The key is the ticket and not the
+	// address for the reason RateLimiter's comment gives, and because one guest
+	// behind a shared address must not use up another's. INTERIM like the
+	// others: in memory and per process.
+	guestUploadLimiter  *authmw.RateLimiter
+	guestRefusalLimiter *authmw.RateLimiter
+
 	// loginThrottleDelay is how long an over-budget login waits before the
 	// password is checked. See config.AuthThrottleDelay.
 	loginThrottleDelay time.Duration
@@ -422,6 +430,13 @@ func New(
 		loginLimiter:       authmw.NewRateLimiter(cfg.AuthRateLimitPerMinute, time.Minute),
 		loginThrottleDelay: cfg.AuthThrottleDelay,
 		guestResendLimiter: authmw.NewRateLimiter(1, 5*time.Minute),
+		// Keyed by ticket, with the figure read from the setting on each use
+		// (TakeWithLimit): the constructor's limit is not consulted.
+		guestUploadLimiter: authmw.NewRateLimiter(1, time.Hour),
+		// Every REFUSED guest upload, refunded or not, against a fixed budget
+		// (guestRefusalsPerHour): a refusal decided before the scan is free of
+		// the hourly upload budget, so this is what stops a stream of them.
+		guestRefusalLimiter: authmw.NewRateLimiter(guestRefusalsPerHour, time.Hour),
 		// Not configurable: the figure is the ruling on #444, not a tuning knob.
 		onBehalfMailLimiter: authmw.NewRateLimiter(onBehalfMailPerHour, time.Hour),
 		// The same shape and the same reasoning (#451).
@@ -731,12 +746,29 @@ func (s *Server) handleGetSiteConfig(w http.ResponseWriter, r *http.Request) {
 	// /submit, and offering a dead end is worse than offering nothing. It says
 	// only whether the instance accepts guest tickets — the same thing an
 	// unauthenticated POST to /guest/tickets would reveal by answering 404.
-	JSON(w, http.StatusOK, map[string]any{
-		"name":                     s.adminSvc.SiteName(r.Context()),
-		"logo_url":                 s.adminSvc.SiteLogoURL(r.Context()),
-		"version":                  version.Version,
-		"guest_submission_enabled": s.adminSvc.GuestSubmissionEnabled(r.Context()),
-	})
+	//
+	// guest_attachments_enabled and guest_attachment_max_bytes (#445) are here
+	// for the same reason: the guest page has no session, and offering an
+	// attach button that can only fail is worse than not offering one. Unlike
+	// guest_submission_enabled this DOES disclose something the guest routes
+	// do not: the upload route answers the same 404 whether the setting or the
+	// token is what failed, so it never says whether uploads are on. Here
+	// anyone can read it, with the effective limit. Accepted (low sensitivity,
+	// and the guest ticket's allow-list stays untouched). The size is the EFFECTIVE limit (the lower of the setting and the
+	// instance-wide maximum), omitted while uploads are off.
+	cfg := map[string]any{
+		"name":                      s.adminSvc.SiteName(r.Context()),
+		"logo_url":                  s.adminSvc.SiteLogoURL(r.Context()),
+		"version":                   version.Version,
+		"guest_submission_enabled":  s.adminSvc.GuestSubmissionEnabled(r.Context()),
+		"guest_attachments_enabled": s.adminSvc.GuestAttachmentsEnabled(r.Context()),
+	}
+	if cfg["guest_attachments_enabled"] == true {
+		cfg["guest_attachment_max_bytes"] = s.guestAttachmentMaxBytes(r.Context())
+		cfg["guest_attachment_max_per_ticket"] = s.adminSvc.GuestAttachmentMaxPerTicket(r.Context())
+		cfg["guest_attachment_uploads_per_hour"] = s.adminSvc.GuestAttachmentUploadsPerHour(r.Context())
+	}
+	JSON(w, http.StatusOK, cfg)
 }
 
 // InitSAML reads SAML config from the database and initialises the SP
@@ -951,4 +983,11 @@ func (s *Server) requireSignedInOrGuestsEnabled(next http.Handler) http.Handler 
 		}
 		Error(w, http.StatusUnauthorized, "unauthorized", "authentication required")
 	})
+}
+
+// SetGuestUploadClockForTest moves the guest upload limiter onto a clock the
+// test controls, so the hourly window can pass without waiting an hour.
+func (s *Server) SetGuestUploadClockForTest(now func() time.Time) {
+	s.guestUploadLimiter.SetClock(now)
+	s.guestRefusalLimiter.SetClock(now)
 }

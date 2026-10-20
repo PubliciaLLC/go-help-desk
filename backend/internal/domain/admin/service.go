@@ -220,6 +220,56 @@ func (s *Service) GuestSubmissionEnabled(ctx context.Context) bool {
 	return v
 }
 
+// GuestAttachmentsEnabled reports whether a guest may attach files from the web
+// page (#445). Off by default, upgrades included: before this setting a guest
+// could upload through the API whenever guest submission was on, and that is
+// now closed until an administrator opens it.
+//
+// It is only ever true while guest submission is on. Reading both here, rather
+// than in each caller, is what makes "dependent on guest submission" a property
+// of the setting and not something a handler has to remember.
+func (s *Service) GuestAttachmentsEnabled(ctx context.Context) bool {
+	if !s.GuestSubmissionEnabled(ctx) {
+		return false
+	}
+	v, _ := s.GetBool(ctx, KeyGuestAttachmentsEnabled)
+	return v
+}
+
+// GuestAttachmentMaxMB is a guest's per-file maximum in megabytes (#445), 1 to
+// 100, 5 until an administrator says otherwise. Unset, unreadable or out of
+// range reads as the default: a damaged row must not quietly lift the cap.
+// The instance-wide attachment maximum still applies on top; the handler takes
+// the lower of the two.
+func (s *Service) GuestAttachmentMaxMB(ctx context.Context) int {
+	v, err := s.GetInt(ctx, KeyGuestAttachmentMaxMB)
+	if err != nil || !ValidGuestAttachmentMaxMB(v) {
+		return GuestAttachmentMaxMBDefault
+	}
+	return v
+}
+
+// GuestAttachmentMaxPerTicket is the most files guests may attach to one ticket
+// (#445), 1 to 50, 5 by default. Unset, unreadable or out of range reads as the
+// default: a damaged row must not quietly lift the cap.
+func (s *Service) GuestAttachmentMaxPerTicket(ctx context.Context) int {
+	v, err := s.GetInt(ctx, KeyGuestAttachmentMaxPerTicket)
+	if err != nil || !ValidGuestAttachmentMaxPerTicket(v) {
+		return GuestAttachmentMaxPerTicketDefault
+	}
+	return v
+}
+
+// GuestAttachmentUploadsPerHour is how many uploads one guest link may make in
+// an hour (#445), 1 to 30, 3 by default, with the same fallback.
+func (s *Service) GuestAttachmentUploadsPerHour(ctx context.Context) int {
+	v, err := s.GetInt(ctx, KeyGuestAttachmentUploadsPerHour)
+	if err != nil || !ValidGuestAttachmentUploadsPerHour(v) {
+		return GuestAttachmentUploadsPerHourDefault
+	}
+	return v
+}
+
 // TicketPrefix returns the configured tracking-number prefix, falling back to
 // the default when unset or invalid.
 func (s *Service) TicketPrefix(ctx context.Context) string {
