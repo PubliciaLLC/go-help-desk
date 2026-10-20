@@ -31,6 +31,16 @@ export default defineConfig({
         launchOptions: executablePath ? { executablePath } : {},
       },
     },
+    // Safari's engine. Chromium and WebKit disagree on flex/grid min-width
+    // and on where an unbroken string may wrap, and the CTO's phone is
+    // WebKit: #479 and #522 were invisible here until this project existed.
+    // Whole suite: it costs about as much as the chromium run. An `iPhone 13`
+    // device project was tried and failed/passed on exactly the same tests as
+    // this one (the specs set their own viewports), so it is not kept.
+    {
+      name: 'webkit',
+      use: { ...devices['Desktop Safari'] },
+    },
   ],
   webServer: {
     // Vite binds to `localhost` by default, not 127.0.0.1 — on at least one
