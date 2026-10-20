@@ -8,6 +8,23 @@ test.use({ viewport: { width: 320, height: 640 } })
 const TOKEN = 'e2e-guest-token'
 
 test('a guest attaches a small file at 320px', async ({ page, browserName }) => {
+  // Linux WebKit hands an intercepted multipart request to postData() without
+  // the file's bytes, so read the file where it is handed over instead: axios
+  // sends through XMLHttpRequest, whose send() receives the FormData.
+  await page.addInitScript(() => {
+    const send = XMLHttpRequest.prototype.send
+    XMLHttpRequest.prototype.send = function (body?: Document | XMLHttpRequestBodyInit | null) {
+      if (body instanceof FormData) {
+        const file = body.get('file')
+        if (file instanceof File) {
+          void file.text().then((text) => {
+            ;(window as unknown as { __sentFile: unknown }).__sentFile = { name: file.name, text }
+          })
+        }
+      }
+      return send.call(this, body)
+    }
+  })
   let uploaded: { auth: string | undefined; body: string } | null = null
 
   await page.route('**/api/v1/**', async (route) => {
@@ -42,9 +59,11 @@ test('a guest attaches a small file at 320px', async ({ page, browserName }) => 
 
   expect(uploaded).not.toBeNull()
   expect(uploaded!.auth).toBe(`Guest ${TOKEN}`)
-  // Linux WebKit hands an intercepted multipart request to postData() without
-  // the file's bytes (seen on CI; macOS WebKit and Chromium include them). The
-  // upload happening, with the guest's token, is still asserted everywhere.
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { __sentFile?: unknown }).__sentFile))
+    .toEqual({ name: 'printer.txt', text: 'paper jam log' })
+  expect(uploaded!.body).toContain('filename="printer.txt"')
+  // The bytes on the wire, where the engine exposes them (Linux WebKit does not).
   if (browserName !== 'webkit') expect(uploaded!.body).toContain('paper jam log')
 
   const { scrollWidth, clientWidth } = await page.evaluate(() => ({
