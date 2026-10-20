@@ -14,7 +14,7 @@ import {
 import { Bold, Code, Italic, Link as LinkIcon, List, ListOrdered, Quote, SquareCode } from 'lucide-react'
 import { safeUrl } from '@/lib/markdownAllowList'
 import { cn } from '@/lib/utils'
-import { createEditor, insertAtCursor, setMarkdown, viewOf } from './editorCore'
+import { addLink, createEditor, insertAtCursor, setMarkdown, viewOf } from './editorCore'
 
 // The lazily loaded half of the editor: the Milkdown instance and its toolbar.
 // MarkdownEditor.tsx (the adapter the forms use) imports this with import().
@@ -166,18 +166,11 @@ export function MilkdownView({ ref, value, onChange, labelId, disabled, placehol
       setLinkError('Enter a full web or mail address: https://..., http://... or mailto:...')
       return
     }
-    const view = viewOf(editor)
-    const { state } = view
-    const type = state.schema.marks.link
-    const { from, to, empty: collapsed } = state.selection
-    const tr = collapsed
-      ? state.tr.insertText(href, from).addMark(from, from + href.length, type.create({ href }))
-      : state.tr.addMark(from, to, type.create({ href }))
-    view.dispatch(tr)
+    addLink(editor, href)
     setLinkOpen(false)
     setLinkUrl('')
     setLinkError('')
-    view.focus()
+    viewOf(editor).focus()
   }
 
   const buttons: { label: string; icon: typeof Bold; pressed: boolean; onClick: () => void }[] = [

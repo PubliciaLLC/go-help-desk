@@ -157,3 +157,60 @@ test('when the formatting worker cannot start, the post is plain and says why', 
   await expect(page.getByRole('button', { name: 'Plain text' }).first()).toBeVisible()
   await expect(page.locator('[data-md-body] strong')).toHaveCount(0)
 })
+
+// On a phone a tap leaves :hover on the button it touched, and a link just
+// inserted used to leave the caret inside it. Either made a toolbar button look
+// pressed when nothing was selected (seen on an iPhone).
+test.describe('the toolbar on a touch screen', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+
+  test('Link with nothing selected inserts the address after a space, and leaves no button shaded', async ({ page }) => {
+    await mockApi(page)
+    await page.goto('/tickets/new')
+    const editor = page.locator('.md-editor [contenteditable="true"]')
+    await expect(editor).toBeVisible()
+    await editor.tap()
+    await page.keyboard.type('Link')
+
+    const link = page.getByRole('button', { name: 'Link', exact: true })
+    await link.tap()
+    await page.getByRole('textbox', { name: 'Link address' }).fill('https://www.google.com')
+    await page.getByRole('button', { name: 'Add', exact: true }).tap()
+
+    await expect(editor).toContainText('Link https://www.google.com')
+    await expect(editor.locator('a')).toHaveText('https://www.google.com')
+    await expect(link).toHaveAttribute('aria-pressed', 'false')
+    // Nothing is selected and nothing is active, so no button is shaded: not by
+    // being active, and not by a hover the touch left behind.
+    const shaded = await page.getByRole('toolbar').getByRole('button').evaluateAll((els) =>
+      els
+        .filter((e) => e.getAttribute('aria-pressed') !== 'true')
+        .map((e) => ({ name: e.getAttribute('aria-label'), bg: getComputedStyle(e).backgroundColor }))
+        .filter((b) => b.bg !== 'rgba(0, 0, 0, 0)'),
+    )
+    expect(shaded).toEqual([])
+    // The next word typed is not part of the link.
+    await page.keyboard.type(' next')
+    await expect(editor.locator('a')).toHaveText('https://www.google.com')
+  })
+
+  test('tapping every toolbar button leaves only the buttons that are really active shaded', async ({ page }) => {
+    await mockApi(page)
+    await page.goto('/tickets/new')
+    const editor = page.locator('.md-editor [contenteditable="true"]')
+    await editor.tap()
+    for (const name of ['Bold', 'Italic', 'Inline code', 'Link', 'Bulleted list', 'Numbered list', 'Quote', 'Code block']) {
+      await page.getByRole('button', { name, exact: true }).tap()
+    }
+    const wrong = await page.getByRole('toolbar').getByRole('button').evaluateAll((els) =>
+      els
+        .map((e) => ({
+          name: e.getAttribute('aria-label'),
+          pressed: e.getAttribute('aria-pressed') === 'true',
+          shaded: getComputedStyle(e).backgroundColor !== 'rgba(0, 0, 0, 0)',
+        }))
+        .filter((b) => b.pressed !== b.shaded),
+    )
+    expect(wrong, 'a button is shaded without being pressed, or pressed without being shaded').toEqual([])
+  })
+})

@@ -55,6 +55,20 @@ describe('MarkdownEditor', () => {
     await waitFor(() => expect(document.querySelector('.md-editor a')?.getAttribute('href')).toBe('https://a.example'))
   })
 
+  it('after adding a link with nothing selected, the Link button is not left pressed', async () => {
+    const user = userEvent.setup()
+    render(<Form onSubmit={() => {}} />)
+    await screen.findByRole('toolbar')
+    await waitFor(() => expect(document.querySelector('[contenteditable="true"]')).not.toBeNull())
+    const link = screen.getByRole('button', { name: 'Link' })
+    await user.click(link)
+    expect(link.getAttribute('aria-pressed')).toBe('true') // the address row is open
+    await user.type(screen.getByRole('textbox', { name: 'Link address' }), 'https://www.google.com{Enter}')
+    await waitFor(() => expect(document.querySelector('.md-editor a')).not.toBeNull())
+    expect(screen.queryByRole('group', { name: 'Add link' })).toBeNull()
+    expect(link.getAttribute('aria-pressed')).toBe('false')
+  })
+
   it('a form submitted straight after typing carries the latest text', async () => {
     const submitted: string[] = []
     render(<Form onSubmit={(v) => submitted.push(v)} />)

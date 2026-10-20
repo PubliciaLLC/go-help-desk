@@ -3,7 +3,7 @@ import { renderNow } from '@/test/formatted'
 import type { Editor } from '@milkdown/kit/core'
 import { DOMParser as PMDOMParser, DOMSerializer } from '@milkdown/kit/prose/model'
 import { TextSelection } from '@milkdown/kit/prose/state'
-import { createEditor, insertAtCursor, markdownOf, setMarkdown, viewOf } from './editorCore'
+import { addLink, createEditor, insertAtCursor, markdownOf, setMarkdown, viewOf } from './editorCore'
 import { EDITOR_MARKS, EDITOR_NODES } from '@/lib/markdownAllowList'
 import { TicketText } from '@/components/TicketText'
 
@@ -265,5 +265,72 @@ describe('inserting at the caret (a canned response)', () => {
     expect(out).toContain('one')
     expect(out).toContain('two')
     expect(out.indexOf('start')).toBeLessThan(out.indexOf('two'))
+  })
+})
+
+// The Link button with and without a selection. The caret must end up outside
+// the link: otherwise the toolbar shows Link as active when nothing is selected
+// (seen on an iPhone), and the next word typed would join the link.
+describe('adding a link', () => {
+  const marksAtCaret = (view: ReturnType<typeof viewOf>) =>
+    view.state.selection.$from.marks().map((m) => m.type.name)
+  const linkRanges = (view: ReturnType<typeof viewOf>) => {
+    const out: { text: string; href: string }[] = []
+    view.state.doc.descendants((n) => {
+      const m = n.marks.find((x) => x.type.name === 'link')
+      if (n.isText && m) out.push({ text: n.text!, href: m.attrs.href })
+    })
+    return out
+  }
+
+  it('with nothing selected after a word: a space, then the address as its own link, caret after it', async () => {
+    const view = await start()
+    setMarkdown(editor!, 'Link')
+    view.dispatch(view.state.tr.setSelection(TextSelection.atEnd(view.state.doc)))
+    addLink(editor!, 'https://www.google.com')
+    expect(view.state.doc.textContent).toBe('Link https://www.google.com')
+    expect(linkRanges(view)).toEqual([{ text: 'https://www.google.com', href: 'https://www.google.com' }])
+    expect(marksAtCaret(view)).not.toContain('link')
+    expect(view.state.selection.empty).toBe(true)
+    expect(view.state.selection.from).toBe(1 + 'Link https://www.google.com'.length)
+    // And the next thing typed is not part of the link.
+    view.dispatch(view.state.tr.insertText(' next'))
+    expect(linkRanges(view)).toEqual([{ text: 'https://www.google.com', href: 'https://www.google.com' }])
+  })
+
+  it('at the start of an empty paragraph there is no leading space', async () => {
+    const view = await start()
+    addLink(editor!, 'https://a.example')
+    expect(view.state.doc.textContent).toBe('https://a.example')
+    expect(marksAtCaret(view)).not.toContain('link')
+  })
+
+  it('after whitespace there is no second space', async () => {
+    const view = await start()
+    setMarkdown(editor!, 'see')
+    view.dispatch(view.state.tr.setSelection(TextSelection.atEnd(view.state.doc)))
+    view.dispatch(view.state.tr.insertText(' '))
+    addLink(editor!, 'https://a.example')
+    expect(view.state.doc.textContent).toBe('see https://a.example')
+  })
+
+  it('with text selected: the selection becomes the link and the caret moves after it', async () => {
+    const view = await start()
+    setMarkdown(editor!, 'go to the docs now')
+    view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, 1 + 10, 1 + 14)))
+    addLink(editor!, 'https://a.example')
+    expect(view.state.doc.textContent).toBe('go to the docs now')
+    expect(linkRanges(view)).toEqual([{ text: 'docs', href: 'https://a.example' }])
+    expect(view.state.selection.empty).toBe(true)
+    expect(view.state.selection.from).toBe(1 + 14)
+    expect(marksAtCaret(view)).not.toContain('link')
+  })
+
+  it('is saved as Markdown', async () => {
+    const view = await start()
+    setMarkdown(editor!, 'Link')
+    view.dispatch(view.state.tr.setSelection(TextSelection.atEnd(view.state.doc)))
+    addLink(editor!, 'https://www.google.com')
+    expect(markdownOf(editor!).trim()).toBe('Link <https://www.google.com>')
   })
 })

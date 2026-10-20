@@ -3,6 +3,7 @@ import {
   commonmark,
   imageSchema,
   insertImageInputRule,
+  linkSchema,
   listItemKeymap,
 } from '@milkdown/kit/preset/commonmark'
 import {
@@ -16,7 +17,7 @@ import {
 import { history } from '@milkdown/kit/plugin/history'
 import { clipboard } from '@milkdown/kit/plugin/clipboard'
 import { $prose, $remark, getMarkdown, insert, replaceAll } from '@milkdown/kit/utils'
-import { Plugin } from '@milkdown/kit/prose/state'
+import { Plugin, TextSelection } from '@milkdown/kit/prose/state'
 import { visit } from 'unist-util-visit'
 import type { Root } from 'mdast'
 import type { MilkdownPlugin } from '@milkdown/kit/ctx'
@@ -43,6 +44,11 @@ const imageAsText = imageSchema.extendSchema((prev) => (ctx) => ({
   parseDOM: [],
   toDOM: (node) => ['span', { class: 'md-image' }, `[image: ${String(node.attrs.alt ?? '')}]`],
 }))
+
+// Typing at the end of a link does not extend it (the link mark is inclusive by
+// default, which kept the caret "inside" a link just inserted, left the toolbar's
+// Link button shown as active, and made the next word part of the link).
+const linkEndsAtItsEnd = linkSchema.extendSchema((prev) => (ctx) => ({ ...prev(ctx), inclusive: false }))
 
 function without(plugins: MilkdownPlugin[]): MilkdownPlugin[] {
   return plugins.filter((p) => !dropped.has(p))
@@ -90,6 +96,7 @@ export const editorPlugins: MilkdownPlugin[] = [
   ...without(commonmark),
   ...without(gfm),
   imageAsText,
+  linkEndsAtItsEnd,
   footnotesAsText,
   history,
   clipboard,
@@ -144,6 +151,32 @@ export async function createEditor(opts: EditorOptions): Promise<Editor> {
 
 export function setMarkdown(editor: Editor, markdown: string) {
   editor.action(replaceAll(markdown))
+}
+
+/**
+ * The Link button. With text selected, the selection becomes the link. With
+ * nothing selected, the address is inserted as its own link text, with a space
+ * before it when it would otherwise run into the word before. Either way the
+ * caret ends up just after the link and outside it, so the toolbar does not show
+ * Link as active and the next thing typed is not part of the link.
+ */
+export function addLink(editor: Editor, href: string) {
+  const view = viewOf(editor)
+  const { state } = view
+  const type = state.schema.marks.link
+  const { from, to, empty, $from } = state.selection
+  let tr = state.tr
+  let end = to
+  if (empty) {
+    const before = $from.parentOffset > 0 ? $from.parent.textBetween($from.parentOffset - 1, $from.parentOffset) : ''
+    const space = before !== '' && !/\s/.test(before) ? ' ' : ''
+    const start = from + space.length
+    end = start + href.length
+    tr = tr.insertText(space + href, from).removeMark(from, end, type).addMark(start, end, type.create({ href }))
+  } else {
+    tr = tr.addMark(from, to, type.create({ href }))
+  }
+  view.dispatch(tr.setSelection(TextSelection.create(tr.doc, end)).removeStoredMark(type))
 }
 
 /** Puts Markdown at the caret (replacing a selection), leaving the caret after it. */
