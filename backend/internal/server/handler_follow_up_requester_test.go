@@ -423,6 +423,7 @@ func TestGuestFollowUp_TheOtherWriteRoutesStillRefuseAClosedTicket(t *testing.T)
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	enableGuests(t, h)
+	setGuestUploads(t, h, true) // or the upload's 404 is the setting's, not the closed ticket's
 	tk, token := seedGuestTicket(t, h)
 	closeGuestTicket(t, h, tk)
 	res := h.doGuest(t, http.MethodPost, "/api/v1/guest/follow-up", token, nil)

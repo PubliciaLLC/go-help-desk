@@ -73,6 +73,7 @@ func TestUpload_AGuestUploadLosingTheRaceToTheCloseIsTheGenericNotFound(t *testi
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	tk, token := seedGuestTicket(t, h)
+	setGuestUploads(t, h, true) // off by default (#445)
 	closeTicketWhenTheUploadPipelineReadsTheAllowlist(t, h, tk.ID.String())
 
 	res := uploadGuestAttachment(t, h, token, "photo.txt", []byte("what it looks like"))

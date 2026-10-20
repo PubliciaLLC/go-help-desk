@@ -454,6 +454,8 @@ func (f *fakeStore) CreateAttachment(context.Context, ticket.Attachment) error {
 func (f *fakeStore) GetAttachmentByID(context.Context, uuid.UUID) (ticket.Attachment, error) {
 	return ticket.Attachment{}, errNotFound
 }
+func (f *fakeStore) CountGuestAttachments(context.Context, uuid.UUID) (int, error) { return 0, nil }
+
 func (f *fakeStore) ListAttachments(context.Context, uuid.UUID) ([]ticket.Attachment, error) {
 	return nil, nil
 }
