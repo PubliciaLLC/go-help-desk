@@ -2808,8 +2808,8 @@ paths:
         password_change_required until the password is changed. The change clears the requirement.
         A missing or wrong current_password answers 400 invalid_current_password: the session is fine, so
         this is not a 401, which here always means there is no session. 1.2.0 did not ask for the current
-        password. Wrong guesses are counted per account against the same budget as sign-in
-        (AUTH_RATE_LIMIT_PER_MINUTE) and answer 429 rate_limited once it is spent; the correct
+        password. Wrong guesses are counted per account against a budget the size of sign-in's
+        (AUTH_RATE_LIMIT_PER_MINUTE, a separate counter) and answer 429 rate_limited once it is spent; the correct
         password is still accepted. The old field name password is still read when new_password is absent. current_password is
         required in either case.
       tags: ['Account']

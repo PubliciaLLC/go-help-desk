@@ -3,6 +3,7 @@ package server_test
 import (
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -71,4 +72,33 @@ func TestChangePasswordThrottle_UsersAreIndependent(t *testing.T) {
 
 	require.Equal(t, http.StatusBadRequest, changePasswordWith(t, admin, "wrong"),
 		"one user's wrong guesses must not throttle another")
+}
+
+// The over-budget wait. Without it the 429 alone limits nothing: the password
+// is checked before the counter is consulted, so a guesser who ignores the
+// status code is bounded only by bcrypt. Same shape as the sign-in tarpit tests
+// in login_tarpit_test.go; the default harness uses a 1ms delay, which would
+// not notice the wait being deleted.
+func TestChangePasswordTarpit_SlowsAnOverBudgetUser(t *testing.T) {
+	const (
+		limit = 2
+		delay = 150 * time.Millisecond
+	)
+	h, cleanup := newHarnessWithThrottle(t, limit, delay)
+	defer cleanup()
+	s := loggedIn(t, h)
+
+	started := time.Now()
+	for range limit {
+		changePasswordWith(t, s, "wrong")
+	}
+	require.Less(t, time.Since(started), delay, "guesses inside the budget should not be held up")
+
+	started = time.Now()
+	changePasswordWith(t, s, "wrong")
+	require.GreaterOrEqual(t, time.Since(started), delay, "an over-budget guess was answered immediately")
+
+	// Slowed, never locked out.
+	require.Equal(t, http.StatusNoContent, changePasswordWith(t, s, "password"),
+		"the correct password must be honoured even with the budget spent")
 }
