@@ -215,6 +215,7 @@ scripts/check-test-coverage.sh main HEAD  # or name the refs explicitly</code></
 npm test          # unit tests (vitest)
 npm run test:e2e  # layout tests (Playwright)</code></pre>
 <p><code>npm run test:e2e</code> runs browser layout tests in Chromium. It starts the Vite dev server itself and mocks every backend call inside each test, so it needs neither Postgres nor the Go server. The current suite checks that the main pages fit a phone-width viewport (<code>frontend/e2e/mobile-layout.spec.ts</code>). Install the browser once with <code>npx playwright install chromium</code> before the first run.</p>
+<p>It starts its own Vite server on port 5183 and fails if something already holds that port, rather than testing the wrong checkout. Running several worktrees at once: give each its own port with <code>PW_PORT=5190 npm run test:e2e</code>. <code>PW_REUSE=1</code> reuses a server already on <code>PW_PORT</code>; use it only if that server is this checkout's.</p>
 
 <h2 id="schema-changes">Schema changes</h2>
 <ol>
