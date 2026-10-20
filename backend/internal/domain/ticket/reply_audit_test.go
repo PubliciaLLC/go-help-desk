@@ -41,7 +41,7 @@ func TestAddReply_WritesOneAuditEntryPerReplyAndNote(t *testing.T) {
 			tk := h.seedOpen()
 			agent := uuid.New()
 
-			reply, err := h.svc.AddReply(context.Background(), tk.ID, "SECRET-BODY-TEXT", tc.internal, false, "",
+			reply, err := h.svc.AddReply(context.Background(), tk.ID, "SECRET-BODY-TEXT", ticket.TextFormatPlain, tc.internal, false, "",
 				ticket.Actor{UserID: &agent, Role: user.RoleStaff}, 7, h.newStatus.ID)
 			require.NoError(t, err)
 
@@ -67,7 +67,7 @@ func TestAddReply_AuditFailureRollsBackTheReply(t *testing.T) {
 	agent := uuid.New()
 	h.auditStore.failOnCall = 1
 
-	_, err := h.svc.AddReply(context.Background(), tk.ID, "hello", false, false, "",
+	_, err := h.svc.AddReply(context.Background(), tk.ID, "hello", ticket.TextFormatPlain, false, false, "",
 		ticket.Actor{UserID: &agent, Role: user.RoleStaff}, 7, h.newStatus.ID)
 	require.Error(t, err)
 
@@ -79,7 +79,7 @@ func TestAddGuestReply_AuditEntryHasNoActor(t *testing.T) {
 	h := newHarness(t)
 	tk := h.seedOpen()
 
-	_, err := h.svc.AddGuestReply(context.Background(), tk.ID, "still broken", 7, h.newStatus.ID)
+	_, err := h.svc.AddGuestReply(context.Background(), tk.ID, "still broken", ticket.TextFormatPlain, 7, h.newStatus.ID)
 	require.NoError(t, err)
 
 	got := replyEntries(h, tk.ID)
@@ -92,7 +92,7 @@ func TestAddReply_RequesterReplyActorIsTheRequester(t *testing.T) {
 	h := newHarness(t)
 	tk := h.seedOpen()
 
-	_, err := h.svc.AddReply(context.Background(), tk.ID, "hi", false, false, "",
+	_, err := h.svc.AddReply(context.Background(), tk.ID, "hi", ticket.TextFormatPlain, false, false, "",
 		ticket.Actor{UserID: tk.ReporterUserID, Role: user.RoleUser}, 7, h.newStatus.ID)
 	require.NoError(t, err)
 
@@ -109,7 +109,7 @@ func TestAddReply_RetryWritesOneAuditEntry(t *testing.T) {
 	svc := h.rerunService(t, func() {})
 	agent := uuid.New()
 
-	_, err := svc.AddReply(context.Background(), tk.ID, "hello", true, false, "",
+	_, err := svc.AddReply(context.Background(), tk.ID, "hello", ticket.TextFormatPlain, true, false, "",
 		ticket.Actor{UserID: &agent, Role: user.RoleStaff}, 7, h.newStatus.ID)
 	require.NoError(t, err)
 

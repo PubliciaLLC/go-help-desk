@@ -17,7 +17,7 @@ func TestAddReply_AuditFailureRollsTheReplyBackOnRealRows(t *testing.T) {
 	f := newChangePriorityFx(t)
 	svc := f.service(t, failingStepAtomic{db: f.db.SQL, step: "audit", err: errStep})
 
-	_, err := svc.AddReply(f.ctx, f.tk.ID, "hello", false, false, "", f.staff, 7, f.newStatusID(t))
+	_, err := svc.AddReply(f.ctx, f.tk.ID, "hello", ticket.TextFormatPlain, false, false, "", f.staff, 7, f.newStatusID(t))
 	require.ErrorIs(t, err, errStep)
 
 	replies, err := f.ts.ListReplies(f.ctx, f.tk.ID)
@@ -30,7 +30,7 @@ func TestAddReply_WritesOneAuditEntryOnRealRows(t *testing.T) {
 	f := newChangePriorityFx(t)
 	svc := f.service(t, nil)
 
-	_, err := svc.AddReply(f.ctx, f.tk.ID, "hello", true, false, "", f.staff, 7, f.newStatusID(t))
+	_, err := svc.AddReply(f.ctx, f.tk.ID, "hello", ticket.TextFormatPlain, true, false, "", f.staff, 7, f.newStatusID(t))
 	require.NoError(t, err)
 
 	require.Equal(t, map[string]int{ticket.AuditActionNoteAdded: 1}, f.actions(t))
