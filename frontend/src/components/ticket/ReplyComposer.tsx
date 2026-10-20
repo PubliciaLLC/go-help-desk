@@ -4,6 +4,8 @@ import { addReply, uploadAttachment, listTicketCannedResponses } from '@/api/tic
 import { extractError } from '@/api/client'
 import { AttachmentUpload, type UploadState } from '@/components/AttachmentUpload'
 import { Button } from '@/components/ui/button'
+import { TextLimit } from '@/components/TextLimit'
+import { isOverLimit } from '@/lib/textLimit'
 import { MarkdownEditor, type MarkdownEditorHandle } from '@/components/editor/MarkdownEditor'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -208,6 +210,7 @@ export function ReplyComposer({ ticketId, isStaffOrAdmin }: ReplyComposerProps) 
           onChange={setBody}
           disabled={busy}
         />
+        <TextLimit value={body} />
 
         {isStaffOrAdmin && (
           <div className="flex flex-wrap gap-4">
@@ -260,7 +263,7 @@ export function ReplyComposer({ ticketId, isStaffOrAdmin }: ReplyComposerProps) 
 
         <Button
           onClick={() => mutation.mutate()}
-          disabled={mutation.isPending || busy || !body.trim()}
+          disabled={mutation.isPending || busy || !body.trim() || isOverLimit(body)}
         >
           {mutation.isPending
             ? 'Saving…'

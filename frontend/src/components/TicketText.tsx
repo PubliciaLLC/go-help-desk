@@ -5,6 +5,7 @@ import type { Root } from 'hast'
 import { renderHast } from '@/lib/markdownComponents'
 import { formatMarkdown, type FormatResult } from '@/lib/markdownRunner'
 import { pageBudget } from '@/lib/pageBudget'
+import { MAX_FORMATTED_CHARS } from '@/lib/markdownLimits'
 import type { TextFormat } from '@/api/types'
 
 interface Props {
@@ -92,7 +93,7 @@ function useNearScreen(enabled: boolean) {
   return [ref, near] as const
 }
 
-export function TicketText({ text, format, className }: Props) {
+function FullText({ text, format, className }: Props) {
   const [flipped, setFlipped] = useState(false)
   const wantsRendered = (format === 'markdown') !== flipped
   // A long page is not formatted all at once: a post waits until it is near the
@@ -146,6 +147,67 @@ export function TicketText({ text, format, className }: Props) {
           {format === 'markdown' ? 'Plain text' : 'Show formatted'}
         </button>
       )}
+    </div>
+  )
+}
+
+/** How much of a very long post is shown before the reader asks for the rest. */
+const PREVIEW_CHARS = 5_000
+
+function sizeOf(text: string): string {
+  const bytes = new TextEncoder().encode(text).length
+  return bytes >= 1_000_000 ? `${(bytes / 1_000_000).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1000))} KB`
+}
+
+/** The first PREVIEW_CHARS, never ending in half of a surrogate pair. */
+function startOf(text: string): string {
+  let end = PREVIEW_CHARS
+  const last = text.charCodeAt(end - 1)
+  if (last >= 0xd800 && last <= 0xdbff) end--
+  return text.slice(0, end)
+}
+
+/**
+ * Ticket text: a description, a reply or an internal note.
+ *
+ * `plain` shows the stored characters as typed (today's behaviour: no links,
+ * nothing interpreted). `markdown` shows them through the strict renderer in
+ * lib/markdownPipeline. The toggle is the reader's: it swaps to the other view
+ * of the same text and stores nothing.
+ *
+ * Text over 50,000 characters can only be older data (a reply had no cap before
+ * 1.3.0; new ones are refused). It is shown collapsed: the start, a note that
+ * this is only the start, and a button for all of it. Laying out a megabyte takes
+ * seconds, so that happens only when asked for, and then in one piece, so the
+ * whole post can be selected and copied exactly as stored. Nothing is cut or
+ * rewritten; the rest is one click away.
+ */
+export function TicketText(props: Props) {
+  const { text, className } = props
+  const [expanded, setExpanded] = useState(false)
+  if (text.length <= MAX_FORMATTED_CHARS) return <FullText {...props} />
+
+  return (
+    <div className="min-w-0">
+      {expanded ? (
+        <FullText {...props} />
+      ) : (
+        <>
+          <p className={cn(plainClass, className)}>{startOf(text)}</p>
+          <p role="note" className="mt-1 text-xs text-gray-600">
+            Showing the first {PREVIEW_CHARS.toLocaleString('en-US')} of {text.length.toLocaleString('en-US')} characters. This is
+            only part of the post: copying here copies only that part.
+          </p>
+        </>
+      )}
+      <button
+        type="button"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((e) => !e)}
+        className="mt-1 inline-flex min-h-6 items-center py-1 text-xs text-gray-700 underline hover:text-gray-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+      >
+        {expanded ? 'Show only the start' : `Show full text (${sizeOf(text)})`}
+      </button>
     </div>
   )
 }

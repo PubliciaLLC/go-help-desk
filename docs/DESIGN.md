@@ -1560,6 +1560,21 @@ guarantee. `dangerouslySetInnerHTML` and `rehype-raw` are banned by lint.
   complex to format", or "formatting unavailable" when the worker could not
   start), and its **Plain text** button stays reachable. A failure that may be a
   slow moment is not remembered, so the next view tries again.
+- **Replies are limited to 50,000 characters, and older longer posts are
+  collapsed.** A reply (REST, guest, MCP, anything that makes one) is held to the
+  description's limit, counted the same way (bytes of the stored text); over it is
+  `400 body_too_long`, checked before anything is written. A reply had no cap
+  before 1.3.0, so some stored posts are longer, up to a megabyte. Laying out a
+  megabyte takes seconds, and splitting it into blocks changes what copying gives
+  back, so such a post is shown **collapsed**: its first 5,000 characters, a note
+  ("Showing the first 5,000 of N characters. This is only part of the post:
+  copying here copies only that part."), and a **Show full text (size)** button.
+  The button draws all of it in one block, as stored, so selecting and copying it
+  returns exactly the stored text (tested in Chromium and WebKit). It is allowed to
+  be slow, once, and only when asked for. Nothing is truncated or rewritten: the
+  rest is one click away. Over 50,000 characters is never formatted, expanded or
+  not. The forms count in the same bytes, show a counter from 90 percent of the
+  limit, and will not send more.
 - **A page of long posts is formatted only where it is read.** A post is formatted
   when it comes within about 1,500 px of the screen (measured in the scrolling
   area that holds it), and the page as a whole has a budget of 300,000 formatted

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { TicketText } from './TicketText'
 
 // #443 security review round 2: things a link must not be allowed to do.
@@ -127,8 +127,11 @@ describe("links into the help desk's own attachment routes", () => {
 })
 
 describe('text too large to format', () => {
-  it('over 50,000 characters is shown as plain text with a note, and can still be toggled', async () => {
+  it('over 50,000 characters starts collapsed; asked for in full it is plain text with the reason, and toggles', async () => {
     const { container } = render(<TicketText text={'word '.repeat(10001)} format="markdown" />)
+    await screen.findByRole('note')
+    expect(container.querySelector('[data-md-body]')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /show full text/i }))
     await screen.findByText(/too long to format/i)
     expect(container.querySelector('[data-md-body]')).toBeNull()
     expect(screen.getByRole('button', { name: /plain text/i })).toBeTruthy()
