@@ -326,6 +326,16 @@ describe('adding a link', () => {
     expect(marksAtCaret(view)).not.toContain('link')
   })
 
+  it('refuses an address that fails the link rule, whoever calls it', async () => {
+    const view = await start()
+    setMarkdown(editor!, 'Link')
+    for (const bad of ['javascript:alert(1)', '/relative', 'mailto:a@b.example?bcc=x@evil.example', 'data:text/html,x']) {
+      addLink(editor!, bad)
+    }
+    expect(view.state.doc.textContent).toBe('Link')
+    expect(linkRanges(view)).toEqual([])
+  })
+
   it('is saved as Markdown', async () => {
     const view = await start()
     setMarkdown(editor!, 'Link')

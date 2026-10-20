@@ -21,6 +21,7 @@ import { Plugin, TextSelection } from '@milkdown/kit/prose/state'
 import { visit } from 'unist-util-visit'
 import type { Root } from 'mdast'
 import type { MilkdownPlugin } from '@milkdown/kit/ctx'
+import { safeUrl } from '@/lib/markdownAllowList'
 
 // #443: the Milkdown editor, built to match lib/markdownAllowList. It writes
 // Markdown; what staff see afterwards goes through the strict renderer.
@@ -161,6 +162,9 @@ export function setMarkdown(editor: Editor, markdown: string) {
  * Link as active and the next thing typed is not part of the link.
  */
 export function addLink(editor: Editor, href: string) {
+  // The caller has checked it; this is the same rule again, because a link is
+  // the one attribute that carries user text.
+  if (safeUrl(href) === null) return
   const view = viewOf(editor)
   const { state } = view
   const type = state.schema.marks.link
