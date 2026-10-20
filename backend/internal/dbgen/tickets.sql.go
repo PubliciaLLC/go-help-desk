@@ -165,8 +165,8 @@ func (q *Queries) CreateAttachment(ctx context.Context, arg CreateAttachmentPara
 }
 
 const createReply = `-- name: CreateReply :exec
-INSERT INTO ticket_replies (id, ticket_id, author_id, body, internal, notify_customer, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO ticket_replies (id, ticket_id, author_id, body, internal, notify_customer, created_at, body_format)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 `
 
 type CreateReplyParams struct {
@@ -177,10 +177,12 @@ type CreateReplyParams struct {
 	Internal       bool          `json:"internal"`
 	NotifyCustomer bool          `json:"notify_customer"`
 	CreatedAt      time.Time     `json:"created_at"`
+	BodyFormat     string        `json:"body_format"`
 }
 
 // author_id is NULL for a reply written by a guest, who has no account. That is
 // the only way it is NULL: every other path passes the acting user.
+// body_format has no column default (migration 000055), so every writer names it.
 func (q *Queries) CreateReply(ctx context.Context, arg CreateReplyParams) error {
 	_, err := q.db.ExecContext(ctx, createReply,
 		arg.ID,
@@ -190,6 +192,7 @@ func (q *Queries) CreateReply(ctx context.Context, arg CreateReplyParams) error 
 		arg.Internal,
 		arg.NotifyCustomer,
 		arg.CreatedAt,
+		arg.BodyFormat,
 	)
 	return err
 }
@@ -200,28 +203,29 @@ INSERT INTO tickets (
     category_id, type_id, item_id, priority, status_id,
     assignee_user_id, assignee_group_id, reporter_user_id, guest_email,
     guest_name, guest_phone,
-    created_at, updated_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+    created_at, updated_at, description_format
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 `
 
 type CreateTicketParams struct {
-	ID              uuid.UUID      `json:"id"`
-	TrackingNumber  string         `json:"tracking_number"`
-	Subject         string         `json:"subject"`
-	Description     string         `json:"description"`
-	CategoryID      uuid.UUID      `json:"category_id"`
-	TypeID          uuid.NullUUID  `json:"type_id"`
-	ItemID          uuid.NullUUID  `json:"item_id"`
-	Priority        string         `json:"priority"`
-	StatusID        uuid.UUID      `json:"status_id"`
-	AssigneeUserID  uuid.NullUUID  `json:"assignee_user_id"`
-	AssigneeGroupID uuid.NullUUID  `json:"assignee_group_id"`
-	ReporterUserID  uuid.NullUUID  `json:"reporter_user_id"`
-	GuestEmail      sql.NullString `json:"guest_email"`
-	GuestName       string         `json:"guest_name"`
-	GuestPhone      string         `json:"guest_phone"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
+	ID                uuid.UUID      `json:"id"`
+	TrackingNumber    string         `json:"tracking_number"`
+	Subject           string         `json:"subject"`
+	Description       string         `json:"description"`
+	CategoryID        uuid.UUID      `json:"category_id"`
+	TypeID            uuid.NullUUID  `json:"type_id"`
+	ItemID            uuid.NullUUID  `json:"item_id"`
+	Priority          string         `json:"priority"`
+	StatusID          uuid.UUID      `json:"status_id"`
+	AssigneeUserID    uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID   uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID    uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail        sql.NullString `json:"guest_email"`
+	GuestName         string         `json:"guest_name"`
+	GuestPhone        string         `json:"guest_phone"`
+	CreatedAt         time.Time      `json:"created_at"`
+	UpdatedAt         time.Time      `json:"updated_at"`
+	DescriptionFormat string         `json:"description_format"`
 }
 
 func (q *Queries) CreateTicket(ctx context.Context, arg CreateTicketParams) error {
@@ -243,6 +247,7 @@ func (q *Queries) CreateTicket(ctx context.Context, arg CreateTicketParams) erro
 		arg.GuestPhone,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.DescriptionFormat,
 	)
 	return err
 }
@@ -313,7 +318,7 @@ func (q *Queries) GetAttachmentByID(ctx context.Context, id uuid.UUID) (Attachme
 }
 
 const getTicketByID = `-- name: GetTicketByID :one
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets WHERE id = $1
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format FROM tickets WHERE id = $1
 `
 
 type GetTicketByIDRow struct {
@@ -342,6 +347,7 @@ type GetTicketByIDRow struct {
 	ReopenCount               int32          `json:"reopen_count"`
 	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
 	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
+	DescriptionFormat         string         `json:"description_format"`
 }
 
 func (q *Queries) GetTicketByID(ctx context.Context, id uuid.UUID) (GetTicketByIDRow, error) {
@@ -373,12 +379,13 @@ func (q *Queries) GetTicketByID(ctx context.Context, id uuid.UUID) (GetTicketByI
 		&i.ReopenCount,
 		&i.LastReopenedAt,
 		&i.PausedSecondsAtLastReopen,
+		&i.DescriptionFormat,
 	)
 	return i, err
 }
 
 const getTicketByIDForUpdate = `-- name: GetTicketByIDForUpdate :one
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets WHERE id = $1 FOR UPDATE
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format FROM tickets WHERE id = $1 FOR UPDATE
 `
 
 type GetTicketByIDForUpdateRow struct {
@@ -407,6 +414,7 @@ type GetTicketByIDForUpdateRow struct {
 	ReopenCount               int32          `json:"reopen_count"`
 	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
 	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
+	DescriptionFormat         string         `json:"description_format"`
 }
 
 // The same row as GetTicketByID, with a write lock held until the transaction
@@ -451,12 +459,13 @@ func (q *Queries) GetTicketByIDForUpdate(ctx context.Context, id uuid.UUID) (Get
 		&i.ReopenCount,
 		&i.LastReopenedAt,
 		&i.PausedSecondsAtLastReopen,
+		&i.DescriptionFormat,
 	)
 	return i, err
 }
 
 const getTicketByTrackingNumber = `-- name: GetTicketByTrackingNumber :one
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets WHERE tracking_number = $1
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format FROM tickets WHERE tracking_number = $1
 `
 
 type GetTicketByTrackingNumberRow struct {
@@ -485,6 +494,7 @@ type GetTicketByTrackingNumberRow struct {
 	ReopenCount               int32          `json:"reopen_count"`
 	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
 	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
+	DescriptionFormat         string         `json:"description_format"`
 }
 
 func (q *Queries) GetTicketByTrackingNumber(ctx context.Context, trackingNumber string) (GetTicketByTrackingNumberRow, error) {
@@ -516,6 +526,7 @@ func (q *Queries) GetTicketByTrackingNumber(ctx context.Context, trackingNumber 
 		&i.ReopenCount,
 		&i.LastReopenedAt,
 		&i.PausedSecondsAtLastReopen,
+		&i.DescriptionFormat,
 	)
 	return i, err
 }
@@ -569,7 +580,7 @@ func (q *Queries) IsAssignableUser(ctx context.Context, id uuid.UUID) (uuid.UUID
 }
 
 const listAllTickets = `-- name: ListAllTickets :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets ORDER BY created_at DESC LIMIT $1 OFFSET $2
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format FROM tickets ORDER BY created_at DESC LIMIT $1 OFFSET $2
 `
 
 type ListAllTicketsParams struct {
@@ -603,6 +614,7 @@ type ListAllTicketsRow struct {
 	ReopenCount               int32          `json:"reopen_count"`
 	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
 	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
+	DescriptionFormat         string         `json:"description_format"`
 }
 
 func (q *Queries) ListAllTickets(ctx context.Context, arg ListAllTicketsParams) ([]ListAllTicketsRow, error) {
@@ -640,6 +652,7 @@ func (q *Queries) ListAllTickets(ctx context.Context, arg ListAllTicketsParams) 
 			&i.ReopenCount,
 			&i.LastReopenedAt,
 			&i.PausedSecondsAtLastReopen,
+			&i.DescriptionFormat,
 		); err != nil {
 			return nil, err
 		}
@@ -695,7 +708,7 @@ func (q *Queries) ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]At
 }
 
 const listReplies = `-- name: ListReplies :many
-SELECT r.id, r.ticket_id, r.author_id, r.body, r.internal, r.created_at, r.notify_customer, u.display_name AS author_display_name
+SELECT r.id, r.ticket_id, r.author_id, r.body, r.internal, r.created_at, r.notify_customer, r.body_format, u.display_name AS author_display_name
 FROM ticket_replies r
 LEFT JOIN users u ON u.id = r.author_id
 WHERE r.ticket_id = $1
@@ -710,6 +723,7 @@ type ListRepliesRow struct {
 	Internal          bool           `json:"internal"`
 	CreatedAt         time.Time      `json:"created_at"`
 	NotifyCustomer    bool           `json:"notify_customer"`
+	BodyFormat        string         `json:"body_format"`
 	AuthorDisplayName sql.NullString `json:"author_display_name"`
 }
 
@@ -740,6 +754,7 @@ func (q *Queries) ListReplies(ctx context.Context, ticketID uuid.UUID) ([]ListRe
 			&i.Internal,
 			&i.CreatedAt,
 			&i.NotifyCustomer,
+			&i.BodyFormat,
 			&i.AuthorDisplayName,
 		); err != nil {
 			return nil, err
@@ -756,7 +771,7 @@ func (q *Queries) ListReplies(ctx context.Context, ticketID uuid.UUID) ([]ListRe
 }
 
 const listResolvedTicketsBefore = `-- name: ListResolvedTicketsBefore :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format FROM tickets
 WHERE resolved_at IS NOT NULL AND resolved_at < $1 AND status_id = $2 AND closed_at IS NULL
 ORDER BY resolved_at ASC
 LIMIT $3
@@ -794,6 +809,7 @@ type ListResolvedTicketsBeforeRow struct {
 	ReopenCount               int32          `json:"reopen_count"`
 	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
 	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
+	DescriptionFormat         string         `json:"description_format"`
 }
 
 // status_id is the Resolved status's id. Without this filter, a row that
@@ -837,6 +853,7 @@ func (q *Queries) ListResolvedTicketsBefore(ctx context.Context, arg ListResolve
 			&i.ReopenCount,
 			&i.LastReopenedAt,
 			&i.PausedSecondsAtLastReopen,
+			&i.DescriptionFormat,
 		); err != nil {
 			return nil, err
 		}
@@ -880,7 +897,7 @@ func (q *Queries) ListTicketLinks(ctx context.Context, sourceTicketID uuid.UUID)
 }
 
 const listTicketsByAssigneeGroup = `-- name: ListTicketsByAssigneeGroup :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets WHERE assignee_group_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format FROM tickets WHERE assignee_group_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
 `
 
 type ListTicketsByAssigneeGroupParams struct {
@@ -915,6 +932,7 @@ type ListTicketsByAssigneeGroupRow struct {
 	ReopenCount               int32          `json:"reopen_count"`
 	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
 	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
+	DescriptionFormat         string         `json:"description_format"`
 }
 
 func (q *Queries) ListTicketsByAssigneeGroup(ctx context.Context, arg ListTicketsByAssigneeGroupParams) ([]ListTicketsByAssigneeGroupRow, error) {
@@ -952,6 +970,7 @@ func (q *Queries) ListTicketsByAssigneeGroup(ctx context.Context, arg ListTicket
 			&i.ReopenCount,
 			&i.LastReopenedAt,
 			&i.PausedSecondsAtLastReopen,
+			&i.DescriptionFormat,
 		); err != nil {
 			return nil, err
 		}
@@ -967,7 +986,7 @@ func (q *Queries) ListTicketsByAssigneeGroup(ctx context.Context, arg ListTicket
 }
 
 const listTicketsByAssigneeUser = `-- name: ListTicketsByAssigneeUser :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets WHERE assignee_user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format FROM tickets WHERE assignee_user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
 `
 
 type ListTicketsByAssigneeUserParams struct {
@@ -1002,6 +1021,7 @@ type ListTicketsByAssigneeUserRow struct {
 	ReopenCount               int32          `json:"reopen_count"`
 	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
 	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
+	DescriptionFormat         string         `json:"description_format"`
 }
 
 func (q *Queries) ListTicketsByAssigneeUser(ctx context.Context, arg ListTicketsByAssigneeUserParams) ([]ListTicketsByAssigneeUserRow, error) {
@@ -1039,6 +1059,7 @@ func (q *Queries) ListTicketsByAssigneeUser(ctx context.Context, arg ListTickets
 			&i.ReopenCount,
 			&i.LastReopenedAt,
 			&i.PausedSecondsAtLastReopen,
+			&i.DescriptionFormat,
 		); err != nil {
 			return nil, err
 		}
@@ -1054,7 +1075,7 @@ func (q *Queries) ListTicketsByAssigneeUser(ctx context.Context, arg ListTickets
 }
 
 const listTicketsByReporter = `-- name: ListTicketsByReporter :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets WHERE reporter_user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format FROM tickets WHERE reporter_user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
 `
 
 type ListTicketsByReporterParams struct {
@@ -1089,6 +1110,7 @@ type ListTicketsByReporterRow struct {
 	ReopenCount               int32          `json:"reopen_count"`
 	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
 	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
+	DescriptionFormat         string         `json:"description_format"`
 }
 
 func (q *Queries) ListTicketsByReporter(ctx context.Context, arg ListTicketsByReporterParams) ([]ListTicketsByReporterRow, error) {
@@ -1126,6 +1148,7 @@ func (q *Queries) ListTicketsByReporter(ctx context.Context, arg ListTicketsByRe
 			&i.ReopenCount,
 			&i.LastReopenedAt,
 			&i.PausedSecondsAtLastReopen,
+			&i.DescriptionFormat,
 		); err != nil {
 			return nil, err
 		}
@@ -1141,7 +1164,7 @@ func (q *Queries) ListTicketsByReporter(ctx context.Context, arg ListTicketsByRe
 }
 
 const listTicketsByStatus = `-- name: ListTicketsByStatus :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets WHERE status_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format FROM tickets WHERE status_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
 `
 
 type ListTicketsByStatusParams struct {
@@ -1176,6 +1199,7 @@ type ListTicketsByStatusRow struct {
 	ReopenCount               int32          `json:"reopen_count"`
 	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
 	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
+	DescriptionFormat         string         `json:"description_format"`
 }
 
 func (q *Queries) ListTicketsByStatus(ctx context.Context, arg ListTicketsByStatusParams) ([]ListTicketsByStatusRow, error) {
@@ -1213,6 +1237,7 @@ func (q *Queries) ListTicketsByStatus(ctx context.Context, arg ListTicketsByStat
 			&i.ReopenCount,
 			&i.LastReopenedAt,
 			&i.PausedSecondsAtLastReopen,
+			&i.DescriptionFormat,
 		); err != nil {
 			return nil, err
 		}
@@ -1228,7 +1253,7 @@ func (q *Queries) ListTicketsByStatus(ctx context.Context, arg ListTicketsByStat
 }
 
 const listTicketsFiltered = `-- name: ListTicketsFiltered :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets t
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format FROM tickets t
 WHERE
   (
     $1::bool
@@ -1318,6 +1343,7 @@ type ListTicketsFilteredRow struct {
 	ReopenCount               int32          `json:"reopen_count"`
 	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
 	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
+	DescriptionFormat         string         `json:"description_format"`
 }
 
 // The MCP list surface: one query carrying every optional filter plus the
@@ -1383,6 +1409,7 @@ func (q *Queries) ListTicketsFiltered(ctx context.Context, arg ListTicketsFilter
 			&i.ReopenCount,
 			&i.LastReopenedAt,
 			&i.PausedSecondsAtLastReopen,
+			&i.DescriptionFormat,
 		); err != nil {
 			return nil, err
 		}
@@ -1398,7 +1425,7 @@ func (q *Queries) ListTicketsFiltered(ctx context.Context, arg ListTicketsFilter
 }
 
 const listTicketsVisibleToStaff = `-- name: ListTicketsVisibleToStaff :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets t
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format FROM tickets t
 WHERE
   t.reporter_user_id = $1
   OR t.assignee_user_id = $1
@@ -1446,6 +1473,7 @@ type ListTicketsVisibleToStaffRow struct {
 	ReopenCount               int32          `json:"reopen_count"`
 	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
 	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
+	DescriptionFormat         string         `json:"description_format"`
 }
 
 // Every ticket a staff member may see under DESIGN.md's scope model: reported
@@ -1490,6 +1518,7 @@ func (q *Queries) ListTicketsVisibleToStaff(ctx context.Context, arg ListTickets
 			&i.ReopenCount,
 			&i.LastReopenedAt,
 			&i.PausedSecondsAtLastReopen,
+			&i.DescriptionFormat,
 		); err != nil {
 			return nil, err
 		}
@@ -1505,7 +1534,7 @@ func (q *Queries) ListTicketsVisibleToStaff(ctx context.Context, arg ListTickets
 }
 
 const listUnassignedTickets = `-- name: ListUnassignedTickets :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format FROM tickets
 WHERE assignee_user_id IS NULL AND assignee_group_id IS NULL
 ORDER BY created_at DESC LIMIT $1 OFFSET $2
 `
@@ -1541,6 +1570,7 @@ type ListUnassignedTicketsRow struct {
 	ReopenCount               int32          `json:"reopen_count"`
 	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
 	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
+	DescriptionFormat         string         `json:"description_format"`
 }
 
 func (q *Queries) ListUnassignedTickets(ctx context.Context, arg ListUnassignedTicketsParams) ([]ListUnassignedTicketsRow, error) {
@@ -1578,6 +1608,7 @@ func (q *Queries) ListUnassignedTickets(ctx context.Context, arg ListUnassignedT
 			&i.ReopenCount,
 			&i.LastReopenedAt,
 			&i.PausedSecondsAtLastReopen,
+			&i.DescriptionFormat,
 		); err != nil {
 			return nil, err
 		}
@@ -1620,7 +1651,7 @@ func (q *Queries) NextTicketSeq(ctx context.Context) (int64, error) {
 }
 
 const searchAllTickets = `-- name: SearchAllTickets :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format FROM tickets
 WHERE (
     tracking_number ILIKE $3
     OR (CASE WHEN $4::text <> '' THEN search_vector @@ to_tsquery('english', $4::text) ELSE false END)
@@ -1664,6 +1695,7 @@ type SearchAllTicketsRow struct {
 	ReopenCount               int32          `json:"reopen_count"`
 	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
 	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
+	DescriptionFormat         string         `json:"description_format"`
 }
 
 func (q *Queries) SearchAllTickets(ctx context.Context, arg SearchAllTicketsParams) ([]SearchAllTicketsRow, error) {
@@ -1706,6 +1738,7 @@ func (q *Queries) SearchAllTickets(ctx context.Context, arg SearchAllTicketsPara
 			&i.ReopenCount,
 			&i.LastReopenedAt,
 			&i.PausedSecondsAtLastReopen,
+			&i.DescriptionFormat,
 		); err != nil {
 			return nil, err
 		}
@@ -1721,7 +1754,7 @@ func (q *Queries) SearchAllTickets(ctx context.Context, arg SearchAllTicketsPara
 }
 
 const searchTicketsByAssigneeGroup = `-- name: SearchTicketsByAssigneeGroup :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format FROM tickets
 WHERE assignee_group_id = $1
   AND (
     tracking_number ILIKE $4
@@ -1767,6 +1800,7 @@ type SearchTicketsByAssigneeGroupRow struct {
 	ReopenCount               int32          `json:"reopen_count"`
 	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
 	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
+	DescriptionFormat         string         `json:"description_format"`
 }
 
 func (q *Queries) SearchTicketsByAssigneeGroup(ctx context.Context, arg SearchTicketsByAssigneeGroupParams) ([]SearchTicketsByAssigneeGroupRow, error) {
@@ -1810,6 +1844,7 @@ func (q *Queries) SearchTicketsByAssigneeGroup(ctx context.Context, arg SearchTi
 			&i.ReopenCount,
 			&i.LastReopenedAt,
 			&i.PausedSecondsAtLastReopen,
+			&i.DescriptionFormat,
 		); err != nil {
 			return nil, err
 		}
@@ -1825,7 +1860,7 @@ func (q *Queries) SearchTicketsByAssigneeGroup(ctx context.Context, arg SearchTi
 }
 
 const searchTicketsByAssigneeUser = `-- name: SearchTicketsByAssigneeUser :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format FROM tickets
 WHERE assignee_user_id = $1
   AND (
     tracking_number ILIKE $4
@@ -1871,6 +1906,7 @@ type SearchTicketsByAssigneeUserRow struct {
 	ReopenCount               int32          `json:"reopen_count"`
 	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
 	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
+	DescriptionFormat         string         `json:"description_format"`
 }
 
 func (q *Queries) SearchTicketsByAssigneeUser(ctx context.Context, arg SearchTicketsByAssigneeUserParams) ([]SearchTicketsByAssigneeUserRow, error) {
@@ -1914,6 +1950,7 @@ func (q *Queries) SearchTicketsByAssigneeUser(ctx context.Context, arg SearchTic
 			&i.ReopenCount,
 			&i.LastReopenedAt,
 			&i.PausedSecondsAtLastReopen,
+			&i.DescriptionFormat,
 		); err != nil {
 			return nil, err
 		}
@@ -1929,7 +1966,7 @@ func (q *Queries) SearchTicketsByAssigneeUser(ctx context.Context, arg SearchTic
 }
 
 const searchTicketsByReporter = `-- name: SearchTicketsByReporter :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format FROM tickets
 WHERE reporter_user_id = $1
   AND (
     tracking_number ILIKE $4
@@ -1975,6 +2012,7 @@ type SearchTicketsByReporterRow struct {
 	ReopenCount               int32          `json:"reopen_count"`
 	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
 	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
+	DescriptionFormat         string         `json:"description_format"`
 }
 
 func (q *Queries) SearchTicketsByReporter(ctx context.Context, arg SearchTicketsByReporterParams) ([]SearchTicketsByReporterRow, error) {
@@ -2018,6 +2056,7 @@ func (q *Queries) SearchTicketsByReporter(ctx context.Context, arg SearchTickets
 			&i.ReopenCount,
 			&i.LastReopenedAt,
 			&i.PausedSecondsAtLastReopen,
+			&i.DescriptionFormat,
 		); err != nil {
 			return nil, err
 		}
@@ -2033,7 +2072,7 @@ func (q *Queries) SearchTicketsByReporter(ctx context.Context, arg SearchTickets
 }
 
 const searchTicketsVisibleToStaff = `-- name: SearchTicketsVisibleToStaff :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets t
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format FROM tickets t
 WHERE
   (
     t.reporter_user_id = $1
@@ -2091,6 +2130,7 @@ type SearchTicketsVisibleToStaffRow struct {
 	ReopenCount               int32          `json:"reopen_count"`
 	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
 	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
+	DescriptionFormat         string         `json:"description_format"`
 }
 
 // Search variant of ListTicketsVisibleToStaff, matching the predicate and
@@ -2136,6 +2176,7 @@ func (q *Queries) SearchTicketsVisibleToStaff(ctx context.Context, arg SearchTic
 			&i.ReopenCount,
 			&i.LastReopenedAt,
 			&i.PausedSecondsAtLastReopen,
+			&i.DescriptionFormat,
 		); err != nil {
 			return nil, err
 		}
@@ -2151,7 +2192,7 @@ func (q *Queries) SearchTicketsVisibleToStaff(ctx context.Context, arg SearchTic
 }
 
 const searchUnassignedTickets = `-- name: SearchUnassignedTickets :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format FROM tickets
 WHERE assignee_user_id IS NULL AND assignee_group_id IS NULL
   AND (
     tracking_number ILIKE $3
@@ -2196,6 +2237,7 @@ type SearchUnassignedTicketsRow struct {
 	ReopenCount               int32          `json:"reopen_count"`
 	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
 	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
+	DescriptionFormat         string         `json:"description_format"`
 }
 
 func (q *Queries) SearchUnassignedTickets(ctx context.Context, arg SearchUnassignedTicketsParams) ([]SearchUnassignedTicketsRow, error) {
@@ -2238,6 +2280,7 @@ func (q *Queries) SearchUnassignedTickets(ctx context.Context, arg SearchUnassig
 			&i.ReopenCount,
 			&i.LastReopenedAt,
 			&i.PausedSecondsAtLastReopen,
+			&i.DescriptionFormat,
 		); err != nil {
 			return nil, err
 		}

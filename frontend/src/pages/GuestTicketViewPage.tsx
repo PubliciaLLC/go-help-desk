@@ -12,7 +12,8 @@ import {
 } from '@/api/guest'
 import { AttachmentUpload, type UploadState } from '@/components/AttachmentUpload'
 import { Button } from '@/components/ui/button'
-import { Textarea } from '@/components/ui/textarea'
+import { MarkdownEditor } from '@/components/editor/MarkdownEditor'
+import { TicketText } from '@/components/TicketText'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
 // The ticket a guest reached by link.
@@ -172,7 +173,7 @@ export function GuestTicketViewPage() {
           <p className="text-sm text-gray-500 mt-1 wrap-anywhere">Status: {ticket.status}</p>
         </CardHeader>
         <CardContent className="space-y-4">
-          <p className="text-sm whitespace-pre-wrap wrap-anywhere text-gray-800">{ticket.description}</p>
+          <TicketText text={ticket.description} format={ticket.description_format} className="text-sm text-gray-800" />
 
           <div className="space-y-3 border-t pt-4">
             {ticket.replies.length === 0 && (
@@ -193,7 +194,7 @@ export function GuestTicketViewPage() {
                   {r.from_you ? 'You' : 'Support'} ·{' '}
                   {new Date(r.created_at).toLocaleString()}
                 </p>
-                <p className="whitespace-pre-wrap wrap-anywhere text-gray-800">{r.body}</p>
+                <TicketText text={r.body} format={r.body_format} className="text-gray-800" />
               </div>
             ))}
           </div>
@@ -241,12 +242,12 @@ export function GuestTicketViewPage() {
                 if (reply.trim()) send.mutate()
               }}
             >
-              <Textarea
+              <span id="guest-reply-label" className="sr-only">Add a reply</span>
+              <MarkdownEditor
                 value={reply}
-                onChange={(e) => setReply(e.target.value)}
-                rows={4}
+                onChange={setReply}
+                labelId="guest-reply-label"
                 placeholder="Add a reply…"
-                aria-label="Add a reply"
               />
               {send.isError && (
                 <p role="alert" className="text-sm text-red-600">

@@ -40,7 +40,7 @@ func uploadAttachment(t *testing.T, h *harness, ticketID, name string, content [
 
 func ticketForUpload(t *testing.T, h *harness) string {
 	t.Helper()
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Attachment", Description: "has one", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})

@@ -33,32 +33,32 @@ func TestCreate_Validation(t *testing.T) {
 	}{
 		{
 			name:  "reporter user is sufficient",
-			input: ticket.CreateInput{Subject: "Printer jammed", ReporterUserID: &reporter},
+			input: ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, Subject: "Printer jammed", ReporterUserID: &reporter},
 		},
 		{
 			name:  "guest email is sufficient",
-			input: ticket.CreateInput{Subject: "Printer jammed", GuestEmail: &guest},
+			input: ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, Subject: "Printer jammed", GuestEmail: &guest},
 		},
 		{
 			name:    "subject is required",
-			input:   ticket.CreateInput{Subject: "", ReporterUserID: &reporter},
+			input:   ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, Subject: "", ReporterUserID: &reporter},
 			wantErr: true,
 		},
 		{
 			name:    "whitespace-only subject is not a subject",
-			input:   ticket.CreateInput{Subject: "   \t\n ", ReporterUserID: &reporter},
+			input:   ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, Subject: "   \t\n ", ReporterUserID: &reporter},
 			wantErr: true,
 		},
 		{
 			// Both columns feed tickets.search_vector; Postgres rejects an
 			// oversized tsvector, so the cap is enforced before the write.
 			name:    "subject over the cap is refused",
-			input:   ticket.CreateInput{Subject: strings.Repeat("x", ticket.MaxSubjectLength+1), ReporterUserID: &reporter},
+			input:   ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, Subject: strings.Repeat("x", ticket.MaxSubjectLength+1), ReporterUserID: &reporter},
 			wantErr: true,
 		},
 		{
 			name: "description over the cap is refused",
-			input: ticket.CreateInput{
+			input: ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 				Subject:        "Fine subject",
 				Description:    strings.Repeat("x", ticket.MaxDescriptionLength+1),
 				ReporterUserID: &reporter,
@@ -67,12 +67,12 @@ func TestCreate_Validation(t *testing.T) {
 		},
 		{
 			name:    "anonymous with no guest email is refused",
-			input:   ticket.CreateInput{Subject: "Who are you"},
+			input:   ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, Subject: "Who are you"},
 			wantErr: true,
 		},
 		{
 			name:    "empty guest email does not count as a reporter",
-			input:   ticket.CreateInput{Subject: "Who are you", GuestEmail: &empty},
+			input:   ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, Subject: "Who are you", GuestEmail: &empty},
 			wantErr: true,
 		},
 	}
@@ -105,7 +105,7 @@ func TestCreate_TrimsSubjectAndRecordsOpening(t *testing.T) {
 	h := newHarness(t)
 	reporter := uuid.New()
 
-	got, err := h.svc.Create(context.Background(), ticket.CreateInput{
+	got, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject:        "  Padded subject  ",
 		ReporterUserID: &reporter,
 	})
@@ -126,7 +126,7 @@ func TestCreate_SequenceFailureCreatesNothing(t *testing.T) {
 	reporter := uuid.New()
 	h.store.errNextSeq = errStoreDown
 
-	_, err := h.svc.Create(context.Background(), ticket.CreateInput{
+	_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject:        "Sequence is down",
 		ReporterUserID: &reporter,
 	})
@@ -535,7 +535,7 @@ func TestReopenPaths_RejectAnUnusableTargetBeforeWriting(t *testing.T) {
 		seeded := h.seedResolved(reporter)
 
 		_, err := h.svc.AddReply(context.Background(), seeded.ID,
-			"It is broken again", false, true, "reporter@example.com",
+			"It is broken again", ticket.TextFormatPlain, false, true, "reporter@example.com",
 			ticket.Actor{UserID: &reporter, Role: user.RoleUser},
 			30, uuid.Nil)
 
@@ -825,7 +825,7 @@ func TestLifecycleWrites_ReadUnderTheLock(t *testing.T) {
 func (h *harness) slaSeed(statusID uuid.UUID, pendingSince *time.Time, pausedSeconds int64) ticket.Ticket {
 	reporter := uuid.New()
 	now := time.Now()
-	t := ticket.Ticket{
+	t := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID:               uuid.New(),
 		TrackingNumber:   ticket.TrackingNumber("HD-SLA-" + uuid.NewString()[:8]),
 		Subject:          "SLA pause fixture",
@@ -949,7 +949,7 @@ func TestStatusTransitions_MaintainSLAPause(t *testing.T) {
 		seeded := h.seedResolved(reporter)
 
 		_, err := h.svc.AddReply(context.Background(), seeded.ID,
-			"Still broken, please hold", false, true, "reporter@example.com",
+			"Still broken, please hold", ticket.TextFormatPlain, false, true, "reporter@example.com",
 			ticket.Actor{UserID: &reporter, Role: user.RoleUser},
 			7, h.pendingStatus.ID)
 		require.NoError(t, err)
@@ -983,7 +983,7 @@ func TestStatusTransitions_MaintainSLAPause(t *testing.T) {
 		agent := uuid.New()
 
 		_, err := h.svc.AddReply(context.Background(), seeded.ID,
-			"Looking into it", false, true, "reporter@example.com",
+			"Looking into it", ticket.TextFormatPlain, false, true, "reporter@example.com",
 			ticket.Actor{UserID: &agent, Role: user.RoleStaff},
 			7, h.newStatus.ID)
 		require.NoError(t, err)
@@ -1009,14 +1009,14 @@ func TestAddReply_InternalNoteDoesNotSatisfyResponseTarget(t *testing.T) {
 	agent := uuid.New()
 
 	_, err := h.svc.AddReply(context.Background(), seeded.ID,
-		"INTERNAL: waiting on vendor", true, false, "",
+		"INTERNAL: waiting on vendor", ticket.TextFormatPlain, true, false, "",
 		ticket.Actor{UserID: &agent, Role: user.RoleStaff},
 		7, h.newStatus.ID)
 	require.NoError(t, err)
 	require.Zero(t, h.sla.firstResponses, "an internal note must not satisfy the response target")
 
 	_, err = h.svc.AddReply(context.Background(), seeded.ID,
-		"We are looking into it", false, true, "reporter@example.com",
+		"We are looking into it", ticket.TextFormatPlain, false, true, "reporter@example.com",
 		ticket.Actor{UserID: &agent, Role: user.RoleStaff},
 		7, h.newStatus.ID)
 	require.NoError(t, err)
@@ -1031,7 +1031,7 @@ func TestAutoClose_ResolvedPastWindowCloses(t *testing.T) {
 
 	// Seed a ticket resolved 10 days ago.
 	resolvedAt := time.Now().Add(-10 * 24 * time.Hour)
-	tt := ticket.Ticket{
+	tt := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000001",
 		Subject:        "Printer offline",
@@ -1076,7 +1076,7 @@ func TestAutoClose_ResolvedWithinWindowStaysResolved(t *testing.T) {
 
 	// Seed a ticket resolved 2 days ago.
 	resolvedAt := time.Now().Add(-2 * 24 * time.Hour)
-	tt := ticket.Ticket{
+	tt := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000001",
 		Subject:        "Printer offline",
@@ -1113,7 +1113,7 @@ func TestAutoClose_WindowOfZeroClosesOnFirstSweep(t *testing.T) {
 
 	// Seed a ticket resolved 1 second ago.
 	resolvedAt := time.Now().Add(-1 * time.Second)
-	tt := ticket.Ticket{
+	tt := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000001",
 		Subject:        "Printer offline",
@@ -1144,7 +1144,7 @@ func TestAutoClose_NegativeWindowBehavesAsZero(t *testing.T) {
 
 	// Seed a ticket resolved 1 second ago.
 	resolvedAt := time.Now().Add(-1 * time.Second)
-	tt := ticket.Ticket{
+	tt := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000001",
 		Subject:        "Printer offline",
@@ -1174,7 +1174,7 @@ func TestAutoClose_ResolvedWithNoTimestampIsInvisible(t *testing.T) {
 	ctx := context.Background()
 
 	// Seed a ticket in Resolved status but with nil ResolvedAt.
-	tt := ticket.Ticket{
+	tt := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000001",
 		Subject:        "Printer offline",
@@ -1204,7 +1204,7 @@ func TestAutoClose_AttributedToSystem(t *testing.T) {
 	ctx := context.Background()
 
 	resolvedAt := time.Now().Add(-10 * 24 * time.Hour)
-	tt := ticket.Ticket{
+	tt := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000001",
 		Subject:        "Printer offline",
@@ -1241,7 +1241,7 @@ func TestAutoClose_SecondSweepLeavesClosedTicketAlone(t *testing.T) {
 	ctx := context.Background()
 
 	resolvedAt := time.Now().Add(-1 * time.Second)
-	tt := ticket.Ticket{
+	tt := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000001",
 		Subject:        "Printer offline",
@@ -1285,7 +1285,7 @@ func TestAutoClose_SkipsTicketReopenedAfterListing(t *testing.T) {
 	ctx := context.Background()
 
 	resolvedAt := time.Now().Add(-10 * 24 * time.Hour)
-	tt := ticket.Ticket{
+	tt := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000001",
 		Subject:        "Printer offline",
@@ -1332,7 +1332,7 @@ func TestAutoClose_ErrorsAreAccumulated(t *testing.T) {
 
 	// Seed a single eligible ticket.
 	resolvedAt := time.Now().Add(-10 * 24 * time.Hour)
-	tt := ticket.Ticket{
+	tt := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000001",
 		Subject:        "Printer offline",
@@ -1368,7 +1368,7 @@ func TestAutoClose_HonoursLimit(t *testing.T) {
 	// Seed three eligible tickets.
 	resolvedAt := time.Now().Add(-10 * 24 * time.Hour)
 	for i := 0; i < 3; i++ {
-		tt := ticket.Ticket{
+		tt := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 			ID:             uuid.New(),
 			TrackingNumber: ticket.TrackingNumber("HD-00000" + string('1'+rune(i))),
 			Subject:        "Issue",
@@ -1415,7 +1415,7 @@ func TestAutoClose_LegacyRowWithWrongStatusNeverListed(t *testing.T) {
 	resolvedAt := time.Now().Add(-10 * 24 * time.Hour)
 
 	// A ticket moved back to New by old code, which left resolved_at set.
-	legacyOpen := ticket.Ticket{
+	legacyOpen := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000001",
 		Subject:        "Legacy row, wrong status (open)",
@@ -1428,7 +1428,7 @@ func TestAutoClose_LegacyRowWithWrongStatusNeverListed(t *testing.T) {
 
 	// A ticket already Closed, but with a stale resolved_at and no closed_at
 	// yet (also possible pre-#191).
-	legacyClosed := ticket.Ticket{
+	legacyClosed := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000002",
 		Subject:        "Legacy row, wrong status (closed)",
@@ -1464,7 +1464,7 @@ func TestClose_BypassesTransitionRules(t *testing.T) {
 	ctx := context.Background()
 
 	// Seed a New ticket (not normally closeable).
-	tt := ticket.Ticket{
+	tt := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000001",
 		Subject:        "Printer offline",
@@ -1491,7 +1491,7 @@ func TestClose_IsIdempotent(t *testing.T) {
 
 	// Seed a Closed ticket.
 	now := time.Now()
-	tt := ticket.Ticket{
+	tt := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000001",
 		Subject:        "Printer offline",

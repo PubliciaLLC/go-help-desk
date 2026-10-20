@@ -37,6 +37,7 @@ function ticket(over: Partial<Ticket>): Ticket {
     tracking_number: 'TKT-0001',
     subject: 'Printer is on fire',
     description: 'Literally.',
+    description_format: 'plain',
     category_id: 'cat-1',
     priority: 'high',
     status_id: 'st-new',

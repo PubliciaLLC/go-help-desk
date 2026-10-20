@@ -319,7 +319,7 @@ func TestMCPStreamable_HiddenTicketAnswersLikeSSE(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "hidden", Description: "x", CategoryID: h.catID, ReporterUserID: &h.staffID,
 	})
 	require.NoError(t, err)

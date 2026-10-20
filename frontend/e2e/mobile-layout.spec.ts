@@ -456,11 +456,12 @@ test.describe('#479: long URLs wrap on a phone', () => {
     tracking_number: 'GHD-2026-000009',
     subject: `Link ${longUrlFor('subject')}`,
     description: `Please see ${longUrlFor('description')}`,
+    description_format: 'plain',
     status: 'S'.repeat(300),
     created_at: '2026-09-20T10:00:00Z',
     replies: [
-      { id: 'g1', body: `Courier tracking ${longUrlFor('reply')}`, created_at: '2026-09-20T11:00:00Z', from_you: false },
-      { id: 'g2', body: `Mine ${longUrlFor('mine')}`, created_at: '2026-09-20T12:00:00Z', from_you: true },
+      { id: 'g1', body: `Courier tracking ${longUrlFor('reply')}`, body_format: 'plain', created_at: '2026-09-20T11:00:00Z', from_you: false },
+      { id: 'g2', body: `Mine ${longUrlFor('mine')}`, body_format: 'plain', created_at: '2026-09-20T12:00:00Z', from_you: true },
     ],
   }
 

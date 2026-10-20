@@ -1,3 +1,6 @@
+/** How a description or reply is shown (#443). Stored with the text, never guessed. */
+export type TextFormat = 'plain' | 'markdown'
+
 export type Role = 'admin' | 'staff' | 'user'
 export type Priority = 'critical' | 'high' | 'medium' | 'low'
 export type LinkType = 'related_to' | 'parent_child' | 'caused_by' | 'duplicate_of'
@@ -198,6 +201,8 @@ export interface Ticket {
   tracking_number: string
   subject: string
   description: string
+  // How description is shown (#443). Everything written before 1.3.0 is plain.
+  description_format: TextFormat
   category_id: string
   type_id?: string
   item_id?: string
@@ -454,6 +459,8 @@ export interface Reply {
   // author_id is genuinely missing too.
   author_name?: string
   body: string
+  // How body is shown (#443).
+  body_format: TextFormat
   internal: boolean
   notify_customer: boolean
   created_at: string

@@ -2110,6 +2110,9 @@ paths:
                 body:
                   type: string
                   description: The reply text. Must not be blank after trimming.
+                format:
+                  description: How body is shown. See TextFormatRequest.
+                  $ref: '#/components/schemas/TextFormatRequest'
       responses:
         '201':
           description: The reply as stored.
@@ -2117,7 +2120,13 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/AccountGuestReply'}
         '400':
-          $ref: '#/components/responses/BadRequest'
+          description: |
+            `bad_request`: malformed body or a failed check; `invalid_format`: format is present and is not
+            exactly plain or markdown (an empty string, "Markdown", "html", a number and `null` are all
+            refused). Nothing is written.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
         '404':
           $ref: '#/components/responses/GuestNotFound'
         '409':
@@ -2189,11 +2198,12 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [tracking_number, subject, description, status, created_at, replies]
+                required: [tracking_number, subject, description, description_format, status, created_at, replies]
                 properties:
                   tracking_number: {type: string}
                   subject: {type: string}
                   description: {type: string}
+                  description_format: {$ref: '#/components/schemas/TextFormat'}
                   status:
                     type: string
                     description: The name of the ticket's current status. Empty if the status cannot be found.
@@ -2233,6 +2243,9 @@ paths:
                 description:
                   type: string
                   description: Free text. At most 50,000 bytes.
+                format:
+                  description: How description is shown. See TextFormatRequest.
+                  $ref: '#/components/schemas/TextFormatRequest'
                 category_id: {$ref: '#/components/schemas/Uuid'}
                 guest_email:
                   type: string
@@ -2254,7 +2267,13 @@ paths:
                 properties:
                   tracking_number: {type: string}
         '400':
-          $ref: '#/components/responses/BadRequest'
+          description: |
+            `bad_request`: malformed body or a failed check; `invalid_format`: format is present and is not
+            exactly plain or markdown (an empty string, "Markdown", "html", a number and `null` are all
+            refused). Nothing is written.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
         '404':
           description: Guest submission is switched off (not_found).
           content:
@@ -3290,6 +3309,9 @@ paths:
                 description:
                   type: string
                   description: Optional. At most 50,000 bytes.
+                format:
+                  description: How description is shown. See TextFormatRequest.
+                  $ref: '#/components/schemas/TextFormatRequest'
                 category_id:
                   $ref: '#/components/schemas/Uuid'
                 type_id:
@@ -3327,7 +3349,9 @@ paths:
                 $ref: '#/components/schemas/Ticket'
         '400':
           description: |
-            `bad_request`, with a message naming the field. Covers invalid JSON,
+            `invalid_format` when format is present and is not exactly plain or markdown
+            (an empty string, "Markdown", "html", a number and `null` are all refused; nothing is
+            written). `bad_request`, with a message naming the field. Covers invalid JSON,
             subject is required, category_id is required, a category, type or
             item that is archived, for staff, administrators and reporting users
             alike (category_id is not an active category; type_id is not an active
@@ -4521,6 +4545,9 @@ paths:
                 notify_customer:
                   description: Whether the reporter is emailed. Defaults to true. Forced to false for an internal note.
                   type: boolean
+                format:
+                  description: How body is shown. See TextFormatRequest.
+                  $ref: '#/components/schemas/TextFormatRequest'
       responses:
         '201':
           description: The reply that was posted.
@@ -4531,7 +4558,8 @@ paths:
         '400':
           description: |
             `bad_request`: invalid JSON; body is required; or no valid reopen target status is configured
-            (on the reopen path).
+            (on the reopen path). `invalid_format`: format is present and is not exactly plain or markdown;
+            nothing is written.
           content:
             application/json:
               schema:
@@ -10019,6 +10047,23 @@ components:
     Role:
       type: string
       enum: [admin, staff, user]
+    TextFormat:
+      description: |
+        How a stored description or reply is shown (#443). plain is shown exactly as typed, with no links and
+        nothing interpreted. markdown is shown through a strict renderer: CommonMark plus GitHub tables,
+        strikethrough and bare-URL links; no images, no raw HTML, headings all one small size; links are
+        http, https and mailto only. Every record before 1.3.0 is plain.
+      type: string
+      enum: [plain, markdown]
+    TextFormatRequest:
+      description: |
+        Optional. Absent means plain, so an existing integration is unchanged. The web app always sends
+        markdown. Anything else, including an empty string, the wrong case ("Markdown"), "html" or a
+        number, is refused with 400 invalid_format and nothing is written. (MCP differs: it defaults to
+        markdown.)
+      type: string
+      enum: [plain, markdown]
+      default: plain
     Priority:
       type: string
       enum: [critical, high, medium, low]
@@ -10145,10 +10190,11 @@ components:
     AccountGuestReply:
       description: A reply as a guest sees it. Internal notes are never included and the author is not named. from_you is true for replies the guest wrote.
       type: object
-      required: [id, body, created_at, from_you]
+      required: [id, body, body_format, created_at, from_you]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
         body: {type: string}
+        body_format: {$ref: '#/components/schemas/TextFormat'}
         created_at: {type: string, format: date-time}
         from_you: {type: boolean}
     Passkey:
@@ -10181,7 +10227,7 @@ components:
         /tickets, PATCH, reopen, resolve, close and follow-up answer it. Optional
         keys are absent when unset, never null.
         A reporting user (any role other than staff or administrator) receives
-        only these keys: id, tracking_number, subject, description, status_id,
+        only these keys: id, tracking_number, subject, description, description_format, status_id,
         priority, category_id, type_id, item_id, created_at, resolved_at,
         assignee_user_id and resolution_notes. Everything else here
         (assignee_group_id, reporter_user_id, guest_email, guest_name,
@@ -10189,7 +10235,7 @@ components:
         reopen_count) is for staff and administrators only. The same list applies to every
         response that carries a ticket, MCP included.
       type: object
-      required: [id, tracking_number, subject, description, category_id, priority, status_id, created_at]
+      required: [id, tracking_number, subject, description, description_format, category_id, priority, status_id, created_at]
       properties:
         id:
           $ref: '#/components/schemas/Uuid'
@@ -10200,6 +10246,8 @@ components:
           type: string
         description:
           type: string
+        description_format:
+          $ref: '#/components/schemas/TextFormat'
         category_id:
           $ref: '#/components/schemas/Uuid'
         type_id:
@@ -10351,7 +10399,7 @@ components:
       description: |
         One message on a ticket thread.
       type: object
-      required: [id, ticket_id, body, internal, notify_customer, created_at]
+      required: [id, ticket_id, body, body_format, internal, notify_customer, created_at]
       properties:
         id:
           $ref: '#/components/schemas/Uuid'
@@ -10365,6 +10413,8 @@ components:
           description: The author's display name, as listReplies sends it. Absent for a guest reply.
         body:
           type: string
+        body_format:
+          $ref: '#/components/schemas/TextFormat'
         internal:
           type: boolean
           description: An internal note. Only staff and administrators are sent these.

@@ -67,7 +67,7 @@ func TestFollowUp_OfATicketWithTabsAndEscapeCodesStillWorks(t *testing.T) {
 	defer cleanup()
 	subject, description := "Printer\tjam\nagain", "\x1b[31mred\x1b[0m\r\nbell\x07"
 	ctx := context.Background()
-	orig, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	orig, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: subject, Description: description, CategoryID: h.catID,
 		Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
 	})

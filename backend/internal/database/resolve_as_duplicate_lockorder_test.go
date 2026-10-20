@@ -72,7 +72,7 @@ func newLockOrderFixture(t *testing.T, db *testutil.DB) *lockOrderFixture {
 
 	mk := func(subject string) ticket.Ticket {
 		now := time.Now().UTC().Truncate(time.Millisecond)
-		tk := ticket.Ticket{
+		tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 			ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("LO-" + uuid.NewString()[:8]),
 			Subject: subject, Description: subject, CategoryID: cat.ID,
 			Priority: ticket.PriorityMedium, StatusID: newSt.ID, ReporterUserID: &reporter.ID,

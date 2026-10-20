@@ -51,23 +51,24 @@ func New(q *dbgen.Queries) *Store { return &Store{q: q} }
 
 func (s *Store) Create(ctx context.Context, t ticket.Ticket) error {
 	return s.q.CreateTicket(ctx, dbgen.CreateTicketParams{
-		ID:              t.ID,
-		TrackingNumber:  string(t.TrackingNumber),
-		Subject:         t.Subject,
-		Description:     t.Description,
-		CategoryID:      t.CategoryID,
-		TypeID:          database.NullUUID(t.TypeID),
-		ItemID:          database.NullUUID(t.ItemID),
-		Priority:        string(t.Priority),
-		StatusID:        t.StatusID,
-		AssigneeUserID:  database.NullUUID(t.AssigneeUserID),
-		AssigneeGroupID: database.NullUUID(t.AssigneeGroupID),
-		ReporterUserID:  database.NullUUID(t.ReporterUserID),
-		GuestEmail:      database.NullString(t.GuestEmail),
-		GuestName:       t.GuestName,
-		GuestPhone:      t.GuestPhone,
-		CreatedAt:       t.CreatedAt,
-		UpdatedAt:       t.UpdatedAt,
+		ID:                t.ID,
+		TrackingNumber:    string(t.TrackingNumber),
+		Subject:           t.Subject,
+		Description:       t.Description,
+		DescriptionFormat: string(t.DescriptionFormat),
+		CategoryID:        t.CategoryID,
+		TypeID:            database.NullUUID(t.TypeID),
+		ItemID:            database.NullUUID(t.ItemID),
+		Priority:          string(t.Priority),
+		StatusID:          t.StatusID,
+		AssigneeUserID:    database.NullUUID(t.AssigneeUserID),
+		AssigneeGroupID:   database.NullUUID(t.AssigneeGroupID),
+		ReporterUserID:    database.NullUUID(t.ReporterUserID),
+		GuestEmail:        database.NullString(t.GuestEmail),
+		GuestName:         t.GuestName,
+		GuestPhone:        t.GuestPhone,
+		CreatedAt:         t.CreatedAt,
+		UpdatedAt:         t.UpdatedAt,
 	})
 }
 
@@ -433,6 +434,7 @@ func (s *Store) CreateReply(ctx context.Context, r ticket.Reply) error {
 		Internal:       r.Internal,
 		NotifyCustomer: r.NotifyCustomer,
 		CreatedAt:      r.CreatedAt,
+		BodyFormat:     string(r.BodyFormat),
 	})
 }
 
@@ -558,6 +560,7 @@ func (s *Store) ListReplies(ctx context.Context, ticketID uuid.UUID) ([]ticket.R
 			AuthorID:       database.UUIDPtr(r.AuthorID),
 			AuthorName:     r.AuthorDisplayName.String,
 			Body:           r.Body,
+			BodyFormat:     ticket.TextFormat(r.BodyFormat),
 			Internal:       r.Internal,
 			NotifyCustomer: r.NotifyCustomer,
 			CreatedAt:      r.CreatedAt,
@@ -903,6 +906,7 @@ type ticketRow struct {
 	ReopenCount               int32
 	LastReopenedAt            sql.NullTime
 	PausedSecondsAtLastReopen int64
+	DescriptionFormat         string
 }
 
 func fromRow(r ticketRow) ticket.Ticket {
@@ -911,6 +915,7 @@ func fromRow(r ticketRow) ticket.Ticket {
 		TrackingNumber:            ticket.TrackingNumber(r.TrackingNumber),
 		Subject:                   r.Subject,
 		Description:               r.Description,
+		DescriptionFormat:         ticket.TextFormat(r.DescriptionFormat),
 		CategoryID:                r.CategoryID,
 		TypeID:                    database.UUIDPtr(r.TypeID),
 		ItemID:                    database.UUIDPtr(r.ItemID),

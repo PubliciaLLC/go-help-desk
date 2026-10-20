@@ -360,7 +360,7 @@ func TestGuestUploadLimits_AServerFaultIsNotRefunded(t *testing.T) {
 func TestGuestUploadLimits_AReportersFileIsNotAGuestFile(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Mine", Description: "x", CategoryID: h.catID, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)
