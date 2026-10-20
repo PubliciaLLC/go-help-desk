@@ -204,13 +204,13 @@ func TestAddReply_SucceedsAndReopens(t *testing.T) {
 	require.Equal(t, 1, h.store.historyCreates, "exactly one history entry")
 	require.Contains(t, h.dispatcher.types(), notification.EventTicketReopened)
 
-	// The reopen, then the first-reopen bump (#464). The SLA is off in this
-	// harness, so no sla_restarted. The exact list, in order.
+	// The reply itself, the reopen, then the first-reopen bump (#464). The SLA
+	// is off in this harness, so no sla_restarted. The exact list, in order.
 	var actions []string
 	for _, e := range h.auditStore.entries {
 		actions = append(actions, e.Action)
 	}
-	require.Equal(t, []string{"reopened", "priority_changed"}, actions,
+	require.Equal(t, []string{"reply_added", "reopened", "priority_changed"}, actions,
 		"a reply-triggered reopen must write an audit entry, the same as an explicit reopen does")
 }
 

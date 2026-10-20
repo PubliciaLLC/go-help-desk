@@ -152,3 +152,17 @@ func TestRedact_ShowsThePriorityChangeKeys(t *testing.T) {
 	require.Equal(t, "high", got["priority"])
 	require.NotContains(t, got, "subject", "free text is still left out")
 }
+
+// A reply's audit entry (reply_added, note_added) is shown as its id and
+// whether it was internal. Anything else a writer put there, a body above all,
+// is left out.
+func TestRedact_ReplyEntryShowsIdAndFlagButNeverText(t *testing.T) {
+	after := map[string]any{
+		"reply_id": "r-1", "internal": true,
+		"body": "free text", "Body": "free text", "text": "free text",
+	}
+
+	_, got := audit.Redact(nil, after)
+
+	require.Equal(t, map[string]any{"reply_id": "r-1", "internal": true}, got)
+}
