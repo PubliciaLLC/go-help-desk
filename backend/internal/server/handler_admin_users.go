@@ -282,11 +282,13 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		handleError(w, fmt.Errorf("%w: invalid role", user.ErrValidation))
 		return
 	}
+	// An address that is invalid is refused unless it is the one the account
+	// already holds: an account stored before addresses had to be ASCII must
+	// still be renamed or given a new role. Decided below, once the account is
+	// read, and still before the first write.
+	var emailErr error
 	if body.Email != nil {
-		if _, err := user.ValidateEmail(*body.Email); err != nil {
-			handleError(w, err)
-			return
-		}
+		_, emailErr = user.ValidateEmail(*body.Email)
 	}
 	if body.DisplayName != nil {
 		if _, err := user.ValidateDisplayName(*body.DisplayName); err != nil {
@@ -301,7 +303,15 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	// answering 404 for the rest.
 	target, err := s.users.GetByIDAdmin(r.Context(), id)
 	if err != nil {
+		if emailErr != nil {
+			err = emailErr
+		}
 		handleError(w, err)
+		return
+	}
+	emailUnchanged := body.Email != nil && strings.TrimSpace(*body.Email) == target.Email
+	if emailErr != nil && !emailUnchanged {
+		handleError(w, emailErr)
 		return
 	}
 	if target.DeletedAt != nil {
@@ -327,7 +337,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if body.Email != nil {
+	if body.Email != nil && !emailUnchanged {
 		addr, err := user.ValidateEmail(*body.Email)
 		if err != nil {
 			handleError(w, err)
@@ -415,7 +425,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		if body.DisplayName != nil {
 			u.DisplayName = *body.DisplayName
 		}
-		if body.Email != nil {
+		if body.Email != nil && !emailUnchanged {
 			// Lowercased and trimmed, the same as Create, SAML and OIDC.
 			// Without it an administrator who typed a capital letter stored
 			// the address verbatim, and login — which lowercases before

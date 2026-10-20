@@ -109,9 +109,9 @@ func ValidateEmail(s string) (string, error) {
 	if trimmed == "" {
 		return "", fmt.Errorf("%w: email is required", ErrValidation)
 	}
-	// Before any lower-casing: strings.ToLower and Postgres lower() fold some
-	// non-ASCII letters into ASCII ones (U+0130 to "i", U+212A to "k"), so a
-	// non-ASCII address cannot be compared reliably. Refused, not folded.
+	// Before any lower-casing: non-ASCII letters can fold to ASCII ones under
+	// strings.ToLower and Postgres lower(), so a non-ASCII address cannot be
+	// compared reliably. Refused, not folded.
 	if !isASCII(trimmed) {
 		return "", fmt.Errorf("%w: email address must contain only ASCII characters", ErrValidation)
 	}

@@ -357,10 +357,16 @@ func (s *Service) EmailIsTaken(ctx context.Context, email string) (bool, error) 
 // anything that changed in between is written back: a password set moments
 // ago stops working, an MFA enrolment is undone, another administrator's role
 // change is reverted. A rename should rename.
+//
+// An address the account already holds is not validated again: one stored
+// before addresses had to be ASCII must still be renamable.
 func (s *Service) UpdateProfile(ctx context.Context, id uuid.UUID, email, displayName string) error {
-	addr, err := ValidateEmail(email)
-	if err != nil {
-		return err
+	addr := email
+	if cur, err := s.store.GetByIDAdmin(ctx, id); err != nil || cur.Email != email {
+		addr, err = ValidateEmail(email)
+		if err != nil {
+			return err
+		}
 	}
 	name, err := ValidateDisplayName(displayName)
 	if err != nil {

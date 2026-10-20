@@ -10752,7 +10752,7 @@ components:
           type: array
           items:
             type: string
-          description: Email domains allowed for SAML accounts created on first sign-in. Empty means no restriction. Session only.
+          description: Email domains allowed for SAML accounts created on first sign-in. Empty means no restriction. Each entry must be ASCII (400 invalid_allowed_email_domains otherwise); use the xn-- form for an internationalised domain. Session only.
         self_signup_enabled:
           type: boolean
           description: Whether people may sign themselves up. Session only.
