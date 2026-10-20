@@ -82,6 +82,7 @@ Read the full notes before upgrading: [1.3.0](https://gohelpdesk.org/docs/upgrad
 - Raw JSON webhooks now carry ids only, and internal notes are their own event. A hook now gets one delivery per change, not one per kind of change. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#one-event)
 - Staff and administrators start receiving email about their tickets once email is configured. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#staff-email)
 - API keys: a key can no longer create API keys or OAuth clients, write users or group membership, or change the ticket-scope and auto-assignment settings, and a new key needs an expiry. Scripts that do these break. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#api-keys)
+- After upgrading, the first administrator to sign in sees a one-time wizard for the new settings, and a weekly check for new releases is available but off unless you turn it on. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#after-upgrade-wizard)
 - Locked out? `docker compose exec app /app/server unlock you@example.com` on the server. [Details](https://gohelpdesk.org/docs/getting-started#locked-out)
 
 **1.2.0**
