@@ -15,6 +15,9 @@ const executablePath = existsSync(sandboxChrome) ? sandboxChrome : undefined
 // checked here: no CSS engine, no media queries, no actual box sizes).
 // Port is overridable so parallel worktrees can each run their own server.
 const port = Number(process.env.PW_PORT ?? 5183)
+if (!Number.isInteger(port) || port < 1 || port > 65535) {
+  throw new Error(`PW_PORT must be a port number (1-65535), got "${process.env.PW_PORT}"`)
+}
 const origin = `http://127.0.0.1:${port}`
 
 export default defineConfig({
@@ -43,6 +46,9 @@ export default defineConfig({
     // this one (the specs set their own viewports), so it is not kept.
     {
       name: 'webkit',
+      // Same as chromium: #542's timing tests must run alone, not beside this
+      // project's workers. Harmless until that file exists.
+      testIgnore: /markdown-dos\.spec\.ts/,
       use: { ...devices['Desktop Safari'] },
     },
   ],

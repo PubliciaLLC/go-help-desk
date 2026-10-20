@@ -875,8 +875,9 @@ test.describe('#517 round 3: two long names that ran the page sideways', () => {
     await noHorizontalScroll(page)
   })
 
-  // The status cards are grid items, whose min-width is `auto`: an unbroken
-  // status name stretched its card, and the grid with it, to the name's width.
+  // An unbroken status name used to stretch its card, and the grid with it, to
+  // the name's width. `overflow-wrap:anywhere` on the title is what fixes it:
+  // it lowers the title's min-content width, so the grid item can shrink.
   test('dashboard status cards: a 300-character status name stays in its card', async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 844 })
     await mockApi(page)
@@ -1071,4 +1072,25 @@ test.describe('#522: the admin header button stays beside the heading on a deskt
       })
     }
   }
+})
+
+// TEMP-DIAG
+test.afterEach(async ({ page }, info) => {
+  if (info.status === info.expectedStatus) return
+  try {
+    const r = await page.evaluate(() => {
+      const main = document.querySelector('main')!
+      const mr = main.getBoundingClientRect().right
+      const d = (e: Element) => e.tagName + '.' + String((e as HTMLElement).className).slice(0, 70)
+      const wide: string[] = []
+      for (const e of Array.from(main.querySelectorAll('*'))) {
+        if (e.closest('.overflow-x-auto')) continue
+        const b = e.getBoundingClientRect()
+        if (b.right > mr + 1 || e.scrollWidth > e.clientWidth + 1) wide.push(`${d(e)} w=${Math.round(b.width)} r=${Math.round(b.right)} sw=${e.scrollWidth} cw=${e.clientWidth} par=${e.parentElement ? d(e.parentElement) + ' pw=' + Math.round(e.parentElement.getBoundingClientRect().width) : ''}`)
+      }
+      const sels = Array.from(main.querySelectorAll('select')).map((e) => `SELECT w=${Math.round(e.getBoundingClientRect().width)} sw=${e.scrollWidth} cw=${e.clientWidth} par=${d(e.parentElement!)} pw=${Math.round(e.parentElement!.getBoundingClientRect().width)} sel="${e.selectedOptions[0]?.text}"`)
+      return { mr, wide: wide.slice(0, 15), sels: sels.slice(0, 10) }
+    })
+    console.log('DIAG ' + info.title + ' ' + JSON.stringify(r, null, 1))
+  } catch (e) { console.log('DIAG failed ' + e) }
 })
