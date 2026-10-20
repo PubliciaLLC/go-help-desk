@@ -74,6 +74,7 @@ Read the full notes before upgrading: [1.3.0](https://gohelpdesk.org/docs/upgrad
 - `guest_submission_enabled` needs a signed-in administrator (#177). [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#guest-setting)
 - Reporters can attach files to replies (#175). [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#reporter-attachments)
 - Building from source needs Docker Buildx (#297, #301). [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#buildx)
+- `PATCH /api/v1/me/password` now needs `current_password`; a 1.2.0 script that sends only the new password fails. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#password-change)
 - Guests can no longer upload files until an administrator turns on "Guests may attach files" (off by default, including after an upgrade). [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#guest-attachments)
 - `MFA_ENABLED` and `GUEST_SUBMISSION_ENABLED` are removed. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#env-removed)
 - Email never sends a password unencrypted, to any server, and sends mail without a password unencrypted only to a private address. Check your SMTP setup before upgrading. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#smtp)
