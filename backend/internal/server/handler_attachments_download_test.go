@@ -53,7 +53,7 @@ func TestAttachmentDownload_IsAlwaysADownloadNeverARender(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Attachment", Description: "has one", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})
@@ -211,7 +211,7 @@ func TestAttachmentDownload_KeepsANonASCIIFilename(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Filename", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})
@@ -250,7 +250,7 @@ func TestAttachmentDownload_AHostileFilenameCannotEscapeTheHeader(t *testing.T) 
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Hostile", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})

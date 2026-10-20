@@ -38,7 +38,7 @@ func TestAdminAudit_TotalCapBoundary(t *testing.T) {
 	newSt, err := h.ticketStore.GetStatusByName(ctx, ticket.StatusNameNew)
 	require.NoError(t, err)
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	tk := ticket.Ticket{
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID: uuid.New(), TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2026, 9331),
 		Subject: "cap", CategoryID: h.catID, Priority: ticket.PriorityLow, StatusID: newSt.ID,
 		AssigneeUserID: &h.staffID, CreatedAt: now, UpdatedAt: now,

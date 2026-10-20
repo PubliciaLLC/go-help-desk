@@ -56,7 +56,7 @@ func TestUpdateStatus_LeavingPendingUnderClockSkewDoesNotFailTheCheckConstraint(
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	pendingSince := now.Add(30 * time.Second) // in the future: negative skew when left "now"
-	tk := ticket.Ticket{
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("SKEW-" + uuid.NewString()[:8]),
 		Subject: "Clock skew", Description: "Clock skew", CategoryID: cat.ID,
 		Priority: ticket.PriorityMedium, StatusID: pendingSt.ID, ReporterUserID: &reporter.ID,

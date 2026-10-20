@@ -1362,7 +1362,7 @@ in 1.2.0.
 - **Toggle in admin settings:** when off, all guest routes (both public submission and token-based read/reply/attach) answer 404 to visitors, suspending any links already issued until the setting is turned back on (#424).
 - **Guests attaching files** (#445) is a second, separate switch, **Guests may attach files** (`guest_attachments_enabled`, **Admin → Settings → General → Submissions**, under guest submission). **Off by default, upgraded installs included**: before it existed a guest could upload through `POST /guest/attachments` whenever guest submission was on, and that is now closed until an administrator opens it. It is **dependent** on guest submission: the setting only takes effect while `guest_submission_enabled` is on (the settings page shows it unavailable while submission is off, and the server treats it as off), so there is no state in which uploads are on and submission is off.
   - **Size.** `guest_attachment_max_mb` is a per-file maximum for guests, set with a slider from 1 to 100 MB, 5 MB by default. The server holds the guest to the **lower** of it and the instance-wide attachment maximum (25 MB, the one every upload has), so a figure above 25 is accepted by the setting and cannot be reached; the slider says so. A value outside 1 to 100 is refused at save (`400 bad_request`) and not stored, and an unreadable stored value reads as 5. Over the limit is `413 too_large`, with the limit that applied in the message ("file exceeds 5 MB limit"); the body is capped while it is read, as for every upload.
-  - **Per-ticket cap and hourly rate** (Erik, 2026-10-19). `guest_attachment_max_per_ticket` is the most files guests may attach to one ticket (1 to 50, default 5); `guest_attachment_uploads_per_hour` is how many uploads one guest link may make per hour (1 to 30, default 3). Both are set under the uploads switch in Settings, unavailable while it is off, session-only, validated at save (`400`, nothing stored) and read as their defaults when unset or damaged, so an upgraded install gets 5 and 3 as soon as an administrator turns uploads on. Both are checked on the guest upload route after the setting, the token and the lifecycle check, the cap first: a full ticket answers `409 guest_attachment_limit` ("This ticket already has the most files a guest can attach"), and the cap does not spend the hour. Past the hourly figure the answer is `429 rate_limited` with `Retry-After` in whole seconds. The rate is keyed by the **ticket the link names**, not the address, so a guest behind a shared address cannot use up another's hour; it reuses `middleware.RateLimiter` (extended with `TakeWithLimit`, because the figure is an admin setting that changes while the server runs, and with an injectable clock for tests). It is a fixed window over the whole limiter, in memory and per process like the other limiters: a restart clears it and each replica has its own. The unit is spent before the work, so parallel uploads cannot all pass a budget with one slot left, and **given back only when the refusal was decided before the scanner**: a wrong type, an over-size file, a name or request the parser refuses (`unsupported_type`, `too_large`, `invalid_filename`, `bad_request`). Those cost the server a body read and nothing more. Everything decided after the scan keeps its unit: `invalid_image`, `invalid_file` (a content mismatch), a malware verdict (`422 infected`), a scanner or storage fault (`503`) and any 5xx, and so does the cap refusal that comes from inside the transaction. Refunding a post-scan refusal let a guest make the server scan without limit (measured: twenty bad PNGs at a budget of one were twenty scans). Because a pre-scan refusal is free of the hour, **every refused attempt also draws on a second, fixed budget of 20 per hour per ticket** (`guestRefusalLimiter`, not a setting), whether or not its unit came back; once spent, the route answers `429 rate_limited` with `Retry-After` before reading anything, a good file included, until the window ends. Like the other limiter it is in memory and per process. The cap counts **only guest uploads**, for which `attachments.uploaded_by_guest` (migration 000054) records the fact, because nothing recorded who uploaded a file; staff and reporter files never count. Files a guest attached before the migration are not counted (the column defaults to false). The cap is **exact**: the authority is `ticket.Service.CreateGuestAttachment`, which counts inside the transaction that already locks the ticket row, so uploads racing for the last slot leave exactly one file there (`TestCreateGuestAttachment_ParallelUploadsCannotOvershootTheCap`). A cheaper count before the file is read and scanned only saves that work. `GET /site` carries the cap and the hourly figure with the size, and the page offers at most the lower of what the ticket has room for and the hour allows, worded "up to 3 files now (5 per ticket)" when they differ.
+  - **Per-ticket cap and hourly rate** (Erik, 2026-10-19). `guest_attachment_max_per_ticket` is the most files guests may attach to one ticket (1 to 50, default 5); `guest_attachment_uploads_per_hour` is how many uploads one guest link may make per hour (1 to 30, default 3). Both are set under the uploads switch in Settings, unavailable while it is off, session-only, validated at save (`400`, nothing stored) and read as their defaults when unset or damaged, so an upgraded install gets 5 and 3 as soon as an administrator turns uploads on. Both are checked on the guest upload route after the setting, the token and the lifecycle check, the cap first: a full ticket answers `409 guest_attachment_limit` ("This ticket already has the most files a guest can attach"), and the cap does not spend the hour. Past the hourly figure the answer is `429 rate_limited` with `Retry-After` in whole seconds. The rate is keyed by the **ticket the link names**, not the address, so a guest behind a shared address cannot use up another's hour; it reuses `middleware.RateLimiter` (extended with `TakeWithLimit`, because the figure is an admin setting that changes while the server runs, and with an injectable clock for tests). It is a fixed window over the whole limiter, in memory and per process like the other limiters: a restart clears it and each replica has its own. The unit is spent before the work, so parallel uploads cannot all pass a budget with one slot left, and **given back only when the refusal was decided before the scanner**: a wrong type, an over-size file, a name or request the parser refuses (`unsupported_type`, `too_large`, `invalid_filename`, `bad_request`). Those cost the server a body read and nothing more. Everything decided after the scan keeps its unit: `invalid_image`, `invalid_file` (a content mismatch), a malware verdict (`422 infected`), a scanner or storage fault (`503`) and any 5xx, and so does the cap refusal that comes from inside the transaction. Refunding a post-scan refusal let a guest make the server scan without limit (measured: twenty bad PNGs at a budget of one were twenty scans). Because a pre-scan refusal is free of the hour, **every refused attempt also draws on a second, fixed budget of 20 per hour per ticket** (`guestRefusalLimiter`, not a setting), whether or not its unit came back; it is charged up front in one locked step (so parallel refusals cannot overshoot it) and given back when the upload is accepted, and it is charged before the hourly budget, so an attempt turned away by it never spends an hourly upload (#559). Once spent, the route answers `429 rate_limited` with `Retry-After` before reading anything, a good file included, until the window ends. Like the other limiter it is in memory and per process. The cap counts **only guest uploads**, for which `attachments.uploaded_by_guest` (migration 000054) records the fact, because nothing recorded who uploaded a file; staff and reporter files never count. Files a guest attached before the migration are not counted (the column defaults to false). The cap is **exact**: the authority is `ticket.Service.CreateGuestAttachment`, which counts inside the transaction that already locks the ticket row, so uploads racing for the last slot leave exactly one file there (`TestCreateGuestAttachment_ParallelUploadsCannotOvershootTheCap`). A cheaper count before the file is read and scanned only saves that work. `GET /site` carries the cap and the hourly figure with the size, and the page offers at most the lower of what the ticket has room for and the hour allows, worded "up to 3 files now (5 per ticket)" when they differ.
   - **Refusal.** With uploads off the route answers the generic `404 not_found`, byte-identical to a bad link and to guest submission being off, like every other guest refusal: a different status would tell an anonymous caller which setting is in force.
   - **Session only.** All four keys are in `AuthCriticalKeys`: they widen what anonymous people can do, and a leaked API key must not be able to turn them on and use them. They are in `KnownKeys`.
   - **One migration.** 000054 adds `attachments.uploaded_by_guest BOOLEAN NOT NULL DEFAULT false`, so the cap can count only guest uploads (nothing recorded who uploaded a file). The settings themselves are rows read with defaults and need none; files guests attached before the upgrade are not counted.
@@ -1436,8 +1436,11 @@ holds for everything a person wrote on a ticket: the subject heading, the
 description, replies and internal notes, reply author names, attachment
 filenames, the requester line, the activity feed and its diffs, the status
 history, followers, the assignee, status names, category, type and item names,
-custom-field labels and values, tags, and the requester picker. It is never
-truncated, rewritten or linkified, so it stays whole and copyable (#479).
+custom-field labels and values, tags, and the requester picker. Plain-format text
+and the other fields listed here are never truncated, rewritten or linkified, so
+they stay whole and copyable (#479). Markdown-format text is linked as described
+under *Ticket text formatting*; its code blocks and tables scroll inside their
+own box, which does not count as cutting text.
 
 **Admin pages (#522).** The same treatment, applied to every page under Admin
 (Users and a user's page, Groups, Roles, Categories, Statuses, Tags, Canned
@@ -1493,6 +1496,109 @@ page. Bulk selection across a queue is the exception and stays desktop-only: it
 is a multi-select over a table, which is the shape that does not translate.
 
 Tracked as [#296](https://github.com/PubliciaLLC/go-help-desk/issues/296); shipped in #299.
+
+### Ticket text formatting
+
+Markdown in ticket descriptions, replies and internal notes ([#443](https://github.com/PubliciaLLC/go-help-desk/issues/443)).
+
+**The format is stored.** Every description and every reply carries `plain` or
+`markdown` (`tickets.description_format`, `ticket_replies.body_format`,
+migration 000055). Nothing is guessed from the text. Every record written before
+1.3.0 is `plain`: 1.2 promised Markdown but never rendered it, so older text
+stays as it was typed. The columns have no default after the migration, so a
+write path that forgets the format fails instead of choosing one.
+
+| Writer | No `format` sent | Accepts |
+|---|---|---|
+| REST `POST /tickets`, `/tickets/{id}/replies`, `/guest/tickets`, `/guest/replies` | `plain`, so existing integrations are unchanged | `plain`, `markdown` |
+| The web app (every form with the editor, staff, requester and guest) | always sends `markdown` | |
+| MCP `create_ticket`, `add_reply` | `markdown` (the tool descriptions say so, and say to escape characters meant literally) | `plain`, `markdown` |
+| Follow-ups | copy the original's format with its text | |
+
+Anything else (an explicit `""`, `"Markdown"`, `"html"`, a number) is `400
+invalid_format` on REST and a tool error on MCP, and nothing is written. Both
+fields are on every ticket and reply object, on the requester and guest views
+too. Notes and resolution notes, canned responses and settings are not
+descriptions or replies: they stay plain text.
+
+**The renderer cannot output script, raw HTML, images or anything outside one
+list.** The guarantee is how the page is built, not filtering. Every element is
+created by React from our own component map; all user text is a React text node;
+the only attribute that carries user data is `href`, checked against `http`,
+`https` and `mailto`. `rehype-sanitize` runs last as a second, independent
+check, and the content security policy is a third line of defence, not the
+guarantee. `dangerouslySetInnerHTML` and `rehype-raw` are banned by lint.
+
+- **One allow-list** (`frontend/src/lib/markdownAllowList.ts`) drives the
+  sanitize schema, the renderer's elements and the editor's node and mark list;
+  a test fails when the three disagree. Allowed: paragraphs, quotes, lists
+  (numbered lists keep `start`), code blocks, rules, tables, emphasis, strong,
+  strike-through, inline code, line breaks, links. All six heading levels render
+  as one small bold line, so a requester cannot post a page-sized banner.
+  Not allowed: images, task-list checkboxes, footnotes, `style`, `id`, `on*`.
+- **Raw HTML is shown as text**, so `<server01>` and `<b>x</b>` read as written.
+- **Images are never loaded.** An image shows as the link "[image: alt]", which
+  follows the link rules (no tracking pixels, no `data:` images).
+- **Links** open in a new tab with `rel="noopener noreferrer nofollow ugc"`.
+  The real host is shown after the link unless the link text is exactly the URL
+  (plain ASCII, no `user:password@`); a look-alike international domain shows in
+  its `xn--` form, and invisible and direction-changing characters are removed
+  from link text and the host. Bare URLs and `www.` addresses are linked, but
+  only in Markdown text. Relative links, `#fragment`, `javascript:`, `data:`,
+  `vbscript:` and `tel:` render as plain text.
+- **Code** in a fenced block is highlighted for 13 languages (bash, powershell,
+  json, yaml, xml/html, sql, javascript, typescript, python, go, ini, diff,
+  plaintext) by `lowlight`, which yields a tree of elements, never an HTML
+  string. A fence in another language, or with none, is not guessed at.
+- **Formatting is bounded, not guessed.** Parsing Markdown is not linear in the
+  size of the input (a table header's width multiplies every short row, unclosed
+  brackets rescan the rest of the text, hard breaks and nested lists add up), and
+  a reply has no length cap. So text over 50,000 characters is never formatted,
+  a table is limited to 5,000 cells, and everything else is parsed in a Web Worker
+  with a one-second budget; past it the worker is terminated. In every such case
+  the post is shown as plain text with a note ("too long to format", "too
+  complex to format", or "formatting unavailable" when the worker could not
+  start), and its **Plain text** button stays reachable. A failure that may be a
+  slow moment is not remembered, so the next view tries again.
+- **A page of long posts is formatted only where it is read.** A post is formatted
+  when it comes within about 1,500 px of the screen (measured in the scrolling
+  area that holds it), and the page as a whole has a budget of 300,000 formatted
+  nodes; past it, further posts stay as written with the note "this page already
+  shows a lot of formatted text". Without this, 220 replies of 50 KB each took
+  3.76 GB of heap. The page
+  itself only turns the worker's sanitized result into elements from the
+  component map, after checking it again, inside an error boundary per post. The
+  worker is same-origin, so `script-src 'self'` covers it (pinned by
+  `TestDefaultCSP_AllowsTheSameOriginMarkdownWorker` and `frontend/e2e-csp`).
+- **Two kinds of link are not links.** A `mailto:` with any query (`?bcc=`,
+  `?cc=`, `?subject=`, `?body=` can add recipients or write the message), with a
+  `;`, a quote, a backslash, whitespace or control character, an `@` or a `%` left
+  in a local part, or a domain that is not a host; its addresses are otherwise
+  shown with the domain in `xn--` form. And a link to one of this help desk's own
+  attachment routes, which would skip the "content looks like..." and reputation
+  warnings of the attachments list: it reads "(attachment: open it from the
+  attachments list)". That rule compares what the server compares: the host
+  without scheme, port, case or trailing dot, and the path with repeated slashes
+  collapsed, decoded once and lower-cased.
+- **Long text** (#479, #517): prose and links wrap; a code block or table scrolls
+  inside its own box (focusable by keyboard); the page itself never scrolls
+  sideways at 320 px.
+
+**Reader toggles.** Every Markdown post has a **Plain text** button that shows the
+stored characters, to copy them exactly or check a suspicious link. Every plain
+post has **Show formatted**, which shows the same text through the same strict
+renderer. Both are the reader's choice, change nothing stored and send nothing to
+the server; the default is the stored format. Both buttons use `aria-pressed`.
+
+**The editor.** The web app's forms use a Milkdown WYSIWYG editor that writes
+Markdown, loaded on demand; it is built from the same allow-list (no task lists,
+footnotes or images; an image node is the text "[image: alt]"). A paste is parsed
+against that schema, so a pasted image or script is dropped and nothing is
+requested from the network. Tab always leaves the editor (list indent is
+`Mod-]`). While it loads, if it fails, or by the writer's choice ("Switch to plain
+editor"), a plain textarea holds the same Markdown. The webhook and email
+formats are unchanged: Markdown source reaches a chat as literal characters, and
+email carries no ticket text.
 
 ### Ticket Submission by Role
 
@@ -1738,7 +1844,8 @@ the same status (policy, configured, reachable, and the `effect` sentence) so an
 administrator can check it without waiting for an upload to fail.
 
 **Attachments are download-only. There is no previewer, and there will not be
-one.**
+one.** (Markdown text follows the same rule for images: an image in a post is a
+link, never loaded. See *Ticket text formatting*.)
 
 No inline rendering of any attachment, images included: no lightbox, no
 thumbnail, no `<img>` pointing at the download route, no PDF viewer. Every link
@@ -2465,8 +2572,8 @@ Exposes help desk operations as an MCP server for AI tool integration, over two 
 | `list_tickets` | any signed-in user | Optional `assignee_user_id`, `status_id`, `priority`, `category_id`, `q` filters. `limit` defaults to 20 and is clamped to 100; `offset` pages the full result set. |
 | `list_categories` | any signed-in user | The Category/Type/Item tree, nested, for filling in CTI. Active entries only; `include_inactive: true` adds retired ones (the tool applies no role check to it, unlike the REST catalogue, which shows archived entries to staff and administrators only). |
 | `list_statuses` | any signed-in user | The statuses this instance defines. |
-| `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` or `reporter_email` (with `guest_name`, always required with the address) names the subject of the ticket; both are absent by default and the caller is the subject. |
-| `add_reply` | staff, admin | A public reply emails the requester exactly as the REST reply does (#442): the guest's address (with a guest link) or the reporting account's, through one shared rule, `ticket.Service.ReplyRecipient`. No mail is sent when the requester has no address on record or the account is gone, or when the requester is a staff member or administrator writing the reply on a ticket they filed (they are not mailed a copy of their own reply, over REST or MCP; an ordinary requester replying on their own ticket still is); the reply is still saved. `internal: true` posts a staff-only note and never notifies the requester. There is no `notify_customer` option over MCP: a public reply always notifies. |
+| `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` or `reporter_email` (with `guest_name`, always required with the address) names the subject of the ticket; both are absent by default and the caller is the subject. `description` is Markdown unless `format: "plain"` is passed (#443); an invalid `format` is a tool error. |
+| `add_reply` | staff, admin | A public reply emails the requester exactly as the REST reply does (#442): the guest's address (with a guest link) or the reporting account's, through one shared rule, `ticket.Service.ReplyRecipient`. No mail is sent when the requester has no address on record or the account is gone, or when the requester is a staff member or administrator writing the reply on a ticket they filed (they are not mailed a copy of their own reply, over REST or MCP; an ordinary requester replying on their own ticket still is); the reply is still saved. `internal: true` posts a staff-only note and never notifies the requester. There is no `notify_customer` option over MCP: a public reply always notifies. `body` is Markdown unless `format: "plain"` is passed (#443). |
 | `assign_ticket` | staff, admin | To a user (`assignee_user_id`) or a group (`assignee_group_id`). To take the ticket off whoever has it, pass `clear_assignee: true` (the audit entry is `unassigned`); it cannot be combined with an assignee id, and omitting everything is refused rather than read as unassigning, because that silently took tickets off the people working them. |
 | `update_ticket_status` | staff, admin | Target status must be one the caller's role may transition to. A ticket in Closed cannot be moved out of it unless `closed_reopen_policy` lets the caller's role (#349; off by default): the result says reopening is disabled or restricted and points at `create_follow_up`. There is no separate reopen tool and never was; this is MCP's path out of Closed, through the same service rule as REST. A move out of Resolved or Closed is a reopen like any other (flagged, priority raised on the first, SLA restarted, staff mailed), with the caller as the actor. |
 | `create_follow_up` | staff, admin | `ticket_id` of a **Closed** ticket. Opens a new, linked ticket (see Closed is terminal); refused for a ticket that is not closed. |

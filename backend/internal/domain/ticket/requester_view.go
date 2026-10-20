@@ -21,13 +21,14 @@ import (
 // user role, or any role this does not recognise) receives.
 //
 //	id, tracking_number, subject, description   the ticket itself
+//	description_format                          plain or markdown: how the page shows the description (#443)
 //	status_id, priority                         its current state, both shown on the page
 //	category_id, type_id, item_id               its classification (the page's Classification panel)
 //	created_at, resolved_at                     when it was opened and resolved (the page shows both)
 //	assignee_user_id                            who holds it, as an id only: a requester has no route that turns it into a name
 //	resolution_notes                            sent to requesters before this list existed; their visibility is unchanged
 var requesterTicketKeys = []string{
-	"id", "tracking_number", "subject", "description",
+	"id", "tracking_number", "subject", "description", "description_format",
 	"status_id", "priority",
 	"category_id", "type_id", "item_id",
 	"created_at", "resolved_at",
@@ -67,7 +68,7 @@ var requesterWrapperKeys = []string{"sla", "can_reopen", "replies", "links"}
 // requester's, since a guest has no account and needs only to read their own
 // ticket by its tracking number. Plus guestWrapperKeys, which are not Ticket
 // fields: the status's name (derived) and the conversation.
-var guestTicketKeys = []string{"tracking_number", "subject", "description", "created_at"}
+var guestTicketKeys = []string{"tracking_number", "subject", "description", "description_format", "created_at"}
 var guestWrapperKeys = []string{"status", "replies"}
 
 // RequesterTicketKeys returns a copy of the allowed list.

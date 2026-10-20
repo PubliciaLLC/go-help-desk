@@ -991,3 +991,15 @@ func (s *Server) SetGuestUploadClockForTest(now func() time.Time) {
 	s.guestUploadLimiter.SetClock(now)
 	s.guestRefusalLimiter.SetClock(now)
 }
+
+// SetGuestRefusalClockForTest moves only the refused-attempts limiter onto a
+// clock the test controls, to model the two windows drifting apart.
+func (s *Server) SetGuestRefusalClockForTest(now func() time.Time) {
+	s.guestRefusalLimiter.SetClock(now)
+}
+
+// SetGuestHourlyClockForTest moves only the hourly upload limiter onto a clock
+// the test controls (the mirror of SetGuestRefusalClockForTest).
+func (s *Server) SetGuestHourlyClockForTest(now func() time.Time) {
+	s.guestUploadLimiter.SetClock(now)
+}

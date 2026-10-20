@@ -27,22 +27,22 @@ func TestCreate_FiledBy(t *testing.T) {
 	}{
 		{
 			name:      "an account requester, filed by staff",
-			in:        ticket.CreateInput{ReporterUserID: &reporterID, FiledBy: &staffID},
+			in:        ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, ReporterUserID: &reporterID, FiledBy: &staffID},
 			wantActor: &staffID,
 		},
 		{
 			name:      "a guest requester, filed by staff",
-			in:        ticket.CreateInput{GuestEmail: &guest, FiledBy: &staffID},
+			in:        ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, GuestEmail: &guest, FiledBy: &staffID},
 			wantActor: &staffID,
 		},
 		{
 			name:      "no FiledBy: the account requester is the actor",
-			in:        ticket.CreateInput{ReporterUserID: &reporterID},
+			in:        ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, ReporterUserID: &reporterID},
 			wantActor: &reporterID,
 		},
 		{
 			name:      "no FiledBy: a guest has no actor",
-			in:        ticket.CreateInput{GuestEmail: &guest},
+			in:        ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, GuestEmail: &guest},
 			wantActor: nil,
 		},
 	}
@@ -94,7 +94,7 @@ func TestCreate_FiledByThenRoutedKeepsTheRoutingMarkOnTheOneEvent(t *testing.T) 
 	h := newHarness(t)
 	staffID, reporterID, assignee := uuid.New(), uuid.New(), uuid.New()
 
-	_, err := h.svc.Create(context.Background(), ticket.CreateInput{
+	_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "s", CategoryID: uuid.New(), ReporterUserID: &reporterID, FiledBy: &staffID,
 		AutoAssign: []ticket.Assignment{{UserID: &assignee}},
 	})

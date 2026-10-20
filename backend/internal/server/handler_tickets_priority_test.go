@@ -26,7 +26,7 @@ func TestUpdateTicket_Priority_HTTP(t *testing.T) {
 	ctx := context.Background()
 
 	mk := func(reporter uuid.UUID) ticket.Ticket {
-		tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 			Subject: "Printer", CategoryID: h.catID, Priority: ticket.PriorityMedium, ReporterUserID: &reporter,
 		})
 		require.NoError(t, err)
@@ -173,7 +173,7 @@ func TestUpdateTicket_InvalidPriorityWritesNothing_HTTP(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Printer", CategoryID: h.catID, Priority: ticket.PriorityMedium, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)
@@ -199,7 +199,7 @@ func TestUpdateTicket_Priority_APIKeyScopes_HTTP(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Printer", CategoryID: h.catID, Priority: ticket.PriorityMedium, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)

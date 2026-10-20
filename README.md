@@ -27,6 +27,7 @@ Go Help Desk is an open-source ticket management system. Staff submit and track 
 - Custom fields, tags, canned responses, and full-text search
 - Optional SLA tracking; resolved tickets close automatically after a configurable reopen window
 - API keys for administrators, and for staff when an administrator allows it. Every new key expires, and keys cannot create keys or write users
+- Markdown in tickets: a formatting editor, strict rendering (no raw HTML, no images), and older text left as plain text
 - Staff can file a ticket for a requester, an existing user or a typed email address
 - Readable audit log with opt-in retention
 - Email notifications, queued with retries. Staff are emailed about their tickets and can follow a ticket
@@ -83,6 +84,7 @@ Read the full notes before upgrading: [1.3.0](https://gohelpdesk.org/docs/upgrad
 - Staff and administrators start receiving email about their tickets once email is configured. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#staff-email)
 - API keys: a key can no longer create API keys or OAuth clients, write users or group membership, or change the ticket-scope and auto-assignment settings, and a new key needs an expiry. Scripts that do these break. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#api-keys)
 - After upgrading, the first administrator to sign in sees a one-time wizard for the new settings, and a weekly check for new releases is available but off unless you turn it on. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#after-upgrade-wizard)
+- Descriptions and replies can be Markdown. Text written before 1.3.0 stays plain; REST defaults to plain unless it sends `format`, and MCP defaults to Markdown. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#markdown)
 - Locked out? `docker compose exec app /app/server unlock you@example.com` on the server. [Details](https://gohelpdesk.org/docs/getting-started#locked-out)
 
 **1.2.0**

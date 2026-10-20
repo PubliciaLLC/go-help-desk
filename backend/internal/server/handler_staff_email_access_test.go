@@ -170,7 +170,7 @@ func TestStaffEmail_AStaffMembersReplyOnTheirOwnTicketIsARequesterReply(t *testi
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	ctx := context.Background()
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Mine", Description: "d", CategoryID: h.catID, ReporterUserID: &h.staffID,
 	})
 	require.NoError(t, err)

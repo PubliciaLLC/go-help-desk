@@ -266,7 +266,7 @@ func TestForceReopen_IsRecordedAsForced(t *testing.T) {
 	// And it is an ordinary open ticket again: the guest writes.
 	_, err = h.svc.TicketForGuestWrite(context.Background(), ev.GuestToken)
 	require.NoError(t, err)
-	_, err = h.svc.AddGuestReply(context.Background(), tk.ID, "thanks", 7, h.newStatus.ID)
+	_, err = h.svc.AddGuestReply(context.Background(), tk.ID, "thanks", ticket.TextFormatPlain, 7, h.newStatus.ID)
 	require.NoError(t, err)
 	_ = held
 }
@@ -374,7 +374,7 @@ func TestForceReopen_RequestersAreReadOnlyInEveryMode(t *testing.T) {
 		tk := h.seedClosed()
 		reporter := ticket.Actor{UserID: tk.ReporterUserID, Role: user.RoleUser}
 
-		_, err := h.svc.AddReply(context.Background(), tk.ID, "x", false, false, "", reporter, 7, h.newStatus.ID)
+		_, err := h.svc.AddReply(context.Background(), tk.ID, "x", ticket.TextFormatPlain, false, false, "", reporter, 7, h.newStatus.ID)
 		require.ErrorIs(t, err, ticket.ErrClosed, policy)
 		require.ErrorIs(t, h.svc.CanRequesterWrite(context.Background(), tk.ID, reporter), ticket.ErrClosed, policy)
 		require.ErrorIs(t, h.svc.CreateAttachment(context.Background(),

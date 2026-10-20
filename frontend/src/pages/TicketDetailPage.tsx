@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { TicketText } from '@/components/TicketText'
 import { useParams, Link } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -671,9 +672,11 @@ export function TicketDetailPage() {
                 <CardTitle className="text-sm text-gray-500">Description</CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="whitespace-pre-wrap text-sm wrap-anywhere">
-                  {ticket.description || <span className="text-gray-400">No description provided.</span>}
-                </p>
+                {ticket.description ? (
+                  <TicketText text={ticket.description} format={ticket.description_format} className="text-sm" />
+                ) : (
+                  <p className="text-sm text-gray-400">No description provided.</p>
+                )}
               </CardContent>
             </Card>
 
@@ -705,7 +708,7 @@ export function TicketDetailPage() {
                           {formatDate(r.created_at)}
                         </span>
                       </div>
-                      <p className="whitespace-pre-wrap wrap-anywhere">{r.body}</p>
+                      <TicketText text={r.body} format={r.body_format} />
                     </div>
                   )
                 }

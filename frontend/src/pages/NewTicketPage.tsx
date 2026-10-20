@@ -19,6 +19,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { MarkdownEditor } from '@/components/editor/MarkdownEditor'
 import { Select } from '@/components/ui/select'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import type { Assignment } from '@/api/types'
@@ -248,13 +249,12 @@ export function NewTicketPage() {
               </div>
 
               <div className="space-y-1">
-                <Label htmlFor="description">Description</Label>
-                <Textarea
-                  id="description"
+                <Label id="description-label">Description</Label>
+                <MarkdownEditor
                   value={description}
-                  onChange={(e) => setDescription(e.target.value)}
+                  onChange={setDescription}
+                  labelId="description-label"
                   placeholder="Full details of the request or issue"
-                  rows={5}
                   disabled={isUploading}
                 />
               </div>

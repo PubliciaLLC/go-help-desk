@@ -130,6 +130,14 @@ cd backend
 go test ./internal/domain/... ./internal/config/... ./internal/middleware/... ./internal/server/notify/...
 ```
 
+### Browser (Playwright) tests
+
+`cd frontend && npm run test:e2e` starts its own Vite server on port 5183 and
+fails if something already holds that port, rather than testing the wrong
+checkout. Running several worktrees at once: give each its own port with
+`PW_PORT=5190 npm run test:e2e`. `PW_REUSE=1` reuses a server already on
+`PW_PORT`; use it only if that server is this checkout's.
+
 ### Full check
 
 ```sh

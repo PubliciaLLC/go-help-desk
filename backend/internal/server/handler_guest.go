@@ -77,15 +77,21 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 	// No custom_fields either, for now: the fields a guest may fill are
 	// category-level and visible_on_new, and nothing here enforces that yet.
 	var body struct {
-		Subject     string    `json:"subject"`
-		Description string    `json:"description"`
-		CategoryID  uuid.UUID `json:"category_id"`
-		GuestEmail  string    `json:"guest_email"`
-		GuestName   string    `json:"guest_name"`
-		GuestPhone  string    `json:"guest_phone"`
+		Subject     string          `json:"subject"`
+		Description string          `json:"description"`
+		Format      json.RawMessage `json:"format"` // optional; see restTextFormat
+		CategoryID  uuid.UUID       `json:"category_id"`
+		GuestEmail  string          `json:"guest_email"`
+		GuestName   string          `json:"guest_name"`
+		GuestPhone  string          `json:"guest_phone"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+	descFormat, err := restTextFormat(body.Format)
+	if err != nil {
+		handleError(w, err)
 		return
 	}
 
@@ -126,14 +132,15 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 	// Priority is not taken from the request. A guest setting their own ticket
 	// to critical is a queue anyone on the internet can jump.
 	in := ticket.CreateInput{
-		Subject:        body.Subject,
-		Description:    body.Description,
-		CategoryID:     body.CategoryID,
-		Priority:       ticket.PriorityMedium,
-		GuestEmail:     &email,
-		GuestName:      name,
-		GuestPhone:     strings.TrimSpace(body.GuestPhone),
-		TrackingPrefix: s.adminSvc.TicketPrefix(ctx),
+		Subject:           body.Subject,
+		Description:       body.Description,
+		DescriptionFormat: descFormat,
+		CategoryID:        body.CategoryID,
+		Priority:          ticket.PriorityMedium,
+		GuestEmail:        &email,
+		GuestName:         name,
+		GuestPhone:        strings.TrimSpace(body.GuestPhone),
+		TrackingPrefix:    s.adminSvc.TicketPrefix(ctx),
 	}
 	t, err := s.tickets.Create(ctx, in)
 	if err != nil {
@@ -189,12 +196,13 @@ func (s *Server) handleGuestGetTicket(w http.ResponseWriter, r *http.Request) {
 	// reporter id and the resolution notes to someone with no account, and
 	// would keep doing so as fields are added.
 	JSON(w, http.StatusOK, guestJSON(map[string]any{
-		"tracking_number": t.TrackingNumber,
-		"subject":         t.Subject,
-		"description":     t.Description,
-		"status":          statusName,
-		"created_at":      t.CreatedAt,
-		"replies":         guestReplyView(ticket.VisibleReplies(replies, user.RoleUser)),
+		"tracking_number":    t.TrackingNumber,
+		"subject":            t.Subject,
+		"description":        t.Description,
+		"description_format": t.DescriptionFormat,
+		"status":             statusName,
+		"created_at":         t.CreatedAt,
+		"replies":            guestReplyView(ticket.VisibleReplies(replies, user.RoleUser)),
 	}))
 }
 
@@ -217,9 +225,10 @@ func guestReplyView(replies []ticket.Reply) []map[string]any {
 	out := make([]map[string]any, 0, len(replies))
 	for _, r := range replies {
 		out = append(out, map[string]any{
-			"id":         r.ID,
-			"body":       r.Body,
-			"created_at": r.CreatedAt,
+			"id":          r.ID,
+			"body":        r.Body,
+			"body_format": r.BodyFormat,
+			"created_at":  r.CreatedAt,
 			// A reply with no author is the guest's own: nothing else writes
 			// one. That is all a guest needs to tell the two apart, and it
 			// names nobody.
@@ -255,10 +264,16 @@ func (s *Server) handleGuestAddReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Body string `json:"body"`
+		Body   string          `json:"body"`
+		Format json.RawMessage `json:"format"` // optional; see restTextFormat
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+	format, err := restTextFormat(body.Format)
+	if err != nil {
+		handleError(w, err)
 		return
 	}
 	if strings.TrimSpace(body.Body) == "" {
@@ -271,17 +286,18 @@ func (s *Server) handleGuestAddReply(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	reply, err := s.tickets.AddGuestReply(ctx, t.ID, body.Body,
+	reply, err := s.tickets.AddGuestReply(ctx, t.ID, body.Body, format,
 		s.adminSvc.ReopenWindowDays(ctx), reopenStatusID)
 	if err != nil {
 		guestWriteError(w, err)
 		return
 	}
 	JSON(w, http.StatusCreated, map[string]any{
-		"id":         reply.ID,
-		"body":       reply.Body,
-		"created_at": reply.CreatedAt,
-		"from_you":   true,
+		"id":          reply.ID,
+		"body":        reply.Body,
+		"body_format": reply.BodyFormat,
+		"created_at":  reply.CreatedAt,
+		"from_you":    true,
 	})
 }
 
@@ -342,9 +358,26 @@ func (s *Server) handleGuestUploadAttachment(w http.ResponseWriter, r *http.Requ
 		Error(w, http.StatusConflict, "guest_attachment_limit", guestLimitMessage(maxFiles))
 		return
 	}
+	// Refused attempts have a budget of their own, charged up front in one
+	// locked step (Take) so parallel refusals cannot all slip under it, and given
+	// back below when the upload is accepted. Charged BEFORE the hourly budget:
+	// an attempt turned away here has done nothing and must not cost an hourly
+	// upload (#559), and the two windows drift, so it could lock a guest out for
+	// up to an extra hour.
+	refusalKey := t.ID.String()
+	okRefusal, refusalWindow := s.guestRefusalLimiter.Take(refusalKey)
+	if !okRefusal {
+		w.Header().Set("Retry-After", strconv.Itoa(max(1, int(math.Ceil(s.guestRefusalLimiter.Remaining().Seconds())))))
+		Error(w, http.StatusTooManyRequests, "rate_limited",
+			"Too many of this ticket's uploads were refused. Please try again later.")
+		return
+	}
+
 	perHour := s.adminSvc.GuestAttachmentUploadsPerHour(ctx)
 	ok, window := s.guestUploadLimiter.TakeWithLimit(t.ID.String(), perHour)
 	if !ok {
+		// Not a refusal of a file: nothing was read or scanned.
+		s.guestRefusalLimiter.Refund(refusalKey, refusalWindow)
 		secs := max(1, int(math.Ceil(s.guestUploadLimiter.Remaining().Seconds())))
 		w.Header().Set("Retry-After", strconv.Itoa(secs))
 		Error(w, http.StatusTooManyRequests, "rate_limited",
@@ -352,26 +385,16 @@ func (s *Server) handleGuestUploadAttachment(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Refused attempts have a budget of their own. Checked before any work, and
-	// charged below for every refusal whether or not its hourly unit comes back.
-	refusalKey := t.ID.String()
-	if s.guestRefusalLimiter.Exceeded(refusalKey) {
-		w.Header().Set("Retry-After", strconv.Itoa(max(1, int(math.Ceil(s.guestRefusalLimiter.Remaining().Seconds())))))
-		Error(w, http.StatusTooManyRequests, "rate_limited",
-			"Too many of this ticket's uploads were refused. Please try again later.")
-		return
-	}
-
-	// The unit is spent before the work, so parallel uploads cannot all pass a
-	// budget with one slot left; it is given back when the guest's own file was
-	// refused for being the wrong thing (see refundable), which should not cost
-	// them their hour. A malware verdict and a server fault are not refunded:
-	// the first is the abuse this limit exists for, the second is not the
-	// guest's mistake but also not a reason to let a retry storm through.
+	// The hourly unit is spent before the work, so parallel uploads cannot all
+	// pass a budget with one slot left; it is given back when the guest's own
+	// file was refused before the scan (see refundable). A malware verdict and a
+	// server fault are not refunded: the first is the abuse this limit exists
+	// for, the second is not the guest's mistake but also not a reason to let a
+	// retry storm through.
 	rec := &refusalRecorder{ResponseWriter: w}
 	s.storeUploadedAttachment(rec, r, t.ID, ticket.Actor{Role: user.RoleUser}, s.guestAttachmentMaxBytes(ctx), maxFiles)
-	if rec.status >= 400 {
-		s.guestRefusalLimiter.Allow(refusalKey)
+	if rec.status < 400 {
+		s.guestRefusalLimiter.Refund(refusalKey, refusalWindow) // accepted: not a refusal
 	}
 	if refundable(rec.status, rec.code()) {
 		s.guestUploadLimiter.Refund(t.ID.String(), window)

@@ -66,7 +66,7 @@ func TestAddReply_DispatchesSubject(t *testing.T) {
 	seeded := h.seedOpen()
 	agent := uuid.New()
 
-	_, err := h.svc.AddReply(context.Background(), seeded.ID, "the reply", false, false,
+	_, err := h.svc.AddReply(context.Background(), seeded.ID, "the reply", ticket.TextFormatPlain, false, false,
 		"reporter@example.com",
 		ticket.Actor{UserID: &agent, Role: user.RoleStaff},
 		30, h.newStatus.ID)

@@ -75,6 +75,7 @@ export const TICKETS = [
     tracking_number: 'GHD-2026-000001',
     subject: 'Printer on fire, second floor',
     description: 'Smoke coming from the tray.',
+    description_format: 'plain',
     category_id: 'cat-1',
     priority: 'critical',
     status_id: 'st-new',
@@ -88,6 +89,7 @@ export const TICKETS = [
     tracking_number: 'GHD-2026-000002',
     subject: 'VPN drops every hour on the hour',
     description: 'Started after the router firmware update.',
+    description_format: 'plain',
     category_id: 'cat-2',
     priority: 'medium',
     status_id: 'st-new',
@@ -100,6 +102,7 @@ export const TICKETS = [
     tracking_number: 'GHD-2026-000003',
     subject: `Deployment failing on ${LONG_TOKEN}`,
     description: 'Build pipeline points at the wrong artifact URL.',
+    description_format: 'plain',
     category_id: 'cat-2',
     priority: 'high',
     status_id: 'st-new',
@@ -117,6 +120,7 @@ export const LINKED_TICKET = {
   tracking_number: 'GHD-2026-000004',
   subject: 'Duplicate printer smoke report from the third floor as well',
   description: 'Reported separately, same building.',
+  description_format: 'plain',
   category_id: 'cat-1',
   priority: 'medium',
   status_id: 'st-new',
@@ -135,6 +139,7 @@ export const TICKET_DETAIL = {
   tracking_number: 'GHD-2026-000001',
   subject: `Printer on fire, second floor — see ${LONG_TOKEN}`,
   description: `${DESCRIPTION_PROSE}\n\nVendor thread: ${DESCRIPTION_URL}`,
+  description_format: 'plain',
   category_id: 'cat-1',
   priority: 'critical',
   status_id: 'st-new',
@@ -174,6 +179,7 @@ export const REPLIES = [
     author_id: 'u-staff',
     author_name: 'Sam Staff',
     body: `${REPLY_PROSE} Tracking: ${REPLY_URL}`,
+    body_format: 'plain',
     internal: false,
     notify_customer: true,
     created_at: '2026-09-20T11:00:00Z',
@@ -260,7 +266,26 @@ export const ATTACHMENTS = [
  * falling back to `{ data: [] }` for anything not named — the same
  * fallback the existing vitest component-test mocks use.
  */
-export async function mockApi(page: Page, opts: { me?: object } = {}) {
+// #443: the same ticket with Markdown text: a 300-character link, a wide table
+// and a long line of code, the three things that could push the page sideways.
+export const MARKDOWN_DETAIL = {
+  ...TICKET_DETAIL,
+  description:
+    `Intro with **bold** and a [long link](${DESCRIPTION_URL}).\n\n` +
+    `| ${Array.from({ length: 12 }, (_, i) => `column ${i} heading`).join(' | ')} |\n` +
+    `|${' --- |'.repeat(12)}\n` +
+    `| ${Array.from({ length: 12 }, (_, i) => `cell number ${i} value`).join(' | ')} |\n\n` +
+    '```bash\n' + 'echo ' + 'x'.repeat(200) + '\n```\n',
+  description_format: 'markdown',
+}
+export const MARKDOWN_REPLIES = [
+  { ...REPLIES[0], body: `A [reply link](${REPLY_URL}) and\n\n- one\n- two\n\n> quoted ${REPLY_URL}`, body_format: 'markdown' },
+]
+
+export async function mockApi(
+  page: Page,
+  opts: { me?: object; ticket?: object; replies?: object[] } = {},
+) {
   const me = opts.me ?? ME_STAFF
   const byPath: Record<string, unknown> = {
     '/api/v1/me': me,
@@ -268,10 +293,10 @@ export async function mockApi(page: Page, opts: { me?: object } = {}) {
     '/api/v1/statuses': STATUSES,
     '/api/v1/tickets': TICKETS,
     '/api/v1/categories': CATEGORIES,
-    [`/api/v1/tickets/${TICKET_DETAIL.id}`]: TICKET_DETAIL,
+    [`/api/v1/tickets/${TICKET_DETAIL.id}`]: opts.ticket ?? TICKET_DETAIL,
     [`/api/v1/tickets/${LINKED_TICKET.id}`]: LINKED_TICKET,
     [`/api/v1/tickets/${TICKET_DETAIL.id}/attachments`]: ATTACHMENTS,
-    [`/api/v1/tickets/${TICKET_DETAIL.id}/replies`]: REPLIES,
+    [`/api/v1/tickets/${TICKET_DETAIL.id}/replies`]: opts.replies ?? REPLIES,
     [`/api/v1/tickets/${TICKET_DETAIL.id}/history`]: [],
     [`/api/v1/tickets/${TICKET_DETAIL.id}/links`]: LINKS,
     [`/api/v1/tickets/${TICKET_DETAIL.id}/tags`]: TAGS,

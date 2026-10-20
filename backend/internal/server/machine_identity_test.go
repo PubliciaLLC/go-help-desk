@@ -47,7 +47,7 @@ func TestOAuthClient_ActsAsItsServiceUser(t *testing.T) {
 		require.Equal(t, c.UserID, *created.ReporterUserID, "the client's service user is the reporter")
 	})
 
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Existing", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})
@@ -71,7 +71,7 @@ func TestOAuthClient_ActsAsItsServiceUser(t *testing.T) {
 	t.Run("the rest of the write routes succeed", func(t *testing.T) {
 		fresh := func(t *testing.T) ticket.Ticket {
 			t.Helper()
-			tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+			tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 				Subject: "Fresh", Description: "x", CategoryID: h.catID, ReporterUserID: &h.staffID,
 			})
 			require.NoError(t, err)

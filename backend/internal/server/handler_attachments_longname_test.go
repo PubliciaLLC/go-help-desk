@@ -29,7 +29,7 @@ func TestUpload_RefusesAFilenameNoArchiveCouldHold(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Long name", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})

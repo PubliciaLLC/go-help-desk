@@ -2,6 +2,7 @@ import { test, expect, type Locator, type Page } from '@playwright/test'
 import {
   mockApi,
   mockAdminApi,
+  LONG_NAME,
   LONG_USER,
   SAML_CERT,
   DESCRIPTION_PROSE,
@@ -456,11 +457,12 @@ test.describe('#479: long URLs wrap on a phone', () => {
     tracking_number: 'GHD-2026-000009',
     subject: `Link ${longUrlFor('subject')}`,
     description: `Please see ${longUrlFor('description')}`,
+    description_format: 'plain',
     status: 'S'.repeat(300),
     created_at: '2026-09-20T10:00:00Z',
     replies: [
-      { id: 'g1', body: `Courier tracking ${longUrlFor('reply')}`, created_at: '2026-09-20T11:00:00Z', from_you: false },
-      { id: 'g2', body: `Mine ${longUrlFor('mine')}`, created_at: '2026-09-20T12:00:00Z', from_you: true },
+      { id: 'g1', body: `Courier tracking ${longUrlFor('reply')}`, body_format: 'plain', created_at: '2026-09-20T11:00:00Z', from_you: false },
+      { id: 'g2', body: `Mine ${longUrlFor('mine')}`, body_format: 'plain', created_at: '2026-09-20T12:00:00Z', from_you: true },
     ],
   }
 
@@ -872,6 +874,24 @@ test.describe('#517 round 3: two long names that ran the page sideways', () => {
     await page.goto('/dashboard')
     await expect(page.getByText(`Welcome back, ${name}`)).toBeVisible()
     await noHorizontalScroll(page)
+  })
+
+  // An unbroken status name used to stretch its card, and the grid with it, to
+  // the name's width. `overflow-wrap:anywhere` on the title is what fixes it:
+  // it lowers the title's min-content width, so the grid item can shrink.
+  test('dashboard status cards: a 300-character status name stays in its card', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 844 })
+    await mockApi(page)
+    await page.route('**/api/v1/statuses', (route) =>
+      route.fulfill({ json: STATUSES.map((st) => (st.id === 'st-new' ? { ...st, name: LONG_NAME } : st)) }),
+    )
+    await page.goto('/dashboard')
+    const title = page.getByText(LONG_NAME, { exact: true })
+    await expect(title).toBeVisible()
+    await noHorizontalScroll(page)
+    await documentFits(page, 320)
+    const right = await title.evaluate((e) => e.getBoundingClientRect().right)
+    expect(right, 'the status name runs off the screen').toBeLessThanOrEqual(320)
   })
 })
 
