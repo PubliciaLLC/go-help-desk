@@ -499,7 +499,7 @@ func (s *Service) ValidateCreate(ctx context.Context, in CreateInput) error {
 		return fmt.Errorf("subject must be %d characters or fewer: %w", MaxSubjectLength, ErrValidation)
 	}
 	if len(in.Description) > MaxDescriptionLength {
-		return fmt.Errorf("description must be %d characters or fewer: %w", MaxDescriptionLength, ErrValidation)
+		return fmt.Errorf("description must be at most %d bytes: %w", MaxDescriptionLength, ErrValidation)
 	}
 	if in.Priority != "" && !in.Priority.Valid() {
 		return fmt.Errorf("priority must be one of critical, high, medium, low: %w", ErrValidation)
@@ -567,7 +567,7 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 		return Ticket{}, fmt.Errorf("description: %w", err)
 	}
 	if len(in.Description) > MaxDescriptionLength {
-		return Ticket{}, fmt.Errorf("description must be %d characters or fewer: %w", MaxDescriptionLength, ErrValidation)
+		return Ticket{}, fmt.Errorf("description must be at most %d bytes: %w", MaxDescriptionLength, ErrValidation)
 	}
 	if in.ReporterUserID == nil && (in.GuestEmail == nil || *in.GuestEmail == "") {
 		return Ticket{}, fmt.Errorf("reporter user or guest email is required: %w", ErrValidation)

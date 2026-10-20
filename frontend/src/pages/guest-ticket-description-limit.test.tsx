@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithQuery } from '@/test/render'
 import * as ticketsApi from '@/api/tickets'
@@ -49,6 +49,9 @@ describe('GuestTicketPage description limit', () => {
     expect(screen.getByRole('alert').textContent).toMatch(/over the size limit \(50,000 bytes\)/)
     await user.click(submit())
     fireEvent.submit(submit().closest('form')!)
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50))
+    })
     expect(createGuestTicket).not.toHaveBeenCalled()
   })
 
@@ -56,6 +59,9 @@ describe('GuestTicketPage description limit', () => {
     await fill('中'.repeat(16_667))
     expect(submit()).toHaveProperty('disabled', true)
     fireEvent.submit(submit().closest('form')!)
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50))
+    })
     expect(createGuestTicket).not.toHaveBeenCalled()
   })
 })

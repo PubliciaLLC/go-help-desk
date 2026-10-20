@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { fireEvent, screen } from '@testing-library/react'
+import { act, fireEvent, screen } from '@testing-library/react'
 import { renderWithQuery } from '@/test/render'
 
 // The guest's reply form will not send what the server would refuse (50,000).
@@ -36,8 +36,14 @@ describe('guest reply length', () => {
     renderWithQuery(<GuestTicketViewPage />)
     fireEvent.change(await screen.findByRole('textbox', { name: 'Add a reply' }), { target: { value: 'a'.repeat(50_001) } })
     expect(screen.getByRole('button', { name: 'Send reply' })).toHaveProperty('disabled', true)
-    expect(screen.getByRole('alert').textContent).toMatch(/1% over the size limit/)
+    expect(screen.getByRole('alert')).toBeTruthy()
+    expect(screen.getByText(/1% over the size limit/)).toBeTruthy()
     fireEvent.submit(screen.getByRole('button', { name: 'Send reply' }).closest('form')!)
+    // The mutation runs on a later tick, so a call that should not happen would
+    // not have happened yet at the next line. Let it.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50))
+    })
     expect(addGuestReply).not.toHaveBeenCalled()
   })
 })

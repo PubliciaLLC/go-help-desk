@@ -331,7 +331,7 @@ func TestFollowUp_CopiesTheOriginalsFormat(t *testing.T) {
 	}
 }
 
-// A reply is limited to 50,000 characters, as a description is: 400 body_too_long
+// A reply is limited to 50,000 bytes, as a description is: 400 body_too_long
 // over it on every way in, nothing written, and 201 at exactly the limit.
 func TestReplyLength_EveryWayIn(t *testing.T) {
 	h, cleanup := newHarness(t)
