@@ -292,6 +292,9 @@
 <p>Staff and admins see an <em>Insert canned response</em> button above the reply box. It opens a searchable picker limited to the responses in scope for that ticket — global templates, plus any scoped to the ticket's category or category and type. Selecting one splices the template's body into the reply at the current cursor position (or appends it, if the box is empty), and the inserted text stays fully editable before sending. Managing the templates themselves is an admin task — see <a href="admin-guide.html#admin-canned-responses">Canned Responses</a> in the Admin Guide.</p>
 
 
+<h3 id="tickets-reply-activity">Replies in the Activity feed</h3>
+<p>Staff and administrators see each reply and internal note in the ticket's <em>Activity</em> panel as "<em>name</em> replied publicly" or "<em>name</em> added an internal note", with the time and no text; the text stays in the conversation under its usual visibility rules. A guest shows as "A guest" and a deleted account as "Someone". Replies and notes written before the upgrade to 1.3.0 do not appear. The same entries are in the admin Audit Log, which has a <em>Hide replies and notes</em> option.</p>
+
 <h2 id="tickets-links">Linked tickets</h2>
 
 <p>Any ticket can be linked to any other ticket, regardless of status. Links are always bidirectional — adding a link on ticket A automatically creates the reverse link on ticket B.</p>
@@ -445,7 +448,7 @@
 </ul>
 
 <h3>What requesters can and cannot see</h3>
-<p>A requester sees the ticket's current state and its public replies. They do not see the Activity feed or the status timeline of their own ticket (the API refuses those requests with <code>403</code>), and the conversation no longer shows status-change events. They receive only these ticket fields: id, tracking number, subject, description, status, priority, category, type, item, created and resolved dates, the assignee's id, and resolution notes. Everything else is withheld, including the assigned group, the reporter, guest contact details, the closed and last-updated dates, its Pending timing, and the reopen count. A guest's view is the same, and it no longer includes the last-updated date.</p>
+<p>A requester sees the ticket's current state and its public replies. They do not see the Activity feed (which now also lists replies and notes) or the status timeline of their own ticket (the API refuses those requests with <code>403</code>), and the conversation no longer shows status-change events. They receive only these ticket fields: id, tracking number, subject, description, status, priority, category, type, item, created and resolved dates, the assignee's id, and resolution notes. Everything else is withheld, including the assigned group, the reporter, guest contact details, the closed and last-updated dates, its Pending timing, and the reopen count. A guest's view is the same, and it no longer includes the last-updated date.</p>
 
 
 <h2 id="tickets-formatting">Formatting text</h2>

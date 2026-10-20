@@ -404,6 +404,7 @@ Cache-Control: private, max-age=3600</code></pre>
 <p>Two list endpoints are paged, <code>GET /api/v1/tickets</code> and <code>GET /api/v1/admin/audit</code>. Both take <code>limit</code> (default 100, maximum 200) and <code>offset</code>. A <code>limit</code> above the maximum is clamped rather than rejected, and a non-numeric or non-positive value is ignored, so the default applies.</p>
 <ul>
   <li>The ticket list is a bare JSON array with no total. Page until a response is shorter than <code>limit</code>.</li>
+  <li><code>GET /api/v1/admin/audit</code> takes a repeatable <code>exclude_action</code> to leave out entries with that action, for example <code>exclude_action=reply_added&amp;exclude_action=note_added</code>. It is applied in the query, so <code>entries</code>, <code>has_more</code> and <code>total</code> describe the same sequence. The actions <code>reply_added</code> (a public reply) and <code>note_added</code> (an internal note) hold only the reply's id and an <code>internal</code> flag, never the text; a guest's reply has no actor.</li>
   <li>The audit list returns an object with <code>entries</code>, <code>total</code>, <code>total_capped</code> and <code>has_more</code>. Page while <code>has_more</code> is true. When <code>total_capped</code> is true, <code>total</code> is the cap (10,000) and means "at least this many".</li>
 </ul>
 <pre><code>GET /api/v1/tickets?limit=50&amp;offset=100</code></pre>
