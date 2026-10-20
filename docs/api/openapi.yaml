@@ -2807,8 +2807,10 @@ paths:
         and must verify the factor first. Any other route refuses a flagged session with 403
         password_change_required until the password is changed. The change clears the requirement.
         A missing or wrong current_password answers 400 invalid_current_password: the session is fine, so
-        this is not a 401, which here always means there is no session. (Releases before 1.3.0 answered 401
-        invalid_credentials.) The old field name password is still read when new_password is absent. current_password is
+        this is not a 401, which here always means there is no session. 1.2.0 did not ask for the current
+        password. Wrong guesses are counted per account against the same budget as sign-in
+        (AUTH_RATE_LIMIT_PER_MINUTE) and answer 429 rate_limited once it is spent; the correct
+        password is still accepted. The old field name password is still read when new_password is absent. current_password is
         required in either case.
       tags: ['Account']
       x-ghd-handler: handleChangePassword
@@ -2851,6 +2853,8 @@ paths:
               schema: {$ref: '#/components/schemas/Error'}
         '403':
           $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
         '404':
           $ref: '#/components/responses/NotFound'
   /api/v1/staff:

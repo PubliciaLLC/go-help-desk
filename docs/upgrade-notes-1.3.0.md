@@ -114,6 +114,10 @@ Slack, Teams, Discord and Jira Automation hooks are not affected: their messages
 
 What to do: a script that filed tickets for other people by looking the person up first sends `reporter_email` on `POST /api/v1/tickets` (or MCP `create_ticket`) and lets the server resolve it: the ticket goes to the account with that address if there is one, otherwise it is a guest ticket (`guest_name` required, guest submission on). `reporter_user_id` still works for ids you already have. An administrator's key that searched accounts by name or address can use `GET /api/v1/admin/users?page=1&q=` (read-only, `users:read`; `q` applies only with `page`); staff keys have no replacement.
 
+### `PATCH /api/v1/me/password` now needs `current_password` (#555)
+
+In 1.2.0, `PATCH /api/v1/me/password` took `password` alone and did not ask for the current password. 1.3.0 requires `current_password` and refuses a missing or wrong one with `400 invalid_current_password`, so a 1.2.0 script that sends only `password` now fails. The new name for the replacement is `new_password`; `password` is still read when `new_password` is absent. Wrong guesses are counted per account against the sign-in budget (`AUTH_RATE_LIMIT_PER_MINUTE`) and answer `429 rate_limited` once it is spent; the correct password is still accepted. A `401` from this route means there is no session. The account page shows a wrong current password inline and keeps the person signed in.
+
 ### Also breaking, described elsewhere
 
 - A ticket-changing webhook delivers one event per change, and a receiver that switches on `Type` can miss a kind: see *One Change, One Event* under Changed behaviour.
@@ -395,10 +399,6 @@ The rest of the #421 changes to scripts and integrations change what an answer s
 - **`POST /api/v1/me/mfa/enroll/confirm`** answers `500` when the server cannot save the factor (it said `400 invalid_code`). A wrong code and an enrolment that was never started are still `400 invalid_code`.
 - **`POST /api/v1/guest/resend`** accepts an empty body (it was `400`). Malformed JSON is still `400`.
 - **`DELETE /api/v1/tickets`** is `405` as before. Its `Allow` header carries `GET` and `POST` as two header lines, which is what the server always sent; clients that read only the first line saw `GET`.
-
-### A wrong current password is `400 invalid_current_password` (#555)
-
-`PATCH /api/v1/me/password` answered `401 invalid_credentials` for a missing or wrong `current_password`. It now answers `400 invalid_current_password` with the same message. A `401` from this route now always means there is no session. The web client treated any `401` as an expired session and signed the person out, so a mistyped current password ended their session; the account page now shows the error and keeps them signed in. A script that checked for `401` or `invalid_credentials` on this route must check for `400` and `invalid_current_password`.
 
 ### Admin API: additive and corrected answers (#419, response half)
 

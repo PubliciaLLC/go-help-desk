@@ -167,7 +167,20 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	// Guessing the current password from a held session is throttled like
+	// guessing it at sign-in: per user, failures only, and an over-budget
+	// caller waits rather than being refused before the check, so the right
+	// password always works and nothing here can keep somebody out of their own
+	// account. See handleLocalLogin for the reasoning behind that ordering.
+	throttleKey := "change-password:" + a.UserID.String()
+	if s.loginLimiter.Exceeded(throttleKey) {
+		s.loginLimiter.Tarpit(r.Context(), throttleKey, s.loginThrottleDelay)
+	}
 	if _, err := s.users.VerifyPassword(r.Context(), u.Email, body.CurrentPassword); err != nil {
+		if !s.loginLimiter.Allow(throttleKey) {
+			tooManyAttempts(w, s.loginLimiter.Remaining())
+			return
+		}
 		// 400, not 401 (#555): the session is good and a field in the body is
 		// wrong. The web client treats any 401 as an expired session and signs
 		// the person out, so a mistyped current password ended their session.
