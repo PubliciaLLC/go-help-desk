@@ -68,9 +68,9 @@ func ValidateEmail(s string) (string, error) {
 	if trimmed == "" {
 		return "", fmt.Errorf("%w: email is required", ErrValidation)
 	}
-	// Before any lower-casing: strings.ToLower and Postgres lower() fold some
-	// non-ASCII letters into ASCII ones (U+0130 to "i", U+212A to "k"), so a
-	// non-ASCII address cannot be compared reliably. Refused, not folded.
+	// Before any lower-casing: non-ASCII letters can fold to ASCII ones under
+	// strings.ToLower and Postgres lower(), so a non-ASCII address cannot be
+	// compared reliably. Refused, not folded.
 	if !isASCII(trimmed) {
 		return "", fmt.Errorf("%w: email address must contain only ASCII characters", ErrValidation)
 	}
@@ -113,6 +113,12 @@ func (u User) Validate() error {
 	if _, err := ValidateEmail(u.Email); err != nil {
 		return err
 	}
+	return u.validateFields()
+}
+
+// validateFields is Validate without the address, for an update that leaves
+// the stored address alone.
+func (u User) validateFields() error {
 	if strings.TrimSpace(u.DisplayName) == "" {
 		return fmt.Errorf("%w: display name is required", ErrValidation)
 	}

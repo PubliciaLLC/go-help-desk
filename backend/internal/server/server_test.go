@@ -80,6 +80,7 @@ type harness struct {
 	userID          uuid.UUID // the seeded reporting (RoleUser) user
 	sessions        *sessionstore.Store
 	authStore       *authstore.Store
+	userStore       *userstore.Store
 }
 
 func newHarness(t *testing.T) (*harness, func()) {
@@ -274,6 +275,7 @@ func newHarnessWithRateLimit(t *testing.T, authRateLimit int) (*harness, func())
 		userID:          reportingUser.ID,
 		sessions:        sessionStore,
 		authStore:       authSt,
+		userStore:       uStore,
 	}
 	cleanup := func() {
 		rollback()

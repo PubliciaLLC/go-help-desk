@@ -554,7 +554,13 @@ func (s *Service) SoftDelete(ctx context.Context, id uuid.UUID) error {
 
 // Update persists changes to an existing user.
 func (s *Service) Update(ctx context.Context, u User) error {
-	if err := u.Validate(); err != nil {
+	// An address the account already holds is not validated again: one stored
+	// before addresses had to be ASCII must still be renamable or re-roled.
+	if cur, err := s.store.GetByIDAdmin(ctx, u.ID); err == nil && cur.Email == u.Email {
+		if err := u.validateFields(); err != nil {
+			return err
+		}
+	} else if err := u.Validate(); err != nil {
 		return err
 	}
 	u.UpdatedAt = time.Now()
