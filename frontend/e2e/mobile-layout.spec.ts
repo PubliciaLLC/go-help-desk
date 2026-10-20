@@ -1073,3 +1073,106 @@ test.describe('#522: the admin header button stays beside the heading on a deskt
     }
   }
 })
+
+// The server-warning banners sit ABOVE <main>, so every check above that
+// measures main is blind to them. A phone showed the passkeys banner's
+// reset-factors command pushing the page wider than the screen, cutting off
+// the "New Ticket" button and the banner's own text. These tests render BOTH
+// notices an administrator is most likely to see and measure the whole
+// document, not main.
+const NOTICE_WIDTHS = [320, 375]
+
+async function mockBothNotices(page: Page) {
+  await page.route('**/api/v1/admin/security-warnings', (route) =>
+    route.fulfill({
+      json: {
+        insecure_secrets: [],
+        attachment_scanning: { policy: 'off', configured: false, reachable: false, effect: '' },
+        attachment_storage: { writable: false, problem: 'permission denied' },
+        // An unbroken host, as a real BASE_URL can be: Safari does not break
+        // inside the hyphenated reset-factors command either, so the banner must
+        // wrap anywhere rather than rely on break opportunities.
+        passkeys: { available: false, reason: `BASE_URL host ${'h'.repeat(120)}.internal has no public suffix` },
+      },
+    }),
+  )
+}
+
+// Nothing in the document, banner included, may stick out past the viewport
+// unless an overflow-x box sits between it and the edge.
+async function nothingPastTheViewport(page: Page, width: number) {
+  const m = await page.evaluate(() => {
+    const vw = document.documentElement.clientWidth
+    const clipped: string[] = []
+    for (const el of Array.from(document.body.querySelectorAll('*'))) {
+      const r = el.getBoundingClientRect()
+      if (r.width <= 1 || r.height <= 1 || (r.right <= vw + 1 && r.left >= -1)) continue
+      let reachable = false
+      for (let p = el.parentElement; p; p = p.parentElement) {
+        const ox = getComputedStyle(p).overflowX
+        if (ox === 'auto' || ox === 'scroll') { reachable = true; break }
+      }
+      if (!reachable) clipped.push(`<${el.tagName.toLowerCase()}> left=${Math.round(r.left)} right=${Math.round(r.right)} "${(el.textContent ?? '').trim().slice(0, 24)}"`)
+    }
+    return { vw, doc: document.documentElement.scrollWidth, clipped: clipped.slice(0, 5) }
+  })
+  expect(m.doc, `the document is ${m.doc}px wide in a ${m.vw}px viewport at ${width}px`).toBeLessThanOrEqual(m.vw)
+  expect(m.clipped, `elements outside the ${width}px screen`).toEqual([])
+}
+
+test.describe('server warnings fit a phone, collapsed and expanded', () => {
+  for (const width of NOTICE_WIDTHS) {
+    for (const target of [
+      { name: 'dashboard', path: '/dashboard' },
+      { name: 'an admin page', path: '/admin/users' },
+    ]) {
+      for (const expanded of [false, true]) {
+        test(`${target.name}: ${width}px, ${expanded ? 'expanded' : 'collapsed'}`, async ({ page }) => {
+          // The dashboard uses short data: with mockAdminApi its stat cards show a
+          // 300-character category name, an unrelated overflow that would mask
+          // what this block measures.
+          if (target.path === '/dashboard') await mockApi(page, { me: ME_ADMIN })
+          else await mockAdminApi(page)
+          await mockBothNotices(page)
+          await page.setViewportSize({ width, height: 844 })
+          await page.goto(target.path)
+          await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+          await page.waitForLoadState('networkidle')
+          // Measured before any click: the banner must fit as the page loads it.
+          await nothingPastTheViewport(page, width)
+          if (expanded) {
+            await page.getByRole('button', { name: /details/i }).click()
+            await expect(page.getByText(/reset-factors/)).toBeVisible()
+            await nothingPastTheViewport(page, width)
+            await noSidewaysScroll(page, width)
+          } else {
+            // One slim bar, not a stack of paragraphs.
+            await expect(page.getByText(/2 server problems need attention/)).toBeVisible()
+            await expect(page.getByText(/reset-factors/)).toBeHidden()
+            const bar = await page.getByRole('button', { name: /details/i }).boundingBox()
+            expect(bar!.height, 'the collapsed bar is a single slim line').toBeLessThan(60)
+          }
+          await noSidewaysScroll(page, width)
+        })
+      }
+    }
+  }
+})
+
+// A touch screen reports a coarse pointer; Hide must be a thumb-sized target there.
+test.describe('server warnings: Hide is a thumb-sized target on a touch screen', () => {
+  test.use({ hasTouch: true, isMobile: true })
+
+  test('375px', async ({ page }) => {
+    await mockApi(page, { me: ME_ADMIN })
+    await mockBothNotices(page)
+    await page.setViewportSize({ width: 375, height: 844 })
+    await page.goto('/dashboard')
+    await page.getByRole('button', { name: /details/i }).click()
+    for (const hide of await page.getByRole('button', { name: /hide for this session/i }).all()) {
+      const box = await hide.boundingBox()
+      expect(box!.height, 'Hide is shorter than 44px').toBeGreaterThanOrEqual(44)
+      expect(box!.width, 'Hide is narrower than 44px').toBeGreaterThanOrEqual(44)
+    }
+  })
+})

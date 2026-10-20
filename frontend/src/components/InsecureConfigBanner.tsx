@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { getSecurityWarnings } from '@/api/admin'
+import { ServerNoticeBar, type Notice } from '@/components/ServerNoticeBar'
 
 interface InsecureConfigBannerProps {
   /** Only administrators can see or fix this, so only they are asked. */
@@ -32,6 +33,13 @@ interface InsecureConfigBannerProps {
  * Its link is a plain anchor, not the router's Link: the banner's tests render
  * it with no router, and the full page load costs nothing here.
  *
+ * Presentation: one slim bar, not a stack of banners. It says how many
+ * problems there are (or names the one), expands to the full explanation of
+ * each, and lets the admin hide a notice for the current session
+ * (sessionStorage, keyed by notice id: it returns at the next sign-in while
+ * the problem remains, so a failure cannot be silenced for good). Red is for
+ * things that are broken now; configuration notices are amber.
+ *
  * All shown to admins only. The backend deliberately keeps this off the
  * public /api/v1/site payload: announcing to anonymous visitors that sessions
  * are signed with a known key, or that uploads are going unscanned, is an
@@ -39,17 +47,23 @@ interface InsecureConfigBannerProps {
  * so non-admins never fire a request that 403s.
  */
 export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
-  const { data } = useQuery({
+  const { data, refetch } = useQuery({
     queryKey: ['security-warnings'],
     queryFn: getSecurityWarnings,
     enabled: isAdmin,
     staleTime: 5 * 60 * 1000,
+    // A fixed problem must stop showing within seconds of the admin coming
+    // back to the tab, not after the stale window. Focus and expand are the
+    // only extra requests, which keeps the rate low.
+    refetchOnWindowFocus: 'always',
     retry: false,
   })
 
   const insecure = data?.insecure_secrets ?? []
   const scanning = data?.attachment_scanning
   const scannerDegraded = !!scanning && scanning.policy !== 'off' && !scanning.reachable
+  // Always a failure: under `required` uploads are refused, under `permissive`
+  // files are being stored unscanned right now.
 
   const staleOff = !!scanning?.stale_off
   const storage = data?.attachment_storage
@@ -73,99 +87,148 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
   const emailOff = !!email && !email.enabled && (email.signup_without_email || email.guest_submission_without_email)
   const emailFailing = !!email && email.failing
 
-  if (
-    insecure.length === 0 && !scannerDegraded && !staleOff && !storageBroken && !reopenInactive &&
-    !passkeysOff && !emailOff && !emailFailing && blindClients.length === 0
-  ) {
-    return null
-  }
-
-  return (
-    <>
-      {insecure.length > 0 && (
-        <div role="alert" className="border-b border-red-700 bg-red-600 px-4 py-3 text-white">
-          <p className="text-sm font-semibold">
+  const notices: Notice[] = []
+  if (insecure.length > 0) {
+    notices.push({
+      id: 'insecure-secrets',
+      severity: 'failure',
+      signature: insecure.join(','),
+      title: 'Insecure configuration',
+      body: (
+        <>
+          <p className="font-semibold">
             Insecure configuration: {insecure.join(' and ')} {insecure.length === 1 ? 'is' : 'are'} set
             to an example value from the repository.
           </p>
-          <p className="mt-1 text-sm text-red-50">
+          <p className="mt-1">
             Anyone can forge sessions or API tokens for this instance. Generate real values with{' '}
-            <code className="rounded bg-red-800/60 px-1 py-0.5 font-mono text-xs">
-              openssl rand -base64 32
-            </code>{' '}
-            and restart. Changing {insecure.length === 1 ? 'it' : 'them'} signs everyone out once.
+            <code className={CODE}>openssl rand -base64 32</code> and restart. Changing{' '}
+            {insecure.length === 1 ? 'it' : 'them'} signs everyone out once.
           </p>
-        </div>
-      )}
-      {scannerDegraded && (
-        <div role="alert" className="border-b border-amber-700 bg-amber-500 px-4 py-3 text-amber-950">
-          <p className="text-sm font-semibold">Attachment scanner unreachable</p>
-          <p className="mt-1 text-sm">{scanning.effect}</p>
-        </div>
-      )}
-      {storageBroken && (
-        <div role="alert" className="border-b border-red-700 bg-red-600 px-4 py-3 text-white">
-          <p className="text-sm font-semibold">Attachment uploads are disabled</p>
-          <p className="mt-1 text-sm text-red-50">
+        </>
+      ),
+    })
+  }
+  if (scannerDegraded) {
+    notices.push({
+      id: 'scanner-unreachable',
+      severity: 'failure',
+      signature: scanning.policy,
+      title: 'Attachment scanner unreachable',
+      body: (
+        <>
+          <p className="font-semibold">Attachment scanner unreachable</p>
+          <p className="mt-1">{scanning.effect}</p>
+        </>
+      ),
+    })
+  }
+  if (storageBroken) {
+    notices.push({
+      id: 'attachment-storage',
+      severity: 'failure',
+      signature: storage.problem,
+      title: 'Attachment uploads are disabled',
+      body: (
+        <>
+          <p className="font-semibold">Attachment uploads are disabled</p>
+          <p className="mt-1">
             The server cannot write to its attachment directory ({storage.problem}). Uploads are refused until{' '}
-            <code className="rounded bg-red-800/60 px-1 py-0.5 font-mono text-xs">ATTACHMENT_DIR</code> exists and the
+            <code className={CODE}>ATTACHMENT_DIR</code> exists and the
             server can write to it. Existing attachments can still be downloaded. No restart is needed once it is fixed.
           </p>
-        </div>
-      )}
-      {reopenInactive && (
-        <div role="alert" className="border-b border-amber-700 bg-amber-500 px-4 py-3 text-amber-950">
-          <p className="text-sm font-semibold">The reopen target status is inactive</p>
-          <p className="mt-1 text-sm">
+        </>
+      ),
+    })
+  }
+  if (reopenInactive) {
+    notices.push({
+      id: 'reopen-target',
+      severity: 'config',
+      signature: reopenTarget?.name ?? '',
+      title: 'The reopen target status is inactive',
+      body: (
+        <>
+          <p className="font-semibold">The reopen target status is inactive</p>
+          <p className="mt-1">
             &quot;{reopenTarget?.name}&quot; has been deactivated, so reopened tickets are going to &quot;New&quot;
             instead. Pick an active status under Settings → Ticket lifecycle → Reopen target status.
           </p>
-        </div>
-      )}
-      {passkeysOff && (
-        <div role="alert" className="border-b border-amber-700 bg-amber-500 px-4 py-3 text-amber-950">
-          <p className="text-sm font-semibold">Passkeys are unavailable</p>
-          <p className="mt-1 text-sm">
-            A passkey is tied to a domain name, so{' '}
-            <code className="rounded bg-amber-700/30 px-1 py-0.5 font-mono text-xs">BASE_URL</code> must be a domain
-            name (or <code className="font-mono text-xs">localhost</code>) to use them; an IP address or a single-word
+        </>
+      ),
+    })
+  }
+  if (passkeysOff) {
+    notices.push({
+      id: 'passkeys',
+      severity: 'config',
+      signature: '',
+      title: 'Passkeys are unavailable',
+      body: (
+        <>
+          <p className="font-semibold">Passkeys are unavailable</p>
+          <p className="mt-1">
+            A passkey is tied to a domain name, so <code className={CODE}>BASE_URL</code> must be a domain
+            name (or <code className={CODE}>localhost</code>) to use them; an IP address or a single-word
             host will not work. Everything else runs normally, but anyone whose only second factor is a passkey cannot
             sign in while sign-in MFA is on, until an administrator resets their sign-in factors. If that is the last
             administrator, run{' '}
-            <code className="rounded bg-amber-700/30 px-1 py-0.5 font-mono text-xs">
-              docker compose exec app /app/server reset-factors &lt;email&gt;
-            </code>{' '}
+            <code className={CODE}>docker compose exec app /app/server reset-factors &lt;email&gt;</code>{' '}
             on the server. Reason: {passkeys.reason}
           </p>
-        </div>
-      )}
-      {emailOff && (
-        <div role="alert" className="border-b border-amber-700 bg-amber-500 px-4 py-3 text-amber-950">
-          <p className="text-sm font-semibold">Email is not set up</p>
-          <p className="mt-1 text-sm">
+        </>
+      ),
+    })
+  }
+  if (emailOff) {
+    notices.push({
+      id: 'email-off',
+      severity: 'config',
+      signature: `${email.missing.join(',')}|${email.signup_without_email}|${email.guest_submission_without_email}`,
+      title: 'Email is not set up',
+      body: (
+        <>
+          <p className="font-semibold">Email is not set up</p>
+          <p className="mt-1">
             No email can be sent: {email.missing.join(' and ')} {email.missing.length === 1 ? 'is' : 'are'} not set in{' '}
-            <code className="font-mono text-xs">docker/.env</code>. Set{' '}
+            <code className={CODE}>docker/.env</code>. Set{' '}
             {email.missing.length === 1 ? 'it' : 'both'}, then restart the server.
             {email.signup_without_email && ' Self-service signup is on, so nobody can finish signing up.'}
             {email.guest_submission_without_email && ' Guest submission is on, so guests get no link to their ticket.'}
           </p>
-        </div>
-      )}
-      {emailFailing && (
-        <div role="alert" className="border-b border-red-700 bg-red-600 px-4 py-3 text-white">
-          <p className="text-sm font-semibold">Email is not being delivered</p>
-          <p className="mt-1 text-sm text-red-50">
+        </>
+      ),
+    })
+  }
+  if (emailFailing) {
+    notices.push({
+      id: 'email-failing',
+      severity: 'failure',
+      signature: String(email.failing_count),
+      title: 'Email is not being delivered',
+      body: (
+        <>
+          <p className="font-semibold">Email is not being delivered</p>
+          <p className="mt-1">
             {email.failing_count} {email.failing_count === 1 ? 'message has' : 'messages have'} failed or are being
             retried. Latest error: {email.last_error}
           </p>
-        </div>
-      )}
-      {blindClients.length > 0 && (
-        <div role="alert" className="border-b border-amber-700 bg-amber-500 px-4 py-3 text-amber-950">
-          <p className="text-sm font-semibold">
+        </>
+      ),
+    })
+  }
+  if (blindClients.length > 0) {
+    notices.push({
+      id: 'oauth-blind-clients',
+      severity: 'config',
+      signature: blindClients.join(','),
+      title: `${blindClients.length === 1 ? 'An OAuth client sees' : 'OAuth clients see'} no tickets`,
+      body: (
+        <>
+          <p className="font-semibold">
             {blindClients.length === 1 ? 'An OAuth client sees' : 'OAuth clients see'} no tickets
           </p>
-          <p className="mt-1 text-sm">
+          <p className="mt-1">
             Ticket scope is on, and {blindClients.join(', ')}{' '}
             {blindClients.length === 1 ? 'acts as a service user' : 'act as service users'} in no group.{' '}
             <a className="font-medium underline" href="/admin/oauth-clients">
@@ -174,23 +237,32 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
             to add {blindClients.length === 1 ? 'it' : 'each'} to a group, or disable{' '}
             {blindClients.length === 1 ? 'it' : 'them'}. This stays until you do.
           </p>
-        </div>
-      )}
-      {staleOff && (
-        <div role="alert" className="border-b border-amber-700 bg-amber-500 px-4 py-3 text-amber-950">
-          <p className="text-sm font-semibold">Attachments are not being scanned</p>
-          <p className="mt-1 text-sm">
-            To turn scanning back on, add{' '}
-            <code className="rounded bg-amber-700/30 px-1 py-0.5 font-mono text-xs">COMPOSE_PROFILES=antivirus</code>{' '}
-            and{' '}
-            <code className="rounded bg-amber-700/30 px-1 py-0.5 font-mono text-xs">CLAMAV_ADDR=tcp://clamav:3310</code>{' '}
-            to <code className="font-mono text-xs">docker/.env</code>, run{' '}
-            <code className="rounded bg-amber-700/30 px-1 py-0.5 font-mono text-xs">docker compose up -d</code>, then
+        </>
+      ),
+    })
+  }
+  if (staleOff) {
+    notices.push({
+      id: 'scanning-off-by-default',
+      severity: 'config',
+      signature: '',
+      title: 'Attachments are not being scanned',
+      body: (
+        <>
+          <p className="font-semibold">Attachments are not being scanned</p>
+          <p className="mt-1">
+            To turn scanning back on, add <code className={CODE}>COMPOSE_PROFILES=antivirus</code> and{' '}
+            <code className={CODE}>CLAMAV_ADDR=tcp://clamav:3310</code> to{' '}
+            <code className={CODE}>docker/.env</code>, run <code className={CODE}>docker compose up -d</code>, then
             confirm the scanner address under Settings → Attachments. To keep scanning off, choose
             &quot;Do not scan&quot; there.
           </p>
-        </div>
-      )}
-    </>
-  )
+        </>
+      ),
+    })
+  }
+
+  return <ServerNoticeBar notices={notices} onOpen={() => void refetch()} />
 }
+
+const CODE = 'rounded bg-black/10 px-1 py-0.5 font-mono text-xs [overflow-wrap:anywhere]'
