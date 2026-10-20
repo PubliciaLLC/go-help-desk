@@ -34,7 +34,7 @@ describe('the attachment scanning warning', () => {
     renderWithQuery(<InsecureConfigBanner isAdmin />)
 
     await waitFor(() => expect(api.get).toHaveBeenCalledWith('/admin/security-warnings'))
-    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Server notices' })).toBeNull()
   })
 
   it('says nothing when the operator has deliberately turned scanning off', async () => {
@@ -52,7 +52,7 @@ describe('the attachment scanning warning', () => {
     await waitFor(() => expect(api.get).toHaveBeenCalledWith('/admin/security-warnings'))
     // Deliberately off is a choice already visible in Settings, not a hidden
     // failure — this banner is for the case nobody would otherwise notice.
-    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Server notices' })).toBeNull()
   })
 
   it('warns when the policy is required and the scanner cannot be reached', async () => {
@@ -63,7 +63,7 @@ describe('the attachment scanning warning', () => {
     })
     renderWithQuery(<InsecureConfigBanner isAdmin />)
 
-    const alert = await screen.findByRole('alert')
+    const alert = await screen.findByRole('region', { name: 'Server notices' })
     expect(alert.textContent ?? '').toContain(effect)
   })
 
@@ -78,7 +78,7 @@ describe('the attachment scanning warning', () => {
     })
     renderWithQuery(<InsecureConfigBanner isAdmin />)
 
-    const alert = await screen.findByRole('alert')
+    const alert = await screen.findByRole('region', { name: 'Server notices' })
     expect(alert.textContent ?? '').toContain(effect)
   })
 
@@ -95,7 +95,7 @@ describe('the attachment scanning warning', () => {
     renderWithQuery(<InsecureConfigBanner isAdmin />)
 
     // One bar now, not one banner each; the details hold both, in order.
-    const bar = await screen.findByRole('alert')
+    const bar = await screen.findByRole('region', { name: 'Server notices' })
     expect(bar.textContent ?? '').toMatch(/2 server problems need attention/)
     fireEvent.click(screen.getByRole('button', { name: /details/i }))
     const items = within(bar).getAllByRole('listitem')
@@ -130,7 +130,7 @@ describe('the scanning-is-off-by-default warning', () => {
     })
     renderWithQuery(<InsecureConfigBanner isAdmin />)
 
-    const alert = await screen.findByRole('alert')
+    const alert = await screen.findByRole('region', { name: 'Server notices' })
     const text = alert.textContent ?? ''
     expect(text).toMatch(/attachments are not being scanned/i)
     expect(text).toContain('COMPOSE_PROFILES=antivirus')
@@ -149,7 +149,7 @@ describe('the scanning-is-off-by-default warning', () => {
     renderWithQuery(<InsecureConfigBanner isAdmin />)
 
     await waitFor(() => expect(api.get).toHaveBeenCalledWith('/admin/security-warnings'))
-    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Server notices' })).toBeNull()
   })
 
   it('says nothing to a non-admin', () => {
@@ -160,7 +160,7 @@ describe('the scanning-is-off-by-default warning', () => {
     renderWithQuery(<InsecureConfigBanner isAdmin={false} />)
 
     expect(api.get).not.toHaveBeenCalled()
-    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Server notices' })).toBeNull()
   })
 })
 
@@ -177,7 +177,7 @@ describe('the OAuth clients without groups warning', () => {
     mockWarnings({ ...healthy, oauth_clients_without_groups: ['JIRA sync', 'CI pipeline'] })
     renderWithQuery(<InsecureConfigBanner isAdmin />)
 
-    const alert = await screen.findByRole('alert')
+    const alert = await screen.findByRole('region', { name: 'Server notices' })
     // The link sits in the details, which start closed.
     fireEvent.click(within(alert).getByRole('button', { name: /details/i }))
     const text = alert.textContent ?? ''
@@ -192,7 +192,7 @@ describe('the OAuth clients without groups warning', () => {
     renderWithQuery(<InsecureConfigBanner isAdmin />)
 
     await waitFor(() => expect(api.get).toHaveBeenCalledWith('/admin/security-warnings'))
-    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Server notices' })).toBeNull()
   })
 
   it('says nothing from a server that predates the field', async () => {
@@ -200,6 +200,6 @@ describe('the OAuth clients without groups warning', () => {
     renderWithQuery(<InsecureConfigBanner isAdmin />)
 
     await waitFor(() => expect(api.get).toHaveBeenCalledWith('/admin/security-warnings'))
-    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Server notices' })).toBeNull()
   })
 })

@@ -1360,16 +1360,24 @@ the page, never a stack of banners. It is a single line: "N server problems
 need attention", or the notice's own title when there is exactly one, with a
 **Details** button (`aria-expanded`) that opens the full explanation of each
 notice. Red marks something broken now (unwritable attachment storage, a
-scanner that is down under the `required` policy, insecure secrets, email not
-being delivered); configuration notices are amber. **Hide** removes one notice
-for the current session: it is kept in `sessionStorage` by notice id, sent
-nowhere, cleared at sign-out, and the notice returns at the next sign-in while
-the problem remains. When every notice is hidden the bar goes away. The query
+scanner that is down, under either policy: `required` refuses uploads and
+`permissive` stores files unscanned right now; insecure secrets; email not being
+delivered); configuration notices are amber. An `info` severity (neutral blue)
+exists for good news such as an available update: it never turns the bar red,
+is not counted as a problem, and is announced politely as a status. **Hide** removes one notice
+for the current session: it is kept in `sessionStorage` by notice id, severity
+and a short summary of what it said (so a notice that gets worse, such as a
+changed scanner policy, more failed email, another blind OAuth client or a
+second exposed secret, comes back), sent nowhere, cleared at sign-out and when
+the session expires (the 401 handler), and the notice returns at the next
+sign-in while the problem remains. When every notice is hidden the bar goes away. The query
 is refetched when the window regains focus and when Details is opened, so a
 problem that was fixed stops showing within seconds. Everything inside wraps
 anywhere, including the `reset-factors` command, because the bar sits above
 `<main>` and a long unbroken token there once widened the whole page. Only
-administrators are asked.
+administrators are asked. Only the summary line is a live region; the bar
+is a labelled region, focus moves to the next Hide button (or Details) after a
+Hide, and Hide is at least 44px on a touch screen.
 
 **What each job covers.** The staff path is the queue, a ticket, and the
 actions taken on it: read, reply, reassign, change status, resolve. The

@@ -1139,3 +1139,21 @@ test.describe('server warnings fit a phone, collapsed and expanded', () => {
     }
   }
 })
+
+// A touch screen reports a coarse pointer; Hide must be a thumb-sized target there.
+test.describe('server warnings: Hide is a thumb-sized target on a touch screen', () => {
+  test.use({ hasTouch: true, isMobile: true })
+
+  test('375px', async ({ page }) => {
+    await mockApi(page, { me: ME_ADMIN })
+    await mockBothNotices(page)
+    await page.setViewportSize({ width: 375, height: 844 })
+    await page.goto('/dashboard')
+    await page.getByRole('button', { name: /details/i }).click()
+    for (const hide of await page.getByRole('button', { name: /hide for this session/i }).all()) {
+      const box = await hide.boundingBox()
+      expect(box!.height, 'Hide is shorter than 44px').toBeGreaterThanOrEqual(44)
+      expect(box!.width, 'Hide is narrower than 44px').toBeGreaterThanOrEqual(44)
+    }
+  })
+})

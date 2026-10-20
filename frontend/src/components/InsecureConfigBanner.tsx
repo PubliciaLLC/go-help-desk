@@ -1,8 +1,6 @@
-import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { getSecurityWarnings } from '@/api/admin'
-import { cn } from '@/lib/utils'
-import { DISMISS_PREFIX, readDismissed } from '@/components/noticeDismissal'
+import { ServerNoticeBar, type Notice } from '@/components/ServerNoticeBar'
 
 interface InsecureConfigBannerProps {
   /** Only administrators can see or fix this, so only they are asked. */
@@ -60,15 +58,12 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
     refetchOnWindowFocus: 'always',
     retry: false,
   })
-  const [open, setOpen] = useState(false)
-  const [dismissed, setDismissed] = useState<Set<string>>(readDismissed)
 
   const insecure = data?.insecure_secrets ?? []
   const scanning = data?.attachment_scanning
   const scannerDegraded = !!scanning && scanning.policy !== 'off' && !scanning.reachable
-  // Only a required policy refuses uploads when the scanner is down; a
-  // permissive one keeps accepting them, so it is a notice, not a failure.
-  const scannerBlocks = scannerDegraded && scanning.policy === 'required'
+  // Always a failure: under `required` uploads are refused, under `permissive`
+  // files are being stored unscanned right now.
 
   const staleOff = !!scanning?.stale_off
   const storage = data?.attachment_storage
@@ -97,6 +92,7 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
     notices.push({
       id: 'insecure-secrets',
       severity: 'failure',
+      signature: insecure.join(','),
       title: 'Insecure configuration',
       body: (
         <>
@@ -116,7 +112,8 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
   if (scannerDegraded) {
     notices.push({
       id: 'scanner-unreachable',
-      severity: scannerBlocks ? 'failure' : 'config',
+      severity: 'failure',
+      signature: scanning.policy,
       title: 'Attachment scanner unreachable',
       body: (
         <>
@@ -130,6 +127,7 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
     notices.push({
       id: 'attachment-storage',
       severity: 'failure',
+      signature: storage.problem,
       title: 'Attachment uploads are disabled',
       body: (
         <>
@@ -147,6 +145,7 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
     notices.push({
       id: 'reopen-target',
       severity: 'config',
+      signature: reopenTarget?.name ?? '',
       title: 'The reopen target status is inactive',
       body: (
         <>
@@ -163,6 +162,7 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
     notices.push({
       id: 'passkeys',
       severity: 'config',
+      signature: '',
       title: 'Passkeys are unavailable',
       body: (
         <>
@@ -184,6 +184,7 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
     notices.push({
       id: 'email-off',
       severity: 'config',
+      signature: `${email.missing.join(',')}|${email.signup_without_email}|${email.guest_submission_without_email}`,
       title: 'Email is not set up',
       body: (
         <>
@@ -203,6 +204,7 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
     notices.push({
       id: 'email-failing',
       severity: 'failure',
+      signature: String(email.failing_count),
       title: 'Email is not being delivered',
       body: (
         <>
@@ -219,6 +221,7 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
     notices.push({
       id: 'oauth-blind-clients',
       severity: 'config',
+      signature: blindClients.join(','),
       title: `${blindClients.length === 1 ? 'An OAuth client sees' : 'OAuth clients see'} no tickets`,
       body: (
         <>
@@ -242,6 +245,7 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
     notices.push({
       id: 'scanning-off-by-default',
       severity: 'config',
+      signature: '',
       title: 'Attachments are not being scanned',
       body: (
         <>
@@ -258,82 +262,7 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
     })
   }
 
-  const visible = notices.filter((n) => !dismissed.has(n.id))
-  if (visible.length === 0) return null
-
-  const anyFailure = visible.some((n) => n.severity === 'failure')
-  const summary =
-    visible.length === 1 ? visible[0].title : `${visible.length} server problems need attention`
-
-  function dismiss(id: string) {
-    try {
-      sessionStorage.setItem(DISMISS_PREFIX + id, '1')
-    } catch {
-      // Storage blocked: the notice is hidden for this page view only.
-    }
-    setDismissed((prev) => new Set(prev).add(id))
-  }
-
-  function toggle() {
-    // Opening is when the admin is checking whether the fix landed.
-    if (!open) void refetch()
-    setOpen(!open)
-  }
-
-  return (
-    <div
-      role="alert"
-      className={cn(
-        'min-w-0 max-w-full border-b text-sm [overflow-wrap:anywhere]',
-        anyFailure ? 'border-red-300 bg-red-50 text-red-900' : 'border-amber-300 bg-amber-50 text-amber-950',
-      )}
-    >
-      <div className="flex min-w-0 items-center gap-2 px-3 py-1.5">
-        <span aria-hidden="true">⚠</span>
-        <span className="min-w-0 flex-1 truncate font-medium">{summary}</span>
-        <button
-          type="button"
-          aria-expanded={open}
-          aria-controls="server-notices"
-          onClick={toggle}
-          className="shrink-0 rounded px-2 py-1 font-medium underline focus-visible:outline focus-visible:outline-2"
-        >
-          Details
-        </button>
-      </div>
-      <ul id="server-notices" hidden={!open} className="max-h-[60dvh] min-w-0 overflow-y-auto border-t border-black/10">
-        {visible.map((n) => (
-          <li
-            key={n.id}
-            className={cn(
-              'flex min-w-0 items-start gap-2 border-b border-black/10 px-3 py-2 last:border-b-0',
-              n.severity === 'failure' ? 'bg-red-50' : 'bg-amber-50',
-            )}
-          >
-            <div className="min-w-0 flex-1">{n.body}</div>
-            <button
-              type="button"
-              aria-label={`Hide for this session: ${n.title}`}
-              onClick={() => dismiss(n.id)}
-              className="shrink-0 rounded px-2 py-1 text-xs font-medium underline"
-            >
-              Hide
-            </button>
-          </li>
-        ))}
-      </ul>
-    </div>
-  )
-}
-
-type Severity = 'failure' | 'config'
-
-interface Notice {
-  id: string
-  /** failure: something is broken now (red). config: needs setting up (amber). */
-  severity: Severity
-  title: string
-  body: React.ReactNode
+  return <ServerNoticeBar notices={notices} onOpen={() => void refetch()} />
 }
 
 const CODE = 'rounded bg-black/10 px-1 py-0.5 font-mono text-xs [overflow-wrap:anywhere]'
