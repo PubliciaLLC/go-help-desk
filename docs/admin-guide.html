@@ -91,6 +91,7 @@
       <li><a href="#admin-webhooks">Webhooks</a></li>
       <li><a href="#admin-oauth-clients">OAuth Clients</a></li>
       <li><a href="#admin-api-keys">API Keys</a></li>
+      <li><a href="#admin-server-warnings">Server Warnings</a></li>
       <li><a href="#admin-audit">Audit Log</a></li>
       <li><a href="#admin-attachments">Attachments</a></li>
       <li><a href="#admin-plugins">Plugins</a></li>
@@ -886,6 +887,15 @@ function verifySignature(secret, body, header) {
   <li>A key acts within its owner's current role, and its scopes never exceed it. A staff key can carry <code>tickets:read</code>, <code>tickets:write</code>, <code>groups:read</code> and <code>audit:read</code> (<code>users:read</code> is no longer offered: its one staff route, the requester lookup, is session-only). Promoting a staff member who holds an administrator-issued key leaves an administrator holding it; revoke it if you do not want that.</li>
   <li><strong>A key cannot create keys or OAuth clients</strong>, and <strong>cannot write users</strong>: it can read users and groups, but cannot create, change, disable or delete an account, set a password, clear a second factor, change an email, or change group membership or scope. It also cannot change <code>ticket_scope_enforced</code> or the auto-assignment settings. These need you, signed in. The scope <code>users:write</code> is no longer offered.</li>
   <li>Every key issued or revoked is written to the audit log (<code>api_key_issued</code>, <code>api_key_revoked</code>).</li>
+</ul>
+
+<h2 id="admin-server-warnings">Server warnings</h2>
+
+<p>Administrators see problems with the server in <strong>one slim bar</strong> above the page, never a stack of banners. Where this guide says a "banner", it means a notice in this bar. The bar is one line: "N server problems need attention", or the notice's own title when there is exactly one, with a <strong>Details</strong> button that opens the full explanation of each notice.</p>
+<ul>
+  <li><strong>Red</strong> marks something broken now: exposed secrets, attachment storage that cannot be written, a virus scanner that cannot be reached (under either scan policy), and email that is not being delivered. <strong>Amber</strong> marks a configuration notice, such as email not set up, passkeys unavailable, or attachments not being scanned.</li>
+  <li><strong>Hide</strong> removes one notice for your current session. It returns at your next sign-in, after your session expires, or when the problem gets worse (for example a changed scanner policy, more failed email, another exposed secret). When every notice is hidden the bar goes away. Nothing about hiding is sent to the server.</li>
+  <li>The bar checks again when the window regains focus and when you open Details, so a fixed problem stops showing within seconds. Long commands in a notice wrap, so the bar fits a phone. Only administrators see it. The same information is available from <code>GET /api/v1/admin/security-warnings</code>.</li>
 </ul>
 
 <h2 id="admin-audit">Audit log</h2>

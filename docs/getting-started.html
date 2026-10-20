@@ -346,7 +346,7 @@ ln -sfn "$(brew --prefix)/opt/docker-buildx/bin/docker-buildx" ~/.docker/cli-plu
     <strong>Set up SSO</strong> (optional). Configure SAML or OIDC under <em>Admin → Settings</em>, in the SAML and OIDC sections. OIDC is reloaded without a restart. See <a href="authentication.html#auth-saml">Authentication: SAML 2.0</a>.
   </li>
   <li>
-    <strong>Check the warning banners.</strong> Administrators see a red banner while an example secret is in use, and another while attachment uploads are disabled because the attachment directory cannot be written. Replace the secret and restart before inviting users. Other banners say when email is not set up or not being delivered, when passkeys are unavailable because of <code>BASE_URL</code>, and when an OAuth client sees no tickets.
+    <strong>Check the server warnings.</strong> Administrators see one slim bar above the page that opens (<em>Details</em>) to the notices (<a href="admin-guide.html#admin-server-warnings">Server warnings</a>). It shows a red notice while an example secret is in use, and another while attachment uploads are disabled because the attachment directory cannot be written. Replace the secret and restart before inviting users. Other notices say when email is not set up or not being delivered, when passkeys are unavailable because of <code>BASE_URL</code>, and when an OAuth client sees no tickets.
   </li>
   <li>
     <strong>Decide audit retention.</strong> Choose whether the audit log is kept forever (the default) or pruned, and whether staff can see ticket change history. Both are under <em>Admin → Settings</em>, in the Audit log section. See <a href="admin-guide.html#admin-audit">Admin Guide: Audit log</a>.
