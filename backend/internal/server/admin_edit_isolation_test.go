@@ -131,7 +131,7 @@ func TestUpdateProfile_WritesOnlyTheAddressAndTheName(t *testing.T) {
 // the foreign key, answered 500, and left a permanent gap in the numbering on
 // every attempt.
 func TestCreateTicket_AnUnknownCategoryDoesNotBurnANumber(t *testing.T) {
-	h, cleanup := newHarness(t)
+	h, cleanup := newIsolatedHarness(t)
 	defer cleanup()
 
 	before := latestTicketNumber(t, h)
@@ -144,6 +144,11 @@ func TestCreateTicket_AnUnknownCategoryDoesNotBurnANumber(t *testing.T) {
 	res.Body.Close()
 	require.Equal(t, http.StatusBadRequest, res.StatusCode,
 		"an unknown category is the caller's mistake, not an internal error: %s", body)
+
+	// Another package's tests draw tracking numbers from the same sequence
+	// when they share the database (#550), and a rollback does not give a
+	// number back. This is that neighbour, made deterministic.
+	drawTrackingNumberElsewhere(t)
 
 	after := createTicketAsUser(t, h, "After the refusal")
 	require.Equal(t, before+1, trackingSeq(t, after.TrackingNumber),
