@@ -96,6 +96,7 @@
       <li><a href="#api-service-users">OAuth clients &amp; service users</a></li>
       <li><a href="#api-priority">Priority and following</a></li>
       <li><a href="#api-on-behalf">Filing for someone else</a></li>
+      <li><a href="#api-format">Text format</a></li>
       <li><a href="#api-webhook-events">Webhook events</a></li>
       <li><a href="#api-errors">Errors &amp; pagination</a></li>
       <li><a href="api-reference.html">API Reference</a></li>
@@ -325,6 +326,16 @@ Cache-Control: private, max-age=3600</code></pre>
   <li><code>GET /api/v1/tickets/{id}</code> carries <code>requester</code> (name and email) for staff and administrators, and never for requesters.</li>
 </ul>
 
+<h2 id="api-format">Text format: plain or Markdown</h2>
+
+<p>Every ticket object carries <code>description_format</code> and every reply carries <code>body_format</code>, each <code>plain</code> or <code>markdown</code>, for staff, requesters and guests alike. A follow-up copies its original's format.</p>
+<ul>
+  <li><strong>REST defaults to plain.</strong> <code>POST /tickets</code>, <code>/tickets/{id}/replies</code>, <code>/guest/tickets</code> and <code>/guest/replies</code> take an optional <code>format</code> (<code>plain</code> or <code>markdown</code>). Without it the text is stored as <code>plain</code>, so existing integrations are unchanged. An integration that sends Markdown-looking text keeps getting plain text unless it adds <code>"format": "markdown"</code>.</li>
+  <li><strong>The web app sends Markdown. MCP <code>create_ticket</code> and <code>add_reply</code> default to Markdown</strong> (see <a href="mcp.html#mcp-tools">MCP tools</a>); pass <code>format: "plain"</code> to keep plain text.</li>
+  <li>Any other value (<code>""</code>, <code>"Markdown"</code>, <code>"html"</code>, a number) is <code>400 invalid_format</code>, and nothing is written.</li>
+  <li>The server stores and returns the text as written; formatting is applied when the page displays it (see <a href="tickets.html#tickets-formatting">Formatting text</a> and <a href="security.html#text">How ticket text is displayed</a>).</li>
+</ul>
+
 <h2 id="api-webhook-events">Webhook events</h2>
 
 <p>A webhook subscribes to event names, set with <code>events</code> on <code>/api/v1/admin/webhooks</code>. The names are <code>*</code> (all), <code>ticket.created</code>, <code>ticket.assigned</code>, <code>ticket.status_changed</code>, <code>ticket.replied</code>, <code>ticket.note_added</code>, <code>ticket.resolved</code>, <code>ticket.closed</code>, <code>ticket.reopened</code>, <code>ticket.linked</code>, <code>ticket.priority_changed</code> and <code>ticket.classified</code>. A change to a ticket is one event, and a hook gets <strong>one delivery per change</strong>, labelled with the first name it subscribes to that the change carries. The raw body holds ids only. When a change is announced under several names, a receiver that reads only <code>Type</code> can miss one; read the ticket by <code>TicketID</code> to know more. For a new ticket that auto-assignment routes, the <code>ticket.assigned</code> delivery has a null <code>ActorID</code>. Assigning a ticket to who and what it already has announces nothing. A webhook's delivery history (<code>/api/v1/admin/webhooks/{id}/deliveries</code>) shows a retry that was dropped as <code>result: "dropped"</code> with a <code>drop_reason</code>; see the API reference. See <a href="admin-guide.html#admin-webhook-one">Webhooks in the admin guide</a> for the order of names and the chat messages, and the <a href="api-reference.html">API reference</a> for the request fields.</p>
@@ -351,6 +362,7 @@ Cache-Control: private, max-age=3600</code></pre>
     <tr><td><code>unauthorized</code></td><td>401</td><td>No valid session, API key or OAuth token.</td></tr>
     <tr><td><code>forbidden</code></td><td>403</td><td>The caller is known but the role does not allow this.</td></tr>
     <tr><td><code>mfa_required</code></td><td>403</td><td>The session has not passed its second factor.</td></tr>
+    <tr><td><code>invalid_format</code></td><td>400</td><td><code>format</code> is present on a ticket or reply and is not <code>plain</code> or <code>markdown</code>.</td></tr>
     <tr><td><code>invalid_current_password</code></td><td>400</td><td><code>PATCH /api/v1/me/password</code> without <code>current_password</code>, or with the wrong one. The session is fine, so this is not a <code>401</code>.</td></tr>
     <tr><td><code>password_change_required</code></td><td>403</td><td>The account was unlocked from the server console and still holds the password it was given. The session may only change its password (<code>PATCH /api/v1/me/password</code>).</td></tr>
     <tr><td><code>password_reset_required</code></td><td>403</td><td>The password is right but is still stored in the older, weaker form, and the grace period has passed. It must be reset by an administrator. Administrators are exempt.</td></tr>

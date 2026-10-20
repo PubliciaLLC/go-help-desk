@@ -112,6 +112,7 @@
       <li><a href="#password-change">Changing a password via API</a></li>
       <li><a href="#update-check">Update check (opt-in)</a></li>
       <li><a href="#after-upgrade-wizard">After-upgrade wizard</a></li>
+      <li><a href="#markdown">Markdown in ticket text</a></li>
       <li><a href="#known-gaps">Not in 1.3.0</a></li>
       <li><a href="#steps">Doing the upgrade</a></li>
     </ul>
@@ -232,6 +233,7 @@
     <tr><td><code>PATCH /api/v1/me/password</code> needs <code>current_password</code>, and wrong guesses are throttled</td><td>Scripts written for 1.2.0 that change a password</td></tr>
     <tr><td>An optional weekly check for new releases; it is off unless an administrator turns it on</td><td>Administrators; air-gapped installs (leave it off)</td></tr>
     <tr><td>A one-time After upgrading wizard for the first administrator</td><td>The first administrator to sign in after the upgrade</td></tr>
+    <tr><td>Markdown in ticket text; old text stays plain; MCP writes Markdown by default</td><td>Everyone who writes tickets; MCP agents; integrations that send Markdown-looking text</td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
@@ -262,6 +264,7 @@
   <li><strong>OAuth clients can write.</strong> Each client acts as a service user that is listed in Admin → Users. <a href="#service-users">Details</a></li>
   <li><strong>API keys for staff.</strong> Staff can create their own API keys when an administrator allows it, every new key expires, and keys are limited in what they can do. Several scripts break; read <a href="#api-keys">the details</a>.</li>
   <li><strong>File for a requester.</strong> Staff can file a ticket for an existing user or a typed address. <a href="#on-behalf">Details</a></li>
+  <li><strong>Markdown in ticket text.</strong> A formatting editor, strict rendering, and old text left as plain text. <a href="#markdown">Details</a></li>
   <li><strong>Search finds more.</strong> Staff search covers every ticket they can see, with a chip to narrow it to the queue. <a href="#staff-search">Details</a></li>
   <li><strong>One delivery per change.</strong> A webhook gets one delivery for one change, however many things it changed, and nothing is sent for a change that failed. <a href="#one-event">Details</a></li>
   <li><strong>Webhook retries, history and a ticket filter.</strong> <a href="#webhooks">Details</a></li>
@@ -1005,7 +1008,7 @@ echo "ok: Postgres is bound to 127.0.0.1 only"</code></pre>
 <ul>
   <li>It only takes effect while guest submission is on.</li>
   <li><strong>Per-file limit:</strong> <code>guest_attachment_max_mb</code>, a slider from 1 to 100 MB, 5 MB by default. A guest is held to the lower of it and the instance-wide 25 MB maximum. Over the limit is <code>413 too_large</code>, and the message names the limit.</li>
-  <li><strong>Two more limits:</strong> <code>guest_attachment_max_per_ticket</code> (1 to 50, default 5) caps the files guests can attach to one ticket (<code>409 guest_attachment_limit</code>), and <code>guest_attachment_uploads_per_hour</code> (1 to 30, default 3) caps uploads per guest link per hour (<code>429 rate_limited</code> with <code>Retry-After</code>). A refusal decided before the scan (wrong type, too big) does not use up the hour; anything decided after it (not an image, a malware verdict) or a server fault does. Refused attempts also share a fixed 20-per-hour budget per ticket. The rate is in memory and per server instance, so a restart clears it.</li>
+  <li><strong>Two more limits:</strong> <code>guest_attachment_max_per_ticket</code> (1 to 50, default 5) caps the files guests can attach to one ticket (<code>409 guest_attachment_limit</code>), and <code>guest_attachment_uploads_per_hour</code> (1 to 30, default 3) caps uploads per guest link per hour (<code>429 rate_limited</code> with <code>Retry-After</code>). A refusal decided before the scan (wrong type, too big) does not use up the hour; anything decided after it (not an image, a malware verdict) or a server fault does. Refused attempts also share a fixed 20-per-hour budget per ticket, charged before the hourly upload budget and given back when the upload succeeds, so reaching it never uses up an hourly upload. The rate is in memory and per server instance, so a restart clears it.</li>
   <li><strong>Session only:</strong> all of these settings need a signed-in administrator; an API key or OAuth client that sends one is refused with <code>403 session_required</code>.</li>
   <li><strong>The guest page has an <em>Add files</em> button</strong> while the setting is on and the ticket is open, and says how many more files can be added. Uploads get the same type, scanning and reputation rules as everyone else's and are download-only. The submission form (<code>/submit</code>) has none: the link to attach from is emailed once the ticket exists.</li>
   <li><code>GET /api/v1/site</code> gains <code>guest_attachments_enabled</code> and, while it is on, <code>guest_attachment_max_bytes</code>, <code>guest_attachment_max_per_ticket</code> and <code>guest_attachment_uploads_per_hour</code>.</li>
@@ -1040,6 +1043,19 @@ echo "ok: Postgres is bound to 127.0.0.1 only"</code></pre>
 
 <p><strong>Who notices:</strong> the first administrator who signs in after an upgrade to 1.3.0. They are taken once to a short wizard, "After upgrading to 1.3.0", with one step per question: the update check; staff email notifications (the upgrade turned them off); staff API keys and the longest an API key may live; the reset window for old passwords, with how many accounts are still on an old hash; and, only if guest submission is on, guest file uploads (which 1.3.0 switched off). Each step shows today's setting. <strong>Skip leaves a setting unchanged.</strong> Finishing or skipping the wizard means it is not shown again. A new install never sees it. See <a href="admin-guide.html#admin-updates">Admin Guide: Updates</a>.</p>
 
+<h2 id="markdown">Markdown in ticket text</h2>
+
+<p><strong>Who notices:</strong> everyone who writes or reads tickets, and integrations that send Markdown-looking text or use MCP.</p>
+<p>Descriptions, replies and internal notes can now be written in Markdown, with a formatting editor in the web app. <strong>Text written before 1.3.0 stays plain text.</strong> 1.2 promised Markdown but never rendered it, so nothing already in the database is reinterpreted: every existing description and reply is marked <code>plain</code> (a migration, 000055) and is shown exactly as before. A reader can choose <strong>Show formatted</strong> on any plain post to see it through the new renderer. That changes only what that reader sees; nothing is stored.</p>
+<ul>
+  <li><strong>Who writes which format.</strong> The web app's editor writes Markdown. <strong>REST is unchanged unless it opts in:</strong> <code>POST /tickets</code>, <code>/tickets/{id}/replies</code>, <code>/guest/tickets</code> and <code>/guest/replies</code> take an optional <code>format</code> (<code>plain</code> or <code>markdown</code>) and default to <code>plain</code>. <strong>MCP <code>create_ticket</code> and <code>add_reply</code> default to <code>markdown</code></strong>, and their tool descriptions tell the agent to escape characters it means literally; pass <code>format: "plain"</code> to keep plain text. Any other value is <code>400 invalid_format</code> on REST and a tool error on MCP, and nothing is written.</li>
+  <li><strong>Reading.</strong> <code>description_format</code> is on every ticket object and <code>body_format</code> on every reply, for staff, requesters and guests alike. A follow-up copies its original's format.</li>
+  <li><strong>What is rendered.</strong> CommonMark plus tables, strike-through and bare-URL links. No images (shown as the link "[image: alt]" and never loaded), no raw HTML (shown as text), all headings one small size, links <code>http</code>, <code>https</code> and <code>mailto</code> only. Code in a fenced block is highlighted for 13 languages. Markdown posts have a <strong>Plain text</strong> button to see the source. See <a href="security.html#text">How ticket text is displayed</a>.</li>
+  <li><strong>Webhooks, email and chat are unchanged.</strong> A webhook payload carries the Markdown source as text, chat targets escape it as before, and email carries no ticket text.</li>
+  <li>The migration adds <code>tickets.description_format</code> and <code>ticket_replies.body_format</code>. It does not rewrite the tables and is safe to apply on a running instance.</li>
+</ul>
+<p><strong>What to check:</strong> an integration that already sends Markdown-looking text over REST keeps getting plain text unless it adds <code>"format": "markdown"</code>. An MCP agent that sent text with <code>*</code>, <code>#</code> or <code>_</code> meant literally will now have it formatted; tell it to escape them or pass <code>format: "plain"</code>. For the editor, see <a href="tickets.html#tickets-formatting">Formatting text</a>.</p>
+
 <h2 id="known-gaps">What is not in 1.3.0</h2>
 
 <p>Earlier versions of these pages described or implied some things that the product does not do. Each is tracked as an issue. These are gaps in the product, not changes in 1.3.0. The pages now say what the product does.</p>
@@ -1047,7 +1063,7 @@ echo "ok: Postgres is bound to 127.0.0.1 only"</code></pre>
 <table class="breaks-table">
   <thead><tr><th>Area</th><th>What is missing</th><th>Issue</th></tr></thead>
   <tbody>
-  <tr><td>Ticket detail</td><td>Markdown is shown as typed, not rendered. A reply cannot be edited or deleted by anyone: a correction is a new reply, by design.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/443" target="_blank" rel="noopener">#443</a></td></tr>
+  <tr><td>Ticket detail</td><td>A reply cannot be edited or deleted by anyone: a correction is a new reply, by design.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/443" target="_blank" rel="noopener">#443</a></td></tr>
   <tr><td>Plugins</td><td>The plugin system is a v2 feature. 1.x has no working plugin system: plugins cannot be installed, and an enabled plugin record never receives events. Earlier pages promised it.</td><td><a href="../index.html#roadmap">v2 on the roadmap</a></td></tr>
   </tbody>
 </table>

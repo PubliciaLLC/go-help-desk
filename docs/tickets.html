@@ -90,6 +90,7 @@
       <li><a href="#tickets-follow">Following a ticket</a></li>
       <li><a href="#tickets-staff-email">Email to staff</a></li>
       <li><a href="#tickets-reopen">Reopened tickets</a></li>
+      <li><a href="#tickets-formatting">Formatting Text</a></li>
       <li><a href="#tickets-custom-fields">Custom Fields</a></li>
       <li><a href="#tickets-attachments">Attachments</a></li>
       <li><a href="#tickets-search">Search</a></li>
@@ -147,7 +148,7 @@
 
 <h3>Optional fields</h3>
 <ul>
-  <li><strong>Description</strong>: the full detail of the request, as plain text, up to 50,000 bytes. Staff read this first, so include error messages, steps to reproduce and what you have already tried.</li>
+  <li><strong>Description</strong>: the full detail of the request, up to 50,000 bytes, written with the formatting editor or as plain text (see <a href="#tickets-formatting">Formatting text</a>). Staff read this first, so include error messages, steps to reproduce and what you have already tried.</li>
   <li><strong>Type</strong> — shown only if the selected Category has Types defined. Filters Items.</li>
   <li><strong>Item</strong> — shown only if the selected Type has Items defined.</li>
   <li><strong>Priority</strong>: defaults to Medium. Only staff and admins can choose it when they create a ticket. Staff and admins can change it afterwards; see <a href="#tickets-priority">Changing priority</a>.</li>
@@ -188,7 +189,7 @@
 <ul>
   <li><strong>It opens one ticket and nothing else.</strong> A guest sees the subject, description, status, and the public replies — internal notes are never included, and staff names are not shown. They can post a reply, subject to the same lifecycle rules as anyone else, including the reopen window.</li>
   <li><strong>Attaching files is off unless an administrator allows it.</strong> The setting <em>Guests may attach files</em> (<em>Admin → Settings → General → Submissions</em>) is off by default, including after an upgrade, and works only while guest submission is on. While it is off, <code>POST /api/v1/guest/attachments</code> answers the same generic <code>404</code> a bad link gets. When it is on, the guest page has an <em>Add files</em> button while the ticket is open, and says how many more files can be added. The submission form (<code>/submit</code>) has none: the link to attach from is emailed once the ticket exists. Uploads follow the same type, scanning and reputation rules as everyone else's and are download-only. The guest page does not list attachments, and a guest cannot download one.</li>
-  <li><strong>Guest upload limits.</strong> Each file is held to the lower of <em>Largest file a guest may attach</em> (a slider from 1 to 100 MB, 5 MB by default) and the instance maximum of 25 MB (<code>413</code> over it). At most 5 files per ticket from guests (an administrator can set 1 to 50; <code>409 guest_attachment_limit</code> over it), and at most 3 uploads an hour per guest link (1 to 30; <code>429</code> with <code>Retry-After</code> over it). A refusal decided before the scan (too large, wrong type, a bad name) does not use up the hour; one decided after it, or a server fault, does. Refused attempts also share a budget of 20 an hour per ticket. The hourly count is kept in memory by each server instance. All of these settings are session-only.</li>
+  <li><strong>Guest upload limits.</strong> Each file is held to the lower of <em>Largest file a guest may attach</em> (a slider from 1 to 100 MB, 5 MB by default) and the instance maximum of 25 MB (<code>413</code> over it). At most 5 files per ticket from guests (an administrator can set 1 to 50; <code>409 guest_attachment_limit</code> over it), and at most 3 uploads an hour per guest link (1 to 30; <code>429</code> with <code>Retry-After</code> over it). A refusal decided before the scan (too large, wrong type, a bad name) does not use up the hour; one decided after it, or a server fault, does. Refused attempts also share a budget of 20 an hour per ticket, charged before the hourly upload budget and given back when the upload succeeds, so reaching it never uses up an hourly upload. The hourly count is kept in memory by each server instance. All of these settings are session-only.</li>
   <li><strong>It is replaced every time the help desk writes to them.</strong> A staff reply, a status change, a resolve or a reopen by staff each send a fresh link and invalidate the previous one immediately. There is no grace period, so the newest email is the one that works.</li>
   <li><strong>Closing the ticket stops the link being replaced, but does not revoke it.</strong> The last link sent still opens the ticket, read-only, until it expires. No mail is sent for the close. A guest can still open a follow-up from a closed ticket with the link.</li>
   <li><strong>It expires 30 days after it was issued.</strong></li>
@@ -282,7 +283,7 @@
 </ul>
 
 <h3>Formatting</h3>
-<p>Replies, notes and descriptions are plain text. Line breaks are kept. Markdown and HTML are shown exactly as typed, never rendered.</p>
+<p>Replies, notes and descriptions can be formatted with Markdown (see <a href="#tickets-formatting">Formatting text</a>). Text written before 1.3.0 stays plain: line breaks are kept, and Markdown and HTML are shown exactly as typed unless the reader chooses <em>Show formatted</em>.</p>
 
 <h3>Replies are permanent</h3>
 <p>A reply or note cannot be edited or deleted once it is posted, by anyone. To correct one, post another.</p>
@@ -446,6 +447,23 @@
 <h3>What requesters can and cannot see</h3>
 <p>A requester sees the ticket's current state and its public replies. They do not see the Activity feed or the status timeline of their own ticket (the API refuses those requests with <code>403</code>), and the conversation no longer shows status-change events. They receive only these ticket fields: id, tracking number, subject, description, status, priority, category, type, item, created and resolved dates, the assignee's id, and resolution notes. Everything else is withheld, including the assigned group, the reporter, guest contact details, the closed and last-updated dates, its Pending timing, and the reopen count. A guest's view is the same, and it no longer includes the last-updated date.</p>
 
+
+<h2 id="tickets-formatting">Formatting text</h2>
+
+<p>Descriptions, replies and internal notes can be written in Markdown, through a formatting editor. The editor is in staff replies and notes, requester replies, the new ticket form, the guest form and guest replies. Its toolbar has Bold, Italic, Code, Link, Bulleted list, Numbered list, Quote and Code block. <strong>Switch to plain editor</strong> swaps it for an ordinary text box holding the same Markdown, and the plain box is also what you get while the editor loads or if it fails to load.</p>
+
+<h3>Old text stays plain</h3>
+<p>Each description and reply is stored with a format, <code>plain</code> or <code>markdown</code>. <strong>Everything written before 1.3.0 is plain text and is shown exactly as before.</strong> 1.2 promised Markdown but never rendered it, so nothing already in the database is reinterpreted. On a plain post, <strong>Show formatted</strong> shows it through the new renderer; on a Markdown post, <strong>Plain text</strong> shows the source exactly as stored, to copy it or check a suspicious link. Both buttons are the reader's choice: nothing is stored or sent.</p>
+
+<h3>What is shown, and what never is</h3>
+<ul>
+  <li><strong>Supported:</strong> paragraphs, quotes, bulleted and numbered lists, code blocks, rules, tables, bold, italic, strike-through, inline code, line breaks and links. All headings show at one small size. Code in a fenced block is highlighted for 13 languages (bash, PowerShell, JSON, YAML, XML or HTML, SQL, JavaScript, TypeScript, Python, Go, INI, diff and plain text).</li>
+  <li><strong>No raw HTML.</strong> It is shown as text, so <code>&lt;server01&gt;</code> reads as written. <strong>No images:</strong> an image is shown as the link "[image: alt]" and is never loaded.</li>
+  <li><strong>Links</strong> open in a new tab and only <code>http</code>, <code>https</code> and <code>mailto</code> are links. The real host is shown after the link when the link text differs from it. A <code>mailto</code> link with a query (a hidden <code>cc</code>, <code>bcc</code>, <code>subject</code> or <code>body</code>) is not linked, and a link to this help desk's own attachment addresses is not linked either (it says to open the file from the attachments list, where the scan and reputation warnings are).</li>
+  <li><strong>Long or complex posts show as plain text.</strong> Text over 50,000 characters is never formatted, and a post that takes too long to format falls back to plain text with a note ("too long to format", "too complex to format"). A page that already shows a lot of formatted text leaves further posts as written.</li>
+  <li>A code block or table wider than the screen scrolls inside its own box; the page never scrolls sideways.</li>
+</ul>
+<p>Webhooks, chat messages and email are unchanged: a webhook or chat message carries the Markdown source as text, and email carries no ticket text. Resolution notes, canned responses and settings stay plain text. A NUL character in text is refused with <code>400</code>.</p>
 
 <h2 id="tickets-custom-fields">Custom fields</h2>
 

@@ -210,6 +210,17 @@
     </tbody>
   </table>
 
+  <h2 id="text">How ticket text is displayed</h2>
+  <p>Anyone who can file a ticket chooses the text staff read, so formatted ticket text (Markdown) is displayed under strict rules. The guarantee is how the page is built, not filtering: every element is created by the application from its own fixed list, all user text is shown as text, and the only attribute that carries user data is a link address checked against an allowed list. A second, independent check runs last, and the content security policy is a third line of defence.</p>
+  <ul>
+    <li><strong>No raw HTML and no images.</strong> HTML is shown as text. An image is shown as a link, "[image: alt]", and is never loaded, so a ticket cannot be used as a tracking pixel.</li>
+    <li><strong>Links</strong> are only <code>http</code>, <code>https</code> and <code>mailto</code>; relative links, <code>javascript:</code>, <code>data:</code>, <code>vbscript:</code> and <code>tel:</code> are plain text. They open in a new tab with <code>noopener noreferrer nofollow ugc</code>, and the real host is shown after the link unless the link text is exactly the address. A look-alike international domain shows in its <code>xn--</code> form, and invisible and direction-changing characters are removed from link text and host.</li>
+    <li><strong>Two kinds of link are not links.</strong> A <code>mailto</code> link with a query (<code>bcc</code>, <code>cc</code>, <code>subject</code> and <code>body</code> can add recipients or write the message) and a link to this help desk's own attachment routes, which would skip the content and reputation warnings of the attachments list.</li>
+    <li><strong>Bounded work.</strong> Text over 50,000 characters is never formatted, a table is limited to 5,000 cells, and everything else is formatted in a background worker with a one-second budget. Past any of these the post is shown as plain text with a note. A page has an overall budget of formatted text.</li>
+    <li><strong>Every formatted post has a Plain text button</strong> that shows the stored characters, so a suspicious link can be checked.</li>
+  </ul>
+  <p><a href="tickets.html#tickets-formatting">Formatting text →</a></p>
+
   <h2 id="uploads">What happens to an uploaded file</h2>
   <p>Attachments get their own writeup — what the server detects, the storage tiers, the quarantine
      archive, the optional reputation lookup, and the things it deliberately does not do (there is
