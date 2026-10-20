@@ -157,7 +157,23 @@ func newHarnessPasskeysOff(t *testing.T) (*harness, func()) {
 
 func newHarnessPasskeys(t *testing.T, authRateLimit int, clamAVAddr string, mutate func(*config.Config), passkeysOn bool) (*harness, func()) {
 	t.Helper()
-	db, closeDB := testutil.NewDB(t)
+	return newHarnessOn(t, testutil.NewDB, authRateLimit, clamAVAddr, mutate, passkeysOn)
+}
+
+// newIsolatedHarness is newHarness on a database of its own (#550).
+//
+// For a test that counts something a rollback does not give back. Tracking
+// numbers come from ticket_seq, and a sequence is not transactional: every
+// other package's test that creates a ticket moves it, so "the next number is
+// this one plus one" is only true where nobody else is drawing.
+func newIsolatedHarness(t *testing.T) (*harness, func()) {
+	t.Helper()
+	return newHarnessOn(t, testutil.NewIsolatedDB, 0, "", nil, true)
+}
+
+func newHarnessOn(t *testing.T, openDB func(*testing.T) (*testutil.DB, func()), authRateLimit int, clamAVAddr string, mutate func(*config.Config), passkeysOn bool) (*harness, func()) {
+	t.Helper()
+	db, closeDB := openDB(t)
 	q, tx, rollback := testutil.TxQueriesTx(t, db)
 
 	ctx := context.Background()

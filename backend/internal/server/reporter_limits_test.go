@@ -2,8 +2,10 @@ package server_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -21,7 +23,7 @@ import (
 // theirs, on a request the shipped UI never sends — which is exactly the
 // shape that goes unnoticed until somebody reads the handler.
 func TestCreateTicket_AReporterIsHeldToTheRoleTable(t *testing.T) {
-	h, cleanup := newHarness(t)
+	h, cleanup := newIsolatedHarness(t)
 	defer cleanup()
 	ctx := context.Background()
 
@@ -193,6 +195,19 @@ func createTicketAsUser(t *testing.T, h *harness, subject string) ticket.Ticket 
 func latestTicketNumber(t *testing.T, h *harness) int {
 	t.Helper()
 	return trackingSeq(t, createTicketAsUser(t, h, "Probe").TrackingNumber)
+}
+
+// drawTrackingNumberElsewhere takes a number from ticket_seq on the shared
+// test database, committed, the way a ticket created by another package's test
+// does. A test that counts tracking numbers must not see it, which means it
+// must not be running on the shared database (#550).
+func drawTrackingNumberElsewhere(t *testing.T) {
+	t.Helper()
+	db, err := sql.Open("pgx", os.Getenv("TEST_DATABASE_URL"))
+	require.NoError(t, err)
+	defer db.Close()
+	var n int64
+	require.NoError(t, db.QueryRow(`SELECT nextval('ticket_seq')`).Scan(&n))
 }
 
 // trackingSeq pulls the counter off the end of a tracking number, e.g.
