@@ -1175,6 +1175,8 @@ test.describe('server warnings: Hide is a thumb-sized target on a touch screen',
       expect(box!.width, 'Hide is narrower than 44px').toBeGreaterThanOrEqual(44)
     }
   })
+})
+
 // TEMP-DIAG
 test.afterEach(async ({ page }, info) => {
   if (info.status === info.expectedStatus) return
