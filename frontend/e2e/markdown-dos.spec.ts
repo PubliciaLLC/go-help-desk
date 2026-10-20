@@ -89,8 +89,16 @@ test('a normal post is still formatted, and soon', async ({ page }) => {
 // near the screen and the page has a budget, so the heap stays bounded however
 // many there are, and whatever is scrolled past.
 const lines = (seed: number) => Array.from({ length: 12_400 }, (_, i) => `${String.fromCharCode(97 + ((i + seed) % 26))}  `).join('\n')
-const heapMB = (page: Page) =>
-  page.evaluate(() => ((performance as unknown as { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? 0) / 1e6)
+// Live memory, not garbage: usedJSHeapSize counts objects nobody references any
+// more until the collector next runs, which on a slow machine can be after the
+// reading (one run read 1998 MB against a 900 MB bound, and passed with a forced
+// collection). So collect first, then read. The bound itself is unchanged.
+const heapMB = async (page: Page) => {
+  const cdp = await page.context().newCDPSession(page)
+  await cdp.send('HeapProfiler.collectGarbage')
+  await cdp.detach()
+  return page.evaluate(() => ((performance as unknown as { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? 0) / 1e6)
+}
 
 test('220 hostile replies keep the heap bounded, on open and after jumping through them', async ({ page }) => {
   test.setTimeout(180_000)
@@ -120,4 +128,26 @@ test('220 hostile replies keep the heap bounded, on open and after jumping throu
   expect(await page.locator('[data-md-body]').count()).toBeLessThan(40)
   await expect(page.getByText(/Shown as plain text: this page already shows a lot of formatted text/).first()).toBeAttached()
   expect(await heapMB(page)).toBeLessThan(900)
+})
+
+// A very long plain text is drawn as blocks the browser can skip while off
+// screen (lib/plainChunks.ts). That must not change what is there: selecting the
+// post and copying gives back exactly the stored text, and finding text deep in
+// it still works.
+test('a very long plain post keeps every character, selectable as one text', async ({ page }) => {
+  const text = Array.from({ length: 30_000 }, (_, i) => `line ${i}`).join('\n')
+  await mockApi(page, { replies: [{ ...REPLIES[0], body: text, body_format: 'plain' }] })
+  await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+  await expect(page.locator('[data-plain-chunk]').first()).toBeAttached()
+  const copied = await page.evaluate(() => {
+    const chunks = document.querySelectorAll('[data-plain-chunk]')
+    const range = document.createRange()
+    range.setStartBefore(chunks[0])
+    range.setEndAfter(chunks[chunks.length - 1])
+    const sel = window.getSelection()!
+    sel.removeAllRanges()
+    sel.addRange(range)
+    return sel.toString()
+  })
+  expect(copied).toBe(text)
 })

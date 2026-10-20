@@ -1560,6 +1560,13 @@ guarantee. `dangerouslySetInnerHTML` and `rehype-raw` are banned by lint.
   complex to format", or "formatting unavailable" when the worker could not
   start), and its **Plain text** button stays reachable. A failure that may be a
   slow moment is not remembered, so the next view tries again.
+- **Long plain text is drawn in skippable blocks.** A post that is shown as
+  written (never formatted, refused, or plain-format) and is over 10,000
+  characters is cut into blocks of about 4,000 characters with
+  `content-visibility: auto`, so the browser does not lay out a megabyte at once
+  (500,000 lines took seconds of main-thread time). Nothing is truncated or
+  rewritten: the cut falls on a newline, else a space, and selecting and copying the
+  post returns the stored text exactly.
 - **A page of long posts is formatted only where it is read.** A post is formatted
   when it comes within about 1,500 px of the screen (measured in the scrolling
   area that holds it), and the page as a whole has a budget of 300,000 formatted

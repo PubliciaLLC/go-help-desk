@@ -5,6 +5,7 @@ import type { Root } from 'hast'
 import { renderHast } from '@/lib/markdownComponents'
 import { formatMarkdown, type FormatResult } from '@/lib/markdownRunner'
 import { pageBudget } from '@/lib/pageBudget'
+import { chunkPlain } from '@/lib/plainChunks'
 import type { TextFormat } from '@/api/types'
 
 interface Props {
@@ -17,6 +18,38 @@ interface Props {
 
 const plainClass = 'whitespace-pre-wrap wrap-anywhere'
 
+// The stored characters as written. Ordinary text is one paragraph, as it always
+// was. A very long text is drawn as blocks the browser can skip while they are off
+// screen, so laying out a megabyte does not freeze the page; every character is
+// still there, selectable and findable.
+function PlainText({ text, className }: { text: string; className?: string }) {
+  const chunks = chunkPlain(text)
+  if (chunks.length === 1) return <p className={cn(plainClass, className)}>{text}</p>
+  return (
+    <div className={cn(plainClass, className)}>
+      {chunks.map((c, i) =>
+        c.text === '' ? null : (
+          <span
+            key={i}
+            data-plain-chunk
+            className="block [content-visibility:auto]"
+            // Room kept for the block while it is skipped: its lines, roughly.
+            style={{ containIntrinsicSize: `auto ${lineEstimate(c.text)}lh` }}
+          >
+            {c.text}
+          </span>
+        ),
+      )}
+    </div>
+  )
+}
+
+function lineEstimate(chunk: string): number {
+  let lines = 1
+  for (let i = chunk.indexOf('\n'); i !== -1; i = chunk.indexOf('\n', i + 1)) lines++
+  return Math.max(lines, Math.ceil(chunk.length / 90))
+}
+
 // A document the parser cannot handle (pathological nesting) falls back to the
 // stored source rather than taking the page down with it.
 class FallbackToSource extends Component<{ text: string; className?: string; children: ReactNode }, { failed: boolean }> {
@@ -25,7 +58,7 @@ class FallbackToSource extends Component<{ text: string; className?: string; chi
     return { failed: true }
   }
   render() {
-    if (this.state.failed) return <p className={cn(plainClass, this.props.className)}>{this.props.text}</p>
+    if (this.state.failed) return <PlainText text={this.props.text} className={this.props.className} />
     return this.props.children
   }
 }
@@ -133,7 +166,7 @@ export function TicketText({ text, format, className }: Props) {
           <Formatted tree={tree} className={className} />
         </FallbackToSource>
       ) : (
-        <p className={cn(plainClass, className)}>{text}</p>
+        <PlainText text={text} className={className} />
       )}
       {refusal && <p className="mt-1 text-xs text-gray-500">Shown as plain text: {refusal}.</p>}
       {text.trim() !== '' && (
