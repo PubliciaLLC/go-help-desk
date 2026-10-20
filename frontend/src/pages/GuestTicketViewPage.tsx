@@ -12,6 +12,8 @@ import {
 } from '@/api/guest'
 import { AttachmentUpload, type UploadState } from '@/components/AttachmentUpload'
 import { Button } from '@/components/ui/button'
+import { TextLimit } from '@/components/TextLimit'
+import { isOverLimit } from '@/lib/textLimit'
 import { MarkdownEditor } from '@/components/editor/MarkdownEditor'
 import { TicketText } from '@/components/TicketText'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -239,7 +241,7 @@ export function GuestTicketViewPage() {
               className="space-y-2 border-t pt-4"
               onSubmit={(e) => {
                 e.preventDefault()
-                if (reply.trim()) send.mutate()
+                if (reply.trim() && !isOverLimit(reply)) send.mutate()
               }}
             >
               <span id="guest-reply-label" className="sr-only">Add a reply</span>
@@ -249,12 +251,13 @@ export function GuestTicketViewPage() {
                 labelId="guest-reply-label"
                 placeholder="Add a reply…"
               />
+              <TextLimit value={reply} />
               {send.isError && (
                 <p role="alert" className="text-sm text-red-600">
                   We could not add your reply. The ticket may have been closed.
                 </p>
               )}
-              <Button type="submit" disabled={!reply.trim() || send.isPending}>
+              <Button type="submit" disabled={!reply.trim() || isOverLimit(reply) || send.isPending}>
                 {send.isPending ? 'Sending…' : 'Send reply'}
               </Button>
             </form>
