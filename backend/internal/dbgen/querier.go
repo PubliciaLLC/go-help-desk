@@ -174,6 +174,9 @@ type Querier interface {
 	// become a join, which is what lets the planner start from the tickets side.
 	// Administrators use CountAuditLog instead.
 	CountAuditLogScoped(ctx context.Context, arg CountAuditLogScopedParams) (int64, error)
+	// Only what a guest uploaded: staff and reporter files do not count toward the
+	// guest cap (#445).
+	CountGuestAttachments(ctx context.Context, ticketID uuid.UUID) (int64, error)
 	// How many administrators this instance would still have if $1 stopped being
 	// one.
 	//

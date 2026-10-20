@@ -288,8 +288,13 @@ ORDER BY r.created_at ASC;
 
 -- name: CreateAttachment :exec
 INSERT INTO attachments (id, ticket_id, filename, mime_type, size_bytes, storage_path, created_at,
-                         detected_mime, sha256, virus_name, content_mismatch)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
+                         detected_mime, sha256, virus_name, content_mismatch, uploaded_by_guest)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
+
+-- name: CountGuestAttachments :one
+-- Only what a guest uploaded: staff and reporter files do not count toward the
+-- guest cap (#445).
+SELECT count(*) FROM attachments WHERE ticket_id = $1 AND uploaded_by_guest;
 
 -- name: GetAttachmentByID :one
 SELECT * FROM attachments WHERE id = $1;

@@ -363,7 +363,7 @@ func TestMCPStreamable_HiddenTicketAnswersLikeSSE(t *testing.T) {
 // POST runs, so there the Origin check is the only barrier
 // (TestMCPOrigin_SSEMessageCheckedWhereNothingElseStopsIt).
 func TestMCPStreamable_NoCrossSiteSurface(t *testing.T) {
-	h, cleanup := newHarness(t)
+	h, cleanup := newIsolatedHarness(t)
 	defer cleanup()
 	c := openStream(t, h, h.apiKey)
 

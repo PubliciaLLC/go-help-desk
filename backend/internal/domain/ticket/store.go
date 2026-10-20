@@ -135,6 +135,8 @@ type Store interface {
 	CreateAttachment(ctx context.Context, a Attachment) error
 	GetAttachmentByID(ctx context.Context, id uuid.UUID) (Attachment, error)
 	ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]Attachment, error)
+	// CountGuestAttachments counts only the files a guest uploaded (#445).
+	CountGuestAttachments(ctx context.Context, ticketID uuid.UUID) (int, error)
 	DeleteAttachment(ctx context.Context, id uuid.UUID) error
 	// AnyAttachmentExists reports whether the instance holds any attachment.
 	AnyAttachmentExists(ctx context.Context) (bool, error)
