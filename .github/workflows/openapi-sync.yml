@@ -1,0 +1,35 @@
+# Guards the website's copy of the OpenAPI description (docs/openapi/).
+#
+# check (blocking, every push and pull request): docs/openapi/openapi.yaml must
+# equal docs/api/openapi.yaml at the commit named in docs/openapi/SOURCE.
+#
+# There is no scheduled or manual trigger, on purpose. GitHub fires `schedule`
+# and `workflow_dispatch` only for workflows on the repository's default branch,
+# and this file lives on the website branch, so either trigger would never run.
+# No branch filter either: the workflow exists only on website branches, so it
+# runs wherever it is, whatever the site branch is called.
+#
+# Whether the copy is older than the newest release (`scripts/openapi-sync.sh
+# stale`) is a manual release-checklist step, not a CI job. At each app release:
+#   scripts/openapi-sync.sh pull v1.3.0
+#   scripts/openapi-sync.sh check && scripts/openapi-sync.sh stale
+#   git commit -am "Re-pin the API reference to v1.3.0"
+name: openapi-sync
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  openapi-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Copy matches the pinned app commit
+        run: scripts/openapi-sync.sh check

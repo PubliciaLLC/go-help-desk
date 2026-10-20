@@ -1,0 +1,1146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Upgrading to 1.3.0 — Go Help Desk Docs</title>
+  <meta name="description" content="What changes when you upgrade Go Help Desk to 1.3.0: ClamAV becomes opt-in in Docker Compose, the audit log becomes readable and is kept by default, signup asks for the name and password at verification, and the quick start pulls a published image." />
+  <link rel="canonical" href="https://gohelpdesk.org/docs/upgrading-1.3.0.html" />
+  <meta property="og:site_name" content="Go Help Desk" />
+  <meta property="og:type" content="article" />
+  <meta property="og:url" content="https://gohelpdesk.org/docs/upgrading-1.3.0.html" />
+  <meta property="og:title" content="Upgrading to 1.3.0 — Go Help Desk Docs" />
+  <meta property="og:description" content="What changes when you upgrade Go Help Desk to 1.3.0: ClamAV becomes opt-in in Docker Compose, the audit log becomes readable and is kept by default, signup asks for the name and password at verification, and the quick start pulls a published image." />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:site" content="@go_help_desk" />
+  <meta name="twitter:title" content="Upgrading to 1.3.0 — Go Help Desk Docs" />
+  <meta name="twitter:description" content="What changes when you upgrade Go Help Desk to 1.3.0: ClamAV becomes opt-in in Docker Compose, the audit log becomes readable and is kept by default, signup asks for the name and password at verification, and the quick start pulls a published image." />
+  <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+  <link rel="stylesheet" href="../style.css" />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "Upgrading to 1.3.0",
+    "description": "What changes when you upgrade Go Help Desk to 1.3.0: ClamAV becomes opt-in in Docker Compose, the audit log becomes readable and is kept by default, signup asks for the name and password at verification, and the quick start pulls a published image.",
+    "url": "https://gohelpdesk.org/docs/upgrading-1.3.0.html",
+    "author": { "@type": "Organization", "name": "PubliciaLLC", "url": "https://github.com/PubliciaLLC" },
+    "publisher": { "@type": "Organization", "name": "Go Help Desk", "url": "https://gohelpdesk.org" },
+    "isPartOf": { "@type": "SoftwareApplication", "name": "Go Help Desk", "url": "https://gohelpdesk.org" }
+  }
+  </script>
+  <style>
+    .breaks-table td:first-child { font-weight:600; }
+    .breaks-table td:nth-child(2) { font-size:0.9rem; }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="container nav-inner">
+    <a href="../index.html" class="nav-logo" style="text-decoration:none;">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      Go Help Desk
+    </a>
+    <ul class="nav-links">
+      <li><a href="../index.html">Home</a></li>
+      <li><a href="../docs.html" style="color:var(--blue);">Docs</a></li>
+      <li><a href="/docs/upgrading-1.3.0.html">Upgrading</a></li>
+      <li><a href="/docs/security.html">Security</a></li>
+      <li><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></li>
+    </ul>
+  </div>
+</nav>
+
+<div class="docs-layout">
+<aside class="docs-sidebar">
+  <div style="padding:0.75rem 0.5rem 1rem;"><a href="../docs.html" style="font-size:0.8rem;color:var(--muted);text-decoration:none;">← All docs</a></div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Upgrading to 1.3.0</div>
+    <ul>
+      <li><a href="upgrading-1.3.0.html" class="active">Overview</a></li>
+      <li><a href="#whats-new">What's new</a></li>
+      <li><a href="#clamav">ClamAV is opt-in</a></li>
+      <li><a href="#audit">The audit log is readable</a></li>
+      <li><a href="#signup">Signup asks later</a></li>
+      <li><a href="#guest-setting">Guest setting needs a person</a></li>
+      <li><a href="#reporter-attachments">Reporters can attach</a></li>
+      <li><a href="#buildx">Building needs Buildx</a></li>
+      <li><a href="#env-removed">Two variables are gone</a></li>
+      <li><a href="#api-404">A ticket you cannot see is 404</a></li>
+      <li><a href="#closed-terminal">Closed stays closed</a></li>
+      <li><a href="#scanner-required">Scanner outages refuse uploads</a></li>
+      <li><a href="#svg-logo">SVG logos are refused</a></li>
+      <li><a href="#compose-database">Postgres is on loopback</a></li>
+      <li><a href="#quoted-email">Quoted addresses are refused</a></li>
+      <li><a href="#password-length">Passwords up to 72 bytes</a></li>
+      <li><a href="#guest-links-off">Guest links and the setting</a></li>
+      <li><a href="#pending-session">Half-signed-in sessions</a></li>
+      <li><a href="#bcrypt-cost">bcrypt cost 12</a></li>
+      <li><a href="#jwt-secret">JWT_SECRET is optional</a></li>
+      <li><a href="#compose-vars">Compose passes two more</a></li>
+      <li><a href="#startup-checks">Startup checks</a></li>
+      <li><a href="#client-errors">4xx, and 404 on DELETE</a></li>
+      <li><a href="#smtp">Email encryption</a></li>
+      <li><a href="#password-age">Old password hashes</a></li>
+      <li><a href="#forgot-password">Forgot password</a></li>
+      <li><a href="#unlock">Unlock command</a></li>
+      <li><a href="#passkeys-base-url">Passkeys need a domain</a></li>
+      <li><a href="#mcp-origin">MCP origin check</a></li>
+      <li><a href="#mcp-reply">MCP replies email</a></li>
+      <li><a href="#archived-nodes">Archived categories, types and items</a></li>
+      <li><a href="#service-users">OAuth service users</a></li>
+      <li><a href="#staff-email">Staff email</a></li>
+      <li><a href="#followers">Followers</a></li>
+      <li><a href="#reopen">Reopening</a></li>
+      <li><a href="#ticket-page">Priority, Assign to me</a></li>
+      <li><a href="#webhooks">Webhooks</a></li>
+      <li><a href="#one-event">One change, one event</a></li>
+      <li><a href="#admin-api">Admin API</a></li>
+      <li><a href="#api-changes">Other API changes</a></li>
+      <li><a href="#admin-screens">Routing and paged Users</a></li>
+      <li><a href="#saml-metadata">SAML metadata XML</a></li>
+      <li><a href="#staff-search">Staff search</a></li>
+      <li><a href="#on-behalf">Filing for a requester</a></li>
+      <li><a href="#mcp-limits">MCP size limit and sessions</a></li>
+      <li><a href="#api-keys">API keys</a></li>
+      <li><a href="#phone-text">Long text on phones</a></li>
+      <li><a href="#deleted-user-tickets">Deleted users' tickets</a></li>
+      <li><a href="#migration-log">Migration log line</a></li>
+      <li><a href="#rollback">Rolling back to 1.2.0</a></li>
+      <li><a href="#guest-attachments">Guest uploads off</a></li>
+      <li><a href="#password-change">Changing a password via API</a></li>
+      <li><a href="#update-check">Update check (opt-in)</a></li>
+      <li><a href="#after-upgrade-wizard">After-upgrade wizard</a></li>
+      <li><a href="#markdown">Markdown in ticket text</a></li>
+      <li><a href="#reply-limit">Reply size limit</a></li>
+      <li><a href="#known-gaps">Not in 1.3.0</a></li>
+      <li><a href="#steps">Doing the upgrade</a></li>
+    </ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Earlier releases</div>
+    <ul><li><a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Getting Started</div>
+    <ul><li><a href="getting-started.html">Overview</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Authentication</div>
+    <ul><li><a href="authentication.html">Authentication</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Administration</div>
+    <ul><li><a href="admin-guide.html">Admin Guide</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Security</div>
+    <ul><li><a href="attachment-security.html">Attachment Security</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Tickets</div>
+    <ul><li><a href="tickets.html">Working with Tickets</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Integrations</div>
+    <ul>
+      <li><a href="api.html">REST API</a></li>
+      <li><a href="api-reference.html">API Reference</a></li>
+      <li><a href="mcp.html">MCP Server</a></li>
+    </ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Extend</div>
+    <ul><li><a href="plugins.html">Plugin Development</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Contribute</div>
+    <ul><li><a href="contributing.html">Contributing</a></li></ul>
+  </div>
+</aside>
+
+<main class="docs-content">
+
+<h1 class="docs-page-title" id="introduction">Upgrading to 1.3.0</h1>
+<p class="docs-page-sub">A feature release. Most of it is new ground; a handful of changes touch something an existing install or integration relies on. Read this before you upgrade, not after.</p>
+
+<div class="callout callout-warn">
+  <p><strong>If your Docker Compose install scans attachments with the bundled ClamAV, scanning stops on upgrade</strong> when your <code>docker/.env</code> has no <code>CLAMAV_ADDR</code> line. Once the instance holds an attachment, administrators see an amber <em>Attachments are not being scanned</em> banner that says so. To keep scanning, add <code>COMPOSE_PROFILES=antivirus</code> and <code>CLAMAV_ADDR=tcp://clamav:3310</code> to <code>docker/.env</code> and run <code>docker compose up -d</code>. See <a href="#clamav">ClamAV is opt-in</a>.</p>
+</div>
+
+<div class="callout callout-note">
+  <p><strong>New and optional: a weekly check for new releases.</strong> It is off, also after you upgrade, and nothing contacts GitHub unless an administrator turns it on. The first administrator to sign in is asked in a short wizard. See <a href="#update-check">the update check</a> and <a href="#after-upgrade-wizard">the wizard</a>.</p>
+</div>
+
+<div class="callout callout-note">
+  <p><strong>Coming from 1.1.x?</strong> Read <a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a> as well; every item there applies too.</p>
+</div>
+
+<p>Everything below is additive unless it says otherwise. Each item names who notices.</p>
+
+<table class="breaks-table">
+  <thead><tr><th>What changes</th><th>Who notices</th></tr></thead>
+  <tbody>
+    <tr><td>ClamAV is opt-in in Docker Compose</td><td>Compose installs that relied on the bundled scanner</td></tr>
+    <tr><td>The audit log is readable, and kept forever by default</td><td>Administrators; staff see a per-ticket feed</td></tr>
+    <tr><td>Signup asks for name and password at verification</td><td>Self-signup users; API clients of <code>/auth/signup</code> and <code>/auth/verify-email</code></td></tr>
+    <tr><td><code>guest_submission_enabled</code> needs a signed-in administrator</td><td>Automation that changes settings with an API key</td></tr>
+    <tr><td>Reporters can attach files to replies</td><td>Reporting users</td></tr>
+    <tr><td>Building from source needs Docker Buildx</td><td>Anyone who builds the image</td></tr>
+    <tr><td><code>MFA_ENABLED</code> and <code>GUEST_SUBMISSION_ENABLED</code> are gone</td><td><code>.env</code> files that set them</td></tr>
+    <tr><td>Tickets you cannot see return <code>404</code>, not <code>403</code></td><td>API clients that branch on <code>403</code></td></tr>
+    <tr><td>Closed tickets cannot be reopened by default</td><td>Staff, admins, and automation that reopens tickets</td></tr>
+    <tr><td>Uploads refused with <code>503</code> if the scanner is down</td><td>Installs that set <code>CLAMAV_ADDR</code>, including bare-metal and Kubernetes</td></tr>
+    <tr><td>SVG logos are refused</td><td>Instances with an SVG logo (it is no longer served)</td></tr>
+    <tr><td>Compose publishes Postgres on loopback only</td><td>Anything that reached the database from another host, such as backups or reporting tools</td></tr>
+    <tr><td>Quoted email local parts are refused</td><td>Anyone signing up with such an address, and single sign-on users whose provider sends one</td></tr>
+    <tr><td>Passwords over 72 bytes are refused</td><td>Anyone setting a password, and API clients that set one</td></tr>
+    <tr><td>Guest links stop working while guest submission is off</td><td>Guests holding a link, and administrators who switch the setting off</td></tr>
+    <tr><td>A half-signed-in session expires after 5 minutes</td><td>Users who take longer at the second-factor step, and API clients that sign in in two requests</td></tr>
+    <tr><td>Passwords are hashed at bcrypt cost 12</td><td>Everyone who signs in; servers that take many sign-ins at once</td></tr>
+    <tr><td><code>JWT_SECRET</code> is optional</td><td>Operators; OAuth clients, once, if the signing key changes</td></tr>
+    <tr><td>Compose passes the sign-in limits; a delay of 0 is refused</td><td>Installs that set <code>AUTH_RATE_LIMIT_PER_MINUTE</code> or <code>AUTH_THROTTLE_DELAY</code> in <code>.env</code>, or set the delay to 0</td></tr>
+    <tr><td><code>ATTACHMENT_DIR</code> is checked at startup</td><td>Installs whose attachment directory cannot be written</td></tr>
+    <tr><td>Client mistakes get 4xx; DELETE of an unknown id is 404</td><td>API clients and scripts that call admin routes</td></tr>
+    <tr><td>Email never sends a password unencrypted, and sends mail without a password unencrypted only to a private address; a mail setup that is off or failing is reported</td><td>Anyone whose mail server lacks STARTTLS, or who sets <code>SMTP_USER</code> for a server with no login</td></tr>
+    <tr><td>Accounts on an old password hash must reset after 30 days</td><td>People who rarely sign in; API clients that sign in with a password</td></tr>
+    <tr><td>Forgot password by email on the sign-in page</td><td>Everyone who signs in with a password; needs email</td></tr>
+    <tr><td><code>unlock &lt;email&gt;</code> on the server</td><td>Operators with a locked-out account</td></tr>
+    <tr><td>An IP address or one-word <code>BASE_URL</code> turns passkeys off</td><td>Installs reached by IP address or a host with no dot</td></tr>
+    <tr><td>MCP refuses requests from another origin; Streamable HTTP added</td><td>Browser-based MCP clients, proxies that add <code>Origin</code></td></tr>
+    <tr><td>A public reply through MCP emails the requester</td><td>Anyone with an agent connected over MCP</td></tr>
+    <tr><td>Nobody can newly file into an archived category, type or item</td><td>Staff, administrators, scripts that file or reclassify</td></tr>
+    <tr><td>OAuth clients act through a service user</td><td>Administrators who use OAuth clients</td></tr>
+    <tr><td>Staff are emailed about their tickets</td><td>Every staff member and administrator, once an administrator turns it on (it starts off on an upgraded install)</td></tr>
+    <tr><td>Staff can follow a ticket</td><td>Staff and administrators</td></tr>
+    <tr><td>Reopening a ticket flags it, raises priority once, restarts the SLA and mails staff; requesters see less</td><td>Staff, administrators, requesters, scripts that read the audit routes</td></tr>
+    <tr><td>Change priority, Assign to me, Resolve all children</td><td>Staff and administrators</td></tr>
+    <tr><td>Webhooks: the raw JSON body holds only ids, notes are their own event, failed deliveries are retried, a history, a ticket filter</td><td>Anyone who receives webhooks</td></tr>
+    <tr><td>One change, one event: a hook gets one delivery per change; two new event names; status moves carry the same names from every route; one staff mail per person per change</td><td>Anyone who receives webhooks; staff who get ticket email</td></tr>
+    <tr><td>Admin API: checks before writes, inactive statuses retired, keys list only themselves</td><td>Scripts and API keys that call admin routes</td></tr>
+    <tr><td>Other API changes: unknown settings keys refused, new answer shapes</td><td>Scripts and integrations</td></tr>
+    <tr><td>New Admin → Routing page; Admin → Users is paged</td><td>Administrators; scripts that save the auto-assignment settings</td></tr>
+    <tr><td>SAML accepts pasted metadata XML and reads more name claims</td><td>Administrators who set up SAML; SAML users whose display name may change</td></tr>
+    <tr><td>Staff search covers every ticket the person can see, with an <em>Only my tickets</em> chip</td><td>Staff and administrators; <code>scope=visible</code> is new</td></tr>
+    <tr><td>Staff can file a ticket for a requester; MCP <code>create_ticket</code> now records the caller as the actor</td><td>Staff and administrators; MCP clients that file for others</td></tr>
+    <tr><td>MCP requests over 1 MiB are refused; an SSE session is bound to the credential that opened it</td><td>MCP clients that send very large calls, or open a stream with one credential and post with another</td></tr>
+    <tr><td>Staff can have API keys; every new key expires; keys cannot create keys, create OAuth clients or write users; three more settings are session-only; webhooks made by a key pause with it</td><td>Administrators, staff, and every script that uses an API key</td></tr>
+    <tr><td>Long text wraps on phones, and the ticket header buttons get their own row</td><td>Staff and requesters on phones</td></tr>
+    <tr><td>Open tickets assigned to a deleted user go back to the unassigned queue</td><td>Staff on an install upgraded from 1.2.x</td></tr>
+    <tr><td>The server logs which migrations ran</td><td>Operators</td></tr>
+    <tr><td>Rolling back to 1.2.0 is possible by hand, and costs data and security fixes</td><td>Operators who need to go back</td></tr>
+    <tr><td>Guests can no longer upload until an administrator turns on <em>Guests may attach files</em></td><td>Administrators; scripts that upload as a guest</td></tr>
+    <tr><td><code>PATCH /api/v1/me/password</code> needs <code>current_password</code>, and wrong guesses are throttled</td><td>Scripts written for 1.2.0 that change a password</td></tr>
+    <tr><td>An optional weekly check for new releases; it is off unless an administrator turns it on</td><td>Administrators; air-gapped installs (leave it off)</td></tr>
+    <tr><td>A one-time After upgrading wizard for the first administrator</td><td>The first administrator to sign in after the upgrade</td></tr>
+    <tr><td>Markdown in ticket text; old text stays plain; MCP writes Markdown by default</td><td>Everyone who writes tickets; MCP agents; integrations that send Markdown-looking text</td></tr>
+    <tr><td>Replies and notes are limited to 50,000 bytes (<code>400 body_too_long</code>); older longer posts show collapsed</td><td>Scripts that post long replies</td></tr>
+    <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="whats-new">What's new in 1.3.0</h2>
+
+<ul>
+  <li><strong>Passkeys.</strong> Passkeys and hardware security keys work as a second factor, beside authenticator apps. A passkey is checked after the password, never instead of it. <a href="authentication.html#auth-mfa">Second factor</a></li>
+  <li><strong>An Account page.</strong> Change your password, set up an authenticator app, add and remove passkeys, and verify a second factor.</li>
+  <li><strong>Recovery from lost factors.</strong> The <code>reset-factors &lt;email&gt;</code> subcommand of the server binary clears every second factor from one account, so its owner can sign in with their password and enrol again. It is run on the server, not through the web. In the Compose stack: <code>docker compose exec app /app/server reset-factors &lt;email&gt;</code>.</li>
+  <li><strong>OpenID Connect sign-in is documented.</strong> OIDC works beside SAML and local accounts, and is set up under <strong>Admin → Settings → Authentication → OIDC / OpenID Connect</strong>. It has shipped since 1.1.1, but its setup was not documented on this site and no release notes announced it. Only an address the provider marks as verified is used to match or create an account. <a href="authentication.html#auth-oidc">OIDC</a></li>
+  <li><strong>Refused sign-ins say why.</strong> When a single sign-on is refused, the login page shows a plain message for the reason, such as an address already held by another account or a domain that is not allowed. The message is chosen from the refusal code, never from text in the address bar.</li>
+  <li><strong>Provider-wrapped addresses are matched.</strong> On a first OIDC sign-in, the address is matched by its parsed form, so an address sent as <code>&lt;a@example.com&gt;</code> finds the account for <code>a@example.com</code> instead of creating a second one. The sign-in is refused instead when that account is an administrator, or is already linked to SAML or to another OIDC identity.</li>
+  <li><strong>Identity-provider lockout guard.</strong> A SAML or OIDC settings change that would leave no administrator able to sign in is refused. <a href="https://github.com/PubliciaLLC/go-help-desk/blob/v1.3.0/docs/DESIGN.md#identity-provider-lockout-guard-300">Design notes</a></li>
+  <li><strong>Signup asks later.</strong> The display name and password are chosen when the email is verified. <a href="#signup">Details</a></li>
+  <li><strong>Guest submission works.</strong> A visitor files a ticket at <code>/submit</code> without an account, receives a per-ticket link, and can reply through it. A guest can attach files from the guest page once an administrator turns that on; it is off by default (<a href="#guest-attachments">Details</a>). <a href="authentication.html#auth-guest">Guest access</a></li>
+  <li><strong>Closed means closed.</strong> A closed ticket is read-only and stays closed by default. The way on is a linked follow-up ticket. An operator can allow admins, or staff and admins, to reopen a closed ticket. <a href="tickets.html#tickets-follow-up">Follow-up tickets</a></li>
+  <li><strong>The lifecycle runs itself.</strong> An auto-close sweep runs every five minutes. A reopen window of 0 closes a resolved ticket on the next sweep.</li>
+  <li><strong>SLA tracking end to end.</strong> Timers pause while a ticket is Pending, a breach sweep runs, and the indicators are colour-coded. The switch is under <strong>Admin → Settings</strong>.</li>
+  <li><strong>Reporters can attach files to replies.</strong> <a href="#reporter-attachments">Details</a></li>
+  <li><strong>Works on a phone.</strong> Staff triage and reporters can use the app on a phone. The admin pages fit a phone too, though they are designed for a desk. <a href="https://github.com/PubliciaLLC/go-help-desk/blob/v1.3.0/docs/DESIGN.md#small-screens">Design notes</a></li>
+  <li><strong>First-run setup creates a category.</strong> A new instance can file a ticket straight away. <a href="getting-started.html#first-run">First-run setup</a></li>
+  <li><strong>A readable audit log.</strong> A per-ticket activity feed and an admin-wide searchable view. <a href="admin-guide.html#admin-audit">Audit log</a></li>
+  <li><strong>Staff email and followers.</strong> Staff are emailed when a ticket is assigned to them or their group, when a requester replies, and when a ticket is reopened, and can follow any ticket to get the same mail. <a href="#staff-email">Staff email</a>, <a href="#followers">Followers</a></li>
+  <li><strong>Reopened tickets are flagged.</strong> A reopen raises the priority one level the first time, starts the SLA over and mails staff. <a href="#reopen">Details</a></li>
+  <li><strong>More on the ticket page.</strong> Staff can change a ticket's priority, take an unassigned ticket with Assign to me, and resolve all open child tickets at once. <a href="#ticket-page">Details</a></li>
+  <li><strong>Archive from the admin screen.</strong> Categories, types and items can be archived and unarchived in <strong>Admin → Categories</strong>. <a href="#archived-nodes">Details</a></li>
+  <li><strong>OAuth clients can write.</strong> Each client acts as a service user that is listed in Admin → Users. <a href="#service-users">Details</a></li>
+  <li><strong>API keys for staff.</strong> Staff can create their own API keys when an administrator allows it, every new key expires, and keys are limited in what they can do. Several scripts break; read <a href="#api-keys">the details</a>.</li>
+  <li><strong>File for a requester.</strong> Staff can file a ticket for an existing user or a typed address. <a href="#on-behalf">Details</a></li>
+  <li><strong>Markdown in ticket text.</strong> A formatting editor, strict rendering, and old text left as plain text. <a href="#markdown">Details</a></li>
+  <li><strong>Search finds more.</strong> Staff search covers every ticket they can see, with a chip to narrow it to the queue. <a href="#staff-search">Details</a></li>
+  <li><strong>One delivery per change.</strong> A webhook gets one delivery for one change, however many things it changed, and nothing is sent for a change that failed. <a href="#one-event">Details</a></li>
+  <li><strong>Webhook retries, history and a ticket filter.</strong> <a href="#webhooks">Details</a></li>
+  <li><strong>MCP over Streamable HTTP.</strong> The server answers MCP at <code>/mcp</code>, and the older SSE routes stay. <a href="mcp.html">MCP Server</a></li>
+  <li><strong>Forgot password.</strong> The sign-in page can mail a one-time link to choose a new password, when email is set up. <a href="#forgot-password">Details</a></li>
+  <li><strong>A way back in.</strong> <code>unlock &lt;email&gt;</code> on the server clears an account's lockouts and gives it a new one-time password. <a href="#unlock">Details</a></li>
+  <li><strong>Notifications from an outbox.</strong> Email is queued in the database and retried with the same schedule as webhooks: 8 attempts, a wait that starts at 30 seconds and doubles each time, about an hour in all. Webhooks are queued too and are retried when a delivery fails (see <a href="#webhooks">Webhooks</a>); the Webhooks screen shows each hook's last delivery result and a History of the last 25.</li>
+  <li><strong>Webhooks with chat formats.</strong> An Admin → Webhooks screen, with Slack, Teams, Discord and JIRA payload formats. <a href="admin-guide.html#admin-webhooks">Webhooks</a></li>
+  <li><strong>Attachment security.</strong> Content detection, mismatch handling, quarantine, download-only files, and optional scanning and reputation lookups. <a href="attachment-security.html">Attachment Security</a></li>
+  <li><strong>Published images.</strong> Multi-architecture images for amd64 and arm64, published to GHCR. Building from source is still supported. <a href="getting-started.html#quick-start">Quick start</a></li>
+  <li><strong>Loud configuration warnings.</strong> Administrators see server problems in one slim bar, red for real failures and amber for configuration notices, that opens to the full text and lets them hide a notice for the session (<a href="admin-guide.html#admin-server-warnings">Server warnings</a>); below, "banner" means a notice in that bar. Example secrets are reported at startup and in a red banner for administrators. "Scanning is off" is reported at startup, by <code>GET /api/v1/admin/security-warnings</code> and, on an instance that holds attachments but never chose a scan policy, in an amber banner. An attachment directory that cannot be written is reported at startup and in a red banner. <em>Admin → Settings → Attachments → Malware scanning</em> shows the scanner's status.</li>
+</ul>
+
+<h2 id="clamav">ClamAV is opt-in</h2>
+
+<p>Docker Compose used to start the bundled ClamAV scanner and set <code>CLAMAV_ADDR</code> for you. From 1.3.0 it is opt-in (#297). An install that relied on that, and whose <code>docker/.env</code> has no <code>CLAMAV_ADDR</code> line, stops scanning attachments on upgrade. Nothing else changes.</p>
+
+<p>Administrators are told. When no scan policy has ever been saved, no scanner address is set (in Settings or in <code>CLAMAV_ADDR</code>) and the instance already holds at least one attachment, administrators see an amber banner at the top of every page:</p>
+
+<div class="callout callout-warn">
+  <p><strong>Attachments are not being scanned.</strong> To turn scanning back on, add <code>COMPOSE_PROFILES=antivirus</code> and <code>CLAMAV_ADDR=tcp://clamav:3310</code> to <code>docker/.env</code>, run <code>docker compose up -d</code>, then confirm the scanner address under Settings → Attachments. To keep scanning off, choose "Do not scan" there.</p>
+</div>
+
+<p>The server also logs <code>attachment scanning is OFF: no scanner address is configured</code> at startup (#303), and <code>GET /api/v1/admin/security-warnings</code> reports <em>Attachments are not scanned. Uploads are accepted without being checked.</em> <strong>Admin → Settings → Attachments → Malware scanning</strong> now starts with a status block: the policy, whether an address is configured, whether the scanner answers, and what that means for uploads. Nothing stops the upgrade, but the banner will be there when you sign in. To keep scanning on, do what it says:</p>
+
+<ol>
+  <li>Add the two lines to your own <code>docker/.env</code> (they are commented out in the "Virus scanning" section of <code>docker/.env.example</code>):
+<pre><code>COMPOSE_PROFILES=antivirus
+CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
+  <li>Run <code>docker compose up -d</code> in <code>docker/</code>.</li>
+  <li>Confirm the scanner address under <strong>Admin → Settings → Attachments → Malware scanning</strong>. A value saved there takes precedence over <code>CLAMAV_ADDR</code>. The status block shows <em>Reachable: Yes</em> once ClamAV has finished downloading its signatures.</li>
+</ol>
+
+<p>The banner goes away when a scanner address is set, or when you choose a scan policy there, <em>Do not scan</em> included. Choose that to keep scanning off on purpose; the banner does not return.</p>
+
+<p><code>clamav/clamav</code> is published for <code>linux/amd64</code> only. On Apple Silicon the scanner runs under emulation rather than failing to pull.</p>
+
+<p>Once <code>CLAMAV_ADDR</code> is set, uploads are refused with <code>503</code> while the scanner cannot be reached. That covers the first few minutes after the first start, while the scanner downloads its signature database (about 300 MB). Everything other than attachment upload keeps working.</p>
+
+<p>See <a href="getting-started.html#config-scanning">Getting Started → Virus scanning</a>.</p>
+
+<h2 id="audit">The audit log is readable, and still kept forever</h2>
+
+<p>Entries were written before 1.3.0, but nothing could read them. From 1.3.0 there is a per-ticket activity feed and an admin-wide searchable view.</p>
+
+<p>Replies and internal notes also appear, as "<em>name</em> replied publicly" or "<em>name</em> added an internal note" with the time and no text, in a ticket's Activity panel and in the admin audit view (the actions <code>reply_added</code> and <code>note_added</code>, whose entries hold only the reply's id and whether it was internal). They are written from the upgrade on, with no backfill. A guest shows as "A guest" and a deleted account as "Someone"; requester-name masking applies, a requester still gets <code>403</code> on the feed, and staff see them in the admin audit view only for tickets in their scope. The admin Audit Log has a <strong>Hide replies and notes</strong> checkbox (API: repeatable <code>exclude_action</code>). Webhooks, MCP and email are unchanged. There is no migration.</p>
+
+<p>Nothing is deleted unless you ask. <code>audit_retention_days</code> defaults to 0, which keeps everything. To start pruning, set it to a number of days under <strong>Admin → Settings</strong>. The maximum is 36,525 days, a century. Set it back to 0 to keep everything again. The first sweep runs two minutes after the server starts, then once a day, so an instance that restarts more often than daily still prunes. Only a signed-in administrator can change this setting. An API key cannot, because shortening retention destroys evidence rather than merely widening access.</p>
+
+<p>The diff shows names, not just ids. A change of status or assignee lists the status or person by name (the id stays in the entry), so a reader does not have to look up a raw id. Only status and assignee changes carry names. The names are what the status or person is called now, and the stored entry is unchanged. Names are shown only to a reader who is allowed to see the diff at all. An id with nothing behind it (a deleted status or account) is shown as the id.</p>
+
+<p>Staff see the per-ticket feed. The field-level before and after diff is behind a second setting, <code>staff_can_view_ticket_change_history</code>. It is <strong>off by default</strong>, so no instance starts showing staff something it did not show them in 1.2.0.</p>
+
+<p>A machine credential needs the <code>audit:read</code> scope to read the admin-wide view.</p>
+
+<p>See <a href="admin-guide.html#admin-audit">Admin Guide → Audit log</a>.</p>
+
+<h2 id="signup">Signup asks for the name and password when the email is verified</h2>
+
+<p>Before this change, anyone who knew an address could sign up again after its owner, with a password or name of their own. The owner, clicking the newest link, got an account with it. The signup form now asks only for the email address. The link in the email opens a page that asks for the display name and the password.</p>
+
+<p>For API clients:</p>
+
+<ul>
+  <li><code>POST /api/v1/auth/verify-email</code> requires <code>token</code>, <code>display_name</code> and <code>password</code>. A request with a missing or invalid name or password is refused with <code>display_name_required</code>, <code>password_too_short</code> or <code>password_too_long</code>, and the link is not used up.</li>
+  <li>A <code>display_name</code> or <code>password</code> sent to <code>POST /api/v1/auth/signup</code> is ignored.</li>
+  <li><code>GET /api/v1/auth/verify-email?token=</code> returns the email address the link is for.</li>
+</ul>
+
+<p>Signups still pending at upgrade keep working. Their links now ask for a name and a password.</p>
+
+<h2 id="guest-setting"><code>guest_submission_enabled</code> requires a signed-in administrator</h2>
+
+<p>This setting decides whether anonymous people can file tickets. It also decides whether the category list can be read without signing in. An API key with settings-write scope could previously switch it either way. Now only a signed-in administrator can change it. An API key cannot, whatever scopes it holds. The refusal is <code>403 session_required</code>.</p>
+
+<p>A malformed or <code>null</code> value is refused outright, rather than being read back as <code>false</code>.</p>
+
+<p>See <a href="api.html#api-session-only">the API settings that need a person</a>.</p>
+
+<h2 id="reporter-attachments">Reporters can attach files to replies</h2>
+
+<p>The upload API never checked the role. Any signed-in user who could see a ticket could already attach a file to it. The reply composer offered the control to staff only. A reporting user replying to their own ticket now sees the same <em>Add files</em> control that staff have.</p>
+
+<h2 id="buildx">Building from source needs Docker Buildx</h2>
+
+<p>Building the image yourself with <code>docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build</code> needs the <code>docker buildx</code> CLI plugin. Without it, on Apple Silicon and other hosts that are not amd64, the build fails at its first step with a <code>--platform=</code> parse error. A later attempt to work around that produced an image that builds cleanly and does not run, so it was reverted.</p>
+
+<p>Docker Desktop includes Buildx. If <code>docker buildx version</code> fails, install the plugin. The steps are under <a href="getting-started.html#build-from-source">Building from source</a> in Getting Started.</p>
+
+<p>This only affects building. The quick start pulls a published image, so most people never run a builder at all.</p>
+
+<h2 id="env-removed">Two environment variables are gone</h2>
+
+<p><code>MFA_ENABLED</code> and <code>GUEST_SUBMISSION_ENABLED</code> were removed in 1.3.0. Nothing read them, so an instance that set them got no error and no change. MFA and guest submission are switched on under <strong>Admin → Settings</strong>, and that setting is the switch.</p>
+
+<p><code>SLA_ENABLED</code> still exists. It switches SLA tracking on at each start, and never off. The setting under <strong>Admin → Settings</strong> is the switch.</p>
+
+<p>No SAML environment variable is read. SAML and OIDC are configured under <strong>Admin → Settings → Authentication</strong>.</p>
+
+<h2 id="api-404">A ticket you cannot see answers 404, not 403</h2>
+
+<p><strong>Who notices:</strong> API clients that branch on <code>403</code>.</p>
+
+<p>The REST API used to answer <code>403 Forbidden</code> for a ticket that exists but that the caller may not see. It now answers <code>404 Not Found</code>, the same answer a tracking number that does not exist gets. Tracking numbers run in sequence, so a signed-in reporter could walk them to learn which tickets exist. This is a deliberate change to the REST API's published contract. A client that reads <code>403</code> as "this ticket exists, but not for you" will now get <code>404</code> for the same request.</p>
+
+<p>See <a href="api.html#api-visibility">REST API → Visibility and tracking numbers</a>.</p>
+
+<h2 id="closed-terminal">Closed tickets stay closed for staff and admins</h2>
+
+<p><strong>Who notices:</strong> staff, administrators, and automation that reopens tickets.</p>
+
+<p>A Closed ticket is now read-only for everyone, staff and administrators included, unless the instance allows reopening. The setting is <strong>Reopening closed tickets</strong>, under <strong>Admin → Settings → General → Ticket lifecycle</strong> (<code>closed_reopen_policy</code>). It is off by default. It can allow administrators, or staff and administrators, and it never allows requesters. Until 1.3.0, staff and administrators could reopen a Closed ticket. With the setting off, the status picker, the reopen endpoint (<code>POST /api/v1/tickets/{id}/reopen</code>) and the MCP <code>update_ticket_status</code> tool all refuse to reopen one. The way on is a linked follow-up ticket.</p>
+
+<p>A reopen window of <code>0</code> now closes a resolved ticket on the next auto-close sweep, about five minutes after it is resolved.</p>
+
+<h2 id="scanner-required">Uploads wait for the scanner, or are refused</h2>
+
+<p><strong>Who notices:</strong> installs that set <code>CLAMAV_ADDR</code>, including bare-metal and Kubernetes installs.</p>
+
+<p>Once a scanner address is set, <code>attachment_scan_policy</code> defaults to <code>required</code>. An upload is refused with <code>503</code> and a <code>Retry-After</code> header while the scanner cannot be reached. It is not accepted unscanned. Version 1.2.0 accepted uploads without a scan when the scanner was unreachable. To keep that behaviour, choose <strong>Scan, but accept uploads while the scanner is down</strong> under <strong>Admin → Settings → Attachments → Malware scanning</strong>. That is a choice you make, not the default.</p>
+
+<h2 id="svg-logo">SVG logos are refused</h2>
+
+<p><strong>Who notices:</strong> instances whose logo is an SVG file.</p>
+
+<p>The logo accepts PNG, JPG and GIF files, and SVG is refused. The logo is the one uploaded file the application shows inline on its own origin, where staff sessions live, and an SVG file can carry scripts. An SVG logo uploaded by an earlier release is no longer served, so the sidebar falls back to the site name. Upload a PNG, JPG or GIF under <strong>Admin → Settings → Branding</strong>.</p>
+
+<h2 id="compose-database">Postgres listens on loopback only in Compose</h2>
+
+<p><strong>Who notices:</strong> anything that reached the database from another machine, such as a backup job or a reporting tool.</p>
+
+<p>The shipped Compose file publishes Postgres on <code>127.0.0.1:5432</code>. Version 1.2.0 published it on every interface, and Docker handles a published port before the host firewall sees it, so closing the port in ufw or firewalld did not protect it. After the upgrade, only processes on the Docker host can connect. Run such tools on the host, or reach the database through an SSH tunnel.</p>
+
+<h2 id="quoted-email">Quoted email addresses are refused</h2>
+
+<p><strong>Who notices:</strong> anyone whose address needs quotation marks, and single sign-on users whose provider sends one.</p>
+
+<p>An address whose local part needs quotation marks, such as <code>"john doe"@example.com</code>, is refused with <code>400</code> wherever an address is saved: at signup, on a guest ticket, and when an account is created or edited. Parsing used to drop the quotes, which turned it into an address the mailer could not send to, so the person was never sent their link. Quotation marks that were never needed are dropped and the address kept: <code>"john"@example.com</code> is stored as <code>john@example.com</code>. Addresses already stored are not changed. A first sign-in through SAML or OIDC with an address that needs quotation marks creates no account, and the login page says the address cannot be used (<code>invalid_email</code>). An existing single sign-on user keeps the address they have.</p>
+
+<h2 id="password-length">Passwords are limited to 72 bytes</h2>
+
+<p><strong>Who notices:</strong> anyone who sets a password, and API clients that set one.</p>
+
+<p>A password must be 8 to 72 bytes. The limit is bcrypt's: bcrypt reads only the first 72 bytes and will not hash more. Bytes are counted, not characters, so an accented letter takes two bytes and most other non-Latin characters take three or four. A longer password is refused with a <code>400</code> that names the limit. Before 1.3.0, most paths that set a password answered with a server error (<code>500</code>). Sign-in applies no maximum.</p>
+
+<h2 id="guest-links-off">Switching guest submission off suspends guest links</h2>
+
+<p><strong>Who notices:</strong> guests holding a link, and administrators who switch <em>Guest submission</em> off.</p>
+
+<p>Before 1.3.0, turning <code>guest_submission_enabled</code> off stopped new guest tickets and link re-requests, but a link already emailed kept reading, replying and uploading. Now it stops those too. While the setting is off, every guest route answers <code>404 not_found</code>: submit, resend, and the four routes that take a link (read, reply, upload and follow-up). The answer is identical to the one for a link that never existed, so a guest cannot tell the two apart. The links are suspended, not revoked. Switch the setting back on and every link that has not expired works again. A guest who is partway through a conversation when you switch it off cannot read or reply until you switch it back on.</p>
+
+<p>The switch under <strong>Admin → Settings → General → Submissions → Guest submission</strong> now says so. See <a href="tickets.html#tickets-create">Guest ticket submission</a> and <a href="api.html#api-guest">REST API: Guest access</a>.</p>
+
+<h2 id="pending-session">A half-signed-in session expires after 5 minutes</h2>
+
+<p><strong>Who notices:</strong> users who take longer than that at the second-factor step, and API clients that sign in in two requests.</p>
+
+<p>When a password is accepted but a second factor is still owed, the session now has a deadline: <strong>5 minutes</strong> to enter a code or confirm with a passkey, and <strong>15 minutes</strong> when the user must first set up their factor, because that means installing an app and scanning a code. The deadline is fixed when the password is accepted, or, for a new self-registered account, when its email address is verified. Nothing extends it. Past it, the session is deleted and the next request is refused with <code>401</code>, so the user signs in with their password again. Code entry after the deadline is not checked, so it does not use up one of the five attempts. A session that has passed the second factor is not affected.</p>
+
+<p>Until 1.3.0 a half-signed-in session lived as long as any other session, up to 7 days. Anyone who is partway through signing in at the moment you upgrade signs in once more. An administrator with no second factor can still recover by signing in with the password and enrolling, as before.</p>
+
+<p>See <a href="authentication.html#auth-mfa">Authentication: Second factor</a>.</p>
+
+<h2 id="bcrypt-cost">Passwords are hashed at bcrypt cost 12</h2>
+
+<p><strong>Who notices:</strong> everyone who signs in with a password, once; and servers that take many sign-ins at the same moment.</p>
+
+<p>New passwords are hashed with bcrypt at cost 12. Releases up to 1.2 used cost 10, although earlier security pages said 12. An existing hash keeps working and is replaced with a cost-12 hash the next time its owner signs in with the correct password. The replacement is best effort: if it fails, the failure is logged and the sign-in still succeeds, and the next sign-in tries again. It never overwrites a password that was changed in the meantime. An account that does not sign in keeps its cost-10 hash, and must reset its password after 30 days (see <a href="#password-age">Accounts on an old password hash must reset</a>).</p>
+
+<p>Each cost step doubles the work, so a password check takes about four times the server time it did. If many people sign in at once, check <code>AUTH_THROTTLE_DELAY</code> and <code>AUTH_RATE_LIMIT_PER_MINUTE</code>. A wrong password for an account still on cost 10 is made to cost as much as one for an address that has no account, so the change of cost does not let the response time show which addresses have accounts.</p>
+
+<h2 id="jwt-secret"><code>JWT_SECRET</code> is optional</h2>
+
+<p><strong>Who notices:</strong> operators; and OAuth clients, once, if the signing key changes.</p>
+
+<p><code>JWT_SECRET</code> signs the OAuth2 access tokens. It no longer has to be set, and Docker Compose no longer refuses to start without it.</p>
+
+<ul>
+  <li>If it is unset, or shorter than 32 bytes, the server generates a random 32-byte key at its first start, stores it in the database and uses it from then on. Each start logs a line beginning <code>jwt signing key: using generated key stored in the database</code>. Every instance that shares the database uses the same key.</li>
+  <li>If it is 32 bytes or more, your value is used, exactly as before.</li>
+  <li>If it is exactly one of the example secrets this project has published (for example <code>change-me-in-production</code> or <code>dev-jwt-secret-change-me</code>), it is ignored, a generated key is used, and the server logs a warning. A value of 32 bytes or more that only looks like a placeholder, because it contains a word such as <code>change-me</code> or <code>example</code>, is still used; the server logs an error at startup and administrators see the red insecure-configuration banner for it.</li>
+</ul>
+
+<p><strong>Upgrade effect.</strong> If your <code>JWT_SECRET</code> is 32 bytes or more and is not a published example, nothing changes. If it was short or a published example, the key in use changes at the first start, and every OAuth client fetches a new access token once. Nobody is signed out: sessions use <code>SESSION_SECRET</code>, not this key.</p>
+
+<p>The generated key is stored in the database without encryption, so a database backup contains the key that signs OAuth2 tokens, and a restore onto another instance carries it along. To rotate it, delete the <code>jwt_signing</code> row from the <code>instance_secrets</code> table and restart; every OAuth2 access token issued before that stops working.</p>
+
+<p>See <a href="getting-started.html#config-jwt">Getting Started: JWT signing key</a>.</p>
+
+<h2 id="compose-vars">Compose passes two more variables, and a throttle of 0 is refused</h2>
+
+<p><strong>Who notices:</strong> installs that set <code>AUTH_RATE_LIMIT_PER_MINUTE</code> or <code>AUTH_THROTTLE_DELAY</code> in <code>docker/.env</code>, and anyone who set the delay to 0.</p>
+
+<p>The shipped <code>docker-compose.yml</code> now passes these to the app. Until now it did not, so a value in <code>.env</code> did nothing:</p>
+
+<ul>
+  <li><code>AUTH_RATE_LIMIT_PER_MINUTE</code>: default <code>10</code>. Failed password attempts per account per minute before the server answers <code>429</code>. <code>0</code> turns the limit off.</li>
+  <li><code>AUTH_THROTTLE_DELAY</code>: default <code>1s</code>. How long a login, or a wrong current-password guess on <code>PATCH /api/v1/me/password</code>, for an account that has used up its budget waits before the password is checked.</li>
+</ul>
+
+<p>If you already had either in <code>.env</code>, it takes effect now. Every other variable on the <a href="getting-started.html#configuration">configuration reference</a> reaches the app, except <code>DATABASE_URL</code> and <code>HTTP_PORT</code>, which stay fixed in the file, and <code>ATTACHMENT_DIR</code>, which is not passed, so the app keeps its default <code>/data/attachments</code>, where Compose mounts the attachments directory.</p>
+
+<p><code>AUTH_THROTTLE_DELAY</code> is now a supported setting, and a delay of 0 (or less) is refused: the server does not start, on any kind of install, and says the delay must be a positive duration such as <code>1s</code>. Without the delay, an account that has used its budget could be guessed at much faster.</p>
+
+<h2 id="startup-checks">Startup checks: <code>ATTACHMENT_DIR</code> and <code>APP_ENV</code></h2>
+
+<p><strong>Who notices:</strong> installs whose attachment directory cannot be written.</p>
+
+<p>At startup the server checks that <code>ATTACHMENT_DIR</code> (default <code>/data/attachments</code>, which under Compose is the mounted <code>docker/data/attachments</code>) exists, creating it if it is missing, and that a file can be written there. If not:</p>
+
+<ul>
+  <li>the server logs a warning, and administrators see a red <em>Attachment uploads are disabled</em> banner with the reason;</li>
+  <li>every upload, from staff, requesters and guests, is refused with <code>503 attachments_unavailable</code> until the directory is fixed. Everything else runs, and stored attachments can still be downloaded while the directory is readable;</li>
+  <li>the check repeats on each upload, so fixing the permissions needs no restart.</li>
+</ul>
+
+<p>Before this, an unwritable directory showed up as a failed upload partway through, as a <code>500</code>.</p>
+
+<p><code>APP_ENV</code> does nothing. If it is set in your environment, whatever its value, the server logs one line saying it is set and ignored. Use <code>LOG_LEVEL</code> for verbose logs.</p>
+
+<h2 id="client-errors">Client mistakes answer 4xx, and DELETE of an unknown id answers 404</h2>
+
+<p><strong>Who notices:</strong> API clients and scripts that call the admin routes. This is a breaking change to the REST API.</p>
+
+<p>Several ordinary mistakes by the caller used to be answered with <code>500 internal_error</code>, and a DELETE of something that was not there answered <code>204</code>. Now:</p>
+
+<ul>
+  <li><strong>DELETE of an unknown id answers <code>404 not_found</code></strong> for groups, group members, group scopes, API keys, OAuth clients, webhooks, categories, types, items, custom-field assignments, SLA policies and canned responses. Deactivating or restoring a tag that does not exist also answers <code>404</code>, while deactivating an already-deactivated tag, or restoring an active one, still answers <code>204</code>. A script that deletes the same thing twice gets <code>404</code> the second time. Deleting a status already did.</li>
+  <li><strong>A canned response whose category or type is unknown, or does not belong together, answers <code>400</code></strong>, not <code>500</code>.</li>
+  <li><strong>An unknown group, category, type, item, plugin, webhook or attachment answers <code>404</code></strong> where the route names it. Listing the members or scopes of an unknown group answers <code>404</code> instead of an empty array.</li>
+  <li><strong>A blank group, category, type or item name, and a zero or missing <code>user_id</code> or <code>category_id</code>, answer <code>400</code>.</strong> An id in a body that names nothing answers <code>400 invalid_reference</code>.</li>
+  <li><strong>A group name that is already taken answers <code>409 group_name_taken</code>.</strong> Deleting a category, type or item that is still in use answers <code>409 category_in_use</code>, <code>type_in_use</code> or <code>item_in_use</code>.</li>
+</ul>
+
+<p>Treat a <code>404</code> on DELETE as "already gone" if your script needs to be idempotent. See <a href="api.html#api-client-errors">REST API: Errors</a>.</p>
+
+<h2 id="smtp">Email needs encryption to send a password, and says when it is off</h2>
+
+<p><strong>Who notices:</strong> anyone whose mail server does not offer encryption, or whose <code>SMTP_USER</code> is set for a server that does not log in. Read this one before you upgrade.</p>
+
+<p>There is no new setting. The rule depends on the port and on whether <code>SMTP_PASSWORD</code> is set:</p>
+
+<ul>
+  <li><strong>Password set:</strong> the connection must be encrypted. Port 465 is encrypted from the first byte. Any other port must offer STARTTLS. A password is never sent unencrypted, even to a private address.</li>
+  <li><strong>No password:</strong> unencrypted mail is allowed only to a server on a loopback or private address (10.x.x.x, 172.16 to 172.31, 192.168.x.x, or IPv6 fc00::/7). A public address still needs encryption.</li>
+</ul>
+
+<p>Nothing needs changing if your mail server offers STARTTLS (or you use port 465) and, when <code>SMTP_USER</code> is set, offers AUTH. What now fails:</p>
+
+<ol>
+  <li><strong>A relay on localhost that takes a password without encryption.</strong> The send fails with <em>SMTP server does not offer STARTTLS, and SMTP_PASSWORD is set: refusing to send the password unencrypted</em>. Turn on STARTTLS (or TLS on port 465) on the relay, or drop the password if the relay does not need one for your network.</li>
+  <li><strong>Mail without a password to a public server that has no STARTTLS.</strong> The send fails with <em>SMTP server does not offer STARTTLS and is not on a private address: refusing to send mail unencrypted</em>. Use a server that offers STARTTLS, or port 465.</li>
+  <li><strong><code>SMTP_USER</code> set, but the server offers no AUTH.</strong> The send fails with <em>SMTP server does not offer AUTH but SMTP_USER is set</em>. Before, the mail was sent without logging in. Point at a server that offers AUTH, or remove <code>SMTP_USER</code> and <code>SMTP_PASSWORD</code> if the relay accepts your mail without a login.</li>
+  <li><strong>Turning on self-signup or guest submission while email is off.</strong> Saving the setting is refused with <code>400 email_required</code> when <code>SMTP_HOST</code> or <code>SMTP_FROM</code> is unset. An install that already has either one on is not switched off and can still save other settings; it gets a warning in the admin panel instead.</li>
+  <li><strong>A damaged email template.</strong> The message is marked failed at once, with no retries, and the error shows in the admin email warning. The shipped templates render, so this matters only for a damaged build.</li>
+</ol>
+
+<p>Port 465 now connects with TLS from the first byte. Before, it waited until the timeout, so no working setup changes.</p>
+
+<p><strong>How you see it.</strong> A failed send is retried for about an hour (a template error is not retried) and then marked failed. While any message is retrying, or failed within the last day, administrators see an email warning with the newest error, with any address replaced by <code>[address]</code>. The same warning lists which of <code>SMTP_HOST</code> and <code>SMTP_FROM</code> is unset, and whether signup or guest submission is on with email off. The server log says once at startup whether email is enabled, and warns when only one of the two is set. The warning is also in <code>GET /api/v1/admin/security-warnings</code>, as <code>email</code>.</p>
+
+<h2 id="password-age">Accounts on an old password hash must reset after 30 days</h2>
+
+<p><strong>Who notices:</strong> people who rarely sign in (seasonal staff, requesters), and API clients that sign in with a password.</p>
+
+<p>Passwords are now hashed more strongly (see <a href="#bcrypt-cost">Passwords are hashed at bcrypt cost 12</a>). An account is upgraded the next time its owner signs in. <strong>An account that has not signed in within 30 days of the first start of 1.3.0 must reset its password.</strong> Until it does, a correct password on an old hash is refused with <code>403 password_reset_required</code> and the message <em>Your password was saved in an older, weaker form and must be reset before you can sign in.</em></p>
+
+<ul>
+  <li><strong>The clock</strong> starts when 1.3.0 first runs against the database. It is recorded once.</li>
+  <li><strong>The number of days</strong> is under <strong>Admin → Settings → Authentication → Passwords</strong> (<code>password_rehash_grace_days</code>). The default is 30, and it can be 1 to 365. Changing it moves the deadline for everyone.</li>
+  <li><strong>Administrators are exempt</strong>, so an instance cannot lock itself out. They are upgraded at their next sign-in like everyone else. Staff and requesters are refused. When SAML limits password sign-in to administrators, other people get the SAML refusal instead.</li>
+  <li><strong>API clients:</strong> signing in with an old hash after the deadline answers <code>403 password_reset_required</code> instead of <code>200</code>, and when the server can send email it also mails the person a reset link (limited per address, like <em>Forgot password</em>). New installs are unaffected.</li>
+  <li><strong>How a person resets:</strong> when the server can send email, the refused sign-in itself mails them a reset link and the message says to check email (see <a href="#forgot-password">Forgot password by email</a>); or an administrator sets a new password for them (<strong>Admin → Users</strong>, open the person, <strong>Reset password</strong>). With email off only the administrator route works.</li>
+</ul>
+
+<p>Tell the people who sign in rarely, or have an administrator reset them, before day 30. New installs are not affected.</p>
+
+<h2 id="forgot-password">Forgot password by email</h2>
+
+<p><strong>Who notices:</strong> everyone who signs in with a password. This is new, and needs email.</p>
+
+<p>When the server can send email (<code>SMTP_HOST</code> and <code>SMTP_FROM</code> set), the sign-in page has a <strong>Forgot password?</strong> link. The person enters their address, is mailed a link, and chooses a new password. <code>GET /api/v1/auth/providers</code> reports <code>password_reset</code> so a client knows whether to offer it.</p>
+<ul>
+  <li><strong>The answer never depends on the address.</strong> <code>POST /api/v1/auth/forgot-password</code> always answers <code>202</code>, whether or not the address has an account, and it answers <code>429</code> when a client asks too often and <code>503 email_not_configured</code> while email is off. An administrator setting a password directly still works and is the route when email is off.</li>
+  <li><strong>The link</strong> works once, for 30 minutes, and a newer request replaces the older link. An account is mailed at most once every five minutes. Only a hash of each link is stored (a new table, added by migration 000049). The link is built from <code>BASE_URL</code>, never from the request.</li>
+  <li><strong>Choosing a new password ends every session of that account.</strong> The link does not sign anyone in: the person goes back to the sign-in page and signs in with the new password and their second factor, if they have one. Their API keys are not touched. <code>POST /api/v1/auth/reset-password</code> answers <code>204</code>, <code>400</code> for a password outside 8 to 72 bytes, and <code>422 token_invalid</code> for a link that does not work.</li>
+  <li><strong>Not for everyone.</strong> Nothing is mailed to a disabled or deleted account, to an account with no password (an SSO account, or a local account created without one), or, when SAML limits password sign-in to administrators, to anyone who is not an administrator.</li>
+  <li><strong>The 30-day refusal now points here.</strong> A person whose old password hash has expired (<a href="#password-age">see above</a>) is mailed a reset link by the refused sign-in itself when the server can send email, and the message says to check email (counted against the same per-address limit as <em>Forgot password</em>). If no link could be sent, the message says "We could not send a reset link just now. Try again in a minute, or ask an administrator." With email off it says to ask an administrator.</li>
+  <li>Each reset is recorded in the audit log as <code>password_reset_by_email</code>, with no actor. Both requests count against <code>AUTH_RATE_LIMIT_PER_MINUTE</code> per client address.</li>
+</ul>
+
+<h2 id="unlock">Unlock an account from the server</h2>
+
+<p><strong>Who notices:</strong> nobody, until someone is locked out. This is new.</p>
+
+<p>The server binary has a second recovery command beside <code>reset-factors</code>. In the Compose stack:</p>
+
+<pre><code>docker compose exec app /app/server unlock you@example.com</code></pre>
+
+<p>It works when the web cannot: a lost authenticator or passkey, a disabled account (the only administrator included), a used-up second-factor lockout, or an administrator who signs in through single sign-on and has no usable password. In one step it clears every second factor, turns the account back on, clears the second-factor lockout, ends all sessions, and sets a new random password that it prints once. The person must choose a new password at their next sign-in. The command is recorded in the audit log with the server console as the actor. It needs shell access to the server and adds nothing reachable from the network. <code>reset-factors</code> is unchanged and still does only the factor part.</p>
+
+<p>A signed-in session that owes a password change is answered <code>403 password_change_required</code> everywhere except <code>PATCH /api/v1/me/password</code>. <code>POST /api/v1/auth/local/login</code> reports it as <code>password_change_required</code>, and the user record carries <code>must_change_password</code>. See <a href="getting-started.html#locked-out">Getting Started: Locked out?</a>.</p>
+
+<h2 id="passkeys-base-url">An IP address or one-word <code>BASE_URL</code> turns passkeys off</h2>
+
+<p><strong>Who notices:</strong> installs reached by an IP address or a host name with no dot, and anyone whose only second factor is a passkey.</p>
+
+<p>Passkeys are tied to a domain name, so they work only when the host in <code>BASE_URL</code> is a domain name (<code>help.example.com</code>) or <code>localhost</code>. If it is an IP address (<code>http://192.168.1.10:8080</code>), a single word (<code>http://helpdesk:8080</code>) or has non-ASCII characters, <strong>passkeys are switched off</strong>. The server still starts, logs <em>passkeys unavailable</em> once, and administrators see a warning banner that explains it.</p>
+
+<ul>
+  <li>The passkey routes answer <code>503 passkeys_unavailable</code>. <code>GET /api/v1/auth/providers</code> reports <code>passkeys: false</code>, and <code>GET /api/v1/admin/security-warnings</code> carries <code>passkeys</code> with <code>available</code> and <code>reason</code>.</li>
+  <li><strong>An account whose only second factor is a passkey cannot sign in</strong> while passkeys are off. Sign-in answers <code>403 passkey_unavailable</code> and tells the person to ask an administrator to reset their sign-in factors. After <strong>Reset MFA</strong>, they sign in and enrol an authenticator app. Accounts with an authenticator app are not affected. For the last administrator, run <code>reset-factors</code> or <a href="#unlock"><code>unlock</code></a> on the server.</li>
+  <li>Passkeys registered under a domain that you later fix work again if the domain matches.</li>
+</ul>
+
+
+<h2 id="mcp-origin">MCP refuses requests from another origin</h2>
+
+<p><strong>Who notices:</strong> browser-based MCP clients, and reverse proxies that add an <code>Origin</code> header. Streamable HTTP at <code>/mcp</code> is new; the older SSE routes stay.</p>
+
+<p>Every MCP route (<code>/mcp</code>, <code>/mcp/sse</code>, <code>/mcp/message</code> and anything else under <code>/mcp/</code>) answers <code>403 origin_not_allowed</code> when the request carries an <code>Origin</code> header that is not the origin of your <code>BASE_URL</code>. This is checked before sign-in. Requests with no <code>Origin</code> header, which is what SDKs, editors and <code>curl</code> send, are unaffected. Serve a browser client from the <code>BASE_URL</code> origin, or stop the proxy adding the header.</p>
+
+<p>1.2.x accepted these requests on the SSE routes. The change closes a way for a web page on a sibling site to act through a signed-in user's session cookie. Upgrade if you expose MCP over SSE. See <a href="mcp.html">MCP Server</a>.</p>
+
+<h2 id="mcp-reply">A public reply through MCP now emails the requester</h2>
+
+<p><strong>Who notices:</strong> anyone with an AI agent or other tool connected over MCP.</p>
+
+<p>A public reply posted through the MCP <code>add_reply</code> tool used to be saved and never emailed. It now emails the requester (the guest, with a guest link, or the reporting account), the same as a reply through the REST API. <strong>Anything connected over MCP can now send mail to your customers.</strong> Review which credentials have <code>tickets:write</code> before you upgrade. Internal notes (<code>internal: true</code>) still send nothing, and MCP has no <code>notify_customer</code> switch: use an internal note for anything that should not reach the requester.</p>
+
+<p>One change for staff over both REST and MCP: a staff member or administrator who replies publicly on a ticket they filed themselves is no longer emailed a copy of their own reply.  An ordinary user replying on their own ticket still gets the copy.</p>
+
+<h2 id="archived-nodes">Nobody can newly file into an archived category, type or item</h2>
+
+<p><strong>Who notices:</strong> staff, administrators, and scripts that file or reclassify tickets.</p>
+
+<p>Before, staff and administrators could create tickets under, and move tickets into, categories and types an administrator had archived, and nobody was checked on items. That is reversed: <strong>nobody, staff and administrators included, can newly pick an archived category, type or item.</strong></p>
+
+<ul>
+  <li><code>POST /api/v1/tickets</code>, <code>PATCH /api/v1/tickets/{id}</code> (with <code>category_id</code>, <code>type_id</code> or <code>item_id</code>) and the MCP <code>create_ticket</code> tool answer <code>400 bad_request</code>, for example <em>type_id is not an active type</em>. This holds for sessions and API keys alike.</li>
+  <li>A ticket already in an archived category, type or item keeps it. Unrelated edits, a change that repeats the existing classification, and staff follow-ups of a closed ticket still work.</li>
+  <li>Staff and administrators still see archived entries, greyed out and labelled <em>(archived)</em>, and cannot pick them in the new-ticket and reclassify pickers. A ticket's own archived category, type or item stays selected so it can keep it.</li>
+  <li>A change that carries a refused classification now changes nothing. The status and assignee in the same request are no longer applied before the <code>400</code>.</li>
+</ul>
+
+<p>Administrators can now archive and unarchive a category, type or item from <strong>Admin → Categories</strong>. To file into it again, unarchive it there.</p>
+
+<h2 id="service-users">OAuth clients act through a service user</h2>
+
+<p><strong>Who notices:</strong> administrators who use OAuth clients, and the integrations behind them.</p>
+
+<p>Every OAuth client now has a <strong>service user</strong>: an account made with the client, named after it, that the client acts as. Upgrading creates one for each existing client, with the staff role and no groups.</p>
+
+<ul>
+  <li><strong>Clients can now write.</strong> A client holding <code>tickets:write</code> creates tickets and replies as its service user, and the audit trail shows the client's name. Before, those calls were refused with <code>403 user_identity_required</code>. A client with only <code>tickets:read</code> is still refused.</li>
+  <li><strong>Service users appear in Admin → Users.</strong> They can be renamed (which renames the client), set to staff or user (never administrator), given groups, and disabled. The server refuses the rest on <code>PATCH /api/v1/admin/users/{id}</code> with <code>409 service_account</code> (a change of email, the administrator role, or <code>reset_mfa: true</code>; none of the request is applied), which is stricter than the first 1.3.0 betas. <strong>Disabling the user stops the client.</strong> A service user cannot be deleted on its own: <code>DELETE /api/v1/admin/users/{id}</code> answers <code>409 service_account</code> and says to delete the client instead.</li>
+  <li><strong>They never sign in.</strong> No password, no second factor, no passkey, no single sign-on, no administrator role.</li>
+  <li>They are left out of assignee pickers and round-robin, do not count as administrators, and are never emailed. A ticket a client opens sends no requester email.</li>
+  <li><code>POST /api/v1/admin/oauth-clients</code> now returns <code>user_id</code>. <code>GET /api/v1/admin/oauth-clients</code> returns <code>user_id</code> and <code>groups</code> for each client.</li>
+  <li><strong>Before you turn on ticket scope enforcement,</strong> give each service user a group. A service user in no group sees no tickets. Saving the setting tells you which clients have none, and the security warnings list them (<code>oauth_clients_without_groups</code>) until each has a group or is disabled. With enforcement off, clients behave as before.</li>
+</ul>
+
+<p>If you downgrade, the down migration deletes the service users. The tickets they wrote stay, with no author link.</p>
+
+<h2 id="staff-email">Staff are emailed about their tickets</h2>
+
+<p><strong>Who notices:</strong> every staff member and administrator, once an administrator turns staff email on. On an upgraded install it starts off.</p>
+
+<p>1.2 never emailed staff. <strong>On an install upgraded from an earlier version (one that already has users), all three staff email overrides start as <em>Off for everyone</em>, so no staff email is sent until an administrator changes them under <em>Settings → Email</em>.</strong> A fresh install is unchanged: each person's own switches start on. A migration stores the three overrides as Off when it finds existing users, and an override an administrator had already stored is kept. Nothing is sent while email is not configured (<code>SMTP_HOST</code> and <code>SMTP_FROM</code>).</p>
+
+<ul>
+  <li><strong>When:</strong> a ticket is assigned to you, a ticket is assigned to a group you belong to, and a requester (an account holder or a guest) replies on a ticket assigned to you. A requester's reply on a group ticket that nobody personally holds goes to the group's members. A reopen is mailed too (see <a href="#reopen">Reopening a ticket now does more</a>).</li>
+  <li><strong>Not when:</strong> you did it yourself, a colleague replies, or someone adds an internal note. A staff member who filed a ticket and replies on it counts as the requester.</li>
+  <li><strong>Each person chooses</strong> under <strong>Your account → Email about tickets</strong>: <em>Tickets assigned to me</em>, <em>Activity on tickets I'm assigned to or follow</em> and <em>My groups' tickets</em>.</li>
+  <li><strong>Administrators can force a switch on or off for everyone</strong> under <strong>Admin → Settings → Email</strong> (<code>staff_email_assigned_override</code>, <code>staff_email_activity_override</code> and <code>staff_email_group_override</code>, each <code>user</code>, <code>on</code> or <code>off</code>, <code>user</code> by default on a fresh install). On an upgraded install they start as <em>Off for everyone</em>. To turn staff email on, set them to <em>Use each person's choice</em> or <em>On for everyone</em>.</li>
+  <li>The service users of OAuth clients are never emailed, even when they belong to a group.</li>
+  <li>The emails carry only the ticket's tracking number and a link, like every other email from the help desk.</li>
+</ul>
+
+<h2 id="followers">Staff can follow a ticket</h2>
+
+<p><strong>Who notices:</strong> staff and administrators. This is new.</p>
+
+<p>A <strong>Follow</strong> button on the ticket page (or <code>PUT</code> and <code>DELETE /api/v1/tickets/{id}/follow</code>) makes a staff member or administrator a follower. A follower is emailed when the ticket is assigned and when its requester replies, under the <em>Activity on tickets I'm assigned to or follow</em> switch. The administrator's override of that switch applies to followers too. Nobody is emailed about their own change, and nobody is emailed twice for one event.</p>
+
+<ul>
+  <li><strong>People only.</strong> An API key, an OAuth client or a service user cannot follow or unfollow (<code>403 session_required</code>). Reading <code>GET /api/v1/tickets/{id}/followers</code> works for staff and administrators, and for a key with <code>tickets:read</code>. Staff always see who follows a ticket.</li>
+  <li><strong>Following is recorded</strong> in the audit log (<code>followed</code>, <code>unfollowed</code>). Administrators see these on a ticket's activity feed and in the admin-wide audit view. Staff do not, until an administrator turns on <strong>Staff can view follow history</strong> (<code>staff_can_view_follow_audit</code>, under <strong>Admin → Settings → General → Audit log</strong>; off by default). Requesters never see them.</li>
+  <li>A follower who can no longer see the ticket (ticket scope was turned on, or their groups changed) is skipped when the mail is sent, and keeps following.</li>
+  <li><strong>Reassigning a ticket ends the old assignee's follow</strong> if they followed the ticket they held. It is recorded as <code>unfollowed</code> with whoever moved the ticket as the actor. Moving a ticket between groups does not touch anyone's follow.</li>
+  <li>The assignee is not also mailed as a follower, and neither are the members of an assigned group when the group itself is mailed. For those, their own switches decide.</li>
+</ul>
+
+<h2 id="reopen">Reopening a ticket now does more</h2>
+
+<p><strong>Who notices:</strong> staff, administrators, requesters, and anything that reopens tickets or reads the audit routes.</p>
+
+<p>A reopen is any move from Resolved or Closed back to an open status: a requester's reply on a Resolved ticket (an account holder or a guest), a status change by staff or an administrator, and <code>POST /api/v1/tickets/{id}/reopen</code>. Until now a reopen changed the status and nothing else. It now does five things in the same step as the status change:</p>
+
+<ul>
+  <li><strong>The ticket is flagged.</strong> Staff and administrators see a <strong>Reopened</strong> badge on the ticket and in the queue while it is open again. It goes away when the ticket is resolved again. The count is <code>reopen_count</code> on the ticket, shown to staff and administrators only and left out when it is 0.</li>
+  <li><strong>The priority goes up one level on the first reopen only</strong> (low, medium, high, critical; critical stays). A ticket that used to keep its priority through a reopen now gets a new one, which can match a different SLA policy. Later reopens do not raise it again.</li>
+  <li><strong>The SLA starts over</strong> on every reopen. The earlier record is kept, staff see an <strong>SLA restarted</strong> badge, and the audit log gets <code>sla_restarted</code>. Nothing happens while SLA tracking is off.</li>
+  <li><strong>Staff are emailed:</strong> the assignee (under <em>Activity on tickets I'm assigned to or follow</em>), the assigned group's members (under <em>My groups' tickets</em>, only while nobody holds the ticket) and its followers, once each, and never the person who reopened it. The administrator's overrides apply. On an upgraded install nobody receives these until an administrator turns staff email on under Settings → Email.</li>
+  <li><strong>The change is audited</strong> as <code>reopened</code>, and a move out of Resolved or Closed now raises the <code>ticket.reopened</code> webhook event, which it did not before.</li>
+</ul>
+
+<p>A priority change can no longer undo a restart: if a ticket's priority moves to one with no SLA policy and later to one with a policy, the new record resumes from the clock it left, or from the last reopen if that is later.</p>
+
+<p><strong>Requesters see less.</strong> A requester sees the ticket as it is now and its public replies, and nothing about how it got there:</p>
+<ul>
+  <li><code>GET /api/v1/tickets/{id}/audit</code> and <code>GET /api/v1/tickets/{id}/history</code> now answer <code>403</code> to a requester. Before, a requester could read both for their own ticket. The ticket page no longer shows them status changes in the conversation either. Staff and administrators are unchanged, and guests never had either route.</li>
+  <li>A requester now receives only these ticket fields, in every ticket response including MCP: <code>id</code>, <code>tracking_number</code>, <code>subject</code>, <code>description</code>, <code>status_id</code>, <code>priority</code>, <code>category_id</code>, <code>type_id</code>, <code>item_id</code>, <code>created_at</code>, <code>resolved_at</code>, <code>assignee_user_id</code> and <code>resolution_notes</code>. They no longer receive <code>assignee_group_id</code>, <code>reporter_user_id</code>, <code>guest_email</code>, <code>guest_name</code>, <code>guest_phone</code>, <code>closed_at</code>, <code>updated_at</code>, <code>pending_since</code>, <code>sla_paused_seconds</code> or <code>reopen_count</code>. Guests no longer receive <code>updated_at</code>; the rest of their view is unchanged. A field added to tickets in a later release stays hidden from requesters until it is added to this list.</li>
+</ul>
+
+<p>A script that signs in as a requester and reads those routes or keys will see the change.</p>
+
+<h2 id="ticket-page">Change priority, Assign to me, and Resolve all children</h2>
+
+<p><strong>Who notices:</strong> staff and administrators. These are new; nothing existing changes.</p>
+
+<ul>
+  <li><strong>Priority.</strong> Staff and administrators can change a ticket's priority from a select in the <strong>Details</strong> card on the ticket page (or with <code>PATCH /api/v1/tickets/{id}</code>). The SLA policy is matched again for the new priority, and the clock keeps running. A Resolved or Closed ticket refuses the change (<code>409 ticket_closed</code>), and the select is disabled with the reason. Requesters see the priority but cannot change it.</li>
+  <li><strong>Assign to me.</strong> A button in the Assignee panel, offered to staff and administrators only while the ticket has no assignee and is not Resolved or Closed. It keeps the ticket's group.</li>
+  <li><strong>Resolve all children.</strong> On a parent ticket, the Linked tickets panel asks for resolution notes once and resolves the direct children that are still open, one after another, each with the same notes. Children already Resolved or Closed are skipped. A refusal on one child does not stop the others, and the panel reports how many were resolved, skipped and refused, and why. <strong>Only direct children are resolved.</strong> If some of those children have children of their own, the panel names up to five of them and says to resolve those from their own tickets.</li>
+</ul>
+
+<h2 id="webhooks">Webhooks: retries, delivery ids, history, notes and a ticket filter</h2>
+
+<p><strong>Who notices:</strong> anyone who receives webhooks. Two of these changes can break a receiver.</p>
+
+<h3 id="webhooks-raw">Breaking: the raw payload carries ids only</h3>
+<p>A hook with the <strong>Raw JSON</strong> format is now sent only the event name (<code>Type</code>), <code>TicketID</code>, <code>ActorID</code>, <code>OccurredAt</code> and, where the event has them, a <code>Payload</code> with <code>new_status_id</code> or <code>target_id</code>. These are gone: <code>TrackingNumber</code>, <code>Subject</code>, <code>Priority</code>, <code>guest_email</code>, <code>reporter_email</code>, <code>ReplyBody</code>, and the <code>internal</code> and <code>link_type</code> fields. A receiver that reads any of them must fetch the ticket through the REST API with <code>TicketID</code>. Slack, Teams, Discord and Jira Automation hooks are not affected: their messages still carry the subject, tracking number, status and public reply text, and never an address or a note's text.</p>
+
+<h3 id="webhooks-notes">Breaking: internal notes are their own event</h3>
+<p><code>ticket.replied</code> is now sent for customer-visible replies only. Internal notes are sent as the new <code>ticket.note_added</code>. A hook subscribed to <code>ticket.replied</code> stops receiving notes. Add <code>ticket.note_added</code>, or choose all events, to keep them.</p>
+
+<h3 id="webhooks-retries">A receiver may now see an event twice</h3>
+<p>A delivery that fails with a connection error, DNS or TLS failure, timeout, a 5xx or a 429 is tried again: 8 attempts in all, with a wait that starts at 30 seconds and doubles each time (30 seconds, then 1, 2, 4, 8, 16 and 32 minutes), each wait capped at an hour. In practice the waits add up to a little over an hour. If a <code>429</code> or <code>5xx</code> answer carries <code>Retry-After</code> asking for a longer wait than the schedule, that wait is used, up to an hour. A blocked (internal) address and any other status, such as 400 or 404, are not retried. If you change a hook's URL, deliveries still waiting for the old address are dropped, and so are deliveries waiting for an event the hook no longer lists.</p>
+<p>Every delivery now carries two headers: <code>X-GHD-Delivery</code>, a UUID that stays the same across the retries of one delivery (use it to drop a repeat), and <code>X-GHD-Event</code>, the event name. The signature headers are unchanged.</p>
+
+<h3 id="webhooks-history">New: History and Redeliver</h3>
+<p><strong>Admin → Webhooks</strong> has a <strong>History</strong> button per hook: its last 25 deliveries with the outcome, status, number of attempts and time. Payloads and error text are not kept. A retry that is dropped because the hook was disabled, paused (its API key, or that key's owner, is no longer active: the key was revoked or expired, or its owner was disabled or deleted), unsubscribed from the event, or no longer admits the ticket under its filter, or because the message cannot be built, shows as <strong>Dropped</strong> with that reason instead of staying on Retrying. Changing a hook's URL still clears its history. In the API a history entry has <code>result: "dropped"</code> and a <code>drop_reason</code> (<code>disabled</code>, <code>unsubscribed</code>, <code>url_changed</code>, <code>filter</code>, <code>paused</code> or <code>unbuildable</code>), present only on dropped entries. A new migration adds them and leaves existing entries unchanged. <strong>Redeliver</strong> sends a delivery's event again as a new delivery. A chat message is rebuilt from the ticket as it is now, so it can differ from the original, and a reply's text is sent only if the reply still exists and is public.</p>
+
+<h3 id="webhooks-filter">New: a ticket filter</h3>
+<p>A hook can be limited to tickets in chosen categories, priorities or assigned groups (<strong>Admin → Webhooks → Ticket filter</strong>), or inverted to send for every ticket that does not match. A hook with no filter, which is every hook after the upgrade, behaves as before. An event the filter turns away is not a delivery for that hook: no delivery id, no retry, no History entry. The filter is read as it is now, when an event is sent, at every retry and at Redeliver, so tightening a filter drops waiting retries that it no longer admits. Redeliver is refused with <code>409 webhook_filter_excludes</code> when the filter does not admit the ticket, and with <code>409 webhook_filter_unverifiable</code> when the hook has a filter and the ticket is gone. A ticket that auto-assignment routes when it is created is announced with its group already set, so a group condition can match <code>ticket.created</code>.</p>
+
+<h2 id="one-event">One change, one event: webhooks and staff email</h2>
+
+<p><strong>Who notices:</strong> anyone who receives webhooks, and staff who get ticket email. Nothing to change in settings, and no migration.</p>
+
+<p>A change to a ticket is now one event, saved to the delivery queue in the same step as the change. Before, each field that changed was announced on its own after the change had been saved, so a crash in between lost the notification. Now a change that fails sends nothing.</p>
+
+<h3 id="one-event-webhooks">Webhook receivers</h3>
+<ul>
+  <li><strong>One delivery per change, per hook.</strong> A hook subscribed to <em>All events</em> (<code>*</code>), or to several names, used to get two or three deliveries for one click: a save that changed status, assignee and priority; a reopen; a reply that reopens. It now gets one. <code>X-GHD-Event</code> and <code>Type</code> carry the first name, in this order, that the hook subscribes to: <code>ticket.created</code>, <code>ticket.reopened</code>, <code>ticket.resolved</code>, <code>ticket.closed</code>, <code>ticket.status_changed</code>, <code>ticket.assigned</code>, <code>ticket.priority_changed</code>, <code>ticket.classified</code>, <code>ticket.replied</code>, <code>ticket.note_added</code>, <code>ticket.linked</code>. A hook subscribed to one name is told that name, with the body it always had.</li>
+  <li><strong>A receiver that switches on <code>Type</code> can miss a kind.</strong> The body does not list the other kinds. A requester's reply that reopens a ticket arrives as <code>ticket.reopened</code> only, so a receiver that handles just <code>ticket.replied</code> will not see that reply. If you need more than the label, read the ticket through the REST API with <code>TicketID</code>.</li>
+  <li><strong>The same status move has the same names from every route.</strong> A move into Resolved is <code>ticket.status_changed</code> and <code>ticket.resolved</code>; into Closed, <code>ticket.status_changed</code> and <code>ticket.closed</code>; out of Resolved or Closed into an open status, <code>ticket.status_changed</code> and <code>ticket.reopened</code>. So <code>ticket.status_changed</code> now also fires for the Resolve button, the Close button, the automatic close and a requester's reopening reply, and <code>ticket.resolved</code> and <code>ticket.closed</code> now also fire when a status is changed directly.</li>
+  <li><strong>Two new names:</strong> <code>ticket.priority_changed</code> and <code>ticket.classified</code> (category, type or item). A hook subscribed to <em>All events</em> starts receiving them. They can be chosen in <strong>Admin → Webhooks</strong>. Their bodies have no <code>Payload</code>; read the ticket by <code>TicketID</code>.</li>
+  <li><strong>A status change to the status the ticket already has announces nothing about status.</strong> 1.2.x sent <code>ticket.status_changed</code> for it. That holds for a change through the API or MCP that repeats the current status, Resolved included: a save that repeats Resolved and assigns someone sends <code>ticket.assigned</code> only, and the guest is not mailed or given a new link. Only the Resolve button on an already-Resolved ticket, with new notes, is still a resolution: it sends <code>ticket.resolved</code> only.</li>
+  <li><strong>The raw body is unchanged:</strong> ids only, with no tracking number, no list of kinds and no version flag. Deliveries queued before the upgrade are sent as they were.</li>
+  <li><strong>Chat and Jira messages.</strong> Under the headline they can add one line, such as <em>Also: assigned, priority changed</em>, that names the change's other kinds, but only kinds that this hook subscribes to. A hook subscribed to a single name gets no such line, and a Jira message gains an optional <code>also</code> key under the same rule. The text of a reply appears only for a hook subscribed to <code>ticket.replied</code> (or <em>All events</em>); a hook on <code>ticket.reopened</code> alone gets its Reopened message without the reply. A Jira message includes the status name only for a hook subscribed to a status event. Internal notes never appear.</li>
+  <li><strong>Mail and webhooks are queued exactly once.</strong> If working out who to mail takes longer than the five minutes a worker holds a change, a second worker finds it already taken and queues nothing, so the same mail is not sent twice.</li>
+  <li>A ticket that auto-assignment routes when it is created is announced once, as created and assigned. <strong>A hook that is told <code>ticket.assigned</code> for it gets a null <code>ActorID</code></strong>, as in 1.2.x, because routing is the system's act. A <code>ticket.created</code> delivery for the same ticket still names the creator, and a hook subscribed to both is told <code>ticket.created</code>, with the creator.</li>
+  <li><strong>Headlines for the two new names.</strong> Chat and Jira messages for <code>ticket.priority_changed</code> and <code>ticket.classified</code> read "Priority changed" and "Reclassified". They show no priority, category or type name. A Jira message keeps the event name in its <code>event</code> key.</li>
+  <li><strong>An assignment that changes nothing announces nothing.</strong> Assigning a ticket to the person and group it already has, or clearing an already-unassigned ticket, used to send <code>ticket.assigned</code> and the assignee's email again in 1.2.x. It now sends neither, as with a same-status or same-priority change. The audit entry is still written.</li>
+</ul>
+
+<h3 id="one-event-tickets">Ticket behaviour</h3>
+<ul>
+  <li><strong>A <code>PATCH /api/v1/tickets/{id}</code> is all or nothing.</strong> Status, assignee, classification and priority are applied in one step. A refusal partway through now leaves the whole request unapplied; before, the steps ahead of it were already saved.</li>
+  <li><strong>Reclassifying announces <code>ticket.classified</code></strong> and a priority change announces <code>ticket.priority_changed</code>. Reclassifying still writes no audit entry.</li>
+</ul>
+
+<h3 id="one-event-email">Staff email</h3>
+<ul>
+  <li>The server works out who is mailed a moment after the change is saved. At most one mail goes to any address for one change (compared without regard to case); when a guest's address is also a staff member's, the staff mail is sent. A person who qualifies for several reasons in one change gets one mail, for the first of assigned, reopened, requester replied whose switch is on. A person who files a ticket that auto-assignment then assigns to them gets one mail.</li>
+  <li><strong>A failed lookup holds the change back.</strong> If the server cannot look up a ticket's followers or a group's members, the whole change is retried, and no mail goes out until every recipient is known, so nobody is mailed twice. A lookup that keeps failing holds back every mail for that change, the requester's included: the change is tried 8 times in all over about an hour, then marked failed. The server log says "staff email: could not work out who to notify".</li>
+  <li>A guest may get a different message: the first of created, reopened, resolved, replied, status changed that the change carries. A change of status to Resolved now says "We have resolved", and one that reopens says "We have reopened". Mail queued before the upgrade is sent as it was.</li>
+</ul>
+
+<h2 id="admin-api">Admin API: no more half-applied edits, and new rules</h2>
+
+<p><strong>Who notices:</strong> scripts and API keys that call the admin API. Nothing needs doing in the admin screens.</p>
+
+<h3>Breaking</h3>
+<ul>
+  <li><strong>Inactive statuses are retired for everyone.</strong> <code>PATCH /api/v1/tickets/{id}</code> with a <code>status_id</code> that names an inactive status answers <code>409 status_inactive</code>, for staff, administrators and API keys alike. Tickets already in an inactive status stay there and can move out. The status picker no longer lists inactive statuses. If you deactivated <em>Pending</em> expecting the SLA to keep pausing, it now stops for new tickets. If the status that reopened tickets go to is inactive, every reopen goes to New instead, administrators see a banner (<code>reopen_target</code> in <code>GET /api/v1/admin/security-warnings</code>), and deactivating that status returns a <code>warning</code>.</li>
+  <li><strong>API keys list and revoke only themselves.</strong> An API key could delete another administrator's key if it knew the id; that has been possible since 1.0.0 and is revoke-only. Now a key lists and revokes only itself (any other id answers <code>404</code>). An administrator signed in through the browser lists and revokes every key, so <code>GET /api/v1/admin/api-keys</code> for a browser session now returns all keys, each with <code>owner_name</code> and <code>owner_email</code>. A script that used one key to list or revoke the others now needs a browser session.</li>
+  <li><strong>Custom-field errors have their own codes.</strong> A name already in use, and a field assigned twice to one place, answer <code>409 conflict</code>. A <code>field_def_id</code> that names no field answers <code>400 invalid_reference</code>. A database failure is a <code>500 internal_error</code>. No response carries database text.</li>
+  <li><strong>A failed ticket count fails the request.</strong> <code>GET /api/v1/admin/statuses</code> and <code>GET /api/v1/statuses</code> answer <code>500</code> when a count cannot be read. Before, the status was reported with <code>ticket_count: 0</code>.</li>
+  <li><strong>Names are trimmed on change</strong> for categories, types and items, as they are on create.</li>
+  <li><strong>Deleting a category, type or item also deletes its custom-field assignments.</strong> Leftovers from earlier deletes are removed once at upgrade.</li>
+  <li><strong>Deleting a group writes an <code>unassigned</code> audit entry for every ticket it held</strong>, in the same step as the delete.</li>
+  <li><strong><code>PATCH /api/v1/admin/users/{id}</code> checks every field before it writes any.</strong> A bad email, an email another account holds (<code>409</code>), or a change that would remove the last active administrator (<code>400</code>) is refused before anything changes. Soft-deleted accounts answer <code>404</code> to this route and to <code>POST /api/v1/admin/users/{id}/password</code>. Both check the body first (<code>400</code>), then the caller (<code>403</code>), then the account (<code>404</code>), for a session and an API key alike.</li>
+  <li><strong>Mismatched ids in a URL answer <code>404</code></strong> on the type and item routes under a category and on all the custom-field assignment routes. Listing the items of an unknown type, or the assignments of an unknown category, type or item, answers <code>404</code> instead of an empty list.</li>
+</ul>
+
+<h3>Added or corrected</h3>
+<ul>
+  <li><code>auth_type</code> reports OIDC with new values <code>oidc</code>, <code>local+oidc</code>, <code>saml+oidc</code> and <code>local+saml+oidc</code>. A client that switches on <code>auth_type</code> with a fixed list of values needs to handle them.</li>
+  <li><code>visible_on_new</code> on a new custom-field assignment now defaults to false in the database too, as it did in the API. Existing rows are untouched.</li>
+  <li><code>GET /api/v1/admin/sla/policies</code> is ordered by severity (critical, high, medium, low, then no priority), then by name.</li>
+  <li><code>POST /api/v1/admin/oauth-clients</code> returns <code>id</code>, the record id that <code>DELETE</code> takes. <code>PATCH /api/v1/admin/users/{id}</code> returns the real <code>passkey_count</code>. <code>PATCH /api/v1/admin/webhooks/{id}</code> and <code>PATCH /api/v1/admin/custom-fields/{id}</code> return the saved row, and the status routes return the real <code>ticket_count</code>.</li>
+  <li>A blank webhook <code>secret</code> on <code>PATCH</code> still clears it, by design and for administrators only.</li>
+</ul>
+
+<h2 id="api-changes">Other API changes</h2>
+
+<p><strong>Who notices:</strong> scripts and integrations that call the API. Three can make a request that used to succeed now fail.</p>
+
+<h3>Requests that now fail</h3>
+<ul>
+  <li><strong>Unknown settings keys are refused.</strong> <code>PATCH /api/v1/admin/settings</code> with a key that is not a real setting answers <code>400 unknown_setting</code>, names the key, and writes nothing, not even the valid keys in the same request. Use the exact names from <code>GET /api/v1/admin/settings</code>.</li>
+  <li><strong><code>POST /api/v1/tickets/{id}/resolve</code> with a body that is not valid JSON is <code>400</code>.</strong> Before, it resolved the ticket and dropped the notes. An empty body still resolves with no notes.</li>
+  <li><strong><code>GET /api/v1/auth/verify-email?token=</code> is <code>422 token_invalid</code></strong> for an address that has since gained an account.</li>
+  <li><code>PATCH /api/v1/admin/settings</code> refuses JSON <code>null</code> (<code>400</code>) for <code>attachment_scan_address</code>, <code>attachment_allowed_types</code> and the four <code>attachment_reputation_*_enabled</code> settings. To clear the scanner address, send an empty string.</li>
+</ul>
+
+<h3>Answers that say something different</h3>
+<ul>
+  <li><code>GET /api/v1/auth/providers</code> is served as JSON. <code>oidc</code> and <code>saml</code> now mean loaded and working, not switched on. The new <code>local_admin_only</code> is true when SAML limits password sign-in to administrators.</li>
+  <li><code>GET /api/v1/admin/oidc</code> and <code>/admin/saml</code> gain <code>live</code>: <code>configured: true, live: false</code> means saved, not working.</li>
+  <li><code>GET /api/v1/auth/signup/status</code>: <code>open_registration</code> is what is in force, so it is false when an allowed-domains list limits signup. The new <code>restricted_by_domain_list</code> says why.</li>
+  <li><code>Retry-After</code> on a <code>429</code> from the sixty-second sign-in, signup and guest limits is now the seconds left (1 to 60). The 15-minute second-factor lock still says 900.</li>
+  <li>A server crash inside a request answers a JSON <code>500 internal_error</code> instead of an empty body.</li>
+  <li>The passkey <code>finish</code> routes answer <code>500</code> when the server cannot write the session (they said <code>400 no_challenge</code>), and refuse a body over 64 KiB with <code>413 too_large</code>. <code>POST /api/v1/me/mfa/enroll/confirm</code> answers <code>500</code> when the server cannot save the factor. <code>POST /api/v1/guest/resend</code> accepts an empty body.</li>
+  <li><strong>A NUL character in free text is <code>400</code>, not <code>500</code>.</strong> A NUL (or invalid UTF-8) in a ticket's <code>subject</code>, <code>description</code>, <code>guest_name</code> or <code>guest_phone</code>, or in a reply <code>body</code>, used to reach the database, which refuses it: a <code>500</code>, and for a create a tracking number already used, leaving a gap in the numbering. It is now <code>400 bad_request</code> naming the field, before anything is written. Every other character (tabs, newlines, escape codes) is accepted and stored as given.</li>
+  <li><code>POST /api/v1/tickets</code> answers with the ticket after routing, so <code>assignee_user_id</code> and <code>assignee_group_id</code> are filled in when a rule applied. <code>POST /api/v1/tickets/{id}/replies</code> includes <code>author_name</code>. <code>PATCH /api/v1/tickets/{id}</code> with no body is the same as <code>{}</code> and answers <code>200</code>.</li>
+  <li>The six choice settings in <code>PATCH /api/v1/admin/settings</code> answer their own error code for every refusal: <code>invalid_closed_reopen_policy</code>, <code>invalid_audit_mask_requester_names</code>, <code>invalid_scan_policy</code>, <code>invalid_infected_handling</code>, <code>invalid_mismatch_handling</code> and <code>invalid_reputation_refresh</code>. Match on those instead of <code>bad_request</code>.</li>
+  <li>Every route under <code>/tickets/{id}</code> now accepts a tracking number (for example <code>GHD-2026-000001</code>) as well as a UUID.</li>
+</ul>
+
+<h2 id="admin-screens">New admin screens: Routing, and a paged Users list</h2>
+
+<p><strong>Who notices:</strong> administrators, and scripts that save the auto-assignment settings or list users.</p>
+
+<ul>
+  <li><strong>Admin → Routing</strong> is a new page for the auto-assignment fallbacks: the fallback group (<code>auto_assign_group_id</code>) and the people who take tickets in turn (<code>auto_assign_user_ids</code>). They could only be changed through the API before. A person who cannot take work right now, such as someone suspended, stays ticked and is labelled <em>(can't take work right now)</em>. They can be unticked.</li>
+  <li><code>PATCH /api/v1/admin/settings</code> now answers <code>400 invalid_auto_assign</code> for a group or user that does not exist, or a person who is not staff or an administrator, instead of saving it and skipping it when a ticket is routed.</li>
+  <li><strong>Admin → Users</strong> is paged (50 a page) and searchable, so it is no longer limited to the first 200 accounts. <code>GET /api/v1/admin/users</code> takes <code>page</code>, <code>per_page</code>, <code>q</code> and <code>role</code> and reports the number of matches in the <code>X-Total-Count</code> header. Without <code>page</code> it answers as before.</li>
+</ul>
+
+<h2 id="saml-metadata">SAML accepts pasted metadata, and reads more name claims</h2>
+
+<p><strong>Who notices:</strong> administrators who set up SAML, and people who sign in through SAML with Microsoft Entra ID or an identity provider that sends <code>firstName</code> and <code>lastName</code>.</p>
+
+<ul>
+  <li><strong>Metadata as XML.</strong> Under <strong>Admin → Settings → Authentication → SAML</strong> you can now give the identity provider's metadata as a URL (as before) or as XML that you paste or upload (<strong>Upload .xml</strong> fills the same box). The two are alternatives: <code>PUT /api/v1/admin/saml</code> refuses a save that would leave both set with <code>400 saml_metadata_conflict</code>. The XML is checked before anything is saved, and refused with <code>invalid_saml_metadata</code> if it is not SAML metadata, has no identity provider section, or has no signing certificate, and with <code>saml_metadata_too_large</code> over 262144 bytes (256 KiB). It is shown again after saving, and it is never refreshed: paste the new metadata when your identity provider changes its signing certificate. <code>GET /api/v1/admin/saml</code> now returns <code>metadata_xml</code>.</li>
+  <li><strong>More name claims.</strong> The display name is now also read from <code>firstName</code> and <code>lastName</code>, and from the claim names Microsoft Entra ID sends by default. A person's stored name is rewritten at each sign-in, so an identity provider that already sent these may change some display names at the next sign-in. <a href="authentication.html#auth-saml">Details</a></li>
+</ul>
+
+<h2 id="staff-search">Staff search covers every ticket they can see</h2>
+
+<p><strong>Who notices:</strong> staff and administrators. Requesters are unchanged and still see only their own tickets.</p>
+
+<p>Searching the ticket list used to cover only the selected queue, so staff searching from <em>Mine</em> never found a ticket assigned to someone else. <strong>Typing in the search box now covers every ticket the person can see, whatever queue is selected</strong>, and the results area says <em>Searching all tickets you can see</em>.</p>
+
+<ul>
+  <li>An <em>Only my tickets</em> or <em>Only unassigned</em> chip narrows the search to the queue. Click it again to widen it. It resets when the box is cleared or the queue changes, and it is not offered on an administrator's <em>All</em> queue. A box with only spaces counts as empty, and with an empty box the queue behaves as before.</li>
+  <li><strong>Who can see what is unchanged.</strong> Administrators, and staff while <em>Limit staff to their group scope</em> is off, see every ticket. With it on, staff see tickets they reported or are assigned, tickets assigned to one of their groups, and tickets in a category or type their groups cover, so search never shows a ticket the staff member could not already open.</li>
+  <li><strong>API:</strong> <code>GET /api/v1/tickets?scope=visible</code> for staff and administrators. An older server ignores an unknown scope and answers as <code>mine</code>. The existing scopes behave as before. There is no migration.</li>
+</ul>
+
+<h2 id="on-behalf">Staff can file a ticket for a requester</h2>
+
+<p><strong>Who notices:</strong> staff and administrators. This is new. Callers that send neither new field behave exactly as before, and there is no migration.</p>
+
+<p>On the New ticket page, staff and administrators get a <strong>Requester</strong> choice: <em>Me</em> (the default), <em>Another user</em> (search by name or address) or <em>Email address</em>. In the API, <code>POST /api/v1/tickets</code> takes <code>reporter_user_id</code> or <code>reporter_email</code> (at most one). A requester who sends either is refused with <code>403</code>.</p>
+<ul>
+  <li><strong>A typed address</strong> is filed like a guest ticket, and the person is emailed the link to read and reply. It needs a name with every address (<code>400</code> without one), whether or not it has an account, so a refusal says nothing about the address; a phone number is optional. It is refused with <code>400</code> while guest submission is off and the address has no account, because the link would not open. If the address belongs to an account, the ticket is filed for that account.</li>
+  <li><strong>40 uses of <code>reporter_email</code> an hour per staff member</strong>, then <code>429 rate_limited</code> with <code>Retry-After</code>. Every typed address that passes validation counts, account or not, and the guest-submission-off refusal counts too; a request refused by validation spends nothing, and a count, once taken, is never given back. Picking a user by <code>reporter_user_id</code> does not count. The count is kept in memory, so it resets when the server restarts and each server instance counts on its own. It is not configurable.</li>
+  <li><strong>An existing user who is filed for is emailed</strong> the usual "We have received your ticket" message, once per address. Filing for yourself sends nothing, as before.</li>
+  <li>The staff member is the actor in the ticket's history and audit entry. <strong>MCP <code>create_ticket</code> with <code>reporter_user_id</code> now does the same</strong>: it used to record the reporter as the actor, and it now emails the user as the REST API does. MCP <code>create_ticket</code> also takes <code>reporter_email</code>, <code>guest_name</code> (always required with the address) and <code>guest_phone</code>, by the same code as REST, sharing the same 40-an-hour budget per staff member.</li>
+  <li><strong>Staff see a Requester line</strong> (name and email) on every ticket page, and <code>GET /api/v1/tickets/{id}</code> carries <code>requester</code> for staff and administrators only.</li>
+  <li><code>GET /api/v1/users/lookup?q=</code> feeds the picker: staff and administrators in a signed-in session only (an API key or OAuth client gets <code>403 session_required</code>; see the breaking changes under API keys), at most ten results, <code>400</code> for fewer than two characters, and no disabled, deleted or service accounts.</li>
+</ul>
+
+<h2 id="mcp-limits">MCP requests are capped, and SSE sessions are bound to their opener</h2>
+
+<p><strong>Who notices:</strong> anyone who sends very large MCP requests, or who opens an MCP stream with one credential and posts with another.</p>
+<ul>
+  <li><strong>A request body is capped at 1 MiB</strong> on <code>/mcp</code>, <code>/mcp/</code> and <code>/mcp/message</code>. Over the cap the server answers <code>413</code> (<code>request_too_large</code>). Before, there was no cap. A single tool call larger than 1 MiB, such as a reply body of over a million characters, is now refused. A declared <code>Content-Length</code> over the limit is refused before the body is read.</li>
+  <li><strong>An SSE session now belongs to the user and credential that opened the stream.</strong> A message for its <code>sessionId</code> from a different user, a different API key of the same user, or a browser session where the stream was opened with a key (or the reverse), is refused with <code>403</code> and not processed. An unknown, missing or closed <code>sessionId</code> gets the same <code>403</code>. Clients that open the stream and post with the same credential are unaffected.</li>
+</ul>
+
+<h2 id="api-keys">API keys: staff can have them, keys can do less, and every new key expires</h2>
+
+<p><strong>Who notices:</strong> administrators, staff, and every script that uses an API key. Read the breaking changes below before you upgrade; several scripts will stop working.</p>
+
+<h3>New</h3>
+<ul>
+  <li><strong>Staff can create their own API keys</strong> when an administrator allows it: <strong>Admin → Settings → Authentication → API keys → Staff may create their own API keys</strong> (<code>staff_can_create_api_keys</code>, off by default, session only). Staff manage their keys under <strong>Account → API keys</strong> (<code>GET</code> and <code>POST /api/v1/me/api-keys</code>, <code>GET /api/v1/me/api-keys/scopes</code>, <code>DELETE /api/v1/me/api-keys/{id}</code>). Turning the setting off stops new keys only; existing keys keep working and staff can still list and revoke their own.</li>
+  <li><strong>Who can own a key.</strong> Administrators always, staff only while the setting is on. Requesters never (<code>/me/api-keys</code> is <code>403</code> for them, and an administrator cannot issue one for them: <code>400 requester_cannot_own_key</code>), and neither do service accounts. An administrator can issue a key on a staff member's behalf, or for themselves, with <code>user_id</code> on <code>POST /api/v1/admin/api-keys</code>, never for another administrator (<code>400 cannot_issue_for_administrator</code>).</li>
+  <li><strong>Maximum lifetime.</strong> A second setting, <strong>Longest an API key may live</strong> (<code>api_key_max_lifetime_years</code>, session only), is a slider with stops of 1 to 5 years and Never. The default is 2 years, and the page shows a red warning above 2. Every new key must expire, no later than that; only at Never may the expiry be left out. Keys that already exist keep working. A key with no expiry, or one past the current limit, is flagged (<code>beyond_limit</code>, shown as "No expiry (longer than the current limit)") so it can be rotated.</li>
+  <li><strong>A key's scopes never exceed its owner's role.</strong> A staff key can carry <code>tickets:read</code>, <code>tickets:write</code>, <code>groups:read</code> and <code>audit:read</code> (<code>users:read</code> is no longer offered: its one staff route, the requester lookup, is session-only; keys that already hold it keep it and it does nothing). Anything else is <code>400 invalid_scope</code>. <code>users:write</code> is no longer offered; keys that hold it keep it, and it opens nothing.</li>
+  <li><strong>Webhooks a key makes stop with the key.</strong> A webhook that an API key created, or last changed the URL of, is paused when the key is revoked or expires, or its owner is disabled or deleted. It shows as Paused on <strong>Admin → Webhooks</strong> and receives nothing until a signed-in administrator clicks <strong>Re-approve</strong> (or changes its URL). While paused, a key cannot edit it (<code>403 webhook_paused</code>). Hooks that exist today, and any made or last re-pointed in the web UI, are unaffected.</li>
+  <li><strong>Password reset can revoke keys.</strong> The administrator's reset form has <em>Also revoke this person's API keys</em>, unticked by default (<code>revoke_api_keys</code> on <code>POST /api/v1/admin/users/{id}/password</code>). If the keys cannot be revoked after the password was reset, the answer is <code>500 keys_not_revoked</code>; <code>500 sessions_not_ended</code> if the sessions cannot be ended. A person's own password change, <em>Forgot password</em>, <code>unlock</code> and <code>reset-factors</code> never touch keys.</li>
+  <li>Every key issued or revoked is written to the audit log (<code>api_key_issued</code>, <code>api_key_revoked</code>; <code>api_keys_revoked</code> with a count when a reset revokes them). The key lists gain <code>created_by</code> and <code>beyond_limit</code>, and <code>GET /api/v1/me</code> gains <code>can_create_api_keys</code> and <code>api_key_max_lifetime_years</code>.</li>
+  <li>Changing someone's role keeps their keys. A key acts within its owner's current role, so promoting a staff member who holds an administrator-issued key leaves an administrator holding it. Revoke it if that is not wanted.</li>
+</ul>
+
+<h3>Breaking: scripts that stop working</h3>
+<ul>
+  <li><strong>A script that uses an API key to create API keys.</strong> <code>POST /api/v1/admin/api-keys</code> with a key now answers <code>403 session_required</code> (an OAuth client gets <code>403 forbidden</code>). That includes a script that rotated its own key by calling this route with the old one. Instead, create the next key in the web UI as a signed-in person. Listing and revoking with a key is unchanged (a key lists and revokes only itself).</li>
+  <li><strong>A script that uses a key to create OAuth clients.</strong> <code>POST /api/v1/admin/oauth-clients</code> with a key answers <code>403 session_required</code>. Create clients in the web UI. A key can still list and delete clients.</li>
+  <li><strong>A script that uses a key or OAuth client to write users or group membership.</strong> Keys may only read users. These now answer <code>403 session_required</code> for an API key (<code>403 forbidden</code> for an OAuth client): <code>POST /api/v1/admin/users</code>, <code>PATCH /api/v1/admin/users/{id}</code>, <code>DELETE /api/v1/admin/users/{id}</code>, <code>POST /api/v1/admin/users/{id}/password</code>, <code>POST</code> and <code>DELETE /api/v1/admin/groups/{id}/members…</code>, and <code>POST</code> and <code>DELETE /api/v1/admin/groups/{id}/scopes</code>. That covers provisioning scripts (create), offboarding scripts (disable, delete, remove from groups), directory sync (rename, email, role, group membership), password and second-factor resets, and anything that gives a group access to categories. Instead: a signed-in administrator makes the change, or use single sign-on just-in-time provisioning (SAML or OIDC creates the account at first sign-in; it creates only requester accounts, so staff still need a signed-in administrator to promote them). Listing users and groups with a key is unchanged. The reason: a key that can write a user can make itself a person, set a password, sign in, and create keys that outlive the key that started it.</li>
+  <li><strong>A script that uses a key to look users up for the requester picker.</strong> <code>GET /api/v1/users/lookup</code> answers <code>403 session_required</code> to an API key or OAuth client, whatever scopes it holds, and staff keys can no longer be given <code>users:read</code> (keys that already hold it keep it and it does nothing). The lookup is for the New ticket page in a signed-in session. Instead: a script that filed tickets for other people sends <code>reporter_email</code> on <code>POST /api/v1/tickets</code> (or MCP <code>create_ticket</code>) with a <code>guest_name</code>, and lets the server resolve it (the account with that address if there is one, otherwise a guest ticket); <code>reporter_user_id</code> still works for ids you already have. An administrator's key that searched accounts can use <code>GET /api/v1/admin/users?page=1&amp;q=</code> (read-only; <code>q</code> applies only with <code>page</code>). Staff keys have no replacement.</li>
+  <li><strong>A script that creates keys without <code>expires_at</code>.</strong> While the limit is a number of years, <code>expires_at</code> is required (<code>400 expires_at_required</code>) and may be no later than that many years away (<code>400 expires_at_too_far</code>). Send one, or have an administrator choose Never.</li>
+  <li><strong>A script that changes <code>ticket_scope_enforced</code>, <code>auto_assign_group_id</code> or <code>auto_assign_user_ids</code> with a key.</strong> These settings now answer <code>403 session_required</code> to an API key or OAuth client, because they decide who sees tickets and who is handed them. A signed-in administrator makes the change.</li>
+  <li><strong>A script that gives a new key <code>users:write</code>,</strong> or a scope beyond its owner's role, gets <code>400 invalid_scope</code>.</li>
+  <li><strong>A script that creates webhooks with a short-lived key</strong> should expect them to pause when the key expires.</li>
+</ul>
+
+<h2 id="phone-text">Long text wraps on phones</h2>
+
+<p><strong>Who notices:</strong> staff and requesters on phones. Nothing to change.</p>
+<p>A long word or link in ticket content now wraps at the edge of its box down to 320 pixels wide and is never shortened, so it stays whole and copyable. Fourteen compact places still end in "…", each showing its full text on hover (the exception is the SAML private key line, which is never shown in full). On a narrow screen the ticket header's action buttons sit on their own row under the title. Every admin page also fits a phone now: nothing scrolls sideways at 320 pixels, a wide table scrolls inside its own box with every column and button reachable, and long names, descriptions and URLs wrap. <a href="tickets.html#tickets-phone">Details</a></p>
+
+<h2 id="deleted-user-tickets">Tickets left assigned to a deleted user go back to the queue</h2>
+
+<p><strong>Who notices:</strong> staff on an install upgraded from 1.2.x. Nothing to do.</p>
+<p>In 1.2.x, deleting a user left their open tickets pointing at them. Such a ticket showed as "Unassigned" on its page, was not in the unassigned queue, and was in nobody's "assigned to me". In 1.3.0, deleting a user returns their open tickets to the queue (with an <code>unassigned</code> audit entry for each), and a migration does the same, once, for the tickets a 1.2.x delete had already stranded.</p>
+<ul>
+  <li><strong>Which tickets:</strong> open ones (neither Resolved nor Closed) whose assignee is a deleted user. Resolved and Closed tickets are history and keep the person who handled them. A <strong>disabled</strong> user is still in the user list, so their tickets are left alone.</li>
+  <li><strong>What you see afterwards:</strong> those tickets are in the unassigned queue, and each has an <code>unassigned</code> entry on its Activity feed and in the admin audit view, naming the deleted user it had. The entry has no actor, because no person ran the migration. Their last-updated time is the time of the upgrade.</li>
+  <li><strong>Nothing else changes.</strong> No mail is sent, no webhook is raised, and no SLA clock moves. A group assignment needs nothing: deleting a group has always cleared it.</li>
+</ul>
+
+<h2 id="migration-log">The server log says which migrations ran</h2>
+
+<p><strong>Who notices:</strong> operators.</p>
+<p>At startup, before it opens the port, the server logs what it did to the database schema. <code>database migrated from 21 to 55</code> means an upgrade from 1.2.0: the first number is the version the database was at, the second the version it is at now (a new database says <code>from 0</code>). <code>database schema at 55, no migrations needed</code> is an ordinary restart. The line also carries <code>from</code> and <code>to</code> fields. Use it to check that an upgrade ran before you look anywhere else. A failed migration still stops the start with <code>running migrations: …</code>.</p>
+
+<h2 id="rollback">Rolling back to 1.2.0</h2>
+
+<p>Migrations are forward-only as far as the server is concerned: it never runs one backwards, and there is no command for it. <strong>A rollback is possible by hand. It discards everything that only 1.3.0 has, and it removes 1.3.0's security fixes.</strong> Take it only if you must. This procedure was run end to end: a database upgraded from 1.2.0 with 1.3.0 activity on it was taken back to version 21, its schema matched a 1.2.0 database (same tables, columns, indexes and constraints; the one difference is below), and the 1.2.0 server then started on it and signed people in, served tickets, attachments, API keys and OAuth tokens, and kept the replies and tickets written under 1.3.0.</p>
+<h3 id="rollback-security">Security: what you give up</h3>
+<p>1.2.0 does not have these 1.3.0 fixes, and a rollback runs without them. Weigh that before you start, and put the instance behind your own network controls until you move forward again:</p>
+<ul>
+<li>
+<strong>Postgres is published on every network interface.</strong> 1.2.0's Compose file publishes the database as <code>5432:5432</code> with the password <code>helpdesk</code>. Docker handles a published port before the host firewall sees it, so closing the port in <code>ufw</code> or <code>firewalld</code> does not protect it. 1.3.0 binds it to <code>127.0.0.1</code>. <strong>The procedure below edits 1.2.0's Compose file to bind it to loopback and checks the result before it starts anything; do not skip that step.</strong>
+</li><li>
+Attachments: the download route refusing a request that is going to be rendered (<code>Sec-Fetch-Dest</code>), which is what stops an uploaded file being shown on the help desk's own origin.
+</li><li>
+<strong>API keys:</strong> the restrictions in <a href="#api-keys">API keys: staff can have them, keys can do less, and every new key expires</a> (a key can create keys and OAuth clients again, write users and group membership, and change the settings that decide who sees tickets), the expiry every new key needed, and the fix that stopped a key deleting another administrator's key.
+</li><li>
+SAML: hand-over cookies that can only be used once.
+</li><li>
+MCP: the <code>Origin</code> check, the 1 MiB request cap and the binding of an SSE session to the credential that opened it.
+</li><li>
+Others listed in these notes, among them the bcrypt cost, the 72-byte password limit, the 5-minute limit on a half-signed-in session, and the <code>404</code> for a ticket you may not see.
+</li></ul>
+<h3 id="rollback-lose">What you lose</h3>
+<p>Each <code>down</code> migration undoes its <code>up</code>. These are dropped or deleted, and cannot be brought back except from the backup you take first:</p>
+<ul>
+<li>
+<strong>Passkeys</strong> (<code>webauthn_credentials</code>, 000029) and <strong>guest links</strong> (<code>guest_access_tokens</code>, 000022). People re-register their passkeys; a guest needs a new link.
+</li><li>
+<strong>The notification queue</strong> (<code>notification_outbox</code>, 000031): any mail or webhook delivery still waiting is gone.
+</li><li>
+<strong>Webhook delivery history</strong> (000037), each hook's <strong>payload format</strong> (Slack, Teams, Discord, Jira, 000026), its <strong>ticket filter</strong> (000038) and its last-delivery status (000034). Hooks go back to plain JSON.
+</li><li>
+<strong>Attachment scan results</strong> (hash, detected type, virus name, quarantine flags, 000023) and the <strong>reputation cache</strong> (000024).
+</li><li>
+<strong>SLA</strong>: pause bookkeeping (000025), the frozen elapsed times (000027), and every superseded SLA record (000043), the history a reopen kept.
+</li><li>
+<strong>Reopen counts and restart points</strong> (000047), <strong>followers</strong> (000046), <strong>password reset links</strong> (000049), the 30-day password clock (000044), the must-change-password flag (000045), <strong>staff email preferences</strong> (000042) and <strong>API key issuer and webhook pause links</strong> (000050).
+</li><li>
+<strong>OAuth service users</strong> (000041): the users made for each client are deleted, and the database removes what hangs off them by cascade: their group memberships (and any sessions or API keys they held, though a service user is not meant to have any). The clients keep working without a user, as in 1.2.0. Tickets and replies they wrote stay, with no author link, and a ticket assigned to one loses its assignee.
+</li><li>
+<strong>The generated JWT signing key</strong> (<code>instance_secrets</code>, 000036). 1.2.0 needs its own <code>JWT_SECRET</code> in <code>docker/.env</code>: set a random secret of at least 32 bytes (for example <code>openssl rand -base64 48</code>). 1.2.0 only warns about a weak or example secret and signs with whatever you give it, and 1.3.0 discarded published example values as well as short and unset ones, so a value that 1.3.0 ignored is not safe to reuse. Every OAuth client fetches a new token either way.
+</li><li>
+Pending signups that 1.3.0 created without a name or password (000032, 000033).
+</li><li>
+<strong>Which attachments a guest uploaded</strong> (<code>attachments.uploaded_by_guest</code>, 000054). The files stay; the record of who attached them is forgotten.
+</li><li>
+<strong>Text formats</strong> (000055): <code>tickets.description_format</code> and <code>ticket_replies.body_format</code> are dropped. Description and reply text stays, but which posts were written as Markdown is forgotten, so Markdown posts written under 1.3 show as raw source, and 1.2.0 shows everything as plain text.
+</li></ul>
+<p><strong>Not undone</strong> (they repair or seed data and have no inverse; their <code>down</code> does nothing): <code>000028</code>, <code>000039</code>, <code>000052</code> and <code>000053</code>. The three staff-email overrides <code>000052</code> stored stay in the settings table, and the tickets <code>000053</code> returned to the queue stay unassigned. 1.2.0 never reads those settings. Settings rows 1.3.0 wrote stay in the table. Passwords hashed at the new cost still work on 1.2.0.</p>
+<p><strong>One difference from a 1.2.0 database:</strong> <code>ticket_replies.guest_token</code> is the last column of the table instead of the fourth. Nothing reads columns by position.</p>
+<h3 id="rollback-procedure">Procedure</h3>
+<p>You need a checkout of the <strong>1.3.0</strong> release, because the <code>down</code> files live in it (<code>backend/internal/database/migrations</code>) and 1.3.0 is deployed from an image, so a checkout may not exist or may be at another version. Check out the release first, from the directory your Compose stack was started in:</p>
+<pre><code>cd go-help-desk
+git fetch --tags
+git checkout v1.3.0
+cd docker</code></pre>
+<ol>
+<li>
+<strong>Stop the app and take a backup.</strong> Do not skip this: the steps below delete data.
+<pre><code>docker compose stop app
+docker compose exec -T db pg_dump -U helpdesk helpdesk &gt; ../backup-before-rollback.sql</code></pre>
+</li><li>
+<strong>Run the down migrations</strong>, newest first, each in its own transaction, starting from the version the database is at. Save this as <code>rollback.sh</code> in <code>go-help-desk/docker</code> and run <code>bash rollback.sh</code>:
+<pre><code>set -euo pipefail
+MIG=../backend/internal/database/migrations
+PSQL="docker compose exec -T db psql -U helpdesk -d helpdesk -v ON_ERROR_STOP=1"
+current=$($PSQL -Atc "SELECT version FROM schema_migrations")
+case "$current" in ''|*[!0-9]*) echo "database version '$current' is not a number: stop"; exit 1;; esac
+top=$(ls $MIG/*.down.sql | sort | tail -1 | xargs basename | cut -c1-6)
+if [ "$current" -gt $((10#$top)) ]; then
+  echo "database is at $current but this checkout stops at $top: check out the release you run (v1.3.0)"; exit 1
+fi
+dirty=$($PSQL -Atc "SELECT dirty FROM schema_migrations")
+if [ "$dirty" != f ]; then
+  echo "the database is marked dirty: a migration failed part-way; restore the backup, do not continue"; exit 1
+fi
+echo "database is at version $current"
+for f in $(ls $MIG/*.down.sql | sort -r); do
+  name=$(basename "$f")
+  v=$((10#${name:0:6}))
+  if [ "$v" -gt "$current" ]; then continue; fi
+  if [ "$v" -le 21 ]; then break; fi
+  echo "rolling back $name"
+  $PSQL --single-transaction &lt; "$f" || { echo "STOPPED at $name: restore the backup"; exit 1; }
+done
+$PSQL -c "UPDATE schema_migrations SET version = 21, dirty = false"</code></pre>
+<p>There is no <code>000048</code>; the script skips it because there is no file. If it stops, the failed file made no change (it ran in a transaction) but the ones before it did: restore <code>backup-before-rollback.sql</code> rather than continue.</p>
+</li><li>
+<strong>Check out 1.2.0 and bind Postgres to loopback, before anything starts.</strong> 1.2.0's Compose file would publish the database on every interface (see <em>Security</em> above), so edit it first, then check it. Save this as <code>bind.sh</code> in <code>go-help-desk/docker</code> and run it with <code>bash bind.sh</code>, from the directory you ran <code>rollback.sh</code> in:
+<pre><code>set -euo pipefail
+cd ..
+git checkout v1.2.0
+cd docker
+sed -i.bak 's/"5432:5432"/"127.0.0.1:5432:5432"/' docker-compose.yml
+rm -f docker-compose.yml.bak
+cfg=$(docker compose config)
+if [ "$(printf '%s\n' "$cfg" | grep -c 'target: 5432')" != 1 ] \
+   || ! printf '%s\n' "$cfg" | grep -B1 'target: 5432' | grep -q 'host_ip: 127.0.0.1'; then
+  echo "Postgres is not bound to 127.0.0.1 only: do NOT start the stack"; exit 1
+fi
+echo "ok: Postgres is bound to 127.0.0.1 only"</code></pre>
+<p><code>git checkout v1.2.0</code> needs a clean working tree, so it also stops you if you have changed tracked files. If the check fails, stop and fix <code>docker-compose.yml</code> by hand until <code>docker compose config</code> shows <code>host_ip: 127.0.0.1</code> on the <code>5432</code> binding and no other. Do not use a <code>docker-compose.override.yml</code> for this: Compose before 2.24.4 ignores the <code>!override</code> tag without a warning and publishes the port on both.</p>
+</li><li>
+<strong>Start 1.2.0</strong>, only once step 3 has printed <code>ok</code>. It builds the app from source, the way 1.2.0 did:
+<pre><code>docker compose up -d --build</code></pre>
+<p>Keep your <code>docker/.env</code>, and make sure it has a <code>JWT_SECRET</code> as described above: 1.2.0's Compose file refuses to start without one.</p>
+</li><li>
+<strong>Check it.</strong> Sign in as an administrator, open a few tickets, and download an attachment. <code>SELECT version, dirty FROM schema_migrations</code> should say <code>21 | f</code>. <code>docker compose port db 5432</code> should say <code>127.0.0.1:5432</code>.
+</li></ol>
+<p>To go forward again, run <code>git checkout -- docker-compose.yml</code> in <code>go-help-desk/docker</code> to drop the edit from step 3, then <code>git checkout v1.3.0</code> (it refuses while the file is changed) and start it: it runs every migration from 22, and says so in the log (<code>database migrated from 21 to 55</code>).</p>
+
+<h2 id="guest-attachments">Guests can no longer upload until you turn it on</h2>
+
+<p><strong>Who notices:</strong> administrators, and any script that uploads as a guest. <strong>This is breaking: uploads are off after the upgrade.</strong></p>
+<p>Before this release a guest could attach a file through <code>POST /api/v1/guest/attachments</code> whenever guest submission was on. That is now off by default, including on an upgraded install. A new setting, <strong>Guests may attach files</strong> (<code>guest_attachments_enabled</code>, <em>Admin → Settings → General → Submissions</em>, under guest submission), controls it. Until an administrator turns it on, the route answers the generic <code>404 not_found</code> that a bad link gets. <strong>If your guests attach files today, turn the setting on after you upgrade.</strong></p>
+<ul>
+  <li>It only takes effect while guest submission is on.</li>
+  <li><strong>Per-file limit:</strong> <code>guest_attachment_max_mb</code>, a slider from 1 to 100 MB, 5 MB by default. A guest is held to the lower of it and the instance-wide 25 MB maximum. Over the limit is <code>413 too_large</code>, and the message names the limit.</li>
+  <li><strong>Two more limits:</strong> <code>guest_attachment_max_per_ticket</code> (1 to 50, default 5) caps the files guests can attach to one ticket (<code>409 guest_attachment_limit</code>), and <code>guest_attachment_uploads_per_hour</code> (1 to 30, default 3) caps uploads per guest link per hour (<code>429 rate_limited</code> with <code>Retry-After</code>). A refusal decided before the scan (wrong type, too big) does not use up the hour; anything decided after it (not an image, a malware verdict) or a server fault does. Refused attempts also share a fixed 20-per-hour budget per ticket, charged before the hourly upload budget and given back when the upload succeeds or is turned away by the hourly limit, so reaching it never uses up an hourly upload. The rate is in memory and per server instance, so a restart clears it.</li>
+  <li><strong>Session only:</strong> all of these settings need a signed-in administrator; an API key or OAuth client that sends one is refused with <code>403 session_required</code>.</li>
+  <li><strong>The guest page has an <em>Add files</em> button</strong> while the setting is on and the ticket is open, and says how many more files can be added. Uploads get the same type, scanning and reputation rules as everyone else's and are download-only. The submission form (<code>/submit</code>) has none: the link to attach from is emailed once the ticket exists.</li>
+  <li><code>GET /api/v1/site</code> gains <code>guest_attachments_enabled</code> and, while it is on, <code>guest_attachment_max_bytes</code>, <code>guest_attachment_max_per_ticket</code> and <code>guest_attachment_uploads_per_hour</code>.</li>
+  <li>A migration (000054) adds <code>attachments.uploaded_by_guest</code>, so the per-ticket cap counts only guest uploads. Files guests attached before the upgrade are not counted toward it.</li>
+</ul>
+
+<h2 id="password-change">Changing a password through the API needs the current password</h2>
+
+<p><strong>Who notices:</strong> any script written for 1.2.0 that changes a password with <code>PATCH /api/v1/me/password</code>. <strong>This is breaking.</strong></p>
+<p>In 1.2.0, <code>PATCH /api/v1/me/password</code> took <code>password</code> alone and did not ask for the current password. 1.3.0 requires <code>current_password</code> and refuses a missing or wrong one with <code>400 invalid_current_password</code>, so a 1.2.0 script that sends only <code>password</code> now fails. Send <code>current_password</code> and the new password as <code>new_password</code> (<code>password</code> is still read when <code>new_password</code> is absent).</p>
+<ul>
+  <li>Wrong guesses are counted per account against a budget the size of sign-in's (<code>AUTH_RATE_LIMIT_PER_MINUTE</code>, a separate counter). Once it is spent, the request waits for <code>AUTH_THROTTLE_DELAY</code> and answers <code>429 rate_limited</code> with <code>Retry-After</code>. The correct password is still accepted.</li>
+  <li>A <code>401</code> from this route means there is no session. The Account page shows a wrong current password inline and keeps the person signed in.</li>
+</ul>
+
+<h2 id="update-check">An optional weekly check for new releases (off unless you choose it)</h2>
+
+<div class="callout callout-note">
+  <p><strong>This is opt-in.</strong> It is off on a new install and it stays off after you upgrade. Nothing contacts GitHub unless an administrator turns it on.</p>
+</div>
+
+<p>1.3.0 can check whether a newer release of Go Help Desk exists.</p>
+<ul>
+  <li><strong>What is sent.</strong> One <code>GET</code> to GitHub's public releases API with exactly two request headers of its own: <code>User-Agent: go-help-desk</code> (a fixed name, no version number) and <code>Accept: application/vnd.github+json</code>. No query string, body, cookie, instance identifier or usage data, and nothing about your server or version. GitHub sees your server's IP address, as any website would.</li>
+  <li><strong>How often.</strong> At most once every 7 days, and not again after a restart until the week is up. A failed check is logged once and tried again the following week.</li>
+  <li><strong>What you see.</strong> If a newer stable release exists, administrators (only) see an information notice, "Version X is available (you run Y)", linking to the release notes, in the server warnings bar. <em>Hide until the next release</em> is remembered per browser. Nothing is downloaded or installed. Prereleases and drafts are ignored.</li>
+  <li><strong>Air-gapped installs:</strong> leave it off. While it is off the server makes no request.</li>
+  <li><strong>Where to choose.</strong> The first-run setup screen asks (unticked: "Check for new releases (contacts GitHub once a week; sends nothing about your server)"). On an upgraded install the first administrator to sign in is asked in the wizard below. Later: <em>Settings → General → Updates</em> (<code>update_check_enabled</code>, session only).</li>
+</ul>
+
+<h2 id="after-upgrade-wizard">The After upgrading wizard</h2>
+
+<p><strong>Who notices:</strong> the first administrator who signs in after an upgrade to 1.3.0. They are taken once to a short wizard, "After upgrading to 1.3.0", with one step per question: the update check; staff email notifications (the upgrade turned them off); staff API keys and the longest an API key may live; the reset window for old passwords, with how many accounts are still on an old hash; and, only if guest submission is on, guest file uploads (which 1.3.0 switched off). Each step shows today's setting. <strong>Skip leaves a setting unchanged.</strong> Finishing or skipping the wizard means it is not shown again. A new install never sees it. See <a href="admin-guide.html#admin-updates">Admin Guide: Updates</a>.</p>
+
+<h2 id="markdown">Markdown in ticket text</h2>
+
+<p><strong>Who notices:</strong> everyone who writes or reads tickets, and integrations that send Markdown-looking text or use MCP.</p>
+<p>Descriptions, replies and internal notes can now be written in Markdown, with a formatting editor in the web app. <strong>Text written before 1.3.0 stays plain text.</strong> 1.2 promised Markdown but never rendered it, so nothing already in the database is reinterpreted: every existing description and reply is marked <code>plain</code> (a migration, 000055) and is shown exactly as before. A reader can choose <strong>Show formatted</strong> on any plain post to see it through the new renderer. That changes only what that reader sees; nothing is stored.</p>
+<ul>
+  <li><strong>Who writes which format.</strong> The web app's editor writes Markdown. <strong>REST is unchanged unless it opts in:</strong> <code>POST /tickets</code>, <code>/tickets/{id}/replies</code>, <code>/guest/tickets</code> and <code>/guest/replies</code> take an optional <code>format</code> (<code>plain</code> or <code>markdown</code>) and default to <code>plain</code>. <strong>MCP <code>create_ticket</code> and <code>add_reply</code> default to <code>markdown</code></strong>, and their tool descriptions tell the agent to escape characters it means literally; pass <code>format: "plain"</code> to keep plain text. Any other value is <code>400 invalid_format</code> on REST and a tool error on MCP, and nothing is written.</li>
+  <li><strong>Reading.</strong> <code>description_format</code> is on every ticket object and <code>body_format</code> on every reply, for staff, requesters and guests alike. A follow-up copies its original's format.</li>
+  <li><strong>What is rendered.</strong> CommonMark plus tables, strike-through and bare-URL links. No images (shown as the link "[image: alt]" and never loaded), no raw HTML (shown as text), all headings one small size, links <code>http</code>, <code>https</code> and <code>mailto</code> only. Code in a fenced block is highlighted for 13 languages. Markdown posts have a <strong>Plain text</strong> button to see the source. See <a href="security.html#text">How ticket text is displayed</a>.</li>
+  <li><strong>Webhooks, email and chat are unchanged.</strong> A webhook payload carries the Markdown source as text, chat targets escape it as before, and email carries no ticket text.</li>
+  <li>The migration adds <code>tickets.description_format</code> and <code>ticket_replies.body_format</code>. It does not rewrite the tables, but <strong>stop every old (1.2 or earlier) instance before the migration runs</strong>: the migration removes the column default, so an instance still running the old version fails every ticket create and reply. There is no rolling upgrade across this version.</li>
+</ul>
+<p><strong>What to check:</strong> an integration that already sends Markdown-looking text over REST keeps getting plain text unless it adds <code>"format": "markdown"</code>. An MCP agent that sent text with <code>*</code>, <code>#</code> or <code>_</code> meant literally will now have it formatted; tell it to escape them or pass <code>format: "plain"</code>. For the editor, see <a href="tickets.html#tickets-formatting">Formatting text</a>.</p>
+
+<h2 id="reply-limit">Replies are limited to 50,000 bytes</h2>
+
+<p><strong>Who notices:</strong> scripts and integrations that post very long replies. <strong>This changes behaviour.</strong></p>
+<p>A reply or internal note over <strong>50,000 bytes of text</strong> is now refused with <code>400 body_too_long</code>, and nothing is written. It is the limit a ticket description has always had. It applies to <code>POST /api/v1/tickets/{id}/replies</code>, <code>POST /api/v1/guest/replies</code> and MCP <code>add_reply</code> (a tool error). Before 1.3.0 a reply had no cap other than the 1 MiB request size, and a megabyte of text slowed every page that showed it.</p>
+<ul>
+  <li><strong>Text already stored is untouched.</strong> A longer post written before the upgrade is shown collapsed: its first 5,000 characters, a note that it is only part of the post, and a <strong>Show full text</strong> button. The button shows all of it, exactly as stored.</li>
+  <li><strong>Scripts and integrations</strong> that post long logs as replies will start getting <code>400</code>. Split them, or attach them as a file.</li>
+  <li>The web forms count in the same bytes, show a counter near the limit, and will not send more.</li>
+</ul>
+<p><strong>What to check:</strong> any script that pastes command output, a log or a stack trace into a reply.</p>
+
+<h2 id="known-gaps">What is not in 1.3.0</h2>
+
+<p>Earlier versions of these pages described or implied some things that the product does not do. Each is tracked as an issue. These are gaps in the product, not changes in 1.3.0. The pages now say what the product does.</p>
+
+<table class="breaks-table">
+  <thead><tr><th>Area</th><th>What is missing</th><th>Issue</th></tr></thead>
+  <tbody>
+  <tr><td>Ticket detail</td><td>A reply cannot be edited or deleted by anyone: a correction is a new reply, by design.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/443" target="_blank" rel="noopener">#443</a></td></tr>
+  <tr><td>Plugins</td><td>The plugin system is a v2 feature. 1.x has no working plugin system: plugins cannot be installed, and an enabled plugin record never receives events. Earlier pages promised it.</td><td><a href="../index.html#roadmap">v2 on the roadmap</a></td></tr>
+  </tbody>
+</table>
+
+<h2 id="steps">Doing the upgrade</h2>
+
+<ol>
+  <li><strong>Take a database backup.</strong> Migrations are forward-only; there is no automatic rollback.</li>
+  <li><strong>If you scan attachments with the bundled ClamAV,</strong> add the two lines to <code>docker/.env</code> and run <code>docker compose up -d</code>. The amber <em>Attachments are not being scanned</em> banner tells you if you need to. See <a href="#clamav">ClamAV is opt-in</a>.</li>
+  <li><strong>Update and restart.</strong>
+    <pre><code>cd go-help-desk
+git pull
+cd docker
+docker compose pull
+docker compose up -d</code></pre>
+    If you checked out a tag earlier (for example <code>v1.2.0</code>), run <code>git checkout main</code> before <code>git pull</code>. If you build from source, run the build command from <a href="getting-started.html#build-from-source">Building from source</a> instead of the two <code>docker compose</code> commands. Migrations run automatically on startup, before the server accepts traffic.
+  </li>
+  <li><strong>Sign in as an administrator</strong> and work through the <a href="#after-upgrade-wizard">After upgrading wizard</a> (or skip it to leave every setting as it is).</li>
+  <li><strong>Check the server warnings.</strong> Look for the red insecure-configuration banner, the red <em>Attachment uploads are disabled</em> banner and the amber scanning banner, and check the scanning status under <strong>Admin → Settings → Attachments → Malware scanning</strong>. Decide <code>audit_retention_days</code> and whether staff should see the field-level change history (<code>staff_can_view_ticket_change_history</code>).</li>
+  <li><strong>Check your mail server</strong> against <a href="#smtp">the new encryption rule</a>, and decide whether staff should start getting <a href="#staff-email">staff email</a>. Staff email starts switched off on an upgraded install, so nothing changes for staff until you turn it on under <strong>Admin → Settings → Email</strong>.</li>
+  <li><strong>If you have webhook receivers,</strong> read <a href="#webhooks">the raw payload and note-event changes</a>, and make receivers cope with a repeated delivery.</li>
+  <li><strong>If you have MCP agents,</strong> note that <a href="#mcp-reply">their public replies now email the requester</a>.</li>
+  <li><strong>If you have scripts that use API keys,</strong> read <a href="#api-keys">API keys</a> first: keys can no longer create keys or OAuth clients, write users or group membership, or change three settings, and new keys need an expiry.</li>
+  <li><strong>Tell people who rarely sign in</strong> about <a href="#password-age">the 30-day password reset</a>.</li>
+  <li><strong>If you have API clients that drive signup,</strong> update them for <a href="#signup">the new verification request</a>.</li>
+  <li><strong>If you have scripts that call admin DELETE routes,</strong> or that drive sign-in in two requests, or that fetch OAuth tokens, see <a href="#client-errors">the 404 and 4xx changes</a>, <a href="#pending-session">the 5-minute session</a> and <a href="#jwt-secret">the JWT key</a>.</li>
+</ol>
+
+<p>For the general mechanics, including zero-downtime upgrades, see <a href="getting-started.html#upgrading">Getting Started → Upgrading</a>.</p>
+
+<div style="display:flex; justify-content:space-between; margin-top:3rem; padding-top:2rem; border-top:1px solid var(--border);">
+  <a href="getting-started.html" class="btn btn-outline">← Getting Started</a>
+  <a href="upgrading-1.2.0.html" class="btn btn-outline">Upgrading to 1.2.0 →</a>
+</div>
+
+</main>
+</div>
+
+<footer>
+  <div class="container footer-inner">
+    <span>Go Help Desk — <a href="https://github.com/PubliciaLLC/go-help-desk/blob/main/LICENSE">AGPL v3</a></span>
+    <span style="display:flex;gap:1.5rem;"><a href="../docs.html">Docs</a><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a><a href="https://x.com/go_help_desk" rel="me">X</a><a href="https://ko-fi.com/erikpt">Support</a></span>
+  </div>
+</footer>
+
+<script>
+  const links = document.querySelectorAll('.docs-sidebar a[href^="#"]');
+  const sections = Array.from(links).map(a => document.querySelector(a.getAttribute('href'))).filter(Boolean);
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        links.forEach(l => l.classList.remove('active'));
+        const link = document.querySelector(`.docs-sidebar a[href="#${entry.target.id}"]`);
+        if (link) link.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-5% 0px -85% 0px' });
+  sections.forEach(s => observer.observe(s));
+</script>
+</body>
+</html>
