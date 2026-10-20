@@ -109,6 +109,7 @@
       <li><a href="#migration-log">Migration log line</a></li>
       <li><a href="#rollback">Rolling back to 1.2.0</a></li>
       <li><a href="#guest-attachments">Guest uploads off</a></li>
+      <li><a href="#password-change">Changing a password via API</a></li>
       <li><a href="#known-gaps">Not in 1.3.0</a></li>
       <li><a href="#steps">Doing the upgrade</a></li>
     </ul>
@@ -222,6 +223,7 @@
     <tr><td>The server logs which migrations ran</td><td>Operators</td></tr>
     <tr><td>Rolling back to 1.2.0 is possible by hand, and costs data and security fixes</td><td>Operators who need to go back</td></tr>
     <tr><td>Guests can no longer upload until an administrator turns on <em>Guests may attach files</em></td><td>Administrators; scripts that upload as a guest</td></tr>
+    <tr><td><code>PATCH /api/v1/me/password</code> needs <code>current_password</code>, and wrong guesses are throttled</td><td>Scripts written for 1.2.0 that change a password</td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
@@ -447,7 +449,7 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 
 <ul>
   <li><code>AUTH_RATE_LIMIT_PER_MINUTE</code>: default <code>10</code>. Failed password attempts per account per minute before the server answers <code>429</code>. <code>0</code> turns the limit off.</li>
-  <li><code>AUTH_THROTTLE_DELAY</code>: default <code>1s</code>. How long a login for an account that has used up its budget waits before the password is checked.</li>
+  <li><code>AUTH_THROTTLE_DELAY</code>: default <code>1s</code>. How long a login, or a wrong current-password guess on <code>PATCH /api/v1/me/password</code>, for an account that has used up its budget waits before the password is checked.</li>
 </ul>
 
 <p>If you already had either in <code>.env</code>, it takes effect now. Every other variable on the <a href="getting-started.html#configuration">configuration reference</a> reaches the app, except <code>DATABASE_URL</code> and <code>HTTP_PORT</code>, which stay fixed in the file, and <code>ATTACHMENT_DIR</code>, which is not passed, so the app keeps its default <code>/data/attachments</code>, where Compose mounts the attachments directory.</p>
@@ -1000,6 +1002,15 @@ echo "ok: Postgres is bound to 127.0.0.1 only"</code></pre>
   <li><strong>The guest page has an <em>Add files</em> button</strong> while the setting is on and the ticket is open, and says how many more files can be added. Uploads get the same type, scanning and reputation rules as everyone else's and are download-only. The submission form (<code>/submit</code>) has none: the link to attach from is emailed once the ticket exists.</li>
   <li><code>GET /api/v1/site</code> gains <code>guest_attachments_enabled</code> and, while it is on, <code>guest_attachment_max_bytes</code>, <code>guest_attachment_max_per_ticket</code> and <code>guest_attachment_uploads_per_hour</code>.</li>
   <li>A migration (000054) adds <code>attachments.uploaded_by_guest</code>, so the per-ticket cap counts only guest uploads. Files guests attached before the upgrade are not counted toward it.</li>
+</ul>
+
+<h2 id="password-change">Changing a password through the API needs the current password</h2>
+
+<p><strong>Who notices:</strong> any script written for 1.2.0 that changes a password with <code>PATCH /api/v1/me/password</code>. <strong>This is breaking.</strong></p>
+<p>In 1.2.0, <code>PATCH /api/v1/me/password</code> took <code>password</code> alone and did not ask for the current password. 1.3.0 requires <code>current_password</code> and refuses a missing or wrong one with <code>400 invalid_current_password</code>, so a 1.2.0 script that sends only <code>password</code> now fails. Send <code>current_password</code> and the new password as <code>new_password</code> (<code>password</code> is still read when <code>new_password</code> is absent).</p>
+<ul>
+  <li>Wrong guesses are counted per account against a budget the size of sign-in's (<code>AUTH_RATE_LIMIT_PER_MINUTE</code>, a separate counter). Once it is spent, the request waits for <code>AUTH_THROTTLE_DELAY</code> and answers <code>429 rate_limited</code> with <code>Retry-After</code>. The correct password is still accepted.</li>
+  <li>A <code>401</code> from this route means there is no session. The Account page shows a wrong current password inline and keeps the person signed in.</li>
 </ul>
 
 <h2 id="known-gaps">What is not in 1.3.0</h2>

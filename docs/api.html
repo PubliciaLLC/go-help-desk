@@ -351,6 +351,7 @@ Cache-Control: private, max-age=3600</code></pre>
     <tr><td><code>unauthorized</code></td><td>401</td><td>No valid session, API key or OAuth token.</td></tr>
     <tr><td><code>forbidden</code></td><td>403</td><td>The caller is known but the role does not allow this.</td></tr>
     <tr><td><code>mfa_required</code></td><td>403</td><td>The session has not passed its second factor.</td></tr>
+    <tr><td><code>invalid_current_password</code></td><td>400</td><td><code>PATCH /api/v1/me/password</code> without <code>current_password</code>, or with the wrong one. The session is fine, so this is not a <code>401</code>.</td></tr>
     <tr><td><code>password_change_required</code></td><td>403</td><td>The account was unlocked from the server console and still holds the password it was given. The session may only change its password (<code>PATCH /api/v1/me/password</code>).</td></tr>
     <tr><td><code>password_reset_required</code></td><td>403</td><td>The password is right but is still stored in the older, weaker form, and the grace period has passed. It must be reset by an administrator. Administrators are exempt.</td></tr>
     <tr><td><code>insufficient_scope</code></td><td>403</td><td>The credential does not carry the scope the route needs.</td></tr>
@@ -398,6 +399,7 @@ Cache-Control: private, max-age=3600</code></pre>
 <h3>Rate limiting</h3>
 <p>The application applies these limits itself. The budget is <code>AUTH_RATE_LIMIT_PER_MINUTE</code> (default 10 a minute). The shipped Docker Compose file passes it to the app, so under Compose you set it in <code>.env</code>. The wait that follows an exhausted budget is <code>AUTH_THROTTLE_DELAY</code> (default 1 second), passed the same way.</p>
 <ul>
+  <li><strong>Wrong current passwords</strong> on <code>PATCH /api/v1/me/password</code> are counted per account against a budget the size of sign-in's (a separate counter). Over budget, the request waits for <code>AUTH_THROTTLE_DELAY</code> and answers <code>429 rate_limited</code> with <code>Retry-After</code>. The correct password always works.</li>
   <li><strong>Password sign-in</strong> is limited per submitted email address. Only failed attempts count. Past the budget, further attempts answer <code>429 rate_limited</code> with <code>Retry-After</code>. Each login for an account over its budget is also held for about a second before the password is checked, so a guesser is slowed down while a correct password still works.</li>
   <li><strong>Signup</strong> is limited per source address.</li>
   <li><strong>Guest submission, resend and follow-up</strong> are limited per source address.</li>

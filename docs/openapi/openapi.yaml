@@ -2832,8 +2832,11 @@ paths:
         one may make it without MFA. A flagged account that has since enrolled a factor gets 403 mfa_required
         and must verify the factor first. Any other route refuses a flagged session with 403
         password_change_required until the password is changed. The change clears the requirement.
-        A wrong current_password answers 401 invalid_credentials as application/json, which is distinct
-        from the text/plain 401 unauthorized sent when there is no session. The old field name password is still read when new_password is absent. current_password is
+        A missing or wrong current_password answers 400 invalid_current_password: the session is fine, so
+        this is not a 401, which here always means there is no session. 1.2.0 did not ask for the current
+        password. Wrong guesses are counted per account against a budget the size of sign-in's
+        (AUTH_RATE_LIMIT_PER_MINUTE, a separate counter) and answer 429 rate_limited once it is spent; the correct
+        password is still accepted. The old field name password is still read when new_password is absent. current_password is
         required in either case.
       tags: ['Account']
       x-ghd-handler: handleChangePassword
@@ -2863,19 +2866,21 @@ paths:
         '204':
           description: The password is changed. A new session cookie is set and the other sessions have ended.
         '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
           description: >-
-            Either no session (unauthorized, text/plain, from the auth middleware)
-            or a wrong current_password (invalid_credentials, application/json,
-            from the handler).
+            The body is not valid, the new password is not 8 to 72 bytes (bad_request), or
+            current_password is missing or wrong (invalid_current_password).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '401':
+          description: No session (unauthorized, text/plain, from the auth middleware).
           content:
             text/plain:
               schema: {$ref: '#/components/schemas/Error'}
-            application/json:
-              schema: {$ref: '#/components/schemas/Error'}
         '403':
           $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
         '404':
           $ref: '#/components/responses/NotFound'
   /api/v1/staff:
