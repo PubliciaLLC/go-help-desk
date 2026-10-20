@@ -1353,6 +1353,24 @@ for one. The admin pages do still **fit** a phone: no sideways scroll at 320
 pixels, whatever the data (#522). They are not redesigned for it. A wide admin
 table stays a table and scrolls inside its own box; the page never does.
 
+**Server warnings.** Administrators see problems with the server (unwritable
+attachment storage, an unreachable scanner, passkeys unavailable, email not set
+up, and the rest of `GET /admin/security-warnings`) in **one slim bar** above
+the page, never a stack of banners. It is a single line: "N server problems
+need attention", or the notice's own title when there is exactly one, with a
+**Details** button (`aria-expanded`) that opens the full explanation of each
+notice. Red marks something broken now (unwritable attachment storage, a
+scanner that is down under the `required` policy, insecure secrets, email not
+being delivered); configuration notices are amber. **Hide** removes one notice
+for the current session: it is kept in `sessionStorage` by notice id, sent
+nowhere, cleared at sign-out, and the notice returns at the next sign-in while
+the problem remains. When every notice is hidden the bar goes away. The query
+is refetched when the window regains focus and when Details is opened, so a
+problem that was fixed stops showing within seconds. Everything inside wraps
+anywhere, including the `reset-factors` command, because the bar sits above
+`<main>` and a long unbroken token there once widened the whole page. Only
+administrators are asked.
+
 **What each job covers.** The staff path is the queue, a ticket, and the
 actions taken on it: read, reply, reassign, change status, resolve. The
 reporter path is the new-ticket form, their own list, and the thread they can

@@ -5,6 +5,7 @@ import { useAuthStore } from '@/store/auth'
 import { logout } from '@/api/auth'
 import { useSiteBranding } from '@/hooks/useSiteBranding'
 import { InsecureConfigBanner } from '@/components/InsecureConfigBanner'
+import { clearDismissedNotices } from '@/components/noticeDismissal'
 import { BrandLogo } from '@/components/BrandLogo'
 import { Button } from '@/components/ui/button'
 import { TicketIcon, UsersIcon, SettingsIcon, LogOutIcon, HomeIcon, FolderIcon, CircleDotIcon, ShieldIcon, UsersRoundIcon, TagIcon, SlidersIcon, KeyIcon, MessageSquareTextIcon, PlugIcon, WebhookIcon, RouteIcon, MenuIcon,
@@ -151,6 +152,7 @@ export function Layout({ children }: LayoutProps) {
 
   async function handleLogout() {
     await logout().catch(() => {})
+    clearDismissedNotices()
     clear()
     window.location.href = '/login'
   }

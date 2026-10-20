@@ -1,0 +1,233 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
+import { focusManager } from '@tanstack/react-query'
+import { renderWithQuery } from '@/test/render'
+import { api } from '@/api/client'
+import { InsecureConfigBanner } from './InsecureConfigBanner'
+import { clearDismissedNotices } from './noticeDismissal'
+
+// One slim bar replaces the stack of banners: a summary line, details on
+// request, a per-session dismiss, red only for what is broken now.
+
+const STORAGE = { writable: false, problem: 'permission denied' }
+const PASSKEYS = { available: false, reason: 'must be a domain and not an IP address' }
+const QUIET = { insecure_secrets: [], attachment_scanning: { policy: 'off', configured: false, reachable: false, effect: '' } }
+
+function mockWarnings(extra: Record<string, unknown>) {
+  const payload: { current: Record<string, unknown> } = { current: { ...QUIET, ...extra } }
+  const spy = vi.spyOn(api, 'get').mockImplementation(((url: string) =>
+    Promise.resolve({ data: url === '/admin/security-warnings' ? payload.current : {} })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ) as any)
+  return { payload, spy }
+}
+
+const calls = (spy: ReturnType<typeof vi.spyOn>) =>
+  spy.mock.calls.filter((c: unknown[]) => c[0] === '/admin/security-warnings').length
+
+beforeEach(() => sessionStorage.clear())
+afterEach(() => vi.restoreAllMocks())
+
+describe('the slim bar', () => {
+  it('renders nothing for zero notices', async () => {
+    const { spy } = mockWarnings({})
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+    await waitFor(() => expect(calls(spy)).toBe(1))
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('button', { name: /details/i })).toBeNull()
+  })
+
+  it('names the one notice and offers Details', async () => {
+    mockWarnings({ passkeys: PASSKEYS })
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+    const bar = await screen.findByRole('alert')
+    expect(bar.textContent).toContain('Passkeys are unavailable')
+    expect(screen.getByRole('button', { name: /details/i })).toBeTruthy()
+  })
+
+  it('counts two notices', async () => {
+    mockWarnings({ passkeys: PASSKEYS, attachment_storage: STORAGE })
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+    expect((await screen.findByRole('alert')).textContent).toContain('2 server problems need attention')
+  })
+
+  it('expands to the full text, with aria-expanded following', async () => {
+    mockWarnings({ passkeys: PASSKEYS, attachment_storage: STORAGE })
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+    await screen.findByRole('alert')
+    const details = screen.getByRole('button', { name: /details/i })
+    expect(details.getAttribute('aria-expanded')).toBe('false')
+    const panel = document.getElementById('server-notices')!
+    expect(panel.hidden).toBe(true)
+
+    fireEvent.click(details)
+    expect(details.getAttribute('aria-expanded')).toBe('true')
+    expect(panel.hidden).toBe(false)
+    expect(screen.getByText(/reset-factors <email>/)).toBeTruthy()
+    expect(screen.getByText(/The server cannot write to its attachment directory \(permission denied\)/)).toBeTruthy()
+
+    fireEvent.click(details)
+    expect(details.getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('wraps long code instead of widening the page', async () => {
+    mockWarnings({ passkeys: PASSKEYS })
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+    fireEvent.click(await screen.findByRole('button', { name: /details/i }))
+    expect(screen.getByText(/reset-factors/).className).toContain('overflow-wrap:anywhere')
+    expect((await screen.findByRole('alert')).className).toContain('overflow-wrap:anywhere')
+  })
+})
+
+describe('severity', () => {
+  it('is red for a real failure', async () => {
+    mockWarnings({ attachment_storage: STORAGE })
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+    expect((await screen.findByRole('alert')).className).toContain('bg-red-')
+  })
+
+  it('is red for a scanner that blocks uploads, not for one that does not', async () => {
+    const down = { policy: 'required', configured: true, reachable: false, effect: 'refused' }
+    mockWarnings({ attachment_scanning: down })
+    const first = renderWithQuery(<InsecureConfigBanner isAdmin />)
+    expect((await screen.findByRole('alert')).className).toContain('bg-red-')
+    first.unmount()
+
+    mockWarnings({ attachment_scanning: { ...down, policy: 'permissive' } })
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+    const bar = await screen.findByRole('alert')
+    expect(bar.className).toContain('bg-amber-')
+    expect(bar.className).not.toContain('bg-red-')
+  })
+
+  it('is neutral for a configuration notice', async () => {
+    mockWarnings({ passkeys: PASSKEYS })
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+    const bar = await screen.findByRole('alert')
+    expect(bar.className).toContain('bg-amber-')
+    expect(bar.className).not.toContain('bg-red-')
+  })
+
+  it('goes red when a failure sits beside a configuration notice', async () => {
+    mockWarnings({ passkeys: PASSKEYS, attachment_storage: STORAGE })
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+    expect((await screen.findByRole('alert')).className).toContain('bg-red-')
+  })
+})
+
+describe('dismissing', () => {
+  it('hides one notice for the session and keeps the other', async () => {
+    mockWarnings({ passkeys: PASSKEYS, attachment_storage: STORAGE })
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+    fireEvent.click(await screen.findByRole('button', { name: /details/i }))
+    fireEvent.click(screen.getByRole('button', { name: /hide for this session: passkeys are unavailable/i }))
+
+    const bar = screen.getByRole('alert')
+    expect(bar.textContent).not.toContain('Passkeys are unavailable')
+    expect(bar.textContent).toContain('Attachment uploads are disabled')
+    expect(bar.textContent).not.toContain('server problems')
+  })
+
+  it('removes the bar when every notice is dismissed', async () => {
+    mockWarnings({ passkeys: PASSKEYS })
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+    fireEvent.click(await screen.findByRole('button', { name: /details/i }))
+    fireEvent.click(screen.getByRole('button', { name: /hide for this session/i }))
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('stays hidden on a remount in the same session, and nothing is sent to the server', async () => {
+    const { spy } = mockWarnings({ passkeys: PASSKEYS })
+    const first = renderWithQuery(<InsecureConfigBanner isAdmin />)
+    fireEvent.click(await screen.findByRole('button', { name: /details/i }))
+    fireEvent.click(screen.getByRole('button', { name: /hide for this session/i }))
+    first.unmount()
+    expect(spy.mock.calls.every((c: unknown[]) => c[0] === '/admin/security-warnings')).toBe(true)
+    const before = calls(spy)
+
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+    await waitFor(() => expect(calls(spy)).toBe(before + 1))
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  // A new session is an empty sessionStorage: the problem is still there, so
+  // the notice is too. A failure is never hidden for good.
+  it('comes back in a new session while the problem remains', async () => {
+    mockWarnings({ attachment_storage: STORAGE })
+    const first = renderWithQuery(<InsecureConfigBanner isAdmin />)
+    fireEvent.click(await screen.findByRole('button', { name: /details/i }))
+    fireEvent.click(screen.getByRole('button', { name: /hide for this session/i }))
+    expect(screen.queryByRole('alert')).toBeNull()
+    first.unmount()
+
+    sessionStorage.clear() // the new session
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+    expect((await screen.findByRole('alert')).textContent).toContain('Attachment uploads are disabled')
+  })
+
+  it('comes back after sign-out even though the tab survives it', async () => {
+    mockWarnings({ passkeys: PASSKEYS })
+    const first = renderWithQuery(<InsecureConfigBanner isAdmin />)
+    fireEvent.click(await screen.findByRole('button', { name: /details/i }))
+    fireEvent.click(screen.getByRole('button', { name: /hide for this session/i }))
+    first.unmount()
+
+    clearDismissedNotices()
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+    expect(await screen.findByRole('alert')).toBeTruthy()
+  })
+})
+
+describe('who sees it', () => {
+  it('shows a non-admin nothing and asks nothing', () => {
+    const { spy } = mockWarnings({ passkeys: PASSKEYS, attachment_storage: STORAGE })
+    renderWithQuery(<InsecureConfigBanner isAdmin={false} />)
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(spy).not.toHaveBeenCalled()
+  })
+})
+
+// A fixed problem must stop showing within seconds of the admin returning to
+// the tab, not after the five-minute stale window.
+describe('freshness', () => {
+  function refocus() {
+    act(() => {
+      focusManager.setFocused(false)
+      focusManager.setFocused(true)
+    })
+  }
+
+  it('refetches on window focus and drops a problem that was fixed', async () => {
+    const { payload, spy } = mockWarnings({ attachment_storage: STORAGE })
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+    await screen.findByRole('alert')
+    expect(calls(spy)).toBe(1)
+
+    payload.current = { ...QUIET, attachment_storage: { writable: true, problem: '' } }
+    refocus()
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+    expect(calls(spy)).toBe(2)
+  })
+
+  it('refetches when Details is opened, and only then', async () => {
+    const { payload, spy } = mockWarnings({ attachment_storage: STORAGE })
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+    const details = await screen.findByRole('button', { name: /details/i })
+    expect(calls(spy)).toBe(1)
+
+    payload.current = { ...QUIET, attachment_storage: { writable: true, problem: '' } }
+    fireEvent.click(details)
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+    expect(calls(spy)).toBe(2)
+  })
+
+  it('does not refetch when Details is closed again', async () => {
+    const { spy } = mockWarnings({ passkeys: PASSKEYS })
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+    const details = await screen.findByRole('button', { name: /details/i })
+    fireEvent.click(details)
+    await waitFor(() => expect(calls(spy)).toBe(2))
+    fireEvent.click(details)
+    expect(calls(spy)).toBe(2)
+  })
+})

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { renderWithQuery } from '@/test/render'
 import { api } from '@/api/client'
 import { InsecureConfigBanner } from './InsecureConfigBanner'
@@ -94,10 +94,14 @@ describe('the attachment scanning warning', () => {
     })
     renderWithQuery(<InsecureConfigBanner isAdmin />)
 
-    await waitFor(() => expect(screen.getAllByRole('alert')).toHaveLength(2))
-    const alerts = screen.getAllByRole('alert')
-    expect(alerts[0].textContent ?? '').toMatch(/insecure configuration/i)
-    expect(alerts[1].textContent ?? '').toMatch(/accepted WITHOUT being scanned/i)
+    // One bar now, not one banner each; the details hold both, in order.
+    const bar = await screen.findByRole('alert')
+    expect(bar.textContent ?? '').toMatch(/2 server problems need attention/)
+    fireEvent.click(screen.getByRole('button', { name: /details/i }))
+    const items = within(bar).getAllByRole('listitem')
+    expect(items).toHaveLength(2)
+    expect(items[0].textContent ?? '').toMatch(/insecure configuration/i)
+    expect(items[1].textContent ?? '').toMatch(/accepted WITHOUT being scanned/i)
   })
 
   it('never fires the query for a non-admin', () => {
@@ -174,6 +178,8 @@ describe('the OAuth clients without groups warning', () => {
     renderWithQuery(<InsecureConfigBanner isAdmin />)
 
     const alert = await screen.findByRole('alert')
+    // The link sits in the details, which start closed.
+    fireEvent.click(within(alert).getByRole('button', { name: /details/i }))
     const text = alert.textContent ?? ''
     expect(text).toContain('JIRA sync')
     expect(text).toContain('CI pipeline')
