@@ -68,6 +68,7 @@ func TestGuest_EveryWriteRouteRefusesAClosedTicketWithTheGenericNotFound(t *test
 	defer cleanup()
 	ctx := context.Background()
 	tk, token := seedGuestTicket(t, h)
+	setGuestUploads(t, h, true) // or the upload's 404 is the setting's, not the closed ticket's
 	require.NoError(t, h.ticketSvc.Close(ctx, tk.ID, ticket.Actor{UserID: &h.adminID, Role: user.RoleAdmin}))
 
 	read := h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket", token, nil)

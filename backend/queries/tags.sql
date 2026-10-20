@@ -13,10 +13,12 @@ SELECT * FROM tags WHERE name = $1;
 -- name: CreateTag :one
 INSERT INTO tags (name) VALUES ($1) RETURNING *;
 
--- name: SoftDeleteTag :exec
-UPDATE tags SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL;
+-- name: SoftDeleteTag :execrows
+-- A tag that is already deleted keeps its original deleted_at but still counts
+-- as found, so only an unknown id reports zero rows.
+UPDATE tags SET deleted_at = COALESCE(deleted_at, now()) WHERE id = $1;
 
--- name: RestoreTag :exec
+-- name: RestoreTag :execrows
 UPDATE tags SET deleted_at = NULL WHERE id = $1;
 
 -- name: ListTicketTags :many

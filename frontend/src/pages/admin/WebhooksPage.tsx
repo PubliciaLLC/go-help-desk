@@ -216,13 +216,13 @@ function CheckGroup({
       <legend className="text-xs font-medium text-gray-700">{legend}</legend>
       <div className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2 lg:grid-cols-3">
         {options.map((o) => (
-          <label key={o.value} className="flex min-h-[24px] items-center gap-2 text-sm text-gray-700">
+          <label key={o.value} className="flex min-h-[24px] min-w-0 items-center gap-2 text-sm text-gray-700">
             <input
               type="checkbox"
               checked={selected.includes(o.value)}
               onChange={(e) => onToggle(o.value, e.target.checked)}
             />
-            <span>{o.label}</span>
+            <span className="min-w-0 wrap-anywhere">{o.label}</span>
           </label>
         ))}
       </div>
@@ -714,7 +714,7 @@ export function WebhooksPage() {
                       <td className="px-4 py-3">
                         <div className="flex flex-wrap gap-1">
                           {filterSummary(h.filter, categories, groups).map((chip) => (
-                            <span key={chip} className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-700">
+                            <span key={chip} className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-700 wrap-anywhere">
                               {chip}
                             </span>
                           ))}

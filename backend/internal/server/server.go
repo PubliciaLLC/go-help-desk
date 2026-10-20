@@ -188,6 +188,14 @@ type Server struct {
 	// six-digit secret.
 	loginLimiter *authmw.RateLimiter
 
+	// guestUploadLimiter spends one unit per guest upload attempt, keyed by the
+	// ticket the guest link names (#445). The key is the ticket and not the
+	// address for the reason RateLimiter's comment gives, and because one guest
+	// behind a shared address must not use up another's. INTERIM like the
+	// others: in memory and per process.
+	guestUploadLimiter  *authmw.RateLimiter
+	guestRefusalLimiter *authmw.RateLimiter
+
 	// loginThrottleDelay is how long an over-budget login waits before the
 	// password is checked. See config.AuthThrottleDelay.
 	loginThrottleDelay time.Duration
@@ -212,13 +220,14 @@ type Server struct {
 	// straight away, and turns a sustained lockout into an inconvenience.
 	guestResendLimiter *authmw.RateLimiter
 
-	// onBehalfMailLimiter caps how many tickets one member of staff can file
-	// for an address that has no account (#444): each one mails a stranger the
-	// "we have received your ticket" message with a link, so without a cap a
-	// compromised or careless staff session is a way to send mail to anyone.
-	// Keyed on the authenticated user, never on the address of the request: a
-	// machine credential is its owner. Only that path spends it; a picked user
-	// or a typed address that belongs to an account does not.
+	// onBehalfMailLimiter caps how many times one member of staff can use
+	// reporter_email in an hour (#290, #444): each one may mail a stranger the
+	// "we have received your ticket" message with a link, and each answers
+	// differently for an address with an account, so unbounded it is both a way
+	// to send mail to anyone and a way to learn who has an account. Every
+	// attempt that passes validation spends a unit, account or not; a picked
+	// reporter_user_id does not. Keyed on the authenticated user, never on the
+	// address of the request: a machine credential is its owner.
 	//
 	// INTERIM, like loginLimiter: in memory and per process, so a restart
 	// clears every count and N replicas multiply the cap by N. Its window is
@@ -421,6 +430,13 @@ func New(
 		loginLimiter:       authmw.NewRateLimiter(cfg.AuthRateLimitPerMinute, time.Minute),
 		loginThrottleDelay: cfg.AuthThrottleDelay,
 		guestResendLimiter: authmw.NewRateLimiter(1, 5*time.Minute),
+		// Keyed by ticket, with the figure read from the setting on each use
+		// (TakeWithLimit): the constructor's limit is not consulted.
+		guestUploadLimiter: authmw.NewRateLimiter(1, time.Hour),
+		// Every REFUSED guest upload, refunded or not, against a fixed budget
+		// (guestRefusalsPerHour): a refusal decided before the scan is free of
+		// the hourly upload budget, so this is what stops a stream of them.
+		guestRefusalLimiter: authmw.NewRateLimiter(guestRefusalsPerHour, time.Hour),
 		// Not configurable: the figure is the ruling on #444, not a tuning knob.
 		onBehalfMailLimiter: authmw.NewRateLimiter(onBehalfMailPerHour, time.Hour),
 		// The same shape and the same reasoning (#451).
@@ -627,10 +643,14 @@ func (s *Server) buildRouter() *chi.Mux {
 			With(authmw.RequireResource(auth.ResourceTickets)).
 			Get("/staff", s.handleListAssignableStaff)
 		// Who a ticket can be filed for (#444): the New ticket page's
-		// requester picker. The scope is users:read, the one that guards the
-		// user list, because this returns addresses.
+		// requester picker. Signed-in sessions only (#290, Erik 2026-10-14):
+		// "there is no user lookup endpoint, so no enumeration surface". A key
+		// or OAuth client files for someone with reporter_email and lets the
+		// server resolve it; it gets no way to search the directory, however
+		// many scopes it holds, so this is DenyMachineCredentials, not a
+		// scope.
 		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff), authmw.RequireMFA).
-			With(authmw.RequireResource(auth.ResourceUsers)).
+			With(authmw.DenyMachineCredentials).
 			Get("/users/lookup", s.handleLookupUsers)
 		// The admin-wide audit view (#129). Staff and admin only. A signed-in
 		// session needs no scope; a machine credential needs audit:read
@@ -726,12 +746,29 @@ func (s *Server) handleGetSiteConfig(w http.ResponseWriter, r *http.Request) {
 	// /submit, and offering a dead end is worse than offering nothing. It says
 	// only whether the instance accepts guest tickets — the same thing an
 	// unauthenticated POST to /guest/tickets would reveal by answering 404.
-	JSON(w, http.StatusOK, map[string]any{
-		"name":                     s.adminSvc.SiteName(r.Context()),
-		"logo_url":                 s.adminSvc.SiteLogoURL(r.Context()),
-		"version":                  version.Version,
-		"guest_submission_enabled": s.adminSvc.GuestSubmissionEnabled(r.Context()),
-	})
+	//
+	// guest_attachments_enabled and guest_attachment_max_bytes (#445) are here
+	// for the same reason: the guest page has no session, and offering an
+	// attach button that can only fail is worse than not offering one. Unlike
+	// guest_submission_enabled this DOES disclose something the guest routes
+	// do not: the upload route answers the same 404 whether the setting or the
+	// token is what failed, so it never says whether uploads are on. Here
+	// anyone can read it, with the effective limit. Accepted (low sensitivity,
+	// and the guest ticket's allow-list stays untouched). The size is the EFFECTIVE limit (the lower of the setting and the
+	// instance-wide maximum), omitted while uploads are off.
+	cfg := map[string]any{
+		"name":                      s.adminSvc.SiteName(r.Context()),
+		"logo_url":                  s.adminSvc.SiteLogoURL(r.Context()),
+		"version":                   version.Version,
+		"guest_submission_enabled":  s.adminSvc.GuestSubmissionEnabled(r.Context()),
+		"guest_attachments_enabled": s.adminSvc.GuestAttachmentsEnabled(r.Context()),
+	}
+	if cfg["guest_attachments_enabled"] == true {
+		cfg["guest_attachment_max_bytes"] = s.guestAttachmentMaxBytes(r.Context())
+		cfg["guest_attachment_max_per_ticket"] = s.adminSvc.GuestAttachmentMaxPerTicket(r.Context())
+		cfg["guest_attachment_uploads_per_hour"] = s.adminSvc.GuestAttachmentUploadsPerHour(r.Context())
+	}
+	JSON(w, http.StatusOK, cfg)
 }
 
 // InitSAML reads SAML config from the database and initialises the SP
@@ -946,4 +983,11 @@ func (s *Server) requireSignedInOrGuestsEnabled(next http.Handler) http.Handler 
 		}
 		Error(w, http.StatusUnauthorized, "unauthorized", "authentication required")
 	})
+}
+
+// SetGuestUploadClockForTest moves the guest upload limiter onto a clock the
+// test controls, so the hourly window can pass without waiting an hour.
+func (s *Server) SetGuestUploadClockForTest(now func() time.Time) {
+	s.guestUploadLimiter.SetClock(now)
+	s.guestRefusalLimiter.SetClock(now)
 }

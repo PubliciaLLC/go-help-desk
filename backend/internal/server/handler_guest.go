@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -314,9 +317,15 @@ func (s *Server) handleGuestAddReply(w http.ResponseWriter, r *http.Request) {
 //
 // Gated on guest_submission_enabled. When the setting is off, existing guest
 // links are revoked and cannot upload until the setting is turned back on (#424).
+//
+// And on guest_attachments_enabled (#445), off by default. It refuses with the
+// same 404 body as a bad link and as guest submission being off, like every
+// other guest refusal: a different answer would tell an anonymous caller which
+// setting is in force. The per-file limit is the lower of the guest setting and
+// the instance-wide maximum.
 func (s *Server) handleGuestUploadAttachment(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	if !s.adminSvc.GuestSubmissionEnabled(ctx) {
+	if !s.adminSvc.GuestAttachmentsEnabled(ctx) { // includes guest submission
 		Error(w, http.StatusNotFound, "not_found", "not found")
 		return
 	}
@@ -335,7 +344,54 @@ func (s *Server) handleGuestUploadAttachment(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	s.storeUploadedAttachment(w, r, t.ID, ticket.Actor{Role: user.RoleUser})
+	// The per-ticket cap, then the hourly rate. The cap first, so a refusal
+	// for a full ticket does not also spend the guest's hour. Neither is a
+	// transaction with the insert: two uploads racing can both pass the cap by
+	// the number in flight, which the rate bounds (at most the hourly figure).
+	maxFiles := s.adminSvc.GuestAttachmentMaxPerTicket(ctx)
+	have, err := s.tickets.CountGuestAttachments(ctx, t.ID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	if have >= maxFiles {
+		Error(w, http.StatusConflict, "guest_attachment_limit", guestLimitMessage(maxFiles))
+		return
+	}
+	perHour := s.adminSvc.GuestAttachmentUploadsPerHour(ctx)
+	ok, window := s.guestUploadLimiter.TakeWithLimit(t.ID.String(), perHour)
+	if !ok {
+		secs := max(1, int(math.Ceil(s.guestUploadLimiter.Remaining().Seconds())))
+		w.Header().Set("Retry-After", strconv.Itoa(secs))
+		Error(w, http.StatusTooManyRequests, "rate_limited",
+			fmt.Sprintf("You can attach at most %d files an hour to this ticket. Please try again later.", perHour))
+		return
+	}
+
+	// Refused attempts have a budget of their own. Checked before any work, and
+	// charged below for every refusal whether or not its hourly unit comes back.
+	refusalKey := t.ID.String()
+	if s.guestRefusalLimiter.Exceeded(refusalKey) {
+		w.Header().Set("Retry-After", strconv.Itoa(max(1, int(math.Ceil(s.guestRefusalLimiter.Remaining().Seconds())))))
+		Error(w, http.StatusTooManyRequests, "rate_limited",
+			"Too many of this ticket's uploads were refused. Please try again later.")
+		return
+	}
+
+	// The unit is spent before the work, so parallel uploads cannot all pass a
+	// budget with one slot left; it is given back when the guest's own file was
+	// refused for being the wrong thing (see refundable), which should not cost
+	// them their hour. A malware verdict and a server fault are not refunded:
+	// the first is the abuse this limit exists for, the second is not the
+	// guest's mistake but also not a reason to let a retry storm through.
+	rec := &refusalRecorder{ResponseWriter: w}
+	s.storeUploadedAttachment(rec, r, t.ID, ticket.Actor{Role: user.RoleUser}, s.guestAttachmentMaxBytes(ctx), maxFiles)
+	if rec.status >= 400 {
+		s.guestRefusalLimiter.Allow(refusalKey)
+	}
+	if refundable(rec.status, rec.code()) {
+		s.guestUploadLimiter.Refund(t.ID.String(), window)
+	}
 }
 
 // POST /api/v1/guest/follow-up
@@ -479,4 +535,71 @@ func (s *Server) PrepareGuestLink(ctx context.Context, ev notification.Event) (n
 		ev.TicketID = id
 	}
 	return s.tickets.IssueGuestLink(ctx, ev)
+}
+
+// guestAttachmentMaxBytes is what a guest may upload per file: the
+// administrator's figure, never above the instance-wide maximum (#445).
+func (s *Server) guestAttachmentMaxBytes(ctx context.Context) int64 {
+	return min(int64(s.adminSvc.GuestAttachmentMaxMB(ctx))<<20, attachMaxBytes)
+}
+
+func guestLimitMessage(maxFiles int) string {
+	return fmt.Sprintf("This ticket already has the most files a guest can attach (%d).", maxFiles)
+}
+
+// refusalRecorder remembers the status and error code of what the upload
+// pipeline answered, so the handler can tell a validation refusal from a fault.
+// It passes everything through untouched.
+type refusalRecorder struct {
+	http.ResponseWriter
+	status int
+	body   []byte
+}
+
+func (r *refusalRecorder) WriteHeader(code int) {
+	if r.status == 0 {
+		r.status = code
+	}
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *refusalRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	if len(r.body) < 1024 { // an error body is tiny; a success body is not read
+		r.body = append(r.body, b...)
+	}
+	return r.ResponseWriter.Write(b)
+}
+
+// Unwrap lets http.NewResponseController reach the real writer.
+func (r *refusalRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
+func (r *refusalRecorder) code() string {
+	var e errResponse
+	if json.Unmarshal(r.body, &e) != nil {
+		return ""
+	}
+	return e.Error.Code
+}
+
+// guestRefusalsPerHour is the fixed budget of refused guest uploads per ticket
+// per hour. Not a setting: it exists to bound abuse of the refund, not to tune.
+const guestRefusalsPerHour = 20
+
+// refundable: refusals decided BEFORE the scanner, which cost the server
+// nothing but reading a body. Refusals after the scan (invalid_image,
+// invalid_file) are not refundable: the scan is the expensive part, and
+// refunding them lets a guest make the server scan without limit. A malware
+// verdict, a 5xx and the in-transaction cap keep their unit too.
+func refundable(status int, code string) bool {
+	if status < 400 || status >= 500 {
+		return false
+	}
+	switch code {
+	case "too_large", "bad_request", "invalid_filename", "unsupported_type":
+		return true
+	}
+	return false
 }

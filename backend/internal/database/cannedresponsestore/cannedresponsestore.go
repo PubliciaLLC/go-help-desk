@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/cannedresponse"
 )
@@ -28,6 +29,9 @@ func (s *Store) Create(ctx context.Context, cr cannedresponse.CannedResponse) er
 		SortOrder:  int32(cr.SortOrder),
 	})
 	if err != nil {
+		if isUnknownScopeViolation(err) {
+			return cannedresponse.ErrUnknownScope
+		}
 		return fmt.Errorf("creating canned response: %w", err)
 	}
 	return nil
@@ -53,16 +57,39 @@ func (s *Store) Update(ctx context.Context, cr cannedresponse.CannedResponse) er
 		TypeID:     nullUUID(cr.TypeID),
 		SortOrder:  int32(cr.SortOrder),
 	}); err != nil {
+		if isUnknownScopeViolation(err) {
+			return cannedresponse.ErrUnknownScope
+		}
 		return fmt.Errorf("updating canned response %s: %w", cr.ID, err)
 	}
 	return nil
 }
 
 func (s *Store) Delete(ctx context.Context, id uuid.UUID) error {
-	if err := s.q.DeleteCannedResponse(ctx, id); err != nil {
+	n, err := s.q.DeleteCannedResponse(ctx, id)
+	if err != nil {
 		return fmt.Errorf("deleting canned response %s: %w", id, err)
 	}
+	if n == 0 {
+		return fmt.Errorf("%w: %s", cannedresponse.ErrNotFound, id)
+	}
 	return nil
+}
+
+// isUnknownScopeViolation reports whether err is one of canned_responses'
+// foreign keys refusing the category or type it was given: no such category,
+// no such type, or a type that belongs to another category. Detected off the
+// typed Postgres error, never err.Error()'s text.
+func isUnknownScopeViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23503" {
+		return false
+	}
+	switch pgErr.ConstraintName {
+	case "canned_responses_category_id_fkey", "canned_responses_type_id_fkey", "canned_responses_type_category_fk":
+		return true
+	}
+	return false
 }
 
 func (s *Store) List(ctx context.Context) ([]cannedresponse.CannedResponse, error) {

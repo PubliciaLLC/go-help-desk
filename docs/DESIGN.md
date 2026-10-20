@@ -630,7 +630,7 @@ did.
 |---|---|
 | **Role** | `staff` or `user`, set by an administrator on the Users page; the actor's role is the stored one. Never `admin` (CHECK, and a 409 `service_account` before it). |
 | **Signs in** | Never. Password login, SSO adoption by address, password reset, passkeys and MFA enrolment all refuse it, and no session for one loads. The login lookups (`GetUserByEmail` and the two subject lookups) do not return it; the session lookup skips it. |
-| **Seen** | Listed on **Admin → Users** with `service_account: true` and `auth_type: "service"` (the page shows a "Service" badge and a filter for it). It can be renamed, given groups, set to staff or user, and disabled. Renaming it renames its OAuth client in the same statement, so the two names cannot drift. Disabling it stops its client on the next request, and enabling it again restores it. It **cannot be deleted on its own**: `DELETE /admin/users/{id}` answers `409 service_account` with "This is the service account for OAuth client <name>. Delete the client instead.", because a client left listed with a dead user is worse than a refusal. It is left out of assignee pickers (`GET /staff`), assignment (`IsAssignableUser`, so round-robin skips it) and the plain user list. |
+| **Seen** | Listed on **Admin → Users** with `service_account: true` and `auth_type: "service"` (the page shows a "Service" badge and a filter for it). It can be renamed, given groups, disabled and set to staff or user, and nothing else: `PATCH /admin/users/{id}` answers `409 service_account` to a body carrying `email`, a `role` of `admin`, or `reset_mfa: true`, and applies none of it (a `reset_mfa: false` asks for nothing and is accepted; a `role` of `staff` or `user` is accepted, Q2 on #434). The page never sent the refused ones; the server now refuses them too. Renaming it renames its OAuth client in the same statement, so the two names cannot drift. The password route (`POST /admin/users/{id}/password`), MFA reset and API keys issued on its behalf are refused as well. Disabling it stops its client on the next request, and enabling it again restores it. It **cannot be deleted on its own**: `DELETE /admin/users/{id}` answers `409 service_account` with "This is the service account for OAuth client <name>. Delete the client instead.", because a client left listed with a dead user is worse than a refusal. It is left out of assignee pickers (`GET /staff`), assignment (`IsAssignableUser`, so round-robin skips it) and the plain user list. |
 | **Writes** | Under its scopes, a client creates tickets and replies **as its user**. The audit trail and authorship show the client's name. |
 | **Mail** | Never. A service user's address is made up (`oauth-<client id>@service-account.invalid`, which can never receive mail), and requester mail is not queued for a ticket it reported. Staff notifications go out as normal. |
 | **Scope** | Ticket scope enforcement (`ticket_scope_enforced`) applies to its user like any staff member's: it sees what its groups cover. Turning enforcement on warns, on that save, which clients have a user in no group; the Security warnings banner (`oauth_clients_without_groups`) keeps saying so until each has a group or is disabled. |
@@ -693,7 +693,7 @@ Routing is best-effort in one respect: a candidate that cannot be given a ticket
 - **Site name** — the product name shown in the sidebar header and browser title. Defaults to "Go Help Desk".
 - **Logo** — uploaded via **Admin → Settings → Branding**. Accepted formats: PNG, JPEG, GIF. Max 2 MB. Images are proportionally scaled to fit within **320 × 64 px** and re-encoded as PNG. When set, the logo replaces the site name text in the sidebar. **SVG is not accepted** (#165): the logo is the only upload rendered inline in this origin, and pattern-matching SVG for scripts is a game you have to keep winning. An SVG logo uploaded by an earlier release stops being served after the upgrade — the route serves PNG and nothing else, so the sidebar falls back to the site name. The settings page says so where the logo would be: the file picker no longer offers SVG, a sentence explains why it went, and an instance whose stored logo can no longer be loaded is told that rather than shown an empty space.
 - Both settings are stored in the database and managed via **Admin → Settings → Branding**.
-- A public `GET /api/v1/site` endpoint returns `{name, logo_url, version, guest_submission_enabled}` — no authentication required, so the shell and the login page render correctly before login (`guest_submission_enabled` is what decides whether the login page links to `/submit`; it reveals only what an unauthenticated `POST /guest/tickets` would reveal by answering 404).
+- A public `GET /api/v1/site` endpoint returns `{name, logo_url, version, guest_submission_enabled, guest_attachments_enabled}`, plus `guest_attachment_max_bytes`, `guest_attachment_max_per_ticket` and `guest_attachment_uploads_per_hour` while guests may attach (#445) — no authentication required, so the shell and the login page render correctly before login (`guest_submission_enabled` is what decides whether the login page links to `/submit`; it reveals only what an unauthenticated `POST /guest/tickets` would reveal by answering 404). `guest_attachments_enabled` and the three figures are different: `POST /guest/attachments` answers the same `404` whether the setting or the token failed, so it never says whether uploads are on, but `/site` does, together with the effective per-file limit, to anyone. That disclosure was accepted (#445): it is low sensitivity, and it keeps the guest ticket response's allow-list unchanged.
 - A public `GET /api/v1/logo` endpoint serves the stored logo file with a 5-minute cache header. `logo_url` in the site response points here when a logo is uploaded.
 
 ---
@@ -703,7 +703,7 @@ Routing is best-effort in one respect: a candidate that cannot be given a ticket
 ### Local Auth (Default)
 
 - Username/password with bcrypt hashing at **cost 12** (`user.ProductionBcryptCost`, #453). Releases up to 1.2 hashed at cost 10; a hash made at a lower cost is replaced at that account's next successful password sign-in, with a write conditional on the old hash so a password changed in between is never overwritten. The upgrade is best effort: a failure is logged and the sign-in still succeeds. While accounts are still on a lower cost, a wrong password for such an account spends the extra comparisons needed to cost as much as one at cost 12, so it takes as long to refuse as an address with no account. An account with no password (one that signs in only through SSO) or with a hash bcrypt cannot read is refused after the same comparison an unknown address gets, so a wrong password does not say which addresses belong to SSO-only accounts (#476). A hash at a higher cost than this one still takes longer to refuse; none is ever written. A password is 8 to 72 **bytes**, the same rule wherever one is set: first-run setup, admin create, admin reset, the account page and signup verification (`user.ValidatePassword`, #368). The upper bound is bcrypt's: it reads only the first 72 bytes and refuses to hash more. It counts bytes, not characters, so accented letters take 2 bytes each and most other non-Latin characters 3 or 4, and a 25-character passphrase in Chinese is already too long. A password over the limit is refused with a 400 that names it (`bad_request`, or `password_too_long` at signup verification). Sign-in applies no maximum, so a hash made elsewhere by a bcrypt that silently truncated still accepts its owner's full password: only the first 72 bytes are compared, as bcrypt always has.
-- **Old hashes stop working after N days (#453).** Rehash at sign-in only reaches accounts that sign in, so a hash made below cost 12 is refused too once the grace period ends. `admin.KeyPasswordRehashStartedAt` (`password_rehash_started_at`) holds the moment 1.3.0 first ran against the database, written once by migration 000044 (`ON CONFLICT DO NOTHING`; a fresh install has no old hashes, so its date changes nothing). It is a settings row rather than an `instance_secrets` row: that table is for secrets (a name allowlist and at least 32 bytes), and a date is not one. It is a known key only because the migration test requires every seeded key to be one; `PATCH /admin/settings` refuses it with `readonly_setting`, it is auth-critical, and the settings dump leaves it out, so nobody can restart the clock. N is `password_rehash_grace_days` (Authentication tab, default **30**, 1 to 365 enforced when saved; an unreadable or out-of-range stored value reads as 30). Sign-in only: `user.Service.VerifyPasswordForSignIn` returns `ErrPasswordResetRequired` for a **correct** password on a hash below the current cost once `started_at + N days` has passed, and the handler answers 403 `password_reset_required` telling the person to use "Forgot password" or ask an administrator. A wrong password still answers 401 `invalid_credentials`, so a guesser learns nothing about the hash. The refusal spends the same bcrypt work as a wrong password on that hash (it burns the cost difference instead of the rehash), pinned by a work-counting test next to #475's. `VerifyPassword` (confirming the current password while changing it) never refuses, since changing the password is the cure. No deadline recorded, or one that cannot be read, means no refusal. **Every administrator is exempt** (rehashed at sign-in as before): administrators are who reset everyone else, setup does not reopen, and email may be off. An earlier version exempted only the last active administrator, which still locked out the others; Erik widened it. Staff and requesters are refused. The SAML restriction (`saml_required`, password sign-in limited to administrators) is checked first, so a non-administrator under SAML gets that refusal rather than a reset instruction. The refusal sends nothing itself: its message points at "Forgot password" (see below) when the server can send email, and at an administrator when it cannot, and the sign-in page shows the "Forgot password?" link in the first case (#451).
+- **Old hashes stop working after N days (#453).** Rehash at sign-in only reaches accounts that sign in, so a hash made below cost 12 is refused too once the grace period ends. `admin.KeyPasswordRehashStartedAt` (`password_rehash_started_at`) holds the moment 1.3.0 first ran against the database, written once by migration 000044 (`ON CONFLICT DO NOTHING`; a fresh install has no old hashes, so its date changes nothing). It is a settings row rather than an `instance_secrets` row: that table is for secrets (a name allowlist and at least 32 bytes), and a date is not one. It is a known key only because the migration test requires every seeded key to be one; `PATCH /admin/settings` refuses it with `readonly_setting`, it is auth-critical, and the settings dump leaves it out, so nobody can restart the clock. N is `password_rehash_grace_days` (Authentication tab, default **30**, 1 to 365 enforced when saved; an unreadable or out-of-range stored value reads as 30). Sign-in only: `user.Service.VerifyPasswordForSignIn` returns `ErrPasswordResetRequired` for a **correct** password on a hash below the current cost once `started_at + N days` has passed, and the handler answers 403 `password_reset_required` (the reset link is sent, or the message says what to do instead; see below). A wrong password still answers 401 `invalid_credentials`, so a guesser learns nothing about the hash. The refusal spends the same bcrypt work as a wrong password on that hash (it burns the cost difference instead of the rehash), pinned by a work-counting test next to #475's. `VerifyPassword` (confirming the current password while changing it) never refuses, since changing the password is the cure. No deadline recorded, or one that cannot be read, means no refusal. **Every administrator is exempt** (rehashed at sign-in as before): administrators are who reset everyone else, setup does not reopen, and email may be off. An earlier version exempted only the last active administrator, which still locked out the others; Erik widened it. Staff and requesters are refused. The SAML restriction (`saml_required`, password sign-in limited to administrators) is checked first, so a non-administrator under SAML gets that refusal rather than a reset instruction. When the server can send email (`passwordResetAvailable()`), the refusal also sends the reset link, through the same code path as "Forgot password" (`requestPasswordReset`, see below), and the message says to check email; Erik's ruling of 2026-10-19, replacing "refuse and point at Forgot password". It is sent only after the password was verified and after the SAML check, so a wrong password or a SAML refusal sends nothing. It spends the same per-address budget as `POST /auth/forgot-password` (`forgotPasswordKey`), and the per-account limit applies when the worker sends. Over the budget, or if the queue insert fails, nothing is queued and the message says "We could not send a reset link just now. Try again in a minute, or ask an administrator." rather than claiming a mail was sent; the code stays `password_reset_required`. The work added to the request is one outbox insert; the mail is sent by the worker. When email is off nothing is sent and the message points at an administrator. The sign-in page shows the "Forgot password?" link in the email-on case (#451).
 - Available for all roles by default. With `saml_enabled` on, only administrators keep it (see SAML below).
 - **MFA** (optional toggle `mfa_enabled` in admin settings): a second factor is **either** a TOTP authenticator app (Google Authenticator, Authy, etc., enrolled by QR code) **or** a registered passkey (below). Admin can enforce MFA for specific roles (`mfa_enforced_roles`) or all users; an enforced user with no factor is sent to enrolment at sign-in, and right after verifying a self-service signup.
 - **A half-signed-in session expires** (#452). After the password is accepted but before the second factor is done, the session is good for **5 minutes** when a code from an existing factor is owed (TOTP or passkey) and **15 minutes** for first-time enrolment, which takes longer (installing an app, scanning a code). The limit is chosen when the session is created (`auth.PendingDeadline`) and stored as `SessionData.PendingUntil`; saving a staged enrolment secret does not extend it. Past it, `SessionAuth` deletes the session row and the request carries no actor, so the route answers its usual 401 and the person signs in with their password again; a refused code is never checked, so it does not use up an MFA attempt. The cookie and row are also given that lifetime so an abandoned sign-in clears itself. A pending session with no `PendingUntil` (saved before this existed) counts as expired, so anyone mid-sign-in at upgrade signs in once more. A fully signed-in session is not affected. Enrolment stays outside `RequireMFA`, so the password is still a way in: the sole administrator can always sign in again and recover (`TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor`).
@@ -718,7 +718,7 @@ A person who cannot sign in can ask for a link by email and choose a new passwor
 - **Choose.** `POST /api/v1/auth/reset-password` takes `{token, password}`. The password goes through `user.ValidatePassword` first (`400 password_too_short` or `password_too_long`) and a refused password does not use the link up. Then **one SQL statement** spends the link, stores the new hash, clears `must_change_password` and **ends every session the account holds**, so a failure part-way cannot leave a spent link with the old password or a new password with old sessions signed in. A link that is unknown, used, replaced, expired, or for an account disabled, deleted or left with no password since is `422 token_invalid`, one answer for all of them. It works with email switched off afterwards: a mailed link was a promise made while it was on. Counted per client address like the request (`429`), which bounds the bcrypt work an anonymous caller can cause.
 - **The link never gives a session.** On success the response is `204` with no cookie. The page says the password is changed and goes back to `/login`, and the person signs in with the new password **and their second factor**, if they have one. A reset link is a credential that sits in an inbox; if it also skipped MFA, a stolen inbox alone would be a stolen account. A test pins that an MFA-enrolled account still answers `mfa_needed` after a reset and that its session cannot read `/me`.
 - **Audit.** `entity_type: "user"`, `action: "password_reset_by_email"`, `after: {sessions_revoked: true}`, **no actor** (nobody was signed in, and naming the account would record a claim; the same reasoning as `reset-factors`), distinct from `password_reset_by_admin`. Like that one it is **not** transactional with the write it describes: the password is already changed, a lost entry is logged and swallowed rather than reported as a failed reset, and the write is detached from the caller's context so hanging up cannot suppress it.
-- **The #453 refusal.** `403 password_reset_required` (a correct password on a hash below the current cost, after the grace period) says to use "Forgot password" when the server can send email and to ask an administrator when it cannot. Its message always contains "Forgot password".
+- **The #453 refusal.** `403 password_reset_required` (a correct password on a hash below the current cost, after the grace period) has three wordings. Email on and the link queued: it says to check email (and names "Forgot password" for a second link). Email off: it says to ask an administrator and that "Forgot password" is unavailable. Email on but nothing queued (the per-address budget is spent, or the queue insert failed): "We could not send a reset link just now. Try again in a minute, or ask an administrator." This one deliberately does not name "Forgot password", because that endpoint shares the budget and would answer 429 for the rest of the minute. So the first two contain "Forgot password" and the third does not.
 - **Not for accounts with no password.** "Forgot password" is for an account that has a password. An account with none (`password_hash` empty) is mailed no link, whether it signs in through OIDC or SAML or is a local account created without a password, and a link that reaches such an account does nothing: the statement that applies a link requires `password_hash <> ''`, so a link made before the account lost its password is refused with `token_invalid` and spent. Giving an identity-provider account a password would put a way in beside the provider's MFA and conditional access, and a local account created without one is left as an administrator made it. The account's password is tested the way the identity provider lockout guard tests it (`password_hash != ""`), not by whether an identity provider subject is set. An identity-provider account signs in through the provider; a local account without a password needs an administrator to set one.
 
 ### Passkeys (WebAuthn)
@@ -1338,6 +1338,13 @@ whether the caller is a guest, which is the shape of the authorisation bug fixed
 in 1.2.0.
 
 - **Toggle in admin settings:** when off, all guest routes (both public submission and token-based read/reply/attach) answer 404 to visitors, suspending any links already issued until the setting is turned back on (#424).
+- **Guests attaching files** (#445) is a second, separate switch, **Guests may attach files** (`guest_attachments_enabled`, **Admin → Settings → General → Submissions**, under guest submission). **Off by default, upgraded installs included**: before it existed a guest could upload through `POST /guest/attachments` whenever guest submission was on, and that is now closed until an administrator opens it. It is **dependent** on guest submission: the setting only takes effect while `guest_submission_enabled` is on (the settings page shows it unavailable while submission is off, and the server treats it as off), so there is no state in which uploads are on and submission is off.
+  - **Size.** `guest_attachment_max_mb` is a per-file maximum for guests, set with a slider from 1 to 100 MB, 5 MB by default. The server holds the guest to the **lower** of it and the instance-wide attachment maximum (25 MB, the one every upload has), so a figure above 25 is accepted by the setting and cannot be reached; the slider says so. A value outside 1 to 100 is refused at save (`400 bad_request`) and not stored, and an unreadable stored value reads as 5. Over the limit is `413 too_large`, with the limit that applied in the message ("file exceeds 5 MB limit"); the body is capped while it is read, as for every upload.
+  - **Per-ticket cap and hourly rate** (Erik, 2026-10-19). `guest_attachment_max_per_ticket` is the most files guests may attach to one ticket (1 to 50, default 5); `guest_attachment_uploads_per_hour` is how many uploads one guest link may make per hour (1 to 30, default 3). Both are set under the uploads switch in Settings, unavailable while it is off, session-only, validated at save (`400`, nothing stored) and read as their defaults when unset or damaged, so an upgraded install gets 5 and 3 as soon as an administrator turns uploads on. Both are checked on the guest upload route after the setting, the token and the lifecycle check, the cap first: a full ticket answers `409 guest_attachment_limit` ("This ticket already has the most files a guest can attach"), and the cap does not spend the hour. Past the hourly figure the answer is `429 rate_limited` with `Retry-After` in whole seconds. The rate is keyed by the **ticket the link names**, not the address, so a guest behind a shared address cannot use up another's hour; it reuses `middleware.RateLimiter` (extended with `TakeWithLimit`, because the figure is an admin setting that changes while the server runs, and with an injectable clock for tests). It is a fixed window over the whole limiter, in memory and per process like the other limiters: a restart clears it and each replica has its own. The unit is spent before the work, so parallel uploads cannot all pass a budget with one slot left, and **given back only when the refusal was decided before the scanner**: a wrong type, an over-size file, a name or request the parser refuses (`unsupported_type`, `too_large`, `invalid_filename`, `bad_request`). Those cost the server a body read and nothing more. Everything decided after the scan keeps its unit: `invalid_image`, `invalid_file` (a content mismatch), a malware verdict (`422 infected`), a scanner or storage fault (`503`) and any 5xx, and so does the cap refusal that comes from inside the transaction. Refunding a post-scan refusal let a guest make the server scan without limit (measured: twenty bad PNGs at a budget of one were twenty scans). Because a pre-scan refusal is free of the hour, **every refused attempt also draws on a second, fixed budget of 20 per hour per ticket** (`guestRefusalLimiter`, not a setting), whether or not its unit came back; once spent, the route answers `429 rate_limited` with `Retry-After` before reading anything, a good file included, until the window ends. Like the other limiter it is in memory and per process. The cap counts **only guest uploads**, for which `attachments.uploaded_by_guest` (migration 000054) records the fact, because nothing recorded who uploaded a file; staff and reporter files never count. Files a guest attached before the migration are not counted (the column defaults to false). The cap is **exact**: the authority is `ticket.Service.CreateGuestAttachment`, which counts inside the transaction that already locks the ticket row, so uploads racing for the last slot leave exactly one file there (`TestCreateGuestAttachment_ParallelUploadsCannotOvershootTheCap`). A cheaper count before the file is read and scanned only saves that work. `GET /site` carries the cap and the hourly figure with the size, and the page offers at most the lower of what the ticket has room for and the hour allows, worded "up to 3 files now (5 per ticket)" when they differ.
+  - **Refusal.** With uploads off the route answers the generic `404 not_found`, byte-identical to a bad link and to guest submission being off, like every other guest refusal: a different status would tell an anonymous caller which setting is in force.
+  - **Session only.** All four keys are in `AuthCriticalKeys`: they widen what anonymous people can do, and a leaked API key must not be able to turn them on and use them. They are in `KnownKeys`.
+  - **One migration.** 000054 adds `attachments.uploaded_by_guest BOOLEAN NOT NULL DEFAULT false`, so the cap can count only guest uploads (nothing recorded who uploaded a file). The settings themselves are rows read with defaults and need none; files guests attached before the upgrade are not counted.
+  - **Where the control is.** The guest ticket page (`/g`) shows **Add files** on an open ticket when `GET /site` says `guest_attachments_enabled`, with the effective per-file limit in `guest_attachment_max_bytes` (the lower of the two figures, so the page never promises more than the server takes). Files go up one after another as they are chosen, to `POST /guest/attachments` with the `Authorization: Guest` header; there is no draft, because a guest's attachment belongs to the ticket and not to a reply. The server's own reason is shown for a refusal. There is no control on the submission page (`/submit`): the link that identifies the ticket is emailed after the ticket exists, so a guest attaches from that link. The page does not list the guest's uploads (the guest read has no attachment list) and renders none of their content; attachments stay download-only.
 - Unauthenticated users submit a ticket at `/submit` and receive a **tracking number**
 - Guest ticket form collects: **name** (required), **email** (required), **phone** (optional), subject, description, and category (active only — no type or item)
 - The tracking number can be referenced when following up with the help desk by phone or email
@@ -1347,10 +1354,37 @@ in 1.2.0.
 
 Two jobs are supported on a phone: **a staff member triaging away from their
 desk**, and **a reporter filing a request and following it**. Administration is
-not. An operator configuring categories, editing roles or managing API keys is
-at a desk, and the admin tables are built for one. That boundary is stated
-rather than implied, because the alternative is a product that appears to work
-on a phone until somebody reaches a page that does not.
+not a job the product is designed around: an operator configuring categories,
+editing roles or managing API keys is at a desk, and the admin tables are built
+for one. The admin pages do still **fit** a phone: no sideways scroll at 320
+pixels, whatever the data (#522). They are not redesigned for it. A wide admin
+table stays a table and scrolls inside its own box; the page never does.
+
+**Server warnings.** Administrators see problems with the server (unwritable
+attachment storage, an unreachable scanner, passkeys unavailable, email not set
+up, and the rest of `GET /admin/security-warnings`) in **one slim bar** above
+the page, never a stack of banners. It is a single line: "N server problems
+need attention", or the notice's own title when there is exactly one, with a
+**Details** button (`aria-expanded`) that opens the full explanation of each
+notice. Red marks something broken now (unwritable attachment storage, a
+scanner that is down, under either policy: `required` refuses uploads and
+`permissive` stores files unscanned right now; insecure secrets; email not being
+delivered); configuration notices are amber. An `info` severity (neutral blue)
+exists for good news such as an available update: it never turns the bar red,
+is not counted as a problem, and is announced politely as a status. **Hide** removes one notice
+for the current session: it is kept in `sessionStorage` by notice id, severity
+and a short summary of what it said (so a notice that gets worse, such as a
+changed scanner policy, more failed email, another blind OAuth client or a
+second exposed secret, comes back), sent nowhere, cleared at sign-out and when
+the session expires (the 401 handler), and the notice returns at the next
+sign-in while the problem remains. When every notice is hidden the bar goes away. The query
+is refetched when the window regains focus and when Details is opened, so a
+problem that was fixed stops showing within seconds. Everything inside wraps
+anywhere, including the `reset-factors` command, because the bar sits above
+`<main>` and a long unbroken token there once widened the whole page. Only
+administrators are asked. Only the summary line is a live region; the bar
+is a labelled region, focus moves to the next Hide button (or Details) after a
+Hide, and Hide is at least 44px on a touch screen.
 
 **What each job covers.** The staff path is the queue, a ticket, and the
 actions taken on it: read, reply, reassign, change status, resolve. The
@@ -1386,7 +1420,28 @@ they stay whole and copyable (#479). Markdown-format text is linked as described
 under *Ticket text formatting*; its code blocks and tables scroll inside their
 own box, which does not count as cutting text.
 
-Ten compact places still end in an ellipsis, because they are one-line rows or
+**Admin pages (#522).** The same treatment, applied to every page under Admin
+(Users and a user's page, Groups, Roles, Categories, Statuses, Tags, Canned
+responses, Custom fields, API keys, OAuth clients, Webhooks, Routing, Audit and
+each Settings tab): `wrap-anywhere` on what an administrator typed (names,
+descriptions, URLs, email addresses), and `min-w-0` on flex and grid children so
+they can shrink to it. The tables on Users, Roles, Statuses, Tags, Canned
+responses, Custom fields, API keys, OAuth clients, Webhooks and Audit, and the
+Categories tree, each sit in an `overflow-x-auto` box. Those tables are still
+wider than a phone with short data, so they scroll sideways inside that box and
+every column, action buttons included, can be reached; the page does not move.
+(They used to be `overflow-hidden`, which cut the columns off instead.) Groups,
+a user's page, Routing and Settings are cards and forms, not tables. On Settings, the tab bar scrolls inside its own row, and a
+setting's control sits under its label below `sm` instead of beside it, because
+a select or number box that cannot shrink does not fit beside a label at 320
+pixels. The end-to-end check pins every admin page, with a 300-character name,
+description and URL and again with short data, at 320 and 375 pixels, and also
+opens the forms and expanded rows on Users, Groups, Categories and Webhooks. It
+fails if the page or `main` scrolls sideways, and also if anything sticks out
+past `main`'s right edge without an `overflow-x: auto` box around it, which is
+what an `overflow-hidden` wrapper looks like.
+
+Fourteen compact places still end in an ellipsis, because they are one-line rows or
 chips where wrapping would break the row, and none of them is ticket content:
 
 - in the Linked tickets panel, the linked ticket line;
@@ -1397,11 +1452,18 @@ chips where wrapping would break the row, and none of them is ticket content:
   name in the mobile top bar;
 - on the Dashboard, each client's name and email in the By Client cards;
 - on the Account page, a passkey's label;
-- in the authenticator-app setup, the secret under the QR code.
+- in the authenticator-app setup, the secret under the QR code;
+- on a ticket, each attachment's SHA-256, cut to its first 12 characters;
+- on the Canned responses admin page, the body preview, cut to 80 characters;
+- on the Settings Authentication tab, the SAML certificate: its first line, with
+  the whole PEM in the `title`;
+- on the same tab, the SAML private key: its first line followed by "…". It is
+  not cut by CSS, the text is simply shortened, and it has no `title`, on
+  purpose: its full text is a secret and must not sit in an attribute.
 
-Each carries a `title` attribute with its full text, which a pointer shows on
-hover; touch browsers do not show one, so the two ticket rows also open the
-ticket, where the text wraps in full. Everything else wraps, including the
+Each, except the private key line, carries a `title` attribute with its full
+text, which a pointer shows on hover; touch browsers do not show one, so the two
+ticket rows also open the ticket, where the text wraps in full. Everything else wraps, including the
 sidebar brand in the drawer and the Dashboard's "Welcome back" line. On the
 ticket page below `md` the header's action buttons sit on their own row under
 the title and tracking number, which keep the full width (#480).
@@ -1543,9 +1605,10 @@ ticket for someone else, which is how a phone-in request is recorded. `POST
   can sign in. **Otherwise it is filed exactly like a guest ticket**: the same
   creation path, the person is sent the same guest link at that address (read
   and reply, read-only once the ticket closes, replaced when the ticket changes
-  in a way they are told about). **`guest_name` is required, exactly as on the
-  guest form** (`400` without a non-blank one); `guest_phone` is optional and
-  kept. An address that matches an account needs no name. Guest links
+  in a way they are told about). **`guest_name` is required with every
+  `reporter_email`** (`400` without a non-blank one), whether or not the address
+  has an account, so that its absence says nothing about the address; it is
+  ignored for an account. `guest_phone` is optional and kept. Guest links
   are suspended while guest submission is off (#424), so a typed address with no
   account behind it is `400` then, and nothing is filed; an address that belongs
   to an account is not affected. Only the requester's identity follows the guest
@@ -1567,14 +1630,18 @@ mailed about it, as before; nor is a requester who files theirs. A typed
 address with no account is filed as a guest ticket and gets the guest link, as
 above.
 
-**Mail limit on the typed-address path.** A typed address with no account mails
-a stranger on a staff member's say-so alone, so those are capped: **40 per
-hour per staff member**, and the 41st is `429 rate_limited` with `Retry-After`
-(the time left in the window) and files nothing. What is counted is tickets
-filed: a request refused for any other reason, or that fails validation, is not
-counted. Filing for an existing account is not counted either: a picked user,
-and a typed address that matches an account, spend nothing and are not stopped
-by a spent budget. The key is the authenticated user, not the
+**Budget on the typed-address path (#290).** A typed address mails a stranger
+on a staff member's say-so alone, and is also the one way to learn whether an
+address has an account, so every attempt is capped: **40 per hour per staff
+member**, and the 41st is `429 rate_limited` with `Retry-After` (the time left
+in the window) and files nothing. Every `reporter_email` that passes validation
+takes a unit before the address is looked up, account or not, and the refusal
+for guest submission being off is not given back. A request refused by
+validation spends nothing. **A unit is never given back once taken**, not for
+the guest-submission refusal and not when `Create` then fails: a refund after
+the address is known makes a miss free whenever a failure can be provoked for
+one kind of address only. A genuine database error costs one of the 40. A picked `reporter_user_id` is not counted and
+is not stopped by a spent budget. The key is the authenticated user, not the
 address of the request, so an API key or OAuth client counts against the user it
 acts as (the same budget as that person's own session), and another staff
 member is unaffected. The figure is fixed, not configurable. Like the credential
@@ -1602,8 +1669,9 @@ On the New ticket page, staff and administrators see a **Requester** choice
 (Me, the default; Another user; Email address) and a requester sees none. Email
 address shows a required **Name** and an optional **Phone**, as the guest form
 does. Another
-user is a search box: `GET /users/lookup?q=` (staff and administrators; `users:read`
-for a machine credential) answers with `id`, `display_name` and `email` of at most
+user is a search box: `GET /users/lookup?q=` (staff and administrators **in a
+signed-in session only**; an API key or OAuth client gets `403 session_required`,
+`users:read` or not, `DenyMachineCredentials`) answers with `id`, `display_name` and `email` of at most
 ten accounts whose name or address contains the query, ignoring case, ordered by
 display name then id. Disabled, deleted and service accounts are excluded by the
 query itself (one read, `LIMIT 10`), not read and dropped afterwards. A query
@@ -1613,11 +1681,40 @@ service accounts are not found. The search minimum is counted in characters, not
 bytes or UTF-16 units. A reporting user gets `403`. The lookup is the picker's:
 a disabled account sent by id is still accepted, as MCP accepts one.
 
-MCP `create_ticket` takes `reporter_user_id` only (no typed address). **When it
-names someone other than the caller, the caller is the actor** of the creation,
-as on REST (`CreateInput.FiledBy`), and the reporter is who it is for; the
-account is emailed as above. Naming yourself, or omitting it, is filing your own
-ticket and is unchanged.
+**There is no user lookup for machine credentials (#290, Erik 2026-10-14).** A
+key that files for someone sends `reporter_email` and the server resolves it:
+an account if one exists, otherwise a guest ticket. That leaves no endpoint
+that confirms whether an address has an account or lists the directory. The
+`201` does carry `reporter_user_id` (the response of a ticket the caller filed
+shows who it was filed for), which tells a key that an address has an account.
+Erik accepted that on 2026-10-16 ("leak accepted").
+
+What the server does to keep that the only leak: `Server.ResolveOnBehalf` runs
+every check that does not depend on the address (subject and description,
+priority, the category, type and item existing, belonging together and being
+open: `ticket.Service.ValidateCreate`) **before** it looks the address up, so a
+request that was going to fail anyway gets the same answer for every address,
+over REST and MCP, with guest submission on or off. `guest_name` is required with every
+`reporter_email`, checked with the rest, so leaving it out is refused the same
+way for every address. Only after all that does the address take a unit of the
+40-an-hour budget and get looked up. The answer is then the ticket (`201`, with
+`reporter_user_id` when there is an account) or, for an address with no
+account, `guest submission is off` (the unit is not given back). So every
+probe that learns anything costs a unit, or a filed ticket and a unit, and
+probing is bounded at 40 an hour per staff member, over REST and MCP together.
+That is what the "leak accepted" ruling covers.
+
+MCP `create_ticket` takes `reporter_user_id` or `reporter_email` (never both),
+`guest_name` and `guest_phone`, with the REST rule, from the same code
+(`Server.ResolveOnBehalf`, which REST's handler calls too): the same address
+rules, the same account-or-guest resolution, the same refusal while guest
+submission is off, the same name requirement (always), the same 40-an-hour budget (one
+per staff member across REST and MCP), the same created mail. A refusal
+comes back as the tool's error text. `reporter_user_id` stays, because existing
+callers send it. **When either names someone other than the caller, the caller
+is the actor** of the creation, as on REST (`CreateInput.FiledBy`), and the
+reporter is who it is for; the account is emailed as above. Naming yourself, or
+omitting both, is filing your own ticket and is unchanged.
 
 **Nobody newly picks an archived category, type or item (#421).** Staff and
 administrators see archived rows (in the picker and in the catalogue API) so they
@@ -1646,10 +1743,12 @@ already upload at ticket creation (#175) — staff-only controls in that
 composer are the internal-note flag, the customer-notify flag and canned
 responses, not the attachment control. A guest cannot attach at ticket
 creation (there is no ticket yet to attach to), but can attach to an
-existing one afterward at `POST /api/v1/guest/attachments`, authorized the
+existing one afterward at `POST /api/v1/guest/attachments` (only while an
+administrator has turned on **Guests may attach files**, off by default, and
+within the guest per-file limit; see Guest Submission, #445), authorized the
 same way `POST /api/v1/guest/replies` is: the ticket comes from the guest
 token in the `Authorization` header, never from an id in the path, so there
-is nothing for a guest to change to reach a different ticket. Which types are accepted is an operator setting, `attachment_allowed_types` — a JSON array of lowercase extensions with the leading dot, each matching `^\.[a-z0-9]{1,16}$`. The shipped default is PDF, DOCX, XLSX, TXT, LOG, JPG, JPEG, PNG, BMP; an empty array means this instance takes no attachments at all. `.jpg` and `.jpeg` name one format, so allowing either allows both. Changing it needs a signed-in administrator — an API key cannot widen what the instance accepts. Max 25 MB per file. Images (JPEG, PNG, BMP) are re-encoded to whichever of JPEG (quality 85) or PNG produces a smaller file — except an image with transparency in it, which is always PNG, because JPEG has no alpha channel and "smaller" would be comparing two different pictures. File names on disk are obfuscated (UUID-based); the original file name is preserved in the database for download.
+is nothing for a guest to change to reach a different ticket. Which types are accepted is an operator setting, `attachment_allowed_types` — a JSON array of lowercase extensions with the leading dot, each matching `^\.[a-z0-9]{1,16}$`. The shipped default is PDF, DOCX, XLSX, TXT, LOG, JPG, JPEG, PNG, BMP; an empty array means this instance takes no attachments at all. `.jpg` and `.jpeg` name one format, so allowing either allows both. Changing it needs a signed-in administrator — an API key cannot widen what the instance accepts. Max 25 MB per file (a guest's maximum is the lower of that and `guest_attachment_max_mb`, 5 MB by default, #445). Images (JPEG, PNG, BMP) are re-encoded to whichever of JPEG (quality 85) or PNG produces a smaller file — except an image with transparency in it, which is always PNG, because JPEG has no alpha channel and "smaller" would be comparing two different pictures. File names on disk are obfuscated (UUID-based); the original file name is preserved in the database for download.
 
 Every attachment upload — authenticated or guest — is authorized the same
 way a reply is (`CanUploadAttachment` / `CanGuestUploadAttachment`, reusing
@@ -2421,7 +2520,7 @@ Serves both the frontend SPA and external integrations.
 
 **Public endpoints (no session or credential):**
 - `GET /health` — liveness, `{"status":"ok"}`. Outside `/api/v1`.
-- `GET /api/v1/site` — branding info, app version and `guest_submission_enabled`; used by the SPA shell and login page before authentication
+- `GET /api/v1/site` — branding info, app version, `guest_submission_enabled` and the guest attachment setting (`guest_attachments_enabled`, `guest_attachment_max_bytes`, `guest_attachment_max_per_ticket`, `guest_attachment_uploads_per_hour`); used by the SPA shell and login page before authentication
 - `GET /api/v1/logo` — the stored logo (PNG), with a 5-minute cache header
 - `GET /api/v1/setup/status` — whether first-run setup is needed; `POST /api/v1/setup` creates the first administrator (and the first category, see Ticket Classification). It answers `409 already_configured` once **any** user row exists, disabled and deleted accounts included, so setup never reopens.
 - `/api/v1/auth/*` — `POST /local/login`, `POST /local/logout`, `GET /providers`, `POST /oauth/token` (OAuth client credentials), the SAML and OIDC sign-in routes, and `GET /signup/status`, `POST /signup`, `GET` and `POST /verify-email` (see Authentication). `POST /local/mfa/verify` and `POST /local/passkey/*` need the session the password step produced and are refused to machine credentials.
@@ -2451,7 +2550,7 @@ Exposes help desk operations as an MCP server for AI tool integration, over two 
 | `list_tickets` | any signed-in user | Optional `assignee_user_id`, `status_id`, `priority`, `category_id`, `q` filters. `limit` defaults to 20 and is clamped to 100; `offset` pages the full result set. |
 | `list_categories` | any signed-in user | The Category/Type/Item tree, nested, for filling in CTI. Active entries only; `include_inactive: true` adds retired ones (the tool applies no role check to it, unlike the REST catalogue, which shows archived entries to staff and administrators only). |
 | `list_statuses` | any signed-in user | The statuses this instance defines. |
-| `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` names the subject of the ticket and defaults to the caller. `description` is Markdown unless `format: "plain"` is passed (#443); an invalid `format` is a tool error. |
+| `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` or `reporter_email` (with `guest_name`, always required with the address) names the subject of the ticket; both are absent by default and the caller is the subject. `description` is Markdown unless `format: "plain"` is passed (#443); an invalid `format` is a tool error. |
 | `add_reply` | staff, admin | A public reply emails the requester exactly as the REST reply does (#442): the guest's address (with a guest link) or the reporting account's, through one shared rule, `ticket.Service.ReplyRecipient`. No mail is sent when the requester has no address on record or the account is gone, or when the requester is a staff member or administrator writing the reply on a ticket they filed (they are not mailed a copy of their own reply, over REST or MCP; an ordinary requester replying on their own ticket still is); the reply is still saved. `internal: true` posts a staff-only note and never notifies the requester. There is no `notify_customer` option over MCP: a public reply always notifies. `body` is Markdown unless `format: "plain"` is passed (#443). |
 | `assign_ticket` | staff, admin | To a user (`assignee_user_id`) or a group (`assignee_group_id`). To take the ticket off whoever has it, pass `clear_assignee: true` (the audit entry is `unassigned`); it cannot be combined with an assignee id, and omitting everything is refused rather than read as unassigning, because that silently took tickets off the people working them. |
 | `update_ticket_status` | staff, admin | Target status must be one the caller's role may transition to. A ticket in Closed cannot be moved out of it unless `closed_reopen_policy` lets the caller's role (#349; off by default): the result says reopening is disabled or restricted and points at `create_follow_up`. There is no separate reopen tool and never was; this is MCP's path out of Closed, through the same service rule as REST. A move out of Resolved or Closed is a reopen like any other (flagged, priority raised on the first, SLA restarted, staff mailed), with the caller as the actor. |
@@ -2781,7 +2880,7 @@ one is a permission decision with one switch and no per-user exceptions.
   *make*, so it takes the stricter reading.)
 - **A key's scopes never exceed its owner's role.** `auth.ScopesForRole` is the
   table: an administrator may carry any scope; staff `tickets:read|write`,
-  `groups:read`, `audit:read` and `users:read` (the requester lookup); a requester none, since requesters never own a
+  `groups:read` and `audit:read` (not `users:read`: the one staff route that needed it, the requester lookup, is session-only since #290); a requester none, since requesters never own a
   key (an existing requester key still acts within the role check). It is checked
   against the key's *owner*, so an administrator issuing a key for a staff member is
   limited by what staff can do; a scope outside it is `400 invalid_scope`.
@@ -3410,8 +3509,19 @@ What happens to a change, step by step:
    verification mail and password-reset mail, never any other event)
    (`notification.Carries`, `channels.go`). The channel list is
    `email`, `webhook`, `verification` (`cmd/server/outbox_wiring.go`).
-   On a deadlock, `InTx` runs the function again once, with a new collector, so
-   the rolled-back attempt's events are discarded with its writes.
+   When Postgres aborts the transaction for a deadlock (`40P01`) or a
+   serialization failure (`40001`), `InTx` runs the function again with a new
+   collector, so the rolled-back attempt's events are discarded with its
+   writes. Three attempts in all, with a 10-50 ms pause between them, and
+   none after the request's context ends (`internal/database/dbretry`, #508).
+   The same rule covers `outboxstore.Split` and the user store's guarded
+   writes. A function given to `InTx` must start from a clean slate on every
+   run: nothing it captured may carry over from an attempt that was rolled
+   back. **Not covered, on purpose:** the `unlock` command, which is run by
+   hand and shows its error to the person running it, and a single
+   autocommit statement, which is not wrapped and returns the error if it is
+   aborted (the three guarded last-administrator statements are the one
+   exception, because the deadlock was measured there).
 3. **The worker** runs in every server process. Each turn it claims rows that
    are due (`FOR UPDATE SKIP LOCKED`, ten-minute lease) and hands each to the
    sender registered for the row's channel (`internal/server/notify/outbox.go`).

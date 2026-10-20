@@ -54,6 +54,29 @@ export async function addGuestReply(token: string, body: string): Promise<GuestR
   return res.data
 }
 
+// A file the server refused (#445): too large, a type this instance does not
+// accept, infected. `message` is the server's own sentence, which is safe to
+// show; it never carries anything about the link. A 404 is not this: it means
+// the link is dead or guest uploads are off, and the server says no more.
+export class GuestUploadRefused extends Error {}
+
+export async function uploadGuestAttachment(token: string, file: File): Promise<void> {
+  const form = new FormData()
+  form.append('file', file)
+  try {
+    await guestApi.post('/attachments', form, auth(token))
+  } catch (err) {
+    if (axios.isAxiosError(err)) {
+      if (err.response?.status === 404) {
+        throw new GuestUploadRefused('Files cannot be added to this ticket any more. The link may have been replaced, or attaching files may have been turned off.')
+      }
+      const message = err.response?.data?.error?.message
+      if (typeof message === 'string' && message) throw new GuestUploadRefused(message)
+    }
+    throw new GuestUploadRefused('The file could not be uploaded.')
+  }
+}
+
 export interface GuestTicketInput {
   subject: string
   description: string

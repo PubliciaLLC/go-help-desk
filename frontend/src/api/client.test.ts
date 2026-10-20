@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import type { AxiosError } from 'axios'
 import { api, extractError } from './client'
+import { DISMISS_PREFIX } from '@/lib/noticeDismissal'
 
 // The first tests in this codebase. client.ts is the deliberate starting point:
 // every API call in the app passes through it, it is 29 lines, and both pieces
@@ -92,6 +93,26 @@ describe('401 response interceptor', () => {
     err.response = { data: {}, status: 401, statusText: 'Unauthorized', headers: {}, config: {} as any }
     return err
   }
+
+  // A session that expires leaves the tab open; the next sign-in there may be
+  // a different administrator, who must see the notices again.
+  it('clears hidden server notices on 401, before the redirect', async () => {
+    sessionStorage.setItem(DISMISS_PREFIX + 'passkeys|config|', '1')
+    stubLocation('/tickets')
+    await expect(rejectionHandler()(unauthorized())).rejects.toBeDefined()
+    expect(sessionStorage.getItem(DISMISS_PREFIX + 'passkeys|config|')).toBeNull()
+    expect(assigned).toBe('/login')
+  })
+
+  it('keeps hidden notices when a 401 only refuses a mistyped code', async () => {
+    sessionStorage.setItem(DISMISS_PREFIX + 'passkeys|config|', '1')
+    stubLocation('/account')
+    const err = unauthorized()
+    err.response!.data = { error: { code: 'invalid_mfa_code' } }
+    await expect(rejectionHandler()(err)).rejects.toBeDefined()
+    expect(sessionStorage.getItem(DISMISS_PREFIX + 'passkeys|config|')).toBe('1')
+    sessionStorage.clear()
+  })
 
   it('redirects to /login on 401', async () => {
     stubLocation('/tickets')

@@ -7,6 +7,8 @@ import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { LifetimeSlider } from '@/components/admin/LifetimeSlider'
+import { GuestSizeSlider } from '@/components/admin/GuestSizeSlider'
+import { BoundedNumberInput } from '@/components/admin/BoundedNumberInput'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Spinner } from '@/components/ui/spinner'
@@ -16,9 +18,10 @@ import { fmtMin } from '@/lib/format'
 
 // ── Shared primitives ─────────────────────────────────────────────────────────
 
-function Toggle({ checked, onChange, label }: {
+function Toggle({ checked, onChange, label, disabled }: {
   checked: boolean
   onChange: (v: boolean) => void
+  disabled?: boolean
   /** The switch's own name, where the surrounding row does not supply one. */
   label?: string
 }) {
@@ -28,9 +31,10 @@ function Toggle({ checked, onChange, label }: {
       role="switch"
       aria-checked={checked}
       aria-label={label}
+      disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cn(
-        'relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2',
+        'relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center disabled:cursor-not-allowed disabled:opacity-50 rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2',
         checked ? 'bg-blue-600' : 'bg-gray-200'
       )}
     >
@@ -78,12 +82,14 @@ function SettingRow({
   children: React.ReactNode
 }) {
   return (
-    <div className="flex items-center justify-between gap-8 px-5 py-4">
+    // Stacked below sm: a control that cannot shrink (a select, a number box)
+    // beside its label is wider than a phone's content box (#522).
+    <div className="flex flex-col gap-2 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-8">
       <div className="min-w-0 flex-1">
         <div className="text-sm font-medium text-gray-900">{label}</div>
         {description && <div className="mt-0.5 text-sm text-gray-500">{description}</div>}
       </div>
-      <div className="shrink-0">{children}</div>
+      <div className="min-w-0 max-w-full sm:shrink-0">{children}</div>
     </div>
   )
 }
@@ -184,7 +190,7 @@ function SAMLSection() {
 
   return (
     <div className="space-y-4 px-5 py-4">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <span className={cn(
           'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium',
           saml?.configured ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'
@@ -195,7 +201,7 @@ function SAMLSection() {
           <span className="text-xs text-gray-500">
             SP metadata:{' '}
             <button
-              className="font-mono text-blue-600 underline decoration-dotted hover:decoration-solid"
+              className="font-mono text-left text-blue-600 underline decoration-dotted hover:decoration-solid wrap-anywhere"
               onClick={() => navigator.clipboard.writeText(spMetadataURL)}
               title="Copy to clipboard"
             >
@@ -268,7 +274,7 @@ function SAMLSection() {
         </label>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={() => certFileRef.current?.click()}>Upload .pem / .crt</Button>
-          {certPEM && <span className="text-xs text-gray-500 truncate max-w-xs font-mono">{certPEM.split('\n')[0]}…</span>}
+          {certPEM && <span title={certPEM} className="text-xs text-gray-500 truncate max-w-xs font-mono">{certPEM.split('\n')[0]}…</span>}
         </div>
         <input ref={certFileRef} type="file" accept=".pem,.crt,.cer" className="hidden"
           onChange={(e) => { const f = e.target.files?.[0]; if (f) readFile(f, setCertPEM) }} />
@@ -370,7 +376,7 @@ function OIDCSection() {
 
   return (
     <div className="space-y-4 px-5 py-4">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <span className={cn(
           'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium',
           configured ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'
@@ -383,7 +389,7 @@ function OIDCSection() {
             Redirect URL:{' '}
             <button
               type="button"
-              className="font-mono text-blue-600 underline decoration-dotted hover:decoration-solid"
+              className="font-mono text-left text-blue-600 underline decoration-dotted hover:decoration-solid wrap-anywhere"
               onClick={() => navigator.clipboard.writeText(redirectURL)}
               title="Copy to clipboard"
             >
@@ -451,7 +457,7 @@ function OIDCSection() {
             Redirect URL
           </label>
           <div className="flex items-center gap-2">
-            <div className="w-full max-w-lg rounded border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-sm text-gray-600">
+            <div className="min-w-0 w-full max-w-lg rounded border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-sm text-gray-600 wrap-anywhere">
               {redirectURL}
             </div>
             <Button
@@ -552,6 +558,59 @@ function GeneralPanel({
           <Toggle checked={bool('guest_submission_enabled')} onChange={(v) => setBool('guest_submission_enabled', v)} />
         </SettingRow>
         <EmailStatusNote on={bool('guest_submission_enabled')} />
+        {/* Dependent on guest submission (#445): shown under it, unavailable
+            while it is off, and the server ignores it in that state too. */}
+        <SettingRow
+          label="Guests may attach files"
+          description="Let a guest add files to their ticket from the link they were emailed. Off by default, and it only takes effect while guest submission is on. Uploads are scanned and held to the same rules as everyone else's, and are download-only."
+        >
+          <Toggle
+            label="Guests may attach files"
+            checked={bool('guest_attachments_enabled')}
+            disabled={!bool('guest_submission_enabled')}
+            onChange={(v) => setBool('guest_attachments_enabled', v)}
+          />
+        </SettingRow>
+        <div className="border-t px-5 py-4 space-y-2">
+          <div className="text-sm text-gray-500">
+            The largest file a guest may attach. It can never exceed this instance&apos;s own attachment maximum of 25 MB.
+          </div>
+          <GuestSizeSlider
+            value={has('guest_attachment_max_mb') ? num('guest_attachment_max_mb') : undefined}
+            onChange={(v) => setNum('guest_attachment_max_mb', v)}
+            instanceMaxMB={25}
+            disabled={!bool('guest_submission_enabled') || !bool('guest_attachments_enabled')}
+          />
+          {!bool('guest_submission_enabled') && (
+            <p className="text-xs text-gray-500">Unavailable while guest submission is off.</p>
+          )}
+        </div>
+        <div className="border-t px-5 py-4 space-y-4">
+          <div className="text-sm text-gray-500">
+            How much one guest can put on a ticket. The cap counts only files guests attached; staff files do not count
+            toward it. The hourly figure is per guest link, so one guest does not use up another&apos;s.
+          </div>
+          <div className="flex flex-wrap gap-8">
+            <BoundedNumberInput
+              label="Most files a guest can attach to one ticket"
+              hint="1 to 50. Default 5."
+              min={1}
+              max={50}
+              value={has('guest_attachment_max_per_ticket') ? num('guest_attachment_max_per_ticket') : 5}
+              onChange={(v) => setNum('guest_attachment_max_per_ticket', v)}
+              disabled={!bool('guest_submission_enabled') || !bool('guest_attachments_enabled')}
+            />
+            <BoundedNumberInput
+              label="Uploads per guest link per hour"
+              hint="1 to 30. Default 3."
+              min={1}
+              max={30}
+              value={has('guest_attachment_uploads_per_hour') ? num('guest_attachment_uploads_per_hour') : 3}
+              onChange={(v) => setNum('guest_attachment_uploads_per_hour', v)}
+              disabled={!bool('guest_submission_enabled') || !bool('guest_attachments_enabled')}
+            />
+          </div>
+        </div>
       </Section>
 
       <Section title="Ticket lifecycle">
@@ -937,11 +996,15 @@ function AuthPanel({
               aria-label="Days before an old password must be reset"
               // 30 until the operator edits it, because 30 is what the server
               // uses when nothing is stored. The upper clamp keeps a typo from
-              // being a value the server refuses; there is no lower clamp, so
-              // clearing the field to retype does not re-inject a minimum
-              // between digits (see the audit retention field).
+              // being a value the server refuses. The lower clamp (1) waits for
+              // the operator to leave the field: clamping on every keystroke
+              // would re-inject a minimum between digits when the field is
+              // cleared to retype (see the audit retention field).
               value={has('password_rehash_grace_days') ? num('password_rehash_grace_days') : 30}
               onChange={(e) => setNum('password_rehash_grace_days', Math.min(365, Math.max(0, parseInt(e.target.value, 10) || 0)))}
+              onBlur={() => {
+                if (has('password_rehash_grace_days') && num('password_rehash_grace_days') < 1) setNum('password_rehash_grace_days', 1)
+              }}
             />
             <span className="text-sm text-gray-500">days</span>
           </div>
@@ -1915,7 +1978,7 @@ function AttachmentsPanel({
           description="Every upload is compared against the extension it claims. A file that turns out to be a type this instance does not accept is either turned away or stored wrapped in a ZIP named suspicious-<crc32>.zip and flagged on the ticket. One whose real type is on the list above is flagged and stored under its own name whichever you choose."
         >
           <Select
-            className="w-72"
+            className="w-72 max-w-full"
             aria-label="When a file’s content contradicts its name"
             value={mismatchHandling}
             onChange={(e) => setStr('attachment_mismatch_handling', e.target.value)}
@@ -1956,7 +2019,7 @@ function AttachmentsPanel({
             value={scanAddress}
             onChange={(e) => setStr('attachment_scan_address', e.target.value)}
             placeholder="tcp://clamav:3310"
-            className="w-72 font-mono"
+            className="w-72 max-w-full font-mono"
             aria-label="Scanner address"
           />
         </SettingRow>
@@ -1966,7 +2029,7 @@ function AttachmentsPanel({
           description="Uploads are passed to the configured ClamAV daemon before they are stored."
         >
           <Select
-            className="w-72"
+            className="w-72 max-w-full"
             aria-label="Scan attachments for malware"
             value={scanPolicy}
             onChange={(e) => setStr('attachment_scan_policy', e.target.value)}
@@ -1992,7 +2055,7 @@ function AttachmentsPanel({
           description="Quarantined files are stored inside a password-protected ZIP (password: infected), labelled on the ticket, and confirmed before download. For an IT security team triaging a reported sample; an ordinary help desk should leave this on Refuse."
         >
           <Select
-            className="w-72"
+            className="w-72 max-w-full"
             aria-label="When a scan finds malware"
             value={handling}
             onChange={(e) => setStr('attachment_infected_handling', e.target.value)}
@@ -2059,7 +2122,7 @@ function AttachmentsPanel({
           description="How long a clean, never-seen or unscanned verdict is trusted before it is looked up again. A detection is never re-checked — engines do not un-flag a file — and staff can ask again by hand once every seven days whatever this says."
         >
           <Select
-            className="w-64"
+            className="w-64 max-w-full"
             aria-label="Re-check stored verdicts"
             value={refresh}
             onChange={(e) => setStr('attachment_reputation_refresh', e.target.value)}
@@ -2225,7 +2288,7 @@ export function SettingsPage() {
 
         {/* Tab bar */}
         <div className="border-b">
-          <nav className="-mb-px flex gap-6">
+          <nav className="-mb-px flex gap-6 overflow-x-auto">
             {TABS.map((tab) => (
               <button
                 key={tab.id}

@@ -22,15 +22,27 @@ const (
 	KeyOIDCClientSecret       = "oidc_client_secret"
 	KeyOIDCRedirectURL        = "oidc_redirect_url"
 	KeyGuestSubmissionEnabled = "guest_submission_enabled"
-	KeySLAEnabled             = "sla_enabled"
-	KeyMFAEnabled             = "mfa_enabled"
-	KeyMFAEnforcedRoles       = "mfa_enforced_roles"
-	KeyReopenWindowDays       = "reopen_window_days"
-	KeyReopenTargetStatusName = "reopen_target_status_name"
-	KeyAttachmentScanPolicy   = "attachment_scan_policy" // off | required | permissive
-	KeyAttachmentScanAddress  = "attachment_scan_address"
-	KeySiteName               = "site_name"
-	KeySiteLogoURL            = "site_logo_url"
+	// Whether a guest may attach files from the web page, and how big each may
+	// be in MB (#445). Both widen what anonymous people can do, so both are
+	// session-only (AuthCriticalKeys). The first only takes effect while
+	// guest submission is on; see Service.GuestAttachmentsEnabled.
+	KeyGuestAttachmentsEnabled = "guest_attachments_enabled" // bool, default off
+	KeyGuestAttachmentMaxMB    = "guest_attachment_max_mb"   // int, 1 to 100, default 5
+	// How many files guests may attach to one ticket, and how many uploads one
+	// guest link may make per hour (#445). Small by default and for the same
+	// reason as the other two: they bound what anonymous people can put on disk
+	// and send through the scanner.
+	KeyGuestAttachmentMaxPerTicket   = "guest_attachment_max_per_ticket"   // int, 1 to 50, default 5
+	KeyGuestAttachmentUploadsPerHour = "guest_attachment_uploads_per_hour" // int, 1 to 30, default 3
+	KeySLAEnabled                    = "sla_enabled"
+	KeyMFAEnabled                    = "mfa_enabled"
+	KeyMFAEnforcedRoles              = "mfa_enforced_roles"
+	KeyReopenWindowDays              = "reopen_window_days"
+	KeyReopenTargetStatusName        = "reopen_target_status_name"
+	KeyAttachmentScanPolicy          = "attachment_scan_policy" // off | required | permissive
+	KeyAttachmentScanAddress         = "attachment_scan_address"
+	KeySiteName                      = "site_name"
+	KeySiteLogoURL                   = "site_logo_url"
 
 	// Whether a Closed ticket can be force-reopened at all and, if so, by whom:
 	// off | admin | staff_admin (#349). Closed is terminal by default; this is
@@ -288,6 +300,42 @@ func ValidAPIKeyMaxLifetime(v int) bool {
 	return v == APIKeyNoLimit || (v >= 1 && v <= APIKeyMaxLifetimeMax)
 }
 
+// A guest's per-file maximum in MB (#445): the slider runs from Min to Max.
+// The instance-wide attachment maximum is lower than Max today (25 MB) and
+// wins where it is; the slider's range is the administrator's intent, not a
+// promise the server can keep.
+const (
+	GuestAttachmentMaxMBDefault = 5
+	GuestAttachmentMaxMBMin     = 1
+	GuestAttachmentMaxMBMax     = 100
+)
+
+// The per-ticket cap and the hourly rate for guest uploads (#445).
+const (
+	GuestAttachmentMaxPerTicketDefault = 5
+	GuestAttachmentMaxPerTicketMin     = 1
+	GuestAttachmentMaxPerTicketMax     = 50
+
+	GuestAttachmentUploadsPerHourDefault = 3
+	GuestAttachmentUploadsPerHourMin     = 1
+	GuestAttachmentUploadsPerHourMax     = 30
+)
+
+// ValidGuestAttachmentMaxPerTicket reports whether v is in the cap's range.
+func ValidGuestAttachmentMaxPerTicket(v int) bool {
+	return v >= GuestAttachmentMaxPerTicketMin && v <= GuestAttachmentMaxPerTicketMax
+}
+
+// ValidGuestAttachmentUploadsPerHour reports whether v is in the rate's range.
+func ValidGuestAttachmentUploadsPerHour(v int) bool {
+	return v >= GuestAttachmentUploadsPerHourMin && v <= GuestAttachmentUploadsPerHourMax
+}
+
+// ValidGuestAttachmentMaxMB reports whether v is on the slider.
+func ValidGuestAttachmentMaxMB(v int) bool {
+	return v >= GuestAttachmentMaxMBMin && v <= GuestAttachmentMaxMBMax
+}
+
 // The N in "after N days" for password_rehash_grace_days.
 const (
 	PasswordRehashGraceDefault = 30
@@ -384,7 +432,9 @@ func KnownKeys() []string {
 	return []string{
 		KeySAMLEnabled, KeySAMLMetadataURL, KeySAMLMetadataXML, KeySAMLCertPEM, KeySAMLKeyPEM,
 		KeyOIDCEnabled, KeyOIDCIssuerURL, KeyOIDCClientID, KeyOIDCClientSecret, KeyOIDCRedirectURL,
-		KeyGuestSubmissionEnabled, KeySLAEnabled, KeyMFAEnabled, KeyMFAEnforcedRoles,
+		KeyGuestSubmissionEnabled, KeyGuestAttachmentsEnabled, KeyGuestAttachmentMaxMB,
+		KeyGuestAttachmentMaxPerTicket, KeyGuestAttachmentUploadsPerHour,
+		KeySLAEnabled, KeyMFAEnabled, KeyMFAEnforcedRoles,
 		KeyReopenWindowDays, KeyReopenTargetStatusName,
 		KeyAttachmentScanPolicy, KeyAttachmentScanAddress,
 		KeySiteName, KeySiteLogoURL,
@@ -438,6 +488,11 @@ func AuthCriticalKeys() []string {
 		// of comparable weight is on this list; a leaked API key should not
 		// be able to open either exposure. See #177.
 		KeyGuestSubmissionEnabled,
+		// What those anonymous people may upload, and how much (#445). Opening
+		// it is the same kind of exposure as opening submission itself, so a
+		// leaked API key must not be able to do it and then use it.
+		KeyGuestAttachmentsEnabled, KeyGuestAttachmentMaxMB,
+		KeyGuestAttachmentMaxPerTicket, KeyGuestAttachmentUploadsPerHour,
 		// Where the virus scanner lives is a route to disabling scanning
 		// entirely: point it at a daemon that answers OK to everything and
 		// every upload passes. A leaked API key should not be able to do that,

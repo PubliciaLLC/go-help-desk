@@ -1,5 +1,6 @@
 import axios from 'axios'
 import type { ApiError } from './types'
+import { clearDismissedNotices } from '@/lib/noticeDismissal'
 
 export const api = axios.create({
   baseURL: '/api/v1',
@@ -11,6 +12,8 @@ api.interceptors.response.use(
   (res) => res,
   (err) => {
     if (err.response?.status === 401 && !isRefusedProof(err)) {
+      // The session is over; whoever signs in next in this tab starts fresh.
+      clearDismissedNotices()
       // Redirect to login unless already there.
       if (!window.location.pathname.startsWith('/login')) {
         window.location.href = '/login'

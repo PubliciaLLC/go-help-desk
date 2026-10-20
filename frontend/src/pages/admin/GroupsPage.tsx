@@ -43,14 +43,14 @@ function GroupNameEditor({ group, onSaved }: { group: Group; onSaved: () => void
 
   if (!editing) {
     return (
-      <div className="flex items-center gap-2">
-        <div>
+      <div className="flex min-w-0 items-center gap-2">
+        <div className="min-w-0 wrap-anywhere">
           <div className="font-medium text-gray-900">{group.name}</div>
           {group.description && <div className="text-xs text-gray-500">{group.description}</div>}
         </div>
         <button
           onClick={() => setEditing(true)}
-          className="text-gray-400 hover:text-gray-600 ml-1"
+          className="shrink-0 text-gray-400 hover:text-gray-600 ml-1"
           title="Edit group"
         >
           <PencilIcon className="h-3.5 w-3.5" />
@@ -60,7 +60,7 @@ function GroupNameEditor({ group, onSaved }: { group: Group; onSaved: () => void
   }
 
   return (
-    <div className="space-y-1">
+    <div className="min-w-0 space-y-1">
       <Input
         value={name}
         onChange={(e) => setName(e.target.value)}
@@ -133,15 +133,15 @@ function MembersPanel({ group, allUsers }: { group: Group; allUsers: User[] }) {
       ) : (
         <ul className="space-y-1">
           {members.map((m) => (
-            <li key={m.id} className="flex items-center justify-between text-sm">
-              <span>
+            <li key={m.id} className="flex items-center justify-between gap-2 text-sm">
+              <span className="min-w-0 wrap-anywhere">
                 {m.display_name}
                 <span className="ml-1 text-xs text-gray-400">{m.email}</span>
               </span>
               <button
                 onClick={() => removeMutation.mutate(m.id)}
                 disabled={removeMutation.isPending}
-                className="text-gray-400 hover:text-red-500"
+                className="shrink-0 text-gray-400 hover:text-red-500"
                 title="Remove member"
               >
                 <XIcon className="h-3.5 w-3.5" />
@@ -154,7 +154,7 @@ function MembersPanel({ group, allUsers }: { group: Group; allUsers: User[] }) {
       {eligible.length > 0 && (
         <div className="flex gap-2">
           <Select
-            className="h-8 text-xs flex-1"
+            className="h-8 min-w-0 text-xs flex-1"
             value={selectedUserId}
             onChange={(e) => setSelectedUserId(e.target.value)}
           >
@@ -273,8 +273,8 @@ export function GroupsPage() {
             <CardTitle className="text-sm">New group</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            <div className="flex gap-3">
-              <div className="flex-1 space-y-1">
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <div className="min-w-0 flex-1 space-y-1">
                 <Label className="text-xs">Name</Label>
                 <Input
                   placeholder="e.g. Tier 1 Support"
@@ -282,7 +282,7 @@ export function GroupsPage() {
                   onChange={(e) => setNewName(e.target.value)}
                 />
               </div>
-              <div className="flex-1 space-y-1">
+              <div className="min-w-0 flex-1 space-y-1">
                 <Label className="text-xs">Description (optional)</Label>
                 <Input
                   placeholder="e.g. First-line help desk staff"

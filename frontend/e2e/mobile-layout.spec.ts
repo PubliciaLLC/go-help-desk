@@ -1,6 +1,9 @@
 import { test, expect, type Locator, type Page } from '@playwright/test'
 import {
   mockApi,
+  mockAdminApi,
+  LONG_USER,
+  SAML_CERT,
   DESCRIPTION_PROSE,
   DESCRIPTION_URL,
   ME_ADMIN,
@@ -24,7 +27,8 @@ import {
 // viewport. DESIGN.md's Small screens section states the rule this pins:
 // no horizontal scrolling at 390 CSS pixels, and tap targets large enough
 // to hit with a thumb, on the four in-scope pages (Dashboard, TicketList,
-// TicketDetail, NewTicket). Admin pages are explicitly out of scope.
+// TicketDetail, NewTicket). The admin pages are covered by the #522 blocks at
+// the end of this file, at 320 and 375 rather than 390.
 //
 // iPhone 13: 390x844 CSS pixels. This is the exact viewport DESIGN.md and
 // issue #296 measured against.
@@ -888,4 +892,269 @@ test.describe('#517 round 4: sign-in page with a long site name', () => {
       await documentFits(page, 320)
     })
   }
+})
+
+// #522: the admin pages, at the narrowest phone (320) and a common one (375),
+// with 300-character unbroken names, descriptions and URLs, and with short data
+// (several pages overflowed with nothing long in them).
+//
+// Three checks, because each catches what the others cannot:
+//  - main's scrollWidth: #522 saw main at 2433px on Webhooks.
+//  - the document's scrollWidth: it saw the document at 557px there.
+//  - no element sticks out past main's right edge unless an overflow-x
+//    auto/scroll box sits between it and main. scrollWidth alone is blind to
+//    overflow-hidden: a table inside one reports a fine width while its
+//    action buttons are cut off and cannot be reached on a phone.
+async function noSidewaysScroll(page: Page, width: number) {
+  const m = await page.evaluate(() => {
+    const main = document.querySelector('main')
+    if (!main) throw new Error('no <main> element found')
+    const edge = main.getBoundingClientRect().right
+    const clipped: string[] = []
+    for (const el of Array.from(main.querySelectorAll('*'))) {
+      const r = el.getBoundingClientRect()
+      // Zero-size and 1px boxes are display:none / sr-only, not visible content.
+      if (r.width <= 1 || r.height <= 1 || r.right <= edge + 1) continue
+      let reachable = false
+      for (let p = el.parentElement; p && p !== main; p = p.parentElement) {
+        const ox = getComputedStyle(p).overflowX
+        if (ox === 'auto' || ox === 'scroll') { reachable = true; break }
+      }
+      if (!reachable) {
+        clipped.push(`<${el.tagName.toLowerCase()} class="${(el.getAttribute('class') ?? '').slice(0, 60)}"> right=${Math.round(r.right)} "${(el.textContent ?? '').trim().slice(0, 20)}"`)
+      }
+    }
+    return {
+      main: main.scrollWidth, mainBox: main.clientWidth,
+      doc: document.documentElement.scrollWidth, docBox: document.documentElement.clientWidth,
+      clipped: clipped.slice(0, 5),
+    }
+  })
+  expect(m.main, `main is ${m.main}px wide in a ${m.mainBox}px box at ${width}px`).toBeLessThanOrEqual(m.mainBox)
+  expect(m.doc, `the document is ${m.doc}px wide in a ${m.docBox}px viewport at ${width}px`).toBeLessThanOrEqual(m.docBox)
+  expect(m.clipped, `elements past main's right edge with no scrolling box around them at ${width}px`).toEqual([])
+}
+
+// Opens every node of the category tree, one level per pass.
+async function expandTree(page: Page) {
+  for (let pass = 0; pass < 4; pass++) {
+    const closed = page.getByRole('button', { name: 'Expand' })
+    if ((await closed.count()) === 0) return
+    await closed.first().click()
+    await page.waitForLoadState('networkidle')
+  }
+}
+
+const ADMIN_PAGES: { name: string; path: string; ready: string | RegExp; short?: boolean; tab?: string; act?: (page: Page) => Promise<void> }[] = [
+  { name: 'users', path: '/admin/users', ready: 'Users' },
+  { name: 'users (short data)', path: '/admin/users', ready: 'Users', short: true },
+  { name: 'user detail', path: `/admin/users/${LONG_USER.id}`, ready: 'NNNNNNNN' },
+  { name: 'groups', path: '/admin/groups', ready: 'Groups' },
+  { name: 'roles', path: '/admin/roles', ready: 'Roles' },
+  { name: 'categories', path: '/admin/categories', ready: 'Categories' },
+  { name: 'statuses', path: '/admin/statuses', ready: 'Statuses' },
+  { name: 'tags', path: '/admin/tags', ready: 'Tags' },
+  { name: 'canned responses', path: '/admin/canned-responses', ready: /Canned/ },
+  { name: 'custom fields', path: '/admin/custom-fields', ready: /Custom/ },
+  { name: 'API keys', path: '/admin/api-keys', ready: /API keys/i },
+  { name: 'OAuth clients', path: '/admin/oauth-clients', ready: /OAuth/ },
+  { name: 'webhooks', path: '/admin/webhooks', ready: /Webhooks/ },
+  { name: 'routing', path: '/admin/routing', ready: /Routing/ },
+  { name: 'audit', path: '/admin/audit', ready: /Audit/ },
+  { name: 'statuses (short data)', path: '/admin/statuses', ready: 'Statuses', short: true },
+  { name: 'tags (short data)', path: '/admin/tags', ready: 'Tags', short: true },
+  { name: 'canned responses (short data)', path: '/admin/canned-responses', ready: /Canned/, short: true },
+  { name: 'custom fields (short data)', path: '/admin/custom-fields', ready: /Custom/, short: true },
+  { name: 'API keys (short data)', path: '/admin/api-keys', ready: /API keys/i, short: true },
+  { name: 'OAuth clients (short data)', path: '/admin/oauth-clients', ready: /OAuth/, short: true },
+  { name: 'audit (short data)', path: '/admin/audit', ready: /Audit/, short: true },
+  { name: 'roles (short data)', path: '/admin/roles', ready: 'Roles', short: true },
+  { name: 'categories (short data)', path: '/admin/categories', ready: 'Categories', short: true },
+  { name: 'categories (short data): tree expanded', path: '/admin/categories', ready: 'Categories', short: true, act: expandTree },
+  { name: 'users: add form', path: '/admin/users', ready: 'Users', act: (p) => p.getByRole('button', { name: 'Add User' }).click() },
+  { name: 'groups: members open', path: '/admin/groups', ready: 'Groups', act: (p) => p.getByRole('button', { name: 'Members' }).first().click() },
+  { name: 'groups: name editor open', path: '/admin/groups', ready: 'Groups', act: (p) => p.getByTitle('Edit group').first().click() },
+  { name: 'categories: tree expanded', path: '/admin/categories', ready: 'Categories', act: expandTree },
+  { name: 'webhooks: edit form', path: '/admin/webhooks', ready: /Webhooks/, act: (p) => p.getByRole('button', { name: 'Edit' }).first().click() },
+  { name: 'webhooks: history open', path: '/admin/webhooks', ready: /Webhooks/, act: (p) => p.getByRole('button', { name: 'History' }).first().click() },
+  { name: 'settings: general', path: '/admin/settings', ready: 'Settings' },
+  { name: 'settings: branding', path: '/admin/settings', ready: 'Settings', tab: 'Branding' },
+  { name: 'settings: authentication', path: '/admin/settings', ready: 'Settings', tab: 'Authentication' },
+  { name: 'settings: features (SLA)', path: '/admin/settings', ready: 'Settings', tab: 'Features' },
+  { name: 'settings: email', path: '/admin/settings', ready: 'Settings', tab: 'Email' },
+  { name: 'settings: attachments', path: '/admin/settings', ready: 'Settings', tab: 'Attachments' },
+]
+
+test.describe('#522: admin pages fit a phone', () => {
+  for (const width of [320, 375]) {
+    for (const p of ADMIN_PAGES) {
+      test(`${p.name}: ${width}px`, async ({ page }) => {
+        await mockAdminApi(page, { short: p.short })
+        await page.setViewportSize({ width, height: 844 })
+        await page.goto(p.path)
+        await expect(page.getByRole('heading', { level: 1 }).filter({ hasText: p.ready })).toBeVisible()
+        if (p.tab) await page.getByRole('button', { name: p.tab, exact: true }).click()
+        // Let the queries settle so the long data is on screen before measuring.
+        await page.waitForLoadState('networkidle')
+        if (p.act) await p.act(page)
+        await noSidewaysScroll(page, width)
+      })
+    }
+  }
+})
+
+// #522: the SAML certificate line is cut to its first line and ends in an
+// ellipsis, so the full PEM has to be on hover. The private key line beside it
+// also shows only its first line and ends in "...", but gets no title: its full
+// text is the secret and must not sit in an attribute.
+test.describe('#522: the truncated SAML certificate line carries its full text', () => {
+  test('title holds the whole PEM', async ({ page }) => {
+    await mockAdminApi(page)
+    await page.goto('/admin/settings')
+    await page.getByRole('button', { name: 'Authentication', exact: true }).click()
+    const line = page.getByText('-----BEGIN CERTIFICATE-----…', { exact: true })
+    await expect(line).toBeVisible()
+    await expect(line).toHaveAttribute('title', SAML_CERT)
+  })
+
+  test('the private key line has no title', async ({ page }) => {
+    await mockAdminApi(page)
+    await page.goto('/admin/settings')
+    await page.getByRole('button', { name: 'Authentication', exact: true }).click()
+    await page.locator('input[type="file"][accept=".pem,.key"]').setInputFiles({
+      name: 'sp.key',
+      mimeType: 'application/x-pem-file',
+      buffer: Buffer.from('-----BEGIN PRIVATE KEY-----\nc2VjcmV0\n-----END PRIVATE KEY-----\n'),
+    })
+    const line = page.getByText('-----BEGIN PRIVATE KEY-----…', { exact: true })
+    await expect(line).toBeVisible()
+    await expect(line).not.toHaveAttribute('title')
+  })
+})
+
+// #522: the phone fix to these headers must not move the desktop layout. With
+// flex-wrap the button dropped under the description at every width, because
+// the description's natural width is always wider than the room beside it.
+test.describe('#522: the admin header button stays beside the heading on a desktop', () => {
+  const headers = [
+    { path: '/admin/categories', button: 'New Category' },
+    { path: '/admin/statuses', button: 'New Status' },
+    { path: '/admin/custom-fields', button: 'New Field' },
+  ]
+  for (const h of headers) {
+    for (const width of [1280, 1920]) {
+      test(`${h.path}: ${width}px`, async ({ page }) => {
+        await mockAdminApi(page)
+        await page.setViewportSize({ width, height: 900 })
+        await page.goto(h.path)
+        const title = await page.getByRole('heading', { level: 1 }).boundingBox()
+        const button = await page.getByRole('button', { name: h.button }).boundingBox()
+        if (!title || !button) throw new Error('header not rendered')
+        expect(Math.abs(button.y - title.y), `${h.button} is not on the heading's row`).toBeLessThanOrEqual(4)
+      })
+    }
+  }
+})
+
+// The server-warning banners sit ABOVE <main>, so every check above that
+// measures main is blind to them. A phone showed the passkeys banner's
+// reset-factors command pushing the page wider than the screen, cutting off
+// the "New Ticket" button and the banner's own text. These tests render BOTH
+// notices an administrator is most likely to see and measure the whole
+// document, not main.
+const NOTICE_WIDTHS = [320, 375]
+
+async function mockBothNotices(page: Page) {
+  await page.route('**/api/v1/admin/security-warnings', (route) =>
+    route.fulfill({
+      json: {
+        insecure_secrets: [],
+        attachment_scanning: { policy: 'off', configured: false, reachable: false, effect: '' },
+        attachment_storage: { writable: false, problem: 'permission denied' },
+        // An unbroken host, as a real BASE_URL can be: Safari does not break
+        // inside the hyphenated reset-factors command either, so the banner must
+        // wrap anywhere rather than rely on break opportunities.
+        passkeys: { available: false, reason: `BASE_URL host ${'h'.repeat(120)}.internal has no public suffix` },
+      },
+    }),
+  )
+}
+
+// Nothing in the document, banner included, may stick out past the viewport
+// unless an overflow-x box sits between it and the edge.
+async function nothingPastTheViewport(page: Page, width: number) {
+  const m = await page.evaluate(() => {
+    const vw = document.documentElement.clientWidth
+    const clipped: string[] = []
+    for (const el of Array.from(document.body.querySelectorAll('*'))) {
+      const r = el.getBoundingClientRect()
+      if (r.width <= 1 || r.height <= 1 || (r.right <= vw + 1 && r.left >= -1)) continue
+      let reachable = false
+      for (let p = el.parentElement; p; p = p.parentElement) {
+        const ox = getComputedStyle(p).overflowX
+        if (ox === 'auto' || ox === 'scroll') { reachable = true; break }
+      }
+      if (!reachable) clipped.push(`<${el.tagName.toLowerCase()}> left=${Math.round(r.left)} right=${Math.round(r.right)} "${(el.textContent ?? '').trim().slice(0, 24)}"`)
+    }
+    return { vw, doc: document.documentElement.scrollWidth, clipped: clipped.slice(0, 5) }
+  })
+  expect(m.doc, `the document is ${m.doc}px wide in a ${m.vw}px viewport at ${width}px`).toBeLessThanOrEqual(m.vw)
+  expect(m.clipped, `elements outside the ${width}px screen`).toEqual([])
+}
+
+test.describe('server warnings fit a phone, collapsed and expanded', () => {
+  for (const width of NOTICE_WIDTHS) {
+    for (const target of [
+      { name: 'dashboard', path: '/dashboard' },
+      { name: 'an admin page', path: '/admin/users' },
+    ]) {
+      for (const expanded of [false, true]) {
+        test(`${target.name}: ${width}px, ${expanded ? 'expanded' : 'collapsed'}`, async ({ page }) => {
+          // The dashboard uses short data: with mockAdminApi its stat cards show a
+          // 300-character category name, an unrelated overflow that would mask
+          // what this block measures.
+          if (target.path === '/dashboard') await mockApi(page, { me: ME_ADMIN })
+          else await mockAdminApi(page)
+          await mockBothNotices(page)
+          await page.setViewportSize({ width, height: 844 })
+          await page.goto(target.path)
+          await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+          await page.waitForLoadState('networkidle')
+          // Measured before any click: the banner must fit as the page loads it.
+          await nothingPastTheViewport(page, width)
+          if (expanded) {
+            await page.getByRole('button', { name: /details/i }).click()
+            await expect(page.getByText(/reset-factors/)).toBeVisible()
+            await nothingPastTheViewport(page, width)
+            await noSidewaysScroll(page, width)
+          } else {
+            // One slim bar, not a stack of paragraphs.
+            await expect(page.getByText(/2 server problems need attention/)).toBeVisible()
+            await expect(page.getByText(/reset-factors/)).toBeHidden()
+            const bar = await page.getByRole('button', { name: /details/i }).boundingBox()
+            expect(bar!.height, 'the collapsed bar is a single slim line').toBeLessThan(60)
+          }
+          await noSidewaysScroll(page, width)
+        })
+      }
+    }
+  }
+})
+
+// A touch screen reports a coarse pointer; Hide must be a thumb-sized target there.
+test.describe('server warnings: Hide is a thumb-sized target on a touch screen', () => {
+  test.use({ hasTouch: true, isMobile: true })
+
+  test('375px', async ({ page }) => {
+    await mockApi(page, { me: ME_ADMIN })
+    await mockBothNotices(page)
+    await page.setViewportSize({ width: 375, height: 844 })
+    await page.goto('/dashboard')
+    await page.getByRole('button', { name: /details/i }).click()
+    for (const hide of await page.getByRole('button', { name: /hide for this session/i }).all()) {
+      const box = await hide.boundingBox()
+      expect(box!.height, 'Hide is shorter than 44px').toBeGreaterThanOrEqual(44)
+      expect(box!.width, 'Hide is narrower than 44px').toBeGreaterThanOrEqual(44)
+    }
+  })
 })

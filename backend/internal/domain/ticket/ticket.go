@@ -243,7 +243,12 @@ type Attachment struct {
 	MimeType    string    `json:"mime_type"`
 	SizeBytes   int64     `json:"size_bytes"`
 	StoragePath string    `json:"-"` // never sent to clients
-	CreatedAt   time.Time `json:"created_at"`
+
+	// UploadedByGuest is true for a file a guest attached through their link
+	// (#445). The guest cap counts these and nothing else. Never sent to
+	// clients.
+	UploadedByGuest bool      `json:"-"`
+	CreatedAt       time.Time `json:"created_at"`
 
 	// What the upload actually was, recorded when it arrived. All three are
 	// pointers because nil is a fact: the file predates the inspection, and
@@ -572,6 +577,10 @@ var (
 	// can already see it); never used to answer for a ticket the caller may not
 	// see, which gets the not-found refusal first.
 	ErrClosed = errors.New("ticket is closed")
+
+	// ErrGuestAttachmentLimit: the ticket already holds the most files a guest
+	// may attach (#445). 409.
+	ErrGuestAttachmentLimit = errors.New("ticket already has the most files a guest can attach")
 	// ErrReopenWindowClosed is separate from ErrForbidden on purpose: the
 	// caller owns the ticket and has the right to reopen it in general. What
 	// expired is the window, and telling them "you do not have permission"

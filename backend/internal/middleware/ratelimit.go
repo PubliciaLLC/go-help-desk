@@ -41,6 +41,10 @@ type RateLimiter struct {
 	counts  map[string]int
 	resetAt time.Time
 
+	// now is the clock; nil means time.Now. Only SetClock sets it, for tests
+	// that need to move past a window without sleeping through it.
+	now func() time.Time
+
 	// slots holds one queue per over-budget key. Created on first use and
 	// emptied as waiters leave, so an instance nobody is attacking carries
 	// nothing.
@@ -58,6 +62,22 @@ func NewRateLimiter(limit int, window time.Duration) *RateLimiter {
 	}
 }
 
+func (rl *RateLimiter) clock() time.Time {
+	if rl.now != nil {
+		return rl.now()
+	}
+	return time.Now()
+}
+
+// SetClock replaces the clock and starts a fresh window from it. For tests.
+func (rl *RateLimiter) SetClock(now func() time.Time) {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	rl.now = now
+	rl.counts = make(map[string]int)
+	rl.resetAt = now().Add(rl.window)
+}
+
 // Allow records an attempt against key and reports whether it may proceed.
 func (rl *RateLimiter) Allow(key string) bool {
 	ok, _ := rl.Take(key)
@@ -67,13 +87,22 @@ func (rl *RateLimiter) Allow(key string) bool {
 // Take is Allow that also says which window the attempt was counted in, for a
 // caller that may need to give it back with Refund.
 func (rl *RateLimiter) Take(key string) (ok bool, window time.Time) {
-	if rl.limit <= 0 {
+	return rl.TakeWithLimit(key, rl.limit)
+}
+
+// TakeWithLimit is Take with the budget supplied by the caller instead of
+// fixed at construction, for a limit an administrator can change while the
+// server runs (guest uploads per hour, #445). The window is still the
+// limiter's own, shared by every key. A limit of zero or less allows
+// everything.
+func (rl *RateLimiter) TakeWithLimit(key string, limit int) (ok bool, window time.Time) {
+	if limit <= 0 {
 		return true, time.Time{}
 	}
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	now := time.Now()
+	now := rl.clock()
 	if now.After(rl.resetAt) {
 		// Whole-map reset rather than per-key expiry: it bounds memory without
 		// a sweeper, which matters because keys are partly attacker-chosen
@@ -82,7 +111,7 @@ func (rl *RateLimiter) Take(key string) (ok bool, window time.Time) {
 		rl.resetAt = now.Add(rl.window)
 	}
 	rl.counts[key]++
-	return rl.counts[key] <= rl.limit, rl.resetAt
+	return rl.counts[key] <= limit, rl.resetAt
 }
 
 // Refund gives back one attempt Take counted against key, for a caller that
@@ -114,7 +143,7 @@ func (rl *RateLimiter) Remaining() time.Duration {
 	}
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
-	return max(0, time.Until(rl.resetAt))
+	return max(0, rl.resetAt.Sub(rl.clock()))
 }
 
 // Exceeded reports whether a key has already spent its budget, WITHOUT
@@ -129,7 +158,7 @@ func (rl *RateLimiter) Exceeded(key string) bool {
 	}
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
-	if time.Now().After(rl.resetAt) {
+	if rl.clock().After(rl.resetAt) {
 		return false
 	}
 	return rl.counts[key] >= rl.limit

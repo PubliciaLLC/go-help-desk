@@ -745,6 +745,7 @@ func TestGuest_TokenRoutesRefusedWhenSubmissionDisabled(t *testing.T) {
 	// Enable submission and seed a guest ticket.
 	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, true))
 	_, token := seedGuestTicket(t, h)
+	setGuestUploads(t, h, true) // off by default (#445)
 
 	// Verify all three token routes work with the setting ON.
 	getRes := h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket", token, nil)

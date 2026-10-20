@@ -19,7 +19,7 @@ import (
 // it, not only behind ProtectMCP (#481). The end-to-end cases, with the real
 // auth chain and both transports, are in internal/server.
 func TestHandler_OversizeBodyIs413WithJSONEnvelope(t *testing.T) {
-	s := New(nil, nil, nil, nil)
+	s := New(nil, nil, nil, nil, nil)
 	for _, path := range []string{"/mcp", "/mcp/"} {
 		t.Run(path, func(t *testing.T) {
 			rec := httptest.NewRecorder()
@@ -39,7 +39,7 @@ func TestHandler_OversizeBodyIs413WithJSONEnvelope(t *testing.T) {
 }
 
 func TestHandler_BodyAtTheLimitIsStillProcessed(t *testing.T) {
-	s := New(nil, nil, nil, nil)
+	s := New(nil, nil, nil, nil, nil)
 	pad := MaxRequestBody - len(strings.ReplaceAll(initializeBody, `"name":"t"`, `"name":""`))
 	body := strings.ReplaceAll(initializeBody, `"name":"t"`, `"name":"`+strings.Repeat("a", pad)+`"`)
 	require.Len(t, body, MaxRequestBody)
@@ -66,7 +66,7 @@ func (failingBody) Close() error { return nil }
 // this check the body is still capped by the read, so only this test notices it
 // going missing.
 func TestHandler_DeclaredLengthOverLimitIsRefusedUnread(t *testing.T) {
-	s := New(nil, nil, nil, nil)
+	s := New(nil, nil, nil, nil, nil)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 	req.Body = failingBody{t}
@@ -80,7 +80,7 @@ func TestHandler_DeclaredLengthOverLimitIsRefusedUnread(t *testing.T) {
 // With Expect: 100-continue the client waits for the server before sending the
 // body. The first response must be the 413, not "100 Continue".
 func TestHandler_Expect100ContinueGets413NotContinue(t *testing.T) {
-	ts := httptest.NewServer(New(nil, nil, nil, nil).Handler())
+	ts := httptest.NewServer(New(nil, nil, nil, nil, nil).Handler())
 	t.Cleanup(ts.Close)
 	conn, err := net.Dial("tcp", ts.Listener.Addr().String())
 	require.NoError(t, err)

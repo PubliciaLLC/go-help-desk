@@ -177,7 +177,7 @@ export function AdminAuditPage() {
           <p role="alert" className="text-sm text-red-600">Could not load the audit log.</p>
         ) : (
           <>
-            <div className="rounded-lg border bg-white overflow-hidden">
+            <div className="rounded-lg border bg-white overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-gray-50 text-xs text-gray-500 uppercase">
                   <tr>
@@ -201,7 +201,7 @@ export function AdminAuditPage() {
                         {/* A follow entry's diff only repeats what its label says. */}
                         {!isFollowAction(e.action) && <AuditDiff before={e.before} after={e.after} names={e.names} />}
                       </td>
-                      <td className="px-4 py-3 text-gray-600">
+                      <td className="px-4 py-3 text-gray-600 wrap-anywhere">
                         {e.actor_masked
                           ? <span className="italic text-gray-500"><EyeOffIcon aria-hidden="true" className="mr-1 inline h-3.5 w-3.5" />Requester (name hidden)</span>
                           : (e.actor_name || '—')}

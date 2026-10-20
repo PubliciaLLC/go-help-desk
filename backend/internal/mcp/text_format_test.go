@@ -13,7 +13,7 @@ import (
 // writes `*` and `#` it means literally, and staff read formatting it did not
 // intend.
 func TestTools_DescribeMarkdownEscapingAndTheFormatArgument(t *testing.T) {
-	s := New(nil, nil, nil, nil)
+	s := New(nil, nil, nil, nil, nil)
 	byName := map[string]string{}
 	for _, st := range s.mcp.ListTools() {
 		schema, err := st.Tool.InputSchema.MarshalJSON()
