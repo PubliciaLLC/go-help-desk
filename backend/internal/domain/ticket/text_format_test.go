@@ -2,6 +2,7 @@ package ticket_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -103,4 +104,19 @@ func TestValidateCreate_RefusesAnEmptyOrUnknownDescriptionFormat(t *testing.T) {
 		})
 		require.ErrorIs(t, err, ticket.ErrInvalidTextFormat, "format %q", f)
 	}
+}
+
+// The description's refusal says bytes, like the reply's: the limit counts bytes.
+func TestCreate_DescriptionLimitSaysBytes(t *testing.T) {
+	h := newHarness(t)
+	reporter := uuid.New()
+	in := ticket.CreateInput{
+		Subject: "s", Description: strings.Repeat("a", ticket.MaxDescriptionLength+1), DescriptionFormat: ticket.TextFormatPlain,
+		CategoryID: uuid.New(), ReporterUserID: &reporter,
+	}
+	_, err := h.svc.Create(context.Background(), in)
+	require.ErrorIs(t, err, ticket.ErrValidation)
+	require.Contains(t, err.Error(), "description must be at most 50000 bytes")
+	err = h.svc.ValidateCreate(context.Background(), in)
+	require.Contains(t, err.Error(), "description must be at most 50000 bytes")
 }

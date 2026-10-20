@@ -154,6 +154,17 @@ function FullText({ text, format, className }: Props) {
 /** How much of a very long post is shown before the reader asks for the rest. */
 const PREVIEW_CHARS = 5_000
 
+/** Characters as a reader counts them (an emoji is one), not UTF-16 units. */
+function countChars(s: string): number {
+  let n = 0
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    if (c >= 0xd800 && c <= 0xdbff) i++
+    n++
+  }
+  return n
+}
+
 function sizeOf(text: string): string {
   const bytes = new TextEncoder().encode(text).length
   return bytes >= 1_000_000 ? `${(bytes / 1_000_000).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1000))} KB`
@@ -186,6 +197,7 @@ export function TicketText(props: Props) {
   const { text, className } = props
   const [expanded, setExpanded] = useState(false)
   if (text.length <= MAX_FORMATTED_CHARS) return <FullText {...props} />
+  const start = startOf(text)
 
   return (
     <div className="min-w-0">
@@ -193,10 +205,10 @@ export function TicketText(props: Props) {
         <FullText {...props} />
       ) : (
         <>
-          <p className={cn(plainClass, className)}>{startOf(text)}</p>
+          <p className={cn(plainClass, className)}>{start}</p>
           <p role="note" className="mt-1 text-xs text-gray-600">
-            Showing the first {PREVIEW_CHARS.toLocaleString('en-US')} of {text.length.toLocaleString('en-US')} characters. This is
-            only part of the post: copying here copies only that part.
+            Showing the first {countChars(start).toLocaleString('en-US')} of {countChars(text).toLocaleString('en-US')} characters.
+            This is only part of the post: copying here copies only that part.
           </p>
         </>
       )}

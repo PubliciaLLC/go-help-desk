@@ -33,6 +33,9 @@ func TestAddReply_LengthLimit(t *testing.T) {
 		{"a megabyte", strings.Repeat("a", 1_000_000), false},
 		// Counted in bytes, as a description is: 25,000 two-byte characters fit and 25,001 do not.
 		{"multi-byte, at the limit", strings.Repeat("é", ticket.MaxReplyLength/2), true},
+		// 16,666 x 3 bytes = 49,998 fits; 16,667 x 3 = 50,001 does not.
+		{"three-byte, at the limit", strings.Repeat("中", 16_666), true},
+		{"three-byte, one character over", strings.Repeat("中", 16_667), false},
 		{"multi-byte, one character over", strings.Repeat("é", ticket.MaxReplyLength/2+1), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -47,6 +50,8 @@ func TestAddReply_LengthLimit(t *testing.T) {
 				return
 			}
 			require.ErrorIs(t, err, ticket.ErrReplyTooLong)
+			require.Contains(t, err.Error(), "body must be at most 50000 bytes")
+			require.NotContains(t, err.Error(), "characters")
 			require.ErrorIs(t, err, ticket.ErrValidation, "still a validation refusal, so every caller already maps it")
 			require.Empty(t, replies, "nothing is written")
 			require.Empty(t, h.dispatcher.events, "and nothing is announced")
