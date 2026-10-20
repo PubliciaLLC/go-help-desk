@@ -721,6 +721,25 @@ test.describe('#517 review: more places at 320px', () => {
     expect(widest, 'an audit diff value is wider than the viewport: it is not wrapping').toBeLessThanOrEqual(320)
   })
 
+  test('ticket Activity: reply and note entries with a long actor name', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 844 })
+    await mockApi(page)
+    const word = 'W'.repeat(300)
+    await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}/audit`, (route) =>
+      route.fulfill({
+        json: [
+          { id: 'r1', action: 'reply_added', actor_id: 'u-staff', actor_name: word, created_at: '2026-09-20T12:00:00Z', after: { reply_id: 'x', internal: false } },
+          { id: 'r2', action: 'note_added', actor_id: 'u-staff', actor_name: 'Erik Test', created_at: '2026-09-20T12:01:00Z', after: { reply_id: 'y', internal: true } },
+        ],
+      }),
+    )
+    await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+    await expect(page.getByText('added an internal note')).toBeVisible()
+    await expect(page.getByText('replied publicly')).toBeVisible()
+    await noHorizontalScroll(page)
+    await documentFits(page, 320)
+  })
+
   const STATUS_NAMES = ['Waiting on third-party vendor response', 'S'.repeat(300)]
   for (const name of STATUS_NAMES) {
     test(`list card status chip: ${name.length} characters`, async ({ page }) => {

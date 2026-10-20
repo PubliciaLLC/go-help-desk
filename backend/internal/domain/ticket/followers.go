@@ -142,11 +142,18 @@ func dropAssigneeFollow(ctx context.Context, st Store, au audit.Store, ticketID,
 // hundred toggles would push the ticket's real history off its feed.
 func (s *Service) ListAuditFeed(ctx context.Context, ticketID uuid.UUID, includeFollow bool) ([]audit.Entry, error) {
 	real, err := s.auditStore.ListByEntityActions(ctx, "ticket", ticketID,
-		audit.ActionFilter{Exclude: FollowAuditActions()}, ticketAuditCap, 0)
+		audit.ActionFilter{Exclude: append(FollowAuditActions(), AuditActionReplyAdded, AuditActionNoteAdded)}, ticketAuditCap, 0)
 	if err != nil {
 		return nil, fmt.Errorf("listing audit entries: %w", err)
 	}
-	entries := real
+	// Reply and note entries are capped on their own, like follows: a long
+	// conversation must not push the ticket's real history off the feed.
+	replies, err := s.auditStore.ListByEntityActions(ctx, "ticket", ticketID,
+		audit.ActionFilter{Only: []string{AuditActionReplyAdded, AuditActionNoteAdded}}, ticketAuditCap, 0)
+	if err != nil {
+		return nil, fmt.Errorf("listing reply entries: %w", err)
+	}
+	entries := append(real, replies...)
 	if includeFollow {
 		follows, err := s.auditStore.ListByEntityActions(ctx, "ticket", ticketID,
 			audit.ActionFilter{Only: FollowAuditActions()}, ticketAuditCap, 0)

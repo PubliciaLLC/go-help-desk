@@ -1715,6 +1715,17 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 		if err := st.CreateReply(ctx, reply); err != nil {
 			return fmt.Errorf("creating reply: %w", err)
 		}
+		// Who wrote, when, and which reply: never the text (the allow-list in
+		// audit.Redact keeps it that way). Same transaction as the reply, so
+		// there is no reply without its entry. A guest has no id, so no actor.
+		action := AuditActionReplyAdded
+		if internal {
+			action = AuditActionNoteAdded
+		}
+		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", ticketID, action, nil,
+			map[string]any{"reply_id": reply.ID, "internal": internal})); err != nil {
+			return fmt.Errorf("auditing reply: %w", err)
+		}
 		if rotateFor {
 			guestLink = hasGuestRecipient(t)
 		}
@@ -1858,6 +1869,15 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 
 	return reply, nil
 }
+
+// Audit actions for a reply and an internal note. They name the event and
+// carry no text: the entry says who wrote and when, and the words stay in the
+// conversation, which has its own visibility rules. Not the webhook events
+// ticket.replied / ticket.note_added (#448), which are a separate vocabulary.
+const (
+	AuditActionReplyAdded = "reply_added"
+	AuditActionNoteAdded  = "note_added"
+)
 
 // isRequester reports whether actor is the person who filed t: its reporter,
 // or the guest (no id, user role) the ticket was filed for.

@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { AuditDiff } from '@/components/AuditDiff'
 import { followRemovalLabel, isFollowAction } from '@/lib/followAudit'
+import { isReplyAction, replyActionLabel } from '@/lib/replyAudit'
 import { EyeOffIcon } from 'lucide-react'
 import type { AdminAuditEntry } from '@/api/types'
 
@@ -197,14 +198,14 @@ export function AdminAuditPage() {
                         <span className="font-mono text-xs">{e.entity_type}</span>
                       </td>
                       <td className="px-4 py-3">
-                        <span className="font-medium text-gray-900">{followRemovalLabel(e) ?? labelFor(e.action)}</span>
+                        <span className="font-medium text-gray-900">{isReplyAction(e.action) ? replyActionLabel(e.action) : (followRemovalLabel(e) ?? labelFor(e.action))}</span>
                         {/* A follow entry's diff only repeats what its label says. */}
-                        {!isFollowAction(e.action) && <AuditDiff before={e.before} after={e.after} names={e.names} />}
+                        {!isFollowAction(e.action) && !isReplyAction(e.action) && <AuditDiff before={e.before} after={e.after} names={e.names} />}
                       </td>
                       <td className="px-4 py-3 text-gray-600 wrap-anywhere">
                         {e.actor_masked
                           ? <span className="italic text-gray-500"><EyeOffIcon aria-hidden="true" className="mr-1 inline h-3.5 w-3.5" />Requester (name hidden)</span>
-                          : (e.actor_name || '—')}
+                          : (e.actor_name || (isReplyAction(e.action) && !e.actor_id ? 'Guest' : '—'))}
                       </td>
                     </tr>
                   ))}

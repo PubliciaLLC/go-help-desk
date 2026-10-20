@@ -458,6 +458,15 @@ In 1.2.x, deleting a user left their open tickets pointing at them. Such a ticke
 - **Nothing else changes.** No mail is sent, no webhook or event is raised, and no SLA clock moves. A group assignment needs nothing: deleting a group has always cleared it.
 - **Rolling back:** the `down` migration does nothing. The tickets stay unassigned; the audit entries record who they had.
 
+### Replies and Internal Notes Appear in Activity and the Audit Log
+
+Replies and internal notes now appear in a ticket's Activity panel as "Erik Test replied publicly" or "Erik Test added an internal note", with the time and no text, and in the admin audit view as `reply_added` and `note_added`. **From the upgrade on:** replies and notes written before it are not backfilled and do not appear.
+
+- **No words are recorded.** The entry holds the author, the time, the reply's id and whether it was internal. The text stays in the conversation, under its existing visibility rules.
+- **Who sees it:** the same people who see Activity today, staff and administrators. A requester still gets 403 on the feed. A requester's or guest's reply shows as "Requester (name hidden)" or "A guest" under the existing `audit_mask_requester_names` setting. Staff see the entries in the admin audit view only for tickets in their scope.
+- **Webhooks, MCP and email are unchanged.** The audit actions are separate from the `ticket.replied` and `ticket.note_added` webhook events.
+- **No migration.** Replies and notes are capped on their own in the feed (the newest 500), so a long conversation cannot push the ticket's other history off it.
+
 ### The Server Logs Which Migrations Ran (#525)
 
 The server now says what it did to the schema, once, at startup, before it opens the port:

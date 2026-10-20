@@ -10321,7 +10321,7 @@ components:
           $ref: '#/components/schemas/Uuid'
         action:
           type: string
-          description: The action name, for example created, assigned, unassigned, priority_changed, reopened, sla_restarted (written by a reopen that restarts the SLA clocks) or closed.
+          description: The action name, for example created, assigned, unassigned, priority_changed, reopened, sla_restarted (written by a reopen that restarts the SLA clocks), reply_added (a public reply), note_added (an internal note) or closed. A reply_added or note_added entry carries only the reply's id and an internal flag in its after, never the text. There is no enum, so new actions are added without a version change.
         actor_id:
           description: The actor's account, or null when there is none (or when a reporting user is shown an assignment).
           anyOf:
@@ -10387,6 +10387,7 @@ components:
           $ref: '#/components/schemas/Uuid'
         action:
           type: string
+          description: The action name. reply_added and note_added (a public reply, an internal note) hold only the reply's id and an internal flag in after, never the text. A guest's reply has no actor.
         actor_id:
           description: The actor's account, or null when there is none.
           anyOf:

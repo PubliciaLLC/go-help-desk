@@ -66,3 +66,19 @@ describe('follow entries on the admin audit page', () => {
     expect(screen.getByText('Unfollowed')).toBeTruthy()
   })
 })
+
+describe('reply and note entries on the admin audit page', () => {
+  it('labels them and does not print their diff', async () => {
+    serve([
+      { ...base, id: 'e1', action: 'reply_added', actor_id: 'u1', actor_name: 'Sam', after: { reply_id: 'r-1', internal: false } },
+      { ...base, id: 'e2', action: 'note_added', actor_id: 'u1', actor_name: 'Sam', after: { reply_id: 'r-2', internal: true } },
+      { ...base, id: 'e3', action: 'reply_added', actor_id: null },
+    ])
+    renderWithQuery(<AdminAuditPage />)
+
+    await waitFor(() => expect(screen.getAllByText('Reply added')).toHaveLength(2))
+    expect(screen.getByText('Internal note added')).toBeTruthy()
+    expect(screen.getByText('Guest')).toBeTruthy()
+    expect(screen.queryByText(/r-1/)).toBeNull()
+  })
+})
