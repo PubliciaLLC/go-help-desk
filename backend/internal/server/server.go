@@ -212,13 +212,14 @@ type Server struct {
 	// straight away, and turns a sustained lockout into an inconvenience.
 	guestResendLimiter *authmw.RateLimiter
 
-	// onBehalfMailLimiter caps how many tickets one member of staff can file
-	// for an address that has no account (#444): each one mails a stranger the
-	// "we have received your ticket" message with a link, so without a cap a
-	// compromised or careless staff session is a way to send mail to anyone.
-	// Keyed on the authenticated user, never on the address of the request: a
-	// machine credential is its owner. Only that path spends it; a picked user
-	// or a typed address that belongs to an account does not.
+	// onBehalfMailLimiter caps how many times one member of staff can use
+	// reporter_email in an hour (#290, #444): each one may mail a stranger the
+	// "we have received your ticket" message with a link, and each answers
+	// differently for an address with an account, so unbounded it is both a way
+	// to send mail to anyone and a way to learn who has an account. Every
+	// attempt that passes validation spends a unit, account or not; a picked
+	// reporter_user_id does not. Keyed on the authenticated user, never on the
+	// address of the request: a machine credential is its owner.
 	//
 	// INTERIM, like loginLimiter: in memory and per process, so a restart
 	// clears every count and N replicas multiply the cap by N. Its window is
@@ -627,10 +628,14 @@ func (s *Server) buildRouter() *chi.Mux {
 			With(authmw.RequireResource(auth.ResourceTickets)).
 			Get("/staff", s.handleListAssignableStaff)
 		// Who a ticket can be filed for (#444): the New ticket page's
-		// requester picker. The scope is users:read, the one that guards the
-		// user list, because this returns addresses.
+		// requester picker. Signed-in sessions only (#290, Erik 2026-10-14):
+		// "there is no user lookup endpoint, so no enumeration surface". A key
+		// or OAuth client files for someone with reporter_email and lets the
+		// server resolve it; it gets no way to search the directory, however
+		// many scopes it holds, so this is DenyMachineCredentials, not a
+		// scope.
 		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff), authmw.RequireMFA).
-			With(authmw.RequireResource(auth.ResourceUsers)).
+			With(authmw.DenyMachineCredentials).
 			Get("/users/lookup", s.handleLookupUsers)
 		// The admin-wide audit view (#129). Staff and admin only. A signed-in
 		// session needs no scope; a machine credential needs audit:read

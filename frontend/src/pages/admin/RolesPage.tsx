@@ -5,7 +5,7 @@ import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/ui/badge'
 import { Select } from '@/components/ui/select'
 import { Spinner } from '@/components/ui/spinner'
-import type { Role, User } from '@/api/types'
+import type { AdminUser, Role } from '@/api/types'
 
 const ROLES: { role: Role; label: string; description: string }[] = [
   {
@@ -34,7 +34,7 @@ function badgeVariant(role: Role) {
   return 'secondary'
 }
 
-function RoleRow({ user, currentUserRole }: { user: User; currentUserRole: Role }) {
+function RoleRow({ user, currentUserRole }: { user: AdminUser; currentUserRole: Role }) {
   const qc = useQueryClient()
   const mutation = useMutation({
     mutationFn: (newRole: Role) => updateUser(user.id, { role: newRole }),
@@ -53,13 +53,15 @@ function RoleRow({ user, currentUserRole }: { user: User; currentUserRole: Role 
         {mutation.isError && (
           <span role="alert" className="mr-2 text-xs text-red-500">{extractError(mutation.error)}</span>
         )}
+        {/* A service user is never an administrator (409 service_account, #434
+            Q2), so its dropdown does not offer the role. */}
         <Select
           value={user.role}
           disabled={mutation.isPending || isCurrentAdmin}
           onChange={(e) => mutation.mutate(e.target.value as Role)}
           className="text-sm"
         >
-          <option value="admin">admin</option>
+          {!user.service_account && <option value="admin">admin</option>}
           <option value="staff">staff</option>
           <option value="user">user</option>
         </Select>
@@ -78,7 +80,7 @@ function RoleCard({
   role: Role
   label: string
   description: string
-  users: User[]
+  users: AdminUser[]
   currentUserRole: Role
 }) {
   return (

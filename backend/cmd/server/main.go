@@ -468,7 +468,7 @@ func run() error {
 	// ── MCP server (mounted under /mcp) ───────────────────────────────────────
 	// srv supplies the visibility rule: MCP applies the same authority model as
 	// the REST API rather than a second copy of it.
-	mcpSrv := mcp.New(ticketSvc, adminSvc.TicketPrefix, srv, categorySvc)
+	mcpSrv := mcp.New(ticketSvc, adminSvc.TicketPrefix, srv, categorySvc, srv)
 
 	mux := http.NewServeMux()
 	// Wrapped, never bare: Handler() authenticates nothing on its own, and this

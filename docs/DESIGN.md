@@ -630,7 +630,7 @@ did.
 |---|---|
 | **Role** | `staff` or `user`, set by an administrator on the Users page; the actor's role is the stored one. Never `admin` (CHECK, and a 409 `service_account` before it). |
 | **Signs in** | Never. Password login, SSO adoption by address, password reset, passkeys and MFA enrolment all refuse it, and no session for one loads. The login lookups (`GetUserByEmail` and the two subject lookups) do not return it; the session lookup skips it. |
-| **Seen** | Listed on **Admin → Users** with `service_account: true` and `auth_type: "service"` (the page shows a "Service" badge and a filter for it). It can be renamed, given groups, set to staff or user, and disabled. Renaming it renames its OAuth client in the same statement, so the two names cannot drift. Disabling it stops its client on the next request, and enabling it again restores it. It **cannot be deleted on its own**: `DELETE /admin/users/{id}` answers `409 service_account` with "This is the service account for OAuth client <name>. Delete the client instead.", because a client left listed with a dead user is worse than a refusal. It is left out of assignee pickers (`GET /staff`), assignment (`IsAssignableUser`, so round-robin skips it) and the plain user list. |
+| **Seen** | Listed on **Admin → Users** with `service_account: true` and `auth_type: "service"` (the page shows a "Service" badge and a filter for it). It can be renamed, given groups, disabled and set to staff or user, and nothing else: `PATCH /admin/users/{id}` answers `409 service_account` to a body carrying `email`, a `role` of `admin`, or `reset_mfa: true`, and applies none of it (a `reset_mfa: false` asks for nothing and is accepted; a `role` of `staff` or `user` is accepted, Q2 on #434). The page never sent the refused ones; the server now refuses them too. Renaming it renames its OAuth client in the same statement, so the two names cannot drift. The password route (`POST /admin/users/{id}/password`), MFA reset and API keys issued on its behalf are refused as well. Disabling it stops its client on the next request, and enabling it again restores it. It **cannot be deleted on its own**: `DELETE /admin/users/{id}` answers `409 service_account` with "This is the service account for OAuth client <name>. Delete the client instead.", because a client left listed with a dead user is worse than a refusal. It is left out of assignee pickers (`GET /staff`), assignment (`IsAssignableUser`, so round-robin skips it) and the plain user list. |
 | **Writes** | Under its scopes, a client creates tickets and replies **as its user**. The audit trail and authorship show the client's name. |
 | **Mail** | Never. A service user's address is made up (`oauth-<client id>@service-account.invalid`, which can never receive mail), and requester mail is not queued for a ticket it reported. Staff notifications go out as normal. |
 | **Scope** | Ticket scope enforcement (`ticket_scope_enforced`) applies to its user like any staff member's: it sees what its groups cover. Turning enforcement on warns, on that save, which clients have a user in no group; the Security warnings banner (`oauth_clients_without_groups`) keeps saying so until each has a group or is disabled. |
@@ -1466,9 +1466,10 @@ ticket for someone else, which is how a phone-in request is recorded. `POST
   can sign in. **Otherwise it is filed exactly like a guest ticket**: the same
   creation path, the person is sent the same guest link at that address (read
   and reply, read-only once the ticket closes, replaced when the ticket changes
-  in a way they are told about). **`guest_name` is required, exactly as on the
-  guest form** (`400` without a non-blank one); `guest_phone` is optional and
-  kept. An address that matches an account needs no name. Guest links
+  in a way they are told about). **`guest_name` is required with every
+  `reporter_email`** (`400` without a non-blank one), whether or not the address
+  has an account, so that its absence says nothing about the address; it is
+  ignored for an account. `guest_phone` is optional and kept. Guest links
   are suspended while guest submission is off (#424), so a typed address with no
   account behind it is `400` then, and nothing is filed; an address that belongs
   to an account is not affected. Only the requester's identity follows the guest
@@ -1490,14 +1491,18 @@ mailed about it, as before; nor is a requester who files theirs. A typed
 address with no account is filed as a guest ticket and gets the guest link, as
 above.
 
-**Mail limit on the typed-address path.** A typed address with no account mails
-a stranger on a staff member's say-so alone, so those are capped: **40 per
-hour per staff member**, and the 41st is `429 rate_limited` with `Retry-After`
-(the time left in the window) and files nothing. What is counted is tickets
-filed: a request refused for any other reason, or that fails validation, is not
-counted. Filing for an existing account is not counted either: a picked user,
-and a typed address that matches an account, spend nothing and are not stopped
-by a spent budget. The key is the authenticated user, not the
+**Budget on the typed-address path (#290).** A typed address mails a stranger
+on a staff member's say-so alone, and is also the one way to learn whether an
+address has an account, so every attempt is capped: **40 per hour per staff
+member**, and the 41st is `429 rate_limited` with `Retry-After` (the time left
+in the window) and files nothing. Every `reporter_email` that passes validation
+takes a unit before the address is looked up, account or not, and the refusal
+for guest submission being off is not given back. A request refused by
+validation spends nothing. **A unit is never given back once taken**, not for
+the guest-submission refusal and not when `Create` then fails: a refund after
+the address is known makes a miss free whenever a failure can be provoked for
+one kind of address only. A genuine database error costs one of the 40. A picked `reporter_user_id` is not counted and
+is not stopped by a spent budget. The key is the authenticated user, not the
 address of the request, so an API key or OAuth client counts against the user it
 acts as (the same budget as that person's own session), and another staff
 member is unaffected. The figure is fixed, not configurable. Like the credential
@@ -1525,8 +1530,9 @@ On the New ticket page, staff and administrators see a **Requester** choice
 (Me, the default; Another user; Email address) and a requester sees none. Email
 address shows a required **Name** and an optional **Phone**, as the guest form
 does. Another
-user is a search box: `GET /users/lookup?q=` (staff and administrators; `users:read`
-for a machine credential) answers with `id`, `display_name` and `email` of at most
+user is a search box: `GET /users/lookup?q=` (staff and administrators **in a
+signed-in session only**; an API key or OAuth client gets `403 session_required`,
+`users:read` or not, `DenyMachineCredentials`) answers with `id`, `display_name` and `email` of at most
 ten accounts whose name or address contains the query, ignoring case, ordered by
 display name then id. Disabled, deleted and service accounts are excluded by the
 query itself (one read, `LIMIT 10`), not read and dropped afterwards. A query
@@ -1536,11 +1542,40 @@ service accounts are not found. The search minimum is counted in characters, not
 bytes or UTF-16 units. A reporting user gets `403`. The lookup is the picker's:
 a disabled account sent by id is still accepted, as MCP accepts one.
 
-MCP `create_ticket` takes `reporter_user_id` only (no typed address). **When it
-names someone other than the caller, the caller is the actor** of the creation,
-as on REST (`CreateInput.FiledBy`), and the reporter is who it is for; the
-account is emailed as above. Naming yourself, or omitting it, is filing your own
-ticket and is unchanged.
+**There is no user lookup for machine credentials (#290, Erik 2026-10-14).** A
+key that files for someone sends `reporter_email` and the server resolves it:
+an account if one exists, otherwise a guest ticket. That leaves no endpoint
+that confirms whether an address has an account or lists the directory. The
+`201` does carry `reporter_user_id` (the response of a ticket the caller filed
+shows who it was filed for), which tells a key that an address has an account.
+Erik accepted that on 2026-10-16 ("leak accepted").
+
+What the server does to keep that the only leak: `Server.ResolveOnBehalf` runs
+every check that does not depend on the address (subject and description,
+priority, the category, type and item existing, belonging together and being
+open: `ticket.Service.ValidateCreate`) **before** it looks the address up, so a
+request that was going to fail anyway gets the same answer for every address,
+over REST and MCP, with guest submission on or off. `guest_name` is required with every
+`reporter_email`, checked with the rest, so leaving it out is refused the same
+way for every address. Only after all that does the address take a unit of the
+40-an-hour budget and get looked up. The answer is then the ticket (`201`, with
+`reporter_user_id` when there is an account) or, for an address with no
+account, `guest submission is off` (the unit is not given back). So every
+probe that learns anything costs a unit, or a filed ticket and a unit, and
+probing is bounded at 40 an hour per staff member, over REST and MCP together.
+That is what the "leak accepted" ruling covers.
+
+MCP `create_ticket` takes `reporter_user_id` or `reporter_email` (never both),
+`guest_name` and `guest_phone`, with the REST rule, from the same code
+(`Server.ResolveOnBehalf`, which REST's handler calls too): the same address
+rules, the same account-or-guest resolution, the same refusal while guest
+submission is off, the same name requirement (always), the same 40-an-hour budget (one
+per staff member across REST and MCP), the same created mail. A refusal
+comes back as the tool's error text. `reporter_user_id` stays, because existing
+callers send it. **When either names someone other than the caller, the caller
+is the actor** of the creation, as on REST (`CreateInput.FiledBy`), and the
+reporter is who it is for; the account is emailed as above. Naming yourself, or
+omitting both, is filing your own ticket and is unchanged.
 
 **Nobody newly picks an archived category, type or item (#421).** Staff and
 administrators see archived rows (in the picker and in the catalogue API) so they
@@ -2373,7 +2408,7 @@ Exposes help desk operations as an MCP server for AI tool integration, over two 
 | `list_tickets` | any signed-in user | Optional `assignee_user_id`, `status_id`, `priority`, `category_id`, `q` filters. `limit` defaults to 20 and is clamped to 100; `offset` pages the full result set. |
 | `list_categories` | any signed-in user | The Category/Type/Item tree, nested, for filling in CTI. Active entries only; `include_inactive: true` adds retired ones (the tool applies no role check to it, unlike the REST catalogue, which shows archived entries to staff and administrators only). |
 | `list_statuses` | any signed-in user | The statuses this instance defines. |
-| `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` names the subject of the ticket and defaults to the caller. |
+| `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` or `reporter_email` (with `guest_name`, always required with the address) names the subject of the ticket; both are absent by default and the caller is the subject. |
 | `add_reply` | staff, admin | A public reply emails the requester exactly as the REST reply does (#442): the guest's address (with a guest link) or the reporting account's, through one shared rule, `ticket.Service.ReplyRecipient`. No mail is sent when the requester has no address on record or the account is gone, or when the requester is a staff member or administrator writing the reply on a ticket they filed (they are not mailed a copy of their own reply, over REST or MCP; an ordinary requester replying on their own ticket still is); the reply is still saved. `internal: true` posts a staff-only note and never notifies the requester. There is no `notify_customer` option over MCP: a public reply always notifies. |
 | `assign_ticket` | staff, admin | To a user (`assignee_user_id`) or a group (`assignee_group_id`). To take the ticket off whoever has it, pass `clear_assignee: true` (the audit entry is `unassigned`); it cannot be combined with an assignee id, and omitting everything is refused rather than read as unassigning, because that silently took tickets off the people working them. |
 | `update_ticket_status` | staff, admin | Target status must be one the caller's role may transition to. A ticket in Closed cannot be moved out of it unless `closed_reopen_policy` lets the caller's role (#349; off by default): the result says reopening is disabled or restricted and points at `create_follow_up`. There is no separate reopen tool and never was; this is MCP's path out of Closed, through the same service rule as REST. A move out of Resolved or Closed is a reopen like any other (flagged, priority raised on the first, SLA restarted, staff mailed), with the caller as the actor. |
@@ -2703,7 +2738,7 @@ one is a permission decision with one switch and no per-user exceptions.
   *make*, so it takes the stricter reading.)
 - **A key's scopes never exceed its owner's role.** `auth.ScopesForRole` is the
   table: an administrator may carry any scope; staff `tickets:read|write`,
-  `groups:read`, `audit:read` and `users:read` (the requester lookup); a requester none, since requesters never own a
+  `groups:read` and `audit:read` (not `users:read`: the one staff route that needed it, the requester lookup, is session-only since #290); a requester none, since requesters never own a
   key (an existing requester key still acts within the role check). It is checked
   against the key's *owner*, so an administrator issuing a key for a staff member is
   limited by what staff can do; a scope outside it is `400 invalid_scope`.

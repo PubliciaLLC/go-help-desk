@@ -96,7 +96,7 @@ func (r *recordingAuthorizer) TicketVisibility(context.Context, *authmw.Actor) (
 // A missing Authorizer must deny, not permit. This is the fail-closed guard on
 // the constructor: the original defect was a surface that served whoever asked.
 func TestNew_WithoutAuthorizer_DeniesByDefault(t *testing.T) {
-	s := New(nil, nil, nil, nil)
+	s := New(nil, nil, nil, nil, nil)
 
 	require.False(t, s.visible(ctxAs(user.RoleAdmin), ticket.Ticket{}),
 		"no Authorizer must mean nothing is visible")
