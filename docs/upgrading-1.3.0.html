@@ -108,6 +108,7 @@
       <li><a href="#deleted-user-tickets">Deleted users' tickets</a></li>
       <li><a href="#migration-log">Migration log line</a></li>
       <li><a href="#rollback">Rolling back to 1.2.0</a></li>
+      <li><a href="#guest-attachments">Guest uploads off</a></li>
       <li><a href="#known-gaps">Not in 1.3.0</a></li>
       <li><a href="#steps">Doing the upgrade</a></li>
     </ul>
@@ -220,6 +221,7 @@
     <tr><td>Open tickets assigned to a deleted user go back to the unassigned queue</td><td>Staff on an install upgraded from 1.2.x</td></tr>
     <tr><td>The server logs which migrations ran</td><td>Operators</td></tr>
     <tr><td>Rolling back to 1.2.0 is possible by hand, and costs data and security fixes</td><td>Operators who need to go back</td></tr>
+    <tr><td>Guests can no longer upload until an administrator turns on <em>Guests may attach files</em></td><td>Administrators; scripts that upload as a guest</td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
@@ -235,7 +237,7 @@
   <li><strong>Provider-wrapped addresses are matched.</strong> On a first OIDC sign-in, the address is matched by its parsed form, so an address sent as <code>&lt;a@example.com&gt;</code> finds the account for <code>a@example.com</code> instead of creating a second one. The sign-in is refused instead when that account is an administrator, or is already linked to SAML or to another OIDC identity.</li>
   <li><strong>Identity-provider lockout guard.</strong> A SAML or OIDC settings change that would leave no administrator able to sign in is refused. <a href="https://github.com/PubliciaLLC/go-help-desk/blob/v1.3.0/docs/DESIGN.md#identity-provider-lockout-guard-300">Design notes</a></li>
   <li><strong>Signup asks later.</strong> The display name and password are chosen when the email is verified. <a href="#signup">Details</a></li>
-  <li><strong>Guest submission works.</strong> A visitor files a ticket at <code>/submit</code> without an account, receives a per-ticket link, and can reply through it. Attaching a file is possible only through the API. The guest page has no upload control, and that is not available in 1.3.0. Tracked in <a href="https://github.com/PubliciaLLC/go-help-desk/issues/445" target="_blank" rel="noopener">#445</a>. <a href="authentication.html#auth-guest">Guest access</a></li>
+  <li><strong>Guest submission works.</strong> A visitor files a ticket at <code>/submit</code> without an account, receives a per-ticket link, and can reply through it. A guest can attach files from the guest page once an administrator turns that on; it is off by default (<a href="#guest-attachments">Details</a>). <a href="authentication.html#auth-guest">Guest access</a></li>
   <li><strong>Closed means closed.</strong> A closed ticket is read-only and stays closed by default. The way on is a linked follow-up ticket. An operator can allow admins, or staff and admins, to reopen a closed ticket. <a href="tickets.html#tickets-follow-up">Follow-up tickets</a></li>
   <li><strong>The lifecycle runs itself.</strong> An auto-close sweep runs every five minutes. A reopen window of 0 closes a resolved ticket on the next sweep.</li>
   <li><strong>SLA tracking end to end.</strong> Timers pause while a ticket is Pending, a breach sweep runs, and the indicators are colour-coded. The switch is under <strong>Admin → Settings</strong>.</li>
@@ -986,6 +988,20 @@ echo "ok: Postgres is bound to 127.0.0.1 only"</code></pre>
 </li></ol>
 <p>To go forward again, run <code>git checkout -- docker-compose.yml</code> in <code>go-help-desk/docker</code> to drop the edit from step 3, then <code>git checkout v1.3.0</code> (it refuses while the file is changed) and start it: it runs every migration from 22, and says so in the log (<code>database migrated from 21 to 53</code>).</p>
 
+<h2 id="guest-attachments">Guests can no longer upload until you turn it on</h2>
+
+<p><strong>Who notices:</strong> administrators, and any script that uploads as a guest. <strong>This is breaking: uploads are off after the upgrade.</strong></p>
+<p>Before this release a guest could attach a file through <code>POST /api/v1/guest/attachments</code> whenever guest submission was on. That is now off by default, including on an upgraded install. A new setting, <strong>Guests may attach files</strong> (<code>guest_attachments_enabled</code>, <em>Admin → Settings → General → Submissions</em>, under guest submission), controls it. Until an administrator turns it on, the route answers the generic <code>404 not_found</code> that a bad link gets. <strong>If your guests attach files today, turn the setting on after you upgrade.</strong></p>
+<ul>
+  <li>It only takes effect while guest submission is on.</li>
+  <li><strong>Per-file limit:</strong> <code>guest_attachment_max_mb</code>, a slider from 1 to 100 MB, 5 MB by default. A guest is held to the lower of it and the instance-wide 25 MB maximum. Over the limit is <code>413 too_large</code>, and the message names the limit.</li>
+  <li><strong>Two more limits:</strong> <code>guest_attachment_max_per_ticket</code> (1 to 50, default 5) caps the files guests can attach to one ticket (<code>409 guest_attachment_limit</code>), and <code>guest_attachment_uploads_per_hour</code> (1 to 30, default 3) caps uploads per guest link per hour (<code>429 rate_limited</code> with <code>Retry-After</code>). A refusal decided before the scan (wrong type, too big) does not use up the hour; anything decided after it (not an image, a malware verdict) or a server fault does. Refused attempts also share a fixed 20-per-hour budget per ticket. The rate is in memory and per server instance, so a restart clears it.</li>
+  <li><strong>Session only:</strong> all of these settings need a signed-in administrator; an API key or OAuth client that sends one is refused with <code>403 session_required</code>.</li>
+  <li><strong>The guest page has an <em>Add files</em> button</strong> while the setting is on and the ticket is open, and says how many more files can be added. Uploads get the same type, scanning and reputation rules as everyone else's and are download-only. The submission form (<code>/submit</code>) has none: the link to attach from is emailed once the ticket exists.</li>
+  <li><code>GET /api/v1/site</code> gains <code>guest_attachments_enabled</code> and, while it is on, <code>guest_attachment_max_bytes</code>, <code>guest_attachment_max_per_ticket</code> and <code>guest_attachment_uploads_per_hour</code>.</li>
+  <li>A migration (000054) adds <code>attachments.uploaded_by_guest</code>, so the per-ticket cap counts only guest uploads. Files guests attached before the upgrade are not counted toward it.</li>
+</ul>
+
 <h2 id="known-gaps">What is not in 1.3.0</h2>
 
 <p>Earlier versions of these pages described or implied some things that the product does not do. Each is tracked as an issue. These are gaps in the product, not changes in 1.3.0. The pages now say what the product does.</p>
@@ -994,7 +1010,6 @@ echo "ok: Postgres is bound to 127.0.0.1 only"</code></pre>
   <thead><tr><th>Area</th><th>What is missing</th><th>Issue</th></tr></thead>
   <tbody>
   <tr><td>Ticket detail</td><td>Markdown is shown as typed, not rendered. A reply cannot be edited or deleted by anyone: a correction is a new reply, by design.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/443" target="_blank" rel="noopener">#443</a></td></tr>
-  <tr><td>Guest attachments</td><td>A guest can attach a file only through the API. The guest page has no upload control.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/445" target="_blank" rel="noopener">#445</a></td></tr>
   <tr><td>Plugins</td><td>The plugin system is a v2 feature. 1.x has no working plugin system: plugins cannot be installed, and an enabled plugin record never receives events. Earlier pages promised it.</td><td><a href="../index.html#roadmap">v2 on the roadmap</a></td></tr>
   </tbody>
 </table>

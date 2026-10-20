@@ -1598,7 +1598,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [name, logo_url, version, guest_submission_enabled]
+                required: [name, logo_url, version, guest_submission_enabled, guest_attachments_enabled]
                 properties:
                   name:
                     type: string
@@ -1611,6 +1611,32 @@ paths:
                     description: The server version.
                   guest_submission_enabled:
                     type: boolean
+                  guest_attachments_enabled:
+                    type: boolean
+                    description: |
+                      Whether a guest may attach files from the web page (#445).
+                      True only while guest submission is also on. This is
+                      public: unlike the upload route, which answers the same
+                      404 whether the setting or the token failed, this tells
+                      anyone whether uploads are on. Accepted as low sensitivity.
+                  guest_attachment_max_bytes:
+                    type: integer
+                    format: int64
+                    description: |
+                      The per-file limit that applies to a guest: the lower of
+                      guest_attachment_max_mb and the instance-wide 25 MB maximum.
+                      Present only while guest_attachments_enabled is true. Public,
+                      like the flag; disclosing the limit was accepted.
+                  guest_attachment_uploads_per_hour:
+                    type: integer
+                    description: |
+                      Uploads one guest link may make per hour (#445). Present
+                      only while guest_attachments_enabled is true.
+                  guest_attachment_max_per_ticket:
+                    type: integer
+                    description: |
+                      The most files guests may attach to one ticket (#445).
+                      Present only while guest_attachments_enabled is true.
   /health:
     get:
       operationId: health
@@ -5061,6 +5087,17 @@ paths:
         - guest_submission_enabled, staff_can_view_ticket_change_history,
           staff_can_view_follow_audit and staff_can_create_api_keys must be JSON
           booleans. null is refused.
+        - guest_attachments_enabled must be a JSON boolean (null is refused). It
+          is off unless set, upgrades included, and only takes effect while
+          guest_submission_enabled is on.
+        - guest_attachment_max_per_ticket must be an integer from 1 to 50 (default
+          5) and guest_attachment_uploads_per_hour an integer from 1 to 30 (default
+          3). Anything else, including null, a string and a fraction, is refused
+          with bad_request, and nothing is stored.
+        - guest_attachment_max_mb must be an integer from 1 to 100 (megabytes).
+          0, 101 or more, negatives, a fraction, a string and null are refused
+          with bad_request, and nothing is stored. Unset reads as 5. A guest is
+          held to the lower of it and the instance-wide 25 MB maximum.
         - api_key_max_lifetime_years must be the integer 1, 2, 3, 4 or 5 (years), or
           -1 for no limit ("Never"). 0, 6 or more, anything below -1, a fraction, a
           string and null are refused with bad_request, and nothing is stored. Unset
@@ -5112,6 +5149,8 @@ paths:
         oidc_redirect_url, mfa_enabled, mfa_enforced_roles, allowed_email_domains,
         self_signup_enabled, open_registration_enabled, closed_reopen_policy,
         audit_mask_requester_names, guest_submission_enabled,
+        guest_attachments_enabled, guest_attachment_max_mb,
+        guest_attachment_max_per_ticket, guest_attachment_uploads_per_hour,
         attachment_scan_address, attachment_scan_policy, attachment_allowed_types,
         attachment_infected_handling, attachment_mismatch_handling,
         audit_retention_days, staff_can_view_ticket_change_history,
@@ -5284,9 +5323,18 @@ paths:
         Authenticated by the guest token alone. The token names the ticket, so no
         ticket id appears in the path. The request is the same multipart upload as
         uploadAttachment, with the same checks, scanning, quarantine and wrapping,
-        and the same 25 MB cap. Two things are specific to guests. Submission
-        being switched off suspends guest links and answers 404 until the setting
-        is enabled again. A Closed ticket answers 404 not_found, the same as a bad link, where
+        and the instance-wide 25 MB cap. Three things are specific to guests.
+        Attaching is off unless an administrator has turned on
+        guest_attachments_enabled (#445): then the route answers the generic
+        404, byte-identical to a bad link. A guest's per-file limit is
+        guest_attachment_max_mb (default 5), never above the 25 MB cap. Two more
+        limits follow the token and lifecycle checks: a ticket holds at most
+        guest_attachment_max_per_ticket guest-uploaded files (409
+        guest_attachment_limit) and one link may upload
+        guest_attachment_uploads_per_hour times an hour (429 rate_limited, with
+        Retry-After).
+        Submission being switched off suspends guest links and answers 404 until
+        the setting is enabled again. A Closed ticket answers 404 not_found, the same as a bad link, where
         uploadAttachment answers 409. As there, a Resolved ticket past its reopen
         window answers 409 reopen_window_closed.
         The response is the stored attachment. Its reputation block is null, since
@@ -5327,13 +5375,19 @@ paths:
         '404':
           $ref: '#/components/responses/GuestNotFound'
         '409':
-          description: The ticket is Resolved and its reopen window has closed (reopen_window_closed).
+          description: The ticket is Resolved and its reopen window has closed (reopen_window_closed), or it already holds the most files a guest can attach (guest_attachment_limit).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: This link has used its uploads for the hour (rate_limited). Retry-After says when to try again.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
         '413':
-          description: The file is over 25 MB (too_large).
+          description: The file is over the guest's per-file limit (too_large). The message names the limit that applied.
           content:
             application/json:
               schema:
@@ -10641,6 +10695,34 @@ components:
         guest_submission_enabled:
           type: boolean
           description: Whether anonymous guests may submit tickets. Session only.
+        guest_attachments_enabled:
+          type: boolean
+          description: |
+            Whether a guest may attach files from the web page (#445). Off by
+            default. Only takes effect while guest_submission_enabled is on.
+            Session only.
+        guest_attachment_max_per_ticket:
+          type: integer
+          minimum: 1
+          maximum: 50
+          description: |
+            The most files guests may attach to one ticket (#445). Default 5.
+            Staff and reporter files do not count. Session only.
+        guest_attachment_uploads_per_hour:
+          type: integer
+          minimum: 1
+          maximum: 30
+          description: |
+            Uploads one guest link may make per hour (#445), keyed by ticket.
+            Default 3. Session only.
+        guest_attachment_max_mb:
+          type: integer
+          minimum: 1
+          maximum: 100
+          description: |
+            A guest's per-file maximum in megabytes (#445). Default 5. The
+            instance-wide 25 MB maximum still applies and wins where lower.
+            Session only.
         sla_enabled:
           type: boolean
           description: Whether SLA tracking is on.

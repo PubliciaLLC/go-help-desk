@@ -384,7 +384,7 @@
 <ol>
   <li>They submit a ticket at <code>/submit</code>. The page shows a tracking number and the server emails the address a link to that one ticket.</li>
   <li>The link is <code>/g#&lt;token&gt;</code>. The token sits after the <code>#</code> deliberately: a fragment is never sent to the server, so it cannot land in a request log. The page reads it once and removes it from the address bar, so it survives neither browser history nor a screenshot of the URL.</li>
-  <li>From then on the browser sends it as an <code>Authorization: Guest &lt;token&gt;</code> header to the guest API: read the ticket, reply to it, and open a follow-up once it is closed. The API also accepts an attachment upload, which the guest page does not offer.</li>
+  <li>From then on the browser sends it as an <code>Authorization: Guest &lt;token&gt;</code> header to the guest API: read the ticket, reply to it, and open a follow-up once it is closed. A guest can also add files to the ticket from the guest page, but only when an administrator has turned on <em>Guests may attach files</em> (off by default).</li>
 </ol>
 
 <h3>What the token is, and how long it lives</h3>
@@ -418,7 +418,7 @@
   <li><strong>Can</strong> read the ticket's subject, description, status and public replies, and post a reply. Lifecycle rules still apply, including the reopen window.</li>
   <li><strong>Can</strong> open one follow-up from their ticket once it is closed.</li>
   <li><strong>Cannot</strong> see internal notes, staff names, the assignee, the reporter or resolution notes. The guest view is built from a deliberately narrow set of fields rather than by hiding parts of the normal one.</li>
-  <li><strong>Cannot</strong> attach a file from the guest page, or download an attachment. The guest view does not indicate whether a ticket has any.</li>
+  <li><strong>Cannot</strong> attach a file unless an administrator has turned on <em>Guests may attach files</em> (off by default), and cannot download an attachment. The guest view does not indicate whether a ticket has any.</li>
   <li><strong>Cannot</strong> reach any other ticket. The token names one.</li>
 </ul>
 
