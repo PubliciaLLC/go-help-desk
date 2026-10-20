@@ -43,14 +43,14 @@ func TestOneChange_OneEvent(t *testing.T) {
 		want [][]notification.EventType // the kinds of each event, in order
 	}{
 		{"staff create, routed to a group", func(t *testing.T, h *prioHarness) {
-			_, err := h.svc.Create(ctx, ticket.CreateInput{
+			_, err := h.svc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 				Subject: "s", CategoryID: uuid.New(), ReporterUserID: ptr(uuid.New()),
 				AutoAssign: []ticket.Assignment{{GroupID: &group}},
 			})
 			require.NoError(t, err)
 		}, [][]notification.EventType{K(created, assigned)}},
 		{"create with nowhere to route it", func(t *testing.T, h *prioHarness) {
-			_, err := h.svc.Create(ctx, ticket.CreateInput{Subject: "s", CategoryID: uuid.New(), ReporterUserID: ptr(uuid.New())})
+			_, err := h.svc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, Subject: "s", CategoryID: uuid.New(), ReporterUserID: ptr(uuid.New())})
 			require.NoError(t, err)
 		}, [][]notification.EventType{K(created)}},
 		{"PATCH status + assignee + priority", func(t *testing.T, h *prioHarness) {
@@ -86,7 +86,7 @@ func TestOneChange_OneEvent(t *testing.T) {
 		{"requester reply that reopens", func(t *testing.T, h *prioHarness) {
 			tk := h.seedFinished("resolved", ticket.PriorityMedium)
 			a := ticket.Actor{UserID: tk.ReporterUserID, Role: user.RoleUser}
-			_, err := h.svc.AddReply(ctx, tk.ID, "again", false, true, "r@example.test", a, 30, h.newStatus.ID)
+			_, err := h.svc.AddReply(ctx, tk.ID, "again", ticket.TextFormatPlain, false, true, "r@example.test", a, 30, h.newStatus.ID)
 			require.NoError(t, err)
 		}, [][]notification.EventType{K(reopened, statusChg, priority, replied)}},
 		{"POST /reopen", func(t *testing.T, h *prioHarness) {
@@ -123,7 +123,7 @@ func TestOneChange_OneEvent(t *testing.T) {
 		}, [][]notification.EventType{K(closed, statusChg)}},
 		{"an internal note", func(t *testing.T, h *prioHarness) {
 			tk := h.seedMedium()
-			_, err := h.svc.AddReply(ctx, tk.ID, "n", true, false, "", reopenStaff, 30, h.newStatus.ID)
+			_, err := h.svc.AddReply(ctx, tk.ID, "n", ticket.TextFormatPlain, true, false, "", reopenStaff, 30, h.newStatus.ID)
 			require.NoError(t, err)
 		}, [][]notification.EventType{K(note)}},
 		{"a link", func(t *testing.T, h *prioHarness) {
@@ -166,7 +166,7 @@ func TestCreate_RoutingIsInsideTheCreateTransaction(t *testing.T) {
 	gone, alive := uuid.New(), uuid.New()
 	h.store.notPeople = map[uuid.UUID]bool{gone: true}
 
-	tk, err := h.svc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "s", CategoryID: uuid.New(), ReporterUserID: ptr(uuid.New()),
 		AutoAssign: []ticket.Assignment{{UserID: &gone}, {UserID: &alive}},
 	})
@@ -197,7 +197,7 @@ func TestCreate_NoAcceptableCandidateLeavesItUnassigned(t *testing.T) {
 	gone := uuid.New()
 	h.store.notPeople = map[uuid.UUID]bool{gone: true}
 
-	tk, err := h.svc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "s", CategoryID: uuid.New(), ReporterUserID: ptr(uuid.New()),
 		AutoAssign: []ticket.Assignment{{UserID: &gone}},
 	})
@@ -241,7 +241,7 @@ func TestUpdate_ReclassifyingToTheSameClassificationAnnouncesNothing(t *testing.
 func TestCreate_TheRoutedAssignmentIsMarkedAsRouting(t *testing.T) {
 	h := newHarness(t)
 	staff := uuid.New()
-	_, err := h.svc.Create(context.Background(), ticket.CreateInput{
+	_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "s", CategoryID: uuid.New(), ReporterUserID: &staff,
 		AutoAssign: []ticket.Assignment{{UserID: &staff}},
 	})
@@ -249,7 +249,7 @@ func TestCreate_TheRoutedAssignmentIsMarkedAsRouting(t *testing.T) {
 	require.True(t, h.dispatcher.events[0].RoutedAssignment)
 
 	h2 := newHarness(t)
-	_, err = h2.svc.Create(context.Background(), ticket.CreateInput{Subject: "s", CategoryID: uuid.New(), ReporterUserID: &staff})
+	_, err = h2.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, Subject: "s", CategoryID: uuid.New(), ReporterUserID: &staff})
 	require.NoError(t, err)
 	require.False(t, h2.dispatcher.events[0].RoutedAssignment)
 }
@@ -305,7 +305,7 @@ func TestSameStatus_AnnouncesNothingAboutStatus(t *testing.T) {
 func TestCreate_TheRoutingAuditEntryRecordsUnassignedToAssigned(t *testing.T) {
 	h := newHarness(t)
 	assignee := uuid.New()
-	_, err := h.svc.Create(context.Background(), ticket.CreateInput{
+	_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "s", CategoryID: uuid.New(), ReporterUserID: ptr(uuid.New()),
 		AutoAssign: []ticket.Assignment{{UserID: &assignee}},
 	})

@@ -1550,6 +1550,14 @@ paths:
                 category:
                   type: string
                   description: The name of the first category. Optional, used only when no category exists yet.
+                update_check:
+                  type: boolean
+                  description: >-
+                    Whether the administrator ticked "Check for new releases".
+                    Stored as update_check_enabled. Absent means false: a client that
+                    never asks cannot turn a request to GitHub on. Setup also records
+                    post_upgrade_130_seen, so the post-upgrade wizard never shows on
+                    a fresh install.
       responses:
         '201':
           description: The administrator was created.
@@ -1598,7 +1606,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [name, logo_url, version, guest_submission_enabled]
+                required: [name, logo_url, version, guest_submission_enabled, guest_attachments_enabled]
                 properties:
                   name:
                     type: string
@@ -1611,6 +1619,32 @@ paths:
                     description: The server version.
                   guest_submission_enabled:
                     type: boolean
+                  guest_attachments_enabled:
+                    type: boolean
+                    description: |
+                      Whether a guest may attach files from the web page (#445).
+                      True only while guest submission is also on. This is
+                      public: unlike the upload route, which answers the same
+                      404 whether the setting or the token failed, this tells
+                      anyone whether uploads are on. Accepted as low sensitivity.
+                  guest_attachment_max_bytes:
+                    type: integer
+                    format: int64
+                    description: |
+                      The per-file limit that applies to a guest: the lower of
+                      guest_attachment_max_mb and the instance-wide 25 MB maximum.
+                      Present only while guest_attachments_enabled is true. Public,
+                      like the flag; disclosing the limit was accepted.
+                  guest_attachment_uploads_per_hour:
+                    type: integer
+                    description: |
+                      Uploads one guest link may make per hour (#445). Present
+                      only while guest_attachments_enabled is true.
+                  guest_attachment_max_per_ticket:
+                    type: integer
+                    description: |
+                      The most files guests may attach to one ticket (#445).
+                      Present only while guest_attachments_enabled is true.
   /health:
     get:
       operationId: health
@@ -2076,6 +2110,9 @@ paths:
                 body:
                   type: string
                   description: The reply text. Must not be blank after trimming.
+                format:
+                  description: How body is shown. See TextFormatRequest.
+                  $ref: '#/components/schemas/TextFormatRequest'
       responses:
         '201':
           description: The reply as stored.
@@ -2083,7 +2120,13 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/AccountGuestReply'}
         '400':
-          $ref: '#/components/responses/BadRequest'
+          description: |
+            `bad_request`: malformed body or a failed check; `invalid_format`: format is present and is not
+            exactly plain or markdown (an empty string, "Markdown", "html", a number and `null` are all
+            refused). Nothing is written.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
         '404':
           $ref: '#/components/responses/GuestNotFound'
         '409':
@@ -2155,11 +2198,12 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [tracking_number, subject, description, status, created_at, replies]
+                required: [tracking_number, subject, description, description_format, status, created_at, replies]
                 properties:
                   tracking_number: {type: string}
                   subject: {type: string}
                   description: {type: string}
+                  description_format: {$ref: '#/components/schemas/TextFormat'}
                   status:
                     type: string
                     description: The name of the ticket's current status. Empty if the status cannot be found.
@@ -2199,6 +2243,9 @@ paths:
                 description:
                   type: string
                   description: Free text. At most 50,000 bytes.
+                format:
+                  description: How description is shown. See TextFormatRequest.
+                  $ref: '#/components/schemas/TextFormatRequest'
                 category_id: {$ref: '#/components/schemas/Uuid'}
                 guest_email:
                   type: string
@@ -2220,7 +2267,13 @@ paths:
                 properties:
                   tracking_number: {type: string}
         '400':
-          $ref: '#/components/responses/BadRequest'
+          description: |
+            `bad_request`: malformed body or a failed check; `invalid_format`: format is present and is not
+            exactly plain or markdown (an empty string, "Markdown", "html", a number and `null` are all
+            refused). Nothing is written.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
         '404':
           description: Guest submission is switched off (not_found).
           content:
@@ -2806,8 +2859,11 @@ paths:
         one may make it without MFA. A flagged account that has since enrolled a factor gets 403 mfa_required
         and must verify the factor first. Any other route refuses a flagged session with 403
         password_change_required until the password is changed. The change clears the requirement.
-        A wrong current_password answers 401 invalid_credentials as application/json, which is distinct
-        from the text/plain 401 unauthorized sent when there is no session. The old field name password is still read when new_password is absent. current_password is
+        A missing or wrong current_password answers 400 invalid_current_password: the session is fine, so
+        this is not a 401, which here always means there is no session. 1.2.0 did not ask for the current
+        password. Wrong guesses are counted per account against a budget the size of sign-in's
+        (AUTH_RATE_LIMIT_PER_MINUTE, a separate counter) and answer 429 rate_limited once it is spent; the correct
+        password is still accepted. The old field name password is still read when new_password is absent. current_password is
         required in either case.
       tags: ['Account']
       x-ghd-handler: handleChangePassword
@@ -2837,19 +2893,21 @@ paths:
         '204':
           description: The password is changed. A new session cookie is set and the other sessions have ended.
         '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
           description: >-
-            Either no session (unauthorized, text/plain, from the auth middleware)
-            or a wrong current_password (invalid_credentials, application/json,
-            from the handler).
+            The body is not valid, the new password is not 8 to 72 bytes (bad_request), or
+            current_password is missing or wrong (invalid_current_password).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '401':
+          description: No session (unauthorized, text/plain, from the auth middleware).
           content:
             text/plain:
               schema: {$ref: '#/components/schemas/Error'}
-            application/json:
-              schema: {$ref: '#/components/schemas/Error'}
         '403':
           $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
         '404':
           $ref: '#/components/responses/NotFound'
   /api/v1/staff:
@@ -3261,6 +3319,9 @@ paths:
                 description:
                   type: string
                   description: Optional. At most 50,000 bytes.
+                format:
+                  description: How description is shown. See TextFormatRequest.
+                  $ref: '#/components/schemas/TextFormatRequest'
                 category_id:
                   $ref: '#/components/schemas/Uuid'
                 type_id:
@@ -3298,7 +3359,9 @@ paths:
                 $ref: '#/components/schemas/Ticket'
         '400':
           description: |
-            `bad_request`, with a message naming the field. Covers invalid JSON,
+            `invalid_format` when format is present and is not exactly plain or markdown
+            (an empty string, "Markdown", "html", a number and `null` are all refused; nothing is
+            written). `bad_request`, with a message naming the field. Covers invalid JSON,
             subject is required, category_id is required, a category, type or
             item that is archived, for staff, administrators and reporting users
             alike (category_id is not an active category; type_id is not an active
@@ -4492,6 +4555,9 @@ paths:
                 notify_customer:
                   description: Whether the reporter is emailed. Defaults to true. Forced to false for an internal note.
                   type: boolean
+                format:
+                  description: How body is shown. See TextFormatRequest.
+                  $ref: '#/components/schemas/TextFormatRequest'
       responses:
         '201':
           description: The reply that was posted.
@@ -4502,7 +4568,8 @@ paths:
         '400':
           description: |
             `bad_request`: invalid JSON; body is required; or no valid reopen target status is configured
-            (on the reopen path).
+            (on the reopen path). `invalid_format`: format is present and is not exactly plain or markdown;
+            nothing is written.
           content:
             application/json:
               schema:
@@ -4837,6 +4904,25 @@ paths:
                       reason:
                         type: string
                         description: Why not, as the passkey library words it. Empty when available.
+                  update:
+                    type: object
+                    required: [current, latest, url]
+                    description: |
+                      Present only when the opt-in update check (update_check_enabled)
+                      has found a stable release newer than the running version. Read
+                      from the stored answer: this endpoint never makes the request.
+                      Absent while the check is off. The admin UI shows a dismissible
+                      notice.
+                    properties:
+                      current:
+                        type: string
+                        description: The running version.
+                      latest:
+                        type: string
+                        description: The newer version, without a leading v.
+                      url:
+                        type: string
+                        description: The release page on GitHub, built from the tag.
                   reopen_target:
                     type: object
                     required: [inactive]
@@ -4962,6 +5048,42 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /api/v1/admin/post-upgrade:
+    get:
+      operationId: getPostUpgrade
+      summary: Count the accounts the old-password reset window will catch.
+      description: |
+        Administrators only (second factor required). Feeds the post-upgrade
+        wizard. Counts the enabled, non-administrator, non-service accounts whose
+        password hash was made below the current bcrypt cost, which are the
+        accounts that must reset their password once password_rehash_grace_days
+        have passed (administrators are exempt). Accounts with no password, such
+        as SSO-only ones, are not counted. Whether reset links can be mailed is
+        in getSecurityWarnings (email.enabled).
+      tags: ['Admin: Settings']
+      x-ghd-handler: handlePostUpgrade
+      security:
+        - sessionCookie: []
+        - apiKey: ['settings:read']
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      responses:
+        '200':
+          description: The count.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [old_password_accounts]
+                properties:
+                  old_password_accounts:
+                    type: integer
+                    minimum: 0
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
   /api/v1/admin/settings:
     get:
       operationId: getSettings
@@ -5068,9 +5190,24 @@ paths:
           Zero, negative, larger, null and non-integers are refused with bad_request.
           password_rehash_started_at is recorded by the server when 1.3.0 first
           runs and is refused with 400 readonly_setting; it is left out of GET.
+        - update_check_enabled and post_upgrade_130_seen must be JSON booleans
+          (update_check_enabled is also session only, below); anything else, null included, is refused with 400 bad_request and nothing is stored. update_check_result
+          holds the last check (its time and the newest stable version). The checker
+          writes it, so it is refused with 400 readonly_setting and left out of GET.
         - guest_submission_enabled, staff_can_view_ticket_change_history,
           staff_can_view_follow_audit and staff_can_create_api_keys must be JSON
           booleans. null is refused.
+        - guest_attachments_enabled must be a JSON boolean (null is refused). It
+          is off unless set, upgrades included, and only takes effect while
+          guest_submission_enabled is on.
+        - guest_attachment_max_per_ticket must be an integer from 1 to 50 (default
+          5) and guest_attachment_uploads_per_hour an integer from 1 to 30 (default
+          3). Anything else, including null, a string and a fraction, is refused
+          with bad_request, and nothing is stored.
+        - guest_attachment_max_mb must be an integer from 1 to 100 (megabytes).
+          0, 101 or more, negatives, a fraction, a string and null are refused
+          with bad_request, and nothing is stored. Unset reads as 5. A guest is
+          held to the lower of it and the instance-wide 25 MB maximum.
         - api_key_max_lifetime_years must be the integer 1, 2, 3, 4 or 5 (years), or
           -1 for no limit ("Never"). 0, 6 or more, anything below -1, a fraction, a
           string and null are refused with bad_request, and nothing is stored. Unset
@@ -5122,12 +5259,15 @@ paths:
         oidc_redirect_url, mfa_enabled, mfa_enforced_roles, allowed_email_domains,
         self_signup_enabled, open_registration_enabled, closed_reopen_policy,
         audit_mask_requester_names, guest_submission_enabled,
+        guest_attachments_enabled, guest_attachment_max_mb,
+        guest_attachment_max_per_ticket, guest_attachment_uploads_per_hour,
         attachment_scan_address, attachment_scan_policy, attachment_allowed_types,
         attachment_infected_handling, attachment_mismatch_handling,
         audit_retention_days, staff_can_view_ticket_change_history,
         staff_can_view_follow_audit, staff_can_create_api_keys,
         api_key_max_lifetime_years, ticket_scope_enforced, auto_assign_group_id,
         auto_assign_user_ids, password_rehash_grace_days, password_rehash_started_at,
+        update_check_enabled,
         attachment_vt_lookup, attachment_vt_api_key, attachment_reputation_provider,
         attachment_reputation_api_key, attachment_reputation_virustotal_enabled,
         attachment_reputation_virustotal_key, attachment_reputation_metadefender_enabled,
@@ -5294,9 +5434,18 @@ paths:
         Authenticated by the guest token alone. The token names the ticket, so no
         ticket id appears in the path. The request is the same multipart upload as
         uploadAttachment, with the same checks, scanning, quarantine and wrapping,
-        and the same 25 MB cap. Two things are specific to guests. Submission
-        being switched off suspends guest links and answers 404 until the setting
-        is enabled again. A Closed ticket answers 404 not_found, the same as a bad link, where
+        and the instance-wide 25 MB cap. Three things are specific to guests.
+        Attaching is off unless an administrator has turned on
+        guest_attachments_enabled (#445): then the route answers the generic
+        404, byte-identical to a bad link. A guest's per-file limit is
+        guest_attachment_max_mb (default 5), never above the 25 MB cap. Two more
+        limits follow the token and lifecycle checks: a ticket holds at most
+        guest_attachment_max_per_ticket guest-uploaded files (409
+        guest_attachment_limit) and one link may upload
+        guest_attachment_uploads_per_hour times an hour (429 rate_limited, with
+        Retry-After).
+        Submission being switched off suspends guest links and answers 404 until
+        the setting is enabled again. A Closed ticket answers 404 not_found, the same as a bad link, where
         uploadAttachment answers 409. As there, a Resolved ticket past its reopen
         window answers 409 reopen_window_closed.
         The response is the stored attachment. Its reputation block is null, since
@@ -5337,13 +5486,19 @@ paths:
         '404':
           $ref: '#/components/responses/GuestNotFound'
         '409':
-          description: The ticket is Resolved and its reopen window has closed (reopen_window_closed).
+          description: The ticket is Resolved and its reopen window has closed (reopen_window_closed), or it already holds the most files a guest can attach (guest_attachment_limit).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: This link has used its uploads for the hour (rate_limited). Retry-After says when to try again.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
         '413':
-          description: The file is over 25 MB (too_large).
+          description: The file is over the guest's per-file limit (too_large). The message names the limit that applied.
           content:
             application/json:
               schema:
@@ -9902,6 +10057,23 @@ components:
     Role:
       type: string
       enum: [admin, staff, user]
+    TextFormat:
+      description: |
+        How a stored description or reply is shown (#443). plain is shown exactly as typed, with no links and
+        nothing interpreted. markdown is shown through a strict renderer: CommonMark plus GitHub tables,
+        strikethrough and bare-URL links; no images, no raw HTML, headings all one small size; links are
+        http, https and mailto only. Every record before 1.3.0 is plain.
+      type: string
+      enum: [plain, markdown]
+    TextFormatRequest:
+      description: |
+        Optional. Absent means plain, so an existing integration is unchanged. The web app always sends
+        markdown. Anything else, including an empty string, the wrong case ("Markdown"), "html" or a
+        number, is refused with 400 invalid_format and nothing is written. (MCP differs: it defaults to
+        markdown.)
+      type: string
+      enum: [plain, markdown]
+      default: plain
     Priority:
       type: string
       enum: [critical, high, medium, low]
@@ -10028,10 +10200,11 @@ components:
     AccountGuestReply:
       description: A reply as a guest sees it. Internal notes are never included and the author is not named. from_you is true for replies the guest wrote.
       type: object
-      required: [id, body, created_at, from_you]
+      required: [id, body, body_format, created_at, from_you]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
         body: {type: string}
+        body_format: {$ref: '#/components/schemas/TextFormat'}
         created_at: {type: string, format: date-time}
         from_you: {type: boolean}
     Passkey:
@@ -10064,7 +10237,7 @@ components:
         /tickets, PATCH, reopen, resolve, close and follow-up answer it. Optional
         keys are absent when unset, never null.
         A reporting user (any role other than staff or administrator) receives
-        only these keys: id, tracking_number, subject, description, status_id,
+        only these keys: id, tracking_number, subject, description, description_format, status_id,
         priority, category_id, type_id, item_id, created_at, resolved_at,
         assignee_user_id and resolution_notes. Everything else here
         (assignee_group_id, reporter_user_id, guest_email, guest_name,
@@ -10072,7 +10245,7 @@ components:
         reopen_count) is for staff and administrators only. The same list applies to every
         response that carries a ticket, MCP included.
       type: object
-      required: [id, tracking_number, subject, description, category_id, priority, status_id, created_at]
+      required: [id, tracking_number, subject, description, description_format, category_id, priority, status_id, created_at]
       properties:
         id:
           $ref: '#/components/schemas/Uuid'
@@ -10083,6 +10256,8 @@ components:
           type: string
         description:
           type: string
+        description_format:
+          $ref: '#/components/schemas/TextFormat'
         category_id:
           $ref: '#/components/schemas/Uuid'
         type_id:
@@ -10234,7 +10409,7 @@ components:
       description: |
         One message on a ticket thread.
       type: object
-      required: [id, ticket_id, body, internal, notify_customer, created_at]
+      required: [id, ticket_id, body, body_format, internal, notify_customer, created_at]
       properties:
         id:
           $ref: '#/components/schemas/Uuid'
@@ -10248,6 +10423,8 @@ components:
           description: The author's display name, as listReplies sends it. Absent for a guest reply.
         body:
           type: string
+        body_format:
+          $ref: '#/components/schemas/TextFormat'
         internal:
           type: boolean
           description: An internal note. Only staff and administrators are sent these.
@@ -10652,6 +10829,34 @@ components:
         guest_submission_enabled:
           type: boolean
           description: Whether anonymous guests may submit tickets. Session only.
+        guest_attachments_enabled:
+          type: boolean
+          description: |
+            Whether a guest may attach files from the web page (#445). Off by
+            default. Only takes effect while guest_submission_enabled is on.
+            Session only.
+        guest_attachment_max_per_ticket:
+          type: integer
+          minimum: 1
+          maximum: 50
+          description: |
+            The most files guests may attach to one ticket (#445). Default 5.
+            Staff and reporter files do not count. Session only.
+        guest_attachment_uploads_per_hour:
+          type: integer
+          minimum: 1
+          maximum: 30
+          description: |
+            Uploads one guest link may make per hour (#445), keyed by ticket.
+            Default 3. Session only.
+        guest_attachment_max_mb:
+          type: integer
+          minimum: 1
+          maximum: 100
+          description: |
+            A guest's per-file maximum in megabytes (#445). Default 5. The
+            instance-wide 25 MB maximum still applies and wins where lower.
+            Session only.
         sla_enabled:
           type: boolean
           description: Whether SLA tracking is on.
@@ -10749,6 +10954,20 @@ components:
             Days after 1.3.0 first ran before an account still on a password hash
             made below bcrypt cost 12 must reset its password to sign in. Unset reads
             as 30. Administrators are exempt. Session only.
+        update_check_enabled:
+          type: boolean
+          description: >-
+            Whether this instance asks GitHub, at most once every 7 days, for the
+            latest release. Off unless chosen, on upgraded installs too; unset reads
+            as off. While off, no request is ever made. The request is one GET to the
+            public releases API with a fixed User-Agent of go-help-desk (no
+            version) and a constant Accept header, and nothing else. Asked at setup and by the post-upgrade wizard. Session only.
+        post_upgrade_130_seen:
+          type: boolean
+          description: >-
+            True once the 1.3.0 setup question or the post-upgrade wizard has been
+            answered or skipped. Setup writes it true; an install that upgraded to
+            1.3.0 has no value until an administrator finishes or skips the wizard.
         site_name:
           type: string
           description: The site name shown in the interface.

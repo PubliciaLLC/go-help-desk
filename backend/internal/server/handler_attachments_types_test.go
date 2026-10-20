@@ -30,7 +30,7 @@ func TestUpload_RefusesTypesABrowserWouldExecute(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Types", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})
@@ -78,7 +78,7 @@ func TestUpload_WrapsContentThatContradictsTheExtension(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Content", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})
@@ -164,7 +164,7 @@ func TestUpload_RefusesAFilenameThatIsNotText(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Filename bytes", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})
@@ -199,7 +199,7 @@ func TestUpload_RefusesANULInTheFilename(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "NUL", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})

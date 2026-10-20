@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { api } from './client'
-import { addReply, listTickets, lookupRequesters, updateTicket, duplicateResolutionNotes } from './tickets'
+import { addReply, createTicket, listTickets, lookupRequesters, updateTicket, duplicateResolutionNotes } from './tickets'
 
 // tickets.ts is mostly thin wrappers, and those are deliberately not tested —
 // asserting that `api.get` gets called proves nothing. What is covered here is
@@ -53,7 +53,16 @@ describe('addReply', () => {
       body: 'Have you tried restarting it?',
       internal: false,
       notify_customer: true,
+      format: 'markdown',
     })
+  })
+
+  // #443: the editor writes Markdown, and the server's default for a REST
+  // client that says nothing is plain. So the web app says it, every time.
+  it('always sends format "markdown"', async () => {
+    const post = vi.spyOn(api, 'post').mockResolvedValue({ data: {} })
+    await addReply('t-1', 'x', true, false)
+    expect(post.mock.calls[0][1]).toHaveProperty('format', 'markdown')
   })
 
   it('maps notifyCustomer to notify_customer', async () => {
@@ -66,6 +75,14 @@ describe('addReply', () => {
     expect(payload).toHaveProperty('notify_customer', false)
     expect(payload).not.toHaveProperty('notifyCustomer')
     expect(payload).toHaveProperty('internal', true)
+  })
+})
+
+describe('createTicket', () => {
+  it('always sends format "markdown" with the description (#443)', async () => {
+    const post = vi.spyOn(api, 'post').mockResolvedValue({ data: {} })
+    await createTicket({ subject: 's', description: '**d**', category_id: 'c' })
+    expect(post).toHaveBeenCalledWith('/tickets', expect.objectContaining({ description: '**d**', format: 'markdown' }))
   })
 })
 

@@ -30,6 +30,7 @@ function ticket(id: string, statusId: string): Ticket {
     tracking_number: `GHD-${id}`,
     subject: `Subject of ${id}`,
     description: '',
+    description_format: 'plain',
     category_id: 'cat-1',
     priority: 'medium',
     status_id: statusId,

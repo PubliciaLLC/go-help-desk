@@ -5,6 +5,16 @@ import { renderWithQuery } from '@/test/render'
 import { ReplyComposer } from './ReplyComposer'
 import * as ticketsApi from '@/api/tickets'
 
+// The rich editor loads asynchronously, which would swap the field being typed
+// into halfway through a test. These tests are about the composer's own
+// behaviour, so the field is a plain textarea with the same props; the real
+// editor is exercised in editor/ and in ReplyComposer.editor.test.tsx.
+vi.mock('@/components/editor/MarkdownEditor', () => ({
+  MarkdownEditor: (p: { value: string; onChange: (v: string) => void; placeholder?: string; disabled?: boolean }) => (
+    <textarea value={p.value} onChange={(e) => p.onChange(e.target.value)} placeholder={p.placeholder} disabled={p.disabled} />
+  ),
+}))
+
 // What is pinned here is the behaviour that was hard to see while this lived
 // inline in TicketDetailPage's 676-line body: the coupling between the two
 // checkboxes, which decides whether a customer gets emailed, and the ordering

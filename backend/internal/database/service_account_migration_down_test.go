@@ -50,8 +50,8 @@ func TestMigration000041_DownOnRealTables_CascadesMembershipsAndKeepsHistory(t *
 	mustExec(`INSERT INTO categories (id, name, sort_order, active) VALUES ($1, 'Cat', 1, TRUE)`, cat)
 	var statusID uuid.UUID
 	require.NoError(t, tx.QueryRowContext(ctx, `SELECT id FROM statuses LIMIT 1`).Scan(&statusID))
-	mustExec(`INSERT INTO tickets (id, tracking_number, subject, category_id, status_id, reporter_user_id)
-		VALUES ($1, 'T-502', 's', $2, $3, $4)`, ticketID, cat, statusID, human)
+	mustExec(`INSERT INTO tickets (id, tracking_number, subject, category_id, status_id, reporter_user_id, description_format)
+		VALUES ($1, 'T-502', 's', $2, $3, $4, 'plain')`, ticketID, cat, statusID, human)
 	svcHist, humanHist := uuid.New(), uuid.New()
 	mustExec(`INSERT INTO ticket_status_history (id, ticket_id, to_status_id, changed_by_user_id)
 		VALUES ($1, $3, $4, $5), ($2, $3, $4, $6)`, svcHist, humanHist, ticketID, statusID, svc, human)

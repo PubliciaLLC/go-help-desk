@@ -72,7 +72,7 @@ jobs:
         run: npm test
 
       - name: Install Playwright's browser
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install --with-deps chromium webkit
 
       - name: E2E (mobile layout — #296)
         run: npm run test:e2e

@@ -213,10 +213,12 @@ const (
 type CreateInput struct {
 	Subject     string
 	Description string
-	CategoryID  uuid.UUID
-	TypeID      *uuid.UUID
-	ItemID      *uuid.UUID
-	Priority    Priority
+	// DescriptionFormat is required; an empty value is ErrInvalidTextFormat.
+	DescriptionFormat TextFormat
+	CategoryID        uuid.UUID
+	TypeID            *uuid.UUID
+	ItemID            *uuid.UUID
+	Priority          Priority
 
 	// Exactly one of ReporterUserID or GuestEmail must be set.
 	ReporterUserID *uuid.UUID
@@ -309,18 +311,21 @@ func (s *Service) CreateFollowUp(ctx context.Context, originalID uuid.UUID, trac
 		return Ticket{}, fmt.Errorf("%w: a follow-up is created from a closed ticket", ErrNotClosed)
 	}
 	in := CreateInput{
-		Subject:        orig.Subject,
-		Description:    orig.Description,
-		CategoryID:     orig.CategoryID,
-		TypeID:         orig.TypeID,
-		ItemID:         orig.ItemID,
-		Priority:       orig.Priority,
-		ReporterUserID: orig.ReporterUserID,
-		GuestEmail:     orig.GuestEmail,
-		GuestName:      orig.GuestName,
-		GuestPhone:     orig.GuestPhone,
-		TrackingPrefix: trackingPrefix,
-		AutoAssign:     route,
+		Subject:     orig.Subject,
+		Description: orig.Description,
+		// The format travels with the text: a follow-up of an old plain
+		// ticket must not start rendering as Markdown.
+		DescriptionFormat: orig.DescriptionFormat,
+		CategoryID:        orig.CategoryID,
+		TypeID:            orig.TypeID,
+		ItemID:            orig.ItemID,
+		Priority:          orig.Priority,
+		ReporterUserID:    orig.ReporterUserID,
+		GuestEmail:        orig.GuestEmail,
+		GuestName:         orig.GuestName,
+		GuestPhone:        orig.GuestPhone,
+		TrackingPrefix:    trackingPrefix,
+		AutoAssign:        route,
 	}
 	return s.create(ctx, in, actor, &orig)
 }
@@ -379,16 +384,19 @@ func (s *Service) CreateRequesterFollowUp(
 		return Ticket{}, err
 	}
 	in := CreateInput{
-		Subject:        orig.Subject,
-		Description:    orig.Description,
-		CategoryID:     orig.CategoryID,
-		Priority:       PriorityMedium,
-		ReporterUserID: orig.ReporterUserID,
-		GuestEmail:     orig.GuestEmail,
-		GuestName:      orig.GuestName,
-		GuestPhone:     orig.GuestPhone,
-		TrackingPrefix: trackingPrefix,
-		AutoAssign:     route,
+		Subject:     orig.Subject,
+		Description: orig.Description,
+		// The format travels with the text: a follow-up of an old plain
+		// ticket must not start rendering as Markdown.
+		DescriptionFormat: orig.DescriptionFormat,
+		CategoryID:        orig.CategoryID,
+		Priority:          PriorityMedium,
+		ReporterUserID:    orig.ReporterUserID,
+		GuestEmail:        orig.GuestEmail,
+		GuestName:         orig.GuestName,
+		GuestPhone:        orig.GuestPhone,
+		TrackingPrefix:    trackingPrefix,
+		AutoAssign:        route,
 	}
 	if actor.UserID != nil {
 		in.TypeID = orig.TypeID // an account holder picks category and type
@@ -473,6 +481,9 @@ func (s *Service) ValidateCreate(ctx context.Context, in CreateInput) error {
 	if err := checkCreateText(in); err != nil {
 		return err
 	}
+	if _, err := ParseTextFormat(string(in.DescriptionFormat)); err != nil {
+		return fmt.Errorf("description: %w", err)
+	}
 	if strings.TrimSpace(in.Subject) == "" {
 		return fmt.Errorf("subject is required: %w", ErrValidation)
 	}
@@ -544,6 +555,9 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 	if len(in.Subject) > MaxSubjectLength {
 		return Ticket{}, fmt.Errorf("subject must be %d characters or fewer: %w", MaxSubjectLength, ErrValidation)
 	}
+	if _, err := ParseTextFormat(string(in.DescriptionFormat)); err != nil {
+		return Ticket{}, fmt.Errorf("description: %w", err)
+	}
 	if len(in.Description) > MaxDescriptionLength {
 		return Ticket{}, fmt.Errorf("description must be %d characters or fewer: %w", MaxDescriptionLength, ErrValidation)
 	}
@@ -603,21 +617,22 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 	var guestLink bool
 	filedFor := s.filedForAddress(ctx, in)
 	t := Ticket{
-		ID:             uuid.New(),
-		TrackingNumber: GenerateTrackingNumber(in.TrackingPrefix, now.Year(), seq),
-		Subject:        strings.TrimSpace(in.Subject),
-		Description:    in.Description,
-		CategoryID:     in.CategoryID,
-		TypeID:         in.TypeID,
-		ItemID:         in.ItemID,
-		Priority:       in.Priority,
-		StatusID:       s.sys.newID,
-		ReporterUserID: in.ReporterUserID,
-		GuestEmail:     in.GuestEmail,
-		GuestName:      in.GuestName,
-		GuestPhone:     in.GuestPhone,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ID:                uuid.New(),
+		TrackingNumber:    GenerateTrackingNumber(in.TrackingPrefix, now.Year(), seq),
+		Subject:           strings.TrimSpace(in.Subject),
+		Description:       in.Description,
+		DescriptionFormat: in.DescriptionFormat,
+		CategoryID:        in.CategoryID,
+		TypeID:            in.TypeID,
+		ItemID:            in.ItemID,
+		Priority:          in.Priority,
+		StatusID:          s.sys.newID,
+		ReporterUserID:    in.ReporterUserID,
+		GuestEmail:        in.GuestEmail,
+		GuestName:         in.GuestName,
+		GuestPhone:        in.GuestPhone,
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}
 
 	// The ticket, its opening status-history row and its audit entry commit
@@ -1507,8 +1522,8 @@ func (s *Service) changePriorityInTx(ctx context.Context, st Store, au audit.Sto
 // notifyCustomer controls whether a ticket-update email is sent to the
 // reporter. It is forced false for internal notes. reporterEmail is the
 // recipient address; callers are responsible for looking it up.
-func (s *Service) AddReply(ctx context.Context, ticketID uuid.UUID, body string, internal bool, notifyCustomer bool, reporterEmail string, actor Actor, reopenWindowDays int, reopenTargetStatusID uuid.UUID) (Reply, error) {
-	return s.addReply(ctx, ticketID, body, internal, notifyCustomer, reporterEmail, actor, reopenWindowDays, reopenTargetStatusID, nil)
+func (s *Service) AddReply(ctx context.Context, ticketID uuid.UUID, body string, format TextFormat, internal bool, notifyCustomer bool, reporterEmail string, actor Actor, reopenWindowDays int, reopenTargetStatusID uuid.UUID) (Reply, error) {
+	return s.addReply(ctx, ticketID, body, format, internal, notifyCustomer, reporterEmail, actor, reopenWindowDays, reopenTargetStatusID, nil)
 }
 
 // AddGuestReply appends a reply from a guest, who has no account.
@@ -1525,9 +1540,9 @@ func (s *Service) AddReply(ctx context.Context, ticketID uuid.UUID, body string,
 // A guest reply is never internal and never notifies: the customer is the one
 // writing, and mailing them their own message back is noise. Staff see it in
 // the thread.
-func (s *Service) AddGuestReply(ctx context.Context, ticketID uuid.UUID, body string, reopenWindowDays int, reopenTargetStatusID uuid.UUID) (Reply, error) {
+func (s *Service) AddGuestReply(ctx context.Context, ticketID uuid.UUID, body string, format TextFormat, reopenWindowDays int, reopenTargetStatusID uuid.UUID) (Reply, error) {
 	guest := Actor{UserID: nil, Role: user.RoleUser}
-	return s.addReply(ctx, ticketID, body, false, false, "", guest, reopenWindowDays, reopenTargetStatusID,
+	return s.addReply(ctx, ticketID, body, format, false, false, "", guest, reopenWindowDays, reopenTargetStatusID,
 		func(t Ticket, status Status) error {
 			return CanGuestUpdate(t, status, reopenWindowDays)
 		})
@@ -1599,9 +1614,12 @@ func (s *Service) ticketAndStatus(ctx context.Context, ticketID uuid.UUID) (Tick
 // addReply is the one reply path. authorize replaces the default ownership
 // check when non-nil; everything after it — the reopen, the write, the audit,
 // the dispatch — is shared, so a guest reply cannot drift from a user's.
-func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string, internal bool, notifyCustomer bool, reporterEmail string, actor Actor, reopenWindowDays int, reopenTargetStatusID uuid.UUID, authorize func(Ticket, Status) error) (Reply, error) {
+func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string, format TextFormat, internal bool, notifyCustomer bool, reporterEmail string, actor Actor, reopenWindowDays int, reopenTargetStatusID uuid.UUID, authorize func(Ticket, Status) error) (Reply, error) {
 	if err := CheckFreeText("body", body); err != nil {
 		return Reply{}, err
+	}
+	if _, err := ParseTextFormat(string(format)); err != nil {
+		return Reply{}, fmt.Errorf("reply: %w", err)
 	}
 	t, err := s.store.GetByID(ctx, ticketID)
 	if err != nil {
@@ -1639,6 +1657,7 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 		TicketID:       ticketID,
 		AuthorID:       actor.UserID,
 		Body:           body,
+		BodyFormat:     format,
 		Internal:       internal,
 		NotifyCustomer: notifyCustomer,
 		CreatedAt:      time.Now(),
@@ -2984,6 +3003,32 @@ func (s *Service) CreateAttachment(ctx context.Context, a Attachment, actor Acto
 	})
 }
 
+// CreateGuestAttachment is CreateAttachment for a guest, and the authority on the
+// per-ticket cap (#445): the count is taken inside the transaction that holds
+// the ticket's row lock, so uploads racing for the last slot cannot all pass.
+// Returns ErrGuestAttachmentLimit when the ticket already holds max guest files.
+//
+// The closure is safe to run again (the transaction runner retries a deadlock,
+// #541): it captures nothing it writes to; n and err are its own.
+func (s *Service) CreateGuestAttachment(ctx context.Context, a Attachment, actor Actor, max int) error {
+	return s.atomic.InTx(ctx, func(st Store, _ audit.Store, _ *notification.Changes) error {
+		// Takes the ticket's row lock (a guest is a requester), which is what
+		// serialises concurrent uploads: the second one's count below waits
+		// for the first to commit and sees its row.
+		if _, err := s.refuseRequesterOnClosed(ctx, st, a.TicketID, actor); err != nil {
+			return err
+		}
+		n, err := st.CountGuestAttachments(ctx, a.TicketID)
+		if err != nil {
+			return err
+		}
+		if n >= max {
+			return ErrGuestAttachmentLimit
+		}
+		return st.CreateAttachment(ctx, a)
+	})
+}
+
 // refuseRequesterOnClosed is closedRefusal for a write that is about to
 // happen: it takes the ticket's row lock and refuses a requester when the
 // locked row is Closed, returning the locked row for the caller to reuse. A
@@ -3011,6 +3056,12 @@ func (s *Service) GetAttachment(ctx context.Context, id uuid.UUID) (Attachment, 
 // AnyAttachmentExists reports whether any attachment is stored on the instance.
 func (s *Service) AnyAttachmentExists(ctx context.Context) (bool, error) {
 	return s.store.AnyAttachmentExists(ctx)
+}
+
+// CountGuestAttachments is how many files a guest has attached to the ticket
+// (#445); staff and reporter uploads are not counted.
+func (s *Service) CountGuestAttachments(ctx context.Context, ticketID uuid.UUID) (int, error) {
+	return s.store.CountGuestAttachments(ctx, ticketID)
 }
 
 // ListAttachments returns all attachments for a ticket.

@@ -97,7 +97,7 @@ func TestClosedIsTerminal_ARequesterReplyDoesNotReopenIt(t *testing.T) {
 	h := newHarness(t)
 	seeded := h.seedClosed()
 
-	_, err := h.svc.AddReply(context.Background(), seeded.ID, "still broken", false, true, "r@example.test",
+	_, err := h.svc.AddReply(context.Background(), seeded.ID, "still broken", ticket.TextFormatPlain, false, true, "r@example.test",
 		ticket.Actor{UserID: seeded.ReporterUserID, Role: user.RoleUser}, 7, h.newStatus.ID)
 
 	require.ErrorIs(t, err, ticket.ErrClosed)
@@ -136,7 +136,7 @@ func TestClosedIsTerminal_AReplyRacingTheCloseIsRefusedAndReopensNothing(t *test
 	seeded := h.seedResolved(reporter) // would reopen: Resolved, inside the window
 	closeBetweenCheckAndWrite(h, seeded.ID)
 
-	_, err := h.svc.AddReply(context.Background(), seeded.ID, "still broken", false, true, "r@example.test",
+	_, err := h.svc.AddReply(context.Background(), seeded.ID, "still broken", ticket.TextFormatPlain, false, true, "r@example.test",
 		ticket.Actor{UserID: &reporter, Role: user.RoleUser}, 7, h.newStatus.ID)
 
 	require.ErrorIs(t, err, ticket.ErrClosed, "the reply lost the race to the close")
@@ -151,7 +151,7 @@ func TestClosedIsTerminal_ARequesterReplyRacingTheCloseOnAnOpenTicketIsRefused(t
 	seeded := h.seedOpen() // not Resolved: nothing to reopen, only a reply to land
 	closeBetweenCheckAndWrite(h, seeded.ID)
 
-	_, err := h.svc.AddReply(context.Background(), seeded.ID, "hello", false, false, "",
+	_, err := h.svc.AddReply(context.Background(), seeded.ID, "hello", ticket.TextFormatPlain, false, false, "",
 		ticket.Actor{UserID: seeded.ReporterUserID, Role: user.RoleUser}, 7, h.newStatus.ID)
 
 	require.ErrorIs(t, err, ticket.ErrClosed)
@@ -163,7 +163,7 @@ func TestClosedIsTerminal_AGuestReplyRacingTheCloseIsRefused(t *testing.T) {
 	tk, _ := guestTicket(t, h)
 	closeBetweenCheckAndWrite(h, tk.ID)
 
-	_, err := h.svc.AddGuestReply(context.Background(), tk.ID, "late", 7, h.newStatus.ID)
+	_, err := h.svc.AddGuestReply(context.Background(), tk.ID, "late", ticket.TextFormatPlain, 7, h.newStatus.ID)
 
 	require.ErrorIs(t, err, ticket.ErrClosed, "the handler maps this to the generic 404")
 	require.Empty(t, h.store.replies[tk.ID])
@@ -199,7 +199,7 @@ func TestClosedIsTerminal_StaffReplyAndAttachmentOnAClosedTicketStand(t *testing
 	seeded := h.seedClosed()
 	staff := ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff}
 
-	_, err := h.svc.AddReply(context.Background(), seeded.ID, "for the record", true, false, "", staff, 7, h.newStatus.ID)
+	_, err := h.svc.AddReply(context.Background(), seeded.ID, "for the record", ticket.TextFormatPlain, true, false, "", staff, 7, h.newStatus.ID)
 	require.NoError(t, err)
 	require.NoError(t, h.svc.CreateAttachment(context.Background(),
 		ticket.Attachment{ID: uuid.New(), TicketID: seeded.ID, Filename: "fix.txt"}, staff))
@@ -213,7 +213,7 @@ func TestRequesterWrites_OnAnOpenTicketStillLand(t *testing.T) {
 	seeded := h.seedOpen()
 	a := ticket.Actor{UserID: seeded.ReporterUserID, Role: user.RoleUser}
 
-	_, err := h.svc.AddReply(context.Background(), seeded.ID, "hello", false, false, "", a, 7, h.newStatus.ID)
+	_, err := h.svc.AddReply(context.Background(), seeded.ID, "hello", ticket.TextFormatPlain, false, false, "", a, 7, h.newStatus.ID)
 	require.NoError(t, err)
 	require.NoError(t, h.svc.CreateAttachment(context.Background(),
 		ticket.Attachment{ID: uuid.New(), TicketID: seeded.ID, Filename: "a.txt"}, a))
@@ -229,9 +229,9 @@ func TestClosedIsTerminal_StaffKeepTheirOtherActions(t *testing.T) {
 	t.Run("reply and internal note", func(t *testing.T) {
 		h := newHarness(t)
 		seeded := h.seedClosed()
-		_, err := h.svc.AddReply(context.Background(), seeded.ID, "for the record", false, false, "", staff, 7, h.newStatus.ID)
+		_, err := h.svc.AddReply(context.Background(), seeded.ID, "for the record", ticket.TextFormatPlain, false, false, "", staff, 7, h.newStatus.ID)
 		require.NoError(t, err)
-		_, err = h.svc.AddReply(context.Background(), seeded.ID, "note", true, false, "", staff, 7, h.newStatus.ID)
+		_, err = h.svc.AddReply(context.Background(), seeded.ID, "note", ticket.TextFormatPlain, true, false, "", staff, 7, h.newStatus.ID)
 		require.NoError(t, err)
 		stored, _ := h.store.GetByID(context.Background(), seeded.ID)
 		require.Equal(t, h.closedStatus.ID, stored.StatusID, "and the reply does not reopen it")

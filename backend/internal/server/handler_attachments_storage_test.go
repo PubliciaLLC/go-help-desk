@@ -95,7 +95,7 @@ func TestAttachmentStorage_UnwritableRefusesStaffUploadsAndTellsAdmins(t *testin
 func TestAttachmentStorage_UnwritableRefusesRequesterUploads(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Mine", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.userID,
 	})
@@ -111,6 +111,7 @@ func TestAttachmentStorage_UnwritableRefusesGuestUploads(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	_, token := seedGuestTicket(t, h)
+	setGuestUploads(t, h, true) // off by default (#445)
 	breakStorage(t, h)
 
 	requireUnavailable(t, uploadGuestAttachment(t, h, token, "photo.txt", []byte("what it looks like")))

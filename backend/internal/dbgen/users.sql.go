@@ -298,6 +298,26 @@ func (q *Queries) CountUsers(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const countUsersWithOldPasswordHash = `-- name: CountUsersWithOldPasswordHash :one
+SELECT count(*) FROM users
+WHERE deleted_at IS NULL AND NOT disabled AND NOT service_account AND role <> 'admin'
+  AND CASE WHEN password_hash ~ '^\$2[abxy]\$[0-9]{2}\$'
+           THEN substring(password_hash FROM 5 FOR 2)::int < $1::int
+           ELSE false END
+`
+
+// Accounts that would have to reset their password once the grace period
+// ends (#453): enabled, not an administrator (every administrator is exempt),
+// not a service account, and holding a bcrypt hash made below cost $1. An
+// empty hash (SSO-only) or one bcrypt cannot read does not match the pattern
+// and is not counted; the CASE keeps the cast from running on it.
+func (q *Queries) CountUsersWithOldPasswordHash(ctx context.Context, dollar_1 int32) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countUsersWithOldPasswordHash, dollar_1)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createUser = `-- name: CreateUser :exec
 INSERT INTO users (
     id,

@@ -1036,6 +1036,17 @@ func (s *Service) UpsertSAMLUser(ctx context.Context, samlSubject, email, displa
 	})
 }
 
+// AccountsOnOldPasswordHash is how many accounts are still on a password hash
+// made below ProductionBcryptCost and would have to reset it once the grace
+// period ends (#453). Administrators are exempt and not counted.
+func (s *Service) AccountsOnOldPasswordHash(ctx context.Context) (int, error) {
+	n, err := s.store.CountBelowCost(ctx, s.hashCost)
+	if err != nil {
+		return 0, fmt.Errorf("counting old password hashes: %w", err)
+	}
+	return n, nil
+}
+
 // HasUsers returns true when at least one user record exists, in the sense
 // that decides whether first-run setup is still open.
 //

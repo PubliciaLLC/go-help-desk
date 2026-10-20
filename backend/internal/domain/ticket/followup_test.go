@@ -25,7 +25,7 @@ func closedWithEverything(t *testing.T, h *harness) ticket.Ticket {
 	assignee := uuid.New()
 	reporter := uuid.New()
 	closedAt := time.Now().Add(-time.Hour)
-	tk := ticket.Ticket{
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID:             uuid.New(),
 		TrackingNumber: "GHD-2026-000042",
 		Subject:        "Printer on 3 is down",

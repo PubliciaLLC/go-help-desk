@@ -260,7 +260,7 @@ func (r *verdictRig) setKey(t *testing.T, key string) {
 
 func (r *verdictRig) ticketFor(t *testing.T, reporter uuid.UUID) uuid.UUID {
 	t.Helper()
-	tk, err := r.h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := r.h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Quarantined sample", Description: "x", CategoryID: r.h.catID,
 		ReporterUserID: &reporter,
 	})

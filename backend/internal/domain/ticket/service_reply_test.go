@@ -80,7 +80,7 @@ func newHarness(t *testing.T) *harness {
 // reply falls inside the reopen window.
 func (h *harness) seedResolved(reporterID uuid.UUID) ticket.Ticket {
 	resolvedAt := time.Now().Add(-24 * time.Hour)
-	t := ticket.Ticket{
+	t := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000001",
 		Subject:        "Printer offline",
@@ -117,7 +117,7 @@ func TestAddReply_ReopenPersistFailureIsNotAnnounced(t *testing.T) {
 	h.store.errUpdate = errStoreDown
 
 	_, err := h.svc.AddReply(context.Background(), seeded.ID,
-		"It is broken again", false, true, "reporter@example.com",
+		"It is broken again", ticket.TextFormatPlain, false, true, "reporter@example.com",
 		ticket.Actor{UserID: &reporter, Role: user.RoleUser},
 		30, h.newStatus.ID)
 
@@ -148,7 +148,7 @@ func TestAddReply_SLAFailureDoesNotLoseTheReply(t *testing.T) {
 	reporter := uuid.New()
 	agent := uuid.New()
 
-	seeded := ticket.Ticket{
+	seeded := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000002",
 		Subject:        "Mouse not working",
@@ -162,7 +162,7 @@ func TestAddReply_SLAFailureDoesNotLoseTheReply(t *testing.T) {
 	h.sla.err = errStoreDown
 
 	reply, err := h.svc.AddReply(context.Background(), seeded.ID,
-		"Have you tried a new battery?", false, true, "reporter@example.com",
+		"Have you tried a new battery?", ticket.TextFormatPlain, false, true, "reporter@example.com",
 		ticket.Actor{UserID: &agent, Role: user.RoleStaff},
 		30, h.newStatus.ID)
 
@@ -189,7 +189,7 @@ func TestAddReply_SucceedsAndReopens(t *testing.T) {
 	seeded := h.seedResolved(reporter)
 
 	reply, err := h.svc.AddReply(context.Background(), seeded.ID,
-		"Still broken", false, true, "reporter@example.com",
+		"Still broken", ticket.TextFormatPlain, false, true, "reporter@example.com",
 		ticket.Actor{UserID: &reporter, Role: user.RoleUser},
 		30, h.newStatus.ID)
 
@@ -221,7 +221,7 @@ func TestAddReply_InternalNoteNeverNotifiesCustomer(t *testing.T) {
 	reporter := uuid.New()
 	agent := uuid.New()
 
-	seeded := ticket.Ticket{
+	seeded := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000003",
 		Subject:        "Cannot print",
@@ -234,7 +234,7 @@ func TestAddReply_InternalNoteNeverNotifiesCustomer(t *testing.T) {
 
 	// notifyCustomer is requested, but the note is internal.
 	reply, err := h.svc.AddReply(context.Background(), seeded.ID,
-		"Reporter is mistaken, see ticket 12", true, true, "reporter@example.com",
+		"Reporter is mistaken, see ticket 12", ticket.TextFormatPlain, true, true, "reporter@example.com",
 		ticket.Actor{UserID: &agent, Role: user.RoleStaff},
 		30, h.newStatus.ID)
 
@@ -257,7 +257,7 @@ func (h *harness) statusNamed(name string) ticket.Status {
 // seedOpen plants a ticket in New.
 func (h *harness) seedOpen() ticket.Ticket {
 	reporter := uuid.New()
-	t := ticket.Ticket{
+	t := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000100",
 		Subject:        "Open ticket",
@@ -275,7 +275,7 @@ func (h *harness) seedOpen() ticket.Ticket {
 func (h *harness) seedClosed() ticket.Ticket {
 	reporter := uuid.New()
 	closedAt := time.Now().Add(-time.Hour)
-	t := ticket.Ticket{
+	t := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000101",
 		Subject:        "Closed ticket",

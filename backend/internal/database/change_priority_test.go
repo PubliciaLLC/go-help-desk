@@ -73,7 +73,7 @@ func newChangePriorityFx(t *testing.T) *changePriorityFx {
 
 	newSt, err := f.ts.GetStatusByName(ctx, ticket.StatusNameNew)
 	require.NoError(t, err)
-	f.tk = ticket.Ticket{
+	f.tk = ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("CP-" + uuid.NewString()[:8]),
 		Subject: "change priority", Description: "change priority", CategoryID: cat.ID,
 		Priority: ticket.PriorityMedium, StatusID: newSt.ID, ReporterUserID: &reporter.ID,

@@ -25,9 +25,9 @@ func TestWebhookEventSource_ReadsTheTicketAsItIsNow(t *testing.T) {
 
 	newStatus := statusIDNamed(t, h, ticket.StatusNameNew)
 	staff := ticket.Actor{UserID: &h.staffID, Role: user.RoleStaff}
-	pub, err := h.ticketSvc.AddReply(ctx, tk.ID, "PUBLIC TEXT", false, false, "", staff, 7, newStatus)
+	pub, err := h.ticketSvc.AddReply(ctx, tk.ID, "PUBLIC TEXT", ticket.TextFormatPlain, false, false, "", staff, 7, newStatus)
 	require.NoError(t, err)
-	note, err := h.ticketSvc.AddReply(ctx, tk.ID, "INTERNAL TEXT", true, false, "", staff, 7, newStatus)
+	note, err := h.ticketSvc.AddReply(ctx, tk.ID, "INTERNAL TEXT", ticket.TextFormatPlain, true, false, "", staff, 7, newStatus)
 	require.NoError(t, err)
 
 	facts, found, err := src.TicketFacts(ctx, tk.ID)

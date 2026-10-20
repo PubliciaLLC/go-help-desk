@@ -51,7 +51,7 @@ export function DashboardPage() {
               <Link key={s.id} to="/tickets" search={{ status: s.id, reporter: undefined }} className="block group">
                 <Card className="border-l-4 transition-shadow group-hover:shadow-md cursor-pointer" style={{ borderLeftColor: s.color }}>
                   <CardHeader className="pb-1">
-                    <CardTitle className="text-sm font-medium text-gray-500">{s.name}</CardTitle>
+                    <CardTitle className="text-sm font-medium text-gray-500 [overflow-wrap:anywhere]">{s.name}</CardTitle>
                   </CardHeader>
                   <CardContent>
                     <p className="text-3xl font-bold text-gray-900">{s.ticket_count}</p>

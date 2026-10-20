@@ -174,6 +174,9 @@ type Querier interface {
 	// become a join, which is what lets the planner start from the tickets side.
 	// Administrators use CountAuditLog instead.
 	CountAuditLogScoped(ctx context.Context, arg CountAuditLogScopedParams) (int64, error)
+	// Only what a guest uploaded: staff and reporter files do not count toward the
+	// guest cap (#445).
+	CountGuestAttachments(ctx context.Context, ticketID uuid.UUID) (int64, error)
 	// How many administrators this instance would still have if $1 stopped being
 	// one.
 	//
@@ -209,6 +212,12 @@ type Querier interface {
 	// the type's items too.
 	CountTicketsByType(ctx context.Context, typeID uuid.NullUUID) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
+	// Accounts that would have to reset their password once the grace period
+	// ends (#453): enabled, not an administrator (every administrator is exempt),
+	// not a service account, and holding a bcrypt hash made below cost $1. An
+	// empty hash (SSO-only) or one bcrypt cannot read does not match the pattern
+	// and is not counted; the CASE keeps the cast from running on it.
+	CountUsersWithOldPasswordHash(ctx context.Context, dollar_1 int32) (int64, error)
 	// Whether this account has a passkey at all.
 	//
 	// This is what makes MFARequiredFor satisfiable by a passkey rather than only
@@ -240,6 +249,7 @@ type Querier interface {
 	CreatePlugin(ctx context.Context, arg CreatePluginParams) error
 	// author_id is NULL for a reply written by a guest, who has no account. That is
 	// the only way it is NULL: every other path passes the acting user.
+	// body_format has no column default (migration 000055), so every writer names it.
 	CreateReply(ctx context.Context, arg CreateReplyParams) error
 	CreateSLAPolicy(ctx context.Context, arg CreateSLAPolicyParams) error
 	CreateSLARecord(ctx context.Context, arg CreateSLARecordParams) error

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -338,12 +339,14 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Subject     string     `json:"subject"`
-		Description string     `json:"description"`
-		CategoryID  uuid.UUID  `json:"category_id"`
-		TypeID      *uuid.UUID `json:"type_id"`
-		ItemID      *uuid.UUID `json:"item_id"`
-		Priority    string     `json:"priority"`
+		Subject     string `json:"subject"`
+		Description string `json:"description"`
+		// Optional: plain (the default) or markdown. See restTextFormat.
+		Format     json.RawMessage `json:"format"`
+		CategoryID uuid.UUID       `json:"category_id"`
+		TypeID     *uuid.UUID      `json:"type_id"`
+		ItemID     *uuid.UUID      `json:"item_id"`
+		Priority   string          `json:"priority"`
 		// Staff and administrators only (#444): who the ticket is for when it
 		// is not the caller. At most one; neither means the caller.
 		ReporterUserID *uuid.UUID `json:"reporter_user_id"`
@@ -357,6 +360,11 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+	descFormat, err := restTextFormat(body.Format)
+	if err != nil {
+		handleError(w, err)
 		return
 	}
 
@@ -447,12 +455,13 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	in := ticket.CreateInput{
-		Subject:     body.Subject,
-		Description: body.Description,
-		CategoryID:  body.CategoryID,
-		TypeID:      body.TypeID,
-		ItemID:      body.ItemID,
-		Priority:    ticket.Priority(body.Priority),
+		Subject:           body.Subject,
+		Description:       body.Description,
+		DescriptionFormat: descFormat,
+		CategoryID:        body.CategoryID,
+		TypeID:            body.TypeID,
+		ItemID:            body.ItemID,
+		Priority:          ticket.Priority(body.Priority),
 	}
 	if in.Priority == "" {
 		in.Priority = ticket.PriorityMedium
@@ -858,9 +867,16 @@ func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 		Body           string `json:"body"`
 		Internal       bool   `json:"internal"`
 		NotifyCustomer *bool  `json:"notify_customer"` // nil → defaults to true
+		// Optional: plain (the default) or markdown. See restTextFormat.
+		Format json.RawMessage `json:"format"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+	format, err := restTextFormat(body.Format)
+	if err != nil {
+		handleError(w, err)
 		return
 	}
 	if strings.TrimSpace(body.Body) == "" {
@@ -905,7 +921,7 @@ func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
-	reply, err := s.tickets.AddReply(r.Context(), id, body.Body, body.Internal, notifyCustomer, reporterEmail, actor, reopenDays, reopenStatusID)
+	reply, err := s.tickets.AddReply(r.Context(), id, body.Body, format, body.Internal, notifyCustomer, reporterEmail, actor, reopenDays, reopenStatusID)
 	if err != nil {
 		handleError(w, err)
 		return

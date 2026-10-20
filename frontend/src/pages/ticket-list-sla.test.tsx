@@ -37,6 +37,7 @@ function ticket(over: Partial<Ticket> & { id: string; subject: string }): Ticket
   return {
     tracking_number: `TKT-${over.id}`,
     description: '',
+    description_format: 'plain',
     category_id: 'cat-1',
     priority: 'medium',
     status_id: 'st-new',

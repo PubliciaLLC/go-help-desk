@@ -68,7 +68,7 @@ func TestMigration_FrozenElapsedBackfillClipsPendingTime(t *testing.T) {
 	firstResponseAt := now.Add(-1 * time.Hour)
 	const priorPausedSeconds = int64(600) // 10 minutes accumulated from an earlier, already-closed pause
 
-	tk := ticket.Ticket{
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID:               uuid.New(),
 		TrackingNumber:   ticket.TrackingNumber("BF-" + uuid.NewString()[:8]),
 		Subject:          "Backfill me",
@@ -213,7 +213,7 @@ func TestMigration_BackfillsPreExistingSLAInvariantViolations(t *testing.T) {
 	// under the OLD rules, before #219. resolved_at is set; first_response_at
 	// is NULL.
 	resolvedAtA := now.Add(-10 * time.Hour)
-	tkA := ticket.Ticket{
+	tkA := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("BFA-" + uuid.NewString()[:8]),
 		Subject: "shape a", Description: "shape a", CategoryID: cat.ID, Priority: ticket.PriorityMedium,
 		StatusID: newSt.ID, ReporterUserID: &reporter.ID, ResolvedAt: &resolvedAtA,
@@ -234,7 +234,7 @@ func TestMigration_BackfillsPreExistingSLAInvariantViolations(t *testing.T) {
 	// resolved — allowed under the OLD rules, before #220. Both resolved_at
 	// (ticket AND sla_records) are NULL; closed_at is set.
 	closedAtB := now.Add(-5 * time.Hour)
-	tkB := ticket.Ticket{
+	tkB := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("BFB-" + uuid.NewString()[:8]),
 		Subject: "shape b", Description: "shape b", CategoryID: cat.ID, Priority: ticket.PriorityMedium,
 		StatusID: closedSt.ID, ReporterUserID: &reporter.ID, ClosedAt: &closedAtB,
@@ -342,7 +342,7 @@ func TestMigration_SLABackfillReachesClosedAtStillNullRows(t *testing.T) {
 
 	// The exact legacy shape #231 describes: sitting in Closed, closed_at
 	// NEVER stamped, sla_records.resolved_at NULL.
-	tk := ticket.Ticket{
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("BF231-" + uuid.NewString()[:8]),
 		Subject: "closed with no closed_at", Description: "closed with no closed_at",
 		CategoryID: cat.ID, Priority: ticket.PriorityMedium,
@@ -460,7 +460,7 @@ func TestMigration_SLABackfillStampsBreachForLateLegacyTicket(t *testing.T) {
 	// 30-minute target — closed_at never stamped (legacy shape), never
 	// separately resolved. UpdatedAt is "now" (much later than the recovered
 	// close), so this also proves history outranks updated_at.
-	tkLate := ticket.Ticket{
+	tkLate := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("BF235L-" + uuid.NewString()[:8]),
 		Subject: "late legacy close", Description: "late legacy close",
 		CategoryID: cat.ID, Priority: ticket.PriorityMedium,
@@ -480,7 +480,7 @@ func TestMigration_SLABackfillStampsBreachForLateLegacyTicket(t *testing.T) {
 	// closed_at = now() to read as "on time" purely because it was seeded
 	// close to the moment the test ran it — that is the exact bug #241
 	// fixed, so this fixture must not rely on it any more.
-	tkOnTime := ticket.Ticket{
+	tkOnTime := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("BF235O-" + uuid.NewString()[:8]),
 		Subject: "on-time legacy close", Description: "on-time legacy close",
 		CategoryID: cat.ID, Priority: ticket.PriorityMedium,
@@ -497,7 +497,7 @@ func TestMigration_SLABackfillStampsBreachForLateLegacyTicket(t *testing.T) {
 	// has nothing to recover from and must fall back to updated_at, which
 	// here is set to a specific instant (15 minutes after creation, on time)
 	// rather than "now", so a wrong fallback to now() would read as late.
-	tkFallback := ticket.Ticket{
+	tkFallback := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("BF235F-" + uuid.NewString()[:8]),
 		Subject: "legacy close no history", Description: "legacy close no history",
 		CategoryID: cat.ID, Priority: ticket.PriorityMedium,
@@ -607,7 +607,7 @@ func TestMigration_SLABackfillReachesResolvedTickets(t *testing.T) {
 	created := now.Add(-4 * time.Hour)
 
 	mkResolved := func(subject string, resolvedAt, closedAt *time.Time) ticket.Ticket {
-		tk := ticket.Ticket{
+		tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 			ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("BF238-" + uuid.NewString()[:8]),
 			Subject: subject, Description: subject,
 			CategoryID: cat.ID, Priority: ticket.PriorityMedium,
@@ -748,7 +748,7 @@ func TestMigration_ClearsStaleClosedAtOnReopenedTickets(t *testing.T) {
 	staleClosedAt := now.Add(-2 * time.Hour)
 
 	mkReopened := func(subject string, statusID uuid.UUID) ticket.Ticket {
-		tk := ticket.Ticket{
+		tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 			ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("BF239-" + uuid.NewString()[:8]),
 			Subject: subject, Description: subject,
 			CategoryID: cat.ID, Priority: ticket.PriorityMedium,
@@ -841,7 +841,7 @@ func TestMigration_BreachStampReachesRowsFrozenBy000027(t *testing.T) {
 	createdLate := now.Add(-24 * time.Hour)
 	resolvedAtLate := now.Add(-12 * time.Hour)
 	closedAtLate := now.Add(-10 * time.Hour)
-	tkFrozenLate := ticket.Ticket{
+	tkFrozenLate := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("BF240L-" + uuid.NewString()[:8]),
 		Subject: "frozen late", Description: "frozen late",
 		CategoryID: cat.ID, Priority: ticket.PriorityMedium,
@@ -858,7 +858,7 @@ func TestMigration_BreachStampReachesRowsFrozenBy000027(t *testing.T) {
 	}))
 
 	// frozenOnTime: same shape, but both instants are within target.
-	tkFrozenOnTime := ticket.Ticket{
+	tkFrozenOnTime := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("BF240O-" + uuid.NewString()[:8]),
 		Subject: "frozen on time", Description: "frozen on time",
 		CategoryID: cat.ID, Priority: ticket.PriorityMedium,
@@ -877,7 +877,7 @@ func TestMigration_BreachStampReachesRowsFrozenBy000027(t *testing.T) {
 
 	// frozenPreStamped: as frozenLate, but already carrying a breach stamp
 	// from an arbitrary earlier sweep instant — must survive untouched.
-	tkFrozenPreStamped := ticket.Ticket{
+	tkFrozenPreStamped := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("BF240P-" + uuid.NewString()[:8]),
 		Subject: "frozen pre-stamped", Description: "frozen pre-stamped",
 		CategoryID: cat.ID, Priority: ticket.PriorityMedium,
@@ -899,7 +899,7 @@ func TestMigration_BreachStampReachesRowsFrozenBy000027(t *testing.T) {
 	// grows sla_paused_seconds, which only shrinks the (re)computed elapsed
 	// reading below what it truly was at met time. Documents that this can
 	// at worst miss a breach, never invent one.
-	tkFrozenPauseGrown := ticket.Ticket{
+	tkFrozenPauseGrown := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("BF240G-" + uuid.NewString()[:8]),
 		Subject: "frozen pause grown", Description: "frozen pause grown",
 		CategoryID: cat.ID, Priority: ticket.PriorityMedium,
@@ -923,7 +923,7 @@ func TestMigration_BreachStampReachesRowsFrozenBy000027(t *testing.T) {
 	// Resolved/Closed), but the sla_records fact — a resolution that DID
 	// happen, and was late — is a fact about the past and must survive.
 	resolvedAtBeforeReopen := createdLate.Add(10 * time.Hour)
-	tkReopenedMet := ticket.Ticket{
+	tkReopenedMet := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
 		ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("BF240R-" + uuid.NewString()[:8]),
 		Subject: "reopened after a late resolution", Description: "reopened after a late resolution",
 		CategoryID: cat.ID, Priority: ticket.PriorityMedium,

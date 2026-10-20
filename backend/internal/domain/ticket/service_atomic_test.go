@@ -29,7 +29,7 @@ func TestCreate_AuditFailureRollsBackTheTicket(t *testing.T) {
 	reporter := uuid.New()
 	h.auditStore.err = errStoreDown
 
-	_, err := h.svc.Create(context.Background(), ticket.CreateInput{
+	_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject:        "Audit is down",
 		ReporterUserID: &reporter,
 	})
@@ -51,7 +51,7 @@ func TestCreate_HistoryFailureRollsBackTheTicket(t *testing.T) {
 	reporter := uuid.New()
 	h.store.errCreateHistory = errStoreDown
 
-	_, err := h.svc.Create(context.Background(), ticket.CreateInput{
+	_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject:        "History is down",
 		ReporterUserID: &reporter,
 	})
@@ -88,7 +88,7 @@ func TestAddReply_ReopenFailureRollsBackTheReply(t *testing.T) {
 	h.store.errUpdate = errStoreDown
 
 	_, err := h.svc.AddReply(context.Background(), seeded.ID,
-		"It is broken again", false, true, "reporter@example.com",
+		"It is broken again", ticket.TextFormatPlain, false, true, "reporter@example.com",
 		ticket.Actor{UserID: &reporter, Role: user.RoleUser},
 		30, h.newStatus.ID)
 
@@ -133,7 +133,7 @@ func TestOperations_CommitOnce(t *testing.T) {
 		{
 			name: "Create",
 			run: func(h *harness) error {
-				_, err := h.svc.Create(context.Background(), ticket.CreateInput{
+				_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 					Subject: "Fine", ReporterUserID: &reporter,
 				})
 				return err
@@ -177,7 +177,7 @@ func TestOperations_CommitOnce(t *testing.T) {
 			name: "AddReply",
 			run: func(h *harness) error {
 				seeded := h.seedOpen()
-				_, err := h.svc.AddReply(context.Background(), seeded.ID, "hello",
+				_, err := h.svc.AddReply(context.Background(), seeded.ID, "hello", ticket.TextFormatPlain,
 					false, true, "r@example.com",
 					ticket.Actor{UserID: &agent, Role: user.RoleStaff}, 30, h.newStatus.ID)
 				return err
@@ -212,7 +212,7 @@ func TestCreate_TransactionUnavailable(t *testing.T) {
 	reporter := uuid.New()
 	h.atomic.errBeginTx = errStoreDown
 
-	_, err := h.svc.Create(context.Background(), ticket.CreateInput{
+	_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "No connections left", ReporterUserID: &reporter,
 	})
 

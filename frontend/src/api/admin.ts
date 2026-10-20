@@ -25,6 +25,15 @@ export interface SiteConfig {
   version: string
   // Whether the instance accepts tickets from visitors with no account.
   guest_submission_enabled?: boolean
+  // Whether a guest may attach files (#445), and the limit that actually
+  // applies per file in bytes: the lower of the guest setting and the
+  // instance-wide maximum. The size is absent while attaching is off.
+  guest_attachments_enabled?: boolean
+  guest_attachment_max_bytes?: number
+  // The most files guests may attach to one ticket (#445), present with the size.
+  guest_attachment_max_per_ticket?: number
+  // Uploads one guest link may make per hour (#445), present with the size.
+  guest_attachment_uploads_per_hour?: number
 }
 
 export async function getSiteConfig(): Promise<SiteConfig> {
@@ -702,6 +711,12 @@ export interface SecurityWarnings {
    * older fixtures and a server that predates it read as healthy.
    */
   email?: EmailWarning
+
+  /**
+   * A stable release newer than the one running, found by the opt-in update
+   * check (#170). Absent when none was found or the check is off.
+   */
+  update?: { current: string; latest: string; url: string }
 }
 
 export interface EmailWarning {
@@ -735,6 +750,12 @@ export interface AttachmentScanningWarning {
    * scanner address anywhere, and attachments already stored (#459).
    */
   stale_off: boolean
+}
+
+/** What the post-upgrade wizard needs that the settings dump does not carry. */
+export async function getPostUpgrade(): Promise<{ old_password_accounts: number }> {
+  const res = await api.get<{ old_password_accounts: number }>('/admin/post-upgrade')
+  return res.data
 }
 
 /** Admin-only. Not on the public /site payload, by design. */

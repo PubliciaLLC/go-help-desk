@@ -30,7 +30,7 @@ func TestUpload_AnOversizedBodyIsRefusedWithoutBeingSwallowed(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
 		Subject: "Too big", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})
