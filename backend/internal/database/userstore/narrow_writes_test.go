@@ -2,6 +2,8 @@ package userstore_test
 
 import (
 	"context"
+	"net/url"
+	"os"
 	"testing"
 	"time"
 
@@ -31,8 +33,9 @@ import (
 // owner has a password change in flight, and "admin" is written back over the
 // demotion.
 func TestNarrowWrites_TouchOnlyWhatTheyName(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
+	requireOwnDatabase(t, db)
 	store := userstore.New(dbgen.New(db.SQL))
 	ctx := context.Background()
 
@@ -273,4 +276,22 @@ func TestEnableMFAIfStillEnrolled_ResetWins(t *testing.T) {
 		require.Empty(t, got.MFASecret,
 			"the cleared secret came back, so the revoked authenticator still works")
 	})
+}
+
+// requireOwnDatabase fails when db is the shared test database (#546).
+//
+// The promoted-to-administrator case above commits role = 'admin' on a row,
+// and the last-administrator guard counts administrators across the whole
+// table. On the shared database that row is, for a moment, an extra
+// administrator in every other package's tests: the server's last-admin tests
+// then see two where they expect one, and fail. Nothing in this test's own
+// results shows it, so the property is asserted.
+func requireOwnDatabase(t *testing.T, db *testutil.DB) {
+	t.Helper()
+	u, err := url.Parse(os.Getenv("TEST_DATABASE_URL"))
+	require.NoError(t, err)
+	var current string
+	require.NoError(t, db.SQL.QueryRow(`SELECT current_database()`).Scan(&current))
+	require.NotEqual(t, u.Path[1:], current,
+		"this test commits an administrator, so it must not run on the shared test database")
 }
