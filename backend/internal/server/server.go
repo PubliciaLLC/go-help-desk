@@ -997,3 +997,9 @@ func (s *Server) SetGuestUploadClockForTest(now func() time.Time) {
 func (s *Server) SetGuestRefusalClockForTest(now func() time.Time) {
 	s.guestRefusalLimiter.SetClock(now)
 }
+
+// SetGuestHourlyClockForTest moves only the hourly upload limiter onto a clock
+// the test controls (the mirror of SetGuestRefusalClockForTest).
+func (s *Server) SetGuestHourlyClockForTest(now func() time.Time) {
+	s.guestUploadLimiter.SetClock(now)
+}

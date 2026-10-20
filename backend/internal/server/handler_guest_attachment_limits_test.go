@@ -421,3 +421,29 @@ func TestGuestUploadLimits_AcceptedUploadsDoNotUseTheRefusalBudget(t *testing.T)
 		require.Equal(t, http.StatusUnsupportedMediaType, res.StatusCode, "refusal %d", i+1)
 	}
 }
+
+// The mirror image of the test above: attempts the HOURLY limiter turns away
+// must not spend the refusal budget either. Without the refund on that path,
+// twenty-five hourly 429s use up the 20 refusal units, and a good file after
+// the hour rolls is turned away by the refusal budget instead.
+func TestGuestUploadLimits_AnHourly429DoesNotSpendTheRefusalBudget(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	now := time.Now()
+	h.srv.SetGuestUploadClockForTest(func() time.Time { return now })
+	_, token := guestUploadsOn(t, h, 50, 1)
+
+	first := uploadGuestAttachment(t, h, token, "one.txt", []byte("x"))
+	require.Equal(t, http.StatusCreated, first.StatusCode, readBody(t, first))
+	for i := range 25 {
+		res := uploadGuestAttachment(t, h, token, "more.txt", []byte("x"))
+		require.Equal(t, http.StatusTooManyRequests, res.StatusCode, "attempt %d: %s", i+1, readBody(t, res))
+	}
+
+	// Only the hourly window rolls over; the refusal window is where it was.
+	later := now.Add(time.Hour + time.Second)
+	h.srv.SetGuestHourlyClockForTest(func() time.Time { return later })
+	ok := uploadGuestAttachment(t, h, token, "two.txt", []byte("x"))
+	require.Equal(t, http.StatusCreated, ok.StatusCode,
+		"the hourly 429s must not have used the refusal budget: "+readBody(t, ok))
+}
