@@ -342,9 +342,26 @@ func (s *Server) handleGuestUploadAttachment(w http.ResponseWriter, r *http.Requ
 		Error(w, http.StatusConflict, "guest_attachment_limit", guestLimitMessage(maxFiles))
 		return
 	}
+	// Refused attempts have a budget of their own, charged up front in one
+	// locked step (Take) so parallel refusals cannot all slip under it, and given
+	// back below when the upload is accepted. Charged BEFORE the hourly budget:
+	// an attempt turned away here has done nothing and must not cost an hourly
+	// upload (#559), and the two windows drift, so it could lock a guest out for
+	// up to an extra hour.
+	refusalKey := t.ID.String()
+	okRefusal, refusalWindow := s.guestRefusalLimiter.Take(refusalKey)
+	if !okRefusal {
+		w.Header().Set("Retry-After", strconv.Itoa(max(1, int(math.Ceil(s.guestRefusalLimiter.Remaining().Seconds())))))
+		Error(w, http.StatusTooManyRequests, "rate_limited",
+			"Too many of this ticket's uploads were refused. Please try again later.")
+		return
+	}
+
 	perHour := s.adminSvc.GuestAttachmentUploadsPerHour(ctx)
 	ok, window := s.guestUploadLimiter.TakeWithLimit(t.ID.String(), perHour)
 	if !ok {
+		// Not a refusal of a file: nothing was read or scanned.
+		s.guestRefusalLimiter.Refund(refusalKey, refusalWindow)
 		secs := max(1, int(math.Ceil(s.guestUploadLimiter.Remaining().Seconds())))
 		w.Header().Set("Retry-After", strconv.Itoa(secs))
 		Error(w, http.StatusTooManyRequests, "rate_limited",
@@ -352,26 +369,16 @@ func (s *Server) handleGuestUploadAttachment(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Refused attempts have a budget of their own. Checked before any work, and
-	// charged below for every refusal whether or not its hourly unit comes back.
-	refusalKey := t.ID.String()
-	if s.guestRefusalLimiter.Exceeded(refusalKey) {
-		w.Header().Set("Retry-After", strconv.Itoa(max(1, int(math.Ceil(s.guestRefusalLimiter.Remaining().Seconds())))))
-		Error(w, http.StatusTooManyRequests, "rate_limited",
-			"Too many of this ticket's uploads were refused. Please try again later.")
-		return
-	}
-
-	// The unit is spent before the work, so parallel uploads cannot all pass a
-	// budget with one slot left; it is given back when the guest's own file was
-	// refused for being the wrong thing (see refundable), which should not cost
-	// them their hour. A malware verdict and a server fault are not refunded:
-	// the first is the abuse this limit exists for, the second is not the
-	// guest's mistake but also not a reason to let a retry storm through.
+	// The hourly unit is spent before the work, so parallel uploads cannot all
+	// pass a budget with one slot left; it is given back when the guest's own
+	// file was refused before the scan (see refundable). A malware verdict and a
+	// server fault are not refunded: the first is the abuse this limit exists
+	// for, the second is not the guest's mistake but also not a reason to let a
+	// retry storm through.
 	rec := &refusalRecorder{ResponseWriter: w}
 	s.storeUploadedAttachment(rec, r, t.ID, ticket.Actor{Role: user.RoleUser}, s.guestAttachmentMaxBytes(ctx), maxFiles)
-	if rec.status >= 400 {
-		s.guestRefusalLimiter.Allow(refusalKey)
+	if rec.status < 400 {
+		s.guestRefusalLimiter.Refund(refusalKey, refusalWindow) // accepted: not a refusal
 	}
 	if refundable(rec.status, rec.code()) {
 		s.guestUploadLimiter.Refund(t.ID.String(), window)
