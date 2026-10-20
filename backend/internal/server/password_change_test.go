@@ -24,16 +24,22 @@ func TestChangePassword_RequiresTheCurrentPassword(t *testing.T) {
 		name string
 		body map[string]any
 		want int
+		// code is the error code expected with a refusal. A wrong current
+		// password is 400, not 401: the session is fine, and a 401 makes the
+		// web client sign the person out as if it had expired (#555).
+		code string
 	}{
 		{
 			name: "no current password at all",
 			body: map[string]any{"new_password": "a-much-better-password"},
-			want: http.StatusUnauthorized,
+			want: http.StatusBadRequest,
+			code: "invalid_current_password",
 		},
 		{
 			name: "the wrong current password",
 			body: map[string]any{"current_password": "not-it", "new_password": "a-much-better-password"},
-			want: http.StatusUnauthorized,
+			want: http.StatusBadRequest,
+			code: "invalid_current_password",
 		},
 		{
 			name: "the right one",
@@ -58,6 +64,9 @@ func TestChangePassword_RequiresTheCurrentPassword(t *testing.T) {
 			sess := loggedIn(t, h)
 			res, body := sess.send(t, http.MethodPatch, "/api/v1/me/password", tc.body)
 			require.Equal(t, tc.want, res.StatusCode, "body: %s", body)
+			if tc.code != "" {
+				require.Contains(t, string(body), tc.code)
+			}
 		})
 	}
 }

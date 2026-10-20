@@ -396,6 +396,10 @@ The rest of the #421 changes to scripts and integrations change what an answer s
 - **`POST /api/v1/guest/resend`** accepts an empty body (it was `400`). Malformed JSON is still `400`.
 - **`DELETE /api/v1/tickets`** is `405` as before. Its `Allow` header carries `GET` and `POST` as two header lines, which is what the server always sent; clients that read only the first line saw `GET`.
 
+### A wrong current password is `400 invalid_current_password` (#555)
+
+`PATCH /api/v1/me/password` answered `401 invalid_credentials` for a missing or wrong `current_password`. It now answers `400 invalid_current_password` with the same message. A `401` from this route now always means there is no session. The web client treated any `401` as an expired session and signed the person out, so a mistyped current password ended their session; the account page now shows the error and keeps them signed in. A script that checked for `401` or `invalid_credentials` on this route must check for `400` and `invalid_current_password`.
+
 ### Admin API: additive and corrected answers (#419, response half)
 
 

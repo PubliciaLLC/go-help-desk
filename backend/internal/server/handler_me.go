@@ -168,7 +168,10 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.users.VerifyPassword(r.Context(), u.Email, body.CurrentPassword); err != nil {
-		Error(w, http.StatusUnauthorized, "invalid_credentials", "current password is incorrect")
+		// 400, not 401 (#555): the session is good and a field in the body is
+		// wrong. The web client treats any 401 as an expired session and signs
+		// the person out, so a mistyped current password ended their session.
+		Error(w, http.StatusBadRequest, "invalid_current_password", "current password is incorrect")
 		return
 	}
 
