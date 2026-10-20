@@ -34,24 +34,45 @@ test('#562: the compact select is tall enough for its own text', async ({ page }
 test('#561: a select focused from the keyboard shows a ring outside its border', async ({ page }) => {
   const select = await openClassificationEditor(page)
   await expect(select).toBeVisible()
-  const box = (await select.boundingBox())!
-  // Pixels in a 6px band around the select. A ring drawn outside the border
-  // changes them; a box-shadow WebKit drops, or one clipped by `contain: paint`,
-  // leaves them identical.
-  const clip = { x: box.x - 6, y: box.y - 6, width: box.width + 12, height: box.height + 12 }
-  await page.mouse.move(0, 0)
-  const before = await page.screenshot({ clip })
-  // A real Tab, so the browser's :focus-visible heuristic applies.
-  await select.evaluate((el) => (el as HTMLElement).blur())
+
+  // Focus it, then step away and back with real keys so the browser's
+  // :focus-visible heuristic sees keyboard use (a click on Edit came first).
+  await select.focus()
   await page.keyboard.press('Shift+Tab')
-  while (!(await select.evaluate((el) => el === document.activeElement))) await page.keyboard.press('Tab')
-  const after = await page.screenshot({ clip })
-  expect(after.equals(before), 'focusing the select changed no pixels around it').toBe(false)
-  // WebKit ignores box-shadow on a native select, so the ring has to be an outline.
-  const outline = await select.evaluate((el) => {
+  await page.keyboard.press('Tab')
+  expect(await select.evaluate((el) => el === document.activeElement), 'Tab did not land on the Category select').toBe(true)
+
+  // WebKit ignores box-shadow on a native select, so the ring has to be an
+  // outline, in the app's ring colour (not each browser's default).
+  const m = await select.evaluate((el) => {
     const cs = getComputedStyle(el)
-    return { style: cs.outlineStyle, width: parseFloat(cs.outlineWidth) }
+    const probe = document.createElement('span')
+    probe.style.color = 'hsl(var(--ring))'
+    document.body.appendChild(probe)
+    const ring = getComputedStyle(probe).color
+    probe.remove()
+    return { style: cs.outlineStyle, width: parseFloat(cs.outlineWidth), color: cs.outlineColor, ring }
   })
-  expect(outline.style, 'a focused select has no outline').not.toBe('none')
-  expect(outline.width).toBeGreaterThan(0)
+  expect(m.style, 'a focused select has no outline').not.toBe('none')
+  expect(m.width).toBeGreaterThan(0)
+  expect(m.color, 'the outline is not the --ring colour').toBe(m.ring)
+
+  // Pixels, as well as styles. Key presses can scroll, so the box is taken now
+  // and the same four clips are used for the focused image and the blurred
+  // one (blur() does not scroll). Only the 6px strips OUTSIDE the border box
+  // are compared, so a change inside the select (WebKit's own native focus
+  // styling) cannot pass for a ring, and neither can `contain: paint` hiding it.
+  const b = (await select.boundingBox())!
+  const g = 6
+  const strips = [
+    { x: b.x - g, y: b.y - g, width: b.width + 2 * g, height: g },
+    { x: b.x - g, y: b.y + b.height, width: b.width + 2 * g, height: g },
+    { x: b.x - g, y: b.y, width: g, height: b.height },
+    { x: b.x + b.width, y: b.y, width: g, height: b.height },
+  ]
+  const focusedShots = await Promise.all(strips.map((clip) => page.screenshot({ clip })))
+  await select.evaluate((el) => (el as HTMLElement).blur())
+  const blurredShots = await Promise.all(strips.map((clip) => page.screenshot({ clip })))
+  const changed = strips.filter((_, k) => !focusedShots[k].equals(blurredShots[k])).length
+  expect(changed, 'focusing the select changed no pixels outside its border').toBeGreaterThan(0)
 })
