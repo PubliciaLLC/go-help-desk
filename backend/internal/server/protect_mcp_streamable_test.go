@@ -35,7 +35,7 @@ type streamConn struct {
 
 func serveMCP(t *testing.T, h *harness) string {
 	t.Helper()
-	mcpSrv := mcp.New(h.ticketSvc, func(context.Context) string { return "GHD" }, h.srv, h.categorySvc)
+	mcpSrv := mcp.New(h.ticketSvc, func(context.Context) string { return "GHD" }, h.srv, h.categorySvc, h.srv)
 	ts := httptest.NewServer(h.srv.ProtectMCP(mcpSrv.Handler()))
 	t.Cleanup(ts.Close)
 	return ts.URL

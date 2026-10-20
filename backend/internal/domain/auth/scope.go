@@ -207,9 +207,9 @@ func ScopesForRole(role string) []Scope {
 			{ResourceGroups, ActionRead},
 			// The admin-wide audit view, which staff may open (#129).
 			{ResourceAudit, ActionRead},
-			// The requester lookup staff use when filing a ticket for someone
-			// (#514, GET /users/lookup). Read only: keys can't write users.
-			{ResourceUsers, ActionRead},
+			// No users:read. GET /users/lookup, the one staff-reachable route
+			// that needed it (#514), is session-only since #290: keys have no
+			// user lookup. A key files for someone with reporter_email.
 		}
 	}
 	// A requester gets nothing: requesters never own a key (#450). That is a

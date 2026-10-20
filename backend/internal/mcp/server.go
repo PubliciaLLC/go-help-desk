@@ -229,6 +229,22 @@ type Server struct {
 	// assistant has no way to discover any of the three. Statuses come from the
 	// ticket service this server already holds.
 	categories CategoryLister
+
+	// onBehalf resolves reporter_email. An explicit constructor argument, not
+	// something sniffed from the Authorizer; nil means reporter_email is
+	// refused rather than guessed at.
+	onBehalf OnBehalfResolver
+}
+
+// OnBehalfResolver is the REST handler's rule for filing a ticket for someone
+// else, exposed so create_ticket applies the same one (#290): the address
+// resolves to an account if one exists, otherwise to a guest ticket, under the
+// same hourly budget, which is never refunded. It sets the reporter, guest
+// fields and FiledBy on in. A refusal carries its message in Refusal(); any
+// other error is ours.
+type OnBehalfResolver interface {
+	ResolveOnBehalf(ctx context.Context, actorID uuid.UUID, in *ticket.CreateInput,
+		id *uuid.UUID, email *string, guestName, guestPhone string) error
 }
 
 // CategoryLister is the slice of the category service MCP needs. Narrow on
@@ -266,6 +282,7 @@ func New(
 	prefix func(context.Context) string,
 	authz Authorizer,
 	categories CategoryLister,
+	onBehalf OnBehalfResolver,
 ) *Server {
 	if prefix == nil {
 		// Tests and any caller that does not care still mint well-formed
@@ -281,6 +298,7 @@ func New(
 		prefix:     prefix,
 		authz:      authz,
 		categories: categories,
+		onBehalf:   onBehalf,
 	}
 	s.registerTools()
 	return s
@@ -530,7 +548,13 @@ func (s *Server) registerTools() {
 		// reporter_user_id is the SUBJECT of the ticket, not the caller —
 		// staff legitimately open tickets on someone's behalf (the caller is
 		// then the actor, #444). It defaults to the caller when omitted.
-		mcpgo.WithString("reporter_user_id", mcpgo.Description("Reporter user UUID (defaults to the authenticated caller)")),
+		mcpgo.WithString("reporter_user_id", mcpgo.Description("Reporter user UUID (defaults to the authenticated caller). Not with reporter_email.")),
+		// reporter_email is how a key files for someone it cannot look up
+		// (#290): there is no user lookup for machine credentials. The server
+		// resolves it, the same way REST's reporter_email does.
+		mcpgo.WithString("reporter_email", mcpgo.Description("Email address of the person the ticket is for. Files for their account if one exists, otherwise as a guest ticket (guest submission must be on, and the guest is emailed a link). guest_name is always required with reporter_email, whether or not the address has an account. Each attempt that passes validation uses one of 40 an hour per staff member. Not with reporter_user_id.")),
+		mcpgo.WithString("guest_name", mcpgo.Description("With reporter_email: the name. Required, whether or not the address has an account (ignored for an account).")),
+		mcpgo.WithString("guest_phone", mcpgo.Description("With reporter_email and no account behind it: the guest's phone (optional).")),
 	), scoped(mcpWrite, s.handleCreateTicket))
 
 	s.mcp.AddTool(mcpgo.NewTool(
@@ -708,20 +732,48 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 		in.ItemID = &id
 	}
 
+	var reporterID *uuid.UUID
 	if reporterIDStr, ok := args["reporter_user_id"].(string); ok && reporterIDStr != "" {
 		rid, err := uuid.Parse(reporterIDStr)
 		if err != nil {
 			return errResult("invalid reporter_user_id")
 		}
-		in.ReporterUserID = &rid
+		reporterID = &rid
+	}
+	var reporterEmail *string
+	if v, present := args["reporter_email"]; present {
+		str, isString := v.(string)
+		if !isString {
+			return errResult("reporter_email must be a string")
+		}
+		reporterEmail = &str
+	}
+
+	switch {
+	case reporterEmail != nil:
+		// The REST rule, from the REST code (#290): an account if there is one,
+		// otherwise a guest ticket, with the same cap and the same mail.
+		if s.onBehalf == nil {
+			return errResult("reporter_email is not available on this server")
+		}
+		guestName, _ := args["guest_name"].(string)
+		guestPhone, _ := args["guest_phone"].(string)
+		if err := s.onBehalf.ResolveOnBehalf(ctx, actor.UserID, &in, reporterID, reporterEmail, guestName, guestPhone); err != nil {
+			var refusal interface{ Refusal() string }
+			if errors.As(err, &refusal) {
+				return errResult(refusal.Refusal())
+			}
+			return storeErr(ctx, "resolve reporter_email", err)
+		}
+	case reporterID != nil:
+		in.ReporterUserID = reporterID
 		// Filing for somebody else: the caller is the actor, as on REST (#444).
 		// Naming yourself is filing your own ticket.
-		if rid != actor.UserID {
+		if *reporterID != actor.UserID {
 			filer := actor.UserID
 			in.FiledBy = &filer
 		}
-	}
-	if in.ReporterUserID == nil {
+	default:
 		// Default the subject of the ticket to the caller rather than refusing.
 		reporter := actor.UserID
 		in.ReporterUserID = &reporter
@@ -731,6 +783,8 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 
 	t, err := s.tickets.Create(ctx, in)
 	if err != nil {
+		// No refund of the reporter_email unit, whatever failed: see
+		// Server.ResolveOnBehalf.
 		return storeErr(ctx, "create ticket", err)
 	}
 	return ticketResult(actor.Role, t)

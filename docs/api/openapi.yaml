@@ -2400,7 +2400,7 @@ paths:
       description: |
         Staff and administrators only, in a signed-in session (second factor required).
         The scopes POST /me/api-keys accepts for this caller: the whole catalogue for an
-        administrator, tickets, groups:read, audit:read and users:read (the requester lookup) for staff. A key acts at its
+        administrator, tickets, groups:read and audit:read for staff. A key acts at its
         owner's role, so a scope outside that role would only look like access it does not have.
       tags: ['Account']
       x-ghd-handler: handleListMyAPIKeyScopes
@@ -3210,23 +3210,29 @@ paths:
         types an address: if it belongs to an account the ticket is filed for
         that account, otherwise it is filed exactly like a guest ticket, so the
         person is sent the guest link at that address. That needs guest
-        submission to be on (400 otherwise, because the link would not open),
-        and guest_name is required (400 without a non-blank one), as on the
-        guest form; guest_phone is kept and optional. An address that belongs to
-        an account needs no name. An account that is filed for (picked, or
+        submission to be on (400 otherwise, because the link would not open).
+        guest_name is required with every reporter_email (400 without a
+        non-blank one), whether or not the address has an account, so its
+        absence says nothing about the address; it is ignored for an account.
+        guest_phone is kept and optional. An account that is filed for (picked, or
         matched by its typed address) is sent the ordinary "We have received
         your ticket" email with a link to the ticket, through the notification
         outbox, unless it is the caller. Either way the caller, not the requester, is the
         actor in the ticket's history, its created audit entry and the created
         event. A reporting user who sends either field gets 403 forbidden; the
-        field is never ignored. GET /users/lookup finds an account to pick.
+        field is never ignored. GET /users/lookup finds an account to pick, in a
+        signed-in session only; a key sends reporter_email instead.
 
-        Mail limit: each reporter_email with no account mails a stranger, so
-        one member of staff can file at most 40 such tickets an hour, then 429
-        rate_limited with Retry-After and nothing is created. Only tickets
-        that are filed count: a request that is refused or fails validation
-        does not. A picked reporter_user_id, and a reporter_email that belongs
-        to an account, do not count either. The count is per user, not per address of the
+        Address limit (#290): every reporter_email that passes validation uses
+        one of the caller's 40 an hour before the address is looked up, whether
+        or not it has an account, then 429 rate_limited with Retry-After and
+        nothing is created. That includes the refusal for guest submission
+        being off, which is not refunded: it is how an address is learned
+        about, and learning is bounded at 40 an hour. Validation comes first
+        and costs nothing: the subject, priority, category, type and item, the
+        address's form, and guest_name are all checked before, and refused the
+        same way for every address. A unit is never given back once taken,
+        not even when the create itself then fails. A picked reporter_user_id is not counted. The count is per user, not per address of the
         request: a machine credential counts against the user it acts as, and
         another member of staff is unaffected. It is kept in memory, so it
         resets when the server restarts and each replica of a multi-instance
@@ -3277,7 +3283,7 @@ paths:
                   description: Staff and administrators only. An address the ticket is for. An account's address files for the account; any other makes a guest ticket and mails the guest link there (guest submission must be on). Not with reporter_user_id.
                 guest_name:
                   type: string
-                  description: With reporter_email and no account behind it, the guest's name. Required (400 when missing or blank); not used when the address belongs to an account.
+                  description: With reporter_email, the name. Required (400 when missing or blank), whether or not the address has an account; used only for an address with no account.
                 guest_phone:
                   type: string
                   description: With reporter_email and no account behind it, the guest's phone. Optional.
@@ -3301,8 +3307,9 @@ paths:
             staff and administrators also: both reporter_user_id and
             reporter_email were sent, reporter_user_id is not a live account,
             reporter_email is not a plain address (reporter_email: ...), or
-            reporter_email has no account and guest submission is off, or it has
-            no account and guest_name is missing or blank.
+            reporter_email has no account and guest submission is off, or
+            guest_name is missing or blank with reporter_email. 429
+            rate_limited when the caller's 40 an hour for reporter_email are used.
           content:
             application/json:
               schema:
@@ -5884,9 +5891,12 @@ paths:
       operationId: lookupUsers
       summary: Find accounts to file a ticket for.
       description: |
-        Staff and administrators only (second factor required). A machine
-        credential (an API key, or an OAuth client acting as a staff service
-        user) needs users:read. The New ticket page's requester picker.
+        Staff and administrators only, in a signed-in session (second factor required). An API key is refused with 403 session_required and an OAuth
+        client likewise, whatever scopes it holds, users:read included: there
+        is no user lookup for machine credentials, so a key cannot enumerate
+        accounts. A key files a ticket for someone with reporter_email on
+        POST /tickets and lets the server resolve it. In the 1.3.0 betas a credential
+        holding users:read could call this. The New ticket page's requester picker.
         Returns accounts whose display name or email contains q, ignoring case
         (% and _ match themselves), as a bare array of id, display_name and
         email, ordered by display name (then id), at most 10. The disabled, deleted
@@ -5900,8 +5910,6 @@ paths:
       x-ghd-handler: handleLookupUsers
       security:
         - sessionCookie: []
-        - apiKey: ['users:read']
-        - oauthClient: ['users:read']
       x-ghd-roles: [admin, staff]
       x-ghd-mfa: true
       parameters:
@@ -5986,7 +5994,7 @@ paths:
         this response, and cannot be shown again. It has the form GHD_ followed by 64
         hexadecimal characters. scopes is required: a non-empty list of
         resource:action values from GET /api/v1/admin/scopes, and none may exceed
-        the owner's role (for staff, tickets, groups:read, audit:read and users:read; for
+        the owner's role (for staff, tickets, groups:read and audit:read; for
         an administrator, any): invalid_scope otherwise. expires_at is required unless
         the api_key_max_lifetime_years setting is Never (-1): 400 expires_at_required
         without it, and it must be a future RFC 3339 timestamp no later than that many
@@ -7471,11 +7479,15 @@ paths:
         '409':
           description: >-
             email_taken, when the new address belongs to another account, deleted accounts
-            included. service_account, when the account is a service account and the
-            change would give it a way to sign in: reset_mfa, or a role of admin. A
-            service account can be renamed, set to staff or user, given groups, and
-            disabled. Renaming it (display_name) also renames its OAuth client, in
-            the same statement. It cannot be deleted here (DELETE answers 409).
+            included. service_account, when the account is a service account (an
+            OAuth client's identity) and the body carries email, a role of admin,
+            or reset_mfa true (reset_mfa false is accepted: it asks for nothing):
+            the whole request is refused and nothing in it is
+            applied, and the message names the client and the refused fields. A
+            service account can be renamed, given groups (through the group
+            routes), disabled and set to staff or user (Q2 on #434), and only that. Renaming it (display_name) also
+            renames its OAuth client, in the same statement. It cannot be deleted
+            here either (DELETE answers 409 service_account).
           content:
             application/json:
               schema:

@@ -159,7 +159,7 @@ func TestActorFrom_RoundTrips(t *testing.T) {
 // reporter_user_id survives deliberately: it names the SUBJECT of a ticket, not
 // the caller, because staff legitimately open tickets on someone's behalf.
 func TestRegisterTools_DeclareNoCallerIdentity(t *testing.T) {
-	s := New(nil, nil, nil, nil)
+	s := New(nil, nil, nil, nil, nil)
 
 	tools := s.mcp.ListTools()
 	require.NotEmpty(t, tools, "tools must be registered")
