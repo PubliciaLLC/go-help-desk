@@ -22,6 +22,8 @@ export interface Notice {
    * a problem), which keeps its own record.
    */
   onHide?: () => void
+  /** What Hide does, for the button's name. Default "for this session". */
+  hideScope?: string
 }
 
 interface ServerNoticeBarProps {
@@ -123,7 +125,7 @@ export function ServerNoticeBar({ notices, onOpen }: ServerNoticeBarProps) {
             <button
               type="button"
               data-hide
-              aria-label={`Hide for this session: ${n.title}`}
+              aria-label={`Hide ${n.hideScope ?? 'for this session'}: ${n.title}`}
               onClick={() => dismiss(n, i)}
               className="shrink-0 rounded px-2 py-1 text-xs font-medium underline focus-visible:outline focus-visible:outline-2 pointer-coarse:min-h-11 pointer-coarse:min-w-11"
             >

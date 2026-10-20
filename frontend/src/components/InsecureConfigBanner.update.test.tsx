@@ -87,7 +87,7 @@ describe('the new release notice in the bar', () => {
     const first = renderWithQuery(<InsecureConfigBanner isAdmin />)
     await screen.findByRole('status')
     await user.click(screen.getByRole('button', { name: /details/i }))
-    await user.click(screen.getByRole('button', { name: /hide for this session: version 1\.4\.0/i }))
+    await user.click(screen.getByRole('button', { name: /hide until the next release: version 1\.4\.0/i }))
     expect(screen.queryByRole('status')).toBeNull()
     expect(localStorage.getItem('ghd.update-notice-dismissed')).toBe('1.4.0')
     first.unmount()
@@ -113,8 +113,19 @@ describe('the new release notice in the bar', () => {
     renderWithQuery(<InsecureConfigBanner isAdmin />)
     await screen.findByRole('status')
     await user.click(screen.getByRole('button', { name: /details/i }))
-    await user.click(screen.getByRole('button', { name: /hide for this session/i }))
+    await user.click(screen.getByRole('button', { name: /hide until the next release/i }))
     expect(sessionStorage.key(0)).toContain('update:1.4.0')
+  })
+
+  it('says its Hide lasts until the next release, while other notices say session', async () => {
+    serve({ update, passkeys: PASSKEYS })
+    const user = userEvent.setup()
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+    await screen.findByRole('alert')
+    await user.click(screen.getByRole('button', { name: /details/i }))
+    expect(screen.getByRole('button', { name: `Hide until the next release: ${TITLE}` })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: `Hide for this session: ${TITLE}` })).toBeNull()
+    expect(screen.getByRole('button', { name: /hide for this session: passkeys are unavailable/i })).toBeTruthy()
   })
 
   it('works when storage is blocked: hidden for this page view only', async () => {

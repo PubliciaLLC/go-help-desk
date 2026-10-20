@@ -115,6 +115,7 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
       severity: 'info',
       signature: '',
       title,
+      hideScope: 'until the next release',
       onHide: () => {
         try {
           localStorage.setItem(DISMISSED_UPDATE_KEY, update.latest)

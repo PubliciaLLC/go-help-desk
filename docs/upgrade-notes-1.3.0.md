@@ -141,7 +141,7 @@ A web page on a sibling site could send MCP requests that the server accepted un
 
 An API key could delete another administrator's key if it knew the id. That has been possible since 1.0.0 (1.0.0 to 1.2.0 are affected). It is revoke-only, needs an administrator's key and the other key's id, and is low severity; upgrading is advised. A GitHub security advisory is published with this release.
 
-**TODO BEFORE TAGGING: replace the placeholder link below with the real advisory.** The release workflow fails a `v*` tag build while `GHSA-TODO` is still in `docs/` or `SECURITY.md`.
+**TODO BEFORE TAGGING: replace the placeholder link below with the real advisory.** The release build refuses to run while the advisory placeholder below is still there.
 
 https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-TODO
 <!-- GHSA id: Erik fills in on tag day -->
