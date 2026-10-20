@@ -583,3 +583,15 @@ UPDATE users
 SET mfa_enabled = TRUE, updated_at = now()
 WHERE id = $1 AND mfa_secret <> '' AND deleted_at IS NULL
 RETURNING id;
+
+-- name: CountUsersWithOldPasswordHash :one
+-- Accounts that would have to reset their password once the grace period
+-- ends (#453): enabled, not an administrator (every administrator is exempt),
+-- not a service account, and holding a bcrypt hash made below cost $1. An
+-- empty hash (SSO-only) or one bcrypt cannot read does not match the pattern
+-- and is not counted; the CASE keeps the cast from running on it.
+SELECT count(*) FROM users
+WHERE deleted_at IS NULL AND NOT disabled AND NOT service_account AND role <> 'admin'
+  AND CASE WHEN password_hash ~ '^\$2[abxy]\$[0-9]{2}\$'
+           THEN substring(password_hash FROM 5 FOR 2)::int < $1::int
+           ELSE false END;

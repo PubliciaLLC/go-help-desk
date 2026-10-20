@@ -20,12 +20,18 @@ export async function setupAdmin(
    * Optional here: the server names it for you when it is blank.
    */
   category?: string,
+  /**
+   * Whether "Check for new releases" was ticked (#170). Pass it only
+   * when ticked: absent means off, and an unticked box sends nothing.
+   */
+  updateCheck?: boolean,
 ): Promise<User> {
   const res = await api.post<User>('/setup', {
     email,
     display_name: displayName,
     password,
     category,
+    update_check: updateCheck,
   })
   return res.data
 }

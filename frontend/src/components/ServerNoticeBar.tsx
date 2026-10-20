@@ -16,6 +16,14 @@ export interface Notice {
   /** What the notice says, in a few characters. A change brings a hidden notice back. */
   signature: string
   body: React.ReactNode
+  /**
+   * Called when the admin hides this notice, after the session dismissal. For
+   * a notice that should stay hidden longer than the session (information, not
+   * a problem), which keeps its own record.
+   */
+  onHide?: () => void
+  /** What Hide does, for the button's name. Default "for this session". */
+  hideScope?: string
 }
 
 interface ServerNoticeBarProps {
@@ -68,6 +76,7 @@ export function ServerNoticeBar({ notices, onOpen }: ServerNoticeBarProps) {
 
   function dismiss(n: Notice, index: number) {
     storeDismissal(noticeKey(n))
+    n.onHide?.()
     setDismissed((prev) => new Set(prev).add(noticeKey(n)))
     focusIndex.current = index
   }
@@ -116,7 +125,7 @@ export function ServerNoticeBar({ notices, onOpen }: ServerNoticeBarProps) {
             <button
               type="button"
               data-hide
-              aria-label={`Hide for this session: ${n.title}`}
+              aria-label={`Hide ${n.hideScope ?? 'for this session'}: ${n.title}`}
               onClick={() => dismiss(n, i)}
               className="shrink-0 rounded px-2 py-1 text-xs font-medium underline focus-visible:outline focus-visible:outline-2 pointer-coarse:min-h-11 pointer-coarse:min-w-11"
             >

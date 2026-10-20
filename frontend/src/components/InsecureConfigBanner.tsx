@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { getSecurityWarnings } from '@/api/admin'
 import { ServerNoticeBar, type Notice } from '@/components/ServerNoticeBar'
@@ -5,6 +6,19 @@ import { ServerNoticeBar, type Notice } from '@/components/ServerNoticeBar'
 interface InsecureConfigBannerProps {
   /** Only administrators can see or fix this, so only they are asked. */
   isAdmin: boolean
+}
+
+// The release the administrator last dismissed (#170). Per browser, and by
+// version, so the next release brings the notice back. Storage can be blocked
+// or absent; the notice then simply returns on each load, which is harmless.
+const DISMISSED_UPDATE_KEY = 'ghd.update-notice-dismissed'
+
+function readDismissedUpdate(): string | null {
+  try {
+    return localStorage.getItem(DISMISSED_UPDATE_KEY)
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -59,6 +73,12 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
     retry: false,
   })
 
+  // #170: the opt-in update check found a newer release. Information, not a
+  // problem, so it is an `info` notice, and its Hide outlasts the session: the
+  // release hidden is remembered in localStorage until a newer one appears.
+  const [dismissedUpdate, setDismissedUpdate] = useState(readDismissedUpdate)
+  const update = data?.update && data.update.latest !== dismissedUpdate ? data.update : undefined
+
   const insecure = data?.insecure_secrets ?? []
   const scanning = data?.attachment_scanning
   const scannerDegraded = !!scanning && scanning.policy !== 'off' && !scanning.reachable
@@ -88,6 +108,32 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
   const emailFailing = !!email && email.failing
 
   const notices: Notice[] = []
+  if (update) {
+    const title = `Version ${update.latest} is available (you run ${update.current})`
+    notices.push({
+      id: `update:${update.latest}`,
+      severity: 'info',
+      signature: '',
+      title,
+      hideScope: 'until the next release',
+      onHide: () => {
+        try {
+          localStorage.setItem(DISMISSED_UPDATE_KEY, update.latest)
+        } catch {
+          // Hidden for this page view only.
+        }
+        setDismissedUpdate(update.latest)
+      },
+      body: (
+        <p>
+          {title}.{' '}
+          <a className="font-medium underline" href={update.url} target="_blank" rel="noopener noreferrer">
+            Release notes
+          </a>
+        </p>
+      ),
+    })
+  }
   if (insecure.length > 0) {
     notices.push({
       id: 'insecure-secrets',

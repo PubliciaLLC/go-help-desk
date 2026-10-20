@@ -212,6 +212,12 @@ type Querier interface {
 	// the type's items too.
 	CountTicketsByType(ctx context.Context, typeID uuid.NullUUID) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
+	// Accounts that would have to reset their password once the grace period
+	// ends (#453): enabled, not an administrator (every administrator is exempt),
+	// not a service account, and holding a bcrypt hash made below cost $1. An
+	// empty hash (SSO-only) or one bcrypt cannot read does not match the pattern
+	// and is not counted; the CASE keeps the cast from running on it.
+	CountUsersWithOldPasswordHash(ctx context.Context, dollar_1 int32) (int64, error)
 	// Whether this account has a passkey at all.
 	//
 	// This is what makes MFARequiredFor satisfiable by a passkey rather than only

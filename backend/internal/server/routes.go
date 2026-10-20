@@ -263,6 +263,13 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.Get("/security-warnings", s.handleGetSecurityWarnings)
 	})
 
+	// What the post-upgrade wizard shows beside its settings. Admin-only like
+	// the rest of this router; the count is not secret but nobody else needs it.
+	r.Group(func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceSettings))
+		r.Get("/post-upgrade", s.handlePostUpgrade)
+	})
+
 	r.Route("/settings", func(r chi.Router) {
 		r.Use(authmw.RequireResource(auth.ResourceSettings))
 		r.Get("/", s.handleGetSettings)
