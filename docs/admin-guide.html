@@ -91,6 +91,7 @@
       <li><a href="#admin-webhooks">Webhooks</a></li>
       <li><a href="#admin-oauth-clients">OAuth Clients</a></li>
       <li><a href="#admin-api-keys">API Keys</a></li>
+      <li><a href="#admin-updates">Updates &amp; Upgrade Wizard</a></li>
       <li><a href="#admin-server-warnings">Server Warnings</a></li>
       <li><a href="#admin-audit">Audit Log</a></li>
       <li><a href="#admin-attachments">Attachments</a></li>
@@ -888,6 +889,28 @@ function verifySignature(secret, body, header) {
   <li><strong>A key cannot create keys or OAuth clients</strong>, and <strong>cannot write users</strong>: it can read users and groups, but cannot create, change, disable or delete an account, set a password, clear a second factor, change an email, or change group membership or scope. It also cannot change <code>ticket_scope_enforced</code> or the auto-assignment settings. These need you, signed in. The scope <code>users:write</code> is no longer offered.</li>
   <li>Every key issued or revoked is written to the audit log (<code>api_key_issued</code>, <code>api_key_revoked</code>).</li>
 </ul>
+
+<h2 id="admin-updates">Updates and the After upgrading wizard</h2>
+
+<h3>Weekly check for new releases (off unless you choose it)</h3>
+<p>The server can check whether a newer release exists. <strong>It is off</strong> on a new install and stays off after an upgrade, and while it is off the server makes no request at all. Turn it on under <em>Admin → Settings → General → Updates</em> (<code>update_check_enabled</code>, session only: an API key or OAuth client cannot change it), or at first-run setup.</p>
+<ul>
+  <li><strong>What is sent.</strong> One <code>GET</code> to GitHub's public releases API (<code>https://api.github.com/repos/PubliciaLLC/go-help-desk/releases/latest</code>) with two headers of its own: <code>User-Agent: go-help-desk</code> (a fixed name, no version number) and <code>Accept: application/vnd.github+json</code>. No query string, body, cookie, instance identifier or usage data, and nothing about your server or version. GitHub sees your server's IP address, as any website would.</li>
+  <li><strong>How often.</strong> At most once every 7 days, and not again after a restart until the week is up. A failed check is logged once and tried again the following week.</li>
+  <li><strong>What you see.</strong> If a newer stable release exists, administrators (only) see an information notice in the <a href="#admin-server-warnings">server warnings</a> bar: "Version X is available (you run Y). Release notes". It never turns the bar red or counts as a problem. <em>Hide until the next release</em> is remembered in your browser. Nothing is downloaded or installed. Prereleases and drafts are ignored.</li>
+  <li><strong>Air-gapped installs:</strong> leave it off.</li>
+</ul>
+
+<h3>The After upgrading wizard</h3>
+<p>On an install upgraded from an earlier release, the first administrator who signs in is taken once to a short <strong>After upgrading to 1.3.0</strong> wizard. Each step shows today's setting, says what changed in 1.3.0 and lets you change it, with <em>Back</em>, <em>Next</em> and <em>Skip</em>. Skip leaves that setting unchanged. The steps are:</p>
+<ol>
+  <li><strong>Weekly check for new releases</strong>, unticked.</li>
+  <li><strong>Staff email notifications</strong>: the upgrade turned the three overrides off.</li>
+  <li><strong>Staff API keys</strong>: whether staff may create their own, and the longest an API key may live.</li>
+  <li><strong>Reset window for old passwords</strong>, with the number of accounts still on an old password hash and whether email is set up.</li>
+  <li><strong>Guest file uploads</strong>, shown only while guest submission is on: 1.3.0 switched guest uploads off, and this step offers the setting, the size slider and the limits.</li>
+</ol>
+<p>Finishing or skipping the wizard means it is not shown again; closing the tab part-way shows it again next time, with the steps already saved showing their new values. A new install never sees it, because first-run setup asks the update question itself. Staff and requesters are never sent to it. Every change goes through the same settings checks as the Settings page.</p>
 
 <h2 id="admin-server-warnings">Server warnings</h2>
 

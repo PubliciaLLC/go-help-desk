@@ -110,6 +110,8 @@
       <li><a href="#rollback">Rolling back to 1.2.0</a></li>
       <li><a href="#guest-attachments">Guest uploads off</a></li>
       <li><a href="#password-change">Changing a password via API</a></li>
+      <li><a href="#update-check">Update check (opt-in)</a></li>
+      <li><a href="#after-upgrade-wizard">After-upgrade wizard</a></li>
       <li><a href="#known-gaps">Not in 1.3.0</a></li>
       <li><a href="#steps">Doing the upgrade</a></li>
     </ul>
@@ -163,6 +165,10 @@
 
 <div class="callout callout-warn">
   <p><strong>If your Docker Compose install scans attachments with the bundled ClamAV, scanning stops on upgrade</strong> when your <code>docker/.env</code> has no <code>CLAMAV_ADDR</code> line. Once the instance holds an attachment, administrators see an amber <em>Attachments are not being scanned</em> banner that says so. To keep scanning, add <code>COMPOSE_PROFILES=antivirus</code> and <code>CLAMAV_ADDR=tcp://clamav:3310</code> to <code>docker/.env</code> and run <code>docker compose up -d</code>. See <a href="#clamav">ClamAV is opt-in</a>.</p>
+</div>
+
+<div class="callout callout-note">
+  <p><strong>New and optional: a weekly check for new releases.</strong> It is off, also after you upgrade, and nothing contacts GitHub unless an administrator turns it on. The first administrator to sign in is asked in a short wizard. See <a href="#update-check">the update check</a> and <a href="#after-upgrade-wizard">the wizard</a>.</p>
 </div>
 
 <div class="callout callout-note">
@@ -224,6 +230,8 @@
     <tr><td>Rolling back to 1.2.0 is possible by hand, and costs data and security fixes</td><td>Operators who need to go back</td></tr>
     <tr><td>Guests can no longer upload until an administrator turns on <em>Guests may attach files</em></td><td>Administrators; scripts that upload as a guest</td></tr>
     <tr><td><code>PATCH /api/v1/me/password</code> needs <code>current_password</code>, and wrong guesses are throttled</td><td>Scripts written for 1.2.0 that change a password</td></tr>
+    <tr><td>An optional weekly check for new releases; it is off unless an administrator turns it on</td><td>Administrators; air-gapped installs (leave it off)</td></tr>
+    <tr><td>A one-time After upgrading wizard for the first administrator</td><td>The first administrator to sign in after the upgrade</td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
@@ -1013,6 +1021,25 @@ echo "ok: Postgres is bound to 127.0.0.1 only"</code></pre>
   <li>A <code>401</code> from this route means there is no session. The Account page shows a wrong current password inline and keeps the person signed in.</li>
 </ul>
 
+<h2 id="update-check">An optional weekly check for new releases (off unless you choose it)</h2>
+
+<div class="callout callout-note">
+  <p><strong>This is opt-in.</strong> It is off on a new install and it stays off after you upgrade. Nothing contacts GitHub unless an administrator turns it on.</p>
+</div>
+
+<p>1.3.0 can check whether a newer release of Go Help Desk exists.</p>
+<ul>
+  <li><strong>What is sent.</strong> One <code>GET</code> to GitHub's public releases API with exactly two request headers of its own: <code>User-Agent: go-help-desk</code> (a fixed name, no version number) and <code>Accept: application/vnd.github+json</code>. No query string, body, cookie, instance identifier or usage data, and nothing about your server or version. GitHub sees your server's IP address, as any website would.</li>
+  <li><strong>How often.</strong> At most once every 7 days, and not again after a restart until the week is up. A failed check is logged once and tried again the following week.</li>
+  <li><strong>What you see.</strong> If a newer stable release exists, administrators (only) see an information notice, "Version X is available (you run Y)", linking to the release notes, in the server warnings bar. <em>Hide until the next release</em> is remembered per browser. Nothing is downloaded or installed. Prereleases and drafts are ignored.</li>
+  <li><strong>Air-gapped installs:</strong> leave it off. While it is off the server makes no request.</li>
+  <li><strong>Where to choose.</strong> The first-run setup screen asks (unticked: "Check for new releases (contacts GitHub once a week; sends nothing about your server)"). On an upgraded install the first administrator to sign in is asked in the wizard below. Later: <em>Settings → General → Updates</em> (<code>update_check_enabled</code>, session only).</li>
+</ul>
+
+<h2 id="after-upgrade-wizard">The After upgrading wizard</h2>
+
+<p><strong>Who notices:</strong> the first administrator who signs in after an upgrade to 1.3.0. They are taken once to a short wizard, "After upgrading to 1.3.0", with one step per question: the update check; staff email notifications (the upgrade turned them off); staff API keys and the longest an API key may live; the reset window for old passwords, with how many accounts are still on an old hash; and, only if guest submission is on, guest file uploads (which 1.3.0 switched off). Each step shows today's setting. <strong>Skip leaves a setting unchanged.</strong> Finishing or skipping the wizard means it is not shown again. A new install never sees it. See <a href="admin-guide.html#admin-updates">Admin Guide: Updates</a>.</p>
+
 <h2 id="known-gaps">What is not in 1.3.0</h2>
 
 <p>Earlier versions of these pages described or implied some things that the product does not do. Each is tracked as an issue. These are gaps in the product, not changes in 1.3.0. The pages now say what the product does.</p>
@@ -1038,7 +1065,8 @@ docker compose pull
 docker compose up -d</code></pre>
     If you checked out a tag earlier (for example <code>v1.2.0</code>), run <code>git checkout main</code> before <code>git pull</code>. If you build from source, run the build command from <a href="getting-started.html#build-from-source">Building from source</a> instead of the two <code>docker compose</code> commands. Migrations run automatically on startup, before the server accepts traffic.
   </li>
-  <li><strong>Sign in as an administrator.</strong> Look for the red insecure-configuration banner, the red <em>Attachment uploads are disabled</em> banner and the amber scanning banner, and check the scanning status under <strong>Admin → Settings → Attachments → Malware scanning</strong>. Decide <code>audit_retention_days</code> and whether staff should see the field-level change history (<code>staff_can_view_ticket_change_history</code>).</li>
+  <li><strong>Sign in as an administrator</strong> and work through the <a href="#after-upgrade-wizard">After upgrading wizard</a> (or skip it to leave every setting as it is).</li>
+  <li><strong>Check the server warnings.</strong> Look for the red insecure-configuration banner, the red <em>Attachment uploads are disabled</em> banner and the amber scanning banner, and check the scanning status under <strong>Admin → Settings → Attachments → Malware scanning</strong>. Decide <code>audit_retention_days</code> and whether staff should see the field-level change history (<code>staff_can_view_ticket_change_history</code>).</li>
   <li><strong>Check your mail server</strong> against <a href="#smtp">the new encryption rule</a>, and decide whether staff should start getting <a href="#staff-email">staff email</a>. Staff email starts switched off on an upgraded install, so nothing changes for staff until you turn it on under <strong>Admin → Settings → Email</strong>.</li>
   <li><strong>If you have webhook receivers,</strong> read <a href="#webhooks">the raw payload and note-event changes</a>, and make receivers cope with a repeated delivery.</li>
   <li><strong>If you have MCP agents,</strong> note that <a href="#mcp-reply">their public replies now email the requester</a>.</li>
