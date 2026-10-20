@@ -35,12 +35,13 @@ Start the backend server:
 DATABASE_URL="postgres://localhost:5432/helpdesk_dev?sslmode=disable" \
 BASE_URL="http://localhost:8080" \
 SESSION_SECRET="dev-session-secret-change-me-32c" \
-JWT_SECRET="dev-jwt-secret-change-me" \
 ATTACHMENT_DIR="$HOME/ghd-attachments" \
 go run ./cmd/server
 ```
 
-`ATTACHMENT_DIR` defaults to `/data/attachments`, which a non-root developer cannot create. The server creates the directory on the first upload, so the parent must be writable by your user. Keep it outside the repository: `backend/data` is not gitignored.
+`JWT_SECRET` is optional here: left unset, the server generates a key and stores it in the database. The example value `dev-jwt-secret-change-me` is ignored if you do set it.
+
+`ATTACHMENT_DIR` defaults to `/data/attachments`, which a non-root developer cannot create. The server creates the directory at startup if it is missing, so the parent must be writable by your user; if it cannot be written, the server logs a warning and refuses uploads. Keep it outside the repository: `backend/data` is not gitignored.
 
 ### Frontend
 
@@ -130,14 +131,6 @@ cd backend
 go test ./internal/domain/... ./internal/config/... ./internal/middleware/... ./internal/server/notify/...
 ```
 
-### Browser (Playwright) tests
-
-`cd frontend && npm run test:e2e` starts its own Vite server on port 5183 and
-fails if something already holds that port, rather than testing the wrong
-checkout. Running several worktrees at once: give each its own port with
-`PW_PORT=5190 npm run test:e2e`. `PW_REUSE=1` reuses a server already on
-`PW_PORT`; use it only if that server is this checkout's.
-
 ### Full check
 
 ```sh
@@ -174,7 +167,9 @@ npm test          # unit tests (vitest)
 npm run test:e2e  # layout tests (Playwright)
 ```
 
-`npm run test:e2e` runs browser layout tests in Chromium. It starts the Vite dev server itself and mocks every backend call inside each test, so it needs neither Postgres nor the Go server. The current suite checks that the main pages fit a phone-width viewport (`frontend/e2e/mobile-layout.spec.ts`). Install the browser once with `npx playwright install chromium` before the first run.
+`npm run test:e2e` runs the browser tests in Chromium and WebKit (plus a `markdown-dos` project that stresses the Markdown renderer). It starts the Vite dev server itself and mocks every backend call inside each test, so it needs neither Postgres nor the Go server. The five spec files in `frontend/e2e/` cover phone-width layout (`mobile-layout.spec.ts`), Markdown rendering (`markdown.spec.ts`, `markdown-dos.spec.ts`), guest attachments and the after-upgrade wizard. Install the browsers once with `npx playwright install chromium webkit` before the first run.
+
+It starts its own Vite server on port 5183 and fails if something already holds that port, rather than testing the wrong checkout. Running several worktrees at once: give each its own port with `PW_PORT=5190 npm run test:e2e`. `PW_REUSE=1` reuses a server already on `PW_PORT`; use it only if that server is this checkout's.
 
 ---
 
