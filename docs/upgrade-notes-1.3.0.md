@@ -133,7 +133,12 @@ A web page on a sibling site could send MCP requests that the server accepted un
 
 ### API key delete is scoped to its owner (#450)
 
-An API key could delete another administrator's key if it knew the id. That has been possible since 1.0.0 (1.0.0 to 1.2.0 are affected). It is revoke-only, needs an administrator's key and the other key's id, and is low severity; upgrading is advised. There is no GitHub security advisory for this API key item.
+An API key could delete another administrator's key if it knew the id. That has been possible since 1.0.0 (1.0.0 to 1.2.0 are affected). It is revoke-only, needs an administrator's key and the other key's id, and is low severity; upgrading is advised. A GitHub security advisory is published with this release.
+
+**TODO BEFORE TAGGING: replace the placeholder link below with the real advisory.** The release workflow fails a `v*` tag build while `GHSA-TODO` is still in `docs/` or `SECURITY.md`.
+
+https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-TODO
+<!-- GHSA id: Erik fills in on tag day -->
 
 Now an API key lists and revokes **only itself**: not its owner's other keys and not anyone else's (any other id answers `404`). An administrator signed in through the browser lists and revokes **every** key, so `GET /admin/api-keys` for a browser session now returns all keys instead of the caller's own, and each entry carries `owner_name` and `owner_email`. A script that used one key to list or revoke the others now needs a browser session.
 
