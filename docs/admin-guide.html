@@ -244,7 +244,7 @@ Facilities
     </tr>
     <tr>
       <td><strong>Staff</strong></td>
-      <td>Can view, reply to, assign and update the tickets they can see: every ticket, unless <a href="#admin-groups">Limit staff to their group scope</a> is on. Can leave internal notes not visible to users. Can resolve tickets; only an administrator can close one. Can add and remove tags. Can file a ticket for a requester, either an existing user or a typed email address (limited to 40 tickets an hour for addresses with no account). Cannot access admin settings.</td>
+      <td>Can view, reply to, assign and update the tickets they can see: every ticket, unless <a href="#admin-groups">Limit staff to their group scope</a> is on. Can leave internal notes not visible to users. Can resolve tickets; only an administrator can close one. Can add and remove tags. Can file a ticket for a requester, either an existing user or a typed email address (limited to 40 typed addresses an hour). Cannot access admin settings.</td>
     </tr>
     <tr>
       <td><strong>User</strong></td>
@@ -278,7 +278,7 @@ Facilities
 </ul>
 
 <h3 id="admin-service-users">Service users</h3>
-<p>Each <a href="#admin-oauth-clients">OAuth client</a> acts as its own account, a <em>service user</em>, which appears in the list with a <em>Service</em> badge. It never signs in: it has no password, no second factor, no passkey and no single sign-on, and cannot be an administrator. On its detail page you can rename it (which renames the client too), set its role to staff or user, give it groups, and disable it. <strong>Disabling the service user stops the client</strong>; enabling it again restores it. You cannot delete it from here: the delete is refused and points you to the OAuth Clients page, because deleting the client is what removes the account. Service users are left out of assignee lists and round-robin, do not count as administrators, and are never emailed.</p>
+<p>Each <a href="#admin-oauth-clients">OAuth client</a> acts as its own account, a <em>service user</em>, which appears in the list with a <em>Service</em> badge. It never signs in: it has no password, no second factor, no passkey and no single sign-on, and cannot be an administrator. On its detail page you can rename it (which renames the client too), set its role to staff or user, give it groups, and disable it. Its email address, the administrator role and a second-factor reset are refused (<code>409 service_account</code>). <strong>Disabling the service user stops the client</strong>; enabling it again restores it. You cannot delete it from here: the delete is refused and points you to the OAuth Clients page, because deleting the client is what removes the account. Service users are left out of assignee lists and round-robin, do not count as administrators, and are never emailed.</p>
 
 <h3>Locked out of every second factor</h3>
 <p>An administrator who loses every second factor, with no other administrator to reset it, can be recovered from the server. Run this where the server runs, while the <code>app</code> container is up:</p>
@@ -883,7 +883,7 @@ function verifySignature(secret, body, header) {
 <ul>
   <li>Administrators always can own keys. Staff can while the first setting is on. Requesters and service accounts never own one.</li>
   <li>You can issue a key on a staff member's behalf (or for yourself) when you create it. Not for another administrator. The key list shows "Issued on their behalf", and the owner sees "Issued for you by an administrator".</li>
-  <li>A key acts within its owner's current role, and its scopes never exceed it. A staff key can carry <code>tickets:read</code>, <code>tickets:write</code>, <code>groups:read</code>, <code>audit:read</code> and <code>users:read</code>. Promoting a staff member who holds an administrator-issued key leaves an administrator holding it; revoke it if you do not want that.</li>
+  <li>A key acts within its owner's current role, and its scopes never exceed it. A staff key can carry <code>tickets:read</code>, <code>tickets:write</code>, <code>groups:read</code> and <code>audit:read</code> (<code>users:read</code> is no longer offered: its one staff route, the requester lookup, is session-only). Promoting a staff member who holds an administrator-issued key leaves an administrator holding it; revoke it if you do not want that.</li>
   <li><strong>A key cannot create keys or OAuth clients</strong>, and <strong>cannot write users</strong>: it can read users and groups, but cannot create, change, disable or delete an account, set a password, clear a second factor, change an email, or change group membership or scope. It also cannot change <code>ticket_scope_enforced</code> or the auto-assignment settings. These need you, signed in. The scope <code>users:write</code> is no longer offered.</li>
   <li>Every key issued or revoked is written to the audit log (<code>api_key_issued</code>, <code>api_key_revoked</code>).</li>
 </ul>

@@ -443,7 +443,7 @@
 <h3>Creating a key</h3>
 <ol>
   <li>An administrator goes to <em>Admin → API Keys</em> and uses <em>Create new key</em>, choosing the owner (themselves or a staff member). Staff go to <em>Account → API keys</em>.</li>
-  <li>Give the key a descriptive name (e.g. <code>monitoring-script</code>), choose its scopes and an expiry date. A key must have at least one scope. Staff keys can carry <code>tickets:read</code>, <code>tickets:write</code>, <code>groups:read</code>, <code>audit:read</code> and <code>users:read</code>.</li>
+  <li>Give the key a descriptive name (e.g. <code>monitoring-script</code>), choose its scopes and an expiry date. A key must have at least one scope. Staff keys can carry <code>tickets:read</code>, <code>tickets:write</code>, <code>groups:read</code> and <code>audit:read</code> (<code>users:read</code> is no longer offered: its one staff route, the requester lookup, is session-only).</li>
   <li><strong>Every new key must expire</strong>, no later than the maximum lifetime: <em>Longest an API key may live</em>, a slider with stops of 1 to 5 years and Never (default 2 years; the settings page shows a red warning above 2). The form offers the longest allowed date by default. Only at Never may the date be left out. Keys made before the upgrade keep working; one with no expiry or one past the current limit is shown as "No expiry (longer than the current limit)" so it can be rotated.</li>
   <li>The key is shown <strong>exactly once</strong> after creation. Copy it into a secret manager or CI secret store. It cannot be retrieved later. A key issued for you by an administrator is marked "Issued for you by an administrator" on your Account page.</li>
 </ol>
@@ -464,7 +464,7 @@
 <h3>OAuth clients</h3>
 <p>Under <em>Admin → OAuth Clients</em>, an administrator creates a client with its scopes. The client also gets a service user, named after it. The client exchanges its ID and secret for a short-lived bearer token at <code>POST /api/v1/auth/oauth/token</code> and sends it as <code>Authorization: Bearer &lt;token&gt;</code>. The client acts as its service user, at that user's role: staff by default, or user, never administrator. A client holding <code>tickets:write</code> can create tickets and replies, recorded under the client's name.</p>
 <ul>
-  <li>The service user appears under <em>Admin → Users</em> with a <em>Service</em> badge, and in the client list as <em>(service user)</em>. An administrator can rename it (which renames the client), change its role, give it groups and disable it. Disabling it stops the client.</li>
+  <li>The service user appears under <em>Admin → Users</em> with a <em>Service</em> badge, and in the client list as <em>(service user)</em>. An administrator can rename it (which renames the client), set its role to staff or user, give it groups and disable it. Its email, the administrator role and a second-factor reset are refused (<code>409 service_account</code>). Disabling it stops the client.</li>
   <li>The user's groups are the client's ticket scope. When staff are limited to their group scope, a client whose user is in no group sees no tickets; the client list says so, and the admin warning banner lists such clients.</li>
   <li>A service user never signs in: it has no password, second factor, passkey or SSO identity, and cannot be made an administrator. It is never emailed.</li>
   <li>Deleting the client deletes its service user. The tickets and replies it wrote keep its name.</li>
