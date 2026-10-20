@@ -211,3 +211,89 @@ describe('the post-upgrade wizard', () => {
     expect(heading()).toBe('Weekly check for new releases')
   })
 })
+
+// Step 5 (#536): guest file uploads. It only makes sense while guest submission
+// is on, so it is part of the wizard only then.
+describe('the guest file uploads step', () => {
+  const GUESTS_ON = { ...UPGRADED, guest_submission_enabled: true }
+
+  async function toStep5(user: ReturnType<typeof userEvent.setup>) {
+    for (let i = 0; i < 4; i++) await user.click(button('Skip'))
+    expect(heading()).toBe('Guest file uploads')
+  }
+
+  it('comes fifth, says what changed, and shows today\u2019s setting (off)', async () => {
+    serve(GUESTS_ON)
+    const user = userEvent.setup()
+    await opened()
+    expect(screen.getByText(/step 1 of 5/i)).toBeTruthy()
+    await toStep5(user)
+    expect(screen.getByText(/in 1\.2, a guest could upload files through the api/i)).toBeTruthy()
+    expect(screen.getByText(/1\.3\.0 switches that off/i)).toBeTruthy()
+    expect(screen.getByText(/currently: guest uploads are off/i)).toBeTruthy()
+    expect(button('Finish')).toBeTruthy()
+  })
+
+  it('saves the switch, size, per-ticket and per-hour limits through the settings API', async () => {
+    const patch = serve(GUESTS_ON)
+    const user = userEvent.setup()
+    await opened()
+    await toStep5(user)
+
+    // The limits are unavailable until uploads are switched on.
+    expect((screen.getByRole('slider') as HTMLInputElement).disabled).toBe(true)
+    await user.click(screen.getByLabelText('Guests may attach files'))
+    fireEvent.change(screen.getByRole('slider'), { target: { value: '10' } })
+    const perTicket = screen.getByLabelText('Most files a guest can attach to one ticket')
+    await user.clear(perTicket)
+    await user.type(perTicket, '8')
+    const perHour = screen.getByLabelText('Uploads per guest link per hour')
+    await user.clear(perHour)
+    await user.type(perHour, '6')
+    await user.click(button('Finish'))
+
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(1))
+    expect(patch).toHaveBeenCalledWith('/admin/settings', {
+      guest_attachments_enabled: true,
+      guest_attachment_max_mb: 10,
+      guest_attachment_max_per_ticket: 8,
+      guest_attachment_uploads_per_hour: 6,
+      post_upgrade_130_seen: true,
+    })
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/dashboard' }))
+  })
+
+  it('Skip leaves uploads off: nothing but the seen flag is sent', async () => {
+    const patch = serve(GUESTS_ON)
+    const user = userEvent.setup()
+    await opened()
+    await toStep5(user)
+    await user.click(screen.getByLabelText('Guests may attach files'))
+    await user.click(button('Skip'))
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(1))
+    expect(patch).toHaveBeenCalledWith('/admin/settings', { post_upgrade_130_seen: true })
+  })
+
+  it.each([
+    ['off', { ...UPGRADED, guest_submission_enabled: false }],
+    ['never set', UPGRADED],
+  ])('is not a step while guest submission is %s, and the wizard says why', async (_n, settings) => {
+    serve(settings)
+    const user = userEvent.setup()
+    await opened()
+    expect(screen.getByText(/step 1 of 4/i)).toBeTruthy()
+    for (let i = 0; i < 3; i++) await user.click(button('Skip'))
+    expect(heading()).toBe('Reset window for old passwords')
+    expect(screen.getByText(/guest file uploads stay off/i)).toBeTruthy()
+    expect(screen.getByText(/need guest submission/i)).toBeTruthy()
+    expect(button('Finish')).toBeTruthy()
+  })
+
+  it('does not mention it when guest submission is on', async () => {
+    serve(GUESTS_ON)
+    const user = userEvent.setup()
+    await opened()
+    for (let i = 0; i < 3; i++) await user.click(button('Skip'))
+    expect(screen.queryByText(/guest file uploads stay off/i)).toBeNull()
+  })
+})

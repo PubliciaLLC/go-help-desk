@@ -8,6 +8,8 @@ import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { LifetimeSlider } from '@/components/admin/LifetimeSlider'
+import { GuestSizeSlider } from '@/components/admin/GuestSizeSlider'
+import { BoundedNumberInput } from '@/components/admin/BoundedNumberInput'
 import { UPDATE_CHECK_DETAIL, UPDATE_CHECK_LABEL } from '@/lib/updateCheck'
 
 // The one-time "after upgrading to 1.3.0" wizard, shown to the first
@@ -38,6 +40,8 @@ interface StepProps {
 interface Step {
   title: string
   keys: string[]
+  /** The step is part of the wizard only when this says so for the stored settings. */
+  when?: (settings: Settings) => boolean
   Body: (p: StepProps) => React.ReactElement
 }
 
@@ -184,15 +188,84 @@ function PasswordsStep({ settings, get, set, extra }: StepProps) {
   )
 }
 
-// To add a step, add one entry. Guest file uploads (#536) goes after the
-// password step once that PR has merged: allow guest uploads, plus size,
-// per-ticket and per-hour limits, reusing #536's controls.
-// STEP 5 GOES HERE.
+// ── Step 5: guest file uploads (#536) ────────────────────────────────────────
+const GUEST_UPLOAD_KEYS = [
+  'guest_attachments_enabled',
+  'guest_attachment_max_mb',
+  'guest_attachment_max_per_ticket',
+  'guest_attachment_uploads_per_hour',
+]
+
+// Guest uploads do nothing while guest submission is off, so the step is only
+// part of the wizard when it is on.
+const guestSubmissionOn = (settings: Settings) => settings.guest_submission_enabled === true
+
+function GuestUploadsStep({ settings, get, set }: StepProps) {
+  const on = get('guest_attachments_enabled') === true
+  const num = (key: string, fallback: number | undefined) =>
+    typeof get(key) === 'number' ? (get(key) as number) : fallback
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-gray-700">
+        In 1.2, a guest could upload files through the API whenever guest submission was on. 1.3.0 switches that off
+        until you turn it on here. Uploads are scanned and held to the same rules as everyone else&rsquo;s, and are
+        download-only. Skip this step to keep them off.
+      </p>
+      <p className="text-sm text-gray-700">
+        Currently: guest uploads are {settings.guest_attachments_enabled === true ? 'on' : 'off'}.
+      </p>
+      <div className="flex items-start gap-2">
+        <input
+          id="wiz-guest-uploads"
+          type="checkbox"
+          className="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          checked={on}
+          onChange={(e) => set('guest_attachments_enabled', e.target.checked)}
+        />
+        <label htmlFor="wiz-guest-uploads" className="text-sm font-medium text-gray-900">
+          Guests may attach files
+        </label>
+      </div>
+      <p className="text-sm text-gray-500">
+        The largest file can never exceed this instance&rsquo;s own attachment maximum of 25 MB.
+      </p>
+      <GuestSizeSlider
+        value={num('guest_attachment_max_mb', undefined)}
+        onChange={(v) => set('guest_attachment_max_mb', v)}
+        instanceMaxMB={25}
+        disabled={!on}
+      />
+      <div className="flex flex-wrap gap-x-8 gap-y-4">
+        <BoundedNumberInput
+          label="Most files a guest can attach to one ticket"
+          hint="1 to 50. Default 5."
+          min={1}
+          max={50}
+          value={num('guest_attachment_max_per_ticket', 5) as number}
+          onChange={(v) => set('guest_attachment_max_per_ticket', v)}
+          disabled={!on}
+        />
+        <BoundedNumberInput
+          label="Uploads per guest link per hour"
+          hint="1 to 30. Default 3."
+          min={1}
+          max={30}
+          value={num('guest_attachment_uploads_per_hour', 3) as number}
+          onChange={(v) => set('guest_attachment_uploads_per_hour', v)}
+          disabled={!on}
+        />
+      </div>
+    </div>
+  )
+}
+
+// To add a step, add one entry.
 const STEPS: Step[] = [
   { title: 'Weekly check for new releases', keys: ['update_check_enabled'], Body: UpdateCheckStep },
   { title: 'Staff email notifications', keys: STAFF_EMAIL_KEYS, Body: StaffEmailStep },
   { title: 'Staff API keys', keys: ['staff_can_create_api_keys', 'api_key_max_lifetime_years'], Body: ApiKeysStep },
   { title: 'Reset window for old passwords', keys: ['password_rehash_grace_days'], Body: PasswordsStep },
+  { title: 'Guest file uploads', keys: GUEST_UPLOAD_KEYS, when: guestSubmissionOn, Body: GuestUploadsStep },
 ]
 
 export function AfterUpgradePage() {
@@ -219,8 +292,12 @@ export function AfterUpgradePage() {
     return <div className="p-6 text-sm text-gray-500">Loading…</div>
   }
 
-  const step = STEPS[index]
-  const last = index === STEPS.length - 1
+  const steps = STEPS.filter((s) => !s.when || s.when(settings))
+  const step = steps[index]
+  const last = index === steps.length - 1
+  // The one step that can drop out, and the reason, said on the final step so
+  // an administrator is not left wondering where guest uploads went.
+  const guestStepHidden = steps.length < STEPS.length
 
   const get = (key: string) => (key in draft ? draft[key] : settings[key])
   const set = (key: string, value: unknown) => setDraft((d) => ({ ...d, [key]: value }))
@@ -265,7 +342,7 @@ export function AfterUpgradePage() {
         </CardHeader>
         <CardContent className="space-y-4">
           <p aria-live="polite" className="text-xs font-medium uppercase tracking-wider text-gray-400">
-            Step {index + 1} of {STEPS.length}
+            Step {index + 1} of {steps.length}
           </p>
           <h2 ref={headingRef} tabIndex={-1} className="text-lg font-semibold text-gray-900 focus:outline-none">
             {step.title}
@@ -278,6 +355,12 @@ export function AfterUpgradePage() {
             unset={unset}
             extra={{ oldPasswordAccounts: upgrade?.old_password_accounts, emailEnabled: warnings?.email?.enabled }}
           />
+          {last && guestStepHidden && (
+            <p className="text-sm text-gray-500">
+              Guest file uploads stay off. They need guest submission, which is off; turn it on under Settings, General,
+              Submissions, and the upload switch and limits appear there.
+            </p>
+          )}
           {error && <p role="alert" className="break-words text-sm text-red-600">{error}</p>}
           <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
             <Button type="button" variant="outline" disabled={index === 0 || save.isPending} onClick={() => { setError(''); setIndex(index - 1) }}>

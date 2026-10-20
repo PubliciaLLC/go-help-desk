@@ -10,8 +10,9 @@ test.use({ viewport: { width: 320, height: 640 } })
 // A stateful stand-in for the server: the settings an install upgraded from 1.2
 // has (staff email forced off by migration 000052, no post_upgrade_130_seen),
 // and every PATCH it receives.
-async function mockUpgradedInstall(page: Page) {
+async function mockUpgradedInstall(page: Page, extra: Record<string, unknown> = {}) {
   const settings: Record<string, unknown> = {
+    ...extra,
     staff_email_assigned_override: 'off',
     staff_email_activity_override: 'off',
     staff_email_group_override: 'off',
@@ -108,4 +109,39 @@ test('an upgraded install is walked through the wizard once, at 320px', async ({
   // Seen: a reload does not bring it back.
   await page.reload()
   await expect(page).toHaveURL(/\/dashboard$/)
+})
+
+test('with guest submission on, the guest uploads step fits at 320px and saves', async ({ page }) => {
+  const patches = await mockUpgradedInstall(page, { guest_submission_enabled: true })
+
+  await page.goto('/dashboard')
+  await expect(page).toHaveURL(/\/after-upgrade$/)
+  await expect(page.getByText('Step 1 of 5')).toBeVisible()
+  for (let i = 0; i < 4; i++) await page.getByRole('button', { name: 'Skip' }).click()
+
+  await expect(page.getByRole('heading', { level: 2 })).toHaveText('Guest file uploads')
+  await expect(page.getByText('Step 5 of 5')).toBeVisible()
+  await noHorizontalOverflow(page)
+
+  const box = page.getByLabel('Guests may attach files')
+  await box.focus()
+  await page.keyboard.press('Space')
+  await expect(box).toBeChecked()
+  await page.getByLabel('Uploads per guest link per hour').fill('5')
+  await noHorizontalOverflow(page)
+  await page.getByRole('button', { name: 'Finish' }).click()
+
+  await expect(page).toHaveURL(/\/dashboard$/)
+  expect(patches).toEqual([
+    { guest_attachments_enabled: true, guest_attachment_uploads_per_hour: 5, post_upgrade_130_seen: true },
+  ])
+})
+
+test('with guest submission off there is no guest step, and the wizard says why', async ({ page }) => {
+  await mockUpgradedInstall(page, { guest_submission_enabled: false })
+  await page.goto('/dashboard')
+  await expect(page.getByText('Step 1 of 4')).toBeVisible()
+  for (let i = 0; i < 3; i++) await page.getByRole('button', { name: 'Skip' }).click()
+  await expect(page.getByText(/guest file uploads stay off/i)).toBeVisible()
+  await noHorizontalOverflow(page)
 })
