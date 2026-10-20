@@ -280,6 +280,10 @@ export async function mockApi(page: Page, opts: { me?: object } = {}) {
     '/api/v1/staff': ASSIGNABLE_STAFF,
     '/api/v1/groups': [],
     '/api/v1/admin/users': [],
+    // An install the post-upgrade wizard has already been through. Without it
+    // an administrator opening the dashboard is sent to /after-upgrade, which
+    // is not what these layout tests are about (see after-upgrade.spec.ts).
+    '/api/v1/admin/settings': { post_upgrade_130_seen: true },
     '/api/v1/tickets/fields': [],
   }
 
@@ -374,7 +378,7 @@ export async function mockAdminApi(page: Page, opts: { short?: boolean } = {}) {
       { id: 'sla-1', name: n, priority: 'high', response_target_min: 30, resolution_target_min: 240 },
     ],
     '/api/v1/admin/scopes': [{ scope: 'tickets:read', resource: 'tickets', action: 'read' }],
-    '/api/v1/admin/settings': { sla_enabled: true, saml_enabled: true, setup_complete: true },
+    '/api/v1/admin/settings': { sla_enabled: true, saml_enabled: true, setup_complete: true, post_upgrade_130_seen: true },
     '/api/v1/admin/saml': { configured: true, metadata_url: u, metadata_xml: '', cert_pem: SAML_CERT, sp_metadata_url: u },
     '/api/v1/admin/oidc': { enabled: true, issuer_url: u, client_id: d, client_secret: '', redirect_url: u, configured: true },
     '/api/v1/admin/audit': {

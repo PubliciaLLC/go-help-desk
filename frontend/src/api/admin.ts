@@ -711,6 +711,12 @@ export interface SecurityWarnings {
    * older fixtures and a server that predates it read as healthy.
    */
   email?: EmailWarning
+
+  /**
+   * A stable release newer than the one running, found by the opt-in update
+   * check (#170). Absent when none was found or the check is off.
+   */
+  update?: { current: string; latest: string; url: string }
 }
 
 export interface EmailWarning {
@@ -744,6 +750,12 @@ export interface AttachmentScanningWarning {
    * scanner address anywhere, and attachments already stored (#459).
    */
   stale_off: boolean
+}
+
+/** What the post-upgrade wizard needs that the settings dump does not carry. */
+export async function getPostUpgrade(): Promise<{ old_password_accounts: number }> {
+  const res = await api.get<{ old_password_accounts: number }>('/admin/post-upgrade')
+  return res.data
 }
 
 /** Admin-only. Not on the public /site payload, by design. */

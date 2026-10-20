@@ -47,6 +47,10 @@ type Store interface {
 	// the stored hash, and reports whether it did. False means the password
 	// changed meanwhile, which is not an error (#453).
 	RehashPassword(ctx context.Context, id uuid.UUID, oldHash, newHash string) (bool, error)
+	// CountBelowCost counts the accounts that would have to reset their
+	// password when the grace period ends: enabled, not an administrator, not
+	// a service account, with a bcrypt hash made below cost.
+	CountBelowCost(ctx context.Context, cost int) (int, error)
 	SetMFA(ctx context.Context, id uuid.UUID, secret string, enabled bool) error
 	// SetFirstMFA adopts secret only if the account has no TOTP when the row
 	// is written, and reports whether it did (#338).

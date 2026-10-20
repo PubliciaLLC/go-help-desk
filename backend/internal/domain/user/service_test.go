@@ -285,6 +285,8 @@ func (f *fakeUserStore) SetEmailPreferences(_ context.Context, id uuid.UUID, p u
 	return nil
 }
 
+func (f *fakeUserStore) CountBelowCost(context.Context, int) (int, error) { return 0, nil }
+
 // RehashPassword mirrors the real statement: it applies only while the stored
 // hash is still the one the caller read.
 func (f *fakeUserStore) RehashPassword(ctx context.Context, id uuid.UUID, oldHash, newHash string) (bool, error) {

@@ -41,6 +41,16 @@ jobs:
       - name: Check the tag logic
         run: ./scripts/image-tags-test.sh
 
+      # The upgrade notes carry a placeholder advisory link until the
+      # advisory exists. A tagged release must not ship it.
+      - name: No advisory placeholder left in the docs
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          if git grep -n 'GHSA-TODO' -- docs SECURITY.md; then
+            echo "::error::GHSA-TODO is still in the docs; replace it with the real advisory id before tagging"
+            exit 1
+          fi
+
       - name: Work out which tags to publish
         id: tags
         run: |
