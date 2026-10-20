@@ -1,9 +1,23 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { getSecurityWarnings } from '@/api/admin'
 
 interface InsecureConfigBannerProps {
   /** Only administrators can see or fix this, so only they are asked. */
   isAdmin: boolean
+}
+
+// The release the administrator last dismissed (#170). Per browser, and by
+// version, so the next release brings the notice back. Storage can be blocked
+// or absent; the notice then simply returns on each load, which is harmless.
+const DISMISSED_UPDATE_KEY = 'ghd.update-notice-dismissed'
+
+function readDismissedUpdate(): string | null {
+  try {
+    return localStorage.getItem(DISMISSED_UPDATE_KEY)
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -47,6 +61,11 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
     retry: false,
   })
 
+  // #170: the opt-in update check found a newer release. Not a warning, so it
+  // is a role="status" note rather than an alert, and it can be dismissed.
+  const [dismissedUpdate, setDismissedUpdate] = useState(readDismissedUpdate)
+  const update = data?.update && data.update.latest !== dismissedUpdate ? data.update : undefined
+
   const insecure = data?.insecure_secrets ?? []
   const scanning = data?.attachment_scanning
   const scannerDegraded = !!scanning && scanning.policy !== 'off' && !scanning.reachable
@@ -75,13 +94,40 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
 
   if (
     insecure.length === 0 && !scannerDegraded && !staleOff && !storageBroken && !reopenInactive &&
-    !passkeysOff && !emailOff && !emailFailing && blindClients.length === 0
+    !passkeysOff && !emailOff && !emailFailing && blindClients.length === 0 && !update
   ) {
     return null
   }
 
+  function dismissUpdate(latest: string) {
+    try {
+      localStorage.setItem(DISMISSED_UPDATE_KEY, latest)
+    } catch {
+      // Dismissed for this page view only.
+    }
+    setDismissedUpdate(latest)
+  }
+
   return (
     <>
+      {update && (
+        <div role="status" className="flex items-start gap-3 border-b border-blue-200 bg-blue-50 px-4 py-2 text-blue-950">
+          <p className="min-w-0 flex-1 text-sm">
+            Version {update.latest} is available (you run {update.current}).{' '}
+            <a className="font-medium underline" href={update.url} target="_blank" rel="noopener noreferrer">
+              Release notes
+            </a>
+          </p>
+          <button
+            type="button"
+            aria-label="Dismiss this notice"
+            onClick={() => dismissUpdate(update.latest)}
+            className="-my-1 flex h-8 w-8 shrink-0 items-center justify-center rounded text-blue-900 hover:bg-blue-100"
+          >
+            <span aria-hidden="true">&times;</span>
+          </button>
+        </div>
+      )}
       {insecure.length > 0 && (
         <div role="alert" className="border-b border-red-700 bg-red-600 px-4 py-3 text-white">
           <p className="text-sm font-semibold">

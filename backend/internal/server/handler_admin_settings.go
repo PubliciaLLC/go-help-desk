@@ -18,6 +18,8 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/antivirus"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/reputation"
+	"github.com/publiciallc/go-help-desk/backend/internal/updatecheck"
+	"github.com/publiciallc/go-help-desk/backend/internal/version"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
@@ -218,7 +220,7 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		// A row the server keeps, not a setting: it is not writable, and the
 		// page sends this dump back on save, so listing it would make every
 		// save refuse an unknown key.
-		if k == admin.KeyPasswordRehashStartedAt {
+		if admin.IsServerKeptKey(k) {
 			continue
 		}
 		if _, secret := secretSettingKeys[k]; secret {
@@ -281,7 +283,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		// The start of the password-reset clock is known (a migration seeds
 		// it) but not writable: restarting it would hand everyone a new grace
 		// period. Refused by name, like the presence flags.
-		if k == admin.KeyPasswordRehashStartedAt {
+		if admin.IsServerKeptKey(k) {
 			Error(w, http.StatusBadRequest, "readonly_setting",
 				k+" is recorded by the server and cannot be changed")
 			return
@@ -470,6 +472,19 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		if err := unmarshalSetting(raw, "staff_can_create_api_keys", &on); err != nil {
 			handleError(w, err)
 			return
+		}
+	}
+
+	// The update check (#170) and the post-upgrade wizard's seen flag: booleans
+	// and nothing else. A string "true", a number or an object would be stored
+	// and read back as off, so the operator would believe they had chosen.
+	for _, key := range []string{admin.KeyUpdateCheckEnabled, admin.KeyPostUpgrade130Seen} {
+		if raw, ok := body[key]; ok {
+			var on bool
+			if err := unmarshalSetting(raw, key, &on); err != nil {
+				handleError(w, err)
+				return
+			}
 		}
 	}
 
@@ -957,6 +972,11 @@ type securityWarnings struct {
 	// Email says whether mail can be sent and whether it is being delivered
 	// (#455, #456). Additive.
 	Email emailStatus `json:"email"`
+
+	// Update is set when the opt-in update check (#170) has found a release
+	// newer than the one running. Absent otherwise, including while the check
+	// is off. Read from the stored answer: this endpoint never causes a request.
+	Update *updatecheck.Available `json:"update,omitempty"`
 }
 
 type reopenTargetStatus struct {
@@ -1079,7 +1099,12 @@ func (s *Server) handleGetSecurityWarnings(w http.ResponseWriter, r *http.Reques
 		slog.ErrorContext(r.Context(), "checking the reopen target for the security warnings failed", "error", err)
 		reopen = reopenTargetStatus{}
 	}
+	var update *updatecheck.Available
+	if n, ok := updatecheck.Notice(r.Context(), s.adminSvc, version.Version); ok {
+		update = &n
+	}
 	JSON(w, http.StatusOK, securityWarnings{
+		Update:                    update,
 		ReopenTarget:              reopen,
 		InsecureSecrets:           s.cfg.InsecureSecrets(),
 		AttachmentScanning:        s.scanStatus(r.Context()),

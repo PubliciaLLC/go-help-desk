@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
@@ -44,6 +45,11 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		// anything. Optional in the request so an existing caller does not
 		// break; the wizard supplies it. See #323.
 		Category string `json:"category"`
+		// Whether the new administrator ticked "Check weekly for new
+		// releases" (#170). A pointer is not needed: absent is false, and an
+		// older client that never asks must never turn a request to a third
+		// party on.
+		UpdateCheck bool `json:"update_check"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -71,6 +77,19 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	// and nothing else in this codebase composes them that way. Ordering buys
 	// the same safety here because the category is harmless on its own.
 	if err := s.ensureFirstCategory(r.Context(), body.Category); err != nil {
+		handleError(w, err)
+		return
+	}
+
+	// The 1.3.0 question was asked on this screen, so the post-upgrade wizard
+	// must not ask it again: that wizard is for installs that never ran this
+	// setup. Written before the user, for the same reason the category is: a
+	// failure here leaves nothing behind that cannot simply be retried.
+	if err := s.adminSvc.SetBool(r.Context(), admin.KeyUpdateCheckEnabled, body.UpdateCheck); err != nil {
+		handleError(w, err)
+		return
+	}
+	if err := s.adminSvc.SetBool(r.Context(), admin.KeyPostUpgrade130Seen, true); err != nil {
 		handleError(w, err)
 		return
 	}

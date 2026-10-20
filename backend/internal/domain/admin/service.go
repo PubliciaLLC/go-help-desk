@@ -492,6 +492,11 @@ func (s *Service) ListAll(ctx context.Context) (map[string][]byte, error) {
 	return s.store.List(ctx)
 }
 
+// GetRaw returns the stored JSON for a key, or an error when there is none.
+func (s *Service) GetRaw(ctx context.Context, key string) ([]byte, error) {
+	return s.store.Get(ctx, key)
+}
+
 // SetRaw persists a raw JSON value for the given key.
 func (s *Service) SetRaw(ctx context.Context, key string, value []byte) error {
 	return s.store.Set(ctx, key, value)

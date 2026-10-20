@@ -273,7 +273,34 @@ const (
 	// and a date is neither. Listed in KnownKeys because the migration seeds it
 	// (see TestUpdateSettings_EveryMigrationSeededKeyIsKnown).
 	KeyPasswordRehashStartedAt = "password_rehash_started_at"
+
+	// Whether this instance may ask GitHub once a week for the latest release
+	// (#170). Off unless an administrator chooses it, upgraded installs
+	// included: it is a request to a third party that an upgrade must not
+	// start on anyone's behalf. Asked at setup and, on an upgraded install, by
+	// the post-upgrade wizard. Unset reads as off.
+	KeyUpdateCheckEnabled = "update_check_enabled" // bool
+
+	// The last update check: {"checked_at": RFC 3339, "latest": "1.4.0"}.
+	// Written only by the checker. PATCH /admin/settings refuses it and the
+	// settings dump leaves it out (see IsServerKeptKey); the admin notice
+	// reads it through GET /admin/security-warnings. It is a settings row so
+	// that a restart does not forget when the last check was and ask again.
+	KeyUpdateCheckResult = "update_check_result"
+
+	// Set once the 1.3.0 setup question or the post-upgrade wizard has been
+	// answered or skipped, so neither shows again. Setup writes it true on a
+	// fresh install; an install that upgraded to 1.3.0 never ran that setup, so
+	// the key being absent is exactly "this install has not been asked".
+	KeyPostUpgrade130Seen = "post_upgrade_130_seen" // bool
 )
+
+// IsServerKeptKey reports whether the server writes key itself: it is a known
+// setting row that PATCH /admin/settings refuses and the settings dump omits,
+// because the page sends the dump back on save.
+func IsServerKeptKey(key string) bool {
+	return key == KeyPasswordRehashStartedAt || key == KeyUpdateCheckResult
+}
 
 // Values of api_key_max_lifetime_years.
 const (
@@ -403,6 +430,7 @@ func KnownKeys() []string {
 		KeyStaffCanCreateAPIKeys, KeyAPIKeyMaxLifetimeYears,
 		KeyStaffEmailAssignedOverride, KeyStaffEmailActivityOverride, KeyStaffEmailGroupOverride,
 		KeyPasswordRehashGraceDays, KeyPasswordRehashStartedAt,
+		KeyUpdateCheckEnabled, KeyUpdateCheckResult, KeyPostUpgrade130Seen,
 	}
 }
 
@@ -523,6 +551,11 @@ func AuthCriticalKeys() []string {
 		// leaked API key is a quiet way to freeze every verdict on the
 		// instance at whatever it said the day the key was stolen.
 		KeyAttachmentReputationRefresh,
+		// Whether this instance contacts GitHub weekly (#170). Same family as
+		// the reputation toggles: a decision about what leaves the server, so a
+		// leaked API key must not be able to make it. The wizard and the
+		// Settings page are sessions, so nothing legitimate is blocked.
+		KeyUpdateCheckEnabled,
 	}
 }
 

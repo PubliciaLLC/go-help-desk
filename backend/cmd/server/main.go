@@ -55,6 +55,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/server"
 	"github.com/publiciallc/go-help-desk/backend/internal/server/notify"
 	"github.com/publiciallc/go-help-desk/backend/internal/ui"
+	"github.com/publiciallc/go-help-desk/backend/internal/updatecheck"
 )
 
 func main() {
@@ -513,6 +514,9 @@ func run() error {
 	}
 	outboxWorker = notify.NewWorker(outboxStore, outboxSenders, slog.Default())
 	go outboxWorker.Run(sweepCtx)
+	// The opt-in weekly release check (#170). Does nothing, and makes no
+	// request, unless an administrator turned update_check_enabled on.
+	go updatecheck.New(adminSvc, slog.Default()).Run(sweepCtx)
 	go func() {
 		t := time.NewTicker(time.Hour)
 		defer t.Stop()

@@ -1,6 +1,9 @@
 import { createRouter, createRoute, createRootRoute, redirect } from '@tanstack/react-router'
 import { getMe } from '@/api/auth'
 import { getSetupStatus } from '@/api/setup'
+import { getSettings } from '@/api/admin'
+import { needsAfterUpgrade } from '@/lib/afterUpgrade'
+import { AfterUpgradePage } from '@/pages/AfterUpgradePage'
 import { useAuthStore } from '@/store/auth'
 import { LoginPage } from '@/pages/LoginPage'
 import { SetupPage } from '@/pages/SetupPage'
@@ -77,11 +80,40 @@ const setupRoute = createRoute({
 })
 
 // ── Authenticated ─────────────────────────────────────────────────────────────
+// An administrator on an install upgraded to 1.3.0 is taken to the post-upgrade
+// wizard from the page sign-in lands on, until it has been finished or skipped.
+// Only the dashboard asks: a deep link to a ticket is not interrupted, and the
+// wizard is not a trap, since every step can be skipped. A settings read that
+// fails lets them through; the wizard is not worth locking anyone out of the app.
+async function dashboardGuard() {
+  await requireAuth()
+  if (useAuthStore.getState().user?.role !== 'admin') return
+  let settings: Record<string, unknown>
+  try {
+    settings = await getSettings()
+  } catch {
+    return
+  }
+  if (needsAfterUpgrade(settings)) throw redirect({ to: '/after-upgrade' })
+}
+
 const dashboardRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/dashboard',
-  beforeLoad: requireAuth,
+  beforeLoad: dashboardGuard,
   component: DashboardPage,
+})
+
+// The wizard itself: administrators only, and only while it has not been
+// answered, so it cannot be reopened by typing the address.
+const afterUpgradeRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/after-upgrade',
+  beforeLoad: async () => {
+    await requireAdmin()
+    if (!needsAfterUpgrade(await getSettings())) throw redirect({ to: '/dashboard' })
+  },
+  component: AfterUpgradePage,
 })
 
 const ticketsRoute = createRoute({
@@ -293,6 +325,7 @@ export const router = createRouter({
     forgotPasswordRoute,
     resetPasswordRoute,
     dashboardRoute,
+    afterUpgradeRoute,
     submitRoute,
     guestViewRoute,
     guestTrackRoute,

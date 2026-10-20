@@ -66,3 +66,16 @@ func TestIsKnownKey(t *testing.T) {
 	require.False(t, admin.IsKnownKey(""))
 	require.False(t, admin.IsKnownKey("oidc_client_secret_set"), "the dump's presence flags are not settings")
 }
+
+// The update check contacts a third party, so only a signed-in session may
+// switch it on (the same rule as the reputation toggles). The record of the
+// last check is kept by the server and is not a setting anybody may write.
+func TestUpdateCheckKeys(t *testing.T) {
+	require.True(t, admin.IsKnownKey(admin.KeyUpdateCheckEnabled))
+	require.True(t, admin.IsKnownKey(admin.KeyPostUpgrade130Seen))
+	require.True(t, admin.IsKnownKey(admin.KeyUpdateCheckResult))
+	require.Contains(t, admin.AuthCriticalKeys(), admin.KeyUpdateCheckEnabled)
+	require.True(t, admin.IsServerKeptKey(admin.KeyUpdateCheckResult))
+	require.True(t, admin.IsServerKeptKey(admin.KeyPasswordRehashStartedAt))
+	require.False(t, admin.IsServerKeptKey(admin.KeyUpdateCheckEnabled))
+}

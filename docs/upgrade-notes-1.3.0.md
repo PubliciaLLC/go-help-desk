@@ -115,6 +115,16 @@ Slack, Teams, Discord and Jira Automation hooks are not affected: their messages
 - MCP `add_reply` now emails the requester: see *MCP `add_reply`* under Changed behaviour.
 - `PATCH /admin/settings` null and error-code changes: see *Ticket and Settings API Responses (#420)* under Changed behaviour.
 
+## Optional weekly check for new releases (off unless you choose it)
+
+1.3.0 can check whether a newer release of Go Help Desk exists. **It is off.** It stays off after you upgrade, and nothing contacts GitHub unless an administrator turns it on.
+
+- **What is sent.** One `GET` to GitHub's public releases API (`https://api.github.com/repos/PubliciaLLC/go-help-desk/releases/latest`) with exactly two request headers of its own: `User-Agent: go-help-desk` (a fixed name, no version number) and `Accept: application/vnd.github+json`. No query string, body, cookie, instance identifier or usage data, and nothing about your server or version. GitHub sees your server's IP address, as any website would.
+- **How often.** At most once every 7 days, and not again after a restart until the week is up. A failed check (GitHub down, no route out) is logged once and tried again the following week.
+- **What you see.** If a newer stable release exists, administrators (only) see a small dismissible line, "Version X is available (you run Y)", linking to the release. Nothing is downloaded or installed. Prereleases and drafts are ignored.
+- **Air-gapped installs.** Leave it off. While it is off the server makes no request.
+- **Where to choose.** On a new install, the setup screen asks (unchecked: "Check for new releases (contacts GitHub once a week; sends nothing about your server)"). On an upgraded install, **the first administrator who signs in after the upgrade is taken once through a short "After upgrading to 1.3.0" wizard**, and this is its first question. The wizard then asks about staff email notifications (the upgrade turned them off), staff API keys and their lifetime, and the old-password reset window, showing today's setting for each. Skip any step to leave that setting as it is; finishing or skipping the wizard means it is not shown again. You can change the update check later under Settings → General → Updates.
+
 ## Security
 
 ### Cross-site request forgery on the MCP routes (1.1.1 to 1.2.x), GHSA-3jmq-7vm4-cc7p

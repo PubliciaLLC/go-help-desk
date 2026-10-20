@@ -13,6 +13,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
 import { useState, useEffect, useRef } from 'react'
 import { fmtMin } from '@/lib/format'
+import { UPDATE_CHECK_LABEL, UPDATE_CHECK_DETAIL } from '@/lib/updateCheck'
 
 // ── Shared primitives ─────────────────────────────────────────────────────────
 
@@ -666,6 +667,16 @@ function GeneralPanel({
                 : 'days — 0 keeps everything'}
             </span>
           </div>
+        </SettingRow>
+      </Section>
+
+      <Section title="Updates">
+        <SettingRow label={UPDATE_CHECK_LABEL} description={UPDATE_CHECK_DETAIL}>
+          <Toggle
+            label={UPDATE_CHECK_LABEL}
+            checked={bool('update_check_enabled')}
+            onChange={(v) => setBool('update_check_enabled', v)}
+          />
         </SettingRow>
       </Section>
 
