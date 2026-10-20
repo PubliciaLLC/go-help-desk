@@ -216,7 +216,7 @@ Descriptions, replies and internal notes can now be written in Markdown. **Text 
 - **Reading.** `description_format` is on every ticket object and `body_format` on every reply, for staff, requesters and guests alike. A follow-up copies its original's format.
 - **What is rendered.** CommonMark plus GitHub tables, strike-through and bare-URL links. No images (shown as the link "[image: alt]" and never loaded), no raw HTML (shown as text), headings all one small size, links http, https and mailto only. Code in a fenced block is highlighted for 13 languages. Markdown post readers get a **Plain text** button to see the source.
 - **Webhooks, email and chat are unchanged.** A webhook payload carries the Markdown source as text; chat targets escape it as before; email carries no ticket text.
-- **Migration 000055** adds `tickets.description_format` and `ticket_replies.body_format` (`plain` or `markdown`, no default afterwards). It does not rewrite the tables and is safe to apply on a running instance.
+- **Migration 000055** adds `tickets.description_format` and `ticket_replies.body_format` (`plain` or `markdown`, no default afterwards). It does not rewrite the tables, but **stop every old (1.2 or earlier) instance before the migration runs**: the migration removes the column default, so an instance still running the old version fails every ticket create and reply. There is no rolling upgrade across this version.
 
 What to check: an integration that already sends Markdown-looking text over REST keeps getting plain text unless it adds `"format": "markdown"`. An MCP agent that sent text with `*`, `#` or `_` meant literally will now have it formatted; tell it to escape them or pass `format: "plain"`.
 
@@ -507,8 +507,8 @@ In 1.2.x, deleting a user left their open tickets pointing at them. Such a ticke
 
 The server now says what it did to the schema, once, at startup, before it opens the port:
 
-- `database migrated from 21 to 53`: an upgrade from 1.2.0 (the first number is the version the database was at, the second the version it is at now). A new database says `from 0`.
-- `database schema at 53, no migrations needed`: an ordinary restart.
+- `database migrated from 21 to 55`: an upgrade from 1.2.0 (the first number is the version the database was at, the second the version it is at now). A new database says `from 0`.
+- `database schema at 55, no migrations needed`: an ordinary restart.
 
 The line carries `from` and `to` fields as well. Use it to check that an upgrade ran before you look anywhere else. Migrations still run on their own, before the server accepts traffic, and a failed one still stops the start with `running migrations: ...`.
 
@@ -556,9 +556,10 @@ Each `down` migration undoes its `up`. These are dropped or deleted, and cannot 
 - **SLA**: pause bookkeeping (000025), the frozen elapsed times (000027), and every superseded SLA record (000043), the history a reopen kept.
 - **Reopen counts and restart points** (000047), **followers** (000046), **password reset links** (000049), the 30-day password clock (000044), the must-change-password flag (000045), **staff email preferences** (000042) and **API key issuer and webhook pause links** (000050).
 - **OAuth service users** (000041): the users made for each client are deleted, and the database removes what hangs off them by cascade: their group memberships (and any sessions or API keys they held, though a service user is not meant to have any). The clients keep working without a user, as in 1.2.0. Tickets and replies they wrote stay, with no author link, and a ticket assigned to one loses its assignee.
-- **Text formats** (000055): `tickets.description_format` and `ticket_replies.body_format` are dropped. Description and reply text stays, but which posts were written as Markdown is forgotten, and 1.2.0 shows everything as plain text.
+- **Text formats** (000055): `tickets.description_format` and `ticket_replies.body_format` are dropped. Description and reply text stays, but which posts were written as Markdown is forgotten, so Markdown posts written under 1.3 show as raw source, and 1.2.0 shows everything as plain text.
 - **The generated JWT signing key** (`instance_secrets`, 000036). 1.2.0 needs its own `JWT_SECRET` in `docker/.env`: set a random secret of at least 32 bytes (for example `openssl rand -base64 48`). 1.2.0 only warns about a weak or example secret and signs with whatever you give it, and 1.3.0 discarded published example values as well as short and unset ones, so a value that 1.3.0 ignored is not safe to reuse. Every OAuth client fetches a new token either way.
 - Pending signups that 1.3.0 created without a name or password (000032, 000033).
+- **Which attachments a guest uploaded** (000054): `attachments.uploaded_by_guest` is dropped. The files stay; the record of who attached them is forgotten.
 
 **Not undone** (they repair or seed data and have no inverse; their `down` does nothing): `000028`, `000039`, `000052` and `000053`. The three staff-email overrides `000052` stored stay in the settings table, and the tickets `000053` returned to the queue stay unassigned. 1.2.0 never reads those settings. Settings rows 1.3.0 wrote stay in the table. Passwords hashed at the new cost still work on 1.2.0.
 
@@ -641,4 +642,4 @@ cd docker
 
 5. **Check it.** Sign in as an administrator, open a few tickets, and download an attachment. `SELECT version, dirty FROM schema_migrations` should say `21 | f`. `docker compose port db 5432` should say `127.0.0.1:5432`.
 
-To go forward again, run `git checkout -- docker-compose.yml` in `go-help-desk/docker` to drop the edit from step 3, then `git checkout v1.3.0` (it refuses while the file is changed) and start it: it runs every migration from 22, and says so in the log (`database migrated from 21 to 53`).
+To go forward again, run `git checkout -- docker-compose.yml` in `go-help-desk/docker` to drop the edit from step 3, then `git checkout v1.3.0` (it refuses while the file is changed) and start it: it runs every migration from 22, and says so in the log (`database migrated from 21 to 55`).
