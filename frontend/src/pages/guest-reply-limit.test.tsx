@@ -36,7 +36,7 @@ describe('guest reply length', () => {
     renderWithQuery(<GuestTicketViewPage />)
     fireEvent.change(await screen.findByRole('textbox', { name: 'Add a reply' }), { target: { value: 'a'.repeat(50_001) } })
     expect(screen.getByRole('button', { name: 'Send reply' })).toHaveProperty('disabled', true)
-    expect(screen.getByRole('alert').textContent).toMatch(/1 too many/)
+    expect(screen.getByRole('alert').textContent).toMatch(/1% over the size limit/)
     fireEvent.submit(screen.getByRole('button', { name: 'Send reply' }).closest('form')!)
     expect(addGuestReply).not.toHaveBeenCalled()
   })

@@ -1627,7 +1627,7 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 		return Reply{}, err
 	}
 	if len(body) > MaxReplyLength {
-		return Reply{}, fmt.Errorf("body must be %d characters or fewer: %w: %w", MaxReplyLength, ErrReplyTooLong, ErrValidation)
+		return Reply{}, fmt.Errorf("body must be at most %d bytes: %w: %w", MaxReplyLength, ErrReplyTooLong, ErrValidation)
 	}
 	if _, err := ParseTextFormat(string(format)); err != nil {
 		return Reply{}, fmt.Errorf("reply: %w", err)

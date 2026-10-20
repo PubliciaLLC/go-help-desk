@@ -31,7 +31,7 @@ describe('ReplyComposer length limit', () => {
     renderWithQuery(<ReplyComposer ticketId="t" isStaffOrAdmin />)
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'a'.repeat(50_001) } })
     expect(screen.getByRole('button', { name: 'Save entry' })).toHaveProperty('disabled', true)
-    expect(screen.getByRole('alert').textContent).toMatch(/1 too many/)
+    expect(screen.getByRole('alert').textContent).toMatch(/1% over the size limit/)
     fireEvent.click(screen.getByRole('button', { name: 'Save entry' }))
     expect(add).not.toHaveBeenCalled()
   })

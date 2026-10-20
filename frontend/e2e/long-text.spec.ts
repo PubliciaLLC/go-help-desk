@@ -52,5 +52,5 @@ test('the reply form refuses over 50,000 characters and says so', async ({ page 
   await expect(page.getByText('50,000 / 50,000')).toBeVisible()
   await box.fill('a'.repeat(50_001))
   await expect(page.getByRole('button', { name: 'Save entry' })).toBeDisabled()
-  await expect(page.getByRole('alert').filter({ hasText: '1 too many' })).toBeVisible()
+  await expect(page.getByRole('alert').filter({ hasText: '1% over the size limit' })).toBeVisible()
 })
