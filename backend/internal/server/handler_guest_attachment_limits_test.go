@@ -375,3 +375,49 @@ func TestGuestUploadLimits_AReportersFileIsNotAGuestFile(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, n)
 }
+
+// #559: once a ticket's refusal budget is spent, a further attempt is turned
+// away without touching the hourly upload budget. The two windows drift in
+// production (each starts at its first use after the last one ended), so the
+// test moves them apart: only the refusal window rolls over, and a good file
+// must then be accepted. Before the fix every turned-away attempt had already
+// spent an hourly unit, and the good file got the hourly 429.
+func TestGuestUploadLimits_ARefusalBudget429DoesNotSpendAnHourlyUpload(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	now := time.Now()
+	h.srv.SetGuestUploadClockForTest(func() time.Time { return now })
+	_, token := guestUploadsOn(t, h, 50, 2)
+
+	for i := range 20 {
+		res := uploadGuestAttachment(t, h, token, "evil.exe", []byte("x"))
+		require.Equal(t, http.StatusUnsupportedMediaType, res.StatusCode, "refusal %d: %s", i+1, readBody(t, res))
+	}
+	for i := range 5 {
+		res := uploadGuestAttachment(t, h, token, "evil.exe", []byte("x"))
+		require.Equal(t, http.StatusTooManyRequests, res.StatusCode, "turned away %d: %s", i+1, readBody(t, res))
+	}
+
+	// Only the refusal window rolls over; the hourly one is where it was.
+	later := now.Add(time.Hour + time.Second)
+	h.srv.SetGuestRefusalClockForTest(func() time.Time { return later })
+	ok := uploadGuestAttachment(t, h, token, "fine.txt", []byte("x"))
+	require.Equal(t, http.StatusCreated, ok.StatusCode,
+		"the turned-away attempts must not have used the hour: "+readBody(t, ok))
+}
+
+// Accepted uploads give their refusal unit back, so a guest who attaches many
+// files is not counted as one who is being refused.
+func TestGuestUploadLimits_AcceptedUploadsDoNotUseTheRefusalBudget(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	_, token := guestUploadsOn(t, h, 50, 30)
+	for i := range 25 {
+		res := uploadGuestAttachment(t, h, token, "ok"+strconv.Itoa(i)+".txt", []byte("x"))
+		require.Equal(t, http.StatusCreated, res.StatusCode, "upload %d: %s", i+1, readBody(t, res))
+	}
+	for i := range 20 {
+		res := uploadGuestAttachment(t, h, token, "evil.exe", []byte("x"))
+		require.Equal(t, http.StatusUnsupportedMediaType, res.StatusCode, "refusal %d", i+1)
+	}
+}
