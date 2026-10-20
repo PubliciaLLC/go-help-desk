@@ -128,6 +128,10 @@ What to check: if your guests attach files today, turn the setting on after you 
 
 What to do: a script that filed tickets for other people by looking the person up first sends `reporter_email` on `POST /api/v1/tickets` (or MCP `create_ticket`) and lets the server resolve it: the ticket goes to the account with that address if there is one, otherwise it is a guest ticket (`guest_name` required, guest submission on). `reporter_user_id` still works for ids you already have. An administrator's key that searched accounts by name or address can use `GET /api/v1/admin/users?page=1&q=` (read-only, `users:read`; `q` applies only with `page`); staff keys have no replacement.
 
+### `PATCH /api/v1/me/password` now needs `current_password` (#555)
+
+In 1.2.0, `PATCH /api/v1/me/password` took `password` alone and did not ask for the current password. 1.3.0 requires `current_password` and refuses a missing or wrong one with `400 invalid_current_password`, so a 1.2.0 script that sends only `password` now fails. The new name for the replacement is `new_password`; `password` is still read when `new_password` is absent. Wrong guesses are counted per account against a budget the size of sign-in's (`AUTH_RATE_LIMIT_PER_MINUTE`, a separate counter) and answer `429 rate_limited` once it is spent; the correct password is still accepted. A `401` from this route means there is no session. The account page shows a wrong current password inline and keeps the person signed in.
+
 ### Also breaking, described elsewhere
 
 - A ticket-changing webhook delivers one event per change, and a receiver that switches on `Type` can miss a kind: see *One Change, One Event* under Changed behaviour.
@@ -309,13 +313,13 @@ The following variables are now honoured when set in `docker/.env`. They are aut
 #### `AUTH_RATE_LIMIT_PER_MINUTE`
 
 - **Default**: `10`
-- **Description**: Failed password attempts per account per minute before a 429 response. `0` disables both password-attempt limiting and signup limiting. In-process counters reset on restart; each replica maintains its own budget, so N replicas multiply the limit by N.
+- **Description**: Failed password attempts per account per minute before a 429 response (sign-in and wrong current passwords on `PATCH /me/password`, each counted separately). `0` disables both password-attempt limiting and signup limiting. In-process counters reset on restart; each replica maintains its own budget, so N replicas multiply the limit by N.
 - **Note**: TOTP verification has its own strict budget (durable on the user row) and is not affected by this setting.
 
 #### `AUTH_THROTTLE_DELAY`
 
 - **Default**: `1s`
-- **Description**: How long a login waits before checking the password, for accounts that have spent their failed-attempt budget. Bounds online guessing to the server's bcrypt throughput (roughly 10–15 guesses/second/core). Must be a positive duration (e.g., `1s`, `500ms`, `1m`); cannot be zero at startup.
+- **Description**: How long a login, or a wrong-current-password guess on `PATCH /me/password`, waits before checking the password, for accounts that have spent their failed-attempt budget. Bounds online guessing to the server's bcrypt throughput (roughly 10–15 guesses/second/core). Must be a positive duration (e.g., `1s`, `500ms`, `1m`); cannot be zero at startup.
 - **Impact**: A legitimate user who exhausts the budget still succeeds — their correct password is always honoured, just after the delay.
 
 ## Changed behaviour
