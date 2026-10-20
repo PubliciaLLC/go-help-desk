@@ -89,3 +89,18 @@ func TestAddReply_StoresTheFormatItWasGiven(t *testing.T) {
 		require.Equal(t, f, got.BodyFormat)
 	}
 }
+
+// ValidateCreate is create's checks without the write; it must refuse the same
+// format create refuses, or a caller that validates first and writes later
+// would see two different rules.
+func TestValidateCreate_RefusesAnEmptyOrUnknownDescriptionFormat(t *testing.T) {
+	for _, f := range []ticket.TextFormat{"", "html"} {
+		h := newHarness(t)
+		reporter := uuid.New()
+		err := h.svc.ValidateCreate(context.Background(), ticket.CreateInput{
+			Subject: "s", Description: "d", DescriptionFormat: f,
+			CategoryID: uuid.New(), ReporterUserID: &reporter,
+		})
+		require.ErrorIs(t, err, ticket.ErrInvalidTextFormat, "format %q", f)
+	}
+}

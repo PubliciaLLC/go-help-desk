@@ -481,6 +481,9 @@ func (s *Service) ValidateCreate(ctx context.Context, in CreateInput) error {
 	if err := checkCreateText(in); err != nil {
 		return err
 	}
+	if _, err := ParseTextFormat(string(in.DescriptionFormat)); err != nil {
+		return fmt.Errorf("description: %w", err)
+	}
 	if strings.TrimSpace(in.Subject) == "" {
 		return fmt.Errorf("subject is required: %w", ErrValidation)
 	}
