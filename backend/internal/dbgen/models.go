@@ -37,6 +37,7 @@ type Attachment struct {
 	Sha256          sql.NullString `json:"sha256"`
 	VirusName       sql.NullString `json:"virus_name"`
 	ContentMismatch sql.NullBool   `json:"content_mismatch"`
+	UploadedByGuest bool           `json:"uploaded_by_guest"`
 }
 
 type AttachmentReputation struct {

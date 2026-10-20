@@ -580,7 +580,13 @@ func (s *Store) CreateAttachment(ctx context.Context, a ticket.Attachment) error
 		Sha256:          database.NullString(a.SHA256),
 		VirusName:       database.NullString(a.VirusName),
 		ContentMismatch: database.NullBool(a.ContentMismatch),
+		UploadedByGuest: a.UploadedByGuest,
 	})
+}
+
+func (s *Store) CountGuestAttachments(ctx context.Context, ticketID uuid.UUID) (int, error) {
+	n, err := s.q.CountGuestAttachments(ctx, ticketID)
+	return int(n), err
 }
 
 func (s *Store) GetAttachmentByID(ctx context.Context, id uuid.UUID) (ticket.Attachment, error) {
