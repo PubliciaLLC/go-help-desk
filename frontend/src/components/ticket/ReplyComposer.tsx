@@ -126,6 +126,7 @@ export function ReplyComposer({ ticketId, isStaffOrAdmin }: ReplyComposerProps) 
       setError('')
       qc.invalidateQueries({ queryKey: ['replies', ticketId] })
       qc.invalidateQueries({ queryKey: ['statusHistory', ticketId] })
+      qc.invalidateQueries({ queryKey: ['ticketAudit', ticketId] })
       qc.invalidateQueries({ queryKey: ['ticket', ticketId] })
 
       // Upload any attached files to the ticket.

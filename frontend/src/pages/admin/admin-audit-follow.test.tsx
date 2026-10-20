@@ -66,3 +66,42 @@ describe('follow entries on the admin audit page', () => {
     expect(screen.getByText('Unfollowed')).toBeTruthy()
   })
 })
+
+describe('reply and note entries on the admin audit page', () => {
+  it('labels them and does not print their diff', async () => {
+    serve([
+      { ...base, id: 'e1', action: 'reply_added', actor_id: 'u1', actor_name: 'Sam', after: { reply_id: 'r-1', internal: false } },
+      { ...base, id: 'e2', action: 'note_added', actor_id: 'u1', actor_name: 'Sam', after: { reply_id: 'r-2', internal: true } },
+      { ...base, id: 'e3', action: 'reply_added', actor_id: null },
+      { ...base, id: 'e4', action: 'note_added', actor_id: 'u-gone' },
+    ])
+    renderWithQuery(<AdminAuditPage />)
+
+    await waitFor(() => expect(screen.getAllByText('Reply added')).toHaveLength(2))
+    expect(screen.getAllByText('Internal note added')).toHaveLength(2)
+    expect(screen.getByText('Someone')).toBeTruthy()
+    expect(screen.getByText('A guest')).toBeTruthy()
+    expect(screen.queryByText(/r-1/)).toBeNull()
+  })
+})
+
+describe('hiding replies and notes on the admin audit page', () => {
+  it('asks the server to leave them out, and stops when unticked', async () => {
+    const get = vi.spyOn(api, 'get').mockImplementation(((url: string) => {
+      if (url === '/admin/audit') return Promise.resolve({ data: { entries: [], total: 0, total_capped: false, has_more: false } })
+      return Promise.resolve({ data: [] })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any)
+    const paramsOf = () => get.mock.calls.filter((c) => c[0] === '/admin/audit').map((c) => (c[1] as { params: Record<string, unknown> }).params)
+    renderWithQuery(<AdminAuditPage />)
+    await waitFor(() => expect(paramsOf().length).toBeGreaterThan(0))
+    expect(paramsOf().at(-1)?.exclude_action).toBeUndefined()
+
+    const box = screen.getByLabelText('Hide replies and notes')
+    box.click()
+    await waitFor(() => expect(paramsOf().at(-1)?.exclude_action).toEqual(['reply_added', 'note_added']))
+
+    box.click()
+    await waitFor(() => expect(paramsOf().at(-1)?.exclude_action).toBeUndefined())
+  })
+})

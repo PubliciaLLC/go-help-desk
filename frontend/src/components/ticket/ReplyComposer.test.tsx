@@ -50,6 +50,24 @@ describe('posting a reply', () => {
     )
   })
 
+  // The Activity panel shows the reply (and a reopen it caused), so it has to
+  // refresh now, not at the next poll.
+  it('refreshes the ticket, its audit feed and its history after posting', async () => {
+    vi.spyOn(ticketsApi, 'addReply').mockResolvedValue({} as never)
+    const user = userEvent.setup()
+    const { queryClient } = renderComposer()
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+
+    await user.type(screen.getByRole('textbox'), 'Swapped the switch')
+    await user.click(screen.getByRole('button', { name: 'Save entry' }))
+
+    await waitFor(() => {
+      const keys = invalidate.mock.calls.map((c) => JSON.stringify(c[0]?.queryKey))
+      expect(keys).toContain(JSON.stringify(['ticketAudit', 'tkt-1']))
+      expect(keys).toContain(JSON.stringify(['replies', 'tkt-1']))
+    })
+  })
+
   it('sends the body with the current flags', async () => {
     const add = vi.spyOn(ticketsApi, 'addReply').mockResolvedValue({} as never)
     const user = userEvent.setup()

@@ -219,6 +219,10 @@ var shownKeys = map[string]bool{
 	"owneruserid": true, "onbehalf": true, "scopes": true, "expiresat": true,
 	// How many keys an administrator's password reset revoked with it (#450).
 	"keysrevoked": true,
+	// A reply or internal note (reply_added, note_added): the reply's id and
+	// whether it was internal. The text is never written, and no key that could
+	// carry it is allow-listed.
+	"replyid": true, "internal": true,
 }
 
 // Redact returns copies of before/after showing only allow-listed keys
