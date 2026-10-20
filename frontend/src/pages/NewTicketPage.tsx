@@ -19,6 +19,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { TextLimit } from '@/components/TextLimit'
+import { isOverLimit } from '@/lib/textLimit'
 import { MarkdownEditor } from '@/components/editor/MarkdownEditor'
 import { Select } from '@/components/ui/select'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -153,6 +155,7 @@ export function NewTicketPage() {
     setError('')
     if (!subject.trim()) { setError('Subject is required'); return }
     if (!categoryId) { setError('Category is required'); return }
+    if (isOverLimit(description)) { setError('The description is too long. Shorten it to send.'); return }
 
     // Validate required custom fields.
     for (const f of visibleFields) {
@@ -257,6 +260,7 @@ export function NewTicketPage() {
                   placeholder="Full details of the request or issue"
                   disabled={isUploading}
                 />
+                <TextLimit value={description} />
               </div>
 
               <div className={`grid grid-cols-1 gap-4 ${isStaffOrAdmin ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
@@ -382,7 +386,7 @@ export function NewTicketPage() {
 
               {!uploadDone && (
                 <div className="flex gap-3">
-                  <Button type="submit" disabled={submitting || isUploading}>
+                  <Button type="submit" disabled={submitting || isUploading || isOverLimit(description)}>
                     {submitting
                       ? 'Submitting…'
                       : isUploading

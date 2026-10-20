@@ -6,6 +6,8 @@ import { extractError } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { TextLimit } from '@/components/TextLimit'
+import { isOverLimit } from '@/lib/textLimit'
 import { MarkdownEditor } from '@/components/editor/MarkdownEditor'
 import { Select } from '@/components/ui/select'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -51,6 +53,7 @@ export function GuestTicketPage() {
     if (!categoryId) { setError('Category is required'); return }
     if (!name.trim()) { setError('Name is required'); return }
     if (!email.trim()) { setError('Email is required'); return }
+    if (isOverLimit(description)) { setError('The description is too long. Shorten it to send.'); return }
 
     setLoading(true)
     try {
@@ -187,6 +190,7 @@ export function GuestTicketPage() {
                   labelId="description-label"
                   placeholder="Full details of the request or issue"
                 />
+                <TextLimit value={description} />
               </div>
 
               <div className="space-y-1">
@@ -206,7 +210,7 @@ export function GuestTicketPage() {
 
               {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
 
-              <Button type="submit" className="w-full" disabled={loading}>
+              <Button type="submit" className="w-full" disabled={loading || isOverLimit(description)}>
                 {loading ? 'Submitting…' : 'Submit request'}
               </Button>
             </form>

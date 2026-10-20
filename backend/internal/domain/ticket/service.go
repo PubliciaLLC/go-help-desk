@@ -207,7 +207,15 @@ func (s *Service) LoadSystemStatuses(ctx context.Context) error {
 const (
 	MaxSubjectLength     = 500
 	MaxDescriptionLength = 50_000
+	// MaxReplyLength is the same limit for a reply or note (#443). Counted the
+	// same way, in bytes of the stored text. A reply had no cap, and a megabyte
+	// of text is a burden on every page that shows it, whatever the page does.
+	MaxReplyLength = MaxDescriptionLength
 )
+
+// ErrReplyTooLong is returned for a reply longer than MaxReplyLength. It is also
+// a validation error (400), with its own code so a client can tell why.
+var ErrReplyTooLong = errors.New("reply too long")
 
 // CreateInput is the data needed to open a new ticket.
 type CreateInput struct {
@@ -1617,6 +1625,9 @@ func (s *Service) ticketAndStatus(ctx context.Context, ticketID uuid.UUID) (Tick
 func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string, format TextFormat, internal bool, notifyCustomer bool, reporterEmail string, actor Actor, reopenWindowDays int, reopenTargetStatusID uuid.UUID, authorize func(Ticket, Status) error) (Reply, error) {
 	if err := CheckFreeText("body", body); err != nil {
 		return Reply{}, err
+	}
+	if len(body) > MaxReplyLength {
+		return Reply{}, fmt.Errorf("body must be %d characters or fewer: %w: %w", MaxReplyLength, ErrReplyTooLong, ErrValidation)
 	}
 	if _, err := ParseTextFormat(string(format)); err != nil {
 		return Reply{}, fmt.Errorf("reply: %w", err)

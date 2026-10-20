@@ -330,3 +330,51 @@ func TestFollowUp_CopiesTheOriginalsFormat(t *testing.T) {
 		})
 	}
 }
+
+// A reply is limited to 50,000 characters, as a description is: 400 body_too_long
+// over it on every way in, nothing written, and 201 at exactly the limit.
+func TestReplyLength_EveryWayIn(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, true))
+	tk := newTicketFor(t, h)
+	_, token := seedGuestTicket(t, h)
+	writer := h.newServiceClient(t, "Agent", "tickets:read", "tickets:write")
+	sess := newMCPSession(t, h, writer.Token)
+
+	atLimit := strings.Repeat("a", ticket.MaxReplyLength)
+	over := atLimit + "a"
+	rest := "/api/v1/tickets/" + tk.ID.String() + "/replies"
+
+	t.Run("REST", func(t *testing.T) {
+		code, out := postFormatBody(t, h, rest, `{"body":"`+over+`"}`)
+		require.Equal(t, http.StatusBadRequest, code)
+		require.Equal(t, "body_too_long", fmtErrCode(out))
+		code, _ = postFormatBody(t, h, rest, `{"body":"`+atLimit+`"}`)
+		require.Equal(t, http.StatusCreated, code)
+		replies, err := h.ticketSvc.ListReplies(ctx, tk.ID)
+		require.NoError(t, err)
+		require.Len(t, replies, 1, "only the one at the limit was written")
+	})
+
+	t.Run("guest", func(t *testing.T) {
+		res := h.doGuestRaw(t, http.MethodPost, "/api/v1/guest/replies", token, `{"body":"`+over+`"}`)
+		defer res.Body.Close()
+		var out map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&out)
+		require.Equal(t, http.StatusBadRequest, res.StatusCode)
+		require.Equal(t, "body_too_long", fmtErrCode(out))
+		res2 := h.doGuestRaw(t, http.MethodPost, "/api/v1/guest/replies", token, `{"body":"`+atLimit+`"}`)
+		defer res2.Body.Close()
+		require.Equal(t, http.StatusCreated, res2.StatusCode)
+	})
+
+	t.Run("MCP add_reply", func(t *testing.T) {
+		text, isErr := sess.tool("add_reply", map[string]any{"ticket_id": tk.ID.String(), "body": over})
+		require.True(t, isErr, text)
+		require.Contains(t, text, "50000")
+		text, isErr = sess.tool("add_reply", map[string]any{"ticket_id": tk.ID.String(), "body": atLimit})
+		require.False(t, isErr, text)
+	})
+}

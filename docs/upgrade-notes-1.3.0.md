@@ -220,6 +220,16 @@ Descriptions, replies and internal notes can now be written in Markdown. **Text 
 
 What to check: an integration that already sends Markdown-looking text over REST keeps getting plain text unless it adds `"format": "markdown"`. An MCP agent that sent text with `*`, `#` or `_` meant literally will now have it formatted; tell it to escape them or pass `format: "plain"`.
 
+### Replies Are Limited to 50,000 Characters (#443)
+
+A reply or internal note over **50,000 bytes of text** is now refused with `400 body_too_long`, and nothing is written. It is the limit a ticket description has always had. It applies to `POST /tickets/{id}/replies`, `POST /guest/replies` and MCP `add_reply`. Before 1.3.0 a reply had no cap other than the 1 MiB request size, and a megabyte of text slowed every page that showed it.
+
+- **Text already stored is untouched.** A longer post written before the upgrade is shown collapsed (its first 5,000 characters, a note, and a **Show full text** button). The button shows all of it, exactly as stored.
+- **Scripts and integrations** that post long logs as replies will start getting 400. Split them, or attach them as a file.
+- The web forms count in the same bytes, show a counter near the limit, and will not send more.
+
+What to check: any script that pastes command output, a log or a stack trace into a reply.
+
 ### `unlock <email>` on the Server Console (#497)
 
 `docker compose exec app /app/server unlock <email>` is the way back for a locked-out account, and it works when the web path cannot: a lost authenticator or passkey, a disabled account (the sole administrator included), a spent MFA lockout, or a federated administrator with no usable password. In one transaction it clears every second factor, re-enables the account, clears the MFA lockout, sets a new random password and prints it once, and ends all sessions. The password must be changed at the next sign-in.

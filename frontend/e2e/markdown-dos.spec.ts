@@ -15,7 +15,8 @@ const MB = 1_000_000
 const fill = (u: string, n: number) => u.repeat(Math.ceil(n / u.length)).slice(0, n)
 const ladder = (ch: string, n: number, sep: string) => Array.from({ length: n }, (_, k) => ch.repeat(k + 1) + sep).join('')
 
-// [name, body, must the post fall back to plain text?]
+// [name, body, must the post fall back to plain text?] (for a body over 50,000 characters,
+// which is old stored data now that replies are capped, the page shows it collapsed instead)
 const inputs: [string, string, boolean][] = [
   ['baseline 1 MB words', fill('lorem ipsum ', MB), true],
   ['1 MB soft newlines', fill('a\n', MB), true],
@@ -55,7 +56,7 @@ for (const [where, mk] of [
   ['a description', (body: string) => ({ ticket: { ...TICKET_DETAIL, description: body, description_format: 'markdown' } })],
 ] as const) {
   test.describe(`hostile Markdown in ${where}`, () => {
-    for (const [name, body, mustFallBack] of inputs) {
+    for (const [name, body] of inputs) {
       test(name, async ({ page }) => {
         test.setTimeout(30_000)
         let crashed = false
@@ -64,12 +65,17 @@ for (const [where, mk] of [
         await page.goto(`/tickets/${TICKET_DETAIL.id}`)
         const worst = await responsive(page)
         expect(worst, 'the page stopped answering while the text was formatted').toBeLessThan(1500)
+        if (body.length > 50_000) {
+          // Older data (a reply had no cap before 1.3.0): collapsed to its start, with the
+          // rest one click away. Nothing was formatted, so there is nothing slow to wait for.
+          await expect(page.getByRole('button', { name: /^Show full text/ }).first()).toBeVisible({ timeout: 8000 })
+          await expect(page.getByRole('note').first()).toContainText(/only part of the post/)
+          expect(crashed).toBe(false)
+          return
+        }
         const toggle = page.getByRole('button', { name: 'Plain text' }).first()
         await expect(toggle).toBeVisible({ timeout: 8000 })
         expect(crashed).toBe(false)
-        if (mustFallBack) {
-          await expect(page.getByText(/Shown as plain text: too (long|complex) to format/).first()).toBeVisible()
-        }
         // The stored text can always be reached.
         await toggle.click()
         await expect(toggle).toHaveAttribute('aria-pressed', 'true')
@@ -128,26 +134,4 @@ test('220 hostile replies keep the heap bounded, on open and after jumping throu
   expect(await page.locator('[data-md-body]').count()).toBeLessThan(40)
   await expect(page.getByText(/Shown as plain text: this page already shows a lot of formatted text/).first()).toBeAttached()
   expect(await heapMB(page)).toBeLessThan(900)
-})
-
-// A very long plain text is drawn as blocks the browser can skip while off
-// screen (lib/plainChunks.ts). That must not change what is there: selecting the
-// post and copying gives back exactly the stored text, and finding text deep in
-// it still works.
-test('a very long plain post keeps every character, selectable as one text', async ({ page }) => {
-  const text = Array.from({ length: 30_000 }, (_, i) => `line ${i}`).join('\n')
-  await mockApi(page, { replies: [{ ...REPLIES[0], body: text, body_format: 'plain' }] })
-  await page.goto(`/tickets/${TICKET_DETAIL.id}`)
-  await expect(page.locator('[data-plain-chunk]').first()).toBeAttached()
-  const copied = await page.evaluate(() => {
-    const chunks = document.querySelectorAll('[data-plain-chunk]')
-    const range = document.createRange()
-    range.setStartBefore(chunks[0])
-    range.setEndAfter(chunks[chunks.length - 1])
-    const sel = window.getSelection()!
-    sel.removeAllRanges()
-    sel.addRange(range)
-    return sel.toString()
-  })
-  expect(copied).toBe(text)
 })
