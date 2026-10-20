@@ -113,6 +113,7 @@
       <li><a href="#update-check">Update check (opt-in)</a></li>
       <li><a href="#after-upgrade-wizard">After-upgrade wizard</a></li>
       <li><a href="#markdown">Markdown in ticket text</a></li>
+      <li><a href="#reply-limit">Reply size limit</a></li>
       <li><a href="#known-gaps">Not in 1.3.0</a></li>
       <li><a href="#steps">Doing the upgrade</a></li>
     </ul>
@@ -234,6 +235,7 @@
     <tr><td>An optional weekly check for new releases; it is off unless an administrator turns it on</td><td>Administrators; air-gapped installs (leave it off)</td></tr>
     <tr><td>A one-time After upgrading wizard for the first administrator</td><td>The first administrator to sign in after the upgrade</td></tr>
     <tr><td>Markdown in ticket text; old text stays plain; MCP writes Markdown by default</td><td>Everyone who writes tickets; MCP agents; integrations that send Markdown-looking text</td></tr>
+    <tr><td>Replies and notes are limited to 50,000 bytes (<code>400 body_too_long</code>); older longer posts show collapsed</td><td>Scripts that post long replies</td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
@@ -1059,6 +1061,17 @@ echo "ok: Postgres is bound to 127.0.0.1 only"</code></pre>
   <li>The migration adds <code>tickets.description_format</code> and <code>ticket_replies.body_format</code>. It does not rewrite the tables, but <strong>stop every old (1.2 or earlier) instance before the migration runs</strong>: the migration removes the column default, so an instance still running the old version fails every ticket create and reply. There is no rolling upgrade across this version.</li>
 </ul>
 <p><strong>What to check:</strong> an integration that already sends Markdown-looking text over REST keeps getting plain text unless it adds <code>"format": "markdown"</code>. An MCP agent that sent text with <code>*</code>, <code>#</code> or <code>_</code> meant literally will now have it formatted; tell it to escape them or pass <code>format: "plain"</code>. For the editor, see <a href="tickets.html#tickets-formatting">Formatting text</a>.</p>
+
+<h2 id="reply-limit">Replies are limited to 50,000 bytes</h2>
+
+<p><strong>Who notices:</strong> scripts and integrations that post very long replies. <strong>This changes behaviour.</strong></p>
+<p>A reply or internal note over <strong>50,000 bytes of text</strong> is now refused with <code>400 body_too_long</code>, and nothing is written. It is the limit a ticket description has always had. It applies to <code>POST /api/v1/tickets/{id}/replies</code>, <code>POST /api/v1/guest/replies</code> and MCP <code>add_reply</code> (a tool error). Before 1.3.0 a reply had no cap other than the 1 MiB request size, and a megabyte of text slowed every page that showed it.</p>
+<ul>
+  <li><strong>Text already stored is untouched.</strong> A longer post written before the upgrade is shown collapsed: its first 5,000 characters, a note that it is only part of the post, and a <strong>Show full text</strong> button. The button shows all of it, exactly as stored.</li>
+  <li><strong>Scripts and integrations</strong> that post long logs as replies will start getting <code>400</code>. Split them, or attach them as a file.</li>
+  <li>The web forms count in the same bytes, show a counter near the limit, and will not send more.</li>
+</ul>
+<p><strong>What to check:</strong> any script that pastes command output, a log or a stack trace into a reply.</p>
 
 <h2 id="known-gaps">What is not in 1.3.0</h2>
 

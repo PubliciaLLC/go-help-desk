@@ -222,7 +222,7 @@
   <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>ticket_id</code></td><td>string (required)</td><td>Ticket UUID.</td></tr>
-    <tr><td><code>body</code></td><td>string (required)</td><td>Reply body, written as Markdown unless <code>format</code> is <code>plain</code>. Escape characters you mean literally.</td></tr>
+    <tr><td><code>body</code></td><td>string (required)</td><td>Reply body, written as Markdown unless <code>format</code> is <code>plain</code>. Escape characters you mean literally. At most 50,000 bytes; longer is a tool error.</td></tr>
     <tr><td><code>format</code></td><td>string (optional)</td><td><code>markdown</code> (the default) or <code>plain</code>.</td></tr>
     <tr><td><code>internal</code></td><td>boolean (optional)</td><td>An internal note, never shown to the requester. Default <code>false</code>.</td></tr>
   </tbody>

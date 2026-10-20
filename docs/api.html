@@ -332,6 +332,7 @@ Cache-Control: private, max-age=3600</code></pre>
 <ul>
   <li><strong>REST defaults to plain.</strong> <code>POST /tickets</code>, <code>/tickets/{id}/replies</code>, <code>/guest/tickets</code> and <code>/guest/replies</code> take an optional <code>format</code> (<code>plain</code> or <code>markdown</code>). Without it the text is stored as <code>plain</code>, so existing integrations are unchanged. An integration that sends Markdown-looking text keeps getting plain text unless it adds <code>"format": "markdown"</code>.</li>
   <li><strong>The web app sends Markdown. MCP <code>create_ticket</code> and <code>add_reply</code> default to Markdown</strong> (see <a href="mcp.html#mcp-tools">MCP tools</a>); pass <code>format: "plain"</code> to keep plain text.</li>
+  <li><strong>Replies are limited to 50,000 bytes</strong>, the same as a description. Over it, <code>POST /tickets/{id}/replies</code> and <code>POST /guest/replies</code> answer <code>400 body_too_long</code> and nothing is written (MCP <code>add_reply</code> returns a tool error). Replies stored before 1.3.0 may be longer; they are not changed.</li>
   <li>Any other value (<code>""</code>, <code>"Markdown"</code>, <code>"html"</code>, a number) is <code>400 invalid_format</code>, and nothing is written.</li>
   <li>The server stores and returns the text as written; formatting is applied when the page displays it (see <a href="tickets.html#tickets-formatting">Formatting text</a> and <a href="security.html#text">How ticket text is displayed</a>).</li>
 </ul>
@@ -362,6 +363,7 @@ Cache-Control: private, max-age=3600</code></pre>
     <tr><td><code>unauthorized</code></td><td>401</td><td>No valid session, API key or OAuth token.</td></tr>
     <tr><td><code>forbidden</code></td><td>403</td><td>The caller is known but the role does not allow this.</td></tr>
     <tr><td><code>mfa_required</code></td><td>403</td><td>The session has not passed its second factor.</td></tr>
+    <tr><td><code>body_too_long</code></td><td>400</td><td>A reply or internal note over 50,000 bytes.</td></tr>
     <tr><td><code>invalid_format</code></td><td>400</td><td><code>format</code> is present on a ticket or reply and is not <code>plain</code> or <code>markdown</code>.</td></tr>
     <tr><td><code>invalid_current_password</code></td><td>400</td><td><code>PATCH /api/v1/me/password</code> without <code>current_password</code>, or with the wrong one. The session is fine, so this is not a <code>401</code>.</td></tr>
     <tr><td><code>password_change_required</code></td><td>403</td><td>The account was unlocked from the server console and still holds the password it was given. The session may only change its password (<code>PATCH /api/v1/me/password</code>).</td></tr>

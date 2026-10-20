@@ -283,7 +283,7 @@
 </ul>
 
 <h3>Formatting</h3>
-<p>Replies, notes and descriptions can be formatted with Markdown (see <a href="#tickets-formatting">Formatting text</a>). Text written before 1.3.0 stays plain: line breaks are kept, and Markdown and HTML are shown exactly as typed unless the reader chooses <em>Show formatted</em>.</p>
+<p>A reply or internal note is limited to 50,000 bytes, the same as a description; a longer one is refused with <code>400 body_too_long</code> and nothing is written. Replies, notes and descriptions can be formatted with Markdown (see <a href="#tickets-formatting">Formatting text</a>). Text written before 1.3.0 stays plain: line breaks are kept, and Markdown and HTML are shown exactly as typed unless the reader chooses <em>Show formatted</em>.</p>
 
 <h3>Replies are permanent</h3>
 <p>A reply or note cannot be edited or deleted once it is posted, by anyone. To correct one, post another.</p>
@@ -461,6 +461,7 @@
   <li><strong>No raw HTML.</strong> It is shown as text, so <code>&lt;server01&gt;</code> reads as written. <strong>No images:</strong> an image is shown as the link "[image: alt]" and is never loaded.</li>
   <li><strong>Links</strong> open in a new tab and only <code>http</code>, <code>https</code> and <code>mailto</code> are links. The real host is shown after the link when the link text differs from it. A <code>mailto</code> link with a query (a hidden <code>cc</code>, <code>bcc</code>, <code>subject</code> or <code>body</code>) is not linked, and a link to this help desk's own attachment addresses is not linked either (it says to open the file from the attachments list, where the scan and reputation warnings are).</li>
   <li><strong>Long or complex posts show as plain text.</strong> Text over 50,000 characters is never formatted, and a post that takes too long to format falls back to plain text with a note ("too long to format", "too complex to format"). A page that already shows a lot of formatted text leaves further posts as written.</li>
+  <li><strong>Older long posts are collapsed.</strong> Before 1.3.0 a reply had no length limit, so some stored posts are longer than 50,000 characters. Such a post shows its first 5,000 characters, a note that this is only part of the post, and a <strong>Show full text (size)</strong> button that draws all of it in one block. Selecting and copying that block returns exactly the stored text. Nothing is cut or rewritten. The forms show a counter from 90% of the size limit and will not send more.</li>
   <li>A code block or table wider than the screen scrolls inside its own box; the page never scrolls sideways.</li>
 </ul>
 <p>Webhooks, chat messages and email are unchanged: a webhook or chat message carries the Markdown source as text, and email carries no ticket text. Resolution notes, canned responses and settings stay plain text. A NUL character in text is refused with <code>400</code>.</p>
