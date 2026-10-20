@@ -3014,6 +3014,16 @@ paths:
           description: Only entries with this action name. Trimmed.
           schema:
             type: string
+        - name: exclude_action
+          in: query
+          required: false
+          description: Leave out entries with this action name. Repeat it to leave out several, for example exclude_action=reply_added&exclude_action=note_added. Applied in the query, so entries, has_more and total all describe the same sequence.
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              type: string
         - name: q
           in: query
           required: false

@@ -51,4 +51,12 @@ describe('reply and note entries in the activity feed', () => {
 
     expect(await screen.findByText('A guest')).toBeTruthy()
   })
+
+  it('calls a reply by a deleted account someone', async () => {
+    serve([{ id: 'a1', action: 'reply_added', actor_id: 'u-gone', created_at: at }])
+    renderWithQuery(<AuditFeed ticketId="t1" />)
+
+    expect(await screen.findByText('Someone')).toBeTruthy()
+    expect(screen.queryByText('A guest')).toBeNull()
+  })
 })

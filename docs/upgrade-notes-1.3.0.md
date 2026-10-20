@@ -464,6 +464,7 @@ Replies and internal notes now appear in a ticket's Activity panel as "Erik Test
 
 - **No words are recorded.** The entry holds the author, the time, the reply's id and whether it was internal. The text stays in the conversation, under its existing visibility rules.
 - **Who sees it:** the same people who see Activity today, staff and administrators. A requester still gets 403 on the feed. A requester's or guest's reply shows as "Requester (name hidden)" or "A guest" under the existing `audit_mask_requester_names` setting. Staff see the entries in the admin audit view only for tickets in their scope.
+- **Hide them if they crowd the log.** The admin audit page has a **Hide replies and notes** checkbox (API: `exclude_action`, repeatable).
 - **Webhooks, MCP and email are unchanged.** The audit actions are separate from the `ticket.replied` and `ticket.note_added` webhook events.
 - **No migration.** Replies and notes are capped on their own in the feed (the newest 500), so a long conversation cannot push the ticket's other history off it.
 

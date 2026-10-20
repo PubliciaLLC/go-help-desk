@@ -42,9 +42,10 @@ interface FilterState {
   from: string
   to: string
   q: string
+  hideReplies: boolean
 }
 
-const EMPTY_FILTERS: FilterState = { entityType: '', action: '', actorId: '', from: '', to: '', q: '' }
+const EMPTY_FILTERS: FilterState = { entityType: '', action: '', actorId: '', from: '', to: '', q: '', hideReplies: false }
 
 // #129's admin-wide half: searchable across every entity, not just one
 // ticket — see handleListAdminAudit. Staff reach this page too (the nav
@@ -63,6 +64,7 @@ export function AdminAuditPage() {
     from: toRFC3339(filters.from),
     to: toRFC3339(filters.to),
     q: filters.q.trim() || undefined,
+    exclude_action: filters.hideReplies ? ['reply_added', 'note_added'] : undefined,
     limit: PAGE_SIZE,
     offset,
   }
@@ -170,6 +172,15 @@ export function AdminAuditPage() {
               placeholder="entity or action"
             />
           </div>
+          <div className="flex items-center gap-2 col-span-full">
+            <input
+              id="audit-hide-replies"
+              type="checkbox"
+              checked={filters.hideReplies}
+              onChange={(e) => updateFilter('hideReplies', e.target.checked)}
+            />
+            <Label htmlFor="audit-hide-replies">Hide replies and notes</Label>
+          </div>
         </div>
 
         {isLoading ? (
@@ -205,7 +216,7 @@ export function AdminAuditPage() {
                       <td className="px-4 py-3 text-gray-600 wrap-anywhere">
                         {e.actor_masked
                           ? <span className="italic text-gray-500"><EyeOffIcon aria-hidden="true" className="mr-1 inline h-3.5 w-3.5" />Requester (name hidden)</span>
-                          : (e.actor_name || (isReplyAction(e.action) && !e.actor_id ? 'Guest' : '—'))}
+                          : (e.actor_name || (isReplyAction(e.action) ? (e.actor_id ? 'Someone' : 'A guest') : '—'))}
                       </td>
                     </tr>
                   ))}

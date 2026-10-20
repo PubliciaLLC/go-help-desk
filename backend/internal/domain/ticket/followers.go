@@ -136,10 +136,12 @@ func dropAssigneeFollow(ctx context.Context, st Store, au audit.Store, ticketID,
 // ListAuditFeed is a ticket's activity feed, oldest first, with follow and
 // unfollow entries (includeFollow) or without.
 //
-// The feed is capped at the newest ticketAuditCap entries. Follow entries are
-// kept out of that count in the query, and fetched on their own with a cap of
-// their own when the viewer may see them, then merged by time: otherwise a few
-// hundred toggles would push the ticket's real history off its feed.
+// Each feed is capped at the newest ticketAuditCap entries. Reply and note
+// entries and follow entries are kept out of the cap on the ticket's real
+// history in the query, and fetched on their own with a cap of their own, then
+// merged by time: otherwise a long conversation, or a few hundred follow
+// toggles, would push the ticket's real history off its feed. Replies and notes
+// are always included; follows only when the viewer may see them.
 func (s *Service) ListAuditFeed(ctx context.Context, ticketID uuid.UUID, includeFollow bool) ([]audit.Entry, error) {
 	real, err := s.auditStore.ListByEntityActions(ctx, "ticket", ticketID,
 		audit.ActionFilter{Exclude: append(FollowAuditActions(), AuditActionReplyAdded, AuditActionNoteAdded)}, ticketAuditCap, 0)

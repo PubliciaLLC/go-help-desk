@@ -781,11 +781,16 @@ export interface AdminAuditFilters {
   from?: string // RFC3339
   to?: string // RFC3339
   q?: string
+  exclude_action?: string[] // sent repeated: exclude_action=a&exclude_action=b
   limit?: number
   offset?: number
 }
 
 export async function listAdminAudit(filters: AdminAuditFilters): Promise<AdminAuditListResponse> {
-  const res = await api.get<AdminAuditListResponse>('/admin/audit', { params: filters })
+  const res = await api.get<AdminAuditListResponse>('/admin/audit', {
+    params: filters,
+    // Repeated keys, not exclude_action[]=a: that is what the server reads.
+    paramsSerializer: { indexes: null },
+  })
   return res.data
 }

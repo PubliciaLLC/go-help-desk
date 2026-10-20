@@ -119,7 +119,7 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 	// the setting lets staff. Left out by the query itself, so the page, the
 	// offset and the total describe one sequence.
 	if role == user.RoleStaff && !s.adminSvc.StaffCanViewFollowAudit(ctx) {
-		f.ExcludeActions = ticket.FollowAuditActions()
+		f.ExcludeActions = append(f.ExcludeActions, ticket.FollowAuditActions()...)
 	}
 
 	page, err := s.auditStore.Search(ctx, f, limit, offset)
@@ -200,6 +200,19 @@ func parseAdminAuditQuery(r *http.Request) (f audit.Filter, limit, offset int, e
 	for _, v := range []string{f.EntityType, f.Action, f.Q} {
 		if strings.ContainsRune(v, 0) || !utf8.ValidString(v) {
 			return audit.Filter{}, 0, 0, errBadText
+		}
+	}
+
+	// exclude_action (repeatable) leaves those actions out, in the query, so
+	// the page, the offset and the total describe one sequence. It only ever
+	// narrows what the caller may see, so it needs no gate of its own.
+	for _, v := range q["exclude_action"] {
+		v = strings.TrimSpace(v)
+		if strings.ContainsRune(v, 0) || !utf8.ValidString(v) {
+			return audit.Filter{}, 0, 0, errBadText
+		}
+		if v != "" {
+			f.ExcludeActions = append(f.ExcludeActions, v)
 		}
 	}
 

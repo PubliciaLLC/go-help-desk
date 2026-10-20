@@ -3,6 +3,7 @@ package server_test
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -160,4 +161,75 @@ func TestReplyAudit_StaffScopeAppliesInTheAdminView(t *testing.T) {
 			require.Zero(t, saw, "%s saw reply entries on a ticket outside their scope", who.name)
 		}
 	}
+}
+
+// exclude_action leaves entries out in the query, so the page, the offset and
+// the total still describe one sequence (as for the follow entries).
+func TestReplyAudit_ExcludeActionKeepsPagingAndTotalConsistent(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	id := ticketWithRequesterReplyAndStaffNote(t, h)
+	for i := 0; i < 3; i++ {
+		res := h.do(t, http.MethodPost, "/api/v1/tickets/"+id+"/replies", map[string]any{"body": "more", "internal": true})
+		res.Body.Close()
+		require.Equal(t, http.StatusCreated, res.StatusCode)
+	}
+
+	type page struct {
+		Entries []replyAuditEntry `json:"entries"`
+		Total   int               `json:"total"`
+		HasMore bool              `json:"has_more"`
+	}
+	get := func(who func(*testing.T, string, string, any) *http.Response, q string) page {
+		res := who(t, http.MethodGet, "/api/v1/admin/audit?entity_type=ticket&"+q, nil)
+		var p page
+		decodeJSON(t, res, &p)
+		require.Equal(t, http.StatusOK, res.StatusCode)
+		return p
+	}
+	const ex = "exclude_action=reply_added&exclude_action=note_added"
+
+	all := get(h.doAsAdmin, "limit=100")
+	others := 0
+	for _, e := range all.Entries {
+		if e.Action != "reply_added" && e.Action != "note_added" {
+			others++
+		}
+	}
+	require.Greater(t, len(all.Entries), others, "fixture has no reply entries to hide")
+
+	for _, who := range []struct {
+		name string
+		do   func(*testing.T, string, string, any) *http.Response
+	}{{"admin", h.doAsAdmin}, {"staff", h.do}} {
+		whole := get(who.do, ex+"&limit=100")
+		for _, e := range whole.Entries {
+			require.NotContains(t, []string{"reply_added", "note_added"}, e.Action, who.name)
+		}
+		require.Equal(t, len(whole.Entries), whole.Total, "%s: total counts what is hidden", who.name)
+
+		// Page one entry at a time: the same sequence, the same total.
+		var seq []string
+		for off := 0; off < whole.Total; off++ {
+			p := get(who.do, ex+"&limit=1&offset="+strconv.Itoa(off))
+			require.Equal(t, whole.Total, p.Total, "%s: total moved with the offset", who.name)
+			require.Len(t, p.Entries, 1)
+			require.Equal(t, off < whole.Total-1, p.HasMore, "%s: has_more at %d", who.name, off)
+			seq = append(seq, p.Entries[0].Action)
+		}
+		var want []string
+		for _, e := range whole.Entries {
+			want = append(want, e.Action)
+		}
+		require.Equal(t, want, seq, who.name)
+	}
+	require.Equal(t, others, get(h.doAsAdmin, ex+"&limit=100").Total)
+}
+
+func TestReplyAudit_ExcludeActionRefusesBadText(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	res := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/audit?exclude_action=%00", nil)
+	res.Body.Close()
+	require.Equal(t, http.StatusBadRequest, res.StatusCode)
 }
