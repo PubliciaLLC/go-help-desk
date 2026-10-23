@@ -11,6 +11,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // GuestTokenTTL is the outer bound on a guest link, not its usual life.
@@ -211,6 +212,12 @@ func (s *Service) TicketForGuestWrite(ctx context.Context, raw string) (Ticket, 
 // The caller answers 202 either way, so this never becomes a way to test
 // whether a tracking number or an address exists.
 func (s *Service) GuestTicketIDFor(ctx context.Context, tn TrackingNumber, email string) (uuid.UUID, error) {
+	// The lookup lower-cases both sides, which folds some non-ASCII letters
+	// into ASCII ones. Stored guest addresses are ASCII, so a non-ASCII one
+	// matches nothing.
+	if _, err := user.ValidateEmail(email); err != nil {
+		return uuid.Nil, ErrGuestTokenNotFound
+	}
 	return s.store.TicketIDByTrackingAndGuestEmail(ctx, tn, email)
 }
 
