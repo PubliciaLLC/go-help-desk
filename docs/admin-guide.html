@@ -678,7 +678,7 @@ Facilities
   <li><strong>The link must stay.</strong> Each ticket email must print its ticket link, the verification email its verification link and the reset email its reset link, outside any <code>{{if}}</code>. A guest's link is replaced each time, so an email without it would lock the guest out.</li>
   <li><strong>Revert to default</strong> removes your edit. Saving text that equals the default does the same.</li>
   <li><strong>Send test</strong> mails the draft to your own address only, with <code>[Test]</code> before the subject. It is limited to 5 every 10 minutes per administrator, and a mail server error is shown on the page. It needs email to be set up.</li>
-  <li><strong>Session only.</strong> Edits need a signed-in administrator in a browser, with a second factor. An API key or OAuth client is refused with <code>403</code>, because a key that could edit the reset email could point it at a link of its own.</li>
+  <li><strong>Session only.</strong> Edits need an administrator in a signed-in browser session (one that has passed its second factor, if the account has one). An API key or OAuth client is refused with <code>403</code>, because a key that could edit the reset email could point it at a link of its own.</li>
   <li><strong>Audit.</strong> Each save and revert is recorded in the audit log with the full text, in the same step as the change. A test send records the template and never the address.</li>
 </ul>
 
@@ -922,7 +922,7 @@ function verifySignature(secret, body, header) {
 </ul>
 
 <h3>The After upgrading wizard</h3>
-<p>On an install upgraded from an earlier release, the first administrator who signs in is taken once to a short <strong>After upgrading to 1.3.0</strong> wizard. Each step shows today's setting, says what changed in 1.3.0 and lets you change it, with <em>Back</em>, <em>Next</em> and <em>Skip</em>. Skip leaves that setting unchanged. The steps are:</p>
+<p>On an install upgraded from an earlier release, the first administrator who signs in is taken once to a short <strong>After upgrading to 1.3.0</strong> wizard. Each step shows today's setting, says what changed in 1.3.0 and lets you change it, with <em>Back</em>, <em>Next</em> and <em>Skip</em>. Skip applies to the step you are on: it leaves that setting unchanged and moves on. The steps are:</p>
 <ol>
   <li><strong>Weekly check for new releases</strong>, unticked.</li>
   <li><strong>Staff email notifications</strong>: the upgrade turned the three overrides off.</li>
@@ -930,14 +930,14 @@ function verifySignature(secret, body, header) {
   <li><strong>Reset window for old passwords</strong>, with the number of accounts still on an old password hash and whether email is set up.</li>
   <li><strong>Guest file uploads</strong>, shown only while guest submission is on: 1.3.0 switched guest uploads off, and this step offers the setting, the size slider and the limits.</li>
 </ol>
-<p>Finishing or skipping the wizard means it is not shown again; closing the tab part-way shows it again next time, with the steps already saved showing their new values. A new install never sees it, because first-run setup asks the update question itself. Staff and requesters are never sent to it. Every change goes through the same settings checks as the Settings page.</p>
+<p>The wizard counts as seen only when you choose <em>Finish</em> on the last step, or <em>Skip</em> on the last step; there is no way to skip the whole wizard at once. Closing the tab part-way shows it again next time, with the steps already saved showing their new values. A new install never sees it, because first-run setup asks the update question itself. Staff and requesters are never sent to it. Every change goes through the same settings checks as the Settings page.</p>
 
 <h2 id="admin-server-warnings">Server warnings</h2>
 
 <p>Administrators see problems with the server in <strong>one slim bar</strong> above the page, never a stack of banners. Where this guide says a "banner", it means a notice in this bar. The bar is one line: "N server problems need attention", or the notice's own title when there is exactly one, with a <strong>Details</strong> button that opens the full explanation of each notice.</p>
 <ul>
-  <li><strong>Red</strong> marks something broken now: exposed secrets, attachment storage that cannot be written, a virus scanner that cannot be reached (under either scan policy), and email that is not being delivered. <strong>Amber</strong> marks a configuration notice, such as email not set up, passkeys unavailable, or attachments not being scanned.</li>
-  <li><strong>Hide</strong> removes one notice for your current session. It returns at your next sign-in, after your session expires, or when the problem gets worse (for example a changed scanner policy, more failed email, another exposed secret). When every notice is hidden the bar goes away. Nothing about hiding is sent to the server.</li>
+  <li><strong>Red</strong> marks something broken now: exposed secrets, attachment storage that cannot be written, a virus scanner that cannot be reached (under either scan policy), email that is not being delivered, and an <a href="#admin-email-tpl">edited email template</a> that no longer works (one notice per template, with <em>Revert to default</em> and <em>Edit</em>). <strong>Amber</strong> marks a configuration notice, such as email not set up, passkeys unavailable, or attachments not being scanned. <strong>Blue</strong> is information only: a newer release is available (see <a href="#admin-updates">Updates</a>). It never counts as a problem.</li>
+  <li><strong>Hide</strong> removes one notice for your current session. It returns at your next sign-in, after your session expires, or when the problem gets worse (for example a changed scanner policy, more failed email, another exposed secret). When every notice is hidden the bar goes away. Nothing about hiding is sent to the server. The one exception to "returns at your next sign-in" is the blue new-release notice: its <em>Hide until the next release</em> is remembered in your browser until a newer release appears.</li>
   <li>The bar checks again when the window regains focus and when you open Details, so a fixed problem stops showing within seconds. Long commands in a notice wrap, so the bar fits a phone. Only administrators see it. The same information is available from <code>GET /api/v1/admin/security-warnings</code>.</li>
 </ul>
 

@@ -43,6 +43,10 @@ const probe = () => {
     if (r.width === 0 || r.right <= vw + 1) continue
     const cs = getComputedStyle(e)
     if (cs.position === 'fixed' || cs.display === 'none' || cs.visibility === 'hidden') continue
+    // An ancestor with overflow-x hidden or clip counts as a box, like auto and
+    // scroll. That means this check accepts content that sticks out inside an
+    // overflow-x:hidden/clip parent: it is cut off there, not scrolled to, so a
+    // real clipping bug in such a parent will not be reported.
     let boxed = false
     for (let a = e.parentElement; a && a !== document.documentElement; a = a.parentElement) {
       const ox = getComputedStyle(a).overflowX
