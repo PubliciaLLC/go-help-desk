@@ -150,3 +150,31 @@ test('a 300 character word in the draft does not widen the page', async ({ page 
   await expect(page.getByText(/Sample/)).toBeVisible()
   await fits(page)
 })
+
+// Touch targets: 44 px on a touch screen (a coarse pointer), on this page only.
+test.describe('touch targets', () => {
+  test.use({ hasTouch: true, isMobile: true })
+
+  for (const width of [320, 375]) {
+    test(`every control is at least 44px tall at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 })
+      await mockTemplates(page)
+      await page.goto('/admin/email-templates?t=ticket_created')
+      await expect(page.getByLabel('Body')).toBeVisible()
+      // Send test and Save are disabled until the first check lands; they still have a size.
+      const targets = [
+        page.getByRole('button', { name: 'All templates' }),
+        page.getByRole('button', { name: 'Save' }),
+        page.getByRole('button', { name: 'Send test' }),
+        page.getByRole('button', { name: 'Revert to default' }),
+        page.getByRole('button', { name: '{{.TicketURL}}' }),
+        page.getByRole('button', { name: '{{.TrackingNumber}}' }),
+      ]
+      for (const t of targets) {
+        const box = await t.boundingBox()
+        expect(box, 'not found').not.toBeNull()
+        expect(box!.height, `${await t.innerText()} is shorter than 44px`).toBeGreaterThanOrEqual(44)
+      }
+    })
+  }
+})

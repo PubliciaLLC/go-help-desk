@@ -229,6 +229,7 @@ var shownKeys = map[string]bool{
 	// no versions table. Named template_* because the plain keys "subject" and
 	// "body" are where ticket entries keep the ticket's own text, and those
 	// stay hidden.
+	// Shown for EVERY entity type, so no other writer may reuse these key names.
 	"templatename": true, "templatesubject": true, "templatebody": true,
 }
 

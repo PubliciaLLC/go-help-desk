@@ -398,11 +398,9 @@ func (w *walker) pipe(p *parse.PipeNode) string {
 		return ""
 	}
 	if len(f.Ident) != 1 {
-		// A nested field's position is its last part; the error belongs at the first.
-		start := int(f.Pos)
-		for _, id := range f.Ident[:len(f.Ident)-1] {
-			start -= len(id) + 1
-		}
+		// For a field of more than one part the parser positions the node at the
+		// SECOND part, whatever the count; the error belongs at the first.
+		start := int(f.Pos) - len(f.Ident[0]) - 1
 		w.refuse(parse.Pos(start), ".%s is not allowed; templates only get the variables listed beside the editor, never nested data", strings.Join(f.Ident, "."))
 		return ""
 	}
@@ -432,9 +430,8 @@ func dotted(names []string) string {
 
 // lineCol converts a byte offset to a 1-based line and character column.
 func lineCol(text string, pos int) (line, col int) {
-	if pos > len(text) {
-		pos = len(text)
-	}
+	// Clamped both ways: a position is never trusted to be inside the text.
+	pos = max(0, min(pos, len(text)))
 	before := text[:pos]
 	line = 1 + strings.Count(before, "\n")
 	col = 1 + utf8.RuneCountInString(before[strings.LastIndex(before, "\n")+1:])
@@ -524,6 +521,12 @@ func RenderTemplate(def TemplateDef, subject, body string, vars map[string]strin
 	if !def.Shell {
 		if renderedSubject, err = execute(def, subject, vars); err != nil {
 			return "", "", err
+		}
+		// Save checked the sample's values; these are the real ones. A line
+		// break in a subject is a header break, so refuse it here too
+		// (sanitizeHeader at send is the last line, not the only one).
+		if strings.ContainsAny(renderedSubject, "\r\n") {
+			return "", "", errors.New("the subject came out with a line break in it")
 		}
 	}
 	if renderedBody, err = execute(def, body, vars); err != nil {

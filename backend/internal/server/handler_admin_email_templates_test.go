@@ -241,6 +241,7 @@ func TestEmailTemplates_SaveRefusesWhatTheValidatorRefuses(t *testing.T) {
 		{"ticket content", "ticket_created", "s", "{{.Ticket.Subject}} {{.TicketURL}}", "body", 1, 3},
 		{"no link", "guest_link", "s", "just words", "body", 1, 1},
 		{"a link inside an if", "password_reset", "s", "{{if .ResetURL}}{{.ResetURL}}{{end}}", "body", 1, 1},
+		{"three parts, which once panicked", "ticket_created", "s", "x{{.TicketURL.Host.X}}", "body", 1, 4},
 		{"a bad subject", "ticket_created", "{{.Subject}}", "{{.TicketURL}}", "subject", 1, 3},
 		{"a header that wants a ticket", "_header", "", "{{.TicketURL}}", "body", 1, 3},
 		{"a footer with a subject", "_footer", "no", "x", "subject", 0, 0},

@@ -81,6 +81,10 @@ func TestValidate_BodyTable(t *testing.T) {
 		{name: "another template's variable", body: "{{.TicketURL}}{{.ResetURL}}", wantLine: 1, wantCol: 17, wantMsg: "ResetURL"},
 		{name: "the whole data", body: "{{.TicketURL}}{{.}}", wantLine: 1, wantCol: 17, wantMsg: "only"},
 		{name: "a field of a field", body: "{{.TicketURL.Foo}}", wantLine: 1, wantCol: 3, wantMsg: "not allowed"},
+		{name: "three parts at the start", body: "{{.TicketURL.Host.X}}", wantLine: 1, wantCol: 3, wantMsg: "not allowed"},
+		{name: "four parts after text", body: "x{{.A.B.C.D}}", wantLine: 1, wantCol: 4, wantMsg: "not allowed"},
+		{name: "four parts after sixteen characters", body: "xxxxxxxxxxxxxxxx{{.A.B.C.D}}", wantLine: 1, wantCol: 19, wantMsg: "not allowed"},
+		{name: "uneven parts", body: "{{.a.bbbbbbbb.c}}", wantLine: 1, wantCol: 3, wantMsg: "not allowed"},
 		{name: "a parenthesised pipe", body: "{{.TicketURL}}{{(.TrackingNumber)}}", wantLine: 1, wantCol: 17, wantMsg: "only"},
 		{name: "a literal", body: "{{.TicketURL}}{{\"x\"}}", wantLine: 1, wantCol: 17, wantMsg: "only"},
 
@@ -391,4 +395,51 @@ func TestSampleVars_AreSafeToMail(t *testing.T) {
 	v = SampleVars(mustDef(t, "ticket_created"), "https://help.example.com", "ACME")
 	require.Equal(t, "https://help.example.com/tickets/00000000-0000-0000-0000-000000000000", v["TicketURL"])
 	require.Regexp(t, `^ACME-\d{4}-000042$`, v["TrackingNumber"])
+}
+
+// A draft is whatever somebody types, so no input may panic the validator (a
+// panic here was a 500 on preview and PUT), and a position is never below 1.
+func FuzzValidateTemplate(f *testing.F) {
+	for _, seed := range []string{
+		"{{.TicketURL.Host.X}}", "x{{.A.B.C.D}}", "{{.a.bbbbbbbb.c}}", "{{", "}}", "{{.", "{{$x := 1}}", "{{(.A)}}",
+		"{{if .TicketURL}}{{else if}}", "\n\n{{index}}", "{{/*", "é{{.É.É.É}}", "{{template}}", "{{- -}}", "{{.TicketURL}}",
+	} {
+		f.Add(seed)
+	}
+	defs := Templates()
+	f.Fuzz(func(t *testing.T, text string) {
+		for _, def := range defs[:3] {
+			for _, te := range ValidateTemplate(def, text, text) {
+				if te.Line < 0 || te.Col < 0 || (te.Line > 0) != (te.Col > 0) {
+					t.Fatalf("bad position %+v for %q", te, text)
+				}
+				if te.Line > 0 && te.Col < 1 {
+					t.Fatalf("column below 1: %+v for %q", te, text)
+				}
+			}
+		}
+	})
+}
+
+func TestLineCol_NeverBelowOneAndNeverPanics(t *testing.T) {
+	text := "ab\ncd é"
+	for pos := -5; pos < len(text)+5; pos++ {
+		line, col := lineCol(text, pos)
+		require.GreaterOrEqual(t, line, 1, pos)
+		require.GreaterOrEqual(t, col, 1, pos)
+	}
+}
+
+// A value that smuggles a line break into the subject is caught after render,
+// not only at save: the validator saw the sample's values, not these.
+func TestRender_RefusesALineBreakInTheRenderedSubject(t *testing.T) {
+	def := mustDef(t, "ticket_created")
+	for _, v := range []string{"a\nBcc: x@y.z", "a\rb", "a\r\nb"} {
+		_, _, err := RenderTemplate(def, "Re {{.TrackingNumber}}", "{{.TicketURL}}", map[string]string{"TrackingNumber": v, "TicketURL": "u"})
+		require.Error(t, err, "%q", v)
+		require.Contains(t, err.Error(), "line break")
+	}
+	// The body may hold line breaks.
+	_, _, err := RenderTemplate(def, "s", "{{.TrackingNumber}}{{.TicketURL}}", map[string]string{"TrackingNumber": "a\nb", "TicketURL": "u"})
+	require.NoError(t, err)
 }

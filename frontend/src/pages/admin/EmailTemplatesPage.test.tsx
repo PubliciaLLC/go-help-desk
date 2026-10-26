@@ -378,6 +378,30 @@ describe('the editor tools', () => {
   })
 })
 
+// Touch targets: 44 px on a coarse pointer, on this page only (the shared Button
+// is unchanged). The real heights are measured in e2e/email-templates.spec.ts.
+describe('touch targets', () => {
+  it.each(['Save', 'Send test', 'All templates'])('%s is 44px on a touch screen', async (name) => {
+    wire({ detail: { ...DETAIL, customised: true } })
+    await openEditor('ticket_created')
+    const cls = screen.getByRole('button', { name }).className
+    expect(cls).toContain('pointer-coarse:min-h-11')
+  })
+
+  it('Revert to default and the variable chips are too', async () => {
+    wire({ detail: { ...DETAIL, customised: true } })
+    await openEditor('ticket_created')
+    expect(screen.getByRole('button', { name: 'Revert to default' }).className).toContain('pointer-coarse:min-h-11')
+    expect(screen.getByRole('button', { name: /\{\{\.TicketURL\}\}/ }).className).toContain('pointer-coarse:min-h-11')
+  })
+
+  it('does not change the desktop size', async () => {
+    wire()
+    await openEditor('ticket_created')
+    expect(screen.getByRole('button', { name: 'Save' }).className).toContain('h-10')
+  })
+})
+
 describe('the shared header and footer', () => {
   it('has a body and no subject', async () => {
     wire({ detail: SHELL })

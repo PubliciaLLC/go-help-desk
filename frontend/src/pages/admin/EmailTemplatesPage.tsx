@@ -40,6 +40,10 @@ const GROUPS: { id: EmailTemplateGroup; title: string }[] = [
 
 const ADVISORY = 'https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-p2wx-wvfr-7h3p'
 
+// 44 px on a coarse pointer (a phone), as on the categories page. Desktop is
+// unchanged, and the shared Button default is left alone.
+const TOUCH = 'pointer-coarse:min-h-11 pointer-coarse:min-w-11'
+
 const queryKey = ['admin', 'email-templates'] as const
 
 // The template open in the editor is kept in the address (?t=name), so the
@@ -129,7 +133,7 @@ function Editor({ name, onBack }: { name: string; onBack: () => void }) {
   })
   return (
     <div className="space-y-4">
-      <Button type="button" variant="outline" size="sm" onClick={onBack}>
+      <Button type="button" variant="outline" size="sm" className={TOUCH} onClick={onBack}>
         All templates
       </Button>
       {isLoading && <div className="flex justify-center py-12"><Spinner /></div>}
@@ -329,7 +333,7 @@ function EditorForm({ detail }: { detail: EmailTemplateDetail }) {
               <button
                 type="button"
                 onClick={() => insert(`{{.${v.name}}}`)}
-                className="rounded bg-gray-100 px-1.5 py-1 font-mono text-xs text-gray-900 hover:bg-gray-200"
+                className={`inline-flex items-center rounded bg-gray-100 px-1.5 py-1 font-mono text-xs text-gray-900 hover:bg-gray-200 ${TOUCH}`}
               >
                 {`{{.${v.name}}}`}
               </button>
@@ -343,14 +347,14 @@ function EditorForm({ detail }: { detail: EmailTemplateDetail }) {
       </div>
 
       <div className="flex flex-wrap gap-2">
-        <Button type="submit" disabled={!canSave}>
+        <Button type="submit" className={TOUCH} disabled={!canSave}>
           {save.isPending ? 'Saving…' : 'Save'}
         </Button>
-        <Button type="button" variant="outline" disabled={!valid || sendTest.isPending} onClick={() => sendTest.mutate()}>
+        <Button type="button" variant="outline" className={TOUCH} disabled={!valid || sendTest.isPending} onClick={() => sendTest.mutate()}>
           {sendTest.isPending ? 'Sending…' : 'Send test'}
         </Button>
         {detail.customised && (
-          <Button type="button" variant="outline" onClick={() => setConfirmRevert(true)}>
+          <Button type="button" variant="outline" className={TOUCH} onClick={() => setConfirmRevert(true)}>
             Revert to default
           </Button>
         )}

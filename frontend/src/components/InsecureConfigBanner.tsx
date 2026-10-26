@@ -269,7 +269,11 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
   // so each is its own red notice. The signature carries when it was saved: a
   // template saved broken again shows even after a Hide.
   for (const t of email?.broken_templates ?? []) {
-    const title = `Email template "${t.label}" is broken: this mail is not being sent`
+    // The header and footer wrap every mail, so a broken one stops all of it.
+    const everyMail = t.name === '_header' || t.name === '_footer'
+    const title = `Email template "${t.label}" is broken: ${
+      everyMail ? 'no email is being sent until it is fixed or reverted' : 'this mail is not being sent'
+    }`
     notices.push({
       id: `email-template-broken:${t.name}`,
       severity: 'failure',

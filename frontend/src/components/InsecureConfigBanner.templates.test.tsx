@@ -50,9 +50,24 @@ describe('the broken email template notice', () => {
     const region = await openNotices()
     const text = region.textContent ?? ''
     expect(text).toContain('Email template "Reset your password" is broken: this mail is not being sent')
-    expect(text).toContain('Email template "Header" is broken: this mail is not being sent')
+    expect(text).toContain('Email template "Header" is broken: no email is being sent until it is fixed or reverted')
     expect(text).toContain('must include {{.ResetURL}}')
     expect(region.className).toMatch(/red/)
+  })
+
+  it('says that NO email is sent when the broken one is the header or the footer', async () => {
+    mockWarnings([
+      { name: '_header', label: 'Header', reason: 'r', updated_at: '2026-10-25T11:00:00Z' },
+      { name: '_footer', label: 'Footer', reason: 'r', updated_at: '2026-10-25T11:00:00Z' },
+      BROKEN[0],
+    ])
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+    const text = (await openNotices()).textContent ?? ''
+    expect(text).toContain('Email template "Header" is broken: no email is being sent until it is fixed or reverted')
+    expect(text).toContain('Email template "Footer" is broken: no email is being sent until it is fixed or reverted')
+    expect(text).not.toContain('"Header" is broken: this mail')
+    // A single template still only stops its own mail.
+    expect(text).toContain('Email template "Reset your password" is broken: this mail is not being sent')
   })
 
   it('has an Edit link to that template', async () => {
