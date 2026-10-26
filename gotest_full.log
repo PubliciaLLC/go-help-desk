@@ -50,3 +50,274 @@ ok  	github.com/publiciallc/go-help-desk/backend/internal/mcp	1.896s
 ok  	github.com/publiciallc/go-help-desk/backend/internal/middleware	1.943s
 ok  	github.com/publiciallc/go-help-desk/backend/internal/reputation	4.758s
 ok  	github.com/publiciallc/go-help-desk/backend/internal/safehttp	1.448s
+--- FAIL: TestOpenAPISpec_CoversEveryRoute (0.04s)
+    openapi_spec_test.go:347: ../../../docs/api/openapi.yaml: DELETE /api/v1/admin/email-templates/{name} is served by handleRevertEmailTemplate but the spec has no operation for it; document it, or add it to specExcludedRoutes with the reason
+    openapi_spec_test.go:347: ../../../docs/api/openapi.yaml: GET /api/v1/admin/email-templates is served by handleListEmailTemplates but the spec has no operation for it; document it, or add it to specExcludedRoutes with the reason
+    openapi_spec_test.go:347: ../../../docs/api/openapi.yaml: GET /api/v1/admin/email-templates/{name} is served by handleGetEmailTemplate but the spec has no operation for it; document it, or add it to specExcludedRoutes with the reason
+    openapi_spec_test.go:347: ../../../docs/api/openapi.yaml: POST /api/v1/admin/email-templates/{name}/preview is served by handlePreviewEmailTemplate but the spec has no operation for it; document it, or add it to specExcludedRoutes with the reason
+    openapi_spec_test.go:347: ../../../docs/api/openapi.yaml: POST /api/v1/admin/email-templates/{name}/test is served by handleTestEmailTemplate but the spec has no operation for it; document it, or add it to specExcludedRoutes with the reason
+    openapi_spec_test.go:347: ../../../docs/api/openapi.yaml: PUT /api/v1/admin/email-templates/{name} is served by handlePutEmailTemplate but the spec has no operation for it; document it, or add it to specExcludedRoutes with the reason
+--- FAIL: TestUserService_ARefusalNamesTheRightReason (0.10s)
+    --- FAIL: TestUserService_ARefusalNamesTheRightReason/the_actual_last_administrator_still_says_so (0.00s)
+        admin_edit_isolation_test.go:264: 
+            	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/admin_edit_isolation_test.go:264
+            	Error:      	Expected error with "invalid input: this is the only administrator, so it cannot be disabled, demoted or deleted" in chain but got nil.
+            	Test:       	TestUserService_ARefusalNamesTheRightReason/the_actual_last_administrator_still_says_so
+--- FAIL: TestSettings_DamagedChoiceSettingDoesNotBlockOtherSaves (0.08s)
+    --- FAIL: TestSettings_DamagedChoiceSettingDoesNotBlockOtherSaves/baseline:_an_undamaged_dump_saves (0.01s)
+        handler_admin_settings_choice_test.go:214: 
+            	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_settings_choice_test.go:209
+            	            				/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_settings_choice_test.go:214
+            	Error:      	Not equal: 
+            	            	expected: 204
+            	            	actual  : 200
+            	Test:       	TestSettings_DamagedChoiceSettingDoesNotBlockOtherSaves/baseline:_an_undamaged_dump_saves
+            	Messages:   	body: {"warning":"This removes the only way to sign in for: zz_store_fed8e079-0b28-4350-90f3-246fcf0de907@example.com. Their accounts are untouched, but they will not be able to authenticate until this is reversed or their access is restored another way."}
+    --- FAIL: TestSettings_DamagedChoiceSettingDoesNotBlockOtherSaves/closed_reopen_policy (0.01s)
+        handler_admin_settings_choice_test.go:220: 
+            	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_settings_choice_test.go:209
+            	            				/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_settings_choice_test.go:220
+            	Error:      	Not equal: 
+            	            	expected: 204
+            	            	actual  : 200
+            	Test:       	TestSettings_DamagedChoiceSettingDoesNotBlockOtherSaves/closed_reopen_policy
+            	Messages:   	body: {"warning":"This removes the only way to sign in for: zz_store_fed8e079-0b28-4350-90f3-246fcf0de907@example.com. Their accounts are untouched, but they will not be able to authenticate until this is reversed or their access is restored another way."}
+    --- FAIL: TestSettings_DamagedChoiceSettingDoesNotBlockOtherSaves/audit_mask_requester_names (0.01s)
+        handler_admin_settings_choice_test.go:220: 
+            	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_settings_choice_test.go:209
+            	            				/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_settings_choice_test.go:220
+            	Error:      	Not equal: 
+            	            	expected: 204
+            	            	actual  : 200
+            	Test:       	TestSettings_DamagedChoiceSettingDoesNotBlockOtherSaves/audit_mask_requester_names
+            	Messages:   	body: {"warning":"This removes the only way to sign in for: zz_store_fed8e079-0b28-4350-90f3-246fcf0de907@example.com. Their accounts are untouched, but they will not be able to authenticate until this is reversed or their access is restored another way."}
+    --- FAIL: TestSettings_DamagedChoiceSettingDoesNotBlockOtherSaves/attachment_scan_policy (0.01s)
+        handler_admin_settings_choice_test.go:220: 
+            	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_settings_choice_test.go:209
+            	            				/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_settings_choice_test.go:220
+            	Error:      	Not equal: 
+            	            	expected: 204
+            	            	actual  : 200
+            	Test:       	TestSettings_DamagedChoiceSettingDoesNotBlockOtherSaves/attachment_scan_policy
+            	Messages:   	body: {"warning":"This removes the only way to sign in for: zz_store_fed8e079-0b28-4350-90f3-246fcf0de907@example.com. Their accounts are untouched, but they will not be able to authenticate until this is reversed or their access is restored another way."}
+    --- FAIL: TestSettings_DamagedChoiceSettingDoesNotBlockOtherSaves/attachment_infected_handling (0.01s)
+        handler_admin_settings_choice_test.go:220: 
+            	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_settings_choice_test.go:209
+            	            				/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_settings_choice_test.go:220
+            	Error:      	Not equal: 
+            	            	expected: 204
+            	            	actual  : 200
+            	Test:       	TestSettings_DamagedChoiceSettingDoesNotBlockOtherSaves/attachment_infected_handling
+            	Messages:   	body: {"warning":"This removes the only way to sign in for: zz_store_fed8e079-0b28-4350-90f3-246fcf0de907@example.com. Their accounts are untouched, but they will not be able to authenticate until this is reversed or their access is restored another way."}
+    --- FAIL: TestSettings_DamagedChoiceSettingDoesNotBlockOtherSaves/attachment_mismatch_handling (0.01s)
+        handler_admin_settings_choice_test.go:220: 
+            	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_settings_choice_test.go:209
+            	            				/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_settings_choice_test.go:220
+            	Error:      	Not equal: 
+            	            	expected: 204
+            	            	actual  : 200
+            	Test:       	TestSettings_DamagedChoiceSettingDoesNotBlockOtherSaves/attachment_mismatch_handling
+            	Messages:   	body: {"warning":"This removes the only way to sign in for: zz_store_fed8e079-0b28-4350-90f3-246fcf0de907@example.com. Their accounts are untouched, but they will not be able to authenticate until this is reversed or their access is restored another way."}
+    --- FAIL: TestSettings_DamagedChoiceSettingDoesNotBlockOtherSaves/attachment_reputation_refresh (0.01s)
+        handler_admin_settings_choice_test.go:220: 
+            	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_settings_choice_test.go:209
+            	            				/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_settings_choice_test.go:220
+            	Error:      	Not equal: 
+            	            	expected: 204
+            	            	actual  : 200
+            	Test:       	TestSettings_DamagedChoiceSettingDoesNotBlockOtherSaves/attachment_reputation_refresh
+            	Messages:   	body: {"warning":"This removes the only way to sign in for: zz_store_fed8e079-0b28-4350-90f3-246fcf0de907@example.com. Their accounts are untouched, but they will not be able to authenticate until this is reversed or their access is restored another way."}
+    --- FAIL: TestSettings_DamagedChoiceSettingDoesNotBlockOtherSaves/staff_email_assigned_override (0.01s)
+        handler_admin_settings_choice_test.go:220: 
+            	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_settings_choice_test.go:209
+            	            				/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_settings_choice_test.go:220
+            	Error:      	Not equal: 
+            	            	expected: 204
+            	            	actual  : 200
+            	Test:       	TestSettings_DamagedChoiceSettingDoesNotBlockOtherSaves/staff_email_assigned_override
+            	Messages:   	body: {"warning":"This removes the only way to sign in for: zz_store_fed8e079-0b28-4350-90f3-246fcf0de907@example.com. Their accounts are untouched, but they will not be able to authenticate until this is reversed or their access is restored another way."}
+    --- FAIL: TestSettings_DamagedChoiceSettingDoesNotBlockOtherSaves/staff_email_activity_override (0.01s)
+        handler_admin_settings_choice_test.go:220: 
+            	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_settings_choice_test.go:209
+            	            				/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_settings_choice_test.go:220
+            	Error:      	Not equal: 
+            	            	expected: 204
+            	            	actual  : 200
+            	Test:       	TestSettings_DamagedChoiceSettingDoesNotBlockOtherSaves/staff_email_activity_override
+            	Messages:   	body: {"warning":"This removes the only way to sign in for: zz_store_fed8e079-0b28-4350-90f3-246fcf0de907@example.com. Their accounts are untouched, but they will not be able to authenticate until this is reversed or their access is restored another way."}
+    --- FAIL: TestSettings_DamagedChoiceSettingDoesNotBlockOtherSaves/staff_email_group_override (0.01s)
+        handler_admin_settings_choice_test.go:220: 
+            	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_settings_choice_test.go:209
+            	            				/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_settings_choice_test.go:220
+            	Error:      	Not equal: 
+            	            	expected: 204
+            	            	actual  : 200
+            	Test:       	TestSettings_DamagedChoiceSettingDoesNotBlockOtherSaves/staff_email_group_override
+            	Messages:   	body: {"warning":"This removes the only way to sign in for: zz_store_fed8e079-0b28-4350-90f3-246fcf0de907@example.com. Their accounts are untouched, but they will not be able to authenticate until this is reversed or their access is restored another way."}
+--- FAIL: TestSaveOIDCConfig_NoWarningWhenNobodyIsStranded (0.17s)
+    handler_admin_sso_guard_test.go:122: 
+        	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_sso_guard_test.go:122
+        	Error:      	"{\"ok\":true,\"warning\":\"This removes the only way to sign in for: zz_store_fed8e079-0b28-4350-90f3-246fcf0de907@example.com. Their accounts are untouched, but they will not be able to authenticate until this is reversed or their access is restored another way.\"}\n" should not contain "warning"
+        	Test:       	TestSaveOIDCConfig_NoWarningWhenNobodyIsStranded
+--- FAIL: TestSaveSAMLConfig_WarnsEvenWhenOldMiddlewareIsStillLive (0.07s)
+    handler_admin_sso_guard_test.go:248: 
+        	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_sso_guard_test.go:248
+        	Error:      	Not equal: 
+        	            	expected: 204
+        	            	actual  : 200
+        	Test:       	TestSaveSAMLConfig_WarnsEvenWhenOldMiddlewareIsStillLive
+        	Messages:   	seeding save must succeed cleanly; body: {"warning":"This removes the only way to sign in for: zz_store_fed8e079-0b28-4350-90f3-246fcf0de907@example.com. Their accounts are untouched, but they will not be able to authenticate until this is reversed or their access is restored another way."}
+--- FAIL: TestSaveSAMLConfig_GoesLiveImmediatelyWithNoSeparateEnableStep (0.06s)
+    handler_admin_sso_guard_test.go:494: 
+        	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_sso_guard_test.go:494
+        	Error:      	Not equal: 
+        	            	expected: 204
+        	            	actual  : 200
+        	Test:       	TestSaveSAMLConfig_GoesLiveImmediatelyWithNoSeparateEnableStep
+        	Messages:   	body: {"warning":"This removes the only way to sign in for: zz_store_fed8e079-0b28-4350-90f3-246fcf0de907@example.com. Their accounts are untouched, but they will not be able to authenticate until this is reversed or their access is restored another way."}
+--- FAIL: TestSaveSAMLConfig_WarnsWithoutRefusingWhenOnlySomeAdminsAreStranded (0.06s)
+    handler_admin_sso_guard_test.go:566: 
+        	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_sso_guard_test.go:566
+        	Error:      	Not equal: 
+        	            	expected: 204
+        	            	actual  : 200
+        	Test:       	TestSaveSAMLConfig_WarnsWithoutRefusingWhenOnlySomeAdminsAreStranded
+        	Messages:   	seeding save must succeed cleanly; body: {"warning":"This removes the only way to sign in for: zz_store_fed8e079-0b28-4350-90f3-246fcf0de907@example.com. Their accounts are untouched, but they will not be able to authenticate until this is reversed or their access is restored another way."}
+--- FAIL: TestAdminSAML_LiveFollowsTheLoadedMiddleware (0.14s)
+    --- FAIL: TestAdminSAML_LiveFollowsTheLoadedMiddleware/loaded (0.05s)
+        handler_admin_sso_live_test.go:73: 
+            	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_sso_live_test.go:73
+            	Error:      	Not equal: 
+            	            	expected: 204
+            	            	actual  : 200
+            	Test:       	TestAdminSAML_LiveFollowsTheLoadedMiddleware/loaded
+            	Messages:   	body: {"warning":"This removes the only way to sign in for: zz_store_fed8e079-0b28-4350-90f3-246fcf0de907@example.com. Their accounts are untouched, but they will not be able to authenticate until this is reversed or their access is restored another way."}
+--- FAIL: TestAdminUsers_PagedModeServesFifty (0.04s)
+    handler_admin_users_paging_test.go:76: 
+        	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_users_paging_test.go:76
+        	Error:      	Not equal: 
+        	            	expected: "208"
+        	            	actual  : "209"
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1 +1 @@
+        	            	-208
+        	            	+209
+        	Test:       	TestAdminUsers_PagedModeServesFifty
+--- FAIL: TestAdminUsers_ServiceAccountFilter (0.07s)
+    --- FAIL: TestAdminUsers_ServiceAccountFilter/false_is_only_people (0.00s)
+        handler_admin_users_service_filter_test.go:56: 
+            	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_users_service_filter_test.go:56
+            	Error:      	Not equal: 
+            	            	expected: "6"
+            	            	actual  : "7"
+            	            	
+            	            	Diff:
+            	            	--- Expected
+            	            	+++ Actual
+            	            	@@ -1 +1 @@
+            	            	-6
+            	            	+7
+            	Test:       	TestAdminUsers_ServiceAccountFilter/false_is_only_people
+            	Messages:   	three seeded accounts and three bulk users
+    --- FAIL: TestAdminUsers_ServiceAccountFilter/absent_is_everyone (0.00s)
+        handler_admin_users_service_filter_test.go:65: 
+            	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_users_service_filter_test.go:65
+            	Error:      	Not equal: 
+            	            	expected: "8"
+            	            	actual  : "9"
+            	            	
+            	            	Diff:
+            	            	--- Expected
+            	            	+++ Actual
+            	            	@@ -1 +1 @@
+            	            	-8
+            	            	+9
+            	Test:       	TestAdminUsers_ServiceAccountFilter/absent_is_everyone
+    --- FAIL: TestAdminUsers_ServiceAccountFilter/an_empty_value_is_the_same_as_absent (0.00s)
+        handler_admin_users_service_filter_test.go:99: 
+            	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_admin_users_service_filter_test.go:99
+            	Error:      	Not equal: 
+            	            	expected: "8"
+            	            	actual  : "9"
+            	            	
+            	            	Diff:
+            	            	--- Expected
+            	            	+++ Actual
+            	            	@@ -1 +1 @@
+            	            	-8
+            	            	+9
+            	Test:       	TestAdminUsers_ServiceAccountFilter/an_empty_value_is_the_same_as_absent
+--- FAIL: TestAuthProviders_SAMLMeansLoaded (0.05s)
+    handler_auth_providers_test.go:92: 
+        	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_auth_providers_test.go:92
+        	Error:      	Not equal: 
+        	            	expected: 204
+        	            	actual  : 200
+        	Test:       	TestAuthProviders_SAMLMeansLoaded
+        	Messages:   	body: {"warning":"This removes the only way to sign in for: zz_store_fed8e079-0b28-4350-90f3-246fcf0de907@example.com. Their accounts are untouched, but they will not be able to authenticate until this is reversed or their access is restored another way."}
+--- FAIL: TestSaveSAMLConfig_ExplicitEmptyFieldsClear (0.04s)
+    handler_saml_config_test.go:72: 
+        	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_saml_config_test.go:72
+        	Error:      	Not equal: 
+        	            	expected: 204
+        	            	actual  : 200
+        	Test:       	TestSaveSAMLConfig_ExplicitEmptyFieldsClear
+        	Messages:   	body: {"warning":"This removes the only way to sign in for: zz_store_fed8e079-0b28-4350-90f3-246fcf0de907@example.com. Their accounts are untouched, but they will not be able to authenticate until this is reversed or their access is restored another way."}
+--- FAIL: TestSaveSAMLConfig_MetadataXML (0.28s)
+    --- FAIL: TestSaveSAMLConfig_MetadataXML/switching_from_URL_to_XML_in_one_save (0.03s)
+        handler_saml_metadata_xml_test.go:172: 
+            	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_saml_metadata_xml_test.go:172
+            	Error:      	Not equal: 
+            	            	expected: 204
+            	            	actual  : 200
+            	Test:       	TestSaveSAMLConfig_MetadataXML/switching_from_URL_to_XML_in_one_save
+            	Messages:   	body: {"warning":"This removes the only way to sign in for: zz_store_fed8e079-0b28-4350-90f3-246fcf0de907@example.com. Their accounts are untouched, but they will not be able to authenticate until this is reversed or their access is restored another way."}
+--- FAIL: TestSaveSAMLConfig_PastedMetadataLoadsAndReadsBack (0.04s)
+    handler_saml_metadata_xml_test.go:199: 
+        	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_saml_metadata_xml_test.go:199
+        	Error:      	Not equal: 
+        	            	expected: 204
+        	            	actual  : 200
+        	Test:       	TestSaveSAMLConfig_PastedMetadataLoadsAndReadsBack
+        	Messages:   	body: {"warning":"This removes the only way to sign in for: zz_store_fed8e079-0b28-4350-90f3-246fcf0de907@example.com. Their accounts are untouched, but they will not be able to authenticate until this is reversed or their access is restored another way."}
+--- FAIL: TestSaveSAMLConfig_GuardTreatsPastedMetadataAsReachable (0.04s)
+    handler_saml_metadata_xml_test.go:260: 
+        	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_saml_metadata_xml_test.go:260
+        	Error:      	Not equal: 
+        	            	expected: 204
+        	            	actual  : 200
+        	Test:       	TestSaveSAMLConfig_GuardTreatsPastedMetadataAsReachable
+        	Messages:   	pasted metadata that loads is reachable, so nobody is stranded; body: {"warning":"This removes the only way to sign in for: zz_store_fed8e079-0b28-4350-90f3-246fcf0de907@example.com. Their accounts are untouched, but they will not be able to authenticate until this is reversed or their access is restored another way."}
+--- FAIL: TestUpdateSettings_SAMLMetadataXML (0.20s)
+    --- FAIL: TestUpdateSettings_SAMLMetadataXML/valid_XML_with_the_URL_cleared (0.04s)
+        handler_saml_metadata_xml_test.go:314: 
+            	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/handler_saml_metadata_xml_test.go:314
+            	Error:      	Not equal: 
+            	            	expected: 204
+            	            	actual  : 200
+            	Test:       	TestUpdateSettings_SAMLMetadataXML/valid_XML_with_the_URL_cleared
+            	Messages:   	body: {"warning":"This removes the only way to sign in for: zz_store_fed8e079-0b28-4350-90f3-246fcf0de907@example.com. Their accounts are untouched, but they will not be able to authenticate until this is reversed or their access is restored another way."}
+--- FAIL: TestSetup_StaysClosedWhenEveryAccountIsGone (0.04s)
+    setup_closed_test.go:48: 
+        	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/server/setup_closed_test.go:48
+        	Error:      	Expected error with "invalid input: this is the only administrator, so it cannot be disabled, demoted or deleted" in chain but got nil.
+        	Test:       	TestSetup_StaysClosedWhenEveryAccountIsGone
+FAIL
+FAIL	github.com/publiciallc/go-help-desk/backend/internal/server	161.371s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/server/notify	3.965s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/testutil	11.108s
+?   	github.com/publiciallc/go-help-desk/backend/internal/ui	[no test files]
+ok  	github.com/publiciallc/go-help-desk/backend/internal/updatecheck	2.137s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/version	2.160s
+FAIL
+
+tearing down
+ Container ghd-test-w158-testdb-1 Stopping 
+ Container ghd-test-w158-testdb-1 Stopped 
+ Container ghd-test-w158-testdb-1 Removing 
+ Container ghd-test-w158-testdb-1 Removed 
+ Network ghd-test-w158_default Removing 
+ Network ghd-test-w158_default Removed 

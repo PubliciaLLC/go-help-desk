@@ -75,21 +75,24 @@ func TestApply_SetsReplacesAndRemoves(t *testing.T) {
 	require.Empty(t, got)
 }
 
+// In the caller's rolled-back transaction: a user committed for real would
+// count as an administrator for every other package's tests running at once.
 func TestApply_UpdatedByIsRecorded(t *testing.T) {
-	s, _, name := newStore(t)
-	ctx := context.Background()
-	var uid uuid.UUID
-	// A real user to point at.
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
-	require.NoError(t, db.SQL.QueryRow(`INSERT INTO users (email, display_name, role) VALUES ($1, 'e', 'admin') RETURNING id`, name+"@example.com").Scan(&uid))
-	t.Cleanup(func() { _, _ = db.SQL.Exec(`DELETE FROM users WHERE id = $1`, uid) })
+	q, tx, rollback := testutil.TxQueriesTx(t, db)
+	defer rollback()
+	s := emailtemplatestore.New(q)
+	ctx := context.Background()
 
-	require.NoError(t, s.Apply(ctx, name, &emailtemplate.Override{Name: name, Subject: "s", Body: "b", UpdatedBy: &uid}, entryFor(name, "saved")))
-	got, err := s.Overrides(ctx, name)
+	var uid uuid.UUID
+	require.NoError(t, tx.QueryRow(`INSERT INTO users (email, display_name, role) VALUES ($1, 'e', 'staff') RETURNING id`, uuid.NewString()+"@example.com").Scan(&uid))
+
+	require.NoError(t, s.Apply(ctx, "ticket_created", &emailtemplate.Override{Name: "ticket_created", Subject: "s", Body: "b", UpdatedBy: &uid}, entryFor("ticket_created", "saved")))
+	got, err := s.Overrides(ctx, "ticket_created")
 	require.NoError(t, err)
-	require.NotNil(t, got[name].UpdatedBy)
-	require.Equal(t, uid, *got[name].UpdatedBy)
+	require.NotNil(t, got["ticket_created"].UpdatedBy)
+	require.Equal(t, uid, *got["ticket_created"].UpdatedBy)
 }
 
 func TestApply_RevertingWhatWasNeverOverriddenWritesNoEntry(t *testing.T) {
