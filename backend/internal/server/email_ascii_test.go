@@ -14,8 +14,8 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
-// Email addresses must be ASCII: lower-casing can fold a non-ASCII letter into
-// an ASCII one, so such an address is refused rather than compared.
+// Email addresses must be ASCII, so that they compare reliably: a non-ASCII
+// address is refused.
 
 func TestOIDC_RefusesANonASCIIEmail(t *testing.T) {
 	for _, tc := range []struct {
@@ -193,4 +193,52 @@ func TestTypedEmailRoutes_RefuseANonASCIIEmail(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, res.StatusCode)
 		require.Equal(t, before, ticketCount(t, h), "no ticket is written")
 	})
+}
+
+// A guest ticket stored with a non-ASCII address before this rule keeps working:
+// a follow-up copies the stored address, which is not a newly typed one, so it
+// is not held to the rule again.
+func TestFollowUp_OfAGuestTicketWithAStoredNonASCIIAddress(t *testing.T) {
+	const stored = "jüm@example.test"
+	seedClosed := func(t *testing.T, h *harness) (ticket.Ticket, string) {
+		t.Helper()
+		enableGuests(t, h)
+		tk, token := seedGuestTicketFor(t, h, "jim@example.test")
+		_, err := h.tx.ExecContext(context.Background(),
+			`UPDATE tickets SET guest_email = $1 WHERE id = $2`, stored, tk.ID)
+		require.NoError(t, err)
+		closeGuestTicket(t, h, tk)
+		return tk, token
+	}
+
+	t.Run("staff", func(t *testing.T) {
+		h, cleanup := newHarness(t)
+		defer cleanup()
+		tk, _ := seedClosed(t, h)
+		res := h.do(t, http.MethodPost, "/api/v1/tickets/"+tk.ID.String()+"/follow-up", nil)
+		got := decodeTicket(t, res)
+		require.NotNil(t, got.GuestEmail)
+		require.Equal(t, stored, *got.GuestEmail)
+	})
+
+	t.Run("guest link", func(t *testing.T) {
+		h, cleanup := newHarness(t)
+		defer cleanup()
+		_, token := seedClosed(t, h)
+		res := h.doGuest(t, http.MethodPost, "/api/v1/guest/follow-up", token, map[string]any{})
+		res.Body.Close()
+		require.Equal(t, http.StatusCreated, res.StatusCode)
+	})
+}
+
+// The forgot-password answer does not depend on the address: a non-ASCII one
+// gets the same status and body as an ASCII one with no account, and no mail.
+func TestForgotPassword_NonASCIIAddressAnswersLikeAnyOther(t *testing.T) {
+	h, cleanup := harnessWithEmail(t)
+	defer cleanup()
+	wantStatus, wantBody := forgot(t, h, "nobody@test.local")
+	gotStatus, gotBody := forgot(t, h, "jüm@test.local")
+	require.Equal(t, wantStatus, gotStatus)
+	require.Equal(t, wantBody, gotBody)
+	require.Empty(t, h.resetMail.sent)
 }

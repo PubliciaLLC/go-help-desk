@@ -109,9 +109,7 @@ func ValidateEmail(s string) (string, error) {
 	if trimmed == "" {
 		return "", fmt.Errorf("%w: email is required", ErrValidation)
 	}
-	// Before any lower-casing: non-ASCII letters can fold to ASCII ones under
-	// strings.ToLower and Postgres lower(), so a non-ASCII address cannot be
-	// compared reliably. Refused, not folded.
+	// Addresses must be ASCII so that they compare reliably.
 	if !isASCII(trimmed) {
 		return "", fmt.Errorf("%w: email address must contain only ASCII characters", ErrValidation)
 	}
@@ -147,8 +145,7 @@ func isASCII(s string) bool {
 }
 
 // asciiLower lower-cases A-Z and nothing else. For text that may be non-ASCII
-// and is only compared, never stored, where strings.ToLower would fold some
-// non-ASCII letters into ASCII ones.
+// and is only compared, never stored.
 func asciiLower(s string) string {
 	b := []byte(s)
 	for i, c := range b {

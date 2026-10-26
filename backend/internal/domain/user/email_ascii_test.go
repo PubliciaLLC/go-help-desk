@@ -8,8 +8,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
-// Email addresses must be ASCII: lower-casing can fold a non-ASCII letter into
-// an ASCII one, so such an address cannot be compared reliably.
+// Email addresses must be ASCII, so that they compare reliably.
 func TestValidateEmail_RefusesNonASCII(t *testing.T) {
 	for _, tc := range []struct {
 		name string

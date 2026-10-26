@@ -668,9 +668,8 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// The allowed-domains comparison folds ASCII letters only, so an entry with
-	// a non-ASCII letter could never be matched the way it was typed. Refused
-	// at save rather than silently inert.
+	// Allowed domains must be ASCII, so that they compare reliably. Refused at
+	// save rather than silently inert.
 	if raw, ok := body[admin.KeyAllowedEmailDomains]; ok {
 		var domains []string
 		if err := json.Unmarshal(raw, &domains); err == nil {

@@ -212,8 +212,7 @@ func (s *Service) TicketForGuestWrite(ctx context.Context, raw string) (Ticket, 
 // The caller answers 202 either way, so this never becomes a way to test
 // whether a tracking number or an address exists.
 func (s *Service) GuestTicketIDFor(ctx context.Context, tn TrackingNumber, email string) (uuid.UUID, error) {
-	// The lookup lower-cases both sides, which folds some non-ASCII letters
-	// into ASCII ones. Stored guest addresses are ASCII, so a non-ASCII one
+	// Addresses must be ASCII. Stored guest addresses are, so a non-ASCII one
 	// matches nothing.
 	if _, err := user.ValidateEmail(email); err != nil {
 		return uuid.Nil, ErrGuestTokenNotFound

@@ -194,7 +194,7 @@ type CreateUserInput struct {
 func (s *Service) Create(ctx context.Context, in CreateUserInput) (User, error) {
 	u := User{
 		ID:          uuid.New(),
-		Email:       strings.TrimSpace(in.Email), // Validate lower-cases it, after refusing non-ASCII
+		Email:       strings.TrimSpace(in.Email), // Validate normalises it
 		DisplayName: strings.TrimSpace(in.DisplayName),
 		Role:        in.Role,
 		SAMLSubject: in.SAMLSubject,
@@ -832,7 +832,7 @@ func (s *Service) UpsertOIDCUser(
 	displayName string,
 ) (User, error) {
 	oidcSubject = strings.TrimSpace(oidcSubject)
-	email = strings.TrimSpace(email) // ValidateEmail lower-cases it, after refusing non-ASCII
+	email = strings.TrimSpace(email) // ValidateEmail normalises it
 	displayName = strings.TrimSpace(displayName)
 
 	// An identity with no subject cannot be bound to an account. The subject
@@ -968,7 +968,7 @@ func canAdoptByEmail(u User, oidcSubject string) error {
 
 func (s *Service) UpsertSAMLUser(ctx context.Context, samlSubject, email, displayName string, allowedDomains []string) (User, error) {
 	samlSubject = strings.TrimSpace(samlSubject)
-	email = strings.TrimSpace(email) // ValidateEmail lower-cases it, after refusing non-ASCII
+	email = strings.TrimSpace(email) // ValidateEmail normalises it
 	displayName = strings.TrimSpace(displayName)
 
 	// An assertion with no NameID cannot be bound to an account. The subject
