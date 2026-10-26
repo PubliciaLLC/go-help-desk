@@ -71,6 +71,7 @@ func TestCreate_PhoneRequiresSomeoneFilingForThem(t *testing.T) {
 	}
 	_, err := h.svc.Create(context.Background(), in)
 	require.ErrorIs(t, err, ticket.ErrValidation)
+	require.ErrorContains(t, err, "phone is for staff filing on someone's behalf")
 	// ValidateCreate runs before the caller has said who filed, so it cannot ask.
 	require.NoError(t, h.svc.ValidateCreate(context.Background(), in))
 }
