@@ -92,6 +92,10 @@ Environment variables control infrastructure; feature flags (SAML, MFA, SLA) and
 > Changing an auth-related setting requires a signed-in administrator — an API
 > key cannot, whatever scopes it holds.
 
+## Upgrading to 1.2.1
+
+Email addresses must be ASCII. See [docs/upgrade-notes-1.2.1.md](docs/upgrade-notes-1.2.1.md).
+
 ## Upgrading to 1.2.0
 
 **Every API key and OAuth client created through the admin UI stops working.**

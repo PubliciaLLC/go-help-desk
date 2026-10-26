@@ -175,7 +175,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Not lower-cased here: that happens after the address is known to be ASCII.
+	// Not normalised here: that happens once the address is known to be ASCII.
 	email := strings.TrimSpace(claims.Email)
 
 	// An unverified address proves nothing about who owns it, so it must not be

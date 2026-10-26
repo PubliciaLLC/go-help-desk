@@ -94,7 +94,7 @@ type CreateUserInput struct {
 func (s *Service) Create(ctx context.Context, in CreateUserInput) (User, error) {
 	u := User{
 		ID:          uuid.New(),
-		Email:       strings.TrimSpace(in.Email), // lower-cased below, after Validate refuses non-ASCII
+		Email:       strings.TrimSpace(in.Email), // normalised below, after Validate checks it
 		DisplayName: strings.TrimSpace(in.DisplayName),
 		Role:        in.Role,
 		SAMLSubject: in.SAMLSubject,
@@ -381,7 +381,7 @@ func (s *Service) UpsertOIDCUser(
 	displayName string,
 ) (User, error) {
 	oidcSubject = strings.TrimSpace(oidcSubject)
-	email = strings.TrimSpace(email) // lower-cased where it is used, once known to be ASCII
+	email = strings.TrimSpace(email) // normalised where it is used, once known to be ASCII
 	displayName = strings.TrimSpace(displayName)
 
 	// An identity with no subject cannot be bound to an account. The subject
@@ -418,8 +418,7 @@ func (s *Service) UpsertOIDCUser(
 	}
 
 	if email != "" {
-		// Refused before the lookup: lower-casing would fold some non-ASCII
-		// letters into ASCII ones and find an account the address is not.
+		// Addresses must be ASCII; refused before the lookup.
 		if !isASCII(email) {
 			return User{}, fmt.Errorf("%w: email address must contain only ASCII characters", ErrValidation)
 		}
@@ -474,7 +473,7 @@ func canAdoptByEmail(u User, oidcSubject string) error {
 
 func (s *Service) UpsertSAMLUser(ctx context.Context, samlSubject, email, displayName string, allowedDomains []string) (User, error) {
 	samlSubject = strings.TrimSpace(samlSubject)
-	email = strings.TrimSpace(email) // lower-cased where it is used, once known to be ASCII
+	email = strings.TrimSpace(email) // normalised where it is used, once known to be ASCII
 	displayName = strings.TrimSpace(displayName)
 
 	// An assertion with no NameID cannot be bound to an account. The subject
@@ -519,7 +518,7 @@ func (s *Service) UpsertSAMLUser(ctx context.Context, samlSubject, email, displa
 	if !IsEmailDomainAllowed(email, allowedDomains) {
 		return User{}, ErrDomainNotAllowed
 	}
-	// Create refuses a non-ASCII address before it lower-cases.
+	// Create refuses a non-ASCII address.
 	return s.Create(ctx, CreateUserInput{
 		Email:       email,
 		DisplayName: displayName,
