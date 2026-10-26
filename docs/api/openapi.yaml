@@ -7936,7 +7936,8 @@ paths:
         tracking number; links carrying token=sample-not-a-real-link) inside the saved
         header and footer. Drafting the header or footer shows it around a sample mail.
         Nothing is sent or stored. preview_error is set when the draft is fine but a
-        saved header or footer cannot render.
+        saved header or footer cannot render. The HTML part, if the draft has one, is
+        checked and rendered the same way (html in the answer).
       tags: ['Admin: Email templates']
       x-ghd-handler: handlePreviewEmailTemplate
       security:
@@ -7984,7 +7985,8 @@ paths:
         5 per 10 minutes per administrator (429 rate_limited with Retry-After). An invalid
         draft is 400 invalid_template; email not set up is 503 email_not_configured; a
         failure of the mail relay is 502 send_failed with the relay's message. The audit
-        entry (email_template_test_sent) names the template, never the address.
+        entry (email_template_test_sent) names the template, never the address. A draft with
+        an HTML part is sent as multipart/alternative, text first.
       tags: ['Admin: Email templates']
       x-ghd-handler: handleTestEmailTemplate
       security:
@@ -11790,6 +11792,7 @@ components:
         group: {type: string, enum: [requester, staff, account, shared]}
         shell: {type: boolean, description: 'True for the header and footer: a body and no subject.'}
         customised: {type: boolean}
+        has_html: {type: boolean, description: 'The saved version has an HTML part, so its mail is multipart/alternative.'}
         broken: {type: boolean, description: 'The saved version no longer validates, so mail that uses it fails.'}
         updated_at: {type: [string, 'null'], format: date-time}
         updated_by_name: {type: string, description: 'Empty when never edited or the editor is gone.'}
@@ -11817,17 +11820,28 @@ components:
             broken_reason: {type: string, description: 'Present when broken.'}
             max_body_bytes: {type: integer}
             max_subject_bytes: {type: integer}
+            html: {type: string, description: 'The HTML part in effect; empty when there is none. There is no default HTML.'}
+            max_html_bytes: {type: integer}
     EmailTemplateDraft:
       type: object
       properties:
         subject: {type: string, description: 'One line. Empty for the header and footer.'}
-        body: {type: string}
+        body: {type: string, description: 'The plain-text part. Always present.'}
+        html:
+          type: string
+          description: >-
+            The optional HTML part (html/template, up to 64 KiB). Absent or empty means no HTML part:
+            the mail is single-part text. Anything outside the allow-list (scripts, forms, frames,
+            event handlers, javascript: or relative URLs, a template anywhere but in the text or as
+            the whole href of a link) is refused with 400 invalid_template and field html. Nothing
+            is rewritten.
     EmailTemplateDraftOptional:
       type: object
-      description: 'Omit both fields to use the saved text.'
+      description: 'Omit subject, body and html to use the saved text and HTML.'
       properties:
         subject: {type: string}
         body: {type: string}
+        html: {type: string}
     EmailTemplatePreview:
       type: object
       required: [valid, errors]
@@ -11839,12 +11853,13 @@ components:
             type: object
             required: [field, line, col, message]
             properties:
-              field: {type: string, enum: [subject, body]}
+              field: {type: string, enum: [subject, body, html]}
               line: {type: integer, description: '1-based; 0 when the problem has no place in the text.'}
               col: {type: integer, description: '1-based, in characters.'}
               message: {type: string}
         subject: {type: string, description: 'Rendered with sample data, when valid.'}
         body: {type: string, description: 'Rendered with sample data, header and footer included, when valid.'}
+        html: {type: string, description: 'The HTML part rendered with sample data, header and footer included, when the draft has one. Show it only in a sandboxed frame.'}
         preview_error: {type: string}
   responses:
     NoContent:

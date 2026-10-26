@@ -3248,7 +3248,8 @@ on the existing webhook feature instead of as plugins.
 - **Editable email templates** ([#158](https://github.com/PubliciaLLC/go-help-desk/issues/158)).
   An administrator edits the wording of all 17 emails under **Admin → Email
   Templates** (`/admin/email-templates`), and a shared **header** and **footer**
-  that wrap every mail. Plain text only; an HTML part is a later release.
+  that wrap every mail. Each can also have an optional HTML part (see *The HTML
+  part* below); without one, mail is plain text.
 
   *No ticket content, ever.* The rule above holds for edited text exactly as
   for the compiled text. A template is `text/template`, but only a sliver of
@@ -3327,7 +3328,63 @@ on the existing webhook feature instead of as plugins.
   "before". `email_template_test_sent` records the template and never the
   address. `template_*` are allow-listed in the audit view; the plain `subject`
   and `body` keys stay hidden, because ticket entries keep the ticket's own text
-  under them.
+  under them. The HTML part is recorded in full under `template_html` (always
+  present on a save or revert, empty when there is none).
+
+  *The HTML part* ([#158](https://github.com/PubliciaLLC/go-help-desk/issues/158), migration
+  `000058`). Every template, and the header and footer, can have an HTML body beside
+  its text one.
+
+  - **Sending.** A template with no HTML sends single-part `text/plain`, byte for
+    byte as before; the golden tests hold that. With HTML it sends
+    `multipart/alternative`, `text/plain` first and `text/html` second, each
+    quoted-printable, with a random boundary. The text part is **always the
+    separately edited text template**, never generated from the HTML. The HTML is
+    the header's HTML, the template's, then the footer's. **The header and footer
+    wrap an HTML part; they do not create one**: a template with no HTML stays
+    plain text even if the header has HTML.
+  - **Templating.** `html/template`, so each value is escaped for where it lands
+    (text, or a link's `href`); the guest `#token` fragment survives it. The same
+    AST allow-list as the text part runs first, on the parse tree before the
+    escaper adds its own functions. The same variables and the same required link
+    (outside any `if`, as text or as the whole `href` of a link). The data is the
+    same string-only map, so ticket text can never reach it.
+  - **What an administrator may write** is checked at save with
+    `golang.org/x/net/html` and **refused, with the reason, line and column;
+    nothing is rewritten.** Elements outside a list of what email carries are
+    refused, and the design's list is refused by name with why: `script`,
+    `iframe`, `frame`, `object`, `embed`, `form`, `input`, `button`, `select`,
+    `textarea`, `base`, `link`, `meta`, `svg`, `math`. Any `on*` attribute,
+    `srcdoc` and `formaction` are refused. `href` must start `https:`, `http:` or
+    `mailto:` (read the way a browser reads it: character references decoded, tabs
+    and line breaks dropped, leading control characters and spaces trimmed), or be
+    exactly one `{{.Variable}}`; `src` and `background` must start `https:`. A
+    template may appear only in text or as the whole `href` value; never in a tag,
+    an attribute name, a comment or a `<style>`. A literal `<` in text is written
+    `&lt;`. Allowed: layout markup, `style` attributes, `<style>` blocks without
+    templates, and remote images (a choice the administrator makes and the audit
+    records). Each branch of an `{{if}}` is read on its own and must come out
+    whole, so one branch cannot finish a tag another began.
+  - **Caps.** Source 64 KiB; the rendered header, body and footer together
+    100 KiB (Gmail clips near 102 KB), checked at save against sample data and
+    again at send.
+  - **No HTML defaults.** Shipping some would turn every install's mail multipart
+    on upgrade. The editor's **Start from a basic layout** button fills an empty
+    HTML field with a starter (the header opens a layout, the footer closes it, a
+    template gets its own text as paragraphs); nothing is saved until Save.
+  - **Preview.** The HTML renders in `<iframe sandbox="">` (no `allow-scripts`, no
+    `allow-same-origin`), written as `srcdoc` with a meta CSP first
+    (`default-src 'none'; style-src 'unsafe-inline'; img-src data:`), so remote
+    images do not load there; the page says so and **Send test** shows the real
+    mail. It is never written into the app's page: a test forbids
+    `innerHTML`-style APIs in the page and pins the sandbox, and browser tests
+    check that a script and an `onerror` handler in the frame do not run, under
+    the backend's real CSP as well (`frame-src` from `default-src 'self'` does not
+    block `about:srcdoc`).
+  - **Stale HTML** fails the mail like stale text: `ErrPermanent`, the same
+    message naming the template, the same broken-template notice and one-click
+    revert. A save, a live check and a test send validate the text and the HTML
+    together and report both.
 
 - **Webhooks** — configurable HTTP callbacks for ticket lifecycle events:
   `ticket.created`, `ticket.assigned`, `ticket.status_changed`,
