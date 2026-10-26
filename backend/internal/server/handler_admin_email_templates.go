@@ -27,7 +27,7 @@ import (
 
 // TemplateMailer is the part of the email dispatcher the editor needs.
 type TemplateMailer interface {
-	PreviewDraft(ctx context.Context, def notify.TemplateDef, subject, body, trackingPrefix string) (notify.Preview, error)
+	PreviewDraftHTML(ctx context.Context, def notify.TemplateDef, subject, body, html, trackingPrefix string) (notify.Preview, error)
 	SendTest(ctx context.Context, to string, p notify.Preview) error
 }
 
@@ -64,6 +64,7 @@ type templateSummary struct {
 	Group         string     `json:"group"`
 	Shell         bool       `json:"shell"`
 	Customised    bool       `json:"customised"`
+	HasHTML       bool       `json:"has_html"`
 	Broken        bool       `json:"broken"`
 	UpdatedAt     *time.Time `json:"updated_at"`
 	UpdatedByName string     `json:"updated_by_name"`
@@ -71,16 +72,20 @@ type templateSummary struct {
 
 type templateDetail struct {
 	templateSummary
-	Subject        string             `json:"subject"`
-	Body           string             `json:"body"`
-	DefaultSubject string             `json:"default_subject"`
-	DefaultBody    string             `json:"default_body"`
-	Required       string             `json:"required"`
-	Variables      []templateVariable `json:"variables"`
+	Subject        string `json:"subject"`
+	Body           string `json:"body"`
+	DefaultSubject string `json:"default_subject"`
+	DefaultBody    string `json:"default_body"`
+	// HTML is the optional HTML part; empty means the mail is plain text. There
+	// is no default HTML, so there is no default_html.
+	HTML      string             `json:"html"`
+	Required  string             `json:"required"`
+	Variables []templateVariable `json:"variables"`
 	// BrokenReason is why the saved version cannot be sent, when Broken.
 	BrokenReason   string `json:"broken_reason,omitempty"`
 	MaxBodyBytes   int    `json:"max_body_bytes"`
 	MaxSubjectByte int    `json:"max_subject_bytes"`
+	MaxHTMLBytes   int    `json:"max_html_bytes"`
 }
 
 // templateDraft is what the editor sends. A pointer, so "not sent" is told
@@ -88,6 +93,14 @@ type templateDetail struct {
 type templateDraft struct {
 	Subject *string `json:"subject"`
 	Body    *string `json:"body"`
+	HTML    *string `json:"html"`
+}
+
+func (d templateDraft) html() string {
+	if d.HTML == nil {
+		return ""
+	}
+	return *d.HTML
 }
 
 func (d templateDraft) subject() string {
@@ -127,6 +140,7 @@ func (s *Server) summarise(ctx context.Context, def notify.TemplateDef, ov *emai
 		return sum
 	}
 	sum.Customised = true
+	sum.HasHTML = ov.HTML != ""
 	sum.Broken = len(notify.BrokenTemplates([]emailtemplate.Override{*ov})) > 0
 	t := ov.UpdatedAt
 	sum.UpdatedAt = &t
@@ -178,13 +192,13 @@ func (s *Server) templateDetail(ctx context.Context, def notify.TemplateDef) (te
 		Subject:         def.DefaultSubject, Body: def.DefaultBody,
 		DefaultSubject: def.DefaultSubject, DefaultBody: def.DefaultBody,
 		Required: def.Required, Variables: []templateVariable{},
-		MaxBodyBytes: notify.MaxBodyBytes, MaxSubjectByte: notify.MaxSubjectBytes,
+		MaxBodyBytes: notify.MaxBodyBytes, MaxSubjectByte: notify.MaxSubjectBytes, MaxHTMLBytes: notify.MaxHTMLBytes,
 	}
 	for _, v := range def.Vars {
 		d.Variables = append(d.Variables, templateVariable{Name: v.Name, Description: v.Description})
 	}
 	if ov != nil {
-		d.Subject, d.Body = ov.Subject, ov.Body
+		d.Subject, d.Body, d.HTML = ov.Subject, ov.Body, ov.HTML
 		if b := notify.BrokenTemplates([]emailtemplate.Override{*ov}); len(b) > 0 {
 			d.BrokenReason = b[0].Reason
 		}
@@ -220,8 +234,11 @@ func invalidTemplate(w http.ResponseWriter, errs []notify.TemplateError) {
 	}})
 }
 
-func templateText(subject, body string, name string) map[string]any {
-	return map[string]any{"template_name": name, "template_subject": subject, "template_body": body}
+// templateText is what an audit entry records of a template: all of it, so the
+// log is the history. The HTML is recorded in full too, whether or not there
+// is any, so "no HTML" reads as an empty value and not as a missing one.
+func templateText(subject, body, html, name string) map[string]any {
+	return map[string]any{"template_name": name, "template_subject": subject, "template_body": body, "template_html": html}
 }
 
 // PUT /api/v1/admin/email-templates/{name}
@@ -244,29 +261,30 @@ func (s *Server) handlePutEmailTemplate(w http.ResponseWriter, r *http.Request) 
 		Error(w, http.StatusBadRequest, "bad_request", "invalid request body")
 		return
 	}
-	subject, body := in.subject(), in.body()
-	if errs := notify.ValidateTemplate(def, subject, body); len(errs) > 0 {
+	subject, body, html := in.subject(), in.body(), in.html()
+	if errs := append(notify.ValidateTemplate(def, subject, body), notify.ValidateHTML(def, html)...); len(errs) > 0 {
 		invalidTemplate(w, errs)
 		return
 	}
 
 	actor := authmw.GetActor(r)
 	var next *emailtemplate.Override
-	if subject != def.DefaultSubject || body != def.DefaultBody {
-		next = &emailtemplate.Override{Name: def.Name, Subject: subject, Body: body, UpdatedBy: &actor.UserID}
+	// There is no default HTML, so any HTML makes the template differ.
+	if subject != def.DefaultSubject || body != def.DefaultBody || html != "" {
+		next = &emailtemplate.Override{Name: def.Name, Subject: subject, Body: body, HTML: html, UpdatedBy: &actor.UserID}
 	}
 	err := s.emailTemplates.Apply(r.Context(), def.Name, next, func(prev *emailtemplate.Override) *audit.Entry {
 		if prev == nil && next == nil {
 			return nil // the default over the default changes nothing
 		}
-		beforeSubject, beforeBody := def.DefaultSubject, def.DefaultBody
+		beforeSubject, beforeBody, beforeHTML := def.DefaultSubject, def.DefaultBody, ""
 		if prev != nil {
-			beforeSubject, beforeBody = prev.Subject, prev.Body
+			beforeSubject, beforeBody, beforeHTML = prev.Subject, prev.Body, prev.HTML
 		}
 		return &audit.Entry{
 			ID: uuid.New(), ActorID: &actor.UserID, EntityType: "email_template", EntityID: emailTemplateEntityID(def.Name),
-			Action: "email_template_saved", Before: templateText(beforeSubject, beforeBody, def.Name),
-			After: templateText(subject, body, def.Name), CreatedAt: time.Now(),
+			Action: "email_template_saved", Before: templateText(beforeSubject, beforeBody, beforeHTML, def.Name),
+			After: templateText(subject, body, html, def.Name), CreatedAt: time.Now(),
 		}
 	})
 	if err != nil {
@@ -298,7 +316,7 @@ func (s *Server) handleRevertEmailTemplate(w http.ResponseWriter, r *http.Reques
 		}
 		return &audit.Entry{
 			ID: uuid.New(), ActorID: &actor.UserID, EntityType: "email_template", EntityID: emailTemplateEntityID(def.Name),
-			Action: "email_template_reverted", Before: templateText(prev.Subject, prev.Body, def.Name), CreatedAt: time.Now(),
+			Action: "email_template_reverted", Before: templateText(prev.Subject, prev.Body, prev.HTML, def.Name), CreatedAt: time.Now(),
 		}
 	})
 	if err != nil {
@@ -327,7 +345,7 @@ func (s *Server) handlePreviewEmailTemplate(w http.ResponseWriter, r *http.Reque
 		Error(w, http.StatusBadRequest, "bad_request", "invalid request body")
 		return
 	}
-	p, err := s.templateMailer.PreviewDraft(r.Context(), def, in.subject(), in.body(), s.adminSvc.TicketPrefix(r.Context()))
+	p, err := s.templateMailer.PreviewDraftHTML(r.Context(), def, in.subject(), in.body(), in.html(), s.adminSvc.TicketPrefix(r.Context()))
 	var invalid *notify.InvalidTemplateError
 	switch {
 	case errors.As(err, &invalid):
@@ -338,7 +356,7 @@ func (s *Server) handlePreviewEmailTemplate(w http.ResponseWriter, r *http.Reque
 	case err != nil:
 		handleError(w, err)
 	default:
-		JSON(w, http.StatusOK, map[string]any{"valid": true, "errors": []notify.TemplateError{}, "subject": p.Subject, "body": p.Body})
+		JSON(w, http.StatusOK, map[string]any{"valid": true, "errors": []notify.TemplateError{}, "subject": p.Subject, "body": p.Body, "html": p.HTML})
 	}
 }
 
@@ -366,14 +384,14 @@ func (s *Server) handleTestEmailTemplate(w http.ResponseWriter, r *http.Request)
 		Error(w, http.StatusBadRequest, "bad_request", "invalid request body")
 		return
 	}
-	subject, body := in.subject(), in.body()
-	if in.Subject == nil && in.Body == nil {
+	subject, body, html := in.subject(), in.body(), in.html()
+	if in.Subject == nil && in.Body == nil && in.HTML == nil {
 		cur, err := s.templateDetail(r.Context(), def)
 		if err != nil {
 			handleError(w, err)
 			return
 		}
-		subject, body = cur.Subject, cur.Body
+		subject, body, html = cur.Subject, cur.Body, cur.HTML
 	}
 	actor := authmw.GetActor(r)
 	me, err := s.users.GetByID(r.Context(), actor.UserID)
@@ -382,7 +400,7 @@ func (s *Server) handleTestEmailTemplate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	p, err := s.templateMailer.PreviewDraft(r.Context(), def, subject, body, s.adminSvc.TicketPrefix(r.Context()))
+	p, err := s.templateMailer.PreviewDraftHTML(r.Context(), def, subject, body, html, s.adminSvc.TicketPrefix(r.Context()))
 	var invalid *notify.InvalidTemplateError
 	if errors.As(err, &invalid) {
 		invalidTemplate(w, invalid.Errors)
