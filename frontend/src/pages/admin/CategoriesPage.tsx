@@ -545,7 +545,7 @@ function SortableItemRow({
           onSave={(name) => renameMutation.mutateAsync(name)}
           className={`text-sm text-gray-700 ${item.active ? '' : 'opacity-60'}`}
         />
-        <div className="flex items-center gap-2 sm:shrink-0 max-sm:basis-full max-sm:flex-wrap max-sm:justify-end">
+        <div className="flex items-center gap-2 max-sm:basis-full max-sm:flex-wrap max-sm:justify-end">
           {!item.active && <ArchivedBadge />}
           <ArchiveControl
             kind="item"
@@ -671,7 +671,7 @@ function SortableTypeRow({
           onSave={(name) => renameMutation.mutateAsync(name)}
           className={`text-sm font-medium text-gray-800 ${type.active ? '' : 'opacity-60'}`}
         />
-        <div className="flex items-center gap-2 sm:shrink-0 max-sm:basis-full max-sm:flex-wrap max-sm:justify-end">
+        <div className="flex items-center gap-2 max-sm:basis-full max-sm:flex-wrap max-sm:justify-end">
           {!type.active && <ArchivedBadge />}
           <ArchiveControl
             kind="type"
@@ -830,7 +830,7 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
           onSave={(name) => renameMutation.mutateAsync(name)}
           className={`text-sm font-semibold text-gray-900 ${cat.active ? '' : 'opacity-60'}`}
         />
-        <div className="flex items-center gap-2 sm:shrink-0 max-sm:basis-full max-sm:flex-wrap max-sm:justify-end">
+        <div className="flex items-center gap-2 max-sm:basis-full max-sm:flex-wrap max-sm:justify-end">
           {!cat.active && <ArchivedBadge />}
           <ArchiveControl
             kind="category"

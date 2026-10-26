@@ -14,7 +14,7 @@ const REFUSAL = 'Cannot restore this entry because its parent is archived and an
 async function mockTree(
   page: Page,
   activeFlags: { cat: boolean; type: boolean; item: boolean },
-  opts: { names?: [string, string, string]; failPatch?: boolean } = {},
+  opts: { names?: [string, string, string]; failPatch?: boolean; refusal?: string } = {},
 ) {
   const [catName, typeName, itemName] = opts.names ?? [LONG_NAME, LONG_NAME, LONG_NAME]
   await mockAdminApi(page)
@@ -25,7 +25,7 @@ async function mockTree(
   const serve = (node: Node) => async (route: import('@playwright/test').Route) => {
     const req = route.request()
     if (req.method() === 'PATCH' && opts.failPatch) {
-      return route.fulfill({ status: 409, json: { error: { code: 'conflict', message: REFUSAL } } })
+      return route.fulfill({ status: 409, json: { error: { code: 'conflict', message: opts.refusal ?? REFUSAL } } })
     }
     if (req.method() === 'PATCH') {
       const body = req.postDataJSON() as { active?: boolean }
@@ -217,5 +217,32 @@ for (const width of [768, 1280]) {
         }
       })
     }
+  })
+}
+
+// A long refusal must wrap, not widen the row: from `sm` up the actions group
+// is part of the row's single line, so an unwrappable alert pushed Restore and
+// Delete past the edge (seen at 768 touch and 1280 mouse).
+const LONG_REFUSAL =
+  'Cannot restore this entry because its parent category is archived, an automatic assignment rule depends on it, and the reopen target points at it'
+for (const [width, touch] of [[640, true], [768, true], [1024, false], [1280, false]] as const) {
+  test.describe(`long refusal ${width}px ${touch ? 'touch' : 'mouse'}`, () => {
+    test.use({ hasTouch: touch })
+    test('buttons stay on screen and the page does not scroll sideways', async ({ page }) => {
+      await mockTree(page, { cat: false, type: false, item: false }, { failPatch: true, refusal: LONG_REFUSAL })
+      await page.setViewportSize({ width, height: 900 })
+      await page.goto('/admin/categories')
+      await expect(page.getByRole('heading', { level: 1, name: 'Categories' })).toBeVisible()
+      await expandAll(page, 3)
+      for (const b of await page.getByRole('button', { name: /^Restore/ }).all()) await b.click()
+      await expect(page.getByRole('alert').filter({ hasText: 'Cannot restore this entry' })).toHaveCount(3)
+      for (const b of await page.getByRole('button', { name: /^(Restore|Delete)/ }).all()) {
+        const box = (await b.boundingBox())!
+        const label = await b.getAttribute('title')
+        expect(box.x, `${label} left edge`).toBeGreaterThanOrEqual(0)
+        expect(box.x + box.width, `${label} right edge`).toBeLessThanOrEqual(width)
+      }
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width)
+    })
   })
 }
