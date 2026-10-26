@@ -33,14 +33,16 @@ const DETAIL = {
 
 const LONG = 'L'.repeat(300)
 
-async function mockTemplates(page: Page) {
+// previewHTML, when set, is what the preview endpoint returns as the HTML part
+// whatever the draft holds; a hostile string here proves the frame, not the server.
+async function mockTemplates(page: Page, opts: { previewHTML?: string } = {}) {
   await mockAdminApi(page, { short: true })
   const saved: unknown[] = []
   await page.route('**/api/v1/admin/email-templates**', async (route) => {
     const req = route.request()
     const path = new URL(req.url()).pathname
     if (path.endsWith('/preview')) {
-      const draft = req.postDataJSON() as { subject: string; body: string }
+      const draft = req.postDataJSON() as { subject: string; body: string; html?: string }
       // The same rule the server applies, enough for the layout: no link, no go.
       if (!draft.body.includes('{{.TicketURL}}')) {
         await route.fulfill({
@@ -52,7 +54,10 @@ async function mockTemplates(page: Page) {
         return
       }
       await route.fulfill({
-        json: { valid: true, errors: [], subject: 'We have received [GHD-2026-000042]', body: `Sample ${draft.body}` },
+        json: {
+          valid: true, errors: [], subject: 'We have received [GHD-2026-000042]', body: `Sample ${draft.body}`,
+          ...(draft.html || opts.previewHTML ? { html: opts.previewHTML ?? draft.html } : {}),
+        },
       })
       return
     }
@@ -151,6 +156,63 @@ test('a 300 character word in the draft does not widen the page', async ({ page 
   await fits(page)
 })
 
+// The HTML preview (#158, PR 2): markup an administrator wrote, shown on the
+// origin staff sessions live on. It must sit in a frame with an EMPTY sandbox,
+// and a script or handler inside it must not run. A frame cannot be inspected
+// from outside once it is sandboxed, so the test listens for postMessage, the
+// one thing a sandboxed script CAN still do: a message arriving means it ran.
+const HOSTILE =
+  '<p id="visible">frame content</p><script>parent.postMessage("script-ran", "*")</script>' +
+  '<img src="x" onerror="parent.postMessage(\'handler-ran\', \'*\')">'
+
+test('the HTML preview is sandboxed and a script inside it does not run', async ({ page }) => {
+  await page.addInitScript(() => {
+    ;(window as unknown as { __messages: string[] }).__messages = []
+    window.addEventListener('message', (e) => (window as unknown as { __messages: string[] }).__messages.push(String(e.data)))
+  })
+  await mockTemplates(page, { previewHTML: HOSTILE })
+  await page.goto('/admin/email-templates?t=ticket_created')
+  await page.getByLabel('HTML').fill('<p>draft</p>')
+  const frame = page.locator('iframe[title="HTML preview"]')
+  await expect(frame).toBeVisible()
+
+  // The attributes.
+  await expect(frame).toHaveAttribute('sandbox', '')
+  const srcdoc = (await frame.getAttribute('srcdoc')) ?? ''
+  expect(srcdoc.startsWith(`<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">`)).toBe(true)
+  expect(await frame.getAttribute('sandbox')).not.toMatch(/allow-/)
+
+  // The content shows, and nothing in it ran.
+  await expect(page.frameLocator('iframe[title="HTML preview"]').locator('#visible')).toHaveText('frame content')
+  await page.waitForTimeout(800)
+  expect(await page.evaluate(() => (window as unknown as { __messages: string[] }).__messages)).toEqual([])
+
+  // Control: the same listener does hear a frame that is allowed to run scripts,
+  // so the silence above is the sandbox and not a broken probe.
+  await page.evaluate(() => {
+    const f = document.createElement('iframe')
+    f.setAttribute('sandbox', 'allow-scripts')
+    f.srcdoc = '<script>parent.postMessage("control", "*")</script>'
+    document.body.appendChild(f)
+  })
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __messages: string[] }).__messages)).toContain('control')
+
+  // Nothing of it was written into the page itself.
+  expect(await page.locator('#visible').count()).toBe(0)
+  await fits(page)
+})
+
+test('the HTML preview fits at 320px', async ({ page }) => {
+  await mockTemplates(page, { previewHTML: '<table width="900"><tr><td>wide</td></tr></table>' })
+  await page.goto('/admin/email-templates?t=ticket_created')
+  await page.getByLabel('HTML').fill('<p>draft</p>')
+  const frame = page.locator('iframe[title="HTML preview"]')
+  await expect(frame).toBeVisible()
+  const box = await frame.boundingBox()
+  expect(box!.x + box!.width).toBeLessThanOrEqual(320)
+  await fits(page)
+})
+
 // Touch targets: 44 px on a touch screen (a coarse pointer), on this page only.
 test.describe('touch targets', () => {
   test.use({ hasTouch: true, isMobile: true })
@@ -167,6 +229,7 @@ test.describe('touch targets', () => {
         page.getByRole('button', { name: 'Save' }),
         page.getByRole('button', { name: 'Send test' }),
         page.getByRole('button', { name: 'Revert to default' }),
+        page.getByRole('button', { name: 'Start from a basic layout' }),
         page.getByRole('button', { name: '{{.TicketURL}}' }),
         page.getByRole('button', { name: '{{.TrackingNumber}}' }),
       ]
