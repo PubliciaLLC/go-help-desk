@@ -78,6 +78,17 @@ Core fields (all editions):
 - **Linked tickets** (related, parent/child, caused-by, duplicate-of — can link to any ticket including Closed)
 - **Tracking number** (quoted in notification email, and one half of a guest link re-request). Shaped `PREFIX-YEAR-SEQUENCE`, e.g. `GHD-2026-000001`. The prefix is the `ticket_prefix` setting (**Admin → Settings → General → Tickets**): one to eight uppercase letters or digits, `GHD` by default, validated when saved (`400 invalid_ticket_prefix`) and applied only to tickets created afterwards, because issued numbers are already in customers' inboxes and replies and are never rewritten
 - **Resolution notes** (summary of what resolved the ticket, captured at resolution)
+- **Source channel** (`tickets.source_channel`, #130): how the ticket arrived, one of `web`, `api`, `mcp`, `guest`, `phone` (a CHECK constraint; `email` is reserved for inbound mail and is a migration away). **Derived by the server from the entry point, never asserted by a caller**, because a caller-chosen channel is a column no report can trust:
+
+  | Entry point | Channel |
+  | --- | --- |
+  | The web app's ticket form, or any REST call made in a browser session | `web` |
+  | REST with an API key or OAuth client (the credential's `Machine` flag, not the route) | `api` |
+  | MCP `create_ticket`, `create_follow_up` | `mcp` |
+  | The guest form, and a guest's follow-up | `guest` |
+  | Staff filing on someone's behalf from the web form, with "Phone call" picked | `phone` |
+
+  **`phone` is the one value a person chooses**, and only a member of staff in a browser session who also names a requester (`reporter_user_id` or `reporter_email`, #444); the default stays `web`. `POST /tickets` takes a `source_channel` member for that alone. **Every other use is refused with `400` and nothing is written** (refusal rather than ignoring, as for a requester's `reporter_*`): any value from an API key or OAuth client, any value but `phone` from a session, `phone` without a requester, and MCP `create_ticket` with a `source_channel` argument. The ticket service backs this up: `phone` without a filer is a validation error. **A follow-up records its own entry point**, not its original's: the person who clicks follow-up is the one opening this ticket, by whatever route (a follow-up of a phone ticket is `web`). **Existing tickets read `web`** (migration 000056), which invents history for those that came in by API or MCP; the 1.3.0 upgrade notes say so. The column has no default after the migration, so a new entry point that forgets to name its channel fails the NOT NULL check instead of being recorded as `web`. **Staff and administrators see it** (the ticket object, MCP `get_ticket`, and a small "via phone" line next to "Opened" on the ticket page); **requesters and guests never do**: it is on the requester never list, because it is operational and `phone` would tell them that staff filed it. A filter on the ticket list is not built.
 
 SLA fields (optional feature toggle, all editions):
 
@@ -439,7 +450,7 @@ A requester is any account that is not staff or an administrator, including a ro
 
 The wrapper keys a response may add around a ticket are kept as they are: `sla` (already null for a requester), `can_reopen` (always false for a requester), `replies` (already without internal notes) and `links` (ticket ids and a link type). Any other wrapper key is dropped.
 
-**Never sent to a requester**: `assignee_group_id` (which team holds it), `reporter_user_id` (their own id; the page never reads it), `guest_email`, `guest_name` and `guest_phone`, `closed_at` and `updated_at` (history-like timestamps: when it was archived, when anything last touched it), `pending_since` and `sla_paused_seconds` (when and for how long the ticket waited: audit information, not state), and `reopen_count` (staff information). The conversation, the audit feed and the status timeline are separate: the conversation stays (public replies only), the other two are staff-only routes.
+**Never sent to a requester**: `assignee_group_id` (which team holds it), `reporter_user_id` (their own id; the page never reads it), `guest_email`, `guest_name` and `guest_phone`, `closed_at` and `updated_at` (history-like timestamps: when it was archived, when anything last touched it), `pending_since` and `sla_paused_seconds` (when and for how long the ticket waited: audit information, not state), and `reopen_count` (staff information), and `source_channel` (how it arrived: operational, and `phone` says staff filed it for them). The conversation, the audit feed and the status timeline are separate: the conversation stays (public replies only), the other two are staff-only routes.
 
 **Guests** (the `/guest` routes) are shown less: a strict subset of the same list, `tracking_number`, `subject`, `description` and `created_at`, plus the status's *name* and the replies. (A guest used to receive `updated_at`; it is gone, because a requester does not receive it and the guest list stays a subset.) The guest ticket response goes through `ticket.FilterForGuest`, so there is still one definition.
 
@@ -1560,21 +1571,28 @@ guarantee. `dangerouslySetInnerHTML` and `rehype-raw` are banned by lint.
   complex to format", or "formatting unavailable" when the worker could not
   start), and its **Plain text** button stays reachable. A failure that may be a
   slow moment is not remembered, so the next view tries again.
-- **Replies are limited to 50,000 characters, and older longer posts are
-  collapsed.** A reply (REST, guest, MCP, anything that makes one) is held to the
-  description's limit, counted the same way (bytes of the stored text); over it is
-  `400 body_too_long`, checked before anything is written. A reply had no cap
-  before 1.3.0, so some stored posts are longer, up to a megabyte. Laying out a
-  megabyte takes seconds, and splitting it into blocks changes what copying gives
-  back, so such a post is shown **collapsed**: its first 5,000 characters, a note
-  ("Showing the first 5,000 of N characters. This is only part of the post:
-  copying here copies only that part."), and a **Show full text (size)** button.
-  The button draws all of it in one block, as stored, so selecting and copying it
-  returns exactly the stored text (tested in Chromium and WebKit). It is allowed to
-  be slow, once, and only when asked for. Nothing is truncated or rewritten: the
-  rest is one click away. Over 50,000 characters is never formatted, expanded or
-  not. The forms count in the same bytes, show a counter from 90 percent of the
-  limit, and will not send more.
+- **Replies are limited to 50,000 bytes, and older longer posts are collapsed.**
+  A reply (REST, guest, MCP, anything that makes one) is held to the
+  description's limit, counted the same way: **bytes** of the stored text, so
+  letters outside basic English and emoji count 2 to 4 each (16,667 Chinese
+  characters are 50,001 bytes and are refused). Over it is `400 body_too_long`
+  ("body must be at most 50000 bytes"), checked before anything is written. The
+  forms say "size limit", never "characters": "This is N% over the size limit
+  (50,000 bytes). Letters outside basic English and emoji take 2 to 4 bytes
+  each." A reply had no cap before 1.3.0, so some stored posts are longer, up to a
+  megabyte. Laying out a megabyte takes seconds, and splitting it into blocks
+  changes what copying gives back, so such a post (the page's rule is over 50,000
+  characters, a threshold of its own) is shown **collapsed**: its first 5,000
+  characters, a note ("Showing the first 5,000 of N characters. This is only part
+  of the post: copying here copies only that part.", counting real characters, an
+  emoji as one), and a **Show full text (size)** button. The button draws all of
+  it in one block, as stored, so selecting and copying it returns exactly the
+  stored text (tested in Chromium and WebKit), with one exception that is the
+  browser's and not ours: a browser drops a trailing newline when copying, for
+  every post, formatted or plain, collapsed or not. Saving does not change it.
+  Expanding is allowed to be slow, once, and only when asked for. Nothing is
+  truncated or rewritten: the rest is one click away. Over 50,000 characters is
+  never formatted, expanded or not.
 - **A page of long posts is formatted only where it is read.** A post is formatted
   when it comes within about 1,500 px of the screen (measured in the scrolling
   area that holds it), and the page as a whole has a budget of 300,000 formatted
@@ -1773,6 +1791,22 @@ so keeping an archived type while choosing a new active item under it is allowed
 A requester's follow-up is unchanged and still needs an active category and type
 (#349). OAuth clients cannot create or reclassify tickets yet (they carry no user
 identity; see #434), so the rule is not exercised for them until they can.
+
+**Archive and restore from the admin page (#446).** Every category, type and
+item row of **Admin → Categories** has an Archive button (Restore on an archived
+row). Archive asks first and says what it does: it cannot be chosen for new
+tickets, and tickets already filed keep it. Restore acts at once. Both send
+`PATCH ... {"active": ...}` to the row's own URL; archived rows stay in the tree,
+greyed and labelled "Archived", so there is no hide/show filter. Archiving is one
+row: the API does not cascade, so a type under an archived category keeps its own
+flag.
+The row buttons (rename, archive/restore, delete) appear on hover or focus with a
+mouse, and are always shown and 44px square on a touch screen. Rename's Save and
+Cancel are shown whenever a name is being edited; on a touch screen they are also
+44px square. Below the `sm` breakpoint (640px) a row's badge and buttons go on
+their own line under the name, so a long name keeps its column. At `sm` and wider
+the row is a single line of controls with the name's text wrapping in its column.
+A refusal from the API is shown in the dialog as sent.
 
 Attachment upload is available to every authenticated non-guest user on the
 API, and the reply composer offers the same control to every role that can
@@ -2587,7 +2621,7 @@ Exposes help desk operations as an MCP server for AI tool integration, over two 
 | `list_tickets` | any signed-in user | Optional `assignee_user_id`, `status_id`, `priority`, `category_id`, `q` filters. `limit` defaults to 20 and is clamped to 100; `offset` pages the full result set. |
 | `list_categories` | any signed-in user | The Category/Type/Item tree, nested, for filling in CTI. Active entries only; `include_inactive: true` adds retired ones (the tool applies no role check to it, unlike the REST catalogue, which shows archived entries to staff and administrators only). |
 | `list_statuses` | any signed-in user | The statuses this instance defines. |
-| `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` or `reporter_email` (with `guest_name`, always required with the address) names the subject of the ticket; both are absent by default and the caller is the subject. `description` is Markdown unless `format: "plain"` is passed (#443); an invalid `format` is a tool error. |
+| `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` or `reporter_email` (with `guest_name`, always required with the address) names the subject of the ticket; both are absent by default and the caller is the subject. `description` is Markdown unless `format: "plain"` is passed (#443); an invalid `format` is a tool error. The ticket is recorded as `mcp` (#130), including one filed for someone else; a `source_channel` argument is a tool error and nothing is written. |
 | `add_reply` | staff, admin | A public reply emails the requester exactly as the REST reply does (#442): the guest's address (with a guest link) or the reporting account's, through one shared rule, `ticket.Service.ReplyRecipient`. No mail is sent when the requester has no address on record or the account is gone, or when the requester is a staff member or administrator writing the reply on a ticket they filed (they are not mailed a copy of their own reply, over REST or MCP; an ordinary requester replying on their own ticket still is); the reply is still saved. `internal: true` posts a staff-only note and never notifies the requester. There is no `notify_customer` option over MCP: a public reply always notifies. `body` is Markdown unless `format: "plain"` is passed (#443). |
 | `assign_ticket` | staff, admin | To a user (`assignee_user_id`) or a group (`assignee_group_id`). To take the ticket off whoever has it, pass `clear_assignee: true` (the audit entry is `unassigned`); it cannot be combined with an assignee id, and omitting everything is refused rather than read as unassigning, because that silently took tickets off the people working them. |
 | `update_ticket_status` | staff, admin | Target status must be one the caller's role may transition to. A ticket in Closed cannot be moved out of it unless `closed_reopen_policy` lets the caller's role (#349; off by default): the result says reopening is disabled or restricted and points at `create_follow_up`. There is no separate reopen tool and never was; this is MCP's path out of Closed, through the same service rule as REST. A move out of Resolved or Closed is a reopen like any other (flagged, priority raised on the first, SLA restarted, staff mailed), with the caller as the actor. |
@@ -3211,6 +3245,90 @@ on the existing webhook feature instead of as plugins.
 
   **Guest tickets** carry a per-ticket link instead of a ticket id, so a
   recipient with no account reaches their own thread and nothing else.
+- **Editable email templates** ([#158](https://github.com/PubliciaLLC/go-help-desk/issues/158)).
+  An administrator edits the wording of all 17 emails under **Admin → Email
+  Templates** (`/admin/email-templates`), and a shared **header** and **footer**
+  that wrap every mail. Plain text only; an HTML part is a later release.
+
+  *No ticket content, ever.* The rule above holds for edited text exactly as
+  for the compiled text. A template is `text/template`, but only a sliver of
+  it is accepted: the words, `{{.Name}}`, and `{{if .Name}}…{{else}}…{{end}}`.
+  The parse tree is walked and anything else is refused with its line and
+  column (a FuncMap cannot do this: `printf`, `call` and `index` are built in,
+  and `{{range 1000000000}}` is legal). The variables are the whole of what a
+  template can see, and a test pins them:
+
+  | Template | Variables | Must print (outside any `if`) |
+  | --- | --- | --- |
+  | the six requester mails (created, replied, status changed, resolved, reopened, guest link) | `TrackingNumber`, `TicketURL` | `TicketURL` |
+  | the nine staff mails | `TrackingNumber`, `TicketURL` | `TicketURL` |
+  | email verification | `VerifyURL` | `VerifyURL` |
+  | password reset | `ResetURL` | `ResetURL` |
+  | header, footer | `SiteName` (the name in Settings) | nothing |
+
+  The guest status, resolve and reopen mails carry the guest's *rotated* link,
+  so dropping `TicketURL` from one would lock the guest out; that is why the
+  link is required and required at the top level. Caps: body 8 KiB, subject 200
+  bytes on one line (a line break in a subject is a header break), rendered
+  output 64 KiB. Each default subject is a template too, so the text the editor
+  shows as "the default" is the text a never-edited install sends.
+
+  *Storage.* Table `email_template_overrides` (migration `000057`): one row per
+  edited template, keyed by name. No row means the shipped text; **reverting is
+  deleting the row**, and saving text equal to the default deletes it too. The
+  header and footer are the reserved names `_header` and `_footer` in the same
+  table, and default to empty, so **with nothing edited every mail is
+  byte-identical to the one before the editor** (a golden test holds the whole
+  MIME message of every template). The header and footer are concatenated
+  verbatim around the body. There is no versions table: the audit log is the
+  history. A send reads the rows it needs in one primary-key lookup, no cache,
+  so several replicas agree.
+
+  *A stale edit fails the mail.* An edit can stop validating only after an
+  upgrade that removes a variable or tightens a rule. The send re-validates the
+  stored text and, if it fails, **fails the mail** with `ErrPermanent` and
+  `email template "Reset your password": your edited version does not work with
+  this release (…); revert it under Admin, Email templates`. It does not fall
+  back to the default: the administrator chose that, knowing a reset or guest
+  link could be missed. So the failure is never quiet: it is the `last_error` of
+  the email-health warning, a WARN per template at startup (startup is never
+  blocked), and `email.broken_templates` in `GET /admin/security-warnings`,
+  computed live from the rows, which the admin banner shows as a red notice per
+  template with a one-click **Revert to default** and an **Edit** link. A broken
+  header or footer fails every mail. Mail that failed before a revert is **not**
+  re-sent.
+
+  *API.* Session-only (an API key or OAuth client is refused with 403, on top
+  of the admin role and MFA): `GET /admin/email-templates`, `GET|PUT|DELETE
+  /admin/email-templates/{name}`, `POST …/{name}/preview`, `POST …/{name}/test`.
+  `PUT` validates again whatever the editor checked, and answers a refusal with
+  400 `invalid_template` carrying `field`, `line`, `col` and `errors` (one per
+  field). `preview` is also the live check: it answers 200 with `valid: false`
+  and every problem, renders a valid draft with sample data (a real-format
+  tracking number; links carrying `token=sample-not-a-real-link`, which answer
+  `token_invalid`) inside the saved header and footer, and sends and stores
+  nothing. `test` mails the draft, or the saved text if none is given, to **the
+  signed-in administrator's own address only** (the request has no recipient to
+  honour), with `[Test] ` in front of the subject, at most 5 per 10 minutes per
+  administrator (429 with `Retry-After`), 503 `email_not_configured` when email
+  is off, and the SMTP error returned to the page.
+
+  *The editor checks as you type.* The draft goes to `preview` 400 ms after the
+  last keystroke. A problem shows beside its field with line and column, the
+  field is marked `aria-invalid`, and **Save is disabled while the draft is
+  invalid or has not been checked yet**. That is a convenience, never the
+  authority: the server refuses an invalid save whatever the page did, and the
+  page shows that refusal the same way.
+
+  *Audit.* `email_template_saved` and `email_template_reverted` are written in
+  the same transaction as the row change, with the **full** subject and body
+  under `template_name`, `template_subject` and `template_body`; a first edit
+  records the default as "before", a revert records the edited text as
+  "before". `email_template_test_sent` records the template and never the
+  address. `template_*` are allow-listed in the audit view; the plain `subject`
+  and `body` keys stay hidden, because ticket entries keep the ticket's own text
+  under them.
+
 - **Webhooks** — configurable HTTP callbacks for ticket lifecycle events:
   `ticket.created`, `ticket.assigned`, `ticket.status_changed`,
   `ticket.replied` (a customer-visible reply only), `ticket.note_added` (a

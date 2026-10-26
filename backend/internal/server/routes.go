@@ -348,6 +348,19 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.Post("/{id}/deliveries/{delivery}/redeliver", s.handleRedeliverWebhook)
 	})
 
+	// The mail the server sends from the operator's domain (#158). Session-only:
+	// a key that could edit the reset mail could point it at a link of its own.
+	r.Route("/email-templates", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceSettings))
+		r.Use(authmw.DenyMachineCredentials)
+		r.Get("/", s.handleListEmailTemplates)
+		r.Get("/{name}", s.handleGetEmailTemplate)
+		r.Put("/{name}", s.handlePutEmailTemplate)
+		r.Delete("/{name}", s.handleRevertEmailTemplate)
+		r.Post("/{name}/preview", s.handlePreviewEmailTemplate)
+		r.Post("/{name}/test", s.handleTestEmailTemplate)
+	})
+
 	r.Route("/tags", func(r chi.Router) {
 		r.Use(authmw.RequireResource(auth.ResourceTags))
 		r.Get("/", s.handleAdminListTags)

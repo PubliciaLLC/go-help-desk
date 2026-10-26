@@ -35,6 +35,14 @@ import type { Category, TicketType, TicketItem, Group, Assignment } from '@/api/
 
 // ── Inline name editor ────────────────────────────────────────────────────────
 
+// Row actions (rename, archive, restore, delete) are hover-revealed on a mouse.
+// A touch screen has no hover, so there they are always shown and 44px square.
+const TOUCH_SIZE =
+  'pointer-coarse:inline-flex pointer-coarse:items-center pointer-coarse:justify-center ' +
+  'pointer-coarse:min-h-11 pointer-coarse:min-w-11'
+const ROW_BTN =
+  `opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 pointer-coarse:opacity-100 ${TOUCH_SIZE}`
+
 function InlineName({
   value,
   onSave,
@@ -81,18 +89,18 @@ function InlineName({
             if (e.key === 'Enter') commit()
             if (e.key === 'Escape') cancel()
           }}
-          className="h-6 py-0 text-sm"
+          className="h-6 py-0 text-sm max-sm:min-w-0"
           disabled={saving}
         />
         <button
           onClick={commit}
           disabled={saving || !draft.trim()}
-          className="text-green-600 hover:text-green-700 disabled:opacity-40"
+          className={`text-green-600 hover:text-green-700 disabled:opacity-40 ${TOUCH_SIZE}`}
           title="Save"
         >
           <CheckIcon className="h-3.5 w-3.5" />
         </button>
-        <button onClick={cancel} className="text-gray-400 hover:text-gray-600" title="Cancel">
+        <button onClick={cancel} className={`text-gray-400 hover:text-gray-600 ${TOUCH_SIZE}`} title="Cancel">
           <XIcon className="h-3.5 w-3.5" />
         </button>
       </div>
@@ -104,7 +112,7 @@ function InlineName({
       <span className="min-w-0 wrap-anywhere">{value}</span>
       <button
         onClick={(e) => { e.stopPropagation(); setDraft(value); setEditing(true) }}
-        className="shrink-0 opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 hover:text-gray-600 group-hover/name:visible"
+        className={`shrink-0 ${ROW_BTN} hover:text-gray-600 group-hover/name:visible`}
         title="Rename"
       >
         <PencilIcon className="h-3 w-3" />
@@ -150,11 +158,11 @@ function ArchiveControl({
   if (archived) {
     return (
       <>
-        {mutation.isError && <span role="alert" className="text-xs text-red-600">{extractError(mutation.error)}</span>}
+        {mutation.isError && <span role="alert" className="text-xs text-red-600 max-sm:order-last max-sm:basis-full max-sm:text-right max-sm:wrap-anywhere">{extractError(mutation.error)}</span>}
       <button
         onClick={() => mutation.mutate(true)}
         disabled={mutation.isPending}
-        className="opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 hover:text-green-600"
+        className={`${ROW_BTN} hover:text-green-600`}
         title={`Restore ${kind}`}
       >
         <ArchiveRestoreIcon className={iconClass} />
@@ -167,7 +175,7 @@ function ArchiveControl({
     <>
       <button
         onClick={() => setConfirmOpen(true)}
-        className="opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 hover:text-amber-600"
+        className={`${ROW_BTN} hover:text-amber-600`}
         title={`Archive ${kind}`}
       >
         <ArchiveIcon className={iconClass} />
@@ -515,7 +523,7 @@ function SortableItemRow({
 
   return (
     <div ref={setNodeRef} style={style} className={isDragging ? 'opacity-50' : ''}>
-      <div data-archived={!item.active} className={`group flex items-center gap-2 py-2 pl-3 pr-3 hover:bg-gray-50`}>
+      <div data-archived={!item.active} className={`group flex items-center max-sm:flex-wrap gap-2 py-2 pl-3 pr-3 hover:bg-gray-50`}>
         <button
           {...attributes}
           {...listeners}
@@ -537,26 +545,28 @@ function SortableItemRow({
           onSave={(name) => renameMutation.mutateAsync(name)}
           className={`text-sm text-gray-700 ${item.active ? '' : 'opacity-60'}`}
         />
-        {!item.active && <ArchivedBadge />}
-        <ArchiveControl
-          kind="item"
-          name={item.name}
-          archived={!item.active}
-          setActive={(active) => updateItem(categoryId, typeId, item.id, { active })}
-          onChanged={() => qc.invalidateQueries({ queryKey: ['admin', 'items', categoryId, typeId] })}
-          iconClass="h-3.5 w-3.5"
-        />
-        <button
-          onClick={() => setConfirmOpen(true)}
-          disabled={deleteMutation.isPending}
-          className="opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 hover:text-red-500"
-          title="Delete item"
-        >
-          <TrashIcon className="h-3.5 w-3.5" />
-        </button>
+        <div className="flex items-center gap-2 max-sm:basis-full max-sm:flex-wrap max-sm:justify-end">
+          {!item.active && <ArchivedBadge />}
+          <ArchiveControl
+            kind="item"
+            name={item.name}
+            archived={!item.active}
+            setActive={(active) => updateItem(categoryId, typeId, item.id, { active })}
+            onChanged={() => qc.invalidateQueries({ queryKey: ['admin', 'items', categoryId, typeId] })}
+            iconClass="h-3.5 w-3.5"
+          />
+          <button
+            onClick={() => setConfirmOpen(true)}
+            disabled={deleteMutation.isPending}
+            className={`${ROW_BTN} hover:text-red-500`}
+            title="Delete item"
+          >
+            <TrashIcon className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
       {expanded && (
-        <div className="ml-8 border-l border-gray-100 pl-2">
+        <div className="ml-8 max-sm:ml-4 border-l border-gray-100 pl-2">
           <FieldsSubsection scope={{ kind: 'item', categoryId, typeId, itemId: item.id }} />
         </div>
       )}
@@ -640,7 +650,7 @@ function SortableTypeRow({
 
   return (
     <div ref={setNodeRef} style={style} className={isDragging ? 'opacity-50' : ''}>
-      <div data-archived={!type.active} className={`group flex items-center gap-2 py-2.5 pl-2 pr-3 hover:bg-gray-50`}>
+      <div data-archived={!type.active} className={`group flex items-center max-sm:flex-wrap gap-2 py-2.5 pl-2 pr-3 hover:bg-gray-50`}>
         <button
           {...attributes}
           {...listeners}
@@ -661,23 +671,25 @@ function SortableTypeRow({
           onSave={(name) => renameMutation.mutateAsync(name)}
           className={`text-sm font-medium text-gray-800 ${type.active ? '' : 'opacity-60'}`}
         />
-        {!type.active && <ArchivedBadge />}
-        <ArchiveControl
-          kind="type"
-          name={type.name}
-          archived={!type.active}
-          setActive={(active) => updateType(categoryId, type.id, { active })}
-          onChanged={() => qc.invalidateQueries({ queryKey: ['admin', 'types', categoryId] })}
-          iconClass="h-3.5 w-3.5"
-        />
-        <button
-          onClick={() => setConfirmOpen(true)}
-          disabled={deleteMutation.isPending}
-          className="opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 hover:text-red-500"
-          title="Delete type"
-        >
-          <TrashIcon className="h-3.5 w-3.5" />
-        </button>
+        <div className="flex items-center gap-2 max-sm:basis-full max-sm:flex-wrap max-sm:justify-end">
+          {!type.active && <ArchivedBadge />}
+          <ArchiveControl
+            kind="type"
+            name={type.name}
+            archived={!type.active}
+            setActive={(active) => updateType(categoryId, type.id, { active })}
+            onChanged={() => qc.invalidateQueries({ queryKey: ['admin', 'types', categoryId] })}
+            iconClass="h-3.5 w-3.5"
+          />
+          <button
+            onClick={() => setConfirmOpen(true)}
+            disabled={deleteMutation.isPending}
+            className={`${ROW_BTN} hover:text-red-500`}
+            title="Delete type"
+          >
+            <TrashIcon className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
       <ConfirmDialog
         open={confirmOpen}
@@ -691,7 +703,7 @@ function SortableTypeRow({
       />
 
       {expanded && (
-        <div className="ml-8 border-l border-gray-100 pl-2 pb-1">
+        <div className="ml-8 max-sm:ml-4 border-l border-gray-100 pl-2 pb-1">
           <GroupsSubsection categoryId={categoryId} typeId={type.id} />
           <FieldsSubsection scope={{ kind: 'type', categoryId, typeId: type.id }} />
           <div className="pt-1">
@@ -797,7 +809,7 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
 
   return (
     <div ref={setNodeRef} style={style} className={`border-b last:border-b-0 ${isDragging ? 'opacity-50' : ''}`}>
-      <div data-archived={!cat.active} className={`group flex items-center gap-2 px-4 py-3 hover:bg-gray-50`}>
+      <div data-archived={!cat.active} className={`group flex items-center max-sm:flex-wrap gap-2 px-4 py-3 hover:bg-gray-50`}>
         <button
           {...attributes}
           {...listeners}
@@ -818,23 +830,25 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
           onSave={(name) => renameMutation.mutateAsync(name)}
           className={`text-sm font-semibold text-gray-900 ${cat.active ? '' : 'opacity-60'}`}
         />
-        {!cat.active && <ArchivedBadge />}
-        <ArchiveControl
-          kind="category"
-          name={cat.name}
-          archived={!cat.active}
-          setActive={(active) => updateCategory(cat.id, { active })}
-          onChanged={() => qc.invalidateQueries({ queryKey: ['admin', 'categories'] })}
-          iconClass="h-4 w-4"
-        />
-        <button
-          onClick={() => setConfirmOpen(true)}
-          disabled={deleteMutation.isPending}
-          className="opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 hover:text-red-500"
-          title="Delete category"
-        >
-          <TrashIcon className="h-4 w-4" />
-        </button>
+        <div className="flex items-center gap-2 max-sm:basis-full max-sm:flex-wrap max-sm:justify-end">
+          {!cat.active && <ArchivedBadge />}
+          <ArchiveControl
+            kind="category"
+            name={cat.name}
+            archived={!cat.active}
+            setActive={(active) => updateCategory(cat.id, { active })}
+            onChanged={() => qc.invalidateQueries({ queryKey: ['admin', 'categories'] })}
+            iconClass="h-4 w-4"
+          />
+          <button
+            onClick={() => setConfirmOpen(true)}
+            disabled={deleteMutation.isPending}
+            className={`${ROW_BTN} hover:text-red-500`}
+            title="Delete category"
+          >
+            <TrashIcon className="h-4 w-4" />
+          </button>
+        </div>
       </div>
       <ConfirmDialog
         open={confirmOpen}
@@ -848,7 +862,7 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
       />
 
       {expanded && (
-        <div className="ml-11 border-l border-gray-100 pl-2 pb-2">
+        <div className="ml-11 max-sm:ml-4 border-l border-gray-100 pl-2 pb-2">
           <GroupsSubsection categoryId={cat.id} />
           <FieldsSubsection scope={{ kind: 'category', categoryId: cat.id }} />
           <div className="pt-1">

@@ -151,6 +151,35 @@ func ParseTextFormat(s string) (TextFormat, error) {
 	return "", ErrInvalidTextFormat
 }
 
+// SourceChannel is how a ticket arrived (#130). It is derived from the entry
+// point by the server, never asserted by the caller; the one value a person
+// chooses is ChannelPhone, and only a member of staff filing on someone's
+// behalf in the web form. "email" is reserved for inbound mail and is not a
+// valid value yet (adding it is a migration).
+type SourceChannel string
+
+const (
+	ChannelWeb   SourceChannel = "web"   // the web app, or a browser session's REST call
+	ChannelAPI   SourceChannel = "api"   // REST with an API key or OAuth client
+	ChannelMCP   SourceChannel = "mcp"   // an MCP tool
+	ChannelGuest SourceChannel = "guest" // the unauthenticated guest form
+	ChannelPhone SourceChannel = "phone" // staff filing for a caller, picked in the web form
+)
+
+// ErrInvalidSourceChannel is returned for a channel outside the list above,
+// an empty one included: the domain never fills in a default, because the
+// right value is the entry point's to name.
+var ErrInvalidSourceChannel = fmt.Errorf("%w: source_channel must be one of web, api, mcp, guest, phone", ErrValidation)
+
+// Valid reports whether c is one of the five values.
+func (c SourceChannel) Valid() bool {
+	switch c {
+	case ChannelWeb, ChannelAPI, ChannelMCP, ChannelGuest, ChannelPhone:
+		return true
+	}
+	return false
+}
+
 // TrackingNumber is the human-readable identifier for a ticket, e.g.
 // "GHD-2024-000001". It is unique across all tickets and never reused.
 type TrackingNumber string
@@ -165,22 +194,25 @@ type Ticket struct {
 	// DescriptionFormat says how Description is shown: plain or markdown
 	// (#443). Stored with the text, never guessed from it.
 	DescriptionFormat TextFormat `json:"description_format"`
-	CategoryID        uuid.UUID  `json:"category_id"`
-	TypeID            *uuid.UUID `json:"type_id,omitempty"`
-	ItemID            *uuid.UUID `json:"item_id,omitempty"`
-	Priority          Priority   `json:"priority"`
-	StatusID          uuid.UUID  `json:"status_id"`
-	AssigneeUserID    *uuid.UUID `json:"assignee_user_id,omitempty"`
-	AssigneeGroupID   *uuid.UUID `json:"assignee_group_id,omitempty"`
-	ReporterUserID    *uuid.UUID `json:"reporter_user_id,omitempty"`
-	GuestEmail        *string    `json:"guest_email,omitempty"`
-	GuestName         string     `json:"guest_name,omitempty"`
-	GuestPhone        string     `json:"guest_phone,omitempty"`
-	ResolutionNotes   *string    `json:"resolution_notes,omitempty"`
-	ResolvedAt        *time.Time `json:"resolved_at,omitempty"`
-	ClosedAt          *time.Time `json:"closed_at,omitempty"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
+	// SourceChannel is how the ticket arrived. Staff and administrators only
+	// on the wire (see requester_view.go).
+	SourceChannel   SourceChannel `json:"source_channel"`
+	CategoryID      uuid.UUID     `json:"category_id"`
+	TypeID          *uuid.UUID    `json:"type_id,omitempty"`
+	ItemID          *uuid.UUID    `json:"item_id,omitempty"`
+	Priority        Priority      `json:"priority"`
+	StatusID        uuid.UUID     `json:"status_id"`
+	AssigneeUserID  *uuid.UUID    `json:"assignee_user_id,omitempty"`
+	AssigneeGroupID *uuid.UUID    `json:"assignee_group_id,omitempty"`
+	ReporterUserID  *uuid.UUID    `json:"reporter_user_id,omitempty"`
+	GuestEmail      *string       `json:"guest_email,omitempty"`
+	GuestName       string        `json:"guest_name,omitempty"`
+	GuestPhone      string        `json:"guest_phone,omitempty"`
+	ResolutionNotes *string       `json:"resolution_notes,omitempty"`
+	ResolvedAt      *time.Time    `json:"resolved_at,omitempty"`
+	ClosedAt        *time.Time    `json:"closed_at,omitempty"`
+	CreatedAt       time.Time     `json:"created_at"`
+	UpdatedAt       time.Time     `json:"updated_at"`
 
 	// PendingSince is when the ticket entered its current Pending interval; nil
 	// when it is not Pending. SLAPausedSeconds is the sum of every Pending

@@ -23,6 +23,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/cannedresponsestore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/categorystore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/customfieldstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/emailtemplatestore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/groupstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/outboxstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/passwordresetstore"
@@ -380,6 +381,14 @@ func newHarnessOn(t *testing.T, openDB func(*testing.T) (*testutil.DB, func()), 
 		WithQueue(notify.WebhookQueue{Outbox: outboxstore.New(q), Hooks: authSt, History: authSt, Source: server.NewWebhookEventSource(ticketSvc)})
 	srvOpts = append(srvOpts, server.WithWebhookRedeliverer(webhookDisp))
 	srvOpts = append(srvOpts, server.WithEmailHealth(outboxstore.New(q)))
+	// The template editor (#158) over the harness transaction, so a test's
+	// saves roll back with it. The dispatcher is the real one: SMTP is off
+	// unless a test sets it, and preview needs none.
+	tmplStore := emailtemplatestore.New(q)
+	emailDisp, err := notify.NewEmailDispatcher(cfg)
+	require.NoError(t, err)
+	emailDisp.WithTemplates(tmplStore, adminSvc)
+	srvOpts = append(srvOpts, server.WithEmailTemplates(tmplStore, emailDisp))
 	srv := server.New(
 		cfg,
 		sessionStore,

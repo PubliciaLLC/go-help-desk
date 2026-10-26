@@ -153,7 +153,7 @@ func TestCreateEvent_CarriesWhatTheEmailNeeds(t *testing.T) {
 	h := newHarness(t)
 
 	guest := "guest@example.com"
-	created, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	created, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject:    "Printer jammed",
 		CategoryID: h.seedOpen().CategoryID,
 		Priority:   ticket.PriorityHigh,
@@ -186,7 +186,7 @@ func TestCreateEvent_NoGuestEmailForAuthenticatedReporters(t *testing.T) {
 	h := newHarness(t)
 	reporter := uuid.New()
 
-	_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject:        "Signed in",
 		CategoryID:     h.seedOpen().CategoryID,
 		Priority:       ticket.PriorityLow,

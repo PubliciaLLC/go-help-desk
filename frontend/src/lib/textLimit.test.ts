@@ -17,6 +17,11 @@ describe('text limit', () => {
     expect(isOverLimit('é'.repeat(25_001))).toBe(true)
   })
 
+  it('16,667 three-byte characters are over; 16,666 are not', () => {
+    expect(isOverLimit('中'.repeat(16_667))).toBe(true)
+    expect(isOverLimit('中'.repeat(16_666))).toBe(false)
+  })
+
   it('is near from 90 percent', () => {
     expect(nearLimit('a'.repeat(44_999))).toBe(false)
     expect(nearLimit('a'.repeat(45_000))).toBe(true)

@@ -46,12 +46,14 @@ var requesterTicketKeys = []string{
 //	closed_at, updated_at                 history-like timestamps (Erik): when it was archived, when anything last touched it
 //	pending_since, sla_paused_seconds     when and for how long the ticket waited: audit information, not state
 //	reopen_count                          staff information (the Reopened badge is staff-only)
+//	source_channel                        how the ticket arrived (web, api, mcp, guest, phone): operational, and "phone" says a member of staff filed it for them (#130)
 var requesterNeverTicketKeys = []string{
 	"assignee_group_id", "reporter_user_id",
 	"guest_email", "guest_name", "guest_phone",
 	"closed_at", "updated_at",
 	"pending_since", "sla_paused_seconds",
 	"reopen_count",
+	"source_channel",
 }
 
 // requesterWrapperKeys are the extra keys a response wraps around a ticket that

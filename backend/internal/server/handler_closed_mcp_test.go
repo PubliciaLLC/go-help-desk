@@ -73,7 +73,7 @@ func TestMCP_CreateFollowUp(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 	closed := reporterClosedTicket(t, h)
-	open, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	open, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Still open", Description: "x", CategoryID: h.catID, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)

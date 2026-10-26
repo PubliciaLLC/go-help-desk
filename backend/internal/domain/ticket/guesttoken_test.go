@@ -17,7 +17,7 @@ import (
 func guestTicket(t *testing.T, h *harness) (ticket.Ticket, string) {
 	t.Helper()
 	email := "guest@example.test"
-	tk, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	tk, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Printer broken", Description: "it is", CategoryID: uuid.New(),
 		GuestEmail: &email, GuestName: "Ada",
 	})
@@ -65,7 +65,7 @@ func TestGuestToken_IsStoredHashedNotRaw(t *testing.T) {
 func TestGuestToken_NotMintedForAnAccountHoldersTicket(t *testing.T) {
 	h := newHarness(t)
 	reporter := uuid.New()
-	_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Laptop", Description: "broken", CategoryID: uuid.New(),
 		ReporterUserID: &reporter,
 	})
@@ -448,7 +448,7 @@ func TestGuestLink_AChangeMarksTheEventAndCreatesNoToken(t *testing.T) {
 	h := newHarness(t)
 	h.dispatcher.sendTime = nil // the queue only, no send
 	email := "guest@example.test"
-	_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Printer broken", Description: "it is", CategoryID: uuid.New(),
 		GuestEmail: &email, GuestName: "Ada",
 	})
@@ -503,7 +503,7 @@ func TestGuestLink_ReplyThenCloseDeliversAWorkingLink(t *testing.T) {
 	staff := ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff}
 	email := "guest@example.test"
 	ctx := context.Background()
-	tk, err := h.svc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	tk, err := h.svc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Printer broken", Description: "it is", CategoryID: uuid.New(),
 		GuestEmail: &email, GuestName: "Ada",
 	})

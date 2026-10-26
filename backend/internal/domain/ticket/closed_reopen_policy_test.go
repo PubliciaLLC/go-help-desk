@@ -359,7 +359,7 @@ func TestForceReopen_FollowUpIsAvailableInEveryMode(t *testing.T) {
 		h.policy = policy
 		orig := h.seedClosed()
 		for _, role := range []user.Role{user.RoleStaff, user.RoleAdmin} {
-			_, err := h.svc.CreateFollowUp(context.Background(), orig.ID, "GHD", ticket.Actor{UserID: ptr(uuid.New()), Role: role})
+			_, err := h.svc.CreateFollowUp(context.Background(), orig.ID, "GHD", ticket.ChannelWeb, ticket.Actor{UserID: ptr(uuid.New()), Role: role})
 			require.NoError(t, err, "%q / %s", policy, role)
 		}
 	}

@@ -77,6 +77,13 @@ describe('a post over 50,000 characters', () => {
     expect(shown.length).toBeGreaterThanOrEqual(4_999)
   })
 
+  it('counts real characters in the note, not UTF-16 units', async () => {
+    // 60,000 emoji: 120,000 units but 60,000 characters.
+    await renderNow(<TicketText text={'😀'.repeat(60_000)} format="plain" />)
+    expect(screen.getByRole('note').textContent).toMatch(/of 60,000 characters/)
+    expect(screen.getByRole('note').textContent).toMatch(/first 2,500 of/)
+  })
+
   it('a post at the limit is not collapsed', async () => {
     const { container } = await renderNow(<TicketText text={'a'.repeat(50_000)} format="plain" />)
     expect(container.querySelector('[role="note"]')).toBeNull()

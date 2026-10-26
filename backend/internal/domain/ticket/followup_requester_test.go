@@ -35,7 +35,7 @@ func TestRequesterFollowUp_AnAccountHolderCopiesOnlyWhatTheyMaySet(t *testing.T)
 	h := newHarness(t)
 	orig := closedWithEverything(t, h) // priority high, assignee, type AND item, replies
 
-	got, err := h.svc.CreateRequesterFollowUp(context.Background(), orig.ID, "GHD", reporterActor(orig), openAlways)
+	got, err := h.svc.CreateRequesterFollowUp(context.Background(), orig.ID, "GHD", ticket.ChannelWeb, reporterActor(orig), openAlways)
 	require.NoError(t, err)
 
 	require.NotEqual(t, orig.ID, got.ID)
@@ -71,7 +71,7 @@ func TestRequesterFollowUp_AGuestCopiesOnlyWhatAGuestMaySet(t *testing.T) {
 	h.dispatcher.events = nil
 	h.dispatcher.sendTime = nil // queue only: what the outbox would hold
 
-	got, err := h.svc.CreateRequesterFollowUp(context.Background(), tk.ID, "GHD", guestActor, openAlways)
+	got, err := h.svc.CreateRequesterFollowUp(context.Background(), tk.ID, "GHD", ticket.ChannelWeb, guestActor, openAlways)
 	require.NoError(t, err)
 
 	require.Nil(t, got.ReporterUserID)
@@ -94,7 +94,7 @@ func TestRequesterFollowUp_AGuestCopiesOnlyWhatAGuestMaySet(t *testing.T) {
 func TestRequesterFollowUp_AuditNamesTheRequesterAndWhatItContinues(t *testing.T) {
 	h := newHarness(t)
 	orig := closedWithEverything(t, h)
-	got, err := h.svc.CreateRequesterFollowUp(context.Background(), orig.ID, "GHD", reporterActor(orig), openAlways)
+	got, err := h.svc.CreateRequesterFollowUp(context.Background(), orig.ID, "GHD", ticket.ChannelWeb, reporterActor(orig), openAlways)
 	require.NoError(t, err)
 
 	hist := historyFor(h, got.ID)
@@ -119,7 +119,7 @@ func TestRequesterFollowUp_Refusals(t *testing.T) {
 		h := newHarness(t)
 		orig := closedWithEverything(t, h)
 		creates := h.store.creates
-		_, err := h.svc.CreateRequesterFollowUp(ctx, orig.ID, "GHD",
+		_, err := h.svc.CreateRequesterFollowUp(ctx, orig.ID, "GHD", ticket.ChannelWeb,
 			ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleUser}, openAlways)
 		require.ErrorIs(t, err, ticket.ErrForbidden)
 		require.Equal(t, creates, h.store.creates, "no tracking number is taken")
@@ -128,7 +128,7 @@ func TestRequesterFollowUp_Refusals(t *testing.T) {
 	t.Run("a guest cannot follow up an account holder's ticket", func(t *testing.T) {
 		h := newHarness(t)
 		orig := closedWithEverything(t, h)
-		_, err := h.svc.CreateRequesterFollowUp(ctx, orig.ID, "GHD", guestActor, openAlways)
+		_, err := h.svc.CreateRequesterFollowUp(ctx, orig.ID, "GHD", ticket.ChannelWeb, guestActor, openAlways)
 		require.ErrorIs(t, err, ticket.ErrForbidden)
 	})
 
@@ -136,7 +136,7 @@ func TestRequesterFollowUp_Refusals(t *testing.T) {
 		h := newHarness(t)
 		tk, _ := guestTicket(t, h)
 		require.NoError(t, h.svc.Close(ctx, tk.ID, ticket.SystemActor))
-		_, err := h.svc.CreateRequesterFollowUp(ctx, tk.ID, "GHD",
+		_, err := h.svc.CreateRequesterFollowUp(ctx, tk.ID, "GHD", ticket.ChannelWeb,
 			ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleUser}, openAlways)
 		require.ErrorIs(t, err, ticket.ErrForbidden)
 	})
@@ -150,7 +150,7 @@ func TestRequesterFollowUp_Refusals(t *testing.T) {
 			reporter := uuid.New()
 			orig := seed(h, reporter)
 			creates, seq := h.store.creates, h.store.seq
-			_, err := h.svc.CreateRequesterFollowUp(ctx, orig.ID, "GHD",
+			_, err := h.svc.CreateRequesterFollowUp(ctx, orig.ID, "GHD", ticket.ChannelWeb,
 				ticket.Actor{UserID: &reporter, Role: user.RoleUser}, openAlways)
 			require.ErrorIs(t, err, ticket.ErrNotClosed)
 			require.Equal(t, creates, h.store.creates)
@@ -160,14 +160,14 @@ func TestRequesterFollowUp_Refusals(t *testing.T) {
 
 	t.Run("a missing ticket", func(t *testing.T) {
 		h := newHarness(t)
-		_, err := h.svc.CreateRequesterFollowUp(ctx, uuid.New(), "GHD", guestActor, openAlways)
+		_, err := h.svc.CreateRequesterFollowUp(ctx, uuid.New(), "GHD", ticket.ChannelWeb, guestActor, openAlways)
 		require.ErrorIs(t, err, errNotFound)
 	})
 
 	t.Run("staff and admin use the other method", func(t *testing.T) {
 		h := newHarness(t)
 		orig := closedWithEverything(t, h)
-		_, err := h.svc.CreateRequesterFollowUp(ctx, orig.ID, "GHD",
+		_, err := h.svc.CreateRequesterFollowUp(ctx, orig.ID, "GHD", ticket.ChannelWeb,
 			ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff}, openAlways)
 		require.ErrorIs(t, err, ticket.ErrForbidden, "a requester method for requesters")
 	})
@@ -183,7 +183,7 @@ func TestRequesterFollowUp_TheCreationRulesOfTheRoleApply(t *testing.T) {
 	creates := h.store.creates
 
 	var sawType *uuid.UUID
-	_, err := h.svc.CreateRequesterFollowUp(context.Background(), orig.ID, "GHD", reporterActor(orig),
+	_, err := h.svc.CreateRequesterFollowUp(context.Background(), orig.ID, "GHD", ticket.ChannelWeb, reporterActor(orig),
 		func(_ context.Context, cat uuid.UUID, ty *uuid.UUID) error {
 			require.Equal(t, orig.CategoryID, cat)
 			sawType = ty
@@ -206,11 +206,11 @@ func TestRequesterFollowUp_OnePerClosedTicket(t *testing.T) {
 	t.Run("a second one is refused", func(t *testing.T) {
 		h := newHarness(t)
 		orig := closedWithEverything(t, h)
-		_, err := h.svc.CreateRequesterFollowUp(ctx, orig.ID, "GHD", reporterActor(orig), openAlways)
+		_, err := h.svc.CreateRequesterFollowUp(ctx, orig.ID, "GHD", ticket.ChannelWeb, reporterActor(orig), openAlways)
 		require.NoError(t, err)
 		creates, seq := h.store.creates, h.store.seq
 
-		_, err = h.svc.CreateRequesterFollowUp(ctx, orig.ID, "GHD", reporterActor(orig), openAlways)
+		_, err = h.svc.CreateRequesterFollowUp(ctx, orig.ID, "GHD", ticket.ChannelWeb, reporterActor(orig), openAlways)
 
 		require.ErrorIs(t, err, ticket.ErrFollowUpExists)
 		require.Equal(t, creates, h.store.creates)
@@ -221,9 +221,9 @@ func TestRequesterFollowUp_OnePerClosedTicket(t *testing.T) {
 	t.Run("a follow-up staff opened counts", func(t *testing.T) {
 		h := newHarness(t)
 		orig := closedWithEverything(t, h)
-		_, err := h.svc.CreateFollowUp(ctx, orig.ID, "GHD", ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff})
+		_, err := h.svc.CreateFollowUp(ctx, orig.ID, "GHD", ticket.ChannelWeb, ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff})
 		require.NoError(t, err)
-		_, err = h.svc.CreateRequesterFollowUp(ctx, orig.ID, "GHD", reporterActor(orig), openAlways)
+		_, err = h.svc.CreateRequesterFollowUp(ctx, orig.ID, "GHD", ticket.ChannelWeb, reporterActor(orig), openAlways)
 		require.ErrorIs(t, err, ticket.ErrFollowUpExists)
 	})
 
@@ -236,7 +236,7 @@ func TestRequesterFollowUp_OnePerClosedTicket(t *testing.T) {
 		require.NoError(t, h.svc.AddLink(ctx, orig.ID, other.ID, ticket.LinkParentChild,
 			ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff}))
 
-		_, err := h.svc.CreateRequesterFollowUp(ctx, orig.ID, "GHD", reporterActor(orig), openAlways)
+		_, err := h.svc.CreateRequesterFollowUp(ctx, orig.ID, "GHD", ticket.ChannelWeb, reporterActor(orig), openAlways)
 
 		require.ErrorIs(t, err, ticket.ErrFollowUpExists)
 	})
@@ -249,7 +249,7 @@ func TestRequesterFollowUp_OnePerClosedTicket(t *testing.T) {
 		require.NoError(t, h.svc.AddLink(ctx, orig.ID, other.ID, ticket.LinkRelatedTo, staff))
 		require.NoError(t, h.svc.AddLink(ctx, other.ID, orig.ID, ticket.LinkParentChild, staff)) // orig is the child
 
-		_, err := h.svc.CreateRequesterFollowUp(ctx, orig.ID, "GHD", reporterActor(orig), openAlways)
+		_, err := h.svc.CreateRequesterFollowUp(ctx, orig.ID, "GHD", ticket.ChannelWeb, reporterActor(orig), openAlways)
 
 		require.NoError(t, err)
 	})
@@ -258,11 +258,11 @@ func TestRequesterFollowUp_OnePerClosedTicket(t *testing.T) {
 		h := newHarness(t)
 		orig := closedWithEverything(t, h)
 		staff := ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff}
-		_, err := h.svc.CreateRequesterFollowUp(ctx, orig.ID, "GHD", reporterActor(orig), openAlways)
+		_, err := h.svc.CreateRequesterFollowUp(ctx, orig.ID, "GHD", ticket.ChannelWeb, reporterActor(orig), openAlways)
 		require.NoError(t, err)
-		_, err = h.svc.CreateFollowUp(ctx, orig.ID, "GHD", staff)
+		_, err = h.svc.CreateFollowUp(ctx, orig.ID, "GHD", ticket.ChannelWeb, staff)
 		require.NoError(t, err)
-		_, err = h.svc.CreateFollowUp(ctx, orig.ID, "GHD", staff)
+		_, err = h.svc.CreateFollowUp(ctx, orig.ID, "GHD", ticket.ChannelWeb, staff)
 		require.NoError(t, err)
 	})
 
@@ -280,7 +280,7 @@ func TestRequesterFollowUp_OnePerClosedTicket(t *testing.T) {
 			}
 			return x
 		}
-		_, err := h.svc.CreateRequesterFollowUp(ctx, orig.ID, "GHD", reporterActor(orig), openAlways)
+		_, err := h.svc.CreateRequesterFollowUp(ctx, orig.ID, "GHD", ticket.ChannelWeb, reporterActor(orig), openAlways)
 		require.ErrorIs(t, err, ticket.ErrFollowUpExists)
 		require.Len(t, h.store.tickets, 1, "nothing was created")
 	})
@@ -299,7 +299,7 @@ func TestRequesterFollowUp_AReopenRacingTheFollowUpIsRefused(t *testing.T) {
 		return x
 	}
 
-	_, err := h.svc.CreateRequesterFollowUp(context.Background(), orig.ID, "GHD", reporterActor(orig), openAlways)
+	_, err := h.svc.CreateRequesterFollowUp(context.Background(), orig.ID, "GHD", ticket.ChannelWeb, reporterActor(orig), openAlways)
 
 	require.ErrorIs(t, err, ticket.ErrNotClosed)
 	require.Len(t, h.store.tickets, 1)
@@ -317,7 +317,7 @@ func TestRequesterFollowUp_LeavesTheOriginalUntouched(t *testing.T) {
 	tokensBefore := h.store.guestTokenCount(tk.ID)
 	updates := h.store.updates
 
-	_, err := h.svc.CreateRequesterFollowUp(context.Background(), tk.ID, "GHD", guestActor, openAlways)
+	_, err := h.svc.CreateRequesterFollowUp(context.Background(), tk.ID, "GHD", ticket.ChannelWeb, guestActor, openAlways)
 	require.NoError(t, err)
 
 	after, _ := h.store.GetByID(context.Background(), tk.ID)
@@ -334,7 +334,7 @@ func TestRequesterFollowUp_AFailedLinkRollsTheTicketBack(t *testing.T) {
 	orig := closedWithEverything(t, h)
 	h.store.errCreateLink = errStoreDown
 
-	_, err := h.svc.CreateRequesterFollowUp(context.Background(), orig.ID, "GHD", reporterActor(orig), openAlways)
+	_, err := h.svc.CreateRequesterFollowUp(context.Background(), orig.ID, "GHD", ticket.ChannelWeb, reporterActor(orig), openAlways)
 
 	require.ErrorIs(t, err, errStoreDown)
 	require.Equal(t, 1, h.atomic.rollbacks)
@@ -347,7 +347,7 @@ func TestRequesterFollowUp_IsAvailableInEveryPolicyMode(t *testing.T) {
 		h := newHarness(t)
 		h.policy = policy
 		orig := closedWithEverything(t, h)
-		_, err := h.svc.CreateRequesterFollowUp(context.Background(), orig.ID, "GHD", reporterActor(orig), openAlways)
+		_, err := h.svc.CreateRequesterFollowUp(context.Background(), orig.ID, "GHD", ticket.ChannelWeb, reporterActor(orig), openAlways)
 		require.NoError(t, err, policy)
 	}
 }

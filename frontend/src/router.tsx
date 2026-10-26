@@ -26,6 +26,7 @@ import { APIKeysPage } from '@/pages/admin/APIKeysPage'
 import { AdminAuditPage } from '@/pages/admin/AdminAuditPage'
 import { OAuthClientsPage } from '@/pages/admin/OAuthClientsPage'
 import { WebhooksPage } from '@/pages/admin/WebhooksPage'
+import { EmailTemplatesPage } from '@/pages/admin/EmailTemplatesPage'
 import { RoutingPage } from '@/pages/admin/RoutingPage'
 import { GuestTicketPage } from '@/pages/GuestTicketPage'
 import { GuestTicketViewPage } from '@/pages/GuestTicketViewPage'
@@ -252,6 +253,13 @@ const adminWebhooksRoute = createRoute({
   component: WebhooksPage,
 })
 
+const adminEmailTemplatesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/email-templates',
+  beforeLoad: requireAdmin,
+  component: EmailTemplatesPage,
+})
+
 const adminRoutingRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/admin/routing',
@@ -345,6 +353,7 @@ export const router = createRouter({
     adminAPIKeysRoute,
   adminOAuthClientsRoute,
   adminWebhooksRoute,
+  adminEmailTemplatesRoute,
   adminRoutingRoute,
     adminSettingsRoute,
     adminAuditRoute,

@@ -40,7 +40,7 @@ func TestIssueGuestLink_ConcurrentSendsLeaveOneWorkingLink(t *testing.T) {
 	newSt, err := ts.GetStatusByName(ctx, ticket.StatusNameNew)
 	require.NoError(t, err)
 	email := "race-" + uuid.NewString()[:8] + "@test.local"
-	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("GRACE-" + uuid.NewString()[:8]),
 		Subject: "Racing sends", Description: "two workers", CategoryID: cat.ID,
 		Priority: ticket.PriorityLow, StatusID: newSt.ID, GuestEmail: &email, GuestName: "Ada",

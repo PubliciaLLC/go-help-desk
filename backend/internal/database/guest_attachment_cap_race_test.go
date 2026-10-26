@@ -45,7 +45,7 @@ func TestCreateGuestAttachment_ParallelUploadsCannotOvershootTheCap(t *testing.T
 	const capN, racers = 3, 6
 	for round := range 15 {
 		email := "cap-" + uuid.NewString()[:8] + "@test.local"
-		tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
+		tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 			ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("CAP-" + uuid.NewString()[:8]),
 			Subject: "Racing uploads", Description: "x", CategoryID: cat.ID,
 			Priority: ticket.PriorityLow, StatusID: newSt.ID, GuestEmail: &email, GuestName: "Ada",

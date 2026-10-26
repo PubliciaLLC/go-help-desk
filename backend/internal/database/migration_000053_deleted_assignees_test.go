@@ -58,7 +58,7 @@ func TestMigration053_UnassignsOpenTicketsHeldByDeletedUsers(t *testing.T) {
 
 	mkTicket := func(assignee *uuid.UUID, resolved, closed bool) uuid.UUID {
 		id := uuid.New()
-		require.NoError(t, ts.Create(ctx, ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
+		require.NoError(t, ts.Create(ctx, ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 			ID: id, TrackingNumber: ticket.TrackingNumber("M53-" + uuid.NewString()[:8]),
 			Subject: "m53", Description: "m53", CategoryID: cat.ID, Priority: ticket.PriorityMedium,
 			StatusID: newSt.ID, ReporterUserID: &reporter, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),

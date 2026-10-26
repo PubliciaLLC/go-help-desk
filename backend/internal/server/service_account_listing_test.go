@@ -155,7 +155,7 @@ func TestServiceAccount_NeverMailedAsRequester(t *testing.T) {
 	h.dispatcher.record = true
 	c := h.newServiceClient(t, "Nagios", "tickets:read")
 
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Filed by a client", Description: "x", CategoryID: h.catID,
 		Priority: ticket.PriorityLow, ReporterUserID: &c.UserID,
 	})

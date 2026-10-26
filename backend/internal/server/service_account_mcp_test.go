@@ -137,7 +137,7 @@ func TestServiceAccount_NeverMailedOverMCP(t *testing.T) {
 
 	reporter := h.newServiceClient(t, "Nagios", "tickets:read")
 	replier := h.newServiceClient(t, "Zapier", "tickets:read", "tickets:write")
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Filed by a client", Description: "x", CategoryID: h.catID,
 		Priority: ticket.PriorityLow, ReporterUserID: &reporter.UserID,
 	})

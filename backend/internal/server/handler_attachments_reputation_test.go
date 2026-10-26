@@ -33,7 +33,7 @@ func TestAttachments_CarryAHashLinkWhateverIsEnabled(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Reputation", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})
@@ -108,7 +108,7 @@ func TestAttachments_OrdinaryFilesCarryNoLookupLink(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Ordinary", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})
@@ -152,7 +152,7 @@ func TestAttachments_WithoutAHashCarryNoLookupLink(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "No hash", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})

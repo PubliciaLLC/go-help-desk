@@ -134,7 +134,7 @@ func TestRESTAddReply_FormatDefaultsToPlainAndIsValidated(t *testing.T) {
 func newTicketFor(t *testing.T, h *harness) ticket.Ticket {
 	t.Helper()
 	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
-		Subject: "s", Description: "d", DescriptionFormat: ticket.TextFormatPlain,
+		Subject: "s", Description: "d", DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		CategoryID: h.catID, Priority: ticket.PriorityMedium, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)
@@ -307,19 +307,19 @@ func TestFollowUp_CopiesTheOriginalsFormat(t *testing.T) {
 	for _, f := range []ticket.TextFormat{ticket.TextFormatPlain, ticket.TextFormatMarkdown} {
 		t.Run(string(f), func(t *testing.T) {
 			tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
-				Subject: "s", Description: "*d*", DescriptionFormat: f,
+				Subject: "s", Description: "*d*", DescriptionFormat: f, SourceChannel: ticket.ChannelWeb,
 				CategoryID: h.catID, Priority: ticket.PriorityMedium, ReporterUserID: &h.userID,
 			})
 			require.NoError(t, err)
 			require.NoError(t, h.ticketSvc.Close(ctx, tk.ID, adminActor))
 
-			staff, err := h.ticketSvc.CreateFollowUp(ctx, tk.ID, "GHD", adminActor)
+			staff, err := h.ticketSvc.CreateFollowUp(ctx, tk.ID, "GHD", ticket.ChannelWeb, adminActor)
 			require.NoError(t, err)
 			require.Equal(t, f, staff.DescriptionFormat)
 
 			// The requester's route, on a fresh closed original.
 			tk2, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
-				Subject: "s2", Description: "*d*", DescriptionFormat: f,
+				Subject: "s2", Description: "*d*", DescriptionFormat: f, SourceChannel: ticket.ChannelWeb,
 				CategoryID: h.catID, Priority: ticket.PriorityMedium, ReporterUserID: &h.userID,
 			})
 			require.NoError(t, err)
@@ -331,7 +331,7 @@ func TestFollowUp_CopiesTheOriginalsFormat(t *testing.T) {
 	}
 }
 
-// A reply is limited to 50,000 characters, as a description is: 400 body_too_long
+// A reply is limited to 50,000 bytes, as a description is: 400 body_too_long
 // over it on every way in, nothing written, and 201 at exactly the limit.
 func TestReplyLength_EveryWayIn(t *testing.T) {
 	h, cleanup := newHarness(t)

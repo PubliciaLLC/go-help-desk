@@ -56,6 +56,7 @@ func (s *Store) Create(ctx context.Context, t ticket.Ticket) error {
 		Subject:           t.Subject,
 		Description:       t.Description,
 		DescriptionFormat: string(t.DescriptionFormat),
+		SourceChannel:     string(t.SourceChannel),
 		CategoryID:        t.CategoryID,
 		TypeID:            database.NullUUID(t.TypeID),
 		ItemID:            database.NullUUID(t.ItemID),
@@ -907,6 +908,7 @@ type ticketRow struct {
 	LastReopenedAt            sql.NullTime
 	PausedSecondsAtLastReopen int64
 	DescriptionFormat         string
+	SourceChannel             string
 }
 
 func fromRow(r ticketRow) ticket.Ticket {
@@ -916,6 +918,7 @@ func fromRow(r ticketRow) ticket.Ticket {
 		Subject:                   r.Subject,
 		Description:               r.Description,
 		DescriptionFormat:         ticket.TextFormat(r.DescriptionFormat),
+		SourceChannel:             ticket.SourceChannel(r.SourceChannel),
 		CategoryID:                r.CategoryID,
 		TypeID:                    database.UUIDPtr(r.TypeID),
 		ItemID:                    database.UUIDPtr(r.ItemID),

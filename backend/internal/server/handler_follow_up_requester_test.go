@@ -33,7 +33,7 @@ import (
 func raisedClosedTicket(t *testing.T, h *harness) ticket.Ticket {
 	t.Helper()
 	ctx := context.Background()
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Laptop will not boot", Description: "black screen", CategoryID: h.catID,
 		Priority: ticket.PriorityCritical, ReporterUserID: &h.userID,
 	})
@@ -121,7 +121,7 @@ func TestRequesterFollowUp_AnAccountHolderIsHeldToTheCreationRules(t *testing.T)
 	t.Run("an archived category", func(t *testing.T) {
 		cat, err := h.categorySvc.CreateCategory(ctx, "Retired later", 98)
 		require.NoError(t, err)
-		other, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+		other, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 			Subject: "Filed under it", Description: "x", CategoryID: cat.ID, ReporterUserID: &h.userID,
 		})
 		require.NoError(t, err)
@@ -144,7 +144,7 @@ func TestRequesterFollowUp_AnAccountHolderRefusals(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("someone else's closed ticket is not found", func(t *testing.T) {
-		foreign, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+		foreign, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 			Subject: "Not theirs", Description: "x", CategoryID: h.catID, ReporterUserID: &h.adminID,
 		})
 		require.NoError(t, err)
@@ -164,7 +164,7 @@ func TestRequesterFollowUp_AnAccountHolderRefusals(t *testing.T) {
 		},
 	} {
 		t.Run(name+" is refused", func(t *testing.T) {
-			tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+			tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 				Subject: "Still going", Description: "x", CategoryID: h.catID, ReporterUserID: &h.userID,
 			})
 			require.NoError(t, err)
@@ -213,7 +213,7 @@ func TestRequesterFollowUp_StaffBehaviourIsUnchanged(t *testing.T) {
 // seedGuestTicketFor is seedGuestTicket for another guest address.
 func seedGuestTicketFor(t *testing.T, h *harness, email string) (ticket.Ticket, string) {
 	t.Helper()
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Printer jammed", Description: "again", CategoryID: h.catID,
 		GuestEmail: &email, GuestName: "Ada",
 	})
@@ -348,7 +348,7 @@ func TestGuestFollowUp_EveryRefusalIsTheGenericNotFound(t *testing.T) {
 		// A guest token can only exist for a guest ticket; this is the service's
 		// own answer if one were somehow presented.
 		reporterTk := reporterClosedTicket(t, h)
-		_, err := h.ticketSvc.CreateRequesterFollowUp(ctx, reporterTk.ID, "GHD", ticket.Actor{Role: user.RoleUser}, nil)
+		_, err := h.ticketSvc.CreateRequesterFollowUp(ctx, reporterTk.ID, "GHD", ticket.ChannelWeb, ticket.Actor{Role: user.RoleUser}, nil)
 		require.ErrorIs(t, err, ticket.ErrForbidden)
 	})
 }
@@ -450,7 +450,7 @@ func TestGuestFollowUp_AnArchivedCategoryIsA400WithTheReason(t *testing.T) {
 	cat, err := h.categorySvc.CreateCategory(ctx, "Retired later", 97)
 	require.NoError(t, err)
 	email := "retired@test.local"
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Filed under it", Description: "x", CategoryID: cat.ID,
 		GuestEmail: &email, GuestName: "Ada",
 	})

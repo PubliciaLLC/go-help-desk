@@ -19,7 +19,7 @@ import (
 // harness's registration service sends to it instead of a mail server.
 type verifyMailbox struct{ tokens []string }
 
-func (m *verifyMailbox) SendVerificationEmail(_, token, _ string) error {
+func (m *verifyMailbox) SendVerificationEmail(_ context.Context, _, token, _ string) error {
 	m.tokens = append(m.tokens, token)
 	return nil
 }
