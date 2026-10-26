@@ -143,6 +143,7 @@
     <li><a href="tickets.html#tickets-create">Guest submission</a> works. <code>guest_submission_enabled</code> needs a signed-in administrator, and switching it off also suspends every existing guest link until it is switched on again. <em>Guests may attach files</em> (<code>guest_attachments_enabled</code>, <em>Settings → General → Submissions</em>, session only) is <strong>off by default, including after an upgrade</strong>, and works only while guest submission is on. It has a per-file size slider (1 to 100 MB, 5 by default, never above the 25 MB instance maximum), a limit of files per ticket (1 to 50, default 5) and uploads per guest link per hour (1 to 30, default 3). See <a href="tickets.html#tickets-create">Guest ticket submission</a>.</li>
     <li><a href="#admin-attachments">Attachment security</a>: content detection, malware scanning and reputation lookup, all configured under <em>Admin → Settings → Attachments</em>.</li>
     <li><a href="#admin-staff-email">Staff email</a>: assignments, requester replies and reopens are emailed to staff, with three switches each person controls and an administrator override. On an upgraded install the overrides start as Off for everyone, so turn staff email on under Settings → Email when you are ready. Staff can also <a href="tickets.html#tickets-follow">follow tickets</a>.</li>
+    <li><a href="#admin-email-tpl">Email templates</a>: edit the wording of all 17 emails, and a shared header and footer, under <em>Admin → Email Templates</em>.</li>
     <li><a href="#admin-email-setup">Email setup rules</a>: SMTP must use TLS when a password is set, and a missing or failing mail setup shows as a banner instead of failing silently.</li>
     <li><a href="#admin-oauth-clients">OAuth clients</a> act as service users, so they can write tickets, and are managed from Users and OAuth Clients.</li>
     <li><a href="#admin-auto-assign">Routing</a> and a paged <a href="#admin-users-list">Users</a> list, <a href="#admin-cti-archive">archive and restore</a> for categories, types and items, and <a href="#admin-webhook-history">webhook History and Redeliver</a>, with <a href="#admin-webhook-filter">ticket filters</a> and retries.</li>
@@ -215,10 +216,11 @@ Facilities
 </ul>
 
 <h3 id="admin-cti-archive">Archiving a Category, Type or Item</h3>
-<p>Archiving hides an entry from new tickets while keeping every ticket already filed under it. Hover over a row and use the archive icon (<em>Archive category</em>, <em>Archive type</em> or <em>Archive item</em>); you are asked to confirm, because requesters will no longer see it. An archived row shows an <em>Archived</em> badge. Its icon becomes <em>Restore</em>, which undoes it at once with no confirmation.</p>
+<p>Archiving hides an entry from new tickets while keeping every ticket already filed under it. Point at a row and use the archive icon (<em>Archive category</em>, <em>Archive type</em> or <em>Archive item</em>); on a touch screen the icons are always shown and are large enough to tap. You are asked to confirm, because requesters will no longer see it. An archived row shows an <em>Archived</em> badge. Its icon becomes <em>Restore</em>, which undoes it at once with no confirmation.</p>
 <ul>
   <li><strong>Nobody files new tickets into an archived entry</strong>: not requesters, not guests, and not staff or administrators either. Creating a ticket, or moving one to a different classification, with an archived Category, Type or Item is refused with <code>400</code>. This applies to the web screens, API keys and the MCP server alike.</li>
   <li><strong>Tickets already in it keep it.</strong> Editing such a ticket in other ways, or saving it with the classification it already has, still works.</li>
+  <li><strong>Archiving changes one row.</strong> A Type under an archived Category keeps its own setting; archive it too if you want it gone. There is no filter to hide archived rows: they stay in the tree, greyed out.</li>
   <li><strong>Staff and administrators still see archived entries</strong> in the new-ticket and reclassify pickers, greyed out and marked as archived, but they cannot select them. A ticket's own archived entry stays selected so it can keep it.</li>
 </ul>
 
@@ -646,42 +648,60 @@ Facilities
 
 <h2 id="admin-email-tpl">Email templates</h2>
 
-<div class="callout callout-warn">
-  <p><strong>Editing templates from the admin UI is not available in 1.3.0</strong>; it is tracked in <a href="https://github.com/PubliciaLLC/go-help-desk/issues/158">issue #158</a>. There is no <em>Admin → Email → Templates</em> page yet, no preview and no send-test. The templates are compiled into the binary; changing one today means editing the file and rebuilding.</p>
-</div>
+<p>Under <em>Admin → Email Templates</em> (also linked from <em>Settings → Email</em>) an administrator can edit the subject and body of every email the help desk sends, and a <strong>header</strong> and <strong>footer</strong> that go around all of them. The text is plain; there is no HTML version. Until you edit something, every email is exactly what it was before the editor existed.</p>
 
-<p>There are sixteen, in <code>backend/internal/server/notify/templates/</code>. Seven go to requesters and the people who sign up, and nine go to staff:</p>
+<p>There are seventeen. Six go to requesters and guests, nine to staff, and two to people setting up or recovering an account:</p>
 
 <table>
   <thead><tr><th>Template</th><th>When sent</th><th>Recipient</th></tr></thead>
   <tbody>
-    <tr><td><code>ticket_created.tmpl</code></td><td>A ticket is filed with a guest address</td><td>That address</td></tr>
-    <tr><td><code>ticket_replied.tmpl</code></td><td>Staff post a public reply with <em>Send ticket update email to customer</em> ticked (the default), or a public reply is added through the MCP <code>add_reply</code> tool, which always notifies</td><td>The requester, account holder or guest</td></tr>
-    <tr><td><code>ticket_status_changed.tmpl</code></td><td>A guest's ticket changes status, other than to Closed</td><td>The guest</td></tr>
-    <tr><td><code>ticket_resolved.tmpl</code></td><td>A guest's ticket is resolved</td><td>The guest</td></tr>
-    <tr><td><code>ticket_reopened.tmpl</code></td><td>A guest's Closed ticket is reopened with the Reopen action. A reopen by the guest's own reply sends no mail</td><td>The guest</td></tr>
-    <tr><td><code>guest_link.tmpl</code></td><td>A guest asks for a new link at <code>/track</code></td><td>The guest</td></tr>
-    <tr><td><code>email_verification.tmpl</code></td><td>Someone signs up</td><td>The address they gave</td></tr>
-    <tr><td><code>staff_assigned.tmpl</code>, <code>staff_assigned_group.tmpl</code>, <code>staff_assigned_follow.tmpl</code></td><td>A ticket is assigned to the person, to a group they belong to, or a ticket they follow is assigned</td><td>That staff member or administrator</td></tr>
-    <tr><td><code>staff_requester_replied.tmpl</code>, <code>staff_requester_replied_group.tmpl</code>, <code>staff_requester_replied_follow.tmpl</code></td><td>The requester replies on a ticket assigned to the person, on a group ticket nobody holds, or on a ticket they follow</td><td>That staff member or administrator</td></tr>
-    <tr><td><code>staff_reopened.tmpl</code>, <code>staff_reopened_group.tmpl</code>, <code>staff_reopened_follow.tmpl</code></td><td>A ticket assigned to the person, to a group they belong to (when nobody holds it), or that they follow is reopened</td><td>That staff member or administrator</td></tr>
+    <tr><td><code>ticket_created</code></td><td>A ticket is filed with a guest address</td><td>That address</td></tr>
+    <tr><td><code>ticket_replied</code></td><td>Staff post a public reply with <em>Send ticket update email to customer</em> ticked (the default), or a public reply is added through the MCP <code>add_reply</code> tool, which always notifies</td><td>The requester, account holder or guest</td></tr>
+    <tr><td><code>ticket_status_changed</code></td><td>A guest's ticket changes status, other than to Closed</td><td>The guest</td></tr>
+    <tr><td><code>ticket_resolved</code></td><td>A guest's ticket is resolved</td><td>The guest</td></tr>
+    <tr><td><code>ticket_reopened</code></td><td>A guest's Closed ticket is reopened with the Reopen action. A reopen by the guest's own reply sends no mail</td><td>The guest</td></tr>
+    <tr><td><code>guest_link</code></td><td>A guest asks for a new link at <code>/track</code></td><td>The guest</td></tr>
+    <tr><td><code>email_verification</code></td><td>Someone signs up</td><td>The address they gave</td></tr>
+    <tr><td><code>password_reset</code></td><td>Someone asks for a password reset, or a refused sign-in on an old password sends one</td><td>That account's address</td></tr>
+    <tr><td><code>staff_assigned</code>, <code>staff_assigned_group</code>, <code>staff_assigned_follow</code></td><td>A ticket is assigned to the person, to a group they belong to, or a ticket they follow is assigned</td><td>That staff member or administrator</td></tr>
+    <tr><td><code>staff_requester_replied</code>, <code>staff_requester_replied_group</code>, <code>staff_requester_replied_follow</code></td><td>The requester replies on a ticket assigned to the person, on a group ticket nobody holds, or on a ticket they follow</td><td>That staff member or administrator</td></tr>
+    <tr><td><code>staff_reopened</code>, <code>staff_reopened_group</code>, <code>staff_reopened_follow</code></td><td>A ticket assigned to the person, to a group they belong to (when nobody holds it), or that they follow is reopened</td><td>That staff member or administrator</td></tr>
   </tbody>
 </table>
 
 <p>Closing and internal notes send no email to anyone. An account holder is emailed only about public replies from staff; the status mails exist for guests, because each one carries the guest's replacement link. Staff mail is described under <a href="#admin-staff-email">Staff email about tickets</a>. Assigning a ticket emails the new assignee, not the requester.</p>
 
+<h3>Editing</h3>
+<ul>
+  <li><strong>Check as you type.</strong> About 0.4 seconds after you stop typing, the draft is checked on the server. A problem is shown beside the field with its line and column, and <em>Save</em> stays off until the draft is valid. The server checks again on every save.</li>
+  <li><strong>Limits.</strong> The body can be up to 8 KiB, and the subject up to 200 bytes on one line.</li>
+  <li><strong>The link must stay.</strong> Each ticket email must print its ticket link, the verification email its verification link and the reset email its reset link, outside any <code>{{if}}</code>. A guest's link is replaced each time, so an email without it would lock the guest out.</li>
+  <li><strong>Revert to default</strong> removes your edit. Saving text that equals the default does the same.</li>
+  <li><strong>Send test</strong> mails the draft to your own address only, with <code>[Test]</code> before the subject. It is limited to 5 every 10 minutes per administrator, and a mail server error is shown on the page. It needs email to be set up.</li>
+  <li><strong>Session only.</strong> Edits need a signed-in administrator in a browser, with a second factor. An API key or OAuth client is refused with <code>403</code>, because a key that could edit the reset email could point it at a link of its own.</li>
+  <li><strong>Audit.</strong> Each save and revert is recorded in the audit log with the full text, in the same step as the change. A test send records the template and never the address.</li>
+</ul>
+
+<h3>When an edit stops working</h3>
+<p>An upgrade can remove a value an old edit used. The mail that uses a saved edit that no longer validates <strong>fails at once and is not retried</strong>; it does not quietly fall back to the shipped text, because that would hide your wording and you chose it. Administrators see a red notice per template in the warning bar with <em>Revert to default</em> and <em>Edit</em>, and the same list is in <code>email.broken_templates</code> of <code>GET /api/v1/admin/security-warnings</code>. A broken header or footer fails every email. Mail that failed before you reverted is not sent again.</p>
+
 <h3>Template variables</h3>
 
-<p>The ticket templates get two, and deliberately only two:</p>
+<p>A template may contain words, a value written <code>{{.Name}}</code>, and <code>{{if .Name}}…{{else}}…{{end}}</code>, and nothing else. Anything else (a function, a loop, a whole-data print) is refused with its line and column. The values are:</p>
 
-<pre><code>{{ .TrackingNumber }}   -- e.g. GHD-2026-000001
-{{ .TicketURL }}        -- the ticket's address (a private link for a guest)</code></pre>
+<table>
+  <thead><tr><th>Template</th><th>Values</th></tr></thead>
+  <tbody>
+    <tr><td>The ticket emails, requester and staff</td><td><code>.TrackingNumber</code> (for example GHD-2026-000001) and <code>.TicketURL</code> (the ticket's address, a private link for a guest)</td></tr>
+    <tr><td><code>email_verification</code></td><td><code>.VerifyURL</code></td></tr>
+    <tr><td><code>password_reset</code></td><td><code>.ResetURL</code></td></tr>
+    <tr><td>Header and footer</td><td><code>.SiteName</code>, the name set under Settings</td></tr>
+  </tbody>
+</table>
 
-<p><code>email_verification.tmpl</code> gets one, <code>{{ .VerifyURL }}</code>.</p>
+<p>There is no ticket subject, reply text or submitter, and none can be added. From v1.2.0 a notification email carries no content from the ticket at all — mail leaving the help desk is sent from the operator's domain, and anyone who can file a ticket chooses that text, so the content stays in the application behind the access rules that already govern it. That rule holds for edited text exactly as for the shipped text. See <a href="upgrading-1.2.0.html#email">Upgrading to 1.2.0</a>.</p>
 
-<p>There is no <code>.Ticket.Subject</code>, no <code>.Reply.Body</code>, no <code>.Submitter</code>. From v1.2.0 a notification email carries no content from the ticket at all — mail leaving the help desk is sent from the operator's domain, and anyone who can file a ticket chooses that text, so the content stays in the application behind the access rules that already govern it. See <a href="upgrading-1.2.0.html#email">Upgrading to 1.2.0</a>.</p>
-
-<p>The whole of <code>ticket_replied.tmpl</code>:</p>
+<p>The whole of the shipped <code>ticket_replied</code> body:</p>
 
 <pre><code>There is a new reply on your ticket.
 
@@ -690,7 +710,7 @@ Ticket: {{.TrackingNumber}}
 Read it here:
 {{.TicketURL}}</code></pre>
 
-<p>Messages are <code>text/plain</code>, quoted-printable, with no HTML alternative. Adding an HTML part would turn the body into a live sink the moment any content went back into it.</p>
+<p>Messages are <code>text/plain</code>, quoted-printable, with no HTML alternative. The header and footer are joined to the body exactly as written, with no line break added, so end your header with one if you want a gap.</p>
 
 <p>If you need the ticket text in an external system, use a webhook. A hook in the Slack, Teams, Discord or Jira Automation format carries the subject, tracking number, status and public reply text, because a webhook target is registered by an administrator rather than chosen by a reporter. A raw JSON hook carries ids only; fetch the ticket through the REST API with the <code>TicketID</code> it gives you. See <a href="#admin-webhook-formats">Payload formats</a>.</p>
 

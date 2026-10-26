@@ -136,8 +136,17 @@
   <li>The staff member is recorded as the one who filed it, in the ticket's history and in the audit log. The requester is its reporter.</li>
   <li>An existing user who is filed for gets the usual "We have received your ticket" email with a link to the ticket, once per address. Nothing is emailed when you file for yourself.</li>
   <li><strong>A staff member can use a typed address 40 times an hour.</strong> After that the request is refused with <code>429</code> and a <code>Retry-After</code> header, and nothing is filed. It caps how many strangers get mail and how fast anyone can learn which addresses have accounts. Every typed address that passes validation counts, whether or not it has an account, and a count, once taken, is not given back; a request refused for a missing field does not count, and neither does picking a user from the list. The count is per staff member, is kept by each server in memory (it resets on a restart, and each server instance counts on its own), and is not configurable.</li>
+  <li><strong>How did this reach you?</strong> When you file for someone else, the form asks whether the ticket came by <em>Web</em> (the default) or <em>Phone call</em>. It is not shown when you file for yourself. See <a href="#tickets-source">How a ticket arrived</a>.</li>
   <li>Requesters cannot file for anyone else; a requester who tries is refused with <code>403</code>.</li>
   <li>Staff and administrators see a <em>Requester</em> line (name and email) on every ticket page. Requesters never see it.</li>
+</ul>
+
+<h3 id="tickets-source">How a ticket arrived</h3>
+<p>Every ticket records how it arrived, and staff and administrators see it next to the opened date on the ticket page: <em>via web</em>, <em>via API</em>, <em>via MCP</em>, <em>via guest form</em> or <em>via phone</em>. The server works it out from the way the ticket came in; nobody types it. The one exception is <em>Phone call</em>, which staff pick when they file a ticket for someone else.</p>
+<ul>
+  <li>A follow-up records its own way in, not the original's. A follow-up of a phone ticket is <em>via web</em>.</li>
+  <li>Requesters and guests never see it, because <em>via phone</em> would tell them that staff filed the ticket.</li>
+  <li>Tickets that existed when the help desk was upgraded to 1.3.0 all read <em>via web</em>, even if they came by API or MCP. There is no ticket-list filter for it yet.</li>
 </ul>
 
 <h3>Required fields</h3>
@@ -283,7 +292,7 @@
 </ul>
 
 <h3>Formatting</h3>
-<p>A reply or internal note is limited to 50,000 bytes, the same as a description; a longer one is refused with <code>400 body_too_long</code> and nothing is written. Replies, notes and descriptions can be formatted with Markdown (see <a href="#tickets-formatting">Formatting text</a>). Text written before 1.3.0 stays plain: line breaks are kept, and Markdown and HTML are shown exactly as typed unless the reader chooses <em>Show formatted</em>.</p>
+<p>A reply or internal note is limited to 50,000 bytes, the same as a description (bytes, not characters: letters outside basic English and emoji take 2 to 4 bytes each, so the form can stop you before 50,000 characters); a longer one is refused with <code>400 body_too_long</code> and nothing is written. Replies, notes and descriptions can be formatted with Markdown (see <a href="#tickets-formatting">Formatting text</a>). Text written before 1.3.0 stays plain: line breaks are kept, and Markdown and HTML are shown exactly as typed unless the reader chooses <em>Show formatted</em>.</p>
 
 <h3>Replies are permanent</h3>
 <p>A reply or note cannot be edited or deleted once it is posted, by anyone. To correct one, post another.</p>
@@ -464,7 +473,7 @@
   <li><strong>No raw HTML.</strong> It is shown as text, so <code>&lt;server01&gt;</code> reads as written. <strong>No images:</strong> an image is shown as the link "[image: alt]" and is never loaded.</li>
   <li><strong>Links</strong> open in a new tab and only <code>http</code>, <code>https</code> and <code>mailto</code> are links. The real host is shown after the link when the link text differs from it. A <code>mailto</code> link with a query (a hidden <code>cc</code>, <code>bcc</code>, <code>subject</code> or <code>body</code>) is not linked, and a link to this help desk's own attachment addresses is not linked either (it says to open the file from the attachments list, where the scan and reputation warnings are).</li>
   <li><strong>Long or complex posts show as plain text.</strong> Text over 50,000 characters is never formatted, and a post that takes too long to format falls back to plain text with a note ("too long to format", "too complex to format"). A page that already shows a lot of formatted text leaves further posts as written.</li>
-  <li><strong>Older long posts are collapsed.</strong> Before 1.3.0 a reply had no length limit, so some stored posts are longer than 50,000 characters. Such a post shows its first 5,000 characters, a note that this is only part of the post, and a <strong>Show full text (size)</strong> button that draws all of it in one block. Selecting and copying that block returns exactly the stored text. Nothing is cut or rewritten. The forms show a counter from 90% of the size limit and will not send more.</li>
+  <li><strong>Older long posts are collapsed.</strong> Before 1.3.0 a reply had no length limit, so some stored posts are longer than 50,000 characters. Such a post shows its first 5,000 characters, a note that this is only part of the post, and a <strong>Show full text (size)</strong> button that draws all of it in one block. Selecting and copying that block returns exactly the stored text (a browser drops a trailing newline when copying, for any post). Nothing is cut or rewritten. The forms show a counter from 90% of the size limit and will not send more.</li>
   <li>A code block or table wider than the screen scrolls inside its own box; the page never scrolls sideways.</li>
 </ul>
 <p>Webhooks, chat messages and email are unchanged: a webhook or chat message carries the Markdown source as text, and email carries no ticket text. Resolution notes, canned responses and settings stay plain text. A NUL character in text is refused with <code>400</code>.</p>

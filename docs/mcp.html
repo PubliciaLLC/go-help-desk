@@ -166,7 +166,7 @@
     <tr><td><code>include_replies</code></td><td>boolean (optional)</td><td>Include the reply thread and the ticket's links. Default <code>true</code>.</td></tr>
   </tbody>
 </table>
-<p>A reporting user never receives internal notes. A ticket the caller may not see is answered with the same "not found" message as one that does not exist.</p>
+<p>A reporting user never receives internal notes. A ticket the caller may not see is answered with the same "not found" message as one that does not exist. For staff and administrators the ticket carries <code>source_channel</code>, how it arrived (<code>web</code>, <code>api</code>, <code>mcp</code>, <code>guest</code> or <code>phone</code>); a reporting user never receives it.</p>
 
 <h3><code>list_tickets</code></h3>
 <p>List the tickets the caller can see, with optional filters.</p>
@@ -214,7 +214,7 @@
     <tr><td><code>guest_phone</code></td><td>string (optional)</td><td>Kept with a guest ticket.</td></tr>
   </tbody>
 </table>
-<p>A malformed <code>type_id</code>, <code>item_id</code> or <code>reporter_user_id</code> is refused rather than ignored. <code>reporter_user_id</code> files the ticket for that user: you, the caller, are recorded as the one who filed it (earlier, the reporter was recorded as the actor), and the user is emailed the usual "We have received your ticket" message, as through the REST API. The same holds for <code>reporter_email</code>, by the same rules as the REST API: an account if the address has one, otherwise a guest ticket (refused while guest submission is off), and every use of <code>reporter_email</code> costs one of 40 an hour per staff member, shared with REST, which is never given back. Creating your own ticket is unchanged. Two things differ from creating a ticket through the REST API: a ticket opened here is not auto-assigned, and custom field values cannot be set.</p>
+<p>A ticket made here is recorded as arriving by MCP, including one filed for someone else. A <code>source_channel</code> argument is a tool error and nothing is written. A malformed <code>type_id</code>, <code>item_id</code> or <code>reporter_user_id</code> is refused rather than ignored. <code>reporter_user_id</code> files the ticket for that user: you, the caller, are recorded as the one who filed it (earlier, the reporter was recorded as the actor), and the user is emailed the usual "We have received your ticket" message, as through the REST API. The same holds for <code>reporter_email</code>, by the same rules as the REST API: an account if the address has one, otherwise a guest ticket (refused while guest submission is off), and every use of <code>reporter_email</code> costs one of 40 an hour per staff member, shared with REST, which is never given back. Creating your own ticket is unchanged. Two things differ from creating a ticket through the REST API: a ticket opened here is not auto-assigned, and custom field values cannot be set.</p>
 
 <h3><code>add_reply</code></h3>
 <p>Add a reply or an internal note to a ticket, authored by the authenticated caller.</p>

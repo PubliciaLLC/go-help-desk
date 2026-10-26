@@ -102,6 +102,7 @@
       <li><a href="#saml-metadata">SAML metadata XML</a></li>
       <li><a href="#staff-search">Staff search</a></li>
       <li><a href="#on-behalf">Filing for a requester</a></li>
+      <li><a href="#source-channel">How a ticket arrived</a></li>
       <li><a href="#mcp-limits">MCP size limit and sessions</a></li>
       <li><a href="#api-keys">API keys</a></li>
       <li><a href="#phone-text">Long text on phones</a></li>
@@ -114,6 +115,7 @@
       <li><a href="#after-upgrade-wizard">After-upgrade wizard</a></li>
       <li><a href="#markdown">Markdown in ticket text</a></li>
       <li><a href="#reply-limit">Reply size limit</a></li>
+      <li><a href="#email-templates">Editable email wording</a></li>
       <li><a href="#known-gaps">Not in 1.3.0</a></li>
       <li><a href="#steps">Doing the upgrade</a></li>
     </ul>
@@ -224,6 +226,7 @@
     <tr><td>SAML accepts pasted metadata XML and reads more name claims</td><td>Administrators who set up SAML; SAML users whose display name may change</td></tr>
     <tr><td>Staff search covers every ticket the person can see, with an <em>Only my tickets</em> chip</td><td>Staff and administrators; <code>scope=visible</code> is new</td></tr>
     <tr><td>Staff can file a ticket for a requester; MCP <code>create_ticket</code> now records the caller as the actor</td><td>Staff and administrators; MCP clients that file for others</td></tr>
+    <tr><td>Each ticket records how it arrived; existing tickets read <code>web</code>; <code>source_channel</code> sent to the API is refused with <code>400</code> (except <code>phone</code> from staff in a browser)</td><td>Staff and administrators; integrations that sent <code>source_channel</code>; anyone reporting on channels</td></tr>
     <tr><td>MCP requests over 1 MiB are refused; an SSE session is bound to the credential that opened it</td><td>MCP clients that send very large calls, or open a stream with one credential and post with another</td></tr>
     <tr><td>Staff can have API keys; every new key expires; keys cannot create keys, create OAuth clients or write users; three more settings are session-only; webhooks made by a key pause with it</td><td>Administrators, staff, and every script that uses an API key</td></tr>
     <tr><td>Long text wraps on phones, and the ticket header buttons get their own row</td><td>Staff and requesters on phones</td></tr>
@@ -236,6 +239,7 @@
     <tr><td>A one-time After upgrading wizard for the first administrator</td><td>The first administrator to sign in after the upgrade</td></tr>
     <tr><td>Markdown in ticket text; old text stays plain; MCP writes Markdown by default</td><td>Everyone who writes tickets; MCP agents; integrations that send Markdown-looking text</td></tr>
     <tr><td>Replies and notes are limited to 50,000 bytes (<code>400 body_too_long</code>); older longer posts show collapsed</td><td>Scripts that post long replies</td></tr>
+    <tr><td>Administrators can edit the wording of every email and add a shared header and footer; a saved edit that stops working fails the mail</td><td>Administrators</td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
@@ -266,7 +270,9 @@
   <li><strong>OAuth clients can write.</strong> Each client acts as a service user that is listed in Admin → Users. <a href="#service-users">Details</a></li>
   <li><strong>API keys for staff.</strong> Staff can create their own API keys when an administrator allows it, every new key expires, and keys are limited in what they can do. Several scripts break; read <a href="#api-keys">the details</a>.</li>
   <li><strong>File for a requester.</strong> Staff can file a ticket for an existing user or a typed address. <a href="#on-behalf">Details</a></li>
+  <li><strong>Tickets record how they arrived.</strong> Web, API, MCP, guest form or phone. Staff see it on the ticket; requesters and guests do not. <a href="#source-channel">Details</a></li>
   <li><strong>Markdown in ticket text.</strong> A formatting editor, strict rendering, and old text left as plain text. <a href="#markdown">Details</a></li>
+  <li><strong>Editable email wording.</strong> Administrators edit all 17 emails and a shared header and footer under <strong>Admin → Email Templates</strong>, with a check as they type and a test send. <a href="#email-templates">Details</a></li>
   <li><strong>Search finds more.</strong> Staff search covers every ticket they can see, with a chip to narrow it to the queue. <a href="#staff-search">Details</a></li>
   <li><strong>One delivery per change.</strong> A webhook gets one delivery for one change, however many things it changed, and nothing is sent for a change that failed. <a href="#one-event">Details</a></li>
   <li><strong>Webhook retries, history and a ticket filter.</strong> <a href="#webhooks">Details</a></li>
@@ -521,7 +527,7 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
   <li><strong>Mail without a password to a public server that has no STARTTLS.</strong> The send fails with <em>SMTP server does not offer STARTTLS and is not on a private address: refusing to send mail unencrypted</em>. Use a server that offers STARTTLS, or port 465.</li>
   <li><strong><code>SMTP_USER</code> set, but the server offers no AUTH.</strong> The send fails with <em>SMTP server does not offer AUTH but SMTP_USER is set</em>. Before, the mail was sent without logging in. Point at a server that offers AUTH, or remove <code>SMTP_USER</code> and <code>SMTP_PASSWORD</code> if the relay accepts your mail without a login.</li>
   <li><strong>Turning on self-signup or guest submission while email is off.</strong> Saving the setting is refused with <code>400 email_required</code> when <code>SMTP_HOST</code> or <code>SMTP_FROM</code> is unset. An install that already has either one on is not switched off and can still save other settings; it gets a warning in the admin panel instead.</li>
-  <li><strong>A damaged email template.</strong> The message is marked failed at once, with no retries, and the error shows in the admin email warning. The shipped templates render, so this matters only for a damaged build.</li>
+  <li><strong>A damaged email template.</strong> The message is marked failed at once, with no retries, and the error shows in the admin email warning. The shipped templates render, so this matters only for a damaged build, or for an edit an administrator saved that stopped working after an upgrade (see <a href="#email-templates">Editable email wording</a>).</li>
 </ol>
 
 <p>Port 465 now connects with TLS from the first byte. Before, it waited until the timeout, so no working setup changes.</p>
@@ -612,7 +618,7 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
   <li>A change that carries a refused classification now changes nothing. The status and assignee in the same request are no longer applied before the <code>400</code>.</li>
 </ul>
 
-<p>Administrators can now archive and unarchive a category, type or item from <strong>Admin → Categories</strong>. To file into it again, unarchive it there.</p>
+<p>Administrators can now archive and unarchive a category, type or item from <strong>Admin → Categories</strong>. To file into it again, unarchive it there. Archiving changes only the row you pick: types under an archived category keep their own setting. On a touch screen the row buttons are always shown and are large enough to tap; with a mouse they appear when you point at the row.</p>
 
 <h2 id="service-users">OAuth clients act through a service user</h2>
 
@@ -845,6 +851,20 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
   <li><code>GET /api/v1/users/lookup?q=</code> feeds the picker: staff and administrators in a signed-in session only (an API key or OAuth client gets <code>403 session_required</code>; see the breaking changes under API keys), at most ten results, <code>400</code> for fewer than two characters, and no disabled, deleted or service accounts.</li>
 </ul>
 
+<h2 id="source-channel">Tickets record how they arrived, and existing ones read <code>web</code></h2>
+
+<p><strong>Who notices:</strong> staff and administrators, anyone who reports on where tickets come from, and integrations that sent a <code>source_channel</code> field. <strong>This is breaking for that last group.</strong></p>
+
+<p>1.3.0 records how each ticket arrived: <code>web</code>, <code>api</code>, <code>mcp</code>, <code>guest</code> or <code>phone</code>. <strong>Tickets that exist when you upgrade are all marked <code>web</code></strong>, because the channel was not recorded before and cannot be worked out afterwards. A ticket an integration opened over REST or MCP, or a guest submitted, reads <code>web</code> too. Use the upgrade date as the start of any report by channel.</p>
+<ul>
+  <li><strong>The server decides the channel; a caller cannot set it.</strong> <code>POST /api/v1/tickets</code> with an API key or OAuth client is <code>api</code>; the same call in a browser session is <code>web</code>; MCP is <code>mcp</code>; the guest form is <code>guest</code>. A follow-up records its own way in, not the original's: a follow-up of a phone ticket is <code>web</code>.</li>
+  <li><strong>The one choice a person makes is <code>phone</code>.</strong> When staff or an administrator file for someone else on the New ticket page, <strong>How did this reach you?</strong> offers <em>Web</em> (the default) or <em>Phone call</em>. It does not appear when you file for yourself.</li>
+  <li><strong>Anything else that sends <code>source_channel</code> is refused with <code>400</code>, and nothing is created:</strong> any value from an API key or OAuth client, any value but <code>phone</code> from a browser session, and <code>phone</code> without <code>reporter_user_id</code> or <code>reporter_email</code>. MCP <code>create_ticket</code> with a <code>source_channel</code> argument is a tool error. An integration that sent the field before, and was ignored, now fails.</li>
+  <li><strong>Who sees it:</strong> staff and administrators see "via web", "via API", "via MCP", "via guest form" or "via phone" next to the opened date on the ticket page, and <code>source_channel</code> on the ticket in REST and in MCP <code>get_ticket</code>. Requesters and guests never receive it, because <code>phone</code> would tell them that staff filed the ticket. There is no ticket-list filter for it.</li>
+  <li><strong>Migration 000056</strong> adds <code>tickets.source_channel</code>. It does not rewrite the table, but <strong>stop every old (1.2 or earlier) instance before it runs</strong>: the migration removes the column default, so an instance still on the old version cannot create tickets afterwards.</li>
+</ul>
+<p><strong>What to check:</strong> any script that sends <code>source_channel</code>, and any report that counts tickets by channel across the upgrade date.</p>
+
 <h2 id="mcp-limits">MCP requests are capped, and SSE sessions are bound to their opener</h2>
 
 <p><strong>Who notices:</strong> anyone who sends very large MCP requests, or who opens an MCP stream with one credential and posts with another.</p>
@@ -899,7 +919,7 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 <h2 id="migration-log">The server log says which migrations ran</h2>
 
 <p><strong>Who notices:</strong> operators.</p>
-<p>At startup, before it opens the port, the server logs what it did to the database schema. <code>database migrated from 21 to 55</code> means an upgrade from 1.2.0: the first number is the version the database was at, the second the version it is at now (a new database says <code>from 0</code>). <code>database schema at 55, no migrations needed</code> is an ordinary restart. The line also carries <code>from</code> and <code>to</code> fields. Use it to check that an upgrade ran before you look anywhere else. A failed migration still stops the start with <code>running migrations: …</code>.</p>
+<p>At startup, before it opens the port, the server logs what it did to the database schema. <code>database migrated from 21 to 57</code> means an upgrade from 1.2.0: the first number is the version the database was at, the second the version it is at now (a new database says <code>from 0</code>). <code>database schema at 57, no migrations needed</code> is an ordinary restart. The line also carries <code>from</code> and <code>to</code> fields. Use it to check that an upgrade ran before you look anywhere else. A failed migration still stops the start with <code>running migrations: …</code>.</p>
 
 <h2 id="rollback">Rolling back to 1.2.0</h2>
 
@@ -945,6 +965,10 @@ Pending signups that 1.3.0 created without a name or password (000032, 000033).
 <strong>Which attachments a guest uploaded</strong> (<code>attachments.uploaded_by_guest</code>, 000054). The files stay; the record of who attached them is forgotten.
 </li><li>
 <strong>Text formats</strong> (000055): <code>tickets.description_format</code> and <code>ticket_replies.body_format</code> are dropped. Description and reply text stays, but which posts were written as Markdown is forgotten, so Markdown posts written under 1.3 show as raw source, and 1.2.0 shows everything as plain text.
+</li><li>
+<strong>Source channel</strong> (000056): <code>tickets.source_channel</code> is dropped, so every recorded <code>api</code>, <code>mcp</code>, <code>guest</code> and <code>phone</code> value is lost. Re-upgrading marks every ticket <code>web</code> again.
+</li><li>
+<strong>Edited email wording</strong> (000057): the table <code>email_template_overrides</code> is dropped, so every edited email and the shared header and footer go back to the shipped text. The audit log keeps the text of each save.
 </li></ul>
 <p><strong>Not undone</strong> (they repair or seed data and have no inverse; their <code>down</code> does nothing): <code>000028</code>, <code>000039</code>, <code>000052</code> and <code>000053</code>. The three staff-email overrides <code>000052</code> stored stay in the settings table, and the tickets <code>000053</code> returned to the queue stay unassigned. 1.2.0 never reads those settings. Settings rows 1.3.0 wrote stay in the table. Passwords hashed at the new cost still work on 1.2.0.</p>
 <p><strong>One difference from a 1.2.0 database:</strong> <code>ticket_replies.guest_token</code> is the last column of the table instead of the fourth. Nothing reads columns by position.</p>
@@ -1007,7 +1031,7 @@ echo "ok: Postgres is bound to 127.0.0.1 only"</code></pre>
 </li><li>
 <strong>Check it.</strong> Sign in as an administrator, open a few tickets, and download an attachment. <code>SELECT version, dirty FROM schema_migrations</code> should say <code>21 | f</code>. <code>docker compose port db 5432</code> should say <code>127.0.0.1:5432</code>.
 </li></ol>
-<p>To go forward again, run <code>git checkout -- docker-compose.yml</code> in <code>go-help-desk/docker</code> to drop the edit from step 3, then <code>git checkout v1.3.0</code> (it refuses while the file is changed) and start it: it runs every migration from 22, and says so in the log (<code>database migrated from 21 to 55</code>).</p>
+<p>To go forward again, run <code>git checkout -- docker-compose.yml</code> in <code>go-help-desk/docker</code> to drop the edit from step 3, then <code>git checkout v1.3.0</code> (it refuses while the file is changed) and start it: it runs every migration from 22, and says so in the log (<code>database migrated from 21 to 57</code>).</p>
 
 <h2 id="guest-attachments">Guests can no longer upload until you turn it on</h2>
 
@@ -1067,13 +1091,29 @@ echo "ok: Postgres is bound to 127.0.0.1 only"</code></pre>
 <h2 id="reply-limit">Replies are limited to 50,000 bytes</h2>
 
 <p><strong>Who notices:</strong> scripts and integrations that post very long replies. <strong>This changes behaviour.</strong></p>
-<p>A reply or internal note over <strong>50,000 bytes of text</strong> is now refused with <code>400 body_too_long</code>, and nothing is written. It is the limit a ticket description has always had. It applies to <code>POST /api/v1/tickets/{id}/replies</code>, <code>POST /api/v1/guest/replies</code> and MCP <code>add_reply</code> (a tool error). Before 1.3.0 a reply had no cap other than the 1 MiB request size, and a megabyte of text slowed every page that showed it.</p>
+<p>A reply or internal note over <strong>50,000 bytes of text</strong> (not characters: letters outside basic English and emoji take 2 to 4 bytes each, so 16,667 Chinese characters are over the limit) is now refused with <code>400 body_too_long</code>, and nothing is written. It is the limit a ticket description has always had. It applies to <code>POST /api/v1/tickets/{id}/replies</code>, <code>POST /api/v1/guest/replies</code> and MCP <code>add_reply</code> (a tool error). Before 1.3.0 a reply had no cap other than the 1 MiB request size, and a megabyte of text slowed every page that showed it.</p>
 <ul>
-  <li><strong>Text already stored is untouched.</strong> A longer post written before the upgrade is shown collapsed: its first 5,000 characters, a note that it is only part of the post, and a <strong>Show full text</strong> button. The button shows all of it, exactly as stored.</li>
+  <li><strong>Text already stored is untouched.</strong> A longer post written before the upgrade is shown collapsed: its first 5,000 characters, a note that it is only part of the post, and a <strong>Show full text</strong> button. The button shows all of it, exactly as stored. (Copying it gives the stored text, except that a browser drops a trailing newline when copying, for any post.)</li>
   <li><strong>Scripts and integrations</strong> that post long logs as replies will start getting <code>400</code>. Split them, or attach them as a file.</li>
-  <li>The web forms count in the same bytes, show a counter near the limit, and will not send more.</li>
+  <li>The web forms count in the same bytes, show a counter near the limit that says how far over the size limit the text is, and will not send more.</li>
 </ul>
 <p><strong>What to check:</strong> any script that pastes command output, a log or a stack trace into a reply.</p>
+
+<h2 id="email-templates">Administrators can edit the wording of the emails</h2>
+
+<p><strong>Who notices:</strong> administrators. This is new, and with nothing edited every email is byte for byte what it was before the editor existed. Migration 000057 adds the table that holds edits; it is safe to apply on a running instance.</p>
+<p>Under <strong>Admin → Email Templates</strong> an administrator edits the subject and body of all 17 emails, and a shared <strong>header</strong> and <strong>footer</strong> that go around every one. The text is plain; an HTML version is not part of 1.3.0. The Settings page links to it.</p>
+<ul>
+  <li><strong>Still no ticket content.</strong> A template may hold only words, a few named values and <code>{{if .Name}}…{{else}}…{{end}}</code>. The ticket emails can print the tracking number and the ticket link; the verification and reset emails, their link; the header and footer, the help desk's name from Settings. Anything else is refused with its line and column. Every mail template must print its link outside any <code>if</code>, because a guest's link is replaced each time and an email without it would lock them out.</li>
+  <li><strong>Limits:</strong> body 8 KiB, subject 200 bytes on one line.</li>
+  <li><strong>Checked as you type.</strong> About 0.4 seconds after the last keystroke the draft is checked on the server. A problem shows beside the field, and Save stays off until the draft is valid. The server checks again on every save.</li>
+  <li><strong>Revert to default</strong> removes the edit. Saving text equal to the default does the same.</li>
+  <li><strong>Send test</strong> mails the draft to the signed-in administrator's own address only, with <code>[Test]</code> in the subject, at most 5 every 10 minutes per administrator.</li>
+  <li><strong>An edit that stops working fails the mail.</strong> If a later upgrade makes a saved edit invalid, mail that uses it fails at once with no retries; it is not replaced by the default. Administrators see a red notice per template with <strong>Revert to default</strong> and <strong>Edit</strong>, and the same list is in <code>email.broken_templates</code> of <code>GET /api/v1/admin/security-warnings</code>. Mail that failed before the revert is not sent again. A broken header or footer fails every mail.</li>
+  <li><strong>Session only.</strong> Administrators in a signed-in browser session, with a second factor. An API key or OAuth client gets <code>403</code>. Routes: <code>/api/v1/admin/email-templates</code>, see the <a href="api-reference.html">API reference</a>.</li>
+  <li><strong>Audit:</strong> each save and revert is recorded with the full text, in the same step as the change. A test send records the template, not the address.</li>
+</ul>
+<p>See <a href="admin-guide.html#admin-email-tpl">Email templates</a> in the admin guide.</p>
 
 <h2 id="known-gaps">What is not in 1.3.0</h2>
 
