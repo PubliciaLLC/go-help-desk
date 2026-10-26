@@ -84,9 +84,15 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 		GuestEmail  string          `json:"guest_email"`
 		GuestName   string          `json:"guest_name"`
 		GuestPhone  string          `json:"guest_phone"`
+		// Refused when present: the visitor does not choose a channel (#130).
+		SourceChannel json.RawMessage `json:"source_channel"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+	if _, refusal := restCreateChannel(nil, body.SourceChannel, false); refusal != "" {
+		Error(w, http.StatusBadRequest, "bad_request", refusal)
 		return
 	}
 	descFormat, err := restTextFormat(body.Format)
@@ -135,6 +141,7 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 		Subject:           body.Subject,
 		Description:       body.Description,
 		DescriptionFormat: descFormat,
+		SourceChannel:     ticket.ChannelGuest,
 		CategoryID:        body.CategoryID,
 		Priority:          ticket.PriorityMedium,
 		GuestEmail:        &email,
@@ -441,7 +448,7 @@ func (s *Server) handleGuestFollowUp(w http.ResponseWriter, r *http.Request) {
 		tooManyAttempts(w, s.loginLimiter.Remaining())
 		return
 	}
-	created, err := s.tickets.CreateRequesterFollowUp(ctx, t.ID, s.adminSvc.TicketPrefix(ctx),
+	created, err := s.tickets.CreateRequesterFollowUp(ctx, t.ID, s.adminSvc.TicketPrefix(ctx), ticket.ChannelGuest,
 		ticket.Actor{Role: user.RoleUser}, s.requesterClassificationOpen,
 		s.routing(ctx, t.CategoryID, nil)...) // a guest's follow-up carries no type
 	if err != nil {

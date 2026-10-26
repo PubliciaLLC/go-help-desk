@@ -41,7 +41,7 @@ var (
 func (h *prioHarness) seedFinished(from string, p ticket.Priority) ticket.Ticket {
 	reporter := uuid.New()
 	at := time.Now().Add(-24 * time.Hour)
-	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID: uuid.New(), TrackingNumber: "HD-000900", Subject: "Printer offline",
 		ReporterUserID: &reporter, Priority: p,
 		AssigneeUserID: ptr(reopenAssignee), AssigneeGroupID: ptr(reopenGroup),

@@ -80,7 +80,7 @@ func newHarness(t *testing.T) *harness {
 // reply falls inside the reopen window.
 func (h *harness) seedResolved(reporterID uuid.UUID) ticket.Ticket {
 	resolvedAt := time.Now().Add(-24 * time.Hour)
-	t := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
+	t := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000001",
 		Subject:        "Printer offline",
@@ -148,7 +148,7 @@ func TestAddReply_SLAFailureDoesNotLoseTheReply(t *testing.T) {
 	reporter := uuid.New()
 	agent := uuid.New()
 
-	seeded := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
+	seeded := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000002",
 		Subject:        "Mouse not working",
@@ -221,7 +221,7 @@ func TestAddReply_InternalNoteNeverNotifiesCustomer(t *testing.T) {
 	reporter := uuid.New()
 	agent := uuid.New()
 
-	seeded := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
+	seeded := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000003",
 		Subject:        "Cannot print",
@@ -257,7 +257,7 @@ func (h *harness) statusNamed(name string) ticket.Status {
 // seedOpen plants a ticket in New.
 func (h *harness) seedOpen() ticket.Ticket {
 	reporter := uuid.New()
-	t := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
+	t := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000100",
 		Subject:        "Open ticket",
@@ -275,7 +275,7 @@ func (h *harness) seedOpen() ticket.Ticket {
 func (h *harness) seedClosed() ticket.Ticket {
 	reporter := uuid.New()
 	closedAt := time.Now().Add(-time.Hour)
-	t := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
+	t := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000101",
 		Subject:        "Closed ticket",

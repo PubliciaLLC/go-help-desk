@@ -132,6 +132,14 @@ What to do: a script that filed tickets for other people by looking the person u
 
 In 1.2.0, `PATCH /api/v1/me/password` took `password` alone and did not ask for the current password. 1.3.0 requires `current_password` and refuses a missing or wrong one with `400 invalid_current_password`, so a 1.2.0 script that sends only `password` now fails. The new name for the replacement is `new_password`; `password` is still read when `new_password` is absent. Wrong guesses are counted per account against a budget the size of sign-in's (`AUTH_RATE_LIMIT_PER_MINUTE`, a separate counter) and answer `429 rate_limited` once it is spent; the correct password is still accepted. A `401` from this route means there is no session. The account page shows a wrong current password inline and keeps the person signed in.
 
+### Existing Tickets Are Marked `web`, Even If They Came by API or MCP (#130)
+
+1.3.0 records how each ticket arrived (`source_channel`: `web`, `api`, `mcp`, `guest` or `phone`). **Tickets that exist when you upgrade are all marked `web`**, because the channel was not recorded before 1.3.0 and cannot be worked out afterwards. A ticket an integration opened over REST or MCP, or a guest submitted, reads `web` too. Channel counts that include dates before the upgrade are not a record of how those tickets came in. Use the upgrade date as the start of any channel report.
+
+- **The channel is recorded from the entry point and cannot be set by a caller.** `POST /tickets` with an API key or OAuth client is `api`; the same call in a browser session is `web`; MCP is `mcp`; the guest form is `guest`. A follow-up records its own entry point, not the original's.
+- **A request that sends `source_channel` is refused with `400`** (nothing is created): any value from an API key or OAuth client, and any MCP `create_ticket` that includes the argument. An integration that sent the member before, which was ignored, now fails. The one value a person can send is `phone`, from the web app, when staff file for someone else.
+- **Migration 000056** adds `tickets.source_channel` (no table rewrite, no default afterwards). As for migration 000055, **stop every old (1.2 or earlier) instance before it runs**: an instance still on the old version cannot insert a ticket once the default is gone.
+
 ### Also breaking, described elsewhere
 
 - A ticket-changing webhook delivers one event per change, and a receiver that switches on `Type` can miss a kind: see *One Change, One Event* under Changed behaviour.
@@ -207,6 +215,10 @@ Every MCP route (`/mcp`, `/mcp/sse`, `/mcp/message` and anything else under `/mc
 - **MCP `create_ticket` takes `reporter_email` too** (with `guest_name`, required, and `guest_phone`), by the same code as REST: an account if the address has one, otherwise a guest ticket, with the same 40-an-hour budget (one budget per staff member across REST and MCP), the same mail and the same actor. `reporter_user_id` still works.
 
 What to check: an API key that files tickets does not need `users:read` to use `reporter_user_id` or `reporter_email`, and cannot use the lookup at all.
+
+### Tickets Record How They Arrived (#130)
+
+Staff and administrators see a small "via web", "via API", "via MCP", "via guest form" or "via phone" next to the opened date on the ticket page, and `source_channel` on the ticket object in REST and MCP `get_ticket`. Requesters and guests never receive it. When a member of staff files for someone else on the New ticket page they get **How did this reach you?**: Web (the default) or Phone call. There is no list filter for it yet. Existing tickets read `web`: see *Existing Tickets Are Marked `web`* under Breaking changes.
 
 ### Markdown in Ticket Text (#443)
 
@@ -527,8 +539,8 @@ Replies and internal notes now appear in a ticket's Activity panel as "Erik Test
 
 The server now says what it did to the schema, once, at startup, before it opens the port:
 
-- `database migrated from 21 to 55`: an upgrade from 1.2.0 (the first number is the version the database was at, the second the version it is at now). A new database says `from 0`.
-- `database schema at 55, no migrations needed`: an ordinary restart.
+- `database migrated from 21 to 56`: an upgrade from 1.2.0 (the first number is the version the database was at, the second the version it is at now). A new database says `from 0`.
+- `database schema at 56, no migrations needed`: an ordinary restart.
 
 The line carries `from` and `to` fields as well. Use it to check that an upgrade ran before you look anywhere else. Migrations still run on their own, before the server accepts traffic, and a failed one still stops the start with `running migrations: ...`.
 
@@ -544,7 +556,7 @@ The line carries `from` and `to` fields as well. Use it to check that an upgrade
 
 1.2.x ends at migration 000021. Going straight to 1.3.0 applies every later migration in number order, and **there is no migration 000048.** The number was retired while 1.3.0 was being built, so that no pre-release database could skip a migration. Nothing is missing: your database goes from 000047 straight to 000049. (#450 first planned 000048, but #451 merged with 000049 first, and the migration runner never applies a version below the one a database is already at.)
 
-The ones these notes describe: 000038 (webhook ticket filter column), 000039 (removes orphaned custom-field assignments, once, irreversibly), 000040 (`visible_on_new` column default becomes false; existing rows untouched), 000041 (OAuth client service users), 000042 (three staff email columns on `users`), 000043 to 000045 (SLA rematch, the password-rehash clock, `users.must_change_password`), 000046 (`ticket_followers`), 000047 (`tickets.reopen_count`, `last_reopened_at`, `paused_seconds_at_last_reopen`), 000049 (`password_reset_tokens`), 000050 (`api_keys.created_by`, `webhook_configs.api_key_id`; the new #450 settings are rows in the settings table and need no migration), 000051 (the `dropped` webhook result and `drop_reason`), 000052 (stores the three staff email administrator overrides as Off on an install that already has users), 000053 (open tickets still assigned to deleted users go back to the queue; see *Tickets Left Assigned to a Deleted User Go Back to the Queue (#524)*) and 000055 (the text format columns; existing text is marked plain; see *Markdown in Ticket Text (#443)*). Those that say so are safe to apply on a running instance.
+The ones these notes describe: 000038 (webhook ticket filter column), 000039 (removes orphaned custom-field assignments, once, irreversibly), 000040 (`visible_on_new` column default becomes false; existing rows untouched), 000041 (OAuth client service users), 000042 (three staff email columns on `users`), 000043 to 000045 (SLA rematch, the password-rehash clock, `users.must_change_password`), 000046 (`ticket_followers`), 000047 (`tickets.reopen_count`, `last_reopened_at`, `paused_seconds_at_last_reopen`), 000049 (`password_reset_tokens`), 000050 (`api_keys.created_by`, `webhook_configs.api_key_id`; the new #450 settings are rows in the settings table and need no migration), 000051 (the `dropped` webhook result and `drop_reason`), 000052 (stores the three staff email administrator overrides as Off on an install that already has users), 000053 (open tickets still assigned to deleted users go back to the queue; see *Tickets Left Assigned to a Deleted User Go Back to the Queue (#524)*) 000055 (the text format columns; existing text is marked plain; see *Markdown in Ticket Text (#443)*) and 000056 (`tickets.source_channel`; every existing ticket is marked `web`; see *Existing Tickets Are Marked `web`, Even If They Came by API or MCP (#130)*). **Stop every old (1.2 or earlier) instance before 000055 and 000056 run:** both remove a column default, so an instance still on the old version cannot create tickets or replies afterwards. Those that say so are safe to apply on a running instance.
 
 A database that ran a 1.3.0 beta build containing `000046` before `000043` to `000045` were merged would skip them: see *Ticket Followers (#441)*.
 
@@ -577,6 +589,7 @@ Each `down` migration undoes its `up`. These are dropped or deleted, and cannot 
 - **Reopen counts and restart points** (000047), **followers** (000046), **password reset links** (000049), the 30-day password clock (000044), the must-change-password flag (000045), **staff email preferences** (000042) and **API key issuer and webhook pause links** (000050).
 - **OAuth service users** (000041): the users made for each client are deleted, and the database removes what hangs off them by cascade: their group memberships (and any sessions or API keys they held, though a service user is not meant to have any). The clients keep working without a user, as in 1.2.0. Tickets and replies they wrote stay, with no author link, and a ticket assigned to one loses its assignee.
 - **Text formats** (000055): `tickets.description_format` and `ticket_replies.body_format` are dropped. Description and reply text stays, but which posts were written as Markdown is forgotten, so Markdown posts written under 1.3 show as raw source, and 1.2.0 shows everything as plain text.
+- **Source channel** (000056): `tickets.source_channel` is dropped, so every recorded `api`, `mcp`, `guest` and `phone` value is lost. Re-upgrading marks every ticket `web` again.
 - **The generated JWT signing key** (`instance_secrets`, 000036). 1.2.0 needs its own `JWT_SECRET` in `docker/.env`: set a random secret of at least 32 bytes (for example `openssl rand -base64 48`). 1.2.0 only warns about a weak or example secret and signs with whatever you give it, and 1.3.0 discarded published example values as well as short and unset ones, so a value that 1.3.0 ignored is not safe to reuse. Every OAuth client fetches a new token either way.
 - Pending signups that 1.3.0 created without a name or password (000032, 000033).
 - **Which attachments a guest uploaded** (000054): `attachments.uploaded_by_guest` is dropped. The files stay; the record of who attached them is forgotten.
@@ -662,4 +675,4 @@ cd docker
 
 5. **Check it.** Sign in as an administrator, open a few tickets, and download an attachment. `SELECT version, dirty FROM schema_migrations` should say `21 | f`. `docker compose port db 5432` should say `127.0.0.1:5432`.
 
-To go forward again, run `git checkout -- docker-compose.yml` in `go-help-desk/docker` to drop the edit from step 3, then `git checkout v1.3.0` (it refuses while the file is changed) and start it: it runs every migration from 22, and says so in the log (`database migrated from 21 to 55`).
+To go forward again, run `git checkout -- docker-compose.yml` in `go-help-desk/docker` to drop the edit from step 3, then `git checkout v1.3.0` (it refuses while the file is changed) and start it: it runs every migration from 22, and says so in the log (`database migrated from 21 to 56`).

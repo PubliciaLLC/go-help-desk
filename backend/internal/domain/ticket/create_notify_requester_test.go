@@ -49,7 +49,7 @@ func TestCreate_NotifiesAnAccountFiledFor(t *testing.T) {
 			h.svc.SetUserEmailLookup(lookup)
 			rid := tc.reporter
 
-			_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+			_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 				Subject: "Printer broken", CategoryID: uuid.New(), ReporterUserID: &rid, FiledBy: tc.filedBy,
 			})
 			require.NoError(t, err)
@@ -66,7 +66,7 @@ func TestCreate_NotifiesAnAccountFiledFor(t *testing.T) {
 	t.Run("no lookup wired", func(t *testing.T) {
 		h := newHarness(t)
 		rid := reporterID
-		_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+		_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 			Subject: "Printer broken", CategoryID: uuid.New(), ReporterUserID: &rid, FiledBy: &staffID,
 		})
 		require.NoError(t, err)

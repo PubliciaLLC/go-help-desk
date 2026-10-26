@@ -342,11 +342,14 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		Subject     string `json:"subject"`
 		Description string `json:"description"`
 		// Optional: plain (the default) or markdown. See restTextFormat.
-		Format     json.RawMessage `json:"format"`
-		CategoryID uuid.UUID       `json:"category_id"`
-		TypeID     *uuid.UUID      `json:"type_id"`
-		ItemID     *uuid.UUID      `json:"item_id"`
-		Priority   string          `json:"priority"`
+		Format json.RawMessage `json:"format"`
+		// Never taken from the caller except "phone" from staff in a browser
+		// session filing for someone else; see restCreateChannel (#130).
+		SourceChannel json.RawMessage `json:"source_channel"`
+		CategoryID    uuid.UUID       `json:"category_id"`
+		TypeID        *uuid.UUID      `json:"type_id"`
+		ItemID        *uuid.UUID      `json:"item_id"`
+		Priority      string          `json:"priority"`
 		// Staff and administrators only (#444): who the ticket is for when it
 		// is not the caller. At most one; neither means the caller.
 		ReporterUserID *uuid.UUID `json:"reporter_user_id"`
@@ -389,6 +392,11 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	onBehalf := body.ReporterUserID != nil || body.ReporterEmail != nil
 	if onBehalf && !isStaffOrAdmin {
 		Error(w, http.StatusForbidden, "forbidden", "only staff can file a ticket for someone else")
+		return
+	}
+	channel, refusal := restCreateChannel(a, body.SourceChannel, onBehalf)
+	if refusal != "" {
+		Error(w, http.StatusBadRequest, "bad_request", refusal)
 		return
 	}
 
@@ -458,6 +466,7 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		Subject:           body.Subject,
 		Description:       body.Description,
 		DescriptionFormat: descFormat,
+		SourceChannel:     channel,
 		CategoryID:        body.CategoryID,
 		TypeID:            body.TypeID,
 		ItemID:            body.ItemID,
@@ -1039,10 +1048,10 @@ func (s *Server) handleCreateFollowUp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if a.Role == user.RoleUser {
-		t, err = s.tickets.CreateRequesterFollowUp(r.Context(), id, s.adminSvc.TicketPrefix(r.Context()), actor,
+		t, err = s.tickets.CreateRequesterFollowUp(r.Context(), id, s.adminSvc.TicketPrefix(r.Context()), followUpChannel(a), actor,
 			s.requesterClassificationOpen, s.routing(r.Context(), orig.CategoryID, orig.TypeID)...)
 	} else {
-		t, err = s.tickets.CreateFollowUp(r.Context(), id, s.adminSvc.TicketPrefix(r.Context()), actor,
+		t, err = s.tickets.CreateFollowUp(r.Context(), id, s.adminSvc.TicketPrefix(r.Context()), followUpChannel(a), actor,
 			s.routing(r.Context(), orig.CategoryID, orig.TypeID)...)
 	}
 	if err != nil {

@@ -693,6 +693,11 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 		return errResult(noUserIdentityMessage)
 	}
 	args := req.GetArguments()
+	// The channel is recorded from the entry point; this tool has no argument
+	// for it, and one that is sent is refused rather than ignored (#130).
+	if _, sent := args["source_channel"]; sent {
+		return errResult("source_channel cannot be set: it is recorded from how the ticket arrived")
+	}
 	subject, _ := args["subject"].(string)
 	catIDStr, _ := args["category_id"].(string)
 	catID, err := uuid.Parse(catIDStr)
@@ -716,6 +721,7 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 		Subject:           subject,
 		Description:       desc,
 		DescriptionFormat: format,
+		SourceChannel:     ticket.ChannelMCP,
 		CategoryID:        catID,
 		Priority:          priority,
 	}
@@ -1089,7 +1095,7 @@ func (s *Server) handleCreateFollowUp(ctx context.Context, req mcpgo.CallToolReq
 		return errResult(notFoundFor(tid.String()))
 	}
 	actorID := caller.UserID
-	t, err := s.tickets.CreateFollowUp(ctx, tid, s.prefix(ctx), ticket.Actor{UserID: &actorID, Role: caller.Role})
+	t, err := s.tickets.CreateFollowUp(ctx, tid, s.prefix(ctx), ticket.ChannelMCP, ticket.Actor{UserID: &actorID, Role: caller.Role})
 	if err != nil {
 		return storeErr(ctx, "create follow-up", err)
 	}

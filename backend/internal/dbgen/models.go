@@ -279,6 +279,7 @@ type Ticket struct {
 	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
 	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
 	DescriptionFormat         string         `json:"description_format"`
+	SourceChannel             string         `json:"source_channel"`
 }
 
 type TicketCustomFieldValue struct {

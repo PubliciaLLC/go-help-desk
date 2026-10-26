@@ -69,12 +69,14 @@ describe('a requester', () => {
     expect(screen.queryByText(/^requester$/i)).toBeNull()
     expect(screen.queryByLabelText(/another user/i)).toBeNull()
     expect(screen.queryByLabelText(/email address/i)).toBeNull()
+    expect(screen.queryByRole('radio', { name: /phone call/i })).toBeNull()
 
     await user.click(screen.getByRole('button', { name: /submit ticket/i }))
     await waitFor(() => expect(createTicket).toHaveBeenCalledTimes(1))
     const sent = createTicket.mock.calls[0][0]
     expect(sent).not.toHaveProperty('reporter_user_id')
     expect(sent).not.toHaveProperty('reporter_email')
+    expect(sent).not.toHaveProperty('source_channel')
     expect(lookup).not.toHaveBeenCalled()
   })
 })
@@ -118,6 +120,65 @@ describe.each(['staff', 'admin'] as const)('the requester control for %s', (role
     const sent = createTicket.mock.calls[0][0]
     expect(sent.reporter_user_id).toBe('u-ada')
     expect(sent).not.toHaveProperty('reporter_email')
+  })
+
+  // #130: the only channel a person picks. Staff taking a call file for the
+  // caller and can say so; filing for themselves there is nothing to pick.
+  it('offers no channel while filing for me', async () => {
+    signInAs(role)
+    const user = userEvent.setup()
+    renderWithQuery(<NewTicketPage />)
+    await fillTicket(user)
+
+    expect(screen.queryByRole('radio', { name: /phone call/i })).toBeNull()
+    await user.click(screen.getByRole('button', { name: /submit ticket/i }))
+    await waitFor(() => expect(createTicket).toHaveBeenCalledTimes(1))
+    expect(createTicket.mock.calls[0][0]).not.toHaveProperty('source_channel')
+  })
+
+  it('files for someone else as web unless "Phone call" is picked', async () => {
+    signInAs(role)
+    const user = userEvent.setup()
+    renderWithQuery(<NewTicketPage />)
+    await fillTicket(user)
+
+    await user.click(screen.getByRole('radio', { name: /email address/i }))
+    await user.type(screen.getByLabelText(/requester email/i), 'new.person@example.com')
+    await user.type(screen.getByLabelText(/requester name/i), 'Ada Lovelace')
+    expect((screen.getByRole('radio', { name: /^web/i }) as HTMLInputElement).checked).toBe(true)
+    await user.click(screen.getByRole('button', { name: /submit ticket/i }))
+    await waitFor(() => expect(createTicket).toHaveBeenCalledTimes(1))
+    expect(createTicket.mock.calls[0][0]).not.toHaveProperty('source_channel')
+  })
+
+  it('sends source_channel "phone" when picked for someone else', async () => {
+    signInAs(role)
+    const user = userEvent.setup()
+    renderWithQuery(<NewTicketPage />)
+    await fillTicket(user)
+
+    await user.click(screen.getByRole('radio', { name: /email address/i }))
+    await user.type(screen.getByLabelText(/requester email/i), 'new.person@example.com')
+    await user.type(screen.getByLabelText(/requester name/i), 'Ada Lovelace')
+    await user.click(screen.getByRole('radio', { name: /phone call/i }))
+    await user.click(screen.getByRole('button', { name: /submit ticket/i }))
+    await waitFor(() => expect(createTicket).toHaveBeenCalledTimes(1))
+    expect(createTicket.mock.calls[0][0].source_channel).toBe('phone')
+  })
+
+  it('drops "phone" when the choice goes back to me', async () => {
+    signInAs(role)
+    const user = userEvent.setup()
+    renderWithQuery(<NewTicketPage />)
+    await fillTicket(user)
+
+    await user.click(screen.getByRole('radio', { name: /email address/i }))
+    await user.click(screen.getByRole('radio', { name: /phone call/i }))
+    await user.click(screen.getByRole('radio', { name: /^me$/i }))
+    await user.click(screen.getByRole('button', { name: /submit ticket/i }))
+    await waitFor(() => expect(createTicket).toHaveBeenCalledTimes(1))
+    // The server refuses "phone" without a requester; it must never be sent.
+    expect(createTicket.mock.calls[0][0]).not.toHaveProperty('source_channel')
   })
 
   it('will not submit "another user" until someone is picked', async () => {

@@ -27,7 +27,7 @@ func TestStaff_CanReadTheListAndAssignFromIt(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Needs an owner", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.userID,
 	})
@@ -76,7 +76,7 @@ func TestReportingUser_CannotReadTheListOrAssign(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Mine", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.userID,
 	})

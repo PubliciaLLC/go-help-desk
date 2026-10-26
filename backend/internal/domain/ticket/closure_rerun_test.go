@@ -71,7 +71,7 @@ func TestCreate_RetryDoesNotKeepTheRoutingOfTheRolledBackAttempt(t *testing.T) {
 	reporter, colleague := uuid.New(), uuid.New()
 	svc := h.rerunService(t, func() { h.store.notPeople = map[uuid.UUID]bool{colleague: true} })
 
-	got, err := svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	got, err := svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject:        "Routed",
 		ReporterUserID: &reporter,
 		AutoAssign:     []ticket.Assignment{{UserID: &colleague}},

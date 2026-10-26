@@ -49,7 +49,7 @@ func newRematchStoreFx(t *testing.T) *rematchStoreFx {
 	require.NoError(t, categorystore.New(q).CreateCategory(ctx, cat))
 	newSt, err := ts.GetStatusByName(ctx, ticket.StatusNameNew)
 	require.NoError(t, err)
-	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("RS-" + uuid.NewString()[:8]),
 		Subject: "rematch store", Description: "rematch store", CategoryID: cat.ID, Priority: ticket.PriorityMedium,
 		StatusID: newSt.ID, ReporterUserID: &rep.ID, CreatedAt: now.Add(-2 * time.Hour), UpdatedAt: now,

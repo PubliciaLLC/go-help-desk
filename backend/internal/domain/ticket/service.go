@@ -223,10 +223,13 @@ type CreateInput struct {
 	Description string
 	// DescriptionFormat is required; an empty value is ErrInvalidTextFormat.
 	DescriptionFormat TextFormat
-	CategoryID        uuid.UUID
-	TypeID            *uuid.UUID
-	ItemID            *uuid.UUID
-	Priority          Priority
+	// SourceChannel is how the ticket arrived and is required: the entry point
+	// names it. ChannelPhone also requires FiledBy.
+	SourceChannel SourceChannel
+	CategoryID    uuid.UUID
+	TypeID        *uuid.UUID
+	ItemID        *uuid.UUID
+	Priority      Priority
 
 	// Exactly one of ReporterUserID or GuestEmail must be set.
 	ReporterUserID *uuid.UUID
@@ -303,7 +306,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 //
 // route is who the new ticket may be routed to, as CreateInput.AutoAssign; none
 // leaves it unassigned (the MCP tool passes none).
-func (s *Service) CreateFollowUp(ctx context.Context, originalID uuid.UUID, trackingPrefix string, actor Actor, route ...Assignment) (Ticket, error) {
+func (s *Service) CreateFollowUp(ctx context.Context, originalID uuid.UUID, trackingPrefix string, channel SourceChannel, actor Actor, route ...Assignment) (Ticket, error) {
 	if actor.Role == user.RoleUser {
 		return Ticket{}, ErrForbidden
 	}
@@ -324,16 +327,20 @@ func (s *Service) CreateFollowUp(ctx context.Context, originalID uuid.UUID, trac
 		// The format travels with the text: a follow-up of an old plain
 		// ticket must not start rendering as Markdown.
 		DescriptionFormat: orig.DescriptionFormat,
-		CategoryID:        orig.CategoryID,
-		TypeID:            orig.TypeID,
-		ItemID:            orig.ItemID,
-		Priority:          orig.Priority,
-		ReporterUserID:    orig.ReporterUserID,
-		GuestEmail:        orig.GuestEmail,
-		GuestName:         orig.GuestName,
-		GuestPhone:        orig.GuestPhone,
-		TrackingPrefix:    trackingPrefix,
-		AutoAssign:        route,
+		// A follow-up is a new ticket and records its own entry point, not
+		// the original's: the person who clicks "follow up" is the one who
+		// opened this ticket, by whatever route they used.
+		SourceChannel:  channel,
+		CategoryID:     orig.CategoryID,
+		TypeID:         orig.TypeID,
+		ItemID:         orig.ItemID,
+		Priority:       orig.Priority,
+		ReporterUserID: orig.ReporterUserID,
+		GuestEmail:     orig.GuestEmail,
+		GuestName:      orig.GuestName,
+		GuestPhone:     orig.GuestPhone,
+		TrackingPrefix: trackingPrefix,
+		AutoAssign:     route,
 	}
 	return s.create(ctx, in, actor, &orig)
 }
@@ -362,6 +369,7 @@ func (s *Service) CreateRequesterFollowUp(
 	ctx context.Context,
 	originalID uuid.UUID,
 	trackingPrefix string,
+	channel SourceChannel,
 	actor Actor,
 	open func(ctx context.Context, categoryID uuid.UUID, typeID *uuid.UUID) error,
 	route ...Assignment,
@@ -397,14 +405,18 @@ func (s *Service) CreateRequesterFollowUp(
 		// The format travels with the text: a follow-up of an old plain
 		// ticket must not start rendering as Markdown.
 		DescriptionFormat: orig.DescriptionFormat,
-		CategoryID:        orig.CategoryID,
-		Priority:          PriorityMedium,
-		ReporterUserID:    orig.ReporterUserID,
-		GuestEmail:        orig.GuestEmail,
-		GuestName:         orig.GuestName,
-		GuestPhone:        orig.GuestPhone,
-		TrackingPrefix:    trackingPrefix,
-		AutoAssign:        route,
+		// A follow-up is a new ticket and records its own entry point, not
+		// the original's: the person who clicks "follow up" is the one who
+		// opened this ticket, by whatever route they used.
+		SourceChannel:  channel,
+		CategoryID:     orig.CategoryID,
+		Priority:       PriorityMedium,
+		ReporterUserID: orig.ReporterUserID,
+		GuestEmail:     orig.GuestEmail,
+		GuestName:      orig.GuestName,
+		GuestPhone:     orig.GuestPhone,
+		TrackingPrefix: trackingPrefix,
+		AutoAssign:     route,
 	}
 	if actor.UserID != nil {
 		in.TypeID = orig.TypeID // an account holder picks category and type
@@ -475,6 +487,25 @@ func checkCreateText(in CreateInput) error {
 	return nil
 }
 
+// checkSourceChannel refuses a missing or unknown channel.
+func checkSourceChannel(in CreateInput) error {
+	if !in.SourceChannel.Valid() {
+		return ErrInvalidSourceChannel
+	}
+	return nil
+}
+
+// checkPhoneHasFiler refuses ChannelPhone without FiledBy: "phone" means a
+// member of staff took the call and filed for the caller, so a ticket with no
+// filer cannot be one. Only create can ask: ValidateCreate runs before the
+// caller has resolved who the ticket is for, and FiledBy is set by that step.
+func checkPhoneHasFiler(in CreateInput) error {
+	if in.SourceChannel == ChannelPhone && in.FiledBy == nil {
+		return fmt.Errorf("%w: phone is for staff filing on someone's behalf", ErrValidation)
+	}
+	return nil
+}
+
 // ValidateCreate refuses what create would refuse for the ticket's own fields
 // and classification (subject, lengths, priority, category, type, item,
 // archived picks), without writing anything and without looking at who the
@@ -491,6 +522,9 @@ func (s *Service) ValidateCreate(ctx context.Context, in CreateInput) error {
 	}
 	if _, err := ParseTextFormat(string(in.DescriptionFormat)); err != nil {
 		return fmt.Errorf("description: %w", err)
+	}
+	if err := checkSourceChannel(in); err != nil {
+		return err
 	}
 	if strings.TrimSpace(in.Subject) == "" {
 		return fmt.Errorf("subject is required: %w", ErrValidation)
@@ -566,6 +600,12 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 	if _, err := ParseTextFormat(string(in.DescriptionFormat)); err != nil {
 		return Ticket{}, fmt.Errorf("description: %w", err)
 	}
+	if err := checkSourceChannel(in); err != nil {
+		return Ticket{}, err
+	}
+	if err := checkPhoneHasFiler(in); err != nil {
+		return Ticket{}, err
+	}
 	if len(in.Description) > MaxDescriptionLength {
 		return Ticket{}, fmt.Errorf("description must be at most %d bytes: %w", MaxDescriptionLength, ErrValidation)
 	}
@@ -630,6 +670,7 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 		Subject:           strings.TrimSpace(in.Subject),
 		Description:       in.Description,
 		DescriptionFormat: in.DescriptionFormat,
+		SourceChannel:     in.SourceChannel,
 		CategoryID:        in.CategoryID,
 		TypeID:            in.TypeID,
 		ItemID:            in.ItemID,
