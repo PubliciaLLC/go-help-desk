@@ -126,6 +126,13 @@ function deleteErrorText(err: unknown): string {
   return `${message.replace(/[.\s]+$/, '')}. Archive it instead to keep the tickets and hide it from new ones.`
 }
 
+// Hover-revealed on a mouse. A touch screen has no hover, so there the button
+// is always shown and 44px square.
+const ARCHIVE_BTN =
+  'opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 ' +
+  'pointer-coarse:opacity-100 pointer-coarse:inline-flex pointer-coarse:items-center pointer-coarse:justify-center ' +
+  'pointer-coarse:min-h-11 pointer-coarse:min-w-11'
+
 // Archiving asks first because it changes what requesters see; restoring only
 // undoes it, so it does not.
 function ArchiveControl({
@@ -154,7 +161,7 @@ function ArchiveControl({
       <button
         onClick={() => mutation.mutate(true)}
         disabled={mutation.isPending}
-        className="opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 hover:text-green-600"
+        className={`${ARCHIVE_BTN} hover:text-green-600`}
         title={`Restore ${kind}`}
       >
         <ArchiveRestoreIcon className={iconClass} />
@@ -167,7 +174,7 @@ function ArchiveControl({
     <>
       <button
         onClick={() => setConfirmOpen(true)}
-        className="opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 hover:text-amber-600"
+        className={`${ARCHIVE_BTN} hover:text-amber-600`}
         title={`Archive ${kind}`}
       >
         <ArchiveIcon className={iconClass} />

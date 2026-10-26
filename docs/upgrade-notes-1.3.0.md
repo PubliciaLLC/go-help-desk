@@ -259,6 +259,10 @@ API keys can now be made by staff, issued by an administrator on a staff member'
 - **Lists and settings API:** `GET /api/v1/admin/api-keys` entries gain `created_by` and `beyond_limit`. `GET /me` gains `can_create_api_keys` and `api_key_max_lifetime_years`.
 - **Existing keys:** an administrator's existing keys keep acting as administrator, unchanged.
 
+### Archive and Restore Buttons on Admin → Categories (#446)
+
+Archiving was possible only through the API (`PATCH` with `active`). Each category, type and item row now has an Archive button, and an archived row has Restore. Archive asks first: the entry can no longer be chosen for new tickets, and tickets already filed under it keep it. Archived rows stay in the tree, greyed and labelled "Archived". Archiving does not cascade to the rows beneath. When deleting an entry is refused because tickets use it, the message now points to Archive.
+
 ### Staff Search Now Covers Every Ticket They Can See (#444)
 
 A search in the ticket list used to cover only the selected queue, so staff searching from "Mine" never found a ticket assigned to someone else. **For staff and administrators the search box now covers every ticket the viewer can see, whatever queue is selected.**
