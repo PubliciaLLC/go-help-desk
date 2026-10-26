@@ -583,7 +583,9 @@ footer {
 
 @media (max-width: 768px) {
   .docs-layout { grid-template-columns: minmax(0, 1fr); }
-  .docs-sidebar { position: static; height: auto; }
+  /* The page text comes first on a phone; the navigation follows it instead of
+     pushing the text a thousand pixels down the page (#477). */
+  .docs-sidebar { position: static; height: auto; order: 2; border-right: none; border-top: 1px solid var(--border); }
   .docs-content { padding: 2rem 1rem; min-width: 0; }
   /* A wide table scrolls inside its own box rather than widening the page. */
   .docs-content table { display: block; overflow-x: auto; }
