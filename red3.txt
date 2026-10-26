@@ -1,0 +1,1 @@
+github.com/publiciallc/go-help-desk/backend/internal/database/emailtemplatestore: no non-test Go files in /private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/database/emailtemplatestore

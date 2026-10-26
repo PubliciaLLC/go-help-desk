@@ -100,6 +100,14 @@ type CustomFieldDef struct {
 	CreatedAt time.Time             `json:"created_at"`
 }
 
+type EmailTemplateOverride struct {
+	Name      string        `json:"name"`
+	Subject   string        `json:"subject"`
+	Body      string        `json:"body"`
+	UpdatedAt time.Time     `json:"updated_at"`
+	UpdatedBy uuid.NullUUID `json:"updated_by"`
+}
+
 type Group struct {
 	ID          uuid.UUID `json:"id"`
 	Name        string    `json:"name"`
