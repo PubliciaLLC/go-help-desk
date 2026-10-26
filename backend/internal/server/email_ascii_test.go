@@ -152,3 +152,45 @@ func TestAdminSettings_RefusesANonASCIIAllowedDomain(t *testing.T) {
 	res.Body.Close()
 	require.Equal(t, http.StatusNoContent, res.StatusCode)
 }
+
+// The routes that take a typed address all end at user.ValidateEmail. These pin
+// each one at the door, so a route added later that skips it shows up here.
+func TestTypedEmailRoutes_RefuseANonASCIIEmail(t *testing.T) {
+	const addr = "jüm@example.test"
+
+	t.Run("signup", func(t *testing.T) {
+		h, cleanup := newHarness(t)
+		defer cleanup()
+		ctx := context.Background()
+		require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeySelfSignupEnabled, true))
+		require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyOpenRegistrationEnabled, true))
+		res := h.doUnauth(t, http.MethodPost, "/api/v1/auth/signup", map[string]any{"email": addr})
+		res.Body.Close()
+		require.Equal(t, http.StatusBadRequest, res.StatusCode)
+	})
+
+	t.Run("guest submission", func(t *testing.T) {
+		h, cleanup := newHarness(t)
+		defer cleanup()
+		enableGuests(t, h)
+		before := ticketCount(t, h)
+		res := h.doGuest(t, http.MethodPost, "/api/v1/guest/tickets", "", map[string]any{
+			"subject": "Door will not open", "description": "it sticks",
+			"category_id": h.catID.String(), "guest_email": addr, "guest_name": "Jim",
+		})
+		res.Body.Close()
+		require.Equal(t, http.StatusBadRequest, res.StatusCode)
+		require.Equal(t, before, ticketCount(t, h), "no ticket is written")
+	})
+
+	t.Run("reporter_email", func(t *testing.T) {
+		h, cleanup := newHarness(t)
+		defer cleanup()
+		enableGuests(t, h)
+		before := ticketCount(t, h)
+		res := h.postOnBehalf(t, "staff", map[string]any{"reporter_email": addr, "guest_name": "Jim"})
+		res.Body.Close()
+		require.Equal(t, http.StatusBadRequest, res.StatusCode)
+		require.Equal(t, before, ticketCount(t, h), "no ticket is written")
+	})
+}
