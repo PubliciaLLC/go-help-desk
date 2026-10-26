@@ -1,9 +1,11 @@
 package notify
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/emailtemplate"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
@@ -527,4 +530,55 @@ func RenderTemplate(def TemplateDef, subject, body string, vars map[string]strin
 		return "", "", err
 	}
 	return renderedSubject, renderedBody, nil
+}
+
+// BrokenTemplate is a stored row that no longer validates.
+type BrokenTemplate struct {
+	Name      string
+	Label     string
+	Reason    string
+	UpdatedAt time.Time
+}
+
+// BrokenTemplates picks the rows that would fail a send. It is the check the
+// admin notice and the startup warning use, and it is the same ValidateTemplate
+// the send path runs, so the notice cannot say a template is fine that a mail
+// would then fail on. A row whose name is not in the registry (a template a
+// later release retired) is never read by a send and is left out.
+func BrokenTemplates(rows []emailtemplate.Override) []BrokenTemplate {
+	out := []BrokenTemplate{}
+	for _, r := range rows {
+		def, ok := LookupTemplate(r.Name)
+		if !ok {
+			continue
+		}
+		if errs := ValidateTemplate(def, r.Subject, r.Body); len(errs) > 0 {
+			out = append(out, BrokenTemplate{Name: r.Name, Label: def.Label, Reason: errs[0].Error(), UpdatedAt: r.UpdatedAt})
+		}
+	}
+	return out
+}
+
+// TemplateLister is what the startup check reads.
+type TemplateLister interface {
+	List(ctx context.Context) ([]emailtemplate.Override, error)
+}
+
+// WarnBrokenTemplates logs one WARN for every stored template that no longer
+// validates, and returns how many. It never blocks startup: the install still
+// serves, the affected mail fails visibly (the admin notice and the email
+// health warning), and one click reverts it. A read failure is logged and
+// counts as none.
+func WarnBrokenTemplates(ctx context.Context, src TemplateLister, log *slog.Logger) int {
+	rows, err := src.List(ctx)
+	if err != nil {
+		log.Error("checking the edited email templates failed", "error", err)
+		return 0
+	}
+	broken := BrokenTemplates(rows)
+	for _, b := range broken {
+		log.Warn("an edited email template does not work with this release, so mail that uses it fails; revert it under Admin, Email templates",
+			"template", b.Name, "label", b.Label, "reason", b.Reason)
+	}
+	return len(broken)
 }

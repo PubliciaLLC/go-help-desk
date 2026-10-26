@@ -1085,6 +1085,9 @@ type emailStatus struct {
 	Failing      bool   `json:"failing"`
 	FailingCount int    `json:"failing_count"`
 	LastError    string `json:"last_error"`
+	// BrokenTemplates are edited email templates that no longer work with this
+	// release (#158). A mail that uses one fails; reverting it clears the entry.
+	BrokenTemplates []brokenTemplate `json:"broken_templates"`
 }
 
 type storageStatus struct {
@@ -1176,7 +1179,7 @@ func (s *Server) passkeyStatus() passkeyStatus {
 }
 
 func (s *Server) emailStatus(ctx context.Context) emailStatus {
-	st := emailStatus{Enabled: s.cfg.EmailEnabled(), Missing: []string{}}
+	st := emailStatus{Enabled: s.cfg.EmailEnabled(), Missing: []string{}, BrokenTemplates: s.brokenTemplates(ctx)}
 	if s.cfg.SMTPHost == "" {
 		st.Missing = append(st.Missing, "SMTP_HOST")
 	}

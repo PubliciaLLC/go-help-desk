@@ -1,0 +1,8 @@
+        	Error Trace:	/private/tmp/claude-501/-Users-erikpitti-source-repos-publiciallc-go-help-desk/9a79e3c7-aa03-4999-bcaf-909bc777ccf4/scratchpad/w158/backend/internal/domain/audit/audit_redact_test.go:180
+        	Error:      	Not equal: 
+        	            	expected: string("ticket_created")
+        	            	actual  : <nil>(<nil>)
+        	Test:       	TestRedact_EmailTemplateTextIsShownUnderItsOwnKeysOnly
+FAIL
+FAIL	github.com/publiciallc/go-help-desk/backend/internal/domain/audit	0.252s
+FAIL

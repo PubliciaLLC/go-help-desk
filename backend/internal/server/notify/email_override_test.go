@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"mime/quotedprintable"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -267,3 +269,61 @@ func goldenEventValue(typ notification.EventType) notification.Event {
 }
 
 func testBase() *config.Config { return &config.Config{BaseURL: "https://help.example.com"} }
+
+// ── which stored rows no longer work ─────────────────────────────────────────
+
+func TestBrokenTemplates_ListsOnlyTheRowsThatFailValidation(t *testing.T) {
+	at := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	got := BrokenTemplates([]emailtemplate.Override{
+		{Name: "ticket_created", Subject: "ok", Body: "{{.TicketURL}}", UpdatedAt: at},
+		{Name: "password_reset", Subject: "ok", Body: "no link", UpdatedAt: at},
+		{Name: NameFooter, Body: "{{.TicketURL}}", UpdatedAt: at},
+		{Name: NameHeader, Body: "fine {{.SiteName}}", UpdatedAt: at},
+		{Name: "retired_template", Subject: "x", Body: "x", UpdatedAt: at},
+	})
+	require.Len(t, got, 2)
+	require.Equal(t, "password_reset", got[0].Name)
+	require.Equal(t, "Reset your password", got[0].Label)
+	require.Contains(t, got[0].Reason, "ResetURL")
+	require.Equal(t, at, got[0].UpdatedAt)
+	require.Equal(t, NameFooter, got[1].Name)
+	require.Equal(t, "Footer", got[1].Label)
+}
+
+func TestBrokenTemplates_NoneIsNotNil(t *testing.T) {
+	require.NotNil(t, BrokenTemplates(nil), "the JSON must be [], not null")
+}
+
+// ── the startup warning ──────────────────────────────────────────────────────
+
+type lister struct {
+	rows []emailtemplate.Override
+	err  error
+}
+
+func (l lister) List(context.Context) ([]emailtemplate.Override, error) { return l.rows, l.err }
+
+func TestWarnBrokenTemplates_LogsEachOneAndNeverBlocks(t *testing.T) {
+	var buf strings.Builder
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	n := WarnBrokenTemplates(context.Background(), lister{rows: []emailtemplate.Override{
+		{Name: "ticket_created", Subject: "ok", Body: "{{.TicketURL}}"},
+		{Name: "password_reset", Subject: "ok", Body: "no link"},
+		{Name: NameHeader, Body: "{{.TicketURL}}"},
+	}}, log)
+	require.Equal(t, 2, n)
+	out := buf.String()
+	require.Equal(t, 2, strings.Count(out, "level=WARN"))
+	require.Contains(t, out, `template=password_reset`)
+	require.Contains(t, out, `template=_header`)
+	require.NotContains(t, out, "template=ticket_created")
+	require.Contains(t, out, "revert")
+}
+
+func TestWarnBrokenTemplates_AReadFailureIsLoggedNotFatal(t *testing.T) {
+	var buf strings.Builder
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	require.Zero(t, WarnBrokenTemplates(context.Background(), lister{err: errors.New("db down")}, log))
+	require.Contains(t, buf.String(), "db down")
+}

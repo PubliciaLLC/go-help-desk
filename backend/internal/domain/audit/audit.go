@@ -223,6 +223,13 @@ var shownKeys = map[string]bool{
 	// whether it was internal. The text is never written, and no key that could
 	// carry it is allow-listed.
 	"replyid": true, "internal": true,
+	// An edited email template (#158): which one, and its full subject and body.
+	// An administrator wrote that text and a template cannot hold ticket
+	// content, so it is safe to show, and showing it is the history: there is
+	// no versions table. Named template_* because the plain keys "subject" and
+	// "body" are where ticket entries keep the ticket's own text, and those
+	// stay hidden.
+	"templatename": true, "templatesubject": true, "templatebody": true,
 }
 
 // Redact returns copies of before/after showing only allow-listed keys

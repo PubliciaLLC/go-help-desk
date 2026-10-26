@@ -24,6 +24,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/cannedresponsestore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/categorystore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/customfieldstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/emailtemplatestore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/groupstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/outboxstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/passwordresetstore"
@@ -308,6 +309,13 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("initialising email dispatcher: %w", err)
 	}
+	// The admin's edited templates (#158), read at send time. One primary-key
+	// lookup per mail and no cache, so several replicas agree. A template that
+	// no longer validates after an upgrade is named here and never blocks
+	// startup: the mail that uses it fails visibly, and one click reverts it.
+	emailTemplates := emailtemplatestore.NewWithDB(sqlDB)
+	emailDisp.WithTemplates(emailTemplates, adminSvc)
+	notify.WarnBrokenTemplates(ctx, emailTemplates, slog.Default())
 	// Said once at startup so "why did nobody get an email" has an answer in
 	// the log (#456). Half a configuration is a warning, not a quiet off.
 	if msg, misconfigured := cfg.EmailStatus(); misconfigured {
@@ -457,6 +465,7 @@ func run() error {
 		server.WithAuditStore(auStore),
 		server.WithPasskeysUnavailable(passkeyReason),
 		server.WithEmailHealth(outboxStore),
+		server.WithEmailTemplates(emailTemplates, emailDisp),
 		server.WithWebhookRedeliverer(webhookDisp),
 		server.WithPasswordReset(passwordResetSvc),
 	)
