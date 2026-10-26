@@ -1,0 +1,52 @@
+waiting for postgres ready
+TEST_DATABASE_URL=postgres://helpdesk:helpdesk@127.0.0.1:64833/helpdesk_test?sslmode=disable
+
+running: go test -count=1 ./...
+
+ok  	github.com/publiciallc/go-help-desk/backend/cmd/server	15.610s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/antivirus	1.076s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/config	1.254s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/database	31.161s
+?   	github.com/publiciallc/go-help-desk/backend/internal/database/adminstore	[no test files]
+?   	github.com/publiciallc/go-help-desk/backend/internal/database/auditstore	[no test files]
+ok  	github.com/publiciallc/go-help-desk/backend/internal/database/authstore	1.720s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/database/cannedresponsestore	2.534s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/database/categorystore	2.295s
+?   	github.com/publiciallc/go-help-desk/backend/internal/database/customfieldstore	[no test files]
+ok  	github.com/publiciallc/go-help-desk/backend/internal/database/dbretry	2.583s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/database/emailtemplatestore	3.388s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/database/groupstore	3.222s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/database/outboxstore	22.306s
+?   	github.com/publiciallc/go-help-desk/backend/internal/database/passwordresetstore	[no test files]
+?   	github.com/publiciallc/go-help-desk/backend/internal/database/registrationstore	[no test files]
+?   	github.com/publiciallc/go-help-desk/backend/internal/database/reputationstore	[no test files]
+ok  	github.com/publiciallc/go-help-desk/backend/internal/database/sessionstore	12.726s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/database/slastore	3.896s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/database/tagstore	3.231s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore	3.722s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/database/txrunner	11.257s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/database/userstore	22.471s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/database/webauthnstore	3.296s
+?   	github.com/publiciallc/go-help-desk/backend/internal/dbgen	[no test files]
+ok  	github.com/publiciallc/go-help-desk/backend/internal/domain/admin	1.942s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/domain/attachment	2.207s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/domain/audit	1.850s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/domain/auth	5.087s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/domain/cannedresponse	1.477s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/domain/category	1.372s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/domain/customfield	1.321s
+?   	github.com/publiciallc/go-help-desk/backend/internal/domain/emailtemplate	[no test files]
+ok  	github.com/publiciallc/go-help-desk/backend/internal/domain/group	0.688s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/domain/notification	0.714s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/domain/passwordreset	0.735s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/domain/plugin	0.822s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/domain/registration	0.774s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/domain/sla	0.797s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/domain/tag	0.953s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/domain/ticket	0.515s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/domain/user	10.145s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/domain/webauthn	1.102s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/mcp	1.896s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/middleware	1.943s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/reputation	4.758s
+ok  	github.com/publiciallc/go-help-desk/backend/internal/safehttp	1.448s
