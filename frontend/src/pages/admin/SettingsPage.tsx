@@ -1860,6 +1860,15 @@ function EmailPanel({
 }) {
   return (
     <div className="space-y-6">
+      <Section title="Email templates">
+        <div className="px-5 py-4 text-sm text-gray-500">
+          The wording of every email this help desk sends, and a header and footer for all of them, can be edited.{' '}
+          <Link to="/admin/email-templates" className="font-medium text-blue-600 underline">
+            Edit email templates
+          </Link>
+        </div>
+      </Section>
+
       <Section title="Staff email about tickets">
         <div className="px-5 py-4 text-sm text-gray-500">
           Staff are emailed when a ticket is assigned to them or their group, and when a requester replies on a ticket

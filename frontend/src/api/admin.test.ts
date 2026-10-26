@@ -5,6 +5,7 @@ import {
   saveSAMLConfig, uploadLogo, addGroupScope, createSLAPolicy, updateSLAPolicy,
   deleteGroup, deleteOAuthClient, deleteAPIKey, deleteCategory, deleteType, deleteItem,
   deleteCategoryAssignment, deleteTypeAssignment, deleteItemAssignment, removeGroupScope, updateSettings,
+  emailTemplateProblems, getEmailTemplate, previewEmailTemplate, revertEmailTemplate, saveEmailTemplate, testEmailTemplate,
 } from './admin'
 
 // admin.ts is 557 lines and almost all of it is one-line wrappers, which are
@@ -168,4 +169,46 @@ describe('deletes treat a not_found 404 as already gone', () => {
       await expect(call()).rejects.toMatchObject({ response: { status: 500 } })
     })
   }
+})
+
+// #158: a template's name is a path segment, and the reserved header and footer
+// start with an underscore. The wrappers send exactly what the server routes on.
+describe('email template calls', () => {
+  it('address one template by name, escaped, with the verbs the API routes', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ok = { data: {} } as any
+    const get = vi.spyOn(api, 'get').mockResolvedValue(ok)
+    const put = vi.spyOn(api, 'put').mockResolvedValue(ok)
+    const post = vi.spyOn(api, 'post').mockResolvedValue(ok)
+    const del = vi.spyOn(api, 'delete').mockResolvedValue(ok)
+    const draft = { subject: 's', body: 'b' }
+
+    await getEmailTemplate('_header')
+    await saveEmailTemplate('ticket_created', draft)
+    await previewEmailTemplate('ticket_created', draft)
+    await testEmailTemplate('ticket_created', draft)
+    await revertEmailTemplate('a/b')
+
+    expect(get).toHaveBeenCalledWith('/admin/email-templates/_header')
+    expect(put).toHaveBeenCalledWith('/admin/email-templates/ticket_created', draft)
+    expect(post).toHaveBeenCalledWith('/admin/email-templates/ticket_created/preview', draft)
+    expect(post).toHaveBeenCalledWith('/admin/email-templates/ticket_created/test', draft)
+    expect(del).toHaveBeenCalledWith('/admin/email-templates/a%2Fb')
+  })
+})
+
+describe('emailTemplateProblems', () => {
+  const refusal = (data: unknown) => ({ response: { data } })
+
+  it('reads the per-field problems out of a 400 invalid_template', () => {
+    const errors = [{ field: 'body', line: 2, col: 5, message: 'no' }]
+    expect(emailTemplateProblems(refusal({ error: { code: 'invalid_template', errors } }))).toEqual(errors)
+  })
+
+  it('is empty for any other error, so a network failure is not shown as a template problem', () => {
+    expect(emailTemplateProblems(refusal({ error: { code: 'internal_error', errors: [{ field: 'body' }] } }))).toEqual([])
+    expect(emailTemplateProblems(new Error('network'))).toEqual([])
+    expect(emailTemplateProblems(refusal({ error: { code: 'invalid_template' } }))).toEqual([])
+    expect(emailTemplateProblems(undefined)).toEqual([])
+  })
 })

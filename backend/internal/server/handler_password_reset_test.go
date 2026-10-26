@@ -31,7 +31,7 @@ type resetMailbox struct {
 
 type resetMail struct{ to, token string }
 
-func (m *resetMailbox) SendPasswordResetEmail(to, token, _ string) error {
+func (m *resetMailbox) SendPasswordResetEmail(_ context.Context, to, token, _ string) error {
 	if m.failNext > 0 {
 		m.failNext--
 		return errors.New("smtp: connection refused")

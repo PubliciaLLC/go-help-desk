@@ -212,6 +212,7 @@ export function AdminAuditPage() {
                         <span className="font-medium text-gray-900">{isReplyAction(e.action) ? replyActionLabel(e.action) : (followRemovalLabel(e) ?? labelFor(e.action))}</span>
                         {/* A follow entry's diff only repeats what its label says. */}
                         {!isFollowAction(e.action) && !isReplyAction(e.action) && <AuditDiff before={e.before} after={e.after} names={e.names} />}
+                        {e.entity_type === 'email_template' && e.before && !e.after && <RemovedTemplateText before={e.before} />}
                       </td>
                       <td className="px-4 py-3 text-gray-600 wrap-anywhere">
                         {e.actor_masked
@@ -258,5 +259,21 @@ export function AdminAuditPage() {
         )}
       </div>
     </Layout>
+  )
+}
+
+// #158: reverting an email template deletes the edited text, and the revert
+// dialog promises it stays in the audit log. A revert has no "after", which
+// AuditDiff leaves out on purpose for every other entity type, so this entity
+// type alone shows what was removed.
+function RemovedTemplateText({ before }: { before: Record<string, unknown> }) {
+  const subject = typeof before.template_subject === 'string' ? before.template_subject : ''
+  const body = typeof before.template_body === 'string' ? before.template_body : ''
+  return (
+    <div className="mt-1 border-l-2 border-gray-100 pl-2 text-gray-500">
+      <p>Removed text:</p>
+      {subject && <p className="wrap-anywhere"><span className="font-mono">template_subject</span>: {subject}</p>}
+      <pre className="whitespace-pre-wrap font-mono text-xs [overflow-wrap:anywhere]">{body}</pre>
+    </div>
   )
 }

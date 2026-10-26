@@ -182,7 +182,7 @@ func (s *Service) SendVerification(ctx context.Context, id uuid.UUID) error {
 	}
 	// pr.Email, not what the request typed: the address on the row, read back
 	// from the database. Same for the token.
-	if err := s.mailer.SendVerificationEmail(pr.Email, pr.Token.String(), s.baseURL); err != nil {
+	if err := s.mailer.SendVerificationEmail(ctx, pr.Email, pr.Token.String(), s.baseURL); err != nil {
 		return fmt.Errorf("sending verification email: %w", err)
 	}
 	return nil

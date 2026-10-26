@@ -25,6 +25,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/cannedresponse"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/emailtemplate"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/passwordreset"
@@ -244,6 +245,14 @@ type Server struct {
 	// the request, so it tells the requester nothing about the account.
 	passwordResetLimiter *authmw.RateLimiter
 
+	// The template editor (#158). Nil unless WithEmailTemplates gave them.
+	emailTemplates emailtemplate.Store
+	templateMailer TemplateMailer
+	// templateTestLimiter caps template test sends per administrator
+	// (templateTestsPerWindow in templateTestWindow). INTERIM like the others:
+	// in memory and per process.
+	templateTestLimiter *authmw.RateLimiter
+
 	cfg      *config.Config
 	router   *chi.Mux
 	sessions SessionStore
@@ -441,6 +450,7 @@ func New(
 		onBehalfMailLimiter: authmw.NewRateLimiter(onBehalfMailPerHour, time.Hour),
 		// The same shape and the same reasoning (#451).
 		passwordResetLimiter: authmw.NewRateLimiter(1, 5*time.Minute),
+		templateTestLimiter:  authmw.NewRateLimiter(templateTestsPerWindow, templateTestWindow),
 		// One Budget for the life of the process, always — even when no
 		// lookup is wired, so that nothing has to check for nil later. A
 		// Budget built per request is a fresh allowance per request, which is

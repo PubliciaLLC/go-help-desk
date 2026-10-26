@@ -3245,6 +3245,90 @@ on the existing webhook feature instead of as plugins.
 
   **Guest tickets** carry a per-ticket link instead of a ticket id, so a
   recipient with no account reaches their own thread and nothing else.
+- **Editable email templates** ([#158](https://github.com/PubliciaLLC/go-help-desk/issues/158)).
+  An administrator edits the wording of all 17 emails under **Admin → Email
+  Templates** (`/admin/email-templates`), and a shared **header** and **footer**
+  that wrap every mail. Plain text only; an HTML part is a later release.
+
+  *No ticket content, ever.* The rule above holds for edited text exactly as
+  for the compiled text. A template is `text/template`, but only a sliver of
+  it is accepted: the words, `{{.Name}}`, and `{{if .Name}}…{{else}}…{{end}}`.
+  The parse tree is walked and anything else is refused with its line and
+  column (a FuncMap cannot do this: `printf`, `call` and `index` are built in,
+  and `{{range 1000000000}}` is legal). The variables are the whole of what a
+  template can see, and a test pins them:
+
+  | Template | Variables | Must print (outside any `if`) |
+  | --- | --- | --- |
+  | the six requester mails (created, replied, status changed, resolved, reopened, guest link) | `TrackingNumber`, `TicketURL` | `TicketURL` |
+  | the nine staff mails | `TrackingNumber`, `TicketURL` | `TicketURL` |
+  | email verification | `VerifyURL` | `VerifyURL` |
+  | password reset | `ResetURL` | `ResetURL` |
+  | header, footer | `SiteName` (the name in Settings) | nothing |
+
+  The guest status, resolve and reopen mails carry the guest's *rotated* link,
+  so dropping `TicketURL` from one would lock the guest out; that is why the
+  link is required and required at the top level. Caps: body 8 KiB, subject 200
+  bytes on one line (a line break in a subject is a header break), rendered
+  output 64 KiB. Each default subject is a template too, so the text the editor
+  shows as "the default" is the text a never-edited install sends.
+
+  *Storage.* Table `email_template_overrides` (migration `000057`): one row per
+  edited template, keyed by name. No row means the shipped text; **reverting is
+  deleting the row**, and saving text equal to the default deletes it too. The
+  header and footer are the reserved names `_header` and `_footer` in the same
+  table, and default to empty, so **with nothing edited every mail is
+  byte-identical to the one before the editor** (a golden test holds the whole
+  MIME message of every template). The header and footer are concatenated
+  verbatim around the body. There is no versions table: the audit log is the
+  history. A send reads the rows it needs in one primary-key lookup, no cache,
+  so several replicas agree.
+
+  *A stale edit fails the mail.* An edit can stop validating only after an
+  upgrade that removes a variable or tightens a rule. The send re-validates the
+  stored text and, if it fails, **fails the mail** with `ErrPermanent` and
+  `email template "Reset your password": your edited version does not work with
+  this release (…); revert it under Admin, Email templates`. It does not fall
+  back to the default: the administrator chose that, knowing a reset or guest
+  link could be missed. So the failure is never quiet: it is the `last_error` of
+  the email-health warning, a WARN per template at startup (startup is never
+  blocked), and `email.broken_templates` in `GET /admin/security-warnings`,
+  computed live from the rows, which the admin banner shows as a red notice per
+  template with a one-click **Revert to default** and an **Edit** link. A broken
+  header or footer fails every mail. Mail that failed before a revert is **not**
+  re-sent.
+
+  *API.* Session-only (an API key or OAuth client is refused with 403, on top
+  of the admin role and MFA): `GET /admin/email-templates`, `GET|PUT|DELETE
+  /admin/email-templates/{name}`, `POST …/{name}/preview`, `POST …/{name}/test`.
+  `PUT` validates again whatever the editor checked, and answers a refusal with
+  400 `invalid_template` carrying `field`, `line`, `col` and `errors` (one per
+  field). `preview` is also the live check: it answers 200 with `valid: false`
+  and every problem, renders a valid draft with sample data (a real-format
+  tracking number; links carrying `token=sample-not-a-real-link`, which answer
+  `token_invalid`) inside the saved header and footer, and sends and stores
+  nothing. `test` mails the draft, or the saved text if none is given, to **the
+  signed-in administrator's own address only** (the request has no recipient to
+  honour), with `[Test] ` in front of the subject, at most 5 per 10 minutes per
+  administrator (429 with `Retry-After`), 503 `email_not_configured` when email
+  is off, and the SMTP error returned to the page.
+
+  *The editor checks as you type.* The draft goes to `preview` 400 ms after the
+  last keystroke. A problem shows beside its field with line and column, the
+  field is marked `aria-invalid`, and **Save is disabled while the draft is
+  invalid or has not been checked yet**. That is a convenience, never the
+  authority: the server refuses an invalid save whatever the page did, and the
+  page shows that refusal the same way.
+
+  *Audit.* `email_template_saved` and `email_template_reverted` are written in
+  the same transaction as the row change, with the **full** subject and body
+  under `template_name`, `template_subject` and `template_body`; a first edit
+  records the default as "before", a revert records the edited text as
+  "before". `email_template_test_sent` records the template and never the
+  address. `template_*` are allow-listed in the audit view; the plain `subject`
+  and `body` keys stay hidden, because ticket entries keep the ticket's own text
+  under them.
+
 - **Webhooks** — configurable HTTP callbacks for ticket lifecycle events:
   `ticket.created`, `ticket.assigned`, `ticket.status_changed`,
   `ticket.replied` (a customer-visible reply only), `ticket.note_added` (a

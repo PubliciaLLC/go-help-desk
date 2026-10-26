@@ -114,6 +114,10 @@ tags:
     description: Installed plugins and whether each is enabled. Installing and uninstalling are not implemented.
   - name: "Admin: Credentials"
     description: The scope catalogue, API keys and OAuth clients.
+  - name: "Admin: Email templates"
+    description: >-
+      The wording of the mail the server sends, and a shared header and footer.
+      Session-only; templates cannot include ticket text.
   - name: "Admin: Webhooks"
     description: Outgoing webhook subscriptions.
   - name: "Admin: Tags"
@@ -7767,6 +7771,277 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /api/v1/admin/email-templates:
+    get:
+      operationId: listEmailTemplates
+      summary: List the editable email templates.
+      description: >-
+        Administrators only, in a signed-in session (second factor required). An
+        API key or OAuth client is refused with 403 session_required. Returns the 17
+        mails and the shared header and footer (names _header and _footer), in the
+        order the editor shows them. customised is true when the administrator
+        saved a version; broken is true when that version no longer works with this
+        release, which fails the mail that uses it.
+      tags: ['Admin: Email templates']
+      x-ghd-handler: handleListEmailTemplates
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      responses:
+        '200':
+          description: Every template.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EmailTemplateSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v1/admin/email-templates/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        description: A name from the list, such as ticket_created, password_reset or _header.
+        schema:
+          type: string
+    get:
+      operationId: getEmailTemplate
+      summary: Read one email template.
+      description: >-
+        Administrators only, in a signed-in session (second factor required). Returns the text in effect (the saved version, or the
+        default), the default, the variables the template may print and the one it
+        must print outside any if. broken and broken_reason say whether the saved
+        version still validates. An unknown name answers 404 not_found.
+      tags: ['Admin: Email templates']
+      x-ghd-handler: handleGetEmailTemplate
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      responses:
+        '200':
+          description: The template.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmailTemplateDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: not_found, for a name that is not a template.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    put:
+      operationId: saveEmailTemplate
+      summary: Save an edited email template.
+      description: >-
+        Administrators only, in a signed-in session (second factor required). Validated here whatever the editor checked: UTF-8 with no
+        NUL, at most 8192 bytes of body and 200 bytes of one-line subject, then parsed,
+        then restricted to the words, {{.Name}} for a variable the template has, and
+        {{if .Name}}...{{else}}...{{end}}, then required to print its link (the
+        content templates) outside any if, then rendered with sample data. Ticket
+        content is not a variable and cannot be made one. A refusal is 400
+        invalid_template with the first problem's field, line and col and every
+        problem in errors (one per field); nothing is stored or audited. Text equal to the
+        default removes the stored version instead of keeping a copy. The change and its
+        audit entry (email_template_saved, with the full text) commit together. The
+        header and footer take an empty subject.
+      tags: ['Admin: Email templates']
+      x-ghd-handler: handlePutEmailTemplate
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailTemplateDraft'
+      responses:
+        '200':
+          description: Saved. The template as now in effect.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmailTemplateDetail'
+        '400':
+          description: >-
+            invalid_template (with field, line, col and errors), or bad_request for a body
+            that is not JSON.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: not_found, for a name that is not a template.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      operationId: revertEmailTemplate
+      summary: Revert an email template to the default.
+      description: >-
+        Administrators only, in a signed-in session (second factor required). Deletes the saved version. The edited text stays in the audit
+        log (email_template_reverted). Idempotent: reverting a template that was never
+        edited answers 204 and records nothing. Mail that failed while the saved version
+        was broken is not re-sent.
+      tags: ['Admin: Email templates']
+      x-ghd-handler: handleRevertEmailTemplate
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: not_found, for a name that is not a template.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/admin/email-templates/{name}/preview:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: previewEmailTemplate
+      summary: Check a draft and render it with sample data.
+      description: >-
+        Administrators only, in a signed-in session (second factor required). The editor's live check: an invalid draft is answered
+        with 200 and valid false and every problem, because a draft mid-typing is
+        normally not valid yet. A valid one is rendered with sample data (a real-format
+        tracking number; links carrying token=sample-not-a-real-link) inside the saved
+        header and footer. Drafting the header or footer shows it around a sample mail.
+        Nothing is sent or stored. preview_error is set when the draft is fine but a
+        saved header or footer cannot render.
+      tags: ['Admin: Email templates']
+      x-ghd-handler: handlePreviewEmailTemplate
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailTemplateDraft'
+      responses:
+        '200':
+          description: The verdict, and the rendering when valid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmailTemplatePreview'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: not_found, for a name that is not a template.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/admin/email-templates/{name}/test:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: testEmailTemplate
+      summary: Send a test of a template to your own address.
+      description: >-
+        Administrators only, in a signed-in session (second factor required). Mails the draft, or the saved text when the body has
+        neither subject nor body, to the signed-in administrator's own address and
+        nowhere else: the request carries no recipient, and any field that looks like one
+        is ignored. The subject starts with "[Test] ". Sent during the request. At most
+        5 per 10 minutes per administrator (429 rate_limited with Retry-After). An invalid
+        draft is 400 invalid_template; email not set up is 503 email_not_configured; a
+        failure of the mail relay is 502 send_failed with the relay's message. The audit
+        entry (email_template_test_sent) names the template, never the address.
+      tags: ['Admin: Email templates']
+      x-ghd-handler: handleTestEmailTemplate
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailTemplateDraftOptional'
+      responses:
+        '200':
+          description: Sent.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sent: {type: boolean}
+        '400':
+          description: invalid_template, or bad_request for a body that is not JSON.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: not_found, for a name that is not a template.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: template_broken, when the saved header or footer cannot render.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '502':
+          description: send_failed; the message is the mail relay's error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: email_not_configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /api/v1/admin/webhooks:
     get:
       operationId: listWebhooks
@@ -11506,6 +11781,71 @@ components:
         resolution_target_min:
           type: integer
           description: Minutes of SLA time until resolution is due. Time the ticket spends pending does not count.
+    EmailTemplateSummary:
+      type: object
+      required: [name, label, group, shell, customised, broken, updated_at, updated_by_name]
+      properties:
+        name: {type: string, description: 'The template name; _header and _footer are the shared header and footer.'}
+        label: {type: string}
+        group: {type: string, enum: [requester, staff, account, shared]}
+        shell: {type: boolean, description: 'True for the header and footer: a body and no subject.'}
+        customised: {type: boolean}
+        broken: {type: boolean, description: 'The saved version no longer validates, so mail that uses it fails.'}
+        updated_at: {type: [string, 'null'], format: date-time}
+        updated_by_name: {type: string, description: 'Empty when never edited or the editor is gone.'}
+    EmailTemplateDetail:
+      allOf:
+        - $ref: '#/components/schemas/EmailTemplateSummary'
+        - type: object
+          required: [subject, body, default_subject, default_body, required, variables, max_body_bytes, max_subject_bytes]
+          properties:
+            subject: {type: string, description: 'In effect: the saved version, else the default.'}
+            body: {type: string}
+            default_subject: {type: string}
+            default_body: {type: string}
+            required:
+              type: string
+              description: 'The variable that must be printed outside any if. Empty for the header and footer.'
+            variables:
+              type: array
+              items:
+                type: object
+                required: [name, description]
+                properties:
+                  name: {type: string}
+                  description: {type: string}
+            broken_reason: {type: string, description: 'Present when broken.'}
+            max_body_bytes: {type: integer}
+            max_subject_bytes: {type: integer}
+    EmailTemplateDraft:
+      type: object
+      properties:
+        subject: {type: string, description: 'One line. Empty for the header and footer.'}
+        body: {type: string}
+    EmailTemplateDraftOptional:
+      type: object
+      description: 'Omit both fields to use the saved text.'
+      properties:
+        subject: {type: string}
+        body: {type: string}
+    EmailTemplatePreview:
+      type: object
+      required: [valid, errors]
+      properties:
+        valid: {type: boolean}
+        errors:
+          type: array
+          items:
+            type: object
+            required: [field, line, col, message]
+            properties:
+              field: {type: string, enum: [subject, body]}
+              line: {type: integer, description: '1-based; 0 when the problem has no place in the text.'}
+              col: {type: integer, description: '1-based, in characters.'}
+              message: {type: string}
+        subject: {type: string, description: 'Rendered with sample data, when valid.'}
+        body: {type: string, description: 'Rendered with sample data, header and footer included, when valid.'}
+        preview_error: {type: string}
   responses:
     NoContent:
       description: Done; no body.

@@ -105,7 +105,7 @@ type fakeMailer struct {
 	err  error
 }
 
-func (f *fakeMailer) SendVerificationEmail(_, _, _ string) error {
+func (f *fakeMailer) SendVerificationEmail(_ context.Context, _, _, _ string) error {
 	if f.err != nil {
 		return f.err
 	}
@@ -343,7 +343,7 @@ func TestRegister_MailsTheStoredAddressNotTheRequestedOne(t *testing.T) {
 
 type recordingMailer struct{ to string }
 
-func (m *recordingMailer) SendVerificationEmail(to, _, _ string) error {
+func (m *recordingMailer) SendVerificationEmail(_ context.Context, to, _, _ string) error {
 	m.to = to
 	return nil
 }
@@ -559,7 +559,7 @@ type sentMail struct{ to, token string }
 
 type sendLog struct{ sent []sentMail }
 
-func (m *sendLog) SendVerificationEmail(to, token, _ string) error {
+func (m *sendLog) SendVerificationEmail(_ context.Context, to, token, _ string) error {
 	m.sent = append(m.sent, sentMail{to, token})
 	return nil
 }

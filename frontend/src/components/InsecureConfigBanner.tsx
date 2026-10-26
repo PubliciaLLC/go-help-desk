@@ -1,6 +1,8 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { getSecurityWarnings } from '@/api/admin'
+import { useMutation, useQuery } from '@tanstack/react-query'
+import { getSecurityWarnings, revertEmailTemplate } from '@/api/admin'
+import type { BrokenEmailTemplate } from '@/api/admin'
+import { extractError } from '@/api/client'
 import { ServerNoticeBar, type Notice } from '@/components/ServerNoticeBar'
 
 interface InsecureConfigBannerProps {
@@ -263,6 +265,23 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
       ),
     })
   }
+  // #158: an edited template that no longer works fails the mail that uses it,
+  // so each is its own red notice. The signature carries when it was saved: a
+  // template saved broken again shows even after a Hide.
+  for (const t of email?.broken_templates ?? []) {
+    // The header and footer wrap every mail, so a broken one stops all of it.
+    const everyMail = t.name === '_header' || t.name === '_footer'
+    const title = `Email template "${t.label}" is broken: ${
+      everyMail ? 'no email is being sent until it is fixed or reverted' : 'this mail is not being sent'
+    }`
+    notices.push({
+      id: `email-template-broken:${t.name}`,
+      severity: 'failure',
+      signature: `${t.name}|${t.updated_at}`,
+      title,
+      body: <BrokenTemplateNotice template={t} title={title} onReverted={() => void refetch()} />,
+    })
+  }
   if (blindClients.length > 0) {
     notices.push({
       id: 'oauth-blind-clients',
@@ -309,6 +328,37 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
   }
 
   return <ServerNoticeBar notices={notices} onOpen={() => void refetch()} />
+}
+
+// Revert is one click and asks nothing: the edited text stays in the audit log.
+function BrokenTemplateNotice({ template, title, onReverted }: { template: BrokenEmailTemplate; title: string; onReverted: () => void }) {
+  const revert = useMutation({
+    mutationFn: () => revertEmailTemplate(template.name),
+    onSuccess: onReverted,
+  })
+  return (
+    <>
+      <p className="font-semibold">{title}</p>
+      <p className="mt-1 [overflow-wrap:anywhere]">
+        Your edited version does not work with this release: {template.reason}. Mail that uses it fails until you fix
+        or revert it, and a person may miss a link they needed.
+      </p>
+      <p className="mt-2 flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          className="min-h-[44px] rounded-md border border-red-400 bg-white px-3 text-sm font-medium text-red-900 hover:bg-red-100 disabled:opacity-50"
+          disabled={revert.isPending}
+          onClick={() => revert.mutate()}
+        >
+          Revert to default
+        </button>
+        <a className="font-medium underline" href={`/admin/email-templates?t=${encodeURIComponent(template.name)}`}>
+          Edit
+        </a>
+      </p>
+      {revert.error && <p className="mt-1">Could not revert: {extractError(revert.error)}</p>}
+    </>
+  )
 }
 
 const CODE = 'rounded bg-black/10 px-1 py-0.5 font-mono text-xs [overflow-wrap:anywhere]'

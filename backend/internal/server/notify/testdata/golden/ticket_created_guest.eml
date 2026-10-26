@@ -1,0 +1,15 @@
+From: <helpdesk@example.com>
+To: <to@example.com>
+Subject: We have received [GHD-2026-000042]
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+We have received your ticket.
+
+Ticket: GHD-2026-000042
+
+View it here:
+https://help.example.com/g#guest-token-abc
+
+You will be notified when there is an update.
