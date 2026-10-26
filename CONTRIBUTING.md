@@ -164,10 +164,10 @@ Generated and wiring-only paths are exempt; the list is at the top of the script
 ```sh
 cd frontend
 npm test          # unit tests (vitest)
-npm run test:e2e  # layout tests (Playwright)
+npm run test:e2e  # browser tests (Playwright)
 ```
 
-`npm run test:e2e` runs the browser tests in Chromium and WebKit (plus a `markdown-dos` project that stresses the Markdown renderer). It starts the Vite dev server itself and mocks every backend call inside each test, so it needs neither Postgres nor the Go server. The five spec files in `frontend/e2e/` cover phone-width layout (`mobile-layout.spec.ts`), Markdown rendering (`markdown.spec.ts`, `markdown-dos.spec.ts`), guest attachments and the after-upgrade wizard. Install the browsers once with `npx playwright install chromium webkit` before the first run.
+`npm run test:e2e` runs the browser tests in Chromium and WebKit (plus a `markdown-dos` project that stresses the Markdown renderer). It starts the Vite dev server itself and mocks every backend call inside each test, so it needs neither Postgres nor the Go server. The spec files in `frontend/e2e/` cover phone-width layout (`mobile-layout.spec.ts`), Markdown rendering (`markdown.spec.ts`, `markdown-dos.spec.ts`), long text (`long-text.spec.ts`), guest attachments (`guest-attach.spec.ts`), the after-upgrade wizard (`after-upgrade.spec.ts`), archive buttons on Admin → Categories (`categories-archive.spec.ts`), the email template editor (`email-templates.spec.ts`) and the shared select control (`select.spec.ts`). Install the browsers once with `npx playwright install chromium webkit` before the first run.
 
 It starts its own Vite server on port 5183 and fails if something already holds that port, rather than testing the wrong checkout. Running several worktrees at once: give each its own port with `PW_PORT=5190 npm run test:e2e`. `PW_REUSE=1` reuses a server already on `PW_PORT`; use it only if that server is this checkout's.
 
