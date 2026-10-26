@@ -175,3 +175,30 @@ func TestApply_OnQueriesJoinsTheCallersTransaction(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "b", got["ticket_created"].Body)
 }
+
+// The HTML part is optional and "none" is NULL, not an empty string: a row
+// saved without HTML must read back as having no HTML part, so its mail stays
+// plain text.
+func TestApply_HTMLRoundTripsAndNoneIsNull(t *testing.T) {
+	s, q, name := newStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, s.Apply(ctx, name, &emailtemplate.Override{Name: name, Subject: "s", Body: "b", HTML: "<p>h</p>"}, entryFor(name, "saved")))
+	got, err := s.Overrides(ctx, name)
+	require.NoError(t, err)
+	require.Equal(t, "<p>h</p>", got[name].HTML)
+
+	var prevHTML string
+	require.NoError(t, s.Apply(ctx, name, &emailtemplate.Override{Name: name, Subject: "s", Body: "b"},
+		func(prev *emailtemplate.Override) *audit.Entry {
+			prevHTML = prev.HTML
+			return entryFor(name, "saved")(prev)
+		}))
+	require.Equal(t, "<p>h</p>", prevHTML, "the entry is told the HTML that was there")
+
+	got, _ = s.Overrides(ctx, name)
+	require.Empty(t, got[name].HTML)
+	row, err := q.LockEmailTemplateOverride(ctx, name)
+	require.NoError(t, err)
+	require.False(t, row.Html.Valid, "no HTML is stored as NULL")
+}

@@ -7,6 +7,7 @@ package dbgen
 
 import (
 	"context"
+	"database/sql"
 
 	uuid "github.com/google/uuid"
 	"github.com/lib/pq"
@@ -22,7 +23,7 @@ func (q *Queries) DeleteEmailTemplateOverride(ctx context.Context, name string) 
 }
 
 const getEmailTemplateOverrides = `-- name: GetEmailTemplateOverrides :many
-SELECT name, subject, body, updated_at, updated_by FROM email_template_overrides WHERE name = ANY($1::text[]) ORDER BY name
+SELECT name, subject, body, updated_at, updated_by, html FROM email_template_overrides WHERE name = ANY($1::text[]) ORDER BY name
 `
 
 func (q *Queries) GetEmailTemplateOverrides(ctx context.Context, names []string) ([]EmailTemplateOverride, error) {
@@ -40,6 +41,7 @@ func (q *Queries) GetEmailTemplateOverrides(ctx context.Context, names []string)
 			&i.Body,
 			&i.UpdatedAt,
 			&i.UpdatedBy,
+			&i.Html,
 		); err != nil {
 			return nil, err
 		}
@@ -55,7 +57,7 @@ func (q *Queries) GetEmailTemplateOverrides(ctx context.Context, names []string)
 }
 
 const listEmailTemplateOverrides = `-- name: ListEmailTemplateOverrides :many
-SELECT name, subject, body, updated_at, updated_by FROM email_template_overrides ORDER BY name
+SELECT name, subject, body, updated_at, updated_by, html FROM email_template_overrides ORDER BY name
 `
 
 func (q *Queries) ListEmailTemplateOverrides(ctx context.Context) ([]EmailTemplateOverride, error) {
@@ -73,6 +75,7 @@ func (q *Queries) ListEmailTemplateOverrides(ctx context.Context) ([]EmailTempla
 			&i.Body,
 			&i.UpdatedAt,
 			&i.UpdatedBy,
+			&i.Html,
 		); err != nil {
 			return nil, err
 		}
@@ -88,7 +91,7 @@ func (q *Queries) ListEmailTemplateOverrides(ctx context.Context) ([]EmailTempla
 }
 
 const lockEmailTemplateOverride = `-- name: LockEmailTemplateOverride :one
-SELECT name, subject, body, updated_at, updated_by FROM email_template_overrides WHERE name = $1 FOR UPDATE
+SELECT name, subject, body, updated_at, updated_by, html FROM email_template_overrides WHERE name = $1 FOR UPDATE
 `
 
 // Locks the row (if any) so the audit entry's "before" is the row this
@@ -102,29 +105,33 @@ func (q *Queries) LockEmailTemplateOverride(ctx context.Context, name string) (E
 		&i.Body,
 		&i.UpdatedAt,
 		&i.UpdatedBy,
+		&i.Html,
 	)
 	return i, err
 }
 
 const upsertEmailTemplateOverride = `-- name: UpsertEmailTemplateOverride :exec
-INSERT INTO email_template_overrides (name, subject, body, updated_at, updated_by)
-VALUES ($1, $2, $3, now(), $4)
+INSERT INTO email_template_overrides (name, subject, body, html, updated_at, updated_by)
+VALUES ($1, $2, $3, $4, now(), $5)
 ON CONFLICT (name) DO UPDATE
-SET subject = EXCLUDED.subject, body = EXCLUDED.body, updated_at = now(), updated_by = EXCLUDED.updated_by
+SET subject = EXCLUDED.subject, body = EXCLUDED.body, html = EXCLUDED.html, updated_at = now(), updated_by = EXCLUDED.updated_by
 `
 
 type UpsertEmailTemplateOverrideParams struct {
-	Name      string        `json:"name"`
-	Subject   string        `json:"subject"`
-	Body      string        `json:"body"`
-	UpdatedBy uuid.NullUUID `json:"updated_by"`
+	Name      string         `json:"name"`
+	Subject   string         `json:"subject"`
+	Body      string         `json:"body"`
+	Html      sql.NullString `json:"html"`
+	UpdatedBy uuid.NullUUID  `json:"updated_by"`
 }
 
+// html is NULL for a template with no HTML part.
 func (q *Queries) UpsertEmailTemplateOverride(ctx context.Context, arg UpsertEmailTemplateOverrideParams) error {
 	_, err := q.db.ExecContext(ctx, upsertEmailTemplateOverride,
 		arg.Name,
 		arg.Subject,
 		arg.Body,
+		arg.Html,
 		arg.UpdatedBy,
 	)
 	return err

@@ -33,7 +33,7 @@ func NewWithDB(db *sql.DB) *Store { return &Store{q: dbgen.New(db), db: db} }
 
 func fromRow(r dbgen.EmailTemplateOverride) emailtemplate.Override {
 	return emailtemplate.Override{
-		Name: r.Name, Subject: r.Subject, Body: r.Body,
+		Name: r.Name, Subject: r.Subject, Body: r.Body, HTML: r.Html.String,
 		UpdatedAt: r.UpdatedAt, UpdatedBy: database.UUIDPtr(r.UpdatedBy),
 	}
 }
@@ -105,7 +105,9 @@ func (s *Store) apply(ctx context.Context, q *dbgen.Queries, name string, next *
 			return fmt.Errorf("removing email template override: %w", err)
 		}
 	} else if err := q.UpsertEmailTemplateOverride(ctx, dbgen.UpsertEmailTemplateOverrideParams{
-		Name: name, Subject: next.Subject, Body: next.Body, UpdatedBy: database.NullUUID(next.UpdatedBy),
+		Name: name, Subject: next.Subject, Body: next.Body,
+		Html:      sql.NullString{String: next.HTML, Valid: next.HTML != ""},
+		UpdatedBy: database.NullUUID(next.UpdatedBy),
 	}); err != nil {
 		return fmt.Errorf("saving email template override: %w", err)
 	}

@@ -1140,6 +1140,7 @@ type Querier interface {
 	UpsertAttachmentReputation(ctx context.Context, arg UpsertAttachmentReputationParams) (AttachmentReputation, error)
 	// ── Values ────────────────────────────────────────────────────────────────────
 	UpsertCustomFieldValue(ctx context.Context, arg UpsertCustomFieldValueParams) error
+	// html is NULL for a template with no HTML part.
 	UpsertEmailTemplateOverride(ctx context.Context, arg UpsertEmailTemplateOverrideParams) error
 	// No password (#360) and no display name (#374): both are chosen at
 	// verification, so a second signup for the same address can only re-issue

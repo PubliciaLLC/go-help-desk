@@ -282,26 +282,10 @@ func checkText(def TemplateDef, field, text string, maxBytes int, wantLink bool)
 		return nil // an empty header or footer is the default
 	}
 
-	// 3. It parses. SkipFuncCheck so that a function is refused by the walk,
-	// with its position, rather than by the parser without one.
-	tree := parse.New(def.Name)
-	tree.Mode = parse.SkipFuncCheck
-	trees := map[string]*parse.Tree{}
-	if _, err := tree.Parse(text, "", "", trees); err != nil {
-		line, col, msg := locateParseError(text, err)
-		return fail(line, col, "%s", msg)
-	}
-	// Exactly one template: {{define}} and {{block}} would add more.
-	if len(trees) != 1 || trees[def.Name] == nil {
-		line, col := findKeyword(text, "define", "block")
-		return fail(line, col, "{{define}} and {{block}} are not allowed")
-	}
-
-	// 4. Only the allowed nodes.
-	w := &walker{def: def, text: text, field: field}
-	w.list(trees[def.Name].Root, true)
-	if w.err != nil {
-		return w.err
+	// 3 and 4. It parses, and only the allowed nodes are in it.
+	_, w, te := parseAndWalk(def, field, text)
+	if te != nil {
+		return te
 	}
 	// 5. The link the mail exists to deliver is always there.
 	if wantLink && !w.foundRequired {
@@ -313,6 +297,32 @@ func checkText(def TemplateDef, field, text string, maxBytes int, wantLink bool)
 		return fail(0, 0, "%s", err.Error())
 	}
 	return nil
+}
+
+// parseAndWalk is steps 3 and 4 of a check, shared by the text and HTML parts:
+// the text parses as exactly one template, and the tree holds only the allowed
+// nodes. The walker it returns knows whether the required link was found.
+func parseAndWalk(def TemplateDef, field, text string) (*parse.Tree, *walker, *TemplateError) {
+	// SkipFuncCheck so that a function is refused by the walk, with its
+	// position, rather than by the parser without one.
+	tree := parse.New(def.Name)
+	tree.Mode = parse.SkipFuncCheck
+	trees := map[string]*parse.Tree{}
+	if _, err := tree.Parse(text, "", "", trees); err != nil {
+		line, col, msg := locateParseError(text, err)
+		return nil, nil, &TemplateError{Field: field, Line: line, Col: col, Message: msg}
+	}
+	// Exactly one template: {{define}} and {{block}} would add more.
+	if len(trees) != 1 || trees[def.Name] == nil {
+		line, col := findKeyword(text, "define", "block")
+		return nil, nil, &TemplateError{Field: field, Line: line, Col: col, Message: "{{define}} and {{block}} are not allowed"}
+	}
+	w := &walker{def: def, text: text, field: field}
+	w.list(trees[def.Name].Root, true)
+	if w.err != nil {
+		return nil, nil, w.err
+	}
+	return trees[def.Name], w, nil
 }
 
 type walker struct {
@@ -481,17 +491,24 @@ func findKeyword(text string, words ...string) (line, col int) {
 	return 1, 1
 }
 
-// limitedWriter stops a render that outgrows the cap.
+// limitedWriter stops a render that outgrows its cap: MaxRenderedBytes, or max
+// (with its own error) for the HTML part.
 type limitedWriter struct {
-	w io.Writer
-	n int
+	w   io.Writer
+	n   int
+	max int
+	err error
 }
 
 var errTooLarge = errors.New("the result is longer than 64 KiB")
 
 func (l *limitedWriter) Write(p []byte) (int, error) {
-	if l.n+len(p) > MaxRenderedBytes {
-		return 0, errTooLarge
+	limit, err := l.max, l.err
+	if limit == 0 {
+		limit, err = MaxRenderedBytes, errTooLarge
+	}
+	if l.n+len(p) > limit {
+		return 0, err
 	}
 	l.n += len(p)
 	return l.w.Write(p)
@@ -555,7 +572,7 @@ func BrokenTemplates(rows []emailtemplate.Override) []BrokenTemplate {
 		if !ok {
 			continue
 		}
-		if errs := ValidateTemplate(def, r.Subject, r.Body); len(errs) > 0 {
+		if errs := append(ValidateTemplate(def, r.Subject, r.Body), ValidateHTML(def, r.HTML)...); len(errs) > 0 {
 			out = append(out, BrokenTemplate{Name: r.Name, Label: def.Label, Reason: errs[0].Error(), UpdatedAt: r.UpdatedAt})
 		}
 	}

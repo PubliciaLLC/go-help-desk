@@ -5,11 +5,15 @@ package notify
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	htmltemplate "html/template"
+	"io"
 	"mime/quotedprintable"
 	"net"
 	"net/mail"
@@ -95,57 +99,101 @@ func (d *EmailDispatcher) Dispatch(ctx context.Context, event notification.Event
 	}
 
 	view, _ := data.(map[string]string)
-	subject, body, err := d.compose(ctx, strings.TrimSuffix(templateName, ".tmpl"), subject, view)
+	subject, body, htmlBody, err := d.compose(ctx, strings.TrimSuffix(templateName, ".tmpl"), subject, view)
 	if err != nil {
 		return err
 	}
-	return d.send(to, subject, body)
+	return d.sendMessage(to, subject, body, htmlBody)
 }
 
-// compose builds the subject and body of one mail: the template's edited
-// version if the admin saved one, else the compiled default, wrapped in the
-// shared header and footer (empty unless the admin wrote them).
+// compose builds the subject, the plain-text part and, when the template has
+// one, the HTML part of one mail: the template's edited version if the admin
+// saved one, else the compiled default, wrapped in the shared header and footer
+// (empty unless the admin wrote them).
+//
+// The HTML part exists only when the template itself has saved HTML. The header
+// and footer wrap it; they do not make a mail multipart on their own, so a
+// template with no HTML is sent as plain text exactly as before, whatever the
+// shell holds. The text part is never generated from the HTML: it is the
+// separately edited text template.
 //
 // An edited version that no longer validates FAILS the mail, permanently,
 // naming the template; it does not fall back to the default. The admin chose
 // that knowing a reset or guest link could be missed (#158), and in return the
 // failure is never quiet: it reaches the email-health warning, the startup log
 // and the broken-template notice, and reverting is one click.
-func (d *EmailDispatcher) compose(ctx context.Context, name, defaultSubject string, view map[string]string) (string, []byte, error) {
+func (d *EmailDispatcher) compose(ctx context.Context, name, defaultSubject string, view map[string]string) (subject string, text, htmlPart []byte, err error) {
 	def, ok := LookupTemplate(name)
 	if !ok {
-		return "", nil, fmt.Errorf("no email template %q: %w", name, ErrPermanent)
+		return "", nil, nil, fmt.Errorf("no email template %q: %w", name, ErrPermanent)
 	}
 	ovs, err := d.storedOverrides(ctx, name, NameHeader, NameFooter)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 
 	subject, content := defaultSubject, ""
-	if ov, edited := ovs[name]; edited {
+	ov, edited := ovs[name]
+	if edited {
 		subject, content, err = RenderTemplate(def, ov.Subject, ov.Body, view)
 		if err != nil {
-			return "", nil, &staleTemplateError{label: def.Label, err: err}
+			return "", nil, nil, &staleTemplateError{label: def.Label, err: err}
 		}
 	} else {
 		var buf bytes.Buffer
 		if err := d.templates.ExecuteTemplate(&buf, name+".tmpl", view); err != nil {
 			// Used to be swallowed ("non-fatal"), which made the worker delete the
 			// row as delivered: a broken template lost every mail silently.
-			return "", nil, fmt.Errorf("rendering %s.tmpl: %w: %w", name, ErrPermanent, err)
+			return "", nil, nil, fmt.Errorf("rendering %s.tmpl: %w: %w", name, ErrPermanent, err)
 		}
 		content = buf.String()
 	}
 
 	header, err := d.renderShell(ctx, ovs, NameHeader)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	footer, err := d.renderShell(ctx, ovs, NameFooter)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
-	return subject, []byte(header + content + footer), nil
+	text = []byte(header + content + footer)
+
+	if edited && ov.HTML != "" {
+		htmlPart, err = d.composeHTML(ctx, def, ov.HTML, view, ovs)
+		if err != nil {
+			return "", nil, nil, err
+		}
+	}
+	return subject, text, htmlPart, nil
+}
+
+// composeHTML renders the HTML part: the template's HTML between the saved
+// header's and footer's. The length limit is on the whole, which is what a mail
+// client clips.
+func (d *EmailDispatcher) composeHTML(ctx context.Context, def TemplateDef, src string, view map[string]string, ovs map[string]emailtemplate.Override) ([]byte, error) {
+	content, err := RenderHTML(def, src, view)
+	if err != nil {
+		return nil, &staleTemplateError{label: def.Label, err: err}
+	}
+	header, err := d.renderShellHTML(ctx, ovs, NameHeader)
+	if err != nil {
+		return nil, err
+	}
+	footer, err := d.renderShellHTML(ctx, ovs, NameFooter)
+	if err != nil {
+		return nil, err
+	}
+	return joinHTML(def, header, content, footer)
+}
+
+// joinHTML puts the three pieces together and holds the whole to the cap.
+func joinHTML(def TemplateDef, header, content, footer string) ([]byte, error) {
+	if n := len(header) + len(content) + len(footer); n > MaxRenderedHTMLBytes {
+		return nil, fmt.Errorf("email template %q: the HTML part comes to %d bytes with the header and footer, and mail clients cut off what is over 100 KiB; shorten it: %w",
+			def.Label, n, ErrPermanent)
+	}
+	return []byte(header + content + footer), nil
 }
 
 // storedOverrides reads the rows for these names in one lookup. A failed read
@@ -184,6 +232,21 @@ func (d *EmailDispatcher) renderShell(ctx context.Context, ovs map[string]emailt
 	return text, nil
 }
 
+// renderShellHTML renders the saved header's or footer's HTML, or "" when it
+// has none.
+func (d *EmailDispatcher) renderShellHTML(ctx context.Context, ovs map[string]emailtemplate.Override, name string) (string, error) {
+	ov, ok := ovs[name]
+	if !ok || ov.HTML == "" {
+		return "", nil
+	}
+	def, _ := LookupTemplate(name)
+	out, err := RenderHTML(def, ov.HTML, map[string]string{"SiteName": d.siteName(ctx)})
+	if err != nil {
+		return "", &staleTemplateError{label: def.Label, err: err}
+	}
+	return out, nil
+}
+
 // staleTemplateError is an edited template that does not validate any more.
 // Its text is what the outbox keeps as the failure reason and the admin reads,
 // so it names the template and the problem and holds no address.
@@ -203,22 +266,37 @@ func (e *staleTemplateError) Unwrap() error { return e.err }
 // the row at once instead of retrying.
 func (e *staleTemplateError) Is(target error) bool { return target == ErrPermanent }
 
-// Preview is a draft rendered with sample data, as it would be mailed.
+// Preview is a draft rendered with sample data, as it would be mailed. HTML is
+// empty when the draft has no HTML part.
 type Preview struct {
 	Subject string `json:"subject"`
 	Body    string `json:"body"`
+	HTML    string `json:"html"`
 }
 
-// PreviewDraft renders an unsaved draft of def with sample data, inside the
+// PreviewDraft is PreviewDraftHTML for a draft with no HTML part.
+func (d *EmailDispatcher) PreviewDraft(ctx context.Context, def TemplateDef, subject, body, trackingPrefix string) (Preview, error) {
+	return d.PreviewDraftHTML(ctx, def, subject, body, "", trackingPrefix)
+}
+
+// PreviewDraftHTML renders an unsaved draft of def with sample data, inside the
 // saved header and footer. Drafting the header or footer itself shows it
 // around a sample ticket mail. Nothing is sent or stored. An invalid draft is
-// an *InvalidTemplateError.
-func (d *EmailDispatcher) PreviewDraft(ctx context.Context, def TemplateDef, subject, body, trackingPrefix string) (Preview, error) {
+// an *InvalidTemplateError holding every problem, text and HTML together, so
+// the editor can mark each field.
+func (d *EmailDispatcher) PreviewDraftHTML(ctx context.Context, def TemplateDef, subject, body, htmlSrc, trackingPrefix string) (Preview, error) {
+	if errs := append(ValidateTemplate(def, subject, body), ValidateHTML(def, htmlSrc)...); len(errs) > 0 {
+		return Preview{}, &InvalidTemplateError{Errors: errs}
+	}
 	vars := SampleVars(def, d.cfg.BaseURL, trackingPrefix)
 	if _, has := vars["SiteName"]; has {
 		vars["SiteName"] = d.siteName(ctx) // the real name, not the sample's
 	}
 	renderedSubject, renderedBody, err := RenderTemplate(def, subject, body, vars)
+	if err != nil {
+		return Preview{}, err
+	}
+	renderedHTML, err := RenderHTML(def, htmlSrc, vars)
 	if err != nil {
 		return Preview{}, err
 	}
@@ -234,11 +312,19 @@ func (d *EmailDispatcher) PreviewDraft(ctx context.Context, def TemplateDef, sub
 	if err != nil {
 		return Preview{}, err
 	}
+	headerHTML, err := d.renderShellHTML(ctx, ovs, NameHeader)
+	if err != nil {
+		return Preview{}, err
+	}
+	footerHTML, err := d.renderShellHTML(ctx, ovs, NameFooter)
+	if err != nil {
+		return Preview{}, err
+	}
 	switch def.Name {
 	case NameHeader:
-		header = renderedBody
+		header, headerHTML = renderedBody, renderedHTML
 	case NameFooter:
-		footer = renderedBody
+		footer, footerHTML = renderedBody, renderedHTML
 	}
 	if def.Shell {
 		// Around a sample mail, so the admin sees it in place.
@@ -248,8 +334,31 @@ func (d *EmailDispatcher) PreviewDraft(ctx context.Context, def TemplateDef, sub
 		if err != nil {
 			return Preview{}, err
 		}
+		if renderedHTML != "" {
+			renderedHTML = textToHTML(renderedBody)
+		}
 	}
-	return Preview{Subject: renderedSubject, Body: header + renderedBody + footer}, nil
+	p := Preview{Subject: renderedSubject, Body: header + renderedBody + footer}
+	if renderedHTML != "" {
+		joined, err := joinHTML(def, headerHTML, renderedHTML, footerHTML)
+		if err != nil {
+			return Preview{}, err
+		}
+		p.HTML = string(joined)
+	}
+	return p, nil
+}
+
+// textToHTML is a plain-text message as paragraphs, for previewing a header or
+// footer around something. Only the preview uses it; no mail does.
+func textToHTML(text string) string {
+	var b strings.Builder
+	for _, para := range strings.Split(strings.TrimSpace(text), "\n\n") {
+		b.WriteString("<p>")
+		b.WriteString(strings.ReplaceAll(htmltemplate.HTMLEscapeString(para), "\n", "<br>"))
+		b.WriteString("</p>")
+	}
+	return b.String()
 }
 
 // SendTest mails a preview to one address with "[Test] " in front of the
@@ -259,7 +368,11 @@ func (d *EmailDispatcher) SendTest(_ context.Context, to string, p Preview) erro
 	if !d.cfg.EmailEnabled() {
 		return ErrEmailNotConfigured
 	}
-	return d.send(to, "[Test] "+p.Subject, []byte(p.Body))
+	var htmlBody []byte
+	if p.HTML != "" {
+		htmlBody = []byte(p.HTML)
+	}
+	return d.sendMessage(to, "[Test] "+p.Subject, []byte(p.Body), htmlBody)
 }
 
 // eventToEmail decides what to send. It deliberately sends no content.
@@ -410,11 +523,11 @@ func (d *EmailDispatcher) sendAccountMail(ctx context.Context, to, name string, 
 	if err != nil {
 		return fmt.Errorf("rendering %s subject: %w: %w", name, ErrPermanent, err)
 	}
-	subject, body, err := d.compose(ctx, name, defaultSubject, view)
+	subject, body, htmlBody, err := d.compose(ctx, name, defaultSubject, view)
 	if err != nil {
 		return err
 	}
-	return d.send(to, subject, body)
+	return d.sendMessage(to, subject, body, htmlBody)
 }
 
 // send builds a MIME message with sanitized headers and quoted-printable-encoded
@@ -439,6 +552,14 @@ func validateSendAddresses(to, from string) (toAddr, fromAddr *mail.Address, err
 }
 
 func (d *EmailDispatcher) send(to, subject string, body []byte) error {
+	return d.sendMessage(to, subject, body, nil)
+}
+
+// sendMessage is send with an optional HTML part. With none the message is one
+// text/plain part, byte for byte what it was before the HTML part existed; with
+// one it is multipart/alternative, text first (the last part is the one a
+// client prefers).
+func (d *EmailDispatcher) sendMessage(to, subject string, body, htmlBody []byte) error {
 	toAddr, fromAddr, err := validateSendAddresses(to, d.cfg.SMTPFrom)
 	if err != nil {
 		return err
@@ -453,21 +574,59 @@ func (d *EmailDispatcher) send(to, subject string, body []byte) error {
 	fmt.Fprintf(&msg, "To: <%s>\r\n", toAddr.Address)
 	fmt.Fprintf(&msg, "Subject: %s\r\n", sanitizeHeader(subject))
 	msg.WriteString("MIME-Version: 1.0\r\n")
-	msg.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
-	msg.WriteString("Content-Transfer-Encoding: quoted-printable\r\n")
-	msg.WriteString("\r\n")
 
-	qp := quotedprintable.NewWriter(&msg)
+	if len(htmlBody) == 0 {
+		msg.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
+		msg.WriteString("Content-Transfer-Encoding: quoted-printable\r\n")
+		msg.WriteString("\r\n")
+		if err := writeQP(&msg, body); err != nil {
+			return err
+		}
+	} else {
+		boundary, err := newBoundary()
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(&msg, "Content-Type: multipart/alternative; boundary=%s\r\n\r\n", boundary)
+		for _, part := range []struct {
+			mediaType string
+			body      []byte
+		}{{"text/plain", body}, {"text/html", htmlBody}} {
+			fmt.Fprintf(&msg, "--%s\r\nContent-Type: %s; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n", boundary, part.mediaType)
+			if err := writeQP(&msg, part.body); err != nil {
+				return err
+			}
+			// The line break before a delimiter belongs to the delimiter.
+			msg.WriteString("\r\n")
+		}
+		fmt.Fprintf(&msg, "--%s--\r\n", boundary)
+	}
+
+	opts := smtpOptionsFor(d.cfg)
+	opts.Timeout = smtpTimeout
+	return sendMail(opts, fromAddr.Address, toAddr.Address, msg.Bytes())
+}
+
+func writeQP(w io.Writer, body []byte) error {
+	qp := quotedprintable.NewWriter(w)
 	if _, err := qp.Write(body); err != nil {
 		return fmt.Errorf("encoding body: %w", err)
 	}
 	if err := qp.Close(); err != nil {
 		return fmt.Errorf("closing encoder: %w", err)
 	}
+	return nil
+}
 
-	opts := smtpOptionsFor(d.cfg)
-	opts.Timeout = smtpTimeout
-	return sendMail(opts, fromAddr.Address, toAddr.Address, msg.Bytes())
+// newBoundary is random per message. A quoted-printable body cannot contain a
+// line that starts with "--" and this many random characters, so no part can
+// end the message early; it is also what stops a guessable one being aimed at.
+func newBoundary() (string, error) {
+	b := make([]byte, 24)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("creating a MIME boundary: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // smtpTimeout bounds a single delivery end to end.

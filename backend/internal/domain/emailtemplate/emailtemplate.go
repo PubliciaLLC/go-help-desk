@@ -16,9 +16,13 @@ import (
 // Override is one edited template. For the shared header and footer (the
 // reserved names _header and _footer) Subject is empty.
 type Override struct {
-	Name      string
-	Subject   string
-	Body      string
+	Name    string
+	Subject string
+	// Body is the plain-text part, always present.
+	Body string
+	// HTML is the optional HTML part. Empty means none: the mail is plain text
+	// only, exactly as before the HTML part existed. Stored as NULL.
+	HTML      string
 	UpdatedAt time.Time
 	UpdatedBy *uuid.UUID
 }
