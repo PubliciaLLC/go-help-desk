@@ -1789,9 +1789,13 @@ tickets, and tickets already filed keep it. Restore acts at once. Both send
 greyed and labelled "Archived", so there is no hide/show filter. Archiving is one
 row: the API does not cascade, so a type under an archived category keeps its own
 flag.
-The row buttons (rename and its Save/Cancel, archive/restore, delete) appear on hover or focus with a
-mouse, and are always shown and 44px square on a touch screen, where a narrow
-row wraps them onto a second line. A refusal from the API is shown in the dialog as sent.
+The row buttons (rename, archive/restore, delete) appear on hover or focus with a
+mouse, and are always shown and 44px square on a touch screen. Rename's Save and
+Cancel are shown whenever a name is being edited; on a touch screen they are also
+44px square. Below the `sm` breakpoint (640px) a row's badge and buttons go on
+their own line under the name, so a long name keeps its column. At `sm` and wider
+the row is a single line of controls with the name's text wrapping in its column.
+A refusal from the API is shown in the dialog as sent.
 
 Attachment upload is available to every authenticated non-guest user on the
 API, and the reply composer offers the same control to every role that can

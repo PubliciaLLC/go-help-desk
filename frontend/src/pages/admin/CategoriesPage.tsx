@@ -80,7 +80,7 @@ function InlineName({
 
   if (editing) {
     return (
-      <div className="flex min-w-0 flex-auto items-center gap-1" onClick={(e) => e.stopPropagation()}>
+      <div className="flex min-w-0 flex-1 items-center gap-1" onClick={(e) => e.stopPropagation()}>
         <Input
           ref={inputRef}
           value={draft}
@@ -89,7 +89,7 @@ function InlineName({
             if (e.key === 'Enter') commit()
             if (e.key === 'Escape') cancel()
           }}
-          className="h-6 min-w-0 py-0 text-sm"
+          className="h-6 py-0 text-sm max-sm:min-w-0"
           disabled={saving}
         />
         <button
@@ -108,7 +108,7 @@ function InlineName({
   }
 
   return (
-    <span className={`group/name flex min-w-0 flex-auto items-center gap-1 ${className ?? ''}`}>
+    <span className={`group/name flex min-w-0 flex-1 items-center gap-1 ${className ?? ''}`}>
       <span className="min-w-0 wrap-anywhere">{value}</span>
       <button
         onClick={(e) => { e.stopPropagation(); setDraft(value); setEditing(true) }}
@@ -158,7 +158,7 @@ function ArchiveControl({
   if (archived) {
     return (
       <>
-        {mutation.isError && <span role="alert" className="order-last basis-full text-right text-xs text-red-600 wrap-anywhere">{extractError(mutation.error)}</span>}
+        {mutation.isError && <span role="alert" className="text-xs text-red-600 max-sm:order-last max-sm:basis-full max-sm:text-right max-sm:wrap-anywhere">{extractError(mutation.error)}</span>}
       <button
         onClick={() => mutation.mutate(true)}
         disabled={mutation.isPending}
@@ -523,7 +523,7 @@ function SortableItemRow({
 
   return (
     <div ref={setNodeRef} style={style} className={isDragging ? 'opacity-50' : ''}>
-      <div data-archived={!item.active} className={`group flex flex-wrap items-center gap-2 py-2 pl-3 pr-3 hover:bg-gray-50`}>
+      <div data-archived={!item.active} className={`group flex items-center max-sm:flex-wrap gap-2 py-2 pl-3 pr-3 hover:bg-gray-50`}>
         <button
           {...attributes}
           {...listeners}
@@ -545,7 +545,7 @@ function SortableItemRow({
           onSave={(name) => renameMutation.mutateAsync(name)}
           className={`text-sm text-gray-700 ${item.active ? '' : 'opacity-60'}`}
         />
-        <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
+        <div className="flex items-center gap-2 sm:shrink-0 max-sm:basis-full max-sm:flex-wrap max-sm:justify-end">
           {!item.active && <ArchivedBadge />}
           <ArchiveControl
             kind="item"
@@ -566,7 +566,7 @@ function SortableItemRow({
         </div>
       </div>
       {expanded && (
-        <div className="ml-8 border-l border-gray-100 pl-2">
+        <div className="ml-8 max-sm:ml-4 border-l border-gray-100 pl-2">
           <FieldsSubsection scope={{ kind: 'item', categoryId, typeId, itemId: item.id }} />
         </div>
       )}
@@ -650,7 +650,7 @@ function SortableTypeRow({
 
   return (
     <div ref={setNodeRef} style={style} className={isDragging ? 'opacity-50' : ''}>
-      <div data-archived={!type.active} className={`group flex flex-wrap items-center gap-2 py-2.5 pl-2 pr-3 hover:bg-gray-50`}>
+      <div data-archived={!type.active} className={`group flex items-center max-sm:flex-wrap gap-2 py-2.5 pl-2 pr-3 hover:bg-gray-50`}>
         <button
           {...attributes}
           {...listeners}
@@ -671,7 +671,7 @@ function SortableTypeRow({
           onSave={(name) => renameMutation.mutateAsync(name)}
           className={`text-sm font-medium text-gray-800 ${type.active ? '' : 'opacity-60'}`}
         />
-        <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
+        <div className="flex items-center gap-2 sm:shrink-0 max-sm:basis-full max-sm:flex-wrap max-sm:justify-end">
           {!type.active && <ArchivedBadge />}
           <ArchiveControl
             kind="type"
@@ -703,7 +703,7 @@ function SortableTypeRow({
       />
 
       {expanded && (
-        <div className="ml-8 border-l border-gray-100 pl-2 pb-1">
+        <div className="ml-8 max-sm:ml-4 border-l border-gray-100 pl-2 pb-1">
           <GroupsSubsection categoryId={categoryId} typeId={type.id} />
           <FieldsSubsection scope={{ kind: 'type', categoryId, typeId: type.id }} />
           <div className="pt-1">
@@ -809,7 +809,7 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
 
   return (
     <div ref={setNodeRef} style={style} className={`border-b last:border-b-0 ${isDragging ? 'opacity-50' : ''}`}>
-      <div data-archived={!cat.active} className={`group flex flex-wrap items-center gap-2 px-4 py-3 hover:bg-gray-50`}>
+      <div data-archived={!cat.active} className={`group flex items-center max-sm:flex-wrap gap-2 px-4 py-3 hover:bg-gray-50`}>
         <button
           {...attributes}
           {...listeners}
@@ -830,7 +830,7 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
           onSave={(name) => renameMutation.mutateAsync(name)}
           className={`text-sm font-semibold text-gray-900 ${cat.active ? '' : 'opacity-60'}`}
         />
-        <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
+        <div className="flex items-center gap-2 sm:shrink-0 max-sm:basis-full max-sm:flex-wrap max-sm:justify-end">
           {!cat.active && <ArchivedBadge />}
           <ArchiveControl
             kind="category"
@@ -862,7 +862,7 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
       />
 
       {expanded && (
-        <div className="ml-11 border-l border-gray-100 pl-2 pb-2">
+        <div className="ml-11 max-sm:ml-4 border-l border-gray-100 pl-2 pb-2">
           <GroupsSubsection categoryId={cat.id} />
           <FieldsSubsection scope={{ kind: 'category', categoryId: cat.id }} />
           <div className="pt-1">

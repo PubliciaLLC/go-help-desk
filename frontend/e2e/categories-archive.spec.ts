@@ -165,13 +165,10 @@ test('archive asks first, then restore brings the row back', async ({ page }) =>
   ])
 })
 
-// Short names must not push their actions onto a second line at 375, for the
-// category and type rows. The item row is only ~247px wide at 375 (two levels of
-// indent), less than its three 44px buttons plus handle and name need, so it
-// wraps by design and is not asserted here.
-test.describe('short names at 375px', () => {
+// Phone: the name has line 1, the actions sit on line 2 (below `sm`).
+test.describe('actions go under the name on a phone', () => {
   test.use({ hasTouch: true })
-  test('actions stay on the name line', async ({ page }) => {
+  test('375px', async ({ page }) => {
     await mockTree(page, { cat: true, type: true, item: true }, { names: ['Hardware', 'Laptop', 'Battery'] })
     await page.setViewportSize({ width: 375, height: 844 })
     await page.goto('/admin/categories')
@@ -179,11 +176,46 @@ test.describe('short names at 375px', () => {
     await expandAll(page, 3)
     const rename = page.getByRole('button', { name: 'Rename' })
     const archive = page.getByRole('button', { name: /^Archive (category|type|item)$/ })
-    await expect(rename).toHaveCount(3)
-    for (let i = 0; i < 2; i++) {
+    for (let i = 0; i < 3; i++) {
       const r = (await rename.nth(i).boundingBox())!
       const a = (await archive.nth(i).boundingBox())!
-      expect(Math.abs(r.y - a.y), `row ${i} wrapped`).toBeLessThan(10)
+      expect(a.y, `row ${i} actions are below the name`).toBeGreaterThanOrEqual(r.y + r.height - 1)
     }
   })
 })
+
+// Desktop (mouse): a long name wraps its own text inside its column and never
+// drops below the drag handle and arrow, so the row stays on one line of
+// controls. Compared by vertical overlap because the row centres its items.
+const WORDED = 'Quarterly hardware refresh requests for the regional offices and satellite branches'
+for (const width of [768, 1280]) {
+  test.describe(`mouse ${width}px`, () => {
+    for (const [label, name] of [['worded', WORDED], ['unbroken', LONG_NAME]] as const) {
+      test(`${label} names stay level with the drag handle: ${width}px`, async ({ page }) => {
+        await mockTree(page, { cat: true, type: true, item: true }, { names: [name, name, name] })
+        await page.setViewportSize({ width, height: 900 })
+        await page.goto('/admin/categories')
+        await expect(page.getByRole('heading', { level: 1, name: 'Categories' })).toBeVisible()
+        await expandAll(page, 3)
+        const rows = page.locator('[data-archived]')
+        await expect(rows).toHaveCount(3)
+        for (let i = 0; i < 3; i++) {
+          const row = rows.nth(i)
+          const handle = (await row.getByTitle('Drag to reorder').boundingBox())!
+          const text = (await row.locator('.wrap-anywhere').first().boundingBox())!
+          expect(text.y, `row ${i} name starts above the handle's bottom`).toBeLessThan(handle.y + handle.height)
+          expect(text.y + text.height, `row ${i} name ends below the handle's top`).toBeGreaterThan(handle.y)
+          // Edit mode keeps the input on the same line too (the row can change
+          // height, so the handle is measured again).
+          await row.hover()
+          await row.getByRole('button', { name: 'Rename' }).click()
+          const editHandle = (await row.getByTitle('Drag to reorder').boundingBox())!
+          const input = (await row.getByRole('textbox').boundingBox())!
+          expect(input.y, `row ${i} input starts above the handle's bottom`).toBeLessThan(editHandle.y + editHandle.height)
+          expect(input.y + input.height, `row ${i} input ends below the handle's top`).toBeGreaterThan(editHandle.y)
+          await row.getByTitle('Cancel', { exact: true }).click()
+        }
+      })
+    }
+  })
+}
