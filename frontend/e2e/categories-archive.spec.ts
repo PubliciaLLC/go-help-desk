@@ -9,14 +9,24 @@ type Node = { id: string; name: string; sort_order: number; active: boolean; [k:
 
 // A stateful tree: PATCH flips `active` on the matching row, so a re-fetch
 // after the mutation shows the new state like the real API would.
-async function mockTree(page: Page, activeFlags: { cat: boolean; type: boolean; item: boolean }) {
+const REFUSAL = 'Cannot restore this entry because its parent is archived and another rule depends on it being kept'
+
+async function mockTree(
+  page: Page,
+  activeFlags: { cat: boolean; type: boolean; item: boolean },
+  opts: { names?: [string, string, string]; failPatch?: boolean } = {},
+) {
+  const [catName, typeName, itemName] = opts.names ?? [LONG_NAME, LONG_NAME, LONG_NAME]
   await mockAdminApi(page)
-  const cat: Node = { id: 'cat-1', name: LONG_NAME, sort_order: 1, active: activeFlags.cat }
-  const type: Node = { id: 'ty-1', category_id: 'cat-1', name: LONG_NAME, sort_order: 1, active: activeFlags.type }
-  const item: Node = { id: 'it-1', type_id: 'ty-1', name: LONG_NAME, sort_order: 1, active: activeFlags.item }
+  const cat: Node = { id: 'cat-1', name: catName, sort_order: 1, active: activeFlags.cat }
+  const type: Node = { id: 'ty-1', category_id: 'cat-1', name: typeName, sort_order: 1, active: activeFlags.type }
+  const item: Node = { id: 'it-1', type_id: 'ty-1', name: itemName, sort_order: 1, active: activeFlags.item }
   const patches: string[] = []
   const serve = (node: Node) => async (route: import('@playwright/test').Route) => {
     const req = route.request()
+    if (req.method() === 'PATCH' && opts.failPatch) {
+      return route.fulfill({ status: 409, json: { error: { code: 'conflict', message: REFUSAL } } })
+    }
     if (req.method() === 'PATCH') {
       const body = req.postDataJSON() as { active?: boolean }
       if (typeof body.active === 'boolean') node.active = body.active
@@ -74,6 +84,65 @@ for (const width of [320, 375]) {
     const doc = await page.evaluate(() => document.documentElement.scrollWidth)
     expect(doc).toBeLessThanOrEqual(width)
   })
+
+  test(`a refused Restore keeps every button on screen: ${width}px`, async ({ page }) => {
+    await mockTree(page, { cat: false, type: false, item: false }, { failPatch: true })
+    await page.setViewportSize({ width, height: 844 })
+    await page.goto('/admin/categories')
+    await expect(page.getByRole('heading', { level: 1, name: 'Categories' })).toBeVisible()
+    await expandAll(page, 3)
+    for (const b of await page.getByRole('button', { name: /^Restore/ }).all()) await b.click()
+    const alerts = page.getByRole('alert').filter({ hasText: 'Cannot restore this entry' })
+    await expect(alerts).toHaveCount(3)
+    for (const a of await alerts.all()) {
+      const box = (await a.boundingBox())!
+      expect(box.x, 'message left edge').toBeGreaterThanOrEqual(0)
+      expect(box.x + box.width, 'message right edge').toBeLessThanOrEqual(width)
+      // Fully visible: wrapped, not cut off by its own box.
+      expect(await a.evaluate((el) => el.scrollWidth <= el.clientWidth + 1), 'message not clipped').toBe(true)
+    }
+    for (const b of await page.getByRole('button', { name: /^(Restore|Delete|Rename)/ }).all()) {
+      const box = (await b.boundingBox())!
+      const label = await b.getAttribute('title')
+      expect(box.x, `${label} left edge`).toBeGreaterThanOrEqual(0)
+      expect(box.x + box.width, `${label} right edge`).toBeLessThanOrEqual(width)
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width)
+  })
+
+  test(`a long unbroken name keeps a readable column: ${width}px`, async ({ page }) => {
+    await mockTree(page, { cat: true, type: true, item: true })
+    await page.setViewportSize({ width, height: 844 })
+    await page.goto('/admin/categories')
+    await expect(page.getByRole('heading', { level: 1, name: 'Categories' })).toBeVisible()
+    await expandAll(page, 3)
+    // Scoped to the tree rows: the long group name is on the page too.
+    const names = page.locator('[data-archived] .wrap-anywhere', { hasText: LONG_NAME })
+    await expect(names).toHaveCount(3)
+    for (const n of await names.all()) {
+      // One letter per line would be about 10px wide.
+      expect((await n.boundingBox())!.width).toBeGreaterThanOrEqual(90)
+    }
+  })
+
+  test(`rename Save and Cancel are tappable: ${width}px`, async ({ page }) => {
+    await mockTree(page, { cat: true, type: true, item: true })
+    await page.setViewportSize({ width, height: 844 })
+    await page.goto('/admin/categories')
+    await expect(page.getByRole('heading', { level: 1, name: 'Categories' })).toBeVisible()
+    await expandAll(page, 3)
+    // The category row, then the deepest (item) row.
+    for (const index of [0, 2]) {
+      await page.getByRole('button', { name: 'Rename' }).nth(index).click()
+      for (const title of ['Save', 'Cancel']) {
+        const box = (await page.getByTitle(title, { exact: true }).boundingBox())!
+        expect(box.height, `${title} height`).toBeGreaterThanOrEqual(44)
+        expect(box.width, `${title} width`).toBeGreaterThanOrEqual(44)
+        expect(box.x + box.width, `${title} inside viewport`).toBeLessThanOrEqual(width)
+      }
+      await page.getByTitle('Cancel', { exact: true }).click()
+    }
+  })
   })
 }
 
@@ -94,4 +163,27 @@ test('archive asks first, then restore brings the row back', async ({ page }) =>
     '/api/v1/admin/categories/cat-1 active=false',
     '/api/v1/admin/categories/cat-1 active=true',
   ])
+})
+
+// Short names must not push their actions onto a second line at 375, for the
+// category and type rows. The item row is only ~247px wide at 375 (two levels of
+// indent), less than its three 44px buttons plus handle and name need, so it
+// wraps by design and is not asserted here.
+test.describe('short names at 375px', () => {
+  test.use({ hasTouch: true })
+  test('actions stay on the name line', async ({ page }) => {
+    await mockTree(page, { cat: true, type: true, item: true }, { names: ['Hardware', 'Laptop', 'Battery'] })
+    await page.setViewportSize({ width: 375, height: 844 })
+    await page.goto('/admin/categories')
+    await expect(page.getByRole('heading', { level: 1, name: 'Categories' })).toBeVisible()
+    await expandAll(page, 3)
+    const rename = page.getByRole('button', { name: 'Rename' })
+    const archive = page.getByRole('button', { name: /^Archive (category|type|item)$/ })
+    await expect(rename).toHaveCount(3)
+    for (let i = 0; i < 2; i++) {
+      const r = (await rename.nth(i).boundingBox())!
+      const a = (await archive.nth(i).boundingBox())!
+      expect(Math.abs(r.y - a.y), `row ${i} wrapped`).toBeLessThan(10)
+    }
+  })
 })

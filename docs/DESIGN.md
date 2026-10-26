@@ -1789,7 +1789,7 @@ tickets, and tickets already filed keep it. Restore acts at once. Both send
 greyed and labelled "Archived", so there is no hide/show filter. Archiving is one
 row: the API does not cascade, so a type under an archived category keeps its own
 flag.
-The row buttons (rename, archive/restore, delete) appear on hover or focus with a
+The row buttons (rename and its Save/Cancel, archive/restore, delete) appear on hover or focus with a
 mouse, and are always shown and 44px square on a touch screen, where a narrow
 row wraps them onto a second line. A refusal from the API is shown in the dialog as sent.
 

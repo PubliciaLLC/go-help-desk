@@ -37,10 +37,11 @@ import type { Category, TicketType, TicketItem, Group, Assignment } from '@/api/
 
 // Row actions (rename, archive, restore, delete) are hover-revealed on a mouse.
 // A touch screen has no hover, so there they are always shown and 44px square.
-const ROW_BTN =
-  'opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 ' +
-  'pointer-coarse:opacity-100 pointer-coarse:inline-flex pointer-coarse:items-center pointer-coarse:justify-center ' +
+const TOUCH_SIZE =
+  'pointer-coarse:inline-flex pointer-coarse:items-center pointer-coarse:justify-center ' +
   'pointer-coarse:min-h-11 pointer-coarse:min-w-11'
+const ROW_BTN =
+  `opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 pointer-coarse:opacity-100 ${TOUCH_SIZE}`
 
 function InlineName({
   value,
@@ -79,7 +80,7 @@ function InlineName({
 
   if (editing) {
     return (
-      <div className="flex min-w-0 flex-1 items-center gap-1" onClick={(e) => e.stopPropagation()}>
+      <div className="flex min-w-0 flex-auto items-center gap-1" onClick={(e) => e.stopPropagation()}>
         <Input
           ref={inputRef}
           value={draft}
@@ -88,18 +89,18 @@ function InlineName({
             if (e.key === 'Enter') commit()
             if (e.key === 'Escape') cancel()
           }}
-          className="h-6 py-0 text-sm"
+          className="h-6 min-w-0 py-0 text-sm"
           disabled={saving}
         />
         <button
           onClick={commit}
           disabled={saving || !draft.trim()}
-          className="text-green-600 hover:text-green-700 disabled:opacity-40"
+          className={`text-green-600 hover:text-green-700 disabled:opacity-40 ${TOUCH_SIZE}`}
           title="Save"
         >
           <CheckIcon className="h-3.5 w-3.5" />
         </button>
-        <button onClick={cancel} className="text-gray-400 hover:text-gray-600" title="Cancel">
+        <button onClick={cancel} className={`text-gray-400 hover:text-gray-600 ${TOUCH_SIZE}`} title="Cancel">
           <XIcon className="h-3.5 w-3.5" />
         </button>
       </div>
@@ -107,7 +108,7 @@ function InlineName({
   }
 
   return (
-    <span className={`group/name flex min-w-0 flex-1 basis-40 items-center gap-1 ${className ?? ''}`}>
+    <span className={`group/name flex min-w-0 flex-auto items-center gap-1 ${className ?? ''}`}>
       <span className="min-w-0 wrap-anywhere">{value}</span>
       <button
         onClick={(e) => { e.stopPropagation(); setDraft(value); setEditing(true) }}
@@ -157,7 +158,7 @@ function ArchiveControl({
   if (archived) {
     return (
       <>
-        {mutation.isError && <span role="alert" className="text-xs text-red-600">{extractError(mutation.error)}</span>}
+        {mutation.isError && <span role="alert" className="order-last basis-full text-right text-xs text-red-600 wrap-anywhere">{extractError(mutation.error)}</span>}
       <button
         onClick={() => mutation.mutate(true)}
         disabled={mutation.isPending}
@@ -544,7 +545,7 @@ function SortableItemRow({
           onSave={(name) => renameMutation.mutateAsync(name)}
           className={`text-sm text-gray-700 ${item.active ? '' : 'opacity-60'}`}
         />
-        <div className="ml-auto flex shrink-0 items-center gap-2">
+        <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
           {!item.active && <ArchivedBadge />}
           <ArchiveControl
             kind="item"
@@ -670,7 +671,7 @@ function SortableTypeRow({
           onSave={(name) => renameMutation.mutateAsync(name)}
           className={`text-sm font-medium text-gray-800 ${type.active ? '' : 'opacity-60'}`}
         />
-        <div className="ml-auto flex shrink-0 items-center gap-2">
+        <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
           {!type.active && <ArchivedBadge />}
           <ArchiveControl
             kind="type"
@@ -829,7 +830,7 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
           onSave={(name) => renameMutation.mutateAsync(name)}
           className={`text-sm font-semibold text-gray-900 ${cat.active ? '' : 'opacity-60'}`}
         />
-        <div className="ml-auto flex shrink-0 items-center gap-2">
+        <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
           {!cat.active && <ArchivedBadge />}
           <ArchiveControl
             kind="category"
