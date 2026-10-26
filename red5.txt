@@ -1,3 +1,0 @@
-# github.com/publiciallc/go-help-desk/backend/internal/server_test
-# [github.com/publiciallc/go-help-desk/backend/internal/server_test]
-vet: internal/server/server_test.go:391:35: undefined: server.WithEmailTemplates

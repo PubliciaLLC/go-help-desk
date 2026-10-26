@@ -1,3 +1,0 @@
-# github.com/publiciallc/go-help-desk/backend/internal/server/notify [github.com/publiciallc/go-help-desk/backend/internal/server/notify.test]
-internal/server/notify/templates_test.go:39:41: undefined: TemplateDef
-internal/server/notify/templates_test.go:41:13: undefined: LookupTemplate
