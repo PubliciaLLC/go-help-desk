@@ -28,9 +28,11 @@ Go Help Desk is an open-source ticket management system. Staff submit and track 
 - Optional SLA tracking; resolved tickets close automatically after a configurable reopen window
 - API keys for administrators, and for staff when an administrator allows it. Every new key expires, and keys cannot create keys or write users
 - Markdown in tickets: a formatting editor, strict rendering (no raw HTML, no images), and older text left as plain text
-- Staff can file a ticket for a requester, an existing user or a typed email address
+- Staff can file a ticket for a requester, an existing user or a typed email address, and mark it as a phone call
+- Each ticket records how it arrived (web, API, MCP, guest form or phone); staff see it, requesters do not
 - Readable audit log with opt-in retention
 - Email notifications, queued with retries. Staff are emailed about their tickets and can follow a ticket
+- Administrators can edit the wording of all 17 emails, plus a shared header and footer, with a live check and a test send. Plain text only, and never ticket content
 - Reopened tickets are flagged, raised one priority level the first time, and get a fresh SLA clock; staff can change a ticket's priority
 - Webhooks (Slack, Teams, Discord and JIRA formats, or raw JSON), one delivery per change, retried on failure, with a delivery history and an optional ticket filter
 - Attachments: content detection, optional ClamAV scanning and reputation lookups, download only
@@ -85,6 +87,7 @@ Read the full notes before upgrading: [1.3.0](https://gohelpdesk.org/docs/upgrad
 - API keys: a key can no longer create API keys or OAuth clients, write users or group membership, or change the ticket-scope and auto-assignment settings, and a new key needs an expiry. Scripts that do these break. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#api-keys)
 - After upgrading, the first administrator to sign in sees a one-time wizard for the new settings, and a weekly check for new releases is available but off unless you turn it on. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#after-upgrade-wizard)
 - Descriptions and replies can be Markdown. Text written before 1.3.0 stays plain; REST defaults to plain unless it sends `format`, and MCP defaults to Markdown. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#markdown)
+- Tickets now record how they arrived. Tickets that exist at upgrade are all marked `web`, even those that came by API or MCP. Sending `source_channel` to the API now fails with `400` (MCP `create_ticket` refuses it too), except `phone` from a staff member's browser session. Stop every 1.2 instance before the upgrade runs. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#source-channel)
 - Locked out? `docker compose exec app /app/server unlock you@example.com` on the server. [Details](https://gohelpdesk.org/docs/getting-started#locked-out)
 
 **1.2.0**
