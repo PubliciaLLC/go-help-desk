@@ -109,7 +109,7 @@ func TestDeleteGroup_UnassignsItsTicketsWithAnAuditEntryEach(t *testing.T) {
 	other := mkGroup(t, h, "Survivor")
 
 	mk := func(subject string, g uuid.UUID) ticket.Ticket {
-		tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 			Subject: subject, Description: "x", CategoryID: h.catID, ReporterUserID: &h.staffID,
 		})
 		require.NoError(t, err)

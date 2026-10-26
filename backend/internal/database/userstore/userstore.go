@@ -433,6 +433,15 @@ func (s *Store) RehashPassword(ctx context.Context, id uuid.UUID, oldHash, newHa
 	return n == 1, nil
 }
 
+// CountBelowCost: see the CountUsersWithOldPasswordHash query.
+func (s *Store) CountBelowCost(ctx context.Context, cost int) (int, error) {
+	n, err := s.q.CountUsersWithOldPasswordHash(ctx, int32(cost))
+	if err != nil {
+		return 0, fmt.Errorf("counting old password hashes: %w", err)
+	}
+	return int(n), nil
+}
+
 func (s *Store) SetMFA(ctx context.Context, id uuid.UUID, secret string, enabled bool) error {
 	if err := s.q.SetUserMFA(ctx, dbgen.SetUserMFAParams{ID: id, MfaSecret: secret, MfaEnabled: enabled}); err != nil {
 		return fmt.Errorf("setting MFA: %w", inertViolation(err))

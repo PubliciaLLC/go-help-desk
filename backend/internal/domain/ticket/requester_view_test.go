@@ -128,12 +128,12 @@ func TestRequesterKeys_EveryTicketKeyIsClassified(t *testing.T) {
 	}
 	// Spelled out so a change to either list is a visible diff in review.
 	require.Equal(t, []string{
-		"assignee_user_id", "category_id", "created_at", "description", "id", "item_id", "priority",
+		"assignee_user_id", "category_id", "created_at", "description", "description_format", "id", "item_id", "priority",
 		"resolution_notes", "resolved_at", "status_id", "subject", "tracking_number", "type_id",
 	}, sorted(allowed))
 	require.Equal(t, []string{
 		"assignee_group_id", "closed_at", "guest_email", "guest_name", "guest_phone",
-		"pending_since", "reopen_count", "reporter_user_id", "sla_paused_seconds", "updated_at",
+		"pending_since", "reopen_count", "reporter_user_id", "sla_paused_seconds", "source_channel", "updated_at",
 	}, sorted(never))
 }
 
@@ -240,7 +240,7 @@ func TestFilterForViewer_DropsTheStaffOnlyRequesterKeyFromARequesterView(t *test
 // Values are not rewritten, only keys dropped; and nothing else is lost.
 func TestFilterForViewer_KeepsValuesAndNonTicketPayloadsAlone(t *testing.T) {
 	id := uuid.New()
-	got, err := ticket.FilterForViewer(user.RoleUser, ticket.Ticket{ID: id, Subject: "s", Priority: ticket.PriorityHigh, ReopenCount: 3})
+	got, err := ticket.FilterForViewer(user.RoleUser, ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb, ID: id, Subject: "s", Priority: ticket.PriorityHigh, ReopenCount: 3})
 	require.NoError(t, err)
 	b, _ := json.Marshal(got)
 	require.Contains(t, string(b), id.String())

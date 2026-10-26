@@ -20,7 +20,7 @@ func TestEveryToolIsClassifiedForRequesterTicketFields(t *testing.T) {
 		noTickets[n] = true
 	}
 
-	s := New(nil, nil, nil, nil)
+	s := New(nil, nil, nil, nil, nil)
 	var got []string
 	for name := range s.mcp.ListTools() {
 		got = append(got, name)

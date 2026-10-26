@@ -50,7 +50,7 @@ func TestUpload_AnOperatorAddedTypeIsNotRefusedForMatchingItsName(t *testing.T) 
 			require.NoError(t, h.adminSvc.SetRaw(ctx, admin.KeyAttachmentAllowedTypes,
 				[]byte(`[".pdf",".txt",".log",".png",".htm",".tif",".tgz"]`)))
 
-			tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+			tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 				Subject: "Operator types", Description: "x", CategoryID: h.catID,
 				ReporterUserID: &h.staffID,
 			})
@@ -116,7 +116,7 @@ func TestUpload_AShippedTypeIsStillContained(t *testing.T) {
 	require.NoError(t, h.adminSvc.SetRaw(ctx, admin.KeyAttachmentAllowedTypes,
 		[]byte(`[".pdf",".txt",".log",".png",".htm"]`)))
 
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Shipped", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})
@@ -201,7 +201,7 @@ func TestUpload_TheEscapeIsDecidedOnTheDetectorsSpelling(t *testing.T) {
 			require.NoError(t, h.adminSvc.SetRaw(ctx, admin.KeyAttachmentMismatchHandling, []byte(`"wrap"`)))
 			require.NoError(t, h.adminSvc.SetRaw(ctx, admin.KeyAttachmentAllowedTypes, []byte(tc.allowed)))
 
-			tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+			tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 				Subject: "Spelling", Description: "x", CategoryID: h.catID,
 				ReporterUserID: &h.staffID,
 			})

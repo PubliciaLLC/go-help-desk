@@ -67,7 +67,7 @@ func replyEventForTest(t *testing.T, body string, internal bool) notification.Ev
 	seeded := h.seedOpen()
 
 	agent := uuid.New()
-	_, err := h.svc.AddReply(context.Background(), seeded.ID, body, internal, false,
+	_, err := h.svc.AddReply(context.Background(), seeded.ID, body, ticket.TextFormatPlain, internal, false,
 		"reporter@example.com",
 		ticket.Actor{UserID: &agent, Role: user.RoleStaff},
 		30, h.newStatus.ID)
@@ -95,7 +95,7 @@ func TestAddReply_EventNamesTheReply(t *testing.T) {
 		h := newHarness(t)
 		seeded := h.seedOpen()
 		agent := uuid.New()
-		reply, err := h.svc.AddReply(context.Background(), seeded.ID, "text", internal, false,
+		reply, err := h.svc.AddReply(context.Background(), seeded.ID, "text", ticket.TextFormatPlain, internal, false,
 			"reporter@example.com",
 			ticket.Actor{UserID: &agent, Role: user.RoleStaff}, 30, h.newStatus.ID)
 		require.NoError(t, err)
@@ -126,7 +126,7 @@ func TestAddReply_SplitsNotesFromReplies(t *testing.T) {
 			h := newHarness(t)
 			seeded := h.seedOpen()
 			agent := uuid.New()
-			_, err := h.svc.AddReply(context.Background(), seeded.ID, "text", tc.internal, false,
+			_, err := h.svc.AddReply(context.Background(), seeded.ID, "text", ticket.TextFormatPlain, tc.internal, false,
 				"reporter@example.com",
 				ticket.Actor{UserID: &agent, Role: user.RoleStaff}, 30, h.newStatus.ID)
 			require.NoError(t, err)
@@ -153,7 +153,7 @@ func TestCreateEvent_CarriesWhatTheEmailNeeds(t *testing.T) {
 	h := newHarness(t)
 
 	guest := "guest@example.com"
-	created, err := h.svc.Create(context.Background(), ticket.CreateInput{
+	created, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject:    "Printer jammed",
 		CategoryID: h.seedOpen().CategoryID,
 		Priority:   ticket.PriorityHigh,
@@ -186,7 +186,7 @@ func TestCreateEvent_NoGuestEmailForAuthenticatedReporters(t *testing.T) {
 	h := newHarness(t)
 	reporter := uuid.New()
 
-	_, err := h.svc.Create(context.Background(), ticket.CreateInput{
+	_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject:        "Signed in",
 		CategoryID:     h.seedOpen().CategoryID,
 		Priority:       ticket.PriorityLow,

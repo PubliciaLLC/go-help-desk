@@ -24,7 +24,7 @@ func reopenedTicketOf(t *testing.T, h *harness) ticket.Ticket {
 	t.Helper()
 	ctx := context.Background()
 	staff := ticket.Actor{UserID: &h.staffID, Role: user.RoleStaff}
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Printer", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)

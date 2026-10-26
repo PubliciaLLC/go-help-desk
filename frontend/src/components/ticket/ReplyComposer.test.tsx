@@ -5,6 +5,16 @@ import { renderWithQuery } from '@/test/render'
 import { ReplyComposer } from './ReplyComposer'
 import * as ticketsApi from '@/api/tickets'
 
+// The rich editor loads asynchronously, which would swap the field being typed
+// into halfway through a test. These tests are about the composer's own
+// behaviour, so the field is a plain textarea with the same props; the real
+// editor is exercised in editor/ and in ReplyComposer.editor.test.tsx.
+vi.mock('@/components/editor/MarkdownEditor', () => ({
+  MarkdownEditor: (p: { value: string; onChange: (v: string) => void; placeholder?: string; disabled?: boolean }) => (
+    <textarea value={p.value} onChange={(e) => p.onChange(e.target.value)} placeholder={p.placeholder} disabled={p.disabled} />
+  ),
+}))
+
 // What is pinned here is the behaviour that was hard to see while this lived
 // inline in TicketDetailPage's 676-line body: the coupling between the two
 // checkboxes, which decides whether a customer gets emailed, and the ordering
@@ -38,6 +48,24 @@ describe('posting a reply', () => {
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Save entry' })).toHaveProperty('disabled', false)
     )
+  })
+
+  // The Activity panel shows the reply (and a reopen it caused), so it has to
+  // refresh now, not at the next poll.
+  it('refreshes the ticket, its audit feed and its history after posting', async () => {
+    vi.spyOn(ticketsApi, 'addReply').mockResolvedValue({} as never)
+    const user = userEvent.setup()
+    const { queryClient } = renderComposer()
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+
+    await user.type(screen.getByRole('textbox'), 'Swapped the switch')
+    await user.click(screen.getByRole('button', { name: 'Save entry' }))
+
+    await waitFor(() => {
+      const keys = invalidate.mock.calls.map((c) => JSON.stringify(c[0]?.queryKey))
+      expect(keys).toContain(JSON.stringify(['ticketAudit', 'tkt-1']))
+      expect(keys).toContain(JSON.stringify(['replies', 'tkt-1']))
+    })
   })
 
   it('sends the body with the current flags', async () => {

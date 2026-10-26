@@ -18,7 +18,7 @@ func TestDownloadAttachment_UnknownAttachmentReturns404(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a ticket so the ticket ID is valid.
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Test", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})
@@ -39,7 +39,7 @@ func TestRecheckAttachmentReputation_UnknownAttachmentReturns404(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a ticket so the ticket ID is valid.
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Test", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})

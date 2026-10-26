@@ -68,7 +68,7 @@ func TestSendPasswordResetEmail_LinkComesFromConfigNotTheRequest(t *testing.T) {
 			addr, received := captureSMTP(t)
 			d := dispatcherFor(t, addr)
 
-			require.NoError(t, d.SendPasswordResetEmail("user@example.com", "the-secret-token", base))
+			require.NoError(t, d.SendPasswordResetEmail(context.Background(), "user@example.com", "the-secret-token", base))
 
 			raw := strings.ReplaceAll(<-received, "=\r\n", "")
 			require.Contains(t, raw, base+"/reset-password?token=3Dthe-secret-token")
@@ -80,13 +80,13 @@ func TestSendPasswordResetEmail_LinkComesFromConfigNotTheRequest(t *testing.T) {
 }
 
 func TestSendPasswordResetEmail_TemplateFailureIsAPermanentError(t *testing.T) {
-	err := brokenDispatcher().SendPasswordResetEmail("to@example.com", "tok", "https://help.example.com")
+	err := brokenDispatcher().SendPasswordResetEmail(context.Background(), "to@example.com", "tok", "https://help.example.com")
 	require.ErrorIs(t, err, ErrPermanent)
 }
 
 func TestSendPasswordResetEmail_SendsNothingWhenEmailIsOff(t *testing.T) {
 	d := brokenDispatcher()
 	d.cfg.SMTPHost = ""
-	require.NoError(t, d.SendPasswordResetEmail("to@example.com", "tok", "https://help.example.com"),
+	require.NoError(t, d.SendPasswordResetEmail(context.Background(), "to@example.com", "tok", "https://help.example.com"),
 		"with email off there is nothing to deliver and nothing to retry")
 }

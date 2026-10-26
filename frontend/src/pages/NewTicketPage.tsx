@@ -19,6 +19,9 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { TextLimit } from '@/components/TextLimit'
+import { isOverLimit } from '@/lib/textLimit'
+import { MarkdownEditor } from '@/components/editor/MarkdownEditor'
 import { Select } from '@/components/ui/select'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import type { Assignment } from '@/api/types'
@@ -103,6 +106,10 @@ export function NewTicketPage() {
   const [files, setFiles] = useState<File[]>([])
   const [uploadStates, setUploadStates] = useState<Record<string, UploadState> | undefined>()
   const [requester, setRequester] = useState<Requester>(ME)
+  // "phone" is only meaningful when filing for someone else (#130); it is
+  // kept while the requester changes and dropped at submit if that goes back
+  // to Me.
+  const [channel, setChannel] = useState<'web' | 'phone'>('web')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [createdTicketId, setCreatedTicketId] = useState<string | null>(null)
@@ -152,6 +159,7 @@ export function NewTicketPage() {
     setError('')
     if (!subject.trim()) { setError('Subject is required'); return }
     if (!categoryId) { setError('Category is required'); return }
+    if (isOverLimit(description)) { setError('The description is too long. Shorten it to send.'); return }
 
     // Validate required custom fields.
     for (const f of visibleFields) {
@@ -170,6 +178,9 @@ export function NewTicketPage() {
     try {
       const t = await createTicket({
         ...who.fields,
+        ...(isStaffOrAdmin && requester.mode !== 'me' && channel === 'phone'
+          ? { source_channel: 'phone' as const }
+          : {}),
         subject,
         description,
         category_id: categoryId,
@@ -234,6 +245,33 @@ export function NewTicketPage() {
               {isStaffOrAdmin && (
                 <RequesterPicker value={requester} onChange={setRequester} disabled={isUploading} />
               )}
+              {isStaffOrAdmin && requester.mode !== 'me' && (
+                <fieldset className="space-y-2">
+                  <legend className="text-sm font-medium text-gray-700">How did this reach you?</legend>
+                  <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-gray-700">
+                    <label className="flex items-center gap-1.5">
+                      <input
+                        type="radio"
+                        name="source-channel"
+                        checked={channel === 'web'}
+                        onChange={() => setChannel('web')}
+                        disabled={isUploading}
+                      />
+                      Web
+                    </label>
+                    <label className="flex items-center gap-1.5">
+                      <input
+                        type="radio"
+                        name="source-channel"
+                        checked={channel === 'phone'}
+                        onChange={() => setChannel('phone')}
+                        disabled={isUploading}
+                      />
+                      Phone call
+                    </label>
+                  </div>
+                </fieldset>
+              )}
 
               <div className="space-y-1">
                 <Label htmlFor="subject">Subject *</Label>
@@ -248,15 +286,15 @@ export function NewTicketPage() {
               </div>
 
               <div className="space-y-1">
-                <Label htmlFor="description">Description</Label>
-                <Textarea
-                  id="description"
+                <Label id="description-label">Description</Label>
+                <MarkdownEditor
                   value={description}
-                  onChange={(e) => setDescription(e.target.value)}
+                  onChange={setDescription}
+                  labelId="description-label"
                   placeholder="Full details of the request or issue"
-                  rows={5}
                   disabled={isUploading}
                 />
+                <TextLimit value={description} />
               </div>
 
               <div className={`grid grid-cols-1 gap-4 ${isStaffOrAdmin ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
@@ -382,7 +420,7 @@ export function NewTicketPage() {
 
               {!uploadDone && (
                 <div className="flex gap-3">
-                  <Button type="submit" disabled={submitting || isUploading}>
+                  <Button type="submit" disabled={submitting || isUploading || isOverLimit(description)}>
                     {submitting
                       ? 'Submitting…'
                       : isUploading

@@ -146,7 +146,7 @@ func buildParityWorld(t *testing.T, h *harness) *parityWorld {
 	mkTicket := func(cat uuid.UUID, typ *uuid.UUID, mod func(*ticket.Ticket)) *ticket.Ticket {
 		seq++
 		now := time.Now().UTC().Truncate(time.Millisecond)
-		tk := ticket.Ticket{
+		tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 			ID:             uuid.New(),
 			TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2026, seq),
 			Subject:        "parity", CategoryID: cat, TypeID: typ, Priority: ticket.PriorityLow,

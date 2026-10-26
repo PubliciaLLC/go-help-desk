@@ -106,7 +106,7 @@ func everyFieldTicket(t *testing.T, h *harness) ticket.Ticket {
 	grp, err := h.groupSvc.Create(ctx, "G"+uuid.NewString()[:6], "d")
 	require.NoError(t, err)
 
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Every field", Description: "all of them", CategoryID: h.catID, TypeID: &ty.ID, ItemID: &it.ID,
 		Priority: ticket.PriorityHigh, ReporterUserID: &h.userID,
 	})
@@ -126,14 +126,14 @@ func TestRequesterResponses_NoRouteLeaksAFieldOutsideTheAllowedList(t *testing.T
 	defer cleanup()
 	ctx := context.Background()
 	tk := everyFieldTicket(t, h)
-	other, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	other, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Linked", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)
 	staff := ticket.Actor{UserID: &h.staffID, Role: user.RoleStaff}
 	require.NoError(t, h.ticketSvc.AddLink(ctx, tk.ID, other.ID, ticket.LinkRelatedTo, staff))
 	newStatus := statusIDNamed(t, h, ticket.StatusNameNew)
-	_, err = h.ticketSvc.AddReply(ctx, tk.ID, "public answer", false, true, "", staff, 7, newStatus)
+	_, err = h.ticketSvc.AddReply(ctx, tk.ID, "public answer", ticket.TextFormatPlain, false, true, "", staff, 7, newStatus)
 	require.NoError(t, err)
 
 	rules := requesterRules()
@@ -174,7 +174,7 @@ func TestRequesterResponses_NoRouteLeaksAFieldOutsideTheAllowedList(t *testing.T
 			}
 			// Spelled out, not read from the list under test.
 			require.ElementsMatch(t, []string{
-				"assignee_user_id", "category_id", "created_at", "description", "id", "item_id", "priority",
+				"assignee_user_id", "category_id", "created_at", "description", "description_format", "id", "item_id", "priority",
 				"resolution_notes", "resolved_at", "status_id", "subject", "tracking_number", "type_id",
 				"sla", "can_reopen",
 			}, keys)
@@ -245,7 +245,7 @@ func TestGuestResponses_NoRouteLeaksAFieldOutsideTheGuestList(t *testing.T) {
 	for k := range got {
 		keys = append(keys, k)
 	}
-	require.ElementsMatch(t, []string{"tracking_number", "subject", "description", "status", "created_at", "replies"}, keys)
+	require.ElementsMatch(t, []string{"tracking_number", "subject", "description", "description_format", "status", "created_at", "replies"}, keys)
 	_ = tk
 
 	for _, rt := range routes {

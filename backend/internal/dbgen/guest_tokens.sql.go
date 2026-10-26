@@ -52,7 +52,8 @@ SELECT t.id, t.tracking_number, t.subject, t.description, t.category_id, t.type_
        t.item_id, t.priority, t.status_id, t.assignee_user_id, t.assignee_group_id,
        t.reporter_user_id, t.guest_email, t.resolution_notes, t.resolved_at,
        t.closed_at, t.created_at, t.updated_at, t.guest_name, t.guest_phone,
-       t.pending_since, t.sla_paused_seconds, t.reopen_count, t.last_reopened_at, t.paused_seconds_at_last_reopen
+       t.pending_since, t.sla_paused_seconds, t.reopen_count, t.last_reopened_at, t.paused_seconds_at_last_reopen,
+       t.description_format, t.source_channel
 FROM guest_access_tokens g
 JOIN tickets t ON t.id = g.ticket_id
 WHERE g.token_hash = $1
@@ -85,6 +86,8 @@ type GetTicketByGuestTokenRow struct {
 	ReopenCount               int32          `json:"reopen_count"`
 	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
 	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
+	DescriptionFormat         string         `json:"description_format"`
+	SourceChannel             string         `json:"source_channel"`
 }
 
 // Resolves a raw token's hash to the ticket it names, in one round trip.
@@ -132,6 +135,8 @@ func (q *Queries) GetTicketByGuestToken(ctx context.Context, tokenHash string) (
 		&i.ReopenCount,
 		&i.LastReopenedAt,
 		&i.PausedSecondsAtLastReopen,
+		&i.DescriptionFormat,
+		&i.SourceChannel,
 	)
 	return i, err
 }

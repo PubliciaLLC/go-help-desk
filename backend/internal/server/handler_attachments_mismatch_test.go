@@ -32,7 +32,7 @@ func TestUpload_RecordsWhetherTheContentMatchedTheName(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Mismatch", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})
@@ -116,7 +116,7 @@ func TestUpload_AMismatchOfAnAcceptedTypeIsFlaggedButNotWrapped(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Allowed mismatch", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})
@@ -155,7 +155,7 @@ func TestUpload_AnInfectedFileTruthfullyNamedIsNotAlsoAMismatch(t *testing.T) {
 	require.NoError(t, h.adminSvc.SetRaw(context.Background(),
 		"attachment_infected_handling", []byte(`"quarantine"`)))
 
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Infected", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})

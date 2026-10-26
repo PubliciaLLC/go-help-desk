@@ -67,7 +67,7 @@ func TestSecurityWarnings_StaleOff(t *testing.T) {
 				require.NoError(t, h.adminSvc.SetString(ctx, admin.KeyAttachmentScanAddress, tc.settingAddr))
 			}
 			if tc.attachment {
-				tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+				tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 					Subject: "Attachment", Description: "has one", CategoryID: h.catID,
 					ReporterUserID: &h.staffID,
 				})

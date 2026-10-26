@@ -151,7 +151,7 @@ func TestEndToEnd_AChangeIsAnnouncedOnceAndMailedOncePerPerson(t *testing.T) {
 	}
 
 	// (a) A guest files a ticket and routing gives it to a staff member.
-	created, err := svc.Create(ctx, ticket.CreateInput{
+	created, err := svc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "e2e", Description: "d", CategoryID: cat.ID, GuestEmail: &guest, GuestName: "Ada",
 		AutoAssign: []ticket.Assignment{{UserID: &routedTo.ID}},
 	})
@@ -208,7 +208,7 @@ func TestEndToEnd_AChangeIsAnnouncedOnceAndMailedOncePerPerson(t *testing.T) {
 	// mailed once, not zero (routing picked them, they did not). Turns red if the
 	// create's mark, or its codec field, is lost on the way to the worker.
 	recorder.got = nil
-	mine, err := svc.Create(ctx, ticket.CreateInput{
+	mine, err := svc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "mine", Description: "d", CategoryID: cat.ID, ReporterUserID: &routedTo.ID,
 		AutoAssign: []ticket.Assignment{{UserID: &routedTo.ID}},
 	})

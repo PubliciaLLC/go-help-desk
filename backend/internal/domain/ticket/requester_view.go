@@ -21,13 +21,14 @@ import (
 // user role, or any role this does not recognise) receives.
 //
 //	id, tracking_number, subject, description   the ticket itself
+//	description_format                          plain or markdown: how the page shows the description (#443)
 //	status_id, priority                         its current state, both shown on the page
 //	category_id, type_id, item_id               its classification (the page's Classification panel)
 //	created_at, resolved_at                     when it was opened and resolved (the page shows both)
 //	assignee_user_id                            who holds it, as an id only: a requester has no route that turns it into a name
 //	resolution_notes                            sent to requesters before this list existed; their visibility is unchanged
 var requesterTicketKeys = []string{
-	"id", "tracking_number", "subject", "description",
+	"id", "tracking_number", "subject", "description", "description_format",
 	"status_id", "priority",
 	"category_id", "type_id", "item_id",
 	"created_at", "resolved_at",
@@ -45,12 +46,14 @@ var requesterTicketKeys = []string{
 //	closed_at, updated_at                 history-like timestamps (Erik): when it was archived, when anything last touched it
 //	pending_since, sla_paused_seconds     when and for how long the ticket waited: audit information, not state
 //	reopen_count                          staff information (the Reopened badge is staff-only)
+//	source_channel                        how the ticket arrived (web, api, mcp, guest, phone): operational, and "phone" says a member of staff filed it for them (#130)
 var requesterNeverTicketKeys = []string{
 	"assignee_group_id", "reporter_user_id",
 	"guest_email", "guest_name", "guest_phone",
 	"closed_at", "updated_at",
 	"pending_since", "sla_paused_seconds",
 	"reopen_count",
+	"source_channel",
 }
 
 // requesterWrapperKeys are the extra keys a response wraps around a ticket that
@@ -67,7 +70,7 @@ var requesterWrapperKeys = []string{"sla", "can_reopen", "replies", "links"}
 // requester's, since a guest has no account and needs only to read their own
 // ticket by its tracking number. Plus guestWrapperKeys, which are not Ticket
 // fields: the status's name (derived) and the conversation.
-var guestTicketKeys = []string{"tracking_number", "subject", "description", "created_at"}
+var guestTicketKeys = []string{"tracking_number", "subject", "description", "description_format", "created_at"}
 var guestWrapperKeys = []string{"status", "replies"}
 
 // RequesterTicketKeys returns a copy of the allowed list.

@@ -212,7 +212,7 @@ func TestArchivedRule_NobodyCanReclassifyIntoAnArchivedNode(t *testing.T) {
 	for _, cred := range staffAndAdminCredentials(t, h) {
 		for _, pick := range tree.archivedPicks() {
 			t.Run(cred.name+" reclassifying into an archived "+pick.level, func(t *testing.T) {
-				tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+				tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 					Subject: "Fine where it is", Description: "x", CategoryID: tree.catOpen,
 					ReporterUserID: &h.userID,
 				})
@@ -242,7 +242,7 @@ func TestArchivedRule_ATicketAlreadyThereKeepsIt(t *testing.T) {
 	tree := buildArchivedTree(t, h)
 	// Filed while the nodes were still active, retired afterwards: how an old
 	// ticket really ends up in an archived node.
-	old, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	old, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Old ticket", Description: "x", CategoryID: tree.catArchived,
 		TypeID: &tree.typeUnderArc, ItemID: &tree.itemUnderArc, ReporterUserID: &h.userID,
 	})
@@ -295,7 +295,7 @@ func TestArchivedRule_OnlyTheLevelThatChangedIsChecked(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 	tree := buildArchivedTree(t, h)
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "In a type that was later retired", Description: "x", CategoryID: tree.catOpen,
 		TypeID: &tree.typeArch, ReporterUserID: &h.userID,
 	})
@@ -316,7 +316,7 @@ func TestArchivedRule_AFollowUpCopiesTheArchivedClassification(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 	tree := buildArchivedTree(t, h)
-	old, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	old, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Old ticket", Description: "x", CategoryID: tree.catArchived,
 		TypeID: &tree.typeUnderArc, ItemID: &tree.itemUnderArc, ReporterUserID: &h.userID,
 	})
@@ -403,7 +403,7 @@ func TestArchivedRule_TheServiceEnforcesItForEveryCaller(t *testing.T) {
 
 	for _, pick := range tree.archivedPicks() {
 		t.Run("Create, archived "+pick.level, func(t *testing.T) {
-			_, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+			_, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 				Subject: "x", Description: "x", CategoryID: pick.cat, TypeID: pick.typ, ItemID: pick.item,
 				ReporterUserID: &h.staffID,
 			})
@@ -411,7 +411,7 @@ func TestArchivedRule_TheServiceEnforcesItForEveryCaller(t *testing.T) {
 			require.ErrorContains(t, err, pick.want)
 		})
 		t.Run("UpdateCTI, archived "+pick.level, func(t *testing.T) {
-			tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+			tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 				Subject: "x", Description: "x", CategoryID: tree.catOpen, ReporterUserID: &h.staffID,
 			})
 			require.NoError(t, err)
@@ -449,7 +449,7 @@ func TestArchivedRule_ARefusedPatchChangesNothing(t *testing.T) {
 	tree := buildArchivedTree(t, h)
 	tree.archive(t, h)
 
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Untouched", Description: "x", CategoryID: tree.catOpen, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)

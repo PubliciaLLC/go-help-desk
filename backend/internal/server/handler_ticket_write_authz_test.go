@@ -29,7 +29,7 @@ func TestWritePathsEnforceTicketVisibility(t *testing.T) {
 
 	// Reported by the ADMIN. The seeded reporting user has no relationship to
 	// it: not reporter, not assignee, not in an assigned group.
-	foreign, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	foreign, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject:        "Payroll discrepancy",
 		Description:    "Contains salary figures",
 		CategoryID:     h.catID,
@@ -76,7 +76,7 @@ func TestReporterCanStillReplyToTheirOwnTicket(t *testing.T) {
 	ctx := context.Background()
 
 	userID := h.userID
-	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject:        "My laptop will not boot",
 		CategoryID:     h.catID,
 		Priority:       ticket.PriorityMedium,
@@ -103,7 +103,7 @@ func TestUpdateTicket_ClearAssignee(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject:        "Assigned then released",
 		CategoryID:     h.catID,
 		Priority:       ticket.PriorityMedium,

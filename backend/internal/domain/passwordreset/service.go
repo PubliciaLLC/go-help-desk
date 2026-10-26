@@ -110,7 +110,7 @@ func (s *Service) Send(ctx context.Context, ev notification.Event, allow func(us
 		return fmt.Errorf("storing reset token: %w", err)
 	}
 	// u.Email, the address on the account, not what was typed.
-	if err := s.mailer.SendPasswordResetEmail(u.Email, raw, s.baseURL); err != nil {
+	if err := s.mailer.SendPasswordResetEmail(ctx, u.Email, raw, s.baseURL); err != nil {
 		return fmt.Errorf("sending password reset email: %w", err)
 	}
 	return nil

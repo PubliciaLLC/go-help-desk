@@ -4,7 +4,8 @@ import type { TicketAuditEntry } from '@/api/types'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { AuditDiff } from '@/components/AuditDiff'
 import { followRemovalLabel, isFollowAction } from '@/lib/followAudit'
-import { EyeOffIcon } from 'lucide-react'
+import { isReplyAction, replyActionVerb } from '@/lib/replyAudit'
+import { EyeOffIcon, LockIcon, MessageSquareIcon } from 'lucide-react'
 
 interface AuditFeedProps {
   ticketId: string
@@ -64,7 +65,23 @@ export function AuditFeed({ ticketId }: AuditFeedProps) {
           <p className="text-xs text-gray-400">Nothing recorded yet</p>
         )}
         <ul className="space-y-2">
-          {entries.map((e) => (
+          {entries.map((e) => isReplyAction(e.action) ? (
+            // "<who> replied publicly": the sentence is the whole entry. Its
+            // diff is only the reply's id, which means nothing to a reader.
+            <li key={e.id} className="text-xs text-gray-700 wrap-anywhere">
+              {e.action === 'note_added'
+                ? <LockIcon aria-hidden="true" className="mr-1 inline h-3 w-3 text-gray-400" />
+                : <MessageSquareIcon aria-hidden="true" className="mr-1 inline h-3 w-3 text-gray-400" />}
+              {e.actor_masked
+                ? <span className="italic"><EyeOffIcon aria-hidden="true" className="mr-0.5 inline h-3 w-3" />Requester (name hidden)</span>
+                : <span className="font-medium">{e.actor_name || (e.actor_id ? 'Someone' : 'A guest')}</span>}
+              {' '}
+              <span>{replyActionVerb(e.action)}</span>
+              <span className="block text-gray-400">
+                {new Date(e.created_at).toLocaleString()}
+              </span>
+            </li>
+          ) : (
             <li key={e.id} className="text-xs text-gray-700 wrap-anywhere">
               <span className="font-medium">{labelForEntry(e)}</span>
               {e.actor_name && (

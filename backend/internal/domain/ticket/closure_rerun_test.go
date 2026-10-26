@@ -71,7 +71,7 @@ func TestCreate_RetryDoesNotKeepTheRoutingOfTheRolledBackAttempt(t *testing.T) {
 	reporter, colleague := uuid.New(), uuid.New()
 	svc := h.rerunService(t, func() { h.store.notPeople = map[uuid.UUID]bool{colleague: true} })
 
-	got, err := svc.Create(context.Background(), ticket.CreateInput{
+	got, err := svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject:        "Routed",
 		ReporterUserID: &reporter,
 		AutoAssign:     []ticket.Assignment{{UserID: &colleague}},
@@ -139,7 +139,7 @@ func TestAddReply_RetryDoesNotKeepTheLockedRowOfTheRolledBackAttempt(t *testing.
 		func() { setStatus(h.inProgressStatus.ID) },
 		func() { setStatus(h.resolvedStatus.ID) })
 
-	_, err := svc.AddReply(context.Background(), tk.ID, "Still broken", false, true, "reporter@example.com",
+	_, err := svc.AddReply(context.Background(), tk.ID, "Still broken", ticket.TextFormatPlain, false, true, "reporter@example.com",
 		ticket.Actor{UserID: &reporter, Role: user.RoleUser}, 30, h.newStatus.ID)
 	require.NoError(t, err)
 

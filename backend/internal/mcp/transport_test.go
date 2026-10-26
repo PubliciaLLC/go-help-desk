@@ -69,7 +69,7 @@ func TestHandler_RoutesBothTransports(t *testing.T) {
 		},
 	}
 
-	s := New(nil, nil, nil, nil)
+	s := New(nil, nil, nil, nil, nil)
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 	// Bounded, because the body is read before the status is checked: if GET
@@ -111,7 +111,7 @@ func TestHandler_RoutesBothTransports(t *testing.T) {
 // SSE is kept for existing client configurations: it must still stream from
 // /mcp/sse after the Streamable HTTP transport is added.
 func TestHandler_SSEStillAtMCPSSE(t *testing.T) {
-	s := New(nil, nil, nil, nil)
+	s := New(nil, nil, nil, nil, nil)
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 
@@ -138,7 +138,7 @@ func TestHandler_SSEStillAtMCPSSE(t *testing.T) {
 // both transports share, so any signed-in caller holding an SSE stream's
 // session id could unregister someone else's stream.
 func TestHandler_DeleteMCPEndsNoSession(t *testing.T) {
-	s := New(nil, nil, nil, nil)
+	s := New(nil, nil, nil, nil, nil)
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 

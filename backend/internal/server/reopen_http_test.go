@@ -23,7 +23,7 @@ func TestReopen_HTTP(t *testing.T) {
 	staff := ticket.Actor{UserID: &h.staffID, Role: user.RoleStaff}
 
 	mkResolved := func() ticket.Ticket {
-		tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 			Subject: "Printer", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
 		})
 		require.NoError(t, err)
@@ -130,7 +130,7 @@ func TestReopen_CountIsForStaffOnly_HTTP(t *testing.T) {
 	ctx := context.Background()
 	staff := ticket.Actor{UserID: &h.staffID, Role: user.RoleStaff}
 
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Printer", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)

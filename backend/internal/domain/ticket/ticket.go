@@ -128,6 +128,58 @@ type TicketLink struct {
 	LinkType       LinkType  `json:"link_type"`
 }
 
+// TextFormat says how a stored piece of ticket text is displayed. Every
+// description and reply carries one; nothing is guessed from the text.
+type TextFormat string
+
+const (
+	TextFormatPlain    TextFormat = "plain"
+	TextFormatMarkdown TextFormat = "markdown"
+)
+
+// ErrInvalidTextFormat is returned for any format that is not exactly "plain"
+// or "markdown", an empty one included: the domain never fills in a default
+// because the right default differs by caller (REST plain, MCP markdown).
+var ErrInvalidTextFormat = errors.New("format must be \"plain\" or \"markdown\"")
+
+// ParseTextFormat accepts only the two exact lower-case values.
+func ParseTextFormat(s string) (TextFormat, error) {
+	switch f := TextFormat(s); f {
+	case TextFormatPlain, TextFormatMarkdown:
+		return f, nil
+	}
+	return "", ErrInvalidTextFormat
+}
+
+// SourceChannel is how a ticket arrived (#130). It is derived from the entry
+// point by the server, never asserted by the caller; the one value a person
+// chooses is ChannelPhone, and only a member of staff filing on someone's
+// behalf in the web form. "email" is reserved for inbound mail and is not a
+// valid value yet (adding it is a migration).
+type SourceChannel string
+
+const (
+	ChannelWeb   SourceChannel = "web"   // the web app, or a browser session's REST call
+	ChannelAPI   SourceChannel = "api"   // REST with an API key or OAuth client
+	ChannelMCP   SourceChannel = "mcp"   // an MCP tool
+	ChannelGuest SourceChannel = "guest" // the unauthenticated guest form
+	ChannelPhone SourceChannel = "phone" // staff filing for a caller, picked in the web form
+)
+
+// ErrInvalidSourceChannel is returned for a channel outside the list above,
+// an empty one included: the domain never fills in a default, because the
+// right value is the entry point's to name.
+var ErrInvalidSourceChannel = fmt.Errorf("%w: source_channel must be one of web, api, mcp, guest, phone", ErrValidation)
+
+// Valid reports whether c is one of the five values.
+func (c SourceChannel) Valid() bool {
+	switch c {
+	case ChannelWeb, ChannelAPI, ChannelMCP, ChannelGuest, ChannelPhone:
+		return true
+	}
+	return false
+}
+
 // TrackingNumber is the human-readable identifier for a ticket, e.g.
 // "GHD-2024-000001". It is unique across all tickets and never reused.
 type TrackingNumber string
@@ -135,26 +187,32 @@ type TrackingNumber string
 // Ticket is the central entity of the system. All business state lives here.
 // Optional foreign keys are represented as pointers to make "not set" explicit.
 type Ticket struct {
-	ID              uuid.UUID      `json:"id"`
-	TrackingNumber  TrackingNumber `json:"tracking_number"`
-	Subject         string         `json:"subject"`
-	Description     string         `json:"description"`
-	CategoryID      uuid.UUID      `json:"category_id"`
-	TypeID          *uuid.UUID     `json:"type_id,omitempty"`
-	ItemID          *uuid.UUID     `json:"item_id,omitempty"`
-	Priority        Priority       `json:"priority"`
-	StatusID        uuid.UUID      `json:"status_id"`
-	AssigneeUserID  *uuid.UUID     `json:"assignee_user_id,omitempty"`
-	AssigneeGroupID *uuid.UUID     `json:"assignee_group_id,omitempty"`
-	ReporterUserID  *uuid.UUID     `json:"reporter_user_id,omitempty"`
-	GuestEmail      *string        `json:"guest_email,omitempty"`
-	GuestName       string         `json:"guest_name,omitempty"`
-	GuestPhone      string         `json:"guest_phone,omitempty"`
-	ResolutionNotes *string        `json:"resolution_notes,omitempty"`
-	ResolvedAt      *time.Time     `json:"resolved_at,omitempty"`
-	ClosedAt        *time.Time     `json:"closed_at,omitempty"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
+	ID             uuid.UUID      `json:"id"`
+	TrackingNumber TrackingNumber `json:"tracking_number"`
+	Subject        string         `json:"subject"`
+	Description    string         `json:"description"`
+	// DescriptionFormat says how Description is shown: plain or markdown
+	// (#443). Stored with the text, never guessed from it.
+	DescriptionFormat TextFormat `json:"description_format"`
+	// SourceChannel is how the ticket arrived. Staff and administrators only
+	// on the wire (see requester_view.go).
+	SourceChannel   SourceChannel `json:"source_channel"`
+	CategoryID      uuid.UUID     `json:"category_id"`
+	TypeID          *uuid.UUID    `json:"type_id,omitempty"`
+	ItemID          *uuid.UUID    `json:"item_id,omitempty"`
+	Priority        Priority      `json:"priority"`
+	StatusID        uuid.UUID     `json:"status_id"`
+	AssigneeUserID  *uuid.UUID    `json:"assignee_user_id,omitempty"`
+	AssigneeGroupID *uuid.UUID    `json:"assignee_group_id,omitempty"`
+	ReporterUserID  *uuid.UUID    `json:"reporter_user_id,omitempty"`
+	GuestEmail      *string       `json:"guest_email,omitempty"`
+	GuestName       string        `json:"guest_name,omitempty"`
+	GuestPhone      string        `json:"guest_phone,omitempty"`
+	ResolutionNotes *string       `json:"resolution_notes,omitempty"`
+	ResolvedAt      *time.Time    `json:"resolved_at,omitempty"`
+	ClosedAt        *time.Time    `json:"closed_at,omitempty"`
+	CreatedAt       time.Time     `json:"created_at"`
+	UpdatedAt       time.Time     `json:"updated_at"`
 
 	// PendingSince is when the ticket entered its current Pending interval; nil
 	// when it is not Pending. SLAPausedSeconds is the sum of every Pending
@@ -199,11 +257,13 @@ type Reply struct {
 	// the thread had nothing to render but the id — and rendered it, as a
 	// bare UUID against every message from a registered account. Empty for a
 	// guest's reply, which has no account behind it.
-	AuthorName     string    `json:"author_name,omitempty"`
-	Body           string    `json:"body"`
-	Internal       bool      `json:"internal"`
-	NotifyCustomer bool      `json:"notify_customer"`
-	CreatedAt      time.Time `json:"created_at"`
+	AuthorName string `json:"author_name,omitempty"`
+	Body       string `json:"body"`
+	// BodyFormat is the Body's TextFormat (#443).
+	BodyFormat     TextFormat `json:"body_format"`
+	Internal       bool       `json:"internal"`
+	NotifyCustomer bool       `json:"notify_customer"`
+	CreatedAt      time.Time  `json:"created_at"`
 }
 
 // Attachment stores file metadata. Bytes live on disk at StoragePath.
@@ -215,7 +275,12 @@ type Attachment struct {
 	MimeType    string    `json:"mime_type"`
 	SizeBytes   int64     `json:"size_bytes"`
 	StoragePath string    `json:"-"` // never sent to clients
-	CreatedAt   time.Time `json:"created_at"`
+
+	// UploadedByGuest is true for a file a guest attached through their link
+	// (#445). The guest cap counts these and nothing else. Never sent to
+	// clients.
+	UploadedByGuest bool      `json:"-"`
+	CreatedAt       time.Time `json:"created_at"`
 
 	// What the upload actually was, recorded when it arrived. All three are
 	// pointers because nil is a fact: the file predates the inspection, and
@@ -544,6 +609,10 @@ var (
 	// can already see it); never used to answer for a ticket the caller may not
 	// see, which gets the not-found refusal first.
 	ErrClosed = errors.New("ticket is closed")
+
+	// ErrGuestAttachmentLimit: the ticket already holds the most files a guest
+	// may attach (#445). 409.
+	ErrGuestAttachmentLimit = errors.New("ticket already has the most files a guest can attach")
 	// ErrReopenWindowClosed is separate from ErrForbidden on purpose: the
 	// caller owns the ticket and has the right to reopen it in general. What
 	// expired is the window, and telling them "you do not have permission"

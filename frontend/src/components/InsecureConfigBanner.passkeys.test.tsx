@@ -29,7 +29,7 @@ describe('the passkeys warning', () => {
     mockWarnings({ available: false, reason: 'must be a domain and not an IP address' })
     renderWithQuery(<InsecureConfigBanner isAdmin />)
 
-    const alert = await screen.findByRole('alert')
+    const alert = await screen.findByRole('region', { name: 'Server notices' })
     const text = alert.textContent ?? ''
     expect(text).toContain('Passkeys are unavailable')
     expect(text).toContain('BASE_URL')
@@ -44,7 +44,7 @@ describe('the passkeys warning', () => {
     mockWarnings({ available: false, reason: 'must be a domain and not an IP address' })
     renderWithQuery(<InsecureConfigBanner isAdmin />)
 
-    const text = (await screen.findByRole('alert')).textContent ?? ''
+    const text = (await screen.findByRole('region', { name: 'Server notices' })).textContent ?? ''
     expect(text).toContain('anyone whose only second factor is a passkey cannot sign in')
     expect(text).toContain('while sign-in MFA is on')
     expect(text).toContain('until an administrator resets their sign-in factors')
@@ -58,7 +58,7 @@ describe('the passkeys warning', () => {
     renderWithQuery(<InsecureConfigBanner isAdmin />)
 
     await waitFor(() => expect(api.get).toHaveBeenCalledWith('/admin/security-warnings'))
-    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Server notices' })).toBeNull()
   })
 
   it('says nothing from a server that predates the field', async () => {
@@ -66,6 +66,6 @@ describe('the passkeys warning', () => {
     renderWithQuery(<InsecureConfigBanner isAdmin />)
 
     await waitFor(() => expect(api.get).toHaveBeenCalledWith('/admin/security-warnings'))
-    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Server notices' })).toBeNull()
   })
 })

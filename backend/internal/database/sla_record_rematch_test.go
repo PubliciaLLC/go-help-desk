@@ -69,7 +69,7 @@ func (f *rematchFx) ticket(t *testing.T, age time.Duration, pendingSince *time.T
 	newSt, err := f.ts.GetStatusByName(f.ctx, ticket.StatusNameNew)
 	require.NoError(t, err)
 	created := f.now.Add(-age)
-	tk := ticket.Ticket{
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("RM-" + uuid.NewString()[:8]),
 		Subject: "rematch", Description: "rematch", CategoryID: f.cat.ID, Priority: ticket.PriorityMedium,
 		StatusID: newSt.ID, ReporterUserID: &f.rep.ID, CreatedAt: created, UpdatedAt: created,

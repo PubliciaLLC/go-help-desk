@@ -121,7 +121,7 @@ func TestMCPOrigin_NoOriginWorks(t *testing.T) {
 }
 
 func TestMCPOrigin_ForeignOriginRefused(t *testing.T) {
-	h, cleanup := newHarness(t)
+	h, cleanup := newIsolatedHarness(t)
 	defer cleanup()
 
 	cases := []struct {
@@ -461,7 +461,7 @@ func TestMCPOrigin_SSEIsChecked(t *testing.T) {
 // with it, and the Origin check is the only thing standing between that page
 // and the signed-in user's tools. docs/DESIGN.md, "MCP Interface" -> Origin.
 func TestMCPOrigin_SSEMessageCheckedWhereNothingElseStopsIt(t *testing.T) {
-	h, cleanup := newHarness(t)
+	h, cleanup := newIsolatedHarness(t)
 	defer cleanup()
 	base := serveMCP(t, h)
 

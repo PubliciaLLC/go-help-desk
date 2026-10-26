@@ -209,6 +209,32 @@ describe('keyboard access', () => {
   })
 })
 
+describe('touch screens', () => {
+  // A phone has no hover, and a 14px icon is not tappable: on a coarse pointer
+  // the buttons are always shown and 44px square.
+  it('every row action is always visible and 44px on a coarse pointer', async () => {
+    mockApi({ type: { active: false } })
+    renderWithQuery(<CategoriesPage />)
+    await expandAll()
+    const buttons = [
+      within(await rowOf('Hardware')).getByRole('button', { name: 'Archive category' }),
+      within(await rowOf('Laptop')).getByRole('button', { name: 'Restore type' }),
+      within(await rowOf('Battery')).getByRole('button', { name: 'Archive item' }),
+      within(await rowOf('Hardware')).getByRole('button', { name: 'Delete category' }),
+      within(await rowOf('Laptop')).getByRole('button', { name: 'Delete type' }),
+      within(await rowOf('Battery')).getByRole('button', { name: 'Delete item' }),
+      within(await rowOf('Hardware')).getByRole('button', { name: 'Rename' }),
+      within(await rowOf('Laptop')).getByRole('button', { name: 'Rename' }),
+      within(await rowOf('Battery')).getByRole('button', { name: 'Rename' }),
+    ]
+    for (const b of buttons) {
+      expect(b.className).toContain('pointer-coarse:opacity-100')
+      expect(b.className).toContain('pointer-coarse:min-h-11')
+      expect(b.className).toContain('pointer-coarse:min-w-11')
+    }
+  })
+})
+
 describe('deleting an entry that is in use', () => {
   it('suggests archiving a category', async () => {
     mockApi()

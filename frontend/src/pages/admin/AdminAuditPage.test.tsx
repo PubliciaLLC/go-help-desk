@@ -285,4 +285,47 @@ describe('AdminAuditPage', () => {
     const named = within(screen.getByText('Resolved').closest('tr')!).getByText('Requester (name hidden)')
     expect(named.querySelector('svg')).toBeNull()
   })
+
+  // #158: the revert dialog says the edited text "stays in the audit log". A
+  // revert has only a before side, which AuditDiff does not render, so the page
+  // shows it for this entity type.
+  describe('an email template revert', () => {
+    const revert = (o: Partial<AdminAuditEntry> = {}) =>
+      entry({
+        entity_type: 'email_template', action: 'email_template_reverted',
+        before: { template_name: 'ticket_created', template_subject: 'Old subject', template_body: 'Old body {{.TicketURL}}' },
+        after: null, ...o,
+      })
+
+    it('shows the removed subject and body', async () => {
+      mockList({ entries: [revert()], total: 1, has_more: false })
+      renderWithQuery(<AdminAuditPage />)
+      const row = (await screen.findByText('email_template', { selector: 'span' })).closest('tr')!
+      expect(row.textContent).toContain('Old subject')
+      expect(row.textContent).toContain('Old body {{.TicketURL}}')
+      expect(row.textContent).toMatch(/removed/i)
+    })
+
+    it('leaves every other before-only entry exactly as it was', async () => {
+      mockList({
+        entries: [entry({ entity_type: 'user', action: 'deleted', before: { id: 'x', template_body: 'not shown' }, after: null })],
+        total: 1, has_more: false,
+      })
+      renderWithQuery(<AdminAuditPage />)
+      const row = (await screen.findByText('user', { selector: 'span' })).closest('tr')!
+      expect(row.textContent).not.toContain('not shown')
+      expect(row.textContent).not.toMatch(/removed/i)
+    })
+
+    it('does not add a second copy to a save, which AuditDiff already shows', async () => {
+      mockList({
+        entries: [revert({ action: 'email_template_saved', after: { template_name: 'ticket_created', template_subject: 'New', template_body: 'New body' } })],
+        total: 1, has_more: false,
+      })
+      renderWithQuery(<AdminAuditPage />)
+      const row = (await screen.findByText('email_template', { selector: 'span' })).closest('tr')!
+      expect(row.textContent).not.toMatch(/removed/i)
+      expect(row.textContent).toContain('New body')
+    })
+  })
 })

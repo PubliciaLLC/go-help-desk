@@ -263,6 +263,13 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.Get("/security-warnings", s.handleGetSecurityWarnings)
 	})
 
+	// What the post-upgrade wizard shows beside its settings. Admin-only like
+	// the rest of this router; the count is not secret but nobody else needs it.
+	r.Group(func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceSettings))
+		r.Get("/post-upgrade", s.handlePostUpgrade)
+	})
+
 	r.Route("/settings", func(r chi.Router) {
 		r.Use(authmw.RequireResource(auth.ResourceSettings))
 		r.Get("/", s.handleGetSettings)
@@ -339,6 +346,19 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.With(authmw.DenyMachineCredentials).Post("/{id}/reapprove", s.handleReapproveWebhook)
 		r.Get("/{id}/deliveries", s.handleListWebhookDeliveries)
 		r.Post("/{id}/deliveries/{delivery}/redeliver", s.handleRedeliverWebhook)
+	})
+
+	// The mail the server sends from the operator's domain (#158). Session-only:
+	// a key that could edit the reset mail could point it at a link of its own.
+	r.Route("/email-templates", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceSettings))
+		r.Use(authmw.DenyMachineCredentials)
+		r.Get("/", s.handleListEmailTemplates)
+		r.Get("/{name}", s.handleGetEmailTemplate)
+		r.Put("/{name}", s.handlePutEmailTemplate)
+		r.Delete("/{name}", s.handleRevertEmailTemplate)
+		r.Post("/{name}/preview", s.handlePreviewEmailTemplate)
+		r.Post("/{name}/test", s.handleTestEmailTemplate)
 	})
 
 	r.Route("/tags", func(r chi.Router) {

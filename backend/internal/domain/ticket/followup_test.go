@@ -25,7 +25,7 @@ func closedWithEverything(t *testing.T, h *harness) ticket.Ticket {
 	assignee := uuid.New()
 	reporter := uuid.New()
 	closedAt := time.Now().Add(-time.Hour)
-	tk := ticket.Ticket{
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: "GHD-2026-000042",
 		Subject:        "Printer on 3 is down",
@@ -52,7 +52,7 @@ func TestCreateFollowUp_CopiesTheDetailsAndLinksBack(t *testing.T) {
 	orig := closedWithEverything(t, h)
 	staff := ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff}
 
-	got, err := h.svc.CreateFollowUp(context.Background(), orig.ID, "GHD", staff)
+	got, err := h.svc.CreateFollowUp(context.Background(), orig.ID, "GHD", ticket.ChannelWeb, staff)
 	require.NoError(t, err)
 
 	require.NotEqual(t, orig.ID, got.ID)
@@ -86,7 +86,7 @@ func TestCreateFollowUp_GoesThroughTheOrdinaryCreationPath(t *testing.T) {
 	staffID := uuid.New()
 	staff := ticket.Actor{UserID: &staffID, Role: user.RoleStaff}
 
-	got, err := h.svc.CreateFollowUp(context.Background(), orig.ID, "GHD", staff)
+	got, err := h.svc.CreateFollowUp(context.Background(), orig.ID, "GHD", ticket.ChannelWeb, staff)
 	require.NoError(t, err)
 
 	hist := historyFor(h, got.ID)
@@ -122,7 +122,7 @@ func TestCreateFollowUp_LeavesTheOriginalUntouched(t *testing.T) {
 	tokensBefore := h.store.guestTokenCount(tk.ID)
 	updatesBefore := h.store.updates
 
-	_, err := h.svc.CreateFollowUp(context.Background(), tk.ID, "GHD", staff)
+	_, err := h.svc.CreateFollowUp(context.Background(), tk.ID, "GHD", ticket.ChannelWeb, staff)
 	require.NoError(t, err)
 
 	after, _ := h.store.GetByID(context.Background(), tk.ID)
@@ -144,7 +144,7 @@ func TestCreateFollowUp_ForAGuestTicketCopiesTheGuest(t *testing.T) {
 	require.NoError(t, h.svc.Close(context.Background(), tk.ID, staff))
 	h.dispatcher.events = nil
 
-	got, err := h.svc.CreateFollowUp(context.Background(), tk.ID, "GHD", staff)
+	got, err := h.svc.CreateFollowUp(context.Background(), tk.ID, "GHD", ticket.ChannelWeb, staff)
 	require.NoError(t, err)
 
 	require.Nil(t, got.ReporterUserID)
@@ -165,7 +165,7 @@ func TestCreateFollowUp_Refusals(t *testing.T) {
 		h := newHarness(t)
 		orig := closedWithEverything(t, h)
 		creates := h.store.creates
-		_, err := h.svc.CreateFollowUp(ctx, orig.ID, "GHD",
+		_, err := h.svc.CreateFollowUp(ctx, orig.ID, "GHD", ticket.ChannelWeb,
 			ticket.Actor{UserID: orig.ReporterUserID, Role: user.RoleUser})
 		require.ErrorIs(t, err, ticket.ErrForbidden)
 		require.Equal(t, creates, h.store.creates)
@@ -182,7 +182,7 @@ func TestCreateFollowUp_Refusals(t *testing.T) {
 			h := newHarness(t)
 			orig := seed(h)
 			creates := h.store.creates
-			_, err := h.svc.CreateFollowUp(ctx, orig.ID, "GHD", staff)
+			_, err := h.svc.CreateFollowUp(ctx, orig.ID, "GHD", ticket.ChannelWeb, staff)
 			require.ErrorIs(t, err, ticket.ErrNotClosed)
 			require.Equal(t, creates, h.store.creates, "no ticket is created, so no tracking number is taken")
 		})
@@ -190,7 +190,7 @@ func TestCreateFollowUp_Refusals(t *testing.T) {
 
 	t.Run("a missing ticket is not found", func(t *testing.T) {
 		h := newHarness(t)
-		_, err := h.svc.CreateFollowUp(ctx, uuid.New(), "GHD", staff)
+		_, err := h.svc.CreateFollowUp(ctx, uuid.New(), "GHD", ticket.ChannelWeb, staff)
 		require.ErrorIs(t, err, errNotFound)
 	})
 
@@ -198,7 +198,7 @@ func TestCreateFollowUp_Refusals(t *testing.T) {
 		h := newHarness(t)
 		orig := closedWithEverything(t, h)
 		h.store.errCreateLink = errStoreDown
-		_, err := h.svc.CreateFollowUp(ctx, orig.ID, "GHD", staff)
+		_, err := h.svc.CreateFollowUp(ctx, orig.ID, "GHD", ticket.ChannelWeb, staff)
 		require.ErrorIs(t, err, errStoreDown)
 		require.Equal(t, 1, h.atomic.rollbacks)
 		require.Len(t, h.store.tickets, 1, "only the original remains")
@@ -211,11 +211,11 @@ func TestCreateFollowUp_CanContinueAChain(t *testing.T) {
 	h := newHarness(t)
 	staff := ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff}
 	orig := closedWithEverything(t, h)
-	first, err := h.svc.CreateFollowUp(context.Background(), orig.ID, "GHD", staff)
+	first, err := h.svc.CreateFollowUp(context.Background(), orig.ID, "GHD", ticket.ChannelWeb, staff)
 	require.NoError(t, err)
 	require.NoError(t, h.svc.Close(context.Background(), first.ID, staff))
 
-	second, err := h.svc.CreateFollowUp(context.Background(), first.ID, "GHD", staff)
+	second, err := h.svc.CreateFollowUp(context.Background(), first.ID, "GHD", ticket.ChannelWeb, staff)
 	require.NoError(t, err)
 	require.Equal(t, second.ID, h.store.links[first.ID][0].TargetTicketID)
 }

@@ -30,7 +30,7 @@ import (
 
 func foreignTicket(t *testing.T, h *harness) ticket.Ticket {
 	t.Helper()
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject:        "Exec compensation review",
 		Description:    "Sensitive",
 		CategoryID:     h.catID,
@@ -107,7 +107,7 @@ func TestListReplies_HidesInternalNotesFromTheReporter(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "My laptop will not boot", CategoryID: h.catID,
 		Priority: ticket.PriorityMedium, ReporterUserID: &h.userID,
 	})
@@ -116,9 +116,9 @@ func TestListReplies_HidesInternalNotesFromTheReporter(t *testing.T) {
 	newStatus := statusIDNamed(t, h, ticket.StatusNameNew)
 	staffActor := ticket.Actor{UserID: &h.staffID, Role: user.RoleStaff}
 
-	_, err = h.ticketSvc.AddReply(ctx, own.ID, "We are looking into it", false, true, "", staffActor, 7, newStatus)
+	_, err = h.ticketSvc.AddReply(ctx, own.ID, "We are looking into it", ticket.TextFormatPlain, false, true, "", staffActor, 7, newStatus)
 	require.NoError(t, err)
-	_, err = h.ticketSvc.AddReply(ctx, own.ID, "INTERNAL: replace under warranty, cost code 4471", true, false, "", staffActor, 7, newStatus)
+	_, err = h.ticketSvc.AddReply(ctx, own.ID, "INTERNAL: replace under warranty, cost code 4471", ticket.TextFormatPlain, true, false, "", staffActor, 7, newStatus)
 	require.NoError(t, err)
 
 	t.Run("the reporter sees only the public reply", func(t *testing.T) {
@@ -196,7 +196,7 @@ func TestTicketNotFound_BodyMatchesAGenuinelyMissingTicket(t *testing.T) {
 	})
 
 	t.Run("link target_id", func(t *testing.T) {
-		own, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+		own, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 			Subject: "Mine", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
 		})
 		require.NoError(t, err)
@@ -232,7 +232,7 @@ func TestAddLink_ChecksTheTargetTicketToo(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Mine", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)
@@ -262,7 +262,7 @@ func TestRemoveLink_ChecksTheTargetTicketToo(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Mine", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)
@@ -294,11 +294,11 @@ func TestAddLink_ReturnsInvalidLinkTypeWith400(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Mine", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)
-	target, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	target, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Target", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)
@@ -330,7 +330,7 @@ func TestAddLink_SelfLinkReturns400(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Mine", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)
@@ -384,11 +384,11 @@ func TestRemoveLink_InvalidLinkTypeReturns400(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Mine", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)
-	target, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	target, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Target", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)
@@ -420,11 +420,11 @@ func TestAddLink_ReturnsDuplicateLinkWith409(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Mine", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)
-	target, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	target, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Target", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)
@@ -467,7 +467,7 @@ func TestTicketSubtree_RefusesStaffOutsideTheirScope(t *testing.T) {
 
 	// Reported by the admin, unassigned, in a category the staff user's groups
 	// do not cover — so it is outside their scope entirely.
-	outOfScope, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	outOfScope, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Finance escalation", CategoryID: h.catID,
 		Priority: ticket.PriorityHigh, ReporterUserID: &h.adminID,
 	})

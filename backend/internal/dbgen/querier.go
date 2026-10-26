@@ -174,6 +174,9 @@ type Querier interface {
 	// become a join, which is what lets the planner start from the tickets side.
 	// Administrators use CountAuditLog instead.
 	CountAuditLogScoped(ctx context.Context, arg CountAuditLogScopedParams) (int64, error)
+	// Only what a guest uploaded: staff and reporter files do not count toward the
+	// guest cap (#445).
+	CountGuestAttachments(ctx context.Context, ticketID uuid.UUID) (int64, error)
 	// How many administrators this instance would still have if $1 stopped being
 	// one.
 	//
@@ -209,6 +212,12 @@ type Querier interface {
 	// the type's items too.
 	CountTicketsByType(ctx context.Context, typeID uuid.NullUUID) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
+	// Accounts that would have to reset their password once the grace period
+	// ends (#453): enabled, not an administrator (every administrator is exempt),
+	// not a service account, and holding a bcrypt hash made below cost $1. An
+	// empty hash (SSO-only) or one bcrypt cannot read does not match the pattern
+	// and is not counted; the CASE keeps the cast from running on it.
+	CountUsersWithOldPasswordHash(ctx context.Context, dollar_1 int32) (int64, error)
 	// Whether this account has a passkey at all.
 	//
 	// This is what makes MFARequiredFor satisfiable by a passkey rather than only
@@ -240,6 +249,7 @@ type Querier interface {
 	CreatePlugin(ctx context.Context, arg CreatePluginParams) error
 	// author_id is NULL for a reply written by a guest, who has no account. That is
 	// the only way it is NULL: every other path passes the acting user.
+	// body_format has no column default (migration 000055), so every writer names it.
 	CreateReply(ctx context.Context, arg CreateReplyParams) error
 	CreateSLAPolicy(ctx context.Context, arg CreateSLAPolicyParams) error
 	CreateSLARecord(ctx context.Context, arg CreateSLARecordParams) error
@@ -279,6 +289,7 @@ type Querier interface {
 	DeleteCategory(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteCustomFieldAssignment(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteCustomFieldValue(ctx context.Context, arg DeleteCustomFieldValueParams) error
+	DeleteEmailTemplateOverride(ctx context.Context, name string) error
 	DeleteExpiredSessions(ctx context.Context) (int64, error)
 	DeleteFailedNotificationsBefore(ctx context.Context, failedAt sql.NullTime) (int64, error)
 	DeleteGroup(ctx context.Context, id uuid.UUID) (int64, error)
@@ -434,6 +445,7 @@ type Querier interface {
 	GetCurrentSLARecordForUpdate(ctx context.Context, ticketID uuid.UUID) (SlaRecord, error)
 	GetCustomFieldAssignment(ctx context.Context, id uuid.UUID) (CustomFieldAssignment, error)
 	GetCustomFieldDef(ctx context.Context, id uuid.UUID) (CustomFieldDef, error)
+	GetEmailTemplateOverrides(ctx context.Context, names []string) ([]EmailTemplateOverride, error)
 	GetGroup(ctx context.Context, id uuid.UUID) (Group, error)
 	GetInstanceSecret(ctx context.Context, name string) ([]byte, error)
 	GetItem(ctx context.Context, id uuid.UUID) (Item, error)
@@ -647,6 +659,7 @@ type Querier interface {
 	ListCategories(ctx context.Context, dollar_1 bool) ([]Category, error)
 	ListCustomFieldDefs(ctx context.Context) ([]CustomFieldDef, error)
 	ListCustomFieldValuesForTicket(ctx context.Context, ticketID uuid.UUID) ([]ListCustomFieldValuesForTicketRow, error)
+	ListEmailTemplateOverrides(ctx context.Context) ([]EmailTemplateOverride, error)
 	ListEnabledWebhookConfigs(ctx context.Context) ([]WebhookConfig, error)
 	ListGroupMembers(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID, error)
 	ListGroupScopes(ctx context.Context, groupID uuid.UUID) ([]GroupScope, error)
@@ -786,6 +799,9 @@ type Querier interface {
 	ListWebhookConfigs(ctx context.Context) ([]WebhookConfig, error)
 	// No event column: the history shows outcomes, never content.
 	ListWebhookDeliveries(ctx context.Context, webhookID uuid.UUID) ([]ListWebhookDeliveriesRow, error)
+	// Locks the row (if any) so the audit entry's "before" is the row this
+	// transaction then replaces.
+	LockEmailTemplateOverride(ctx context.Context, name string) (EmailTemplateOverride, error)
 	// Locks the group row so nothing can be assigned to it until the transaction
 	// ends. A ticket's assignee_group_id takes a share lock on the group it names,
 	// and this conflicts with that. Without it a ticket assigned between
@@ -1124,6 +1140,7 @@ type Querier interface {
 	UpsertAttachmentReputation(ctx context.Context, arg UpsertAttachmentReputationParams) (AttachmentReputation, error)
 	// ── Values ────────────────────────────────────────────────────────────────────
 	UpsertCustomFieldValue(ctx context.Context, arg UpsertCustomFieldValueParams) error
+	UpsertEmailTemplateOverride(ctx context.Context, arg UpsertEmailTemplateOverrideParams) error
 	// No password (#360) and no display name (#374): both are chosen at
 	// verification, so a second signup for the same address can only re-issue
 	// the link, never choose anything the account will get.

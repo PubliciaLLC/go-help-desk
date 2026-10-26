@@ -73,6 +73,7 @@ func TestUpload_AGuestUploadLosingTheRaceToTheCloseIsTheGenericNotFound(t *testi
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	tk, token := seedGuestTicket(t, h)
+	setGuestUploads(t, h, true) // off by default (#445)
 	closeTicketWhenTheUploadPipelineReadsTheAllowlist(t, h, tk.ID.String())
 
 	res := uploadGuestAttachment(t, h, token, "photo.txt", []byte("what it looks like"))
@@ -91,7 +92,7 @@ func TestUpload_AGuestUploadLosingTheRaceToTheCloseIsTheGenericNotFound(t *testi
 func TestUpload_AReporterUploadLosingTheRaceToTheCloseIsConflict(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Needs a screenshot", Description: "x", CategoryID: h.catID, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)
@@ -114,7 +115,7 @@ func TestUpload_AReporterUploadLosingTheRaceToTheCloseIsConflict(t *testing.T) {
 func TestUpload_AStaffUploadRacingTheCloseStillLands(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Documenting the fix", Description: "x", CategoryID: h.catID, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)

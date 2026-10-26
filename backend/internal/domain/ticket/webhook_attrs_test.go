@@ -19,7 +19,7 @@ import (
 func (h *harness) seedClassified(status uuid.UUID) ticket.Ticket {
 	grp := uuid.New()
 	reporter := uuid.New()
-	t := ticket.Ticket{
+	t := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:              uuid.New(),
 		TrackingNumber:  "HD-000200",
 		Subject:         "Classified",
@@ -85,7 +85,7 @@ func TestWebhookEvents_CarryTheTicketAttrs(t *testing.T) {
 		run  func(t *testing.T, h *harness) ticket.Ticket // returns the ticket the events describe
 	}{
 		{"create", func(t *testing.T, h *harness) ticket.Ticket {
-			got, err := h.svc.Create(ctx, ticket.CreateInput{
+			got, err := h.svc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 				Subject: "s", Description: "d", CategoryID: uuid.New(),
 				Priority: ticket.PriorityHigh, ReporterUserID: ptr(uuid.New()),
 			})
@@ -109,13 +109,13 @@ func TestWebhookEvents_CarryTheTicketAttrs(t *testing.T) {
 		}},
 		{"public reply", func(t *testing.T, h *harness) ticket.Ticket {
 			seeded := h.seedClassified(h.newStatus.ID)
-			_, err := h.svc.AddReply(ctx, seeded.ID, "r", false, false, "x@example.com", staff, 30, h.newStatus.ID)
+			_, err := h.svc.AddReply(ctx, seeded.ID, "r", ticket.TextFormatPlain, false, false, "x@example.com", staff, 30, h.newStatus.ID)
 			require.NoError(t, err)
 			return seeded
 		}},
 		{"internal note", func(t *testing.T, h *harness) ticket.Ticket {
 			seeded := h.seedClassified(h.newStatus.ID)
-			_, err := h.svc.AddReply(ctx, seeded.ID, "r", true, false, "x@example.com", staff, 30, h.newStatus.ID)
+			_, err := h.svc.AddReply(ctx, seeded.ID, "r", ticket.TextFormatPlain, true, false, "x@example.com", staff, 30, h.newStatus.ID)
 			require.NoError(t, err)
 			return seeded
 		}},
@@ -127,7 +127,7 @@ func TestWebhookEvents_CarryTheTicketAttrs(t *testing.T) {
 			seeded.ReporterUserID = &reporter
 			h.store.seed(seeded)
 			requester := ticket.Actor{UserID: &reporter, Role: user.RoleUser}
-			_, err := h.svc.AddReply(ctx, seeded.ID, "again", false, false, "x@example.com", requester, 30, h.newStatus.ID)
+			_, err := h.svc.AddReply(ctx, seeded.ID, "again", ticket.TextFormatPlain, false, false, "x@example.com", requester, 30, h.newStatus.ID)
 			require.NoError(t, err)
 			require.Contains(t, h.dispatcher.types(), notification.EventTicketReopened,
 				"the case must reopen, or it tests nothing about reopen")
@@ -192,7 +192,7 @@ func TestWebhookEvents_FollowUpCarriesEachTicketsOwnAttrs(t *testing.T) {
 	h.store.seed(orig)
 	staff := ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff}
 
-	got, err := h.svc.CreateFollowUp(context.Background(), orig.ID, "GHD", staff)
+	got, err := h.svc.CreateFollowUp(context.Background(), orig.ID, "GHD", ticket.ChannelWeb, staff)
 	require.NoError(t, err)
 	require.NotEqual(t, classificationOf(orig), classificationOf(got),
 		"the two tickets must differ, or the test cannot tell their events apart")

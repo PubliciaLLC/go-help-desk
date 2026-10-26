@@ -196,7 +196,7 @@ func TestEmail_VerificationLinkComesFromConfigNotTheRequest(t *testing.T) {
 	addr, received := captureSMTP(t)
 	d := dispatcherFor(t, addr)
 
-	require.NoError(t, d.SendVerificationEmail(
+	require.NoError(t, d.SendVerificationEmail(context.Background(),
 		"user@example.com", "the-secret-token", "https://help.example.com"))
 
 	raw := <-received
@@ -222,7 +222,7 @@ func TestEmail_VerificationLinkHostFollowsTheConfiguredBaseURL(t *testing.T) {
 		t.Run(base, func(t *testing.T) {
 			addr, received := captureSMTP(t)
 			d := dispatcherFor(t, addr)
-			require.NoError(t, d.SendVerificationEmail("user@example.com", "tok", base))
+			require.NoError(t, d.SendVerificationEmail(context.Background(), "user@example.com", "tok", base))
 			raw := strings.ReplaceAll(<-received, "=\r\n", "")
 			require.Contains(t, raw, base+"/verify-email")
 			require.NotContains(t, raw, "127.0.0.1")

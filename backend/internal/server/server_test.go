@@ -23,6 +23,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/cannedresponsestore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/categorystore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/customfieldstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/emailtemplatestore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/groupstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/outboxstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/passwordresetstore"
@@ -157,7 +158,23 @@ func newHarnessPasskeysOff(t *testing.T) (*harness, func()) {
 
 func newHarnessPasskeys(t *testing.T, authRateLimit int, clamAVAddr string, mutate func(*config.Config), passkeysOn bool) (*harness, func()) {
 	t.Helper()
-	db, closeDB := testutil.NewDB(t)
+	return newHarnessOn(t, testutil.NewDB, authRateLimit, clamAVAddr, mutate, passkeysOn)
+}
+
+// newIsolatedHarness is newHarness on a database of its own (#550).
+//
+// For a test that counts something a rollback does not give back. Tracking
+// numbers come from ticket_seq, and a sequence is not transactional: every
+// other package's test that creates a ticket moves it, so "the next number is
+// this one plus one" is only true where nobody else is drawing.
+func newIsolatedHarness(t *testing.T) (*harness, func()) {
+	t.Helper()
+	return newHarnessOn(t, testutil.NewIsolatedDB, 0, "", nil, true)
+}
+
+func newHarnessOn(t *testing.T, openDB func(*testing.T) (*testutil.DB, func()), authRateLimit int, clamAVAddr string, mutate func(*config.Config), passkeysOn bool) (*harness, func()) {
+	t.Helper()
+	db, closeDB := openDB(t)
 	q, tx, rollback := testutil.TxQueriesTx(t, db)
 
 	ctx := context.Background()
@@ -364,6 +381,14 @@ func newHarnessPasskeys(t *testing.T, authRateLimit int, clamAVAddr string, muta
 		WithQueue(notify.WebhookQueue{Outbox: outboxstore.New(q), Hooks: authSt, History: authSt, Source: server.NewWebhookEventSource(ticketSvc)})
 	srvOpts = append(srvOpts, server.WithWebhookRedeliverer(webhookDisp))
 	srvOpts = append(srvOpts, server.WithEmailHealth(outboxstore.New(q)))
+	// The template editor (#158) over the harness transaction, so a test's
+	// saves roll back with it. The dispatcher is the real one: SMTP is off
+	// unless a test sets it, and preview needs none.
+	tmplStore := emailtemplatestore.New(q)
+	emailDisp, err := notify.NewEmailDispatcher(cfg)
+	require.NoError(t, err)
+	emailDisp.WithTemplates(tmplStore, adminSvc)
+	srvOpts = append(srvOpts, server.WithEmailTemplates(tmplStore, emailDisp))
 	srv := server.New(
 		cfg,
 		sessionStore,

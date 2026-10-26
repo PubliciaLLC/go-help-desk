@@ -82,7 +82,7 @@ func newFilteredFixture(t *testing.T, q *dbgen.Queries) *filteredFixture {
 	mkTicket := func(subject string, cat uuid.UUID, reporter *uuid.UUID, assignee *uuid.UUID, st uuid.UUID, p ticket.Priority) ticket.Ticket {
 		seq++
 		now := time.Now().UTC().Truncate(time.Millisecond)
-		tk := ticket.Ticket{
+		tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 			ID:             uuid.New(),
 			TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2026, seq),
 			Subject:        subject,

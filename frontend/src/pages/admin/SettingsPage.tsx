@@ -7,18 +7,22 @@ import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { LifetimeSlider } from '@/components/admin/LifetimeSlider'
+import { GuestSizeSlider } from '@/components/admin/GuestSizeSlider'
+import { BoundedNumberInput } from '@/components/admin/BoundedNumberInput'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Spinner } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
 import { useState, useEffect, useRef } from 'react'
 import { fmtMin } from '@/lib/format'
+import { UPDATE_CHECK_LABEL, UPDATE_CHECK_DETAIL } from '@/lib/updateCheck'
 
 // ── Shared primitives ─────────────────────────────────────────────────────────
 
-function Toggle({ checked, onChange, label }: {
+function Toggle({ checked, onChange, label, disabled }: {
   checked: boolean
   onChange: (v: boolean) => void
+  disabled?: boolean
   /** The switch's own name, where the surrounding row does not supply one. */
   label?: string
 }) {
@@ -28,9 +32,10 @@ function Toggle({ checked, onChange, label }: {
       role="switch"
       aria-checked={checked}
       aria-label={label}
+      disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cn(
-        'relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2',
+        'relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center disabled:cursor-not-allowed disabled:opacity-50 rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2',
         checked ? 'bg-blue-600' : 'bg-gray-200'
       )}
     >
@@ -554,6 +559,59 @@ function GeneralPanel({
           <Toggle checked={bool('guest_submission_enabled')} onChange={(v) => setBool('guest_submission_enabled', v)} />
         </SettingRow>
         <EmailStatusNote on={bool('guest_submission_enabled')} />
+        {/* Dependent on guest submission (#445): shown under it, unavailable
+            while it is off, and the server ignores it in that state too. */}
+        <SettingRow
+          label="Guests may attach files"
+          description="Let a guest add files to their ticket from the link they were emailed. Off by default, and it only takes effect while guest submission is on. Uploads are scanned and held to the same rules as everyone else's, and are download-only."
+        >
+          <Toggle
+            label="Guests may attach files"
+            checked={bool('guest_attachments_enabled')}
+            disabled={!bool('guest_submission_enabled')}
+            onChange={(v) => setBool('guest_attachments_enabled', v)}
+          />
+        </SettingRow>
+        <div className="border-t px-5 py-4 space-y-2">
+          <div className="text-sm text-gray-500">
+            The largest file a guest may attach. It can never exceed this instance&apos;s own attachment maximum of 25 MB.
+          </div>
+          <GuestSizeSlider
+            value={has('guest_attachment_max_mb') ? num('guest_attachment_max_mb') : undefined}
+            onChange={(v) => setNum('guest_attachment_max_mb', v)}
+            instanceMaxMB={25}
+            disabled={!bool('guest_submission_enabled') || !bool('guest_attachments_enabled')}
+          />
+          {!bool('guest_submission_enabled') && (
+            <p className="text-xs text-gray-500">Unavailable while guest submission is off.</p>
+          )}
+        </div>
+        <div className="border-t px-5 py-4 space-y-4">
+          <div className="text-sm text-gray-500">
+            How much one guest can put on a ticket. The cap counts only files guests attached; staff files do not count
+            toward it. The hourly figure is per guest link, so one guest does not use up another&apos;s.
+          </div>
+          <div className="flex flex-wrap gap-8">
+            <BoundedNumberInput
+              label="Most files a guest can attach to one ticket"
+              hint="1 to 50. Default 5."
+              min={1}
+              max={50}
+              value={has('guest_attachment_max_per_ticket') ? num('guest_attachment_max_per_ticket') : 5}
+              onChange={(v) => setNum('guest_attachment_max_per_ticket', v)}
+              disabled={!bool('guest_submission_enabled') || !bool('guest_attachments_enabled')}
+            />
+            <BoundedNumberInput
+              label="Uploads per guest link per hour"
+              hint="1 to 30. Default 3."
+              min={1}
+              max={30}
+              value={has('guest_attachment_uploads_per_hour') ? num('guest_attachment_uploads_per_hour') : 3}
+              onChange={(v) => setNum('guest_attachment_uploads_per_hour', v)}
+              disabled={!bool('guest_submission_enabled') || !bool('guest_attachments_enabled')}
+            />
+          </div>
+        </div>
       </Section>
 
       <Section title="Ticket lifecycle">
@@ -666,6 +724,16 @@ function GeneralPanel({
                 : 'days — 0 keeps everything'}
             </span>
           </div>
+        </SettingRow>
+      </Section>
+
+      <Section title="Updates">
+        <SettingRow label={UPDATE_CHECK_LABEL} description={UPDATE_CHECK_DETAIL}>
+          <Toggle
+            label={UPDATE_CHECK_LABEL}
+            checked={bool('update_check_enabled')}
+            onChange={(v) => setBool('update_check_enabled', v)}
+          />
         </SettingRow>
       </Section>
 
@@ -1792,6 +1860,15 @@ function EmailPanel({
 }) {
   return (
     <div className="space-y-6">
+      <Section title="Email templates">
+        <div className="px-5 py-4 text-sm text-gray-500">
+          The wording of every email this help desk sends, and a header and footer for all of them, can be edited.{' '}
+          <Link to="/admin/email-templates" className="font-medium text-blue-600 underline">
+            Edit email templates
+          </Link>
+        </div>
+      </Section>
+
       <Section title="Staff email about tickets">
         <div className="px-5 py-4 text-sm text-gray-500">
           Staff are emailed when a ticket is assigned to them or their group, and when a requester replies on a ticket

@@ -107,7 +107,7 @@ func (f *migration028TestFixture) reporterID() *uuid.UUID { return &f.reporter.I
 // as given rather than at time.Now().
 func (f *migration028TestFixture) seed(t *testing.T, subject string, statusID uuid.UUID, created, updated time.Time, resolvedAt, closedAt, pendingSince *time.Time) ticket.Ticket {
 	t.Helper()
-	tk := ticket.Ticket{
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: ticket.TrackingNumber("M28-" + uuid.NewString()[:8]),
 		Subject:        subject,

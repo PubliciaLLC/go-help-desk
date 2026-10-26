@@ -116,6 +116,11 @@ describe('attachments are never rendered inline', () => {
     'src/components/MFAEnrollForm.tsx': 1,
     'src/pages/AccountPage.tsx': 1,
     'src/pages/admin/SettingsPage.tsx': 1,
+    // #443: not a renderer. This is the `new URL(value)` that parses a link's
+    // target in safeUrl, which the regex above reads as a CSS url(). Markdown
+    // images are never loaded: the pipeline turns each into a link (see
+    // TicketText.xss.test.tsx), and nothing else in the file renders anything.
+    'src/lib/markdownAllowList.ts': 1,
   }
 
   it('renders nothing that is not on the list', () => {
@@ -160,10 +165,21 @@ describe('attachments are never rendered inline', () => {
     // concatenation, a plain string, with or without the trailing slash —
     // because how the URL is written is not the point. The trailing slash
     // used to be required, which let ['…/attachments', id].join('/') past.
-    const builders = files
-      .filter(({ source }) => /['"`][^'"`]*\/attachments\b/.test(source))
-      .map(({ path }) => path)
+    const spelled = files.filter(({ source }) => /['"`][^'"`]*\/attachments\b/.test(source))
+    const builders = spelled.map(({ path }) => path).filter((p) => p !== 'src/api/guest.ts')
     expect(builders).toEqual(['src/api/tickets.ts'])
+
+    // guest.ts (#445) may spell the path exactly once, as the guest UPLOAD:
+    // a POST the page makes with axios, never a URL it renders or links (the
+    // guest read has no attachment list). Every occurrence of the path text
+    // must be that one call, so a second spelling of any kind, such as a
+    // download-URL builder, fails here instead of passing under the file's
+    // name.
+    const guest = files.find(({ path }) => path === 'src/api/guest.ts')!.source
+    const occurrences = guest.match(/\/attachments\b/g) ?? []
+    const uploadCalls = guest.match(/guestApi\.post\(\s*['"]\/attachments['"]\s*,/g) ?? []
+    expect(occurrences.length, 'guest.ts mentions /attachments more than once').toBe(1)
+    expect(uploadCalls.length, 'guest.ts must post to /attachments exactly once').toBe(1)
   })
 
   // And the one place that uses it has to ask the browser to save. The

@@ -114,6 +114,10 @@ tags:
     description: Installed plugins and whether each is enabled. Installing and uninstalling are not implemented.
   - name: "Admin: Credentials"
     description: The scope catalogue, API keys and OAuth clients.
+  - name: "Admin: Email templates"
+    description: >-
+      The wording of the mail the server sends, and a shared header and footer.
+      Session-only; templates cannot include ticket text.
   - name: "Admin: Webhooks"
     description: Outgoing webhook subscriptions.
   - name: "Admin: Tags"
@@ -1551,6 +1555,14 @@ paths:
                 category:
                   type: string
                   description: The name of the first category. Optional, used only when no category exists yet.
+                update_check:
+                  type: boolean
+                  description: >-
+                    Whether the administrator ticked "Check for new releases".
+                    Stored as update_check_enabled. Absent means false: a client that
+                    never asks cannot turn a request to GitHub on. Setup also records
+                    post_upgrade_130_seen, so the post-upgrade wizard never shows on
+                    a fresh install.
       responses:
         '201':
           description: The administrator was created.
@@ -1599,7 +1611,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [name, logo_url, version, guest_submission_enabled]
+                required: [name, logo_url, version, guest_submission_enabled, guest_attachments_enabled]
                 properties:
                   name:
                     type: string
@@ -1612,6 +1624,32 @@ paths:
                     description: The server version.
                   guest_submission_enabled:
                     type: boolean
+                  guest_attachments_enabled:
+                    type: boolean
+                    description: |
+                      Whether a guest may attach files from the web page (#445).
+                      True only while guest submission is also on. This is
+                      public: unlike the upload route, which answers the same
+                      404 whether the setting or the token failed, this tells
+                      anyone whether uploads are on. Accepted as low sensitivity.
+                  guest_attachment_max_bytes:
+                    type: integer
+                    format: int64
+                    description: |
+                      The per-file limit that applies to a guest: the lower of
+                      guest_attachment_max_mb and the instance-wide 25 MB maximum.
+                      Present only while guest_attachments_enabled is true. Public,
+                      like the flag; disclosing the limit was accepted.
+                  guest_attachment_uploads_per_hour:
+                    type: integer
+                    description: |
+                      Uploads one guest link may make per hour (#445). Present
+                      only while guest_attachments_enabled is true.
+                  guest_attachment_max_per_ticket:
+                    type: integer
+                    description: |
+                      The most files guests may attach to one ticket (#445).
+                      Present only while guest_attachments_enabled is true.
   /health:
     get:
       operationId: health
@@ -2076,7 +2114,10 @@ paths:
               properties:
                 body:
                   type: string
-                  description: The reply text. Must not be blank after trimming.
+                  description: The reply text. Must not be blank after trimming. At most 50,000 bytes, as a description; more is refused with 400 body_too_long.
+                format:
+                  description: How body is shown. See TextFormatRequest.
+                  $ref: '#/components/schemas/TextFormatRequest'
       responses:
         '201':
           description: The reply as stored.
@@ -2084,7 +2125,14 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/AccountGuestReply'}
         '400':
-          $ref: '#/components/responses/BadRequest'
+          description: |
+            `bad_request`: malformed body or a failed check; `body_too_long` (the guest reply route only): body is
+            over 50,000 bytes; `invalid_format`: format is present and is not
+            exactly plain or markdown (an empty string, "Markdown", "html", a number and `null` are all
+            refused). Nothing is written.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
         '404':
           $ref: '#/components/responses/GuestNotFound'
         '409':
@@ -2156,11 +2204,12 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [tracking_number, subject, description, status, created_at, replies]
+                required: [tracking_number, subject, description, description_format, status, created_at, replies]
                 properties:
                   tracking_number: {type: string}
                   subject: {type: string}
                   description: {type: string}
+                  description_format: {$ref: '#/components/schemas/TextFormat'}
                   status:
                     type: string
                     description: The name of the ticket's current status. Empty if the status cannot be found.
@@ -2200,6 +2249,9 @@ paths:
                 description:
                   type: string
                   description: Free text. At most 50,000 bytes.
+                format:
+                  description: How description is shown. See TextFormatRequest.
+                  $ref: '#/components/schemas/TextFormatRequest'
                 category_id: {$ref: '#/components/schemas/Uuid'}
                 guest_email:
                   type: string
@@ -2221,7 +2273,13 @@ paths:
                 properties:
                   tracking_number: {type: string}
         '400':
-          $ref: '#/components/responses/BadRequest'
+          description: |
+            `bad_request`: malformed body or a failed check; `invalid_format`: format is present and is not
+            exactly plain or markdown (an empty string, "Markdown", "html", a number and `null` are all
+            refused). Nothing is written.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
         '404':
           description: Guest submission is switched off (not_found).
           content:
@@ -2393,7 +2451,7 @@ paths:
       description: |
         Staff and administrators only, in a signed-in session (second factor required).
         The scopes POST /me/api-keys accepts for this caller: the whole catalogue for an
-        administrator, tickets, groups:read, audit:read and users:read (the requester lookup) for staff. A key acts at its
+        administrator, tickets, groups:read and audit:read for staff. A key acts at its
         owner's role, so a scope outside that role would only look like access it does not have.
       tags: ['Account']
       x-ghd-handler: handleListMyAPIKeyScopes
@@ -2807,8 +2865,11 @@ paths:
         one may make it without MFA. A flagged account that has since enrolled a factor gets 403 mfa_required
         and must verify the factor first. Any other route refuses a flagged session with 403
         password_change_required until the password is changed. The change clears the requirement.
-        A wrong current_password answers 401 invalid_credentials as application/json, which is distinct
-        from the text/plain 401 unauthorized sent when there is no session. The old field name password is still read when new_password is absent. current_password is
+        A missing or wrong current_password answers 400 invalid_current_password: the session is fine, so
+        this is not a 401, which here always means there is no session. 1.2.0 did not ask for the current
+        password. Wrong guesses are counted per account against a budget the size of sign-in's
+        (AUTH_RATE_LIMIT_PER_MINUTE, a separate counter) and answer 429 rate_limited once it is spent; the correct
+        password is still accepted. The old field name password is still read when new_password is absent. current_password is
         required in either case.
       tags: ['Account']
       x-ghd-handler: handleChangePassword
@@ -2838,19 +2899,21 @@ paths:
         '204':
           description: The password is changed. A new session cookie is set and the other sessions have ended.
         '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
           description: >-
-            Either no session (unauthorized, text/plain, from the auth middleware)
-            or a wrong current_password (invalid_credentials, application/json,
-            from the handler).
+            The body is not valid, the new password is not 8 to 72 bytes (bad_request), or
+            current_password is missing or wrong (invalid_current_password).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '401':
+          description: No session (unauthorized, text/plain, from the auth middleware).
           content:
             text/plain:
               schema: {$ref: '#/components/schemas/Error'}
-            application/json:
-              schema: {$ref: '#/components/schemas/Error'}
         '403':
           $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
         '404':
           $ref: '#/components/responses/NotFound'
   /api/v1/staff:
@@ -3015,6 +3078,16 @@ paths:
           description: Only entries with this action name. Trimmed.
           schema:
             type: string
+        - name: exclude_action
+          in: query
+          required: false
+          description: Leave out entries with this action name. Repeat it to leave out several, for example exclude_action=reply_added&exclude_action=note_added. Applied in the query, so entries, has_more and total all describe the same sequence.
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              type: string
         - name: q
           in: query
           required: false
@@ -3203,23 +3276,29 @@ paths:
         types an address, which must be ASCII (400 otherwise): if it belongs to an account the ticket is filed for
         that account, otherwise it is filed exactly like a guest ticket, so the
         person is sent the guest link at that address. That needs guest
-        submission to be on (400 otherwise, because the link would not open),
-        and guest_name is required (400 without a non-blank one), as on the
-        guest form; guest_phone is kept and optional. An address that belongs to
-        an account needs no name. An account that is filed for (picked, or
+        submission to be on (400 otherwise, because the link would not open).
+        guest_name is required with every reporter_email (400 without a
+        non-blank one), whether or not the address has an account, so its
+        absence says nothing about the address; it is ignored for an account.
+        guest_phone is kept and optional. An account that is filed for (picked, or
         matched by its typed address) is sent the ordinary "We have received
         your ticket" email with a link to the ticket, through the notification
         outbox, unless it is the caller. Either way the caller, not the requester, is the
         actor in the ticket's history, its created audit entry and the created
         event. A reporting user who sends either field gets 403 forbidden; the
-        field is never ignored. GET /users/lookup finds an account to pick.
+        field is never ignored. GET /users/lookup finds an account to pick, in a
+        signed-in session only; a key sends reporter_email instead.
 
-        Mail limit: each reporter_email with no account mails a stranger, so
-        one member of staff can file at most 40 such tickets an hour, then 429
-        rate_limited with Retry-After and nothing is created. Only tickets
-        that are filed count: a request that is refused or fails validation
-        does not. A picked reporter_user_id, and a reporter_email that belongs
-        to an account, do not count either. The count is per user, not per address of the
+        Address limit (#290): every reporter_email that passes validation uses
+        one of the caller's 40 an hour before the address is looked up, whether
+        or not it has an account, then 429 rate_limited with Retry-After and
+        nothing is created. That includes the refusal for guest submission
+        being off, which is not refunded: it is how an address is learned
+        about, and learning is bounded at 40 an hour. Validation comes first
+        and costs nothing: the subject, priority, category, type and item, the
+        address's form, and guest_name are all checked before, and refused the
+        same way for every address. A unit is never given back once taken,
+        not even when the create itself then fails. A picked reporter_user_id is not counted. The count is per user, not per address of the
         request: a machine credential counts against the user it acts as, and
         another member of staff is unaffected. It is kept in memory, so it
         resets when the server restarts and each replica of a multi-instance
@@ -3246,6 +3325,9 @@ paths:
                 description:
                   type: string
                   description: Optional. At most 50,000 bytes.
+                format:
+                  description: How description is shown. See TextFormatRequest.
+                  $ref: '#/components/schemas/TextFormatRequest'
                 category_id:
                   $ref: '#/components/schemas/Uuid'
                 type_id:
@@ -3262,6 +3344,16 @@ paths:
                   type: object
                   additionalProperties:
                     type: string
+                source_channel:
+                  description: |
+                    Only "phone", and only from a browser session of a member of staff who also sends
+                    reporter_user_id or reporter_email: the web app's "Phone call" choice. The channel is
+                    otherwise recorded from how the request arrived (web for a session, api for an API key
+                    or OAuth client) and cannot be set. Any other use is 400 and nothing is written: any
+                    value from an API key or OAuth client, any value other than "phone", and "phone" without
+                    reporter_user_id or reporter_email.
+                  type: string
+                  enum: [phone]
                 reporter_user_id:
                   description: Staff and administrators only. The existing account the ticket is for. Not with reporter_email. An id that is not a live account is 400.
                   $ref: '#/components/schemas/Uuid'
@@ -3270,7 +3362,7 @@ paths:
                   description: Staff and administrators only. An address the ticket is for. An account's address files for the account; any other makes a guest ticket and mails the guest link there (guest submission must be on). Not with reporter_user_id.
                 guest_name:
                   type: string
-                  description: With reporter_email and no account behind it, the guest's name. Required (400 when missing or blank); not used when the address belongs to an account.
+                  description: With reporter_email, the name. Required (400 when missing or blank), whether or not the address has an account; used only for an address with no account.
                 guest_phone:
                   type: string
                   description: With reporter_email and no account behind it, the guest's phone. Optional.
@@ -3283,7 +3375,9 @@ paths:
                 $ref: '#/components/schemas/Ticket'
         '400':
           description: |
-            `bad_request`, with a message naming the field. Covers invalid JSON,
+            `invalid_format` when format is present and is not exactly plain or markdown
+            (an empty string, "Markdown", "html", a number and `null` are all refused; nothing is
+            written). `bad_request`, with a message naming the field. Covers invalid JSON,
             subject is required, category_id is required, a category, type or
             item that is archived, for staff, administrators and reporting users
             alike (category_id is not an active category; type_id is not an active
@@ -3294,8 +3388,10 @@ paths:
             staff and administrators also: both reporter_user_id and
             reporter_email were sent, reporter_user_id is not a live account,
             reporter_email is not a plain address (reporter_email: ...), or
-            reporter_email has no account and guest submission is off, or it has
-            no account and guest_name is missing or blank.
+            reporter_email has no account and guest submission is off, or
+            guest_name is missing or blank with reporter_email. source_channel
+            is sent when it may not be (see that field). 429
+            rate_limited when the caller's 40 an hour for reporter_email are used.
           content:
             application/json:
               schema:
@@ -4468,7 +4564,7 @@ paths:
               required: [body]
               properties:
                 body:
-                  description: The reply text. Required after trimming.
+                  description: The reply text. Required after trimming. At most 50,000 bytes of text, the same limit as a description; more is refused with 400 body_too_long and nothing is written.
                   type: string
                 internal:
                   description: Internal note, seen by staff only. Defaults to false. Staff and administrators only.
@@ -4476,6 +4572,9 @@ paths:
                 notify_customer:
                   description: Whether the reporter is emailed. Defaults to true. Forced to false for an internal note.
                   type: boolean
+                format:
+                  description: How body is shown. See TextFormatRequest.
+                  $ref: '#/components/schemas/TextFormatRequest'
       responses:
         '201':
           description: The reply that was posted.
@@ -4486,7 +4585,9 @@ paths:
         '400':
           description: |
             `bad_request`: invalid JSON; body is required; or no valid reopen target status is configured
-            (on the reopen path).
+            (on the reopen path). `body_too_long`: body is over 50,000 bytes (the description's limit); nothing
+            is written. `invalid_format`: format is present and is not exactly plain or markdown;
+            nothing is written.
           content:
             application/json:
               schema:
@@ -4821,6 +4922,25 @@ paths:
                       reason:
                         type: string
                         description: Why not, as the passkey library words it. Empty when available.
+                  update:
+                    type: object
+                    required: [current, latest, url]
+                    description: |
+                      Present only when the opt-in update check (update_check_enabled)
+                      has found a stable release newer than the running version. Read
+                      from the stored answer: this endpoint never makes the request.
+                      Absent while the check is off. The admin UI shows a dismissible
+                      notice.
+                    properties:
+                      current:
+                        type: string
+                        description: The running version.
+                      latest:
+                        type: string
+                        description: The newer version, without a leading v.
+                      url:
+                        type: string
+                        description: The release page on GitHub, built from the tag.
                   reopen_target:
                     type: object
                     required: [inactive]
@@ -4946,6 +5066,42 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /api/v1/admin/post-upgrade:
+    get:
+      operationId: getPostUpgrade
+      summary: Count the accounts the old-password reset window will catch.
+      description: |
+        Administrators only (second factor required). Feeds the post-upgrade
+        wizard. Counts the enabled, non-administrator, non-service accounts whose
+        password hash was made below the current bcrypt cost, which are the
+        accounts that must reset their password once password_rehash_grace_days
+        have passed (administrators are exempt). Accounts with no password, such
+        as SSO-only ones, are not counted. Whether reset links can be mailed is
+        in getSecurityWarnings (email.enabled).
+      tags: ['Admin: Settings']
+      x-ghd-handler: handlePostUpgrade
+      security:
+        - sessionCookie: []
+        - apiKey: ['settings:read']
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      responses:
+        '200':
+          description: The count.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [old_password_accounts]
+                properties:
+                  old_password_accounts:
+                    type: integer
+                    minimum: 0
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
   /api/v1/admin/settings:
     get:
       operationId: getSettings
@@ -5052,9 +5208,24 @@ paths:
           Zero, negative, larger, null and non-integers are refused with bad_request.
           password_rehash_started_at is recorded by the server when 1.3.0 first
           runs and is refused with 400 readonly_setting; it is left out of GET.
+        - update_check_enabled and post_upgrade_130_seen must be JSON booleans
+          (update_check_enabled is also session only, below); anything else, null included, is refused with 400 bad_request and nothing is stored. update_check_result
+          holds the last check (its time and the newest stable version). The checker
+          writes it, so it is refused with 400 readonly_setting and left out of GET.
         - guest_submission_enabled, staff_can_view_ticket_change_history,
           staff_can_view_follow_audit and staff_can_create_api_keys must be JSON
           booleans. null is refused.
+        - guest_attachments_enabled must be a JSON boolean (null is refused). It
+          is off unless set, upgrades included, and only takes effect while
+          guest_submission_enabled is on.
+        - guest_attachment_max_per_ticket must be an integer from 1 to 50 (default
+          5) and guest_attachment_uploads_per_hour an integer from 1 to 30 (default
+          3). Anything else, including null, a string and a fraction, is refused
+          with bad_request, and nothing is stored.
+        - guest_attachment_max_mb must be an integer from 1 to 100 (megabytes).
+          0, 101 or more, negatives, a fraction, a string and null are refused
+          with bad_request, and nothing is stored. Unset reads as 5. A guest is
+          held to the lower of it and the instance-wide 25 MB maximum.
         - api_key_max_lifetime_years must be the integer 1, 2, 3, 4 or 5 (years), or
           -1 for no limit ("Never"). 0, 6 or more, anything below -1, a fraction, a
           string and null are refused with bad_request, and nothing is stored. Unset
@@ -5106,12 +5277,15 @@ paths:
         oidc_redirect_url, mfa_enabled, mfa_enforced_roles, allowed_email_domains,
         self_signup_enabled, open_registration_enabled, closed_reopen_policy,
         audit_mask_requester_names, guest_submission_enabled,
+        guest_attachments_enabled, guest_attachment_max_mb,
+        guest_attachment_max_per_ticket, guest_attachment_uploads_per_hour,
         attachment_scan_address, attachment_scan_policy, attachment_allowed_types,
         attachment_infected_handling, attachment_mismatch_handling,
         audit_retention_days, staff_can_view_ticket_change_history,
         staff_can_view_follow_audit, staff_can_create_api_keys,
         api_key_max_lifetime_years, ticket_scope_enforced, auto_assign_group_id,
         auto_assign_user_ids, password_rehash_grace_days, password_rehash_started_at,
+        update_check_enabled,
         attachment_vt_lookup, attachment_vt_api_key, attachment_reputation_provider,
         attachment_reputation_api_key, attachment_reputation_virustotal_enabled,
         attachment_reputation_virustotal_key, attachment_reputation_metadefender_enabled,
@@ -5278,9 +5452,18 @@ paths:
         Authenticated by the guest token alone. The token names the ticket, so no
         ticket id appears in the path. The request is the same multipart upload as
         uploadAttachment, with the same checks, scanning, quarantine and wrapping,
-        and the same 25 MB cap. Two things are specific to guests. Submission
-        being switched off suspends guest links and answers 404 until the setting
-        is enabled again. A Closed ticket answers 404 not_found, the same as a bad link, where
+        and the instance-wide 25 MB cap. Three things are specific to guests.
+        Attaching is off unless an administrator has turned on
+        guest_attachments_enabled (#445): then the route answers the generic
+        404, byte-identical to a bad link. A guest's per-file limit is
+        guest_attachment_max_mb (default 5), never above the 25 MB cap. Two more
+        limits follow the token and lifecycle checks: a ticket holds at most
+        guest_attachment_max_per_ticket guest-uploaded files (409
+        guest_attachment_limit) and one link may upload
+        guest_attachment_uploads_per_hour times an hour (429 rate_limited, with
+        Retry-After).
+        Submission being switched off suspends guest links and answers 404 until
+        the setting is enabled again. A Closed ticket answers 404 not_found, the same as a bad link, where
         uploadAttachment answers 409. As there, a Resolved ticket past its reopen
         window answers 409 reopen_window_closed.
         The response is the stored attachment. Its reputation block is null, since
@@ -5321,13 +5504,19 @@ paths:
         '404':
           $ref: '#/components/responses/GuestNotFound'
         '409':
-          description: The ticket is Resolved and its reopen window has closed (reopen_window_closed).
+          description: The ticket is Resolved and its reopen window has closed (reopen_window_closed), or it already holds the most files a guest can attach (guest_attachment_limit).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: This link has used its uploads for the hour (rate_limited). Retry-After says when to try again.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
         '413':
-          description: The file is over 25 MB (too_large).
+          description: The file is over the guest's per-file limit (too_large). The message names the limit that applied.
           content:
             application/json:
               schema:
@@ -5817,9 +6006,12 @@ paths:
       operationId: lookupUsers
       summary: Find accounts to file a ticket for.
       description: |
-        Staff and administrators only (second factor required). A machine
-        credential (an API key, or an OAuth client acting as a staff service
-        user) needs users:read. The New ticket page's requester picker.
+        Staff and administrators only, in a signed-in session (second factor required). An API key is refused with 403 session_required and an OAuth
+        client likewise, whatever scopes it holds, users:read included: there
+        is no user lookup for machine credentials, so a key cannot enumerate
+        accounts. A key files a ticket for someone with reporter_email on
+        POST /tickets and lets the server resolve it. In the 1.3.0 betas a credential
+        holding users:read could call this. The New ticket page's requester picker.
         Returns accounts whose display name or email contains q, ignoring case
         (% and _ match themselves), as a bare array of id, display_name and
         email, ordered by display name (then id), at most 10. The disabled, deleted
@@ -5833,8 +6025,6 @@ paths:
       x-ghd-handler: handleLookupUsers
       security:
         - sessionCookie: []
-        - apiKey: ['users:read']
-        - oauthClient: ['users:read']
       x-ghd-roles: [admin, staff]
       x-ghd-mfa: true
       parameters:
@@ -5919,7 +6109,7 @@ paths:
         this response, and cannot be shown again. It has the form GHD_ followed by 64
         hexadecimal characters. scopes is required: a non-empty list of
         resource:action values from GET /api/v1/admin/scopes, and none may exceed
-        the owner's role (for staff, tickets, groups:read, audit:read and users:read; for
+        the owner's role (for staff, tickets, groups:read and audit:read; for
         an administrator, any): invalid_scope otherwise. expires_at is required unless
         the api_key_max_lifetime_years setting is Never (-1): 400 expires_at_required
         without it, and it must be a future RFC 3339 timestamp no later than that many
@@ -7404,11 +7594,15 @@ paths:
         '409':
           description: >-
             email_taken, when the new address belongs to another account, deleted accounts
-            included. service_account, when the account is a service account and the
-            change would give it a way to sign in: reset_mfa, or a role of admin. A
-            service account can be renamed, set to staff or user, given groups, and
-            disabled. Renaming it (display_name) also renames its OAuth client, in
-            the same statement. It cannot be deleted here (DELETE answers 409).
+            included. service_account, when the account is a service account (an
+            OAuth client's identity) and the body carries email, a role of admin,
+            or reset_mfa true (reset_mfa false is accepted: it asks for nothing):
+            the whole request is refused and nothing in it is
+            applied, and the message names the client and the refused fields. A
+            service account can be renamed, given groups (through the group
+            routes), disabled and set to staff or user (Q2 on #434), and only that. Renaming it (display_name) also
+            renames its OAuth client, in the same statement. It cannot be deleted
+            here either (DELETE answers 409 service_account).
           content:
             application/json:
               schema:
@@ -7574,6 +7768,277 @@ paths:
             message is "The password was reset, but the API keys were NOT revoked.
             Revoke them from Admin → API Keys." Any other 500 is internal_error and
             means the password may not have been set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/admin/email-templates:
+    get:
+      operationId: listEmailTemplates
+      summary: List the editable email templates.
+      description: >-
+        Administrators only, in a signed-in session (second factor required). An
+        API key or OAuth client is refused with 403 session_required. Returns the 17
+        mails and the shared header and footer (names _header and _footer), in the
+        order the editor shows them. customised is true when the administrator
+        saved a version; broken is true when that version no longer works with this
+        release, which fails the mail that uses it.
+      tags: ['Admin: Email templates']
+      x-ghd-handler: handleListEmailTemplates
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      responses:
+        '200':
+          description: Every template.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EmailTemplateSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v1/admin/email-templates/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        description: A name from the list, such as ticket_created, password_reset or _header.
+        schema:
+          type: string
+    get:
+      operationId: getEmailTemplate
+      summary: Read one email template.
+      description: >-
+        Administrators only, in a signed-in session (second factor required). Returns the text in effect (the saved version, or the
+        default), the default, the variables the template may print and the one it
+        must print outside any if. broken and broken_reason say whether the saved
+        version still validates. An unknown name answers 404 not_found.
+      tags: ['Admin: Email templates']
+      x-ghd-handler: handleGetEmailTemplate
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      responses:
+        '200':
+          description: The template.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmailTemplateDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: not_found, for a name that is not a template.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    put:
+      operationId: saveEmailTemplate
+      summary: Save an edited email template.
+      description: >-
+        Administrators only, in a signed-in session (second factor required). Validated here whatever the editor checked: UTF-8 with no
+        NUL, at most 8192 bytes of body and 200 bytes of one-line subject, then parsed,
+        then restricted to the words, {{.Name}} for a variable the template has, and
+        {{if .Name}}...{{else}}...{{end}}, then required to print its link (the
+        content templates) outside any if, then rendered with sample data. Ticket
+        content is not a variable and cannot be made one. A refusal is 400
+        invalid_template with the first problem's field, line and col and every
+        problem in errors (one per field); nothing is stored or audited. Text equal to the
+        default removes the stored version instead of keeping a copy. The change and its
+        audit entry (email_template_saved, with the full text) commit together. The
+        header and footer take an empty subject.
+      tags: ['Admin: Email templates']
+      x-ghd-handler: handlePutEmailTemplate
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailTemplateDraft'
+      responses:
+        '200':
+          description: Saved. The template as now in effect.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmailTemplateDetail'
+        '400':
+          description: >-
+            invalid_template (with field, line, col and errors), or bad_request for a body
+            that is not JSON.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: not_found, for a name that is not a template.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      operationId: revertEmailTemplate
+      summary: Revert an email template to the default.
+      description: >-
+        Administrators only, in a signed-in session (second factor required). Deletes the saved version. The edited text stays in the audit
+        log (email_template_reverted). Idempotent: reverting a template that was never
+        edited answers 204 and records nothing. Mail that failed while the saved version
+        was broken is not re-sent.
+      tags: ['Admin: Email templates']
+      x-ghd-handler: handleRevertEmailTemplate
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: not_found, for a name that is not a template.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/admin/email-templates/{name}/preview:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: previewEmailTemplate
+      summary: Check a draft and render it with sample data.
+      description: >-
+        Administrators only, in a signed-in session (second factor required). The editor's live check: an invalid draft is answered
+        with 200 and valid false and every problem, because a draft mid-typing is
+        normally not valid yet. A valid one is rendered with sample data (a real-format
+        tracking number; links carrying token=sample-not-a-real-link) inside the saved
+        header and footer. Drafting the header or footer shows it around a sample mail.
+        Nothing is sent or stored. preview_error is set when the draft is fine but a
+        saved header or footer cannot render.
+      tags: ['Admin: Email templates']
+      x-ghd-handler: handlePreviewEmailTemplate
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailTemplateDraft'
+      responses:
+        '200':
+          description: The verdict, and the rendering when valid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmailTemplatePreview'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: not_found, for a name that is not a template.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/admin/email-templates/{name}/test:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: testEmailTemplate
+      summary: Send a test of a template to your own address.
+      description: >-
+        Administrators only, in a signed-in session (second factor required). Mails the draft, or the saved text when the body has
+        neither subject nor body, to the signed-in administrator's own address and
+        nowhere else: the request carries no recipient, and any field that looks like one
+        is ignored. The subject starts with "[Test] ". Sent during the request. At most
+        5 per 10 minutes per administrator (429 rate_limited with Retry-After). An invalid
+        draft is 400 invalid_template; email not set up is 503 email_not_configured; a
+        failure of the mail relay is 502 send_failed with the relay's message. The audit
+        entry (email_template_test_sent) names the template, never the address.
+      tags: ['Admin: Email templates']
+      x-ghd-handler: handleTestEmailTemplate
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailTemplateDraftOptional'
+      responses:
+        '200':
+          description: Sent.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sent: {type: boolean}
+        '400':
+          description: invalid_template, or bad_request for a body that is not JSON.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: not_found, for a name that is not a template.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: template_broken, when the saved header or footer cannot render.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '502':
+          description: send_failed; the message is the mail relay's error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: email_not_configured.
           content:
             application/json:
               schema:
@@ -9881,6 +10346,35 @@ components:
     Role:
       type: string
       enum: [admin, staff, user]
+    SourceChannel:
+      description: |
+        How a ticket arrived (#130), recorded by the server from the entry point and never asserted by a
+        caller. web is the web app or any REST call made in a browser session; api is REST with an API key
+        or OAuth client; mcp is an MCP tool; guest is the guest form (and a guest's follow-up); phone is a
+        member of staff who took a call and filed for the caller, picked in the web app's New ticket form.
+        A follow-up records its own entry point, not its original's. Every ticket from before 1.3.0 reads
+        web, whatever way it really came in, because the channel was not recorded then. Sent to staff and
+        administrators only; a requester or guest never receives it. email is reserved for inbound mail
+        and is not a value yet.
+      type: string
+      enum: [web, api, mcp, guest, phone]
+    TextFormat:
+      description: |
+        How a stored description or reply is shown (#443). plain is shown exactly as typed, with no links and
+        nothing interpreted. markdown is shown through a strict renderer: CommonMark plus GitHub tables,
+        strikethrough and bare-URL links; no images, no raw HTML, headings all one small size; links are
+        http, https and mailto only. Every record before 1.3.0 is plain.
+      type: string
+      enum: [plain, markdown]
+    TextFormatRequest:
+      description: |
+        Optional. Absent means plain, so an existing integration is unchanged. The web app always sends
+        markdown. Anything else, including an empty string, the wrong case ("Markdown"), "html" or a
+        number, is refused with 400 invalid_format and nothing is written. (MCP differs: it defaults to
+        markdown.)
+      type: string
+      enum: [plain, markdown]
+      default: plain
     Priority:
       type: string
       enum: [critical, high, medium, low]
@@ -10007,10 +10501,11 @@ components:
     AccountGuestReply:
       description: A reply as a guest sees it. Internal notes are never included and the author is not named. from_you is true for replies the guest wrote.
       type: object
-      required: [id, body, created_at, from_you]
+      required: [id, body, body_format, created_at, from_you]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
         body: {type: string}
+        body_format: {$ref: '#/components/schemas/TextFormat'}
         created_at: {type: string, format: date-time}
         from_you: {type: boolean}
     Passkey:
@@ -10043,15 +10538,15 @@ components:
         /tickets, PATCH, reopen, resolve, close and follow-up answer it. Optional
         keys are absent when unset, never null.
         A reporting user (any role other than staff or administrator) receives
-        only these keys: id, tracking_number, subject, description, status_id,
+        only these keys: id, tracking_number, subject, description, description_format, status_id,
         priority, category_id, type_id, item_id, created_at, resolved_at,
         assignee_user_id and resolution_notes. Everything else here
         (assignee_group_id, reporter_user_id, guest_email, guest_name,
         guest_phone, closed_at, updated_at, pending_since, sla_paused_seconds,
-        reopen_count) is for staff and administrators only. The same list applies to every
+        reopen_count, source_channel) is for staff and administrators only. The same list applies to every
         response that carries a ticket, MCP included.
       type: object
-      required: [id, tracking_number, subject, description, category_id, priority, status_id, created_at]
+      required: [id, tracking_number, subject, description, description_format, category_id, priority, status_id, created_at]
       properties:
         id:
           $ref: '#/components/schemas/Uuid'
@@ -10062,6 +10557,10 @@ components:
           type: string
         description:
           type: string
+        description_format:
+          $ref: '#/components/schemas/TextFormat'
+        source_channel:
+          $ref: '#/components/schemas/SourceChannel'
         category_id:
           $ref: '#/components/schemas/Uuid'
         type_id:
@@ -10213,7 +10712,7 @@ components:
       description: |
         One message on a ticket thread.
       type: object
-      required: [id, ticket_id, body, internal, notify_customer, created_at]
+      required: [id, ticket_id, body, body_format, internal, notify_customer, created_at]
       properties:
         id:
           $ref: '#/components/schemas/Uuid'
@@ -10227,6 +10726,8 @@ components:
           description: The author's display name, as listReplies sends it. Absent for a guest reply.
         body:
           type: string
+        body_format:
+          $ref: '#/components/schemas/TextFormat'
         internal:
           type: boolean
           description: An internal note. Only staff and administrators are sent these.
@@ -10310,7 +10811,7 @@ components:
           $ref: '#/components/schemas/Uuid'
         action:
           type: string
-          description: The action name, for example created, assigned, unassigned, priority_changed, reopened, sla_restarted (written by a reopen that restarts the SLA clocks) or closed.
+          description: The action name, for example created, assigned, unassigned, priority_changed, reopened, sla_restarted (written by a reopen that restarts the SLA clocks), reply_added (a public reply), note_added (an internal note) or closed. A reply_added or note_added entry carries only the reply's id and an internal flag in its after, never the text. There is no enum, so new actions are added without a version change.
         actor_id:
           description: The actor's account, or null when there is none (or when a reporting user is shown an assignment).
           anyOf:
@@ -10376,6 +10877,7 @@ components:
           $ref: '#/components/schemas/Uuid'
         action:
           type: string
+          description: The action name. reply_added and note_added (a public reply, an internal note) hold only the reply's id and an internal flag in after, never the text. A guest's reply has no actor.
         actor_id:
           description: The actor's account, or null when there is none.
           anyOf:
@@ -10630,6 +11132,34 @@ components:
         guest_submission_enabled:
           type: boolean
           description: Whether anonymous guests may submit tickets. Session only.
+        guest_attachments_enabled:
+          type: boolean
+          description: |
+            Whether a guest may attach files from the web page (#445). Off by
+            default. Only takes effect while guest_submission_enabled is on.
+            Session only.
+        guest_attachment_max_per_ticket:
+          type: integer
+          minimum: 1
+          maximum: 50
+          description: |
+            The most files guests may attach to one ticket (#445). Default 5.
+            Staff and reporter files do not count. Session only.
+        guest_attachment_uploads_per_hour:
+          type: integer
+          minimum: 1
+          maximum: 30
+          description: |
+            Uploads one guest link may make per hour (#445), keyed by ticket.
+            Default 3. Session only.
+        guest_attachment_max_mb:
+          type: integer
+          minimum: 1
+          maximum: 100
+          description: |
+            A guest's per-file maximum in megabytes (#445). Default 5. The
+            instance-wide 25 MB maximum still applies and wins where lower.
+            Session only.
         sla_enabled:
           type: boolean
           description: Whether SLA tracking is on.
@@ -10727,6 +11257,20 @@ components:
             Days after 1.3.0 first ran before an account still on a password hash
             made below bcrypt cost 12 must reset its password to sign in. Unset reads
             as 30. Administrators are exempt. Session only.
+        update_check_enabled:
+          type: boolean
+          description: >-
+            Whether this instance asks GitHub, at most once every 7 days, for the
+            latest release. Off unless chosen, on upgraded installs too; unset reads
+            as off. While off, no request is ever made. The request is one GET to the
+            public releases API with a fixed User-Agent of go-help-desk (no
+            version) and a constant Accept header, and nothing else. Asked at setup and by the post-upgrade wizard. Session only.
+        post_upgrade_130_seen:
+          type: boolean
+          description: >-
+            True once the 1.3.0 setup question or the post-upgrade wizard has been
+            answered or skipped. Setup writes it true; an install that upgraded to
+            1.3.0 has no value until an administrator finishes or skips the wizard.
         site_name:
           type: string
           description: The site name shown in the interface.
@@ -11238,6 +11782,71 @@ components:
         resolution_target_min:
           type: integer
           description: Minutes of SLA time until resolution is due. Time the ticket spends pending does not count.
+    EmailTemplateSummary:
+      type: object
+      required: [name, label, group, shell, customised, broken, updated_at, updated_by_name]
+      properties:
+        name: {type: string, description: 'The template name; _header and _footer are the shared header and footer.'}
+        label: {type: string}
+        group: {type: string, enum: [requester, staff, account, shared]}
+        shell: {type: boolean, description: 'True for the header and footer: a body and no subject.'}
+        customised: {type: boolean}
+        broken: {type: boolean, description: 'The saved version no longer validates, so mail that uses it fails.'}
+        updated_at: {type: [string, 'null'], format: date-time}
+        updated_by_name: {type: string, description: 'Empty when never edited or the editor is gone.'}
+    EmailTemplateDetail:
+      allOf:
+        - $ref: '#/components/schemas/EmailTemplateSummary'
+        - type: object
+          required: [subject, body, default_subject, default_body, required, variables, max_body_bytes, max_subject_bytes]
+          properties:
+            subject: {type: string, description: 'In effect: the saved version, else the default.'}
+            body: {type: string}
+            default_subject: {type: string}
+            default_body: {type: string}
+            required:
+              type: string
+              description: 'The variable that must be printed outside any if. Empty for the header and footer.'
+            variables:
+              type: array
+              items:
+                type: object
+                required: [name, description]
+                properties:
+                  name: {type: string}
+                  description: {type: string}
+            broken_reason: {type: string, description: 'Present when broken.'}
+            max_body_bytes: {type: integer}
+            max_subject_bytes: {type: integer}
+    EmailTemplateDraft:
+      type: object
+      properties:
+        subject: {type: string, description: 'One line. Empty for the header and footer.'}
+        body: {type: string}
+    EmailTemplateDraftOptional:
+      type: object
+      description: 'Omit both fields to use the saved text.'
+      properties:
+        subject: {type: string}
+        body: {type: string}
+    EmailTemplatePreview:
+      type: object
+      required: [valid, errors]
+      properties:
+        valid: {type: boolean}
+        errors:
+          type: array
+          items:
+            type: object
+            required: [field, line, col, message]
+            properties:
+              field: {type: string, enum: [subject, body]}
+              line: {type: integer, description: '1-based; 0 when the problem has no place in the text.'}
+              col: {type: integer, description: '1-based, in characters.'}
+              message: {type: string}
+        subject: {type: string, description: 'Rendered with sample data, when valid.'}
+        body: {type: string, description: 'Rendered with sample data, header and footer included, when valid.'}
+        preview_error: {type: string}
   responses:
     NoContent:
       description: Done; no body.

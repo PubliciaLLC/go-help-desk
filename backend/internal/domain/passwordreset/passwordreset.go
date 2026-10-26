@@ -57,5 +57,5 @@ type Users interface {
 
 // Mailer sends the link.
 type Mailer interface {
-	SendPasswordResetEmail(to, token, baseURL string) error
+	SendPasswordResetEmail(ctx context.Context, to, token, baseURL string) error
 }

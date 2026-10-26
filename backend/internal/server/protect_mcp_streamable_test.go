@@ -35,7 +35,7 @@ type streamConn struct {
 
 func serveMCP(t *testing.T, h *harness) string {
 	t.Helper()
-	mcpSrv := mcp.New(h.ticketSvc, func(context.Context) string { return "GHD" }, h.srv, h.categorySvc)
+	mcpSrv := mcp.New(h.ticketSvc, func(context.Context) string { return "GHD" }, h.srv, h.categorySvc, h.srv)
 	ts := httptest.NewServer(h.srv.ProtectMCP(mcpSrv.Handler()))
 	t.Cleanup(ts.Close)
 	return ts.URL
@@ -319,7 +319,7 @@ func TestMCPStreamable_HiddenTicketAnswersLikeSSE(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "hidden", Description: "x", CategoryID: h.catID, ReporterUserID: &h.staffID,
 	})
 	require.NoError(t, err)
@@ -363,7 +363,7 @@ func TestMCPStreamable_HiddenTicketAnswersLikeSSE(t *testing.T) {
 // POST runs, so there the Origin check is the only barrier
 // (TestMCPOrigin_SSEMessageCheckedWhereNothingElseStopsIt).
 func TestMCPStreamable_NoCrossSiteSurface(t *testing.T) {
-	h, cleanup := newHarness(t)
+	h, cleanup := newIsolatedHarness(t)
 	defer cleanup()
 	c := openStream(t, h, h.apiKey)
 

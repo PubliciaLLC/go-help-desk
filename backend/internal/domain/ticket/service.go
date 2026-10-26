@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
@@ -206,16 +207,29 @@ func (s *Service) LoadSystemStatuses(ctx context.Context) error {
 const (
 	MaxSubjectLength     = 500
 	MaxDescriptionLength = 50_000
+	// MaxReplyLength is the same limit for a reply or note (#443). Counted the
+	// same way, in bytes of the stored text. A reply had no cap, and a megabyte
+	// of text is a burden on every page that shows it, whatever the page does.
+	MaxReplyLength = MaxDescriptionLength
 )
+
+// ErrReplyTooLong is returned for a reply longer than MaxReplyLength. It is also
+// a validation error (400), with its own code so a client can tell why.
+var ErrReplyTooLong = errors.New("reply too long")
 
 // CreateInput is the data needed to open a new ticket.
 type CreateInput struct {
 	Subject     string
 	Description string
-	CategoryID  uuid.UUID
-	TypeID      *uuid.UUID
-	ItemID      *uuid.UUID
-	Priority    Priority
+	// DescriptionFormat is required; an empty value is ErrInvalidTextFormat.
+	DescriptionFormat TextFormat
+	// SourceChannel is how the ticket arrived and is required: the entry point
+	// names it. ChannelPhone also requires FiledBy.
+	SourceChannel SourceChannel
+	CategoryID    uuid.UUID
+	TypeID        *uuid.UUID
+	ItemID        *uuid.UUID
+	Priority      Priority
 
 	// Exactly one of ReporterUserID or GuestEmail must be set.
 	ReporterUserID *uuid.UUID
@@ -292,7 +306,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 //
 // route is who the new ticket may be routed to, as CreateInput.AutoAssign; none
 // leaves it unassigned (the MCP tool passes none).
-func (s *Service) CreateFollowUp(ctx context.Context, originalID uuid.UUID, trackingPrefix string, actor Actor, route ...Assignment) (Ticket, error) {
+func (s *Service) CreateFollowUp(ctx context.Context, originalID uuid.UUID, trackingPrefix string, channel SourceChannel, actor Actor, route ...Assignment) (Ticket, error) {
 	if actor.Role == user.RoleUser {
 		return Ticket{}, ErrForbidden
 	}
@@ -308,8 +322,15 @@ func (s *Service) CreateFollowUp(ctx context.Context, originalID uuid.UUID, trac
 		return Ticket{}, fmt.Errorf("%w: a follow-up is created from a closed ticket", ErrNotClosed)
 	}
 	in := CreateInput{
-		Subject:        orig.Subject,
-		Description:    orig.Description,
+		Subject:     orig.Subject,
+		Description: orig.Description,
+		// The format travels with the text: a follow-up of an old plain
+		// ticket must not start rendering as Markdown.
+		DescriptionFormat: orig.DescriptionFormat,
+		// A follow-up is a new ticket and records its own entry point, not
+		// the original's: the person who clicks "follow up" is the one who
+		// opened this ticket, by whatever route they used.
+		SourceChannel:  channel,
 		CategoryID:     orig.CategoryID,
 		TypeID:         orig.TypeID,
 		ItemID:         orig.ItemID,
@@ -348,6 +369,7 @@ func (s *Service) CreateRequesterFollowUp(
 	ctx context.Context,
 	originalID uuid.UUID,
 	trackingPrefix string,
+	channel SourceChannel,
 	actor Actor,
 	open func(ctx context.Context, categoryID uuid.UUID, typeID *uuid.UUID) error,
 	route ...Assignment,
@@ -378,8 +400,15 @@ func (s *Service) CreateRequesterFollowUp(
 		return Ticket{}, err
 	}
 	in := CreateInput{
-		Subject:        orig.Subject,
-		Description:    orig.Description,
+		Subject:     orig.Subject,
+		Description: orig.Description,
+		// The format travels with the text: a follow-up of an old plain
+		// ticket must not start rendering as Markdown.
+		DescriptionFormat: orig.DescriptionFormat,
+		// A follow-up is a new ticket and records its own entry point, not
+		// the original's: the person who clicks "follow up" is the one who
+		// opened this ticket, by whatever route they used.
+		SourceChannel:  channel,
 		CategoryID:     orig.CategoryID,
 		Priority:       PriorityMedium,
 		ReporterUserID: orig.ReporterUserID,
@@ -426,19 +455,159 @@ func (s *Service) refuseSecondFollowUp(ctx context.Context, st Store, closedID u
 	return nil
 }
 
+// CheckFreeText refuses what Postgres refuses in a text column, and nothing
+// else: NUL and invalid UTF-8. Either was a 500 (and, on a create, a tracking
+// number already taken, so a gap in the sequence); it is a 400 before anything
+// is written. Every other character, tabs, newlines, ESC and the rest, was
+// accepted and stored as given in 1.2, and a follow-up copies a stored subject
+// and description into a create, so refusing any of them would make a ticket
+// that holds one impossible to follow up.
+func CheckFreeText(field, v string) error {
+	if !utf8.ValidString(v) {
+		return fmt.Errorf("%s: is not valid UTF-8: %w", field, ErrValidation)
+	}
+	if strings.ContainsRune(v, 0) {
+		return fmt.Errorf("%s: must not contain a NUL character: %w", field, ErrValidation)
+	}
+	return nil
+}
+
+// checkCreateText is CheckFreeText over a create's free-text fields.
+func checkCreateText(in CreateInput) error {
+	for _, f := range []struct{ name, v string }{
+		{"subject", in.Subject},
+		{"description", in.Description},
+		{"guest_name", in.GuestName},
+		{"guest_phone", in.GuestPhone},
+	} {
+		if err := CheckFreeText(f.name, f.v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkSourceChannel refuses a missing or unknown channel.
+func checkSourceChannel(in CreateInput) error {
+	if !in.SourceChannel.Valid() {
+		return ErrInvalidSourceChannel
+	}
+	return nil
+}
+
+// checkPhoneHasFiler refuses ChannelPhone without FiledBy: "phone" means a
+// member of staff took the call and filed for the caller, so a ticket with no
+// filer cannot be one. Only create can ask: ValidateCreate runs before the
+// caller has resolved who the ticket is for, and FiledBy is set by that step.
+func checkPhoneHasFiler(in CreateInput) error {
+	if in.SourceChannel == ChannelPhone && in.FiledBy == nil {
+		return fmt.Errorf("%w: phone is for staff filing on someone's behalf", ErrValidation)
+	}
+	return nil
+}
+
+// ValidateCreate refuses what create would refuse for the ticket's own fields
+// and classification (subject, lengths, priority, category, type, item,
+// archived picks), without writing anything and without looking at who the
+// ticket is for.
+//
+// It exists so a caller that resolves the requester can do it AFTER these
+// checks: filing for a typed address answers differently for an address with
+// an account and one without, and if that came before a refusal the address
+// does not affect, a bad category would tell the caller which addresses have
+// accounts, for free (#290, "no enumeration surface").
+func (s *Service) ValidateCreate(ctx context.Context, in CreateInput) error {
+	if err := checkCreateText(in); err != nil {
+		return err
+	}
+	if _, err := ParseTextFormat(string(in.DescriptionFormat)); err != nil {
+		return fmt.Errorf("description: %w", err)
+	}
+	if err := checkSourceChannel(in); err != nil {
+		return err
+	}
+	if strings.TrimSpace(in.Subject) == "" {
+		return fmt.Errorf("subject is required: %w", ErrValidation)
+	}
+	if len(in.Subject) > MaxSubjectLength {
+		return fmt.Errorf("subject must be %d characters or fewer: %w", MaxSubjectLength, ErrValidation)
+	}
+	if len(in.Description) > MaxDescriptionLength {
+		return fmt.Errorf("description must be at most %d bytes: %w", MaxDescriptionLength, ErrValidation)
+	}
+	if in.Priority != "" && !in.Priority.Valid() {
+		return fmt.Errorf("priority must be one of critical, high, medium, low: %w", ErrValidation)
+	}
+	return s.validateClassification(ctx, in, nil)
+}
+
+// validateClassification is the category, type and item part of create's
+// checks, shared with ValidateCreate.
+func (s *Service) validateClassification(ctx context.Context, in CreateInput, followUpOf *Ticket) error {
+	// The category, checked for the same reason as everything else here:
+	// after this point a tracking number has been taken, and an id the
+	// foreign key refuses costs a 500 and a permanent gap in the sequence.
+	// Only a reporting user's category was checked, and that check asks
+	// whether it is OPEN to them — not whether it exists at all, which is
+	// what staff and MCP needed.
+	if ok, err := s.store.CategoryExists(ctx, in.CategoryID); err != nil {
+		return err
+	} else if !ok {
+		return fmt.Errorf("%w: category_id is not a category on this help desk", ErrValidation)
+	}
+
+	// And the rest of the classification: that the type belongs to the
+	// category, and the item to the type.
+	//
+	// Verified before this existed: five refused creates advanced the
+	// sequence by five. The REST handler checked type-against-category and
+	// MCP checked nothing, and nobody checked the item — there is no
+	// composite key for item-to-type, so a ticket could carry a type and an
+	// item that do not go together and then be routed on that pairing.
+	if ok, err := s.store.CTIIsCoherent(ctx, in.CategoryID, in.TypeID, in.ItemID); err != nil {
+		return err
+	} else if !ok {
+		return fmt.Errorf(
+			"%w: type_id and item_id must belong to the category and to each other", ErrValidation)
+	}
+
+	// Nobody newly picks an archived node (#421). A follow-up is exempt: it
+	// copies the closed ticket's classification, which may have been retired
+	// since, and that is not a new pick. A requester's follow-up is held to
+	// the active-only rule by its own caller (see CreateRequesterFollowUp).
+	if followUpOf == nil {
+		if err := s.refuseArchivedPick(ctx, in.CategoryID, in.TypeID, in.ItemID, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // create is the one path that opens a ticket. actor is who did it, for the
 // status history, the audit entry and the event: the reporter for an ordinary
 // create (Create passes them), the member of staff for a follow-up. followUpOf
 // is the closed ticket a follow-up continues, or nil.
 func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, followUpOf *Ticket) (Ticket, error) {
+	if err := checkCreateText(in); err != nil {
+		return Ticket{}, err
+	}
 	if strings.TrimSpace(in.Subject) == "" {
 		return Ticket{}, fmt.Errorf("subject is required: %w", ErrValidation)
 	}
 	if len(in.Subject) > MaxSubjectLength {
 		return Ticket{}, fmt.Errorf("subject must be %d characters or fewer: %w", MaxSubjectLength, ErrValidation)
 	}
+	if _, err := ParseTextFormat(string(in.DescriptionFormat)); err != nil {
+		return Ticket{}, fmt.Errorf("description: %w", err)
+	}
+	if err := checkSourceChannel(in); err != nil {
+		return Ticket{}, err
+	}
+	if err := checkPhoneHasFiler(in); err != nil {
+		return Ticket{}, err
+	}
 	if len(in.Description) > MaxDescriptionLength {
-		return Ticket{}, fmt.Errorf("description must be %d characters or fewer: %w", MaxDescriptionLength, ErrValidation)
+		return Ticket{}, fmt.Errorf("description must be at most %d bytes: %w", MaxDescriptionLength, ErrValidation)
 	}
 	if in.ReporterUserID == nil && (in.GuestEmail == nil || *in.GuestEmail == "") {
 		return Ticket{}, fmt.Errorf("reporter user or guest email is required: %w", ErrValidation)
@@ -468,41 +637,8 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 		return Ticket{}, fmt.Errorf("priority must be one of critical, high, medium, low: %w", ErrValidation)
 	}
 
-	// The category, checked for the same reason as everything else here:
-	// after this point a tracking number has been taken, and an id the
-	// foreign key refuses costs a 500 and a permanent gap in the sequence.
-	// Only a reporting user's category was checked, and that check asks
-	// whether it is OPEN to them — not whether it exists at all, which is
-	// what staff and MCP needed.
-	if ok, err := s.store.CategoryExists(ctx, in.CategoryID); err != nil {
+	if err := s.validateClassification(ctx, in, followUpOf); err != nil {
 		return Ticket{}, err
-	} else if !ok {
-		return Ticket{}, fmt.Errorf("%w: category_id is not a category on this help desk", ErrValidation)
-	}
-
-	// And the rest of the classification: that the type belongs to the
-	// category, and the item to the type.
-	//
-	// Verified before this existed: five refused creates advanced the
-	// sequence by five. The REST handler checked type-against-category and
-	// MCP checked nothing, and nobody checked the item — there is no
-	// composite key for item-to-type, so a ticket could carry a type and an
-	// item that do not go together and then be routed on that pairing.
-	if ok, err := s.store.CTIIsCoherent(ctx, in.CategoryID, in.TypeID, in.ItemID); err != nil {
-		return Ticket{}, err
-	} else if !ok {
-		return Ticket{}, fmt.Errorf(
-			"%w: type_id and item_id must belong to the category and to each other", ErrValidation)
-	}
-
-	// Nobody newly picks an archived node (#421). A follow-up is exempt: it
-	// copies the closed ticket's classification, which may have been retired
-	// since, and that is not a new pick. A requester's follow-up is held to
-	// the active-only rule by its own caller (see CreateRequesterFollowUp).
-	if followUpOf == nil {
-		if err := s.refuseArchivedPick(ctx, in.CategoryID, in.TypeID, in.ItemID, nil); err != nil {
-			return Ticket{}, err
-		}
 	}
 
 	// A supplied reporter, checked for the same reason the priority above is:
@@ -529,21 +665,23 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 	var guestLink bool
 	filedFor := s.filedForAddress(ctx, in)
 	t := Ticket{
-		ID:             uuid.New(),
-		TrackingNumber: GenerateTrackingNumber(in.TrackingPrefix, now.Year(), seq),
-		Subject:        strings.TrimSpace(in.Subject),
-		Description:    in.Description,
-		CategoryID:     in.CategoryID,
-		TypeID:         in.TypeID,
-		ItemID:         in.ItemID,
-		Priority:       in.Priority,
-		StatusID:       s.sys.newID,
-		ReporterUserID: in.ReporterUserID,
-		GuestEmail:     in.GuestEmail,
-		GuestName:      in.GuestName,
-		GuestPhone:     in.GuestPhone,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ID:                uuid.New(),
+		TrackingNumber:    GenerateTrackingNumber(in.TrackingPrefix, now.Year(), seq),
+		Subject:           strings.TrimSpace(in.Subject),
+		Description:       in.Description,
+		DescriptionFormat: in.DescriptionFormat,
+		SourceChannel:     in.SourceChannel,
+		CategoryID:        in.CategoryID,
+		TypeID:            in.TypeID,
+		ItemID:            in.ItemID,
+		Priority:          in.Priority,
+		StatusID:          s.sys.newID,
+		ReporterUserID:    in.ReporterUserID,
+		GuestEmail:        in.GuestEmail,
+		GuestName:         in.GuestName,
+		GuestPhone:        in.GuestPhone,
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}
 
 	// The ticket, its opening status-history row and its audit entry commit
@@ -1433,8 +1571,8 @@ func (s *Service) changePriorityInTx(ctx context.Context, st Store, au audit.Sto
 // notifyCustomer controls whether a ticket-update email is sent to the
 // reporter. It is forced false for internal notes. reporterEmail is the
 // recipient address; callers are responsible for looking it up.
-func (s *Service) AddReply(ctx context.Context, ticketID uuid.UUID, body string, internal bool, notifyCustomer bool, reporterEmail string, actor Actor, reopenWindowDays int, reopenTargetStatusID uuid.UUID) (Reply, error) {
-	return s.addReply(ctx, ticketID, body, internal, notifyCustomer, reporterEmail, actor, reopenWindowDays, reopenTargetStatusID, nil)
+func (s *Service) AddReply(ctx context.Context, ticketID uuid.UUID, body string, format TextFormat, internal bool, notifyCustomer bool, reporterEmail string, actor Actor, reopenWindowDays int, reopenTargetStatusID uuid.UUID) (Reply, error) {
+	return s.addReply(ctx, ticketID, body, format, internal, notifyCustomer, reporterEmail, actor, reopenWindowDays, reopenTargetStatusID, nil)
 }
 
 // AddGuestReply appends a reply from a guest, who has no account.
@@ -1451,9 +1589,9 @@ func (s *Service) AddReply(ctx context.Context, ticketID uuid.UUID, body string,
 // A guest reply is never internal and never notifies: the customer is the one
 // writing, and mailing them their own message back is noise. Staff see it in
 // the thread.
-func (s *Service) AddGuestReply(ctx context.Context, ticketID uuid.UUID, body string, reopenWindowDays int, reopenTargetStatusID uuid.UUID) (Reply, error) {
+func (s *Service) AddGuestReply(ctx context.Context, ticketID uuid.UUID, body string, format TextFormat, reopenWindowDays int, reopenTargetStatusID uuid.UUID) (Reply, error) {
 	guest := Actor{UserID: nil, Role: user.RoleUser}
-	return s.addReply(ctx, ticketID, body, false, false, "", guest, reopenWindowDays, reopenTargetStatusID,
+	return s.addReply(ctx, ticketID, body, format, false, false, "", guest, reopenWindowDays, reopenTargetStatusID,
 		func(t Ticket, status Status) error {
 			return CanGuestUpdate(t, status, reopenWindowDays)
 		})
@@ -1525,7 +1663,16 @@ func (s *Service) ticketAndStatus(ctx context.Context, ticketID uuid.UUID) (Tick
 // addReply is the one reply path. authorize replaces the default ownership
 // check when non-nil; everything after it — the reopen, the write, the audit,
 // the dispatch — is shared, so a guest reply cannot drift from a user's.
-func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string, internal bool, notifyCustomer bool, reporterEmail string, actor Actor, reopenWindowDays int, reopenTargetStatusID uuid.UUID, authorize func(Ticket, Status) error) (Reply, error) {
+func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string, format TextFormat, internal bool, notifyCustomer bool, reporterEmail string, actor Actor, reopenWindowDays int, reopenTargetStatusID uuid.UUID, authorize func(Ticket, Status) error) (Reply, error) {
+	if err := CheckFreeText("body", body); err != nil {
+		return Reply{}, err
+	}
+	if len(body) > MaxReplyLength {
+		return Reply{}, fmt.Errorf("body must be at most %d bytes: %w: %w", MaxReplyLength, ErrReplyTooLong, ErrValidation)
+	}
+	if _, err := ParseTextFormat(string(format)); err != nil {
+		return Reply{}, fmt.Errorf("reply: %w", err)
+	}
 	t, err := s.store.GetByID(ctx, ticketID)
 	if err != nil {
 		return Reply{}, err
@@ -1562,6 +1709,7 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 		TicketID:       ticketID,
 		AuthorID:       actor.UserID,
 		Body:           body,
+		BodyFormat:     format,
 		Internal:       internal,
 		NotifyCustomer: notifyCustomer,
 		CreatedAt:      time.Now(),
@@ -1637,6 +1785,17 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 		}
 		if err := st.CreateReply(ctx, reply); err != nil {
 			return fmt.Errorf("creating reply: %w", err)
+		}
+		// Who wrote, when, and which reply: never the text (the allow-list in
+		// audit.Redact keeps it that way). Same transaction as the reply, so
+		// there is no reply without its entry. A guest has no id, so no actor.
+		action := AuditActionReplyAdded
+		if internal {
+			action = AuditActionNoteAdded
+		}
+		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", ticketID, action, nil,
+			map[string]any{"reply_id": reply.ID, "internal": internal})); err != nil {
+			return fmt.Errorf("auditing reply: %w", err)
 		}
 		if rotateFor {
 			guestLink = hasGuestRecipient(t)
@@ -1781,6 +1940,15 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 
 	return reply, nil
 }
+
+// Audit actions for a reply and an internal note. They name the event and
+// carry no text: the entry says who wrote and when, and the words stay in the
+// conversation, which has its own visibility rules. Not the webhook events
+// ticket.replied / ticket.note_added (#448), which are a separate vocabulary.
+const (
+	AuditActionReplyAdded = "reply_added"
+	AuditActionNoteAdded  = "note_added"
+)
 
 // isRequester reports whether actor is the person who filed t: its reporter,
 // or the guest (no id, user role) the ticket was filed for.
@@ -2887,6 +3055,32 @@ func (s *Service) CreateAttachment(ctx context.Context, a Attachment, actor Acto
 	})
 }
 
+// CreateGuestAttachment is CreateAttachment for a guest, and the authority on the
+// per-ticket cap (#445): the count is taken inside the transaction that holds
+// the ticket's row lock, so uploads racing for the last slot cannot all pass.
+// Returns ErrGuestAttachmentLimit when the ticket already holds max guest files.
+//
+// The closure is safe to run again (the transaction runner retries a deadlock,
+// #541): it captures nothing it writes to; n and err are its own.
+func (s *Service) CreateGuestAttachment(ctx context.Context, a Attachment, actor Actor, max int) error {
+	return s.atomic.InTx(ctx, func(st Store, _ audit.Store, _ *notification.Changes) error {
+		// Takes the ticket's row lock (a guest is a requester), which is what
+		// serialises concurrent uploads: the second one's count below waits
+		// for the first to commit and sees its row.
+		if _, err := s.refuseRequesterOnClosed(ctx, st, a.TicketID, actor); err != nil {
+			return err
+		}
+		n, err := st.CountGuestAttachments(ctx, a.TicketID)
+		if err != nil {
+			return err
+		}
+		if n >= max {
+			return ErrGuestAttachmentLimit
+		}
+		return st.CreateAttachment(ctx, a)
+	})
+}
+
 // refuseRequesterOnClosed is closedRefusal for a write that is about to
 // happen: it takes the ticket's row lock and refuses a requester when the
 // locked row is Closed, returning the locked row for the caller to reuse. A
@@ -2914,6 +3108,12 @@ func (s *Service) GetAttachment(ctx context.Context, id uuid.UUID) (Attachment, 
 // AnyAttachmentExists reports whether any attachment is stored on the instance.
 func (s *Service) AnyAttachmentExists(ctx context.Context) (bool, error) {
 	return s.store.AnyAttachmentExists(ctx)
+}
+
+// CountGuestAttachments is how many files a guest has attached to the ticket
+// (#445); staff and reporter uploads are not counted.
+func (s *Service) CountGuestAttachments(ctx context.Context, ticketID uuid.UUID) (int, error) {
+	return s.store.CountGuestAttachments(ctx, ticketID)
 }
 
 // ListAttachments returns all attachments for a ticket.

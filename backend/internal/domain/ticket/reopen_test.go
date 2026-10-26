@@ -41,7 +41,7 @@ var (
 func (h *prioHarness) seedFinished(from string, p ticket.Priority) ticket.Ticket {
 	reporter := uuid.New()
 	at := time.Now().Add(-24 * time.Hour)
-	tk := ticket.Ticket{
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID: uuid.New(), TrackingNumber: "HD-000900", Subject: "Printer offline",
 		ReporterUserID: &reporter, Priority: p,
 		AssigneeUserID: ptr(reopenAssignee), AssigneeGroupID: ptr(reopenGroup),
@@ -70,7 +70,7 @@ func reopenDoors() []reopenDoor {
 	return []reopenDoor{
 		{"a requester's reply", "resolved", func(h *prioHarness, tk ticket.Ticket) (ticket.Actor, error) {
 			a := ticket.Actor{UserID: tk.ReporterUserID, Role: user.RoleUser}
-			_, err := h.svc.AddReply(context.Background(), tk.ID, "still broken", false, true, "r@example.test", a, 30, h.newStatus.ID)
+			_, err := h.svc.AddReply(context.Background(), tk.ID, "still broken", ticket.TextFormatPlain, false, true, "r@example.test", a, 30, h.newStatus.ID)
 			return a, err
 		}},
 		{"a guest's reply", "resolved", func(h *prioHarness, tk ticket.Ticket) (ticket.Actor, error) {
@@ -78,7 +78,7 @@ func reopenDoors() []reopenDoor {
 			// reporter's, keeping everything else.
 			tk.ReporterUserID, tk.GuestEmail = nil, ptrTo("guest@example.test")
 			h.store.seed(tk)
-			_, err := h.svc.AddGuestReply(context.Background(), tk.ID, "still broken", 30, h.newStatus.ID)
+			_, err := h.svc.AddGuestReply(context.Background(), tk.ID, "still broken", ticket.TextFormatPlain, 30, h.newStatus.ID)
 			return ticket.Actor{Role: user.RoleUser}, err
 		}},
 		{"staff changing the status of a Resolved ticket", "resolved", func(h *prioHarness, tk ticket.Ticket) (ticket.Actor, error) {
@@ -155,7 +155,7 @@ func TestReopen_OnlyTheFirstReopenBumpsThePriority(t *testing.T) {
 	reporter := tk.ReporterUserID
 	requester := ticket.Actor{UserID: reporter, Role: user.RoleUser}
 	reply := func() {
-		_, err := h.svc.AddReply(context.Background(), tk.ID, "again", false, true, "r@example.test", requester, 30, h.newStatus.ID)
+		_, err := h.svc.AddReply(context.Background(), tk.ID, "again", ticket.TextFormatPlain, false, true, "r@example.test", requester, 30, h.newStatus.ID)
 		require.NoError(t, err)
 	}
 
@@ -289,7 +289,7 @@ func TestReopen_ARefusedReopenChangesNothing(t *testing.T) {
 			return err
 		},
 		"Closed, requester reply": func(h *prioHarness, tk ticket.Ticket) error {
-			_, err := h.svc.AddReply(context.Background(), tk.ID, "hello", false, true, "r@example.test",
+			_, err := h.svc.AddReply(context.Background(), tk.ID, "hello", ticket.TextFormatPlain, false, true, "r@example.test",
 				ticket.Actor{UserID: tk.ReporterUserID, Role: user.RoleUser}, 30, h.newStatus.ID)
 			return err
 		},
@@ -376,7 +376,7 @@ func TestReopen_AReplyThatReopensIsOneEventCarryingBothKinds(t *testing.T) {
 	tk := h.seedFinished("resolved", ticket.PriorityMedium)
 	requester := ticket.Actor{UserID: tk.ReporterUserID, Role: user.RoleUser}
 
-	_, err := h.svc.AddReply(context.Background(), tk.ID, "still broken", false, true, "r@example.test", requester, 30, h.newStatus.ID)
+	_, err := h.svc.AddReply(context.Background(), tk.ID, "still broken", ticket.TextFormatPlain, false, true, "r@example.test", requester, 30, h.newStatus.ID)
 	require.NoError(t, err)
 
 	require.Len(t, h.dispatcher.events, 1)
@@ -392,7 +392,7 @@ func TestReopen_AReplyThatReopensIsOneEventCarryingBothKinds(t *testing.T) {
 	open.ReporterUserID = tk.ReporterUserID
 	h.store.seed(open)
 	h.dispatcher.events = nil
-	_, err = h.svc.AddReply(context.Background(), open.ID, "more detail", false, true, "r@example.test", requester, 30, h.newStatus.ID)
+	_, err = h.svc.AddReply(context.Background(), open.ID, "more detail", ticket.TextFormatPlain, false, true, "r@example.test", requester, 30, h.newStatus.ID)
 	require.NoError(t, err)
 	require.True(t, lastEventOfType(t, h.harness, notification.EventTicketReplied).FromRequester)
 }

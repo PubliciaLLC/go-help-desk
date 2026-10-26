@@ -75,7 +75,7 @@ func TestUploadAttachment_ReporterRefusedOnTheirOwnClosedTicket(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Needs a screenshot", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.userID,
 	})
@@ -98,7 +98,7 @@ func TestUploadAttachment_StaffMayStillAttachToAClosedTicket(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Documenting the fix", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.userID,
 	})
@@ -117,7 +117,7 @@ func TestUploadAttachment_ReporterStillRefusedOnSomeoneElsesTicket(t *testing.T)
 	defer cleanup()
 	ctx := context.Background()
 
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Not yours", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.staffID, // owned by someone other than h.userID
 	})
@@ -136,6 +136,7 @@ func TestGuestUploadAttachment_WorksWithAValidToken(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	tk, token := seedGuestTicket(t, h)
+	setGuestUploads(t, h, true) // off by default (#445)
 
 	res := uploadGuestAttachment(t, h, token, "photo.txt", []byte("what it looks like"))
 	defer res.Body.Close()
@@ -152,13 +153,14 @@ func TestGuestUploadAttachment_ReachesOneTicketAndNoOther(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	tk, token := seedGuestTicket(t, h)
+	setGuestUploads(t, h, true) // off by default (#445)
 
 	res := uploadGuestAttachment(t, h, token, "photo.txt", []byte("mine"))
 	res.Body.Close()
 	require.Equal(t, http.StatusCreated, res.StatusCode)
 
 	other := "other@test.local"
-	tk2, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk2, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Other", Description: "x", CategoryID: h.catID,
 		GuestEmail: &other, GuestName: "Bo",
 	})
@@ -173,6 +175,11 @@ func TestGuestUploadAttachment_ReachesOneTicketAndNoOther(t *testing.T) {
 func TestGuestUploadAttachment_RefusedWithoutAValidToken(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
+	// Both switches on, so the 404 below can only come from the token. With the
+	// uploads setting off (its default) it would be the setting answering.
+	require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeyGuestSubmissionEnabled, true))
+	setGuestUploads(t, h, true)
+	require.True(t, h.adminSvc.GuestAttachmentsEnabled(context.Background()), "the setting must be on for this test to mean anything")
 
 	cases := []struct {
 		name  string
@@ -200,6 +207,7 @@ func TestGuestUploadAttachment_AClosedTicketRefusesLikeABadToken(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	tk, token := seedGuestTicket(t, h)
+	setGuestUploads(t, h, true) // or the 404 is the setting's, not the closed ticket's
 
 	staff := ticket.Actor{UserID: &h.staffID, Role: user.RoleStaff}
 	require.NoError(t, h.ticketSvc.Close(context.Background(), tk.ID, staff))
@@ -228,6 +236,7 @@ func TestGuestUploadAttachment_RefusedPastTheReopenWindow(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 	tk, _ := seedGuestTicket(t, h)
+	setGuestUploads(t, h, true) // off by default (#445)
 
 	staff := ticket.Actor{UserID: &h.staffID, Role: user.RoleStaff}
 	_, err := h.ticketSvc.Resolve(ctx, tk.ID, "fixed", staff)
@@ -259,6 +268,7 @@ func TestGuestUploadAttachment_GatedOnGuestSubmissionEnabled(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 	_, token := seedGuestTicket(t, h)
+	setGuestUploads(t, h, true) // off by default (#445)
 
 	// With the setting ON, upload works.
 	res := uploadGuestAttachment(t, h, token, "photo.txt", []byte("x"))

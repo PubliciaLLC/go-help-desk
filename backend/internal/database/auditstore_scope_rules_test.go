@@ -104,7 +104,7 @@ func TestAuditStore_Search_ScopeRuleShapes(t *testing.T) {
 	mkTicket := func(cat uuid.UUID, typ *uuid.UUID, mod func(*ticket.Ticket)) ticket.Ticket {
 		seq++
 		now := time.Now().UTC().Truncate(time.Millisecond)
-		tk := ticket.Ticket{
+		tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 			ID: uuid.New(), TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2026, seq),
 			Subject: "rules", CategoryID: cat, TypeID: typ, Priority: ticket.PriorityLow, StatusID: newSt.ID,
 			ReporterUserID: &reporter.ID, CreatedAt: now, UpdatedAt: now,
@@ -329,14 +329,14 @@ func TestAuditStore_Search_ScopedAndUnscopedAgree(t *testing.T) {
 	const action = "scope_agree"
 	now := time.Now().UTC().Truncate(time.Microsecond)
 
-	tk1 := ticket.Ticket{
+	tk1 := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID: uuid.New(), TrackingNumber: "AGR-001", Subject: "agree-1",
 		CategoryID: cat.ID, Priority: ticket.PriorityLow, StatusID: newSt.ID,
 		ReporterUserID: &reporter.ID, CreatedAt: now, UpdatedAt: now,
 	}
 	require.NoError(t, ts.Create(ctx, tk1))
 
-	tk2 := ticket.Ticket{
+	tk2 := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID: uuid.New(), TrackingNumber: "AGR-002", Subject: "agree-2",
 		CategoryID: cat.ID, TypeID: &typ, Priority: ticket.PriorityLow, StatusID: newSt.ID,
 		ReporterUserID: &reporter.ID, CreatedAt: now, UpdatedAt: now,

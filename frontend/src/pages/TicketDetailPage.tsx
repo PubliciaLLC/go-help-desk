@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { TicketText } from '@/components/TicketText'
 import { useParams, Link } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -35,10 +36,19 @@ import { Select } from '@/components/ui/select'
 import { api } from '@/api/client'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import type { Group, StatusHistoryEntry, TicketFieldValue } from '@/api/types'
+import type { Group, SourceChannel, StatusHistoryEntry, TicketFieldValue } from '@/api/types'
 import { priorityVariant } from '@/lib/format'
 import { ReopenedBadge } from '@/components/ticket/ReopenedBadge'
 import { SLAIndicator } from '@/components/ticket/SLAIndicator'
+
+// How the server's channel values read on the page (#130).
+const SOURCE_CHANNEL_LABEL: Record<SourceChannel, string> = {
+  web: 'via web',
+  api: 'via API',
+  mcp: 'via MCP',
+  guest: 'via guest form',
+  phone: 'via phone',
+}
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleString()
@@ -550,6 +560,12 @@ export function TicketDetailPage() {
               <span className="whitespace-nowrap">{ticket.tracking_number}</span>
               <span>·</span>
               <span>Opened {formatDate(ticket.created_at)}</span>
+              {isStaffOrAdmin && ticket.source_channel && (
+                <>
+                  <span>·</span>
+                  <span data-testid="source-channel-line">{SOURCE_CHANNEL_LABEL[ticket.source_channel]}</span>
+                </>
+              )}
             </div>
             <h1 className="text-2xl font-bold text-gray-900 wrap-anywhere">{ticket.subject}</h1>
             {isStaffOrAdmin && (
@@ -671,9 +687,11 @@ export function TicketDetailPage() {
                 <CardTitle className="text-sm text-gray-500">Description</CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="whitespace-pre-wrap text-sm wrap-anywhere">
-                  {ticket.description || <span className="text-gray-400">No description provided.</span>}
-                </p>
+                {ticket.description ? (
+                  <TicketText text={ticket.description} format={ticket.description_format} className="text-sm" />
+                ) : (
+                  <p className="text-sm text-gray-400">No description provided.</p>
+                )}
               </CardContent>
             </Card>
 
@@ -705,7 +723,7 @@ export function TicketDetailPage() {
                           {formatDate(r.created_at)}
                         </span>
                       </div>
-                      <p className="whitespace-pre-wrap wrap-anywhere">{r.body}</p>
+                      <TicketText text={r.body} format={r.body_format} />
                     </div>
                   )
                 }

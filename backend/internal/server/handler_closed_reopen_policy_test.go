@@ -36,7 +36,7 @@ func policyRoutes(h *harness) map[string]func(t *testing.T, do func(*testing.T, 
 			return do(t, http.MethodPost, "/api/v1/tickets/"+id+"/resolve", map[string]any{"notes": "again"})
 		},
 		"duplicate-of with auto-resolve": func(t *testing.T, do func(*testing.T, string, string, any) *http.Response, id string) *http.Response {
-			target, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+			target, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 				Subject: "Original", Description: "x", CategoryID: h.catID, ReporterUserID: &h.userID,
 			})
 			require.NoError(t, err)
@@ -199,7 +199,7 @@ func TestClosedReopenPolicy_CanReopenOnTheTicketResponse(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	closed := reporterClosedTicket(t, h)
-	open, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	open, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Open one", Description: "x", CategoryID: h.catID, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)

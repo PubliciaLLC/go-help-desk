@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { AuditDiff } from '@/components/AuditDiff'
 import { followRemovalLabel, isFollowAction } from '@/lib/followAudit'
+import { isReplyAction, replyActionLabel } from '@/lib/replyAudit'
 import { EyeOffIcon } from 'lucide-react'
 import type { AdminAuditEntry } from '@/api/types'
 
@@ -41,9 +42,10 @@ interface FilterState {
   from: string
   to: string
   q: string
+  hideReplies: boolean
 }
 
-const EMPTY_FILTERS: FilterState = { entityType: '', action: '', actorId: '', from: '', to: '', q: '' }
+const EMPTY_FILTERS: FilterState = { entityType: '', action: '', actorId: '', from: '', to: '', q: '', hideReplies: false }
 
 // #129's admin-wide half: searchable across every entity, not just one
 // ticket — see handleListAdminAudit. Staff reach this page too (the nav
@@ -62,6 +64,7 @@ export function AdminAuditPage() {
     from: toRFC3339(filters.from),
     to: toRFC3339(filters.to),
     q: filters.q.trim() || undefined,
+    exclude_action: filters.hideReplies ? ['reply_added', 'note_added'] : undefined,
     limit: PAGE_SIZE,
     offset,
   }
@@ -169,6 +172,15 @@ export function AdminAuditPage() {
               placeholder="entity or action"
             />
           </div>
+          <div className="flex items-center gap-2 col-span-full">
+            <input
+              id="audit-hide-replies"
+              type="checkbox"
+              checked={filters.hideReplies}
+              onChange={(e) => updateFilter('hideReplies', e.target.checked)}
+            />
+            <Label htmlFor="audit-hide-replies">Hide replies and notes</Label>
+          </div>
         </div>
 
         {isLoading ? (
@@ -197,14 +209,15 @@ export function AdminAuditPage() {
                         <span className="font-mono text-xs">{e.entity_type}</span>
                       </td>
                       <td className="px-4 py-3">
-                        <span className="font-medium text-gray-900">{followRemovalLabel(e) ?? labelFor(e.action)}</span>
+                        <span className="font-medium text-gray-900">{isReplyAction(e.action) ? replyActionLabel(e.action) : (followRemovalLabel(e) ?? labelFor(e.action))}</span>
                         {/* A follow entry's diff only repeats what its label says. */}
-                        {!isFollowAction(e.action) && <AuditDiff before={e.before} after={e.after} names={e.names} />}
+                        {!isFollowAction(e.action) && !isReplyAction(e.action) && <AuditDiff before={e.before} after={e.after} names={e.names} />}
+                        {e.entity_type === 'email_template' && e.before && !e.after && <RemovedTemplateText before={e.before} />}
                       </td>
                       <td className="px-4 py-3 text-gray-600 wrap-anywhere">
                         {e.actor_masked
                           ? <span className="italic text-gray-500"><EyeOffIcon aria-hidden="true" className="mr-1 inline h-3.5 w-3.5" />Requester (name hidden)</span>
-                          : (e.actor_name || '—')}
+                          : (e.actor_name || (isReplyAction(e.action) ? (e.actor_id ? 'Someone' : 'A guest') : '—'))}
                       </td>
                     </tr>
                   ))}
@@ -246,5 +259,21 @@ export function AdminAuditPage() {
         )}
       </div>
     </Layout>
+  )
+}
+
+// #158: reverting an email template deletes the edited text, and the revert
+// dialog promises it stays in the audit log. A revert has no "after", which
+// AuditDiff leaves out on purpose for every other entity type, so this entity
+// type alone shows what was removed.
+function RemovedTemplateText({ before }: { before: Record<string, unknown> }) {
+  const subject = typeof before.template_subject === 'string' ? before.template_subject : ''
+  const body = typeof before.template_body === 'string' ? before.template_body : ''
+  return (
+    <div className="mt-1 border-l-2 border-gray-100 pl-2 text-gray-500">
+      <p>Removed text:</p>
+      {subject && <p className="wrap-anywhere"><span className="font-mono">template_subject</span>: {subject}</p>}
+      <pre className="whitespace-pre-wrap font-mono text-xs [overflow-wrap:anywhere]">{body}</pre>
+    </div>
   )
 }

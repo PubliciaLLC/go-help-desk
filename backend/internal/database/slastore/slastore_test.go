@@ -39,7 +39,7 @@ func seedTicketAndRecord(t *testing.T, ctx context.Context, ts *ticketstore.Stor
 	newSt, err := ts.GetStatusByName(ctx, ticket.StatusNameNew)
 	require.NoError(t, err)
 
-	tk := ticket.Ticket{
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: ticket.TrackingNumber("SS-" + uuid.NewString()[:8]),
 		Subject:        "slastore test",

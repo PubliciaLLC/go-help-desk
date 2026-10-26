@@ -38,7 +38,7 @@ describe('the reopen target warning', () => {
     mockWarnings({ inactive: true, name: 'Awaiting parts' })
     renderWithQuery(<InsecureConfigBanner isAdmin />)
 
-    const alert = await screen.findByRole('alert')
+    const alert = await screen.findByRole('region', { name: 'Server notices' })
     const text = alert.textContent ?? ''
     expect(text).toContain('Awaiting parts')
     expect(text).toMatch(/inactive/i)
@@ -51,7 +51,7 @@ describe('the reopen target warning', () => {
     renderWithQuery(<InsecureConfigBanner isAdmin />)
 
     await waitFor(() => expect(api.get).toHaveBeenCalledWith('/admin/security-warnings'))
-    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Server notices' })).toBeNull()
   })
 
   it('says nothing to a non-admin', () => {
@@ -59,6 +59,6 @@ describe('the reopen target warning', () => {
     renderWithQuery(<InsecureConfigBanner isAdmin={false} />)
 
     expect(api.get).not.toHaveBeenCalled()
-    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Server notices' })).toBeNull()
   })
 })

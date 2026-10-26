@@ -21,7 +21,7 @@ func TestUpdateTicket_EmptyBodyIsNoChange(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Nothing to change", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})

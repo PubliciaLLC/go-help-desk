@@ -24,6 +24,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/cannedresponsestore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/categorystore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/customfieldstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/emailtemplatestore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/groupstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/outboxstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/passwordresetstore"
@@ -55,6 +56,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/server"
 	"github.com/publiciallc/go-help-desk/backend/internal/server/notify"
 	"github.com/publiciallc/go-help-desk/backend/internal/ui"
+	"github.com/publiciallc/go-help-desk/backend/internal/updatecheck"
 )
 
 func main() {
@@ -307,6 +309,13 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("initialising email dispatcher: %w", err)
 	}
+	// The admin's edited templates (#158), read at send time. One primary-key
+	// lookup per mail and no cache, so several replicas agree. A template that
+	// no longer validates after an upgrade is named here and never blocks
+	// startup: the mail that uses it fails visibly, and one click reverts it.
+	emailTemplates := emailtemplatestore.NewWithDB(sqlDB)
+	emailDisp.WithTemplates(emailTemplates, adminSvc)
+	notify.WarnBrokenTemplates(ctx, emailTemplates, slog.Default())
 	// Said once at startup so "why did nobody get an email" has an answer in
 	// the log (#456). Half a configuration is a warning, not a quiet off.
 	if msg, misconfigured := cfg.EmailStatus(); misconfigured {
@@ -456,6 +465,7 @@ func run() error {
 		server.WithAuditStore(auStore),
 		server.WithPasskeysUnavailable(passkeyReason),
 		server.WithEmailHealth(outboxStore),
+		server.WithEmailTemplates(emailTemplates, emailDisp),
 		server.WithWebhookRedeliverer(webhookDisp),
 		server.WithPasswordReset(passwordResetSvc),
 	)
@@ -468,7 +478,7 @@ func run() error {
 	// ── MCP server (mounted under /mcp) ───────────────────────────────────────
 	// srv supplies the visibility rule: MCP applies the same authority model as
 	// the REST API rather than a second copy of it.
-	mcpSrv := mcp.New(ticketSvc, adminSvc.TicketPrefix, srv, categorySvc)
+	mcpSrv := mcp.New(ticketSvc, adminSvc.TicketPrefix, srv, categorySvc, srv)
 
 	mux := http.NewServeMux()
 	// Wrapped, never bare: Handler() authenticates nothing on its own, and this
@@ -513,6 +523,9 @@ func run() error {
 	}
 	outboxWorker = notify.NewWorker(outboxStore, outboxSenders, slog.Default())
 	go outboxWorker.Run(sweepCtx)
+	// The opt-in weekly release check (#170). Does nothing, and makes no
+	// request, unless an administrator turned update_check_enabled on.
+	go updatecheck.New(adminSvc, slog.Default()).Run(sweepCtx)
 	go func() {
 		t := time.NewTicker(time.Hour)
 		defer t.Stop()

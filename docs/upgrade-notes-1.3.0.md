@@ -108,12 +108,54 @@ Slack, Teams, Discord and Jira Automation hooks are not affected: their messages
 
 - **API keys list and revoke only themselves.** See *API key delete is scoped to its owner* under Security.
 
+### Guests Can No Longer Upload Until You Turn It On (#445)
+
+Before this release a guest could attach a file through `POST /api/v1/guest/attachments` whenever guest submission was on. **That is now off by default, including on an upgraded install.** A new setting, **Guests may attach files** (`guest_attachments_enabled`, Admin → Settings → General → Submissions, under guest submission), controls it. Until an administrator turns it on, the route answers the generic `404 not_found` a bad link gets, and a script that uploads as a guest will see that.
+
+- **Dependent on guest submission.** It only takes effect while guest submission is on.
+- **Per-file limit.** `guest_attachment_max_mb`, a slider from 1 to 100 MB, 5 MB by default. A guest is held to the lower of it and the instance-wide 25 MB maximum. Over the limit is `413 too_large`, and the message names the limit.
+- **Two more limits, with small defaults.** `guest_attachment_max_per_ticket` (1 to 50, default 5) caps the files guests can attach to one ticket, and `guest_attachment_uploads_per_hour` (1 to 30, default 3) caps uploads per guest link per hour. Over the cap is `409 guest_attachment_limit`; over the rate is `429 rate_limited` with `Retry-After`. Both are on the same settings page, under the switch. The rate is in memory and per process, so a restart clears it. A refusal decided before the scan (wrong type, too big) does not use up the guest's hour; anything decided after it (not an image, a malware verdict) or a server fault does. Refused attempts also share a fixed 20-per-hour budget per ticket.
+- **Session only.** All of these settings need a signed-in administrator; an API key or OAuth client sending either is refused with `403 session_required`.
+- **The guest page now has an Add files button** while the setting is on. Uploads get the same type, scanning and reputation rules as everyone else's, and are download-only. The submission form (`/submit`) has none: the link to attach from is emailed once the ticket exists.
+- **`GET /api/v1/site`** gains `guest_attachments_enabled` and, while it is on, `guest_attachment_max_bytes`, `guest_attachment_max_per_ticket` and `guest_attachment_uploads_per_hour`.
+- **Migration 000054** (runs on start, nothing to do) adds `attachments.uploaded_by_guest`, default false, so the cap counts only guest uploads. Files guests attached before the upgrade are not counted toward it. The settings themselves need no migration; they are read with their defaults.
+
+What to check: if your guests attach files today, turn the setting on after you upgrade.
+
+### `GET /users/lookup` is closed to API keys and OAuth clients (#290)
+
+`GET /api/v1/users/lookup` now answers `403 session_required` to an API key or an OAuth client, whatever scopes it holds. In the 1.3.0 betas it opened to any credential with `users:read`, which a staff key could be given, so a key could search the user directory by name or address. It is for the New ticket page's requester picker, in a signed-in session, and nothing else. Staff keys can no longer be given `users:read` (it opened nothing else for them); keys that already hold it keep it and it does nothing.
+
+What to do: a script that filed tickets for other people by looking the person up first sends `reporter_email` on `POST /api/v1/tickets` (or MCP `create_ticket`) and lets the server resolve it: the ticket goes to the account with that address if there is one, otherwise it is a guest ticket (`guest_name` required, guest submission on). `reporter_user_id` still works for ids you already have. An administrator's key that searched accounts by name or address can use `GET /api/v1/admin/users?page=1&q=` (read-only, `users:read`; `q` applies only with `page`); staff keys have no replacement.
+
+### `PATCH /api/v1/me/password` now needs `current_password` (#555)
+
+In 1.2.0, `PATCH /api/v1/me/password` took `password` alone and did not ask for the current password. 1.3.0 requires `current_password` and refuses a missing or wrong one with `400 invalid_current_password`, so a 1.2.0 script that sends only `password` now fails. The new name for the replacement is `new_password`; `password` is still read when `new_password` is absent. Wrong guesses are counted per account against a budget the size of sign-in's (`AUTH_RATE_LIMIT_PER_MINUTE`, a separate counter) and answer `429 rate_limited` once it is spent; the correct password is still accepted. A `401` from this route means there is no session. The account page shows a wrong current password inline and keeps the person signed in.
+
+### Existing Tickets Are Marked `web`, Even If They Came by API or MCP (#130)
+
+1.3.0 records how each ticket arrived (`source_channel`: `web`, `api`, `mcp`, `guest` or `phone`). **Tickets that exist when you upgrade are all marked `web`**, because the channel was not recorded before 1.3.0 and cannot be worked out afterwards. A ticket an integration opened over REST or MCP, or a guest submitted, reads `web` too. Channel counts that include dates before the upgrade are not a record of how those tickets came in. Use the upgrade date as the start of any channel report.
+
+- **The channel is recorded from the entry point and cannot be set by a caller.** `POST /tickets` with an API key or OAuth client is `api`; the same call in a browser session is `web`; MCP is `mcp`; the guest form is `guest`. A follow-up records its own entry point, not the original's.
+- **A request that sends `source_channel` is refused with `400`** (nothing is created): any value from an API key or OAuth client, and any MCP `create_ticket` that includes the argument. An integration that sent the member before, which was ignored, now fails. The one value a person can send is `phone`, from the web app, when staff file for someone else.
+- **Migration 000056** adds `tickets.source_channel` (no table rewrite, no default afterwards). As for migration 000055, **stop every old (1.2 or earlier) instance before it runs**: an instance still on the old version cannot insert a ticket once the default is gone.
+
 ### Also breaking, described elsewhere
 
 - A ticket-changing webhook delivers one event per change, and a receiver that switches on `Type` can miss a kind: see *One Change, One Event* under Changed behaviour.
 - If `JWT_SECRET` is unset or short, OAuth clients must fetch a new access token once: see *JWT Secret* under Security.
 - MCP `add_reply` now emails the requester: see *MCP `add_reply`* under Changed behaviour.
 - `PATCH /admin/settings` null and error-code changes: see *Ticket and Settings API Responses (#420)* under Changed behaviour.
+
+## Optional weekly check for new releases (off unless you choose it)
+
+1.3.0 can check whether a newer release of Go Help Desk exists. **It is off.** It stays off after you upgrade, and nothing contacts GitHub unless an administrator turns it on.
+
+- **What is sent.** One `GET` to GitHub's public releases API (`https://api.github.com/repos/PubliciaLLC/go-help-desk/releases/latest`) with exactly two request headers of its own: `User-Agent: go-help-desk` (a fixed name, no version number) and `Accept: application/vnd.github+json`. No query string, body, cookie, instance identifier or usage data, and nothing about your server or version. GitHub sees your server's IP address, as any website would.
+- **How often.** At most once every 7 days, and not again after a restart until the week is up. A failed check (GitHub down, no route out) is logged once and tried again the following week.
+- **What you see.** If a newer stable release exists, administrators (only) see a small dismissible line, "Version X is available (you run Y)", linking to the release. Nothing is downloaded or installed. Prereleases and drafts are ignored.
+- **Air-gapped installs.** Leave it off. While it is off the server makes no request.
+- **Where to choose.** On a new install, the setup screen asks (unchecked: "Check for new releases (contacts GitHub once a week; sends nothing about your server)"). On an upgraded install, **the first administrator who signs in after the upgrade is taken once through a short "After upgrading to 1.3.0" wizard**, and this is its first question. The wizard then asks about staff email notifications (the upgrade turned them off), staff API keys and their lifetime, the old-password reset window, and (only if guest submission is on) guest file uploads, which 1.3.0 switched off, showing today's setting for each. Skip any step to leave that setting as it is; finishing or skipping the wizard means it is not shown again. You can change the update check later under Settings → General → Updates.
 
 ## Security
 
@@ -123,7 +165,12 @@ A web page on a sibling site could send MCP requests that the server accepted un
 
 ### API key delete is scoped to its owner (#450)
 
-An API key could delete another administrator's key if it knew the id. That has been possible since 1.0.0 (1.0.0 to 1.2.0 are affected). It is revoke-only, needs an administrator's key and the other key's id, and is low severity; upgrading is advised. There is no GitHub security advisory for this API key item.
+An API key could delete another administrator's key if it knew the id. That has been possible since 1.0.0 (1.0.0 to 1.2.0 are affected). It is revoke-only, needs an administrator's key and the other key's id, and is low severity; upgrading is advised. A GitHub security advisory is published with this release.
+
+**TODO BEFORE TAGGING: replace the placeholder link below with the real advisory.** The release build refuses to run while the advisory placeholder below is still there.
+
+https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-TODO
+<!-- GHSA id: Erik fills in on tag day -->
 
 Now an API key lists and revokes **only itself**: not its owner's other keys and not anyone else's (any other id answers `404`). An administrator signed in through the browser lists and revokes **every** key, so `GET /admin/api-keys` for a browser session now returns all keys instead of the caller's own, and each entry carries `owner_name` and `owner_email`. A script that used one key to list or revoke the others now needs a browser session.
 
@@ -157,15 +204,43 @@ Every MCP route (`/mcp`, `/mcp/sse`, `/mcp/message` and anything else under `/mc
 
 `POST /api/v1/tickets` takes `reporter_user_id` (an existing account) or `reporter_email` (a typed address), **staff and administrators only**, at most one. The New ticket page shows them a **Requester** choice: Me (the default), Another user (search) or Email address. Requesters see no such control, and a requester who sends either field is refused with `403 forbidden`.
 
-- **A typed address sends the guest link to that address.** Unless the address belongs to an account (then the ticket is filed for that account), it is filed exactly like a guest ticket: the person is emailed the link to read and reply, as for a ticket they submitted themselves. It is refused with `400` while guest submission is off, because the link would not open. As on the guest form, a **name is required** for such an address (`400` without one) and a phone number is optional; an address that belongs to an account needs no name.
-- **A staff member can file 40 tickets an hour for typed addresses with no account**, then `429 rate_limited` (with `Retry-After`) and nothing is filed. Each one mails a stranger, so this is the cap on that. Only tickets that are filed count: a request that is refused or fails validation does not. Picking a user, or typing an address that belongs to an account, does not count either. It is per staff member (an API key or OAuth client counts against the user it acts as), kept in memory, so it resets when the server restarts and each replica of a multi-instance deployment counts on its own. Not configurable.
+- **A typed address sends the guest link to that address.** Unless the address belongs to an account (then the ticket is filed for that account), it is filed exactly like a guest ticket: the person is emailed the link to read and reply, as for a ticket they submitted themselves. It is refused with `400` while guest submission is off, because the link would not open. As on the guest form, a **name (`guest_name`) is required with every `reporter_email`** (`400` without one), whether or not the address has an account, so a refusal says nothing about the address; it is ignored for an account. A phone number is optional.
+- **A staff member can use `reporter_email` 40 times an hour**, then `429 rate_limited` (with `Retry-After`) and nothing is filed. It bounds how fast anyone can learn which addresses have accounts, and how many strangers get mail. Every `reporter_email` that passes validation counts, account or not, and the refusal for guest submission being off counts too; a request refused by validation (subject, category, type, item, address form, missing name) does not, and a unit, once taken, is never given back (a create that then fails costs it). Picking a user by `reporter_user_id` does not count. It is per staff member (an API key or OAuth client counts against the user it acts as), kept in memory, so it resets when the server restarts and each replica of a multi-instance deployment counts on its own. Not configurable.
 - **An existing user who is filed for is emailed.** Someone picked from the list, or a typed address that matches an account, gets the ordinary "We have received your ticket" email with a link to the ticket, through the notification outbox. A member of staff filing their own ticket is not emailed, as before.
 - The member of staff is the actor in the ticket's history and audit entry; the requester is its reporter or guest. **MCP `create_ticket` with `reporter_user_id` now does the same**: it used to record the reporter as the actor of a ticket the caller filed for them. It also emails an account filed for this way, as REST does. Creating your own ticket over MCP is unchanged.
 - **Staff see a Requester line** on the ticket page (the account's name and email, or the guest's), on every ticket. `GET /api/v1/tickets/{id}` carries it as `requester` for staff and administrators only; requesters do not receive it.
-- New `GET /api/v1/users/lookup?q=` feeds the picker: staff and administrators only, `users:read` for an API key or OAuth client, at most ten results (`id`, `display_name`, `email`), `400` for a query under two characters. Disabled accounts are not offered (MCP `create_ticket` still accepts one by id).
+- New `GET /api/v1/users/lookup?q=` feeds the picker: staff and administrators **in a signed-in session only** (an API key or OAuth client gets `403 session_required`; see Breaking changes), at most ten results (`id`, `display_name`, `email`), `400` for a query under two characters. Disabled accounts are not offered (MCP `create_ticket` still accepts one by id).
 - No migration. Existing callers that send neither field behave exactly as before.
 
-What to check: an API key that files tickets does not need `users:read` to use `reporter_user_id` or `reporter_email`; only the lookup does.
+- **MCP `create_ticket` takes `reporter_email` too** (with `guest_name`, required, and `guest_phone`), by the same code as REST: an account if the address has one, otherwise a guest ticket, with the same 40-an-hour budget (one budget per staff member across REST and MCP), the same mail and the same actor. `reporter_user_id` still works.
+
+What to check: an API key that files tickets does not need `users:read` to use `reporter_user_id` or `reporter_email`, and cannot use the lookup at all.
+
+### Tickets Record How They Arrived (#130)
+
+Staff and administrators see a small "via web", "via API", "via MCP", "via guest form" or "via phone" next to the opened date on the ticket page, and `source_channel` on the ticket object in REST and MCP `get_ticket`. Requesters and guests never receive it. When a member of staff files for someone else on the New ticket page they get **How did this reach you?**: Web (the default) or Phone call. There is no list filter for it yet. Existing tickets read `web`: see *Existing Tickets Are Marked `web`* under Breaking changes.
+
+### Markdown in Ticket Text (#443)
+
+Descriptions, replies and internal notes can now be written in Markdown. **Text written before 1.3.0 stays plain text.** 1.2 promised Markdown but never rendered it, so nothing already in the database is reinterpreted: every existing description and reply is marked `plain` (migration 000055) and is shown exactly as before. A reader can choose **Show formatted** on any plain post to see it through the new renderer. That changes only what that reader sees; nothing is stored and the default stays plain.
+
+- **Who writes which format.** The web app's editor writes Markdown. **REST is unchanged unless it opts in:** `POST /tickets`, `/tickets/{id}/replies`, `/guest/tickets` and `/guest/replies` take an optional `format` (`plain` or `markdown`) and default to `plain`. **MCP `create_ticket` and `add_reply` default to `markdown`**, and their tool descriptions tell the agent to escape characters it means literally; pass `format: "plain"` to keep plain text. Any other value (`""`, `"Markdown"`, `"html"`, a number) is `400 invalid_format` on REST and a tool error on MCP, and nothing is written.
+- **Reading.** `description_format` is on every ticket object and `body_format` on every reply, for staff, requesters and guests alike. A follow-up copies its original's format.
+- **What is rendered.** CommonMark plus GitHub tables, strike-through and bare-URL links. No images (shown as the link "[image: alt]" and never loaded), no raw HTML (shown as text), headings all one small size, links http, https and mailto only. Code in a fenced block is highlighted for 13 languages. Markdown post readers get a **Plain text** button to see the source.
+- **Webhooks, email and chat are unchanged.** A webhook payload carries the Markdown source as text; chat targets escape it as before; email carries no ticket text.
+- **Migration 000055** adds `tickets.description_format` and `ticket_replies.body_format` (`plain` or `markdown`, no default afterwards). It does not rewrite the tables, but **stop every old (1.2 or earlier) instance before the migration runs**: the migration removes the column default, so an instance still running the old version fails every ticket create and reply. There is no rolling upgrade across this version.
+
+What to check: an integration that already sends Markdown-looking text over REST keeps getting plain text unless it adds `"format": "markdown"`. An MCP agent that sent text with `*`, `#` or `_` meant literally will now have it formatted; tell it to escape them or pass `format: "plain"`.
+
+### Replies Are Limited to 50,000 Bytes (#443)
+
+A reply or internal note over **50,000 bytes of text** (not characters: letters outside basic English and emoji take 2 to 4 bytes each) is now refused with `400 body_too_long`, and nothing is written. It is the limit a ticket description has always had. It applies to `POST /tickets/{id}/replies`, `POST /guest/replies` and MCP `add_reply`. Before 1.3.0 a reply had no cap other than the 1 MiB request size, and a megabyte of text slowed every page that showed it.
+
+- **Text already stored is untouched.** A longer post written before the upgrade is shown collapsed (its first 5,000 characters, a note, and a **Show full text** button). The button shows all of it, exactly as stored.
+- **Scripts and integrations** that post long logs as replies will start getting 400. Split them, or attach them as a file.
+- The web forms count in the same bytes, show a counter near the limit, and will not send more.
+
+What to check: any script that pastes command output, a log or a stack trace into a reply.
 
 ### `unlock <email>` on the Server Console (#497)
 
@@ -189,12 +264,16 @@ API keys can now be made by staff, issued by an administrator on a staff member'
 - **Where:** Account → API keys (list, create with an expiry, revoke), and `GET/POST /api/v1/me/api-keys`, `GET /api/v1/me/api-keys/scopes`, `DELETE /api/v1/me/api-keys/{id}`. Session only: an API key or OAuth client gets 403 `session_required`, so a key cannot create more keys.
 - **Issuing on behalf:** `POST /api/v1/admin/api-keys` takes an optional `user_id`, from a signed-in administrator only. They can issue for a staff member or for themselves. Not for another administrator (400 `cannot_issue_for_administrator`), a requester, or a service account (400 `service_account_cannot_own_key`). Responses now include `user_id` and `created_by`.
 - **Changing someone's role keeps their keys.** A key acts within its owner's current role. Promoting a staff member who holds an administrator-issued key leaves an administrator holding it; revoke it if that is not wanted.
-- **A key's scopes never exceed its owner's role.** Staff keys can carry `tickets:read|write`, `groups:read`, `audit:read` and `users:read`; an administrator's any scope. Anything else is 400 `invalid_scope`, on both routes. `GET /api/v1/admin/scopes?role=staff` lists what a staff key may carry.
+- **A key's scopes never exceed its owner's role.** Staff keys can carry `tickets:read|write`, `groups:read` and `audit:read` (`users:read` is no longer offered: its one staff route, the requester lookup, is session-only); an administrator's any scope. Anything else is 400 `invalid_scope`, on both routes. `GET /api/v1/admin/scopes?role=staff` lists what a staff key may carry.
 - **Marked for rotation:** both key lists carry `beyond_limit`. A key with no expiry, or one beyond the current limit (for example after the limit is lowered), is shown as "No expiry (longer than the current limit)" so it can be rotated.
 - **Password reset can revoke keys:** `POST /api/v1/admin/users/{id}/password` takes `revoke_api_keys` (default false); the admin form has "Also revoke this person's API keys", unticked. It deletes every key the account owns and audits the count; if the keys cannot be revoked after the password was reset, the answer is 500 `keys_not_revoked` ("The password was reset, but the API keys were NOT revoked."). A person's own password change, a password reset by email ("Forgot password", #451), `server unlock` and `server reset-factors` never touch keys.
 - **Audit:** every key issued or revoked, own or on someone's behalf, writes `api_key_issued` / `api_key_revoked` (entity type `api_key`) to the admin audit log; a revoke-on-reset writes `api_keys_revoked` on the account with the number of keys.
 - **Lists and settings API:** `GET /api/v1/admin/api-keys` entries gain `created_by` and `beyond_limit`. `GET /me` gains `can_create_api_keys` and `api_key_max_lifetime_years`.
 - **Existing keys:** an administrator's existing keys keep acting as administrator, unchanged.
+
+### Archive and Restore Buttons on Admin → Categories (#446)
+
+Archiving was possible only through the API (`PATCH` with `active`). Each category, type and item row now has an Archive button, and an archived row has Restore. Archive asks first: the entry can no longer be chosen for new tickets, and tickets already filed under it keep it. Archived rows stay in the tree, greyed and labelled "Archived". Archiving does not cascade to the rows beneath. When deleting an entry is refused because tickets use it, the message now points to Archive.
 
 ### Staff Search Now Covers Every Ticket They Can See (#444)
 
@@ -228,7 +307,7 @@ Every OAuth client now has a **service user**: an account made with the client, 
 What changes:
 
 - **Clients can now write.** A client holding `tickets:write` creates tickets and replies as its service user, and the audit trail shows the client's name. Before, those calls were refused with `403 user_identity_required`. Nothing else about the scopes changed; a client with only `tickets:read` is still refused.
-- **Service users are listed on Admin → Users**, with `service_account: true` and `auth_type: "service"` in the API. They can be renamed (which renames the client too), set to staff or user (never admin), given groups, and disabled. **Disabling the user stops the client**; enabling it restores it. A service user cannot be deleted on its own: `DELETE /admin/users/{id}` answers `409 service_account` and says to delete the client instead. Deleting the client soft-deletes its user; tickets it wrote keep its name.
+- **Service users are listed on Admin → Users**, with `service_account: true` and `auth_type: "service"` in the API. They can be renamed (which renames the client too), set to staff or user (never admin), given groups, and disabled; the server refuses the rest on `PATCH /admin/users/{id}` with `409 service_account` (`email`, a `role` of `admin`, and `reset_mfa: true`; none of the request is applied). This is stricter than the first 1.3.0 betas, which accepted a change of address. **Disabling the user stops the client**; enabling it restores it. A service user cannot be deleted on its own: `DELETE /admin/users/{id}` answers `409 service_account` and says to delete the client instead. Deleting the client soft-deletes its user; tickets it wrote keep its name.
 - **They never sign in.** No password, no MFA, no passkey, no SSO, no admin role. The database enforces it, and the API answers `409 service_account` to an attempt.
 - **They are hidden from assignee pickers and round-robin, do not count as administrators, and are never mailed.** A ticket a client opens sends no requester email.
 - **`POST /admin/oauth-clients` returns `user_id`**; `GET /admin/oauth-clients` returns `user_id` and `groups` for each client.
@@ -287,13 +366,13 @@ The following variables are now honoured when set in `docker/.env`. They are aut
 #### `AUTH_RATE_LIMIT_PER_MINUTE`
 
 - **Default**: `10`
-- **Description**: Failed password attempts per account per minute before a 429 response. `0` disables both password-attempt limiting and signup limiting. In-process counters reset on restart; each replica maintains its own budget, so N replicas multiply the limit by N.
+- **Description**: Failed password attempts per account per minute before a 429 response (sign-in and wrong current passwords on `PATCH /me/password`, each counted separately). `0` disables both password-attempt limiting and signup limiting. In-process counters reset on restart; each replica maintains its own budget, so N replicas multiply the limit by N.
 - **Note**: TOTP verification has its own strict budget (durable on the user row) and is not affected by this setting.
 
 #### `AUTH_THROTTLE_DELAY`
 
 - **Default**: `1s`
-- **Description**: How long a login waits before checking the password, for accounts that have spent their failed-attempt budget. Bounds online guessing to the server's bcrypt throughput (roughly 10–15 guesses/second/core). Must be a positive duration (e.g., `1s`, `500ms`, `1m`); cannot be zero at startup.
+- **Description**: How long a login, or a wrong-current-password guess on `PATCH /me/password`, waits before checking the password, for accounts that have spent their failed-attempt budget. Bounds online guessing to the server's bcrypt throughput (roughly 10–15 guesses/second/core). Must be a positive duration (e.g., `1s`, `500ms`, `1m`); cannot be zero at startup.
 - **Impact**: A legitimate user who exhausts the budget still succeeds — their correct password is always honoured, just after the delay.
 
 ## Changed behaviour
@@ -377,6 +456,7 @@ Scripts and API keys that call the admin API can see these changes. Nothing need
 
 The rest of the #421 changes to scripts and integrations change what an answer says.
 
+- **A NUL character in free text is `400`, not `500`.** A NUL (or invalid UTF-8) in a ticket's `subject`, `description`, `guest_name` or `guest_phone`, or in a reply `body`, reached Postgres, which refuses it: a `500`, and for a create a tracking number already taken, so a gap in the numbering. It is now `400 bad_request` naming the field, before anything is written. Nothing else changed: every other character (tabs, newlines, escape codes) is accepted and stored as given, as before.
 - **`GET /api/v1/auth/providers`** is served as `application/json` (it had no content type). `oidc` and `saml` now mean "loaded and working", not "switched on": an identity provider that did not answer shows `false`, and SAML shows `true` whenever it is loaded, whatever `saml_enabled` says. `local` is still always `true`; the new `local_admin_only` is `true` when `saml_enabled` limits password sign-in to administrators.
 - **`GET /api/v1/admin/oidc` and `/admin/saml`** gain `live`. `configured: true, live: false` means "saved, not working". `configured` is unchanged.
 - **`GET /api/v1/auth/signup/status`**: `open_registration` is now what is in force, so it reads `false` when an allowed-domains list limits signup, even with the open-registration setting on. The new `restricted_by_domain_list` says why. Who can sign up is unchanged.
@@ -458,12 +538,22 @@ In 1.2.x, deleting a user left their open tickets pointing at them. Such a ticke
 - **Nothing else changes.** No mail is sent, no webhook or event is raised, and no SLA clock moves. A group assignment needs nothing: deleting a group has always cleared it.
 - **Rolling back:** the `down` migration does nothing. The tickets stay unassigned; the audit entries record who they had.
 
+### Replies and Internal Notes Appear in Activity and the Audit Log
+
+Replies and internal notes now appear in a ticket's Activity panel as "Erik Test replied publicly" or "Erik Test added an internal note", with the time and no text, and in the admin audit view as `reply_added` and `note_added`. **From the upgrade on:** replies and notes written before it are not backfilled and do not appear.
+
+- **No words are recorded.** The entry holds the author, the time, the reply's id and whether it was internal. The text stays in the conversation, under its existing visibility rules.
+- **Who sees it:** the same people who see Activity today, staff and administrators. A requester still gets 403 on the feed. A requester's or guest's reply shows as "Requester (name hidden)" or "A guest" under the existing `audit_mask_requester_names` setting. Staff see the entries in the admin audit view only for tickets in their scope.
+- **Hide them if they crowd the log.** The admin audit page has a **Hide replies and notes** checkbox (API: `exclude_action`, repeatable).
+- **Webhooks, MCP and email are unchanged.** The audit actions are separate from the `ticket.replied` and `ticket.note_added` webhook events.
+- **No migration.** Replies and notes are capped on their own in the feed (the newest 500), so a long conversation cannot push the ticket's other history off it.
+
 ### The Server Logs Which Migrations Ran (#525)
 
 The server now says what it did to the schema, once, at startup, before it opens the port:
 
-- `database migrated from 21 to 53`: an upgrade from 1.2.0 (the first number is the version the database was at, the second the version it is at now). A new database says `from 0`.
-- `database schema at 53, no migrations needed`: an ordinary restart.
+- `database migrated from 21 to 56`: an upgrade from 1.2.0 (the first number is the version the database was at, the second the version it is at now). A new database says `from 0`.
+- `database schema at 56, no migrations needed`: an ordinary restart.
 
 The line carries `from` and `to` fields as well. Use it to check that an upgrade ran before you look anywhere else. Migrations still run on their own, before the server accepts traffic, and a failed one still stops the start with `running migrations: ...`.
 
@@ -479,7 +569,7 @@ The line carries `from` and `to` fields as well. Use it to check that an upgrade
 
 1.2.x ends at migration 000021. Going straight to 1.3.0 applies every later migration in number order, and **there is no migration 000048.** The number was retired while 1.3.0 was being built, so that no pre-release database could skip a migration. Nothing is missing: your database goes from 000047 straight to 000049. (#450 first planned 000048, but #451 merged with 000049 first, and the migration runner never applies a version below the one a database is already at.)
 
-The ones these notes describe: 000038 (webhook ticket filter column), 000039 (removes orphaned custom-field assignments, once, irreversibly), 000040 (`visible_on_new` column default becomes false; existing rows untouched), 000041 (OAuth client service users), 000042 (three staff email columns on `users`), 000043 to 000045 (SLA rematch, the password-rehash clock, `users.must_change_password`), 000046 (`ticket_followers`), 000047 (`tickets.reopen_count`, `last_reopened_at`, `paused_seconds_at_last_reopen`), 000049 (`password_reset_tokens`), 000050 (`api_keys.created_by`, `webhook_configs.api_key_id`; the new #450 settings are rows in the settings table and need no migration), 000051 (the `dropped` webhook result and `drop_reason`), 000052 (stores the three staff email administrator overrides as Off on an install that already has users) and 000053 (open tickets still assigned to deleted users go back to the queue; see *Tickets Left Assigned to a Deleted User Go Back to the Queue (#524)*). Those that say so are safe to apply on a running instance.
+The ones these notes describe: 000038 (webhook ticket filter column), 000039 (removes orphaned custom-field assignments, once, irreversibly), 000040 (`visible_on_new` column default becomes false; existing rows untouched), 000041 (OAuth client service users), 000042 (three staff email columns on `users`), 000043 to 000045 (SLA rematch, the password-rehash clock, `users.must_change_password`), 000046 (`ticket_followers`), 000047 (`tickets.reopen_count`, `last_reopened_at`, `paused_seconds_at_last_reopen`), 000049 (`password_reset_tokens`), 000050 (`api_keys.created_by`, `webhook_configs.api_key_id`; the new #450 settings are rows in the settings table and need no migration), 000051 (the `dropped` webhook result and `drop_reason`), 000052 (stores the three staff email administrator overrides as Off on an install that already has users), 000053 (open tickets still assigned to deleted users go back to the queue; see *Tickets Left Assigned to a Deleted User Go Back to the Queue (#524)*) 000055 (the text format columns; existing text is marked plain; see *Markdown in Ticket Text (#443)*) and 000056 (`tickets.source_channel`; every existing ticket is marked `web`; see *Existing Tickets Are Marked `web`, Even If They Came by API or MCP (#130)*). **Stop every old (1.2 or earlier) instance before 000055 and 000056 run:** both remove a column default, so an instance still on the old version cannot create tickets or replies afterwards. Those that say so are safe to apply on a running instance.
 
 A database that ran a 1.3.0 beta build containing `000046` before `000043` to `000045` were merged would skip them: see *Ticket Followers (#441)*.
 
@@ -511,8 +601,11 @@ Each `down` migration undoes its `up`. These are dropped or deleted, and cannot 
 - **SLA**: pause bookkeeping (000025), the frozen elapsed times (000027), and every superseded SLA record (000043), the history a reopen kept.
 - **Reopen counts and restart points** (000047), **followers** (000046), **password reset links** (000049), the 30-day password clock (000044), the must-change-password flag (000045), **staff email preferences** (000042) and **API key issuer and webhook pause links** (000050).
 - **OAuth service users** (000041): the users made for each client are deleted, and the database removes what hangs off them by cascade: their group memberships (and any sessions or API keys they held, though a service user is not meant to have any). The clients keep working without a user, as in 1.2.0. Tickets and replies they wrote stay, with no author link, and a ticket assigned to one loses its assignee.
+- **Text formats** (000055): `tickets.description_format` and `ticket_replies.body_format` are dropped. Description and reply text stays, but which posts were written as Markdown is forgotten, so Markdown posts written under 1.3 show as raw source, and 1.2.0 shows everything as plain text.
+- **Source channel** (000056): `tickets.source_channel` is dropped, so every recorded `api`, `mcp`, `guest` and `phone` value is lost. Re-upgrading marks every ticket `web` again.
 - **The generated JWT signing key** (`instance_secrets`, 000036). 1.2.0 needs its own `JWT_SECRET` in `docker/.env`: set a random secret of at least 32 bytes (for example `openssl rand -base64 48`). 1.2.0 only warns about a weak or example secret and signs with whatever you give it, and 1.3.0 discarded published example values as well as short and unset ones, so a value that 1.3.0 ignored is not safe to reuse. Every OAuth client fetches a new token either way.
 - Pending signups that 1.3.0 created without a name or password (000032, 000033).
+- **Which attachments a guest uploaded** (000054): `attachments.uploaded_by_guest` is dropped. The files stay; the record of who attached them is forgotten.
 
 **Not undone** (they repair or seed data and have no inverse; their `down` does nothing): `000028`, `000039`, `000052` and `000053`. The three staff-email overrides `000052` stored stay in the settings table, and the tickets `000053` returned to the queue stay unassigned. 1.2.0 never reads those settings. Settings rows 1.3.0 wrote stay in the table. Passwords hashed at the new cost still work on 1.2.0.
 
@@ -595,4 +688,4 @@ cd docker
 
 5. **Check it.** Sign in as an administrator, open a few tickets, and download an attachment. `SELECT version, dirty FROM schema_migrations` should say `21 | f`. `docker compose port db 5432` should say `127.0.0.1:5432`.
 
-To go forward again, run `git checkout -- docker-compose.yml` in `go-help-desk/docker` to drop the edit from step 3, then `git checkout v1.3.0` (it refuses while the file is changed) and start it: it runs every migration from 22, and says so in the log (`database migrated from 21 to 53`).
+To go forward again, run `git checkout -- docker-compose.yml` in `go-help-desk/docker` to drop the edit from step 3, then `git checkout v1.3.0` (it refuses while the file is changed) and start it: it runs every migration from 22, and says so in the log (`database migrated from 21 to 56`).

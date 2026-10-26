@@ -5,10 +5,11 @@ import { useAuthStore } from '@/store/auth'
 import { logout } from '@/api/auth'
 import { useSiteBranding } from '@/hooks/useSiteBranding'
 import { InsecureConfigBanner } from '@/components/InsecureConfigBanner'
+import { clearDismissedNotices } from '@/lib/noticeDismissal'
 import { BrandLogo } from '@/components/BrandLogo'
 import { Button } from '@/components/ui/button'
 import { TicketIcon, UsersIcon, SettingsIcon, LogOutIcon, HomeIcon, FolderIcon, CircleDotIcon, ShieldIcon, UsersRoundIcon, TagIcon, SlidersIcon, KeyIcon, MessageSquareTextIcon, PlugIcon, WebhookIcon, RouteIcon, MenuIcon,
-  UserIcon, HistoryIcon,
+  UserIcon, HistoryIcon, MailIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { User } from '@/api/types'
@@ -89,6 +90,7 @@ function SidebarContent({ user, branding, onNavigate, onLogout }: SidebarContent
             <NavItem to="/admin/api-keys" icon={<KeyIcon className="h-4 w-4" />} label="API Keys" onNavigate={onNavigate} />
             <NavItem to="/admin/oauth-clients" icon={<PlugIcon className="h-4 w-4" />} label="OAuth Clients" onNavigate={onNavigate} />
             <NavItem to="/admin/webhooks" icon={<WebhookIcon className="h-4 w-4" />} label="Webhooks" onNavigate={onNavigate} />
+            <NavItem to="/admin/email-templates" icon={<MailIcon className="h-4 w-4" />} label="Email Templates" onNavigate={onNavigate} />
             <NavItem to="/admin/routing" icon={<RouteIcon className="h-4 w-4" />} label="Routing" onNavigate={onNavigate} />
             <NavItem to="/admin/settings" icon={<SettingsIcon className="h-4 w-4" />} label="Settings" onNavigate={onNavigate} />
           </>
@@ -151,6 +153,7 @@ export function Layout({ children }: LayoutProps) {
 
   async function handleLogout() {
     await logout().catch(() => {})
+    clearDismissedNotices()
     clear()
     window.location.href = '/login'
   }

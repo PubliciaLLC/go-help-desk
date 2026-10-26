@@ -152,3 +152,34 @@ func TestRedact_ShowsThePriorityChangeKeys(t *testing.T) {
 	require.Equal(t, "high", got["priority"])
 	require.NotContains(t, got, "subject", "free text is still left out")
 }
+
+// A reply's audit entry (reply_added, note_added) is shown as its id and
+// whether it was internal. Anything else a writer put there, a body above all,
+// is left out.
+func TestRedact_ReplyEntryShowsIdAndFlagButNeverText(t *testing.T) {
+	after := map[string]any{
+		"reply_id": "r-1", "internal": true,
+		"body": "free text", "Body": "free text", "text": "free text",
+	}
+
+	_, got := audit.Redact(nil, after)
+
+	require.Equal(t, map[string]any{"reply_id": "r-1", "internal": true}, got)
+}
+
+// #158: an edited email template is recorded in full, under its own keys. The
+// plain "subject" and "body" stay hidden because ticket entries store the
+// ticket's subject and text under those names.
+func TestRedact_EmailTemplateTextIsShownUnderItsOwnKeysOnly(t *testing.T) {
+	before := map[string]any{
+		"template_name": "ticket_created", "template_subject": "Old {{.TrackingNumber}}", "template_body": "Old {{.TicketURL}}",
+		"subject": "Printer on fire", "body": "A reply that says anything",
+	}
+	got, _ := audit.Redact(before, nil)
+
+	require.Equal(t, "ticket_created", got["template_name"])
+	require.Equal(t, "Old {{.TrackingNumber}}", got["template_subject"])
+	require.Equal(t, "Old {{.TicketURL}}", got["template_body"])
+	require.NotContains(t, got, "subject", "a ticket's subject must stay hidden")
+	require.NotContains(t, got, "body", "a ticket's text must stay hidden")
+}

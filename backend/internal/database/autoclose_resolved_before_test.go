@@ -60,7 +60,7 @@ func TestTicketStore_ListResolvedBefore_ExcludesWrongStatus(t *testing.T) {
 
 	old := time.Now().UTC().Add(-10 * 24 * time.Hour).Truncate(time.Millisecond)
 	mk := func(subject string, statusID uuid.UUID, resolvedAt *time.Time) ticket.Ticket {
-		tk := ticket.Ticket{
+		tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 			ID:             uuid.New(),
 			TrackingNumber: ticket.TrackingNumber("RB-" + uuid.NewString()[:8]),
 			Subject:        subject,
@@ -193,7 +193,7 @@ func TestMigration_RepairsResolvedStatusInvariant(t *testing.T) {
 
 	stale := time.Now().UTC().Add(-30 * 24 * time.Hour).Truncate(time.Millisecond)
 	mk := func(subject string, statusID uuid.UUID, resolvedAt, closedAt *time.Time) ticket.Ticket {
-		tk := ticket.Ticket{
+		tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 			ID:             uuid.New(),
 			TrackingNumber: ticket.TrackingNumber("MIG-" + uuid.NewString()[:8]),
 			Subject:        subject,

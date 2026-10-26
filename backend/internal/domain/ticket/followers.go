@@ -136,17 +136,26 @@ func dropAssigneeFollow(ctx context.Context, st Store, au audit.Store, ticketID,
 // ListAuditFeed is a ticket's activity feed, oldest first, with follow and
 // unfollow entries (includeFollow) or without.
 //
-// The feed is capped at the newest ticketAuditCap entries. Follow entries are
-// kept out of that count in the query, and fetched on their own with a cap of
-// their own when the viewer may see them, then merged by time: otherwise a few
-// hundred toggles would push the ticket's real history off its feed.
+// Each feed is capped at the newest ticketAuditCap entries. Reply and note
+// entries and follow entries are kept out of the cap on the ticket's real
+// history in the query, and fetched on their own with a cap of their own, then
+// merged by time: otherwise a long conversation, or a few hundred follow
+// toggles, would push the ticket's real history off its feed. Replies and notes
+// are always included; follows only when the viewer may see them.
 func (s *Service) ListAuditFeed(ctx context.Context, ticketID uuid.UUID, includeFollow bool) ([]audit.Entry, error) {
 	real, err := s.auditStore.ListByEntityActions(ctx, "ticket", ticketID,
-		audit.ActionFilter{Exclude: FollowAuditActions()}, ticketAuditCap, 0)
+		audit.ActionFilter{Exclude: append(FollowAuditActions(), AuditActionReplyAdded, AuditActionNoteAdded)}, ticketAuditCap, 0)
 	if err != nil {
 		return nil, fmt.Errorf("listing audit entries: %w", err)
 	}
-	entries := real
+	// Reply and note entries are capped on their own, like follows: a long
+	// conversation must not push the ticket's real history off the feed.
+	replies, err := s.auditStore.ListByEntityActions(ctx, "ticket", ticketID,
+		audit.ActionFilter{Only: []string{AuditActionReplyAdded, AuditActionNoteAdded}}, ticketAuditCap, 0)
+	if err != nil {
+		return nil, fmt.Errorf("listing reply entries: %w", err)
+	}
+	entries := append(real, replies...)
 	if includeFollow {
 		follows, err := s.auditStore.ListByEntityActions(ctx, "ticket", ticketID,
 			audit.ActionFilter{Only: FollowAuditActions()}, ticketAuditCap, 0)

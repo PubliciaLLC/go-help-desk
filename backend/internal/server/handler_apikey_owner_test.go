@@ -90,7 +90,7 @@ func TestAdminScopes_CanBeNarrowedToARole(t *testing.T) {
 
 	code, staff := list("?role=staff")
 	require.Equal(t, http.StatusOK, code)
-	require.ElementsMatch(t, []string{"tickets:read", "tickets:write", "groups:read", "audit:read", "users:read"}, staff)
+	require.ElementsMatch(t, []string{"tickets:read", "tickets:write", "groups:read", "audit:read"}, staff)
 
 	code, adm := list("?role=admin")
 	require.Equal(t, http.StatusOK, code)

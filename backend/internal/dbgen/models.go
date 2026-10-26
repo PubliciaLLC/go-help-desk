@@ -37,6 +37,7 @@ type Attachment struct {
 	Sha256          sql.NullString `json:"sha256"`
 	VirusName       sql.NullString `json:"virus_name"`
 	ContentMismatch sql.NullBool   `json:"content_mismatch"`
+	UploadedByGuest bool           `json:"uploaded_by_guest"`
 }
 
 type AttachmentReputation struct {
@@ -97,6 +98,14 @@ type CustomFieldDef struct {
 	SortOrder int32                 `json:"sort_order"`
 	Active    bool                  `json:"active"`
 	CreatedAt time.Time             `json:"created_at"`
+}
+
+type EmailTemplateOverride struct {
+	Name      string        `json:"name"`
+	Subject   string        `json:"subject"`
+	Body      string        `json:"body"`
+	UpdatedAt time.Time     `json:"updated_at"`
+	UpdatedBy uuid.NullUUID `json:"updated_by"`
 }
 
 type Group struct {
@@ -277,6 +286,8 @@ type Ticket struct {
 	ReopenCount               int32          `json:"reopen_count"`
 	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
 	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
+	DescriptionFormat         string         `json:"description_format"`
+	SourceChannel             string         `json:"source_channel"`
 }
 
 type TicketCustomFieldValue struct {
@@ -306,6 +317,7 @@ type TicketReply struct {
 	Internal       bool          `json:"internal"`
 	CreatedAt      time.Time     `json:"created_at"`
 	NotifyCustomer bool          `json:"notify_customer"`
+	BodyFormat     string        `json:"body_format"`
 }
 
 type TicketStatusHistory struct {

@@ -25,6 +25,15 @@ export interface SiteConfig {
   version: string
   // Whether the instance accepts tickets from visitors with no account.
   guest_submission_enabled?: boolean
+  // Whether a guest may attach files (#445), and the limit that actually
+  // applies per file in bytes: the lower of the guest setting and the
+  // instance-wide maximum. The size is absent while attaching is off.
+  guest_attachments_enabled?: boolean
+  guest_attachment_max_bytes?: number
+  // The most files guests may attach to one ticket (#445), present with the size.
+  guest_attachment_max_per_ticket?: number
+  // Uploads one guest link may make per hour (#445), present with the size.
+  guest_attachment_uploads_per_hour?: number
 }
 
 export async function getSiteConfig(): Promise<SiteConfig> {
@@ -702,6 +711,12 @@ export interface SecurityWarnings {
    * older fixtures and a server that predates it read as healthy.
    */
   email?: EmailWarning
+
+  /**
+   * A stable release newer than the one running, found by the opt-in update
+   * check (#170). Absent when none was found or the check is off.
+   */
+  update?: { current: string; latest: string; url: string }
 }
 
 export interface EmailWarning {
@@ -717,6 +732,20 @@ export interface EmailWarning {
   failing_count: number
   /** Newest error, email addresses already replaced by [address]. */
   last_error: string
+  /**
+   * Edited email templates that no longer work with this release (#158). Mail
+   * that uses one fails until it is fixed or reverted. Optional so a server
+   * that predates the editor reads as healthy.
+   */
+  broken_templates?: BrokenEmailTemplate[]
+}
+
+export interface BrokenEmailTemplate {
+  name: string
+  label: string
+  reason: string
+  /** When it was last saved: with the name, what makes a new breakage show again after a Hide. */
+  updated_at: string
 }
 
 export interface AttachmentScanningWarning {
@@ -735,6 +764,12 @@ export interface AttachmentScanningWarning {
    * scanner address anywhere, and attachments already stored (#459).
    */
   stale_off: boolean
+}
+
+/** What the post-upgrade wizard needs that the settings dump does not carry. */
+export async function getPostUpgrade(): Promise<{ old_password_accounts: number }> {
+  const res = await api.get<{ old_password_accounts: number }>('/admin/post-upgrade')
+  return res.data
 }
 
 /** Admin-only. Not on the public /site payload, by design. */
@@ -781,11 +816,106 @@ export interface AdminAuditFilters {
   from?: string // RFC3339
   to?: string // RFC3339
   q?: string
+  exclude_action?: string[] // sent repeated: exclude_action=a&exclude_action=b
   limit?: number
   offset?: number
 }
 
 export async function listAdminAudit(filters: AdminAuditFilters): Promise<AdminAuditListResponse> {
-  const res = await api.get<AdminAuditListResponse>('/admin/audit', { params: filters })
+  const res = await api.get<AdminAuditListResponse>('/admin/audit', {
+    params: filters,
+    // Repeated keys, not exclude_action[]=a: that is what the server reads.
+    paramsSerializer: { indexes: null },
+  })
   return res.data
+}
+
+// ── Email templates (#158) ────────────────────────────────────────────────────
+
+export type EmailTemplateGroup = 'requester' | 'staff' | 'account' | 'shared'
+
+export interface EmailTemplateSummary {
+  name: string
+  label: string
+  group: EmailTemplateGroup
+  /** The shared header and footer: a body and no subject. */
+  shell: boolean
+  customised: boolean
+  broken: boolean
+  updated_at: string | null
+  updated_by_name: string
+}
+
+export interface EmailTemplateDetail extends EmailTemplateSummary {
+  subject: string
+  body: string
+  default_subject: string
+  default_body: string
+  /** The variable that must be printed outside any {{if}}; empty for the header and footer. */
+  required: string
+  variables: { name: string; description: string }[]
+  /** Why the saved version cannot be sent, when `broken`. */
+  broken_reason?: string
+  max_body_bytes: number
+  max_subject_bytes: number
+}
+
+/** One reason a draft is refused. line and col are 0 when it has no place in the text. */
+export interface EmailTemplateProblem {
+  field: 'subject' | 'body'
+  line: number
+  col: number
+  message: string
+}
+
+export interface EmailTemplatePreview {
+  valid: boolean
+  errors: EmailTemplateProblem[]
+  subject?: string
+  body?: string
+  /** The draft is fine but the saved header or footer cannot render. */
+  preview_error?: string
+}
+
+export interface EmailTemplateDraft {
+  subject: string
+  body: string
+}
+
+export async function listEmailTemplates(): Promise<EmailTemplateSummary[]> {
+  const res = await api.get<EmailTemplateSummary[]>('/admin/email-templates')
+  return res.data
+}
+
+export async function getEmailTemplate(name: string): Promise<EmailTemplateDetail> {
+  const res = await api.get<EmailTemplateDetail>(`/admin/email-templates/${encodeURIComponent(name)}`)
+  return res.data
+}
+
+/** The server validates again whatever the editor checked: a refusal is 400 invalid_template. */
+export async function saveEmailTemplate(name: string, draft: EmailTemplateDraft): Promise<EmailTemplateDetail> {
+  const res = await api.put<EmailTemplateDetail>(`/admin/email-templates/${encodeURIComponent(name)}`, draft)
+  return res.data
+}
+
+/** Back to the shipped text. The edited text stays in the audit log. */
+export async function revertEmailTemplate(name: string): Promise<void> {
+  await api.delete(`/admin/email-templates/${encodeURIComponent(name)}`)
+}
+
+/** Validates a draft and renders it with sample data. Sends and stores nothing. */
+export async function previewEmailTemplate(name: string, draft: EmailTemplateDraft): Promise<EmailTemplatePreview> {
+  const res = await api.post<EmailTemplatePreview>(`/admin/email-templates/${encodeURIComponent(name)}/preview`, draft)
+  return res.data
+}
+
+/** Mails the draft to the signed-in administrator's own address and nowhere else. */
+export async function testEmailTemplate(name: string, draft: EmailTemplateDraft): Promise<void> {
+  await api.post(`/admin/email-templates/${encodeURIComponent(name)}/test`, draft)
+}
+
+/** The per-field problems in a 400 invalid_template, or none for any other error. */
+export function emailTemplateProblems(err: unknown): EmailTemplateProblem[] {
+  const data = (err as { response?: { data?: { error?: { code?: string; errors?: EmailTemplateProblem[] } } } })?.response?.data
+  return data?.error?.code === 'invalid_template' ? (data.error.errors ?? []) : []
 }

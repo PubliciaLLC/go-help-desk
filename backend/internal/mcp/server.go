@@ -229,6 +229,22 @@ type Server struct {
 	// assistant has no way to discover any of the three. Statuses come from the
 	// ticket service this server already holds.
 	categories CategoryLister
+
+	// onBehalf resolves reporter_email. An explicit constructor argument, not
+	// something sniffed from the Authorizer; nil means reporter_email is
+	// refused rather than guessed at.
+	onBehalf OnBehalfResolver
+}
+
+// OnBehalfResolver is the REST handler's rule for filing a ticket for someone
+// else, exposed so create_ticket applies the same one (#290): the address
+// resolves to an account if one exists, otherwise to a guest ticket, under the
+// same hourly budget, which is never refunded. It sets the reporter, guest
+// fields and FiledBy on in. A refusal carries its message in Refusal(); any
+// other error is ours.
+type OnBehalfResolver interface {
+	ResolveOnBehalf(ctx context.Context, actorID uuid.UUID, in *ticket.CreateInput,
+		id *uuid.UUID, email *string, guestName, guestPhone string) error
 }
 
 // CategoryLister is the slice of the category service MCP needs. Narrow on
@@ -266,6 +282,7 @@ func New(
 	prefix func(context.Context) string,
 	authz Authorizer,
 	categories CategoryLister,
+	onBehalf OnBehalfResolver,
 ) *Server {
 	if prefix == nil {
 		// Tests and any caller that does not care still mint well-formed
@@ -281,6 +298,7 @@ func New(
 		prefix:     prefix,
 		authz:      authz,
 		categories: categories,
+		onBehalf:   onBehalf,
 	}
 	s.registerTools()
 	return s
@@ -520,7 +538,8 @@ func (s *Server) registerTools() {
 		"create_ticket",
 		mcpgo.WithDescription("Open a new help desk ticket"),
 		mcpgo.WithString("subject", mcpgo.Required(), mcpgo.Description("Short summary")),
-		mcpgo.WithString("description", mcpgo.Description("Full description")),
+		mcpgo.WithString("description", mcpgo.Description("Full description. Rendered as Markdown (CommonMark plus GitHub tables, strikethrough and autolinks; no images, no raw HTML). Escape characters you mean literally (\\*, \\#, \\_). Pass format: \"plain\" to store plain text instead.")),
+		mcpgo.WithString("format", mcpgo.Description("How description is shown: markdown (default) or plain"), mcpgo.Enum("plain", "markdown")),
 		// Category is required; Type and Item are the optional lower tiers of
 		// the CTI hierarchy. list_categories returns all three.
 		mcpgo.WithString("category_id", mcpgo.Required(), mcpgo.Description("Category UUID")),
@@ -530,14 +549,21 @@ func (s *Server) registerTools() {
 		// reporter_user_id is the SUBJECT of the ticket, not the caller —
 		// staff legitimately open tickets on someone's behalf (the caller is
 		// then the actor, #444). It defaults to the caller when omitted.
-		mcpgo.WithString("reporter_user_id", mcpgo.Description("Reporter user UUID (defaults to the authenticated caller)")),
+		mcpgo.WithString("reporter_user_id", mcpgo.Description("Reporter user UUID (defaults to the authenticated caller). Not with reporter_email.")),
+		// reporter_email is how a key files for someone it cannot look up
+		// (#290): there is no user lookup for machine credentials. The server
+		// resolves it, the same way REST's reporter_email does.
+		mcpgo.WithString("reporter_email", mcpgo.Description("Email address of the person the ticket is for. Files for their account if one exists, otherwise as a guest ticket (guest submission must be on, and the guest is emailed a link). guest_name is always required with reporter_email, whether or not the address has an account. Each attempt that passes validation uses one of 40 an hour per staff member. Not with reporter_user_id.")),
+		mcpgo.WithString("guest_name", mcpgo.Description("With reporter_email: the name. Required, whether or not the address has an account (ignored for an account).")),
+		mcpgo.WithString("guest_phone", mcpgo.Description("With reporter_email and no account behind it: the guest's phone (optional).")),
 	), scoped(mcpWrite, s.handleCreateTicket))
 
 	s.mcp.AddTool(mcpgo.NewTool(
 		"add_reply",
 		mcpgo.WithDescription("Add a reply to a ticket. A public reply emails the requester; an internal note does not."),
 		mcpgo.WithString("ticket_id", mcpgo.Required(), mcpgo.Description("Ticket UUID")),
-		mcpgo.WithString("body", mcpgo.Required(), mcpgo.Description("Reply body")),
+		mcpgo.WithString("body", mcpgo.Required(), mcpgo.Description("Reply body. Rendered as Markdown (CommonMark plus GitHub tables, strikethrough and autolinks; no images, no raw HTML). Escape characters you mean literally (\\*, \\#, \\_). Pass format: \"plain\" to store plain text instead.")),
+		mcpgo.WithString("format", mcpgo.Description("How body is shown: markdown (default) or plain"), mcpgo.Enum("plain", "markdown")),
 		mcpgo.WithBoolean("internal", mcpgo.Description("Internal note, not visible to the reporter (default false)")),
 		// No author parameter: the author is the authenticated caller.
 	), scoped(mcpWrite, s.handleAddReply))
@@ -667,6 +693,11 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 		return errResult(noUserIdentityMessage)
 	}
 	args := req.GetArguments()
+	// The channel is recorded from the entry point; this tool has no argument
+	// for it, and one that is sent is refused rather than ignored (#130).
+	if _, sent := args["source_channel"]; sent {
+		return errResult("source_channel cannot be set: it is recorded from how the ticket arrived")
+	}
 	subject, _ := args["subject"].(string)
 	catIDStr, _ := args["category_id"].(string)
 	catID, err := uuid.Parse(catIDStr)
@@ -682,11 +713,17 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 	}
 
 	desc, _ := args["description"].(string)
+	format, err := mcpTextFormat(args)
+	if err != nil {
+		return errResult(err.Error())
+	}
 	in := ticket.CreateInput{
-		Subject:     subject,
-		Description: desc,
-		CategoryID:  catID,
-		Priority:    priority,
+		Subject:           subject,
+		Description:       desc,
+		DescriptionFormat: format,
+		SourceChannel:     ticket.ChannelMCP,
+		CategoryID:        catID,
+		Priority:          priority,
 	}
 
 	// Type and Item are the optional lower tiers of CTI. Only Category is
@@ -708,20 +745,48 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 		in.ItemID = &id
 	}
 
+	var reporterID *uuid.UUID
 	if reporterIDStr, ok := args["reporter_user_id"].(string); ok && reporterIDStr != "" {
 		rid, err := uuid.Parse(reporterIDStr)
 		if err != nil {
 			return errResult("invalid reporter_user_id")
 		}
-		in.ReporterUserID = &rid
+		reporterID = &rid
+	}
+	var reporterEmail *string
+	if v, present := args["reporter_email"]; present {
+		str, isString := v.(string)
+		if !isString {
+			return errResult("reporter_email must be a string")
+		}
+		reporterEmail = &str
+	}
+
+	switch {
+	case reporterEmail != nil:
+		// The REST rule, from the REST code (#290): an account if there is one,
+		// otherwise a guest ticket, with the same cap and the same mail.
+		if s.onBehalf == nil {
+			return errResult("reporter_email is not available on this server")
+		}
+		guestName, _ := args["guest_name"].(string)
+		guestPhone, _ := args["guest_phone"].(string)
+		if err := s.onBehalf.ResolveOnBehalf(ctx, actor.UserID, &in, reporterID, reporterEmail, guestName, guestPhone); err != nil {
+			var refusal interface{ Refusal() string }
+			if errors.As(err, &refusal) {
+				return errResult(refusal.Refusal())
+			}
+			return storeErr(ctx, "resolve reporter_email", err)
+		}
+	case reporterID != nil:
+		in.ReporterUserID = reporterID
 		// Filing for somebody else: the caller is the actor, as on REST (#444).
 		// Naming yourself is filing your own ticket.
-		if rid != actor.UserID {
+		if *reporterID != actor.UserID {
 			filer := actor.UserID
 			in.FiledBy = &filer
 		}
-	}
-	if in.ReporterUserID == nil {
+	default:
 		// Default the subject of the ticket to the caller rather than refusing.
 		reporter := actor.UserID
 		in.ReporterUserID = &reporter
@@ -731,9 +796,24 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 
 	t, err := s.tickets.Create(ctx, in)
 	if err != nil {
+		// No refund of the reporter_email unit, whatever failed: see
+		// Server.ResolveOnBehalf.
 		return storeErr(ctx, "create ticket", err)
 	}
 	return ticketResult(actor.Role, t)
+}
+
+// mcpTextFormat reads the optional "format" argument. Absent means markdown
+// (#443): an agent is told its text renders as Markdown, and the REST default
+// of plain would make that description false. Present but not exactly "plain"
+// or "markdown" is a tool error and nothing is written.
+func mcpTextFormat(args map[string]any) (ticket.TextFormat, error) {
+	v, present := args["format"]
+	if !present {
+		return ticket.TextFormatMarkdown, nil
+	}
+	s, _ := v.(string)
+	return ticket.ParseTextFormat(s)
 }
 
 func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -754,6 +834,10 @@ func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) 
 		return errResult("invalid ticket_id")
 	}
 	body, _ := args["body"].(string)
+	format, err := mcpTextFormat(args)
+	if err != nil {
+		return errResult(err.Error())
+	}
 
 	t, err := s.tickets.GetByID(ctx, tid)
 	if err != nil {
@@ -784,7 +868,7 @@ func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) 
 	// today and would become a bug the moment that changes, hence the comment.
 	reopenTargetStatusID := uuid.Nil
 
-	reply, err := s.tickets.AddReply(ctx, tid, body, isInternal, notifyRequester, reporterEmail, actor, reopenWindowDays, reopenTargetStatusID)
+	reply, err := s.tickets.AddReply(ctx, tid, body, format, isInternal, notifyRequester, reporterEmail, actor, reopenWindowDays, reopenTargetStatusID)
 	if err != nil {
 		return storeErr(ctx, "add reply", err)
 	}
@@ -1011,7 +1095,7 @@ func (s *Server) handleCreateFollowUp(ctx context.Context, req mcpgo.CallToolReq
 		return errResult(notFoundFor(tid.String()))
 	}
 	actorID := caller.UserID
-	t, err := s.tickets.CreateFollowUp(ctx, tid, s.prefix(ctx), ticket.Actor{UserID: &actorID, Role: caller.Role})
+	t, err := s.tickets.CreateFollowUp(ctx, tid, s.prefix(ctx), ticket.ChannelMCP, ticket.Actor{UserID: &actorID, Role: caller.Role})
 	if err != nil {
 		return storeErr(ctx, "create follow-up", err)
 	}

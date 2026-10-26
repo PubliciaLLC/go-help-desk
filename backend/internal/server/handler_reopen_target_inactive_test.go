@@ -21,7 +21,7 @@ import (
 
 func reporterOpenTicket(t *testing.T, h *harness) ticket.Ticket {
 	t.Helper()
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Laptop will not boot", Description: "black screen", CategoryID: h.catID,
 		ReporterUserID: &h.userID,
 	})

@@ -45,7 +45,7 @@ func TestMustChangePassword_OnlyThePasswordChangeIsAllowedUntilItIsDone(t *testi
 	// The current password is still asked for: a stolen cookie is not enough.
 	res, _ = s.send(t, http.MethodPatch, "/api/v1/me/password",
 		map[string]any{"current_password": "wrong", "new_password": "a-brand-new-password"})
-	require.Equal(t, http.StatusUnauthorized, res.StatusCode)
+	require.Equal(t, http.StatusBadRequest, res.StatusCode)
 
 	res, body = s.send(t, http.MethodPatch, "/api/v1/me/password",
 		map[string]any{"current_password": "password", "new_password": "a-brand-new-password"})

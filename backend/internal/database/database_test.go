@@ -213,7 +213,7 @@ func TestTicketStore_CreateAndGet(t *testing.T) {
 	require.NoError(t, err)
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	tk := ticket.Ticket{
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2024, 1),
 		Subject:        "Printer broken",
@@ -261,7 +261,7 @@ func TestTicketStore_TypeCategoryMismatch(t *testing.T) {
 	require.NoError(t, err)
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	tk := ticket.Ticket{
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2024, 2),
 		Subject:        "Mismatched CTI",
@@ -300,7 +300,7 @@ func TestTicketStore_Reply(t *testing.T) {
 	require.NoError(t, err)
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	tk := ticket.Ticket{
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2024, 2),
 		Subject:        "No internet",
@@ -314,7 +314,7 @@ func TestTicketStore_Reply(t *testing.T) {
 	}
 	require.NoError(t, ts.Create(ctx, tk))
 
-	reply := ticket.Reply{
+	reply := ticket.Reply{BodyFormat: ticket.TextFormatPlain,
 		ID:        uuid.New(),
 		TicketID:  tk.ID,
 		AuthorID:  &reporter.ID,
@@ -372,7 +372,7 @@ func TestTicketStore_PersistsSLAPause(t *testing.T) {
 	require.NoError(t, err)
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	tk := ticket.Ticket{
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2026, 900001),
 		Subject:        "SLA pause round trip",
@@ -468,7 +468,7 @@ func TestTicketStore_ScopedListsAndCounts(t *testing.T) {
 	mkTicket := func(subject string, assigneeUser *uuid.UUID, assigneeGroup *uuid.UUID) ticket.Ticket {
 		seq, err := ts.NextSeq(ctx)
 		require.NoError(t, err)
-		tk := ticket.Ticket{
+		tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 			ID:              uuid.New(),
 			TrackingNumber:  ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2024, seq),
 			Subject:         subject,
@@ -587,7 +587,7 @@ func TestTicketStore_FullTextSearch(t *testing.T) {
 	mkTicket := func(subject, description string, createdAt time.Time) ticket.Ticket {
 		seq, err := ts.NextSeq(ctx)
 		require.NoError(t, err)
-		tk := ticket.Ticket{
+		tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 			ID:             uuid.New(),
 			TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2024, seq),
 			Subject:        subject,
@@ -668,7 +668,7 @@ func TestTicketStore_FullTextSearch(t *testing.T) {
 		// subject/description don't — so query "jam" matches it ONLY via the
 		// tracking_number ILIKE branch (rank 0), while it still content-matches
 		// subjectMatch and descriptionMatch (both contain "jammed").
-		trackingOnly := ticket.Ticket{
+		trackingOnly := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 			ID:             uuid.New(),
 			TrackingNumber: "JAM-SPECIAL-001",
 			Subject:        "Special hardware unit",
@@ -906,7 +906,7 @@ func TestSLAStore_Records(t *testing.T) {
 	require.NoError(t, err)
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	tk := ticket.Ticket{
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2025, 99),
 		Subject:        "SLA test ticket",
@@ -978,7 +978,7 @@ func TestSLAStore_DeletePolicy_RefusesPolicyWithRecords(t *testing.T) {
 	require.NoError(t, err)
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	tk := ticket.Ticket{
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2025, 98),
 		Subject:        "SLA in-use test ticket",
@@ -1234,7 +1234,7 @@ func TestSLAStore_ListBreachCandidates(t *testing.T) {
 			require.NoError(t, err)
 
 			createdAt := now.Add(-tc.age)
-			tk := ticket.Ticket{
+			tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 				ID:             uuid.New(),
 				TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2025, 700),
 				Subject:        "Candidate test ticket",
@@ -1344,7 +1344,7 @@ func TestSLAStore_ListBreachCandidates_LeavingPending(t *testing.T) {
 
 	createdAt := now.Add(-3 * time.Hour)
 	pendingSince := createdAt.Add(10 * time.Minute)
-	tk := ticket.Ticket{
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2025, 800),
 		Subject:        "Leaving pending test ticket",
@@ -1439,7 +1439,7 @@ func TestSLAStore_StampBreaches(t *testing.T) {
 	require.NoError(t, err)
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	tk := ticket.Ticket{
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2025, 701),
 		Subject:        "Stamp test ticket",
