@@ -841,6 +841,8 @@ export interface EmailTemplateSummary {
   /** The shared header and footer: a body and no subject. */
   shell: boolean
   customised: boolean
+  /** The template has an HTML part, so its mail is multipart. */
+  has_html?: boolean
   broken: boolean
   updated_at: string | null
   updated_by_name: string
@@ -851,6 +853,8 @@ export interface EmailTemplateDetail extends EmailTemplateSummary {
   body: string
   default_subject: string
   default_body: string
+  /** The optional HTML part; empty means the mail is plain text. There is no default HTML. */
+  html?: string
   /** The variable that must be printed outside any {{if}}; empty for the header and footer. */
   required: string
   variables: { name: string; description: string }[]
@@ -858,11 +862,12 @@ export interface EmailTemplateDetail extends EmailTemplateSummary {
   broken_reason?: string
   max_body_bytes: number
   max_subject_bytes: number
+  max_html_bytes?: number
 }
 
 /** One reason a draft is refused. line and col are 0 when it has no place in the text. */
 export interface EmailTemplateProblem {
-  field: 'subject' | 'body'
+  field: 'subject' | 'body' | 'html'
   line: number
   col: number
   message: string
@@ -873,6 +878,8 @@ export interface EmailTemplatePreview {
   errors: EmailTemplateProblem[]
   subject?: string
   body?: string
+  /** The rendered HTML part, with the saved header and footer; absent when the draft has none. */
+  html?: string
   /** The draft is fine but the saved header or footer cannot render. */
   preview_error?: string
 }
@@ -880,6 +887,8 @@ export interface EmailTemplatePreview {
 export interface EmailTemplateDraft {
   subject: string
   body: string
+  /** Left out when empty: no key means no HTML part. */
+  html?: string
 }
 
 export async function listEmailTemplates(): Promise<EmailTemplateSummary[]> {

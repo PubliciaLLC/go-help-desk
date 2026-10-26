@@ -641,7 +641,7 @@ describe('the HTML preview', () => {
   it('says remote images do not load here, and where to see the real thing', async () => {
     wire({ detail: HTML_DETAIL, preview: () => HTML_PREVIEW })
     await openEditor('ticket_created')
-    expect(screen.getByText(/Images from other sites do not load in this preview/i).textContent).toMatch(/Send test/)
+    expect((await screen.findByText(/Images from other sites do not load in this preview/i)).textContent).toMatch(/Send test/)
   })
 
   it('shows the text preview as before, beside it', async () => {
