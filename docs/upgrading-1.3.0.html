@@ -966,7 +966,7 @@ Pending signups that 1.3.0 created without a name or password (000032, 000033).
 </li><li>
 <strong>Used SAML hand-over cookies</strong> (<code>spent_saml_handovers</code>, 000035): the table is dropped, and 1.2.0 does not make those cookies single-use (see the security list above). It holds only short-lived replay-protection rows.
 </li><li>
-<strong>Audit log search indexes</strong> (000030): three indexes on <code>audit_log</code> (by time, actor and action) are dropped. Nothing is lost, but the admin-wide audit view and the retention purge get slower on a large log.
+<strong>Audit log search indexes</strong> (000030): three indexes on <code>audit_log</code> (by time, actor and action) are dropped. Nothing is lost, and 1.2.0 has no query that uses them; upgrading again recreates them.
 </li><li>
 <strong>Custom field default</strong> (000040): <code>custom_field_assignments.visible_on_new</code> goes back to a column default of <code>true</code>. Existing rows are untouched.
 </li><li>

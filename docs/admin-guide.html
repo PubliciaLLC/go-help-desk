@@ -917,7 +917,7 @@ function verifySignature(secret, body, header) {
 <ul>
   <li><strong>What is sent.</strong> One <code>GET</code> to GitHub's public releases API (<code>https://api.github.com/repos/PubliciaLLC/go-help-desk/releases/latest</code>) with two headers of its own: <code>User-Agent: go-help-desk</code> (a fixed name, no version number) and <code>Accept: application/vnd.github+json</code>. No query string, body, cookie, instance identifier or usage data, and nothing about your server or version. GitHub sees your server's IP address, as any website would.</li>
   <li><strong>How often.</strong> At most once every 7 days, and not again after a restart until the week is up. A failed check is logged once and tried again the following week.</li>
-  <li><strong>What you see.</strong> If a newer stable release exists, administrators (only) see an information notice in the <a href="#admin-server-warnings">server warnings</a> bar: "Version X is available (you run Y). Release notes". It never turns the bar red or counts as a problem. its <em>Hide</em> is remembered in your browser until a newer release appears. Nothing is downloaded or installed. Prereleases and drafts are ignored.</li>
+  <li><strong>What you see.</strong> If a newer stable release exists, administrators (only) see an information notice in the <a href="#admin-server-warnings">server warnings</a> bar: "Version X is available (you run Y). Release notes". It never turns the bar red or counts as a problem. Its <em>Hide</em> is remembered in your browser until a newer release appears. Nothing is downloaded or installed. Prereleases and drafts are ignored.</li>
   <li><strong>Air-gapped installs:</strong> leave it off.</li>
 </ul>
 
