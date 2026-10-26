@@ -58,15 +58,18 @@ for (const width of [320, 375]) {
     await expect(page.getByRole('heading', { level: 1, name: 'Categories' })).toBeVisible()
     await expandAll(page, 3)
     await expect(page.getByText('Archived')).toHaveCount(3)
-    const restore = page.getByRole('button', { name: /^Restore/ })
-    await expect(restore).toHaveCount(3)
-    // Every Restore button is on screen (not clipped past the right edge) and
-    // at least 44px tall to tap.
-    for (const b of await restore.all()) {
+    await expect(page.getByRole('button', { name: /^Restore/ })).toHaveCount(3)
+    // Every row action (Restore, Delete, Rename) is on screen, not clipped past
+    // the right edge, and at least 44px square to tap.
+    const actions = page.getByRole('button', { name: /^(Restore|Delete|Rename)/ })
+    await expect(actions).toHaveCount(9)
+    for (const b of await actions.all()) {
       const box = await b.boundingBox()
-      expect(box, 'restore button has a box').not.toBeNull()
-      expect(box!.x + box!.width).toBeLessThanOrEqual(width)
-      expect(box!.height).toBeGreaterThanOrEqual(44)
+      const label = await b.getAttribute('title')
+      expect(box, `${label} has a box`).not.toBeNull()
+      expect(box!.x + box!.width, `${label} inside viewport`).toBeLessThanOrEqual(width)
+      expect(box!.height, `${label} height`).toBeGreaterThanOrEqual(44)
+      expect(box!.width, `${label} width`).toBeGreaterThanOrEqual(44)
     }
     const doc = await page.evaluate(() => document.documentElement.scrollWidth)
     expect(doc).toBeLessThanOrEqual(width)
