@@ -22,7 +22,7 @@ func (q *queued) Dispatch(context.Context, notification.Event) error { q.n++; re
 
 type noMail struct{}
 
-func (noMail) SendVerificationEmail(string, string, string) error { return nil }
+func (noMail) SendVerificationEmail(context.Context, string, string, string) error { return nil }
 
 // tableWork is what this transaction has done to the tables signup touches:
 // rows read by scans, and rows inserted, updated or deleted.

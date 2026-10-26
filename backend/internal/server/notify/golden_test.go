@@ -81,11 +81,11 @@ func goldenCases() []goldenCase {
 }
 
 func sendVerification(d *EmailDispatcher, to, token, baseURL string) error {
-	return d.SendVerificationEmail(to, token, baseURL)
+	return d.SendVerificationEmail(context.Background(), to, token, baseURL)
 }
 
 func sendReset(d *EmailDispatcher, to, token, baseURL string) error {
-	return d.SendPasswordResetEmail(to, token, baseURL)
+	return d.SendPasswordResetEmail(context.Background(), to, token, baseURL)
 }
 
 // captureMessage sends through a real dispatcher to a real listener and

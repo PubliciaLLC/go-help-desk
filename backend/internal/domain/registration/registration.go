@@ -34,5 +34,5 @@ type Store interface {
 
 // Mailer sends transactional email for registration verification.
 type Mailer interface {
-	SendVerificationEmail(to, token, baseURL string) error
+	SendVerificationEmail(ctx context.Context, to, token, baseURL string) error
 }

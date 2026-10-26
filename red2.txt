@@ -1,0 +1,12 @@
+# github.com/publiciallc/go-help-desk/backend/internal/server/notify [github.com/publiciallc/go-help-desk/backend/internal/server/notify.test]
+internal/server/notify/email_override_test.go:52:38: d.WithTemplates undefined (type *EmailDispatcher has no field or method WithTemplates)
+internal/server/notify/email_override_test.go:163:81: too many arguments in call to d.SendPasswordResetEmail
+	have (context.Context, string, string, string)
+	want (string, string, string)
+internal/server/notify/email_override_test.go:203:11: d.WithTemplates undefined (type *EmailDispatcher has no field or method WithTemplates)
+internal/server/notify/email_override_test.go:219:39: dispatcherFor(t, "127.0.0.1:1").WithTemplates undefined (type *EmailDispatcher has no field or method WithTemplates)
+internal/server/notify/email_override_test.go:232:39: dispatcherFor(t, "127.0.0.1:1").WithTemplates undefined (type *EmailDispatcher has no field or method WithTemplates)
+internal/server/notify/email_override_test.go:245:39: dispatcherFor(t, "127.0.0.1:1").WithTemplates undefined (type *EmailDispatcher has no field or method WithTemplates)
+internal/server/notify/email_override_test.go:253:30: dispatcherFor(t, addr).WithTemplates undefined (type *EmailDispatcher has no field or method WithTemplates)
+internal/server/notify/email_override_test.go:256:75: undefined: Preview
+internal/server/notify/golden_test.go:84:66: too many arguments in call to d.SendVerificationEmail

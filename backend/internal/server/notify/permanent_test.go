@@ -33,7 +33,7 @@ func TestDispatch_TemplateFailureIsAPermanentError(t *testing.T) {
 }
 
 func TestSendVerificationEmail_TemplateFailureIsAPermanentError(t *testing.T) {
-	err := brokenDispatcher().SendVerificationEmail("to@example.com", "tok", "https://help.example.com")
+	err := brokenDispatcher().SendVerificationEmail(context.Background(), "to@example.com", "tok", "https://help.example.com")
 	require.ErrorIs(t, err, ErrPermanent)
 }
 

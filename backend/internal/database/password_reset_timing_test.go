@@ -21,7 +21,7 @@ import (
 
 type noResetMail struct{}
 
-func (noResetMail) SendPasswordResetEmail(string, string, string) error { return nil }
+func (noResetMail) SendPasswordResetEmail(context.Context, string, string, string) error { return nil }
 
 // workOn is what this transaction has done to the named tables: rows read by
 // scans, and rows inserted, updated or deleted.

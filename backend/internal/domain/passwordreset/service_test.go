@@ -68,7 +68,7 @@ type fakeMailer struct {
 	err             error
 }
 
-func (f *fakeMailer) SendPasswordResetEmail(to, token, baseURL string) error {
+func (f *fakeMailer) SendPasswordResetEmail(_ context.Context, to, token, baseURL string) error {
 	if f.err != nil {
 		return f.err
 	}
