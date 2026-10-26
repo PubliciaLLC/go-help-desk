@@ -68,7 +68,7 @@ func TestTicketStore_ConcurrentWritesDoNotLoseEachOther(t *testing.T) {
 	newSt, err := ts.GetStatusByName(ctx, ticket.StatusNameNew)
 	require.NoError(t, err)
 
-	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("CONC-" + uuid.NewString()[:8]),
 		Subject: "Contended", Description: "two writers", CategoryID: cat.ID,
 		Priority: ticket.PriorityHigh, StatusID: newSt.ID, ReporterUserID: &reporter.ID,

@@ -44,7 +44,7 @@ func TestCreate_RefusesAnEmptyOrUnknownDescriptionFormat(t *testing.T) {
 		h := newHarness(t)
 		reporter := uuid.New()
 		_, err := h.svc.Create(context.Background(), ticket.CreateInput{
-			Subject: "s", Description: "d", DescriptionFormat: f,
+			Subject: "s", Description: "d", DescriptionFormat: f, SourceChannel: ticket.ChannelWeb,
 			CategoryID: uuid.New(), ReporterUserID: &reporter,
 		})
 		require.ErrorIs(t, err, ticket.ErrInvalidTextFormat, "format %q", f)
@@ -57,7 +57,7 @@ func TestCreate_StoresTheFormatItWasGiven(t *testing.T) {
 		h := newHarness(t)
 		reporter := uuid.New()
 		got, err := h.svc.Create(context.Background(), ticket.CreateInput{
-			Subject: "s", Description: "d", DescriptionFormat: f,
+			Subject: "s", Description: "d", DescriptionFormat: f, SourceChannel: ticket.ChannelWeb,
 			CategoryID: uuid.New(), ReporterUserID: &reporter,
 		})
 		require.NoError(t, err)
@@ -99,7 +99,7 @@ func TestValidateCreate_RefusesAnEmptyOrUnknownDescriptionFormat(t *testing.T) {
 		h := newHarness(t)
 		reporter := uuid.New()
 		err := h.svc.ValidateCreate(context.Background(), ticket.CreateInput{
-			Subject: "s", Description: "d", DescriptionFormat: f,
+			Subject: "s", Description: "d", DescriptionFormat: f, SourceChannel: ticket.ChannelWeb,
 			CategoryID: uuid.New(), ReporterUserID: &reporter,
 		})
 		require.ErrorIs(t, err, ticket.ErrInvalidTextFormat, "format %q", f)
@@ -111,7 +111,7 @@ func TestCreate_DescriptionLimitSaysBytes(t *testing.T) {
 	h := newHarness(t)
 	reporter := uuid.New()
 	in := ticket.CreateInput{
-		Subject: "s", Description: strings.Repeat("a", ticket.MaxDescriptionLength+1), DescriptionFormat: ticket.TextFormatPlain,
+		Subject: "s", Description: strings.Repeat("a", ticket.MaxDescriptionLength+1), DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		CategoryID: uuid.New(), ReporterUserID: &reporter,
 	}
 	_, err := h.svc.Create(context.Background(), in)

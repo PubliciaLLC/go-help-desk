@@ -20,7 +20,7 @@ import (
 // rather than a second copy of it, so the two can never drift apart again.
 
 func (h *harness) seedOpenTicket(reporterID uuid.UUID) ticket.Ticket {
-	t := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
+	t := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-100001",
 		Subject:        "Needs a screenshot",
@@ -108,7 +108,7 @@ func TestCanGuestUploadAttachment_HasNoOwnershipCheckButObeysTheLifecycle(t *tes
 	t.Run("a guest with no reporter account may still attach", func(t *testing.T) {
 		h := newHarness(t)
 		email := "guest@example.test"
-		tk, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+		tk, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 			Subject: "No account", Description: "guest ticket", CategoryID: uuid.New(),
 			GuestEmail: &email, GuestName: "Ada",
 		})

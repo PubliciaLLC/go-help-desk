@@ -133,7 +133,7 @@ func TestRequesterKeys_EveryTicketKeyIsClassified(t *testing.T) {
 	}, sorted(allowed))
 	require.Equal(t, []string{
 		"assignee_group_id", "closed_at", "guest_email", "guest_name", "guest_phone",
-		"pending_since", "reopen_count", "reporter_user_id", "sla_paused_seconds", "updated_at",
+		"pending_since", "reopen_count", "reporter_user_id", "sla_paused_seconds", "source_channel", "updated_at",
 	}, sorted(never))
 }
 
@@ -240,7 +240,7 @@ func TestFilterForViewer_DropsTheStaffOnlyRequesterKeyFromARequesterView(t *test
 // Values are not rewritten, only keys dropped; and nothing else is lost.
 func TestFilterForViewer_KeepsValuesAndNonTicketPayloadsAlone(t *testing.T) {
 	id := uuid.New()
-	got, err := ticket.FilterForViewer(user.RoleUser, ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, ID: id, Subject: "s", Priority: ticket.PriorityHigh, ReopenCount: 3})
+	got, err := ticket.FilterForViewer(user.RoleUser, ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb, ID: id, Subject: "s", Priority: ticket.PriorityHigh, ReopenCount: 3})
 	require.NoError(t, err)
 	b, _ := json.Marshal(got)
 	require.Contains(t, string(b), id.String())

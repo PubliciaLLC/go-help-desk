@@ -17,6 +17,10 @@ export interface CreateTicketInput {
   // a requester.
   reporter_user_id?: string
   reporter_email?: string
+  // The one channel a person picks (#130): staff who took a call and are
+  // filing for the caller. Sent only with one of the two fields above, from the
+  // web form; the server refuses it from an API key and without a requester.
+  source_channel?: 'phone'
 }
 
 // A person the requester picker offers: all it draws, and no more.

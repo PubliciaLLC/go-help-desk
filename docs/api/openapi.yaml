@@ -3339,6 +3339,16 @@ paths:
                   type: object
                   additionalProperties:
                     type: string
+                source_channel:
+                  description: |
+                    Only "phone", and only from a browser session of a member of staff who also sends
+                    reporter_user_id or reporter_email: the web app's "Phone call" choice. The channel is
+                    otherwise recorded from how the request arrived (web for a session, api for an API key
+                    or OAuth client) and cannot be set. Any other use is 400 and nothing is written: any
+                    value from an API key or OAuth client, any value other than "phone", and "phone" without
+                    reporter_user_id or reporter_email.
+                  type: string
+                  enum: [phone]
                 reporter_user_id:
                   description: Staff and administrators only. The existing account the ticket is for. Not with reporter_email. An id that is not a live account is 400.
                   $ref: '#/components/schemas/Uuid'
@@ -3374,7 +3384,8 @@ paths:
             reporter_email were sent, reporter_user_id is not a live account,
             reporter_email is not a plain address (reporter_email: ...), or
             reporter_email has no account and guest submission is off, or
-            guest_name is missing or blank with reporter_email. 429
+            guest_name is missing or blank with reporter_email. source_channel
+            is sent when it may not be (see that field). 429
             rate_limited when the caller's 40 an hour for reporter_email are used.
           content:
             application/json:
@@ -10059,6 +10070,18 @@ components:
     Role:
       type: string
       enum: [admin, staff, user]
+    SourceChannel:
+      description: |
+        How a ticket arrived (#130), recorded by the server from the entry point and never asserted by a
+        caller. web is the web app or any REST call made in a browser session; api is REST with an API key
+        or OAuth client; mcp is an MCP tool; guest is the guest form (and a guest's follow-up); phone is a
+        member of staff who took a call and filed for the caller, picked in the web app's New ticket form.
+        A follow-up records its own entry point, not its original's. Every ticket from before 1.3.0 reads
+        web, whatever way it really came in, because the channel was not recorded then. Sent to staff and
+        administrators only; a requester or guest never receives it. email is reserved for inbound mail
+        and is not a value yet.
+      type: string
+      enum: [web, api, mcp, guest, phone]
     TextFormat:
       description: |
         How a stored description or reply is shown (#443). plain is shown exactly as typed, with no links and
@@ -10244,7 +10267,7 @@ components:
         assignee_user_id and resolution_notes. Everything else here
         (assignee_group_id, reporter_user_id, guest_email, guest_name,
         guest_phone, closed_at, updated_at, pending_since, sla_paused_seconds,
-        reopen_count) is for staff and administrators only. The same list applies to every
+        reopen_count, source_channel) is for staff and administrators only. The same list applies to every
         response that carries a ticket, MCP included.
       type: object
       required: [id, tracking_number, subject, description, description_format, category_id, priority, status_id, created_at]
@@ -10260,6 +10283,8 @@ components:
           type: string
         description_format:
           $ref: '#/components/schemas/TextFormat'
+        source_channel:
+          $ref: '#/components/schemas/SourceChannel'
         category_id:
           $ref: '#/components/schemas/Uuid'
         type_id:

@@ -29,7 +29,7 @@ func TestCreate_AuditFailureRollsBackTheTicket(t *testing.T) {
 	reporter := uuid.New()
 	h.auditStore.err = errStoreDown
 
-	_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject:        "Audit is down",
 		ReporterUserID: &reporter,
 	})
@@ -51,7 +51,7 @@ func TestCreate_HistoryFailureRollsBackTheTicket(t *testing.T) {
 	reporter := uuid.New()
 	h.store.errCreateHistory = errStoreDown
 
-	_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject:        "History is down",
 		ReporterUserID: &reporter,
 	})
@@ -133,7 +133,7 @@ func TestOperations_CommitOnce(t *testing.T) {
 		{
 			name: "Create",
 			run: func(h *harness) error {
-				_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+				_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 					Subject: "Fine", ReporterUserID: &reporter,
 				})
 				return err
@@ -212,7 +212,7 @@ func TestCreate_TransactionUnavailable(t *testing.T) {
 	reporter := uuid.New()
 	h.atomic.errBeginTx = errStoreDown
 
-	_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "No connections left", ReporterUserID: &reporter,
 	})
 

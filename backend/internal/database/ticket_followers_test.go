@@ -46,7 +46,7 @@ func TestTicketFollowers_Store(t *testing.T) {
 	require.NoError(t, cs.CreateCategory(ctx, cat))
 	newSt, err := ts.GetStatusByName(ctx, ticket.StatusNameNew)
 	require.NoError(t, err)
-	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID: uuid.New(), TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2026, 990001),
 		Subject: "s", Description: "d", CategoryID: cat.ID, Priority: ticket.PriorityMedium,
 		StatusID: newSt.ID, ReporterUserID: &requester.ID, CreatedAt: now, UpdatedAt: now,

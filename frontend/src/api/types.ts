@@ -196,6 +196,9 @@ export interface Status {
   ticket_count: number
 }
 
+// How a ticket arrived (#130), recorded by the server from the entry point.
+export type SourceChannel = 'web' | 'api' | 'mcp' | 'guest' | 'phone'
+
 export interface Ticket {
   id: string
   tracking_number: string
@@ -203,6 +206,9 @@ export interface Ticket {
   description: string
   // How description is shown (#443). Everything written before 1.3.0 is plain.
   description_format: TextFormat
+  // How the ticket arrived (#130). Staff and administrators only: absent for a
+  // requester and a guest.
+  source_channel?: SourceChannel
   category_id: string
   type_id?: string
   item_id?: string

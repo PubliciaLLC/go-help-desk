@@ -106,7 +106,7 @@ func everyFieldTicket(t *testing.T, h *harness) ticket.Ticket {
 	grp, err := h.groupSvc.Create(ctx, "G"+uuid.NewString()[:6], "d")
 	require.NoError(t, err)
 
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Every field", Description: "all of them", CategoryID: h.catID, TypeID: &ty.ID, ItemID: &it.ID,
 		Priority: ticket.PriorityHigh, ReporterUserID: &h.userID,
 	})
@@ -126,7 +126,7 @@ func TestRequesterResponses_NoRouteLeaksAFieldOutsideTheAllowedList(t *testing.T
 	defer cleanup()
 	ctx := context.Background()
 	tk := everyFieldTicket(t, h)
-	other, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	other, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Linked", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)

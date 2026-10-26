@@ -98,7 +98,7 @@ func TestAuditStore_Search_SnapshotOn_Scoped(t *testing.T) {
 
 	mkTicket := func(subject string, reporterID *uuid.UUID, assigneeID *uuid.UUID) ticket.Ticket {
 		seq++
-		tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
+		tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 			ID:             uuid.New(),
 			TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2026, seq),
 			Subject:        subject,
@@ -255,7 +255,7 @@ func TestAuditStore_Search_SnapshotOn_Unscoped(t *testing.T) {
 	require.NoError(t, err)
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2026, 8000),
 		Subject:        "Unscoped test ticket",

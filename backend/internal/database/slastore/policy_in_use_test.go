@@ -117,7 +117,7 @@ func TestDeletePolicy_RecordReferencingIt_TriggersRealForeignKeyViolation(t *tes
 	newSt, err := ts.GetStatusByName(ctx, ticket.StatusNameNew)
 	require.NoError(t, err)
 
-	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain,
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: ticket.TrackingNumber("PV-" + uuid.NewString()[:8]),
 		Subject:        "policy violation test",

@@ -132,6 +132,14 @@ What to do: a script that filed tickets for other people by looking the person u
 
 In 1.2.0, `PATCH /api/v1/me/password` took `password` alone and did not ask for the current password. 1.3.0 requires `current_password` and refuses a missing or wrong one with `400 invalid_current_password`, so a 1.2.0 script that sends only `password` now fails. The new name for the replacement is `new_password`; `password` is still read when `new_password` is absent. Wrong guesses are counted per account against a budget the size of sign-in's (`AUTH_RATE_LIMIT_PER_MINUTE`, a separate counter) and answer `429 rate_limited` once it is spent; the correct password is still accepted. A `401` from this route means there is no session. The account page shows a wrong current password inline and keeps the person signed in.
 
+### Existing Tickets Are Marked `web`, Even If They Came by API or MCP (#130)
+
+1.3.0 records how each ticket arrived (`source_channel`: `web`, `api`, `mcp`, `guest` or `phone`). **Tickets that exist when you upgrade are all marked `web`**, because the channel was not recorded before 1.3.0 and cannot be worked out afterwards. A ticket an integration opened over REST or MCP, or a guest submitted, reads `web` too. Channel counts that include dates before the upgrade are not a record of how those tickets came in. Use the upgrade date as the start of any channel report.
+
+- **The channel is recorded from the entry point and cannot be set by a caller.** `POST /tickets` with an API key or OAuth client is `api`; the same call in a browser session is `web`; MCP is `mcp`; the guest form is `guest`. A follow-up records its own entry point, not the original's.
+- **A request that sends `source_channel` is refused with `400`** (nothing is created): any value from an API key or OAuth client, and any MCP `create_ticket` that includes the argument. An integration that sent the member before, which was ignored, now fails. The one value a person can send is `phone`, from the web app, when staff file for someone else.
+- **Migration 000056** adds `tickets.source_channel` (no table rewrite, no default afterwards). As for migration 000055, **stop every old (1.2 or earlier) instance before it runs**: an instance still on the old version cannot insert a ticket once the default is gone.
+
 ### Also breaking, described elsewhere
 
 - A ticket-changing webhook delivers one event per change, and a receiver that switches on `Type` can miss a kind: see *One Change, One Event* under Changed behaviour.
@@ -207,6 +215,10 @@ Every MCP route (`/mcp`, `/mcp/sse`, `/mcp/message` and anything else under `/mc
 - **MCP `create_ticket` takes `reporter_email` too** (with `guest_name`, required, and `guest_phone`), by the same code as REST: an account if the address has one, otherwise a guest ticket, with the same 40-an-hour budget (one budget per staff member across REST and MCP), the same mail and the same actor. `reporter_user_id` still works.
 
 What to check: an API key that files tickets does not need `users:read` to use `reporter_user_id` or `reporter_email`, and cannot use the lookup at all.
+
+### Tickets Record How They Arrived (#130)
+
+Staff and administrators see a small "via web", "via API", "via MCP", "via guest form" or "via phone" next to the opened date on the ticket page, and `source_channel` on the ticket object in REST and MCP `get_ticket`. Requesters and guests never receive it. When a member of staff files for someone else on the New ticket page they get **How did this reach you?**: Web (the default) or Phone call. There is no list filter for it yet. Existing tickets read `web`: see *Existing Tickets Are Marked `web`* under Breaking changes.
 
 ### Markdown in Ticket Text (#443)
 

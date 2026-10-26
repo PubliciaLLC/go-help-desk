@@ -94,21 +94,21 @@ func TestReplyRecipient_MCPQueuesWhatRESTQueues(t *testing.T) {
 			name: "guest ticket mails the guest, with a link",
 			seed: func(t *testing.T, h *harness) ticket.Ticket {
 				email := "guest@test.local"
-				return newTicket(t, h, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, GuestEmail: &email, GuestName: "Ada"})
+				return newTicket(t, h, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb, GuestEmail: &email, GuestName: "Ada"})
 			},
 			wantTo: "guest@test.local", wantLink: true,
 		},
 		{
 			name: "account ticket mails the account's address, no link",
 			seed: func(t *testing.T, h *harness) ticket.Ticket {
-				return newTicket(t, h, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, ReporterUserID: &h.userID})
+				return newTicket(t, h, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb, ReporterUserID: &h.userID})
 			},
 			wantTo: "user@test.local",
 		},
 		{
 			name: "a requester whose account is gone cannot be mailed",
 			seed: func(t *testing.T, h *harness) ticket.Ticket {
-				return newTicket(t, h, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, ReporterUserID: &h.userID})
+				return newTicket(t, h, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb, ReporterUserID: &h.userID})
 			},
 			after: func(t *testing.T, h *harness) {
 				require.NoError(t, h.userSvc.SoftDelete(ctx, h.userID))
@@ -121,7 +121,7 @@ func TestReplyRecipient_MCPQueuesWhatRESTQueues(t *testing.T) {
 			// are; an ordinary requester still is (next test).
 			name: "staff replying on a ticket they filed is not mailed about it",
 			seed: func(t *testing.T, h *harness) ticket.Ticket {
-				return newTicket(t, h, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, ReporterUserID: &h.staffID})
+				return newTicket(t, h, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb, ReporterUserID: &h.staffID})
 			},
 			wantTo: "",
 		},
@@ -154,7 +154,7 @@ func TestReplyRecipient_ARequesterRepliesOnTheirOwnTicketAndIsStillMailed(t *tes
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	h.dispatcher.record = true
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Printer jammed", Description: "again", CategoryID: h.catID, ReporterUserID: &h.userID,
 	})
 	require.NoError(t, err)
@@ -172,7 +172,7 @@ func TestReplyRecipient_AnAdminReplyingOnTheirOwnTicketIsNotMailed(t *testing.T)
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	h.dispatcher.record = true
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Printer jammed", Description: "again", CategoryID: h.catID, ReporterUserID: &h.adminID,
 	})
 	require.NoError(t, err)
@@ -190,7 +190,7 @@ func TestReplyRecipient_AnMCPInternalNoteMailsNobody(t *testing.T) {
 	defer cleanup()
 	h.dispatcher.record = true
 	email := "guest@test.local"
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Printer jammed", Description: "again", CategoryID: h.catID, GuestEmail: &email, GuestName: "Ada",
 	})
 	require.NoError(t, err)

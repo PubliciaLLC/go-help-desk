@@ -30,7 +30,7 @@ func TestDeleteUser_ReturnsTheirOpenTicketsToTheQueue(t *testing.T) {
 	leaver, err := h.userSvc.Create(ctx, userInput("leaver@test.local", "A Leaver"))
 	require.NoError(t, err)
 
-	open, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	open, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Still open", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})

@@ -38,7 +38,7 @@ func TestCreate_AnnouncesTheStoredTicketNotTheRequestedOne(t *testing.T) {
 		return tk
 	}
 
-	_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject:    "Printer broken",
 		GuestEmail: &requested,
 		GuestName:  "Ada",
@@ -63,7 +63,7 @@ func TestCreate_ReadFailureAfterCommitSendsNoEmail(t *testing.T) {
 
 	h.store.errGetByID = errNotFound
 
-	tk, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	tk, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject:    "Printer broken",
 		GuestEmail: &guest,
 		GuestName:  "Ada",
@@ -118,7 +118,7 @@ func TestCreate_RefusesAGuestAddressThatIsNotOne(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			email := tc.email
-			_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+			_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 				Subject:    "Printer broken",
 				GuestEmail: &email,
 				GuestName:  "Ada",
@@ -133,7 +133,7 @@ func TestCreate_RefusesAGuestAddressThatIsNotOne(t *testing.T) {
 func TestCreate_StoresTheNormalisedGuestAddress(t *testing.T) {
 	h := newHarness(t)
 	email := "  Ada@Example.COM  "
-	tk, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+	tk, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject:    "Printer broken",
 		GuestEmail: &email,
 		GuestName:  "Ada",

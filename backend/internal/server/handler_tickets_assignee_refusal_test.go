@@ -27,7 +27,7 @@ func TestUpdateTicket_RefusedAssignmentChangesNothing_HTTP(t *testing.T) {
 	require.NoError(t, err)
 
 	mk := func() ticket.Ticket {
-		tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain,
+		tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 			Subject: "Printer", CategoryID: h.catID, Priority: ticket.PriorityMedium, ReporterUserID: &h.userID,
 		})
 		require.NoError(t, err)
