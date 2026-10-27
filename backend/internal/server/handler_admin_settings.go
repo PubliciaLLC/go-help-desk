@@ -668,6 +668,23 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Allowed domains must be ASCII, so that they compare reliably. Refused at
+	// save rather than silently inert.
+	if raw, ok := body[admin.KeyAllowedEmailDomains]; ok {
+		var domains []string
+		if err := json.Unmarshal(raw, &domains); err == nil {
+			for _, d := range domains {
+				for i := 0; i < len(d); i++ {
+					if d[i] >= 0x80 {
+						Error(w, http.StatusBadRequest, "invalid_allowed_email_domains",
+							fmt.Sprintf("%q must be ASCII: use the xn-- form for an internationalised domain", d))
+						return
+					}
+				}
+			}
+		}
+	}
+
 	// Routing fallbacks (#447). These used to be saved as given and read back
 	// leniently: an id that did not parse, or named nobody, was skipped at
 	// routing time, so a typo saved cleanly and tickets quietly stayed

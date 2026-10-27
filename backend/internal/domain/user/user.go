@@ -109,6 +109,10 @@ func ValidateEmail(s string) (string, error) {
 	if trimmed == "" {
 		return "", fmt.Errorf("%w: email is required", ErrValidation)
 	}
+	// Addresses must be ASCII so that they compare reliably.
+	if !isASCII(trimmed) {
+		return "", fmt.Errorf("%w: email address must contain only ASCII characters", ErrValidation)
+	}
 	addr, err := mail.ParseAddress(trimmed)
 	if err != nil {
 		return "", fmt.Errorf("%w: %q is not an email address", ErrValidation, trimmed)
@@ -129,6 +133,27 @@ func ValidateEmail(s string) (string, error) {
 		return "", fmt.Errorf("%w: %q cannot be used: an address that needs quotation marks is not supported", ErrValidation, trimmed)
 	}
 	return strings.ToLower(addr.Address), nil
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// asciiLower lower-cases A-Z and nothing else. For text that may be non-ASCII
+// and is only compared, never stored.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
 }
 
 func (u *User) Validate() error {
