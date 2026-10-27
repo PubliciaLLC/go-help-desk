@@ -203,7 +203,7 @@
   <li><strong>Closing the ticket stops the link being replaced, but does not revoke it.</strong> The last link sent still opens the ticket, read-only, until it expires. No mail is sent for the close. A guest can still open a follow-up from a closed ticket with the link.</li>
   <li><strong>It expires 30 days after it was issued.</strong></li>
   <li><strong>Switching guest submission off suspends every link.</strong> While the setting is off, a guest link answers <code>404</code>, the same as a link that never existed, so a guest in the middle of a conversation cannot read or reply. Links are suspended, not revoked: switch the setting back on and the ones that have not expired work again.</li>
-  <li><strong>Lost it?</strong> <code>/track</code> takes a tracking number and the email address and mails a new link, replacing the old one. It always answers the same way whether or not those details matched anything, so it cannot be used to find out which tickets exist. One request per ticket every five minutes.</li>
+  <li><strong>Lost it?</strong> <code>/track</code> takes a tracking number and the email address and mails a new link, replacing the old one. It always answers the same way whether or not those details matched anything, so it cannot be used to find out which tickets exist. A ticket whose stored address is not ASCII cannot get a new link this way; follow-ups on it still work. One request per ticket every five minutes.</li>
 </ul>
 
 <p>The token is stored only as a hash, and the emailed link carries it after a <code>#</code> so that it never reaches a server log. The page strips it out of the address bar as soon as it loads, so it survives neither browser history nor a screenshot of the URL.</p>

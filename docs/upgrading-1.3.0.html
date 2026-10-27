@@ -73,6 +73,7 @@
       <li><a href="#svg-logo">SVG logos are refused</a></li>
       <li><a href="#compose-database">Postgres is on loopback</a></li>
       <li><a href="#quoted-email">Quoted addresses are refused</a></li>
+      <li><a href="#ascii-email">Addresses must be ASCII</a></li>
       <li><a href="#password-length">Passwords up to 72 bytes</a></li>
       <li><a href="#guest-links-off">Guest links and the setting</a></li>
       <li><a href="#pending-session">Half-signed-in sessions</a></li>
@@ -197,6 +198,7 @@
     <tr><td>SVG logos are refused</td><td>Instances with an SVG logo (it is no longer served)</td></tr>
     <tr><td>Compose publishes Postgres on loopback only</td><td>Anything that reached the database from another host, such as backups or reporting tools</td></tr>
     <tr><td>Quoted email local parts are refused</td><td>Anyone signing up with such an address, and single sign-on users whose provider sends one</td></tr>
+    <tr><td>Email addresses must be ASCII; allowed email domains must be ASCII too (<code>xn--</code> form)</td><td>People with a non-ASCII address; administrators with allowed domains; scripts that send such an address</td></tr>
     <tr><td>Passwords over 72 bytes are refused</td><td>Anyone setting a password, and API clients that set one</td></tr>
     <tr><td>Guest links stop working while guest submission is off</td><td>Guests holding a link, and administrators who switch the setting off</td></tr>
     <tr><td>A half-signed-in session expires after 5 minutes</td><td>Users who take longer at the second-factor step, and API clients that sign in in two requests</td></tr>
@@ -277,6 +279,7 @@
   <li><strong>One delivery per change.</strong> A webhook gets one delivery for one change, however many things it changed, and nothing is sent for a change that failed. <a href="#one-event">Details</a></li>
   <li><strong>Webhook retries, history and a ticket filter.</strong> <a href="#webhooks">Details</a></li>
   <li><strong>MCP over Streamable HTTP.</strong> The server answers MCP at <code>/mcp</code>, and the older SSE routes stay. <a href="mcp.html">MCP Server</a></li>
+  <li><strong>Addresses must be ASCII.</strong> New addresses with a character outside plain ASCII are refused, and allowed email domains must be ASCII. Existing accounts keep signing in. <a href="#ascii-email">Details</a></li>
   <li><strong>Forgot password.</strong> The sign-in page can mail a one-time link to choose a new password, when email is set up. <a href="#forgot-password">Details</a></li>
   <li><strong>A way back in.</strong> <code>unlock &lt;email&gt;</code> on the server clears an account's lockouts and gives it a new one-time password. <a href="#unlock">Details</a></li>
   <li><strong>Notifications from an outbox.</strong> Email is queued in the database and retried with the same schedule as webhooks: 8 attempts, a wait that starts at 30 seconds and doubles each time, about an hour in all. Webhooks are queued too and are retried when a delivery fails (see <a href="#webhooks">Webhooks</a>); the Webhooks screen shows each hook's last delivery result and a History of the last 25.</li>
@@ -411,6 +414,20 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 <p><strong>Who notices:</strong> anyone whose address needs quotation marks, and single sign-on users whose provider sends one.</p>
 
 <p>An address whose local part needs quotation marks, such as <code>"john doe"@example.com</code>, is refused with <code>400</code> wherever an address is saved: at signup, on a guest ticket, and when an account is created or edited. Parsing used to drop the quotes, which turned it into an address the mailer could not send to, so the person was never sent their link. Quotation marks that were never needed are dropped and the address kept: <code>"john"@example.com</code> is stored as <code>john@example.com</code>. Addresses already stored are not changed. A first sign-in through SAML or OIDC with an address that needs quotation marks creates no account, and the login page says the address cannot be used (<code>invalid_email</code>). An existing single sign-on user keeps the address they have.</p>
+
+<h2 id="ascii-email">Email addresses must be ASCII</h2>
+
+<p><strong>Who notices:</strong> anyone whose address contains a character outside plain ASCII, administrators who set allowed email domains, and scripts that send such an address. Addresses must be ASCII so that they compare reliably.</p>
+
+<p>An address with a non-ASCII character is refused everywhere a person types one: signup, an administrator creating an account or changing an address, a typed <code>reporter_email</code>, and a guest submission all answer <code>400</code>. A first sign-in through SAML or OIDC with such an address creates no account and the login page says so (<code>/login?error=invalid_email</code>, or <code>domain_not_allowed</code> when an allowed-domains list is set and the domain is not ASCII).</p>
+<ul>
+  <li><strong>Existing accounts keep signing in</strong>, by their identity provider subject and by password. An administrator can still rename them or change their role: an edit that leaves the address alone does not check it again, and one that sets a new address is checked before anything is saved. They cannot be reset by typing the address, and a single sign-on sync that carries such an address keeps the stored one.</li>
+  <li><strong>Guests.</strong> A guest whose ticket holds such an address can no longer ask for a new link by typing it at <code>/track</code>; follow-ups on that ticket still work.</li>
+  <li><strong>Allowed domains must be ASCII.</strong> Saving an entry with a non-ASCII character is refused with <code>400 invalid_allowed_email_domains</code>. Use the <code>xn--</code> form for an internationalised domain. If you already have such an entry, replace it.</li>
+  <li><strong>The 30-day password refusal.</strong> When the refused sign-in cannot send a reset link for an account (its stored address cannot be mailed), the message says "We could not send a reset link just now" instead of claiming one was sent. An administrator can set the password directly.</li>
+  <li><strong>Known limitation:</strong> an existing user whose stored address has a non-ASCII domain may be refused at sign-in by an allowed-domains list, because the list can no longer hold such an entry.</li>
+</ul>
+<p><strong>What to check:</strong> <code>SELECT count(*) FROM users WHERE email ~ '[^\x01-\x7f]'</code>. Zero means nothing changes for you.</p>
 
 <h2 id="password-length">Passwords are limited to 72 bytes</h2>
 

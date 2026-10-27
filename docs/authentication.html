@@ -146,7 +146,7 @@
 <p>An older hash does not keep working forever. Once a set number of days has passed since 1.3.0 first started on your database, a correct password that is still stored in the old form is refused with <code>403 password_reset_required</code> and the message that it was saved in an older, weaker form and must be reset. The number of days is <em>Admin → Settings → Authentication → Passwords → Reset window for old passwords</em>: 30 by default, from 1 to 365, and changing it moves the deadline for everyone. Anyone who signs in before the deadline is upgraded automatically.</p>
 <ul>
   <li><strong>Administrators are exempt</strong>, so the instance cannot lock itself out. They are upgraded at their next sign-in like everyone else.</li>
-  <li>Staff and users past the deadline are mailed a reset link by the refused sign-in itself when the server can send email (the message says to check email, and <em>Forgot password?</em> on the sign-in page sends another; see <a href="#auth-forgot-password">Forgot password</a>). If no link could be sent the message says "We could not send a reset link just now. Try again in a minute, or ask an administrator." An administrator can always set a new password under <em>Admin → Users → [user] → Reset password</em>, and with email off that is the only route.</li>
+  <li>Staff and users past the deadline are mailed a reset link by the refused sign-in itself when the server can send email (the message says to check email, and <em>Forgot password?</em> on the sign-in page sends another; see <a href="#auth-forgot-password">Forgot password</a>). If no link could be sent (for example because the account's stored address cannot be mailed, see <a href="upgrading-1.3.0.html#ascii-email">Addresses must be ASCII</a>) the message says "We could not send a reset link just now. Try again in a minute, or ask an administrator." An administrator can always set a new password under <em>Admin → Users → [user] → Reset password</em>, and with email off that is the only route.</li>
   <li>People who sign in rarely, such as seasonal staff, are the ones affected. New installs are not.</li>
   <li>When SAML restricts password sign-in to administrators, other accounts get the SAML refusal instead.</li>
 </ul>
@@ -167,6 +167,7 @@
 <ul>
   <li><strong>Admin-created</strong>: an administrator clicks <em>Add User</em> under <em>Admin → Users</em> and assigns any role.</li>
   <li><strong>Self-service signup</strong>: only when <em>Allow self-service signup</em> is on, which it is not by default. Signup is limited to the <em>Allowed email domains</em> (judged by the domain of the address as it will be stored, so <code>&lt;a@x.com&gt;</code> and <code>A@X.COM</code> both count as <code>x.com</code>) unless <em>Allow open registration</em> is on. A signup page at <code>/signup</code> asks only for an email address and sends a verification link, valid for 24 hours. The display name and password are chosen when the link is opened. A self-registered account gets the <em>User</em> role. Email must be configured, or no link is sent.</li>
+  <li><strong>Signup addresses must be ASCII</strong>, and so must each allowed domain (use the <code>xn--</code> form for an internationalised domain); see <a href="upgrading-1.3.0.html#ascii-email">Addresses must be ASCII</a>.</li>
   <li><strong>SAML or OIDC</strong>: an account is created at the first sign-in through the identity provider. See <a href="#auth-saml">SAML 2.0</a> and <a href="#auth-oidc">OIDC</a>.</li>
   <li><strong>First-run setup</strong>: the first administrator, created at <code>/setup</code> on an empty database.</li>
 </ul>
@@ -350,7 +351,7 @@
 </details>
 
 <h3>Just-in-time user provisioning</h3>
-<p>When someone signs in through SAML for the first time, an account is created from the assertion with the <em>User</em> role, provided their email domain is on the <em>Allowed email domains</em> list (an empty list allows any domain). Promote accounts to Staff or Admin from <em>Admin → Users</em>.</p>
+<p>When someone signs in through SAML for the first time, an account is created from the assertion with the <em>User</em> role, provided their email domain is on the <em>Allowed email domains</em> list (an empty list allows any domain; entries and addresses must be ASCII, see <a href="upgrading-1.3.0.html#ascii-email">Addresses must be ASCII</a>). Promote accounts to Staff or Admin from <em>Admin → Users</em>.</p>
 
 <p>Later sign-ins update the user's email address and name from the IdP, but never their role.</p>
 

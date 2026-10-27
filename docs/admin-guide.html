@@ -260,7 +260,7 @@ Facilities
 <h3>User detail page</h3>
 <p>Click any user in the list to open their detail page. From there you can:</p>
 <ul>
-  <li><strong>Edit profile</strong> — change display name, email address, and role. Disabled accounts must be re-enabled before editing profile fields.</li>
+  <li><strong>Edit profile</strong> — change display name, email address, and role. A new email address must be ASCII; an account that already has a non-ASCII address can still be renamed or have its role changed, because an edit that leaves the address alone does not check it again. Disabled accounts must be re-enabled before editing profile fields.</li>
   <li><strong>View account info</strong> — member since date, login type (Local / SSO / Local + SSO), and MFA enrollment status.</li>
   <li><strong>Reset MFA</strong>, clears the user's authenticator and every passkey, and ends all of their sessions. The user signs in with their password and enrols again. Only shown when the user has a second factor, an authenticator or a passkey.</li>
   <li><strong>Enable / Disable account</strong> — disabled accounts cannot log in. All tickets and history are preserved. Re-enable at any time.</li>
@@ -271,7 +271,7 @@ Facilities
 </ul>
 
 <h3>Creating a user</h3>
-<p>Click <em>Add User</em> from the Users list. Enter email, display name, role, and an initial password. The account is created immediately and appears in the list.</p>
+<p>Click <em>Add User</em> from the Users list. Enter email, display name, role, and an initial password. The email address must be ASCII (a new address with any other character is refused with <code>400</code>). The account is created immediately and appears in the list.</p>
 
 <h3>Login type column</h3>
 <p>The <em>Login</em> column in the users list shows how the account authenticates:</p>
