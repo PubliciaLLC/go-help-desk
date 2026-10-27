@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	htmltemplate "html/template"
+	"regexp"
 	"strings"
 	"text/template/parse"
 	"unicode/utf8"
@@ -37,9 +38,10 @@ const (
 // private-use characters; any the author typed are replaced first, so a
 // sentinel always means an action.
 const (
-	sentAction = '' // {{.Name}}
-	sentBlock  = '' // {{if}}…{{end}} or a template comment
-	sentinels  = ""
+	sentAction = '\uE000' // {{.Name}}
+	sentBlock  = '\uE001' // {{if}}…{{end}} or a template comment
+	sentLink   = '\uE002' // {{.Name}} where Name is a link variable
+	sentinels  = "\uE000\uE001\uE002"
 )
 
 // refusedElements are the elements the design names, each with why.
@@ -80,6 +82,74 @@ var allowedElements = map[string]bool{
 var refusedAttributes = map[string]string{
 	"srcdoc":     "it embeds a page",
 	"formaction": "it submits a form",
+}
+
+// allowedAttributes is what email markup uses. Like the elements, it is a list
+// of what is allowed, so an attribute invented later is refused until someone
+// decides about it. aria-* is allowed as a family.
+var allowedAttributes = map[string]bool{
+	"class": true, "id": true, "style": true, "title": true, "lang": true, "dir": true, "role": true,
+	"align": true, "valign": true, "width": true, "height": true, "bgcolor": true, "color": true,
+	"border": true, "cellpadding": true, "cellspacing": true, "colspan": true, "rowspan": true,
+	"nowrap": true, "face": true, "size": true, "alt": true, "target": true, "rel": true,
+	"type": true, "start": true, "summary": true, "scope": true, "headers": true, "abbr": true,
+	"hspace": true, "vspace": true, "span": true, "xmlns": true,
+	// These take a URL; each is held to https: below.
+	"href": true, "src": true, "srcset": true, "background": true, "lowsrc": true, "dynsrc": true,
+	"ping": true, "cite": true, "longdesc": true,
+}
+
+// httpsOnly are the attributes that load or report to an address: every URL in
+// them must be https. href is not here: a link may also be http: or mailto:.
+var httpsOnly = map[string]bool{
+	"src": true, "srcset": true, "background": true, "lowsrc": true, "dynsrc": true,
+	"ping": true, "cite": true, "longdesc": true,
+}
+
+// linkVariables are the variables whose value is a link this server built; a
+// whole-value href may be one of them and nothing else.
+var linkVariables = map[string]bool{"TicketURL": true, "VerifyURL": true, "ResetURL": true}
+
+var attributeName = regexp.MustCompile(`^[a-z0-9-]+$`)
+
+// cssRefusals are the ways CSS runs code or reaches out, with why. Matched on
+// the lower-cased value. CSS stays allowed (the design allows style attributes
+// and <style> blocks); these are the parts of it that are not styling.
+var cssRefusals = []struct{ word, why string }{
+	{"expression", "expression() runs script in old mail clients"},
+	{"behavior", "behavior attaches script in old mail clients"},
+	{"-moz-binding", "-moz-binding attaches script"},
+	{"@import", "@import loads another stylesheet, so the mail would be styled by something that is not in it"},
+	{"javascript:", "a javascript: URL runs script"},
+	{"vbscript:", "a vbscript: URL runs script"},
+	{"data:", "a data: URL can carry anything"},
+	{"image-set(", "image-set( loads an image without url(, past the check on url("},
+}
+
+// checkCSS returns why a style attribute value or <style> text is refused, or "".
+func checkCSS(css string) string {
+	l := strings.ToLower(css)
+	if strings.ContainsRune(l, '\\') {
+		// \6a\61vascript is javascript to a CSS parser, and cannot be matched as text.
+		return "a backslash in CSS can spell out a word the checks look for, so it is not allowed"
+	}
+	for _, r := range cssRefusals {
+		if strings.Contains(l, r.word) {
+			return fmt.Sprintf("%s is not allowed in CSS: %s", r.word, r.why)
+		}
+	}
+	for rest := l; ; {
+		i := strings.Index(rest, "url(")
+		if i < 0 {
+			return ""
+		}
+		rest = rest[i+len("url("):]
+		arg := strings.TrimLeft(rest, " \t\r\n\f")
+		arg = strings.TrimLeft(arg, `"'`)
+		if !strings.HasPrefix(arg, "https:") {
+			return "url( must be followed by https: (after an optional quote); a http:, data: or relative address is not allowed"
+		}
+	}
 }
 
 const templatesWhere = "a template ({{ }}) is allowed only in the text or as the whole href value of a link"
@@ -152,7 +222,7 @@ type skeleton struct {
 
 func (s *skeleton) text(t string, at int) {
 	// A sentinel the author typed would pass for an action.
-	t = strings.NewReplacer("", "�", "", "�").Replace(t)
+	t = strings.NewReplacer("\uE000", "\uFFFD", "\uE001", "\uFFFD", "\uE002", "\uFFFD").Replace(t)
 	for i := 0; i < len(t); i++ {
 		s.b = append(s.b, t[i])
 		s.src = append(s.src, at+i)
@@ -176,7 +246,11 @@ func (c *htmlCheck) list(l *parse.ListNode) {
 		case *parse.TextNode:
 			sk.text(string(n.Text), int(n.Pos))
 		case *parse.ActionNode:
-			sk.sentinel(sentAction, c.openAt(n.Pos))
+			r := sentAction
+			if linkVariables[actionField(n)] {
+				r = sentLink
+			}
+			sk.sentinel(r, c.openAt(n.Pos))
 		case *parse.CommentNode:
 			sk.sentinel(sentBlock, c.openAt(n.Pos))
 		case *parse.IfNode:
@@ -186,6 +260,18 @@ func (c *htmlCheck) list(l *parse.ListNode) {
 		}
 	}
 	c.scan(sk)
+}
+
+// actionField is the variable an action prints. The walk has already accepted
+// the action, so it is one field; anything else reads as "".
+func actionField(n *parse.ActionNode) string {
+	if n.Pipe == nil || len(n.Pipe.Cmds) != 1 || len(n.Pipe.Cmds[0].Args) != 1 {
+		return ""
+	}
+	if f, ok := n.Pipe.Cmds[0].Args[0].(*parse.FieldNode); ok && len(f.Ident) == 1 {
+		return f.Ident[0]
+	}
+	return ""
 }
 
 // openAt moves a node's position back to the "{{" that opens it.
@@ -244,6 +330,12 @@ func (c *htmlCheck) scan(sk *skeleton) {
 				c.fail(sk, at+strings.IndexAny(raw, sentinels), "a template is not allowed inside <style>")
 				return
 			}
+			if inStyle {
+				if why := checkCSS(raw); why != "" {
+					c.fail(sk, at, "%s", why)
+					return
+				}
+			}
 			if i := strings.IndexByte(raw, '<'); i >= 0 {
 				if next := raw[i+1:]; next != "" && strings.ContainsRune(sentinels, []rune(next)[0]) {
 					c.fail(sk, at+i, "%s", templatesWhere)
@@ -253,7 +345,15 @@ func (c *htmlCheck) scan(sk *skeleton) {
 				return
 			}
 
-		case html.CommentToken, html.DoctypeToken:
+		case html.CommentToken:
+			// html/template drops a comment from what it renders, so an allowed
+			// comment would vanish from the mail without a word. Refused instead.
+			// That includes Outlook's <!--[if mso]> blocks, which only look like
+			// comments: the renderer would remove them too.
+			c.fail(sk, at, "HTML comments are not allowed: the renderer removes them, so they would silently not be sent; use {{/* */}} for a note to yourself")
+			return
+
+		case html.DoctypeToken:
 			if strings.ContainsAny(raw, sentinels) {
 				c.fail(sk, at+strings.IndexAny(raw, sentinels), "%s", templatesWhere)
 				return
@@ -298,6 +398,9 @@ func (c *htmlCheck) tag(sk *skeleton, tok html.Token, raw string, at int) bool {
 	for _, a := range tok.Attr {
 		key, val := a.Key, a.Val
 		switch {
+		case key == "xlink:href":
+			c.fail(sk, at, `attribute "xlink:href" is not allowed: it is a link in SVG, which email does not carry`)
+			return false
 		case strings.HasPrefix(key, "on"):
 			c.fail(sk, at, "attribute %q is not allowed: event handlers are scripts", key)
 			return false
@@ -307,28 +410,47 @@ func (c *htmlCheck) tag(sk *skeleton, tok html.Token, raw string, at int) bool {
 		case strings.ContainsAny(key, sentinels):
 			c.fail(sk, at, "%s", templatesWhere)
 			return false
+		case !attributeName.MatchString(key):
+			c.fail(sk, at, "attribute %q is not allowed: names are letters, digits and hyphens only", key)
+			return false
+		case !allowedAttributes[key] && !strings.HasPrefix(key, "aria-"):
+			c.fail(sk, at, "attribute %q is not allowed: email clients do not use it", key)
+			return false
 		}
-		switch key {
-		case "href":
-			if val == string(sentAction) {
-				accepted++ // a server-built link, the whole value
-				continue
-			}
+		switch {
+		case key == "href":
 			if strings.ContainsAny(val, sentinels) {
-				c.fail(sk, at, "%s", templatesWhere)
+				switch val {
+				case string(sentLink):
+					accepted++ // a link this server built, the whole value
+					continue
+				case string(sentAction):
+					c.fail(sk, at, "an href that is a template must be a link variable ({{.TicketURL}}, {{.VerifyURL}} or {{.ResetURL}}), not any other value")
+				default:
+					c.fail(sk, at, "%s", templatesWhere)
+				}
 				return false
 			}
 			if !urlHasScheme(val, "https:", "http:", "mailto:") {
 				c.fail(sk, at, "href must start with https:, http: or mailto:, or be exactly one {{.Variable}}; a javascript:, data: or relative address is not allowed")
 				return false
 			}
-		case "src", "background":
-			if !urlHasScheme(val, "https:") {
+		case httpsOnly[key]:
+			if !allURLsHTTPS(key, val) {
 				c.fail(sk, at, "%s must start with https:; a http:, data: or relative address is not allowed", key)
 				return false
 			}
 			if strings.ContainsAny(val, sentinels) {
 				c.fail(sk, at, "%s", templatesWhere)
+				return false
+			}
+		case key == "style":
+			if strings.ContainsAny(val, sentinels) {
+				c.fail(sk, at, "%s", templatesWhere)
+				return false
+			}
+			if why := checkCSS(val); why != "" {
+				c.fail(sk, at, "%s", why)
 				return false
 			}
 		default:
@@ -340,9 +462,24 @@ func (c *htmlCheck) tag(sk *skeleton, tok html.Token, raw string, at int) bool {
 	}
 	// Every sentinel in the tag must be one accepted above; one anywhere else
 	// (between attributes, in an odd spot the tokenizer folds away) is not.
-	if strings.Count(raw, string(sentAction))+strings.Count(raw, string(sentBlock)) != accepted {
+	if strings.Count(raw, string(sentAction))+strings.Count(raw, string(sentBlock))+strings.Count(raw, string(sentLink)) != accepted {
 		c.fail(sk, at, "%s", templatesWhere)
 		return false
+	}
+	return true
+}
+
+// allURLsHTTPS holds every URL in an attribute to https. srcset is a list of
+// candidates ("url 1x, url 2x"); the others are one URL.
+func allURLsHTTPS(key, val string) bool {
+	if key != "srcset" {
+		return urlHasScheme(val, "https:")
+	}
+	for _, cand := range strings.Split(val, ",") {
+		f := strings.Fields(cand)
+		if len(f) == 0 || !urlHasScheme(f[0], "https:") {
+			return false
+		}
 	}
 	return true
 }

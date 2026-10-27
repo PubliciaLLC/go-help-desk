@@ -90,7 +90,7 @@ func TestValidateHTML_Table(t *testing.T) {
 		{name: "action in a style attribute", html: `{{.TicketURL}}<p style="color:{{.TrackingNumber}}">y</p>`, wantMsg: "only in the text or as the whole href"},
 		{name: "action in a style block", html: `<style>p{content:"{{.TrackingNumber}}"}</style>{{.TicketURL}}`, wantMsg: "not allowed inside <style>"},
 		{name: "if in a style block", html: `<style>{{if .TrackingNumber}}p{}{{end}}</style>{{.TicketURL}}`, wantMsg: "not allowed inside <style>"},
-		{name: "action in an html comment", html: `<!-- {{.TicketURL}} -->hello`, wantMsg: "only in the text or as the whole href"},
+		{name: "action in an html comment", html: `<!-- {{.TicketURL}} -->hello`, wantMsg: "HTML comments are not allowed"},
 		{name: "if inside a tag", html: `{{.TicketURL}}<a {{if .TrackingNumber}}class="x"{{end}}>y</a>`, wantMsg: "only in the text or as the whole href"},
 		{name: "if inside an href", html: `<a href="{{if .TrackingNumber}}{{.TicketURL}}{{end}}">y</a>{{.TicketURL}}`, wantMsg: "only in the text or as the whole href"},
 		// The parser drops a template comment, so the text either side is one
@@ -105,6 +105,54 @@ func TestValidateHTML_Table(t *testing.T) {
 		{name: "a bare less-than", html: `{{.TicketURL}} a < b`, wantMsg: "write &lt;"},
 		{name: "an unfinished tag", html: `{{.TicketURL}}<a href="https://x.example`, wantMsg: "tag is not finished"},
 		{name: "an unfinished comment", html: `{{.TicketURL}}<!-- x`, wantMsg: "comment is not finished"},
+
+		// ── HTML comments are refused, not stripped ──
+		{name: "a comment", html: "{{.TicketURL}}\n<!-- note to self -->", wantLine: 2, wantCol: 1, wantMsg: "HTML comments are not allowed"},
+		{name: "an outlook conditional comment", html: `{{.TicketURL}}<!--[if mso]><table><tr><td><![endif]-->`, wantMsg: "{{/* */}}"},
+		{name: "the shortest comment", html: `{{.TicketURL}}<!-->`, wantMsg: "HTML comments are not allowed"},
+		{name: "a downlevel-revealed comment", html: `{{.TicketURL}}<!--[if !mso]><!-->x<!--<![endif]-->`, wantMsg: "HTML comments are not allowed"},
+
+		// ── CSS: style attributes and <style> blocks stay, but the ways CSS reaches out or runs are refused ──
+		{name: "a plain style attribute", html: `<p style="color:red;background:url(https://cdn.example.com/a.png)">{{.TicketURL}}</p>`},
+		{name: "a quoted https url in css", html: `<p style="background:url('https://cdn.example.com/a.png')">{{.TicketURL}}</p>`},
+		{name: "css backslash in a style attribute", html: `{{.TicketURL}}<p style="col\6frs:x">y</p>`, wantMsg: "backslash"},
+		{name: "css backslash in a style block", html: `<style>p { color: \72 ed }</style>{{.TicketURL}}`, wantMsg: "backslash"},
+		{name: "css expression", html: `{{.TicketURL}}<p style="width:expression(alert(1))">y</p>`, wantMsg: "expression"},
+		{name: "css expression upper case", html: `{{.TicketURL}}<p style="width:EXPRESSION(alert(1))">y</p>`, wantMsg: "expression"},
+		{name: "css behavior", html: `{{.TicketURL}}<p style="behavior:url(https://x.example/a.htc)">y</p>`, wantMsg: "behavior"},
+		{name: "css moz-binding", html: `{{.TicketURL}}<p style="-moz-binding:url(https://x.example/a.xml)">y</p>`, wantMsg: "-moz-binding"},
+		{name: "css import", html: `<style>@import "https://evil.example/a.css";</style>{{.TicketURL}}`, wantMsg: "@import"},
+		{name: "css import upper case", html: `<style>@IMPORT url(https://evil.example/a.css);</style>{{.TicketURL}}`, wantMsg: "@import"},
+		{name: "css javascript url", html: `{{.TicketURL}}<p style="background:url(javascript:alert(1))">y</p>`, wantMsg: "javascript:"},
+		{name: "css vbscript", html: `{{.TicketURL}}<p style="background:vbscript:x">y</p>`, wantMsg: "vbscript:"},
+		{name: "css data url", html: `{{.TicketURL}}<p style="background:url(data:image/png;base64,AAAA)">y</p>`, wantMsg: "data:"},
+		{name: "css http url", html: `{{.TicketURL}}<p style="background:url(http://a.example/x.png)">y</p>`, wantMsg: "url( must be followed by https:"},
+		{name: "css relative url", html: `<style>p{background:url(/x.png)}</style>{{.TicketURL}}`, wantMsg: "url( must be followed by https:"},
+		{name: "css url with spaces", html: `{{.TicketURL}}<p style="background:url(  http://a.example/x.png)">y</p>`, wantMsg: "url( must be followed by https:"},
+		{name: "css url upper case", html: `{{.TicketURL}}<p style="background:URL(//a.example/x.png)">y</p>`, wantMsg: "url( must be followed by https:"},
+		{name: "css image-set", html: `{{.TicketURL}}<p style="background:image-set('http://a.example/x.png' 1x)">y</p>`, wantMsg: "image-set("},
+
+		// ── attributes are an allow-list ──
+		{name: "an attribute email does not use", html: `{{.TicketURL}}<p contenteditable="true">y</p>`, wantMsg: `attribute "contenteditable" is not allowed`},
+		{name: "a data attribute", html: `{{.TicketURL}}<p data-x="y">y</p>`, wantMsg: `attribute "data-x" is not allowed`},
+		{name: "an aria attribute is fine", html: `{{.TicketURL}}<p aria-label="y" role="presentation">y</p>`},
+		{name: "a vertical tab before a handler", html: "<a href=\"https://ok.example\" \vonclick=x>{{.TicketURL}}</a>", wantMsg: "is not allowed"},
+		{name: "a handler after a slash", html: `{{.TicketURL}}<a href="https://ok.example"/onclick="x">y</a>`, wantMsg: `"onclick"`},
+		{name: "an odd attribute name", html: `{{.TicketURL}}<p a$b="y">y</p>`, wantMsg: "letters, digits and hyphens"},
+		{name: "xlink href", html: `{{.TicketURL}}<a xlink:href="javascript:alert(1)">y</a>`, wantMsg: `"xlink:href"`},
+		{name: "srcset with a http candidate", html: `{{.TicketURL}}<img src="https://a.example/x.png" srcset="https://a.example/x.png 1x, http://a.example/y.png 2x">`, wantMsg: "srcset must start with https:"},
+		{name: "srcset all https", html: `{{.TicketURL}}<img src="https://a.example/x.png" srcset="https://a.example/x.png 1x, https://a.example/y.png 2x">`},
+		{name: "lowsrc", html: `{{.TicketURL}}<img src="https://a.example/x.png" lowsrc="http://a.example/x.png">`, wantMsg: "lowsrc must start with https:"},
+		{name: "dynsrc", html: `{{.TicketURL}}<img dynsrc="javascript:x">`, wantMsg: "dynsrc must start with https:"},
+		{name: "ping", html: `{{.TicketURL}}<a href="https://a.example" ping="http://t.example/p">y</a>`, wantMsg: "ping must start with https:"},
+		{name: "cite", html: `{{.TicketURL}}<blockquote cite="http://a.example">y</blockquote>`, wantMsg: "cite must start with https:"},
+		{name: "longdesc", html: `{{.TicketURL}}<img src="https://a.example/x.png" longdesc="/relative">`, wantMsg: "longdesc must start with https:"},
+		{name: "a first href that is a javascript url", html: `{{.TicketURL}}<a href="javascript:alert(1)" href="https://ok.example">y</a>`, wantMsg: "href must start with"},
+		{name: "a second handler after a repeated attribute", html: `{{.TicketURL}}<a title="a" title="b" onclick="x">y</a>`, wantMsg: `"onclick"`},
+
+		// ── a whole-value action in a link must be a URL ──
+		{name: "a tracking number as an href", html: `{{.TicketURL}}<a href="{{.TrackingNumber}}">y</a>`, wantMsg: "must be a link variable"},
+		{name: "a tracking number in the only link", html: `<a href="{{.TrackingNumber}}">{{.TicketURL}}</a>`, wantMsg: "must be a link variable"},
 
 		// ── the required link ──
 		{name: "no link", html: `<p>Hello</p>`, wantLine: 1, wantCol: 1, wantMsg: "must include {{.TicketURL}}"},
@@ -135,6 +183,32 @@ func TestValidateHTML_Table(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateHTML_ALinkVariableIsAcceptedAsAHrefInEveryMail(t *testing.T) {
+	for name, v := range map[string]string{"ticket_created": "TicketURL", "email_verification": "VerifyURL", "password_reset": "ResetURL"} {
+		def := mustDef(t, name)
+		require.Empty(t, ValidateHTML(def, `<a href="{{.`+v+`}}">go</a>`), name)
+	}
+	// The shells have no link variable, so a whole-value action cannot be one.
+	for _, name := range []string{NameHeader, NameFooter} {
+		errs := ValidateHTML(mustDef(t, name), `<a href="{{.SiteName}}">x</a>`)
+		require.NotEmpty(t, errs, name)
+		require.Contains(t, errs[0].Message, "must be a link variable")
+	}
+}
+
+// golang.org/x/net/html keeps the FIRST of a repeated attribute and drops the
+// rest, which is what a browser does, so the validator only ever sees the one
+// that counts. This pins that: if a later x/net keeps the last instead, the
+// second case below starts being accepted with a javascript: link in it, and
+// this fails. (A mail client that reads the LAST one would see the other link;
+// the first is the one a browser and the tokenizer agree on.)
+func TestValidateHTML_ARepeatedAttributeIsReadTheFirstWay(t *testing.T) {
+	def := mustDef(t, "ticket_created")
+	require.NotEmpty(t, ValidateHTML(def, `{{.TicketURL}}<a href="javascript:alert(1)" href="https://ok.example">y</a>`), "the first one is the one that counts")
+	require.Empty(t, ValidateHTML(def, `{{.TicketURL}}<a href="https://ok.example" href="javascript:alert(1)">y</a>`), "the dropped one is not read")
+	require.NotEmpty(t, ValidateHTML(def, `{{.TicketURL}}<a onclick="x()" onclick="y()">y</a>`))
 }
 
 func TestValidateHTML_RefusalNamesWhy(t *testing.T) {
