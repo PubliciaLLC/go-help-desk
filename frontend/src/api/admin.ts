@@ -887,7 +887,7 @@ export interface EmailTemplatePreview {
 export interface EmailTemplateDraft {
   subject: string
   body: string
-  /** Left out when empty: no key means no HTML part. */
+  /** Always sent, "" for none: an absent key leaves the stored HTML unchanged. */
   html?: string
 }
 

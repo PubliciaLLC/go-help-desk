@@ -255,7 +255,7 @@ describe('Save', () => {
     await userEvent.click(saveButton())
     await waitFor(() => expect(put).toHaveBeenCalledTimes(1))
     expect(put).toHaveBeenCalledWith('/admin/email-templates/ticket_created', {
-      subject: DETAIL.subject, body: 'New wording. {{.TicketURL}}',
+      subject: DETAIL.subject, body: 'New wording. {{.TicketURL}}', html: '',
     })
   })
 
@@ -338,7 +338,7 @@ describe('the editor tools', () => {
     await waitFor(() => expect((saveButton()).disabled).toBe(false))
     await userEvent.click(screen.getByRole('button', { name: 'Send test' }))
     await waitFor(() =>
-      expect(post).toHaveBeenCalledWith('/admin/email-templates/ticket_created/test', { subject: DETAIL.subject, body: 'Draft {{.TicketURL}}' }),
+      expect(post).toHaveBeenCalledWith('/admin/email-templates/ticket_created/test', { subject: DETAIL.subject, body: 'Draft {{.TicketURL}}', html: '' }),
     )
     expect(await screen.findByText(/sent to your own address/i)).toBeTruthy()
   })
@@ -421,7 +421,7 @@ describe('the shared header and footer', () => {
     type(bodyField(), 'Acme Support\n')
     await waitFor(() => expect((saveButton()).disabled).toBe(false))
     await userEvent.click(saveButton())
-    await waitFor(() => expect(put).toHaveBeenCalledWith('/admin/email-templates/_header', { subject: '', body: 'Acme Support\n' }))
+    await waitFor(() => expect(put).toHaveBeenCalledWith('/admin/email-templates/_header', { subject: '', body: 'Acme Support\n', html: '' }))
   })
 })
 
@@ -450,7 +450,8 @@ describe('the HTML part', () => {
     wire()
     await openEditor('ticket_created')
     expect(htmlField().value).toBe('')
-    expect(screen.getByText(/Leave empty to send plain text only/i)).toBeTruthy()
+    expect(screen.getByText(/Leave empty to turn the text above into the HTML part/i)).toBeTruthy()
+    expect(screen.getByText(/With no HTML in the header, the footer or here, the mail is plain text/i)).toBeTruthy()
   })
 
   it('shows the saved HTML', async () => {
@@ -468,11 +469,11 @@ describe('the HTML part', () => {
     expect(within(screen.getByRole('button', { name: /Ticket received/ })).queryByText('HTML')).toBeNull()
   })
 
-  it('sends the HTML with the draft to be checked, and leaves the key out when there is none', async () => {
+  it('sends the HTML with the draft to be checked, always, empty when there is none', async () => {
     const { previewCalls } = wire()
     await openEditor('ticket_created')
     await waitFor(() => expect(previewCalls.length).toBeGreaterThan(0))
-    expect(previewCalls[0].draft).not.toHaveProperty('html')
+    expect(previewCalls[0].draft.html, 'the key is always sent, empty when there is none').toBe('')
 
     type(htmlField(), '<p>{{.TicketURL}}</p>')
     await waitFor(() => expect(previewCalls.at(-1)?.draft.html).toBe('<p>{{.TicketURL}}</p>'))
@@ -490,7 +491,7 @@ describe('the HTML part', () => {
     })
   })
 
-  it('removing the HTML is a save without the key, and counts as a change', async () => {
+  it('removing the HTML is a save with an empty html, and counts as a change', async () => {
     const { put } = wire({ detail: HTML_DETAIL, preview: () => HTML_PREVIEW })
     await openEditor('ticket_created')
     await waitFor(() => expect(saveButton().disabled).toBe(true)) // unchanged
@@ -498,7 +499,7 @@ describe('the HTML part', () => {
     await waitFor(() => expect(saveButton().disabled).toBe(false))
     await userEvent.click(saveButton())
     await waitFor(() => expect(put).toHaveBeenCalledTimes(1))
-    expect(put.mock.calls[0][1]).toEqual({ subject: DETAIL.subject, body: DETAIL.body })
+    expect(put.mock.calls[0][1]).toEqual({ subject: DETAIL.subject, body: DETAIL.body, html: '' })
   })
 
   it('shows an HTML problem beside the HTML field with its place, and Save stays off', async () => {
@@ -539,7 +540,7 @@ describe('the HTML part', () => {
     expect(htmlField().getAttribute('aria-invalid')).toBe('true')
   })
 
-  it('sends the HTML in a test mail, and omits the key when there is none', async () => {
+  it('sends the HTML in a test mail', async () => {
     const { post } = wire({ preview: () => HTML_PREVIEW })
     await openEditor('ticket_created')
     type(htmlField(), '<p>{{.TicketURL}}</p>')
@@ -648,6 +649,24 @@ describe('the HTML preview', () => {
     wire({ detail: HTML_DETAIL, preview: () => HTML_PREVIEW })
     await openEditor('ticket_created')
     expect(await screen.findByText(/Open it:/, { selector: 'pre *, pre' })).toBeTruthy()
+  })
+
+  it('shows the text as paragraphs when the template has no HTML of its own but the mail still has an HTML part', async () => {
+    wire({ preview: () => ({ ...OK_PREVIEW, html: '<p>Open it</p>' }) })
+    await openEditor('ticket_created')
+    await screen.findByTitle('HTML preview')
+    expect(screen.getByText(/no HTML of its own: its text is shown as paragraphs/i)).toBeTruthy()
+    expect(frame().getAttribute('sandbox')).toBe('')
+  })
+
+  it('puts the policy after a leading doctype, so the frame is not in quirks mode', async () => {
+    wire({ detail: HTML_DETAIL, preview: () => ({ ...OK_PREVIEW, html: '<!DOCTYPE html>\n<html><body><p>x</p></body></html>' }) })
+    await openEditor('ticket_created')
+    await screen.findByTitle('HTML preview')
+    const doc = frame().getAttribute('srcdoc') ?? ''
+    expect(doc.startsWith('<!DOCTYPE html>')).toBe(true)
+    expect(doc.indexOf('<meta http-equiv="Content-Security-Policy"')).toBeGreaterThan(doc.indexOf('<!DOCTYPE html>'))
+    expect(doc.indexOf('<meta http-equiv="Content-Security-Policy"')).toBeLessThan(doc.indexOf('<html>'))
   })
 
   it('says the mail is plain text when there is no HTML, and shows no frame', async () => {

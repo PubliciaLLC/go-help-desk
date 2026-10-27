@@ -157,15 +157,24 @@ test('a 300 character word in the draft does not widen the page', async ({ page 
 })
 
 // The HTML preview (#158, PR 2): markup an administrator wrote, shown on the
-// origin staff sessions live on. It must sit in a frame with an EMPTY sandbox,
-// and a script or handler inside it must not run. A frame cannot be inspected
-// from outside once it is sandboxed, so the test listens for postMessage, the
-// one thing a sandboxed script CAN still do: a message arriving means it ran.
+// origin staff sessions live on. It sits in a frame with an EMPTY sandbox.
+//
+// Two defences are stacked there: the sandbox, and a CSP meta that the page puts
+// first in the frame's document. Either alone stops an inline script, so a test
+// that merely shows "the script did not run" passes with one of them removed.
+// This test therefore takes the CSP meta away (this dev server sends no page
+// policy either) and shows that the sandbox ALONE still keeps the script from
+// running and keeps the frame in an opaque origin, with a control proving the
+// probe works. The page's real policy is covered in e2e-csp/.
+//
+// The probe is postMessage, the one thing a sandboxed script could still do: a
+// message arriving means the script ran.
 const HOSTILE =
   '<p id="visible">frame content</p><script>parent.postMessage("script-ran", "*")</script>' +
   '<img src="x" onerror="parent.postMessage(\'handler-ran\', \'*\')">'
+const META = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">`
 
-test('the HTML preview is sandboxed and a script inside it does not run', async ({ page }) => {
+test('the HTML preview sandbox alone keeps a script from running', async ({ page }) => {
   await page.addInitScript(() => {
     ;(window as unknown as { __messages: string[] }).__messages = []
     window.addEventListener('message', (e) => (window as unknown as { __messages: string[] }).__messages.push(String(e.data)))
@@ -176,30 +185,39 @@ test('the HTML preview is sandboxed and a script inside it does not run', async 
   const frame = page.locator('iframe[title="HTML preview"]')
   await expect(frame).toBeVisible()
 
-  // The attributes.
+  // The attributes, and the policy first in the document.
   await expect(frame).toHaveAttribute('sandbox', '')
   const srcdoc = (await frame.getAttribute('srcdoc')) ?? ''
-  expect(srcdoc.startsWith(`<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">`)).toBe(true)
-  expect(await frame.getAttribute('sandbox')).not.toMatch(/allow-/)
-
-  // The content shows, and nothing in it ran.
+  expect(srcdoc.startsWith(META)).toBe(true)
   await expect(page.frameLocator('iframe[title="HTML preview"]').locator('#visible')).toHaveText('frame content')
-  await page.waitForTimeout(800)
-  expect(await page.evaluate(() => (window as unknown as { __messages: string[] }).__messages)).toEqual([])
 
-  // Control: the same listener does hear a frame that is allowed to run scripts,
-  // so the silence above is the sandbox and not a broken probe.
-  await page.evaluate(() => {
+  // An opaque origin: the page cannot reach into the frame (null, not a document).
+  expect(await frame.evaluate((el) => (el as HTMLIFrameElement).contentDocument)).toBeNull()
+
+  // Take the CSP meta out (a re-navigation of the same frame, sandbox untouched)
+  // so only the sandbox is left, and let it settle.
+  await frame.evaluate((el, meta) => {
+    const f = el as HTMLIFrameElement
+    f.srcdoc = f.srcdoc.replace(meta, '')
+  }, META)
+  await expect(page.frameLocator('iframe[title="HTML preview"]').locator('#visible')).toHaveText('frame content')
+  expect(await frame.getAttribute('srcdoc')).not.toContain('Content-Security-Policy')
+  await page.waitForTimeout(800)
+  expect(await page.evaluate(() => (window as unknown as { __messages: string[] }).__messages), 'a script ran with only the sandbox in the way').toEqual([])
+  expect(await frame.evaluate((el) => (el as HTMLIFrameElement).contentDocument)).toBeNull()
+
+  // Control: the same document with scripts allowed DOES run, so the silence
+  // above is the sandbox and not a broken probe.
+  await page.evaluate((doc) => {
     const f = document.createElement('iframe')
     f.setAttribute('sandbox', 'allow-scripts')
-    f.srcdoc = '<script>parent.postMessage("control", "*")</script>'
+    f.srcdoc = doc
     document.body.appendChild(f)
-  })
-  await expect.poll(() => page.evaluate(() => (window as unknown as { __messages: string[] }).__messages)).toContain('control')
+  }, HOSTILE)
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __messages: string[] }).__messages)).toContain('script-ran')
 
   // Nothing of it was written into the page itself.
   expect(await page.locator('#visible').count()).toBe(0)
-  await fits(page)
 })
 
 test('the HTML preview fits at 320px', async ({ page }) => {

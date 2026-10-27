@@ -157,10 +157,10 @@ const byteLength = (s: string) => new TextEncoder().encode(s).length
 
 type FieldName = 'subject' | 'body' | 'html'
 
-// The draft as the API takes it. No html key when there is none: that is how
-// the server is told "no HTML part".
-const draftOf = (subject: string, body: string, html: string): EmailTemplateDraft =>
-  html === '' ? { subject, body } : { subject, body, html }
+// The draft as the API takes it. html is always sent, "" for none: the server
+// reads an absent key as "leave the stored HTML alone" (so a tab from before
+// HTML existed cannot wipe it), and removing HTML takes an explicit "".
+const draftOf = (subject: string, body: string, html: string): EmailTemplateDraft => ({ subject, body, html })
 
 const escapeText = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
@@ -203,7 +203,12 @@ function contentStarter(detail: EmailTemplateDetail, text: string): string {
 // tighten it. No script, no remote anything; images only as data:.
 const PREVIEW_CSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">`
 // A click on a sample link goes nowhere: the sandbox lets nothing open a new window, so target=_blank is refused.
-const previewDocument = (html: string) => `${PREVIEW_CSP}<base target="_blank">${html}`
+// After a leading doctype, if there is one: anything before it puts the frame in
+// quirks mode, and the preview would not look like the mail.
+const previewDocument = (html: string) => {
+  const doctype = /^\s*<!doctype[^>]*>/i.exec(html)?.[0] ?? ''
+  return `${doctype}${PREVIEW_CSP}<base target="_blank">${html.slice(doctype.length)}`
+}
 
 function EditorForm({ detail }: { detail: EmailTemplateDetail }) {
   const qc = useQueryClient()
@@ -391,8 +396,8 @@ function EditorForm({ detail }: { detail: EmailTemplateDetail }) {
         problems={forField('html')}
         hint={
           (detail.shell
-            ? 'Added to the HTML part of every template that has one. '
-            : 'Leave empty to send plain text only. With HTML the mail has both parts, and the text above is still what plain-text readers get. ') +
+            ? 'Saving an HTML header or footer gives every email an HTML part: a template with no HTML of its own has its text shown as paragraphs, with its links made clickable, between them. '
+            : 'Leave empty to turn the text above into the HTML part, as paragraphs, when the header or footer has HTML. With no HTML in the header, the footer or here, the mail is plain text. The text above is always what plain-text readers get. ') +
           (detail.required ? `Needs {{.${detail.required}}} outside any {{if}}, as text or as the whole href of a link. ` : '') +
           `${byteLength(html)} of ${detail.max_html_bytes ?? 65536} bytes.`
         }
@@ -534,8 +539,13 @@ function Preview({ result, hasHTML }: { result: EmailTemplatePreview | null; has
       {result?.valid && result.body !== undefined && (
         <div className="mt-3">
           <p className="text-xs font-medium text-gray-700">HTML part</p>
-          {hasHTML && result.html ? (
+          {result.html ? (
             <>
+              {!hasHTML && (
+                <p className="text-xs text-gray-500">
+                  This template has no HTML of its own: its text is shown as paragraphs between the HTML header and footer.
+                </p>
+              )}
               <p className="text-xs text-gray-500">
                 Images from other sites do not load in this preview. Use Send test to see the real thing.
               </p>

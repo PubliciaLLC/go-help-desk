@@ -306,6 +306,27 @@ describe('AdminAuditPage', () => {
       expect(row.textContent).toMatch(/removed/i)
     })
 
+    it('shows the removed HTML part in a second block, and no block when there was none', async () => {
+      mockList({
+        entries: [revert({ before: { template_name: 'ticket_created', template_subject: 's', template_body: 'Plain body', template_html: '<p>Old html {{.TicketURL}}</p>' } })],
+        total: 1, has_more: false,
+      })
+      const { unmount } = renderWithQuery(<AdminAuditPage />)
+      const row = (await screen.findByText('email_template', { selector: 'span' })).closest('tr')!
+      const blocks = row.querySelectorAll('pre')
+      expect(blocks).toHaveLength(2)
+      expect(blocks[0].textContent).toBe('Plain body')
+      expect(blocks[1].textContent).toBe('<p>Old html {{.TicketURL}}</p>')
+      // Shown as text: nothing of it became an element.
+      expect(row.querySelector('pre p')).toBeNull()
+      unmount()
+
+      mockList({ entries: [revert({ before: { template_name: 'ticket_created', template_subject: 's', template_body: 'Plain body', template_html: '' } })], total: 1, has_more: false })
+      renderWithQuery(<AdminAuditPage />)
+      const row2 = (await screen.findByText('email_template', { selector: 'span' })).closest('tr')!
+      expect(row2.querySelectorAll('pre')).toHaveLength(1)
+    })
+
     it('leaves every other before-only entry exactly as it was', async () => {
       mockList({
         entries: [entry({ entity_type: 'user', action: 'deleted', before: { id: 'x', template_body: 'not shown' }, after: null })],

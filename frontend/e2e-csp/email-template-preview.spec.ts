@@ -2,9 +2,13 @@ import { test, expect } from '@playwright/test'
 import { mockAdminApi } from '../e2e/mock'
 
 // #158 PR 2: the HTML preview under the backend's REAL Content-Security-Policy
-// (default-src 'self' gives frame-src 'self'). Two things only a browser under
-// that policy can tell us: that a srcdoc frame is not blocked by it, and that
-// the frame still runs nothing when the policy and the sandbox are both there.
+// (default-src 'self' gives frame-src 'self'). What this proves, and what it
+// does not: that a srcdoc frame is NOT blocked by that policy (the one thing only
+// a browser under it can tell us), that it keeps its empty sandbox and opaque
+// origin, and that nothing in it runs. It does NOT prove the sandbox on its own:
+// the page policy (script-src 'self') already stops an inline script, so this
+// would still pass with the sandbox removed. The sandbox alone is proven in
+// e2e/email-templates.spec.ts, with the frame's own policy taken away.
 
 const DETAIL = {
   name: 'ticket_created', label: 'Ticket received', group: 'requester', shell: false, customised: true, broken: false,
@@ -38,6 +42,7 @@ test('the sandboxed preview is not blocked by the page policy, and runs nothing'
 
   const frame = page.locator('iframe[title="HTML preview"]')
   await expect(frame).toHaveAttribute('sandbox', '')
+  expect(await frame.evaluate((el) => (el as HTMLIFrameElement).contentDocument)).toBeNull()
   await expect(page.frameLocator('iframe[title="HTML preview"]').locator('#visible')).toHaveText('frame content')
   await page.waitForTimeout(800)
   expect(await page.evaluate(() => (window as unknown as { __m: string[] }).__m)).toEqual([])
