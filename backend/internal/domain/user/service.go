@@ -94,7 +94,7 @@ type CreateUserInput struct {
 func (s *Service) Create(ctx context.Context, in CreateUserInput) (User, error) {
 	u := User{
 		ID:          uuid.New(),
-		Email:       strings.ToLower(strings.TrimSpace(in.Email)),
+		Email:       strings.TrimSpace(in.Email), // normalised below, after Validate checks it
 		DisplayName: strings.TrimSpace(in.DisplayName),
 		Role:        in.Role,
 		SAMLSubject: in.SAMLSubject,
@@ -105,6 +105,7 @@ func (s *Service) Create(ctx context.Context, in CreateUserInput) (User, error) 
 	if err := u.Validate(); err != nil {
 		return User{}, err
 	}
+	u.Email = strings.ToLower(u.Email)
 	switch {
 	case in.Password != "":
 		hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), s.hashCost)
@@ -316,7 +317,7 @@ func IsEmailDomainAllowed(email string, allowed []string) bool {
 	if len(allowed) == 0 {
 		return true
 	}
-	parts := strings.SplitN(strings.ToLower(strings.TrimSpace(email)), "@", 2)
+	parts := strings.SplitN(asciiLower(strings.TrimSpace(email)), "@", 2)
 	if len(parts) != 2 || parts[1] == "" {
 		return false
 	}
@@ -380,7 +381,7 @@ func (s *Service) UpsertOIDCUser(
 	displayName string,
 ) (User, error) {
 	oidcSubject = strings.TrimSpace(oidcSubject)
-	email = strings.ToLower(strings.TrimSpace(email))
+	email = strings.TrimSpace(email) // normalised where it is used, once known to be ASCII
 	displayName = strings.TrimSpace(displayName)
 
 	// An identity with no subject cannot be bound to an account. The subject
@@ -399,8 +400,8 @@ func (s *Service) UpsertOIDCUser(
 		if !u.IsActive() {
 			return User{}, ErrUserDisabled
 		}
-		if email != "" {
-			u.Email = email
+		if email != "" && isASCII(email) {
+			u.Email = strings.ToLower(email)
 		}
 		if displayName != "" {
 			u.DisplayName = displayName
@@ -417,6 +418,11 @@ func (s *Service) UpsertOIDCUser(
 	}
 
 	if email != "" {
+		// Addresses must be ASCII; refused before the lookup.
+		if !isASCII(email) {
+			return User{}, fmt.Errorf("%w: email address must contain only ASCII characters", ErrValidation)
+		}
+		email = strings.ToLower(email)
 		u, err := s.store.GetByEmail(ctx, email)
 		switch {
 		case err == nil:
@@ -467,7 +473,7 @@ func canAdoptByEmail(u User, oidcSubject string) error {
 
 func (s *Service) UpsertSAMLUser(ctx context.Context, samlSubject, email, displayName string, allowedDomains []string) (User, error) {
 	samlSubject = strings.TrimSpace(samlSubject)
-	email = strings.ToLower(strings.TrimSpace(email))
+	email = strings.TrimSpace(email) // normalised where it is used, once known to be ASCII
 	displayName = strings.TrimSpace(displayName)
 
 	// An assertion with no NameID cannot be bound to an account. The subject
@@ -491,8 +497,8 @@ func (s *Service) UpsertSAMLUser(ctx context.Context, samlSubject, email, displa
 		// Synced only when present. An IdP that stops releasing an attribute
 		// must not blank what is already stored: the email column is unique, so
 		// the second user that happened to could not log in at all.
-		if email != "" {
-			u.Email = email
+		if email != "" && isASCII(email) {
+			u.Email = strings.ToLower(email)
 		}
 		if displayName != "" {
 			u.DisplayName = displayName
@@ -512,6 +518,7 @@ func (s *Service) UpsertSAMLUser(ctx context.Context, samlSubject, email, displa
 	if !IsEmailDomainAllowed(email, allowedDomains) {
 		return User{}, ErrDomainNotAllowed
 	}
+	// Create refuses a non-ASCII address.
 	return s.Create(ctx, CreateUserInput{
 		Email:       email,
 		DisplayName: displayName,
@@ -546,7 +553,13 @@ func (s *Service) SoftDelete(ctx context.Context, id uuid.UUID) error {
 
 // Update persists changes to an existing user.
 func (s *Service) Update(ctx context.Context, u User) error {
-	if err := u.Validate(); err != nil {
+	// An address the account already holds is not validated again: one stored
+	// before addresses had to be ASCII must still be renamable or re-roled.
+	if cur, err := s.store.GetByIDAdmin(ctx, u.ID); err == nil && cur.Email == u.Email {
+		if err := u.validateFields(); err != nil {
+			return err
+		}
+	} else if err := u.Validate(); err != nil {
 		return err
 	}
 	u.UpdatedAt = time.Now()

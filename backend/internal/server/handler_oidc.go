@@ -175,7 +175,8 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	email := strings.ToLower(strings.TrimSpace(claims.Email))
+	// Not normalised here: that happens once the address is known to be ASCII.
+	email := strings.TrimSpace(claims.Email)
 
 	// An unverified address proves nothing about who owns it, so it must not be
 	// used to adopt an existing account or to provision a new one. Dropping it
@@ -229,6 +230,8 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 				"the identity provider did not supply a verified email address")
 		case errors.Is(err, user.ErrDomainNotAllowed):
 			fail(http.StatusForbidden, "domain_not_allowed", "this email domain is not allowed")
+		case errors.Is(err, user.ErrValidation):
+			fail(http.StatusBadRequest, "invalid_email", "the identity provider sent an email address that cannot be used")
 		default:
 			failInternal(err)
 		}

@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
@@ -79,6 +80,23 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			Error(w, http.StatusBadRequest, "invalid_ticket_prefix",
 				"ticket prefix must be 1-8 characters, uppercase letters or digits only")
 			return
+		}
+	}
+
+	// Allowed domains must be ASCII, so that they compare reliably. Refused at
+	// save rather than silently inert.
+	if raw, ok := body[admin.KeyAllowedEmailDomains]; ok {
+		var domains []string
+		if err := json.Unmarshal(raw, &domains); err == nil {
+			for _, d := range domains {
+				for i := 0; i < len(d); i++ {
+					if d[i] >= 0x80 {
+						Error(w, http.StatusBadRequest, "invalid_allowed_email_domains",
+							fmt.Sprintf("%q must be ASCII: use the xn-- form for an internationalised domain", d))
+						return
+					}
+				}
+			}
 		}
 	}
 

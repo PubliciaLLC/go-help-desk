@@ -68,6 +68,10 @@ func ValidateEmail(s string) (string, error) {
 	if trimmed == "" {
 		return "", fmt.Errorf("%w: email is required", ErrValidation)
 	}
+	// Addresses must be ASCII so that they compare reliably.
+	if !isASCII(trimmed) {
+		return "", fmt.Errorf("%w: email address must contain only ASCII characters", ErrValidation)
+	}
 	addr, err := mail.ParseAddress(trimmed)
 	if err != nil {
 		return "", fmt.Errorf("%w: %q is not an email address", ErrValidation, trimmed)
@@ -81,10 +85,37 @@ func ValidateEmail(s string) (string, error) {
 	return strings.ToLower(addr.Address), nil
 }
 
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// asciiLower lower-cases A-Z and nothing else. For text that may be non-ASCII
+// and is only compared, never stored.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
+}
+
 func (u User) Validate() error {
 	if _, err := ValidateEmail(u.Email); err != nil {
 		return err
 	}
+	return u.validateFields()
+}
+
+// validateFields is Validate without the address, for an update that leaves
+// the stored address alone.
+func (u User) validateFields() error {
 	if strings.TrimSpace(u.DisplayName) == "" {
 		return fmt.Errorf("%w: display name is required", ErrValidation)
 	}
