@@ -221,7 +221,12 @@ func joinHTML(def TemplateDef, header, content, footer string) ([]byte, error) {
 		return nil, fmt.Errorf("email template %q: the HTML part comes to %d bytes with the header and footer, and mail clients cut off what is over 100 KiB; shorten it: %w",
 			def.Label, n, ErrPermanent)
 	}
-	return []byte(header + content + footer), nil
+	joined := header + content + footer
+	// The bytes that will be sent get the same markup check as the source did.
+	if te := checkRenderedHTML(joined); te != nil {
+		return nil, fmt.Errorf("email template %q: the HTML that would be sent is refused (%s): %w", def.Label, te.Message, ErrPermanent)
+	}
+	return []byte(joined), nil
 }
 
 // storedOverrides reads the rows for these names in one lookup. A failed read

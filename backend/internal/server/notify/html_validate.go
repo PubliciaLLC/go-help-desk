@@ -124,11 +124,22 @@ var cssRefusals = []struct{ word, why string }{
 	{"vbscript:", "a vbscript: URL runs script"},
 	{"data:", "a data: URL can carry anything"},
 	{"image-set(", "image-set( loads an image without url(, past the check on url("},
+	{"image(", "image( loads an image without url(, past the check on url("},
+	{"src(", "src( loads a resource without url(, past the check on url("},
+	{"cross-fade(", "cross-fade( loads images, and its arguments are not checked"},
+	{"progid:", "an Internet Explorer filter can load a file"},
 }
 
 // checkCSS returns why a style attribute value or <style> text is refused, or "".
 func checkCSS(css string) string {
 	l := strings.ToLower(css)
+	if strings.Contains(l, "/*") {
+		// A comment can split a keyword the checks look for, and whether "/*" is
+		// a comment or part of a string is a parser's decision, not a text
+		// search's: a string holding "/*" would let a naive strip hide a url(.
+		// Mail has no use for them.
+		return "a CSS comment (/* */) is not allowed: it can hide what the checks look for"
+	}
 	if strings.ContainsRune(l, '\\') {
 		// \6a\61vascript is javascript to a CSS parser, and cannot be matched as text.
 		return "a backslash in CSS can spell out a word the checks look for, so it is not allowed"
@@ -195,10 +206,28 @@ func checkHTML(def TemplateDef, src string) *TemplateError {
 	if !def.Shell && !w.foundRequired {
 		return fail(1, 1, "must include {{.%s}} outside any {{if}}; without it the person cannot reach the link", def.Required)
 	}
-	if _, err := executeHTML(def, src, SampleVars(def, "https://help.example.com", "GHD")); err != nil {
+	out, err := executeHTML(def, src, SampleVars(def, "https://help.example.com", "GHD"))
+	if err != nil {
 		return fail(0, 0, "%s", err.Error())
 	}
+	// The source was read with its actions stood in for; the output is what a
+	// reader's software gets. The same check on it closes whatever the two could
+	// disagree about.
+	if te := checkRenderedHTML(out); te != nil {
+		return fail(0, 0, "the HTML that would be sent is refused: %s", te.Message)
+	}
 	return nil
+}
+
+// checkRenderedHTML runs the markup check on bytes that are final: no actions
+// to stand in for. A private-use character in a value is text, and is read as
+// text.
+func checkRenderedHTML(out string) *TemplateError {
+	c := &htmlCheck{src: out}
+	sk := &skeleton{}
+	sk.text(out, 0)
+	c.scan(sk)
+	return c.err
 }
 
 // htmlCheck reads the markup. The source cannot be handed to an HTML tokenizer
@@ -366,7 +395,10 @@ func (c *htmlCheck) scan(sk *skeleton) {
 			}
 			name := tok.Data
 			switch {
-			case name == "style" && tt == html.StartTagToken:
+			case name == "style" && tt != html.EndTagToken:
+				// A self-closing <style/> too: in HTML that slash means nothing,
+				// and the tokenizer and every browser read what follows as CSS
+				// up to </style>. Missing this was a way to hide CSS from the check.
 				inStyle, styleAt = true, at
 			case name == "style" && tt == html.EndTagToken:
 				inStyle = false

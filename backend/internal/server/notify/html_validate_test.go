@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	nethtml "golang.org/x/net/html"
+	"golang.org/x/net/html/atom"
 )
 
 // The HTML part of an email template (#158, PR 2). Whatever the admin writes
@@ -153,6 +155,43 @@ func TestValidateHTML_Table(t *testing.T) {
 		// ── a whole-value action in a link must be a URL ──
 		{name: "a tracking number as an href", html: `{{.TicketURL}}<a href="{{.TrackingNumber}}">y</a>`, wantMsg: "must be a link variable"},
 		{name: "a tracking number in the only link", html: `<a href="{{.TrackingNumber}}">{{.TicketURL}}</a>`, wantMsg: "must be a link variable"},
+
+		// ── differentials: where the validator's tokenizer and a browser could disagree ──
+		// <style/> is NOT self-closing in HTML: a browser (and the tokenizer) read
+		// what follows as CSS up to </style>. The check on CSS must follow.
+		{name: "a self-closing style still starts CSS", html: `{{.TicketURL}}<style/>p{background:url(http://a.example/x)}</style>`, wantMsg: "url( must be followed by https:"},
+		{name: "a self-closing style still refuses a template inside", html: `<style/>{{.TrackingNumber}}</style>{{.TicketURL}}`, wantMsg: "not allowed inside <style>"},
+		{name: "a self-closing style left open", html: `{{.TicketURL}}<style/>p{}`, wantMsg: "<style> is not closed"},
+		{name: "a self-closing style with CSS that runs", html: `{{.TicketURL}}<style />p{width:expression(alert(1))}</style>`, wantMsg: "expression"},
+		{name: "style start tag with odd casing", html: `{{.TicketURL}}<STYLE>p{background:url(http://a.example/x)}</sTyLe >`, wantMsg: "url( must be followed by https:"},
+		{name: "style end tag with a tab", html: "{{.TicketURL}}<style>p{}</style\t><script>x</script>", wantMsg: "<script> is not allowed"},
+		{name: "style end tag with a slash", html: `{{.TicketURL}}<style>p{}</style/><script>x</script>`, wantMsg: "<script> is not allowed"},
+		{name: "a comment close with a bang", html: `{{.TicketURL}}<!-- a --!><script>x</script> -->`, wantMsg: "HTML comments are not allowed"},
+		{name: "a comment that is just dashes", html: `{{.TicketURL}}<!--->`, wantMsg: "HTML comments are not allowed"},
+		{name: "a processing instruction", html: `{{.TicketURL}}<?php <script>x</script> ?>`, wantMsg: "HTML comments are not allowed"},
+		{name: "cdata", html: `{{.TicketURL}}<![CDATA[ <script>x</script> ]]>`, wantMsg: "HTML comments are not allowed"},
+		{name: "a bogus end tag", html: `{{.TicketURL}}</ script><script>x</script>`, wantMsg: "HTML comments are not allowed"},
+		{name: "title", html: `{{.TicketURL}}<title></title>`, wantMsg: "<title> is not allowed"},
+		{name: "textarea with an odd end", html: `{{.TicketURL}}<TEXTAREA></TextArea ><script>x</script>`, wantMsg: "<textarea> is not allowed"},
+		{name: "a control character in an attribute name", html: "{{.TicketURL}}<p a\x01b=c>y</p>", wantMsg: "letters, digits and hyphens"},
+		{name: "a form feed before a handler", html: "{{.TicketURL}}<p\x0conclick=x>y</p>", wantMsg: `"onclick"`},
+		{name: "a control character after the tag name", html: "{{.TicketURL}}<a\x0b href=\"javascript:x\">y</a>", wantMsg: "is not allowed"},
+		{name: "an entity for a NUL is only text", html: `{{.TicketURL}}<p title="&#0;">y</p>`},
+		{name: "html entities for a javascript url", html: `{{.TicketURL}}<a href="java&Tab;script&colon;alert(1)">y</a>`, wantMsg: "href must start with"},
+		{name: "a numeric entity with no semicolon", html: `{{.TicketURL}}<a href="&#106avascript:alert(1)">y</a>`, wantMsg: "href must start with"},
+		{name: "entities in a style attribute are decoded", html: `{{.TicketURL}}<p style="background:u&#114;l(http://a.example/x)">y</p>`, wantMsg: "url( must be followed by https:"},
+		{name: "entities in a style block are not decoded, and are not CSS", html: `<style>p{content:"&#117;rl(http://a.example/x)"}</style>{{.TicketURL}}`},
+		{name: "css comments are refused", html: `{{.TicketURL}}<p style="color:red /* x */">y</p>`, wantMsg: "comment"},
+		{name: "css comment splitting a keyword", html: `{{.TicketURL}}<p style="width:exp/**/ression(alert(1))">y</p>`, wantMsg: "comment"},
+		{name: "css comment hiding a url", html: `<style>p{content:"/*";background:url(http://a.example/x)/* "}</style>{{.TicketURL}}`, wantMsg: "comment"},
+		{name: "css newline inside url", html: "{{.TicketURL}}<p style=\"background:url(\nhttp://a.example/x)\">y</p>", wantMsg: "url( must be followed by https:"},
+		{name: "css newline inside url is fine for https", html: "{{.TicketURL}}<p style=\"background:url(\nhttps://a.example/x)\">y</p>"},
+		{name: "css src()", html: `{{.TicketURL}}<p style="background:src(http://a.example/x)">y</p>`, wantMsg: "src("},
+		{name: "css image()", html: `<style>p{background:image(http://a.example/x)}</style>{{.TicketURL}}`, wantMsg: "image("},
+		{name: "css cross-fade()", html: `<style>p{background:cross-fade(url(https://a.example/x), url(https://a.example/y))}</style>{{.TicketURL}}`, wantMsg: "cross-fade("},
+		{name: "css webkit image-set", html: `{{.TicketURL}}<p style="background:-webkit-image-set(url(http://a.example/x) 1x)">y</p>`, wantMsg: "image-set("},
+		{name: "css ie filter loader", html: `{{.TicketURL}}<p style="filter:progid:DXImageTransform.Microsoft.AlphaImageLoader(src='http://a.example/x')">y</p>`, wantMsg: "progid:"},
+		{name: "css behavior with a comment", html: `{{.TicketURL}}<p style="beha/**/vior:x">y</p>`, wantMsg: "comment"},
 
 		// ── the required link ──
 		{name: "no link", html: `<p>Hello</p>`, wantLine: 1, wantCol: 1, wantMsg: "must include {{.TicketURL}}"},
@@ -349,10 +388,96 @@ func TestRenderHTML_AMissingValueIsAnErrorNotBlankText(t *testing.T) {
 
 // ── fuzz ─────────────────────────────────────────────────────────────────────
 
+// treeProblem reads rendered HTML the way a browser does, with the HTML5 tree
+// builder, not with the tokenizer the validator uses, and returns the first
+// thing in it that the validator exists to keep out. The two disagreeing about
+// what some bytes are (a comment that ends early, a raw-text element, a name
+// with an odd character) shows up here as a script, a handler or a bad URL in
+// the tree of something the validator accepted.
+func treeProblem(out string) string {
+	nodes, err := nethtml.ParseFragment(strings.NewReader(out), &nethtml.Node{Type: nethtml.ElementNode, DataAtom: atom.Body, Data: "body"})
+	if err != nil {
+		return "unparseable: " + err.Error()
+	}
+	var walk func(n *nethtml.Node) string
+	walk = func(n *nethtml.Node) string {
+		if n.Type == nethtml.ElementNode {
+			if n.Namespace != "" {
+				return "foreign element " + n.Data
+			}
+			if _, bad := refusedElements[n.Data]; bad || !allowedElements[n.Data] {
+				return "element " + n.Data
+			}
+			for _, a := range n.Attr {
+				k := strings.ToLower(a.Key)
+				switch {
+				case strings.HasPrefix(k, "on"):
+					return "handler " + a.Key
+				case k == "href" && !urlHasScheme(a.Val, "https:", "http:", "mailto:"):
+					return "href " + a.Val
+				case httpsOnly[k] && !allURLsHTTPS(k, a.Val):
+					return k + " " + a.Val
+				case k == "style" && checkCSS(a.Val) != "":
+					return "style " + a.Val
+				case !allowedAttributes[k] && !strings.HasPrefix(k, "aria-"):
+					return "attribute " + a.Key
+				}
+			}
+			if n.Data == "style" {
+				for c := n.FirstChild; c != nil; c = c.NextSibling {
+					if why := checkCSS(c.Data); why != "" {
+						return "style block: " + why
+					}
+				}
+			}
+		}
+		if n.Type == nethtml.CommentNode {
+			return "comment"
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			if p := walk(c); p != "" {
+				return p
+			}
+		}
+		return ""
+	}
+	for _, n := range nodes {
+		if p := walk(n); p != "" {
+			return p
+		}
+	}
+	return ""
+}
+
+// differentialSeeds are inputs where a tokenizer and a browser could disagree.
+var differentialSeeds = []string{
+	"<style/>p{background:url(http://a/x)}</style>", "<style />p{width:expression(x)}</style>", "<style/>{{.TrackingNumber}}</style>",
+	"<style>p{background:url(http://a/x)/* }</style>", "<p style=\"background:src(http://a/x)\">", "<p a\x01b=c>",
+	"<!-->", "<!--->", "<!-- x --!> <script>alert(1)</script> -->", "<!-- a --> b", "<!--[if mso]><p><![endif]-->",
+	"<title>&lt;/title&gt;<script>alert(1)</script></title>", "<textarea></textarea><script>x</script>",
+	"<style>p{}</STYLE ><script>x</script>", "<style>p{}</style\t><script>x</script>", "<style>p{}</style/><script>x</script>",
+	"<style>/* </style><script>alert(1)</script> */</style>", "<style>a{b:'</style><script>alert(1)</script>'}</style>",
+	"<p a\x00=b>", "<p \x0bonclick=x>", "<p\x0conclick=x>", "<a href=\"https://ok\"onclick=x>y</a>", "<a href=\"https://ok\"/onclick=x>y</a>",
+	"<a href=\"&#x6A;avascript:x\">y</a>", "<a href=\"java&Tab;script:x\">y</a>", "<a href=\"java&NewLine;script&colon;x\">y</a>",
+	"<a href=\"&#106avascript:x\">y</a>", "<a href=\"&amp;#106;avascript:x\">y</a>", "<a href=\"\x01javascript:x\">y</a>", "<a href=\"\u00a0javascript:x\">y</a>",
+	"<p style=\"background:url(&#104;ttp://a/x)\">", "<p style=\"background:u&#114;l(http://a/x)\">", "<p style=\"background:url(\nhttp://a/x)\">",
+	"<p style=\"background:url(/**/http://a/x)\">", "<p style=\"background:ur/**/l(http://a/x)\">", "<p style=\"width:exp/**/ression(x)\">",
+	"<p style=\"background:url('https://a/x');background:url(http://a/y)\">", "<style>p{background:url(http://a/x)}</style>",
+	"<style>@im/**/port 'http://a/x';</style>", "<style>p{content:\"/*\";background:url(http://a/x)/* \"}</style>",
+	"<style>p{background:src(http://a/x)}</style>", "<p style=\"filter:progid:DXImageTransform.Microsoft.AlphaImageLoader(src='http://a/x')\">",
+	"<noscript><p title=\"</noscript><script>x</script>\"></noscript>", "<xmp><script>x</script></xmp>", "<plaintext><script>x</script>",
+	"<table><tr><td><style>p{}</style><script>x</script>", "<select><script>x</script></select>", "<template><script>x</script></template>",
+	"<svg><style><![CDATA[</style><script>x</script>]]></style></svg>", "<math><mtext><table><mglyph><style><!--</style><img src onerror=x>",
+	"<![CDATA[ <script>x</script> ]]>", "<?php <script>x</script> ?>", "</ script><script>x</script>", "<!x <script>y</script> >",
+	"<img src=\"https://a/x\" srcset=\"https://a/x 1x,http://a/y 2x\">", "<a ping=\"http://a\" href=\"https://ok\">y</a>",
+	"<a href=https://ok.example/a`b onclick=x>y</a>", "<p a=`b onclick=x`>", "&lt;script&gt;", "&#60;script&#62;",
+}
+
 // FuzzValidateHTML asserts what the save path relies on: the validator never
-// panics, and anything it accepts renders without error and into something
-// that passes the same checks the output of a send would be held to. `go test`
-// runs the seed corpus; `go test -fuzz=FuzzValidateHTML` explores.
+// panics, and anything it accepts renders without error into bytes that, read
+// the way a browser reads them (a different parser from the validator's), hold
+// nothing the validator forbids. `go test` runs the seed corpus; `go test
+// -fuzz=FuzzValidateHTML` explores.
 func FuzzValidateHTML(f *testing.F) {
 	for _, s := range []string{
 		``, `{{.TicketURL}}`, `<a href="{{.TicketURL}}">x</a>`, `<p>{{.TrackingNumber}}</p>{{.TicketURL}}`,
@@ -363,11 +488,14 @@ func FuzzValidateHTML(f *testing.F) {
 	} {
 		f.Add(s)
 	}
+	for _, s := range differentialSeeds {
+		f.Add("{{.TicketURL}}" + s)
+		f.Add(s + "{{.TicketURL}}")
+	}
 	def, ok := LookupTemplate("ticket_created")
 	if !ok {
 		f.Fatal("no ticket_created template")
 	}
-	shell, _ := LookupTemplate(NameHeader)
 	vars := SampleVars(def, "https://help.example.com", "GHD")
 	f.Fuzz(func(t *testing.T, src string) {
 		if len(ValidateHTML(def, src)) > 0 {
@@ -377,14 +505,40 @@ func FuzzValidateHTML(f *testing.F) {
 		if err != nil {
 			t.Fatalf("accepted but did not render: %v\nsource: %q", err, src)
 		}
-		// What was sent must itself pass the markup checks: escaping must not
-		// have turned an accepted source into a script, a handler or a bad URL.
-		// (Checked as a header, which needs no link and takes no variables.)
-		if strings.Contains(out, "{{") {
-			return // a literal "{{" in the text would be read as an action
-		}
-		if errs := ValidateHTML(shell, out); len(errs) > 0 {
-			t.Fatalf("accepted source rendered markup that is refused: %v\nsource: %q\noutput: %q", errs[0], src, out)
+		if p := treeProblem(out); p != "" {
+			t.Fatalf("accepted source rendered markup a browser would read as %s\nsource: %q\noutput: %q", p, src, out)
 		}
 	})
+}
+
+// The oracle itself: it must see what it is there to see.
+func TestTreeProblem_SeesWhatABrowserWouldSee(t *testing.T) {
+	for _, bad := range []string{
+		`<script>x</script>`, `<p onclick="x">y</p>`, `<a href="javascript:x">y</a>`, `<!-- c -->`,
+		`<title>t</title>`, `<p style="width:expression(x)">y</p>`, `<img src="http://a/x">`,
+		`<!-- a --!><script>x</script>`, `<svg></svg>`, `<p data-x="y">`,
+	} {
+		require.NotEmpty(t, treeProblem(bad), bad)
+	}
+	require.Empty(t, treeProblem(`<table><tr><td style="color:red"><a href="https://a.example">x</a> &amp; y</td></tr></table>`))
+}
+
+// The bytes that are sent are checked, not only the source they came from.
+func TestCheckRenderedHTML_IsTheSameCheckOnTheFinalBytes(t *testing.T) {
+	require.Nil(t, checkRenderedHTML(`<table><tr><td><p>Hi &amp; bye <a href="https://a.example/g#tok">x</a></p></td></tr></table>`))
+	require.Nil(t, checkRenderedHTML("Site  name"), "private-use characters in a value are text, not template markers")
+	for _, bad := range []string{`<script>x</script>`, `<p onclick=x>`, `<a href="javascript:x">y</a>`, `<style/>p{background:url(http://a/x)}</style>`, `<!-- c -->`, `a < b`} {
+		require.NotNil(t, checkRenderedHTML(bad), bad)
+	}
+}
+
+func TestSend_RefusesFinalHTMLThatFailsTheCheck(t *testing.T) {
+	// joinHTML is what compose and the preview both use for the final bytes.
+	def := mustDef(t, "ticket_created")
+	_, err := joinHTML(def, "<p>", "<script>x</script>", "</p>")
+	require.ErrorIs(t, err, ErrPermanent)
+	require.Contains(t, err.Error(), "<script> is not allowed")
+	out, err := joinHTML(def, "<p>", "x", "</p>")
+	require.NoError(t, err)
+	require.Equal(t, "<p>x</p>", string(out))
 }

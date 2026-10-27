@@ -121,6 +121,7 @@ func TestHTMLAll_APreviewOfATemplateWithNoHTMLShowsItsTextAsParagraphs(t *testin
 
 func TestHTMLAll_DraftingAShellWithNoHTMLWhileTheOtherHasSome(t *testing.T) {
 	d := dispatcherFor(t, "127.0.0.1:1").WithTemplates(overrides(brandedShell[1]), fakeSite("x"))
+	d.cfg.BaseURL = "https://help.example.com"
 	p, err := d.PreviewDraftHTML(context.Background(), mustDef(t, NameHeader), "", "", "", "GHD")
 	require.NoError(t, err)
 	require.Contains(t, p.HTML, "Sent by x", "the footer's HTML part is enough to make the mail HTML")
