@@ -275,6 +275,17 @@ API keys can now be made by staff, issued by an administrator on a staff member'
 
 Archiving was possible only through the API (`PATCH` with `active`). Each category, type and item row now has an Archive button, and an archived row has Restore. Archive asks first: the entry can no longer be chosen for new tickets, and tickets already filed under it keep it. Archived rows stay in the tree, greyed and labelled "Archived". Archiving does not cascade to the rows beneath. When deleting an entry is refused because tickets use it, the message now points to Archive.
 
+### Administrators Can Edit the Wording of the Emails (#158)
+
+Under **Admin → Email Templates** an administrator edits the subject and body of all 17 emails, and a shared header and footer that go around every one. The text is plain; an HTML version is not part of 1.3.0. With nothing edited, every email is byte for byte what it was before the editor existed.
+
+- **Still no ticket content.** A template may hold only words, `{{.Name}}` for a value the template has, and `{{if .Name}}...{{else}}...{{end}}`. The ticket emails can print the tracking number and the ticket link, the verification and reset emails their link, the header and footer the help desk's name. Anything else is refused with its line and column. Each mail must print its link outside any `if`, because a guest's link is replaced each time.
+- **Limits:** body 8 KiB, subject 200 bytes on one line.
+- **An edit that stops working fails the mail.** If a later upgrade makes a saved edit invalid, the mail that uses it fails at once with no retries; it is not replaced by the shipped text. Administrators see a red notice per template with **Revert to default** and **Edit**, and the list is in `email.broken_templates` of `GET /api/v1/admin/security-warnings`. Mail that failed before the revert is not sent again.
+- **Session only.** The routes under `/api/v1/admin/email-templates` need an administrator in a browser session; an API key or OAuth client gets `403`.
+- **Test send** goes to the signed-in administrator's own address only, at most 5 every 10 minutes.
+- **Migration 000057** creates the table `email_template_overrides`, one row per edited template. It adds no column to an existing table and is safe to apply on a running instance.
+
 ### Staff Search Now Covers Every Ticket They Can See (#444)
 
 A search in the ticket list used to cover only the selected queue, so staff searching from "Mine" never found a ticket assigned to someone else. **For staff and administrators the search box now covers every ticket the viewer can see, whatever queue is selected.**
@@ -543,8 +554,8 @@ Replies and internal notes now appear in a ticket's Activity panel as "Erik Test
 
 The server now says what it did to the schema, once, at startup, before it opens the port:
 
-- `database migrated from 21 to 56`: an upgrade from 1.2.0 (the first number is the version the database was at, the second the version it is at now). A new database says `from 0`.
-- `database schema at 56, no migrations needed`: an ordinary restart.
+- `database migrated from 21 to 57`: an upgrade from 1.2.0 (the first number is the version the database was at, the second the version it is at now). A new database says `from 0`.
+- `database schema at 57, no migrations needed`: an ordinary restart.
 
 The line carries `from` and `to` fields as well. Use it to check that an upgrade ran before you look anywhere else. Migrations still run on their own, before the server accepts traffic, and a failed one still stops the start with `running migrations: ...`.
 
@@ -560,7 +571,7 @@ The line carries `from` and `to` fields as well. Use it to check that an upgrade
 
 1.2.x ends at migration 000021. Going straight to 1.3.0 applies every later migration in number order, and **there is no migration 000048.** The number was retired while 1.3.0 was being built, so that no pre-release database could skip a migration. Nothing is missing: your database goes from 000047 straight to 000049. (#450 first planned 000048, but #451 merged with 000049 first, and the migration runner never applies a version below the one a database is already at.)
 
-The ones these notes describe: 000038 (webhook ticket filter column), 000039 (removes orphaned custom-field assignments, once, irreversibly), 000040 (`visible_on_new` column default becomes false; existing rows untouched), 000041 (OAuth client service users), 000042 (three staff email columns on `users`), 000043 to 000045 (SLA rematch, the password-rehash clock, `users.must_change_password`), 000046 (`ticket_followers`), 000047 (`tickets.reopen_count`, `last_reopened_at`, `paused_seconds_at_last_reopen`), 000049 (`password_reset_tokens`), 000050 (`api_keys.created_by`, `webhook_configs.api_key_id`; the new #450 settings are rows in the settings table and need no migration), 000051 (the `dropped` webhook result and `drop_reason`), 000052 (stores the three staff email administrator overrides as Off on an install that already has users), 000053 (open tickets still assigned to deleted users go back to the queue; see *Tickets Left Assigned to a Deleted User Go Back to the Queue (#524)*) 000055 (the text format columns; existing text is marked plain; see *Markdown in Ticket Text (#443)*) and 000056 (`tickets.source_channel`; every existing ticket is marked `web`; see *Existing Tickets Are Marked `web`, Even If They Came by API or MCP (#130)*). **Stop every old (1.2 or earlier) instance before 000055 and 000056 run:** both remove a column default, so an instance still on the old version cannot create tickets or replies afterwards. Those that say so are safe to apply on a running instance.
+The ones these notes describe: 000038 (webhook ticket filter column), 000039 (removes orphaned custom-field assignments, once, irreversibly), 000040 (`visible_on_new` column default becomes false; existing rows untouched), 000041 (OAuth client service users), 000042 (three staff email columns on `users`), 000043 to 000045 (SLA rematch, the password-rehash clock, `users.must_change_password`), 000046 (`ticket_followers`), 000047 (`tickets.reopen_count`, `last_reopened_at`, `paused_seconds_at_last_reopen`), 000049 (`password_reset_tokens`), 000050 (`api_keys.created_by`, `webhook_configs.api_key_id`; the new #450 settings are rows in the settings table and need no migration), 000051 (the `dropped` webhook result and `drop_reason`), 000052 (stores the three staff email administrator overrides as Off on an install that already has users), 000053 (open tickets still assigned to deleted users go back to the queue; see *Tickets Left Assigned to a Deleted User Go Back to the Queue (#524)*) 000055 (the text format columns; existing text is marked plain; see *Markdown in Ticket Text (#443)*), 000056 (`tickets.source_channel`; every existing ticket is marked `web`; see *Existing Tickets Are Marked `web`, Even If They Came by API or MCP (#130)*) and 000057 (`email_template_overrides`, the table that holds edited email wording; see *Administrators Can Edit the Wording of the Emails (#158)*). **Stop every old (1.2 or earlier) instance before 000055 and 000056 run:** both remove a column default, so an instance still on the old version cannot create tickets or replies afterwards. Those that say so are safe to apply on a running instance.
 
 A database that ran a 1.3.0 beta build containing `000046` before `000043` to `000045` were merged would skip them: see *Ticket Followers (#441)*.
 
@@ -594,6 +605,10 @@ Each `down` migration undoes its `up`. These are dropped or deleted, and cannot 
 - **OAuth service users** (000041): the users made for each client are deleted, and the database removes what hangs off them by cascade: their group memberships (and any sessions or API keys they held, though a service user is not meant to have any). The clients keep working without a user, as in 1.2.0. Tickets and replies they wrote stay, with no author link, and a ticket assigned to one loses its assignee.
 - **Text formats** (000055): `tickets.description_format` and `ticket_replies.body_format` are dropped. Description and reply text stays, but which posts were written as Markdown is forgotten, so Markdown posts written under 1.3 show as raw source, and 1.2.0 shows everything as plain text.
 - **Source channel** (000056): `tickets.source_channel` is dropped, so every recorded `api`, `mcp`, `guest` and `phone` value is lost. Re-upgrading marks every ticket `web` again.
+- **Edited email wording** (000057): the table `email_template_overrides` is dropped, so every edited email and the shared header and footer go back to the shipped text. The text of each save stays in the `audit_log` table. 1.2.0 has no audit page, so after a rollback it can be read only with SQL; it shows in the Audit Log again after you upgrade again.
+- **Used SAML hand-over cookies** (000035): the table `spent_saml_handovers` is dropped. It holds only short-lived replay-protection rows, and 1.2.0 does not make those cookies single-use.
+- **Audit log search indexes** (000030): three indexes on `audit_log` (by time, actor and action) are dropped. Nothing is lost, and 1.2.0 has no query that uses them; upgrading again recreates them.
+- **Custom field default** (000040): `custom_field_assignments.visible_on_new` goes back to a column default of `true`. Existing rows are untouched.
 - **The generated JWT signing key** (`instance_secrets`, 000036). 1.2.0 needs its own `JWT_SECRET` in `docker/.env`: set a random secret of at least 32 bytes (for example `openssl rand -base64 48`). 1.2.0 only warns about a weak or example secret and signs with whatever you give it, and 1.3.0 discarded published example values as well as short and unset ones, so a value that 1.3.0 ignored is not safe to reuse. Every OAuth client fetches a new token either way.
 - Pending signups that 1.3.0 created without a name or password (000032, 000033).
 - **Which attachments a guest uploaded** (000054): `attachments.uploaded_by_guest` is dropped. The files stay; the record of who attached them is forgotten.
@@ -679,4 +694,4 @@ cd docker
 
 5. **Check it.** Sign in as an administrator, open a few tickets, and download an attachment. `SELECT version, dirty FROM schema_migrations` should say `21 | f`. `docker compose port db 5432` should say `127.0.0.1:5432`.
 
-To go forward again, run `git checkout -- docker-compose.yml` in `go-help-desk/docker` to drop the edit from step 3, then `git checkout v1.3.0` (it refuses while the file is changed) and start it: it runs every migration from 22, and says so in the log (`database migrated from 21 to 56`).
+To go forward again, run `git checkout -- docker-compose.yml` in `go-help-desk/docker` to drop the edit from step 3, then `git checkout v1.3.0` (it refuses while the file is changed) and start it: it runs every migration from 22, and says so in the log (`database migrated from 21 to 57`).
