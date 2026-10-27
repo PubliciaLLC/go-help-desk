@@ -89,6 +89,7 @@ Read the full notes before upgrading: [1.3.0](https://gohelpdesk.org/docs/upgrad
 - Descriptions and replies can be Markdown. Text written before 1.3.0 stays plain; REST defaults to plain unless it sends `format`, and MCP defaults to Markdown. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#markdown)
 - Tickets now record how they arrived. Tickets that exist at upgrade are all marked `web`, even those that came by API or MCP. Sending `source_channel` to the API now fails with `400` (MCP `create_ticket` refuses it too). The one exception is `phone`, from a staff or administrator browser session that is filing for someone else (`reporter_user_id` or `reporter_email`). Stop every 1.2 instance before the upgrade runs. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#source-channel)
 - A reply or internal note over 50,000 bytes is refused with `400 body_too_long`. Letters outside basic English and emoji take 2 to 4 bytes each. Longer posts already stored are shown collapsed. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#reply-limit)
+- Email addresses must be ASCII, so that they compare reliably. New signups, administrator-created accounts and guest tickets with other characters are refused, and allowed email domains must be ASCII (use the `xn--` form). Existing accounts keep signing in. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#ascii-email)
 - Locked out? `docker compose exec app /app/server unlock you@example.com` on the server. [Details](https://gohelpdesk.org/docs/getting-started#locked-out)
 
 **1.2.0**
