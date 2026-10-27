@@ -3359,14 +3359,19 @@ on the existing webhook feature instead of as plugins.
   `000058`). Every template, and the header and footer, can have an HTML body beside
   its text one.
 
-  - **Sending.** A template with no HTML sends single-part `text/plain`, byte for
-    byte as before; the golden tests hold that. With HTML it sends
-    `multipart/alternative`, `text/plain` first and `text/html` second, each
+  - **Sending.** With no HTML saved anywhere (no HTML header, footer or body), every
+    mail is single-part `text/plain`, byte for byte as before; the golden tests
+    hold that. **Once the header or the footer has HTML, EVERY mail gets an HTML
+    part** (the administrator's ruling): a template with HTML of its own uses it;
+    one without has its text turned into paragraphs on the server (a blank line
+    starts a paragraph, a line break is a `<br>`, each link variable is a
+    clickable link, the text is escaped and each value is escaped by
+    `html/template`). The HTML part is the header's HTML, then that, then the
+    footer's. The mail is `multipart/alternative`, `text/plain` first, each part
     quoted-printable, with a random boundary. The text part is **always the
-    separately edited text template**, never generated from the HTML. The HTML is
-    the header's HTML, the template's, then the footer's. **The header and footer
-    wrap an HTML part; they do not create one**: a template with no HTML stays
-    plain text even if the header has HTML.
+    separately edited text template** (with the text header and footer), never
+    generated from the HTML. A text-only header or footer is not carried into the
+    HTML part.
   - **Templating.** `html/template`, so each value is escaped for where it lands
     (text, or a link's `href`); the guest `#token` fragment survives it. The same
     AST allow-list as the text part runs first, on the parse tree before the
@@ -3375,40 +3380,78 @@ on the existing webhook feature instead of as plugins.
     same string-only map, so ticket text can never reach it.
   - **What an administrator may write** is checked at save with
     `golang.org/x/net/html` and **refused, with the reason, line and column;
-    nothing is rewritten.** Elements outside a list of what email carries are
-    refused, and the design's list is refused by name with why: `script`,
-    `iframe`, `frame`, `object`, `embed`, `form`, `input`, `button`, `select`,
-    `textarea`, `base`, `link`, `meta`, `svg`, `math`. Any `on*` attribute,
-    `srcdoc` and `formaction` are refused. `href` must start `https:`, `http:` or
-    `mailto:` (read the way a browser reads it: character references decoded, tabs
-    and line breaks dropped, leading control characters and spaces trimmed), or be
-    exactly one `{{.Variable}}`; `src` and `background` must start `https:`. A
-    template may appear only in text or as the whole `href` value; never in a tag,
-    an attribute name, a comment or a `<style>`. A literal `<` in text is written
-    `&lt;`. Allowed: layout markup, `style` attributes, `<style>` blocks without
-    templates, and remote images (a choice the administrator makes and the audit
-    records). Each branch of an `{{if}}` is read on its own and must come out
-    whole, so one branch cannot finish a tag another began.
-  - **Caps.** Source 64 KiB; the rendered header, body and footer together
-    100 KiB (Gmail clips near 102 KB), checked at save against sample data and
-    again at send.
+    nothing is rewritten.**
+    - *Elements* outside a list of what email carries are refused, and the
+      design's list is refused by name with why: `script`, `iframe`, `frame`,
+      `object`, `embed`, `form`, `input`, `button`, `select`, `textarea`, `base`,
+      `link`, `meta`, `svg`, `math`.
+    - *Attributes* are an allow-list too (names are letters, digits and hyphens;
+      `aria-*` as a family). `on*`, `srcdoc`, `formaction` and `xlink:href` are
+      refused by name. `href` must start `https:`, `http:` or `mailto:` (read the
+      way a browser reads it: character references decoded, tabs and line breaks
+      dropped, leading control characters and spaces trimmed), or be exactly one
+      link variable (`TicketURL`, `VerifyURL` or `ResetURL`; any other variable as
+      a whole href is refused). `src`, `srcset` (every candidate), `background`,
+      `lowsrc`, `dynsrc`, `ping`, `cite` and `longdesc` must be `https:`.
+    - *CSS* (`style` attributes and `<style>` blocks, which stay allowed) is
+      refused when it holds a backslash, a comment (`/* */`), `expression`,
+      `behavior`, `-moz-binding`, `@import`, `javascript:`, `vbscript:`, `data:`,
+      `progid:`, `image-set(`, `image(`, `src(`, `cross-fade(`, or any `url(` not
+      followed (after a quote or space) by `https:`. Matched on the lower-cased
+      text, on the decoded value for an attribute and the raw text for a block.
+    - *Comments* (`<!-- -->`, Outlook conditionals, `<!-->`, `<?...>`,
+      `<![CDATA[`) are refused: `html/template` drops them from what it renders,
+      which would be a silent change. Use `{{/* */}}` for a note.
+    - *Templates* may appear only in text or as the whole `href` value; never in a
+      tag, an attribute name, a comment or a `<style>`. A literal `<` in text is
+      written `&lt;`. Remote images are allowed (the administrator's choice, and the
+      audit records it). Each branch of an `{{if}}` is read on its own and must come
+      out whole, so one branch cannot finish a tag another began.
+    - *Repeated attributes*: the tokenizer, like a browser, keeps the first and
+      drops the rest; a test pins it.
+  - **The bytes that are sent are checked, not only the source.** The tokenizer
+    reads source with its actions stood in for; a browser reads what comes out.
+    The same markup check runs on the rendered sample at save and on the joined
+    header, body and footer at send and in the preview, and the fuzz test reads the
+    output with the HTML5 tree builder (a different parser) and fails on any
+    element, handler, URL or CSS the validator forbids. Found this way: `<style/>`
+    is not self-closing in HTML, so what follows is CSS; the check used to treat it
+    as an empty element and skipped that CSS and the template rule for `<style>`.
+  - **Caps.** Source 64 KiB. The rendered header, body and footer **together**
+    100 KiB (Gmail clips near 102 KB). That is checked **at save, for what the save
+    would join with**: saving a body is checked with the saved header and footer,
+    saving the header or footer is checked against every template (each has an HTML
+    part once a shell has HTML), and the 400 names the template that would go
+    over. The live check (`preview`) says the same, so Save stays off. A stored
+    combination that is over appears as a broken template (red notice) and fails the
+    send. The measure uses long links (2,048 bytes each, a guest link with its token
+    behind a long `BASE_URL`), a 1,024-byte site name and a 64-byte tracking number,
+    so what saves can be sent; the settings do not cap the site name, so that one is
+    generous rather than proven.
   - **No HTML defaults.** Shipping some would turn every install's mail multipart
     on upgrade. The editor's **Start from a basic layout** button fills an empty
     HTML field with a starter (the header opens a layout, the footer closes it, a
     template gets its own text as paragraphs); nothing is saved until Save.
+  - **Saving.** `html` absent means unchanged (a tab opened before the upgrade
+    cannot wipe it); an explicit `""` removes the HTML part. The editor always
+    sends the key.
   - **Preview.** The HTML renders in `<iframe sandbox="">` (no `allow-scripts`, no
-    `allow-same-origin`), written as `srcdoc` with a meta CSP first
+    `allow-same-origin`), written as `srcdoc` with a meta CSP first (after a leading
+    doctype, so the frame is not in quirks mode)
     (`default-src 'none'; style-src 'unsafe-inline'; img-src data:`), so remote
     images do not load there; the page says so and **Send test** shows the real
-    mail. It is never written into the app's page: a test forbids
-    `innerHTML`-style APIs in the page and pins the sandbox, and browser tests
-    check that a script and an `onerror` handler in the frame do not run, under
-    the backend's real CSP as well (`frame-src` from `default-src 'self'` does not
-    block `about:srcdoc`).
+    mail. It is never written into the app's page: a test forbids `innerHTML`-style
+    APIs in the page and pins the sandbox. Browser tests prove the sandbox on its
+    own (the frame's CSP meta is removed and the script still does not run; the
+    frame's origin is opaque; a control frame with scripts allowed does run), and
+    separately that under the backend's real CSP a `srcdoc` frame is not blocked
+    (`frame-src` from `default-src 'self'` does not block `about:srcdoc`).
   - **Stale HTML** fails the mail like stale text: `ErrPermanent`, the same
     message naming the template, the same broken-template notice and one-click
     revert. A save, a live check and a test send validate the text and the HTML
     together and report both.
+  - **Audit.** The full HTML is under `template_html` on every save and revert; the
+    Audit page shows a reverted template's removed text and its removed HTML.
 
 - **Webhooks** — configurable HTTP callbacks for ticket lifecycle events:
   `ticket.created`, `ticket.assigned`, `ticket.status_changed`,
