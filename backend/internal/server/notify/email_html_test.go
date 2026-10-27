@@ -108,25 +108,6 @@ func TestHTML_NoHTMLMeansTheSameMailAsBefore(t *testing.T) {
 	require.NotContains(t, raw, "text/html")
 }
 
-func TestHTML_AHeaderOrFooterWithHTMLDoesNotMakeAMailMultipart(t *testing.T) {
-	// "With no saved HTML, mail stays plain text": the HTML belongs to the
-	// template, and the shell only wraps one that has it.
-	ov := overrides(
-		emailtemplate.Override{Name: NameHeader, Body: "H\n", HTML: "<table><tr><td>{{.SiteName}}"},
-		emailtemplate.Override{Name: NameFooter, Body: "F\n", HTML: "</td></tr></table>"},
-	)
-	for _, c := range goldenCases() {
-		t.Run(c.file, func(t *testing.T) {
-			raw := captureMessage(t, c.send, with(ov))
-			mt, _, _, ps := readMessage(t, raw)
-			require.Equal(t, "text/plain", mt)
-			require.Len(t, ps, 1)
-			require.True(t, strings.HasPrefix(ps[0].body, "H\n"))
-			require.True(t, strings.HasSuffix(ps[0].body, "F\n"), "the text shell is still applied")
-		})
-	}
-}
-
 func TestHTML_TheShellWrapsTheHTMLPartAndTheTextShellWrapsTheTextPart(t *testing.T) {
 	ov := overrides(
 		emailtemplate.Override{Name: NameHeader, Body: "== {{.SiteName}} ==\n", HTML: `<table><tr><td><b>{{.SiteName}}</b></td></tr><tr><td>`},
@@ -256,10 +237,8 @@ func TestPreviewDraftHTML_RendersTheHTMLInsideTheSavedShell(t *testing.T) {
 	require.Equal(t, "Text https://help.example.com/tickets/00000000-0000-0000-0000-000000000000", p.Body)
 }
 
-func TestPreviewDraftHTML_NoHTMLDraftHasNoHTMLPreview(t *testing.T) {
-	d := dispatcherFor(t, "127.0.0.1:1").WithTemplates(overrides(
-		emailtemplate.Override{Name: NameHeader, HTML: `<div>h</div>`},
-	), fakeSite("x"))
+func TestPreviewDraftHTML_NoHTMLAnywhereHasNoHTMLPreview(t *testing.T) {
+	d := dispatcherFor(t, "127.0.0.1:1").WithTemplates(overrides(), fakeSite("x"))
 	p, err := d.PreviewDraftHTML(context.Background(), mustDef(t, "ticket_created"), "s", "Text {{.TicketURL}}", "", "GHD")
 	require.NoError(t, err)
 	require.Empty(t, p.HTML)
@@ -286,10 +265,9 @@ func TestPreviewDraftHTML_RefusesInvalidHTMLNamingTheField(t *testing.T) {
 }
 
 func TestPreviewDraft_StaysTextOnly(t *testing.T) {
-	// The PR 1 entry point is unchanged: no HTML in, none out.
-	d := dispatcherFor(t, "127.0.0.1:1").WithTemplates(overrides(
-		emailtemplate.Override{Name: NameHeader, HTML: `<div>h</div>`},
-	), fakeSite("x"))
+	// The PR 1 entry point is unchanged: no HTML in, none out, unless a header
+	// or footer has some (then every mail has an HTML part).
+	d := dispatcherFor(t, "127.0.0.1:1").WithTemplates(overrides(), fakeSite("x"))
 	p, err := d.PreviewDraft(context.Background(), mustDef(t, "ticket_created"), "s", "{{.TicketURL}}", "GHD")
 	require.NoError(t, err)
 	require.Empty(t, p.HTML)

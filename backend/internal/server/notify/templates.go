@@ -576,6 +576,16 @@ func BrokenTemplates(rows []emailtemplate.Override) []BrokenTemplate {
 			out = append(out, BrokenTemplate{Name: r.Name, Label: def.Label, Reason: errs[0].Error(), UpdatedAt: r.UpdatedAt})
 		}
 	}
+	// A combination of parts that are each fine can still be too long to send.
+	for _, b := range overCapBroken(rows) {
+		seen := false
+		for _, o := range out {
+			seen = seen || o.Name == b.Name
+		}
+		if !seen {
+			out = append(out, b)
+		}
+	}
 	return out
 }
 

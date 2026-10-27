@@ -134,14 +134,14 @@ func templateFromPath(w http.ResponseWriter, r *http.Request) (notify.TemplateDe
 	return def, ok
 }
 
-func (s *Server) summarise(ctx context.Context, def notify.TemplateDef, ov *emailtemplate.Override) templateSummary {
+func (s *Server) summarise(ctx context.Context, def notify.TemplateDef, ov *emailtemplate.Override, broken map[string]notify.BrokenTemplate) templateSummary {
 	sum := templateSummary{Name: def.Name, Label: def.Label, Group: def.Group, Shell: def.Shell}
 	if ov == nil {
 		return sum
 	}
 	sum.Customised = true
 	sum.HasHTML = ov.HTML != ""
-	sum.Broken = len(notify.BrokenTemplates([]emailtemplate.Override{*ov})) > 0
+	_, sum.Broken = broken[def.Name]
 	t := ov.UpdatedAt
 	sum.UpdatedAt = &t
 	if ov.UpdatedBy != nil {
@@ -167,28 +167,44 @@ func (s *Server) handleListEmailTemplates(w http.ResponseWriter, r *http.Request
 	for _, o := range rows {
 		byName[o.Name] = o
 	}
+	broken := brokenByName(rows)
 	out := []templateSummary{}
 	for _, def := range notify.Templates() {
 		var ov *emailtemplate.Override
 		if o, ok := byName[def.Name]; ok {
 			ov = &o
 		}
-		out = append(out, s.summarise(r.Context(), def, ov))
+		out = append(out, s.summarise(r.Context(), def, ov, broken))
 	}
 	JSON(w, http.StatusOK, out)
 }
 
+// brokenByName is which stored templates would fail a send, judged over ALL the
+// rows: whether a combination of header, footer and body is too long cannot be
+// seen from one row.
+func brokenByName(rows []emailtemplate.Override) map[string]notify.BrokenTemplate {
+	out := map[string]notify.BrokenTemplate{}
+	for _, b := range notify.BrokenTemplates(rows) {
+		out[b.Name] = b
+	}
+	return out
+}
+
 func (s *Server) templateDetail(ctx context.Context, def notify.TemplateDef) (templateDetail, error) {
-	ovs, err := s.emailTemplates.Overrides(ctx, def.Name)
+	rows, err := s.emailTemplates.List(ctx)
 	if err != nil {
 		return templateDetail{}, err
 	}
 	var ov *emailtemplate.Override
-	if o, ok := ovs[def.Name]; ok {
-		ov = &o
+	for _, o := range rows {
+		if o.Name == def.Name {
+			o := o
+			ov = &o
+		}
 	}
+	broken := brokenByName(rows)
 	d := templateDetail{
-		templateSummary: s.summarise(ctx, def, ov),
+		templateSummary: s.summarise(ctx, def, ov, broken),
 		Subject:         def.DefaultSubject, Body: def.DefaultBody,
 		DefaultSubject: def.DefaultSubject, DefaultBody: def.DefaultBody,
 		Required: def.Required, Variables: []templateVariable{},
@@ -199,8 +215,8 @@ func (s *Server) templateDetail(ctx context.Context, def notify.TemplateDef) (te
 	}
 	if ov != nil {
 		d.Subject, d.Body, d.HTML = ov.Subject, ov.Body, ov.HTML
-		if b := notify.BrokenTemplates([]emailtemplate.Override{*ov}); len(b) > 0 {
-			d.BrokenReason = b[0].Reason
+		if b, ok := broken[def.Name]; ok {
+			d.BrokenReason = b.Reason
 		}
 	}
 	return d, nil
@@ -262,8 +278,30 @@ func (s *Server) handlePutEmailTemplate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	subject, body, html := in.subject(), in.body(), in.html()
+	rows, err := s.emailTemplates.List(r.Context())
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	stored := make(map[string]emailtemplate.Override, len(rows))
+	for _, o := range rows {
+		stored[o.Name] = o
+	}
+	if in.HTML == nil {
+		// A client that does not know about HTML (a tab opened before the
+		// upgrade) must not wipe it: no key means unchanged, and removing the
+		// HTML takes an explicit empty string.
+		html = stored[def.Name].HTML
+	}
 	if errs := append(notify.ValidateTemplate(def, subject, body), notify.ValidateHTML(def, html)...); len(errs) > 0 {
 		invalidTemplate(w, errs)
+		return
+	}
+	// The size limit is on the header, body and footer together, which no part
+	// can see alone: the same check a send makes, with long links so that what
+	// is saved here can be sent.
+	if te := notify.CheckJoinedHTML(def, stored, emailtemplate.Override{Name: def.Name, Subject: subject, Body: body, HTML: html}); te != nil {
+		invalidTemplate(w, []notify.TemplateError{*te})
 		return
 	}
 
@@ -273,7 +311,7 @@ func (s *Server) handlePutEmailTemplate(w http.ResponseWriter, r *http.Request) 
 	if subject != def.DefaultSubject || body != def.DefaultBody || html != "" {
 		next = &emailtemplate.Override{Name: def.Name, Subject: subject, Body: body, HTML: html, UpdatedBy: &actor.UserID}
 	}
-	err := s.emailTemplates.Apply(r.Context(), def.Name, next, func(prev *emailtemplate.Override) *audit.Entry {
+	err = s.emailTemplates.Apply(r.Context(), def.Name, next, func(prev *emailtemplate.Override) *audit.Entry {
 		if prev == nil && next == nil {
 			return nil // the default over the default changes nothing
 		}
@@ -351,7 +389,8 @@ func (s *Server) handlePreviewEmailTemplate(w http.ResponseWriter, r *http.Reque
 	case errors.As(err, &invalid):
 		JSON(w, http.StatusOK, map[string]any{"valid": false, "errors": invalid.Errors})
 	case errors.Is(err, notify.ErrPermanent):
-		// The draft is fine; a SAVED header or footer is what cannot render.
+		// The draft is valid on its own, but it cannot be rendered with what is
+		// saved (a saved header or footer that no longer works).
 		JSON(w, http.StatusOK, map[string]any{"valid": true, "errors": []notify.TemplateError{}, "preview_error": err.Error()})
 	case err != nil:
 		handleError(w, err)
@@ -385,13 +424,20 @@ func (s *Server) handleTestEmailTemplate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	subject, body, html := in.subject(), in.body(), in.html()
-	if in.Subject == nil && in.Body == nil && in.HTML == nil {
+	if in.Subject == nil && in.Body == nil || in.HTML == nil {
+		// What is not given is what is saved (a tab from before HTML existed
+		// sends no html key, and its draft is still in front of the saved HTML).
 		cur, err := s.templateDetail(r.Context(), def)
 		if err != nil {
 			handleError(w, err)
 			return
 		}
-		subject, body, html = cur.Subject, cur.Body, cur.HTML
+		if in.Subject == nil && in.Body == nil {
+			subject, body = cur.Subject, cur.Body
+		}
+		if in.HTML == nil {
+			html = cur.HTML
+		}
 	}
 	actor := authmw.GetActor(r)
 	me, err := s.users.GetByID(r.Context(), actor.UserID)

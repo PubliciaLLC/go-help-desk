@@ -363,3 +363,158 @@ func TestEmailTemplatesHTML_AStaleHTMLPartIsListedAsBroken(t *testing.T) {
 	require.Empty(t, h.tmplWarnings(t).Email.BrokenTemplates)
 	require.False(t, h.getHTMLDetail(t, "password_reset").HasHTML)
 }
+
+// ── the joined size ──────────────────────────────────────────────────────────
+
+func divOf(n int) string { return "<div>" + strings.Repeat("x", n) + "</div>" }
+
+func (h *harness) putCreatedHTML(t *testing.T, html string) (int, []byte) {
+	t.Helper()
+	def := h.getTemplate(t, "ticket_created")
+	return h.putTemplateHTML(t, "ticket_created", def.DefaultSubject, def.DefaultBody, html)
+}
+
+func TestEmailTemplatesHTML_TheJoinedSizeIsCheckedAtSave(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	// Each is under every limit alone: a 40 KiB header, a 40 KiB footer.
+	code, b := h.putTemplateHTML(t, "_header", "", "", divOf(40*1024))
+	require.Equal(t, http.StatusOK, code, string(b)[:min(300, len(b))])
+	code, b = h.putTemplateHTML(t, "_footer", "", "", divOf(40*1024))
+	require.Equal(t, http.StatusOK, code, string(b)[:min(300, len(b))])
+
+	// The third would make every send fail at about 123 KB.
+	code, b = h.putCreatedHTML(t, divOf(40*1024)+`<a href="{{.TicketURL}}">x</a>`)
+	require.Equal(t, http.StatusBadRequest, code, string(b)[:min(300, len(b))])
+	var e tmplErr
+	require.NoError(t, json.Unmarshal(b, &e))
+	require.Equal(t, "invalid_template", e.Error.Code)
+	require.Equal(t, "html", e.Error.Field)
+	require.Contains(t, e.Error.Message, `"Ticket received"`)
+	require.Contains(t, e.Error.Message, "100 KiB")
+	require.False(t, h.getHTMLDetail(t, "ticket_created").Customised, "a refused save stores nothing")
+	require.Empty(t, h.templateAudit(t, "ticket_created"))
+
+	// A smaller one is fine.
+	code, b = h.putCreatedHTML(t, `<a href="{{.TicketURL}}">x</a>`)
+	require.Equal(t, http.StatusOK, code, string(b)[:min(300, len(b))])
+}
+
+func TestEmailTemplatesHTML_AShellThatWouldBreakATemplateIsRefused(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	code, b := h.putCreatedHTML(t, divOf(60*1024)+`<a href="{{.TicketURL}}">x</a>`)
+	require.Equal(t, http.StatusOK, code, string(b)[:min(300, len(b))])
+
+	code, b = h.putTemplateHTML(t, "_header", "", "", divOf(45*1024))
+	require.Equal(t, http.StatusBadRequest, code, string(b)[:min(300, len(b))])
+	var e tmplErr
+	require.NoError(t, json.Unmarshal(b, &e))
+	require.Equal(t, "html", e.Error.Field)
+	require.Contains(t, e.Error.Message, `"Ticket received"`)
+	require.False(t, h.getHTMLDetail(t, "_header").Customised)
+
+	// Smaller is fine, and so is a revert of a header that is already there.
+	code, b = h.putTemplateHTML(t, "_header", "", "", divOf(10*1024))
+	require.Equal(t, http.StatusOK, code, string(b)[:min(300, len(b))])
+	res := h.doAsAdminSession(t, http.MethodDelete, tmplPath+"/_header", nil)
+	readAll(t, res)
+	require.Equal(t, http.StatusNoContent, res.StatusCode)
+}
+
+func TestEmailTemplatesHTML_AShellMakesEveryTemplatesTextCount(t *testing.T) {
+	// With a 51 KiB header and 51 KiB footer every template has an HTML part,
+	// so the second save is refused naming a template that has no HTML of its own.
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	code, b := h.putTemplateHTML(t, "_header", "", "", divOf(51*1024))
+	require.Equal(t, http.StatusOK, code, string(b)[:min(300, len(b))])
+	code, b = h.putTemplateHTML(t, "_footer", "", "", divOf(51*1024))
+	require.Equal(t, http.StatusBadRequest, code, string(b)[:min(300, len(b))])
+	var e tmplErr
+	require.NoError(t, json.Unmarshal(b, &e))
+	require.Contains(t, e.Error.Message, "would come to")
+}
+
+func TestEmailTemplatesHTML_AnOverCapCombinationInTheDatabaseIsBrokenAndSaysSo(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	def := h.getTemplate(t, "ticket_created")
+	h.seedStaleHTML(t, "_header", "", "", divOf(40*1024))
+	h.seedStaleHTML(t, "_footer", "", "", divOf(40*1024))
+	h.seedStaleHTML(t, "ticket_created", def.DefaultSubject, def.DefaultBody, divOf(40*1024)+`<a href="{{.TicketURL}}">x</a>`)
+
+	w := h.tmplWarnings(t)
+	found := false
+	for _, b := range w.Email.BrokenTemplates {
+		if b.Name == "ticket_created" {
+			found = true
+			require.Contains(t, b.Reason, "100 KiB")
+		}
+	}
+	require.True(t, found, "%+v", w.Email.BrokenTemplates)
+	d := h.getHTMLDetail(t, "ticket_created")
+	require.True(t, d.Broken)
+	require.Contains(t, d.BrokenReason, "100 KiB")
+
+	res := h.doAsAdminSession(t, http.MethodGet, tmplPath, nil)
+	var list []struct {
+		Name   string `json:"name"`
+		Broken bool   `json:"broken"`
+	}
+	require.NoError(t, json.Unmarshal(readAll(t, res), &list))
+	for _, e := range list {
+		if e.Name == "ticket_created" {
+			require.True(t, e.Broken, "the list marks it too")
+		}
+	}
+}
+
+func TestEmailTemplatesHTML_PreviewOfAnOverCapDraftIsInvalid(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	code, b := h.putTemplateHTML(t, "_header", "", "", divOf(40*1024))
+	require.Equal(t, http.StatusOK, code, string(b)[:min(300, len(b))])
+	code, b = h.putTemplateHTML(t, "_footer", "", "", divOf(40*1024))
+	require.Equal(t, http.StatusOK, code, string(b)[:min(300, len(b))])
+	p := h.previewHTML(t, "ticket_created", map[string]any{"subject": "s", "body": "{{.TicketURL}}", "html": divOf(40*1024) + `<a href="{{.TicketURL}}">x</a>`})
+	require.False(t, p.Valid, "Save must stay off")
+	require.Equal(t, "html", p.Errors[0].Field)
+	require.Contains(t, p.Errors[0].Message, "100 KiB")
+}
+
+// ── an absent html key leaves the stored HTML alone ─────────────────────────
+
+func TestEmailTemplatesHTML_AnAbsentHTMLKeyKeepsTheStoredHTMLAndAnEmptyOneClearsIt(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	def := h.getTemplate(t, "ticket_created")
+	code, b := h.putTemplateHTML(t, "ticket_created", def.DefaultSubject, def.DefaultBody, goodHTML)
+	require.Equal(t, http.StatusOK, code, string(b))
+
+	// An old tab (PR 1) knows nothing of HTML and sends only subject and body.
+	res := h.doAsAdminSession(t, http.MethodPut, tmplPath+"/ticket_created", map[string]any{"subject": "Reworded", "body": "{{.TicketURL}} reworded"})
+	require.Equal(t, http.StatusOK, res.StatusCode, string(readAll(t, res)))
+	d := h.getHTMLDetail(t, "ticket_created")
+	require.Equal(t, goodHTML, d.HTML, "the old tab's save did not wipe the HTML")
+	require.Equal(t, "{{.TicketURL}} reworded", h.getTemplate(t, "ticket_created").Body)
+	entries := h.templateAudit(t, "ticket_created")
+	require.Equal(t, goodHTML, entries[0].After["template_html"], "and the audit entry says what is stored")
+
+	// An explicit empty string is the way to remove it.
+	code, b = h.putTemplateHTML(t, "ticket_created", "Reworded", "{{.TicketURL}} reworded", "")
+	require.Equal(t, http.StatusOK, code, string(b))
+	require.Empty(t, h.getHTMLDetail(t, "ticket_created").HTML)
+}
+
+func TestEmailTemplatesHTML_AnAbsentKeyWithTheDefaultTextStillKeepsTheRowBecauseOfItsHTML(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	def := h.getTemplate(t, "ticket_created")
+	code, _ := h.putTemplateHTML(t, "ticket_created", def.DefaultSubject, def.DefaultBody, goodHTML)
+	require.Equal(t, http.StatusOK, code)
+	res := h.doAsAdminSession(t, http.MethodPut, tmplPath+"/ticket_created", map[string]any{"subject": def.DefaultSubject, "body": def.DefaultBody})
+	require.Equal(t, http.StatusOK, res.StatusCode, string(readAll(t, res)))
+	require.Equal(t, goodHTML, h.getHTMLDetail(t, "ticket_created").HTML)
+}
