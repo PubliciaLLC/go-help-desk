@@ -11831,11 +11831,15 @@ components:
         html:
           type: string
           description: >-
-            The optional HTML part (html/template, up to 64 KiB). Absent or empty means no HTML part:
-            the mail is single-part text. Anything outside the allow-list (scripts, forms, frames,
-            event handlers, javascript: or relative URLs, a template anywhere but in the text or as
-            the whole href of a link) is refused with 400 invalid_template and field html. Nothing
-            is rewritten.
+            The optional HTML part (html/template, up to 64 KiB). Absent leaves the stored HTML
+            unchanged; an empty string removes it. With no HTML in the header, the footer or the
+            template, the mail is single-part text; once the header or footer has HTML, every mail
+            has an HTML part (a template with none has its text as paragraphs). Anything outside the
+            allow-list (scripts, forms, frames, event handlers, odd attributes, comments, CSS that
+            runs or reaches out, javascript: or relative URLs, a template anywhere but in the text or
+            as the whole href of a link) is refused with 400 invalid_template and field html, as is a
+            header, body and footer that would together pass 100 KiB (the message names the template).
+            Nothing is rewritten.
     EmailTemplateDraftOptional:
       type: object
       description: 'Omit subject, body and html to use the saved text and HTML.'
