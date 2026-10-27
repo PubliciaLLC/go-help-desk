@@ -617,7 +617,13 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 	// accepted, written to the row, and handed to the mailer — including one
 	// carrying a display name, which is chosen text delivered in a header of a
 	// message sent from this server's domain.
-	if in.GuestEmail != nil && *in.GuestEmail != "" {
+	//
+	// Not for a follow-up that copies the address its ticket already holds: that
+	// one was not typed now, and a ticket stored before addresses had to be
+	// ASCII must still be followed up.
+	copiedFromTicket := followUpOf != nil && followUpOf.GuestEmail != nil &&
+		in.GuestEmail != nil && *in.GuestEmail == *followUpOf.GuestEmail
+	if in.GuestEmail != nil && *in.GuestEmail != "" && !copiedFromTicket {
 		normalised, err := user.ValidateEmail(*in.GuestEmail)
 		if err != nil {
 			return Ticket{}, fmt.Errorf("guest email: %s: %w", err, ErrValidation)

@@ -478,6 +478,15 @@ The rest of the #421 changes to scripts and integrations change what an answer s
 - **`POST /api/v1/guest/resend`** accepts an empty body (it was `400`). Malformed JSON is still `400`.
 - **`DELETE /api/v1/tickets`** is `405` as before. Its `Allow` header carries `GET` and `POST` as two header lines, which is what the server always sent; clients that read only the first line saw `GET`.
 
+### Email addresses must be ASCII
+
+New accounts, sign-ins that create or link an account, and password resets refuse an address containing non-ASCII characters. Signup, administrator create and edit (when the address changes), a typed `reporter_email` and guest submission answer `400`; a first-time SAML or OIDC sign-in redirects to `/login?error=invalid_email` (or `domain_not_allowed` when an allowed-domains list is set and the domain is not ASCII). Addresses must be ASCII so that they compare reliably.
+
+- **Existing accounts** keep signing in, by their identity provider subject and by password. An administrator can still rename them or change their role. They cannot be reset by typing the address, and a sign-in that carries a non-ASCII address keeps the stored one. A guest whose ticket holds a non-ASCII address can no longer ask for a new link by typing it; follow-ups on that ticket still work.
+- **Allowed domains:** entries must be ASCII. Saving an entry with a non-ASCII character is refused with `400`; use the `xn--` form for an internationalised domain. If you already have such an entry, replace it.
+- **Known limitation:** an existing user whose stored address has a non-ASCII domain may be refused at sign-in by an allowed-domains list.
+- **What to check:** `SELECT count(*) FROM users WHERE email ~ '[^\x01-\x7f]'`. Zero means nothing changes for you.
+
 ### Admin API: additive and corrected answers (#419, response half)
 
 

@@ -1166,7 +1166,8 @@ paths:
         one. Refused with 403 signup_disabled when self-service signup is off, and
         with 422 domain_not_allowed when the address's domain is not permitted, or
         when no domains are listed and open registration is off. Each client
-        address has a per-minute budget, and a refused attempt answers 429. Public
+        address has a per-minute budget, and a refused attempt answers 429. An
+        address containing a non-ASCII character is refused with 400. Public
         and needs no credential.
       tags: ['Signup']
       x-ghd-handler: handleSignup
@@ -2226,7 +2227,7 @@ paths:
         Opens a ticket for a guest. Answers 404 not_found while guest submission is switched off.
         subject is required and is limited to 500 bytes. description is limited to 50,000 bytes. category_id
         must name an active category that is open to guests. guest_email is required and must be a plain
-        address without a display name. guest_name is required. guest_phone is optional. Priority is always
+        ASCII address without a display name (400 otherwise). guest_name is required. guest_phone is optional. Priority is always
         medium and cannot be set by a guest.
         The response carries only the tracking number. The access link is emailed to guest_email, so a guest
         proves ownership of the address by using the link. The per-client-address budget is shared with
@@ -3272,7 +3273,7 @@ paths:
         Filing for someone else (staff and administrators only). The caller is
         the requester unless reporter_user_id or reporter_email is sent; send at
         most one. reporter_user_id picks an existing account. reporter_email
-        types an address: if it belongs to an account the ticket is filed for
+        types an address, which must be ASCII (400 otherwise): if it belongs to an account the ticket is filed for
         that account, otherwise it is filed exactly like a guest ticket, so the
         person is sent the guest link at that address. That needs guest
         submission to be on (400 otherwise, because the link would not open).
@@ -11295,7 +11296,7 @@ components:
           type: array
           items:
             type: string
-          description: Email domains allowed for SAML accounts created on first sign-in. Empty means no restriction. Session only.
+          description: Email domains allowed for SAML accounts created on first sign-in. Empty means no restriction. Each entry must be ASCII (400 invalid_allowed_email_domains otherwise); use the xn-- form for an internationalised domain. Session only.
         self_signup_enabled:
           type: boolean
           description: Whether people may sign themselves up. Session only.

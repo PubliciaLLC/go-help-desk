@@ -35,6 +35,11 @@ func forgotPasswordKey(r *http.Request) string {
 // whether the request was queued, for the one caller (sign-in) that says so.
 func (s *Server) requestPasswordReset(ctx context.Context, email string) bool {
 	if err := s.passwordReset.Request(ctx, email); err != nil {
+		// Nothing to mail, and no fault of ours: not logged, or anyone could
+		// fill the log by typing a bad address.
+		if errors.Is(err, passwordreset.ErrNotAnAddress) {
+			return false
+		}
 		slog.ErrorContext(ctx, "password reset request could not be queued", "error", err)
 		return false
 	}

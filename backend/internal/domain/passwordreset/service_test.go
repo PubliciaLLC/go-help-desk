@@ -170,13 +170,14 @@ func TestRequest_QueuesOneEventAndLooksNothingUp(t *testing.T) {
 	}
 }
 
-// A string that is not an address has nobody to mail. It is not an error the
-// requester is told about (the endpoint answers 202 whatever it is given), and
-// nothing is queued for it.
+// A string that is not an address has nobody to mail, and nothing is queued for
+// it. Request says so with ErrNotAnAddress so a caller that tells someone a link
+// was sent can tell it was not; the forgot-password endpoint ignores the error
+// and answers 202 whatever it is given, so the answer says nothing about it.
 func TestRequest_ANonAddressQueuesNothing(t *testing.T) {
-	for _, in := range []string{"", "   ", "not an address", "Eve <eve@example.com>"} {
+	for _, in := range []string{"", "   ", "not an address", "Eve <eve@example.com>", "jüm@example.com"} {
 		r := newRig()
-		require.NoError(t, r.svc.Request(context.Background(), in), "%q", in)
+		require.ErrorIs(t, r.svc.Request(context.Background(), in), ErrNotAnAddress, "%q", in)
 		require.Empty(t, r.queue.got, "%q", in)
 	}
 }

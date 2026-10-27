@@ -194,7 +194,7 @@ type CreateUserInput struct {
 func (s *Service) Create(ctx context.Context, in CreateUserInput) (User, error) {
 	u := User{
 		ID:          uuid.New(),
-		Email:       strings.ToLower(strings.TrimSpace(in.Email)),
+		Email:       strings.TrimSpace(in.Email), // Validate normalises it
 		DisplayName: strings.TrimSpace(in.DisplayName),
 		Role:        in.Role,
 		SAMLSubject: in.SAMLSubject,
@@ -357,10 +357,16 @@ func (s *Service) EmailIsTaken(ctx context.Context, email string) (bool, error) 
 // anything that changed in between is written back: a password set moments
 // ago stops working, an MFA enrolment is undone, another administrator's role
 // change is reverted. A rename should rename.
+//
+// An address the account already holds is not validated again: one stored
+// before addresses had to be ASCII must still be renamable.
 func (s *Service) UpdateProfile(ctx context.Context, id uuid.UUID, email, displayName string) error {
-	addr, err := ValidateEmail(email)
-	if err != nil {
-		return err
+	addr := email
+	if cur, err := s.store.GetByIDAdmin(ctx, id); err != nil || cur.Email != email {
+		addr, err = ValidateEmail(email)
+		if err != nil {
+			return err
+		}
 	}
 	name, err := ValidateDisplayName(displayName)
 	if err != nil {
@@ -768,7 +774,7 @@ func emailDomain(email string) (string, bool) {
 	if addr, err := ValidateEmail(email); err == nil {
 		email = addr
 	}
-	parts := strings.SplitN(strings.ToLower(strings.TrimSpace(email)), "@", 2)
+	parts := strings.SplitN(asciiLower(strings.TrimSpace(email)), "@", 2)
 	if len(parts) != 2 || parts[1] == "" {
 		return "", false
 	}
@@ -826,7 +832,7 @@ func (s *Service) UpsertOIDCUser(
 	displayName string,
 ) (User, error) {
 	oidcSubject = strings.TrimSpace(oidcSubject)
-	email = strings.ToLower(strings.TrimSpace(email))
+	email = strings.TrimSpace(email) // ValidateEmail normalises it
 	displayName = strings.TrimSpace(displayName)
 
 	// An identity with no subject cannot be bound to an account. The subject
@@ -962,7 +968,7 @@ func canAdoptByEmail(u User, oidcSubject string) error {
 
 func (s *Service) UpsertSAMLUser(ctx context.Context, samlSubject, email, displayName string, allowedDomains []string) (User, error) {
 	samlSubject = strings.TrimSpace(samlSubject)
-	email = strings.ToLower(strings.TrimSpace(email))
+	email = strings.TrimSpace(email) // ValidateEmail normalises it
 	displayName = strings.TrimSpace(displayName)
 
 	// An assertion with no NameID cannot be bound to an account. The subject

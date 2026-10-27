@@ -22,6 +22,11 @@ import (
 // waiting; long enough to read a mail that arrives a few minutes late.
 const TokenTTL = 30 * time.Minute
 
+// ErrNotAnAddress is Request's answer for a string it will not queue: nothing is
+// mailed for it. The forgot-password endpoint ignores it, so what a requester
+// is told does not depend on the address.
+var ErrNotAnAddress = errors.New("not an address this server will mail")
+
 // ErrTokenInvalid is a link that does not work: unknown, already used,
 // replaced by a later one, expired, or for an account that can no longer have
 // its password set. One error for all of them, so a guess is told nothing.
