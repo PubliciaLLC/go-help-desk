@@ -1263,6 +1263,30 @@ existing single sign-on user keeps their stored address when the identity
 provider sends one that needs quotes; their other details still sync and
 sign-in succeeds.
 
+**Email addresses must be ASCII.** `user.ValidateEmail` refuses any address
+containing a non-ASCII character with `400`, and so does every path that takes an address: signup, administrator create and
+edit, a typed `reporter_email`, a guest submission, and a first-time SAML or
+OIDC sign-in (`/login?error=invalid_email`, or `domain_not_allowed` when an
+allowed-domains list is set and the domain is not ASCII). Addresses must be ASCII so that they
+compare reliably. The guest re-request lookup and a
+password-reset request match nothing for such an address.
+
+- **Allowed domains** must be ASCII. An entry with
+  a non-ASCII character is refused when the setting is saved (`400`,
+  `invalid_allowed_email_domains`): use the `xn--` form for an
+  internationalised domain.
+- **Existing accounts** with a stored non-ASCII address keep signing in: by their
+  identity provider subject, and by password. An administrator can still rename
+  them or change their role: an edit that leaves the address alone does not
+  validate it again, and one that sets a new address is checked before anything
+  is written. They cannot be reset by typing the
+  address, and a sync that carries a non-ASCII address keeps the stored one.
+- **Known limitation:** an existing user whose stored address has a non-ASCII
+  domain may be refused at sign-in by an allowed-domains list, because that
+  list can no longer hold a non-ASCII entry.
+- Check for stored ones with
+  `SELECT count(*) FROM users WHERE email ~ '[^\x01-\x7f]'`.
+
 **Closed means read-only, not revoked** (#349). Closing, a status change to
 Closed and the auto-close sweep **stop rotating** the guest's link; they do not
 delete it. The last link sent keeps reading the ticket until it expires

@@ -48,12 +48,14 @@ func NewService(store Store, users Users, mailer Mailer, queue notification.Disp
 // would go (Send), off the request, as signup does (#348). The caller answers
 // 202 whatever this returns for an address.
 //
-// A string that is not an address has nobody to mail and queues nothing. That
-// is not an error: the answer is the same either way.
+// A string that is not an address has nobody to mail and queues nothing. It
+// returns ErrNotAnAddress so a caller that says a link was sent can tell it
+// was not; the forgot-password endpoint ignores it, so the answer is the same
+// either way.
 func (s *Service) Request(ctx context.Context, email string) error {
 	addr, err := user.ValidateEmail(email)
 	if err != nil {
-		return nil
+		return ErrNotAnAddress
 	}
 	if err := s.queue.Dispatch(ctx, notification.Event{
 		Type:       notification.EventPasswordResetRequested,
