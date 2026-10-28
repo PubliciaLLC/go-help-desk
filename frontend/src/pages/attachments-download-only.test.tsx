@@ -116,6 +116,12 @@ describe('attachments are never rendered inline', () => {
     'src/components/MFAEnrollForm.tsx': 1,
     'src/pages/AccountPage.tsx': 1,
     'src/pages/admin/SettingsPage.tsx': 1,
+    // #158: the email template editor's HTML preview. Not an attachment: it is
+    // markup an administrator typed, returned by the preview endpoint, shown in
+    // an <iframe sandbox=""> (no scripts, opaque origin) under a CSP meta that
+    // allows no remote loads. EmailTemplatesPage.preview-safety.test.ts pins
+    // that it is the only frame and that the sandbox stays empty.
+    'src/pages/admin/EmailTemplatesPage.tsx': 1,
     // #443: not a renderer. This is the `new URL(value)` that parses a link's
     // target in safeUrl, which the regex above reads as a CSS url(). Markdown
     // images are never loaded: the pipeline turns each into a link (see

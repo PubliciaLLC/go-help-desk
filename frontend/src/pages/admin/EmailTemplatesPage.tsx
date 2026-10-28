@@ -11,6 +11,7 @@ import {
 } from '@/api/admin'
 import type {
   EmailTemplateDetail,
+  EmailTemplateDraft,
   EmailTemplateGroup,
   EmailTemplatePreview,
   EmailTemplateProblem,
@@ -122,6 +123,7 @@ function TemplateRow({ t, onOpen }: { t: EmailTemplateSummary; onOpen: (name: st
       <span className="font-medium text-gray-900 wrap-anywhere">{t.label}</span>
       {t.broken && <span className="rounded bg-red-100 px-1.5 py-0.5 text-xs font-medium text-red-800">Broken</span>}
       {t.customised && <span className="rounded bg-blue-50 px-1.5 py-0.5 text-xs text-blue-800">Customised</span>}
+      {t.has_html && <span className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-700">HTML</span>}
     </button>
   )
 }
@@ -153,23 +155,80 @@ interface Check {
 
 const byteLength = (s: string) => new TextEncoder().encode(s).length
 
+type FieldName = 'subject' | 'body' | 'html'
+
+// The draft as the API takes it. html is always sent, "" for none: the server
+// reads an absent key as "leave the stored HTML alone" (so a tab from before
+// HTML existed cannot wipe it), and removing HTML takes an explicit "".
+const draftOf = (subject: string, body: string, html: string): EmailTemplateDraft => ({ subject, body, html })
+
+const escapeText = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+// Starting points, inserted into an empty HTML field. They are drafts like any
+// other: nothing is saved until the person presses Save, and the server checks
+// them the same way. The header opens a layout that the footer closes, so a
+// pair of them brands every mail that has an HTML part.
+const HEADER_STARTER = `<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:0;background:#f4f4f5;font-family:Arial,Helvetica,sans-serif;color:#18181b">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 12px">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background:#ffffff">
+<tr><td style="padding:16px 24px;background:#1d4ed8;color:#ffffff;font-size:18px;font-weight:bold">{{.SiteName}}</td></tr>
+<tr><td style="padding:24px;font-size:16px;line-height:1.5">
+`
+
+const FOOTER_STARTER = `
+</td></tr>
+<tr><td style="padding:16px 24px;font-size:12px;color:#71717a">Sent by {{.SiteName}}</td></tr>
+</table>
+</td></tr></table>
+</body>
+</html>
+`
+
+// The template's own text as paragraphs, with its link made clickable.
+function contentStarter(detail: EmailTemplateDetail, text: string): string {
+  const paras = text.trim().split(/\n\s*\n/).map((p) => `<p>${escapeText(p.trim()).replace(/\n/g, '<br>\n')}</p>`)
+  let out = paras.join('\n')
+  if (detail.required) {
+    const v = `{{.${detail.required}}}`
+    out = out.split(v).join(`<a href="${v}">${v}</a>`)
+    if (!out.includes(`href="${v}"`)) out += `\n<p><a href="${v}">${v}</a></p>`
+  }
+  return out + '\n'
+}
+
+// What the preview frame shows. The policy comes first and the page's own
+// policy still applies on top (policies combine), so the markup can only
+// tighten it. No script, no remote anything; images only as data:.
+const PREVIEW_CSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">`
+// A click on a sample link goes nowhere: the sandbox lets nothing open a new window, so target=_blank is refused.
+// After a leading doctype, if there is one: anything before it puts the frame in
+// quirks mode, and the preview would not look like the mail.
+const previewDocument = (html: string) => {
+  const doctype = /^\s*<!doctype[^>]*>/i.exec(html)?.[0] ?? ''
+  return `${doctype}${PREVIEW_CSP}<base target="_blank">${html.slice(doctype.length)}`
+}
+
 function EditorForm({ detail }: { detail: EmailTemplateDetail }) {
   const qc = useQueryClient()
   const [subject, setSubject] = useState(detail.subject)
   const [body, setBody] = useState(detail.body)
+  const [html, setHTML] = useState(detail.html ?? '')
   const [check, setCheck] = useState<Check | null>(null)
   // The server's refusal of the last save, shown until the next edit.
   const [refused, setRefused] = useState<{ draft: string; problems: EmailTemplateProblem[]; message: string } | null>(null)
   const [notice, setNotice] = useState('')
   const [noticeIsError, setNoticeIsError] = useState(false)
   const [confirmRevert, setConfirmRevert] = useState(false)
-  const lastField = useRef<'subject' | 'body'>('body')
+  const lastField = useRef<FieldName>('body')
   const subjectRef = useRef<HTMLInputElement>(null)
   const bodyRef = useRef<HTMLTextAreaElement>(null)
+  const htmlRef = useRef<HTMLTextAreaElement>(null)
   const ids = useId()
 
-  const draftKey = JSON.stringify([subject, body])
-  const dirty = subject !== detail.subject || body !== detail.body
+  const draftKey = JSON.stringify([subject, body, html])
+  const dirty = subject !== detail.subject || body !== detail.body || html !== (detail.html ?? '')
 
   // The check: the draft goes to the server 400 ms after the last change. An
   // answer that arrives for an older draft is stored but never matches the
@@ -177,12 +236,12 @@ function EditorForm({ detail }: { detail: EmailTemplateDetail }) {
   useEffect(() => {
     const draft = draftKey
     const timer = setTimeout(() => {
-      previewEmailTemplate(detail.name, { subject, body })
+      previewEmailTemplate(detail.name, draftOf(subject, body, html))
         .then((result) => setCheck({ draft, result, failure: '' }))
         .catch((err) => setCheck({ draft, result: null, failure: extractError(err) }))
     }, CHECK_DELAY_MS)
     return () => clearTimeout(timer)
-    // subject and body are inside draftKey.
+    // subject, body and html are inside draftKey.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftKey, detail.name])
 
@@ -196,7 +255,7 @@ function EditorForm({ detail }: { detail: EmailTemplateDetail }) {
     : result && !result.valid
       ? result.errors
       : []
-  const forField = (f: 'subject' | 'body') => problems.filter((p) => p.field === f)
+  const forField = (f: FieldName) => problems.filter((p) => p.field === f)
 
   const refresh = () => {
     void qc.invalidateQueries({ queryKey })
@@ -204,7 +263,7 @@ function EditorForm({ detail }: { detail: EmailTemplateDetail }) {
   }
 
   const save = useMutation({
-    mutationFn: () => saveEmailTemplate(detail.name, { subject, body }),
+    mutationFn: () => saveEmailTemplate(detail.name, draftOf(subject, body, html)),
     onSuccess: () => {
       setNotice('Saved.')
       setNoticeIsError(false)
@@ -225,7 +284,7 @@ function EditorForm({ detail }: { detail: EmailTemplateDetail }) {
   })
 
   const sendTest = useMutation({
-    mutationFn: () => testEmailTemplate(detail.name, { subject, body }),
+    mutationFn: () => testEmailTemplate(detail.name, draftOf(subject, body, html)),
     onSuccess: () => {
       setNotice('A test email was sent to your own address.')
       setNoticeIsError(false)
@@ -237,13 +296,15 @@ function EditorForm({ detail }: { detail: EmailTemplateDetail }) {
   })
 
   const insert = (token: string) => {
-    const field = detail.shell ? 'body' : lastField.current
-    const el = field === 'subject' ? subjectRef.current : bodyRef.current
-    const value = field === 'subject' ? subject : body
+    // The header and footer have no subject; a subject chip never lands there.
+    const field: FieldName = detail.shell && lastField.current === 'subject' ? 'body' : lastField.current
+    const el = field === 'subject' ? subjectRef.current : field === 'html' ? htmlRef.current : bodyRef.current
+    const value = field === 'subject' ? subject : field === 'html' ? html : body
     const start = el?.selectionStart ?? value.length
     const end = el?.selectionEnd ?? value.length
     const next = value.slice(0, start) + token + value.slice(end)
     if (field === 'subject') setSubject(next)
+    else if (field === 'html') setHTML(next)
     else setBody(next)
     const caret = start + token.length
     requestAnimationFrame(() => {
@@ -251,6 +312,10 @@ function EditorForm({ detail }: { detail: EmailTemplateDetail }) {
       el?.setSelectionRange(caret, caret)
     })
   }
+
+  const starter = detail.shell
+    ? detail.name === '_footer' ? FOOTER_STARTER : HEADER_STARTER
+    : contentStarter(detail, body)
 
   const canSave = dirty && valid && !save.isPending
 
@@ -325,6 +390,36 @@ function EditorForm({ detail }: { detail: EmailTemplateDetail }) {
         )}
       </Field>
 
+      <Field
+        id={`${ids}-html`}
+        label="HTML"
+        problems={forField('html')}
+        hint={
+          (detail.shell
+            ? 'Saving an HTML header or footer gives every email an HTML part: a template with no HTML of its own has its text shown as paragraphs, with its links made clickable, between them. A header or footer that has only text is carried into the HTML part as paragraphs. '
+            : 'Leave empty to turn the text above into the HTML part, as paragraphs, when the header or footer has HTML. With no HTML in the header, the footer or here, the mail is plain text. The text above is always what plain-text readers get. ') +
+          (detail.required ? `Needs {{.${detail.required}}} outside any {{if}}, as text or as the whole href of a link. ` : '') +
+          `${byteLength(html)} of ${detail.max_html_bytes ?? 65536} bytes.`
+        }
+      >
+        {(aria) => (
+          <Textarea
+            id={`${ids}-html`}
+            ref={htmlRef}
+            value={html}
+            rows={12}
+            spellCheck={false}
+            onFocus={() => (lastField.current = 'html')}
+            onChange={(e) => setHTML(e.target.value)}
+            className="font-mono text-sm"
+            {...aria}
+          />
+        )}
+      </Field>
+      <Button type="button" variant="outline" className={TOUCH} disabled={html !== ''} onClick={() => setHTML(starter)}>
+        Start from a basic layout
+      </Button>
+
       <div>
         <p className="text-sm font-medium text-gray-900">Variables</p>
         <ul className="mt-1 space-y-1">
@@ -373,7 +468,7 @@ function EditorForm({ detail }: { detail: EmailTemplateDetail }) {
         </p>
       )}
 
-      <Preview result={result} />
+      <Preview result={result} hasHTML={html !== ''} />
 
       <ConfirmDialog
         open={confirmRevert}
@@ -421,9 +516,12 @@ function Field({
   )
 }
 
-// What the mail would look like, rendered with sample data. A <pre>, text
-// only: it holds what the server rendered and nothing is ever interpreted.
-function Preview({ result }: { result: EmailTemplatePreview | null }) {
+// What the mail would look like, rendered with sample data. The text part is a
+// <pre>: it holds what the server rendered and nothing is interpreted. The HTML
+// part is markup an administrator wrote, on the origin staff sessions live on,
+// so it goes in an iframe with an EMPTY sandbox (no scripts, no same-origin)
+// and is never written into this page. A test pins that.
+function Preview({ result, hasHTML }: { result: EmailTemplatePreview | null; hasHTML: boolean }) {
   return (
     <div>
       <p className="text-sm font-medium text-gray-900">Preview</p>
@@ -432,10 +530,37 @@ function Preview({ result }: { result: EmailTemplatePreview | null }) {
       {result?.valid && result.body !== undefined ? (
         <div className="mt-1 rounded-md border bg-gray-50 p-3 text-sm">
           <p className="font-medium wrap-anywhere">Subject: {result.subject}</p>
-          <pre className="mt-2 whitespace-pre-wrap font-mono text-xs [overflow-wrap:anywhere]">{result.body}</pre>
+          <p className="mt-2 text-xs font-medium text-gray-700">Plain text part</p>
+          <pre className="mt-1 whitespace-pre-wrap font-mono text-xs [overflow-wrap:anywhere]">{result.body}</pre>
         </div>
       ) : (
         <p className="mt-1 text-sm text-gray-500">The preview appears when the draft is valid.</p>
+      )}
+      {result?.valid && result.body !== undefined && (
+        <div className="mt-3">
+          <p className="text-xs font-medium text-gray-700">HTML part</p>
+          {result.html ? (
+            <>
+              {!hasHTML && (
+                <p className="text-xs text-gray-500">
+                  This template has no HTML of its own: its text is shown as paragraphs between the HTML header and footer.
+                </p>
+              )}
+              <p className="text-xs text-gray-500">
+                Images from other sites do not load in this preview. Use Send test to see the real thing.
+              </p>
+              <iframe
+                title="HTML preview"
+                sandbox=""
+                referrerPolicy="no-referrer"
+                srcDoc={previewDocument(result.html)}
+                className="mt-1 h-96 w-full rounded-md border bg-white"
+              />
+            </>
+          ) : (
+            <p className="mt-1 text-sm text-gray-500">This template has no HTML part: it is sent as plain text.</p>
+          )}
+        </div>
       )}
     </div>
   )

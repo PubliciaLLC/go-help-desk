@@ -80,7 +80,10 @@ func captureSMTP(t *testing.T) (addr string, received chan string) {
 					received <- body.String()
 					continue
 				}
-				body.WriteString(line)
+				// Undo dot-stuffing (RFC 5321 4.5.2), as a real server does: a
+				// long HTML line wrapped by quoted-printable can start a line
+				// with ".", which the client doubles on the wire.
+				body.WriteString(strings.TrimPrefix(line, "."))
 				continue
 			}
 			switch {

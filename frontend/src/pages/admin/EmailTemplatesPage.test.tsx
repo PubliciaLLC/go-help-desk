@@ -81,12 +81,15 @@ function refusal(code: string, message: string, extra: Record<string, unknown> =
   } as never)
 }
 
-type Preview = typeof OK_PREVIEW | { valid: boolean; errors: { field: string; line: number; col: number; message: string }[] }
+type Preview =
+  | typeof OK_PREVIEW
+  | (typeof OK_PREVIEW & { html: string })
+  | { valid: boolean; errors: { field: string; line: number; col: number; message: string }[] }
 
 interface Wiring {
   detail?: unknown
   /** What the preview endpoint says for a draft. */
-  preview?: (draft: { subject: string; body: string }) => Preview
+  preview?: (draft: { subject: string; body: string; html?: string }) => Preview
 }
 
 function wire(w: Wiring = {}) {
@@ -97,8 +100,8 @@ function wire(w: Wiring = {}) {
     return Promise.resolve({ data: [] })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   }) as any)
-  const previewCalls: { at: number; draft: { subject: string; body: string } }[] = []
-  const post = vi.spyOn(api, 'post').mockImplementation(((url: string, draft: { subject: string; body: string }) => {
+  const previewCalls: { at: number; draft: { subject: string; body: string; html?: string } }[] = []
+  const post = vi.spyOn(api, 'post').mockImplementation(((url: string, draft: { subject: string; body: string; html?: string }) => {
     if (url.endsWith('/preview')) {
       previewCalls.push({ at: Date.now(), draft })
       return Promise.resolve({ data: (w.preview ?? (() => OK_PREVIEW))(draft) })
@@ -252,7 +255,7 @@ describe('Save', () => {
     await userEvent.click(saveButton())
     await waitFor(() => expect(put).toHaveBeenCalledTimes(1))
     expect(put).toHaveBeenCalledWith('/admin/email-templates/ticket_created', {
-      subject: DETAIL.subject, body: 'New wording. {{.TicketURL}}',
+      subject: DETAIL.subject, body: 'New wording. {{.TicketURL}}', html: '',
     })
   })
 
@@ -335,7 +338,7 @@ describe('the editor tools', () => {
     await waitFor(() => expect((saveButton()).disabled).toBe(false))
     await userEvent.click(screen.getByRole('button', { name: 'Send test' }))
     await waitFor(() =>
-      expect(post).toHaveBeenCalledWith('/admin/email-templates/ticket_created/test', { subject: DETAIL.subject, body: 'Draft {{.TicketURL}}' }),
+      expect(post).toHaveBeenCalledWith('/admin/email-templates/ticket_created/test', { subject: DETAIL.subject, body: 'Draft {{.TicketURL}}', html: '' }),
     )
     expect(await screen.findByText(/sent to your own address/i)).toBeTruthy()
   })
@@ -418,6 +421,276 @@ describe('the shared header and footer', () => {
     type(bodyField(), 'Acme Support\n')
     await waitFor(() => expect((saveButton()).disabled).toBe(false))
     await userEvent.click(saveButton())
-    await waitFor(() => expect(put).toHaveBeenCalledWith('/admin/email-templates/_header', { subject: '', body: 'Acme Support\n' }))
+    await waitFor(() => expect(put).toHaveBeenCalledWith('/admin/email-templates/_header', { subject: '', body: 'Acme Support\n', html: '' }))
+  })
+})
+
+
+// ── the HTML part (#158, PR 2) ───────────────────────────────────────────────
+//
+// An optional HTML body beside the text one. Checked as you type like the rest,
+// previewed in a sandboxed iframe, and sent only when there is some: a request
+// without "html" is a request for no HTML part, which is what the server reads
+// an absent key as.
+
+const HTML_DETAIL = {
+  ...DETAIL,
+  customised: true,
+  html: '<p>Hello</p><a href="{{.TicketURL}}">Open</a>',
+  has_html: true,
+  max_html_bytes: 65536,
+}
+
+const HTML_PREVIEW = { ...OK_PREVIEW, html: '<p>Hello</p><a href="https://x/tickets/0">Open</a>' }
+
+const htmlField = () => screen.getByLabelText('HTML') as HTMLTextAreaElement
+
+describe('the HTML part', () => {
+  it('has its own field, empty for a template with no HTML', async () => {
+    wire()
+    await openEditor('ticket_created')
+    expect(htmlField().value).toBe('')
+    expect(screen.getByText(/Leave empty to turn the text above into the HTML part/i)).toBeTruthy()
+    expect(screen.getByText(/With no HTML in the header, the footer or here, the mail is plain text/i)).toBeTruthy()
+  })
+
+  it('shows the saved HTML', async () => {
+    wire({ detail: HTML_DETAIL, preview: () => HTML_PREVIEW })
+    await openEditor('ticket_created')
+    expect(htmlField().value).toBe(HTML_DETAIL.html)
+  })
+
+  it('marks the templates that have HTML in the list', async () => {
+    vi.spyOn(api, 'get').mockImplementation(((url: string) =>
+      Promise.resolve({ data: url === '/admin/email-templates' ? LIST.map((t) => ({ ...t, has_html: t.name === 'guest_link' })) : [] })) as never)
+    renderWithQuery(<EmailTemplatesPage />)
+    const guest = await screen.findByRole('button', { name: /New guest link/ })
+    expect(within(guest).getByText('HTML')).toBeTruthy()
+    expect(within(screen.getByRole('button', { name: /Ticket received/ })).queryByText('HTML')).toBeNull()
+  })
+
+  it('sends the HTML with the draft to be checked, always, empty when there is none', async () => {
+    const { previewCalls } = wire()
+    await openEditor('ticket_created')
+    await waitFor(() => expect(previewCalls.length).toBeGreaterThan(0))
+    expect(previewCalls[0].draft.html, 'the key is always sent, empty when there is none').toBe('')
+
+    type(htmlField(), '<p>{{.TicketURL}}</p>')
+    await waitFor(() => expect(previewCalls.at(-1)?.draft.html).toBe('<p>{{.TicketURL}}</p>'))
+  })
+
+  it('saves the HTML with the text', async () => {
+    const { put } = wire()
+    await openEditor('ticket_created')
+    type(htmlField(), '<p>{{.TicketURL}}</p>')
+    await waitFor(() => expect(saveButton().disabled).toBe(false))
+    await userEvent.click(saveButton())
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1))
+    expect(put).toHaveBeenCalledWith('/admin/email-templates/ticket_created', {
+      subject: DETAIL.subject, body: DETAIL.body, html: '<p>{{.TicketURL}}</p>',
+    })
+  })
+
+  it('removing the HTML is a save with an empty html, and counts as a change', async () => {
+    const { put } = wire({ detail: HTML_DETAIL, preview: () => HTML_PREVIEW })
+    await openEditor('ticket_created')
+    await waitFor(() => expect(saveButton().disabled).toBe(true)) // unchanged
+    type(htmlField(), '')
+    await waitFor(() => expect(saveButton().disabled).toBe(false))
+    await userEvent.click(saveButton())
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1))
+    expect(put.mock.calls[0][1]).toEqual({ subject: DETAIL.subject, body: DETAIL.body, html: '' })
+  })
+
+  it('shows an HTML problem beside the HTML field with its place, and Save stays off', async () => {
+    const { put } = wire({
+      preview: (d) =>
+        d.html?.includes('<script')
+          ? { valid: false, errors: [{ field: 'html', line: 2, col: 1, message: '<script> is not allowed: mail clients remove scripts' }] }
+          : OK_PREVIEW,
+    })
+    await openEditor('ticket_created')
+    type(htmlField(), '<p>{{.TicketURL}}</p>\n<script>x</script>')
+    const msg = await screen.findByText(/Line 2, column 1/)
+    expect(msg.textContent).toContain('<script> is not allowed')
+    expect(htmlField().getAttribute('aria-invalid')).toBe('true')
+    expect(htmlField().getAttribute('aria-describedby')).toBe(msg.id)
+    expect(bodyField().getAttribute('aria-invalid')).not.toBe('true')
+    expect(saveButton().disabled).toBe(true)
+
+    await userEvent.click(saveButton())
+    fireEvent.submit(htmlField().closest('form') as HTMLFormElement)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(put).not.toHaveBeenCalled()
+  })
+
+  it('shows the server\'s refusal of the HTML too', async () => {
+    const { put } = wire()
+    await openEditor('ticket_created')
+    put.mockRejectedValue(
+      refusal('invalid_template', 'html, line 1 column 1: a rule the page did not know', {
+        field: 'html', line: 1, col: 1, errors: [{ field: 'html', line: 1, col: 1, message: 'a rule the page did not know' }],
+      }),
+    )
+    type(htmlField(), '<p>{{.TicketURL}}</p>')
+    await waitFor(() => expect(saveButton().disabled).toBe(false))
+    await userEvent.click(saveButton())
+    const msg = await screen.findByText(/Line 1, column 1/)
+    expect(msg.textContent).toContain('a rule the page did not know')
+    expect(htmlField().getAttribute('aria-invalid')).toBe('true')
+  })
+
+  it('sends the HTML in a test mail', async () => {
+    const { post } = wire({ preview: () => HTML_PREVIEW })
+    await openEditor('ticket_created')
+    type(htmlField(), '<p>{{.TicketURL}}</p>')
+    await waitFor(() => expect(saveButton().disabled).toBe(false))
+    await userEvent.click(screen.getByRole('button', { name: 'Send test' }))
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith('/admin/email-templates/ticket_created/test', {
+        subject: DETAIL.subject, body: DETAIL.body, html: '<p>{{.TicketURL}}</p>',
+      }),
+    )
+  })
+
+  it('inserts a variable into whichever field was last used, the HTML included', async () => {
+    wire()
+    await openEditor('ticket_created')
+    htmlField().focus()
+    await userEvent.type(htmlField(), '<p></p>')
+    htmlField().setSelectionRange(3, 3)
+    await userEvent.click(screen.getByRole('button', { name: /\{\{\.TicketURL\}\}/ }))
+    expect(htmlField().value).toBe('<p>{{.TicketURL}}</p>')
+    expect(bodyField().value).toBe(DETAIL.body)
+  })
+})
+
+describe('the HTML help text for the header and footer', () => {
+  it('says every email gets an HTML part, and that a text-only header or footer is carried in', async () => {
+    wire({ detail: SHELL })
+    await openEditor('_header')
+    expect(screen.getByText(/gives every email an HTML part/i)).toBeTruthy()
+    expect(screen.getByText(/only text is carried into the HTML part as paragraphs/i)).toBeTruthy()
+  })
+})
+
+describe('Start from a basic layout', () => {
+  it('fills an empty HTML field with a starter that has the template\'s link, and saves nothing', async () => {
+    const { put } = wire()
+    await openEditor('ticket_created')
+    await userEvent.click(screen.getByRole('button', { name: 'Start from a basic layout' }))
+    expect(htmlField().value).toContain('{{.TicketURL}}')
+    expect(htmlField().value).toContain('href="{{.TicketURL}}"')
+    expect(put).not.toHaveBeenCalled()
+    // It is a draft like any other: it has to be checked before it can be saved.
+    expect(saveButton().disabled).toBe(true)
+    await waitFor(() => expect(saveButton().disabled).toBe(false))
+  })
+
+  it('is for an empty field only: it never replaces what was written', async () => {
+    wire({ detail: HTML_DETAIL, preview: () => HTML_PREVIEW })
+    await openEditor('ticket_created')
+    expect((screen.getByRole('button', { name: 'Start from a basic layout' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('gives the header and the footer the two halves of one layout', async () => {
+    wire({ detail: SHELL })
+    await openEditor('_header')
+    await userEvent.click(screen.getByRole('button', { name: 'Start from a basic layout' }))
+    const header = htmlField().value
+    expect(header).toContain('{{.SiteName}}')
+    expect(header).not.toMatch(/<\/table>/i)
+    expect(header).not.toContain('{{.TicketURL}}')
+  })
+
+  it('keeps the starter free of anything the server refuses', async () => {
+    wire()
+    await openEditor('ticket_created')
+    await userEvent.click(screen.getByRole('button', { name: 'Start from a basic layout' }))
+    expect(htmlField().value).not.toMatch(/<script|<form|<iframe|\son\w+=|javascript:|<meta|<link/i)
+  })
+})
+
+describe('the HTML preview', () => {
+  const frame = () => screen.getByTitle('HTML preview') as HTMLIFrameElement
+
+  it('renders in an iframe with an empty sandbox: no scripts, not the page\'s origin', async () => {
+    wire({ detail: HTML_DETAIL, preview: () => HTML_PREVIEW })
+    await openEditor('ticket_created')
+    await screen.findByTitle('HTML preview')
+    // sandbox="" and not sandbox="allow-something": every restriction on.
+    expect(frame().getAttribute('sandbox')).toBe('')
+    expect(frame().hasAttribute('src')).toBe(false)
+    expect(frame().getAttribute('referrerpolicy')).toBe('no-referrer')
+  })
+
+  it('puts a Content-Security-Policy meta first in the document it shows', async () => {
+    wire({ detail: HTML_DETAIL, preview: () => HTML_PREVIEW })
+    await openEditor('ticket_created')
+    await screen.findByTitle('HTML preview')
+    const doc = frame().getAttribute('srcdoc') ?? ''
+    expect(doc.startsWith(
+      `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">`,
+    )).toBe(true)
+    expect(doc).toContain(HTML_PREVIEW.html)
+    // A click on a sample link goes nowhere.
+    expect(doc).toContain('<base target="_blank">')
+  })
+
+  it('never lets what the server rendered into the page itself', async () => {
+    const hostile = '<script id="hostile">window.__pwned = true</script><img src=x onerror="window.__pwned = true">'
+    wire({ detail: HTML_DETAIL, preview: () => ({ ...OK_PREVIEW, html: hostile }) })
+    await openEditor('ticket_created')
+    await screen.findByTitle('HTML preview')
+    expect(document.getElementById('hostile')).toBeNull()
+    expect(document.querySelector('img[onerror]')).toBeNull()
+    expect((window as unknown as { __pwned?: boolean }).__pwned).toBeUndefined()
+    expect(frame().getAttribute('sandbox')).toBe('')
+  })
+
+  it('says remote images do not load here, and where to see the real thing', async () => {
+    wire({ detail: HTML_DETAIL, preview: () => HTML_PREVIEW })
+    await openEditor('ticket_created')
+    expect((await screen.findByText(/Images from other sites do not load in this preview/i)).textContent).toMatch(/Send test/)
+  })
+
+  it('shows the text preview as before, beside it', async () => {
+    wire({ detail: HTML_DETAIL, preview: () => HTML_PREVIEW })
+    await openEditor('ticket_created')
+    expect(await screen.findByText(/Open it:/, { selector: 'pre *, pre' })).toBeTruthy()
+  })
+
+  it('shows the text as paragraphs when the template has no HTML of its own but the mail still has an HTML part', async () => {
+    wire({ preview: () => ({ ...OK_PREVIEW, html: '<p>Open it</p>' }) })
+    await openEditor('ticket_created')
+    await screen.findByTitle('HTML preview')
+    expect(screen.getByText(/no HTML of its own: its text is shown as paragraphs/i)).toBeTruthy()
+    expect(frame().getAttribute('sandbox')).toBe('')
+  })
+
+  it('puts the policy after a leading doctype, so the frame is not in quirks mode', async () => {
+    wire({ detail: HTML_DETAIL, preview: () => ({ ...OK_PREVIEW, html: '<!DOCTYPE html>\n<html><body><p>x</p></body></html>' }) })
+    await openEditor('ticket_created')
+    await screen.findByTitle('HTML preview')
+    const doc = frame().getAttribute('srcdoc') ?? ''
+    expect(doc.startsWith('<!DOCTYPE html>')).toBe(true)
+    expect(doc.indexOf('<meta http-equiv="Content-Security-Policy"')).toBeGreaterThan(doc.indexOf('<!DOCTYPE html>'))
+    expect(doc.indexOf('<meta http-equiv="Content-Security-Policy"')).toBeLessThan(doc.indexOf('<html>'))
+  })
+
+  it('says the mail is plain text when there is no HTML, and shows no frame', async () => {
+    wire()
+    await openEditor('ticket_created')
+    await screen.findByText(/Open it:/, { selector: 'pre *, pre' })
+    expect(screen.queryByTitle('HTML preview')).toBeNull()
+    expect(screen.getByText(/no HTML part: it is sent as plain text/i)).toBeTruthy()
+  })
+})
+
+describe('touch targets for the HTML part', () => {
+  it('Start from a basic layout is 44px on a touch screen', async () => {
+    wire()
+    await openEditor('ticket_created')
+    expect(screen.getByRole('button', { name: 'Start from a basic layout' }).className).toContain('pointer-coarse:min-h-11')
   })
 })

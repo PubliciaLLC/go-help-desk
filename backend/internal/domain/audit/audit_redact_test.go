@@ -183,3 +183,11 @@ func TestRedact_EmailTemplateTextIsShownUnderItsOwnKeysOnly(t *testing.T) {
 	require.NotContains(t, got, "subject", "a ticket's subject must stay hidden")
 	require.NotContains(t, got, "body", "a ticket's text must stay hidden")
 }
+
+// #158 PR 2: the HTML part of an edited template is recorded in full too.
+func TestRedact_EmailTemplateHTMLIsShown(t *testing.T) {
+	before := map[string]any{"template_name": "ticket_created", "template_html": `<p>Old</p><a href="{{.TicketURL}}">x</a>`, "html": "other"}
+	got, _ := audit.Redact(before, nil)
+	require.Equal(t, `<p>Old</p><a href="{{.TicketURL}}">x</a>`, got["template_html"])
+	require.NotContains(t, got, "html", "only the template_* key is allow-listed")
+}

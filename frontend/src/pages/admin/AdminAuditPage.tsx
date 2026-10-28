@@ -269,11 +269,19 @@ export function AdminAuditPage() {
 function RemovedTemplateText({ before }: { before: Record<string, unknown> }) {
   const subject = typeof before.template_subject === 'string' ? before.template_subject : ''
   const body = typeof before.template_body === 'string' ? before.template_body : ''
+  const html = typeof before.template_html === 'string' ? before.template_html : ''
   return (
     <div className="mt-1 border-l-2 border-gray-100 pl-2 text-gray-500">
       <p>Removed text:</p>
       {subject && <p className="wrap-anywhere"><span className="font-mono">template_subject</span>: {subject}</p>}
       <pre className="whitespace-pre-wrap font-mono text-xs [overflow-wrap:anywhere]">{body}</pre>
+      {/* Source text, never markup: it is shown, not rendered. */}
+      {html && (
+        <>
+          <p className="mt-1">Removed HTML part:</p>
+          <pre className="whitespace-pre-wrap font-mono text-xs [overflow-wrap:anywhere]">{html}</pre>
+        </>
+      )}
     </div>
   )
 }
