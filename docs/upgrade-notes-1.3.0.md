@@ -286,7 +286,7 @@ Under **Admin → Email Templates** an administrator edits the subject and body 
 - **Test send** goes to the signed-in administrator's own address only, at most 5 every 10 minutes.
 - **Migration 000057** creates the table `email_template_overrides`, one row per edited template. It adds no column to an existing table and is safe to apply on a running instance.
 - **Migration 000058** adds the nullable column `email_template_overrides.html`. NULL means no HTML part, so no email changes until an administrator saves some HTML. It is safe to apply on a running instance.
-- **HTML header or footer.** Once an administrator saves an HTML header or footer, every email gets an HTML part: a template with no HTML of its own has its text turned into paragraphs, with links made clickable, and is wrapped in the HTML header and footer. With no HTML header, footer or body saved, every email stays a single plain-text part.
+- **HTML header or footer.** Once an administrator saves an HTML header or footer, every email gets an HTML part: a template with no HTML of its own has its text turned into paragraphs, with links made clickable, and is wrapped in the HTML header and footer. A header or footer that has only text is carried into the HTML part the same way. Changing the help desk's name is refused if it would make an email's HTML part longer than 100 KiB. With no HTML header, footer or body saved, every email stays a single plain-text part.
 
 ### Staff Search Now Covers Every Ticket They Can See (#444)
 

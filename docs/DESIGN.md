@@ -3367,11 +3367,15 @@ on the existing webhook feature instead of as plugins.
     starts a paragraph, a line break is a `<br>`, each link variable is a
     clickable link, the text is escaped and each value is escaped by
     `html/template`). The HTML part is the header's HTML, then that, then the
-    footer's. The mail is `multipart/alternative`, `text/plain` first, each part
+    footer's; a header or footer that has only text goes through the same
+    conversion, so it is not lost from an HTML part that exists because the other
+    one has HTML (text-only shells alone still make no HTML part). The mail is
+    `multipart/alternative`, `text/plain` first, each part
     quoted-printable, with a random boundary. The text part is **always the
     separately edited text template** (with the text header and footer), never
-    generated from the HTML. A text-only header or footer is not carried into the
-    HTML part.
+    generated from the HTML. A `{` or `}` in the text is written as an entity in
+    the generated source, because a `{` next to an action would otherwise make
+    `{{{`, which does not parse.
   - **Templating.** `html/template`, so each value is escaped for where it lands
     (text, or a link's `href`); the guest `#token` fragment survives it. The same
     AST allow-list as the text part runs first, on the parse tree before the
@@ -3396,7 +3400,8 @@ on the existing webhook feature instead of as plugins.
     - *CSS* (`style` attributes and `<style>` blocks, which stay allowed) is
       refused when it holds a backslash, a comment (`/* */`), `expression`,
       `behavior`, `-moz-binding`, `@import`, `javascript:`, `vbscript:`, `data:`,
-      `progid:`, `image-set(`, `image(`, `src(`, `cross-fade(`, or any `url(` not
+      `progid:`, a control or replacement character (an entity such as `&#x0;`
+      decodes to one), `image-set(`, `image(`, `src(`, `cross-fade(`, or any `url(` not
       followed (after a quote or space) by `https:`. Matched on the lower-cased
       text, on the decoded value for an attribute and the raw text for a block.
     - *Comments* (`<!-- -->`, Outlook conditionals, `<!-->`, `<?...>`,
@@ -3407,8 +3412,10 @@ on the existing webhook feature instead of as plugins.
       written `&lt;`. Remote images are allowed (the administrator's choice, and the
       audit records it). Each branch of an `{{if}}` is read on its own and must come
       out whole, so one branch cannot finish a tag another began.
-    - *Repeated attributes*: the tokenizer, like a browser, keeps the first and
-      drops the rest; a test pins it.
+    - *Repeated attributes* are refused. The tokenizer, like a browser, keeps the
+      first and drops the rest, but a mail client may read the last, so the raw tag
+      is scanned (HTML5 rules: a name ends at whitespace, `/`, `>` or `=`; names
+      compare without case; an unquoted value runs to whitespace or `>`).
   - **The bytes that are sent are checked, not only the source.** The tokenizer
     reads source with its actions stood in for; a browser reads what comes out.
     The same markup check runs on the rendered sample at save and on the joined
@@ -3425,15 +3432,20 @@ on the existing webhook feature instead of as plugins.
     over. The live check (`preview`) says the same, so Save stays off. A stored
     combination that is over appears as a broken template (red notice) and fails the
     send. The measure uses long links (2,048 bytes each, a guest link with its token
-    behind a long `BASE_URL`), a 1,024-byte site name and a 64-byte tracking number,
-    so what saves can be sent; the settings do not cap the site name, so that one is
-    generous rather than proven.
+    behind a long `BASE_URL`) and a 64-byte tracking number, and **the real site
+    name**, since the settings do not cap it: the broken-template notice appears as
+    soon as a long name makes a header or footer too big, and changing the site name
+    in the settings is refused (`400 site_name_too_long_for_email`) when it would push
+    an email over the limit. Text that cannot be turned into HTML (a stored text that
+    no longer parses) is a refusal or a broken template, never counted as 0 bytes.
   - **No HTML defaults.** Shipping some would turn every install's mail multipart
     on upgrade. The editor's **Start from a basic layout** button fills an empty
     HTML field with a starter (the header opens a layout, the footer closes it, a
     template gets its own text as paragraphs); nothing is saved until Save.
   - **Saving.** `html` absent means unchanged (a tab opened before the upgrade
-    cannot wipe it); an explicit `""` removes the HTML part. The editor always
+    cannot wipe it); an explicit `""` removes the HTML part. The merge is decided
+    inside the save's transaction, under the row's lock, so two concurrent saves
+    cannot bring back HTML the other removed. The editor always
     sends the key.
   - **Preview.** The HTML renders in `<iframe sandbox="">` (no `allow-scripts`, no
     `allow-same-origin`), written as `srcdoc` with a meta CSP first (after a leading

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -167,7 +168,7 @@ func (s *Server) handleListEmailTemplates(w http.ResponseWriter, r *http.Request
 	for _, o := range rows {
 		byName[o.Name] = o
 	}
-	broken := brokenByName(rows)
+	broken := brokenByName(rows, s.adminSvc.SiteName(r.Context()))
 	out := []templateSummary{}
 	for _, def := range notify.Templates() {
 		var ov *emailtemplate.Override
@@ -182,9 +183,9 @@ func (s *Server) handleListEmailTemplates(w http.ResponseWriter, r *http.Request
 // brokenByName is which stored templates would fail a send, judged over ALL the
 // rows: whether a combination of header, footer and body is too long cannot be
 // seen from one row.
-func brokenByName(rows []emailtemplate.Override) map[string]notify.BrokenTemplate {
+func brokenByName(rows []emailtemplate.Override, siteName string) map[string]notify.BrokenTemplate {
 	out := map[string]notify.BrokenTemplate{}
-	for _, b := range notify.BrokenTemplates(rows) {
+	for _, b := range notify.BrokenTemplatesFor(rows, siteName) {
 		out[b.Name] = b
 	}
 	return out
@@ -202,7 +203,7 @@ func (s *Server) templateDetail(ctx context.Context, def notify.TemplateDef) (te
 			ov = &o
 		}
 	}
-	broken := brokenByName(rows)
+	broken := brokenByName(rows, s.adminSvc.SiteName(ctx))
 	d := templateDetail{
 		templateSummary: s.summarise(ctx, def, ov, broken),
 		Subject:         def.DefaultSubject, Body: def.DefaultBody,
@@ -250,6 +251,10 @@ func invalidTemplate(w http.ResponseWriter, errs []notify.TemplateError) {
 	}})
 }
 
+// errTemplateRefused is how the save's decision says the draft was refused; the
+// reasons are kept beside it. Returning it rolls the transaction back.
+var errTemplateRefused = errors.New("email template draft refused")
+
 // templateText is what an audit entry records of a template: all of it, so the
 // log is the history. The HTML is recorded in full too, whether or not there
 // is any, so "no HTML" reads as an empty value and not as a missing one.
@@ -277,7 +282,7 @@ func (s *Server) handlePutEmailTemplate(w http.ResponseWriter, r *http.Request) 
 		Error(w, http.StatusBadRequest, "bad_request", "invalid request body")
 		return
 	}
-	subject, body, html := in.subject(), in.body(), in.html()
+	subject, body := in.subject(), in.body()
 	rows, err := s.emailTemplates.List(r.Context())
 	if err != nil {
 		handleError(w, err)
@@ -287,44 +292,56 @@ func (s *Server) handlePutEmailTemplate(w http.ResponseWriter, r *http.Request) 
 	for _, o := range rows {
 		stored[o.Name] = o
 	}
-	if in.HTML == nil {
-		// A client that does not know about HTML (a tab opened before the
-		// upgrade) must not wipe it: no key means unchanged, and removing the
-		// HTML takes an explicit empty string.
-		html = stored[def.Name].HTML
-	}
-	if errs := append(notify.ValidateTemplate(def, subject, body), notify.ValidateHTML(def, html)...); len(errs) > 0 {
-		invalidTemplate(w, errs)
-		return
-	}
-	// The size limit is on the header, body and footer together, which no part
-	// can see alone: the same check a send makes, with long links so that what
-	// is saved here can be sent.
-	if te := notify.CheckJoinedHTML(def, stored, emailtemplate.Override{Name: def.Name, Subject: subject, Body: body, HTML: html}, s.adminSvc.SiteName(r.Context())); te != nil {
-		invalidTemplate(w, []notify.TemplateError{*te})
-		return
-	}
-
+	siteName := s.adminSvc.SiteName(r.Context())
 	actor := authmw.GetActor(r)
-	var next *emailtemplate.Override
-	// There is no default HTML, so any HTML makes the template differ.
-	if subject != def.DefaultSubject || body != def.DefaultBody || html != "" {
-		next = &emailtemplate.Override{Name: def.Name, Subject: subject, Body: body, HTML: html, UpdatedBy: &actor.UserID}
-	}
-	err = s.emailTemplates.Apply(r.Context(), def.Name, next, func(prev *emailtemplate.Override) *audit.Entry {
+
+	// Decided inside the transaction, under the row's lock: an absent html key
+	// means "leave the stored HTML alone" (a tab opened before the upgrade must
+	// not wipe it), and that has to be the HTML at commit time, not at the time
+	// the request was read, or two saves could bring back what the other removed.
+	// Removing HTML takes an explicit empty string.
+	var refused []notify.TemplateError
+	var html string
+	err = s.emailTemplates.Update(r.Context(), def.Name, func(prev *emailtemplate.Override) (*emailtemplate.Override, *audit.Entry, error) {
+		refused = nil
+		html = in.html()
+		if in.HTML == nil && prev != nil {
+			html = prev.HTML
+		}
+		if errs := append(notify.ValidateTemplate(def, subject, body), notify.ValidateHTML(def, html)...); len(errs) > 0 {
+			refused = errs
+			return nil, nil, errTemplateRefused
+		}
+		// The size limit is on the header, body and footer together, which no
+		// part can see alone: the same check a send makes, with long links so
+		// that what is saved here can be sent.
+		if te := notify.CheckJoinedHTML(def, stored, emailtemplate.Override{Name: def.Name, Subject: subject, Body: body, HTML: html}, siteName); te != nil {
+			refused = []notify.TemplateError{*te}
+			return nil, nil, errTemplateRefused
+		}
+
+		var next *emailtemplate.Override
+		// There is no default HTML, so any HTML makes the template differ.
+		if subject != def.DefaultSubject || body != def.DefaultBody || html != "" {
+			next = &emailtemplate.Override{Name: def.Name, Subject: subject, Body: body, HTML: html, UpdatedBy: &actor.UserID}
+		}
 		if prev == nil && next == nil {
-			return nil // the default over the default changes nothing
+			return nil, nil, nil // the default over the default changes nothing
 		}
 		beforeSubject, beforeBody, beforeHTML := def.DefaultSubject, def.DefaultBody, ""
 		if prev != nil {
 			beforeSubject, beforeBody, beforeHTML = prev.Subject, prev.Body, prev.HTML
 		}
-		return &audit.Entry{
+		return next, &audit.Entry{
 			ID: uuid.New(), ActorID: &actor.UserID, EntityType: "email_template", EntityID: emailTemplateEntityID(def.Name),
 			Action: "email_template_saved", Before: templateText(beforeSubject, beforeBody, beforeHTML, def.Name),
 			After: templateText(subject, body, html, def.Name), CreatedAt: time.Now(),
-		}
+		}, nil
 	})
+	if errors.Is(err, errTemplateRefused) {
+		invalidTemplate(w, refused)
+		return
+	}
 	if err != nil {
 		handleError(w, fmt.Errorf("saving email template %s: %w", def.Name, err))
 		return
@@ -504,8 +521,39 @@ func (s *Server) brokenTemplates(ctx context.Context) []brokenTemplate {
 		slog.ErrorContext(ctx, "reading email templates for the security warnings failed", "error", err)
 		return out
 	}
-	for _, b := range notify.BrokenTemplates(rows) {
+	for _, b := range notify.BrokenTemplatesFor(rows, s.adminSvc.SiteName(ctx)) {
 		out = append(out, brokenTemplate{Name: b.Name, Label: b.Label, Reason: b.Reason, UpdatedAt: b.UpdatedAt})
 	}
 	return out
+}
+
+// refuseSiteNameTooLongForEmail answers a settings change of the help desk's name
+// that would push an email's HTML part over the size limit, because a header or
+// footer prints the name. It refuses only a change that makes things worse than
+// they are, and reports whether it answered.
+func (s *Server) refuseSiteNameTooLongForEmail(w http.ResponseWriter, r *http.Request, raw json.RawMessage) bool {
+	var name string
+	if s.emailTemplates == nil || json.Unmarshal(raw, &name) != nil {
+		return false // the settings handler's own validation answers a bad value
+	}
+	rows, err := s.emailTemplates.List(r.Context())
+	if err != nil {
+		return false // not a reason to refuse a rename
+	}
+	stored := make(map[string]emailtemplate.Override, len(rows))
+	for _, o := range rows {
+		stored[o.Name] = o
+	}
+	was := map[string]bool{}
+	for _, o := range notify.OverCapHTML(stored, s.adminSvc.SiteName(r.Context())) {
+		was[o.Name] = true
+	}
+	for _, o := range notify.OverCapHTML(stored, name) {
+		if o.Problem == "" && !was[o.Name] {
+			Error(w, http.StatusBadRequest, "site_name_too_long_for_email",
+				fmt.Sprintf("with this name the HTML part of the email %q would come to %d bytes; the limit is 100 KiB, where mail clients cut a message off. Use a shorter name, or shorten the HTML header or footer that prints it", o.Label, o.Bytes))
+			return true
+		}
+	}
+	return false
 }

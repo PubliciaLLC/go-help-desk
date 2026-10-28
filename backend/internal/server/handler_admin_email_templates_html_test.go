@@ -518,3 +518,45 @@ func TestEmailTemplatesHTML_AnAbsentKeyWithTheDefaultTextStillKeepsTheRowBecause
 	require.Equal(t, http.StatusOK, res.StatusCode, string(readAll(t, res)))
 	require.Equal(t, goodHTML, h.getHTMLDetail(t, "ticket_created").HTML)
 }
+
+// ── the site name is part of the size ────────────────────────────────────────
+
+func TestEmailTemplatesHTML_ALongSiteNameThatWouldBreakAHeaderIsRefused(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	code, b := h.putTemplateHTML(t, "_header", "", "", strings.Repeat(`<b>{{.SiteName}}</b>`, 120))
+	require.Equal(t, http.StatusOK, code, string(b)[:min(300, len(b))])
+
+	long := strings.Repeat("N", 1500)
+	res := h.doAsAdminSession(t, http.MethodPatch, "/api/v1/admin/settings", map[string]any{"site_name": long})
+	rb := readAll(t, res)
+	require.Equal(t, http.StatusBadRequest, res.StatusCode, string(rb))
+	require.Equal(t, "site_name_too_long_for_email", errCode(t, rb))
+	require.Contains(t, string(rb), "100 KiB")
+
+	// Nothing was written.
+	res = h.doAsAdminSession(t, http.MethodGet, "/api/v1/admin/settings", nil)
+	require.NotContains(t, string(readAll(t, res)), long)
+
+	// A name that fits is fine.
+	res = h.doAsAdminSession(t, http.MethodPatch, "/api/v1/admin/settings", map[string]any{"site_name": "Acme Support"})
+	require.Less(t, res.StatusCode, 300, string(readAll(t, res)))
+}
+
+func TestEmailTemplatesHTML_ALongSiteNameIsFineWhenNoTemplatePrintsIt(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	res := h.doAsAdminSession(t, http.MethodPatch, "/api/v1/admin/settings", map[string]any{"site_name": strings.Repeat("N", 1500)})
+	require.Less(t, res.StatusCode, 300, string(readAll(t, res)))
+}
+
+func TestEmailTemplatesHTML_ANameAlreadyLongMakesTheNoticeAppear(t *testing.T) {
+	// A name set before the header existed, or straight in the database.
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	_, err := h.tx.Exec(`INSERT INTO settings (key, value) VALUES ('site_name', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, `"`+strings.Repeat("N", 1500)+`"`)
+	require.NoError(t, err)
+	h.seedStaleHTML(t, "_header", "", "", strings.Repeat(`<b>{{.SiteName}}</b>`, 120))
+	w := h.tmplWarnings(t)
+	require.NotEmpty(t, w.Email.BrokenTemplates, "renaming the site to something long shows the notice at once")
+}

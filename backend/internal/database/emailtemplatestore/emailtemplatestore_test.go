@@ -2,6 +2,7 @@ package emailtemplatestore_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -201,4 +202,74 @@ func TestApply_HTMLRoundTripsAndNoneIsNull(t *testing.T) {
 	row, err := q.LockEmailTemplateOverride(ctx, name)
 	require.NoError(t, err)
 	require.False(t, row.Html.Valid, "no HTML is stored as NULL")
+}
+
+// Update runs the decision INSIDE the transaction and the row lock, so a save
+// that merges with what is stored (an absent html key) merges with the row as it
+// is when it commits, not as it was when the request was read.
+func TestUpdate_TheDecisionSeesTheLockedRowAndSerialisesWithOthers(t *testing.T) {
+	s, _, name := newStore(t)
+	ctx := context.Background()
+	require.NoError(t, s.Apply(ctx, name, &emailtemplate.Override{Name: name, Subject: "s", Body: "b0", HTML: "<p>first</p>"}, entryFor(name, "saved")))
+
+	// A holds the lock until released, having read HTML "<p>first</p>".
+	aRead := make(chan string, 1)
+	release := make(chan struct{})
+	aDone := make(chan error, 1)
+	go func() {
+		aDone <- s.Update(ctx, name, func(prev *emailtemplate.Override) (*emailtemplate.Override, *audit.Entry, error) {
+			aRead <- prev.HTML
+			<-release
+			return &emailtemplate.Override{Name: name, Subject: "s", Body: "bA", HTML: prev.HTML + "A"}, entryFor(name, "saved")(prev), nil
+		})
+	}()
+	require.Equal(t, "<p>first</p>", <-aRead)
+
+	// B arrives while A holds the row. It must wait, and then see A's result.
+	bSaw := make(chan string, 1)
+	bDone := make(chan error, 1)
+	go func() {
+		bDone <- s.Update(ctx, name, func(prev *emailtemplate.Override) (*emailtemplate.Override, *audit.Entry, error) {
+			bSaw <- prev.HTML
+			return &emailtemplate.Override{Name: name, Subject: "s", Body: "bB", HTML: prev.HTML + "B"}, entryFor(name, "saved")(prev), nil
+		})
+	}()
+	select {
+	case <-bSaw:
+		t.Fatal("B read the row while A held it: a merge in B would bring back stale HTML")
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(release)
+	require.NoError(t, <-aDone)
+	require.Equal(t, "<p>first</p>A", <-bSaw, "B merged with A's committed row")
+	require.NoError(t, <-bDone)
+
+	got, err := s.Overrides(ctx, name)
+	require.NoError(t, err)
+	require.Equal(t, "<p>first</p>AB", got[name].HTML)
+}
+
+func TestUpdate_ADecisionToRemoveDeletesAndAnErrorChangesNothing(t *testing.T) {
+	s, _, name := newStore(t)
+	ctx := context.Background()
+	require.NoError(t, s.Apply(ctx, name, &emailtemplate.Override{Name: name, Subject: "s", Body: "b"}, entryFor(name, "saved")))
+
+	boom := errors.New("refused")
+	err := s.Update(ctx, name, func(*emailtemplate.Override) (*emailtemplate.Override, *audit.Entry, error) { return nil, nil, boom })
+	require.ErrorIs(t, err, boom)
+	got, _ := s.Overrides(ctx, name)
+	require.Len(t, got, 1, "a refused decision leaves the row")
+
+	require.NoError(t, s.Update(ctx, name, func(prev *emailtemplate.Override) (*emailtemplate.Override, *audit.Entry, error) {
+		return nil, entryFor(name, "reverted")(prev), nil
+	}))
+	got, _ = s.Overrides(ctx, name)
+	require.Empty(t, got)
+
+	var prevSeen = true
+	require.NoError(t, s.Update(ctx, name, func(prev *emailtemplate.Override) (*emailtemplate.Override, *audit.Entry, error) {
+		prevSeen = prev != nil
+		return nil, nil, nil
+	}))
+	require.False(t, prevSeen, "no row is a nil prev")
 }
