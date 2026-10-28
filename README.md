@@ -32,7 +32,7 @@ Go Help Desk is an open-source ticket management system. Staff submit and track 
 - Each ticket records how it arrived (web, API, MCP, guest form or phone); staff see it, requesters do not
 - Readable audit log with opt-in retention
 - Email notifications, queued with retries. Staff are emailed about their tickets and can follow a ticket
-- Administrators can edit the wording of all 17 emails, plus a shared header and footer, with a live check and a test send. Plain text only, and never ticket content
+- Administrators can edit the wording of all 17 emails, plus a shared header and footer, with a live check and a test send. Each can have an optional HTML part. Never ticket content
 - Reopened tickets are flagged, raised one priority level the first time, and get a fresh SLA clock; staff can change a ticket's priority
 - Webhooks (Slack, Teams, Discord and JIRA formats, or raw JSON), one delivery per change, retried on failure, with a delivery history and an optional ticket filter
 - Attachments: content detection, optional ClamAV scanning and reputation lookups, download only
