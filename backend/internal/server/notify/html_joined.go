@@ -28,26 +28,29 @@ import (
 type OverCap struct {
 	Name, Label string
 	Bytes       int
+	Problem     string
 }
 
 // Worst-case values, so that what passes a save cannot fail a send. A link is
 // at most this long in practice (browsers and relays stop near it), and a
-// guest's carries a token. Site name and tracking number have no short bound in
-// the settings, so these are generous rather than proven.
+// guest's carries a token. The site name is the real one (the settings do not
+// cap it, so a guess would be wrong one way or the other): renaming the site
+// to something long shows the red notices at once, and the settings save refuses
+// a name that would push a template over.
 const (
 	worstURLBytes      = 2048
-	worstSiteNameBytes = 1024
 	worstTrackingBytes = 64
+	defaultSiteName    = "Go Help Desk"
 )
 
-func worstCaseVars(def TemplateDef) map[string]string {
+func worstCaseVars(def TemplateDef, siteName string) map[string]string {
 	out := map[string]string{}
 	for _, v := range def.Vars {
 		switch {
 		case linkVariables[v.Name]:
 			out[v.Name] = "https://" + strings.Repeat("h", worstURLBytes-len("https://"))
 		case v.Name == "SiteName":
-			out[v.Name] = strings.Repeat("S", worstSiteNameBytes)
+			out[v.Name] = siteName
 		default:
 			out[v.Name] = strings.Repeat("N", worstTrackingBytes)
 		}
@@ -59,33 +62,62 @@ type countingWriter struct{ n int }
 
 func (c *countingWriter) Write(p []byte) (int, error) { c.n += len(p); return len(p), nil }
 
-// htmlSize is how many bytes src renders to with the worst-case values. A source
-// that does not render counts as 0: it is reported as broken on its own.
-func htmlSize(def TemplateDef, src string) int {
+// htmlSize is how many bytes src renders to with the worst-case values.
+func htmlSize(def TemplateDef, src, siteName string) (int, error) {
 	if src == "" {
-		return 0
+		return 0, nil
 	}
 	t, err := htpl.New(def.Name).Option("missingkey=error").Parse(src)
 	if err != nil {
-		return 0
+		return 0, err
 	}
 	var w countingWriter
-	if err := t.Execute(&w, worstCaseVars(def)); err != nil {
-		return 0
+	if err := t.Execute(&w, worstCaseVars(def, siteName)); err != nil {
+		return 0, err
 	}
-	return w.n
+	return w.n, nil
+}
+
+// shellSize is the size of the header's or footer's contribution: its HTML, or
+// its text turned into paragraphs when it has no HTML. A failure to make HTML
+// from text is returned, never counted as 0.
+func shellSize(def TemplateDef, ov emailtemplate.Override, siteName string) (int, error) {
+	switch {
+	case ov.HTML != "":
+		// The administrator's own HTML that does not render is reported on its
+		// own, as broken; it is not this check's finding.
+		n, _ := htmlSize(def, ov.HTML, siteName)
+		return n, nil
+	case ov.Body != "":
+		src, err := htmlFromText(def, ov.Body)
+		if err != nil {
+			return 0, err
+		}
+		return htmlSize(def, src, siteName)
+	}
+	return 0, nil
 }
 
 // OverCapHTML lists, in the editor's order, every template whose HTML part
-// would come to more than MaxRenderedHTMLBytes given these stored rows.
-func OverCapHTML(ovs map[string]emailtemplate.Override) []OverCap {
-	hdr, ftr := ovs[NameHeader].HTML, ovs[NameFooter].HTML
-	shellHTML := hdr != "" || ftr != ""
-	headerDef, _ := LookupTemplate(NameHeader)
-	footerDef, _ := LookupTemplate(NameFooter)
-	shells := htmlSize(headerDef, hdr) + htmlSize(footerDef, ftr)
-
+// would come to more than MaxRenderedHTMLBytes given these stored rows, or
+// whose HTML part cannot be made at all (Problem set). The shell is named when
+// it is the one that cannot be made.
+func OverCapHTML(ovs map[string]emailtemplate.Override, siteName string) []OverCap {
+	shellHTML := ovs[NameHeader].HTML != "" || ovs[NameFooter].HTML != ""
 	var out []OverCap
+	shells := 0
+	if shellHTML {
+		for _, name := range []string{NameHeader, NameFooter} {
+			def, _ := LookupTemplate(name)
+			n, err := shellSize(def, ovs[name], siteName)
+			if err != nil {
+				out = append(out, OverCap{Name: name, Label: def.Label, Problem: err.Error()})
+				continue
+			}
+			shells += n
+		}
+	}
+
 	for _, def := range Templates() {
 		if def.Shell {
 			continue
@@ -94,17 +126,20 @@ func OverCapHTML(ovs map[string]emailtemplate.Override) []OverCap {
 		var own int
 		switch {
 		case edited && ov.HTML != "":
-			own = htmlSize(def, ov.HTML)
+			own, _ = htmlSize(def, ov.HTML, siteName) // broken on its own if it does not render
 		case shellHTML:
 			text := def.DefaultBody
 			if edited {
 				text = ov.Body
 			}
 			src, err := htmlFromText(def, text)
+			if err == nil {
+				own, err = htmlSize(def, src, siteName)
+			}
 			if err != nil {
+				out = append(out, OverCap{Name: def.Name, Label: def.Label, Problem: err.Error()})
 				continue
 			}
-			own = htmlSize(def, src)
 		default:
 			continue
 		}
@@ -119,7 +154,7 @@ func OverCapHTML(ovs map[string]emailtemplate.Override) []OverCap {
 // candidate in place of def's. For a content template it is that template's
 // HTML part; for the header or footer it is every template's, because each one
 // is wrapped in it. It names the template that would go over. nil is fine.
-func CheckJoinedHTML(def TemplateDef, ovs map[string]emailtemplate.Override, candidate emailtemplate.Override) *TemplateError {
+func CheckJoinedHTML(def TemplateDef, ovs map[string]emailtemplate.Override, candidate emailtemplate.Override, siteName string) *TemplateError {
 	next := make(map[string]emailtemplate.Override, len(ovs)+1)
 	for k, v := range ovs {
 		next[k] = v
@@ -127,13 +162,18 @@ func CheckJoinedHTML(def TemplateDef, ovs map[string]emailtemplate.Override, can
 	candidate.Name = def.Name
 	next[def.Name] = candidate
 
-	for _, o := range OverCapHTML(next) {
-		if def.Shell {
+	for _, o := range OverCapHTML(next, siteName) {
+		switch {
+		case o.Problem != "" && (def.Shell || o.Name == def.Name):
+			return &TemplateError{Field: "html", Message: fmt.Sprintf(
+				"the HTML part of %q cannot be made from its text (%s), so no mail that uses it could be sent as it is; fix or revert that template first",
+				o.Label, o.Problem)}
+		case o.Problem != "":
+		case def.Shell:
 			return &TemplateError{Field: "html", Message: fmt.Sprintf(
 				"with this %s the HTML part of %q would come to %d bytes (measured with long links); the limit is 100 KiB, where mail clients cut a message off; shorten it, or the other shared part",
 				strings.ToLower(def.Label), o.Label, o.Bytes)}
-		}
-		if o.Name == def.Name {
+		case o.Name == def.Name:
 			return &TemplateError{Field: "html", Message: fmt.Sprintf(
 				"the HTML part of %q would come to %d bytes with the header and footer (measured with long links); the limit is 100 KiB, where mail clients cut a message off; shorten it",
 				o.Label, o.Bytes)}
@@ -144,14 +184,19 @@ func CheckJoinedHTML(def TemplateDef, ovs map[string]emailtemplate.Override, can
 
 // overCapBroken turns the over-cap combinations among stored rows into broken
 // templates, dated by the newest row that is part of the combination.
-func overCapBroken(rows []emailtemplate.Override) []BrokenTemplate {
+func overCapBroken(rows []emailtemplate.Override, siteName string) []BrokenTemplate {
 	ovs := make(map[string]emailtemplate.Override, len(rows))
 	for _, r := range rows {
 		ovs[r.Name] = r
 	}
 	var out []BrokenTemplate
-	for _, o := range OverCapHTML(ovs) {
+	for _, o := range OverCapHTML(ovs, siteName) {
 		at := newest(ovs[o.Name].UpdatedAt, ovs[NameHeader].UpdatedAt, ovs[NameFooter].UpdatedAt)
+		if o.Problem != "" {
+			out = append(out, BrokenTemplate{Name: o.Name, Label: o.Label, UpdatedAt: at,
+				Reason: "html: the HTML part cannot be made from the text: " + o.Problem})
+			continue
+		}
 		out = append(out, BrokenTemplate{
 			Name: o.Name, Label: o.Label, UpdatedAt: at,
 			Reason: fmt.Sprintf("html: the HTML part comes to %d bytes with the header and footer (measured with long links); the limit is 100 KiB, where mail clients cut a message off", o.Bytes),
@@ -245,4 +290,11 @@ func ifField(n *parse.IfNode) string {
 	return ""
 }
 
-func htmlescape(s string) string { return htmltemplate.EscapeString(s) }
+// htmlescape makes text safe as HTML source for html/template: markup characters
+// as entities, and the braces too. A "{" left alone can sit right before an
+// action's "{{" and make "{{{", which does not parse.
+func htmlescape(s string) string {
+	s = htmltemplate.EscapeString(s)
+	s = strings.ReplaceAll(s, "{", "&#123;")
+	return strings.ReplaceAll(s, "}", "&#125;")
+}

@@ -169,7 +169,7 @@ func TestJoined_EachPartPassesAloneAndTogetherTheyDoNot(t *testing.T) {
 		}
 		require.Empty(t, ValidateHTML(d, o.HTML), o.Name+" is fine alone")
 	}
-	over := OverCapHTML(jrows())
+	over := OverCapHTML(jrows(), defaultSiteName)
 	require.Len(t, over, 1, "only the template with the 40 KiB body goes over; the others have a short text")
 	var created *OverCap
 	for i := range over {
@@ -189,23 +189,23 @@ func TestJoined_BigShellsPutEveryTemplateOver(t *testing.T) {
 		NameHeader: {Name: NameHeader, HTML: `<div>` + pad(51*1024) + `</div>`},
 		NameFooter: {Name: NameFooter, HTML: `<div>` + pad(51*1024) + `</div>`},
 	}
-	require.Len(t, OverCapHTML(rows), 17)
+	require.Len(t, OverCapHTML(rows, defaultSiteName), 17)
 }
 
 func TestJoined_ABodyAloneIsOnlyChecked_WhenNoShellHasHTML(t *testing.T) {
 	rows := jrows()
 	delete(rows, NameHeader)
 	delete(rows, NameFooter)
-	require.Empty(t, OverCapHTML(rows), "40 KiB alone is fine")
+	require.Empty(t, OverCapHTML(rows, defaultSiteName), "40 KiB alone is fine")
 	rows["ticket_created"] = emailtemplate.Override{Name: "ticket_created", Subject: "s", Body: "{{.TicketURL}}", HTML: `<div>` + pad(60*1024) + `</div><a href="{{.TicketURL}}">x</a>`}
-	require.Empty(t, OverCapHTML(rows))
+	require.Empty(t, OverCapHTML(rows, defaultSiteName))
 }
 
 func TestJoined_CheckJoinedHTML_ForAContentTemplateNamesIt(t *testing.T) {
 	rows := jrows()
 	cand := rows["ticket_created"]
 	delete(rows, "ticket_created")
-	te := CheckJoinedHTML(mustDef(t, "ticket_created"), rows, cand)
+	te := CheckJoinedHTML(mustDef(t, "ticket_created"), rows, cand, defaultSiteName)
 	require.NotNil(t, te)
 	require.Equal(t, "html", te.Field)
 	require.Contains(t, te.Message, `"Ticket received"`)
@@ -218,13 +218,13 @@ func TestJoined_CheckJoinedHTML_ForAShellNamesTheTemplateItWouldBreak(t *testing
 	cand := rows[NameFooter]
 	delete(rows, NameFooter)
 	// With the header and the body at 40 KiB each, a 40 KiB footer is over.
-	te := CheckJoinedHTML(mustDef(t, NameFooter), rows, cand)
+	te := CheckJoinedHTML(mustDef(t, NameFooter), rows, cand, defaultSiteName)
 	require.NotNil(t, te)
 	require.Equal(t, "html", te.Field)
 	require.Contains(t, te.Message, "would come to")
 
 	small := emailtemplate.Override{Name: NameFooter, HTML: `<p>small</p>`}
-	require.Nil(t, CheckJoinedHTML(mustDef(t, NameFooter), rows, small))
+	require.Nil(t, CheckJoinedHTML(mustDef(t, NameFooter), rows, small, defaultSiteName))
 }
 
 func TestJoined_ARevertOrASmallerSaveIsNeverRefused(t *testing.T) {
@@ -232,7 +232,7 @@ func TestJoined_ARevertOrASmallerSaveIsNeverRefused(t *testing.T) {
 	delete(rows, NameFooter)
 	delete(rows, "ticket_created")
 	// A header that is fine alone and with every default text.
-	require.Nil(t, CheckJoinedHTML(mustDef(t, NameHeader), rows, emailtemplate.Override{Name: NameHeader, HTML: `<div>` + pad(40*1024) + `</div>`}))
+	require.Nil(t, CheckJoinedHTML(mustDef(t, NameHeader), rows, emailtemplate.Override{Name: NameHeader, HTML: `<div>` + pad(40*1024) + `</div>`}, defaultSiteName))
 }
 
 func TestJoined_MeasuredWithLongLinksSoWhatSavesCanBeSent(t *testing.T) {
@@ -241,11 +241,11 @@ func TestJoined_MeasuredWithLongLinksSoWhatSavesCanBeSent(t *testing.T) {
 	def := mustDef(t, "ticket_created")
 	body := strings.Repeat(`<p><a href="{{.TicketURL}}">{{.TicketURL}}</a></p>`, 30)
 	require.Empty(t, ValidateHTML(def, body), "fine with the sample address")
-	te := CheckJoinedHTML(def, nil, emailtemplate.Override{Name: "ticket_created", Subject: "s", Body: "{{.TicketURL}}", HTML: body})
+	te := CheckJoinedHTML(def, nil, emailtemplate.Override{Name: "ticket_created", Subject: "s", Body: "{{.TicketURL}}", HTML: body}, defaultSiteName)
 	require.NotNil(t, te, "but not with a long one")
 	// Fewer copies fit with room to spare.
 	ok := strings.Repeat(`<p><a href="{{.TicketURL}}">{{.TicketURL}}</a></p>`, 5)
-	require.Nil(t, CheckJoinedHTML(def, nil, emailtemplate.Override{Name: "ticket_created", Subject: "s", Body: "{{.TicketURL}}", HTML: ok}))
+	require.Nil(t, CheckJoinedHTML(def, nil, emailtemplate.Override{Name: "ticket_created", Subject: "s", Body: "{{.TicketURL}}", HTML: ok}, defaultSiteName))
 }
 
 func TestJoined_BrokenTemplatesReportsAnOverCapCombination(t *testing.T) {

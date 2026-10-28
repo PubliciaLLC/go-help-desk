@@ -133,6 +133,13 @@ var cssRefusals = []struct{ word, why string }{
 // checkCSS returns why a style attribute value or <style> text is refused, or "".
 func checkCSS(css string) string {
 	l := strings.ToLower(css)
+	for _, r := range l {
+		if r == 0xFFFD || (r < 0x20 && r != '\t' && r != '\n' && r != '\r' && r != '\f') || (r >= 0x7f && r <= 0x9f) {
+			// An entity such as &#x0; decodes to one of these, and a parser may
+			// drop it, which joins the pieces either side of it into a keyword.
+			return "a control or replacement character in CSS is not allowed: it can split a keyword the checks look for"
+		}
+	}
 	if strings.Contains(l, "/*") {
 		// A comment can split a keyword the checks look for, and whether "/*" is
 		// a comment or part of a string is a parser's decision, not a text
@@ -426,6 +433,14 @@ func (c *htmlCheck) tag(sk *skeleton, tok html.Token, raw string, at int) bool {
 		c.fail(sk, at, "%s is not allowed: email clients do not show it reliably; use tables, div, p, span, a, img, headings or lists", shown)
 		return false
 	}
+	// The tokenizer drops a repeated attribute (it keeps the first, as a browser
+	// does); a mail client may read the last. So the raw tag is read for repeats.
+	if !closing {
+		if dup := repeatedAttribute(raw); dup != "" {
+			c.fail(sk, at, "attribute %q appears twice in this tag; browsers use the first and some mail clients the last, so the link or style you meant is not certain", dup)
+			return false
+		}
+	}
 	accepted := 0
 	for _, a := range tok.Attr {
 		key, val := a.Key, a.Val
@@ -499,6 +514,63 @@ func (c *htmlCheck) tag(sk *skeleton, tok html.Token, raw string, at int) bool {
 		return false
 	}
 	return true
+}
+
+func isTagSpace(b byte) bool { return b == ' ' || b == '\t' || b == '\n' || b == '\f' || b == '\r' }
+
+// repeatedAttribute returns the first attribute name that appears twice in a
+// start tag's raw text, or "". It follows the HTML5 tokenizer: a name ends at
+// whitespace, "/", ">" or "="; a value is quoted or runs to whitespace or ">",
+// so "=" and "/" inside an unquoted value are part of the value. Names compare
+// without regard to case.
+func repeatedAttribute(raw string) string {
+	i := 1 // past "<"
+	for i < len(raw) && !isTagSpace(raw[i]) && raw[i] != '/' && raw[i] != '>' {
+		i++
+	}
+	seen := map[string]bool{}
+	for i < len(raw) {
+		for i < len(raw) && (isTagSpace(raw[i]) || raw[i] == '/') {
+			i++
+		}
+		if i >= len(raw) || raw[i] == '>' {
+			break
+		}
+		start := i
+		if raw[i] == '=' { // a leading "=" is part of the name
+			i++
+		}
+		for i < len(raw) && !isTagSpace(raw[i]) && raw[i] != '/' && raw[i] != '>' && raw[i] != '=' {
+			i++
+		}
+		name := strings.ToLower(raw[start:i])
+		if seen[name] {
+			return name
+		}
+		seen[name] = true
+		for i < len(raw) && isTagSpace(raw[i]) {
+			i++
+		}
+		if i < len(raw) && raw[i] == '=' {
+			i++
+			for i < len(raw) && isTagSpace(raw[i]) {
+				i++
+			}
+			if i < len(raw) && (raw[i] == '"' || raw[i] == '\'') {
+				q := raw[i]
+				i++
+				for i < len(raw) && raw[i] != q {
+					i++
+				}
+				i++
+			} else {
+				for i < len(raw) && !isTagSpace(raw[i]) && raw[i] != '>' {
+					i++
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // allURLsHTTPS holds every URL in an attribute to https. srcset is a list of

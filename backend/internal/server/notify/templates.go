@@ -566,6 +566,13 @@ type BrokenTemplate struct {
 // would then fail on. A row whose name is not in the registry (a template a
 // later release retired) is never read by a send and is left out.
 func BrokenTemplates(rows []emailtemplate.Override) []BrokenTemplate {
+	return BrokenTemplatesFor(rows, defaultSiteName)
+}
+
+// BrokenTemplatesFor is BrokenTemplates with the help desk's real name, which
+// the size of a header or footer that prints it depends on: a long name makes
+// the notice appear at once.
+func BrokenTemplatesFor(rows []emailtemplate.Override, siteName string) []BrokenTemplate {
 	out := []BrokenTemplate{}
 	for _, r := range rows {
 		def, ok := LookupTemplate(r.Name)
@@ -577,7 +584,7 @@ func BrokenTemplates(rows []emailtemplate.Override) []BrokenTemplate {
 		}
 	}
 	// A combination of parts that are each fine can still be too long to send.
-	for _, b := range overCapBroken(rows) {
+	for _, b := range overCapBroken(rows, siteName) {
 		seen := false
 		for _, o := range out {
 			seen = seen || o.Name == b.Name

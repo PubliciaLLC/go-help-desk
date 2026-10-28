@@ -149,8 +149,8 @@ func TestValidateHTML_Table(t *testing.T) {
 		{name: "ping", html: `{{.TicketURL}}<a href="https://a.example" ping="http://t.example/p">y</a>`, wantMsg: "ping must start with https:"},
 		{name: "cite", html: `{{.TicketURL}}<blockquote cite="http://a.example">y</blockquote>`, wantMsg: "cite must start with https:"},
 		{name: "longdesc", html: `{{.TicketURL}}<img src="https://a.example/x.png" longdesc="/relative">`, wantMsg: "longdesc must start with https:"},
-		{name: "a first href that is a javascript url", html: `{{.TicketURL}}<a href="javascript:alert(1)" href="https://ok.example">y</a>`, wantMsg: "href must start with"},
-		{name: "a second handler after a repeated attribute", html: `{{.TicketURL}}<a title="a" title="b" onclick="x">y</a>`, wantMsg: `"onclick"`},
+		{name: "a first href that is a javascript url", html: `{{.TicketURL}}<a href="javascript:alert(1)" href="https://ok.example">y</a>`, wantMsg: "appears twice"},
+		{name: "a handler after a repeated attribute", html: `{{.TicketURL}}<a title="a" title="b" onclick="x">y</a>`, wantMsg: "appears twice"},
 
 		// ── a whole-value action in a link must be a URL ──
 		{name: "a tracking number as an href", html: `{{.TicketURL}}<a href="{{.TrackingNumber}}">y</a>`, wantMsg: "must be a link variable"},
@@ -192,6 +192,29 @@ func TestValidateHTML_Table(t *testing.T) {
 		{name: "css webkit image-set", html: `{{.TicketURL}}<p style="background:-webkit-image-set(url(http://a.example/x) 1x)">y</p>`, wantMsg: "image-set("},
 		{name: "css ie filter loader", html: `{{.TicketURL}}<p style="filter:progid:DXImageTransform.Microsoft.AlphaImageLoader(src='http://a.example/x')">y</p>`, wantMsg: "progid:"},
 		{name: "css behavior with a comment", html: `{{.TicketURL}}<p style="beha/**/vior:x">y</p>`, wantMsg: "comment"},
+
+		// ── a repeated attribute is refused: the tokenizer keeps the first, some mail clients the last ──
+		{name: "href twice", html: `{{.TicketURL}}<a href="https://x.example" href="javascript:alert(1)">y</a>`, wantMsg: `attribute "href" appears twice`},
+		{name: "href twice the other way round", html: `{{.TicketURL}}<a href="javascript:alert(1)" href="https://x.example">y</a>`, wantMsg: `attribute "href" appears twice`},
+		{name: "style twice", html: `{{.TicketURL}}<p style="a:b" style="c:d">y</p>`, wantMsg: `attribute "style" appears twice`},
+		{name: "unquoted src twice", html: `{{.TicketURL}}<img src=https://ok.example/a.png src=http://evil.example/b.png>`, wantMsg: `attribute "src" appears twice`},
+		{name: "twice with different case", html: `{{.TicketURL}}<p CLASS="a" class="b">y</p>`, wantMsg: `attribute "class" appears twice`},
+		{name: "twice with a slash between", html: `{{.TicketURL}}<p class="a"/class="b">y</p>`, wantMsg: `attribute "class" appears twice`},
+		{name: "twice with no space after a quote", html: `{{.TicketURL}}<p class="a"class="b">y</p>`, wantMsg: `attribute "class" appears twice`},
+		{name: "twice after a bare attribute", html: `{{.TicketURL}}<td nowrap class=a nowrap>y</td>`, wantMsg: `attribute "nowrap" appears twice`},
+		{name: "an unquoted value with an equals sign is one the renderer refuses", html: `{{.TicketURL}}<a title=a=b>y</a>`, wantMsg: "in unquoted attr"},
+		{name: "an unquoted value with an equals sign then a repeat", html: `{{.TicketURL}}<a href=https://ok.example/?a=b href=javascript:x>y</a>`, wantMsg: `attribute "href" appears twice`},
+		{name: "a quoted value that looks like an attribute", html: `{{.TicketURL}}<p title="class=x" class="y">y</p>`},
+		{name: "the same name in two tags is fine", html: `{{.TicketURL}}<p class="a">x</p><p class="b">y</p>`},
+		{name: "the same name in an end tag is not read", html: `{{.TicketURL}}<p class="a">x</p class="b">`},
+
+		// ── CSS: control characters and U+FFFD ──
+		{name: "a NUL entity splitting a keyword", html: `{{.TicketURL}}<p style="x:exp&#x0;ression(1)">y</p>`, wantMsg: "control or replacement character"},
+		{name: "a control character entity", html: `{{.TicketURL}}<p style="x:exp&#x1;ression(1)">y</p>`, wantMsg: "control or replacement character"},
+		{name: "a replacement character", html: "{{.TicketURL}}<p style=\"x:exp\uFFFDression(1)\">y</p>", wantMsg: "control or replacement character"},
+		{name: "a control character in a style block", html: "<style>p{x:exp\x01ression(1)}</style>{{.TicketURL}}", wantMsg: "control or replacement character"},
+		{name: "a delete character", html: "{{.TicketURL}}<p style=\"x:y\x7f\">y</p>", wantMsg: "control or replacement character"},
+		{name: "tabs and newlines are fine in CSS", html: "{{.TicketURL}}<p style=\"color:red;\n\tbackground:blue\">y</p>"},
 
 		// ── the required link ──
 		{name: "no link", html: `<p>Hello</p>`, wantLine: 1, wantCol: 1, wantMsg: "must include {{.TicketURL}}"},
@@ -238,16 +261,16 @@ func TestValidateHTML_ALinkVariableIsAcceptedAsAHrefInEveryMail(t *testing.T) {
 }
 
 // golang.org/x/net/html keeps the FIRST of a repeated attribute and drops the
-// rest, which is what a browser does, so the validator only ever sees the one
-// that counts. This pins that: if a later x/net keeps the last instead, the
-// second case below starts being accepted with a javascript: link in it, and
-// this fails. (A mail client that reads the LAST one would see the other link;
-// the first is the one a browser and the tokenizer agree on.)
-func TestValidateHTML_ARepeatedAttributeIsReadTheFirstWay(t *testing.T) {
-	def := mustDef(t, "ticket_created")
-	require.NotEmpty(t, ValidateHTML(def, `{{.TicketURL}}<a href="javascript:alert(1)" href="https://ok.example">y</a>`), "the first one is the one that counts")
-	require.Empty(t, ValidateHTML(def, `{{.TicketURL}}<a href="https://ok.example" href="javascript:alert(1)">y</a>`), "the dropped one is not read")
-	require.NotEmpty(t, ValidateHTML(def, `{{.TicketURL}}<a onclick="x()" onclick="y()">y</a>`))
+// rest before the validator sees them, which is what a browser does; a mail
+// client could read the LAST. So the repeat is refused from the raw tag text.
+// This pins the tokenizer's behaviour that makes that scan necessary.
+func TestValidateHTML_TheTokenizerDropsARepeatedAttributeSoTheRawTagIsRead(t *testing.T) {
+	z := nethtml.NewTokenizer(strings.NewReader(`<a href="https://ok.example" href="javascript:alert(1)">`))
+	z.Next()
+	tok := z.Token()
+	require.Len(t, tok.Attr, 1, "if x/net starts reporting both, the raw scan can be reviewed")
+	require.Equal(t, "https://ok.example", tok.Attr[0].Val)
+	require.NotEmpty(t, ValidateHTML(mustDef(t, "ticket_created"), `{{.TicketURL}}<a href="https://ok.example" href="javascript:alert(1)">y</a>`))
 }
 
 func TestValidateHTML_RefusalNamesWhy(t *testing.T) {
@@ -541,4 +564,26 @@ func TestSend_RefusesFinalHTMLThatFailsTheCheck(t *testing.T) {
 	out, err := joinHTML(def, "<p>", "x", "</p>")
 	require.NoError(t, err)
 	require.Equal(t, "<p>x</p>", string(out))
+}
+
+func TestRepeatedAttribute_FollowsTheTokenizerRules(t *testing.T) {
+	for raw, want := range map[string]string{
+		`<a href="x" href="y">`:          "href",
+		`<a HREF=x href=y>`:              "href",
+		`<a href=x/href=y>`:              "", // "/" is part of an unquoted value: one attribute
+		`<a title=a=b href=x>`:           "", // "=" too
+		`<a title=a=b title=c>`:          "title",
+		`<a title="a" title='b'>`:        "title",
+		`<a title = "a" title = "b">`:    "title",
+		`<a title="x href=y" class="z">`: "",
+		"<a\ttitle=a\ntitle=b>":          "title",
+		`<br/>`:                          "",
+		`<p a b a>`:                      "a",
+		`<p class="a"class="b">`:         "class",
+		`<p class="a"/class="b">`:        "class",
+		`<p =x =x>`:                      "", // the second "=" after whitespace begins the first one's value
+		`<td nowrap class=a nowrap>`:     "nowrap",
+	} {
+		require.Equal(t, want, repeatedAttribute(raw), raw)
+	}
 }

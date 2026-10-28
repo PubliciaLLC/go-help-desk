@@ -300,7 +300,7 @@ func (s *Server) handlePutEmailTemplate(w http.ResponseWriter, r *http.Request) 
 	// The size limit is on the header, body and footer together, which no part
 	// can see alone: the same check a send makes, with long links so that what
 	// is saved here can be sent.
-	if te := notify.CheckJoinedHTML(def, stored, emailtemplate.Override{Name: def.Name, Subject: subject, Body: body, HTML: html}); te != nil {
+	if te := notify.CheckJoinedHTML(def, stored, emailtemplate.Override{Name: def.Name, Subject: subject, Body: body, HTML: html}, s.adminSvc.SiteName(r.Context())); te != nil {
 		invalidTemplate(w, []notify.TemplateError{*te})
 		return
 	}

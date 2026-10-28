@@ -265,19 +265,39 @@ func (d *EmailDispatcher) renderShell(ctx context.Context, ovs map[string]emailt
 	return text, nil
 }
 
-// renderShellHTML renders the saved header's or footer's HTML, or "" when it
-// has none.
+// renderShellHTML renders the saved header's or footer's HTML part: its HTML, or
+// when it has only text, that text as paragraphs (so a text-only footer is not
+// lost from an HTML part that exists because the header has HTML). "" when it
+// has neither. Whether an HTML part exists at all is decided by the caller.
 func (d *EmailDispatcher) renderShellHTML(ctx context.Context, ovs map[string]emailtemplate.Override, name string) (string, error) {
 	ov, ok := ovs[name]
-	if !ok || ov.HTML == "" {
+	if !ok {
 		return "", nil
 	}
 	def, _ := LookupTemplate(name)
-	out, err := RenderHTML(def, ov.HTML, map[string]string{"SiteName": d.siteName(ctx)})
-	if err != nil {
-		return "", &staleTemplateError{label: def.Label, err: err}
+	vars := map[string]string{"SiteName": d.siteName(ctx)}
+	switch {
+	case ov.HTML != "":
+		out, err := RenderHTML(def, ov.HTML, vars)
+		if err != nil {
+			return "", &staleTemplateError{label: def.Label, err: err}
+		}
+		return out, nil
+	case ov.Body != "":
+		return d.shellTextAsHTML(def, ov.Body, vars)
 	}
-	return out, nil
+	return "", nil
+}
+
+func (d *EmailDispatcher) shellTextAsHTML(def TemplateDef, text string, vars map[string]string) (string, error) {
+	src, err := htmlFromText(def, text)
+	if err == nil {
+		var out string
+		if out, err = RenderHTMLUnchecked(def, src, vars); err == nil {
+			return out, nil
+		}
+	}
+	return "", &staleTemplateError{label: def.Label, err: err}
 }
 
 // staleTemplateError is an edited template that does not validate any more.
@@ -331,7 +351,7 @@ func (d *EmailDispatcher) PreviewDraftHTML(ctx context.Context, def TemplateDef,
 	if err != nil {
 		return Preview{}, err
 	}
-	if te := CheckJoinedHTML(def, ovs, emailtemplate.Override{Name: def.Name, Subject: subject, Body: body, HTML: htmlSrc}); te != nil {
+	if te := CheckJoinedHTML(def, ovs, emailtemplate.Override{Name: def.Name, Subject: subject, Body: body, HTML: htmlSrc}, d.siteName(ctx)); te != nil {
 		return Preview{}, &InvalidTemplateError{Errors: []TemplateError{*te}}
 	}
 
@@ -363,11 +383,35 @@ func (d *EmailDispatcher) PreviewDraftHTML(ctx context.Context, def TemplateDef,
 	if err != nil {
 		return Preview{}, err
 	}
+	// Which parts have HTML of their own decides whether there is an HTML part;
+	// a text-only shell is carried into one, it does not make one.
+	headerOwn, footerOwn := ovs[NameHeader].HTML != "", ovs[NameFooter].HTML != ""
+	// The draft of a shell replaces what is saved for it, text or HTML.
+	if def.Shell {
+		shellHTML := renderedHTML
+		if shellHTML == "" && body != "" {
+			if shellHTML, err = d.shellTextAsHTML(def, body, vars); err != nil {
+				return Preview{}, err
+			}
+		}
+		if def.Name == NameHeader {
+			headerOwn, headerHTML = htmlSrc != "", shellHTML
+		} else {
+			footerOwn, footerHTML = htmlSrc != "", shellHTML
+		}
+		if body == "" && htmlSrc == "" {
+			if def.Name == NameHeader {
+				headerHTML = ""
+			} else {
+				footerHTML = ""
+			}
+		}
+	}
 	switch def.Name {
 	case NameHeader:
-		header, headerHTML = renderedBody, renderedHTML
+		header = renderedBody
 	case NameFooter:
-		footer, footerHTML = renderedBody, renderedHTML
+		footer = renderedBody
 	}
 
 	contentDef, contentHTML, contentText := def, renderedHTML, body
@@ -382,7 +426,7 @@ func (d *EmailDispatcher) PreviewDraftHTML(ctx context.Context, def TemplateDef,
 		contentDef, contentHTML, contentText, vars = sample, "", sample.DefaultBody, sampleVars
 	}
 	p := Preview{Subject: renderedSubject, Body: header + renderedBody + footer}
-	if contentHTML != "" || headerHTML != "" || footerHTML != "" {
+	if contentHTML != "" || headerOwn || footerOwn {
 		if contentHTML == "" {
 			if contentHTML, err = d.contentFromText(contentDef, contentText, vars); err != nil {
 				return Preview{}, err
