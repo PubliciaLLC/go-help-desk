@@ -565,6 +565,15 @@ describe('the HTML part', () => {
   })
 })
 
+describe('the HTML help text for the header and footer', () => {
+  it('says every email gets an HTML part, and that a text-only header or footer is carried in', async () => {
+    wire({ detail: SHELL })
+    await openEditor('_header')
+    expect(screen.getByText(/gives every email an HTML part/i)).toBeTruthy()
+    expect(screen.getByText(/only text is carried into the HTML part as paragraphs/i)).toBeTruthy()
+  })
+})
+
 describe('Start from a basic layout', () => {
   it('fills an empty HTML field with a starter that has the template\'s link, and saves nothing', async () => {
     const { put } = wire()

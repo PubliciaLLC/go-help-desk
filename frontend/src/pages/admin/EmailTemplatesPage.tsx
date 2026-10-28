@@ -396,7 +396,7 @@ function EditorForm({ detail }: { detail: EmailTemplateDetail }) {
         problems={forField('html')}
         hint={
           (detail.shell
-            ? 'Saving an HTML header or footer gives every email an HTML part: a template with no HTML of its own has its text shown as paragraphs, with its links made clickable, between them. '
+            ? 'Saving an HTML header or footer gives every email an HTML part: a template with no HTML of its own has its text shown as paragraphs, with its links made clickable, between them. A header or footer that has only text is carried into the HTML part as paragraphs. '
             : 'Leave empty to turn the text above into the HTML part, as paragraphs, when the header or footer has HTML. With no HTML in the header, the footer or here, the mail is plain text. The text above is always what plain-text readers get. ') +
           (detail.required ? `Needs {{.${detail.required}}} outside any {{if}}, as text or as the whole href of a link. ` : '') +
           `${byteLength(html)} of ${detail.max_html_bytes ?? 65536} bytes.`
