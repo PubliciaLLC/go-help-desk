@@ -274,7 +274,7 @@
   <li><strong>File for a requester.</strong> Staff can file a ticket for an existing user or a typed address. <a href="#on-behalf">Details</a></li>
   <li><strong>Tickets record how they arrived.</strong> Web, API, MCP, guest form or phone. Staff see it on the ticket; requesters and guests do not. <a href="#source-channel">Details</a></li>
   <li><strong>Markdown in ticket text.</strong> A formatting editor, strict rendering, and old text left as plain text. <a href="#markdown">Details</a></li>
-  <li><strong>Editable email wording.</strong> Administrators edit all 17 emails and a shared header and footer under <strong>Admin → Email Templates</strong>, with a check as they type and a test send. <a href="#email-templates">Details</a></li>
+  <li><strong>Editable email wording.</strong> Administrators edit all 17 emails, with an optional HTML part, and a shared header and footer under <strong>Admin → Email Templates</strong>, with a check as they type and a test send. <a href="#email-templates">Details</a></li>
   <li><strong>Search finds more.</strong> Staff search covers every ticket they can see, with a chip to narrow it to the queue. <a href="#staff-search">Details</a></li>
   <li><strong>One delivery per change.</strong> A webhook gets one delivery for one change, however many things it changed, and nothing is sent for a change that failed. <a href="#one-event">Details</a></li>
   <li><strong>Webhook retries, history and a ticket filter.</strong> <a href="#webhooks">Details</a></li>
@@ -936,7 +936,7 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 <h2 id="migration-log">The server log says which migrations ran</h2>
 
 <p><strong>Who notices:</strong> operators.</p>
-<p>At startup, before it opens the port, the server logs what it did to the database schema. <code>database migrated from 21 to 57</code> means an upgrade from 1.2.0: the first number is the version the database was at, the second the version it is at now (a new database says <code>from 0</code>). <code>database schema at 57, no migrations needed</code> is an ordinary restart. The line also carries <code>from</code> and <code>to</code> fields. Use it to check that an upgrade ran before you look anywhere else. A failed migration still stops the start with <code>running migrations: …</code>.</p>
+<p>At startup, before it opens the port, the server logs what it did to the database schema. <code>database migrated from 21 to 58</code> means an upgrade from 1.2.0: the first number is the version the database was at, the second the version it is at now (a new database says <code>from 0</code>). <code>database schema at 58, no migrations needed</code> is an ordinary restart. The line also carries <code>from</code> and <code>to</code> fields. Use it to check that an upgrade ran before you look anywhere else. A failed migration still stops the start with <code>running migrations: …</code>.</p>
 
 <h2 id="rollback">Rolling back to 1.2.0</h2>
 
@@ -991,7 +991,7 @@ Pending signups that 1.3.0 created without a name or password (000032, 000033).
 </li><li>
 <strong>Source channel</strong> (000056): <code>tickets.source_channel</code> is dropped, so every recorded <code>api</code>, <code>mcp</code>, <code>guest</code> and <code>phone</code> value is lost. Re-upgrading marks every ticket <code>web</code> again.
 </li><li>
-<strong>Edited email wording</strong> (000057): the table <code>email_template_overrides</code> is dropped, so every edited email and the shared header and footer go back to the shipped text. The text of each save stays in the <code>audit_log</code> table. 1.2.0 has no audit page, so after a rollback it can be read only with SQL; it shows in the Audit Log again after you upgrade again.
+<strong>Edited email wording</strong> (000057, 000058): the table <code>email_template_overrides</code> is dropped, so every edited email, the shared header and footer, and every HTML part go back to the shipped text. The text of each save, HTML included, stays in the <code>audit_log</code> table. 1.2.0 has no audit page, so after a rollback it can be read only with SQL; it shows in the Audit Log again after you upgrade again. Rolling back 000058 alone drops only the HTML parts.
 </li></ul>
 <p><strong>Not undone</strong> (they repair or seed data and have no inverse; their <code>down</code> does nothing): <code>000028</code>, <code>000039</code>, <code>000052</code> and <code>000053</code>. The three staff-email overrides <code>000052</code> stored stay in the settings table, and the tickets <code>000053</code> returned to the queue stay unassigned. 1.2.0 never reads those settings. Settings rows 1.3.0 wrote stay in the table. Passwords hashed at the new cost still work on 1.2.0.</p>
 <p><strong>One difference from a 1.2.0 database:</strong> <code>ticket_replies.guest_token</code> is the last column of the table instead of the fourth. Nothing reads columns by position.</p>
@@ -1054,7 +1054,7 @@ echo "ok: Postgres is bound to 127.0.0.1 only"</code></pre>
 </li><li>
 <strong>Check it.</strong> Sign in as an administrator, open a few tickets, and download an attachment. <code>SELECT version, dirty FROM schema_migrations</code> should say <code>21 | f</code>. <code>docker compose port db 5432</code> should say <code>127.0.0.1:5432</code>.
 </li></ol>
-<p>To go forward again, run <code>git checkout -- docker-compose.yml</code> in <code>go-help-desk/docker</code> to drop the edit from step 3, then <code>git checkout v1.3.0</code> (it refuses while the file is changed) and start it: it runs every migration from 22, and says so in the log (<code>database migrated from 21 to 57</code>).</p>
+<p>To go forward again, run <code>git checkout -- docker-compose.yml</code> in <code>go-help-desk/docker</code> to drop the edit from step 3, then <code>git checkout v1.3.0</code> (it refuses while the file is changed) and start it: it runs every migration from 22, and says so in the log (<code>database migrated from 21 to 58</code>).</p>
 
 <h2 id="guest-attachments">Guests can no longer upload until you turn it on</h2>
 
@@ -1124,8 +1124,8 @@ echo "ok: Postgres is bound to 127.0.0.1 only"</code></pre>
 
 <h2 id="email-templates">Administrators can edit the wording of the emails</h2>
 
-<p><strong>Who notices:</strong> administrators. This is new, and with nothing edited every email is byte for byte what it was before the editor existed. Migration 000057 adds the table that holds edits; it is safe to apply on a running instance.</p>
-<p>Under <strong>Admin → Email Templates</strong> an administrator edits the subject and body of all 17 emails, and a shared <strong>header</strong> and <strong>footer</strong> that go around every one. The text is plain; an HTML version is not part of 1.3.0. The Settings page links to it.</p>
+<p><strong>Who notices:</strong> administrators. This is new, and with nothing edited every email is byte for byte what it was before the editor existed. Migration 000057 adds the table that holds edits, and 000058 a column for the optional HTML part; both are safe to apply on a running instance.</p>
+<p>Under <strong>Admin → Email Templates</strong> an administrator edits the subject and body of all 17 emails, and a shared <strong>header</strong> and <strong>footer</strong> that go around every one. Each email, and the header and footer, can also have an optional HTML part; with none, the email is plain text exactly as before. The Settings page links to it.</p>
 <ul>
   <li><strong>Still no ticket content.</strong> A template may hold only words, a few named values and <code>{{if .Name}}…{{else}}…{{end}}</code>. The ticket emails can print the tracking number and the ticket link; the verification and reset emails, their link; the header and footer, the help desk's name from Settings. Anything else is refused with its line and column. Every mail template must print its link outside any <code>if</code>, because a guest's link is replaced each time and an email without it would lock them out.</li>
   <li><strong>Limits:</strong> body 8 KiB, subject 200 bytes on one line.</li>
@@ -1134,7 +1134,9 @@ echo "ok: Postgres is bound to 127.0.0.1 only"</code></pre>
   <li><strong>Send test</strong> mails the draft to the signed-in administrator's own address only, with <code>[Test]</code> in the subject, at most 5 every 10 minutes per administrator.</li>
   <li><strong>An edit that stops working fails the mail.</strong> If a later upgrade makes a saved edit invalid, mail that uses it fails at once with no retries; it is not replaced by the default. Administrators see a red notice per template with <strong>Revert to default</strong> and <strong>Edit</strong>, and the same list is in <code>email.broken_templates</code> of <code>GET /api/v1/admin/security-warnings</code>. Mail that failed before the revert is not sent again. A broken header or footer fails every mail.</li>
   <li><strong>Session only.</strong> Administrators in a signed-in browser session (one that has passed its second factor, if the account has one). An API key or OAuth client gets <code>403</code>. Routes: <code>/api/v1/admin/email-templates</code>, see the <a href="api-reference.html">API reference</a>.</li>
-  <li><strong>Audit:</strong> each save and revert is recorded with the full text, in the same step as the change. A test send records the template, not the address.</li>
+  <li><strong>HTML header or footer.</strong> Once an administrator saves an HTML header or footer, every email gets an HTML part: a template with no HTML of its own has its text turned into paragraphs, with links made clickable, and is wrapped in the HTML header and footer. A header or footer that has only text is carried into the HTML part the same way. Changing the help desk's name is refused (<code>400 site_name_too_long_for_email</code>) if it would make an email's HTML part longer than 100 KiB. With no HTML header, footer or body saved, every email stays a single plain-text part. What the HTML may contain, and why some things are refused, is in the <a href="admin-guide.html#admin-email-html">admin guide</a>.</li>
+  <li><strong>Migration 000058</strong> adds the nullable column <code>email_template_overrides.html</code>. NULL means no HTML part, so no email changes until an administrator saves some HTML.</li>
+  <li><strong>Audit:</strong> each save and revert is recorded with the full text, HTML included, in the same step as the change. A test send records the template, not the address.</li>
 </ul>
 <p>See <a href="admin-guide.html#admin-email-tpl">Email templates</a> in the admin guide.</p>
 

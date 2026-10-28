@@ -143,7 +143,7 @@
     <li><a href="tickets.html#tickets-create">Guest submission</a> works. <code>guest_submission_enabled</code> needs a signed-in administrator, and switching it off also suspends every existing guest link until it is switched on again. <em>Guests may attach files</em> (<code>guest_attachments_enabled</code>, <em>Settings → General → Submissions</em>, session only) is <strong>off by default, including after an upgrade</strong>, and works only while guest submission is on. It has a per-file size slider (1 to 100 MB, 5 by default, never above the 25 MB instance maximum), a limit of files per ticket (1 to 50, default 5) and uploads per guest link per hour (1 to 30, default 3). See <a href="tickets.html#tickets-create">Guest ticket submission</a>.</li>
     <li><a href="#admin-attachments">Attachment security</a>: content detection, malware scanning and reputation lookup, all configured under <em>Admin → Settings → Attachments</em>.</li>
     <li><a href="#admin-staff-email">Staff email</a>: assignments, requester replies and reopens are emailed to staff, with three switches each person controls and an administrator override. On an upgraded install the overrides start as Off for everyone, so turn staff email on under Settings → Email when you are ready. Staff can also <a href="tickets.html#tickets-follow">follow tickets</a>.</li>
-    <li><a href="#admin-email-tpl">Email templates</a>: edit the wording of all 17 emails, and a shared header and footer, under <em>Admin → Email Templates</em>.</li>
+    <li><a href="#admin-email-tpl">Email templates</a>: edit the wording of all 17 emails, with an optional HTML part, and a shared header and footer, under <em>Admin → Email Templates</em>.</li>
     <li><a href="#admin-email-setup">Email setup rules</a>: SMTP must use TLS when a password is set, and a missing or failing mail setup shows as a banner instead of failing silently.</li>
     <li><a href="#admin-oauth-clients">OAuth clients</a> act as service users, so they can write tickets, and are managed from Users and OAuth Clients.</li>
     <li><a href="#admin-auto-assign">Routing</a> and a paged <a href="#admin-users-list">Users</a> list, <a href="#admin-cti-archive">archive and restore</a> for categories, types and items, and <a href="#admin-webhook-history">webhook History and Redeliver</a>, with <a href="#admin-webhook-filter">ticket filters</a> and retries.</li>
@@ -648,7 +648,7 @@ Facilities
 
 <h2 id="admin-email-tpl">Email templates</h2>
 
-<p>Under <em>Admin → Email Templates</em> (also linked from <em>Settings → Email</em>) an administrator can edit the subject and body of every email the help desk sends, and a <strong>header</strong> and <strong>footer</strong> that go around all of them. The text is plain; there is no HTML version. Until you edit something, every email is exactly what it was before the editor existed.</p>
+<p>Under <em>Admin → Email Templates</em> (also linked from <em>Settings → Email</em>) an administrator can edit the subject and body of every email the help desk sends, and a <strong>header</strong> and <strong>footer</strong> that go around all of them. Each can also have an optional HTML part (see <a href="#admin-email-html">The HTML part</a>); with none, the email is plain text. Until you edit something, every email is exactly what it was before the editor existed.</p>
 
 <p>There are seventeen. Six go to requesters and guests, nine to staff, and two to people setting up or recovering an account:</p>
 
@@ -682,8 +682,33 @@ Facilities
   <li><strong>Audit.</strong> Each save and revert is recorded in the audit log with the full text, in the same step as the change. A test send records the template and never the address.</li>
 </ul>
 
+<h3 id="admin-email-html">The HTML part</h3>
+<p>Every template, and the header and footer, can have an optional <strong>HTML</strong> version beside its text one. Until some HTML is saved, every email is plain text exactly as before; nothing becomes multipart on upgrade, and there is no HTML shipped by default.</p>
+<ul>
+  <li><strong>Once the header or footer has HTML, every email gets an HTML part.</strong> A template with HTML of its own uses it. One without has its text turned into paragraphs (a blank line starts a paragraph, a line break becomes a line break, links become clickable) and is wrapped in the HTML header and footer. A header or footer that has only text is carried into the HTML part the same way. A text-only header and footer alone make no HTML part. The email is sent as both, plain text first, and the plain-text part is always the text you edited, never made from the HTML.</li>
+  <li><strong>Same values, no ticket content.</strong> The HTML uses the same values and must print the same link (outside any <code>{{if}}</code>, as text or as the whole <code>href</code> of a link). The only values allowed as a whole <code>href</code> are the ticket, verification and reset links. Ticket text still cannot reach an email.</li>
+  <li><strong>What is refused, and why.</strong> The editor checks the HTML when you type and again on save, and refuses what email cannot carry safely. It never rewrites your markup; it tells you the reason, line and column.
+    <ul>
+      <li>Elements outside a list of what email carries reliably (tables, <code>div</code>, <code>p</code>, <code>span</code>, links, images, headings, lists and basic text styling). Scripts, frames, forms and form controls, embedded objects, SVG, MathML and page-level tags such as <code>base</code>, <code>link</code> and <code>meta</code> are refused by name.</li>
+      <li>Attributes outside an allow-list. Event handlers (<code>on…</code>) are refused, and so are attributes that embed a page or submit a form.</li>
+      <li>Links must start <code>https:</code>, <code>http:</code> or <code>mailto:</code>, or be exactly one of the three link values. Image and other loading addresses must be <code>https:</code>. Relative and <code>javascript:</code> addresses are refused.</li>
+      <li>Styles (<code>style</code> attributes and <code>&lt;style&gt;</code> blocks stay allowed) are refused if they can run code or fetch something other than from an <code>https:</code> address.</li>
+      <li>HTML comments, including Outlook conditionals, because the sending code would silently drop them. Use <code>{{/* note */}}</code> for a note.</li>
+      <li>Repeated attributes in one tag, because browsers and mail clients disagree about which one wins.</li>
+      <li>A template value anywhere except in text or as a whole link address. Write a literal <code>&lt;</code> in text as <code>&amp;lt;</code>.</li>
+    </ul>
+    Remote images are allowed; that is your choice, and the audit log records it.</li>
+  <li><strong>The sent email is checked too</strong>, not only what you typed, so a combination of header, body and footer cannot end up with something that is refused.</li>
+  <li><strong>Size.</strong> Each HTML part may be up to 64 KiB. The header, body and footer <strong>together</strong> may not come to more than 100 KiB, because mail clients such as Gmail cut longer messages off. This is checked on save for what the save would join with: saving a body is checked with the saved header and footer, and saving a header or footer is checked against every template; the refusal names the template that would go over. The check assumes long links and a long tracking number, and it uses <strong>your real site name</strong>, which Settings does not otherwise limit.</li>
+  <li><strong>A long site name.</strong> Changing the site name in Settings is refused with <code>400 site_name_too_long_for_email</code> if it would push an email over the limit. A name that is already too long for a header or footer shows up as a broken template (red notice) and fails the mail.</li>
+  <li><strong>Start from a basic layout</strong> fills an empty HTML field with a starter: the header opens a layout, the footer closes it, and a template gets its own text as paragraphs. Nothing is saved until you press Save.</li>
+  <li><strong>Preview.</strong> The HTML is shown in a sandboxed frame that runs no scripts and cannot reach the rest of the page. <strong>Images from other sites do not load in the preview</strong>; use <strong>Send test</strong> to see the real email. A test of a template with HTML is sent as both parts.</li>
+  <li><strong>An old browser tab cannot wipe your HTML.</strong> If a page opened before an upgrade saves a template, it leaves the stored HTML alone. The editor always says explicitly when you remove HTML, by emptying the field.</li>
+  <li><strong>Audit.</strong> The full HTML is recorded with each save and revert, and the Audit page shows what a revert removed.</li>
+</ul>
+
 <h3>When an edit stops working</h3>
-<p>An upgrade can remove a value an old edit used. The mail that uses a saved edit that no longer validates <strong>fails at once and is not retried</strong>; it does not quietly fall back to the shipped text, because that would hide your wording and you chose it. Administrators see a red notice per template in the warning bar with <em>Revert to default</em> and <em>Edit</em>, and the same list is in <code>email.broken_templates</code> of <code>GET /api/v1/admin/security-warnings</code>. A broken header or footer fails every email. Mail that failed before you reverted is not sent again.</p>
+<p>An upgrade can remove a value an old edit used. The mail that uses a saved edit that no longer validates <strong>fails at once and is not retried</strong>; it does not quietly fall back to the shipped text, because that would hide your wording and you chose it. Administrators see a red notice per template in the warning bar with <em>Revert to default</em> and <em>Edit</em>, and the same list is in <code>email.broken_templates</code> of <code>GET /api/v1/admin/security-warnings</code>. A broken header or footer fails every email. The same applies to stale HTML, and to a header, body and footer that together pass the size limit. Mail that failed before you reverted is not sent again.</p>
 
 <h3>Template variables</h3>
 
@@ -1168,7 +1193,7 @@ function verifySignature(secret, body, header) {
 <table>
   <thead><tr><th>Setting</th><th>Description</th></tr></thead>
   <tbody>
-    <tr><td><strong>Site name</strong></td><td>Shown in the sidebar header and browser title when no logo is set. Default: "Go Help Desk".</td></tr>
+    <tr><td><strong>Site name</strong></td><td>Shown in the sidebar header and browser title when no logo is set, and printed by the email header and footer. Default: "Go Help Desk". A name that would push an email's HTML part over its size limit is refused (<code>400 site_name_too_long_for_email</code>); see <a href="#admin-email-html">The HTML part</a>.</td></tr>
     <tr>
       <td><strong>Logo</strong></td>
       <td>
