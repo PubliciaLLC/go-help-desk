@@ -16,9 +16,13 @@ import (
 // Override is one edited template. For the shared header and footer (the
 // reserved names _header and _footer) Subject is empty.
 type Override struct {
-	Name      string
-	Subject   string
-	Body      string
+	Name    string
+	Subject string
+	// Body is the plain-text part, always present.
+	Body string
+	// HTML is the optional HTML part. Empty means none: the mail is plain text
+	// only, exactly as before the HTML part existed. Stored as NULL.
+	HTML      string
 	UpdatedAt time.Time
 	UpdatedBy *uuid.UUID
 }
@@ -41,4 +45,11 @@ type Store interface {
 	// row as it was (nil if there was none) and returns the entry to write, or
 	// nil to write none (reverting what was never overridden changes nothing).
 	Apply(ctx context.Context, name string, next *Override, entry func(prev *Override) *audit.Entry) error
+	// Update is Apply with the decision made inside the transaction: decide is
+	// given the row as it is under the lock (nil if none) and returns the row to
+	// store (nil to remove it) and the audit entry (nil for none), or an error,
+	// which leaves everything as it was and is returned as it is. A save that
+	// merges with what is stored must use this, not read and then Apply: the
+	// read may be stale by the time Apply commits.
+	Update(ctx context.Context, name string, decide func(prev *Override) (*Override, *audit.Entry, error)) error
 }

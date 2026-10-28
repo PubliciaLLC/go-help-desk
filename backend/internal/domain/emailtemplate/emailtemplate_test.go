@@ -49,6 +49,26 @@ func (r *recorder) Apply(_ context.Context, name string, next *emailtemplate.Ove
 	return nil
 }
 
+func (r *recorder) Update(ctx context.Context, name string, decide func(prev *emailtemplate.Override) (*emailtemplate.Override, *audit.Entry, error)) error {
+	var prev *emailtemplate.Override
+	if o, ok := r.rows[name]; ok {
+		prev = &o
+	}
+	next, e, err := decide(prev)
+	if err != nil {
+		return err
+	}
+	if e != nil {
+		r.log = append(r.log, *e)
+	}
+	if next == nil {
+		delete(r.rows, name)
+	} else {
+		r.rows[name] = *next
+	}
+	return nil
+}
+
 func TestApplyContract_EntryIsToldWhatWasThereAndMayDeclineToWrite(t *testing.T) {
 	var s emailtemplate.Store = &recorder{rows: map[string]emailtemplate.Override{}}
 	ctx := context.Background()

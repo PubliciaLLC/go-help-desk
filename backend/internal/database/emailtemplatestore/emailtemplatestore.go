@@ -33,7 +33,7 @@ func NewWithDB(db *sql.DB) *Store { return &Store{q: dbgen.New(db), db: db} }
 
 func fromRow(r dbgen.EmailTemplateOverride) emailtemplate.Override {
 	return emailtemplate.Override{
-		Name: r.Name, Subject: r.Subject, Body: r.Body,
+		Name: r.Name, Subject: r.Subject, Body: r.Body, HTML: r.Html.String,
 		UpdatedAt: r.UpdatedAt, UpdatedBy: database.UUIDPtr(r.UpdatedBy),
 	}
 }
@@ -64,11 +64,20 @@ func (s *Store) List(ctx context.Context) ([]emailtemplate.Override, error) {
 }
 
 // Apply sets or removes the override and writes its audit entry in one
-// transaction. Run again when Postgres aborts the transaction to break a lock
-// cycle (dbretry); every attempt starts clean, and entry is called afresh.
+// transaction. See Update, which it is a case of.
 func (s *Store) Apply(ctx context.Context, name string, next *emailtemplate.Override, entry func(prev *emailtemplate.Override) *audit.Entry) error {
+	return s.Update(ctx, name, func(prev *emailtemplate.Override) (*emailtemplate.Override, *audit.Entry, error) {
+		return next, entry(prev), nil
+	})
+}
+
+// Update runs decide under the row's lock, inside the transaction that writes
+// the result and its audit entry. Run again when Postgres aborts the transaction
+// to break a lock cycle (dbretry); every attempt starts clean, and decide is
+// called afresh.
+func (s *Store) Update(ctx context.Context, name string, decide func(prev *emailtemplate.Override) (*emailtemplate.Override, *audit.Entry, error)) error {
 	if s.db == nil {
-		return s.apply(ctx, s.q, name, next, entry)
+		return s.update(ctx, s.q, name, decide)
 	}
 	return dbretry.Do(ctx, nil, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
@@ -76,7 +85,7 @@ func (s *Store) Apply(ctx context.Context, name string, next *emailtemplate.Over
 			return fmt.Errorf("beginning transaction: %w", err)
 		}
 		defer func() { _ = tx.Rollback() }() // a no-op once committed
-		if err := s.apply(ctx, s.q.WithTx(tx), name, next, entry); err != nil {
+		if err := s.update(ctx, s.q.WithTx(tx), name, decide); err != nil {
 			return err
 		}
 		if err := tx.Commit(); err != nil {
@@ -86,9 +95,9 @@ func (s *Store) Apply(ctx context.Context, name string, next *emailtemplate.Over
 	})
 }
 
-func (s *Store) apply(ctx context.Context, q *dbgen.Queries, name string, next *emailtemplate.Override, entry func(prev *emailtemplate.Override) *audit.Entry) error {
-	// Locked, so the entry's "before" is the row this transaction replaces and
-	// not one a concurrent save changed in between.
+func (s *Store) update(ctx context.Context, q *dbgen.Queries, name string, decide func(prev *emailtemplate.Override) (*emailtemplate.Override, *audit.Entry, error)) error {
+	// Locked, so decide sees the row this transaction then replaces and not one
+	// a concurrent save changed in between.
 	var prev *emailtemplate.Override
 	row, err := q.LockEmailTemplateOverride(ctx, name)
 	switch {
@@ -100,17 +109,23 @@ func (s *Store) apply(ctx context.Context, q *dbgen.Queries, name string, next *
 		return fmt.Errorf("reading email template override: %w", err)
 	}
 
+	next, e, err := decide(prev)
+	if err != nil {
+		return err
+	}
 	if next == nil {
 		if err := q.DeleteEmailTemplateOverride(ctx, name); err != nil {
 			return fmt.Errorf("removing email template override: %w", err)
 		}
 	} else if err := q.UpsertEmailTemplateOverride(ctx, dbgen.UpsertEmailTemplateOverrideParams{
-		Name: name, Subject: next.Subject, Body: next.Body, UpdatedBy: database.NullUUID(next.UpdatedBy),
+		Name: name, Subject: next.Subject, Body: next.Body,
+		Html:      sql.NullString{String: next.HTML, Valid: next.HTML != ""},
+		UpdatedBy: database.NullUUID(next.UpdatedBy),
 	}); err != nil {
 		return fmt.Errorf("saving email template override: %w", err)
 	}
 
-	if e := entry(prev); e != nil {
+	if e != nil {
 		if err := auditstore.New(q).Create(ctx, *e); err != nil {
 			return fmt.Errorf("writing audit entry: %w", err)
 		}

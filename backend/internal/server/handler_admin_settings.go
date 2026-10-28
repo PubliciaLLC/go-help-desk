@@ -317,6 +317,12 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The name is printed by the email header and footer, so a long one can push
+	// an email's HTML part over the size limit.
+	if raw, ok := body[admin.KeySiteName]; ok && s.refuseSiteNameTooLongForEmail(w, r, raw) {
+		return
+	}
+
 	// guest_submission_enabled decides whether anonymous people on the
 	// internet can file tickets into this instance, and — since the category
 	// catalogue stopped being anonymous (see requireSignedInOrGuestsEnabled
