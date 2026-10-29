@@ -97,7 +97,12 @@ func (s *Store) Update(ctx context.Context, name string, decide func(prev *email
 
 func (s *Store) update(ctx context.Context, q *dbgen.Queries, name string, decide func(prev *emailtemplate.Override) (*emailtemplate.Override, *audit.Entry, error)) error {
 	// Locked, so decide sees the row this transaction then replaces and not one
-	// a concurrent save changed in between.
+	// a concurrent save changed in between. The name is locked first: a row lock
+	// holds nothing when there is no row yet, and two first saves of a template
+	// would both decide against "nothing there".
+	if err := q.LockEmailTemplateName(ctx, name); err != nil {
+		return fmt.Errorf("locking email template %q: %w", name, err)
+	}
 	var prev *emailtemplate.Override
 	row, err := q.LockEmailTemplateOverride(ctx, name)
 	switch {
