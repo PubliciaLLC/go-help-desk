@@ -19,8 +19,8 @@ func (s *Store) ListByEntityActions(ctx context.Context, entityType string, enti
 		EntityID:       entityID,
 		OnlyActions:    nilIfEmpty(f.Only),
 		ExcludeActions: nilIfEmpty(f.Exclude),
-		PageLimit:      int32(limit),
-		PageOffset:     int32(offset),
+		PageLimit:      pageInt32(limit),
+		PageOffset:     pageInt32(offset),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing audit entries: %w", err)
