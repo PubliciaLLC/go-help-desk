@@ -3,6 +3,7 @@ package emailtemplatestore_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -247,6 +248,68 @@ func TestUpdate_TheDecisionSeesTheLockedRowAndSerialisesWithOthers(t *testing.T)
 	got, err := s.Overrides(ctx, name)
 	require.NoError(t, err)
 	require.Equal(t, "<p>first</p>AB", got[name].HTML)
+}
+
+// FOR UPDATE on a row that does not exist locks nothing, so two first-time saves
+// of one template both read "no override" and both decided against it: a save
+// that left html out (an old tab) then wrote NULL over the HTML the other had
+// just saved, and its audit entry recorded the shipped text as what was there.
+// The lock has to be on the name, so it holds when there is no row to lock.
+func TestUpdate_TwoFirstSavesOfOneNameAreSerialisedToo(t *testing.T) {
+	s, _, name := newStore(t)
+	ctx := context.Background()
+
+	// A is the first save. It has read "nothing there" and holds the name.
+	aRead := make(chan *emailtemplate.Override, 1)
+	release := make(chan struct{})
+	var once sync.Once
+	letGo := func() { once.Do(func() { close(release) }) }
+	defer letGo() // a failed assertion must not leave A holding the name
+	aDone := make(chan error, 1)
+	go func() {
+		aDone <- s.Update(ctx, name, func(prev *emailtemplate.Override) (*emailtemplate.Override, *audit.Entry, error) {
+			aRead <- prev
+			<-release
+			return &emailtemplate.Override{Name: name, Subject: "s", Body: "bA", HTML: "<p>A</p>"}, entryFor(name, "saved")(prev), nil
+		})
+	}()
+	require.Nil(t, <-aRead, "A is the first save: there is nothing to read")
+
+	// B, an old tab that leaves html out, arrives while A holds the name. It
+	// must wait for A, and then see A's row, HTML included.
+	bSaw := make(chan *emailtemplate.Override, 1)
+	var bPrevBody string
+	bDone := make(chan error, 1)
+	go func() {
+		bDone <- s.Update(ctx, name, func(prev *emailtemplate.Override) (*emailtemplate.Override, *audit.Entry, error) {
+			bSaw <- prev
+			html := ""
+			if prev != nil {
+				html, bPrevBody = prev.HTML, prev.Body
+			}
+			return &emailtemplate.Override{Name: name, Subject: "s", Body: "bB", HTML: html}, entryFor(name, "saved")(prev), nil
+		})
+	}()
+	select {
+	case <-bSaw:
+		letGo()
+		<-aDone
+		<-bDone
+		t.Fatal("B decided while A held the name: with no row there is nothing for FOR UPDATE to lock, and B would read nothing and wipe A's HTML")
+	case <-time.After(300 * time.Millisecond):
+	}
+	letGo()
+	require.NoError(t, <-aDone)
+	prev := <-bSaw
+	require.NotNil(t, prev, "B saw A's committed row, not an empty name")
+	require.Equal(t, "<p>A</p>", prev.HTML)
+	require.NoError(t, <-bDone)
+	require.Equal(t, "bA", bPrevBody, "B's audit entry records what A saved as the previous text")
+
+	got, err := s.Overrides(ctx, name)
+	require.NoError(t, err)
+	require.Equal(t, "<p>A</p>", got[name].HTML, "the HTML A saved survives B")
+	require.Equal(t, "bB", got[name].Body)
 }
 
 func TestUpdate_ADecisionToRemoveDeletesAndAnErrorChangesNothing(t *testing.T) {

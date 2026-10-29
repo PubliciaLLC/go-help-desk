@@ -574,7 +574,7 @@ describe('the reputation verdict', () => {
     const hashLine = link!.closest('p')
     expect(hashLine, 'the lookup link is not on a line of its own').not.toBeNull()
 
-    const verdictText = screen.queryAllByText(new RegExp(THREAT_NAME.replace(/\./g, '\\.')))
+    const verdictText = screen.queryAllByText(new RegExp(THREAT_NAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
     expect(verdictText.length, 'the threat name is not rendered as text').toBeGreaterThan(0)
 
     const siblings = Array.from(hashLine!.parentElement?.children ?? [])

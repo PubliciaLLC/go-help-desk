@@ -148,3 +148,27 @@ func TestAdminGroups_SuccessPathsUnchanged(t *testing.T) {
 	res = h.doAsAdmin(t, http.MethodGet, base+"/"+g.ID.String()+"/scopes", nil)
 	require.Equal(t, http.StatusOK, res.StatusCode)
 }
+
+// PATCH answers with the group as stored. The service trims the name before it
+// saves, so a response built from the untrimmed request value told the client
+// "  Ops2 " while the database and every later GET said "Ops2".
+func TestAdminGroups_PatchResponseIsTheStoredGroup(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	id := mkGroup(t, h, "Ops")
+
+	res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/groups/"+id.String(), map[string]any{"name": "  Ops2 "})
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	var patched struct {
+		Name string `json:"name"`
+	}
+	decodeJSON(t, res, &patched)
+
+	res = h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/groups/"+id.String(), nil)
+	var fetched struct {
+		Name string `json:"name"`
+	}
+	decodeJSON(t, res, &fetched)
+	require.Equal(t, "Ops2", fetched.Name)
+	require.Equal(t, fetched.Name, patched.Name, "PATCH response matches what GET returns")
+}

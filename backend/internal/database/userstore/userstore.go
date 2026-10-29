@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -243,8 +244,8 @@ func (s *Store) AdminSetPassword(ctx context.Context, id uuid.UUID, hash string)
 
 func (s *Store) List(ctx context.Context, limit, offset int) ([]user.User, error) {
 	rows, err := s.q.ListUsers(ctx, dbgen.ListUsersParams{
-		Limit:  int32(limit),
-		Offset: int32(offset),
+		Limit:  pageInt32(limit),
+		Offset: pageInt32(offset),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing users: %w", err)
@@ -258,8 +259,8 @@ func (s *Store) List(ctx context.Context, limit, offset int) ([]user.User, error
 
 func (s *Store) ListAdmin(ctx context.Context, limit, offset int) ([]user.User, error) {
 	rows, err := s.q.ListUsersAdmin(ctx, dbgen.ListUsersAdminParams{
-		Limit:  int32(limit),
-		Offset: int32(offset),
+		Limit:  pageInt32(limit),
+		Offset: pageInt32(offset),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing users (admin): %w", err)
@@ -285,8 +286,8 @@ func (s *Store) SearchAdmin(ctx context.Context, role, q string, serviceAccount 
 		Role:           role,
 		ServiceAccount: svc,
 		Q:              pattern,
-		PageLimit:      int32(limit),
-		PageOffset:     int32(offset),
+		PageLimit:      pageInt32(limit),
+		PageOffset:     pageInt32(offset),
 	})
 	if err != nil {
 		return nil, 0, fmt.Errorf("searching users (admin): %w", err)
@@ -620,4 +621,21 @@ func wrapNotFound(err error, kind, id string) error {
 		return fmt.Errorf("%w: %s %s", ErrNotFound, kind, id)
 	}
 	return fmt.Errorf("getting %s %s: %w", kind, id, err)
+}
+
+// pageInt32 narrows a page bound to what the generated queries accept.
+//
+// sqlc emits int32 for LIMIT and OFFSET. Converting a Go int directly wraps
+// past MaxInt32: 2147483648 goes negative and Postgres answers "OFFSET must not
+// be negative" as a 500, and 4294967296 wraps to zero and silently serves the
+// first page. The HTTP handlers bound their own input, but a store takes any
+// int from any caller, and the conversion is the place the value stops fitting.
+func pageInt32(n int) int32 {
+	if n < 0 {
+		return 0
+	}
+	if n > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	return int32(n)
 }
