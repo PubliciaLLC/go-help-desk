@@ -1116,7 +1116,7 @@ function verifySignature(secret, body, header) {
 
 <h3>When uploads are disabled</h3>
 
-<p>At startup, and again on every upload, the server checks that <code>ATTACHMENT_DIR</code> exists and can be written. When it cannot, administrators see a red <em>Attachment uploads are disabled</em> banner with the reason the operating system gave, and every upload, from staff, requesters and guests, is refused with <code>503 attachments_unavailable</code>. Everything else keeps working, and attachments already stored can still be downloaded while the directory is readable. Fix the directory's permissions or mount and the next upload works; no restart is needed. The logo upload also writes under that directory and is not blocked by this check, so a failure there still answers with a storage error.</p>
+<p>At startup, and again on every upload, the server checks that <code>ATTACHMENT_DIR</code> and its <code>tickets</code> subfolder, where uploads are written, exist and can be written. When it cannot, administrators see a red <em>Attachment uploads are disabled</em> banner with the reason the operating system gave, and every upload, from staff, requesters and guests, is refused with <code>503 attachments_unavailable</code>. Everything else keeps working, and attachments already stored can still be downloaded while the directory is readable. Fix the directory's permissions or mount and the next upload works; no restart is needed. The logo upload also writes under that directory and is not blocked by this check, so a failure there still answers with a storage error.</p>
 
 <h3>Reputation lookup</h3>
 
