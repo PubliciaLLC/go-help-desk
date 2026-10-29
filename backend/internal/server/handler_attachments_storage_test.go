@@ -189,3 +189,23 @@ func TestAttachmentStorage_ReadOnlyDirectoryStillServesDownloads(t *testing.T) {
 	body, _ := io.ReadAll(dl.Body)
 	require.Equal(t, "hello", string(body))
 }
+
+// The probe has to test the place an upload writes to, not the directory above
+// it. Uploads store under ATTACHMENT_DIR/tickets/<ticket>/; with a root that is
+// writable but a tickets path that is not a directory (a volume restored
+// wrong, a file left behind) the old probe passed, the settings page said
+// "writable", and every upload failed with a 500 partway through. A regular
+// file stands in for any unusable subdirectory so the test holds for root too.
+func TestAttachmentStorage_ProbeCoversTheTicketsDirectory(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	id := ticketForUpload(t, h)
+
+	require.NoError(t, os.RemoveAll(h.attachDir))
+	require.NoError(t, os.MkdirAll(h.attachDir, 0o700))
+	require.NoError(t, os.WriteFile(h.attachDir+"/tickets", []byte("not a directory"), 0o600))
+
+	require.Error(t, server.CheckAttachmentDir(h.attachDir))
+	require.False(t, attachmentStorageWarning(t, h).Writable)
+	requireUnavailable(t, uploadAttachment(t, h, id, "notes.txt", []byte("hello")))
+}

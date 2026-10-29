@@ -19,7 +19,8 @@ http
     res.setHeader('X-Frame-Options', 'DENY')
     const p = decodeURIComponent(new URL(req.url, 'http://x').pathname)
     let f = path.join(dist, p)
-    if (!f.startsWith(dist) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) f = path.join(dist, 'index.html')
+    // Not f.startsWith(dist): that also accepts a sibling such as dist-private.
+    if (!f.startsWith(dist + path.sep) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) f = path.join(dist, 'index.html')
     res.setHeader('Content-Type', types[path.extname(f)] ?? 'application/octet-stream')
     fs.createReadStream(f).pipe(res)
   })

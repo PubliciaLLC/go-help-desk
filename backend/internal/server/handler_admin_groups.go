@@ -88,7 +88,14 @@ func (s *Server) handleUpdateGroup(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, existing)
+	// Answer with the row as stored: Update trims the name, so echoing
+	// `existing` returned a name the database does not hold.
+	updated, err := s.groups.GetByID(r.Context(), id)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, updated)
 }
 
 func (s *Server) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
