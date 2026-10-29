@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -102,8 +103,8 @@ func (s *Store) searchUnscoped(ctx context.Context, p searchParamValues, limit, 
 		FromTs:     p.from,
 		ToTs:       p.to,
 		Q:          p.q,
-		PageLimit:  int32(limit + 1),
-		PageOffset: int32(offset),
+		PageLimit:  pageInt32(limit + 1),
+		PageOffset: pageInt32(offset),
 
 		ExcludeActions: p.excludeActions,
 	})
@@ -164,8 +165,8 @@ func (s *Store) searchScoped(ctx context.Context, p searchParamValues, userID uu
 		CategoryIds:      sc.CategoryIds,
 		TypedCategoryIds: sc.TypedCategoryIds,
 		TypeIds:          sc.TypeIds,
-		PageLimit:        int32(limit + 1),
-		PageOffset:       int32(offset),
+		PageLimit:        pageInt32(limit + 1),
+		PageOffset:       pageInt32(offset),
 		ExcludeActions:   p.excludeActions,
 	})
 	if err != nil {
@@ -255,8 +256,8 @@ func (s *Store) ListByEntity(ctx context.Context, entityType string, entityID uu
 	rows, err := s.q.ListAuditByEntity(ctx, dbgen.ListAuditByEntityParams{
 		EntityType: entityType,
 		EntityID:   entityID,
-		Limit:      int32(limit),
-		Offset:     int32(offset),
+		Limit:      pageInt32(limit),
+		Offset:     pageInt32(offset),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing audit entries: %w", err)
@@ -295,4 +296,21 @@ func unmarshalMap(n pqtype.NullRawMessage) map[string]any {
 	var m map[string]any
 	_ = json.Unmarshal(n.RawMessage, &m)
 	return m
+}
+
+// pageInt32 narrows a page bound to what the generated queries accept.
+//
+// sqlc emits int32 for LIMIT and OFFSET. Converting a Go int directly wraps
+// past MaxInt32: 2147483648 goes negative and Postgres answers "OFFSET must not
+// be negative" as a 500, and 4294967296 wraps to zero and silently serves the
+// first page. The HTTP handlers bound their own input, but a store takes any
+// int from any caller, and the conversion is the place the value stops fitting.
+func pageInt32(n int) int32 {
+	if n < 0 {
+		return 0
+	}
+	if n > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	return int32(n)
 }

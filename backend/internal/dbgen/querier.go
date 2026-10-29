@@ -799,8 +799,13 @@ type Querier interface {
 	ListWebhookConfigs(ctx context.Context) ([]WebhookConfig, error)
 	// No event column: the history shows outcomes, never content.
 	ListWebhookDeliveries(ctx context.Context, webhookID uuid.UUID) ([]ListWebhookDeliveriesRow, error)
+	// Held until the transaction ends. FOR UPDATE below locks a row only when there
+	// is one, so two first-time saves of one template would both read "no override"
+	// and the second would overwrite the first (and record the shipped text as what
+	// it replaced). Locking the name serialises them whether or not a row exists.
+	LockEmailTemplateName(ctx context.Context, name string) error
 	// Locks the row (if any) so the audit entry's "before" is the row this
-	// transaction then replaces.
+	// transaction then replaces. Taken after LockEmailTemplateName.
 	LockEmailTemplateOverride(ctx context.Context, name string) (EmailTemplateOverride, error)
 	// Locks the group row so nothing can be assigned to it until the transaction
 	// ends. A ticket's assignee_group_id takes a share lock on the group it names,
