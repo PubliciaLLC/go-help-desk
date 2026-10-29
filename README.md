@@ -43,7 +43,7 @@ Go Help Desk is an open-source ticket management system. Staff submit and track 
 ```sh
 git clone https://github.com/PubliciaLLC/go-help-desk
 cd go-help-desk/docker
-cp .env.example .env   # set SESSION_SECRET, JWT_SECRET, BASE_URL
+cp .env.example .env   # set SESSION_SECRET and BASE_URL (JWT_SECRET is optional)
 docker compose up -d
 ```
 
@@ -83,7 +83,7 @@ Read the full notes before upgrading: [1.3.0](https://gohelpdesk.org/docs/upgrad
 - Email never sends a password unencrypted, to any server, and sends mail without a password unencrypted only to a private address. Check your SMTP setup before upgrading. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#smtp)
 - Accounts that have not signed in within 30 days of the first 1.3.0 start must reset their password. Administrators are exempt. When email is set up, the refused sign-in mails them a reset link. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#password-age)
 - Raw JSON webhooks now carry ids only, and internal notes are their own event. A hook now gets one delivery per change, not one per kind of change. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#one-event)
-- Staff and administrators start receiving email about their tickets once email is configured. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#staff-email)
+- Staff and administrators can be emailed about their tickets once email is configured. On an upgraded install this starts off; turn it on under Settings → Email. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#staff-email)
 - API keys: a key can no longer create API keys or OAuth clients, write users or group membership, or change the ticket-scope and auto-assignment settings, and a new key needs an expiry. Scripts that do these break. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#api-keys)
 - After upgrading, the first administrator to sign in sees a one-time wizard for the new settings, and a weekly check for new releases is available but off unless you turn it on. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#after-upgrade-wizard)
 - Descriptions and replies can be Markdown. Text written before 1.3.0 stays plain; REST defaults to plain unless it sends `format`, and MCP defaults to Markdown. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#markdown)
