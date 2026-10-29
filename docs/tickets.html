@@ -575,7 +575,7 @@
 
 <h3>Storage</h3>
 <p>Files are stored under <code>ATTACHMENT_DIR/tickets/&lt;ticketID&gt;/</code> with UUID-based filenames to prevent enumeration. The original filename is preserved in the database and shown in the UI and <code>Content-Disposition</code> headers on download — except where the server renamed the file itself, which is the quarantine and mismatch wraps above.</p>
-<p>The server checks at startup, and again before each upload, that this directory and its <code>tickets</code> subfolder exist and can be written. While it cannot, an upload from anyone, a guest included, is refused with <code>503 attachments_unavailable</code> before the file is read, and administrators see an <em>Attachment uploads are disabled</em> banner. Files already stored can still be downloaded while the directory is readable.</p>
+<p>The server checks at startup, and again before each upload, that <code>ATTACHMENT_DIR</code> and its <code>tickets</code> subfolder exist and can be written. While it cannot, an upload from anyone, a guest included, is refused with <code>503 attachments_unavailable</code> before the file is read, and administrators see an <em>Attachment uploads are disabled</em> banner. Files already stored can still be downloaded while the directory is readable.</p>
 
 
 <h2 id="tickets-search">Search</h2>
