@@ -30,3 +30,9 @@ test('a real file inside dist is still served', async ({ request }) => {
   expect(res.status()).toBe(200)
   expect(res.headers()['content-type']).toContain('text/html')
 })
+
+test('a malformed percent escape is answered 400 and the server keeps serving', async ({ request }) => {
+  const res = await request.get('/%zz')
+  expect(res.status()).toBe(400)
+  expect((await request.get('/index.html')).status()).toBe(200)
+})

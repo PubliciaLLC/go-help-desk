@@ -201,3 +201,24 @@ func TestReplyRecipient_AnMCPInternalNoteMailsNobody(t *testing.T) {
 	require.Equal(t, true, ev.Payload["internal"])
 	require.Empty(t, ev.Payload["reporter_email"])
 }
+
+// A ticket that a 1.3.0 -> 1.2.0 -> 1.3.0 round trip leaves as a guest ticket
+// with an empty address (migration 000041's down) must not be mailed on a staff
+// reply: no recipient and no guest link.
+func TestReplyRecipient_EmptyGuestAddressIsNotMailed(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	h.dispatcher.record = true
+	email := "placeholder@test.local"
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
+		Subject: "from a client", Description: "x", CategoryID: h.catID, GuestEmail: &email, GuestName: "Nagios",
+	})
+	require.NoError(t, err)
+	// Create refuses an empty address; the rollback writes one directly.
+	_, err = h.tx.ExecContext(context.Background(), `UPDATE tickets SET guest_email = '' WHERE id = $1`, tk.ID)
+	require.NoError(t, err)
+
+	ev := replyViaREST(t, h, tk.ID, false)
+	require.Empty(t, ev.Recipient)
+	require.False(t, ev.GuestLink)
+}

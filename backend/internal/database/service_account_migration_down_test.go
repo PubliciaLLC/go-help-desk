@@ -127,6 +127,12 @@ func TestMigrationDownChain_CompletesWithOAuthCreatedTickets(t *testing.T) {
 	mustExec(`INSERT INTO tickets (id, tracking_number, subject, category_id, status_id, reporter_user_id, guest_email, description_format, source_channel)
 		VALUES ($1, 'T-577', 'from nagios', $2, $3, $4, NULL, 'plain', 'api')`, ticketID, cat, statusID, svc)
 
+	// Same, but the ticket already carries a guest name (a phone caller logged
+	// through the client): the rollback must keep it.
+	named := uuid.New()
+	mustExec(`INSERT INTO tickets (id, tracking_number, subject, category_id, status_id, reporter_user_id, guest_email, guest_name, description_format, source_channel)
+		VALUES ($1, 'T-578', 'phone', $2, $3, $4, NULL, 'Phone Pat', 'plain', 'api')`, named, cat, statusID, svc)
+
 	// Other 1.3.0-only data the rest of the chain has to get through.
 	hook := uuid.New()
 	mustExec(`INSERT INTO webhook_configs (id, url) VALUES ($1, 'https://example.invalid/h')`, hook)
@@ -137,10 +143,13 @@ func TestMigrationDownChain_CompletesWithOAuthCreatedTickets(t *testing.T) {
 	files, err := filepath.Glob("migrations/*.down.sql")
 	require.NoError(t, err)
 	sort.Sort(sort.Reverse(sort.StringSlice(files)))
+	// From the highest number on disk, so a future 059 is run and not skipped.
+	require.NotEmpty(t, files)
+	top := filepath.Base(files[0])[:6]
 	ran := 0
 	for _, f := range files {
 		v := filepath.Base(f)[:6]
-		if v > "000058" || v < "000022" {
+		if v > top || v < "000022" {
 			continue
 		}
 		// A failed statement aborts the transaction, so the first failure is
@@ -157,7 +166,14 @@ func TestMigrationDownChain_CompletesWithOAuthCreatedTickets(t *testing.T) {
 		"the OAuth-created ticket survives the rollback")
 	require.Nil(t, reporter, "the service user is gone")
 	require.NotNil(t, guest, "the ticket still satisfies ticket_reporter_or_guest")
-	require.Equal(t, "oauth-x@service-account.invalid", *guest,
-		"the requester is kept as the client's own address, which names the client and can never receive mail")
-	require.Equal(t, "Nagios", *guestName, "and under the client's name")
+	// Empty, not NULL (the check wants one of the two) and not an address: both
+	// 1.2.0 and 1.3.0 skip an empty recipient, so nothing is mailed to a
+	// placeholder.
+	require.Equal(t, "", *guest, "a guest ticket with no email address")
+	require.Equal(t, "Nagios", *guestName, "named after the service user's display name")
+
+	require.NoError(t, tx.QueryRowContext(ctx,
+		`SELECT guest_email, guest_name FROM tickets WHERE id = $1`, named).Scan(&guest, &guestName))
+	require.Equal(t, "", *guest)
+	require.Equal(t, "Phone Pat", *guestName, "a guest name already on the ticket is kept")
 }
