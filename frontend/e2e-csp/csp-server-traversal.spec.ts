@@ -7,20 +7,24 @@ import path from 'path'
 // /..%2fdist-private/secret.txt reached it. This is a test server, but it binds
 // a port on the developer's or CI machine, and it should serve dist/ and
 // nothing beside it.
-const sibling = path.resolve('dist-private')
+// The sibling is created with mkdtemp so the test never reuses, overwrites or
+// deletes a directory it did not make. The name must still start with "dist":
+// that prefix is what the old startsWith(dist) check wrongly accepted.
+const dist = path.resolve('dist')
 const SECRET = 'sibling-secret-do-not-serve'
+let sibling = ''
 
 test.beforeAll(() => {
-  fs.mkdirSync(sibling, { recursive: true })
+  sibling = fs.mkdtempSync(path.join(path.dirname(dist), 'dist-private-'))
   fs.writeFileSync(path.join(sibling, 'secret.txt'), SECRET)
 })
 test.afterAll(() => {
-  fs.rmSync(sibling, { recursive: true, force: true })
+  if (sibling) fs.rmSync(sibling, { recursive: true, force: true })
 })
 
-for (const p of ['/..%2fdist-private/secret.txt', '/%2e%2e%2fdist-private/secret.txt']) {
-  test(`${p} does not reach a sibling of dist`, async ({ request }) => {
-    const res = await request.get(p)
+for (const dots of ['..%2f', '%2e%2e%2f']) {
+  test(`/${dots}<sibling>/secret.txt does not reach a sibling of dist`, async ({ request }) => {
+    const res = await request.get(`/${dots}${path.basename(sibling)}/secret.txt`)
     expect(await res.text()).not.toContain(SECRET)
   })
 }
