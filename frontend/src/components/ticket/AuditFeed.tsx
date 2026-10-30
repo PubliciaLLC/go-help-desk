@@ -1,0 +1,108 @@
+import { useQuery } from '@tanstack/react-query'
+import { listTicketAudit } from '@/api/tickets'
+import type { TicketAuditEntry } from '@/api/types'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { AuditDiff } from '@/components/AuditDiff'
+import { followRemovalLabel, isFollowAction } from '@/lib/followAudit'
+import { isReplyAction, replyActionVerb } from '@/lib/replyAudit'
+import { EyeOffIcon, LockIcon, MessageSquareIcon } from 'lucide-react'
+
+interface AuditFeedProps {
+  ticketId: string
+}
+
+// The action strings ticket.Service writes today. Not exhaustive on
+// purpose: an action this map doesn't know falls back to a readable guess
+// from the raw string rather than a blank line, so a new action added on the
+// backend later shows up as something instead of nothing.
+const ACTION_LABELS: Record<string, string> = {
+  created: 'Ticket filed',
+  status_changed: 'Status changed',
+  assigned: 'Assigned',
+  unassigned: 'Unassigned',
+  resolved: 'Resolved',
+  closed: 'Closed',
+  reopened: 'Reopened',
+  followed: 'Started following',
+  unfollowed: 'Stopped following',
+}
+
+function labelFor(action: string): string {
+  return (
+    ACTION_LABELS[action] ??
+    action.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase())
+  )
+}
+
+function labelForEntry(e: TicketAuditEntry): string {
+  return followRemovalLabel(e) ?? labelFor(e.action)
+}
+
+// #129: the per-ticket activity feed, next to the status timeline —
+// answers "who changed this and when" without database access. It inherits
+// the ticket's own visibility gate; the one action-specific exception
+// (assignment is staff/admin-only, and reporters can't resolve an assignee
+// to a name anywhere else) is enforced server-side — the API simply omits
+// actor_name/actor_id on those entries for a reporting user, so there is
+// nothing this component needs to filter itself.
+export function AuditFeed({ ticketId }: AuditFeedProps) {
+  const { data: entries = [], isLoading, isError } = useQuery({
+    queryKey: ['ticketAudit', ticketId],
+    queryFn: () => listTicketAudit(ticketId),
+  })
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+          Activity
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isLoading && <p className="text-xs text-gray-400">Loading…</p>}
+        {isError && <p className="text-xs text-red-600">Could not load activity</p>}
+        {!isLoading && !isError && entries.length === 0 && (
+          <p className="text-xs text-gray-400">Nothing recorded yet</p>
+        )}
+        <ul className="space-y-2">
+          {entries.map((e) => isReplyAction(e.action) ? (
+            // "<who> replied publicly": the sentence is the whole entry. Its
+            // diff is only the reply's id, which means nothing to a reader.
+            <li key={e.id} className="text-xs text-gray-700 wrap-anywhere">
+              {e.action === 'note_added'
+                ? <LockIcon aria-hidden="true" className="mr-1 inline h-3 w-3 text-gray-400" />
+                : <MessageSquareIcon aria-hidden="true" className="mr-1 inline h-3 w-3 text-gray-400" />}
+              {e.actor_masked
+                ? <span className="italic"><EyeOffIcon aria-hidden="true" className="mr-0.5 inline h-3 w-3" />Requester (name hidden)</span>
+                : <span className="font-medium">{e.actor_name || (e.actor_id ? 'Someone' : 'A guest')}</span>}
+              {' '}
+              <span>{replyActionVerb(e.action)}</span>
+              <span className="block text-gray-400">
+                {new Date(e.created_at).toLocaleString()}
+              </span>
+            </li>
+          ) : (
+            <li key={e.id} className="text-xs text-gray-700 wrap-anywhere">
+              <span className="font-medium">{labelForEntry(e)}</span>
+              {e.actor_name && (
+                <>
+                  {' by '}
+                  {e.actor_masked
+                    ? <span className="italic"><EyeOffIcon aria-hidden="true" className="mr-0.5 inline h-3 w-3" />Requester (name hidden)</span>
+                    : <span className="font-medium">{e.actor_name}</span>}
+                </>
+              )}
+              <span className="block text-gray-400">
+                {new Date(e.created_at).toLocaleString()}
+              </span>
+              {/* A follow entry's diff only repeats what its label says. */}
+              {!isFollowAction(e.action) && (
+                <AuditDiff before={e.before} after={e.after} names={e.names} />
+              )}
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
+  )
+}

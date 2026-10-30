@@ -2,7 +2,9 @@ package audit
 
 import (
 	"context"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 )
@@ -24,4 +26,248 @@ type Entry struct {
 type Store interface {
 	Create(ctx context.Context, e Entry) error
 	ListByEntity(ctx context.Context, entityType string, entityID uuid.UUID, limit, offset int) ([]Entry, error)
+
+	// ListByEntityActions is ListByEntity narrowed by action, newest first. The
+	// narrowing is in the query, so entries left out never count toward limit.
+	ListByEntityActions(ctx context.Context, entityType string, entityID uuid.UUID, f ActionFilter, limit, offset int) ([]Entry, error)
+
+	// Search answers the admin-wide audit view (#129): every field on Filter
+	// is optional and narrows the result, newest first, ties broken by id.
+	// Returns the matching page and what a pager needs, see Page. The count
+	// and the page come from the same predicate, so Total is the count of what
+	// the page pages.
+	//
+	// Search knows about staff ticket scope only through Filter.ScopedTo. With
+	// it unset every entity is returned; a caller that must not show every
+	// entity has to say so there rather than filter the page afterwards, which
+	// leaves the count and the offset describing a different sequence from the
+	// one the caller reads.
+	Search(ctx context.Context, f Filter, limit, offset int) (Page, error)
+
+	// DeleteOlderThan hard-deletes every entry created before cutoff and
+	// reports how many were removed. Used by the retention sweep
+	// (admin.Service.AuditRetentionDays), which runs only when an operator
+	// has set a retention window — the default keeps everything. There is
+	// no soft-delete or archive table: an expired entry is gone.
+	DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
+// ActionFilter narrows a ListByEntityActions call. Only, when non-empty, keeps
+// just those actions; Exclude drops these. The zero value narrows nothing.
+type ActionFilter struct {
+	Only, Exclude []string
+}
+
+// TotalCap is the most Search will count. A table nobody prunes (retention is
+// off by default) only grows, and an exact count over it is a full scan on
+// every page view, so past this many matches Search stops counting and says
+// so. 10,000 is 200 pages of 50, more than anyone pages through.
+const TotalCap = 10000
+
+// Page is one page of a Search and what a pager needs to move on from it.
+type Page struct {
+	Entries []Entry
+
+	// Total is the number of matching entries, counted only up to TotalCap.
+	// It is exact whenever TotalCapped is false.
+	Total int
+
+	// TotalCapped is true when more than TotalCap entries match; Total is then
+	// TotalCap and means "at least this many".
+	TotalCapped bool
+
+	// HasMore reports whether an entry exists after this page. It does not
+	// depend on Total, which stops at TotalCap while a pager keeps going.
+	HasMore bool
+}
+
+// Filter narrows a Search call. The zero value matches everything.
+//
+// Q is deliberately metadata-only: it matches against the entity type and
+// action, never against the Before/After payload. Matching payload content
+// would let a search for a redacted field's value still surface a hit
+// confirming the value existed — see Redact. It does not match the actor's
+// name either: a Store has no join to the users table to offer, and name
+// resolution already happens one layer up, in the HTTP handler — the same
+// place ListByEntity's callers resolve names today.
+type Filter struct {
+	EntityType string     // exact match, e.g. "ticket"
+	Action     string     // exact match, e.g. "resolved"
+	ActorID    *uuid.UUID // exact match; nil means "any actor, including system"
+	From       *time.Time // inclusive
+	To         *time.Time // inclusive
+	Q          string     // case-insensitive substring against entity_type and action
+
+	// ExcludeActions leaves out every entry whose action is listed, in the
+	// page and in the count alike. It is how a view withholds a kind of entry
+	// from a viewer (follow and unfollow, from staff, #441) without filtering
+	// the page afterwards, which would leave the count and the offset
+	// describing a different sequence from the one the caller reads.
+	ExcludeActions []string
+
+	// ScopedTo, when set, restricts the result to ticket entries on tickets
+	// that staff member may see under the DESIGN.md staff scope: tickets they
+	// reported, are assigned, their groups are assigned, or that fall in a
+	// Category/Type their groups cover. It is ticket.CanView's staff branch
+	// applied inside the query, and server's parity test keeps the two equal.
+	//
+	// Anything that is not a ticket entry matches nothing, and neither does an
+	// entry whose ticket no longer exists — to the person asking that is the
+	// same as a ticket they may not see, so the answer cannot be used to tell
+	// the two apart. Callers that apply no scope (an administrator, or staff
+	// while scope enforcement is off) leave this nil.
+	ScopedTo *uuid.UUID
+}
+
+// sensitiveFragments marks a Before/After key as one whose value must never
+// render in a browser — including to an admin. This is not "hide it from
+// staff", the rule #129 and the per-ticket feed's own staff gate already
+// cover; it is "this value must never render at all", the same class of rule
+// as the write-only settings in handler_admin_settings.go's secretSettingKeys.
+//
+// A key is sensitive when its normalised form (see normaliseKey) contains any
+// of these, or ends in "key" or "pass". The suffixes exist because the real
+// write-only secrets here are named attachment_reputation_virustotal_key and
+// smtp_pass, which no stem reaches; a test feeds every entry of
+// secretSettingKeys through Redact so the two lists cannot drift. Substring
+// rather than exact, so passwordHash, PASSWORD_HASH and user.password land
+// alongside password_hash, and a field nobody listed by name (access_token,
+// key_pem) still lands on its stem. The cost is over-redaction — "hash" hides
+// a hashtag, "key" hides a monkey — which fails safe: a hidden value is a
+// nuisance, a rendered secret is not.
+//
+// Nothing writes any of these into a Before/After map today — see shownKeys
+// for what the writers record. Since #362 the view is an allow-list, and
+// this deny-list is the layer that keeps a secret-looking key visible only as
+// a placeholder. It exists for the shape of the problem #129 named — "if a mutation ever
+// touched a sensitive field, the value is in there" — not a value observed
+// in this codebase, so it is a denylist of plausible stems rather than a
+// measured list: extend it before extending what writes into Before/After.
+var sensitiveFragments = []string{
+	"password",
+	"passwd",
+	"secret",
+	"token",
+	"hash",
+	"keypem",
+	"recoverycode",
+	"backupcode",
+}
+
+// Matched against the end of the normalised key: api_key, private_key and the
+// per-provider *_key settings all end in "key".
+var sensitiveSuffixes = []string{"key", "pass"}
+
+// normaliseKey lower-cases k and drops everything that is not a letter or
+// digit, so "apiKey", "API_KEY" and "api-key" all become "apikey".
+func normaliseKey(k string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(k) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func isSensitive(k string) bool {
+	n := normaliseKey(k)
+	for _, f := range sensitiveFragments {
+		if strings.Contains(n, f) {
+			return true
+		}
+	}
+	for _, f := range sensitiveSuffixes {
+		if strings.HasSuffix(n, f) {
+			return true
+		}
+	}
+	return false
+}
+
+const redactedPlaceholder = "[redacted]"
+
+// shownKeys is every Before/After key the audit view may show, normalised
+// (normaliseKey). Each is an id, a status, a flag or a count, written by
+// ticketMap and the ticket audit paths (including the priority change's
+// reason, SLA outcome and record ids), UnassignForUser, DeleteGroup,
+// user.ResetMFA, the API key audit paths in handler_admin_credentials.go and
+// cmd/server/resetfactors.go (whose os_user and host say who ran it, as
+// actor_name does for everyone else).
+//
+// An allow-list, not a deny-list, because of #362: the audit view is built
+// not to display protected or sensitive data — PII, and data under FERPA,
+// HIPAA, SOX or PCI-DSS — and this diff is where it would otherwise appear.
+// (Requester names in the actor column are the one configurable exception: the
+// audit_mask_requester_names setting.) A deny-list can only hide what someone
+// thought to name; free text such as a ticket subject can hold any of it.
+// Adding a key here is a decision that its values can never carry such data.
+var shownKeys = map[string]bool{
+	"id": true, "statusid": true, "priority": true,
+	"assigneeuserid": true, "assigneegroupid": true, "followupof": true,
+	"forcedreopen": true, "closedreopenpolicy": true,
+	"passkeysremoved": true, "totpcleared": true, "sessionsrevoked": true,
+	"osuser": true, "host": true, "source": true,
+	// The priority change and SLA re-match (#443b): why the priority changed
+	// and what happened to the SLA (fixed enums), and the policy and record
+	// ids before and after.
+	"prioritychangereason": true, "slaoutcome": true,
+	"slapolicyid": true, "slarecordid": true, "previousslarecordid": true,
+	// An API key being issued or revoked (#450): whose it is, whether the actor
+	// was acting on someone else's account, the scopes (a fixed vocabulary) and
+	// the expiry. The key's name is free text and is not written.
+	"owneruserid": true, "onbehalf": true, "scopes": true, "expiresat": true,
+	// How many keys an administrator's password reset revoked with it (#450).
+	"keysrevoked": true,
+	// A reply or internal note (reply_added, note_added): the reply's id and
+	// whether it was internal. The text is never written, and no key that could
+	// carry it is allow-listed.
+	"replyid": true, "internal": true,
+	// An edited email template (#158): which one, and its full subject, body and
+	// HTML part.
+	// An administrator wrote that text and a template cannot hold ticket
+	// content, so it is safe to show, and showing it is the history: there is
+	// no versions table. Named template_* because the plain keys "subject" and
+	// "body" are where ticket entries keep the ticket's own text, and those
+	// stay hidden.
+	// Shown for EVERY entity type, so no other writer may reuse these key names.
+	"templatename": true, "templatesubject": true, "templatebody": true, "templatehtml": true,
+}
+
+// Redact returns copies of before/after showing only allow-listed keys
+// (shownKeys) whose values are plain values. A key whose name looks like a
+// secret (sensitiveFragments) is kept as a placeholder, so a rotated secret
+// still shows as a change (#329); every other key is LEFT OUT, nested values
+// included. Left out rather than shown as a placeholder because ticketMap
+// writes the free-text subject into both sides of every ticket entry, and a
+// placeholder on both sides read as an edit that never happened. nil in, nil
+// out — Entry.Before/After
+// are nil for create/delete actions respectively, and that distinction (no
+// value existed) is different from "a value existed and is hidden".
+func Redact(before, after map[string]any) (map[string]any, map[string]any) {
+	return redactMap(before), redactMap(after)
+}
+
+func redactMap(m map[string]any) map[string]any {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		switch {
+		case isSensitive(k):
+			out[k] = redactedPlaceholder
+		case shownKeys[normaliseKey(k)] && !isContainer(v):
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func isContainer(v any) bool {
+	switch v.(type) {
+	case map[string]any, []any:
+		return true
+	}
+	return false
 }

@@ -1,0 +1,124 @@
+package server
+
+import (
+	"net"
+	"net/http"
+	"net/netip"
+	"net/url"
+	"strconv"
+	"strings"
+)
+
+// originPolicy decides whether a request's Origin header names this instance.
+//
+// want is the canonical origin of BASE_URL ("scheme://host:port", the port
+// always written), or "" when BASE_URL has no usable origin. In that case every
+// request that carries an Origin is refused: the check fails closed, as
+// webauthn.NewService does at startup for the same setting, rather than
+// guessing what the operator meant. Startup refuses a BASE_URL with no host
+// (webauthn.NewService), but not every unusable one: "ftp://helpdesk.example.com"
+// and "http://helpdesk.example.com:99999" both start, and this is what they get.
+type originPolicy struct{ want string }
+
+func newOriginPolicy(baseURL string) originPolicy {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return originPolicy{}
+	}
+	// BASE_URL is a URL, so its path, query and any userinfo are not part of
+	// the origin. Rebuilding from scheme and host is what webauthn.NewService
+	// does for the relying-party origin.
+	want, _ := canonicalOrigin(u.Scheme + "://" + u.Host)
+	return originPolicy{want: want}
+}
+
+// allows reports whether a request with these headers may reach an MCP route.
+//
+// No Origin header passes: only browsers send one on every cross-origin request,
+// and a non-browser client has no reason to. A header that is present must be
+// the only one, and must be exactly the origin of BASE_URL.
+func (p originPolicy) allows(h http.Header) bool {
+	vals, present := h["Origin"]
+	if !present {
+		return true
+	}
+	if len(vals) != 1 || p.want == "" {
+		return false
+	}
+	got, ok := canonicalOrigin(vals[0])
+	return ok && got == p.want
+}
+
+// canonicalOrigin turns a serialized origin into one comparable string:
+// lower-case, bracketed IPv6 in its shortest form, and the port always
+// present. It accepts what a browser sends (scheme://host[:port]) and nothing
+// else, so "null", a trailing slash, a path, userinfo and a percent-encoded
+// host are all refused rather than interpreted.
+//
+// A browser writes the host in ASCII (punycode), so a byte outside printable
+// ASCII is refused too. Letting one through would be worse than odd:
+// strings.ToLower maps the Kelvin sign to "k" and the dotted capital I to "i",
+// so two different hosts would compare equal.
+func canonicalOrigin(raw string) (string, bool) {
+	for i := 0; i < len(raw); i++ {
+		if raw[i] <= ' ' || raw[i] >= 0x7f {
+			return "", false
+		}
+	}
+	scheme, authority, found := strings.Cut(raw, "://")
+	scheme = strings.ToLower(scheme)
+	if !found || (scheme != "http" && scheme != "https") {
+		return "", false
+	}
+	if authority == "" || strings.ContainsAny(authority, "/?#@%\\") || strings.HasSuffix(authority, ":") {
+		return "", false
+	}
+	u, err := url.Parse(scheme + "://" + authority)
+	if err != nil || u.Hostname() == "" {
+		return "", false
+	}
+
+	port := u.Port()
+	if port == "" {
+		port = map[string]string{"http": "80", "https": "443"}[scheme]
+	}
+	n, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || n == 0 {
+		return "", false
+	}
+	port = strconv.FormatUint(n, 10)
+
+	host := strings.ToLower(u.Hostname())
+	if strings.Contains(authority, "[") {
+		// Bracketed means IPv6. Anything else in the brackets, or an address
+		// that is not one, is not an origin.
+		addr, err := netip.ParseAddr(host)
+		if err != nil || !addr.Is6() {
+			return "", false
+		}
+		host = addr.String()
+	}
+	return scheme + "://" + net.JoinHostPort(host, port), true
+}
+
+// requireMCPOrigin refuses a request whose Origin header is present and is not
+// this instance's. It covers every route that reaches ProtectMCP: /mcp, /mcp/,
+// and the legacy SSE transport at /mcp/sse and /mcp/message. There is no path
+// test on purpose, so a route added behind ProtectMCP is covered without
+// anyone remembering to list it. See docs/DESIGN.md, "MCP Interface" -> Origin.
+//
+// It wraps the authentication chain rather than sitting inside it, so the
+// refusal is the same for every caller. Inside, a foreign Origin would get 401
+// without a valid credential and 403 with one, which is a way to test keys.
+// A caller with no Origin never meets this check, so it still sees exactly the
+// responses it saw before.
+func requireMCPOrigin(baseURL string, next http.Handler) http.Handler {
+	policy := newOriginPolicy(baseURL)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !policy.allows(r.Header) {
+			Error(w, http.StatusForbidden, "origin_not_allowed", "Origin not allowed")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}

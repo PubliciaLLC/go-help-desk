@@ -4,7 +4,9 @@ import { addReply, uploadAttachment, listTicketCannedResponses } from '@/api/tic
 import { extractError } from '@/api/client'
 import { AttachmentUpload, type UploadState } from '@/components/AttachmentUpload'
 import { Button } from '@/components/ui/button'
-import { Textarea } from '@/components/ui/textarea'
+import { TextLimit } from '@/components/TextLimit'
+import { isOverLimit } from '@/lib/textLimit'
+import { MarkdownEditor, type MarkdownEditorHandle } from '@/components/editor/MarkdownEditor'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { MessageSquareTextIcon } from 'lucide-react'
@@ -70,7 +72,7 @@ function CannedResponsePicker({ responses, onSelect, onClose, containerRef }: Ca
               onClick={() => onSelect(r.body)}
             >
               <div className="text-sm font-medium text-gray-900">{r.name}</div>
-              <div className="truncate text-xs text-gray-400">{r.body}</div>
+              <div className="truncate text-xs text-gray-400" title={r.body}>{r.body}</div>
             </button>
           ))
         )}
@@ -108,8 +110,8 @@ export function ReplyComposer({ ticketId, isStaffOrAdmin }: ReplyComposerProps) 
   const [uploadStates, setUploadStates] = useState<Record<string, UploadState> | undefined>()
   const [error, setError] = useState('')
   const [pickerOpen, setPickerOpen] = useState(false)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
   const pickerContainerRef = useRef<HTMLDivElement>(null)
+  const editorRef = useRef<MarkdownEditorHandle>(null)
 
   const { data: cannedResponses = [] } = useQuery({
     queryKey: ['ticket-canned-responses', ticketId],
@@ -124,6 +126,7 @@ export function ReplyComposer({ ticketId, isStaffOrAdmin }: ReplyComposerProps) 
       setError('')
       qc.invalidateQueries({ queryKey: ['replies', ticketId] })
       qc.invalidateQueries({ queryKey: ['statusHistory', ticketId] })
+      qc.invalidateQueries({ queryKey: ['ticketAudit', ticketId] })
       qc.invalidateQueries({ queryKey: ['ticket', ticketId] })
 
       // Upload any attached files to the ticket.
@@ -156,18 +159,11 @@ export function ReplyComposer({ ticketId, isStaffOrAdmin }: ReplyComposerProps) 
     onError: (err) => setError(extractError(err)),
   })
 
+  // At the caret, as the textarea always did; the editor decides how (see
+  // MarkdownEditor's insertAtCursor).
   function insertCannedResponse(text: string) {
-    const textarea = textareaRef.current
-    const start = textarea?.selectionStart ?? body.length
-    const end = textarea?.selectionEnd ?? body.length
-    const newValue = body.slice(0, start) + text + body.slice(end)
-    const cursorPos = start + text.length
-    setBody(newValue)
+    editorRef.current?.insertAtCursor(text)
     setPickerOpen(false)
-    requestAnimationFrame(() => {
-      textarea?.focus()
-      textarea?.setSelectionRange(cursorPos, cursorPos)
-    })
   }
 
   const busy = !!uploadStates
@@ -204,63 +200,71 @@ export function ReplyComposer({ ticketId, isStaffOrAdmin }: ReplyComposerProps) 
           </div>
         )}
 
-        <Textarea
-          ref={textareaRef}
+        <span id={`reply-label-${ticketId}`} className="sr-only">
+          {isStaffOrAdmin ? 'Work log entry' : 'Reply'}
+        </span>
+        <MarkdownEditor
+          ref={editorRef}
+          labelId={`reply-label-${ticketId}`}
           placeholder={isStaffOrAdmin ? 'Describe the work performed or add a note…' : 'Type your reply…'}
-          rows={4}
           value={body}
-          onChange={(e) => setBody(e.target.value)}
+          onChange={setBody}
           disabled={busy}
         />
+        <TextLimit value={body} />
 
         {isStaffOrAdmin && (
-          <>
-            <div className="flex flex-wrap gap-4">
-              <label className="flex items-center gap-2 text-sm">
+          <div className="flex flex-wrap gap-4">
+            <label className="flex min-h-6 items-center gap-2 py-1 text-sm">
+              <input
+                type="checkbox"
+                checked={internal}
+                onChange={(e) => {
+                  setInternal(e.target.checked)
+                  // An internal note is for colleagues, so it never mails the
+                  // customer; unticking it restores the default.
+                  setNotify(!e.target.checked)
+                }}
+                className="h-4 w-4 rounded border-gray-300"
+                disabled={busy}
+              />
+              Internal note (not visible to customer)
+            </label>
+
+            {!internal && (
+              <label className="flex min-h-6 items-center gap-2 py-1 text-sm">
                 <input
                   type="checkbox"
-                  checked={internal}
-                  onChange={(e) => {
-                    setInternal(e.target.checked)
-                    // An internal note is for colleagues, so it never mails the
-                    // customer; unticking it restores the default.
-                    setNotify(!e.target.checked)
-                  }}
+                  checked={notify}
+                  onChange={(e) => setNotify(e.target.checked)}
                   className="h-4 w-4 rounded border-gray-300"
                   disabled={busy}
                 />
-                Internal note (not visible to customer)
+                Send ticket update email to customer
               </label>
-
-              {!internal && (
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={notify}
-                    onChange={(e) => setNotify(e.target.checked)}
-                    className="h-4 w-4 rounded border-gray-300"
-                    disabled={busy}
-                  />
-                  Send ticket update email to customer
-                </label>
-              )}
-            </div>
-
-            <AttachmentUpload
-              files={files}
-              onChange={setFiles}
-              uploadStates={uploadStates}
-              disabled={busy}
-              maxFiles={5}
-            />
-          </>
+            )}
+          </div>
         )}
 
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {/* The reply API has no role gate on uploads (any authenticated
+            non-guest may attach to a ticket they can see), and
+            NewTicketPage already offers the same control to every role at
+            creation time. Gating it here too, behind isStaffOrAdmin, left
+            reporters with no UI path to attach a follow-up file even though
+            the request would succeed. See #175. */}
+        <AttachmentUpload
+          files={files}
+          onChange={setFiles}
+          uploadStates={uploadStates}
+          disabled={busy}
+          maxFiles={5}
+        />
+
+        {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
 
         <Button
           onClick={() => mutation.mutate()}
-          disabled={mutation.isPending || busy || !body.trim()}
+          disabled={mutation.isPending || busy || !body.trim() || isOverLimit(body)}
         >
           {mutation.isPending
             ? 'Saving…'

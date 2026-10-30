@@ -42,12 +42,18 @@ export function StatusesPage() {
 
   const deactivateMutation = useMutation({
     mutationFn: (id: string) => updateStatus(id, { active: false }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'statuses'] }),
+    onSuccess: () => {
+      setFormError('')
+      qc.invalidateQueries({ queryKey: ['admin', 'statuses'] })
+    },
   })
 
   const reactivateMutation = useMutation({
     mutationFn: (id: string) => updateStatus(id, { active: true }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'statuses'] }),
+    onSuccess: () => {
+      setFormError('')
+      qc.invalidateQueries({ queryKey: ['admin', 'statuses'] })
+    },
   })
 
   const deleteMutation = useMutation({
@@ -55,6 +61,11 @@ export function StatusesPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['admin', 'statuses'] })
       setPendingDelete(null)
+      setFormError('')
+    },
+    onError: (err) => {
+      setPendingDelete(null)
+      setFormError(extractError(err))
     },
   })
 
@@ -63,14 +74,14 @@ export function StatusesPage() {
   return (
     <Layout>
       <div className="space-y-6">
-        <div className="flex items-start justify-between">
-          <div>
+        <div className="flex flex-col items-start gap-3 sm:flex-row sm:justify-between sm:gap-0">
+          <div className="min-w-0">
             <h1 className="text-2xl font-bold text-gray-900">Ticket Statuses</h1>
             <p className="mt-1 text-sm text-gray-500">
-              Add custom intermediate statuses for your workflow. The three system statuses — New, Resolved, and Closed — have fixed lifecycle rules and cannot be removed or deactivated.
+              Add custom intermediate statuses for your workflow. The three system statuses — New, Resolved, and Closed — have fixed lifecycle rules and cannot be renamed, removed, or deactivated.
             </p>
           </div>
-          <Button onClick={() => setAddingStatus(true)} className="ml-6 shrink-0">
+          <Button onClick={() => { setFormError(''); setAddingStatus(true) }} className="shrink-0 sm:ml-6">
             <PlusIcon className="mr-2 h-4 w-4" />
             New Status
           </Button>
@@ -89,7 +100,7 @@ export function StatusesPage() {
                   onChange={(e) => setName(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && name.trim()) createMutation.mutate()
-                    if (e.key === 'Escape') { setAddingStatus(false); setName('') }
+                    if (e.key === 'Escape') { setAddingStatus(false); setName(''); setFormError('') }
                   }}
                 />
               </div>
@@ -120,19 +131,19 @@ export function StatusesPage() {
                 >
                   {createMutation.isPending ? 'Adding…' : 'Add'}
                 </Button>
-                <Button variant="outline" onClick={() => { setAddingStatus(false); setName('') }}>
+                <Button variant="outline" onClick={() => { setAddingStatus(false); setName(''); setFormError('') }}>
                   Cancel
                 </Button>
               </div>
             </div>
-            {formError && <p className="mt-2 text-sm text-red-600">{formError}</p>}
+            {formError && <p role="alert" className="mt-2 text-sm text-red-600">{formError}</p>}
           </div>
         )}
 
         {isLoading ? (
           <div className="flex justify-center py-12"><Spinner /></div>
         ) : (
-          <div className="overflow-hidden rounded-lg border bg-white">
+          <div className="overflow-x-auto rounded-lg border bg-white">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 text-xs uppercase tracking-wide text-gray-500">
                 <tr>
@@ -153,7 +164,7 @@ export function StatusesPage() {
                         style={{ backgroundColor: s.color || DEFAULT_COLOR }}
                       />
                     </td>
-                    <td className="px-4 py-3 font-medium text-gray-900">
+                    <td className="px-4 py-3 font-medium text-gray-900 wrap-anywhere">
                       {s.name}
                       {!s.active && (
                         <span className="ml-2 rounded bg-gray-100 px-1.5 py-0.5 text-xs font-normal text-gray-500">
@@ -200,7 +211,7 @@ export function StatusesPage() {
                                 size="sm"
                                 variant="outline"
                                 className="text-red-600 border-red-200 hover:bg-red-50"
-                                onClick={() => setPendingDelete(s)}
+                                onClick={() => { setFormError(''); setPendingDelete(s) }}
                                 disabled={deleteMutation.isPending}
                               >
                                 Delete
@@ -223,6 +234,9 @@ export function StatusesPage() {
             </table>
           </div>
         )}
+        {/* Not nested under addingStatus above: this also carries delete
+            refusals (409 status_in_use, #275) surfaced outside that form. */}
+        {formError && !addingStatus && <p className="text-sm text-red-600">{formError}</p>}
       </div>
       <ConfirmDialog
         open={pendingDelete !== null}

@@ -7,11 +7,11 @@ INSERT INTO tickets (
     category_id, type_id, item_id, priority, status_id,
     assignee_user_id, assignee_group_id, reporter_user_id, guest_email,
     guest_name, guest_phone,
-    created_at, updated_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17);
+    created_at, updated_at, description_format, source_channel
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19);
 
 -- name: GetTicketByID :one
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets WHERE id = $1;
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format, source_channel FROM tickets WHERE id = $1;
 
 -- name: GetTicketByIDForUpdate :one
 -- The same row as GetTicketByID, with a write lock held until the transaction
@@ -27,16 +27,17 @@ SELECT id, tracking_number, subject, description, category_id, type_id, item_id,
 -- Reading here instead serialises the writers. The second one sees the first's
 -- committed state and applies its change on top, which is what someone clicking
 -- Resolve a moment after someone else clicked Assign expects.
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets WHERE id = $1 FOR UPDATE;
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format, source_channel FROM tickets WHERE id = $1 FOR UPDATE;
 
 -- name: GetTicketByTrackingNumber :one
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets WHERE tracking_number = $1;
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format, source_channel FROM tickets WHERE tracking_number = $1;
 
 -- name: UpdateTicket :exec
 UPDATE tickets
 SET subject = $2, description = $3, type_id = $4, item_id = $5,
     priority = $6, status_id = $7, assignee_user_id = $8, assignee_group_id = $9,
-    resolution_notes = $10, resolved_at = $11, closed_at = $12, updated_at = $13
+    resolution_notes = $10, resolved_at = $11, closed_at = $12, updated_at = $13,
+    pending_since = $14, sla_paused_seconds = $15, reopen_count = $16, last_reopened_at = $17, paused_seconds_at_last_reopen = $18
 WHERE id = $1;
 
 -- name: UpdateTicketCTI :exec
@@ -45,10 +46,10 @@ SET category_id = $2, type_id = $3, item_id = $4, updated_at = $5
 WHERE id = $1;
 
 -- name: ListTicketsByReporter :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets WHERE reporter_user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3;
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format, source_channel FROM tickets WHERE reporter_user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3;
 
 -- name: SearchTicketsByReporter :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format, source_channel FROM tickets
 WHERE reporter_user_id = $1
   AND (
     tracking_number ILIKE $4
@@ -60,10 +61,10 @@ ORDER BY
 LIMIT $2 OFFSET $3;
 
 -- name: ListTicketsByAssigneeUser :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets WHERE assignee_user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3;
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format, source_channel FROM tickets WHERE assignee_user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3;
 
 -- name: SearchTicketsByAssigneeUser :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format, source_channel FROM tickets
 WHERE assignee_user_id = $1
   AND (
     tracking_number ILIKE $4
@@ -75,10 +76,10 @@ ORDER BY
 LIMIT $2 OFFSET $3;
 
 -- name: ListTicketsByAssigneeGroup :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets WHERE assignee_group_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3;
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format, source_channel FROM tickets WHERE assignee_group_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3;
 
 -- name: SearchTicketsByAssigneeGroup :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format, source_channel FROM tickets
 WHERE assignee_group_id = $1
   AND (
     tracking_number ILIKE $4
@@ -90,13 +91,13 @@ ORDER BY
 LIMIT $2 OFFSET $3;
 
 -- name: ListTicketsByStatus :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets WHERE status_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3;
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format, source_channel FROM tickets WHERE status_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3;
 
 -- name: ListAllTickets :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets ORDER BY created_at DESC LIMIT $1 OFFSET $2;
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format, source_channel FROM tickets ORDER BY created_at DESC LIMIT $1 OFFSET $2;
 
 -- name: SearchAllTickets :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format, source_channel FROM tickets
 WHERE (
     tracking_number ILIKE $3
     OR (CASE WHEN sqlc.arg(search_query)::text <> '' THEN search_vector @@ to_tsquery('english', sqlc.arg(search_query)::text) ELSE false END)
@@ -106,13 +107,140 @@ ORDER BY
   created_at DESC
 LIMIT $1 OFFSET $2;
 
+-- name: CategoryExists :one
+-- Whether a category id is real. Checked before a tracking number is taken,
+-- because the foreign key only speaks at the INSERT — by which point the
+-- number is gone and the sequence has a permanent gap. Staff and MCP were
+-- never validated here; only a reporting user's category was checked, and
+-- that check is about whether the category is OPEN to them, not whether it
+-- exists.
+SELECT EXISTS (SELECT 1 FROM categories WHERE id = $1);
+
+-- name: CTIIsCoherent :one
+-- Whether a category/type/item triple exists and hangs together: the type
+-- belongs to the category, and the item belongs to the type.
+--
+-- One question rather than three, because the foreign keys are the only thing
+-- that was asking and they speak at the INSERT — after the tracking number
+-- has been taken. Verified: five refused creates advanced the sequence by
+-- five. REST checked that the type belonged to the category; MCP checked
+-- neither; nobody checked the item at all, and there is no composite key for
+-- item-to-type, so a ticket could carry a type and an item that do not go
+-- together and then be routed on that.
+SELECT
+    (sqlc.narg('type_id')::uuid IS NULL OR EXISTS (
+        SELECT 1 FROM types ty
+        WHERE ty.id = sqlc.narg('type_id') AND ty.category_id = sqlc.arg('category_id')))
+    AND
+    (sqlc.narg('item_id')::uuid IS NULL OR EXISTS (
+        SELECT 1 FROM items it
+        JOIN types t2 ON t2.id = it.type_id
+        WHERE it.id = sqlc.narg('item_id')
+          AND it.type_id = sqlc.narg('type_id')
+          AND t2.category_id = sqlc.arg('category_id')));
+
+-- name: ArchivedCTINode :one
+-- Which level of a classification being NEWLY picked is archived: 'category',
+-- 'type', 'item', or '' when none is. Highest level first, so a ticket aimed at
+-- an archived category is told about the category, not the type under it.
+--
+-- A NULL argument means "not being picked" and is skipped; the caller passes
+-- only the levels that differ from what the ticket already holds, because a
+-- ticket already sitting in an archived node keeps it (#421). An id that does
+-- not exist matches nothing here: CategoryExists and CTIIsCoherent refuse
+-- those.
+SELECT (CASE
+    WHEN sqlc.narg('category_id')::uuid IS NOT NULL
+         AND EXISTS (SELECT 1 FROM categories WHERE id = sqlc.narg('category_id') AND NOT active) THEN 'category'
+    WHEN sqlc.narg('type_id')::uuid IS NOT NULL
+         AND EXISTS (SELECT 1 FROM types WHERE id = sqlc.narg('type_id') AND NOT active) THEN 'type'
+    WHEN sqlc.narg('item_id')::uuid IS NOT NULL
+         AND EXISTS (SELECT 1 FROM items WHERE id = sqlc.narg('item_id') AND NOT active) THEN 'item'
+    ELSE ''
+END)::text AS archived_level;
+
+-- name: UserExists :one
+-- Whether a live account holds this id. Used for a supplied reporter, which
+-- unlike an assignee may be any role — a ticket is filed on behalf of whoever
+-- it is about.
+SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL);
+
+-- name: IsAssignableUser :one
+-- Whether a user can be given a ticket: the account exists, is not deleted,
+-- is not disabled, and is staff. A reporting user is not a queue, and neither
+-- is a service user (#420): an OAuth client's identity cannot work a ticket,
+-- which also keeps it out of round-robin without a check of its own.
+--
+-- Asked inside the assignment transaction rather than by the caller, because
+-- the caller is not the only caller. The REST handler checked this and MCP
+-- did not, so `assign_ticket` happily put tickets on deleted accounts and on
+-- reporting users — and a check the caller makes is a check every future
+-- caller has to remember to make. This one is where the write is.
+-- FOR SHARE, so a delete cannot land between this check and the write.
+--
+-- A plain read let them interleave: the check passed, a concurrent request
+-- soft-deleted the account and unassigned its tickets (finding none, because
+-- this one was not written yet), and then this transaction committed the
+-- assignment — leaving the ticket on a deleted account, which is the limbo
+-- the unassign-on-delete work exists to prevent. The share lock makes the
+-- delete wait for this transaction instead.
+SELECT id FROM users
+WHERE id = $1
+  AND deleted_at IS NULL
+  AND disabled = FALSE
+  AND role IN ('staff', 'admin')
+  AND NOT service_account
+FOR SHARE;
+
+-- name: IsAssignableGroup :one
+-- Whether a group can be given a ticket. An unknown id used to reach the
+-- foreign key and answer 500 for what is a caller's typo.
+SELECT EXISTS (SELECT 1 FROM groups WHERE id = $1);
+
+-- name: UnassignTicketsForUser :many
+-- Takes a departing user off every ticket still assigned to them, and says
+-- which ones.
+--
+-- Deleting a user is a soft delete, so the assignee column kept pointing at a
+-- row that no longer appears anywhere: the ticket showed as "Unassigned" on
+-- the page (the lookup found nobody), was NOT in the unassigned queue (the
+-- column was not null), and was in nobody's "assigned to me". It sat in the
+-- gap between the two lists with nothing to prompt anyone to pick it up.
+--
+-- Only tickets that are still open are worth moving. A resolved or closed
+-- ticket assigned to somebody who has left is history, and history should
+-- record who actually handled it.
+UPDATE tickets
+SET assignee_user_id = NULL, updated_at = now()
+WHERE assignee_user_id = $1
+  AND resolved_at IS NULL
+  AND closed_at IS NULL
+RETURNING id;
+
+-- name: LockGroup :one
+-- Locks the group row so nothing can be assigned to it until the transaction
+-- ends. A ticket's assignee_group_id takes a share lock on the group it names,
+-- and this conflicts with that. Without it a ticket assigned between
+-- UnassignTicketsForGroup and the delete would lose its group silently, which
+-- is the gap this exists to close.
+SELECT id FROM groups WHERE id = $1 FOR UPDATE;
+
+-- name: UnassignTicketsForGroup :many
+-- Takes every ticket off a group that is about to be deleted, and says which.
+-- All of them, resolved and closed too: the foreign key (ON DELETE SET NULL)
+-- would clear those anyway, and the audit trail should record it.
+UPDATE tickets
+SET assignee_group_id = NULL, updated_at = now()
+WHERE assignee_group_id = $1
+RETURNING id;
+
 -- name: ListUnassignedTickets :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format, source_channel FROM tickets
 WHERE assignee_user_id IS NULL AND assignee_group_id IS NULL
 ORDER BY created_at DESC LIMIT $1 OFFSET $2;
 
 -- name: SearchUnassignedTickets :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format, source_channel FROM tickets
 WHERE assignee_user_id IS NULL AND assignee_group_id IS NULL
   AND (
     tracking_number ILIKE $3
@@ -124,29 +252,59 @@ ORDER BY
 LIMIT $1 OFFSET $2;
 
 -- name: ListResolvedTicketsBefore :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets
-WHERE resolved_at IS NOT NULL AND resolved_at < $1 AND closed_at IS NULL
+-- status_id is the Resolved status's id. Without this filter, a row that
+-- satisfies resolved_at < $1 but sits in a different status (a legacy row
+-- moved off Resolved by old code that cleared status_id without clearing
+-- resolved_at, or a Closed ticket with a stale resolved_at) is listed on
+-- every sweep, locked, skipped by stillEligible, and listed again forever —
+-- see #191.
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format, source_channel FROM tickets
+WHERE resolved_at IS NOT NULL AND resolved_at < $1 AND status_id = $2 AND closed_at IS NULL
 ORDER BY resolved_at ASC
-LIMIT $2;
+LIMIT $3;
 
 -- name: CreateReply :exec
 -- author_id is NULL for a reply written by a guest, who has no account. That is
 -- the only way it is NULL: every other path passes the acting user.
-INSERT INTO ticket_replies (id, ticket_id, author_id, body, internal, notify_customer, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7);
+-- body_format has no column default (migration 000055), so every writer names it.
+INSERT INTO ticket_replies (id, ticket_id, author_id, body, internal, notify_customer, created_at, body_format)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
 -- name: ListReplies :many
-SELECT * FROM ticket_replies WHERE ticket_id = $1 ORDER BY created_at ASC;
+-- The author's display name comes back with the reply.
+--
+-- Without it the ticket page had nothing but author_id to render, and rendered
+-- it: every reply from a registered account showed as a bare UUID, so a staff
+-- member reading a thread could not tell who had said what. A join here rather
+-- than a lookup in the browser, because the page cannot do the lookup for a
+-- reporting user -- it is not allowed to list users, and should not be.
+--
+-- LEFT JOIN: author_id is NULL for a guest's reply, which is the one case
+-- where there is genuinely no account behind the message.
+SELECT r.*, u.display_name AS author_display_name
+FROM ticket_replies r
+LEFT JOIN users u ON u.id = r.author_id
+WHERE r.ticket_id = $1
+ORDER BY r.created_at ASC;
 
 -- name: CreateAttachment :exec
-INSERT INTO attachments (id, ticket_id, filename, mime_type, size_bytes, storage_path, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7);
+INSERT INTO attachments (id, ticket_id, filename, mime_type, size_bytes, storage_path, created_at,
+                         detected_mime, sha256, virus_name, content_mismatch, uploaded_by_guest)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
+
+-- name: CountGuestAttachments :one
+-- Only what a guest uploaded: staff and reporter files do not count toward the
+-- guest cap (#445).
+SELECT count(*) FROM attachments WHERE ticket_id = $1 AND uploaded_by_guest;
 
 -- name: GetAttachmentByID :one
 SELECT * FROM attachments WHERE id = $1;
 
 -- name: ListAttachments :many
 SELECT * FROM attachments WHERE ticket_id = $1 ORDER BY created_at ASC;
+
+-- name: AnyAttachmentExists :one
+SELECT EXISTS (SELECT 1 FROM attachments);
 
 -- name: DeleteAttachment :exec
 DELETE FROM attachments WHERE id = $1;
@@ -171,7 +329,7 @@ WHERE source_ticket_id = $1 OR target_ticket_id = $1;
 --
 -- Filtering happens here rather than in Go because the caller paginates: a page
 -- fetched and then filtered returns short pages and skips rows.
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets t
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format, source_channel FROM tickets t
 WHERE
   t.reporter_user_id = $1
   OR t.assignee_user_id = $1
@@ -189,7 +347,7 @@ LIMIT $2 OFFSET $3;
 -- name: SearchTicketsVisibleToStaff :many
 -- Search variant of ListTicketsVisibleToStaff, matching the predicate and
 -- ranking used by the other ticket searches.
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets t
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format, source_channel FROM tickets t
 WHERE
   (
     t.reporter_user_id = $1
@@ -227,7 +385,7 @@ LIMIT $2 OFFSET $3;
 -- all combinations. Filtering and paginating in the same statement is what
 -- keeps pages full: a page fetched and then filtered returns short pages and
 -- skips rows.
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets t
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format, source_channel FROM tickets t
 WHERE
   (
     sqlc.arg(unrestricted)::bool

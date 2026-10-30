@@ -81,48 +81,85 @@ function hasDownloadAttribute(element: string): boolean {
 }
 
 describe('attachments are never rendered inline', () => {
-  // Every element in the frontend that renders remote content, with the reason
-  // it is allowed to exist. This is deliberately a list and not a rule: the
-  // point is that adding one is a decision someone makes on purpose, in a
-  // review, rather than something that slips in.
+  // Every file in the frontend allowed to render remote content, and how many
+  // such elements it may hold. Deliberately a list and not a rule: the point
+  // is that adding one is a decision someone makes on purpose, in review,
+  // rather than something that slips in.
   //
-  // Layout.tsx and SettingsPage.tsx are the instance logo: an admin-uploaded
-  // image served from its own route under a policy that blocks scripts (see
-  // logoCSP in security_headers.go). LoginPage.tsx is the TOTP enrolment QR
-  // code, which is a data: URL the server generates during MFA setup — not an
-  // upload at all.
-  const allowedRenderers = new Set([
-    'src/components/Layout.tsx:69',
-    'src/pages/LoginPage.tsx:235',
-    'src/pages/admin/SettingsPage.tsx:594',
-  ])
+  // Counted per file rather than pinned to a line number, which is how the
+  // first version worked. That version went stale the moment an unrelated edit
+  // above a renderer shifted it down — a false failure that teaches people to
+  // "fix" the list without reading it, which is exactly how a guard stops
+  // guarding. A count still fails on a new renderer, and survives the file
+  // being reordered.
+  //
+  // BrandLogo.tsx and SettingsPage.tsx are the instance logo: an
+  // admin-uploaded image served from its own route under a policy that blocks
+  // scripts (see logoCSP in security_headers.go). MFAEnrollForm.tsx is the
+  // TOTP enrolment QR code, a data: URL the server generates during MFA
+  // setup — not an upload at all. It was LoginPage.tsx's until #369 moved the
+  // compelled-enrolment form into a component, so the signup verification
+  // page could use it too; LoginPage renders no <img> of its own now.
+  //
+  // Since #296, BrandLogo is mounted three times at once (permanent sidebar,
+  // mobile top bar, drawer) — but it is one <img>, in one file, used three
+  // times, not three renderers to keep in sync. Layout.tsx itself renders no
+  // <img> of its own any more, which is the reason it is off this list.
+  //
+  // AccountPage.tsx is the same enrolment QR as MFAEnrollForm's, now that setting
+  // up an authenticator app is something you can choose to do rather than
+  // only something you are forced through at sign-in. Same source, same
+  // reason: the server generates the data: URL from the secret it just
+  // minted, and no part of it comes from an upload or from another user.
+  const allowedRenderers: Record<string, number> = {
+    'src/components/BrandLogo.tsx': 1,
+    'src/components/MFAEnrollForm.tsx': 1,
+    'src/pages/AccountPage.tsx': 1,
+    'src/pages/admin/SettingsPage.tsx': 1,
+    // #158: the email template editor's HTML preview. Not an attachment: it is
+    // markup an administrator typed, returned by the preview endpoint, shown in
+    // an <iframe sandbox=""> (no scripts, opaque origin) under a CSP meta that
+    // allows no remote loads. EmailTemplatesPage.preview-safety.test.ts pins
+    // that it is the only frame and that the sandbox stays empty.
+    'src/pages/admin/EmailTemplatesPage.tsx': 1,
+    // #443: not a renderer. This is the `new URL(value)` that parses a link's
+    // target in safeUrl, which the regex above reads as a CSS url(). Markdown
+    // images are never loaded: the pipeline turns each into a link (see
+    // TicketText.xss.test.tsx), and nothing else in the file renders anything.
+    'src/lib/markdownAllowList.ts': 1,
+  }
 
   it('renders nothing that is not on the list', () => {
-    // JSX allows whitespace and a newline between "<" and the tag name, and
-    // a component can be built without JSX at all, so normalise first and
-    // look for the other spellings too. createElement('img', …) renders just
-    // as well as <img>, and so does an innerHTML string or a CSS url().
+    // JSX allows whitespace and a newline between "<" and the tag name, and a
+    // component can be built without JSX at all, so normalise and look for the
+    // other spellings too. createElement('img', …) renders just as well as
+    // <img>, and so does an innerHTML string or a CSS url().
     const renderer =
       /<\s*(img|image|object|embed|iframe|frame|video|audio|source|track)\b|createElement\s*\(\s*['"`](img|image|object|embed|iframe|frame|video|audio|source|track)['"`]|dangerouslySetInnerHTML|\burl\s*\(/i
 
-    const found = files.flatMap(({ path, source }) =>
-      [...source.matchAll(new RegExp(renderer.source, 'gi'))].map(
+    const found: Record<string, string[]> = {}
+    for (const { path, source } of files) {
+      const hits = [...source.matchAll(new RegExp(renderer.source, 'gi'))].map(
         (m) => `${path}:${lineAt(source, m.index)}`,
-      ),
-    )
+      )
+      if (hits.length) found[path] = hits
+    }
 
-    const unexpected = found.filter((site) => !allowedRenderers.has(site))
-    expect(
-      unexpected,
-      `A new element that renders remote content. If it renders an attachment ` +
-        `it contradicts docs/DESIGN.md and is stored XSS against staff sessions. ` +
-        `If it does not, add it to allowedRenderers with the reason.`,
-    ).toEqual([])
+    for (const [path, hits] of Object.entries(found)) {
+      expect(
+        hits.length,
+        `${path} renders remote content in ${hits.length} place(s), expected ${
+          allowedRenderers[path] ?? 0
+        }. If one of these renders an attachment it contradicts docs/DESIGN.md ` +
+          `and is stored XSS against staff sessions. If not, update ` +
+          `allowedRenderers with the reason.\n  ${hits.join('\n  ')}`,
+      ).toBe(allowedRenderers[path] ?? 0)
+    }
 
-    // The other direction: a line that moves or disappears leaves the list
-    // stale, and a stale list quietly stops guarding anything.
-    const gone = [...allowedRenderers].filter((site) => !found.includes(site))
-    expect(gone, 'allowedRenderers is out of date — these no longer exist').toEqual([])
+    // The other direction: a file that stops rendering anything leaves the
+    // list stale, and a stale list quietly stops guarding.
+    const gone = Object.keys(allowedRenderers).filter((p) => !found[p])
+    expect(gone, 'allowedRenderers is out of date — these render nothing now').toEqual([])
   })
 
   // Anything that addresses an attachment has to go through one function, or
@@ -134,10 +171,21 @@ describe('attachments are never rendered inline', () => {
     // concatenation, a plain string, with or without the trailing slash —
     // because how the URL is written is not the point. The trailing slash
     // used to be required, which let ['…/attachments', id].join('/') past.
-    const builders = files
-      .filter(({ source }) => /['"`][^'"`]*\/attachments\b/.test(source))
-      .map(({ path }) => path)
+    const spelled = files.filter(({ source }) => /['"`][^'"`]*\/attachments\b/.test(source))
+    const builders = spelled.map(({ path }) => path).filter((p) => p !== 'src/api/guest.ts')
     expect(builders).toEqual(['src/api/tickets.ts'])
+
+    // guest.ts (#445) may spell the path exactly once, as the guest UPLOAD:
+    // a POST the page makes with axios, never a URL it renders or links (the
+    // guest read has no attachment list). Every occurrence of the path text
+    // must be that one call, so a second spelling of any kind, such as a
+    // download-URL builder, fails here instead of passing under the file's
+    // name.
+    const guest = files.find(({ path }) => path === 'src/api/guest.ts')!.source
+    const occurrences = guest.match(/\/attachments\b/g) ?? []
+    const uploadCalls = guest.match(/guestApi\.post\(\s*['"]\/attachments['"]\s*,/g) ?? []
+    expect(occurrences.length, 'guest.ts mentions /attachments more than once').toBe(1)
+    expect(uploadCalls.length, 'guest.ts must post to /attachments exactly once').toBe(1)
   })
 
   // And the one place that uses it has to ask the browser to save. The

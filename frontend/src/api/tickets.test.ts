@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { api } from './client'
-import { addReply, listTickets, updateTicket } from './tickets'
+import { addReply, createTicket, listTickets, lookupRequesters, updateTicket, duplicateResolutionNotes } from './tickets'
 
 // tickets.ts is mostly thin wrappers, and those are deliberately not tested —
 // asserting that `api.get` gets called proves nothing. What is covered here is
@@ -53,7 +53,16 @@ describe('addReply', () => {
       body: 'Have you tried restarting it?',
       internal: false,
       notify_customer: true,
+      format: 'markdown',
     })
+  })
+
+  // #443: the editor writes Markdown, and the server's default for a REST
+  // client that says nothing is plain. So the web app says it, every time.
+  it('always sends format "markdown"', async () => {
+    const post = vi.spyOn(api, 'post').mockResolvedValue({ data: {} })
+    await addReply('t-1', 'x', true, false)
+    expect(post.mock.calls[0][1]).toHaveProperty('format', 'markdown')
   })
 
   it('maps notifyCustomer to notify_customer', async () => {
@@ -66,6 +75,14 @@ describe('addReply', () => {
     expect(payload).toHaveProperty('notify_customer', false)
     expect(payload).not.toHaveProperty('notifyCustomer')
     expect(payload).toHaveProperty('internal', true)
+  })
+})
+
+describe('createTicket', () => {
+  it('always sends format "markdown" with the description (#443)', async () => {
+    const post = vi.spyOn(api, 'post').mockResolvedValue({ data: {} })
+    await createTicket({ subject: 's', description: '**d**', category_id: 'c' })
+    expect(post).toHaveBeenCalledWith('/tickets', expect.objectContaining({ description: '**d**', format: 'markdown' }))
   })
 })
 
@@ -101,5 +118,42 @@ describe('updateTicket', () => {
     await updateTicket('abc-123', { status_id: 's-1' })
 
     expect(patch.mock.calls[0][0]).toBe('/tickets/abc-123')
+  })
+})
+
+describe('duplicateResolutionNotes', () => {
+  // This is the template generator for duplicate resolution notes. It formats
+  // the target tracking number into the default resolution text shown to the user
+  // when creating a duplicate link with automatic resolution.
+  it('formats the template with the target tracking number', () => {
+    const result = duplicateResolutionNotes('GHD-2026-000001')
+    expect(result).toBe('Duplicate of GHD-2026-000001')
+  })
+
+  it('handles different tracking number formats', () => {
+    expect(duplicateResolutionNotes('TKT-100')).toBe('Duplicate of TKT-100')
+    expect(duplicateResolutionNotes('ISSUE-2024-999')).toBe('Duplicate of ISSUE-2024-999')
+  })
+
+  it('produces the exact format expected by addDuplicateLinkAndResolve', () => {
+    // This test pins the exact format so changes to the template are visible
+    const trackingNumber = 'GHD-2026-000042'
+    const notes = duplicateResolutionNotes(trackingNumber)
+    expect(notes).toMatch(/^Duplicate of GHD-2026-000042$/)
+  })
+})
+
+describe('lookupRequesters', () => {
+  it('sends the query as q and returns the hits', async () => {
+    const hits = [{ id: 'u-1', display_name: 'Ada', email: 'ada@example.com' }]
+    const get = vi.spyOn(api, 'get').mockResolvedValue({ data: hits })
+
+    await expect(lookupRequesters('ada')).resolves.toEqual(hits)
+    expect(get).toHaveBeenCalledWith('/users/lookup', { params: { q: 'ada' } })
+  })
+
+  it('returns an empty array when the server sends null', async () => {
+    vi.spyOn(api, 'get').mockResolvedValue({ data: null })
+    await expect(lookupRequesters('ada')).resolves.toEqual([])
   })
 })

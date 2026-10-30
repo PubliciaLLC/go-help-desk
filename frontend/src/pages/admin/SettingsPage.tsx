@@ -1,28 +1,41 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getSettings, updateSettings, getSAMLConfig, saveSAMLConfig, getOIDCConfig, saveOIDCConfig, getSiteConfig, uploadLogo, deleteLogo, listStatuses, listCategories, listSLAPolicies, createSLAPolicy, updateSLAPolicy, deleteSLAPolicy } from '@/api/admin'
+import { Link } from '@tanstack/react-router'
+import { getSettings, updateSettings, getSAMLConfig, saveSAMLConfig, getOIDCConfig, saveOIDCConfig, getSiteConfig, uploadLogo, deleteLogo, listStatuses, listCategories, listSLAPolicies, getSecurityWarnings, createSLAPolicy, updateSLAPolicy, deleteSLAPolicy } from '@/api/admin'
 import type { SLAPolicy } from '@/api/types'
-import { extractError } from '@/api/client'
+import { extractError, extractErrorCode } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { LifetimeSlider } from '@/components/admin/LifetimeSlider'
+import { GuestSizeSlider } from '@/components/admin/GuestSizeSlider'
+import { BoundedNumberInput } from '@/components/admin/BoundedNumberInput'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Spinner } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
 import { useState, useEffect, useRef } from 'react'
 import { fmtMin } from '@/lib/format'
+import { UPDATE_CHECK_LABEL, UPDATE_CHECK_DETAIL } from '@/lib/updateCheck'
 
 // ── Shared primitives ─────────────────────────────────────────────────────────
 
-function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+function Toggle({ checked, onChange, label, disabled }: {
+  checked: boolean
+  onChange: (v: boolean) => void
+  disabled?: boolean
+  /** The switch's own name, where the surrounding row does not supply one. */
+  label?: string
+}) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cn(
-        'relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2',
+        'relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center disabled:cursor-not-allowed disabled:opacity-50 rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2',
         checked ? 'bg-blue-600' : 'bg-gray-200'
       )}
     >
@@ -45,6 +58,21 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   )
 }
 
+/** Where email stands, shown beside the settings that send mail. The banner
+ *  stays quiet for an install that runs without email on purpose. */
+function EmailStatusNote({ on }: { on: boolean }) {
+  const { data } = useQuery({ queryKey: ['security-warnings'], queryFn: getSecurityWarnings, retry: false })
+  const email = data?.email
+  if (!email || email.enabled) return null
+  return (
+    <p role="note" className="px-5 pb-4 text-sm text-amber-800">
+      Email is not set up ({email.missing.join(' and ')} not set in docker/.env)
+      {on ? ": people using this aren't getting their mail." : ', so this cannot be turned on until it is.'} Set{' '}
+      {email.missing.length === 1 ? 'it' : 'both'} and restart the server.
+    </p>
+  )
+}
+
 function SettingRow({
   label,
   description,
@@ -55,12 +83,14 @@ function SettingRow({
   children: React.ReactNode
 }) {
   return (
-    <div className="flex items-center justify-between gap-8 px-5 py-4">
+    // Stacked below sm: a control that cannot shrink (a select, a number box)
+    // beside its label is wider than a phone's content box (#522).
+    <div className="flex flex-col gap-2 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-8">
       <div className="min-w-0 flex-1">
         <div className="text-sm font-medium text-gray-900">{label}</div>
         {description && <div className="mt-0.5 text-sm text-gray-500">{description}</div>}
       </div>
-      <div className="shrink-0">{children}</div>
+      <div className="min-w-0 max-w-full sm:shrink-0">{children}</div>
     </div>
   )
 }
@@ -76,7 +106,7 @@ function SaveBar({ onSave, isPending, error, saved }: {
       <Button onClick={onSave} disabled={isPending}>
         {isPending ? 'Saving…' : 'Save changes'}
       </Button>
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
       {saved && <p className="text-sm text-green-600">Saved.</p>}
     </div>
   )
@@ -88,8 +118,11 @@ function SAMLSection() {
   const qc = useQueryClient()
   const certFileRef = useRef<HTMLInputElement>(null)
   const keyFileRef = useRef<HTMLInputElement>(null)
+  const metadataFileRef = useRef<HTMLInputElement>(null)
 
+  const [metadataSource, setMetadataSource] = useState<'url' | 'xml'>('url')
   const [metadataURL, setMetadataURL] = useState('')
+  const [metadataXML, setMetadataXML] = useState('')
   const [certPEM, setCertPEM] = useState('')
   const [keyPEM, setKeyPEM] = useState('')
   const [saveError, setSaveError] = useState('')
@@ -112,6 +145,8 @@ function SAMLSection() {
   useEffect(() => {
     if (saml) {
       setMetadataURL(saml.metadata_url)
+      setMetadataXML(saml.metadata_xml)
+      setMetadataSource(saml.metadata_xml ? 'xml' : 'url')
       setCertPEM(saml.cert_pem)
     }
   }, [saml])
@@ -124,7 +159,22 @@ function SAMLSection() {
   }
 
   const saveMutation = useMutation({
-    mutationFn: () => saveSAMLConfig({ metadata_url: metadataURL, cert_pem: certPEM, key_pem: keyPEM }),
+    // key_pem is only included when this session actually uploaded or typed
+    // one: getSAMLConfig never returns the stored private key at all (see its
+    // own comment), so the local keyPEM state starts blank and stays that way
+    // until the admin replaces it. Sending it as "" whenever it was merely
+    // left alone used to backfill from the stored value on the server side —
+    // that backfill no longer happens (see #300), so doing so now would
+    // clear the working key on every ordinary save that isn't also a key
+    // rotation.
+    mutationFn: () => saveSAMLConfig({
+      // One source or the other, never both: the server refuses a save that
+      // leaves both set, so the unchosen one is cleared explicitly.
+      metadata_url: metadataSource === 'url' ? metadataURL : '',
+      metadata_xml: metadataSource === 'xml' ? metadataXML : '',
+      cert_pem: certPEM,
+      ...(keyPEM ? { key_pem: keyPEM } : {}),
+    }),
     onSuccess: (res) => {
       setSaved(true)
       setSaveError('')
@@ -141,7 +191,7 @@ function SAMLSection() {
 
   return (
     <div className="space-y-4 px-5 py-4">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <span className={cn(
           'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium',
           saml?.configured ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'
@@ -152,7 +202,7 @@ function SAMLSection() {
           <span className="text-xs text-gray-500">
             SP metadata:{' '}
             <button
-              className="font-mono text-blue-600 underline decoration-dotted hover:decoration-solid"
+              className="font-mono text-left text-blue-600 underline decoration-dotted hover:decoration-solid wrap-anywhere"
               onClick={() => navigator.clipboard.writeText(spMetadataURL)}
               title="Copy to clipboard"
             >
@@ -162,15 +212,61 @@ function SAMLSection() {
         )}
       </div>
 
-      <div className="space-y-1">
-        <label className="block text-sm font-medium text-gray-700">IdP metadata URL</label>
-        <Input
-          placeholder="https://idp.example.com/saml/metadata"
-          value={metadataURL}
-          onChange={(e) => setMetadataURL(e.target.value)}
-          className="max-w-lg font-mono text-sm"
-        />
-      </div>
+      <fieldset className="space-y-2">
+        <legend className="text-sm font-medium text-gray-700">IdP metadata</legend>
+        <div className="flex items-center gap-4 text-sm text-gray-700">
+          <label className="flex items-center gap-1.5">
+            <input type="radio" name="saml-metadata-source" checked={metadataSource === 'url'}
+              onChange={() => setMetadataSource('url')} />
+            URL
+          </label>
+          <label className="flex items-center gap-1.5">
+            <input type="radio" name="saml-metadata-source" checked={metadataSource === 'xml'}
+              onChange={() => setMetadataSource('xml')} />
+            XML
+          </label>
+        </div>
+        {metadataSource === 'url' ? (
+          <div className="space-y-1">
+            <label htmlFor="saml-metadata-url" className="block text-sm text-gray-600">IdP metadata URL</label>
+            <Input
+              id="saml-metadata-url"
+              placeholder="https://idp.example.com/saml/metadata"
+              value={metadataURL}
+              onChange={(e) => setMetadataURL(e.target.value)}
+              className="max-w-lg font-mono text-sm"
+            />
+          </div>
+        ) : (
+          <div className="space-y-1">
+            <label htmlFor="saml-metadata-xml" className="block text-sm text-gray-600">IdP metadata XML</label>
+            <textarea
+              id="saml-metadata-xml"
+              rows={10}
+              placeholder="<EntityDescriptor …>"
+              className="w-full max-w-lg rounded border border-gray-300 p-2 font-mono text-xs text-gray-600"
+              value={metadataXML}
+              onChange={(e) => setMetadataXML(e.target.value)}
+            />
+            <div>
+              <Button variant="outline" size="sm" onClick={() => metadataFileRef.current?.click()}>Upload .xml</Button>
+            </div>
+            <input ref={metadataFileRef} type="file" accept=".xml,application/xml,text/xml"
+              aria-label="IdP metadata XML file" className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                if (f) readFile(f, setMetadataXML)
+                // So the same file can be chosen again after an edit.
+                e.target.value = ''
+              }} />
+            <p className="max-w-lg text-xs text-gray-500">
+              Paste the metadata XML, or upload the file your identity provider gave you. It is checked when you save,
+              and shown here again afterwards. It is not refreshed: when your identity provider&apos;s signing
+              certificate changes, paste its new metadata.
+            </p>
+          </div>
+        )}
+      </fieldset>
 
       <div className="space-y-1">
         <label className="block text-sm font-medium text-gray-700">
@@ -179,7 +275,7 @@ function SAMLSection() {
         </label>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={() => certFileRef.current?.click()}>Upload .pem / .crt</Button>
-          {certPEM && <span className="text-xs text-gray-500 truncate max-w-xs font-mono">{certPEM.split('\n')[0]}…</span>}
+          {certPEM && <span title={certPEM} className="text-xs text-gray-500 truncate max-w-xs font-mono">{certPEM.split('\n')[0]}…</span>}
         </div>
         <input ref={certFileRef} type="file" accept=".pem,.crt,.cer" className="hidden"
           onChange={(e) => { const f = e.target.files?.[0]; if (f) readFile(f, setCertPEM) }} />
@@ -212,7 +308,7 @@ function SAMLSection() {
         <Button size="sm" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>
           {saveMutation.isPending ? 'Saving…' : 'Save SAML config'}
         </Button>
-        {saveError && <p className="text-sm text-red-600">{saveError}</p>}
+        {saveError && <p role="alert" className="text-sm text-red-600">{saveError}</p>}
         {saved && !warning && <p className="text-sm text-green-600">SAML config saved.</p>}
         {warning && <p className="text-sm text-amber-600">{warning}</p>}
       </div>
@@ -281,7 +377,7 @@ function OIDCSection() {
 
   return (
     <div className="space-y-4 px-5 py-4">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <span className={cn(
           'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium',
           configured ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'
@@ -294,7 +390,7 @@ function OIDCSection() {
             Redirect URL:{' '}
             <button
               type="button"
-              className="font-mono text-blue-600 underline decoration-dotted hover:decoration-solid"
+              className="font-mono text-left text-blue-600 underline decoration-dotted hover:decoration-solid wrap-anywhere"
               onClick={() => navigator.clipboard.writeText(redirectURL)}
               title="Copy to clipboard"
             >
@@ -362,7 +458,7 @@ function OIDCSection() {
             Redirect URL
           </label>
           <div className="flex items-center gap-2">
-            <div className="w-full max-w-lg rounded border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-sm text-gray-600">
+            <div className="min-w-0 w-full max-w-lg rounded border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-sm text-gray-600 wrap-anywhere">
               {redirectURL}
             </div>
             <Button
@@ -389,7 +485,7 @@ function OIDCSection() {
         </Button>
 
         {saveError && (
-          <p className="text-sm text-red-600">{saveError}</p>
+          <p role="alert" className="text-sm text-red-600">{saveError}</p>
         )}
 
         {saved && (
@@ -404,25 +500,28 @@ function OIDCSection() {
 
 // ── Tab definitions ───────────────────────────────────────────────────────────
 
-type Tab = 'general' | 'branding' | 'auth' | 'features'
+type Tab = 'general' | 'branding' | 'auth' | 'features' | 'email' | 'attachments'
 
 const TABS: { id: Tab; label: string }[] = [
-  { id: 'general',  label: 'General' },
-  { id: 'branding', label: 'Branding' },
-  { id: 'auth',     label: 'Authentication' },
-  { id: 'features', label: 'Features' },
+  { id: 'general',     label: 'General' },
+  { id: 'branding',    label: 'Branding' },
+  { id: 'auth',        label: 'Authentication' },
+  { id: 'features',    label: 'Features' },
+  { id: 'email',       label: 'Email' },
+  { id: 'attachments', label: 'Attachments' },
 ]
 
 // ── Tab panels ────────────────────────────────────────────────────────────────
 
 function GeneralPanel({
-  bool, num, str,
+  bool, num, str, has,
   setBool, setNum, setStr,
   onSave, isPending, error, saved,
 }: {
   bool: (k: string) => boolean
   num: (k: string) => number
   str: (k: string) => string
+  has: (k: string) => boolean
   setBool: (k: string, v: boolean) => void
   setNum: (k: string, v: number) => void
   setStr: (k: string, v: string) => void
@@ -455,16 +554,70 @@ function GeneralPanel({
       <Section title="Submissions">
         <SettingRow
           label="Guest submission"
-          description="Allow unauthenticated users to submit a ticket using only their email address. They receive a tracking number to follow up without creating an account."
+          description="Allow unauthenticated users to submit a ticket using only their email address. They receive a tracking number to follow up without creating an account. Switching this off also suspends all active guest links until the setting is enabled again."
         >
           <Toggle checked={bool('guest_submission_enabled')} onChange={(v) => setBool('guest_submission_enabled', v)} />
         </SettingRow>
+        <EmailStatusNote on={bool('guest_submission_enabled')} />
+        {/* Dependent on guest submission (#445): shown under it, unavailable
+            while it is off, and the server ignores it in that state too. */}
+        <SettingRow
+          label="Guests may attach files"
+          description="Let a guest add files to their ticket from the link they were emailed. Off by default, and it only takes effect while guest submission is on. Uploads are scanned and held to the same rules as everyone else's, and are download-only."
+        >
+          <Toggle
+            label="Guests may attach files"
+            checked={bool('guest_attachments_enabled')}
+            disabled={!bool('guest_submission_enabled')}
+            onChange={(v) => setBool('guest_attachments_enabled', v)}
+          />
+        </SettingRow>
+        <div className="border-t px-5 py-4 space-y-2">
+          <div className="text-sm text-gray-500">
+            The largest file a guest may attach. It can never exceed this instance&apos;s own attachment maximum of 25 MB.
+          </div>
+          <GuestSizeSlider
+            value={has('guest_attachment_max_mb') ? num('guest_attachment_max_mb') : undefined}
+            onChange={(v) => setNum('guest_attachment_max_mb', v)}
+            instanceMaxMB={25}
+            disabled={!bool('guest_submission_enabled') || !bool('guest_attachments_enabled')}
+          />
+          {!bool('guest_submission_enabled') && (
+            <p className="text-xs text-gray-500">Unavailable while guest submission is off.</p>
+          )}
+        </div>
+        <div className="border-t px-5 py-4 space-y-4">
+          <div className="text-sm text-gray-500">
+            How much one guest can put on a ticket. The cap counts only files guests attached; staff files do not count
+            toward it. The hourly figure is per guest link, so one guest does not use up another&apos;s.
+          </div>
+          <div className="flex flex-wrap gap-8">
+            <BoundedNumberInput
+              label="Most files a guest can attach to one ticket"
+              hint="1 to 50. Default 5."
+              min={1}
+              max={50}
+              value={has('guest_attachment_max_per_ticket') ? num('guest_attachment_max_per_ticket') : 5}
+              onChange={(v) => setNum('guest_attachment_max_per_ticket', v)}
+              disabled={!bool('guest_submission_enabled') || !bool('guest_attachments_enabled')}
+            />
+            <BoundedNumberInput
+              label="Uploads per guest link per hour"
+              hint="1 to 30. Default 3."
+              min={1}
+              max={30}
+              value={has('guest_attachment_uploads_per_hour') ? num('guest_attachment_uploads_per_hour') : 3}
+              onChange={(v) => setNum('guest_attachment_uploads_per_hour', v)}
+              disabled={!bool('guest_submission_enabled') || !bool('guest_attachments_enabled')}
+            />
+          </div>
+        </div>
       </Section>
 
       <Section title="Ticket lifecycle">
         <SettingRow
-          label="Reopen window"
-          description="How many days after resolution a user may reopen their ticket by adding a reply. Set to 0 to prevent reopening entirely."
+          label="Reopen window and auto-close"
+          description="How many days after resolution a requester may reopen their ticket by adding a reply. This is also when the ticket closes: once the window ends, a Resolved ticket is closed automatically, and a closed ticket is read-only for everyone who filed it and cannot be reopened by a requester (staff and admins open a linked follow-up ticket instead, or reopen it if you allow that below). Set to 0 for no reopening at all: a Resolved ticket is closed and read-only on the next automatic sweep, about 5 minutes later."
         >
           <div className="flex items-center gap-2">
             <Input
@@ -476,8 +629,23 @@ function GeneralPanel({
           </div>
         </SettingRow>
         <SettingRow
+          label="Reopening closed tickets"
+          description="Whether a Closed ticket can be reopened at all, and by whom. Off (the default): a closed ticket is archived read-only and nobody can reopen it; staff and admins open a linked follow-up ticket instead. Admins only: an administrator may force-reopen a closed ticket. Staff and admins: either may. Requesters (users and guests) can never reopen a closed ticket, whatever this is set to, and a follow-up is always available. Takes effect on the next request."
+        >
+          <Select
+            className="w-44"
+            aria-label="Reopening closed tickets"
+            value={str('closed_reopen_policy') || 'off'}
+            onChange={(e) => setStr('closed_reopen_policy', e.target.value)}
+          >
+            <option value="off">Off (terminal)</option>
+            <option value="admin">Admins only</option>
+            <option value="staff_admin">Staff and admins</option>
+          </Select>
+        </SettingRow>
+        <SettingRow
           label="Reopen target status"
-          description="The status a ticket is moved to when a user reopens it."
+          description="The status a ticket is moved to when it is reopened: a Resolved ticket by its requester's reply, or a Closed one by a force-reopen (when allowed above)."
         >
           <Select
             className="w-44"
@@ -504,6 +672,89 @@ function GeneralPanel({
         </SettingRow>
       </Section>
 
+      <Section title="Audit log">
+        <SettingRow
+          label="Staff can view ticket change history"
+          description="When on, staff also see the field-level before/after detail on a ticket's Activity feed and in the admin-wide audit view — not just what happened and who did it, which staff already see either way. Admins always see this detail; reporters never do, regardless of this setting. Off by default: earlier versions shipped without this detail visible to staff at all."
+        >
+          <Toggle
+            label="Staff can view ticket change history"
+            checked={bool('staff_can_view_ticket_change_history')}
+            onChange={(v) => setBool('staff_can_view_ticket_change_history', v)}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Staff can view follow history"
+          description="When on, staff also see the entries recording who started and stopped following a ticket, on its Activity feed and in the admin-wide audit view. Admins always see them; reporters never do. Staff always see the current list of followers on a ticket, whatever this is set to. Off by default."
+        >
+          <Toggle
+            label="Staff can view follow history"
+            checked={bool('staff_can_view_follow_audit')}
+            onChange={(v) => setBool('staff_can_view_follow_audit', v)}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Retention"
+          description="How many days an audit entry is kept before it is permanently deleted. Zero keeps everything forever, which is the default and what every release before 1.3.0 did. Applies to every entry system-wide — ticket changes, account changes, everything the audit log records."
+        >
+          <div className="flex items-center gap-2">
+            <Input
+              type="number" min={0} max={36525} className="w-24 text-right"
+              aria-label="Retention, in days"
+              // Shows 0 when unset, because 0 is what the server does when
+              // unset: keep forever. It used to show 365 here while the server
+              // kept everything, telling the operator they had a one-year
+              // window they did not have — the same "believes they have a
+              // window and has an unbounded table" failure the settings
+              // handler refuses a bad PATCH to avoid, delivered by the UI.
+              //
+              // The fallback applies only until the operator's first edit, not
+              // on every keystroke: a fallback baked into onChange re-injected
+              // the default between digits, so typing "30" produced 36530.
+              // has() flips true on that first edit. The server treats any
+              // non-positive value as forever and refuses anything above
+              // AuditRetentionMaxDays, so this field stays usable rather than
+              // enforcing.
+              value={has('audit_retention_days') ? num('audit_retention_days') : 0}
+              onChange={(e) => setNum('audit_retention_days', Math.max(0, parseInt(e.target.value, 10) || 0))}
+            />
+            <span className="text-sm text-gray-500">
+              {(has('audit_retention_days') ? num('audit_retention_days') : 0) > 0
+                ? 'days'
+                : 'days — 0 keeps everything'}
+            </span>
+          </div>
+        </SettingRow>
+      </Section>
+
+      <Section title="Updates">
+        <SettingRow label={UPDATE_CHECK_LABEL} description={UPDATE_CHECK_DETAIL}>
+          <Toggle
+            label={UPDATE_CHECK_LABEL}
+            checked={bool('update_check_enabled')}
+            onChange={(v) => setBool('update_check_enabled', v)}
+          />
+        </SettingRow>
+      </Section>
+
+      <Section title="Privacy">
+        <SettingRow
+          label="Mask requester names in Audit Trail"
+          description="Where an audit view shows a requester (the person who filed the ticket) as 'Requester (name hidden)' instead of by name. Staff and admin names are always shown: the audit trail exists to say which employee did what. Whether someone counts as a requester depends on their role now, not on their role when the entry was written. This hides names from the list only: it is not an access control. A masked entry still records who acted, so anyone who can see it can still identify the requester by opening the ticket, and an administrator can also open the user it records. Everywhere (the default) masks both the admin-wide audit log and each ticket's Activity feed. The ticket page itself still shows the requester's name either way."
+        >
+          <Select
+            className="w-52"
+            aria-label="Mask requester names in Audit Trail"
+            value={str('audit_mask_requester_names') || 'everywhere'}
+            onChange={(e) => setStr('audit_mask_requester_names', e.target.value)}
+          >
+            <option value="admin_log">Admin Audit Log Only</option>
+            <option value="ticket_log">Ticket Audit Log</option>
+            <option value="everywhere">Everywhere</option>
+          </Select>
+        </SettingRow>
+      </Section>
+
       <SaveBar onSave={onSave} isPending={isPending} error={error} saved={saved} />
     </div>
   )
@@ -527,6 +778,12 @@ function BrandingPanel({
   const [deleting, setDeleting] = useState(false)
   const [confirmDeleteLogo, setConfirmDeleteLogo] = useState(false)
   const [logoKey, setLogoKey] = useState(0)
+  /* A stored logo URL that will not load. On this branch that has one likely
+     cause: handleServeLogo serves logo.png and nothing else, so an SVG left by
+     a release that still accepted them 404s, the sidebar falls back to the
+     site name, and nothing anywhere says why. The server's own comment says
+     "the settings page says why" — this is that. */
+  const [logoUnavailable, setLogoUnavailable] = useState(false)
 
   const { data: siteConfig } = useQuery({ queryKey: ['site-config'], queryFn: getSiteConfig })
   const currentLogoURL = siteConfig?.logo_url ?? ''
@@ -584,27 +841,44 @@ function BrandingPanel({
           <div>
             <div className="text-sm font-medium text-gray-900">Logo</div>
             <div className="mt-0.5 text-sm text-gray-500">
-              Target size: <span className="font-medium">320 × 64 px</span> · PNG, SVG, JPG, or GIF · Max 2 MB.
+              Target size: <span className="font-medium">320 × 64 px</span> · PNG, JPG, or GIF · Max 2 MB.
               Larger images are scaled proportionally to fit. The logo replaces the site name in the sidebar.
+            </div>
+            {/* One sentence, not a warning: an operator who used an SVG logo
+                and finds the option gone should know it was deliberate. */}
+            <div className="mt-0.5 text-sm text-gray-500">
+              SVG is not accepted. The logo is the one uploaded file this application renders inside its own
+              origin, and an SVG is a document that can carry script.
             </div>
           </div>
 
           {currentLogoURL && (
-            <div className="flex items-center gap-3">
-              <img
-                src={`${currentLogoURL}?v=${logoKey}`}
-                alt="Current logo"
-                className="h-8 max-w-[200px] rounded border object-contain p-1"
-              />
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setConfirmDeleteLogo(true)}
-                disabled={deleting || uploading}
-              >
-                {deleting ? 'Removing…' : 'Remove logo'}
-              </Button>
-            </div>
+            <>
+              <div className="flex items-center gap-3">
+                <img
+                  src={`${currentLogoURL}?v=${logoKey}`}
+                  alt="Current logo"
+                  className="h-8 max-w-[200px] rounded border object-contain p-1"
+                  onLoad={() => setLogoUnavailable(false)}
+                  onError={() => setLogoUnavailable(true)}
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setConfirmDeleteLogo(true)}
+                  disabled={deleting || uploading}
+                >
+                  {deleting ? 'Removing…' : 'Remove logo'}
+                </Button>
+              </div>
+              {logoUnavailable && (
+                <p className="text-sm text-amber-700">
+                  This instance has a logo stored, but it cannot be loaded and is no longer served — an SVG
+                  uploaded by an earlier version is the usual reason. The sidebar is showing the site name
+                  instead. Upload a PNG, JPG or GIF to replace it.
+                </p>
+              )}
+            </>
           )}
           <ConfirmDialog
             open={confirmDeleteLogo}
@@ -628,13 +902,13 @@ function BrandingPanel({
             <input
               ref={fileInputRef}
               type="file"
-              accept=".png,.jpg,.jpeg,.gif,.svg"
+              accept=".png,.jpg,.jpeg,.gif"
               className="hidden"
               onChange={handleFileChange}
             />
           </div>
 
-          {logoError && <p className="text-sm text-red-600">{logoError}</p>}
+          {logoError && <p role="alert" className="text-sm text-red-600">{logoError}</p>}
         </div>
       </Section>
 
@@ -644,13 +918,16 @@ function BrandingPanel({
 }
 
 function AuthPanel({
-  bool, strArr,
-  setBool, toggleStrArr, setStrArr,
+  bool, num, has, strArr,
+  setBool, setNum, toggleStrArr, setStrArr,
   onSave, isPending, error, saved,
 }: {
   bool: (k: string) => boolean
+  num: (k: string) => number
+  has: (k: string) => boolean
   strArr: (k: string) => string[]
   setBool: (k: string, v: boolean) => void
+  setNum: (k: string, v: number) => void
   toggleStrArr: (k: string, item: string, checked: boolean) => void
   setStrArr: (k: string, v: string[]) => void
   onSave: () => void
@@ -719,6 +996,56 @@ function AuthPanel({
         )}
       </Section>
 
+      <Section title="Passwords">
+        <SettingRow
+          label="Reset window for old passwords"
+          description="Releases before 1.3.0 saved passwords in a weaker form. An account is upgraded the next time its owner signs in. Once this many days have passed since 1.3.0 first started, anyone whose password is still in the old form must reset it before they can sign in. Administrators are exempt, so the instance cannot lock itself out. New installs are not affected."
+        >
+          <div className="flex items-center gap-2">
+            <Input
+              type="number" min={1} max={365} className="w-24 text-right"
+              aria-label="Days before an old password must be reset"
+              // 30 until the operator edits it, because 30 is what the server
+              // uses when nothing is stored. The upper clamp keeps a typo from
+              // being a value the server refuses. The lower clamp (1) waits for
+              // the operator to leave the field: clamping on every keystroke
+              // would re-inject a minimum between digits when the field is
+              // cleared to retype (see the audit retention field).
+              value={has('password_rehash_grace_days') ? num('password_rehash_grace_days') : 30}
+              onChange={(e) => setNum('password_rehash_grace_days', Math.min(365, Math.max(0, parseInt(e.target.value, 10) || 0)))}
+              onBlur={() => {
+                if (has('password_rehash_grace_days') && num('password_rehash_grace_days') < 1) setNum('password_rehash_grace_days', 1)
+              }}
+            />
+            <span className="text-sm text-gray-500">days</span>
+          </div>
+        </SettingRow>
+      </Section>
+
+      <Section title="API keys">
+        <SettingRow
+          label="Staff may create their own API keys"
+          description="When on, staff can create their own API keys under Account. Turning it off only stops staff creating new keys: keys that already exist keep working, and staff can still list and revoke their own. Administrators can always create keys, and can issue one on behalf of a staff member from Admin → API Keys. Requesters never own keys. A key acts as its owner and can carry only permissions that owner's role has. Off by default."
+        >
+          <Toggle
+            label="Staff may create their own API keys"
+            checked={bool('staff_can_create_api_keys')}
+            onChange={(v) => setBool('staff_can_create_api_keys', v)}
+          />
+        </SettingRow>
+        <div className="border-t px-5 py-4 space-y-2">
+          <div className="text-sm text-gray-500">
+            Every new API key must expire, and no later than this. It is checked when a key is created, so lowering it
+            does not break keys that already exist; they are marked in the key lists so they can be rotated. Choosing
+            Never lets keys be made with no expiry.
+          </div>
+          <LifetimeSlider
+            value={has('api_key_max_lifetime_years') ? num('api_key_max_lifetime_years') : undefined}
+            onChange={(v) => setNum('api_key_max_lifetime_years', v)}
+          />
+        </div>
+      </Section>
+
       <Section title="Registration">
         <SettingRow
           label="Allow self-service signup"
@@ -726,6 +1053,7 @@ function AuthPanel({
         >
           <Toggle checked={bool('self_signup_enabled')} onChange={(v) => setBool('self_signup_enabled', v)} />
         </SettingRow>
+        <EmailStatusNote on={bool('self_signup_enabled')} />
         {bool('self_signup_enabled') && (
           <>
             <div className="border-t px-5 py-4 space-y-2">
@@ -923,6 +1251,7 @@ function SLAPoliciesSection() {
       qc.invalidateQueries({ queryKey: ['sla-policies'] })
       setShowAdd(false)
       setForm(EMPTY_FORM)
+      setFormError('')
     },
     onError: (err) => setFormError(extractError(err)),
   })
@@ -940,6 +1269,7 @@ function SLAPoliciesSection() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['sla-policies'] })
       setEditingId(null)
+      setFormError('')
     },
     onError: (err) => setFormError(extractError(err)),
   })
@@ -949,6 +1279,11 @@ function SLAPoliciesSection() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['sla-policies'] })
       setPendingDelete(null)
+      setFormError('')
+    },
+    onError: (err) => {
+      setPendingDelete(null)
+      setFormError(extractError(err))
     },
   })
 
@@ -980,7 +1315,7 @@ function SLAPoliciesSection() {
                       key={p.id}
                       form={form} setForm={setForm} categories={categories}
                       onSave={() => updateMutation.mutate(p.id)}
-                      onCancel={() => setEditingId(null)}
+                      onCancel={() => { setFormError(''); setEditingId(null) }}
                       isPending={updateMutation.isPending}
                     />
                   ) : (
@@ -1007,7 +1342,7 @@ function SLAPoliciesSection() {
                           <button className="text-xs text-blue-600 hover:underline" onClick={() => startEdit(p)}>Edit</button>
                           <button
                             className="text-xs text-red-600 hover:underline disabled:opacity-40"
-                            onClick={() => setPendingDelete(p)}
+                            onClick={() => { setFormError(''); setPendingDelete(p) }}
                             disabled={deleteMutation.isPending}
                           >
                             Delete
@@ -1021,7 +1356,7 @@ function SLAPoliciesSection() {
                   <PolicyFormRow
                     form={form} setForm={setForm} categories={categories}
                     onSave={() => createMutation.mutate()}
-                    onCancel={() => setShowAdd(false)}
+                    onCancel={() => { setFormError(''); setShowAdd(false) }}
                     isPending={createMutation.isPending}
                   />
                 )}
@@ -1031,7 +1366,7 @@ function SLAPoliciesSection() {
         ) : (
           <p className="text-sm text-gray-500">No SLA policies defined.</p>
         )}
-        {formError && <p className="text-sm text-red-600">{formError}</p>}
+        {formError && <p role="alert" className="text-sm text-red-600">{formError}</p>}
         {!showAdd && !editingId && (
           <Button size="sm" variant="outline" onClick={startAdd}>+ Add policy</Button>
         )}
@@ -1040,7 +1375,7 @@ function SLAPoliciesSection() {
         open={pendingDelete !== null}
         onOpenChange={(open) => { if (!open) setPendingDelete(null) }}
         title={`Delete SLA policy "${pendingDelete?.name ?? ''}"?`}
-        description="Tickets currently tracking against this policy will lose their SLA targets."
+        description="This cannot be undone. A policy that any ticket has been tracked against cannot be deleted."
         confirmLabel="Delete policy"
         isPending={deleteMutation.isPending}
         onConfirm={() => { if (pendingDelete) deleteMutation.mutate(pendingDelete.id) }}
@@ -1068,12 +1403,757 @@ function FeaturesPanel({
         <div>
           <SettingRow
             label="SLA tracking"
-            description="Enable SLA response and resolution time targets configurable per priority and category. When enabled, tickets approaching or breaching their SLA target are highlighted."
+            description="Track response and resolution targets per priority and category. A policy is attached when a ticket is created, a background sweep marks a target breached when it passes, and the queue shows each ticket's standing. This toggle is the switch; SLA_ENABLED in the environment turns it on at every start."
           >
             <Toggle checked={bool('sla_enabled')} onChange={(v) => setBool('sla_enabled', v)} />
           </SettingRow>
           {bool('sla_enabled') && <SLAPoliciesSection />}
         </div>
+      </Section>
+
+      <SaveBar onSave={onSave} isPending={isPending} error={error} saved={saved} />
+    </div>
+  )
+}
+
+// ── Attachments panel ─────────────────────────────────────────────────────────
+
+/**
+ * The four reputation services, in the order the page shows them.
+ *
+ * Four independent toggles rather than one selected provider: they answer
+ * different questions — VirusTotal counts engines, CIRCL says whether a
+ * catalogue holds the file — and every enabled one is asked. Each carries its
+ * own key, so configuring a second service does not destroy the key you pasted
+ * for the first.
+ *
+ * `keySetting` is null for CIRCL alone, and the absence is the decision:
+ * hashlookup authenticates nobody, so there is no key an operator could
+ * supply, and an empty box beside the other three is a box somebody feels
+ * obliged to fill and then goes looking for a fault when the feature works
+ * without it.
+ *
+ * Every key here is write-only over the API — they are in secretSettingKeys
+ * beside the OIDC client secret — so the dump returns `<setting>_set`, a
+ * boolean saying only whether something is stored, and never the key itself.
+ */
+const REPUTATION_PROVIDERS: {
+  id: string
+  name: string
+  description: string
+  enabledSetting: string
+  keySetting: string | null
+  Terms: () => React.JSX.Element
+}[] = [
+  {
+    id: 'virustotal',
+    name: 'VirusTotal',
+    description:
+      'Seventy-odd engines on one file. The broadest answer of the four, and the page every analyst already knows.',
+    enabledSetting: 'attachment_reputation_virustotal_enabled',
+    keySetting: 'attachment_reputation_virustotal_key',
+    Terms: VirusTotalTerms,
+  },
+  {
+    id: 'metadefender',
+    name: 'MetaDefender',
+    description: "OPSWAT's cloud, with a smaller engine set and a larger daily allowance.",
+    enabledSetting: 'attachment_reputation_metadefender_enabled',
+    keySetting: 'attachment_reputation_metadefender_key',
+    Terms: MetaDefenderTerms,
+  },
+  {
+    id: 'polyswarm',
+    name: 'PolySwarm',
+    description:
+      'The only one of the four that can say a file is a known legitimate binary, vouched for by a named vendor feed.',
+    enabledSetting: 'attachment_reputation_polyswarm_enabled',
+    keySetting: 'attachment_reputation_polyswarm_key',
+    Terms: PolySwarmTerms,
+  },
+  {
+    id: 'circl',
+    name: 'CIRCL',
+    description:
+      'A catalogue rather than a scanner: it answers whether a hash set it re-publishes holds this file, never whether an engine flagged it. No key, and no account.',
+    enabledSetting: 'attachment_reputation_circl_enabled',
+    keySetting: null,
+    Terms: CIRCLTerms,
+  },
+]
+
+/**
+ * What the server accepts when the operator has never set a list, from
+ * admin.DefaultAllowedTypes().
+ *
+ * Duplicated here because the API does not send it: an instance that has never
+ * set the list has no row, so the field would otherwise be empty — and an
+ * empty list is itself a valid setting meaning "no attachments at all", which
+ * is the opposite of what an unset instance does. Display only. An untouched
+ * list is never written back, so an instance that never chose one keeps
+ * following whatever the server's default becomes.
+ */
+const DEFAULT_ALLOWED_TYPES = ['.pdf', '.docx', '.xlsx', '.txt', '.log', '.jpg', '.jpeg', '.png', '.bmp']
+
+/** Extensions out of the textarea: whitespace or commas, in any combination. */
+function parseAllowedTypes(text: string): string[] {
+  return text
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
+/**
+ * What one provider says about their own free tier, in their words.
+ *
+ * Four rules from #168, all deliberate:
+ *
+ *   not dismissible      "a warning with an × becomes a warning nobody sees
+ *                        twice". There is no control in here at all.
+ *   always shown         including when the provider is switched off and when
+ *                        no key is configured. Someone reading this page to
+ *                        decide whether to switch it on is exactly the person
+ *                        who needs it.
+ *   quoted, attributed   we are not the licensing authority and must not read
+ *                        as one. Quote them; let the operator judge their own
+ *                        deployment. Anything we cannot find on the vendor's
+ *                        own page does not go in quotation marks — the last
+ *                        time this feature quoted a vendor's terms from
+ *                        memory, the quote turned out not to exist and was
+ *                        wrong in the permissive direction.
+ *   one per provider     and no second warning elsewhere, and no confirmation
+ *                        dialog on a toggle. That is reserved for downloading
+ *                        an infected file, where the risk is immediate.
+ *
+ * Both halves are in each because they answer different questions: the limit
+ * decides whether the feature works for them, the licence decides whether they
+ * should switch it on at all.
+ *
+ * role="alert" follows InsecureConfigBanner, the one existing banner in this
+ * codebase — consistency with the precedent, and the content does warrant
+ * interrupting somebody who is about to paste a key in.
+ */
+function ReputationWarning({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      role="alert"
+      className="space-y-2 rounded border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+    >
+      {children}
+    </div>
+  )
+}
+
+/** A link out of a warning. Never a navigation of ours. */
+function TermsLink({ href, children }: { href: string; children: React.ReactNode }) {
+  return (
+    <a className="font-medium underline" href={href} target="_blank" rel="noreferrer noopener">
+      {children}
+    </a>
+  )
+}
+
+/* The VirusTotal copy is specified word for word in #168 and is quoted rather
+   than summarised. Softening it is the failure mode it exists to prevent: the
+   penalty VirusTotal state is a ban on the operator's whole organisation, not
+   on the key they pasted in here. */
+function VirusTotalTerms() {
+  return (
+    <>
+      <p className="font-semibold">
+        ⚠ VirusTotal's free API has limits, and is not licensed for commercial use
+      </p>
+      {/* #168 specifies this paragraph, and the first clause of it was written
+          before verdicts expired: "looks up each infected attachment once and
+          stores the result" stopped being true when the re-check interval
+          below arrived. Reworded rather than left standing, because the
+          difference is how much of the operator's allowance this spends. */}
+      <p>
+        The free public API allows <strong>4 requests per minute and 500 per day</strong>. Go Help Desk asks
+        once for each quarantined attachment, stores the answer and asks again only when the interval below
+        has passed, but on a busy instance some lookups will be skipped until the quota resets at 00:00 UTC.
+        Skipped lookups show as <em>not checked</em> — never as clean.
+      </p>
+      <p>
+        VirusTotal state that the public API “must not be used in commercial products or services”, and
+        “must not be used in business workflows that do not contribute new files”. This feature only looks
+        hashes up; it never uploads a file. If you are running Go Help Desk commercially, you need a paid
+        VirusTotal API key. VirusTotal state the penalty for non-compliance as a permanent ban of the
+        individual or organization.
+      </p>
+      <p>
+        <TermsLink href="https://docs.virustotal.com/reference/public-vs-premium-api">
+          VirusTotal: public vs premium API ↗
+        </TermsLink>
+      </p>
+    </>
+  )
+}
+
+/* MetaDefender's terms are not VirusTotal's, so the copy is not VirusTotal's
+   either — the same shape, their numbers, their words.
+
+   The quoted clause is from OPSWAT's current Terms of Service, section 6,
+   read live rather than from #168: the issue quotes "personal, non-commercial
+   use" with a carve-out for a "non-commercial personal or organizational
+   capacity", and neither phrase appears in the published terms today. What
+   they do say about free access is quoted here verbatim, and it is narrower
+   than the issue's wording rather than broader, so the operator is not being
+   told they have more room than they have. */
+function MetaDefenderTerms() {
+  return (
+    <>
+      <p className="font-semibold">
+        ⚠ MetaDefender's free API has limits, and is licensed for personal use
+      </p>
+      {/* The 4,000 is ours and not theirs, and the sentence has to say so.
+          OPSWAT state only "a limited number of API calls per day"; the number
+          is in budget.go, where we chose it. Printing it as their published
+          limit attributes a figure to them they have never given, which is the
+          same error as the invented quote above in a quieter form. */}
+      <p>
+        OPSWAT give no figure for the free tier — their API documentation says only “a limited number of API
+        calls per day” — so <strong>this instance caps itself at 4,000 lookups a day</strong> and does not
+        throttle them by the minute, because OPSWAT do not throttle single hash lookups. Go Help Desk asks
+        once for each quarantined attachment, stores the answer and asks again only when the interval below
+        has passed. Lookups beyond the cap show as <em>not checked</em> — never as clean.
+      </p>
+      <p>
+        OPSWAT state that free access to their services is licensed “solely for Your personal use”. There is
+        no carve-out for an organization. This feature only looks hashes up; it never uploads a file. A help
+        desk is not a personal use of the service, so read their terms against your own deployment before
+        switching this on; OPSWAT sell paid MetaDefender Cloud plans for organizational use.
+      </p>
+      <p className="flex flex-wrap gap-x-4">
+        <TermsLink href="https://www.opswat.com/legal/terms-of-service">
+          OPSWAT Terms of Service ↗
+        </TermsLink>
+        <TermsLink href="https://docs.opswat.com/mdcloud">
+          MetaDefender Cloud documentation ↗
+        </TermsLink>
+      </p>
+    </>
+  )
+}
+
+/* PolySwarm is the one an operator reaches for when their lawyer has rejected
+   the other two, so the licensing half is the half that matters — and what
+   makes their position good is an ABSENCE: no field-of-use clause anywhere in
+   the grant.
+
+   The grant itself is quoted, read live from https://polyswarm.io/terms rather
+   than taken from #168, which asserts the absence without ever quoting the
+   clause that would carry a restriction. Same rule as the OPSWAT paragraph
+   above and for the same reason: an operator told they may use this
+   commercially should be able to read the sentence that says so, and a quote
+   nobody checked is how this feature already shipped one that did not exist.
+
+   What is NOT in quotation marks is the absence, because an absence has no
+   words. It is stated as our reading of their document, with its date beside
+   it. */
+function PolySwarmTerms() {
+  return (
+    <>
+      <p className="font-semibold">
+        ⚠ PolySwarm's free tier is 60 lookups an hour, and its published terms are from 2018
+      </p>
+      <p>
+        The free tier allows <strong>60 lookups an hour</strong>, with no daily figure published. It is an
+        hourly bucket rather than a pace: a ticket carrying ten quarantined attachments spends ten of the
+        sixty at once, and the hour has to pass before they come back. Go Help Desk asks once for each
+        quarantined attachment, stores the answer and asks again only when the interval below has passed. Lookups beyond the allowance show as <em>not checked</em> —
+        never as clean.
+      </p>
+      <p>
+        PolySwarm grant “a non-exclusive, non-sublicenseable, non-transferable, revocable license to access
+        and use the PolySwarm Products strictly in accordance with these Terms”, and attach no commercial-use
+        restriction to it — no non-commercial, personal-use or internal-use clause appears anywhere in their
+        terms. That makes them the only one of these four an organization can use without a licensing
+        argument. The caveat is the date: their terms are dated 30 April 2018 and predate the API this
+        instance calls, so the absence may be their policy or may be staleness. Read them before relying on
+        it.
+      </p>
+      <p>
+        <TermsLink href="https://polyswarm.io/terms">PolySwarm Terms of Service ↗</TermsLink>
+      </p>
+    </>
+  )
+}
+
+/* CIRCL's warning is not a variation on the other three, and it must not read
+   like one. Two facts are theirs alone:
+
+     it publishes    /stats/top serves the most-queried hashes with filenames.
+                     VirusTotal and OPSWAT log what they are asked; this one
+                     puts it on a public page. An operator weighing whether
+                     customers' file hashes may go there cannot get that from
+                     shared copy.
+     no terms        there is no terms-of-service page for hashlookup at all.
+                     The licence is CC-BY, which permits commercial use, but
+                     CIRCL nowhere say so in their own words — so that is
+                     stated as the position it is rather than smoothed into a
+                     permission. CC-BY asks for attribution, and the line it
+                     asks for is here. */
+function CIRCLTerms() {
+  return (
+    <>
+      <p className="font-semibold">
+        ⚠ CIRCL publishes what it is asked about, and has no terms of service to read
+      </p>
+      <p>
+        hashlookup needs no key and no account, and it is the only one of the four that makes its traffic
+        public: <span className="font-mono">/stats/top</span> serves the hundred most-queried hashes with
+        their filenames and query counts, alongside the hashes it is most often asked about and has no
+        record of. Each lookup is recorded against the caller's IP address and User-Agent. The other three
+        log what they are asked; this one publishes it, so a customer's attachment hash — and whatever
+        filename CIRCL holds for it — can appear on a public page.
+      </p>
+      <p>
+        CIRCL state no rate limit, describing the service as “free and served as a best-effort basis”, so
+        the <strong>300 lookups an hour</strong> this instance allows itself is a courtesy of ours rather
+        than a limit of theirs.
+      </p>
+      <p>
+        There is no terms-of-service page for hashlookup. The service declares its licence as CC-BY and the
+        dataset is released as CC-BY-4.0, which permits commercial use — but CIRCL nowhere say so in their
+        own words, which is why none of that is in quotation marks. CC-BY asks for attribution, and this
+        instance gives it: Hash reputation data from CIRCL hashlookup, Computer Incident Response Center
+        Luxembourg, CC-BY-4.0.
+      </p>
+      <p>
+        <TermsLink href="https://hashlookup.circl.lu">CIRCL hashlookup ↗</TermsLink>
+      </p>
+    </>
+  )
+}
+
+/**
+ * One provider: its toggle, its key if it has one, and its warning.
+ *
+ * Grouped and named rather than laid out as three unrelated rows, because the
+ * page now carries three password boxes all labelled "API key" and a reader
+ * arriving at one — by tab, by screen reader, or by eye — has to be able to
+ * tell whose account they are about to paste a key into.
+ *
+ * Nothing here pre-empts the server's rule that an enabled provider needs a
+ * key. The server refuses that write with invalid_reputation_config and names
+ * the provider; a second copy of the rule in here would be one more thing to
+ * drift, and it would have to guess at a stored key it cannot read.
+ */
+function ReputationProviderRow({
+  provider, enabled, setEnabled, keyStored, typedKey, setTypedKey, cleared, setCleared,
+}: {
+  provider: (typeof REPUTATION_PROVIDERS)[number]
+  enabled: boolean
+  setEnabled: (v: boolean) => void
+  /** From the dump's "<setting>_set" flag — the only thing it says about a key. */
+  keyStored: boolean
+  typedKey: string
+  setTypedKey: (v: string) => void
+  cleared: boolean
+  setCleared: (v: boolean) => void
+}) {
+  const [confirmClear, setConfirmClear] = useState(false)
+  const fieldId = `reputation-key-${provider.id}`
+
+  return (
+    <div role="group" aria-label={provider.name} className="space-y-3 px-5 py-4">
+      <div className="flex items-center justify-between gap-8">
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium text-gray-900">{provider.name}</div>
+          <div className="mt-0.5 text-sm text-gray-500">{provider.description}</div>
+        </div>
+        <div className="shrink-0">
+          <Toggle label={`Ask ${provider.name}`} checked={enabled} onChange={setEnabled} />
+        </div>
+      </div>
+
+      {provider.keySetting && (
+        <div className="space-y-2">
+          <label htmlFor={fieldId} className="block text-sm font-medium text-gray-900">
+            {provider.name} API key
+          </label>
+          <Input
+            id={fieldId}
+            type="password"
+            autoComplete="off"
+            className="max-w-lg font-mono text-sm"
+            placeholder={cleared ? 'The stored key will be removed' : 'Paste a key to set or replace one'}
+            value={typedKey}
+            disabled={cleared}
+            onChange={(e) => setTypedKey(e.target.value)}
+          />
+          <p className="text-xs text-gray-500">
+            {keyStored ? 'A key is stored.' : 'No key is stored.'} Write-only: the server never sends a
+            stored key back, so this field cannot be filled in for you. Leaving it blank leaves whatever is
+            stored untouched — saving an empty field never removes a working key.
+          </p>
+
+          {cleared ? (
+            <div className="flex items-center gap-3">
+              <p className="text-sm text-amber-700">The stored key will be removed when you save.</p>
+              <Button variant="outline" size="sm" onClick={() => setCleared(false)}>
+                Keep the stored key
+              </Button>
+            </div>
+          ) : (
+            keyStored && (
+              <Button variant="outline" size="sm" onClick={() => setConfirmClear(true)}>
+                Remove the stored key
+              </Button>
+            )
+          )}
+          <ConfirmDialog
+            open={confirmClear}
+            onOpenChange={setConfirmClear}
+            title={`Remove the stored ${provider.name} API key?`}
+            description={`${provider.name} lookups stop until a new key is saved, and the save is refused outright while ${provider.name} is switched on above. Stored verdicts are kept, and nothing is removed until you save.`}
+            confirmLabel="Remove the key"
+            onConfirm={() => {
+              setCleared(true)
+              setConfirmClear(false)
+            }}
+          />
+        </div>
+      )}
+
+      <ReputationWarning>
+        <provider.Terms />
+      </ReputationWarning>
+    </div>
+  )
+}
+
+// ── Email ────────────────────────────────────────────────────────────────────
+
+// The three per-user staff-email switches live on each person's profile (#441).
+// These override them for everyone: leave it to each person (the default),
+// force it on, or force it off.
+const STAFF_EMAIL_SWITCHES: { key: string; name: string; help: string }[] = [
+  {
+    key: 'staff_email_assigned_override',
+    name: 'Tickets assigned to me',
+    help: 'A ticket is assigned to a person.',
+  },
+  {
+    key: 'staff_email_activity_override',
+    name: "Activity on tickets I'm assigned to or follow",
+    help: 'A requester replies on a ticket assigned to a person, or it is reopened; or a ticket a person follows is assigned, gets a reply or is reopened.',
+  },
+  {
+    key: 'staff_email_group_override',
+    name: "My groups' tickets",
+    help: 'A ticket is assigned to a group, a requester replies on a group ticket nobody has taken yet, or a group ticket nobody has taken yet is reopened. Goes to every member of the group.',
+  },
+]
+
+function EmailPanel({
+  str, setStr,
+  onSave, isPending, error, saved,
+}: {
+  str: (k: string) => string
+  setStr: (k: string, v: string) => void
+  onSave: () => void
+  isPending: boolean
+  error: string
+  saved: boolean
+}) {
+  return (
+    <div className="space-y-6">
+      <Section title="Email templates">
+        <div className="px-5 py-4 text-sm text-gray-500">
+          The wording of every email this help desk sends, and a header and footer for all of them, can be edited.{' '}
+          <Link to="/admin/email-templates" className="font-medium text-blue-600 underline">
+            Edit email templates
+          </Link>
+        </div>
+      </Section>
+
+      <Section title="Staff email about tickets">
+        <div className="px-5 py-4 text-sm text-gray-500">
+          Staff are emailed when a ticket is assigned to them or their group, and when a requester replies on a ticket
+          that is theirs. Each person chooses on their profile; their own switches start on. Nobody is emailed about
+          their own action. These settings decide for everyone: "Use each person's choice" leaves it to them,
+          "On for everyone" and "Off for everyone" ignore what they chose. On an install upgraded from 1.2 all three
+          start as "Off for everyone", so no staff email is sent until you change them. Only has an effect once email
+          is set up.
+        </div>
+        {STAFF_EMAIL_SWITCHES.map(({ key, name, help }) => (
+          <SettingRow key={key} label={name} description={help}>
+            <Select
+              className="w-52"
+              aria-label={`${name}: administrator override`}
+              value={str(key) || 'user'}
+              onChange={(e) => setStr(key, e.target.value)}
+            >
+              <option value="user">Use each person's choice</option>
+              <option value="on">On for everyone</option>
+              <option value="off">Off for everyone</option>
+            </Select>
+          </SettingRow>
+        ))}
+      </Section>
+
+      <SaveBar onSave={onSave} isPending={isPending} error={error} saved={saved} />
+    </div>
+  )
+}
+
+function AttachmentsPanel({
+  bool, str, strArr, has,
+  setBool, setStr, setStrArr,
+  apiKeys, setApiKey, clearedKeys, setClearKey,
+  onSave, isPending, error, saved,
+}: {
+  bool: (k: string) => boolean
+  str: (k: string) => string
+  strArr: (k: string) => string[]
+  has: (k: string) => boolean
+  setBool: (k: string, v: boolean) => void
+  setStr: (k: string, v: string) => void
+  setStrArr: (k: string, v: string[]) => void
+  apiKeys: Record<string, string>
+  setApiKey: (k: string, v: string) => void
+  clearedKeys: Record<string, boolean>
+  setClearKey: (k: string, v: boolean) => void
+  onSave: () => void
+  isPending: boolean
+  error: string
+  saved: boolean
+}) {
+  const typesSet = has('attachment_allowed_types')
+  const [typesText, setTypesText] = useState(
+    (typesSet ? strArr('attachment_allowed_types') : DEFAULT_ALLOWED_TYPES).join('\n'),
+  )
+
+  // Same query and key as InsecureConfigBanner, so the page costs no extra
+  // request; absent while loading or if the call fails, and the section simply
+  // omits the status block.
+  const { data: warnings } = useQuery({
+    queryKey: ['security-warnings'],
+    queryFn: getSecurityWarnings,
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  })
+  const scanning = warnings?.attachment_scanning
+  const scanPolicy = str('attachment_scan_policy')
+  const scanAddress = str('attachment_scan_address')
+  const handling = str('attachment_infected_handling') || 'refuse'
+  const mismatchHandling = str('attachment_mismatch_handling') || 'refuse'
+  const refresh = str('attachment_reputation_refresh') || 'biweekly'
+
+  function editTypes(v: string) {
+    // Lowercased as it is typed, the way the tracking prefix is uppercased:
+    // the server compares against strings.ToLower(filepath.Ext(name)) and
+    // refuses an uppercase entry outright, so ".PDF" is only ever a refusal
+    // waiting to happen.
+    const lower = v.toLowerCase()
+    setTypesText(lower)
+    setStrArr('attachment_allowed_types', parseAllowedTypes(lower))
+  }
+
+  return (
+    <div className="space-y-6">
+      <Section title="Uploads">
+        <div className="space-y-2 px-5 py-4">
+          <label htmlFor="attachment-allowed-types" className="block text-sm font-medium text-gray-900">
+            Allowed file types
+          </label>
+          <div className="text-sm text-gray-500">
+            One extension per line, with the leading dot — <span className="font-mono">.pdf</span>. Anything
+            else is refused at upload, before the file is read. An empty list means this instance accepts no
+            attachments at all.
+          </div>
+          <textarea
+            id="attachment-allowed-types"
+            rows={9}
+            className="w-full max-w-xs rounded border border-gray-300 p-2 font-mono text-sm"
+            value={typesText}
+            onChange={(e) => editTypes(e.target.value)}
+          />
+          {!typesSet && (
+            <p className="text-xs text-gray-500">
+              This instance has never set a list, so the built-in default is shown. It is saved only if you
+              change it.
+            </p>
+          )}
+        </div>
+
+        {/* Here rather than beside the scanner settings, for the same reason
+            the infected-handling select is beside those: a control belongs
+            with the thing that produces the finding it acts on. This one acts
+            on the content check every upload goes through, and the list above
+            is what decides which of its findings are wrapped — a file is
+            wrapped when what it turned out to be is not something this
+            instance accepts.
+
+            The wording deliberately shares the decision's shape with "When a
+            scan finds malware" and none of its vocabulary. Nothing found
+            anything wrong with a mislabelled file; it is named wrongly, the
+            archive carries no password, and borrowing the other tier's words
+            would say something false about what is stored and make both tiers
+            mean less. */}
+        <SettingRow
+          label="When a file’s content contradicts its name"
+          description="Every upload is compared against the extension it claims. A file that turns out to be a type this instance does not accept is either turned away or stored wrapped in a ZIP named suspicious-<crc32>.zip and flagged on the ticket. One whose real type is on the list above is flagged and stored under its own name whichever you choose."
+        >
+          <Select
+            className="w-72 max-w-full"
+            aria-label="When a file’s content contradicts its name"
+            value={mismatchHandling}
+            onChange={(e) => setStr('attachment_mismatch_handling', e.target.value)}
+          >
+            {/* Two values, and "quarantine" is not one of them however much it
+                looks like it should be: it is the other setting's word, and
+                the server refuses it rather than reading it as "wrap". */}
+            <option value="refuse">Refuse the upload</option>
+            <option value="wrap">Store it in a renamed archive</option>
+          </Select>
+        </SettingRow>
+      </Section>
+
+      <Section title="Malware scanning">
+        {scanning && (
+          <div
+            role="group"
+            aria-label="Scanner status"
+            className="mb-3 rounded border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900"
+          >
+            <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1">
+              <dt className="text-gray-600">Policy</dt>
+              <dd className="font-mono">{scanning.policy}</dd>
+              <dt className="text-gray-600">Configured</dt>
+              <dd>{scanning.configured ? 'Yes' : 'No'}</dd>
+              <dt className="text-gray-600">Reachable</dt>
+              <dd>{scanning.reachable ? 'Yes' : 'No'}</dd>
+            </dl>
+            <p className="mt-2">{scanning.effect}</p>
+          </div>
+        )}
+
+        <SettingRow
+          label="Scanner address"
+          description={`Overrides CLAMAV_ADDR, the environment variable this instance starts with. Accepts "tcp://host:port" or "unix:///path/to/socket". Leave blank to use the environment variable instead.`}
+        >
+          <Input
+            value={scanAddress}
+            onChange={(e) => setStr('attachment_scan_address', e.target.value)}
+            placeholder="tcp://clamav:3310"
+            className="w-72 max-w-full font-mono"
+            aria-label="Scanner address"
+          />
+        </SettingRow>
+
+        <SettingRow
+          label="Scan attachments for malware"
+          description="Uploads are passed to the configured ClamAV daemon before they are stored."
+        >
+          <Select
+            className="w-72 max-w-full"
+            aria-label="Scan attachments for malware"
+            value={scanPolicy}
+            onChange={(e) => setStr('attachment_scan_policy', e.target.value)}
+          >
+            {/* Unset is not one of the three values: with no setting the
+                server scans if a scanner address is configured and does not
+                if one is not, and this page cannot see the address when it
+                comes from the environment. Showing "Do not scan" for that
+                would be a guess, and half the time a wrong one. */}
+            {!has('attachment_scan_policy') && (
+              <option value="" disabled>
+                Not set — follows the scanner address
+              </option>
+            )}
+            <option value="off">Do not scan</option>
+            <option value="required">Scan, and refuse uploads while the scanner is down</option>
+            <option value="permissive">Scan, but accept uploads while the scanner is down</option>
+          </Select>
+        </SettingRow>
+
+        <SettingRow
+          label="When a scan finds malware"
+          description="Quarantined files are stored inside a password-protected ZIP (password: infected), labelled on the ticket, and confirmed before download. For an IT security team triaging a reported sample; an ordinary help desk should leave this on Refuse."
+        >
+          <Select
+            className="w-72 max-w-full"
+            aria-label="When a scan finds malware"
+            value={handling}
+            onChange={(e) => setStr('attachment_infected_handling', e.target.value)}
+          >
+            <option value="refuse">Refuse the upload</option>
+            <option value="quarantine">Store it in a password-protected archive</option>
+          </Select>
+        </SettingRow>
+
+        {/* The combination reads as though it does something, which is exactly
+            why it has to be said: with no scan there is never an Infected
+            verdict for this setting to act on. */}
+        {scanPolicy === 'off' && handling === 'quarantine' && (
+          <div className="px-5 py-3 text-sm text-gray-600">
+            Nothing is scanned on this instance, so nothing is ever identified as malware and nothing is
+            ever quarantined. Turn scanning on for this setting to do anything.
+          </div>
+        )}
+      </Section>
+
+      <Section title="Reputation lookup">
+        {/* What the toggles below do, and — the part that has to be said out
+            loud — what all of them off means. That is the state every instance
+            upgrades into, it is a legitimate choice for an operator who cannot
+            send customer file hashes anywhere, and "nothing configured" is the
+            easiest thing in a settings page to render as though something were
+            wrong. One statement, not a prompt. */}
+        <div className="space-y-2 px-5 py-4 text-sm text-gray-500">
+          <p>
+            A quarantined attachment's SHA-256 can be looked up at these services. They answer different
+            questions — how many engines flagged the file, whether a catalogue has it on record — so every
+            service switched on is asked, and staff see the most serious answer with all of them one click
+            away. A hash is not the file: nothing here ever uploads one.
+          </p>
+          <p>
+            With none enabled, attachments are judged by this instance's own scanner alone.
+          </p>
+          {/* A link is not a lookup, and without this sentence an operator who
+              switched VirusTotal off and still sees VirusTotal links will
+              reasonably conclude the setting does not work. */}
+          <p>
+            A flagged attachment always links to VirusTotal, whatever these toggles say. That link opens in the
+            reader's own browser and this instance sends nothing there unless VirusTotal is switched on
+            below; the toggles govern what this server discloses, not where staff may look.
+          </p>
+        </div>
+
+        {REPUTATION_PROVIDERS.map((p) => (
+          <ReputationProviderRow
+            key={p.id}
+            provider={p}
+            enabled={bool(p.enabledSetting)}
+            setEnabled={(v) => setBool(p.enabledSetting, v)}
+            keyStored={p.keySetting ? bool(`${p.keySetting}_set`) : false}
+            typedKey={p.keySetting ? (apiKeys[p.keySetting] ?? '') : ''}
+            setTypedKey={(v) => { if (p.keySetting) setApiKey(p.keySetting, v) }}
+            cleared={p.keySetting ? Boolean(clearedKeys[p.keySetting]) : false}
+            setCleared={(v) => { if (p.keySetting) setClearKey(p.keySetting, v) }}
+          />
+        ))}
+
+        <SettingRow
+          label="Re-check stored verdicts"
+          description="How long a clean, never-seen or unscanned verdict is trusted before it is looked up again. A detection is never re-checked — engines do not un-flag a file — and staff can ask again by hand once every seven days whatever this says."
+        >
+          <Select
+            className="w-64 max-w-full"
+            aria-label="Re-check stored verdicts"
+            value={refresh}
+            onChange={(e) => setStr('attachment_reputation_refresh', e.target.value)}
+          >
+            <option value="weekly">After 7 days</option>
+            <option value="biweekly">After 14 days</option>
+            <option value="monthly">After 30 days</option>
+            <option value="quarterly">After 90 days</option>
+            <option value="never">Never re-check automatically</option>
+          </Select>
+        </SettingRow>
       </Section>
 
       <SaveBar onSave={onSave} isPending={isPending} error={error} saved={saved} />
@@ -1089,6 +2169,22 @@ export function SettingsPage() {
   const [local, setLocal] = useState<Record<string, unknown>>({})
   const [saveError, setSaveError] = useState('')
   const [saved, setSaved] = useState(false)
+  // What the server said about a save that went through (the PATCH answers 200
+  // with a warning instead of 204). Kept until the next save, not timed out:
+  // it is something to act on, such as OAuth clients left seeing no tickets.
+  const [saveWarning, setSaveWarning] = useState<{ text: string; aboutClients: boolean } | null>(null)
+
+  /* The reputation API keys are write-only, so none of them is ever in `local`
+     and none travels with an ordinary save. One is sent only when the operator
+     typed it or asked for the stored one to be removed — three blank fields
+     PATCHed as "" would wipe three working keys on an unrelated change, and
+     nothing would report it: the lookups would simply stop.
+
+     Keyed by settings key rather than held as one value, which is the whole
+     point of the change: a shared field would paste one service's key into
+     another's account. */
+  const [apiKeys, setApiKeys] = useState<Record<string, string>>({})
+  const [clearedKeys, setClearedKeys] = useState<Record<string, boolean>>({})
 
   const { data: settings, isLoading } = useQuery({
     queryKey: ['admin', 'settings'],
@@ -1109,18 +2205,62 @@ export function SettingsPage() {
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const saveMutation = useMutation({
-    mutationFn: () => updateSettings(local),
-    onSuccess: () => {
+    mutationFn: async () => {
+      /* The dump's "<key>_set" entries are the server describing secrets it
+         will not send, not settings. Sending one back writes a settings row by
+         that name which nothing ever reads. */
+      const patch: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(local)) {
+        if (k.endsWith('_set')) continue
+        /* Only what the operator changed (#394). A stored value the server refuses
+           (only a database edit can put one there) used to travel back with every
+           save and fail it, on every tab. JSON.stringify so an untouched array
+           compares equal; a key absent from the dump stringifies to undefined and
+           is always sent. */
+        if (settings && JSON.stringify(settings[k]) === JSON.stringify(v)) continue
+        patch[k] = v
+      }
+      for (const p of REPUTATION_PROVIDERS) {
+        if (!p.keySetting) continue
+        if (clearedKeys[p.keySetting]) patch[p.keySetting] = ''
+        else if ((apiKeys[p.keySetting] ?? '').trim() !== '') {
+          patch[p.keySetting] = apiKeys[p.keySetting].trim()
+        }
+      }
+      const res = await updateSettings(patch)
+      // The save that turned ticket scope on is the one whose warning is about
+      // OAuth clients; an SSO warning shares the field and gets no such link.
+      return { ...res, aboutClients: patch.ticket_scope_enforced === true }
+    },
+    onSuccess: (res) => {
       setSaved(true)
       setSaveError('')
+      setSaveWarning(res.warning ? { text: res.warning, aboutClients: res.aboutClients } : null)
+      // Only on success: a refused save leaves every edit where it was,
+      // including a key typed but not yet accepted.
+      setApiKeys({})
+      setClearedKeys({})
       setTimeout(() => setSaved(false), 2500)
       qc.invalidateQueries({ queryKey: ['admin', 'settings'] })
       qc.invalidateQueries({ queryKey: ['site-config'] })
+      // The scan policy and address feed the banner and the scanner status;
+      // without this a saved "Do not scan" keeps warning for five minutes.
+      qc.invalidateQueries({ queryKey: ['security-warnings'] })
     },
-    onError: (err) => setSaveError(extractError(err)),
+    onError: (err) =>
+      setSaveError(
+        // The server's text names the raw setting; say what an admin can do.
+        extractErrorCode(err) === 'email_required'
+          ? 'Email is not set up, so signup and guest submission cannot be turned on: both send an email the person needs. Set SMTP_HOST and SMTP_FROM in docker/.env, restart the server, then try again.'
+          : extractError(err),
+      ),
   })
 
   function bool(key: string) { return Boolean(local[key]) }
+  // Whether this instance has ever stored a value for the key, as opposed to
+  // what the value is. The difference matters where an unset setting does not
+  // mean the zero value — see the allowed attachment types.
+  function has(key: string) { return key in local }
   function num(key: string) { return Number(local[key] ?? 0) }
   function str(key: string) { return String(local[key] ?? '') }
   function strArr(key: string): string[] {
@@ -1141,9 +2281,13 @@ export function SettingsPage() {
     })
   }
 
+  function setApiKey(key: string, v: string) { setApiKeys((s) => ({ ...s, [key]: v })) }
+  function setClearKey(key: string, v: boolean) { setClearedKeys((s) => ({ ...s, [key]: v })) }
+
   const panelProps = {
-    bool, num, str, strArr,
+    bool, num, str, strArr, has,
     setBool, setNum, setStr, setStrArr, toggleStrArr,
+    apiKeys, setApiKey, clearedKeys, setClearKey,
     onSave: () => saveMutation.mutate(),
     isPending: saveMutation.isPending,
     error: saveError,
@@ -1164,7 +2308,7 @@ export function SettingsPage() {
 
         {/* Tab bar */}
         <div className="border-b">
-          <nav className="-mb-px flex gap-6">
+          <nav className="-mb-px flex gap-6 overflow-x-auto">
             {TABS.map((tab) => (
               <button
                 key={tab.id}
@@ -1182,12 +2326,28 @@ export function SettingsPage() {
           </nav>
         </div>
 
+        {saveWarning && (
+          <div role="status" className="max-w-2xl rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <p>{saveWarning.text}</p>
+            {saveWarning.aboutClients && (
+              <p className="mt-1">
+                <Link to="/admin/oauth-clients" className="font-medium underline">
+                  Open OAuth clients
+                </Link>{' '}
+                to see which clients have no groups.
+              </p>
+            )}
+          </div>
+        )}
+
         {/* Active panel */}
         <div className="max-w-2xl">
           {activeTab === 'general'  && <GeneralPanel  {...panelProps} />}
           {activeTab === 'branding' && <BrandingPanel {...panelProps} />}
           {activeTab === 'auth'     && <AuthPanel     {...panelProps} />}
           {activeTab === 'features' && <FeaturesPanel {...panelProps} />}
+          {activeTab === 'email'    && <EmailPanel    {...panelProps} />}
+          {activeTab === 'attachments' && <AttachmentsPanel {...panelProps} />}
         </div>
       </div>
     </Layout>

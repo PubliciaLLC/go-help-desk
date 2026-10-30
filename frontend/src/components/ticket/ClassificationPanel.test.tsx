@@ -72,16 +72,60 @@ describe('display mode', () => {
 })
 
 describe('edit mode', () => {
-  it('offers only active options', async () => {
+  // Erik's decision (#421): staff still SEE archived rows, greyed out, but
+  // nobody may newly pick one. This test was "offers only active options" and
+  // asserted archived rows were absent; the decision makes them listed,
+  // labelled and disabled instead.
+  it('lists archived options disabled and labelled, not hidden', async () => {
     const user = userEvent.setup()
     renderPanel()
     await user.click(await screen.findByRole('button', { name: 'Edit' }))
 
-    expect(await screen.findByRole('option', { name: 'Network' })).toBeDefined()
-    // Inactive entries are still referenced by old tickets but must not be
-    // selectable for new classification.
-    expect(screen.queryByRole('option', { name: 'Retired' })).toBeNull()
-    expect(screen.queryByRole('option', { name: 'Decommissioned' })).toBeNull()
+    const network = (await screen.findByRole('option', { name: 'Network' })) as HTMLOptionElement
+    expect(network.disabled).toBe(false)
+    expect((screen.getByRole('option', { name: 'Retired (archived)' }) as HTMLOptionElement).disabled).toBe(true)
+    expect((screen.getByRole('option', { name: 'Decommissioned (archived)' }) as HTMLOptionElement).disabled).toBe(true)
+  })
+
+  it('lists an archived item disabled too', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(ticketsApi, 'listPublicItems').mockResolvedValue([
+      ...ITEMS,
+      { id: 'item-old', type_id: 'type-vpn', name: 'Token fob', active: false, sort_order: 2 },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any)
+    renderPanel()
+    await user.click(await screen.findByRole('button', { name: 'Edit' }))
+
+    expect(((await screen.findByRole('option', { name: 'Certificate' })) as HTMLOptionElement).disabled).toBe(false)
+    expect((screen.getByRole('option', { name: 'Token fob (archived)' }) as HTMLOptionElement).disabled).toBe(true)
+  })
+
+  // The other half of the same question. "Not selectable for NEW work" is not
+  // the same as "cannot be kept": a ticket filed under a classification that
+  // was retired afterwards has to be able to stay where it is.
+  //
+  // It could not. The lists were filtered to active rows for display as well
+  // as for the dropdowns, so the sidebar resolved the ticket's own category
+  // to nothing and printed "—", and opening the editor showed an empty
+  // Category select — meaning staff could move the ticket OUT of the
+  // archived category but never leave it there, and editing its Type alone
+  // would quietly strip the Category with it.
+  it('still offers the archived classification the ticket already has', async () => {
+    const user = userEvent.setup()
+    renderPanel({ categoryId: 'cat-old', typeId: null, itemId: null })
+
+    // Named in the sidebar rather than shown as an em dash.
+    expect(await screen.findByText('Retired')).toBeDefined()
+
+    await user.click(await screen.findByRole('button', { name: 'Edit' }))
+
+    // Shown, labelled, enabled and still selected, so it can be kept; the
+    // OTHER archived rows are listed but disabled, as in the test above.
+    const own = (await screen.findByRole('option', { name: 'Retired (archived)' })) as HTMLOptionElement
+    expect(own.disabled).toBe(false)
+    expect(own.selected).toBe(true)
+    expect((screen.getByRole('option', { name: 'Decommissioned (archived)' }) as HTMLOptionElement).disabled).toBe(true)
   })
 
   // The cascade is the reason this component owns all three values: choosing a

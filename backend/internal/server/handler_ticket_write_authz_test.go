@@ -29,7 +29,7 @@ func TestWritePathsEnforceTicketVisibility(t *testing.T) {
 
 	// Reported by the ADMIN. The seeded reporting user has no relationship to
 	// it: not reporter, not assignee, not in an assigned group.
-	foreign, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	foreign, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject:        "Payroll discrepancy",
 		Description:    "Contains salary figures",
 		CategoryID:     h.catID,
@@ -39,16 +39,17 @@ func TestWritePathsEnforceTicketVisibility(t *testing.T) {
 	require.NoError(t, err)
 
 	// Baseline: the read is refused, so any accepted write is unambiguously a gap.
+	// 404, not 403: see #174.
 	res := h.doAsUser(t, http.MethodGet, "/api/v1/tickets/"+foreign.ID.String(), nil)
 	res.Body.Close()
-	require.Equal(t, http.StatusForbidden, res.StatusCode, "precondition: the read is gated")
+	require.Equal(t, http.StatusNotFound, res.StatusCode, "precondition: the read is gated")
 
 	t.Run("reply is refused", func(t *testing.T) {
 		res := h.doAsUser(t, http.MethodPost, "/api/v1/tickets/"+foreign.ID.String()+"/replies",
 			map[string]any{"body": "injected by an unrelated user"})
 		b, _ := io.ReadAll(res.Body)
 		res.Body.Close()
-		require.Equal(t, http.StatusForbidden, res.StatusCode,
+		require.Equal(t, http.StatusNotFound, res.StatusCode,
 			"a user that cannot read a ticket must not write to it; body %s", b)
 	})
 
@@ -57,7 +58,7 @@ func TestWritePathsEnforceTicketVisibility(t *testing.T) {
 			map[string]any{"assignee_user_id": h.staffID.String()})
 		b, _ := io.ReadAll(res.Body)
 		res.Body.Close()
-		require.Equal(t, http.StatusForbidden, res.StatusCode,
+		require.Equal(t, http.StatusNotFound, res.StatusCode,
 			"reassigning a foreign ticket must be refused; body %s", b)
 	})
 
@@ -75,7 +76,7 @@ func TestReporterCanStillReplyToTheirOwnTicket(t *testing.T) {
 	ctx := context.Background()
 
 	userID := h.userID
-	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject:        "My laptop will not boot",
 		CategoryID:     h.catID,
 		Priority:       ticket.PriorityMedium,
@@ -102,7 +103,7 @@ func TestUpdateTicket_ClearAssignee(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject:        "Assigned then released",
 		CategoryID:     h.catID,
 		Priority:       ticket.PriorityMedium,

@@ -1,9 +1,13 @@
 import { createRouter, createRoute, createRootRoute, redirect } from '@tanstack/react-router'
 import { getMe } from '@/api/auth'
 import { getSetupStatus } from '@/api/setup'
+import { getSettings } from '@/api/admin'
+import { needsAfterUpgrade } from '@/lib/afterUpgrade'
+import { AfterUpgradePage } from '@/pages/AfterUpgradePage'
 import { useAuthStore } from '@/store/auth'
 import { LoginPage } from '@/pages/LoginPage'
 import { SetupPage } from '@/pages/SetupPage'
+import { AccountPage } from '@/pages/AccountPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { TicketListPage } from '@/pages/TicketListPage'
 import { NewTicketPage } from '@/pages/NewTicketPage'
@@ -19,12 +23,18 @@ import { TagsPage } from '@/pages/admin/TagsPage'
 import { CannedResponsesPage } from '@/pages/admin/CannedResponsesPage'
 import { CustomFieldsPage } from '@/pages/admin/CustomFieldsPage'
 import { APIKeysPage } from '@/pages/admin/APIKeysPage'
+import { AdminAuditPage } from '@/pages/admin/AdminAuditPage'
 import { OAuthClientsPage } from '@/pages/admin/OAuthClientsPage'
+import { WebhooksPage } from '@/pages/admin/WebhooksPage'
+import { EmailTemplatesPage } from '@/pages/admin/EmailTemplatesPage'
+import { RoutingPage } from '@/pages/admin/RoutingPage'
 import { GuestTicketPage } from '@/pages/GuestTicketPage'
 import { GuestTicketViewPage } from '@/pages/GuestTicketViewPage'
 import { GuestTrackPage } from '@/pages/GuestTrackPage'
 import { SignupPage } from '@/pages/SignupPage'
 import { VerifyEmailPage } from '@/pages/VerifyEmailPage'
+import { ForgotPasswordPage } from '@/pages/ForgotPasswordPage'
+import { ResetPasswordPage } from '@/pages/ResetPasswordPage'
 
 async function requireAuth() {
   const { user, setUser } = useAuthStore.getState()
@@ -41,6 +51,12 @@ async function requireAdmin() {
   await requireAuth()
   const { user } = useAuthStore.getState()
   if (user?.role !== 'admin') throw redirect({ to: '/dashboard' })
+}
+
+async function requireStaffOrAdmin() {
+  await requireAuth()
+  const { user } = useAuthStore.getState()
+  if (user?.role !== 'admin' && user?.role !== 'staff') throw redirect({ to: '/dashboard' })
 }
 
 // ── Root ──────────────────────────────────────────────────────────────────────
@@ -65,11 +81,40 @@ const setupRoute = createRoute({
 })
 
 // ── Authenticated ─────────────────────────────────────────────────────────────
+// An administrator on an install upgraded to 1.3.0 is taken to the post-upgrade
+// wizard from the page sign-in lands on, until it has been finished or skipped.
+// Only the dashboard asks: a deep link to a ticket is not interrupted, and the
+// wizard is not a trap, since every step can be skipped. A settings read that
+// fails lets them through; the wizard is not worth locking anyone out of the app.
+async function dashboardGuard() {
+  await requireAuth()
+  if (useAuthStore.getState().user?.role !== 'admin') return
+  let settings: Record<string, unknown>
+  try {
+    settings = await getSettings()
+  } catch {
+    return
+  }
+  if (needsAfterUpgrade(settings)) throw redirect({ to: '/after-upgrade' })
+}
+
 const dashboardRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/dashboard',
-  beforeLoad: requireAuth,
+  beforeLoad: dashboardGuard,
   component: DashboardPage,
+})
+
+// The wizard itself: administrators only, and only while it has not been
+// answered, so it cannot be reopened by typing the address.
+const afterUpgradeRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/after-upgrade',
+  beforeLoad: async () => {
+    await requireAdmin()
+    if (!needsAfterUpgrade(await getSettings())) throw redirect({ to: '/dashboard' })
+  },
+  component: AfterUpgradePage,
 })
 
 const ticketsRoute = createRoute({
@@ -91,6 +136,13 @@ const newTicketRoute = createRoute({
   path: '/tickets/new',
   beforeLoad: requireAuth,
   component: NewTicketPage,
+})
+
+const accountRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/account',
+  beforeLoad: requireAuth,
+  component: AccountPage,
 })
 
 const ticketDetailRoute = createRoute({
@@ -150,6 +202,15 @@ const adminSettingsRoute = createRoute({
   component: SettingsPage,
 })
 
+// #129: staff and admin, not admin-only — the route's own guard matches the
+// backend's RequireRole(admin, staff) on GET /admin/audit.
+const adminAuditRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/audit',
+  beforeLoad: requireStaffOrAdmin,
+  component: AdminAuditPage,
+})
+
 const adminTagsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/admin/tags',
@@ -185,6 +246,27 @@ const adminOAuthClientsRoute = createRoute({
   component: OAuthClientsPage,
 })
 
+const adminWebhooksRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/webhooks',
+  beforeLoad: requireAdmin,
+  component: WebhooksPage,
+})
+
+const adminEmailTemplatesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/email-templates',
+  beforeLoad: requireAdmin,
+  component: EmailTemplatesPage,
+})
+
+const adminRoutingRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/routing',
+  beforeLoad: requireAdmin,
+  component: RoutingPage,
+})
+
 // ── Guest ─────────────────────────────────────────────────────────────────────
 const guestViewRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -218,6 +300,18 @@ const verifyEmailRoute = createRoute({
   component: VerifyEmailPage,
 })
 
+const forgotPasswordRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/forgot-password',
+  component: ForgotPasswordPage,
+})
+
+const resetPasswordRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/reset-password',
+  component: ResetPasswordPage,
+})
+
 // ── Index redirect ────────────────────────────────────────────────────────────
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -236,13 +330,17 @@ export const router = createRouter({
     setupRoute,
     signupRoute,
     verifyEmailRoute,
+    forgotPasswordRoute,
+    resetPasswordRoute,
     dashboardRoute,
+    afterUpgradeRoute,
     submitRoute,
     guestViewRoute,
     guestTrackRoute,
     ticketsRoute,
     newTicketRoute,
     ticketDetailRoute,
+    accountRoute,
     adminUsersRoute,
     adminUserDetailRoute,
     adminGroupsRoute,
@@ -254,7 +352,11 @@ export const router = createRouter({
     adminCustomFieldsRoute,
     adminAPIKeysRoute,
   adminOAuthClientsRoute,
+  adminWebhooksRoute,
+  adminEmailTemplatesRoute,
+  adminRoutingRoute,
     adminSettingsRoute,
+    adminAuditRoute,
   ]),
 })
 

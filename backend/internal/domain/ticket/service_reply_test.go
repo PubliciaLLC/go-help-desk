@@ -24,9 +24,16 @@ type harness struct {
 	atomic     *fakeAtomic
 	sla        *fakeSLA
 
-	newStatus      ticket.Status
-	resolvedStatus ticket.Status
-	closedStatus   ticket.Status
+	// policy is the closed_reopen_policy the service reads at request time
+	// (#349). Empty is the default, off. A test changes it between calls, or
+	// from inside a store hook, to show it is read when it is used.
+	policy string
+
+	newStatus        ticket.Status
+	resolvedStatus   ticket.Status
+	closedStatus     ticket.Status
+	pendingStatus    ticket.Status // custom status named "Pending" — pauses SLA
+	inProgressStatus ticket.Status // an ordinary custom status that does not
 }
 
 func newHarness(t *testing.T) *harness {
@@ -35,29 +42,37 @@ func newHarness(t *testing.T) *harness {
 	newSt := ticket.Status{ID: uuid.New(), Name: ticket.StatusNameNew, Kind: ticket.StatusKindSystem, Active: true}
 	resolvedSt := ticket.Status{ID: uuid.New(), Name: ticket.StatusNameResolved, Kind: ticket.StatusKindSystem, Active: true}
 	closedSt := ticket.Status{ID: uuid.New(), Name: ticket.StatusNameClosed, Kind: ticket.StatusKindSystem, Active: true}
+	pendingSt := ticket.Status{ID: uuid.New(), Name: ticket.StatusNamePending, Kind: ticket.StatusKindCustom, Active: true}
+	inProgressSt := ticket.Status{ID: uuid.New(), Name: "In Progress", Kind: ticket.StatusKindCustom, Active: true}
 
 	statuses := &fakeStatusStore{
 		byName: map[string]ticket.Status{
 			ticket.StatusNameNew:      newSt,
 			ticket.StatusNameResolved: resolvedSt,
 			ticket.StatusNameClosed:   closedSt,
+			ticket.StatusNamePending:  pendingSt,
+			"In Progress":             inProgressSt,
 		},
 		counts: make(map[uuid.UUID]int64),
 	}
 
 	h := &harness{
-		store:          newFakeStore(),
-		statuses:       statuses,
-		dispatcher:     &fakeDispatcher{},
-		auditStore:     &fakeAuditStore{},
-		sla:            &fakeSLA{},
-		newStatus:      newSt,
-		resolvedStatus: resolvedSt,
-		closedStatus:   closedSt,
+		store:            newFakeStore(),
+		statuses:         statuses,
+		dispatcher:       &fakeDispatcher{},
+		auditStore:       &fakeAuditStore{},
+		sla:              &fakeSLA{},
+		newStatus:        newSt,
+		resolvedStatus:   resolvedSt,
+		closedStatus:     closedSt,
+		pendingStatus:    pendingSt,
+		inProgressStatus: inProgressSt,
 	}
-	h.atomic = &fakeAtomic{store: h.store, audit: h.auditStore}
+	h.atomic = &fakeAtomic{store: h.store, audit: h.auditStore, sink: h.dispatcher}
 	h.svc = ticket.NewService(h.store, statuses, h.dispatcher, h.auditStore, h.atomic, h.sla)
 	require.NoError(t, h.svc.LoadSystemStatuses(context.Background()))
+	h.dispatcher.sendTime = h.svc.IssueGuestLink
+	h.svc.SetClosedReopenPolicy(func(context.Context) string { return h.policy })
 	return h
 }
 
@@ -65,10 +80,11 @@ func newHarness(t *testing.T) *harness {
 // reply falls inside the reopen window.
 func (h *harness) seedResolved(reporterID uuid.UUID) ticket.Ticket {
 	resolvedAt := time.Now().Add(-24 * time.Hour)
-	t := ticket.Ticket{
+	t := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000001",
 		Subject:        "Printer offline",
+		Priority:       ticket.PriorityMedium, // a real ticket always has one; a reopen raises it
 		ReporterUserID: &reporterID,
 		StatusID:       h.resolvedStatus.ID,
 		ResolvedAt:     &resolvedAt,
@@ -101,7 +117,7 @@ func TestAddReply_ReopenPersistFailureIsNotAnnounced(t *testing.T) {
 	h.store.errUpdate = errStoreDown
 
 	_, err := h.svc.AddReply(context.Background(), seeded.ID,
-		"It is broken again", false, true, "reporter@example.com",
+		"It is broken again", ticket.TextFormatPlain, false, true, "reporter@example.com",
 		ticket.Actor{UserID: &reporter, Role: user.RoleUser},
 		30, h.newStatus.ID)
 
@@ -132,7 +148,7 @@ func TestAddReply_SLAFailureDoesNotLoseTheReply(t *testing.T) {
 	reporter := uuid.New()
 	agent := uuid.New()
 
-	seeded := ticket.Ticket{
+	seeded := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000002",
 		Subject:        "Mouse not working",
@@ -146,7 +162,7 @@ func TestAddReply_SLAFailureDoesNotLoseTheReply(t *testing.T) {
 	h.sla.err = errStoreDown
 
 	reply, err := h.svc.AddReply(context.Background(), seeded.ID,
-		"Have you tried a new battery?", false, true, "reporter@example.com",
+		"Have you tried a new battery?", ticket.TextFormatPlain, false, true, "reporter@example.com",
 		ticket.Actor{UserID: &agent, Role: user.RoleStaff},
 		30, h.newStatus.ID)
 
@@ -159,13 +175,21 @@ func TestAddReply_SLAFailureDoesNotLoseTheReply(t *testing.T) {
 // healthy, the reopen path persists the status, writes exactly one history
 // entry, and dispatches the reopen event. Without this, the test above could
 // pass for the wrong reason — by the reopen never running at all.
+//
+// It also pins #326's second gap: a reply-triggered reopen wrote a
+// status-history entry but no audit entry, so /history and /audit could
+// disagree about whether the ticket was still open. Every other lifecycle
+// change writes an audit entry in the same transaction as its status-history
+// one (the explicit POST /reopen path did too, until #349 removed reopening a
+// Closed ticket, leaving this reply-reopen from Resolved as the only reopen);
+// this path must do the same.
 func TestAddReply_SucceedsAndReopens(t *testing.T) {
 	h := newHarness(t)
 	reporter := uuid.New()
 	seeded := h.seedResolved(reporter)
 
 	reply, err := h.svc.AddReply(context.Background(), seeded.ID,
-		"Still broken", false, true, "reporter@example.com",
+		"Still broken", ticket.TextFormatPlain, false, true, "reporter@example.com",
 		ticket.Actor{UserID: &reporter, Role: user.RoleUser},
 		30, h.newStatus.ID)
 
@@ -179,6 +203,15 @@ func TestAddReply_SucceedsAndReopens(t *testing.T) {
 
 	require.Equal(t, 1, h.store.historyCreates, "exactly one history entry")
 	require.Contains(t, h.dispatcher.types(), notification.EventTicketReopened)
+
+	// The reply itself, the reopen, then the first-reopen bump (#464). The SLA
+	// is off in this harness, so no sla_restarted. The exact list, in order.
+	var actions []string
+	for _, e := range h.auditStore.entries {
+		actions = append(actions, e.Action)
+	}
+	require.Equal(t, []string{"reply_added", "reopened", "priority_changed"}, actions,
+		"a reply-triggered reopen must write an audit entry, the same as an explicit reopen does")
 }
 
 // TestAddReply_InternalNoteNeverNotifiesCustomer pins an existing rule that the
@@ -188,7 +221,7 @@ func TestAddReply_InternalNoteNeverNotifiesCustomer(t *testing.T) {
 	reporter := uuid.New()
 	agent := uuid.New()
 
-	seeded := ticket.Ticket{
+	seeded := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000003",
 		Subject:        "Cannot print",
@@ -201,7 +234,7 @@ func TestAddReply_InternalNoteNeverNotifiesCustomer(t *testing.T) {
 
 	// notifyCustomer is requested, but the note is internal.
 	reply, err := h.svc.AddReply(context.Background(), seeded.ID,
-		"Reporter is mistaken, see ticket 12", true, true, "reporter@example.com",
+		"Reporter is mistaken, see ticket 12", ticket.TextFormatPlain, true, true, "reporter@example.com",
 		ticket.Actor{UserID: &agent, Role: user.RoleStaff},
 		30, h.newStatus.ID)
 
@@ -224,10 +257,11 @@ func (h *harness) statusNamed(name string) ticket.Status {
 // seedOpen plants a ticket in New.
 func (h *harness) seedOpen() ticket.Ticket {
 	reporter := uuid.New()
-	t := ticket.Ticket{
+	t := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000100",
 		Subject:        "Open ticket",
+		Priority:       ticket.PriorityMedium, // a real ticket always has one; a reopen raises it
 		ReporterUserID: &reporter,
 		StatusID:       h.newStatus.ID,
 		CreatedAt:      time.Now().Add(-2 * time.Hour),
@@ -241,10 +275,11 @@ func (h *harness) seedOpen() ticket.Ticket {
 func (h *harness) seedClosed() ticket.Ticket {
 	reporter := uuid.New()
 	closedAt := time.Now().Add(-time.Hour)
-	t := ticket.Ticket{
+	t := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000101",
 		Subject:        "Closed ticket",
+		Priority:       ticket.PriorityMedium, // a real ticket always has one; a reopen raises it
 		ReporterUserID: &reporter,
 		StatusID:       h.closedStatus.ID,
 		ResolvedAt:     &closedAt,

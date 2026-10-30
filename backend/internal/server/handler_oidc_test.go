@@ -39,6 +39,7 @@ type fakeOIDCClaims struct {
 	Expiry        time.Duration // relative to now; defaults to +1h
 	SignWithWrong bool          // sign with a key absent from the JWKS
 	Nonce         string        // echoed into the id_token; the callback requires it to match
+	AMR           []string      // RFC 8176 authentication methods; omitted when nil
 }
 
 type fakeOIDC struct {
@@ -150,6 +151,9 @@ func (i *fakeOIDC) mint(t *testing.T, c fakeOIDCClaims) string {
 	// at all and confirm the callback refuses it.
 	if c.Nonce != "" {
 		tok.Claims.(jwt.MapClaims)["nonce"] = c.Nonce
+	}
+	if c.AMR != nil {
+		tok.Claims.(jwt.MapClaims)["amr"] = c.AMR
 	}
 	tok.Header["kid"] = i.keyID
 
@@ -265,9 +269,19 @@ func (oh *oidcHarness) login(t *testing.T, claims fakeOIDCClaims) *http.Response
 	return oh.callback(t, url.Values{"state": {state}, "code": {"the-code"}}, cookies)
 }
 
-// errorCode pulls the code out of the standard error envelope.
+// errorCode pulls the code out of a login redirect or the standard error envelope.
+// Redirects to /login?error=<code> return the code from the query string.
+// JSON error responses return the code from the body.
 func errorCode(t *testing.T, resp *http.Response) string {
 	t.Helper()
+	// Check for redirect to /login with error parameter
+	if resp.StatusCode == http.StatusSeeOther {
+		loc, err := url.Parse(resp.Header.Get("Location"))
+		if err == nil && loc.Path == "/login" {
+			return loc.Query().Get("error")
+		}
+	}
+	// Fall back to JSON envelope
 	var body struct {
 		Error struct {
 			Code    string `json:"code"`
@@ -278,6 +292,18 @@ func errorCode(t *testing.T, resp *http.Response) string {
 	require.NoError(t, err)
 	_ = json.Unmarshal(raw, &body)
 	return body.Error.Code
+}
+
+// requireLoginRefused asserts that the response is a 303 redirect to
+// /login?error=<expectedCode> and does not set an authenticated session.
+func requireLoginRefused(t *testing.T, h *harness, resp *http.Response, expectedCode string) {
+	t.Helper()
+	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
+	loc := resp.Header.Get("Location")
+	require.Equal(t, "/login?error="+url.QueryEscape(expectedCode), loc)
+	// Verify no session was created
+	_, authed := whoami(t, h, resp.Cookies())
+	require.False(t, authed, "a refused callback must not create an authenticated session")
 }
 
 // findUser returns the user with the given email, or ok=false.
@@ -385,8 +411,7 @@ func TestOIDCCallback_StateMismatch(t *testing.T) {
 	_, cookies := oh.startOIDCLogin(t, nil)
 
 	resp := oh.callback(t, url.Values{"state": {"not-the-state"}, "code": {"c"}}, cookies)
-	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-	require.Equal(t, "invalid_state", errorCode(t, resp))
+	requireLoginRefused(t, oh.harness, resp, "invalid_state")
 }
 
 func TestOIDCCallback_NoSessionCookie(t *testing.T) {
@@ -394,8 +419,7 @@ func TestOIDCCallback_NoSessionCookie(t *testing.T) {
 	defer cleanup()
 
 	resp := oh.callback(t, url.Values{"state": {"whatever"}, "code": {"c"}}, nil)
-	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-	require.Equal(t, "invalid_session", errorCode(t, resp))
+	requireLoginRefused(t, oh.harness, resp, "invalid_session")
 }
 
 func TestOIDCCallback_MissingCode(t *testing.T) {
@@ -405,8 +429,7 @@ func TestOIDCCallback_MissingCode(t *testing.T) {
 	state, cookies := oh.startOIDCLogin(t, nil)
 
 	resp := oh.callback(t, url.Values{"state": {state}}, cookies)
-	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
-	require.Equal(t, "missing_code", errorCode(t, resp))
+	requireLoginRefused(t, oh.harness, resp, "missing_code")
 }
 
 // TestOIDCCallback_MissingStateParamIsReportedAsInvalidState records the other
@@ -424,9 +447,7 @@ func TestOIDCCallback_MissingStateParamIsReportedAsInvalidState(t *testing.T) {
 	_, cookies := oh.startOIDCLogin(t, nil)
 
 	resp := oh.callback(t, url.Values{"code": {"the-code"}}, cookies)
-	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-	require.Equal(t, "invalid_state", errorCode(t, resp),
-		"the missing_state branch is unreachable dead code")
+	requireLoginRefused(t, oh.harness, resp, "invalid_state")
 }
 
 // TestOIDCCallback_IdPErrorResponse pins defect 10.
@@ -447,13 +468,11 @@ func TestOIDCCallback_IdPErrorResponse(t *testing.T) {
 		"error_description": {"user denied consent"},
 	}, cookies)
 
-	require.GreaterOrEqual(t, resp.StatusCode, 400)
-	require.Less(t, resp.StatusCode, 500)
-
-	code := errorCode(t, resp)
-	require.NotEqual(t, "missing_code", code,
-		"an IdP error response must be reported as such, not as a missing code")
-	require.NotEmpty(t, code)
+	requireLoginRefused(t, oh.harness, resp, "idp_error")
+	// The IdP's text is not echoed: the Location header must not contain
+	// the error_description value.
+	require.NotContains(t, resp.Header.Get("Location"), "user denied consent",
+		"the IdP's error description must not be echoed in the redirect")
 }
 
 // TestOIDCCallback_StateIsNotReplayable pins the second half of defect 8.
@@ -470,7 +489,7 @@ func TestOIDCCallback_StateIsNotReplayable(t *testing.T) {
 
 	// First attempt fails: no code.
 	failed := oh.callback(t, url.Values{"state": {state}}, cookies)
-	require.Equal(t, http.StatusBadRequest, failed.StatusCode)
+	requireLoginRefused(t, oh.harness, failed, "missing_code")
 
 	// The session cookie is unchanged by the failure, so reuse it.
 	replayCookies := cookies
@@ -486,7 +505,8 @@ func TestOIDCCallback_StateIsNotReplayable(t *testing.T) {
 	})
 	replay := oh.callback(t, url.Values{"state": {state}, "code": {"the-code"}}, replayCookies)
 
-	require.NotEqual(t, http.StatusSeeOther, replay.StatusCode,
+	// A replayed state must redirect back to login, not succeed
+	require.NotEqual(t, "/", replay.Header.Get("Location"),
 		"a state consumed by a failed callback must not be accepted again")
 	if _, ok := whoami(t, oh.harness, replay.Cookies()); ok {
 		t.Fatal("a replayed state must not produce an authenticated session")
@@ -536,8 +556,7 @@ func TestOIDCCallback_TokenValidation(t *testing.T) {
 			defer cleanup()
 
 			resp := oh.login(t, tc.claims)
-			require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-			require.Equal(t, "invalid_id_token", errorCode(t, resp))
+			requireLoginRefused(t, oh.harness, resp, "invalid_id_token")
 
 			_, ok := findUser(t, oh.harness, tc.claims.Email)
 			require.False(t, ok, "a rejected token must not create a user")
@@ -561,6 +580,7 @@ func TestOIDCCallback_NewUserGetsRoleUser(t *testing.T) {
 		Name:          "Newbie",
 	})
 	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
+	require.Equal(t, "/", resp.Header.Get("Location"))
 
 	u, ok := findUser(t, oh.harness, "newbie@test.local")
 	require.True(t, ok, "the user should have been provisioned")
@@ -588,10 +608,41 @@ func TestOIDCCallback_DomainNotAllowed(t *testing.T) {
 	_, ok := findUser(t, oh.harness, "outsider@notallowed.test")
 	require.False(t, ok, "a disallowed email domain must not be provisioned")
 
-	require.NotEqual(t, http.StatusSeeOther, resp.StatusCode,
-		"a disallowed domain must not complete the login")
-	if _, authed := whoami(t, oh.harness, resp.Cookies()); authed {
-		t.Fatal("a disallowed domain must not produce an authenticated session")
+	requireLoginRefused(t, oh.harness, resp, "domain_not_allowed")
+}
+
+// #402: the allow-list reads the address the way the account will be stored,
+// so an IdP that sends it in angle brackets is judged by its real domain.
+func TestOIDCCallback_BracketedAddressIsJudgedByItsDomain(t *testing.T) {
+	cases := []struct {
+		name   string
+		email  string
+		stored string // empty: refused, nobody provisioned
+	}{
+		{"allowed domain", "<newbie@allowed.test>", "newbie@allowed.test"},
+		{"other domain", "<outsider@notallowed.test>", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			oh, cleanup := newOIDCHarness(t)
+			defer cleanup()
+			require.NoError(t, oh.adminSvc.SetRaw(context.Background(),
+				admin.KeyAllowedEmailDomains, []byte(`["allowed.test"]`)))
+
+			resp := oh.login(t, fakeOIDCClaims{
+				Subject:       "bracketed-sub",
+				Email:         tc.email,
+				EmailVerified: true,
+				Name:          "Bracketed",
+			})
+
+			if tc.stored == "" {
+				requireLoginRefused(t, oh.harness, resp, "domain_not_allowed")
+				return
+			}
+			_, ok := findUser(t, oh.harness, tc.stored)
+			require.True(t, ok, "%s should have been provisioned as %s", tc.email, tc.stored)
+		})
 	}
 }
 
@@ -678,11 +729,7 @@ func TestOIDCCallback_DisabledUserGetsNoSession(t *testing.T) {
 		Name:          "Suspended",
 	})
 
-	require.NotEqual(t, http.StatusSeeOther, resp.StatusCode,
-		"a disabled account must not complete an OIDC login")
-	if _, authed := whoami(t, oh.harness, resp.Cookies()); authed {
-		t.Fatal("a disabled account must not end up with an authenticated session")
-	}
+	requireLoginRefused(t, oh.harness, resp, "account_disabled")
 }
 
 // TestOIDCCallback_WrongNonceIsRejected covers the attack the nonce exists to
@@ -706,11 +753,7 @@ func TestOIDCCallback_WrongNonceIsRejected(t *testing.T) {
 
 	resp := oh.callback(t, url.Values{"state": {state}, "code": {"the-code"}}, cookies)
 
-	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-	require.Equal(t, "invalid_id_token", errorCode(t, resp))
-
-	_, ok := whoami(t, oh.harness, resp.Cookies())
-	require.False(t, ok, "a token minted for another login must not create a session")
+	requireLoginRefused(t, oh.harness, resp, "invalid_id_token")
 }
 
 // TestOIDCCallback_MissingNonceIsRejected is the degenerate case: an IdP that
@@ -731,11 +774,7 @@ func TestOIDCCallback_MissingNonceIsRejected(t *testing.T) {
 
 	resp := oh.callback(t, url.Values{"state": {state}, "code": {"the-code"}}, cookies)
 
-	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-	require.Equal(t, "invalid_id_token", errorCode(t, resp))
-
-	_, ok := whoami(t, oh.harness, resp.Cookies())
-	require.False(t, ok, "an id_token with no nonce must not create a session")
+	requireLoginRefused(t, oh.harness, resp, "invalid_id_token")
 }
 
 // TestOIDCLogin_SendsPKCEChallenge checks the front-channel half of PKCE from
@@ -784,6 +823,7 @@ func TestOIDCCallback_SendsCodeVerifierOnExchange(t *testing.T) {
 
 	cb := oh.callback(t, url.Values{"state": {state}, "code": {"the-code"}}, cookies)
 	require.Equal(t, http.StatusSeeOther, cb.StatusCode)
+	require.Equal(t, "/", cb.Header.Get("Location"))
 
 	require.NotEmpty(t, oh.idp.tokenRequests, "the token endpoint must have been called")
 	form := oh.idp.tokenRequests[len(oh.idp.tokenRequests)-1]
@@ -815,6 +855,7 @@ func TestOIDCCallback_FallsBackToEmailForDisplayName(t *testing.T) {
 
 	require.Equal(t, http.StatusSeeOther, resp.StatusCode,
 		"a missing name claim must not fail the login")
+	require.Equal(t, "/", resp.Header.Get("Location"))
 
 	me, ok := whoami(t, oh.harness, resp.Cookies())
 	require.True(t, ok, "the login must produce a session")
@@ -839,6 +880,126 @@ func TestOIDCCallback_HappyPathCreatesSession(t *testing.T) {
 	require.True(t, authed, "a successful OIDC login must authenticate the session")
 	require.Equal(t, "happy@test.local", u.Email)
 	require.Equal(t, "Happy Path", u.DisplayName)
+}
+
+// TestOIDCCallback_AdoptsByEmailWhenTheProviderBracketsTheAddress tests that
+// an email address wrapped in angle brackets by the provider is parsed and
+// matched against existing accounts, so the OIDC subject is linked to the
+// existing account rather than creating a duplicate.
+func TestOIDCCallback_AdoptsByEmailWhenTheProviderBracketsTheAddress(t *testing.T) {
+	oh, cleanup := newOIDCHarness(t)
+	defer cleanup()
+
+	// The harness seeds user@test.local as an unfederated RoleUser.
+	victim, ok := findUser(t, oh.harness, "user@test.local")
+	require.True(t, ok, "precondition: the account must exist")
+	require.Empty(t, victim.OIDCSubject, "precondition: the account must not be federated")
+
+	resp := oh.login(t, fakeOIDCClaims{
+		Subject:       "bracket-sub",
+		Email:         "<user@test.local>",
+		EmailVerified: true,
+		Name:          "User",
+	})
+
+	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
+	require.Equal(t, "/", resp.Header.Get("Location"))
+
+	me, authed := whoami(t, oh.harness, resp.Cookies())
+	require.True(t, authed, "the adoption must produce an authenticated session")
+	require.Equal(t, victim.ID, me.ID, "the login must authenticate as the existing account")
+
+	adopted, err := oh.userSvc.GetByIDAdmin(context.Background(), victim.ID)
+	require.NoError(t, err)
+	require.Equal(t, "bracket-sub", adopted.OIDCSubject, "the OIDC subject must be linked")
+
+	remaining, err := oh.userSvc.ListAdmin(context.Background(), 500, 0)
+	require.NoError(t, err)
+	userCount := 0
+	for _, u := range remaining {
+		if u.Email == "user@test.local" {
+			userCount++
+		}
+	}
+	require.Equal(t, 1, userCount, "there must be only one account with this email")
+}
+
+// TestOIDCCallback_AdoptsByEmailWhenTheProviderQuotesTheAddress tests the same
+// behavior when the provider wraps the local part in quotes.
+func TestOIDCCallback_AdoptsByEmailWhenTheProviderQuotesTheAddress(t *testing.T) {
+	oh, cleanup := newOIDCHarness(t)
+	defer cleanup()
+
+	victim, ok := findUser(t, oh.harness, "user@test.local")
+	require.True(t, ok, "precondition: the account must exist")
+	require.Empty(t, victim.OIDCSubject, "precondition: the account must not be federated")
+
+	resp := oh.login(t, fakeOIDCClaims{
+		Subject:       "quoted-sub",
+		Email:         `"user"@test.local`,
+		EmailVerified: true,
+		Name:          "User",
+	})
+
+	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
+	require.Equal(t, "/", resp.Header.Get("Location"))
+
+	me, authed := whoami(t, oh.harness, resp.Cookies())
+	require.True(t, authed, "the adoption must produce an authenticated session")
+	require.Equal(t, victim.ID, me.ID, "the login must authenticate as the existing account")
+
+	adopted, err := oh.userSvc.GetByIDAdmin(context.Background(), victim.ID)
+	require.NoError(t, err)
+	require.Equal(t, "quoted-sub", adopted.OIDCSubject, "the OIDC subject must be linked")
+
+	remaining, err := oh.userSvc.ListAdmin(context.Background(), 500, 0)
+	require.NoError(t, err)
+	userCount := 0
+	for _, u := range remaining {
+		if u.Email == "user@test.local" {
+			userCount++
+		}
+	}
+	require.Equal(t, 1, userCount, "there must be only one account with this email")
+}
+
+// TestOIDCCallback_EmailTakenRedirects tests that when a known OIDC subject tries
+// to sync to an email address that is already taken by another account, the callback
+// redirects to /login?error=email_taken and does not create a session.
+func TestOIDCCallback_EmailTakenRedirects(t *testing.T) {
+	oh, cleanup := newOIDCHarness(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Create an account with an OIDC subject already linked
+	_, err := oh.userSvc.Create(ctx, user.CreateUserInput{
+		Email:       "existing@test.local",
+		DisplayName: "Existing User",
+		Role:        user.RoleUser,
+		OIDCSubject: "existing-sub",
+	})
+	require.NoError(t, err)
+
+	// Create another account with a different email
+	_, err = oh.userSvc.Create(ctx, user.CreateUserInput{
+		Email:       "other@test.local",
+		DisplayName: "Other User",
+		Role:        user.RoleUser,
+	})
+	require.NoError(t, err)
+
+	// Try to log in with the existing subject but claiming the other account's email
+	// This should try to sync the existing account to other@test.local,
+	// which will fail because it's already taken
+	resp := oh.login(t, fakeOIDCClaims{
+		Subject:       "existing-sub",
+		Email:         "other@test.local",
+		EmailVerified: true,
+		Name:          "Existing User",
+	})
+
+	requireLoginRefused(t, oh.harness, resp, "email_taken")
 }
 
 // ── Admin surface ────────────────────────────────────────────────────────────
@@ -904,4 +1065,63 @@ func TestSaveOIDCConfig_BlankSecretPreservesStored(t *testing.T) {
 	require.Equal(t, "rotated-client-id", cfg.ClientID)
 	require.Equal(t, oh.idp.clientSecret, cfg.ClientSecret,
 		"a blank client_secret must preserve the stored one")
+}
+
+// An OIDC sign-in counts as having proved a second factor only when the
+// provider says so in amr (#333). Without that, an OIDC session on an account
+// that has a local factor cannot replace it — the same rule as a password.
+func TestOIDCCallback_FactorVerifiedOnlyWhenTheProviderAssertsMFA(t *testing.T) {
+	oh, cleanup := newOIDCHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	require.NoError(t, oh.adminSvc.SetBool(ctx, admin.KeyMFAEnabled, true))
+
+	claims := fakeOIDCClaims{Subject: "amr-sub", Email: "amr@test.local", EmailVerified: true, Name: "Amr"}
+	resp := oh.login(t, claims)
+	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
+	require.Equal(t, "/", resp.Header.Get("Location"))
+	u, ok := findUser(t, oh.harness, "amr@test.local")
+	require.True(t, ok)
+	enrollMFA(t, ctx, oh.userSvc, u.ID) // the account now has a local factor
+
+	for _, tc := range []struct {
+		name string
+		amr  []string
+		want int
+	}{
+		{"no amr", nil, http.StatusForbidden},
+		{"password only", []string{"pwd"}, http.StatusForbidden},
+		{"provider asserted MFA", []string{"pwd", "mfa"}, http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := claims
+			c.AMR = tc.amr
+			resp := oh.login(t, c)
+			require.Equal(t, http.StatusSeeOther, resp.StatusCode)
+			require.Equal(t, "/", resp.Header.Get("Location"))
+			enrol := oh.rawPostJSON(t, "/api/v1/me/mfa/enroll", map[string]any{}, resp.Cookies())
+			defer enrol.Body.Close()
+			require.Equal(t, tc.want, enrol.StatusCode)
+		})
+	}
+}
+
+func TestOIDCCallback_QuotedEmailIsRefusedNotAnInternalError(t *testing.T) {
+	oh, cleanup := newOIDCHarness(t)
+	defer cleanup()
+
+	resp := oh.login(t, fakeOIDCClaims{
+		Subject:       "quoted-email-sub",
+		Email:         `"john doe"@test.local`,
+		EmailVerified: true,
+		Name:          "John Doe",
+	})
+
+	requireLoginRefused(t, oh.harness, resp, "invalid_email")
+
+	_, ok := findUser(t, oh.harness, `"john doe"@test.local`)
+	require.False(t, ok, "a quoted email must not create a user account")
+
+	_, ok = findUser(t, oh.harness, "john doe@test.local")
+	require.False(t, ok, "normalized version must not create a user account")
 }

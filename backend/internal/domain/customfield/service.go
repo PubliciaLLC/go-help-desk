@@ -18,13 +18,13 @@ func NewService(store Store) *Service { return &Service{store: store} }
 func (s *Service) CreateFieldDef(ctx context.Context, name string, fieldType FieldType, options []string, sortOrder int) (FieldDef, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return FieldDef{}, fmt.Errorf("field name is required")
+		return FieldDef{}, Invalid("field name is required")
 	}
 	if err := validateFieldType(fieldType); err != nil {
 		return FieldDef{}, err
 	}
 	if fieldType == FieldTypeSelect && len(options) == 0 {
-		return FieldDef{}, fmt.Errorf("select fields require at least one option")
+		return FieldDef{}, Invalid("select fields require at least one option")
 	}
 	def := FieldDef{
 		ID:        uuid.New(),
@@ -48,13 +48,13 @@ func (s *Service) GetFieldDef(ctx context.Context, id uuid.UUID) (FieldDef, erro
 func (s *Service) UpdateFieldDef(ctx context.Context, def FieldDef) error {
 	def.Name = strings.TrimSpace(def.Name)
 	if def.Name == "" {
-		return fmt.Errorf("field name is required")
+		return Invalid("field name is required")
 	}
 	if err := validateFieldType(def.FieldType); err != nil {
 		return err
 	}
 	if def.FieldType == FieldTypeSelect && len(def.Options) == 0 {
-		return fmt.Errorf("select fields require at least one option")
+		return Invalid("select fields require at least one option")
 	}
 	return s.store.UpdateFieldDef(ctx, def)
 }
@@ -131,10 +131,10 @@ func (s *Service) SetValue(ctx context.Context, ticketID, fieldDefID uuid.UUID, 
 		return fmt.Errorf("field not found: %w", err)
 	}
 	if !def.Active {
-		return fmt.Errorf("field %q is deactivated", def.Name)
+		return Invalid(fmt.Sprintf("field %q is deactivated", def.Name))
 	}
 	if def.FieldType == FieldTypeSelect && !slices.Contains(def.Options, value) {
-		return fmt.Errorf("value %q is not a valid option for field %q", value, def.Name)
+		return Invalid(fmt.Sprintf("value %q is not a valid option for field %q", value, def.Name))
 	}
 	return s.store.UpsertValue(ctx, ticketID, fieldDefID, value)
 }
@@ -148,6 +148,6 @@ func validateFieldType(ft FieldType) error {
 	case FieldTypeText, FieldTypeTextarea, FieldTypeNumber, FieldTypeSelect:
 		return nil
 	default:
-		return fmt.Errorf("invalid field type %q", ft)
+		return Invalid(fmt.Sprintf("invalid field type %q", ft))
 	}
 }

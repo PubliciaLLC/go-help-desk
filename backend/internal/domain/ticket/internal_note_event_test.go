@@ -67,19 +67,78 @@ func replyEventForTest(t *testing.T, body string, internal bool) notification.Ev
 	seeded := h.seedOpen()
 
 	agent := uuid.New()
-	_, err := h.svc.AddReply(context.Background(), seeded.ID, body, internal, false,
+	_, err := h.svc.AddReply(context.Background(), seeded.ID, body, ticket.TextFormatPlain, internal, false,
 		"reporter@example.com",
 		ticket.Actor{UserID: &agent, Role: user.RoleStaff},
 		30, h.newStatus.ID)
 	require.NoError(t, err)
 
+	// An internal note is announced as ticket.note_added, a public reply as
+	// ticket.replied (#448).
+	want := notification.EventTicketReplied
+	if internal {
+		want = notification.EventTicketNoteAdded
+	}
 	for _, e := range h.dispatcher.events {
-		if e.Type == notification.EventTicketReplied {
+		if e.Type == want {
 			return e
 		}
 	}
-	t.Fatal("no ticket.replied event dispatched")
+	t.Fatalf("no %s event dispatched", want)
 	return notification.Event{}
+}
+
+// The event names the reply it announces by id, so a redelivery can look the
+// reply up again instead of the history keeping its text (#448).
+func TestAddReply_EventNamesTheReply(t *testing.T) {
+	for _, internal := range []bool{false, true} {
+		h := newHarness(t)
+		seeded := h.seedOpen()
+		agent := uuid.New()
+		reply, err := h.svc.AddReply(context.Background(), seeded.ID, "text", ticket.TextFormatPlain, internal, false,
+			"reporter@example.com",
+			ticket.Actor{UserID: &agent, Role: user.RoleStaff}, 30, h.newStatus.ID)
+		require.NoError(t, err)
+
+		var got any
+		for _, e := range h.dispatcher.events {
+			if e.Type == notification.EventTicketReplied || e.Type == notification.EventTicketNoteAdded {
+				got = e.Payload["reply_id"]
+			}
+		}
+		require.Equal(t, reply.ID, got, "internal=%v", internal)
+	}
+}
+
+// ticket.replied is customer-visible replies only: a hook subscribed to it
+// must never be handed a staff note, and a note has its own event (#448).
+func TestAddReply_SplitsNotesFromReplies(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		internal bool
+		want     notification.EventType
+		absent   notification.EventType
+	}{
+		{"public reply", false, notification.EventTicketReplied, notification.EventTicketNoteAdded},
+		{"internal note", true, notification.EventTicketNoteAdded, notification.EventTicketReplied},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			seeded := h.seedOpen()
+			agent := uuid.New()
+			_, err := h.svc.AddReply(context.Background(), seeded.ID, "text", ticket.TextFormatPlain, tc.internal, false,
+				"reporter@example.com",
+				ticket.Actor{UserID: &agent, Role: user.RoleStaff}, 30, h.newStatus.ID)
+			require.NoError(t, err)
+
+			var got []notification.EventType
+			for _, e := range h.dispatcher.events {
+				got = append(got, e.Type)
+			}
+			require.Contains(t, got, tc.want)
+			require.NotContains(t, got, tc.absent)
+		})
+	}
 }
 
 // The "Your ticket has been received" email shipped unreachable: Create
@@ -94,7 +153,7 @@ func TestCreateEvent_CarriesWhatTheEmailNeeds(t *testing.T) {
 	h := newHarness(t)
 
 	guest := "guest@example.com"
-	created, err := h.svc.Create(context.Background(), ticket.CreateInput{
+	created, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject:    "Printer jammed",
 		CategoryID: h.seedOpen().CategoryID,
 		Priority:   ticket.PriorityHigh,
@@ -127,7 +186,7 @@ func TestCreateEvent_NoGuestEmailForAuthenticatedReporters(t *testing.T) {
 	h := newHarness(t)
 	reporter := uuid.New()
 
-	_, err := h.svc.Create(context.Background(), ticket.CreateInput{
+	_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject:        "Signed in",
 		CategoryID:     h.seedOpen().CategoryID,
 		Priority:       ticket.PriorityLow,

@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/google/uuid"
@@ -55,6 +57,13 @@ func TestWriteTools_RefuseReportingUsers(t *testing.T) {
 				"ticket_id": ticketID, "status_id": uuid.New().String(),
 			}))
 		}},
+		// #349: the way forward from a closed ticket is staff's, like the
+		// other writes.
+		{"create_follow_up", func(ctx context.Context) (*mcpgo.CallToolResult, error) {
+			return s.handleCreateFollowUp(ctx, callToolRequest("create_follow_up", map[string]any{
+				"ticket_id": ticketID,
+			}))
+		}},
 	}
 
 	for _, tc := range cases {
@@ -87,7 +96,7 @@ func (r *recordingAuthorizer) TicketVisibility(context.Context, *authmw.Actor) (
 // A missing Authorizer must deny, not permit. This is the fail-closed guard on
 // the constructor: the original defect was a surface that served whoever asked.
 func TestNew_WithoutAuthorizer_DeniesByDefault(t *testing.T) {
-	s := New(nil, nil, nil, nil)
+	s := New(nil, nil, nil, nil, nil)
 
 	require.False(t, s.visible(ctxAs(user.RoleAdmin), ticket.Ticket{}),
 		"no Authorizer must mean nothing is visible")
@@ -228,4 +237,26 @@ func TestNotFoundFor_MatchesStoreWording(t *testing.T) {
 	// produces this same string. Both must agree for the two cases to be
 	// indistinguishable; if either drifts, one of the two tests fails.
 	require.Equal(t, "not found: ticket "+id.String(), notFoundFor(id.String()))
+}
+
+// A ticket that does not exist must answer exactly as one the caller may not
+// see does. The hidden path already answered notFoundFor(id); a real miss went
+// through storeErr and said "get ticket failed", so get_ticket still told a
+// reporting user which tracking numbers are real. See #174.
+func TestTicketLookupErr_RealMissMatchesHidden(t *testing.T) {
+	id := uuid.New().String()
+	miss := fmt.Errorf("%w: ticket %s", ticket.ErrNotFound, id)
+
+	res, err := ticketLookupErr(context.Background(), "get ticket", id, miss)
+	require.NoError(t, err)
+	require.True(t, res.IsError)
+	require.Equal(t, notFoundFor(id), resultText(t, res))
+}
+
+func TestTicketLookupErr_OtherFailuresStayGeneric(t *testing.T) {
+	res, err := ticketLookupErr(context.Background(), "get ticket", "x", errors.New("connection reset by peer"))
+	require.NoError(t, err)
+	require.True(t, res.IsError)
+	require.Equal(t, "get ticket failed", resultText(t, res),
+		"an infrastructure failure must not be dressed up as a missing ticket or leak its detail")
 }

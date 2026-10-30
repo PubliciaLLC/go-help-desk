@@ -2,6 +2,7 @@ package auth
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -9,7 +10,7 @@ import (
 //
 // A scope is checked AFTER the role, so a credential cannot reach anything its
 // owner could not reach anyway: an API key acts at its owner's role, and an
-// OAuth client acts as staff. Granting `users:write` to a key owned by a
+// OAuth client acts at its service user's role (staff or user, never admin). Granting `users:write` to a key owned by a
 // reporting user grants nothing.
 //
 // An empty scope list denies everything. That is deliberate and it is a
@@ -46,6 +47,16 @@ const (
 	// escalation path by design — treat it as equivalent to the owner's full
 	// access, and prefer not to grant it to an integration.
 	ResourceCredentials = "credentials"
+
+	// ResourceAudit covers the admin-wide audit view (#362). A signed-in
+	// session needs no scope; a machine credential needs audit:read, which
+	// an administrator grants on purpose. tickets:read used to reach it, so
+	// an integration key could read every entity's audit entries without
+	// anything about the key saying so. There is no audit:write: only the
+	// running server writes audit entries, so ParseScope refuses it when a
+	// credential is created, and one already stored grants nothing — not
+	// even audit:read through write-implies-read (#371).
+	ResourceAudit = "audit"
 )
 
 // Scope is one resource and one action.
@@ -59,14 +70,29 @@ func (s Scope) String() string { return s.Resource + ":" + string(s.Action) }
 var resources = []string{
 	ResourceTickets, ResourceUsers, ResourceGroups, ResourceCategories,
 	ResourceTags, ResourceCannedResponses, ResourceSLA, ResourceSettings,
-	ResourcePlugins, ResourceWebhooks, ResourceCredentials,
+	ResourcePlugins, ResourceWebhooks, ResourceCredentials, ResourceAudit,
 }
 
-// All returns every valid scope, for validation and for the admin UI's picker.
+// writable reports whether a resource has a write scope. The audit log has
+// none: no credential may write it (#371).
+func writable(resource string) bool { return resource != ResourceAudit }
+
+// offeredWritable reports whether the catalogue and the pickers offer a write
+// scope for a resource. users:write is not offered: keys can't write users
+// (2026-10-16), so it opens nothing to a key. ParseScope still accepts it, so a
+// stored key or a script that names it keeps working.
+func offeredWritable(resource string) bool { return writable(resource) && resource != ResourceUsers }
+
+// All returns every scope the catalogue offers, for the admin UI's picker.
+// Every one of them is also valid to ParseScope; the reverse is not quite true
+// (users:write is accepted but no longer offered).
 func All() []Scope {
 	out := make([]Scope, 0, len(resources)*2)
 	for _, r := range resources {
-		out = append(out, Scope{r, ActionRead}, Scope{r, ActionWrite})
+		out = append(out, Scope{r, ActionRead})
+		if offeredWritable(r) {
+			out = append(out, Scope{r, ActionWrite})
+		}
 	}
 	return out
 }
@@ -85,6 +111,9 @@ func ParseScope(s string) (Scope, error) {
 	}
 	for _, r := range resources {
 		if r == resource {
+			if Action(action) == ActionWrite && !writable(resource) {
+				return Scope{}, fmt.Errorf("scope %q: %s is read-only; only the server writes it", s, resource)
+			}
 			return Scope{resource, Action(action)}, nil
 		}
 	}
@@ -109,7 +138,8 @@ func ValidateScopes(scopes []string) error {
 //
 // Malformed granted scopes are ignored rather than trusted. They cannot be
 // created through the API — ValidateScopes rejects them — but a row edited by
-// hand must not become a wildcard.
+// hand must not become a wildcard. audit:write stored before #371 refused it
+// is ignored the same way, so it does not imply audit:read.
 // There is no wildcard. A credential that should reach everything lists every
 // scope it needs, so what it can do is legible from the credential itself, and
 // a resource added later does not silently widen credentials that already
@@ -151,4 +181,55 @@ func Subset(have, want []string) (string, bool) {
 		}
 	}
 	return "", true
+}
+
+// ScopesForRole is the most a key owned by role may carry: a key acts at its
+// owner's role, so a scope no route that role can reach uses is a scope that
+// can only mislead. role is user.Role's string value; this package cannot
+// import user.
+//
+// Written out, not computed, because the router is the source of truth and the
+// router lives in a package this one cannot import.
+// TestScopesForRole_MatchTheRouter (internal/server) derives the same table
+// from the router's own middleware and fails when the two differ in either
+// direction, so a route that is opened to staff, or a scope added for an admin
+// route, cannot leave this stale.
+//
+// Requesters and unknown roles get nothing.
+func ScopesForRole(role string) []Scope {
+	switch role {
+	case "admin":
+		return All()
+	case "staff":
+		return []Scope{
+			{ResourceTickets, ActionRead}, {ResourceTickets, ActionWrite},
+			// The assignee picker's group list, read only (groupsRouter).
+			{ResourceGroups, ActionRead},
+			// The admin-wide audit view, which staff may open (#129).
+			{ResourceAudit, ActionRead},
+			// No users:read. GET /users/lookup, the one staff-reachable route
+			// that needed it (#514), is session-only since #290: keys have no
+			// user lookup. A key files for someone with reporter_email.
+		}
+	}
+	// A requester gets nothing: requesters never own a key (#450). That is a
+	// rule about who may hold a key, so it is stated here rather than derived
+	// from the router, which would say tickets:read|write.
+	return nil
+}
+
+// WithinRole returns an error naming the first scope in want that a key owned
+// by role may not carry. want must already have passed ValidateScopes.
+func WithinRole(role string, want []string) error {
+	offered := ScopesForRole(role)
+	for _, w := range want {
+		sc, err := ParseScope(w)
+		if err != nil {
+			return err
+		}
+		if !slices.Contains(offered, sc) {
+			return fmt.Errorf("scope %q is not available to a key owned by a %s account", w, role)
+		}
+	}
+	return nil
 }

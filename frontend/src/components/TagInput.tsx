@@ -83,13 +83,13 @@ export function TagInput({ ticketId, readonly = false }: TagInputProps) {
         {ticketTags.map((t: Tag) => (
           <span
             key={t.id}
-            className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2.5 py-0.5 text-xs font-medium text-blue-800"
+            className="inline-flex max-w-full items-center gap-1 rounded-full bg-blue-100 px-2.5 py-0.5 text-xs font-medium text-blue-800"
           >
-            {t.name}
+            <span className="min-w-0 wrap-anywhere">{t.name}</span>
             {!readonly && (
               <button
                 onClick={() => removeMutation.mutate(t.id)}
-                className="ml-0.5 rounded-full hover:bg-blue-200 p-0.5"
+                className="ml-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full hover:bg-blue-200"
                 aria-label={`Remove tag ${t.name}`}
               >
                 <XIcon className="h-3 w-3" />
@@ -146,7 +146,7 @@ export function TagInput({ ticketId, readonly = false }: TagInputProps) {
         </div>
       )}
 
-      {error && <p className="text-xs text-red-600">{error}</p>}
+      {error && <p role="alert" className="text-xs text-red-600">{error}</p>}
     </div>
   )
 }

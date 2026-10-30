@@ -1,6 +1,21 @@
-import { api } from './client'
-import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, Tag, CannedResponse, FieldDef, Assignment, ScopeType, SLAPolicy, ScopeInfo, OAuthClient } from './types'
+import axios from 'axios'
+import { api, extractErrorCode } from './client'
+import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, WebhookDeliveryRecord, WebhookFilter, WebhookPayloadFormat, Tag, CannedResponse, FieldDef, Assignment, ScopeType, SLAPolicy, ScopeInfo, OAuthClient, AdminAuditListResponse } from './types'
 import type { Role } from './types'
+
+// DELETE where a not_found 404 means the row is already gone (#418). That is the
+// outcome the caller asked for, so it resolves. Any other failure rejects,
+// including the router's plain-text 404 for a path that is not a route, which
+// is a bug rather than a row that is gone.
+async function deleteIfPresent(url: string, config?: { data: unknown }): Promise<void> {
+  try {
+    if (config) await api.delete(url, config)
+    else await api.delete(url)
+  } catch (err) {
+    if (axios.isAxiosError(err) && err.response?.status === 404 && extractErrorCode(err) === 'not_found') return
+    throw err
+  }
+}
 
 // ── Site config (public) ──────────────────────────────────────────────────────
 
@@ -10,6 +25,15 @@ export interface SiteConfig {
   version: string
   // Whether the instance accepts tickets from visitors with no account.
   guest_submission_enabled?: boolean
+  // Whether a guest may attach files (#445), and the limit that actually
+  // applies per file in bytes: the lower of the guest setting and the
+  // instance-wide maximum. The size is absent while attaching is off.
+  guest_attachments_enabled?: boolean
+  guest_attachment_max_bytes?: number
+  // The most files guests may attach to one ticket (#445), present with the size.
+  guest_attachment_max_per_ticket?: number
+  // Uploads one guest link may make per hour (#445), present with the size.
+  guest_attachment_uploads_per_hour?: number
 }
 
 export async function getSiteConfig(): Promise<SiteConfig> {
@@ -22,6 +46,27 @@ export async function getSiteConfig(): Promise<SiteConfig> {
 export async function listUsers(limit = 200, offset = 0): Promise<AdminUser[]> {
   const res = await api.get<AdminUser[]>('/admin/users', { params: { limit, offset } })
   return res.data
+}
+
+export const USERS_PER_PAGE = 50
+
+/**
+ * One page of the admin user list (#449). Sending `page` is what switches the
+ * server into paged mode; without it the endpoint answers the first 200 and
+ * ignores everything else. The total is in X-Total-Count, not the body.
+ */
+export async function listUsersPage(
+  page: number,
+  filters: { q?: string; role?: Role | ''; serviceAccount?: boolean } = {},
+): Promise<{ users: AdminUser[]; total: number }> {
+  const params: Record<string, string | number | boolean> = { page, per_page: USERS_PER_PAGE }
+  if (filters.q) params.q = filters.q
+  if (filters.role) params.role = filters.role
+  // true is only service accounts, false only people; absent is everyone (#420).
+  if (filters.serviceAccount !== undefined) params.service_account = filters.serviceAccount
+  const res = await api.get<AdminUser[]>('/admin/users', { params })
+  const total = Number(res.headers?.['x-total-count'])
+  return { users: res.data, total: Number.isFinite(total) ? total : res.data.length }
 }
 
 export async function getUser(id: string): Promise<AdminUser> {
@@ -50,8 +95,13 @@ export async function updateUser(id: string, patch: {
   return res.data
 }
 
-export async function adminResetPassword(id: string, newPassword: string): Promise<void> {
-  await api.post(`/admin/users/${id}/password`, { new_password: newPassword })
+/**
+ * Sets someone's password. revokeAPIKeys also deletes every API key they own
+ * (#450); it is always sent, false included, so what was asked for is visible
+ * on the wire.
+ */
+export async function adminResetPassword(id: string, newPassword: string, revokeAPIKeys = false): Promise<void> {
+  await api.post(`/admin/users/${id}/password`, { new_password: newPassword, revoke_api_keys: revokeAPIKeys })
 }
 
 export async function deleteUser(id: string): Promise<void> {
@@ -76,7 +126,7 @@ export async function updateGroup(id: string, patch: Partial<Pick<Group, 'name' 
 }
 
 export async function deleteGroup(id: string): Promise<void> {
-  await api.delete(`/admin/groups/${id}`)
+  await deleteIfPresent(`/admin/groups/${id}`)
 }
 
 export async function listGroupMembers(groupId: string): Promise<User[]> {
@@ -108,7 +158,7 @@ export async function addGroupScope(groupId: string, input: { category_id: strin
 }
 
 export async function removeGroupScope(groupId: string, input: { category_id: string; type_id?: string }): Promise<void> {
-  await api.delete(`/admin/groups/${groupId}/scopes`, { data: input })
+  await deleteIfPresent(`/admin/groups/${groupId}/scopes`, { data: input })
 }
 
 // ── Categories ───────────────────────────────────────────────────────────────
@@ -129,7 +179,7 @@ export async function updateCategory(id: string, patch: { name?: string; sort_or
 }
 
 export async function deleteCategory(id: string): Promise<void> {
-  await api.delete(`/admin/categories/${id}`)
+  await deleteIfPresent(`/admin/categories/${id}`)
 }
 
 export async function listTypes(categoryId: string): Promise<TicketType[]> {
@@ -142,13 +192,13 @@ export async function createType(categoryId: string, input: { name: string; sort
   return res.data
 }
 
-export async function updateType(categoryId: string, typeId: string, patch: { name?: string; sort_order?: number }): Promise<TicketType> {
+export async function updateType(categoryId: string, typeId: string, patch: { name?: string; sort_order?: number; active?: boolean }): Promise<TicketType> {
   const res = await api.patch<TicketType>(`/admin/categories/${categoryId}/types/${typeId}`, patch)
   return res.data
 }
 
 export async function deleteType(categoryId: string, typeId: string): Promise<void> {
-  await api.delete(`/admin/categories/${categoryId}/types/${typeId}`)
+  await deleteIfPresent(`/admin/categories/${categoryId}/types/${typeId}`)
 }
 
 export async function listItems(categoryId: string, typeId: string): Promise<TicketItem[]> {
@@ -168,13 +218,13 @@ export async function createItem(
   return res.data
 }
 
-export async function updateItem(categoryId: string, typeId: string, itemId: string, patch: { name?: string; sort_order?: number }): Promise<TicketItem> {
+export async function updateItem(categoryId: string, typeId: string, itemId: string, patch: { name?: string; sort_order?: number; active?: boolean }): Promise<TicketItem> {
   const res = await api.patch<TicketItem>(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}`, patch)
   return res.data
 }
 
 export async function deleteItem(categoryId: string, typeId: string, itemId: string): Promise<void> {
-  await api.delete(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}`)
+  await deleteIfPresent(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}`)
 }
 
 // ── Statuses ─────────────────────────────────────────────────────────────────
@@ -203,6 +253,9 @@ export async function deleteStatus(id: string): Promise<void> {
 export interface SAMLConfig {
   configured: boolean
   metadata_url: string
+  // The IdP metadata as pasted, returned as stored (it is public data). Empty
+  // when the metadata is given by URL or not at all.
+  metadata_xml: string
   cert_pem: string
   sp_metadata_url: string
 }
@@ -212,10 +265,21 @@ export async function getSAMLConfig(): Promise<SAMLConfig> {
   return res.data
 }
 
+// Each field is optional on purpose, not just individually falsy-safe: the
+// backend now distinguishes "omitted" (keep the stored value) from "sent as
+// an explicit empty string" (clear it) — see #300. key_pem in particular is
+// never round-tripped by getSAMLConfig (the server never returns a private
+// key at all), so a caller must genuinely leave it out to preserve the
+// stored key rather than send back the blank the form started with.
+//
+// metadata_url and metadata_xml are alternatives (#461): the server refuses a
+// save that would leave both set, so the source the admin did not choose is
+// sent as "" rather than left out.
 export async function saveSAMLConfig(input: {
-  metadata_url: string
-  cert_pem: string
-  key_pem: string
+  metadata_url?: string
+  metadata_xml?: string
+  cert_pem?: string
+  key_pem?: string
 }): Promise<{ warning?: string }> {
   const res = await api.put<{ warning?: string }>('/admin/saml', input)
   return res.data ?? {}
@@ -269,14 +333,23 @@ export async function getSettings(): Promise<Record<string, unknown>> {
   return res.data
 }
 
-export async function updateSettings(patch: Record<string, unknown>): Promise<void> {
-  await api.patch('/admin/settings', patch)
+/**
+ * A save can succeed with something the administrator should read: the server
+ * answers 200 {"warning"} instead of 204 (an SSO setting that locks people out,
+ * or ticket scope turned on while an OAuth client has no group, #420).
+ */
+export async function updateSettings(patch: Record<string, unknown>): Promise<{ warning?: string }> {
+  const res = await api.patch<{ warning?: string } | undefined>('/admin/settings', patch)
+  return { warning: res.data?.warning }
 }
 
 // ── API Keys ─────────────────────────────────────────────────────────────────
 
-export async function listScopes(): Promise<ScopeInfo[]> {
-  const res = await api.get<ScopeInfo[]>('/admin/scopes')
+/** The scope catalogue, or with role the scopes a key owned by that role may carry. */
+export async function listScopes(role?: 'admin' | 'staff'): Promise<ScopeInfo[]> {
+  const res = role
+    ? await api.get<ScopeInfo[]>('/admin/scopes', { params: { role } })
+    : await api.get<ScopeInfo[]>('/admin/scopes')
   return res.data
 }
 
@@ -297,7 +370,7 @@ export async function createOAuthClient(input: {
 }
 
 export async function deleteOAuthClient(id: string): Promise<void> {
-  await api.delete(`/admin/oauth-clients/${id}`)
+  await deleteIfPresent(`/admin/oauth-clients/${id}`)
 }
 
 export async function listAPIKeys(): Promise<APIKey[]> {
@@ -309,13 +382,15 @@ export async function createAPIKey(input: {
   name: string
   scopes?: string[]
   expires_at?: string
+  // Issue the key for this account instead of the caller (#450).
+  user_id?: string
 }): Promise<{ id: string; name: string; token: string }> {
   const res = await api.post<{ id: string; name: string; token: string }>('/admin/api-keys', input)
   return res.data
 }
 
 export async function deleteAPIKey(id: string): Promise<void> {
-  await api.delete(`/admin/api-keys/${id}`)
+  await deleteIfPresent(`/admin/api-keys/${id}`)
 }
 
 // ── Tags (admin) ──────────────────────────────────────────────────────────────
@@ -382,6 +457,9 @@ export async function createWebhook(input: {
   url: string
   events?: string[]
   secret?: string
+  payload_format?: WebhookPayloadFormat
+  enabled?: boolean
+  filter?: WebhookFilter
 }): Promise<WebhookConfig> {
   const res = await api.post<WebhookConfig>('/admin/webhooks', input)
   return res.data
@@ -389,14 +467,32 @@ export async function createWebhook(input: {
 
 export async function updateWebhook(
   id: string,
-  patch: Partial<Pick<WebhookConfig, 'url' | 'events' | 'secret' | 'enabled'>>
+  patch: Partial<Pick<WebhookConfig, 'url' | 'events' | 'enabled' | 'payload_format' | 'filter'>> & {
+    // Write-only: sent to replace the stored secret, never returned.
+    secret?: string
+  }
 ): Promise<WebhookConfig> {
   const res = await api.patch<WebhookConfig>(`/admin/webhooks/${id}`, patch)
   return res.data
 }
 
+/** Clears a paused hook's link to the API key that made it, so it fires again. */
+export async function reapproveWebhook(id: string): Promise<void> {
+  await api.post(`/admin/webhooks/${id}/reapprove`)
+}
+
 export async function deleteWebhook(id: string): Promise<void> {
   await api.delete(`/admin/webhooks/${id}`)
+}
+
+export async function listWebhookDeliveries(id: string): Promise<WebhookDeliveryRecord[]> {
+  const res = await api.get<WebhookDeliveryRecord[]>(`/admin/webhooks/${id}/deliveries`)
+  return res.data
+}
+
+// Queues the delivery's event again as a new delivery; the server answers 202.
+export async function redeliverWebhook(id: string, deliveryId: string): Promise<void> {
+  await api.post(`/admin/webhooks/${id}/deliveries/${deliveryId}/redeliver`)
 }
 
 // ── Custom field definitions ──────────────────────────────────────────────────
@@ -510,15 +606,15 @@ export async function updateItemAssignment(
 }
 
 export async function deleteCategoryAssignment(categoryId: string, assignmentId: string): Promise<void> {
-  await api.delete(`/admin/categories/${categoryId}/fields/${assignmentId}`)
+  await deleteIfPresent(`/admin/categories/${categoryId}/fields/${assignmentId}`)
 }
 
 export async function deleteTypeAssignment(categoryId: string, typeId: string, assignmentId: string): Promise<void> {
-  await api.delete(`/admin/categories/${categoryId}/types/${typeId}/fields/${assignmentId}`)
+  await deleteIfPresent(`/admin/categories/${categoryId}/types/${typeId}/fields/${assignmentId}`)
 }
 
 export async function deleteItemAssignment(categoryId: string, typeId: string, itemId: string, assignmentId: string): Promise<void> {
-  await api.delete(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}/fields/${assignmentId}`)
+  await deleteIfPresent(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}/fields/${assignmentId}`)
 }
 
 // ── CTI group scope (read from CTI perspective) ───────────────────────────────
@@ -576,10 +672,259 @@ export async function deleteSLAPolicy(id: string): Promise<void> {
 export interface SecurityWarnings {
   /** Names of env vars still set to a shipped example value. Names only. */
   insecure_secrets: string[]
+
+  /**
+   * What the malware scanner is actually doing, as opposed to what the
+   * configuration says it should — a live reachability check, not a cached
+   * belief. See handleGetSecurityWarnings / scanStatus on the backend.
+   */
+  attachment_scanning: AttachmentScanningWarning
+
+  /**
+   * Whether uploads can be stored (#458). Optional only so older fixtures and
+   * a server that predates the field read as healthy.
+   */
+  attachment_storage?: { writable: boolean; problem: string }
+
+  /**
+   * Names of OAuth clients that see no tickets because ticket scope is on and
+   * their service user is in no group (#420). Optional so a server that
+   * predates it reads as none.
+   */
+  oauth_clients_without_groups?: string[]
+
+  /**
+   * The configured reopen target status has been deactivated, so reopened
+   * tickets go to New instead. Optional so an older server reads as healthy.
+   */
+  reopen_target?: { inactive: boolean; name?: string }
+
+  /**
+   * Whether passkeys can be used (#494). They cannot when BASE_URL is an IP
+   * address, a single-label host or non-ASCII. Optional so a server that
+   * predates the field reads as fine.
+   */
+  passkeys?: { available: boolean; reason: string }
+
+  /**
+   * Whether email can be sent and is being delivered (#455, #456). Optional so
+   * older fixtures and a server that predates it read as healthy.
+   */
+  email?: EmailWarning
+
+  /**
+   * A stable release newer than the one running, found by the opt-in update
+   * check (#170). Absent when none was found or the check is off.
+   */
+  update?: { current: string; latest: string; url: string }
+}
+
+export interface EmailWarning {
+  /** False until both SMTP_HOST and SMTP_FROM are set. */
+  enabled: boolean
+  /** Which of SMTP_HOST and SMTP_FROM is unset. */
+  missing: string[]
+  /** A feature that emails the person is on although email is off. */
+  signup_without_email: boolean
+  guest_submission_without_email: boolean
+  /** Email is retrying after an error, or failed within the last day. */
+  failing: boolean
+  failing_count: number
+  /** Newest error, email addresses already replaced by [address]. */
+  last_error: string
+  /**
+   * Edited email templates that no longer work with this release (#158). Mail
+   * that uses one fails until it is fixed or reverted. Optional so a server
+   * that predates the editor reads as healthy.
+   */
+  broken_templates?: BrokenEmailTemplate[]
+}
+
+export interface BrokenEmailTemplate {
+  name: string
+  label: string
+  reason: string
+  /** When it was last saved: with the name, what makes a new breakage show again after a Hide. */
+  updated_at: string
+}
+
+export interface AttachmentScanningWarning {
+  /** off, required or permissive. */
+  policy: string
+  /** Whether a scanner address is configured at all. */
+  configured: boolean
+  /** The answer to a live ping just now. */
+  reachable: boolean
+  /** Plain-English sentence for what is happening to uploads right now. */
+  effect: string
+  /** An administrator saved a valid scan policy (as opposed to a derived default). */
+  policy_explicit: boolean
+  /**
+   * Scanning is off by default rather than by choice: no policy saved, no
+   * scanner address anywhere, and attachments already stored (#459).
+   */
+  stale_off: boolean
+}
+
+/** What the post-upgrade wizard needs that the settings dump does not carry. */
+export async function getPostUpgrade(): Promise<{ old_password_accounts: number }> {
+  const res = await api.get<{ old_password_accounts: number }>('/admin/post-upgrade')
+  return res.data
 }
 
 /** Admin-only. Not on the public /site payload, by design. */
 export async function getSecurityWarnings(): Promise<SecurityWarnings> {
   const res = await api.get<SecurityWarnings>('/admin/security-warnings')
   return res.data
+}
+
+/**
+ * The people work can be given to: id and display name only.
+ *
+ * Staff-readable, unlike `listUsers`, which is `/admin/users` and answers 403
+ * to anybody who is not an administrator. That is why this exists: the
+ * assignee picker was empty for every staff member and no colleague's name
+ * could be resolved on a ticket, because the only list the page knew about
+ * was one staff cannot read.
+ */
+export interface AssignableStaff {
+  id: string
+  display_name: string
+  /**
+   * False for somebody still here who cannot be given work — suspended, or
+   * moved to a reporting role.
+   *
+   * Their name is still in the list on purpose. A ticket already assigned to
+   * them has to show who has it, and filtering them out made the page call a
+   * suspended colleague a former staff member, which is a claim about
+   * somebody having left that was not true.
+   */
+  assignable: boolean
+}
+
+export async function listAssignableStaff(): Promise<AssignableStaff[]> {
+  const res = await api.get<AssignableStaff[]>('/staff')
+  return res.data
+}
+
+// ── Admin-wide audit view (#129) ────────────────────────────────────────────
+
+export interface AdminAuditFilters {
+  entity_type?: string
+  action?: string
+  actor_id?: string
+  from?: string // RFC3339
+  to?: string // RFC3339
+  q?: string
+  exclude_action?: string[] // sent repeated: exclude_action=a&exclude_action=b
+  limit?: number
+  offset?: number
+}
+
+export async function listAdminAudit(filters: AdminAuditFilters): Promise<AdminAuditListResponse> {
+  const res = await api.get<AdminAuditListResponse>('/admin/audit', {
+    params: filters,
+    // Repeated keys, not exclude_action[]=a: that is what the server reads.
+    paramsSerializer: { indexes: null },
+  })
+  return res.data
+}
+
+// ── Email templates (#158) ────────────────────────────────────────────────────
+
+export type EmailTemplateGroup = 'requester' | 'staff' | 'account' | 'shared'
+
+export interface EmailTemplateSummary {
+  name: string
+  label: string
+  group: EmailTemplateGroup
+  /** The shared header and footer: a body and no subject. */
+  shell: boolean
+  customised: boolean
+  /** The template has an HTML part, so its mail is multipart. */
+  has_html?: boolean
+  broken: boolean
+  updated_at: string | null
+  updated_by_name: string
+}
+
+export interface EmailTemplateDetail extends EmailTemplateSummary {
+  subject: string
+  body: string
+  default_subject: string
+  default_body: string
+  /** The optional HTML part; empty means the mail is plain text. There is no default HTML. */
+  html?: string
+  /** The variable that must be printed outside any {{if}}; empty for the header and footer. */
+  required: string
+  variables: { name: string; description: string }[]
+  /** Why the saved version cannot be sent, when `broken`. */
+  broken_reason?: string
+  max_body_bytes: number
+  max_subject_bytes: number
+  max_html_bytes?: number
+}
+
+/** One reason a draft is refused. line and col are 0 when it has no place in the text. */
+export interface EmailTemplateProblem {
+  field: 'subject' | 'body' | 'html'
+  line: number
+  col: number
+  message: string
+}
+
+export interface EmailTemplatePreview {
+  valid: boolean
+  errors: EmailTemplateProblem[]
+  subject?: string
+  body?: string
+  /** The rendered HTML part, with the saved header and footer; absent when the draft has none. */
+  html?: string
+  /** The draft is fine but the saved header or footer cannot render. */
+  preview_error?: string
+}
+
+export interface EmailTemplateDraft {
+  subject: string
+  body: string
+  /** Always sent, "" for none: an absent key leaves the stored HTML unchanged. */
+  html?: string
+}
+
+export async function listEmailTemplates(): Promise<EmailTemplateSummary[]> {
+  const res = await api.get<EmailTemplateSummary[]>('/admin/email-templates')
+  return res.data
+}
+
+export async function getEmailTemplate(name: string): Promise<EmailTemplateDetail> {
+  const res = await api.get<EmailTemplateDetail>(`/admin/email-templates/${encodeURIComponent(name)}`)
+  return res.data
+}
+
+/** The server validates again whatever the editor checked: a refusal is 400 invalid_template. */
+export async function saveEmailTemplate(name: string, draft: EmailTemplateDraft): Promise<EmailTemplateDetail> {
+  const res = await api.put<EmailTemplateDetail>(`/admin/email-templates/${encodeURIComponent(name)}`, draft)
+  return res.data
+}
+
+/** Back to the shipped text. The edited text stays in the audit log. */
+export async function revertEmailTemplate(name: string): Promise<void> {
+  await api.delete(`/admin/email-templates/${encodeURIComponent(name)}`)
+}
+
+/** Validates a draft and renders it with sample data. Sends and stores nothing. */
+export async function previewEmailTemplate(name: string, draft: EmailTemplateDraft): Promise<EmailTemplatePreview> {
+  const res = await api.post<EmailTemplatePreview>(`/admin/email-templates/${encodeURIComponent(name)}/preview`, draft)
+  return res.data
+}
+
+/** Mails the draft to the signed-in administrator's own address and nowhere else. */
+export async function testEmailTemplate(name: string, draft: EmailTemplateDraft): Promise<void> {
+  await api.post(`/admin/email-templates/${encodeURIComponent(name)}/test`, draft)
+}
+
+/** The per-field problems in a 400 invalid_template, or none for any other error. */
+export function emailTemplateProblems(err: unknown): EmailTemplateProblem[] {
+  const data = (err as { response?: { data?: { error?: { code?: string; errors?: EmailTemplateProblem[] } } } })?.response?.data
+  return data?.error?.code === 'invalid_template' ? (data.error.errors ?? []) : []
 }

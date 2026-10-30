@@ -48,6 +48,35 @@ check whether it is listed here.
   test pins this so it does not get "fixed".
 - **`ticket.Atomic` takes both a `Store` and an `audit.Store`.** An audit entry
   committed apart from the change it describes is not an audit trail.
+- **`user.Service.writeAuditEntry` (ResetMFA, AdminSetPassword) is NOT
+  transactional with the write it describes, on purpose — the one exception to
+  the `ticket.Atomic` rule above.** The mutation commits first; the audit
+  write is a separate, best-effort step, logged and swallowed on failure
+  rather than rolled back or retried (see the doc comment on
+  `writeAuditEntry`, `internal/domain/user/service.go`). This is deliberate,
+  not an oversight that inherited the wrong shape: per `audit.Store`'s own
+  documented contract ("log and continue rather than blocking the caller"),
+  and per #306's own framing, an audit entry here does not gate anything —
+  whoever can clear a factor or reset a password already holds the
+  capability, so losing one entry to a genuine crash or DB outage between the
+  two writes is a visibility gap, not a security control, and failing the
+  actual reset over a logging hiccup would be the wrong trade. `ticket.Atomic`
+  exists because a ticket's audit trail IS relied on as a record of what
+  changed and when; this path is not held to the same bar. Do not "fix" this
+  into `ticket.Atomic`'s shape without re-reading #306 first.
+
+  **This does not mean the caller gets to choose whether they're audited.**
+  An earlier version of `ResetMFA`/`AdminSetPassword` used the caller's
+  `context.Context` for both the mutation and the audit write — which meant
+  the actor #306 is actually worried about (someone resetting a factor who
+  wants it unrecorded) could disconnect right after the reset committed and
+  suppress the entry, or worse, get a false 500 for a reset that had already
+  landed (pgx reports `context canceled` after an autocommit write completes,
+  not before). Both functions now detach with `context.WithoutCancel` before
+  touching the store, matching `handler_passkeys.go`'s `Touch` call. The
+  "log and continue" trade above is about infrastructure failing, not about
+  the actor controlling the outcome by hanging up — keep both functions
+  detached if you touch this code again.
 - **Attachments are download-only; there is no previewer.** Not an oversight
   and not a backlog item. Rendering attachment content on the help desk origin
   makes every uploaded file a candidate for stored XSS against the staff
@@ -60,6 +89,44 @@ check whether it is listed here.
   attachment without that third check. It does not cover script fetching the
   bytes and rendering them itself; nothing on the server can. See docs/DESIGN.md and #165 before adding a
   thumbnail, a lightbox or an inline PDF view.
+
+- **The last-administrator guard does not cover credentials, and that is
+  correct only while a password is always a way in.** The three
+  `...UnlessLastAdmin` statements in `queries/users.sql` refuse to disable,
+  demote or delete the last active administrator, because setup does not
+  reopen. Removing that administrator's last way to authenticate is the same
+  permanent mistake, and the guard says nothing about it — deliberately.
+
+  It is safe today because of a mechanism, not a coincidence: MFA enrolment
+  lives outside `RequireMFA` in `meRouter`, so an administrator with no working
+  factor still signs in with their password, reaches enrolment and recovers
+  alone. `TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor` fails if those
+  routes are ever moved behind the gate.
+
+  **This stops being true the moment passwordless sign-in exists** (passkeys,
+  see docs/DESIGN.md → Authentication → Passkeys). When the password is no
+  longer a way in, self-recovery stops working and an administrator whose last
+  credential is removed is locked out for good. The guard grows its fourth case
+  in the change that introduces passwordless — not afterwards, and not as a
+  follow-up issue. This entry is the opposite shape to the rest of this list:
+  the others say "looks unfinished, is not". This one says "looks finished, is
+  conditional, and here is the condition".
+
+- **CIRCL hashlookup's `KnownMalicious` field is read by nothing, on purpose.**
+  It is a field named `KnownMalicious`, sitting in a response we parse, holding
+  the string `"malshare.com"`, and wiring it to the `detected` verdict would be
+  a one-line change that reports jQuery to staff as malware. Measured against
+  the live service, the files carrying it include `jquery-1.12.4.min.js`,
+  `fontawesome-webfont.woff2`, a 1x1 spacer GIF and the hash of the two bytes
+  `1\n`. MalShare's corpus is everything ever submitted to it, benign assets
+  carved out of malware samples included, so the field means "these bytes have
+  appeared in MalShare" and nothing else. It is left undecoded rather than
+  decoded and ignored, so nothing can start branching on it by accident.
+  `hashlookup:trust` is not a verdict either: it starts at 50, adds 5 per
+  parent archive, subtracts 20 for `KnownMalicious` and caps at 100, so EICAR
+  scores 100 — a breadth counter, not an opinion. Both are documented at the
+  `clRecord` type in `internal/reputation/circl.go`, and tests pin that neither
+  changes a verdict.
 
 ### No breaking changes
 
@@ -168,10 +235,18 @@ go test ./internal/domain/... ./internal/config/... ./internal/middleware/... ./
 Integration tests are skipped automatically when `TEST_DATABASE_URL` is unset.
 
 ```sh
-# Via Docker Compose (recommended)
-docker-compose -f docker/docker-compose.yml --profile test run --rm test
+# Against a throwaway database (recommended)
+#
+# Starts an ephemeral Postgres on 127.0.0.1:5433, runs the suite against it,
+# and leaves nothing behind. Never points at the development database.
+./scripts/test-db.sh test
 
-# From the host (requires port 5432 exposed — it is by default)
+# Several at once (worktrees, parallel agents): name an instance, and each
+# gets its own database on its own free port. Without a name they share one,
+# and the first run to finish tears it down under the others.
+GHD_TEST_INSTANCE=my-branch ./scripts/test-db.sh once
+
+# Or against the development stack's database, which the suite will migrate
 cd backend
 TEST_DATABASE_URL="postgres://helpdesk:helpdesk@localhost:5432/helpdesk?sslmode=disable" go test ./...
 ```

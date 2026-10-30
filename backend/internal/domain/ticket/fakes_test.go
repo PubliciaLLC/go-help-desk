@@ -3,6 +3,7 @@ package ticket_test
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 
@@ -30,15 +31,22 @@ var errNotFound = errors.New("not found")
 // ── ticket store ─────────────────────────────────────────────────────────────
 
 type fakeStore struct {
-	forUpdateReads int
+	forUpdateReads    int
+	attachmentCreates int
 
-	guestTokens   map[string]guestTokenRow
-	errGuestToken error
+	guestTokens       map[string]guestTokenRow
+	errGuestToken     error
+	guestTokenCreates int // total CreateGuestToken calls, across rotations
 
 	// onRead rewrites what a read returns, so a test can tell a value that came
 	// back from the store apart from the identical-looking one the caller
 	// already had in hand.
 	onRead func(ticket.Ticket) ticket.Ticket
+
+	// followers[ticket][user]; notPeople are accounts IsAssignableUser refuses
+	// (a service account, a requester). See followers_test.go.
+	followers map[uuid.UUID]map[uuid.UUID]time.Time
+	notPeople map[uuid.UUID]bool
 
 	tickets map[uuid.UUID]ticket.Ticket
 	replies map[uuid.UUID][]ticket.Reply
@@ -52,13 +60,22 @@ type fakeStore struct {
 	replyCreates   int
 	historyCreates int
 
+	// SLA records, in insertion order, and the policy each priority matches.
+	// The unique-current rule of the real table is enforced in StartSLARecord.
+	// slaPolicies maps a priority to the policy MatchSLAPolicy returns for it;
+	// a priority with no entry matches none.
+	slaRecords  []fakeSLARecord
+	slaPolicies map[ticket.Priority]uuid.UUID
+
 	// Injectable failures.
 	errUpdate        error
+	errDeleteGroup   error
 	errCreate        error
 	errCreateReply   error
 	errGetByID       error
 	errNextSeq       error
 	errCreateHistory error
+	errCreateLink    error
 }
 
 func newFakeStore() *fakeStore {
@@ -70,6 +87,100 @@ func newFakeStore() *fakeStore {
 }
 
 func (f *fakeStore) seed(t ticket.Ticket) { f.tickets[t.ID] = t }
+
+// ── SLA records (the re-match's four store methods) ──────────────────────────
+
+// fakeSLARecord is one sla_records row as far as the re-match can see it.
+type fakeSLARecord struct {
+	id, ticketID, policyID uuid.UUID
+	startedAt              *time.Time
+	pausedBase             int64
+	facts                  ticket.SLAFacts
+	supersededAt           *time.Time
+}
+
+// errSecondCurrentSLARecord stands in for the sla_records_current_idx violation.
+var errSecondCurrentSLARecord = errors.New("duplicate key value violates unique constraint \"sla_records_current_idx\"")
+
+// seedSLARecord adds a current record for a ticket and returns its id.
+func (f *fakeStore) seedSLARecord(ticketID, policyID uuid.UUID, startedAt *time.Time, pausedBase int64, facts ticket.SLAFacts) uuid.UUID {
+	r := fakeSLARecord{id: uuid.New(), ticketID: ticketID, policyID: policyID, startedAt: startedAt, pausedBase: pausedBase, facts: facts}
+	f.slaRecords = append(f.slaRecords, r)
+	return r.id
+}
+
+// slaRows returns every record a ticket has had, oldest first.
+func (f *fakeStore) slaRows(ticketID uuid.UUID) []fakeSLARecord {
+	var out []fakeSLARecord
+	for _, r := range f.slaRecords {
+		if r.ticketID == ticketID {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func (f *fakeStore) CurrentSLARecordForUpdate(_ context.Context, ticketID uuid.UUID) (*ticket.SLARecordState, error) {
+	for _, r := range f.slaRecords {
+		if r.ticketID == ticketID && r.supersededAt == nil {
+			return &ticket.SLARecordState{
+				ID: r.id, PolicyID: r.policyID, StartedAt: r.startedAt,
+				PausedSecondsAtStart: r.pausedBase, Facts: r.facts,
+			}, nil
+		}
+	}
+	return nil, nil
+}
+
+func (f *fakeStore) LatestSupersededSLARecord(_ context.Context, ticketID uuid.UUID) (*ticket.SLARecordState, error) {
+	var best *fakeSLARecord
+	for i, r := range f.slaRecords {
+		if r.ticketID != ticketID || r.supersededAt == nil {
+			continue
+		}
+		if best == nil || !r.supersededAt.Before(*best.supersededAt) {
+			best = &f.slaRecords[i]
+		}
+	}
+	if best == nil {
+		return nil, nil
+	}
+	return &ticket.SLARecordState{
+		ID: best.id, PolicyID: best.policyID, StartedAt: best.startedAt,
+		PausedSecondsAtStart: best.pausedBase, Facts: best.facts,
+	}, nil
+}
+
+func (f *fakeStore) MatchSLAPolicy(_ context.Context, p ticket.Priority, _ uuid.UUID) (*uuid.UUID, error) {
+	if id, ok := f.slaPolicies[p]; ok {
+		return &id, nil
+	}
+	return nil, nil
+}
+
+func (f *fakeStore) SupersedeSLARecord(_ context.Context, id uuid.UUID, at time.Time) error {
+	for i, r := range f.slaRecords {
+		if r.id == id && r.supersededAt == nil {
+			r.supersededAt = &at
+			f.slaRecords[i] = r
+			return nil
+		}
+	}
+	return errNotFound
+}
+
+func (f *fakeStore) StartSLARecord(_ context.Context, r ticket.SLARecordStart) error {
+	for _, existing := range f.slaRecords {
+		if existing.ticketID == r.TicketID && existing.supersededAt == nil {
+			return errSecondCurrentSLARecord
+		}
+	}
+	f.slaRecords = append(f.slaRecords, fakeSLARecord{
+		id: r.ID, ticketID: r.TicketID, policyID: r.PolicyID,
+		startedAt: r.StartedAt, pausedBase: r.PausedSecondsAtStart, facts: r.Facts,
+	})
+	return nil
+}
 
 func (f *fakeStore) Create(_ context.Context, t ticket.Ticket) error {
 	if f.errCreate != nil {
@@ -173,6 +284,15 @@ func (f *fakeStore) ListStatusHistory(_ context.Context, ticketID uuid.UUID) ([]
 }
 
 func (f *fakeStore) CreateLink(_ context.Context, link ticket.TicketLink) error {
+	if f.errCreateLink != nil {
+		return f.errCreateLink
+	}
+	// Simulate unique constraint: check if link already exists
+	for _, existing := range f.links[link.SourceTicketID] {
+		if existing.TargetTicketID == link.TargetTicketID && existing.LinkType == link.LinkType {
+			return ticket.ErrLinkAlreadyExists
+		}
+	}
 	f.links[link.SourceTicketID] = append(f.links[link.SourceTicketID], link)
 	return nil
 }
@@ -203,8 +323,99 @@ func (f *fakeStore) ListAll(context.Context, int, int) ([]ticket.Ticket, error) 
 func (f *fakeStore) ListUnassigned(context.Context, int, int) ([]ticket.Ticket, error) {
 	return nil, nil
 }
-func (f *fakeStore) ListResolvedBefore(context.Context, time.Time, int) ([]ticket.Ticket, error) {
-	return nil, nil
+
+// IsAssignableUser and IsAssignableGroup: this fake has no user table, so
+// everything it is asked about is assignable. The real rule lives in SQL and
+// is exercised against a real database.
+func (f *fakeStore) IsAssignableUser(_ context.Context, id uuid.UUID) (bool, error) {
+	return !f.notPeople[id], nil
+}
+
+func (f *fakeStore) CTIIsCoherent(context.Context, uuid.UUID, *uuid.UUID, *uuid.UUID) (bool, error) {
+	return true, nil
+}
+
+// ArchivedCTINode: this fake has no catalogue, so nothing is archived. The real
+// rule lives in SQL and is exercised against a real database.
+func (f *fakeStore) ArchivedCTINode(context.Context, *uuid.UUID, *uuid.UUID, *uuid.UUID) (string, error) {
+	return "", nil
+}
+
+func (f *fakeStore) CategoryExists(context.Context, uuid.UUID) (bool, error) {
+	return true, nil
+}
+
+func (f *fakeStore) UserExists(context.Context, uuid.UUID) (bool, error) {
+	return true, nil
+}
+
+func (f *fakeStore) IsAssignableGroup(context.Context, uuid.UUID) (bool, error) {
+	return true, nil
+}
+
+// UnassignForUser clears the assignee on every open ticket held by a user.
+func (f *fakeStore) UnassignForUser(_ context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	var moved []uuid.UUID
+	for id, t := range f.tickets {
+		if t.AssigneeUserID == nil || *t.AssigneeUserID != userID {
+			continue
+		}
+		if t.ResolvedAt != nil || t.ClosedAt != nil {
+			continue
+		}
+		t.AssigneeUserID = nil
+		f.tickets[id] = t
+		moved = append(moved, id)
+	}
+	return moved, nil
+}
+
+// UnassignForGroup clears the group on every ticket held by it, whatever
+// state the ticket is in: the foreign key would clear them anyway.
+func (f *fakeStore) UnassignForGroup(_ context.Context, groupID uuid.UUID) ([]uuid.UUID, error) {
+	var moved []uuid.UUID
+	for id, t := range f.tickets {
+		if t.AssigneeGroupID == nil || *t.AssigneeGroupID != groupID {
+			continue
+		}
+		t.AssigneeGroupID = nil
+		f.tickets[id] = t
+		moved = append(moved, id)
+	}
+	return moved, nil
+}
+
+// DeleteGroup is where a test makes the last step of a group delete fail.
+func (f *fakeStore) DeleteGroup(_ context.Context, _ uuid.UUID) error {
+	return f.errDeleteGroup
+}
+
+func (f *fakeStore) ListResolvedBefore(_ context.Context, before time.Time, resolvedStatusID uuid.UUID, limit int) ([]ticket.Ticket, error) {
+	// Filter: ResolvedAt != nil && ResolvedAt < before && StatusID == resolvedStatusID && ClosedAt == nil
+	// Sort by ResolvedAt ascending, apply limit.
+	//
+	// StatusID is checked here to mirror the real query's `status_id = $2`
+	// (#191): a row with a stale resolved_at that has since moved to a
+	// different status must not be listed, or the sweep would relock and skip
+	// it forever instead of it simply falling out of the candidate set.
+	var candidates []ticket.Ticket
+	for _, t := range f.tickets {
+		if t.ResolvedAt != nil && t.ResolvedAt.Before(before) && t.StatusID == resolvedStatusID && t.ClosedAt == nil {
+			candidates = append(candidates, t)
+		}
+	}
+	// Sort by ResolvedAt ascending (earliest first).
+	for i := 0; i < len(candidates)-1; i++ {
+		for j := i + 1; j < len(candidates); j++ {
+			if candidates[j].ResolvedAt.Before(*candidates[i].ResolvedAt) {
+				candidates[i], candidates[j] = candidates[j], candidates[i]
+			}
+		}
+	}
+	if limit > 0 && len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	return candidates, nil
 }
 func (f *fakeStore) SearchByReporter(context.Context, uuid.UUID, string, int, int) ([]ticket.Ticket, error) {
 	return nil, nil
@@ -236,14 +447,20 @@ func (f *fakeStore) ListFiltered(context.Context, ticket.Filter) ([]ticket.Ticke
 func (f *fakeStore) SearchVisibleToStaff(context.Context, uuid.UUID, string, int, int) ([]ticket.Ticket, error) {
 	return nil, nil
 }
-func (f *fakeStore) CreateAttachment(context.Context, ticket.Attachment) error { return nil }
+func (f *fakeStore) CreateAttachment(context.Context, ticket.Attachment) error {
+	f.attachmentCreates++
+	return nil
+}
 func (f *fakeStore) GetAttachmentByID(context.Context, uuid.UUID) (ticket.Attachment, error) {
 	return ticket.Attachment{}, errNotFound
 }
+func (f *fakeStore) CountGuestAttachments(context.Context, uuid.UUID) (int, error) { return 0, nil }
+
 func (f *fakeStore) ListAttachments(context.Context, uuid.UUID) ([]ticket.Attachment, error) {
 	return nil, nil
 }
 func (f *fakeStore) DeleteAttachment(context.Context, uuid.UUID) error { return nil }
+func (f *fakeStore) AnyAttachmentExists(context.Context) (bool, error) { return false, nil }
 
 // ── status store ─────────────────────────────────────────────────────────────
 
@@ -256,6 +473,7 @@ type fakeStatusStore struct {
 	counts map[uuid.UUID]int64
 
 	deletes int
+	updates int
 }
 
 func (f *fakeStatusStore) GetStatusByName(_ context.Context, name string) (ticket.Status, error) {
@@ -275,7 +493,10 @@ func (f *fakeStatusStore) ListStatuses(context.Context) ([]ticket.Status, error)
 }
 
 func (f *fakeStatusStore) CreateStatus(context.Context, ticket.Status) error { return nil }
-func (f *fakeStatusStore) UpdateStatus(context.Context, ticket.Status) error { return nil }
+func (f *fakeStatusStore) UpdateStatus(context.Context, ticket.Status) error {
+	f.updates++
+	return nil
+}
 func (f *fakeStatusStore) DeleteStatus(context.Context, uuid.UUID) error {
 	f.deletes++
 	return nil
@@ -301,11 +522,24 @@ func (f *fakeStatusStore) CountByStatusForAssignee(context.Context, uuid.UUID, u
 type fakeDispatcher struct {
 	events []notification.Event
 	err    error
+	// sendTime stands in for the outbox worker's send-time step (#164): the
+	// harness sets it to Service.IssueGuestLink, so an event marked GuestLink
+	// is recorded as it would be sent — carrying the token the send created,
+	// or none if nobody is left to send it to. Rotation tests keep asserting
+	// on GuestToken, now created at send rather than at the change.
+	sendTime func(context.Context, notification.Event) (notification.Event, bool, error)
 }
 
-func (f *fakeDispatcher) Dispatch(_ context.Context, e notification.Event) error {
+func (f *fakeDispatcher) Dispatch(ctx context.Context, e notification.Event) error {
 	if f.err != nil {
 		return f.err
+	}
+	if e.GuestLink && f.sendTime != nil {
+		// A send-time failure does not undo the queueing, which succeeded;
+		// the worker retries it. Record the event as queued.
+		if sent, ok, err := f.sendTime(ctx, e); err == nil && ok {
+			e = sent
+		}
 	}
 	f.events = append(f.events, e)
 	return nil
@@ -324,9 +558,18 @@ func (f *fakeDispatcher) types() []notification.EventType {
 type fakeAuditStore struct {
 	entries []audit.Entry
 	err     error
+
+	// failOnCall, when non-zero, fails the Nth call to Create (1-based) and no
+	// other, so a test can let a first audit write succeed and fail the second.
+	failOnCall int
+	calls      int
 }
 
 func (f *fakeAuditStore) Create(_ context.Context, e audit.Entry) error {
+	f.calls++
+	if f.failOnCall != 0 && f.calls == f.failOnCall {
+		return errStoreDown
+	}
 	if f.err != nil {
 		return f.err
 	}
@@ -334,27 +577,115 @@ func (f *fakeAuditStore) Create(_ context.Context, e audit.Entry) error {
 	return nil
 }
 
-func (f *fakeAuditStore) ListByEntity(context.Context, string, uuid.UUID, int, int) ([]audit.Entry, error) {
-	return nil, nil
+// ListByEntity mirrors the real store's query closely enough to be a
+// meaningful double: filtered to the (entityType, entityID) pair, newest
+// first, limit/offset applied — not a stub that always returns nothing.
+func (f *fakeAuditStore) ListByEntity(_ context.Context, entityType string, entityID uuid.UUID, limit, offset int) ([]audit.Entry, error) {
+	var matched []audit.Entry
+	for _, e := range f.entries {
+		if e.EntityType == entityType && e.EntityID == entityID {
+			matched = append(matched, e)
+		}
+	}
+	sort.Slice(matched, func(i, j int) bool { return matched[i].CreatedAt.After(matched[j].CreatedAt) })
+	if offset >= len(matched) {
+		return nil, nil
+	}
+	matched = matched[offset:]
+	if limit > 0 && limit < len(matched) {
+		matched = matched[:limit]
+	}
+	return matched, nil
+}
+
+// Search mirrors the real store's filter semantics closely enough to be a
+// meaningful double: every Filter field is optional and narrows the result,
+// newest first, with the total count taken before limit/offset is applied.
+func (f *fakeAuditStore) Search(_ context.Context, filter audit.Filter, limit, offset int) (audit.Page, error) {
+	if f.err != nil {
+		return audit.Page{}, f.err
+	}
+	// Scope is a query's job and this double has no ticket table to apply it
+	// to; ignoring it would hand back entries the caller asked to have hidden.
+	if filter.ScopedTo != nil {
+		return audit.Page{}, errors.New("fakeAuditStore does not implement Filter.ScopedTo")
+	}
+	var matched []audit.Entry
+	for _, e := range f.entries {
+		if filter.EntityType != "" && e.EntityType != filter.EntityType {
+			continue
+		}
+		if filter.Action != "" && e.Action != filter.Action {
+			continue
+		}
+		if filter.ActorID != nil && (e.ActorID == nil || *e.ActorID != *filter.ActorID) {
+			continue
+		}
+		if filter.From != nil && e.CreatedAt.Before(*filter.From) {
+			continue
+		}
+		if filter.To != nil && e.CreatedAt.After(*filter.To) {
+			continue
+		}
+		if filter.Q != "" && !strings.Contains(e.EntityType, filter.Q) && !strings.Contains(e.Action, filter.Q) {
+			continue
+		}
+		matched = append(matched, e)
+	}
+	sort.Slice(matched, func(i, j int) bool { return matched[i].CreatedAt.After(matched[j].CreatedAt) })
+	total := len(matched)
+	if offset >= len(matched) {
+		return audit.Page{Total: total}, nil
+	}
+	matched = matched[offset:]
+	hasMore := false
+	if limit > 0 && limit < len(matched) {
+		matched, hasMore = matched[:limit], true
+	}
+	return audit.Page{Entries: matched, Total: total, HasMore: hasMore}, nil
+}
+
+func (f *fakeAuditStore) DeleteOlderThan(_ context.Context, cutoff time.Time) (int64, error) {
+	if f.err != nil {
+		return 0, f.err
+	}
+	var kept []audit.Entry
+	var deleted int64
+	for _, e := range f.entries {
+		if e.CreatedAt.Before(cutoff) {
+			deleted++
+			continue
+		}
+		kept = append(kept, e)
+	}
+	f.entries = kept
+	return deleted, nil
 }
 
 type fakeSLA struct {
 	firstResponses int
 	resolutions    int
 	err            error
+
+	// lastResolvedAt is the `at` argument RecordResolved was last called
+	// with, so a test can assert WHICH instant close()/UpdateStatus recorded
+	// a resolution against — the real ticket's own ResolvedAt, not a bare
+	// close-time now(). See #227.
+	lastResolvedAt time.Time
 }
 
 func (f *fakeSLA) AttachPolicy(context.Context, ticket.Ticket) error { return nil }
 
-func (f *fakeSLA) RecordResolved(_ context.Context, _ uuid.UUID, _ time.Time) error {
+func (f *fakeSLA) RecordResolved(_ context.Context, _ ticket.Ticket, at time.Time) error {
 	if f.err != nil {
 		return f.err
 	}
 	f.resolutions++
+	f.lastResolvedAt = at
 	return nil
 }
 
-func (f *fakeSLA) RecordFirstResponse(_ context.Context, _ uuid.UUID, _ time.Time) error {
+func (f *fakeSLA) RecordFirstResponse(_ context.Context, _ ticket.Ticket, _ time.Time) error {
 	if f.err != nil {
 		return f.err
 	}
@@ -375,12 +706,17 @@ type fakeAtomic struct {
 	store *fakeStore
 	audit *fakeAuditStore
 
+	// sink stands in for the outbox the production runner writes in the
+	// transaction (#506): the merged events of a change that committed are
+	// delivered here, and those of one that rolled back never are.
+	sink notification.Dispatcher
+
 	commits    int
 	rollbacks  int
 	errBeginTx error
 }
 
-func (a *fakeAtomic) InTx(_ context.Context, fn func(ticket.Store, audit.Store) error) error {
+func (a *fakeAtomic) InTx(ctx context.Context, fn func(ticket.Store, audit.Store, *notification.Changes) error) error {
 	if a.errBeginTx != nil {
 		return a.errBeginTx
 	}
@@ -398,13 +734,21 @@ func (a *fakeAtomic) InTx(_ context.Context, fn func(ticket.Store, audit.Store) 
 	}
 	history := append([]ticket.StatusHistoryEntry(nil), a.store.history...)
 	entries := append([]audit.Entry(nil), a.audit.entries...)
+	links := make(map[uuid.UUID][]ticket.TicketLink, len(a.store.links))
+	for k, v := range a.store.links {
+		links[k] = append([]ticket.TicketLink(nil), v...)
+	}
 	counters := [4]int{a.store.creates, a.store.updates, a.store.replyCreates, a.store.historyCreates}
+	slaRecords := append([]fakeSLARecord(nil), a.store.slaRecords...)
 
-	if err := fn(a.store, a.audit); err != nil {
+	changes := &notification.Changes{}
+	if err := fn(a.store, a.audit, changes); err != nil {
+		a.store.slaRecords = slaRecords
 		a.store.tickets = tickets
 		a.store.replies = replies
 		a.store.history = history
 		a.audit.entries = entries
+		a.store.links = links
 		a.store.creates, a.store.updates, a.store.replyCreates, a.store.historyCreates =
 			counters[0], counters[1], counters[2], counters[3]
 		a.rollbacks++
@@ -412,6 +756,11 @@ func (a *fakeAtomic) InTx(_ context.Context, fn func(ticket.Store, audit.Store) 
 	}
 
 	a.commits++
+	if a.sink != nil {
+		for _, ev := range changes.Events() {
+			_ = a.sink.Dispatch(ctx, ev)
+		}
+	}
 	return nil
 }
 
@@ -434,18 +783,21 @@ func (f *fakeStore) CreateGuestToken(_ context.Context, _, ticketID uuid.UUID, h
 		f.guestTokens = map[string]guestTokenRow{}
 	}
 	f.guestTokens[hash] = guestTokenRow{ticketID: ticketID, expiresAt: expiresAt}
+	f.guestTokenCreates++
 	return nil
 }
 
 func (f *fakeStore) TicketByGuestToken(ctx context.Context, hash string) (ticket.Ticket, error) {
 	row, ok := f.guestTokens[hash]
-	// Expiry and closure decided here, as the query decides them, so a test
-	// cannot pass against a fake that is more permissive than the database.
+	// Expiry decided here, as the query decides it, so a test cannot pass
+	// against a fake that is more permissive than the database. Closure is
+	// NOT decided here (#349): a closed ticket resolves, and the service
+	// refuses it for writes.
 	if !ok || !row.expiresAt.After(time.Now()) {
 		return ticket.Ticket{}, ticket.ErrGuestTokenNotFound
 	}
 	t, err := f.GetByID(ctx, row.ticketID)
-	if err != nil || t.ClosedAt != nil {
+	if err != nil {
 		return ticket.Ticket{}, ticket.ErrGuestTokenNotFound
 	}
 	return t, nil
@@ -474,11 +826,33 @@ func (f *fakeStore) DeleteGuestTokensForTicket(_ context.Context, ticketID uuid.
 func (f *fakeStore) TicketIDByTrackingAndGuestEmail(_ context.Context, tn ticket.TrackingNumber, email string) (uuid.UUID, error) {
 	for _, t := range f.tickets {
 		if t.TrackingNumber == tn && t.GuestEmail != nil &&
-			strings.EqualFold(*t.GuestEmail, email) && t.ClosedAt == nil {
+			strings.EqualFold(*t.GuestEmail, email) {
 			return t.ID, nil
 		}
 	}
 	return uuid.Nil, ticket.ErrGuestTokenNotFound
+}
+
+// expireGuestTokens backdates every token a ticket holds, as thirty days
+// passing would.
+func (f *fakeStore) expireGuestTokens(ticketID uuid.UUID) {
+	for h, row := range f.guestTokens {
+		if row.ticketID == ticketID {
+			row.expiresAt = time.Now().Add(-time.Minute)
+			f.guestTokens[h] = row
+		}
+	}
+}
+
+// latestGuestTokenExpiry is the furthest expiry among a ticket's tokens.
+func (f *fakeStore) latestGuestTokenExpiry(ticketID uuid.UUID) time.Time {
+	var latest time.Time
+	for _, row := range f.guestTokens {
+		if row.ticketID == ticketID && row.expiresAt.After(latest) {
+			latest = row.expiresAt
+		}
+	}
+	return latest
 }
 
 // guestTokenCount reports how many tokens a ticket holds, so a test can assert
@@ -491,4 +865,15 @@ func (f *fakeStore) guestTokenCount(ticketID uuid.UUID) int {
 		}
 	}
 	return n
+}
+
+// kinds is every kind the recorded events announce, in order. An event is one
+// change (#506), so what a test used to ask of "the events dispatched" it asks
+// of the kinds they carry.
+func (f *fakeDispatcher) kinds() []notification.EventType {
+	var out []notification.EventType
+	for _, e := range f.events {
+		out = append(out, e.AllKinds()...)
+	}
+	return out
 }

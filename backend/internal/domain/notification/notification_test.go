@@ -2,6 +2,7 @@ package notification
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +27,8 @@ func TestEvent_RecipientAndTrackingNumberStayOutOfTheWebhookPayload(t *testing.T
 		Payload:        map[string]any{"ReplyBody": "the reply"},
 		TrackingNumber: "GHD-2026-000001",
 		Recipient:      "customer@example.com",
+		Subject:        "Printer jammed",
+		StatusName:     "Resolved",
 	}
 
 	raw, err := json.Marshal(ev)
@@ -38,6 +41,13 @@ func TestEvent_RecipientAndTrackingNumberStayOutOfTheWebhookPayload(t *testing.T
 	require.NotContains(t, body, "TrackingNumber\":",
 		"the field must not be serialised; the payload key of the same name may be")
 	require.NotContains(t, body, "GHD-2026-000001")
+	// Subject and StatusName exist for the webhook renderers to read off the
+	// event directly; they must not move the raw wire shape either.
+	require.NotContains(t, body, "Subject\":",
+		"the field must not be serialised; a Payload key of the same name may be")
+	require.NotContains(t, body, "StatusName")
+	require.NotContains(t, body, "Printer jammed")
+	require.NotContains(t, body, "Resolved")
 
 	// What subscribers do get is unchanged.
 	var got map[string]any
@@ -75,4 +85,45 @@ func TestEvent_GuestTokenStaysOutOfTheWebhookPayload(t *testing.T) {
 	require.NotContains(t, string(raw), "a-secret-access-token",
 		"a subscriber must not be handed the guest's credential")
 	require.NotContains(t, string(raw), "GuestToken")
+}
+
+// GuestLink and GuestToken are for the email channel. Event's JSON is the raw
+// webhook body, and a webhook subscriber must never receive a guest's access
+// token, nor the flag that says one is coming (#164).
+func TestEvent_GuestFieldsNeverReachTheWebhookBody(t *testing.T) {
+	ev := Event{Type: EventTicketReplied, GuestToken: "raw-token", GuestLink: true}
+	b, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leaked := range []string{"raw-token", "GuestToken", "GuestLink", "guest_link"} {
+		if strings.Contains(string(b), leaked) {
+			t.Fatalf("webhook body carries %q: %s", leaked, b)
+		}
+	}
+}
+
+// Attrs is how the webhook filter (#413) sees a ticket's classification. It is
+// excluded from the wire like Subject, so setting it must not move the raw
+// body by one byte.
+func TestEvent_AttrsStayOutOfTheWebhookPayload(t *testing.T) {
+	ev := Event{
+		Type:       EventTicketCreated,
+		TicketID:   uuid.MustParse("11111111-2222-3333-4444-555555555555"),
+		OccurredAt: time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC),
+		Payload:    map[string]any{"Subject": "Printer jammed"},
+	}
+	before, err := json.Marshal(ev)
+	require.NoError(t, err)
+
+	catID := uuid.MustParse("aaaaaaaa-0000-0000-0000-000000000001")
+	grpID := uuid.MustParse("bbbbbbbb-0000-0000-0000-000000000002")
+	ev.Ticket = &TicketState{CategoryID: catID, Priority: "critical", AssigneeGroupID: &grpID}
+	after, err := json.Marshal(ev)
+	require.NoError(t, err)
+
+	require.Equal(t, string(before), string(after), "setting Attrs changed the webhook body")
+	require.NotContains(t, string(after), "critical")
+	require.NotContains(t, string(after), catID.String())
+	require.NotContains(t, string(after), grpID.String())
 }

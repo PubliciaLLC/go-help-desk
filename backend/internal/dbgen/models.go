@@ -14,24 +14,42 @@ import (
 )
 
 type ApiKey struct {
-	ID          uuid.UUID    `json:"id"`
-	Name        string       `json:"name"`
-	HashedToken string       `json:"hashed_token"`
-	UserID      uuid.UUID    `json:"user_id"`
-	Scopes      []string     `json:"scopes"`
-	LastUsedAt  sql.NullTime `json:"last_used_at"`
-	ExpiresAt   sql.NullTime `json:"expires_at"`
-	CreatedAt   time.Time    `json:"created_at"`
+	ID          uuid.UUID     `json:"id"`
+	Name        string        `json:"name"`
+	HashedToken string        `json:"hashed_token"`
+	UserID      uuid.UUID     `json:"user_id"`
+	Scopes      []string      `json:"scopes"`
+	LastUsedAt  sql.NullTime  `json:"last_used_at"`
+	ExpiresAt   sql.NullTime  `json:"expires_at"`
+	CreatedAt   time.Time     `json:"created_at"`
+	CreatedBy   uuid.NullUUID `json:"created_by"`
 }
 
 type Attachment struct {
-	ID          uuid.UUID `json:"id"`
-	TicketID    uuid.UUID `json:"ticket_id"`
-	Filename    string    `json:"filename"`
-	MimeType    string    `json:"mime_type"`
-	SizeBytes   int64     `json:"size_bytes"`
-	StoragePath string    `json:"storage_path"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID              uuid.UUID      `json:"id"`
+	TicketID        uuid.UUID      `json:"ticket_id"`
+	Filename        string         `json:"filename"`
+	MimeType        string         `json:"mime_type"`
+	SizeBytes       int64          `json:"size_bytes"`
+	StoragePath     string         `json:"storage_path"`
+	CreatedAt       time.Time      `json:"created_at"`
+	DetectedMime    sql.NullString `json:"detected_mime"`
+	Sha256          sql.NullString `json:"sha256"`
+	VirusName       sql.NullString `json:"virus_name"`
+	ContentMismatch sql.NullBool   `json:"content_mismatch"`
+	UploadedByGuest bool           `json:"uploaded_by_guest"`
+}
+
+type AttachmentReputation struct {
+	Sha256     string         `json:"sha256"`
+	Provider   string         `json:"provider"`
+	State      string         `json:"state"`
+	Detected   sql.NullInt32  `json:"detected"`
+	Total      sql.NullInt32  `json:"total"`
+	KnownFeeds []string       `json:"known_feeds"`
+	ThreatName sql.NullString `json:"threat_name"`
+	AnalysedAt sql.NullTime   `json:"analysed_at"`
+	FetchedAt  time.Time      `json:"fetched_at"`
 }
 
 type AuditLog struct {
@@ -82,6 +100,15 @@ type CustomFieldDef struct {
 	CreatedAt time.Time             `json:"created_at"`
 }
 
+type EmailTemplateOverride struct {
+	Name      string         `json:"name"`
+	Subject   string         `json:"subject"`
+	Body      string         `json:"body"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	UpdatedBy uuid.NullUUID  `json:"updated_by"`
+	Html      sql.NullString `json:"html"`
+}
+
 type Group struct {
 	ID          uuid.UUID `json:"id"`
 	Name        string    `json:"name"`
@@ -108,12 +135,30 @@ type GuestAccessToken struct {
 	LastUsedAt sql.NullTime `json:"last_used_at"`
 }
 
+type InstanceSecret struct {
+	Name      string    `json:"name"`
+	Value     []byte    `json:"value"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type Item struct {
 	ID        uuid.UUID `json:"id"`
 	TypeID    uuid.UUID `json:"type_id"`
 	Name      string    `json:"name"`
 	SortOrder int32     `json:"sort_order"`
 	Active    bool      `json:"active"`
+}
+
+type NotificationOutbox struct {
+	ID           uuid.UUID       `json:"id"`
+	Channel      string          `json:"channel"`
+	Event        json.RawMessage `json:"event"`
+	CreatedAt    time.Time       `json:"created_at"`
+	AvailableAt  time.Time       `json:"available_at"`
+	ClaimedUntil sql.NullTime    `json:"claimed_until"`
+	Attempts     int32           `json:"attempts"`
+	LastError    sql.NullString  `json:"last_error"`
+	FailedAt     sql.NullTime    `json:"failed_at"`
 }
 
 type OauthClient struct {
@@ -123,16 +168,24 @@ type OauthClient struct {
 	Name         string    `json:"name"`
 	Scopes       []string  `json:"scopes"`
 	CreatedAt    time.Time `json:"created_at"`
+	UserID       uuid.UUID `json:"user_id"`
+}
+
+type PasswordResetToken struct {
+	UserID    uuid.UUID `json:"user_id"`
+	TokenHash string    `json:"token_hash"`
+	ExpiresAt time.Time `json:"expires_at"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type PendingRegistration struct {
-	ID           uuid.UUID `json:"id"`
-	Email        string    `json:"email"`
-	DisplayName  string    `json:"display_name"`
-	PasswordHash string    `json:"password_hash"`
-	Token        uuid.UUID `json:"token"`
-	ExpiresAt    time.Time `json:"expires_at"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID           uuid.UUID      `json:"id"`
+	Email        string         `json:"email"`
+	DisplayName  sql.NullString `json:"display_name"`
+	PasswordHash sql.NullString `json:"password_hash"`
+	Token        uuid.UUID      `json:"token"`
+	ExpiresAt    time.Time      `json:"expires_at"`
+	CreatedAt    time.Time      `json:"created_at"`
 }
 
 type Plugin struct {
@@ -172,12 +225,23 @@ type SlaPolicy struct {
 }
 
 type SlaRecord struct {
-	TicketID             uuid.UUID    `json:"ticket_id"`
-	PolicyID             uuid.UUID    `json:"policy_id"`
-	FirstResponseAt      sql.NullTime `json:"first_response_at"`
-	ResolvedAt           sql.NullTime `json:"resolved_at"`
-	ResponseBreachedAt   sql.NullTime `json:"response_breached_at"`
-	ResolutionBreachedAt sql.NullTime `json:"resolution_breached_at"`
+	TicketID                      uuid.UUID     `json:"ticket_id"`
+	PolicyID                      uuid.UUID     `json:"policy_id"`
+	FirstResponseAt               sql.NullTime  `json:"first_response_at"`
+	ResolvedAt                    sql.NullTime  `json:"resolved_at"`
+	ResponseBreachedAt            sql.NullTime  `json:"response_breached_at"`
+	ResolutionBreachedAt          sql.NullTime  `json:"resolution_breached_at"`
+	ResponseElapsedAtMetSeconds   sql.NullInt64 `json:"response_elapsed_at_met_seconds"`
+	ResolutionElapsedAtMetSeconds sql.NullInt64 `json:"resolution_elapsed_at_met_seconds"`
+	ID                            uuid.UUID     `json:"id"`
+	StartedAt                     sql.NullTime  `json:"started_at"`
+	PausedSecondsAtStart          int64         `json:"paused_seconds_at_start"`
+	SupersededAt                  sql.NullTime  `json:"superseded_at"`
+}
+
+type SpentSamlHandover struct {
+	TokenHash []byte    `json:"token_hash"`
+	SpentAt   time.Time `json:"spent_at"`
 }
 
 type Status struct {
@@ -197,27 +261,34 @@ type Tag struct {
 }
 
 type Ticket struct {
-	ID              uuid.UUID      `json:"id"`
-	TrackingNumber  string         `json:"tracking_number"`
-	Subject         string         `json:"subject"`
-	Description     string         `json:"description"`
-	CategoryID      uuid.UUID      `json:"category_id"`
-	TypeID          uuid.NullUUID  `json:"type_id"`
-	ItemID          uuid.NullUUID  `json:"item_id"`
-	Priority        string         `json:"priority"`
-	StatusID        uuid.UUID      `json:"status_id"`
-	AssigneeUserID  uuid.NullUUID  `json:"assignee_user_id"`
-	AssigneeGroupID uuid.NullUUID  `json:"assignee_group_id"`
-	ReporterUserID  uuid.NullUUID  `json:"reporter_user_id"`
-	GuestEmail      sql.NullString `json:"guest_email"`
-	ResolutionNotes sql.NullString `json:"resolution_notes"`
-	ResolvedAt      sql.NullTime   `json:"resolved_at"`
-	ClosedAt        sql.NullTime   `json:"closed_at"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
-	GuestName       string         `json:"guest_name"`
-	GuestPhone      string         `json:"guest_phone"`
-	SearchVector    interface{}    `json:"search_vector"`
+	ID                        uuid.UUID      `json:"id"`
+	TrackingNumber            string         `json:"tracking_number"`
+	Subject                   string         `json:"subject"`
+	Description               string         `json:"description"`
+	CategoryID                uuid.UUID      `json:"category_id"`
+	TypeID                    uuid.NullUUID  `json:"type_id"`
+	ItemID                    uuid.NullUUID  `json:"item_id"`
+	Priority                  string         `json:"priority"`
+	StatusID                  uuid.UUID      `json:"status_id"`
+	AssigneeUserID            uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID           uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID            uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail                sql.NullString `json:"guest_email"`
+	ResolutionNotes           sql.NullString `json:"resolution_notes"`
+	ResolvedAt                sql.NullTime   `json:"resolved_at"`
+	ClosedAt                  sql.NullTime   `json:"closed_at"`
+	CreatedAt                 time.Time      `json:"created_at"`
+	UpdatedAt                 time.Time      `json:"updated_at"`
+	GuestName                 string         `json:"guest_name"`
+	GuestPhone                string         `json:"guest_phone"`
+	SearchVector              interface{}    `json:"search_vector"`
+	PendingSince              sql.NullTime   `json:"pending_since"`
+	SlaPausedSeconds          int64          `json:"sla_paused_seconds"`
+	ReopenCount               int32          `json:"reopen_count"`
+	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
+	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
+	DescriptionFormat         string         `json:"description_format"`
+	SourceChannel             string         `json:"source_channel"`
 }
 
 type TicketCustomFieldValue struct {
@@ -225,6 +296,12 @@ type TicketCustomFieldValue struct {
 	FieldDefID uuid.UUID `json:"field_def_id"`
 	Value      string    `json:"value"`
 	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type TicketFollower struct {
+	TicketID  uuid.UUID `json:"ticket_id"`
+	UserID    uuid.UUID `json:"user_id"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type TicketLink struct {
@@ -241,6 +318,7 @@ type TicketReply struct {
 	Internal       bool          `json:"internal"`
 	CreatedAt      time.Time     `json:"created_at"`
 	NotifyCustomer bool          `json:"notify_customer"`
+	BodyFormat     string        `json:"body_format"`
 }
 
 type TicketStatusHistory struct {
@@ -266,28 +344,68 @@ type Type struct {
 }
 
 type User struct {
-	ID                uuid.UUID    `json:"id"`
-	Email             string       `json:"email"`
-	DisplayName       string       `json:"display_name"`
-	Role              string       `json:"role"`
-	PasswordHash      string       `json:"password_hash"`
-	MfaSecret         string       `json:"mfa_secret"`
-	MfaEnabled        bool         `json:"mfa_enabled"`
-	SamlSubject       string       `json:"saml_subject"`
-	CreatedAt         time.Time    `json:"created_at"`
-	UpdatedAt         time.Time    `json:"updated_at"`
-	DeletedAt         sql.NullTime `json:"deleted_at"`
-	Disabled          bool         `json:"disabled"`
-	OidcSubject       string       `json:"oidc_subject"`
-	MfaFailedAttempts int32        `json:"mfa_failed_attempts"`
-	MfaLockedUntil    sql.NullTime `json:"mfa_locked_until"`
+	ID                  uuid.UUID    `json:"id"`
+	Email               string       `json:"email"`
+	DisplayName         string       `json:"display_name"`
+	Role                string       `json:"role"`
+	PasswordHash        string       `json:"password_hash"`
+	MfaSecret           string       `json:"mfa_secret"`
+	MfaEnabled          bool         `json:"mfa_enabled"`
+	SamlSubject         string       `json:"saml_subject"`
+	CreatedAt           time.Time    `json:"created_at"`
+	UpdatedAt           time.Time    `json:"updated_at"`
+	DeletedAt           sql.NullTime `json:"deleted_at"`
+	Disabled            bool         `json:"disabled"`
+	OidcSubject         string       `json:"oidc_subject"`
+	MfaFailedAttempts   int32        `json:"mfa_failed_attempts"`
+	MfaLockedUntil      sql.NullTime `json:"mfa_locked_until"`
+	ServiceAccount      bool         `json:"service_account"`
+	EmailNotifyAssigned bool         `json:"email_notify_assigned"`
+	EmailNotifyActivity bool         `json:"email_notify_activity"`
+	EmailNotifyGroup    bool         `json:"email_notify_group"`
+	MustChangePassword  bool         `json:"must_change_password"`
+}
+
+type WebauthnCredential struct {
+	ID             uuid.UUID    `json:"id"`
+	UserID         uuid.UUID    `json:"user_id"`
+	CredentialID   []byte       `json:"credential_id"`
+	PublicKey      []byte       `json:"public_key"`
+	SignCount      int64        `json:"sign_count"`
+	Transports     []string     `json:"transports"`
+	Aaguid         []byte       `json:"aaguid"`
+	BackupEligible bool         `json:"backup_eligible"`
+	BackupState    bool         `json:"backup_state"`
+	Name           string       `json:"name"`
+	CreatedAt      time.Time    `json:"created_at"`
+	LastUsedAt     sql.NullTime `json:"last_used_at"`
 }
 
 type WebhookConfig struct {
-	ID        uuid.UUID `json:"id"`
-	Url       string    `json:"url"`
-	Events    []string  `json:"events"`
-	Secret    string    `json:"secret"`
-	Enabled   bool      `json:"enabled"`
-	CreatedAt time.Time `json:"created_at"`
+	ID                 uuid.UUID       `json:"id"`
+	Url                string          `json:"url"`
+	Events             []string        `json:"events"`
+	Secret             string          `json:"secret"`
+	Enabled            bool            `json:"enabled"`
+	CreatedAt          time.Time       `json:"created_at"`
+	PayloadFormat      string          `json:"payload_format"`
+	LastDeliveryAt     sql.NullTime    `json:"last_delivery_at"`
+	LastDeliveryStatus int32           `json:"last_delivery_status"`
+	LastDeliveryError  string          `json:"last_delivery_error"`
+	TicketFilter       json.RawMessage `json:"ticket_filter"`
+	ApiKeyID           uuid.NullUUID   `json:"api_key_id"`
+}
+
+type WebhookDelivery struct {
+	ID            uuid.UUID       `json:"id"`
+	WebhookID     uuid.UUID       `json:"webhook_id"`
+	EventType     string          `json:"event_type"`
+	Event         json.RawMessage `json:"event"`
+	CreatedAt     time.Time       `json:"created_at"`
+	LastAttemptAt time.Time       `json:"last_attempt_at"`
+	Status        int32           `json:"status"`
+	Result        string          `json:"result"`
+	Attempts      int32           `json:"attempts"`
+	Retrying      bool            `json:"retrying"`
+	DropReason    string          `json:"drop_reason"`
 }

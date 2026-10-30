@@ -3,6 +3,7 @@ package user_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,10 +27,13 @@ var errFakeNotFound = user.ErrNotFound
 type fakeUserStore struct {
 	mfaFailures map[uuid.UUID]int
 	mfaLocks    map[uuid.UUID]*time.Time
-	byID        map[uuid.UUID]user.User
-	byEmail     map[string]user.User
-	bySAML      map[string]user.User
-	byOIDC      map[string]user.User
+	// passkeys is how many each user holds; the fake has no passkey table, and
+	// the only question asked of it is whether ClearFactors took them.
+	passkeys map[uuid.UUID]int
+	byID     map[uuid.UUID]user.User
+	byEmail  map[string]user.User
+	bySAML   map[string]user.User
+	byOIDC   map[string]user.User
 
 	// Call counters, so tests can assert that a rejected login neither
 	// created nor mutated a user record.
@@ -40,6 +44,11 @@ type fakeUserStore struct {
 	errGetByOIDC  error
 	errGetByEmail error
 	errGetBySAML  error
+
+	// Rehash injection, for the sign-in upgrade tests.
+	rehashCalls  int
+	errRehash    error
+	rehashCtxErr error // ctx.Err() as the last RehashPassword saw it
 }
 
 // seed inserts a user directly, without touching the call counters.
@@ -62,6 +71,7 @@ func newFakeUserStore() *fakeUserStore {
 		byOIDC:      make(map[string]user.User),
 		mfaFailures: make(map[uuid.UUID]int),
 		mfaLocks:    make(map[uuid.UUID]*time.Time),
+		passkeys:    make(map[uuid.UUID]int),
 	}
 }
 
@@ -84,6 +94,16 @@ func (f *fakeUserStore) GetByID(_ context.Context, id uuid.UUID) (user.User, err
 		return user.User{}, errors.New("not found")
 	}
 	return u, nil
+}
+
+func (f *fakeUserStore) GetByIDs(_ context.Context, ids []uuid.UUID) ([]user.User, error) {
+	var out []user.User
+	for _, id := range ids {
+		if u, ok := f.byID[id]; ok {
+			out = append(out, u)
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeUserStore) GetByEmail(_ context.Context, email string) (user.User, error) {
@@ -201,8 +221,260 @@ func (f *fakeUserStore) ListAdmin(_ context.Context, _, _ int) ([]user.User, err
 	return out, nil
 }
 
+func (f *fakeUserStore) SearchAdmin(_ context.Context, _, _ string, _ *bool, _, _ int) ([]user.User, int64, error) {
+	return nil, 0, nil
+}
+
+func (f *fakeUserStore) LookupRequesters(_ context.Context, _ string) ([]user.User, error) {
+	return nil, nil
+}
+
+func (f *fakeUserStore) ListActiveAdmins(_ context.Context) ([]user.User, error) {
+	out := make([]user.User, 0, len(f.byID))
+	for _, u := range f.byID {
+		if u.Role == user.RoleAdmin && u.IsActive() {
+			out = append(out, u)
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeUserStore) Count(_ context.Context) (int64, error) {
 	return int64(len(f.byID)), nil
+}
+
+// EmailIsTaken covers deleted rows, because the real unique constraint does.
+func (f *fakeUserStore) EmailIsTaken(_ context.Context, email string) (bool, error) {
+	_, ok := f.byEmail[email]
+	return ok, nil
+}
+
+// UpdateProfile writes only the address and the name, leaving everything else
+// on the row alone — which is the whole point of it existing.
+func (f *fakeUserStore) UpdateProfile(_ context.Context, id uuid.UUID, email, displayName string) error {
+	u, ok := f.byID[id]
+	if !ok {
+		return errFakeNotFound
+	}
+	delete(f.byEmail, u.Email)
+	u.Email = email
+	u.DisplayName = displayName
+	u.UpdatedAt = time.Now()
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	return nil
+}
+
+// SetEmailPreferences writes only the switches named in the patch.
+func (f *fakeUserStore) SetEmailPreferences(_ context.Context, id uuid.UUID, p user.EmailPreferencesPatch) error {
+	u, ok := f.byID[id]
+	if !ok {
+		return errFakeNotFound
+	}
+	if p.Assigned != nil {
+		u.EmailNotifyAssigned = *p.Assigned
+	}
+	if p.Activity != nil {
+		u.EmailNotifyActivity = *p.Activity
+	}
+	if p.Group != nil {
+		u.EmailNotifyGroup = *p.Group
+	}
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	return nil
+}
+
+func (f *fakeUserStore) CountBelowCost(context.Context, int) (int, error) { return 0, nil }
+
+// RehashPassword mirrors the real statement: it applies only while the stored
+// hash is still the one the caller read.
+func (f *fakeUserStore) RehashPassword(ctx context.Context, id uuid.UUID, oldHash, newHash string) (bool, error) {
+	f.rehashCalls++
+	f.rehashCtxErr = ctx.Err()
+	if f.errRehash != nil {
+		return false, f.errRehash
+	}
+	u, ok := f.byID[id]
+	if !ok || u.PasswordHash != oldHash {
+		return false, nil
+	}
+	u.PasswordHash = newHash
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	return true, nil
+}
+
+// The narrow writes. Each touches the one thing it names and leaves the rest
+// of the row alone — which is the property the whole-row Update did not have.
+func (f *fakeUserStore) SetPasswordHash(_ context.Context, id uuid.UUID, hash string) error {
+	u, ok := f.byID[id]
+	if !ok {
+		return errFakeNotFound
+	}
+	u.PasswordHash = hash
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	return nil
+}
+
+func (f *fakeUserStore) SetMFA(_ context.Context, id uuid.UUID, secret string, enabled bool) error {
+	u, ok := f.byID[id]
+	if !ok {
+		return errFakeNotFound
+	}
+	u.MFASecret, u.MFAEnabled = secret, enabled
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	return nil
+}
+
+func (f *fakeUserStore) SetFirstMFA(_ context.Context, id uuid.UUID, secret string) (bool, error) {
+	u, ok := f.byID[id]
+	if !ok {
+		return false, errFakeNotFound
+	}
+	if u.MFAEnabled {
+		return false, nil
+	}
+	u.MFASecret, u.MFAEnabled = secret, true
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	return true, nil
+}
+
+// SyncFederated counts as an update, because that is what the OIDC and SAML
+// tests are asking about: whether the sign-in wrote the profile back. It goes
+// through the narrow statement now rather than the whole-row one, which is
+// the point of it existing — a sign-in must not carry a role or a password
+// hash along with the name.
+func (f *fakeUserStore) SyncFederated(ctx context.Context, id uuid.UUID, email, displayName string) error {
+	f.updates++
+	return f.UpdateProfile(ctx, id, email, displayName)
+}
+
+// EnableMFAIfStillEnrolled mirrors the statement: the flag only, and only
+// while a secret is still there. A fake that wrote the secret back would hide
+// the very thing this exists to stop.
+func (f *fakeUserStore) EnableMFAIfStillEnrolled(_ context.Context, id uuid.UUID) (bool, error) {
+	u, ok := f.byID[id]
+	if !ok || u.MFASecret == "" || u.DeletedAt != nil {
+		return false, nil
+	}
+	u.MFAEnabled = true
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	return true, nil
+}
+
+// AdoptOIDCSubject applies the same conditions the statement does, from the
+// stored row rather than from whatever the caller read earlier — which is the
+// whole reason the real one is a single statement.
+func (f *fakeUserStore) AdoptOIDCSubject(_ context.Context, id uuid.UUID, subject, displayName string) (bool, error) {
+	u, ok := f.byID[id]
+	if !ok {
+		return false, nil
+	}
+	if u.Disabled || u.DeletedAt != nil || u.Role == user.RoleAdmin ||
+		u.SAMLSubject != "" || (u.OIDCSubject != "" && u.OIDCSubject != subject) {
+		return false, nil
+	}
+	f.updates++
+	u.OIDCSubject = subject
+	if displayName != "" {
+		u.DisplayName = displayName
+	}
+	f.byID[u.ID] = u
+	f.byEmail[u.Email] = u
+	f.byOIDC[subject] = u
+	return true, nil
+}
+
+// The three guarded writes. This fake applies the same rule the SQL does:
+// refuse when the change would leave no active administrator.
+func (f *fakeUserStore) lastActiveAdmin(id uuid.UUID) bool {
+	for otherID, u := range f.byID {
+		if otherID == id || u.Role != user.RoleAdmin || u.Disabled || u.DeletedAt != nil {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func (f *fakeUserStore) DisableUnlessLastAdmin(ctx context.Context, id uuid.UUID) (bool, error) {
+	if f.byID[id].Role == user.RoleAdmin && f.lastActiveAdmin(id) {
+		return false, nil
+	}
+	return true, f.Disable(ctx, id)
+}
+
+func (f *fakeUserStore) SoftDeleteUnlessLastAdmin(ctx context.Context, id uuid.UUID) (bool, error) {
+	if f.byID[id].Role == user.RoleAdmin && f.lastActiveAdmin(id) {
+		return false, nil
+	}
+	return true, f.SoftDelete(ctx, id)
+}
+
+func (f *fakeUserStore) SetRoleUnlessLastAdmin(_ context.Context, id uuid.UUID, role string) (bool, error) {
+	if role != string(user.RoleAdmin) && f.byID[id].Role == user.RoleAdmin && f.lastActiveAdmin(id) {
+		return false, nil
+	}
+	u := f.byID[id]
+	u.Role = user.Role(role)
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	return true, nil
+}
+
+// ListAssignableStaff returns the active staff and admins in this fake.
+func (f *fakeUserStore) ListAssignableStaff(_ context.Context) ([]user.AssignableStaff, error) {
+	var out []user.AssignableStaff
+	for _, u := range f.byID {
+		if u.DeletedAt != nil {
+			continue
+		}
+		out = append(out, user.AssignableStaff{
+			ID: u.ID, DisplayName: u.DisplayName,
+			Assignable: u.Role == user.RoleStaff || u.Role == user.RoleAdmin,
+		})
+	}
+	return out, nil
+}
+
+// CountOtherActiveAdmins counts the administrators left if this one stopped
+// being one.
+func (f *fakeUserStore) CountOtherActiveAdmins(_ context.Context, excluding uuid.UUID) (int64, error) {
+	var n int64
+	for id, u := range f.byID {
+		if id == excluding || u.Role != user.RoleAdmin || u.Disabled || u.DeletedAt != nil {
+			continue
+		}
+		n++
+	}
+	return n, nil
+}
+
+// CountAll counts every row. This fake never removes one, so it is the same
+// number — which is the point: the real store's two counts differ, and that
+// difference is what reopened the setup route.
+func (f *fakeUserStore) CountAll(_ context.Context) (int64, error) {
+	return int64(len(f.byID)), nil
+}
+
+// ClearFactors mirrors the statement: authenticator and passkeys together.
+func (f *fakeUserStore) ClearFactors(_ context.Context, id uuid.UUID) (int, error) {
+	u, ok := f.byID[id]
+	if !ok {
+		return 0, errFakeNotFound
+	}
+	u.MFAEnabled = false
+	u.MFASecret = ""
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	n := f.passkeys[id]
+	delete(f.passkeys, id)
+	return n, nil
 }
 
 func (f *fakeUserStore) ClearMFA(_ context.Context, id uuid.UUID) error {
@@ -289,12 +561,12 @@ func TestUserService_VerifyPassword_InactiveUser(t *testing.T) {
 		Email:       "dave@example.com",
 		DisplayName: "Dave",
 		Role:        user.RoleUser,
-		Password:    "pass",
+		Password:    "a-passphrase",
 	})
 	require.NoError(t, err)
 	require.NoError(t, svc.SoftDelete(context.Background(), u.ID))
 
-	_, err = svc.VerifyPassword(context.Background(), "dave@example.com", "pass")
+	_, err = svc.VerifyPassword(context.Background(), "dave@example.com", "a-passphrase")
 	require.Error(t, err)
 }
 
@@ -304,16 +576,16 @@ func TestUserService_SetPassword(t *testing.T) {
 		Email:       "eve@example.com",
 		DisplayName: "Eve",
 		Role:        user.RoleUser,
-		Password:    "oldpass",
+		Password:    "old-passphrase",
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, svc.SetPassword(context.Background(), u.ID, "newpass"))
+	require.NoError(t, svc.SetPassword(context.Background(), u.ID, "new-passphrase"))
 
-	_, err = svc.VerifyPassword(context.Background(), "eve@example.com", "oldpass")
+	_, err = svc.VerifyPassword(context.Background(), "eve@example.com", "old-passphrase")
 	require.Error(t, err, "old password should no longer work")
 
-	_, err = svc.VerifyPassword(context.Background(), "eve@example.com", "newpass")
+	_, err = svc.VerifyPassword(context.Background(), "eve@example.com", "new-passphrase")
 	require.NoError(t, err, "new password should work")
 }
 
@@ -323,7 +595,7 @@ func TestUserService_EnrollMFA(t *testing.T) {
 		Email:       "frank@example.com",
 		DisplayName: "Frank",
 		Role:        user.RoleUser,
-		Password:    "pass",
+		Password:    "a-passphrase",
 	})
 	require.NoError(t, err)
 
@@ -339,7 +611,7 @@ func TestUserService_ConfirmMFAEnrollment(t *testing.T) {
 		Email:       "grace@example.com",
 		DisplayName: "Grace",
 		Role:        user.RoleUser,
-		Password:    "pass",
+		Password:    "a-passphrase",
 	})
 	require.NoError(t, err)
 
@@ -356,13 +628,13 @@ func TestUserService_ConfirmMFAEnrollment(t *testing.T) {
 	require.True(t, got.MFAEnabled)
 }
 
-// TestNewService_DefaultsToDefaultCost is the guard on WithBcryptCost.
+// TestNewService_DefaultsToCost12 is the guard on WithBcryptCost.
 //
 // The option exists so the test suite can hash cheaply; the danger is that it
 // leaks into production wiring, or that someone "simplifies" the default. Both
 // would silently weaken every password in the database — nothing else in the
 // system would notice, and no test would fail. This one does.
-func TestNewService_DefaultsToDefaultCost(t *testing.T) {
+func TestNewService_DefaultsToCost12(t *testing.T) {
 	store := newFakeUserStore()
 	svc := user.NewService(store) // no options: exactly how cmd/server builds it
 
@@ -379,8 +651,8 @@ func TestNewService_DefaultsToDefaultCost(t *testing.T) {
 
 	cost, err := bcrypt.Cost([]byte(stored.PasswordHash))
 	require.NoError(t, err)
-	require.Equal(t, bcrypt.DefaultCost, cost,
-		"the default construction must hash at bcrypt.DefaultCost; lowering it weakens every stored password")
+	require.Equal(t, 12, cost,
+		"the default construction must hash at cost 12 (#453); lowering it weakens every stored password")
 }
 
 // TestWithBcryptCost_FloorsAtMinCost keeps the option from producing hashes
@@ -417,7 +689,7 @@ func TestUserService_EnrollMFA_RefusesSilentReEnrolment(t *testing.T) {
 		Email:       "heidi@example.com",
 		DisplayName: "Heidi",
 		Role:        user.RoleUser,
-		Password:    "pass",
+		Password:    "a-passphrase",
 	})
 	require.NoError(t, err)
 
@@ -482,6 +754,27 @@ func TestVerifyPassword_MissCostsTheSameAsAHit(t *testing.T) {
 
 // MFA attempt tracking. The fake keeps it in the struct so a test can assert
 // that failures are counted and cleared.
+// ClaimMFAAttempt mirrors the real statement: an expired lock resets the
+// window, a live one holds its deadline while the count keeps rising, and
+// otherwise the attempt is counted and the lock set once the budget is spent.
+func (f *fakeUserStore) ClaimMFAAttempt(_ context.Context, id uuid.UUID, maxAttempts int, lockFor time.Duration) (int, *time.Time, error) {
+	if until := f.mfaLocks[id]; until != nil {
+		if time.Now().After(*until) {
+			f.mfaFailures[id] = 1
+			f.mfaLocks[id] = nil
+			return 1, nil, nil
+		}
+		f.mfaFailures[id]++
+		return f.mfaFailures[id], until, nil
+	}
+	f.mfaFailures[id]++
+	if f.mfaFailures[id] >= maxAttempts {
+		lockedUntil := time.Now().Add(lockFor)
+		f.mfaLocks[id] = &lockedUntil
+	}
+	return f.mfaFailures[id], f.mfaLocks[id], nil
+}
+
 func (f *fakeUserStore) RecordMFAFailure(_ context.Context, id uuid.UUID, maxAttempts int, lockFor time.Duration) (int, *time.Time, error) {
 	f.mfaFailures[id]++
 	if f.mfaFailures[id] >= maxAttempts {
@@ -499,4 +792,203 @@ func (f *fakeUserStore) ClearMFAFailures(_ context.Context, id uuid.UUID) error 
 
 func (f *fakeUserStore) GetMFALock(_ context.Context, id uuid.UUID) (int, *time.Time, error) {
 	return f.mfaFailures[id], f.mfaLocks[id], nil
+}
+
+// TestValidatePassword checks the password length rule that every path that
+// sets a password applies.
+func TestValidatePassword(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		wantErr error
+	}{
+		{name: "empty", input: "", wantErr: user.ErrPasswordTooShort},
+		{name: "one short of the minimum", input: "passwor", wantErr: user.ErrPasswordTooShort},
+		{name: "exactly the minimum", input: "password", wantErr: nil},
+		{name: "exactly the maximum", input: strings.Repeat("a", 72), wantErr: nil},
+		{name: "one over the maximum", input: strings.Repeat("a", 73), wantErr: user.ErrPasswordTooLong},
+		{name: "far over", input: strings.Repeat("a", 1000), wantErr: user.ErrPasswordTooLong},
+		{name: "36 two-byte characters are exactly 72 bytes", input: strings.Repeat("é", 36), wantErr: nil},
+		{name: "25 three-byte characters are 75 bytes", input: strings.Repeat("密", 25), wantErr: user.ErrPasswordTooLong},
+		{name: "18 four-byte characters are exactly 72 bytes", input: strings.Repeat("🔑", 18), wantErr: nil},
+		{name: "19 four-byte characters are 76 bytes", input: strings.Repeat("🔑", 19), wantErr: user.ErrPasswordTooLong},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := user.ValidatePassword(tc.input)
+			if tc.wantErr == nil {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, tc.wantErr)
+			}
+		})
+	}
+
+	// Guards: the constant is 72, bcrypt accepts exactly 72 bytes and refuses 73
+	// (so the constant matches what bcrypt enforces).
+	require.Equal(t, 72, user.MaxPasswordLength)
+	_, err := bcrypt.GenerateFromPassword([]byte(strings.Repeat("a", user.MaxPasswordLength)), bcrypt.MinCost)
+	require.NoError(t, err, "bcrypt accepts exactly MaxPasswordLength bytes")
+	_, err = bcrypt.GenerateFromPassword([]byte(strings.Repeat("a", user.MaxPasswordLength+1)), bcrypt.MinCost)
+	require.ErrorIs(t, err, bcrypt.ErrPasswordTooLong,
+		"bcrypt refuses to hash anything longer than MaxPasswordLength")
+}
+
+// TestPassword_TheMaximumAppliesOnEveryDomainPath checks that Create,
+// SetPassword, and AdminSetPassword all enforce the maximum and refuse before
+// hashing or writing.
+func TestPassword_TheMaximumAppliesOnEveryDomainPath(t *testing.T) {
+	validPass := strings.Repeat("a", 72)
+	tooLongPass := strings.Repeat("密", 25) // 75 bytes
+	tooShortPass := "short"                // 5 bytes, below minimum 8
+
+	cases := []struct {
+		name   string
+		method func(svc *user.Service, password string) (email string, err error)
+	}{
+		{
+			name: "Create",
+			method: func(svc *user.Service, pwd string) (string, error) {
+				_, err := svc.Create(context.Background(), user.CreateUserInput{
+					Email:       "x@example.com",
+					DisplayName: "X",
+					Role:        user.RoleUser,
+					Password:    pwd,
+				})
+				return "", err
+			},
+		},
+		{
+			name: "SetPassword",
+			method: func(svc *user.Service, pwd string) (string, error) {
+				u, err := svc.Create(context.Background(), user.CreateUserInput{
+					Email:       "y@example.com",
+					DisplayName: "Y",
+					Role:        user.RoleUser,
+					Password:    "a-passphrase",
+				})
+				require.NoError(t, err, "seed account creation must succeed")
+				return u.Email, svc.SetPassword(context.Background(), u.ID, pwd)
+			},
+		},
+		{
+			name: "AdminSetPassword",
+			method: func(svc *user.Service, pwd string) (string, error) {
+				u, err := svc.Create(context.Background(), user.CreateUserInput{
+					Email:       "z@example.com",
+					DisplayName: "Z",
+					Role:        user.RoleUser,
+					Password:    "a-passphrase",
+				})
+				require.NoError(t, err, "seed account creation must succeed")
+				return u.Email, svc.AdminSetPassword(context.Background(), u.ID, pwd, nil)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Subcase: 72-byte password succeeds
+			store := newFakeUserStore()
+			svc := user.NewService(store, user.WithBcryptCost(bcrypt.MinCost))
+			_, err := tc.method(svc, validPass)
+			require.NoError(t, err, "a 72-byte password must be accepted")
+
+			// Subcase: too-long password (75 bytes) fails with the right error
+			store = newFakeUserStore()
+			svc = user.NewService(store, user.WithBcryptCost(bcrypt.MinCost))
+			email, err := tc.method(svc, tooLongPass)
+			require.Error(t, err)
+			require.ErrorIs(t, err, user.ErrPasswordTooLong,
+				"a too-long password must be refused with ErrPasswordTooLong")
+			require.ErrorIs(t, err, user.ErrValidation,
+				"a validation error must wrap ErrValidation so the handler knows it is a 400")
+			require.NotErrorIs(t, err, bcrypt.ErrPasswordTooLong,
+				"the refusal must happen before bcrypt, not after")
+
+			// For SetPassword and AdminSetPassword, verify old password still works
+			if tc.name != "Create" {
+				_, verifyErr := svc.VerifyPassword(context.Background(), email, "a-passphrase")
+				require.NoError(t, verifyErr, "the old password must still work; the failed change did not write")
+			}
+
+			// Subcase: too-short password fails with the right error
+			store = newFakeUserStore()
+			svc = user.NewService(store, user.WithBcryptCost(bcrypt.MinCost))
+			email, err = tc.method(svc, tooShortPass)
+			require.Error(t, err)
+			require.ErrorIs(t, err, user.ErrPasswordTooShort,
+				"a too-short password must be refused with ErrPasswordTooShort")
+			require.ErrorIs(t, err, user.ErrValidation,
+				"a validation error must wrap ErrValidation so the handler knows it is a 400")
+
+			// For SetPassword and AdminSetPassword, verify old password still works after short password failure too
+			if tc.name != "Create" {
+				_, verifyErr := svc.VerifyPassword(context.Background(), email, "a-passphrase")
+				require.NoError(t, verifyErr, "the old password must still work; the failed change did not write")
+			}
+		})
+	}
+
+	// Guard: the minimum message must stay unchanged (caught by string comparison)
+	store := newFakeUserStore()
+	svc := user.NewService(store, user.WithBcryptCost(bcrypt.MinCost))
+	_, err := svc.Create(context.Background(), user.CreateUserInput{
+		Email:       "msg@example.com",
+		DisplayName: "M",
+		Role:        user.RoleUser,
+		Password:    "short",
+	})
+	require.EqualError(t, err, "invalid input: password must be at least 8 characters")
+}
+
+// TestVerifyPassword_DoesNotApplyTheMaximum checks that login does not refuse
+// long passwords, so a hash made by truncating bcrypt still accepts its owner's
+// full password.
+func TestVerifyPassword_DoesNotApplyTheMaximum(t *testing.T) {
+	store := newFakeUserStore()
+	svc := user.NewService(store, user.WithBcryptCost(bcrypt.MinCost))
+
+	// Seed a user with a hash of 72 bytes (what a truncating bcrypt would make).
+	h, _ := bcrypt.GenerateFromPassword([]byte(strings.Repeat("a", 72)), bcrypt.MinCost)
+	u := user.User{
+		ID:           uuid.New(),
+		Email:        "legacy@example.com",
+		DisplayName:  "Legacy",
+		Role:         user.RoleUser,
+		PasswordHash: string(h),
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+	store.seed(u)
+
+	// A 100-byte password whose first 72 bytes match must succeed (login truncates)
+	_, err := svc.VerifyPassword(context.Background(), "legacy@example.com", strings.Repeat("a", 100))
+	require.NoError(t, err, "login must accept a long password if its first 72 bytes match the hash")
+
+	// A 100-byte wrong password must fail like any wrong password
+	_, err = svc.VerifyPassword(context.Background(), "legacy@example.com", strings.Repeat("b", 100))
+	require.Error(t, err)
+	require.NotErrorIs(t, err, user.ErrPasswordTooLong,
+		"a wrong long password must not be refused with ErrPasswordTooLong")
+	require.NotErrorIs(t, err, user.ErrValidation,
+		"a wrong long password is not a validation error; it is an authentication failure")
+}
+
+// GetByIDs returns the accounts that exist and leaves out the rest, and an
+// empty request does not reach the store.
+func TestService_GetByIDs(t *testing.T) {
+	store := newFakeUserStore()
+	a := user.User{ID: uuid.New(), DisplayName: "A"}
+	store.byID[a.ID] = a
+	svc := user.NewService(store)
+
+	got, err := svc.GetByIDs(context.Background(), []uuid.UUID{a.ID, uuid.New()})
+	require.NoError(t, err)
+	require.Equal(t, []user.User{a}, got)
+
+	got, err = svc.GetByIDs(context.Background(), nil)
+	require.NoError(t, err)
+	require.Empty(t, got)
 }

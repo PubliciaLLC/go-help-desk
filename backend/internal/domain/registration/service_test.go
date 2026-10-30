@@ -3,12 +3,14 @@ package registration
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
@@ -43,6 +45,20 @@ func (f *fakeStore) GetByToken(_ context.Context, _ uuid.UUID) (PendingRegistrat
 	return f.record, nil
 }
 
+func (f *fakeStore) GetByID(_ context.Context, id uuid.UUID) (PendingRegistration, error) {
+	if f.getErr != nil {
+		return PendingRegistration{}, f.getErr
+	}
+	if f.record.ID != id {
+		return PendingRegistration{}, ErrNotFound
+	}
+	r := f.record
+	if f.rewriteEmail != "" {
+		r.Email = f.rewriteEmail
+	}
+	return r, nil
+}
+
 func (f *fakeStore) Delete(_ context.Context, _ uuid.UUID) error {
 	f.deleted = true
 	return f.deleteErr
@@ -50,13 +66,30 @@ func (f *fakeStore) Delete(_ context.Context, _ uuid.UUID) error {
 
 type fakeUsers struct {
 	created user.User
+	input   user.CreateUserInput
 	err     error
+	// existing is the set of addresses that already have an account, so the
+	// pre-check can be exercised.
+	existing map[string]bool
+	// takenErr makes EmailIsTaken fail, to tell a fault from a verdict.
+	takenErr error
+}
+
+// EmailIsTaken reports an existing account, which stops a signup before the
+// verification email goes out. Deleted accounts count here, as they do in the
+// real store — that is the case the first version of this missed.
+func (f *fakeUsers) EmailIsTaken(_ context.Context, email string) (bool, error) {
+	if f.takenErr != nil {
+		return false, f.takenErr
+	}
+	return f.existing[email], nil
 }
 
 func (f *fakeUsers) Create(_ context.Context, in user.CreateUserInput) (user.User, error) {
 	if f.err != nil {
 		return user.User{}, f.err
 	}
+	f.input = in
 	u := user.User{
 		ID:          uuid.New(),
 		Email:       in.Email,
@@ -72,12 +105,32 @@ type fakeMailer struct {
 	err  error
 }
 
-func (f *fakeMailer) SendVerificationEmail(_, _, _ string) error {
+func (f *fakeMailer) SendVerificationEmail(_ context.Context, _, _, _ string) error {
 	if f.err != nil {
 		return f.err
 	}
 	f.sent = true
 	return nil
+}
+
+// sendNow is the queue for tests that follow Register through to the mail: it
+// sends at once, through SendVerification, as the outbox worker would.
+type sendNow struct{ s *Service }
+
+func (n *sendNow) Dispatch(ctx context.Context, ev notification.Event) error {
+	raw, _ := ev.Payload["pending_id"].(string)
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return err
+	}
+	return n.s.SendVerification(ctx, id)
+}
+
+// newSendingService is NewService with a queue that sends at once.
+func newSendingService(store Store, users userCreator, mailer Mailer, baseURL string) *Service {
+	q := &sendNow{}
+	q.s = NewService(store, users, mailer, q, baseURL)
+	return q.s
 }
 
 // ── isEmailDomainAllowed ──────────────────────────────────────────────────────
@@ -112,16 +165,16 @@ func TestIsEmailDomainAllowed(t *testing.T) {
 
 func TestRegister(t *testing.T) {
 	t.Run("domain not allowed", func(t *testing.T) {
-		svc := NewService(&fakeStore{}, &fakeUsers{}, &fakeMailer{}, "http://localhost")
-		err := svc.Register(context.Background(), "a@other.com", "Alice", "pass", []string{"example.com"}, false)
+		svc := NewService(&fakeStore{}, &fakeUsers{}, &fakeMailer{}, &recordingQueue{}, "http://localhost")
+		err := svc.Register(context.Background(), "a@other.com", []string{"example.com"}, false)
 		if !errors.Is(err, ErrDomainNotAllowed) {
 			t.Fatalf("want ErrDomainNotAllowed, got %v", err)
 		}
 	})
 
 	t.Run("open registration required", func(t *testing.T) {
-		svc := NewService(&fakeStore{}, &fakeUsers{}, &fakeMailer{}, "http://localhost")
-		err := svc.Register(context.Background(), "a@any.com", "Alice", "pass", nil, false)
+		svc := NewService(&fakeStore{}, &fakeUsers{}, &fakeMailer{}, &recordingQueue{}, "http://localhost")
+		err := svc.Register(context.Background(), "a@any.com", nil, false)
 		if !errors.Is(err, ErrOpenRegistrationRequired) {
 			t.Fatalf("want ErrOpenRegistrationRequired, got %v", err)
 		}
@@ -130,8 +183,8 @@ func TestRegister(t *testing.T) {
 	t.Run("happy path — email sent", func(t *testing.T) {
 		store := &fakeStore{}
 		mailer := &fakeMailer{}
-		svc := NewService(store, &fakeUsers{}, mailer, "http://localhost")
-		err := svc.Register(context.Background(), "alice@example.com", "Alice", "password123", []string{"example.com"}, false)
+		svc := newSendingService(store, &fakeUsers{}, mailer, "http://localhost")
+		err := svc.Register(context.Background(), "alice@example.com", []string{"example.com"}, false)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -145,8 +198,8 @@ func TestRegister(t *testing.T) {
 
 	t.Run("open registration", func(t *testing.T) {
 		mailer := &fakeMailer{}
-		svc := NewService(&fakeStore{}, &fakeUsers{}, mailer, "http://localhost")
-		err := svc.Register(context.Background(), "a@any.com", "A", "pass", nil, true)
+		svc := newSendingService(&fakeStore{}, &fakeUsers{}, mailer, "http://localhost")
+		err := svc.Register(context.Background(), "a@any.com", nil, true)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -161,8 +214,8 @@ func TestRegister(t *testing.T) {
 func TestVerify(t *testing.T) {
 	t.Run("token not found", func(t *testing.T) {
 		store := &fakeStore{getErr: errors.New("not found")}
-		svc := NewService(store, &fakeUsers{}, &fakeMailer{}, "http://localhost")
-		_, err := svc.Verify(context.Background(), uuid.New())
+		svc := NewService(store, &fakeUsers{}, &fakeMailer{}, &recordingQueue{}, "http://localhost")
+		_, err := svc.Verify(context.Background(), uuid.New(), "Alice", "a-real-passphrase")
 		if err == nil {
 			t.Fatal("expected error")
 		}
@@ -176,8 +229,8 @@ func TestVerify(t *testing.T) {
 				ExpiresAt: time.Now().Add(-time.Hour),
 			},
 		}
-		svc := NewService(store, &fakeUsers{}, &fakeMailer{}, "http://localhost")
-		_, err := svc.Verify(context.Background(), uuid.New())
+		svc := NewService(store, &fakeUsers{}, &fakeMailer{}, &recordingQueue{}, "http://localhost")
+		_, err := svc.Verify(context.Background(), uuid.New(), "Alice", "a-real-passphrase")
 		if !errors.Is(err, ErrTokenExpired) {
 			t.Fatalf("want ErrTokenExpired, got %v", err)
 		}
@@ -186,21 +239,29 @@ func TestVerify(t *testing.T) {
 	t.Run("happy path — user created", func(t *testing.T) {
 		store := &fakeStore{
 			record: PendingRegistration{
-				ID:           uuid.New(),
-				Email:        "alice@example.com",
-				DisplayName:  "Alice",
-				PasswordHash: "hashed",
-				ExpiresAt:    time.Now().Add(time.Hour),
+				ID:        uuid.New(),
+				Email:     "alice@example.com",
+				ExpiresAt: time.Now().Add(time.Hour),
 			},
 		}
 		users := &fakeUsers{}
-		svc := NewService(store, users, &fakeMailer{}, "http://localhost")
-		u, err := svc.Verify(context.Background(), uuid.New())
+		svc := NewService(store, users, &fakeMailer{}, &recordingQueue{}, "http://localhost")
+		u, err := svc.Verify(context.Background(), uuid.New(), "Alice", "a-real-passphrase")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if u.Email != "alice@example.com" {
 			t.Errorf("unexpected user email: %s", u.Email)
+		}
+		// #360: the password is the one typed at verification, handed to
+		// user.Create as plain text so it is held to the same minimum and
+		// hashed the same way as every other account.
+		if users.input.Password != "a-real-passphrase" {
+			t.Errorf("account created with password %q, want the one given at verification", users.input.Password)
+		}
+		// #374: and the name, for the same reason.
+		if users.input.DisplayName != "Alice" {
+			t.Errorf("account created with name %q, want the one given at verification", users.input.DisplayName)
 		}
 		if !store.deleted {
 			t.Error("expected pending record to be deleted")
@@ -222,9 +283,9 @@ func TestRegister_RefusesAMalformedEmailBeforeStoringAnything(t *testing.T) {
 	} {
 		store := &fakeStore{}
 		mailer := &fakeMailer{}
-		svc := NewService(store, &fakeUsers{}, mailer, "https://help.example.com")
+		svc := newSendingService(store, &fakeUsers{}, mailer, "https://help.example.com")
 
-		err := svc.Register(context.Background(), addr, "Attacker", "password123", nil, true)
+		err := svc.Register(context.Background(), addr, nil, true)
 
 		if err == nil {
 			t.Fatalf("Register accepted %q", addr)
@@ -246,10 +307,10 @@ func TestRegister_RefusesAMalformedEmailBeforeStoringAnything(t *testing.T) {
 // A real signup must still work, and the address is normalised on the way in.
 func TestRegister_AcceptsAndNormalisesARealAddress(t *testing.T) {
 	store := &fakeStore{}
-	svc := NewService(store, &fakeUsers{}, &fakeMailer{}, "https://help.example.com")
+	svc := NewService(store, &fakeUsers{}, &fakeMailer{}, &recordingQueue{}, "https://help.example.com")
 
-	if err := svc.Register(context.Background(), "  User@Example.COM  ", "User",
-		"password123", nil, true); err != nil {
+	if err := svc.Register(context.Background(), "  User@Example.COM  ",
+		nil, true); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	if store.record.Email != "user@example.com" {
@@ -272,9 +333,9 @@ func TestRegister_MailsTheStoredAddressNotTheRequestedOne(t *testing.T) {
 	store := &fakeStore{}
 	store.rewriteEmail = "canonical@example.com"
 	mailer := &recordingMailer{}
-	svc := NewService(store, &fakeUsers{}, mailer, "https://help.example.com")
+	svc := newSendingService(store, &fakeUsers{}, mailer, "https://help.example.com")
 
-	err := svc.Register(context.Background(), "Requested@Example.com", "Ada", "correct horse", nil, true)
+	err := svc.Register(context.Background(), "Requested@Example.com", nil, true)
 	require.NoError(t, err)
 	require.Equal(t, "canonical@example.com", mailer.to,
 		"the mail must go to the address the store returned")
@@ -282,7 +343,377 @@ func TestRegister_MailsTheStoredAddressNotTheRequestedOne(t *testing.T) {
 
 type recordingMailer struct{ to string }
 
-func (m *recordingMailer) SendVerificationEmail(to, _, _ string) error {
+func (m *recordingMailer) SendVerificationEmail(_ context.Context, to, _, _ string) error {
 	m.to = to
 	return nil
+}
+
+// Verification is held to the same password minimum as every other path that
+// sets one, and a refused password does not use up the link: the person can
+// try again with a longer one.
+//
+// Signup was the fifth such path, and the one missed when the minimum was made
+// a single rule — an EMPTY password once produced a real account. Since #360
+// the password is chosen here rather than at signup, so the rule moves with
+// it.
+func TestVerify_HoldsThePasswordLengthRule(t *testing.T) {
+	cases := []struct {
+		name     string
+		password string
+		wantErr  error
+	}{
+		{name: "empty", password: "", wantErr: ErrPasswordTooShort},
+		{name: "one character", password: "a", wantErr: ErrPasswordTooShort},
+		{name: "one short of the minimum", password: "passwor", wantErr: ErrPasswordTooShort},
+		{name: "exactly the minimum", password: "password", wantErr: nil},
+		{name: "comfortably over", password: "a-real-passphrase", wantErr: nil},
+		{name: "exactly the maximum", password: strings.Repeat("a", 72), wantErr: nil},
+		{name: "one over the maximum", password: strings.Repeat("a", 73), wantErr: ErrPasswordTooLong},
+		{name: "25 characters, 75 bytes", password: strings.Repeat("密", 25), wantErr: ErrPasswordTooLong},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeStore{record: PendingRegistration{
+				ID: uuid.New(), Email: "a@any.com", ExpiresAt: time.Now().Add(time.Hour),
+			}}
+			users := &fakeUsers{}
+			svc := NewService(store, users, &fakeMailer{}, &recordingQueue{}, "http://localhost")
+			_, err := svc.Verify(context.Background(), uuid.New(), "Alice", tc.password)
+
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr,
+					"a %d-byte password was accepted (err=%v)", len(tc.password), err)
+				require.False(t, store.deleted || users.created.ID != uuid.Nil,
+					"a refused password used up the link")
+				return
+			}
+			require.NoError(t, err, "an acceptable password was refused: %v", err)
+		})
+	}
+
+	if user.MinPasswordLength != 8 {
+		t.Fatalf("the cases above are written against a minimum of 8, not %d", user.MinPasswordLength)
+	}
+	if user.MaxPasswordLength != 72 {
+		t.Fatalf("the cases above are written against a maximum of 72, not %d", user.MaxPasswordLength)
+	}
+}
+
+// A signup for an address that already has an account stops here, and says
+// nothing about it to the person signing up.
+//
+// It used to go all the way through: the row was written, the email was sent,
+// and the person clicked the link to be told their token was invalid or
+// already used — which it was not. Somebody whose old account was deleted
+// could never register again and was told every time that their link was
+// broken.
+//
+// The endpoint's answer is unchanged, deliberately. A 202 either way is what
+// stops signup being a way to find out who has an account here; what changes
+// is that a link which cannot work is never sent.
+func TestRegister_StopsWhenTheAddressAlreadyHasAnAccount(t *testing.T) {
+	mailer := &fakeMailer{}
+	svc := newSendingService(
+		&fakeStore{},
+		&fakeUsers{existing: map[string]bool{"taken@any.com": true}},
+		mailer, "http://localhost")
+
+	err := svc.Register(context.Background(), "taken@any.com", nil, true)
+	if !errors.Is(err, ErrAlreadyRegistered) {
+		t.Fatalf("want ErrAlreadyRegistered, got %v", err)
+	}
+	if mailer.sent {
+		t.Error("a verification email was sent for an address that cannot be registered")
+	}
+}
+
+// A deleted account still owns its address, so a signup for it is stopped
+// too.
+//
+// This was the case the first version of the check missed: it asked the login
+// lookup, which hides deleted rows, while the unique constraint covers every
+// row. So the signup was accepted, the email went out, and the link failed at
+// the end with "invalid or already used token" — the exact dead end the check
+// was added to prevent, still there for the exact person it was added for.
+func TestRegister_ADeletedAccountStillOwnsItsAddress(t *testing.T) {
+	mailer := &fakeMailer{}
+	svc := newSendingService(
+		&fakeStore{},
+		&fakeUsers{existing: map[string]bool{"gone@any.com": true}},
+		mailer, "http://localhost")
+
+	err := svc.Register(context.Background(), "gone@any.com", nil, true)
+	if !errors.Is(err, ErrAlreadyRegistered) {
+		t.Fatalf("want ErrAlreadyRegistered, got %v", err)
+	}
+	if mailer.sent {
+		t.Error("a verification email was sent for an address that cannot be registered")
+	}
+}
+
+// recordingQueue records what Register queues, without sending.
+type recordingQueue struct{ events []notification.Event }
+
+func (q *recordingQueue) Dispatch(_ context.Context, ev notification.Event) error {
+	q.events = append(q.events, ev)
+	return nil
+}
+
+// failingQueue refuses every event, as a broken outbox would.
+type failingQueue struct{ err error }
+
+func (q failingQueue) Dispatch(context.Context, notification.Event) error { return q.err }
+
+// A refused queue fails the signup, for a fresh address and a taken one alike.
+// For a taken address the queue error must win over ErrAlreadyRegistered: the
+// event never reached the outbox, and the caller's log should say so.
+func TestRegister_QueueFailureIsReturned(t *testing.T) {
+	queueErr := errors.New("outbox unavailable")
+	users := &fakeUsers{existing: map[string]bool{"taken@any.com": true}}
+	for _, addr := range []string{"fresh@any.com", "taken@any.com"} {
+		t.Run(addr, func(t *testing.T) {
+			svc := NewService(&fakeStore{}, users, &fakeMailer{}, failingQueue{queueErr}, "http://localhost")
+
+			err := svc.Register(context.Background(), addr, nil, true)
+			require.ErrorIs(t, err, queueErr)
+			require.NotErrorIs(t, err, ErrAlreadyRegistered)
+		})
+	}
+}
+
+// countingStore counts writes, so two requests can be compared.
+type countingStore struct {
+	fakeStore
+	upserts int
+}
+
+func (c *countingStore) Upsert(ctx context.Context, pr PendingRegistration) (PendingRegistration, error) {
+	c.upserts++
+	return c.fakeStore.Upsert(ctx, pr)
+}
+
+// #348: a fresh address and one that already has an account do the same work
+// on the request — one pending row written, one event queued — so the timing
+// no longer says which it was. The event names the pending row and nothing
+// else: no token, no address.
+func TestRegister_FreshAndTakenAddressesDoTheSameWork(t *testing.T) {
+	users := &fakeUsers{existing: map[string]bool{"taken@any.com": true}}
+	for _, addr := range []string{"fresh@any.com", "taken@any.com"} {
+		store, queue, mailer := &countingStore{}, &recordingQueue{}, &fakeMailer{}
+		svc := NewService(store, users, mailer, queue, "http://localhost")
+		_ = svc.Register(context.Background(), addr, nil, true)
+
+		if store.upserts != 1 || len(queue.events) != 1 {
+			t.Fatalf("%s: %d pending rows written and %d events queued, want 1 and 1", addr, store.upserts, len(queue.events))
+		}
+		if mailer.sent {
+			t.Fatalf("%s: mail was sent on the request", addr)
+		}
+		ev := queue.events[0]
+		if ev.Type != notification.EventRegistrationVerify || ev.Recipient != "" || ev.GuestToken != "" {
+			t.Fatalf("%s: unexpected event %+v", addr, ev)
+		}
+		if len(ev.Payload) != 1 || ev.Payload["pending_id"] != store.record.ID.String() {
+			t.Fatalf("%s: payload must hold only the pending id, got %v", addr, ev.Payload)
+		}
+	}
+}
+
+func TestSendVerification(t *testing.T) {
+	ctx := context.Background()
+	fresh := PendingRegistration{
+		ID: uuid.New(), Email: "fresh@any.com", Token: uuid.New(), ExpiresAt: time.Now().Add(time.Hour),
+	}
+	cases := []struct {
+		name     string
+		record   PendingRegistration
+		existing map[string]bool
+		id       uuid.UUID
+		wantSent bool
+	}{
+		{"mails the stored address and token", fresh, nil, fresh.ID, true},
+		{"a row that is gone sends nothing", fresh, nil, uuid.New(), false},
+		{"an expired row sends nothing", PendingRegistration{ID: fresh.ID, Email: fresh.Email, Token: fresh.Token,
+			ExpiresAt: time.Now().Add(-time.Minute)}, nil, fresh.ID, false},
+		{"an address with an account sends nothing", fresh, map[string]bool{"fresh@any.com": true}, fresh.ID, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mailer := &sendLog{}
+			svc := NewService(&fakeStore{record: tc.record}, &fakeUsers{existing: tc.existing}, mailer, &recordingQueue{}, "https://desk.example")
+			if err := svc.SendVerification(ctx, tc.id); err != nil {
+				t.Fatal(err)
+			}
+			if got := len(mailer.sent) == 1; got != tc.wantSent {
+				t.Fatalf("sent=%v, want %v", got, tc.wantSent)
+			}
+			if tc.wantSent && (mailer.sent[0].to != fresh.Email || mailer.sent[0].token != fresh.Token.String()) {
+				t.Fatalf("mailed %+v, want the stored address and token", mailer.sent[0])
+			}
+		})
+	}
+}
+
+type sentMail struct{ to, token string }
+
+type sendLog struct{ sent []sentMail }
+
+func (m *sendLog) SendVerificationEmail(_ context.Context, to, token, _ string) error {
+	m.sent = append(m.sent, sentMail{to, token})
+	return nil
+}
+
+// #370: the verification page looks the link up before asking for a name and
+// password, so it can show which address the account is for (and give a
+// password manager the address), and say a dead link is dead before anything
+// is typed. Lookup writes nothing.
+func TestLookup(t *testing.T) {
+	live := PendingRegistration{
+		ID: uuid.New(), Email: "alice@any.com", ExpiresAt: time.Now().Add(time.Hour),
+	}
+	cases := []struct {
+		name    string
+		store   *fakeStore
+		wantErr error
+	}{
+		{"a live link", &fakeStore{record: live}, nil},
+		{"an expired link", &fakeStore{record: PendingRegistration{ID: live.ID, Email: live.Email,
+			ExpiresAt: time.Now().Add(-time.Minute)}}, ErrTokenExpired},
+		{"an unknown link", &fakeStore{getErr: ErrNotFound}, ErrNotFound},
+	}
+	// A database fault is not a verdict on the link: the page must not tell
+	// somebody their link is dead because of an outage.
+	t.Run("a store fault is not a dead link", func(t *testing.T) {
+		svc := NewService(&fakeStore{getErr: errors.New("connection refused")}, &fakeUsers{}, &fakeMailer{}, &recordingQueue{}, "http://localhost")
+		_, err := svc.Lookup(context.Background(), uuid.New())
+		require.Error(t, err)
+		require.NotErrorIs(t, err, ErrNotFound)
+		require.NotErrorIs(t, err, ErrTokenExpired)
+	})
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			users := &fakeUsers{}
+			svc := NewService(tc.store, users, &fakeMailer{}, &recordingQueue{}, "http://localhost")
+			pr, err := svc.Lookup(context.Background(), uuid.New())
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, "alice@any.com", pr.Email)
+			}
+			require.False(t, tc.store.deleted, "a lookup must not use up the link")
+			require.Equal(t, uuid.Nil, users.created.ID, "a lookup must not create an account")
+		})
+	}
+}
+
+// #421: the lookup behind the verification page also says so when the address
+// has gained an account since the link was mailed, instead of letting the page
+// show a form the POST is certain to refuse. It is the POST's own verdict
+// (ErrAlreadyRegistered), and a fault in the check is a fault, not a verdict.
+func TestLookup_RefusesAnAddressThatNowHasAnAccount(t *testing.T) {
+	live := PendingRegistration{ID: uuid.New(), Email: "alice@any.com", ExpiresAt: time.Now().Add(time.Hour)}
+	expired := PendingRegistration{ID: uuid.New(), Email: "alice@any.com", ExpiresAt: time.Now().Add(-time.Minute)}
+
+	t.Run("taken", func(t *testing.T) {
+		store := &fakeStore{record: live}
+		svc := NewService(store, &fakeUsers{existing: map[string]bool{"alice@any.com": true}},
+			&fakeMailer{}, &recordingQueue{}, "http://localhost")
+		_, err := svc.Lookup(context.Background(), uuid.New())
+		require.ErrorIs(t, err, ErrAlreadyRegistered)
+		require.False(t, store.deleted, "a lookup must not use up the link")
+	})
+	t.Run("free", func(t *testing.T) {
+		svc := NewService(&fakeStore{record: live}, &fakeUsers{}, &fakeMailer{}, &recordingQueue{}, "http://localhost")
+		pr, err := svc.Lookup(context.Background(), uuid.New())
+		require.NoError(t, err)
+		require.Equal(t, "alice@any.com", pr.Email)
+	})
+	t.Run("expired wins over taken", func(t *testing.T) {
+		svc := NewService(&fakeStore{record: expired}, &fakeUsers{existing: map[string]bool{"alice@any.com": true}},
+			&fakeMailer{}, &recordingQueue{}, "http://localhost")
+		_, err := svc.Lookup(context.Background(), uuid.New())
+		require.ErrorIs(t, err, ErrTokenExpired)
+	})
+	t.Run("a store fault is not a verdict", func(t *testing.T) {
+		svc := NewService(&fakeStore{record: live}, &fakeUsers{takenErr: errors.New("connection refused")},
+			&fakeMailer{}, &recordingQueue{}, "http://localhost")
+		_, err := svc.Lookup(context.Background(), uuid.New())
+		require.Error(t, err)
+		require.NotErrorIs(t, err, ErrAlreadyRegistered)
+		require.NotErrorIs(t, err, ErrNotFound)
+		require.NotErrorIs(t, err, ErrTokenExpired)
+	})
+}
+
+// #374: the display name is chosen at verification too, by whoever reads the
+// inbox. A blank one is refused before anything is written, so the link still
+// works and the person can fill it in.
+func TestVerify_RequiresADisplayName(t *testing.T) {
+	for _, name := range []string{"", "   ", "\t\n"} {
+		store := &fakeStore{record: PendingRegistration{
+			ID: uuid.New(), Email: "a@any.com", ExpiresAt: time.Now().Add(time.Hour),
+		}}
+		users := &fakeUsers{}
+		svc := NewService(store, users, &fakeMailer{}, &recordingQueue{}, "http://localhost")
+		_, err := svc.Verify(context.Background(), uuid.New(), name, "a-real-passphrase")
+		require.ErrorIs(t, err, ErrDisplayNameRequired, "name %q", name)
+		require.False(t, store.deleted, "a refused name used up the link")
+		require.Equal(t, uuid.Nil, users.created.ID)
+	}
+
+	store := &fakeStore{record: PendingRegistration{ID: uuid.New(), Email: "a@any.com", ExpiresAt: time.Now().Add(time.Hour)}}
+	users := &fakeUsers{}
+	_, err := NewService(store, users, &fakeMailer{}, &recordingQueue{}, "http://localhost").
+		Verify(context.Background(), uuid.New(), "  Alice  ", "a-real-passphrase")
+	require.NoError(t, err)
+	require.Equal(t, "Alice", users.input.DisplayName, "the name is trimmed")
+}
+
+// #373: Verify tells a fault from a verdict, as Lookup does. ErrNotFound,
+// ErrTokenExpired and ErrAlreadyRegistered are verdicts on the link and the
+// page closes the form for them; anything else is a fault, and an outage must
+// not tell somebody their link is dead.
+func TestVerify_TellsAFaultFromAVerdict(t *testing.T) {
+	live := func() *fakeStore {
+		return &fakeStore{record: PendingRegistration{
+			ID: uuid.New(), Email: "alice@any.com", ExpiresAt: time.Now().Add(time.Hour),
+		}}
+	}
+	verdicts := []error{ErrNotFound, ErrTokenExpired, ErrAlreadyRegistered}
+
+	t.Run("an unknown link is a verdict", func(t *testing.T) {
+		svc := NewService(&fakeStore{getErr: ErrNotFound}, &fakeUsers{}, &fakeMailer{}, &recordingQueue{}, "http://localhost")
+		_, err := svc.Verify(context.Background(), uuid.New(), "Alice", "a-real-passphrase")
+		require.ErrorIs(t, err, ErrNotFound)
+	})
+
+	// The address gained an account after the link was mailed. Only the
+	// holder of a live link gets here, and they were mailed this address, so
+	// saying so discloses nothing; it is answered as a used link.
+	t.Run("an address that has gained an account is a verdict", func(t *testing.T) {
+		svc := NewService(live(), &fakeUsers{err: user.ErrEmailTaken}, &fakeMailer{}, &recordingQueue{}, "http://localhost")
+		_, err := svc.Verify(context.Background(), uuid.New(), "Alice", "a-real-passphrase")
+		require.ErrorIs(t, err, ErrAlreadyRegistered)
+	})
+
+	faults := []struct {
+		name  string
+		store *fakeStore
+		users *fakeUsers
+	}{
+		{"a store fault on the lookup", &fakeStore{getErr: errors.New("connection refused")}, &fakeUsers{}},
+		{"a store fault creating the account", live(), &fakeUsers{err: errors.New("connection refused")}},
+	}
+	for _, tc := range faults {
+		t.Run(tc.name+" is not a verdict", func(t *testing.T) {
+			svc := NewService(tc.store, tc.users, &fakeMailer{}, &recordingQueue{}, "http://localhost")
+			_, err := svc.Verify(context.Background(), uuid.New(), "Alice", "a-real-passphrase")
+			require.Error(t, err)
+			for _, v := range verdicts {
+				require.NotErrorIs(t, err, v)
+			}
+		})
+	}
 }

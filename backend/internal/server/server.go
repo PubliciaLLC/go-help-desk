@@ -20,19 +20,26 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/config"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/authstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/cannedresponse"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/emailtemplate"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/passwordreset"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/tag"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/webauthn"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
+	"github.com/publiciallc/go-help-desk/backend/internal/reputation"
 	"github.com/publiciallc/go-help-desk/backend/internal/version"
+	"golang.org/x/sync/singleflight"
 )
 
 // Server holds its domain services as concrete types, not interfaces, and does
@@ -73,6 +80,10 @@ import (
 // author. The package comment claimed it "uses the same auth methods (API key,
 // bearer token) as the REST API", which is presumably why nobody checked.
 //
+// On every MCP route (/mcp, /mcp/, /mcp/sse, /mcp/message) it first refuses any
+// request whose Origin header is present and is not this instance's: see
+// requireMCPOrigin.
+//
 // It authenticates; it does not authorise. Every signed-in role is admitted,
 // including RoleUser, and what a caller may then DO is decided per tool in
 // internal/mcp: write tools require staff, and reads are filtered through the
@@ -100,7 +111,7 @@ func (s *Server) ProtectMCP(next http.Handler) http.Handler {
 	chain := authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser)(
 		authmw.RequireMFA(next),
 	)
-	chain = authmw.BearerAuth(s.cfg.JWTSecret, s.oauthClientStore.GetByClientID)(chain)
+	chain = authmw.BearerAuth(s.cfg.JWTSecret, s.oauthClientStore.GetWithUser)(chain)
 	chain = authmw.APIKeyAuth(s.apiKeyLookup)(chain)
 	chain = authmw.SessionAuth(s.sessions)(chain)
 
@@ -115,27 +126,56 @@ func (s *Server) ProtectMCP(next http.Handler) http.Handler {
 	//
 	// Outermost, so the log line records the status the client actually saw,
 	// including the 401s and 403s the auth chain produces.
-	return chimw.RequestID(chimw.Recoverer(requestLogger(chain)))
+	//
+	// securityHeaders is here for the same reason the logger is: this mux sits
+	// outside the chi chain, so nothing else was setting them. DESIGN.md says
+	// "security headers on every response", and /mcp/ was one of the two
+	// places that was not true.
+	//
+	// The Origin check goes outside the auth chain and inside the logger, so a
+	// refusal is logged and carries the security headers, and says the same
+	// thing whatever credential came with it. See requireMCPOrigin.
+	return securityHeaders(chimw.RequestID(jsonRecoverer(requestLogger(
+		requireMCPOrigin(s.cfg.BaseURL, chain)))))
 }
 
-// OAuthClientLookup fetches an OAuth client by client ID.
+// OAuthClientLookup fetches an OAuth client by client ID. GetWithUser also
+// returns the service user it acts as, in one query, for BearerAuth.
 type OAuthClientLookup interface {
 	GetByClientID(ctx context.Context, clientID string) (auth.OAuthClient, error)
+	GetWithUser(ctx context.Context, clientID string) (auth.OAuthClient, user.User, error)
 }
 
 // AuthStoreIface is the server-facing interface for auth key management.
 type AuthStoreIface interface {
 	CreateAPIKey(ctx context.Context, k auth.APIKey) error
 	Delete(ctx context.Context, id uuid.UUID) error
+	// DeleteForUser is Delete limited to a key the user owns (#450).
+	DeleteForUser(ctx context.Context, id, userID uuid.UUID) error
 	ListByUser(ctx context.Context, userID uuid.UUID) ([]auth.APIKey, error)
+	// DeleteAllForUser revokes every key the user owns and returns how many.
+	DeleteAllForUser(ctx context.Context, userID uuid.UUID) (int64, error)
+	ListWithOwner(ctx context.Context, keyID *uuid.UUID) ([]auth.APIKeyWithOwner, error)
 	CreateOAuthClient(ctx context.Context, c auth.OAuthClient) error
 	DeleteOAuthClient(ctx context.Context, id uuid.UUID) error
 	ListOAuthClients(ctx context.Context) ([]auth.OAuthClient, error)
+	// OAuthClientNameForUser is the client a service user belongs to.
+	OAuthClientNameForUser(ctx context.Context, userID uuid.UUID) (string, error)
+	// ListOAuthClientGroups is every client's groups (its service user's), keyed
+	// by the client row's id, in one query.
+	ListOAuthClientGroups(ctx context.Context) (map[uuid.UUID][]auth.ClientGroup, error)
+	// ListOAuthClientsWithoutGroups names the switched-on clients whose service
+	// user is in no group.
+	ListOAuthClientsWithoutGroups(ctx context.Context) ([]string, error)
 	CreateWebhook(ctx context.Context, wh authstore.WebhookConfig) error
 	GetWebhook(ctx context.Context, id uuid.UUID) (authstore.WebhookConfig, error)
 	UpdateWebhook(ctx context.Context, wh authstore.WebhookConfig) error
 	DeleteWebhook(ctx context.Context, id uuid.UUID) error
+	// ReapproveWebhook clears the hook's link to the API key that made it.
+	ReapproveWebhook(ctx context.Context, id uuid.UUID) error
 	ListEnabledWebhooks(ctx context.Context) ([]authstore.WebhookConfig, error)
+	ListWebhooks(ctx context.Context) ([]authstore.WebhookConfig, error)
+	ListWebhookDeliveries(ctx context.Context, hookID uuid.UUID) ([]authstore.WebhookDeliveryRecord, error)
 }
 
 // Server is the top-level HTTP handler.
@@ -149,6 +189,18 @@ type Server struct {
 	// six-digit secret.
 	loginLimiter *authmw.RateLimiter
 
+	// guestUploadLimiter spends one unit per guest upload attempt, keyed by the
+	// ticket the guest link names (#445). The key is the ticket and not the
+	// address for the reason RateLimiter's comment gives, and because one guest
+	// behind a shared address must not use up another's. INTERIM like the
+	// others: in memory and per process.
+	guestUploadLimiter  *authmw.RateLimiter
+	guestRefusalLimiter *authmw.RateLimiter
+
+	// loginThrottleDelay is how long an over-budget login waits before the
+	// password is checked. See config.AuthThrottleDelay.
+	loginThrottleDelay time.Duration
+
 	// No scanner field. It is built per use from the effective address,
 	// because the address is an operator setting and a scanner constructed
 	// once at startup would ignore it — the setting would validate, store,
@@ -161,21 +213,73 @@ type Server struct {
 	// cache and no invalidation to get wrong.
 
 	// guestResendLimiter is per ticket, and much tighter than the credential
-	// budget: a resend rotates, so anyone who can guess a sequential tracking
+	// budget: a resend rotates an open ticket's link (a closed ticket's gets a
+	// read-only link added instead, #349), so anyone who can guess a sequential tracking
 	// number and knows the address could otherwise replace the link a customer
 	// is holding ten times a minute, indefinitely, from one address. One every
 	// five minutes still lets a customer who lost their link get another
 	// straight away, and turns a sustained lockout into an inconvenience.
 	guestResendLimiter *authmw.RateLimiter
 
+	// onBehalfMailLimiter caps how many times one member of staff can use
+	// reporter_email in an hour (#290, #444): each one may mail a stranger the
+	// "we have received your ticket" message with a link, and each answers
+	// differently for an address with an account, so unbounded it is both a way
+	// to send mail to anyone and a way to learn who has an account. Every
+	// attempt that passes validation spends a unit, account or not; a picked
+	// reporter_user_id does not. Keyed on the authenticated user, never on the
+	// address of the request: a machine credential is its owner.
+	//
+	// INTERIM, like loginLimiter: in memory and per process, so a restart
+	// clears every count and N replicas multiply the cap by N. Its window is
+	// fixed and shared by every key (see RateLimiter), so a member of staff
+	// can file a full budget just before the window ends and another just
+	// after: "40 an hour" is a cap on the pace, not a promise about any
+	// particular sixty minutes.
+	onBehalfMailLimiter *authmw.RateLimiter
+
+	// passwordResetLimiter is per account, charged when the reset mail is sent
+	// and not when it is asked for (SendPasswordReset): one mail per account
+	// per five minutes, however many requests arrive and from however many
+	// addresses, so the endpoint cannot be used to fill an inbox. Charged off
+	// the request, so it tells the requester nothing about the account.
+	passwordResetLimiter *authmw.RateLimiter
+
+	// The template editor (#158). Nil unless WithEmailTemplates gave them.
+	emailTemplates emailtemplate.Store
+	templateMailer TemplateMailer
+	// templateTestLimiter caps template test sends per administrator
+	// (templateTestsPerWindow in templateTestWindow). INTERIM like the others:
+	// in memory and per process.
+	templateTestLimiter *authmw.RateLimiter
+
 	cfg      *config.Config
 	router   *chi.Mux
 	sessions SessionStore
 
-	users           *user.Service
-	tickets         *ticket.Service
-	registration    *registration.Service
-	categories      *category.Service
+	// reopenTargetCheck replaces reopenTargetInactive. Nil in production; a
+	// test sets it to make the check fail after a status has been saved,
+	// which cannot be done by breaking a table (see export_test.go).
+	reopenTargetCheck func(context.Context) (reopenTargetStatus, error)
+
+	users        *user.Service
+	tickets      *ticket.Service
+	registration *registration.Service
+	// passwordReset is nil unless WithPasswordReset gave one; see
+	// passwordResetAvailable.
+	passwordReset *passwordreset.Service
+	categories    *category.Service
+	// passkeys runs the two WebAuthn ceremonies; passkeyStore persists what
+	// they produce. Two fields because the ceremony service owns no storage —
+	// it is handed an account and returns a credential, and the caller decides
+	// what to keep.
+	//
+	// passkeys is nil when BASE_URL cannot be a relying-party id (#494);
+	// passkeysAvailable is the only way to ask, and every route that would
+	// reach the service sits behind requirePasskeys.
+	passkeys        *webauthn.Service
+	passkeysReason  string
+	passkeyStore    webauthn.Store
 	groups          *group.Service
 	tags            *tag.Service
 	adminSvc        *admin.Service
@@ -201,6 +305,92 @@ type Server struct {
 
 	// rrIdx is the round-robin counter for auto-assigning tickets to users.
 	rrIdx atomic.Uint64
+
+	// The attachment reputation lookup. See reputation.go for what each of
+	// these is and, for repBudget, why it is a field here rather than built
+	// per call like the provider beside it.
+	repStore  reputation.Store
+	repBudget *reputation.Budget
+	repGroup  *singleflight.Group
+	repOpts   []reputation.Option
+
+	// auditStore backs the admin-wide audit view (#129). See WithAuditStore.
+	auditStore audit.Store
+
+	// emailHealth backs the email entry in the admin security warnings
+	// (#456). Nil reports configuration only. See WithEmailHealth.
+	emailHealth notification.HealthReader
+
+	// webhookRedeliverer queues a past webhook delivery again (#448). See
+	// WithWebhookRedeliverer.
+	webhookRedeliverer WebhookRedeliverer
+}
+
+// Option adjusts a Server after its collaborators are in place.
+//
+// Variadic rather than another positional parameter: New already takes
+// sixteen, and a seventeenth would make every caller state a dependency most
+// of them do not have. The shape matches user.NewService(store,
+// user.WithBcryptCost(...)).
+type Option func(*Server)
+
+// WithReputationLookup turns the attachment reputation lookup on by giving the
+// server somewhere to cache verdicts.
+//
+// Without it the server still builds the link an analyst clicks — that needs
+// no key, no cache and no request — and simply never looks anything up.
+//
+// providerOpts are passed to whichever provider the operator has configured.
+// Production passes none and gets the real endpoints; a test passes
+// reputation.WithBaseURL to point at an httptest server.
+func WithReputationLookup(store reputation.Store, providerOpts ...reputation.Option) Option {
+	return func(s *Server) {
+		s.repStore = store
+		s.repOpts = providerOpts
+	}
+}
+
+// WithPasskeysUnavailable records why New was given no passkey service, for
+// the administrator's security warnings (#494). It does not switch anything
+// off: a nil service is what does that. An empty reason is ignored, so main
+// can pass whatever configuring passkeys returned.
+func WithPasskeysUnavailable(reason string) Option {
+	return func(s *Server) {
+		s.passkeysReason = reason
+	}
+}
+
+// WithAuditStore gives the server read access to the audit log for the
+// admin-wide audit view (#129).
+//
+// Unlike WithReputationLookup, this is not optional in the sense of a
+// feature some deployments genuinely lack — every deployment already has an
+// audit.Store, because ticket.Service and user.Service both require one to
+// write entries. It is an Option rather than New's seventeenth positional
+// parameter only because of this file's own rule above: every existing
+// caller can pass the same store it already built for those two services.
+func WithAuditStore(store audit.Store) Option {
+	return func(s *Server) {
+		s.auditStore = store
+	}
+}
+
+// WithPasswordReset turns on "forgot password" (#451). It is an Option rather
+// than another positional parameter for the reason Option gives. Without it, or
+// with email off, the feature reports itself unavailable (503 on the request,
+// password_reset false on /auth/providers).
+func WithPasswordReset(svc *passwordreset.Service) Option {
+	return func(s *Server) {
+		s.passwordReset = svc
+	}
+}
+
+// WithEmailHealth lets the admin security warnings say whether email is being
+// delivered (#456). Without it the warning reports configuration only.
+func WithEmailHealth(r notification.HealthReader) Option {
+	return func(s *Server) {
+		s.emailHealth = r
+	}
 }
 
 // New constructs a Server and registers all routes.
@@ -210,6 +400,8 @@ func New(
 	users *user.Service,
 	tickets *ticket.Service,
 	categories *category.Service,
+	passkeys *webauthn.Service,
+	passkeyStore webauthn.Store,
 	groups *group.Service,
 	tags *tag.Service,
 	adminSvc *admin.Service,
@@ -221,6 +413,7 @@ func New(
 	authStore AuthStoreIface,
 	registrationSvc *registration.Service,
 	cannedResponses *cannedresponse.Service,
+	opts ...Option,
 ) *Server {
 	s := &Server{
 		cfg:              cfg,
@@ -229,6 +422,8 @@ func New(
 		tickets:          tickets,
 		registration:     registrationSvc,
 		categories:       categories,
+		passkeys:         passkeys,
+		passkeyStore:     passkeyStore,
 		groups:           groups,
 		tags:             tags,
 		adminSvc:         adminSvc,
@@ -242,7 +437,52 @@ func New(
 		// Built here rather than injected: derived entirely from config, no
 		// other collaborators.
 		loginLimiter:       authmw.NewRateLimiter(cfg.AuthRateLimitPerMinute, time.Minute),
+		loginThrottleDelay: cfg.AuthThrottleDelay,
 		guestResendLimiter: authmw.NewRateLimiter(1, 5*time.Minute),
+		// Keyed by ticket, with the figure read from the setting on each use
+		// (TakeWithLimit): the constructor's limit is not consulted.
+		guestUploadLimiter: authmw.NewRateLimiter(1, time.Hour),
+		// Every REFUSED guest upload, refunded or not, against a fixed budget
+		// (guestRefusalsPerHour): a refusal decided before the scan is free of
+		// the hourly upload budget, so this is what stops a stream of them.
+		guestRefusalLimiter: authmw.NewRateLimiter(guestRefusalsPerHour, time.Hour),
+		// Not configurable: the figure is the ruling on #444, not a tuning knob.
+		onBehalfMailLimiter: authmw.NewRateLimiter(onBehalfMailPerHour, time.Hour),
+		// The same shape and the same reasoning (#451).
+		passwordResetLimiter: authmw.NewRateLimiter(1, 5*time.Minute),
+		templateTestLimiter:  authmw.NewRateLimiter(templateTestsPerWindow, templateTestWindow),
+		// One Budget for the life of the process, always — even when no
+		// lookup is wired, so that nothing has to check for nil later. A
+		// Budget built per request is a fresh allowance per request, which is
+		// no cap at all.
+		repBudget: reputation.NewBudget(),
+		// Same reasoning, for the same reason, one process-lifetime group: a
+		// singleflight.Group built per request could never see two different
+		// requests as the same call, which is the entire case it exists for.
+		repGroup: new(singleflight.Group),
+	}
+	// The ticket service reads closed_reopen_policy through this when it decides
+	// a force-reopen (#349), on the locked row. Here rather than in cmd/server
+	// because the server already holds both halves and every ticket route — REST
+	// and MCP, which shares this service — reaches the service through it.
+	tickets.SetClosedReopenPolicy(adminSvc.ClosedReopenPolicy)
+	// Same reasoning: REST and MCP both ask the ticket service who a reply is
+	// mailed to (#442), and it needs the user lookup the server already holds.
+	tickets.SetUserEmailLookup(func(ctx context.Context, id uuid.UUID) (string, error) {
+		u, err := users.GetByID(ctx, id)
+		if err != nil {
+			return "", err
+		}
+		// A service user (an OAuth client's identity) is never mailed: its
+		// address is made up and cannot receive mail. No address means the
+		// reply goes out without mail, on REST and MCP alike (#420).
+		if u.ServiceAccount {
+			return "", nil
+		}
+		return u.Email, nil
+	})
+	for _, opt := range opts {
+		opt(s)
 	}
 	s.router = s.buildRouter()
 	return s
@@ -323,6 +563,12 @@ type SessionStore interface {
 	// Delete removes one session, which is how the id is rotated when a
 	// session gains authority.
 	Delete(ctx context.Context, id string) error
+
+	// SpendSAMLHandover makes the SAML library's hand-over cookie single-use.
+	// signedInput is the cookie's header.payload, never the whole cookie: the
+	// signature can be respelled and still verify. It reports true the first
+	// time a given signed input is presented, false every time after.
+	SpendSAMLHandover(ctx context.Context, signedInput string) (bool, error)
 }
 
 func (s *Server) buildRouter() *chi.Mux {
@@ -335,14 +581,19 @@ func (s *Server) buildRouter() *chi.Mux {
 	// back with a trusted-proxy setting attached, so that getting it wrong
 	// costs a log field rather than a security control.
 	r.Use(chimw.RequestID)
-	r.Use(chimw.Recoverer)
+	r.Use(jsonRecoverer)
 	r.Use(requestLogger)
 	r.Use(securityHeaders)
+	// Stamps the request with the instant after which no attachment
+	// reputation lookup may start. Outermost of the handler-facing layers,
+	// because the budget it carries is measured from the start of the
+	// request; see reputationRequestBudget in reputation.go.
+	r.Use(reputationDeadline)
 
 	// Auth middleware chain: each layer runs only when no prior actor is set.
 	r.Use(authmw.SessionAuth(s.sessions))
 	r.Use(authmw.APIKeyAuth(s.apiKeyLookup))
-	r.Use(authmw.BearerAuth(s.cfg.JWTSecret, s.oauthClientStore.GetByClientID))
+	r.Use(authmw.BearerAuth(s.cfg.JWTSecret, s.oauthClientStore.GetWithUser))
 
 	// Health check — no auth required.
 	r.Get("/health", s.handleHealth)
@@ -366,13 +617,58 @@ func (s *Server) buildRouter() *chi.Mux {
 			With(authmw.RequireResource(auth.ResourceTickets),
 				authmw.RequireRole(user.RoleAdmin, user.RoleStaff)).
 			Get("/tags", s.handleListActiveTags)
-		// Public category/type/item listing (active only, no admin required).
-		r.Get("/categories", s.handleListPublicCategories)
-		r.Get("/categories/{id}/types", s.handleListPublicTypes)
-		r.Get("/categories/{id}/types/{typeId}/items", s.handleListPublicItems)
+		// Category/type/item listing. Active only for a guest or a
+		// reporting user; the whole tree for staff and administrators, per
+		// DESIGN.md's role table — see catalogueIsFullyVisible.
+		//
+		// Open to anyone signed in, and to nobody else unless this instance
+		// takes guest submissions. It used to be open to everyone outright:
+		// an unauthenticated GET returned the whole catalogue, whatever the
+		// guest setting said. That is an operator's own structure — team
+		// names, service names, the shape of what they support — published to
+		// the internet by a deployment that had deliberately switched guest
+		// submission off.
+		//
+		// The guest form needs it, which is why it cannot simply require a
+		// session; when guests are enabled, the operator has chosen to make
+		// this list public, and that is the same choice.
+		r.With(s.requireSignedInOrGuestsEnabled).Group(func(r chi.Router) {
+			r.Get("/categories", s.handleListPublicCategories)
+			r.Get("/categories/{id}/types", s.handleListPublicTypes)
+			r.Get("/categories/{id}/types/{typeId}/items", s.handleListPublicItems)
+		})
 		// Statuses are needed by all authenticated users for display (ticket list, detail, dashboard).
 		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser), authmw.RequireMFA).
 			With(authmw.RequireResource(auth.ResourceTickets)).Get("/statuses", s.handleListStatuses)
+
+		// Who work can be given to: id and display name, for staff and
+		// admins.
+		//
+		// Mounted here rather than on the ticket router, which is where it
+		// first went — and that put it at /api/v1/tickets/staff while the
+		// page asked for /api/v1/staff. Every assignee picker was empty and
+		// every assigned ticket showed no name, for administrators as well as
+		// staff, which was worse than the problem it was added to fix.
+		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff), authmw.RequireMFA).
+			With(authmw.RequireResource(auth.ResourceTickets)).
+			Get("/staff", s.handleListAssignableStaff)
+		// Who a ticket can be filed for (#444): the New ticket page's
+		// requester picker. Signed-in sessions only (#290, Erik 2026-10-14):
+		// "there is no user lookup endpoint, so no enumeration surface". A key
+		// or OAuth client files for someone with reporter_email and lets the
+		// server resolve it; it gets no way to search the directory, however
+		// many scopes it holds, so this is DenyMachineCredentials, not a
+		// scope.
+		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff), authmw.RequireMFA).
+			With(authmw.DenyMachineCredentials).
+			Get("/users/lookup", s.handleLookupUsers)
+		// The admin-wide audit view (#129). Staff and admin only. A signed-in
+		// session needs no scope; a machine credential needs audit:read
+		// (#362), not tickets:read — for an admin's key the view covers every
+		// entity, MFA and password resets included.
+		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff), authmw.RequireMFA).
+			With(authmw.RequireResource(auth.ResourceAudit)).
+			Get("/admin/audit", s.handleListAdminAudit)
 		r.Mount("/admin", s.adminRouter())
 		r.Mount("/me", s.meRouter())
 	})
@@ -384,11 +680,37 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// catalogueIsFullyVisible reports whether this caller sees the whole
+// category/type/item tree rather than only the active part of it.
+//
+// DESIGN.md's "Ticket Submission by Role" table: a guest and a reporting user
+// get active categories and types only; staff and administrators get All.
+// Staff need the archived ones to read the classification of tickets already
+// filed under it, and to filter and report on it; the UI shows them greyed out.
+// They are NOT for picking: nobody, staff and administrators included, may newly
+// file or reclassify into an archived node (#421; the ticket service enforces it).
+//
+// The form used to ask a different endpoint for staff — /admin/categories —
+// which is wrapped in RequireRole(admin). Staff got 403, the query failed,
+// the picker fell back to an empty list, and a staff member could not file a
+// ticket at all: the category is required and there was nothing in it to
+// pick. The same 403 emptied the type and item pickers. So this is one
+// endpoint that answers according to who asked, not two endpoints where the
+// caller has to guess which one it may use.
+//
+// MFAPassed as well as the role: a session that has passed the password and
+// not the second factor is not yet staff for this purpose, and the archived
+// half of an operator's structure is not something to hand it.
+func catalogueIsFullyVisible(r *http.Request) bool {
+	a := authmw.GetActor(r)
+	return a != nil && a.MFAPassed && !a.MustChangePassword && (a.Role == user.RoleAdmin || a.Role == user.RoleStaff)
+}
+
 // handleListPublicCategories returns only active categories.
 // Used by the ticket-creation form for regular users and guests.
 // No admin auth required — any authenticated user or guest can call this.
 func (s *Server) handleListPublicCategories(w http.ResponseWriter, r *http.Request) {
-	cats, err := s.categories.ListCategories(r.Context(), true) // active only
+	cats, err := s.categories.ListCategories(r.Context(), !catalogueIsFullyVisible(r))
 	if err != nil {
 		handleError(w, err)
 		return
@@ -403,7 +725,7 @@ func (s *Server) handleListPublicTypes(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "invalid_id", "invalid category id")
 		return
 	}
-	types, err := s.categories.ListTypes(r.Context(), catID, true) // active only
+	types, err := s.categories.ListTypes(r.Context(), catID, !catalogueIsFullyVisible(r))
 	if err != nil {
 		handleError(w, err)
 		return
@@ -418,7 +740,7 @@ func (s *Server) handleListPublicItems(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "invalid_id", "invalid type id")
 		return
 	}
-	items, err := s.categories.ListItems(r.Context(), typeID, true) // active only
+	items, err := s.categories.ListItems(r.Context(), typeID, !catalogueIsFullyVisible(r))
 	if err != nil {
 		handleError(w, err)
 		return
@@ -434,62 +756,113 @@ func (s *Server) handleGetSiteConfig(w http.ResponseWriter, r *http.Request) {
 	// /submit, and offering a dead end is worse than offering nothing. It says
 	// only whether the instance accepts guest tickets — the same thing an
 	// unauthenticated POST to /guest/tickets would reveal by answering 404.
-	JSON(w, http.StatusOK, map[string]any{
-		"name":                     s.adminSvc.SiteName(r.Context()),
-		"logo_url":                 s.adminSvc.SiteLogoURL(r.Context()),
-		"version":                  version.Version,
-		"guest_submission_enabled": s.adminSvc.GuestSubmissionEnabled(r.Context()),
-	})
+	//
+	// guest_attachments_enabled and guest_attachment_max_bytes (#445) are here
+	// for the same reason: the guest page has no session, and offering an
+	// attach button that can only fail is worse than not offering one. Unlike
+	// guest_submission_enabled this DOES disclose something the guest routes
+	// do not: the upload route answers the same 404 whether the setting or the
+	// token is what failed, so it never says whether uploads are on. Here
+	// anyone can read it, with the effective limit. Accepted (low sensitivity,
+	// and the guest ticket's allow-list stays untouched). The size is the EFFECTIVE limit (the lower of the setting and the
+	// instance-wide maximum), omitted while uploads are off.
+	cfg := map[string]any{
+		"name":                      s.adminSvc.SiteName(r.Context()),
+		"logo_url":                  s.adminSvc.SiteLogoURL(r.Context()),
+		"version":                   version.Version,
+		"guest_submission_enabled":  s.adminSvc.GuestSubmissionEnabled(r.Context()),
+		"guest_attachments_enabled": s.adminSvc.GuestAttachmentsEnabled(r.Context()),
+	}
+	if cfg["guest_attachments_enabled"] == true {
+		cfg["guest_attachment_max_bytes"] = s.guestAttachmentMaxBytes(r.Context())
+		cfg["guest_attachment_max_per_ticket"] = s.adminSvc.GuestAttachmentMaxPerTicket(r.Context())
+		cfg["guest_attachment_uploads_per_hour"] = s.adminSvc.GuestAttachmentUploadsPerHour(r.Context())
+	}
+	JSON(w, http.StatusOK, cfg)
 }
 
 // InitSAML reads SAML config from the database and initialises the SP
-// middleware if all three fields (cert, key, metadata URL) are present.
+// middleware if the cert, the key and the IdP metadata (a URL or pasted XML) are present.
 // It is called once at startup; a non-fatal error is logged and ignored so
 // that the server starts even when SAML is not yet configured.
+
+// buildOIDCProvider constructs an OIDC provider from CANDIDATE settings
+// without touching the live s.oidcProvider — split out of InitOIDC so the
+// settings-save handler can learn what reachability will ACTUALLY be
+// (including a real discovery attempt) BEFORE persisting anything, which is
+// what #300's stranding guard needs: a guess based on "the fields look
+// complete" can be wrong in exactly the direction that matters, letting a
+// save through that silently orphans an administrator once discovery turns
+// out to fail. See #300 (the PR that added this) and #297b for background.
+//
+// commit is InitOIDC's own fail-safe: it has never cleared a working
+// provider over an incomplete edit or a transient discovery failure, and
+// commit=false here is what lets a caller preserve that — the LIVE process
+// keeps whatever provider is already running.
+//
+// reachable is a DIFFERENT question and must not be answered from the same
+// fail-safe: it is what a caller uses to decide whether persisting cfg would
+// strand anybody, and the row being persisted has no live process to fall
+// back on — the next ordinary restart calls InitOIDC against exactly this
+// cfg with no existing provider to keep, so whatever fails here fails there
+// too. A review round on #304 found this returning s.oidcReachableNow() (the
+// OLD, unrelated provider's live state) for both fail-safe branches below,
+// which let a save through the guard as "reachable" purely because a
+// DIFFERENT, still-working config happened to be loaded at the moment of
+// saving — reachable is now unconditionally false whenever cfg itself would
+// not build, live process notwithstanding.
+func (s *Server) buildOIDCProvider(ctx context.Context, cfg auth.OIDCConfig) (reachable bool, provider *auth.OIDCProvider, commit bool, err error) {
+	if !cfg.Enabled {
+		return false, nil, true, nil
+	}
+	if cfg.IssuerURL == "" || cfg.ClientID == "" || cfg.ClientSecret == "" {
+		// Both write paths (handleSaveOIDCConfig, ssoSettingsWarning) now
+		// refuse an enabled-but-incomplete cfg outright before ever calling
+		// this, so in practice only InitOIDC reaches this branch today — at
+		// startup, with no provider loaded yet, for which false is simply
+		// correct. Kept as its own branch (rather than falling into the
+		// buildErr one below) because there is nothing to attempt: an empty
+		// issuer URL is not a discovery failure, it is nothing to discover.
+		return false, nil, false, fmt.Errorf("OIDC configuration is incomplete")
+	}
+	if cfg.RedirectURL == "" {
+		cfg.RedirectURL = s.cfg.BaseURL + "/api/v1/auth/oidc/callback"
+	}
+	// Discovery runs here, against the candidate config, before anything is
+	// persisted. commit=false on failure is the same fail-safe as above: the
+	// LIVE process keeps whatever provider is already running rather than
+	// clearing it. reachable is false regardless — see the function's own
+	// comment on why this cannot reuse the live process's state.
+	provider, buildErr := auth.NewOIDCProvider(ctx, cfg)
+	if buildErr != nil {
+		return false, nil, false, fmt.Errorf("OIDC provider initialization failed: %w", buildErr)
+	}
+	return true, provider, true, nil
+}
+
+// commitOIDCProvider installs p as the live provider. p is nil when OIDC is
+// disabled.
+func (s *Server) commitOIDCProvider(p *auth.OIDCProvider) {
+	s.oidcMu.Lock()
+	s.oidcProvider = p
+	s.oidcMu.Unlock()
+}
 
 // InitOIDC initializes the OpenID Connect provider.
 // OIDC is optional; startup continues when it is not configured.
 func (s *Server) InitOIDC(ctx context.Context) error {
 	cfg := s.adminSvc.GetOIDCConfig(ctx)
-
-	// OIDC is explicitly disabled. Clear the active provider.
-	if !cfg.Enabled {
-		s.oidcMu.Lock()
-		s.oidcProvider = nil
-		s.oidcMu.Unlock()
-		return nil
-	}
-
-	// Enabled but incomplete configuration is invalid.
-	if cfg.IssuerURL == "" ||
-		cfg.ClientID == "" ||
-		cfg.ClientSecret == "" {
-		err := fmt.Errorf("OIDC configuration is incomplete")
-		slog.Warn("OIDC provider not loaded", "error", err)
+	_, provider, commit, err := s.buildOIDCProvider(ctx, cfg)
+	if !commit {
+		if err != nil {
+			slog.Warn("OIDC provider not loaded/reloaded; keeping existing provider", "error", err)
+		}
 		return err
 	}
-
-	if cfg.RedirectURL == "" {
-		cfg.RedirectURL = s.cfg.BaseURL +
-			"/api/v1/auth/oidc/callback"
+	s.commitOIDCProvider(provider)
+	if provider != nil {
+		slog.Info("OIDC provider loaded", "issuer", cfg.IssuerURL)
 	}
-
-	// Discover and initialize the new provider BEFORE replacing the
-	// currently active provider. If discovery fails, leave the existing
-	// provider untouched so a bad admin change cannot take OIDC offline.
-	provider, err := auth.NewOIDCProvider(ctx, cfg)
-	if err != nil {
-		slog.Warn("OIDC provider reload failed; keeping existing provider",
-			"error", err)
-		return fmt.Errorf("OIDC provider initialization failed: %w", err)
-	}
-
-	// Swap only after successful initialization.
-	s.oidcMu.Lock()
-	s.oidcProvider = provider
-	s.oidcMu.Unlock()
-
-	slog.Info("OIDC provider loaded", "issuer", cfg.IssuerURL)
 	return nil
 }
 
@@ -499,33 +872,69 @@ func (s *Server) InitSAML(ctx context.Context) {
 	}
 }
 
-// reloadSAML reads the three SAML settings from the database, (re)initialises
-// the crewjam/saml middleware, and stores it for use by the request handlers.
-// Callers must hold no lock; this method acquires the write lock internally.
-func (s *Server) reloadSAML(ctx context.Context) error {
-	metadataURL, certPEM, keyPEM := s.adminSvc.GetSAMLConfig(ctx)
-	if metadataURL == "" || certPEM == "" || keyPEM == "" {
-		// Not yet configured — clear any previously loaded handler.
-		s.samlMu.Lock()
-		s.samlHandler = nil
-		s.samlMu.Unlock()
-		return nil
+// buildSAMLMiddleware is buildOIDCProvider's SAML counterpart: constructs a
+// middleware from CANDIDATE settings without touching the live s.samlHandler.
+// An incomplete config (no metadata, no cert or no key) has never had a
+// fail-safe here — reloadSAML always cleared the handler outright for it,
+// and that is unchanged.
+//
+// Deliberately takes no enabled flag. #304's first draft gave SAML one,
+// reusing the existing saml_enabled setting — which turned out to already
+// have a real, unrelated meaning (user.IsLocalAuthAllowed reads it to decide
+// whether non-admins may still use a password once SAML is configured), so
+// wiring it into whether the middleware loads at all would have made
+// flipping that switch — which many operators use purely to require SSO for
+// staff while keeping SAML itself already running — also silently take SAML
+// down until they flipped it back. Reverted before merge; see #304's PR
+// thread. Field-completeness alone is what reloadSAML has always gated on,
+// and it is enough: an incomplete config cannot be built regardless.
+//
+// commit=false on a construction/metadata-fetch failure is the same
+// fail-safe InitSAML/reloadSAML have always had: the LIVE process keeps
+// whatever middleware is already running rather than clearing it. reachable
+// does NOT get the same treatment — see buildOIDCProvider's own comment for
+// why (a review round on #304 found this exact confusion in both
+// functions): the row being persisted has no live process to fall back on,
+// so reachable is false whenever cfg itself fails to build, regardless of
+// what a DIFFERENT, currently-live config says.
+func (s *Server) buildSAMLMiddleware(ctx context.Context, c samlSettings) (reachable bool, mw *samlsp.Middleware, commit bool, err error) {
+	if !samlFieldsLookConfigured(c) {
+		return false, nil, true, nil
 	}
-
-	mw, err := auth.NewSAMLMiddleware(ctx, auth.SAMLConfig{
+	mw, buildErr := auth.NewSAMLMiddleware(ctx, auth.SAMLConfig{
 		BaseURL:     s.cfg.BaseURL,
-		MetadataURL: metadataURL,
-		CertPEM:     []byte(certPEM),
-		KeyPEM:      []byte(keyPEM),
+		MetadataURL: c.MetadataURL,
+		MetadataXML: []byte(c.MetadataXML),
+		CertPEM:     []byte(c.CertPEM),
+		KeyPEM:      []byte(c.KeyPEM),
 	})
-	if err != nil {
-		return err
+	if buildErr != nil {
+		return false, nil, false, buildErr
 	}
+	return true, mw, true, nil
+}
 
+// commitSAMLMiddleware installs mw as the live SAML handler. mw is nil when
+// SAML is not configured.
+func (s *Server) commitSAMLMiddleware(mw *samlsp.Middleware) {
 	s.samlMu.Lock()
 	s.samlHandler = mw
 	s.samlMu.Unlock()
-	slog.Info("SAML middleware loaded", "metadata_url", metadataURL)
+}
+
+// reloadSAML reads the SAML settings from the database, (re)initialises
+// the crewjam/saml middleware, and stores it for use by the request handlers.
+// Callers must hold no lock; this method acquires the write lock internally.
+func (s *Server) reloadSAML(ctx context.Context) error {
+	c := s.storedSAMLSettings(ctx)
+	_, mw, commit, err := s.buildSAMLMiddleware(ctx, c)
+	if !commit {
+		return err
+	}
+	s.commitSAMLMiddleware(mw)
+	if mw != nil {
+		slog.Info("SAML middleware loaded", "metadata_url", c.MetadataURL, "metadata_xml", c.MetadataXML != "")
+	}
 	return nil
 }
 
@@ -556,4 +965,51 @@ func (s *Server) scanner(ctx context.Context) *antivirus.Scanner {
 		return antivirus.New(addr)
 	}
 	return antivirus.New(s.cfg.ClamAVAddr)
+}
+
+// SetLoginThrottleDelayForTest sets how long an over-budget login waits.
+//
+// Exported for tests only, and named so that is unmistakable. The suite runs
+// with a delay of a millisecond — the queueing and the bound still apply, and
+// nothing spends a second per login proving that time passes — while the two
+// tests about the delay itself need one long enough to measure.
+func (s *Server) SetLoginThrottleDelayForTest(d time.Duration) {
+	s.loginThrottleDelay = d
+}
+
+// requireSignedInOrGuestsEnabled admits any authenticated caller, and an
+// anonymous one only when this instance takes guest submissions.
+//
+// The catalogue is the one list both the signed-in ticket form and the public
+// guest form need, so it cannot simply require a session. What it can do is
+// stop being public on an instance that has turned guests off — which is an
+// operator saying they do not want anonymous people filing tickets here, and
+// therefore do not want the anonymous internet reading their category tree.
+func (s *Server) requireSignedInOrGuestsEnabled(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if authmw.GetActor(r) != nil || s.adminSvc.GuestSubmissionEnabled(r.Context()) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		Error(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+	})
+}
+
+// SetGuestUploadClockForTest moves the guest upload limiter onto a clock the
+// test controls, so the hourly window can pass without waiting an hour.
+func (s *Server) SetGuestUploadClockForTest(now func() time.Time) {
+	s.guestUploadLimiter.SetClock(now)
+	s.guestRefusalLimiter.SetClock(now)
+}
+
+// SetGuestRefusalClockForTest moves only the refused-attempts limiter onto a
+// clock the test controls, to model the two windows drifting apart.
+func (s *Server) SetGuestRefusalClockForTest(now func() time.Time) {
+	s.guestRefusalLimiter.SetClock(now)
+}
+
+// SetGuestHourlyClockForTest moves only the hourly upload limiter onto a clock
+// the test controls (the mirror of SetGuestRefusalClockForTest).
+func (s *Server) SetGuestHourlyClockForTest(now func() time.Time) {
+	s.guestUploadLimiter.SetClock(now)
 }

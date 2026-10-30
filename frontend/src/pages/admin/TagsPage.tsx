@@ -83,13 +83,13 @@ export function TagsPage() {
               {createMutation.isPending ? 'Adding…' : 'Add'}
             </Button>
           </div>
-          {createError && <p className="mt-2 text-sm text-red-600">{createError}</p>}
+          {createError && <p role="alert" className="mt-2 text-sm text-red-600">{createError}</p>}
         </div>
 
         {isLoading ? (
           <div className="flex justify-center py-12"><Spinner /></div>
         ) : (
-          <div className="rounded-lg border bg-white overflow-hidden">
+          <div className="rounded-lg border bg-white overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 text-xs text-gray-500 uppercase">
                 <tr>
@@ -102,7 +102,7 @@ export function TagsPage() {
               <tbody className="divide-y">
                 {tags.map((t) => (
                   <tr key={t.id} className={isDeleted(t) ? 'opacity-50' : ''}>
-                    <td className="px-4 py-3 font-medium text-gray-900">{t.name}</td>
+                    <td className="px-4 py-3 font-medium text-gray-900 wrap-anywhere">{t.name}</td>
                     <td className="px-4 py-3">
                       {isDeleted(t) ? (
                         <Badge variant="secondary">Deactivated</Badge>

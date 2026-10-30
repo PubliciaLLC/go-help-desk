@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { useParams } from '@tanstack/react-router'
+import { TicketText } from '@/components/TicketText'
+import { useParams, Link } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   getTicket,
@@ -7,18 +8,23 @@ import {
   listStatusHistory,
   resolveTicket,
   reopenTicket,
+  createFollowUp,
   closeTicket,
   updateTicket,
   listAttachments,
-  attachmentDownloadUrl,
   listTicketCustomFields,
   putTicketCustomFields,
 } from '@/api/tickets'
 import { TagInput } from '@/components/TagInput'
 import { ClassificationPanel } from '@/components/ticket/ClassificationPanel'
+import { LinkedTicketsPanel } from '@/components/ticket/LinkedTicketsPanel'
+import { PriorityControl } from '@/components/ticket/PriorityControl'
+import { AuditFeed } from '@/components/ticket/AuditFeed'
+import { FollowersPanel } from '@/components/ticket/FollowersPanel'
 import { ReplyComposer } from '@/components/ticket/ReplyComposer'
-import { listStatuses, listUsers } from '@/api/admin'
-import { extractError } from '@/api/client'
+import { AttachmentList, QuarantineBanner } from '@/components/ticket/AttachmentList'
+import { listAssignableStaff, listStatuses, type AssignableStaff } from '@/api/admin'
+import { apiRefusal, extractError } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
@@ -30,8 +36,19 @@ import { Select } from '@/components/ui/select'
 import { api } from '@/api/client'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import type { Group, User, StatusHistoryEntry, TicketFieldValue } from '@/api/types'
+import type { Group, SourceChannel, StatusHistoryEntry, TicketFieldValue } from '@/api/types'
 import { priorityVariant } from '@/lib/format'
+import { ReopenedBadge } from '@/components/ticket/ReopenedBadge'
+import { SLAIndicator } from '@/components/ticket/SLAIndicator'
+
+// How the server's channel values read on the page (#130).
+const SOURCE_CHANNEL_LABEL: Record<SourceChannel, string> = {
+  web: 'via web',
+  api: 'via API',
+  mcp: 'via MCP',
+  guest: 'via guest form',
+  phone: 'via phone',
+}
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleString()
@@ -49,12 +66,22 @@ interface AssigneePanelProps {
   ticketId: string
   assigneeUserId?: string
   assigneeGroupId?: string
-  users: User[]
+  users: AssignableStaff[]
+  // haveStaffList says the list above actually loaded. Without it the panel
+  // cannot tell "this assignee has left" from "I could not read the list",
+  // and the first version of this guessed the first — so for a staff member,
+  // who could not read the list at all, every live colleague was reported as
+  // having left.
+  haveStaffList: boolean
   groups: Group[]
+  // meId and closed drive "Assign to me": offered only on an unassigned ticket
+  // that is not Resolved or Closed.
+  meId?: string
+  closed: boolean
   onUpdated: () => void
 }
 
-function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, groups, onUpdated }: AssigneePanelProps) {
+function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, haveStaffList, groups, meId, closed, onUpdated }: AssigneePanelProps) {
   const [mode, setMode] = useState<'user' | 'group'>('user')
   const [selectedId, setSelectedId] = useState('')
   const [error, setError] = useState('')
@@ -75,6 +102,20 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, group
     onError: (err) => setError(extractError(err)),
   })
 
+  // The ticket's group is sent back with the user. The server's Assign sets
+  // both assignee fields from the request, so a user-only PATCH would clear the
+  // group; "Assign to me" keeps it (#444). The key is left out when there is no
+  // group, so the body is exactly {assignee_user_id} then.
+  const assignToMeMutation = useMutation({
+    mutationFn: () =>
+      updateTicket(ticketId, {
+        assignee_user_id: meId,
+        ...(assigneeGroupId ? { assignee_group_id: assigneeGroupId } : {}),
+      }),
+    onSuccess: () => { setError(''); onUpdated() },
+    onError: (err) => setError(extractError(err)),
+  })
+
   const unassignMutation = useMutation({
     // clear_assignee, not two undefineds: JSON.stringify drops undefined keys,
     // so the old body serialised to {} and the server skipped the assign
@@ -87,12 +128,15 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, group
   const currentUser = users.find((u) => u.id === assigneeUserId)
   const currentGroup = groups.find((g) => g.id === assigneeGroupId)
 
-  const staffUsers = users.filter((u) => u.role === 'staff' || u.role === 'admin')
+  // Everyone in the list can be NAMED; only some can be PICKED. A suspended
+  // colleague still holds the tickets they were given, so their name belongs
+  // on those tickets — they just should not be offered for new ones.
+  const staffUsers = users.filter((u) => u.assignable)
 
   return (
     <div className="space-y-2">
       {/* Current assignee */}
-      <div className="text-sm">
+      <div className="text-sm wrap-anywhere">
         {currentUser ? (
           <span className="font-medium">{currentUser.display_name}</span>
         ) : currentGroup ? (
@@ -100,21 +144,45 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, group
             <span className="h-2 w-2 rounded-full bg-blue-400" />
             {currentGroup.name}
           </span>
+        ) : assigneeUserId && haveStaffList ? (
+          // Assigned to somebody who is not in the list of people work can be
+          // given to — a deleted account. Saying "Unassigned" here was a lie
+          // the page told about its own history: a resolved ticket keeps its
+          // assignee deliberately, so the record shows who handled it, and the
+          // page was erasing exactly that.
+          //
+          // Only when the list actually loaded. The first version of this said
+          // "Former staff member" whenever the list was empty, which for a
+          // staff member was always — so every live colleague was reported as
+          // having left. A page that cannot tell should say nothing, not guess.
+          <span className="text-gray-500 italic">Former staff member</span>
+        ) : assigneeUserId ? (
+          <span className="text-gray-400">Assigned</span>
         ) : (
           <span className="text-gray-400">Unassigned</span>
         )}
       </div>
 
+      {!assigneeUserId && !closed && meId && (
+        <button
+          className="min-h-6 rounded px-1 py-1 text-xs text-blue-600 hover:underline"
+          onClick={() => assignToMeMutation.mutate()}
+          disabled={assignToMeMutation.isPending}
+        >
+          Assign to me
+        </button>
+      )}
+
       {/* Assignment controls */}
       <div className="flex gap-1 text-xs">
         <button
-          className={`px-2 py-0.5 rounded ${mode === 'user' ? 'bg-blue-100 text-blue-700 font-medium' : 'text-gray-500 hover:text-gray-700'}`}
+          className={`min-h-6 rounded px-2.5 py-1.5 ${mode === 'user' ? 'bg-blue-100 text-blue-700 font-medium' : 'text-gray-500 hover:text-gray-700'}`}
           onClick={() => setMode('user')}
         >
           User
         </button>
         <button
-          className={`px-2 py-0.5 rounded ${mode === 'group' ? 'bg-blue-100 text-blue-700 font-medium' : 'text-gray-500 hover:text-gray-700'}`}
+          className={`min-h-6 rounded px-2.5 py-1.5 ${mode === 'group' ? 'bg-blue-100 text-blue-700 font-medium' : 'text-gray-500 hover:text-gray-700'}`}
           onClick={() => setMode('group')}
         >
           Group
@@ -148,14 +216,14 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, group
 
       {(assigneeUserId || assigneeGroupId) && (
         <button
-          className="text-xs text-gray-400 hover:text-gray-600"
+          className="min-h-6 rounded px-1 py-1 text-xs text-gray-400 hover:text-gray-600"
           onClick={() => unassignMutation.mutate()}
           disabled={unassignMutation.isPending}
         >
           Clear assignment
         </button>
       )}
-      {error && <p className="text-xs text-red-600">{error}</p>}
+      {error && <p role="alert" className="text-xs text-red-600">{error}</p>}
     </div>
   )
 }
@@ -252,7 +320,7 @@ function CustomFieldsPanel({ ticketId, isStaffOrAdmin }: CustomFieldsPanelProps)
           </CardTitle>
           {isStaffOrAdmin && !editValues && (
             <button
-              className="text-xs text-blue-600 hover:underline"
+              className="min-h-6 rounded px-2 py-1 text-xs text-blue-600 hover:underline"
               onClick={() => {
                 const init: Record<string, string> = {}
                 for (const v of values) init[v.field_def_id] = v.value
@@ -267,11 +335,11 @@ function CustomFieldsPanel({ ticketId, isStaffOrAdmin }: CustomFieldsPanelProps)
       <CardContent className="space-y-3 text-sm">
         {displayValues.map((v) => (
           <div key={v.field_def_id} className="space-y-0.5">
-            <Label className="text-xs text-gray-500">{v.field_name}</Label>
+            <Label className="text-xs text-gray-500 wrap-anywhere">{v.field_name}</Label>
             {isStaffOrAdmin && editValues ? (
               renderInput(v)
             ) : (
-              <p className="text-sm">{v.value || <span className="text-gray-400">—</span>}</p>
+              <p className="text-sm wrap-anywhere">{v.value || <span className="text-gray-400">—</span>}</p>
             )}
           </div>
         ))}
@@ -295,7 +363,7 @@ function CustomFieldsPanel({ ticketId, isStaffOrAdmin }: CustomFieldsPanelProps)
             </Button>
           </div>
         )}
-        {saveError && <p className="text-xs text-red-600">{saveError}</p>}
+        {saveError && <p role="alert" className="text-xs text-red-600">{saveError}</p>}
       </CardContent>
     </Card>
   )
@@ -308,10 +376,15 @@ export function TicketDetailPage() {
   const { user } = useAuthStore()
   const qc = useQueryClient()
 
-
   const { data: ticket, isLoading, error } = useQuery({
     queryKey: ['ticket', id],
     queryFn: () => getTicket(id),
+    // The server computes SLA status at fetch time; re-polling is simpler
+    // and less error-prone than re-deriving color against a ticking clock in
+    // the browser. 60s is finer than the 80% band of any realistic target,
+    // and only runs at all once this ticket has actually shown a status —
+    // an instance with SLA off never polls for it.
+    refetchInterval: (query) => (query.state.data?.sla != null ? 60_000 : false),
   })
 
   const { data: replies = [] } = useQuery({
@@ -323,7 +396,9 @@ export function TicketDetailPage() {
   const { data: statusHistory = [] } = useQuery({
     queryKey: ['statusHistory', id],
     queryFn: () => listStatusHistory(id),
-    enabled: !!ticket,
+    // History is for staff (Erik, 2026-10-15): the API refuses a requester, and
+    // the thread shows them the conversation only.
+    enabled: !!ticket && (user?.role === 'staff' || user?.role === 'admin'),
   })
 
   type TimelineItem =
@@ -343,9 +418,15 @@ export function TicketDetailPage() {
   const isStaffOrAdmin = user?.role === 'staff' || user?.role === 'admin'
   const isAdmin = user?.role === 'admin'
 
-  const { data: allUsers = [] } = useQuery({
-    queryKey: ['users'],
-    queryFn: () => listUsers(),
+  // The staff-readable list, not /admin/users.
+  //
+  // listUsers answers 403 to anybody who is not an administrator, so for a
+  // staff member this query failed silently, the list was empty, and the
+  // assignee picker had nothing in it — while the server would have accepted
+  // the assignment perfectly well.
+  const { data: allUsers = [], isSuccess: haveStaffList } = useQuery({
+    queryKey: ['assignable-staff'],
+    queryFn: listAssignableStaff,
     enabled: isStaffOrAdmin,
   })
 
@@ -369,6 +450,7 @@ export function TicketDetailPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['ticket', id] })
       qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+      qc.invalidateQueries({ queryKey: ['ticketAudit', id] })
       qc.invalidateQueries({ queryKey: ['tickets'] })
     },
   })
@@ -378,15 +460,39 @@ export function TicketDetailPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['ticket', id] })
       qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+      qc.invalidateQueries({ queryKey: ['ticketAudit', id] })
       qc.invalidateQueries({ queryKey: ['tickets'] })
     },
   })
 
+  // Force-reopen, for the roles closed_reopen_policy allows (#349). The
+  // button is only shown when the ticket response says can_reopen.
   const reopenMutation = useMutation({
     mutationFn: () => reopenTicket(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['ticket', id] })
       qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+      qc.invalidateQueries({ queryKey: ['ticketAudit', id] })
+      qc.invalidateQueries({ queryKey: ['tickets'] })
+    },
+    onError: () => {
+      // A 409 means this page is stale (the setting changed, or someone else
+      // already reopened it): refetch so the header and the button show the
+      // truth.
+      qc.invalidateQueries({ queryKey: ['ticket', id] })
+      qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+      qc.invalidateQueries({ queryKey: ['ticketAudit', id] })
+    },
+  })
+
+  // The way forward from a Closed ticket (#349). Closed is terminal by
+  // default, so staff and admin open a new ticket linked to it. The new
+  // ticket is offered as a link rather than navigated to, so the closed one
+  // stays on screen until they choose.
+  const followUpMutation = useMutation({
+    mutationFn: () => createFollowUp(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['links', id] })
       qc.invalidateQueries({ queryKey: ['tickets'] })
     },
   })
@@ -396,44 +502,102 @@ export function TicketDetailPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['ticket', id] })
       qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+      qc.invalidateQueries({ queryKey: ['ticketAudit', id] })
       qc.invalidateQueries({ queryKey: ['tickets'] })
     },
   })
 
+  // Whichever of the three last failed. They are mutually exclusive in
+  // practice — a ticket is never resolvable and closed-and-continuable at once.
+  const lifecycleError =
+    (resolveMutation.isError && extractError(resolveMutation.error)) ||
+    (reopenMutation.isError && extractError(reopenMutation.error)) ||
+    (followUpMutation.isError && extractError(followUpMutation.error)) ||
+    (closeMutation.isError && extractError(closeMutation.error)) ||
+    ''
+
   if (isLoading) return <Layout><div className="flex justify-center py-12"><Spinner size="lg" /></div></Layout>
-  if (error || !ticket) return <Layout><p className="text-red-600">Ticket not found.</p></Layout>
+  if (error || !ticket) {
+    // Not every failure here is a missing ticket: a 500 or a proxy's 503 is
+    // not about this ticket at all. A 404 covers both "does not exist" and
+    // "exists, not yours to read" — the server answers the same way for
+    // both on purpose, so there is no third case to distinguish here; see
+    // #174.
+    const { status, message } = apiRefusal(error)
+    const text =
+      status === 404 ? 'Ticket not found.'
+      : message ? message
+      : status ? `This ticket could not be loaded (error ${status}).`
+      : 'This ticket could not be loaded.'
+    return <Layout><p role="alert" className="text-red-600">{text}</p></Layout>
+  }
 
   const canResolve = isStaffOrAdmin && statusName !== 'Resolved' && statusName !== 'Closed'
-  const canReopen = isStaffOrAdmin && (statusName === 'Resolved' || statusName === 'Closed')
+  // Closed is read-only for requesters and terminal by default (#349). Staff
+  // and admin cannot reopen it unless the instance's closed_reopen_policy lets
+  // their role (the server says so in can_reopen); the way forward is a linked
+  // follow-up ticket either way. A Resolved ticket is still moved with the
+  // status selector, or reopened by its requester's reply inside the window.
+  const isClosed = statusName === 'Closed'
+  // Staff and admin may open one from any closed ticket; a requester from their
+  // own (the server holds them to one, and to what a normal create allows).
+  const canFollowUp = isClosed
+  const canReopen = isStaffOrAdmin && isClosed && ticket.can_reopen === true
   const canClose = isAdmin && statusName === 'Resolved'
 
   return (
     <Layout>
       <div className="space-y-6">
+        <QuarantineBanner attachments={attachments} />
+
         {/* Header */}
-        <div className="flex items-start justify-between gap-4">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2 text-sm text-gray-500">
-              <span>{ticket.tracking_number}</span>
+        {/* Below md the action buttons wrap onto their own row under the title
+            block (#480): beside it they left the title and tracking number a
+            column of ~120px at 375px and ran the number under "Reopen". */}
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div className="min-w-0 space-y-1">
+            <div className="flex flex-wrap items-center gap-x-2 text-sm text-gray-500">
+              <span className="whitespace-nowrap">{ticket.tracking_number}</span>
               <span>·</span>
               <span>Opened {formatDate(ticket.created_at)}</span>
+              {isStaffOrAdmin && ticket.source_channel && (
+                <>
+                  <span>·</span>
+                  <span data-testid="source-channel-line">{SOURCE_CHANNEL_LABEL[ticket.source_channel]}</span>
+                </>
+              )}
             </div>
-            <h1 className="text-2xl font-bold text-gray-900">{ticket.subject}</h1>
+            <h1 className="text-2xl font-bold text-gray-900 wrap-anywhere">{ticket.subject}</h1>
+            {isStaffOrAdmin && (
+              <p data-testid="requester-line" className="text-sm text-gray-600 wrap-anywhere">
+                Requester:{' '}
+                {ticket.requester ? (
+                  <>
+                    <span className="font-medium text-gray-900">{ticket.requester.name}</span>{' '}
+                    ({ticket.requester.email})
+                  </>
+                ) : (
+                  <span className="text-gray-400">unknown</span>
+                )}
+              </p>
+            )}
             <div className="flex items-center gap-2 flex-wrap">
               <span
-                className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium"
+                className="inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium"
                 style={{ borderColor: statusColor, color: statusColor }}
               >
-                <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: statusColor }} />
-                {statusName}
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: statusColor }} />
+                <span className="min-w-0 wrap-anywhere">{statusName}</span>
               </span>
               <Badge variant={priorityVariant(ticket.priority) as never}>
                 {ticket.priority}
               </Badge>
+              {isStaffOrAdmin && <ReopenedBadge reopenCount={ticket.reopen_count} statusName={statuses.find((s) => s.id === ticket.status_id)?.name} />}
+              <SLAIndicator sla={ticket.sla} />
             </div>
           </div>
 
-          <div className="flex gap-2 shrink-0">
+          <div className="flex flex-wrap gap-2 md:shrink-0">
             {canResolve && (
               <Button
                 variant="outline"
@@ -464,21 +628,70 @@ export function TicketDetailPage() {
                 Reopen
               </Button>
             )}
+            {canFollowUp && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => followUpMutation.mutate()}
+                disabled={followUpMutation.isPending || followUpMutation.isSuccess}
+              >
+                Create follow-up
+              </Button>
+            )}
           </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-6">
+        {/* The server explains why it refused — a transition the lifecycle
+            does not allow, a ticket outside this staff member's scope, an
+            expired session. Without this the button simply re-enabled and
+            the status did not change, which reads as the app being broken.
+            The status picker below already did this; these three did not. */}
+        {lifecycleError && (
+          <p role="alert" className="text-sm text-red-600">{lifecycleError}</p>
+        )}
+
+        {followUpMutation.isSuccess && (
+          <p role="status" className="text-sm text-green-700">
+            Follow-up created:{' '}
+            <Link
+              to="/tickets/$id"
+              params={{ id: followUpMutation.data.id }}
+              className="font-medium underline"
+            >
+              {followUpMutation.data.tracking_number}
+            </Link>
+          </p>
+        )}
+
+        {/* A closed ticket is an archive. Said once, near the top, so a
+            requester who cannot find the reply box knows it is not a bug. */}
+        {isClosed && (
+          <p role="note" className="rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700">
+            {isStaffOrAdmin
+              ? canReopen
+                ? 'This ticket is closed. You can reopen it, or use “Create follow-up” to continue the work in a new, linked ticket.'
+                : 'This ticket is closed and cannot be reopened. Use “Create follow-up” to continue the work in a new, linked ticket.'
+              : 'This ticket is closed and read-only. If you still need help, use “Create follow-up” to open a new ticket based on this one.'}
+          </p>
+        )}
+
+        {/* Below md this stacks: main column first, then what is the sidebar
+            above it as full-width cards beneath — not the three-column grid
+            shrunk, which at 390px would leave each column ~90px wide. */}
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
           {/* Main column */}
-          <div className="col-span-2 space-y-6 min-w-0">
+          <div className="space-y-6 min-w-0 md:col-span-2">
             {/* Description */}
             <Card>
               <CardHeader>
                 <CardTitle className="text-sm text-gray-500">Description</CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="whitespace-pre-wrap text-sm break-all">
-                  {ticket.description || <span className="text-gray-400">No description provided.</span>}
-                </p>
+                {ticket.description ? (
+                  <TicketText text={ticket.description} format={ticket.description_format} className="text-sm" />
+                ) : (
+                  <p className="text-sm text-gray-400">No description provided.</p>
+                )}
               </CardContent>
             </Card>
 
@@ -496,14 +709,21 @@ export function TicketDetailPage() {
                       key={r.id}
                       className={`rounded-lg border p-4 text-sm ${r.internal ? 'border-yellow-200 bg-yellow-50' : 'bg-white'}`}
                     >
-                      <div className="mb-1 flex items-center justify-between text-xs text-gray-500">
-                        <span>{r.author_id ?? 'Customer'}</span>
+                      <div className="mb-1 flex items-center justify-between gap-2 text-xs text-gray-500">
+                        {/* The name, not the id. This printed r.author_id,
+                            so every reply from a registered account showed as
+                            a bare UUID and nobody could tell who had said
+                            what. A reply with no author came from a guest —
+                            that is the only way it is null. */}
+                        <span className="min-w-0 wrap-anywhere" title={r.author_name || (r.author_id ? 'Unknown user' : 'Customer')}>
+                          {r.author_name || (r.author_id ? 'Unknown user' : 'Customer')}
+                        </span>
                         <span className="flex items-center gap-2">
                           {r.internal && <span className="text-yellow-600 font-medium">Internal note</span>}
                           {formatDate(r.created_at)}
                         </span>
                       </div>
-                      <p className="whitespace-pre-wrap">{r.body}</p>
+                      <TicketText text={r.body} format={r.body_format} />
                     </div>
                   )
                 }
@@ -512,7 +732,7 @@ export function TicketDetailPage() {
                 return (
                   <div key={h.id} className="flex items-center gap-3 py-1 text-xs text-gray-400">
                     <div className="flex-1 border-t border-gray-100" />
-                    <span className="shrink-0 text-center">
+                    <span className="min-w-0 text-center wrap-anywhere">
                       {h.from_status_id ? (
                         <>
                           <span style={{ color: h.from_status_color || undefined }} className="font-medium">
@@ -542,7 +762,7 @@ export function TicketDetailPage() {
             </div>
 
             {/* Reply / work log form */}
-            {statusName !== 'Closed' && (
+            {!isClosed && (
               <ReplyComposer ticketId={id} isStaffOrAdmin={isStaffOrAdmin} />
             )}
           </div>
@@ -562,14 +782,23 @@ export function TicketDetailPage() {
                     assigneeUserId={ticket.assignee_user_id}
                     assigneeGroupId={ticket.assignee_group_id}
                     users={allUsers}
+                    haveStaffList={haveStaffList}
                     groups={groups}
-                    onUpdated={() => qc.invalidateQueries({ queryKey: ['ticket', id] })}
+                    meId={user?.id}
+                    closed={statusName === 'Resolved' || statusName === 'Closed'}
+                    onUpdated={() => {
+                      qc.invalidateQueries({ queryKey: ['ticket', id] })
+                      qc.invalidateQueries({ queryKey: ['ticketAudit', id] })
+                    }}
                   />
                 </CardContent>
               </Card>
             )}
 
-            {isStaffOrAdmin && (
+            {/* No status picker on a Closed ticket unless this viewer may
+                reopen it (#349): otherwise every other option would only be
+                refused. */}
+            {isStaffOrAdmin && (!isClosed || canReopen) && (
               <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gray-400">
@@ -578,17 +807,21 @@ export function TicketDetailPage() {
                 </CardHeader>
                 <CardContent>
                   <Select
+                    aria-label="Ticket status"
                     className="h-8 text-xs w-full"
                     value={ticket.status_id}
                     onChange={(e) => statusMutation.mutate(e.target.value)}
                     disabled={statusMutation.isPending}
                   >
-                    {statuses.map((s) => (
+                    {/* An inactive status is retired: the server refuses a move
+                        into it, so it is not offered. The ticket's own status
+                        stays listed or the select would show the wrong one. */}
+                    {statuses.filter((s) => s.active || s.id === ticket.status_id).map((s) => (
                       <option key={s.id} value={s.id}>{s.name}</option>
                     ))}
                   </Select>
                   {statusMutation.isError && (
-                    <p className="mt-1 text-xs text-red-600">{extractError(statusMutation.error)}</p>
+                    <p role="alert" className="mt-1 text-xs text-red-600">{extractError(statusMutation.error)}</p>
                   )}
                 </CardContent>
               </Card>
@@ -610,6 +843,17 @@ export function TicketDetailPage() {
               </CardContent>
             </Card>
 
+            {isStaffOrAdmin && <LinkedTicketsPanel ticketId={id} />}
+
+            {/* Staff always see who follows (#441); the API refuses a requester. */}
+            {isStaffOrAdmin && <FollowersPanel ticketId={id} />}
+
+            {/* Staff-only display and a staff-only route: the API refuses the
+                audit feed (and /history) to a requester with 403, since
+                requesters see the ticket's current state and conversation,
+                not its history. This keeps the page from asking. */}
+            {isStaffOrAdmin && <AuditFeed ticketId={id} />}
+
             {attachments.length > 0 && (
               <Card>
                 <CardHeader className="pb-2">
@@ -617,18 +861,8 @@ export function TicketDetailPage() {
                     Attachments
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-1">
-                  {attachments.map((a) => (
-                    <a
-                      key={a.id}
-                      href={attachmentDownloadUrl(id, a.id)}
-                      className="flex items-center gap-2 text-sm text-blue-600 hover:underline truncate"
-                      download={a.filename}
-                    >
-                      <span className="shrink-0 text-gray-400">↓</span>
-                      <span className="truncate">{a.filename}</span>
-                    </a>
-                  ))}
+                <CardContent>
+                  <AttachmentList ticketId={id} attachments={attachments} />
                 </CardContent>
               </Card>
             )}
@@ -648,10 +882,25 @@ export function TicketDetailPage() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Priority</span>
-                  <Badge variant={priorityVariant(ticket.priority) as never}>{ticket.priority}</Badge>
-                </div>
+                {isStaffOrAdmin ? (
+                  // Staff and admin change it here; the header badge stays.
+                  // Stacked rather than side by side so the select has the
+                  // card's full width at 390px. Resolved and Closed lock it:
+                  // the server answers 409 ticket_closed there.
+                  <div className="space-y-1">
+                    <span className="text-gray-500">Priority</span>
+                    <PriorityControl
+                      ticketId={id}
+                      priority={ticket.priority}
+                      locked={statusName === 'Resolved' || statusName === 'Closed'}
+                    />
+                  </div>
+                ) : (
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Priority</span>
+                    <Badge variant={priorityVariant(ticket.priority) as never}>{ticket.priority}</Badge>
+                  </div>
+                )}
                 <div className="flex justify-between">
                   <span className="text-gray-500">Created</span>
                   <span className="text-right text-xs">{formatDate(ticket.created_at)}</span>

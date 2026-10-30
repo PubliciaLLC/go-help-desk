@@ -17,7 +17,7 @@ Go Help Desk is licensed under the [GNU Affero General Public License v3.0](LICE
 
 ### Requirements
 
-- Go 1.26+
+- Go 1.27+
 - Node.js 24+ and npm
 - PostgreSQL 17+ (local or Docker)
 - [sqlc](https://sqlc.dev) (for schema changes)
@@ -54,9 +54,23 @@ Postgres:
 ```
 
 The database is ephemeral: it lives in a tmpfs, listens on **5433** so it can
-never be confused with the dev stack on 5432, and runs with `fsync=off`. Nothing
+never be confused with the dev stack on 5432, and runs with `fsync=off`.
+
+That default is **one shared database**: two runs at once (two worktrees, or
+two agents) tear each other's database down, because `once` ends by removing
+it. To run several, give each its own instance and it gets its own free port:
+
+```sh
+GHD_TEST_INSTANCE=pr368 ./scripts/test-db.sh once ./...
+```
+
+Use one name per worktree. `GHD_TEST_PORT` pins the port if you need it, and only
+with an instance name: on the shared database it would recreate it under
+anyone using it, so the script refuses. Nothing
 persists between runs and nothing needs seeding — `testutil.NewDB` applies the
 migrations on first connect and each test rolls back its own transaction.
+
+The suite records a checksum of every migration it applies. If it stops with "the test database was migrated by different migration files than this tree's", the database was migrated by another branch that numbered a migration the same as yours, or a migration you edited after it was applied. golang-migrate tracks only the number, so it would otherwise call the database up to date and your tests would fail on a missing table. Recreate the test database (`./scripts/test-db.sh down`, with the same `GHD_TEST_INSTANCE` if you set one). Pointing `TEST_DATABASE_URL` at the dev database adds one table, `testutil_migration_checksums`, which the server ignores. If two open branches both add the next migration number, the second one to merge renumbers.
 
 On macOS the script will start [colima](https://colima.run) if no container
 runtime is responding, and stop it again on teardown, so no VM idles between
@@ -93,14 +107,30 @@ go test ./internal/domain/... ./internal/config/... ./internal/middleware/... ./
 ### Integration tests
 
 ```sh
-# Via Docker Compose (recommended)
-docker-compose -f docker/docker-compose.yml --profile test run --rm test
+# Against a throwaway database (recommended)
+#
+# Starts an ephemeral Postgres on 127.0.0.1:5433, runs the suite against it,
+# and leaves nothing behind. Never points at the development database.
+./scripts/test-db.sh test
 
-# From the host (port 5432 is exposed by docker-compose)
+# Several at once (worktrees, parallel agents): name an instance, and each
+# gets its own database on its own free port. Without a name they share one,
+# and the first run to finish tears it down under the others.
+GHD_TEST_INSTANCE=my-branch ./scripts/test-db.sh once
+
+# Or against the development stack's database, which the suite will migrate
 TEST_DATABASE_URL="postgres://helpdesk:helpdesk@localhost:5432/helpdesk?sslmode=disable" go test ./...
 ```
 
 If `TEST_DATABASE_URL` is not set, integration tests are skipped (not failed).
+
+### Browser (Playwright) tests
+
+`cd frontend && npm run test:e2e` starts its own Vite server on port 5183 and
+fails if something already holds that port, rather than testing the wrong
+checkout. Running several worktrees at once: give each its own port with
+`PW_PORT=5190 npm run test:e2e`. `PW_REUSE=1` reuses a server already on
+`PW_PORT`; use it only if that server is this checkout's.
 
 ### Full check
 

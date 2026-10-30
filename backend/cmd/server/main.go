@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/gob"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -22,14 +24,19 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/cannedresponsestore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/categorystore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/customfieldstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/emailtemplatestore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/groupstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/outboxstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/passwordresetstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/registrationstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/reputationstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/sessionstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/slastore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/tagstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/txrunner"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/webauthnstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
@@ -37,6 +44,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/passwordreset"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
@@ -48,9 +56,35 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/server"
 	"github.com/publiciallc/go-help-desk/backend/internal/server/notify"
 	"github.com/publiciallc/go-help-desk/backend/internal/ui"
+	"github.com/publiciallc/go-help-desk/backend/internal/updatecheck"
 )
 
 func main() {
+	// One subcommand, handled before run() so it never starts a server or a
+	// sweep. Everything else is the server, which keeps `docker run <image>`
+	// meaning what it has always meant.
+	if len(os.Args) > 1 && os.Args[1] == "reset-factors" {
+		var email string
+		if len(os.Args) > 2 {
+			email = os.Args[2]
+		}
+		if err := resetFactors(context.Background(), email); err != nil {
+			slog.Error("reset-factors", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "unlock" {
+		var email string
+		if len(os.Args) > 2 {
+			email = os.Args[2]
+		}
+		if err := unlock(context.Background(), email, os.Stdout); err != nil {
+			slog.Error("unlock", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		// Not log.Fatalf. run() installs a slog JSON handler as the default,
 		// which also routes the stdlib log package — and Go's stdlib-log
@@ -65,6 +99,45 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+// slaSweepInterval is how often the breach sweep runs. Policy targets are
+// integer minutes (response_target_min / resolution_target_min), and the
+// sweep stamps the time a breach was DETECTED rather than the deadline
+// instant, so this interval is exactly the stamp's worst-case error. One
+// minute keeps that error at the same granularity as the targets themselves:
+// 30s would double the query load for sub-minute precision no target can
+// express, and 5m would let a 15-minute critical response target report a
+// breach up to 33% late. Not configurable — DESIGN.md names no setting for
+// it, and the candidate query's own age prefilter keeps the load bounded
+// regardless of interval.
+const slaSweepInterval = time.Minute
+
+// runSLASweepTick runs one breach-sweep pass if and only if enabled(ctx)
+// reports the SLA feature on — read fresh on every call, not decided once at
+// boot, per gatedSLA's doc comment in sla_wiring.go. ran reports whether
+// sweep was actually invoked, so a disabled tick can be told apart from an
+// enabled tick that swept zero candidates.
+//
+// Extracted out of the goroutine in run() so this gating is unit-testable
+// (see sla_wiring_test.go) without booting a database or an HTTP server:
+// enabled and sweep are both narrow function values, not the concrete
+// admin.Service / sla.Service types.
+func runSLASweepTick(
+	ctx context.Context,
+	enabled func(ctx context.Context) bool,
+	sweep func(ctx context.Context, now time.Time) (sla.SweepResult, error),
+	now time.Time,
+) (ran bool, res sla.SweepResult, err error) {
+	if !enabled(ctx) {
+		return false, sla.SweepResult{}, nil
+	}
+	res, err = sweep(ctx, now)
+	return true, res, err
+}
+
+// autoCloseBatch is the page size for the auto-close sweep. Resolved tickets
+// past the reopen window flip to Closed on each tick.
+const autoCloseBatch = 500
 
 func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -86,6 +159,20 @@ func run() error {
 	}
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})))
 
+	// APP_ENV is set but has no effect; the message helps developers understand that.
+	_, appEnvSet := os.LookupEnv("APP_ENV")
+	if msg, shouldLog := appEnvNotice(appEnvSet); shouldLog {
+		slog.Info(msg)
+	}
+
+	// Uploads are refused (503) while this directory cannot be written, and
+	// the admin panel says so; everything else runs. The check repeats on
+	// every upload, so fixing the directory needs no restart.
+	if err := server.CheckAttachmentDir(cfg.AttachmentDir); err != nil {
+		slog.Warn("ATTACHMENT_DIR is not writable: attachment uploads are disabled until it is fixed",
+			"dir", cfg.AttachmentDir, "error", err)
+	}
+
 	// A copied .env.example starts cleanly and is entirely forgeable: the
 	// example SESSION_SECRET is 47 characters, so the 32-character minimum
 	// does not catch it. Refusing to boot would be hostile to anyone kicking
@@ -100,9 +187,11 @@ func run() error {
 
 	// ── Database ─────────────────────────────────────────────────────────────
 	// Run migrations before opening the pool so the schema is always current.
-	if err := database.Migrate(ctx, database.MigrateURL(cfg.DatabaseURL)); err != nil {
+	migrated, err := database.MigrateReport(ctx, database.MigrateURL(cfg.DatabaseURL))
+	if err != nil {
 		return fmt.Errorf("running migrations: %w", err)
 	}
+	slog.Info(migrated.String(), "from", migrated.From, "to", migrated.To)
 
 	pool, err := database.New(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -114,27 +203,70 @@ func run() error {
 	sqlDB := stdlib.OpenDBFromPool(pool)
 	q := dbgen.New(sqlDB)
 
+	// ── JWT Secret ─────────────────────────────────────────────────────────────
+	// Resolve the JWT signing key. If cfg.JWTSecret is 32+ bytes, use it as-is.
+	// Otherwise, generate a random 32-byte key, store it in the database
+	// (insert-if-absent), and use that. After resolution, cfg.JWTSecret holds
+	// the effective key.
+	secretStore := database.NewSecretStore(q)
+	jwtSecret, source, discarded, err := resolveJWTSecret(ctx, cfg.JWTSecret, secretStore, rand.Reader)
+	if err != nil {
+		return fmt.Errorf("resolving jwt signing key: %w", err)
+	}
+	if discarded {
+		slog.Warn("JWT_SECRET is an example value from the repository and was ignored; using a generated key instead")
+	}
+	cfg.JWTSecret = jwtSecret
+	if source == "database" {
+		slog.Info("jwt signing key: using generated key stored in the database (JWT_SECRET unset or under 32 bytes)")
+	}
+
 	// ── Stores ────────────────────────────────────────────────────────────────
 	uStore := userstore.New(q)
 	tStore := ticketstore.New(q)
 	cStore := categorystore.New(q)
 	gStore := groupstore.New(q)
 	aStore := adminstore.New(q)
-	auStore := auditstore.New(q)
+	auStore := auditstore.New(q).SnapshotOn(sqlDB)
 	slStore := slastore.New(q)
 	authStore := authstore.New(q)
 	cfStore := customfieldstore.New(q)
 	regStore := registrationstore.New(q)
 	crStore := cannedresponsestore.New(q)
+	repStore := reputationstore.New(q)
 
 	// ── Domain services ───────────────────────────────────────────────────────
 	tagStore := tagstore.New(q)
 
-	userSvc := user.NewService(uStore)
+	// adminSvc supplies the deadline after which an old password hash is
+	// refused at sign-in (#453).
+	adminSvc := admin.NewService(aStore)
+	userSvc := user.NewService(uStore, user.WithAuditStore(auStore), user.WithPasswordExpiry(adminSvc))
 	categorySvc := category.NewService(cStore)
 	groupSvc := group.NewService(gStore)
 	tagSvc := tag.NewService(tagStore)
-	adminSvc := admin.NewService(aStore)
+
+	// Say so when attachments are not being scanned.
+	//
+	// An unset address is a supported configuration and not an error, so this
+	// is a warning rather than a refusal to boot. It is here because the
+	// alternative is silence: Docker Compose used to hardcode the address, so
+	// an operator who upgrades past the change that made the scanner opt-in
+	// (#297) has scanning switched off by a file they never edited, on an
+	// instance where it had been running. Nothing else tells them — the admin
+	// panel reports it, but only to somebody who goes and looks.
+	//
+	// Emitted here rather than beside the secrets warning above, which is
+	// where it used to be, because up there the only address available is the
+	// environment's. The saved setting takes precedence over it, so a warning
+	// that only read the environment told an instance scanning through the
+	// setting that its uploads were accepted unchecked — false, at every boot.
+	// A warning that cries wolf about malware is worse than none, because the
+	// next real one gets ignored. Found by the pre-merge gate on #303.
+	//
+	// The same shape as the secrets warning: what is true, what it costs, and
+	// what to do about it.
+	emitScanWarning(slog.Default(), cfg.ClamAVAddr, adminSvc.AttachmentScanAddress(ctx))
 	customFieldSvc := customfield.NewService(cfStore)
 	cannedResponseSvc := cannedresponse.NewService(crStore)
 
@@ -142,16 +274,34 @@ func run() error {
 	// regardless of whether SLA enforcement is active.
 	slaPolicySvc := sla.NewService(slStore)
 
-	// slaSvc is passed to the ticket service for enforcement; nil when disabled
-	// via the SLA_ENABLED env var (preserves existing behaviour).
-	// Declared as the interface type so the zero value is a true nil interface,
-	// not a (*sla.Service)(nil) wrapped in an interface (which would pass != nil checks).
-	var slaSvc ticket.SLAService
+	// slaSvc is always wired into the ticket service now — never nil. What
+	// used to gate it (cfg.SLAEnabled, decided once here at boot) and what
+	// actually governs the feature (adminSvc.SLAEnabled, the Settings-page
+	// toggle DESIGN.md documents as the real switch) used to be two
+	// independent gates: an admin turning the UI toggle on, with the env var
+	// at its default of false, attached no records and ran no sweep until the
+	// process was restarted. gatedSLA closes that gap by checking the DB
+	// setting live, on every call, so main.go no longer decides this at all.
+	// See gatedSLA's doc comment in sla_wiring.go.
+	//
+	// loggingSLA still wraps the outside, so a real failure from the inner
+	// sla.Service (as opposed to gatedSLA's own no-op when the feature is
+	// off) is still reported — the ticket service treats these as non-fatal
+	// and drops them, and domain code does not log, so without this wrapper
+	// they would vanish entirely.
+	slaSvc := ticket.SLAService(newLoggingSLA(newGatedSLA(sla.NewService(slStore), adminSvc, slog.Default()), slog.Default()))
+
+	// SLA_ENABLED is a startup-time convenience only: DESIGN.md documents it
+	// as a way to pre-enable the feature so a fresh instance works from first
+	// boot, without an admin needing to find the Settings toggle first. It
+	// only ever turns the DB setting ON; it never turns it off, so it can
+	// never override an admin's own choice to enable the feature via the UI
+	// (or, for that matter, a previous run's pre-enable) with an unset or
+	// false env var on a later boot.
 	if cfg.SLAEnabled {
-		// Wrapped so SLA bookkeeping failures are reported. The ticket
-		// service treats them as non-fatal and drops them, and the domain
-		// does not log — so without this they vanish entirely.
-		slaSvc = newLoggingSLA(sla.NewService(slStore), slog.Default())
+		if err := adminSvc.SetBool(ctx, admin.KeySLAEnabled, true); err != nil {
+			return fmt.Errorf("pre-enabling SLA tracking: %w", err)
+		}
 	}
 
 	// ── Notifications ─────────────────────────────────────────────────────────
@@ -159,20 +309,79 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("initialising email dispatcher: %w", err)
 	}
-	webhookDisp := notify.NewWebhookDispatcher(authStore)
-	dispatcher := notify.NewMulti(emailDisp, webhookDisp)
+	// The admin's edited templates (#158), read at send time. One primary-key
+	// lookup per mail and no cache, so several replicas agree. A template that
+	// no longer validates after an upgrade is named here and never blocks
+	// startup: the mail that uses it fails visibly, and one click reverts it.
+	emailTemplates := emailtemplatestore.NewWithDB(sqlDB)
+	emailDisp.WithTemplates(emailTemplates, adminSvc)
+	notify.WarnBrokenTemplates(ctx, emailTemplates, slog.Default())
+	// Said once at startup so "why did nobody get an email" has an answer in
+	// the log (#456). Half a configuration is a warning, not a quiet off.
+	if msg, misconfigured := cfg.EmailStatus(); misconfigured {
+		slog.Warn(msg)
+	} else {
+		slog.Info(msg)
+	}
+	// Requests queue notifications in the outbox and return; outboxWorker,
+	// started once the server exists, sends them (#164). The worker needs the
+	// server for the send-time guest-link step, and the ticket service needs a
+	// dispatcher before the server can be built, hence the late assignment.
+	outboxStore := outboxstore.NewWithDB(sqlDB)
+	var outboxWorker *notify.Worker
+	// Each subscribed hook gets its own queued, retried delivery (#448); the
+	// worker below sends them.
+	webhookDisp := notify.NewWebhookDispatcher(authStore, cfg.BaseURL, slog.Default()).
+		WithQueue(notify.WebhookQueue{
+			Outbox: outboxStore, Hooks: authStore, History: authStore,
+			Wake: func() {
+				if outboxWorker != nil {
+					outboxWorker.Wake()
+				}
+			},
+		})
+	dispatcher := notify.NewOutboxDispatcher(outboxStore, outboxChannels(), func() {
+		if outboxWorker != nil {
+			outboxWorker.Wake()
+		}
+	})
 
 	// ── Registration service ──────────────────────────────────────────────────
-	registrationSvc := registration.NewService(regStore, userSvc, emailDisp, cfg.BaseURL)
+	// Verification email goes through the outbox too (#348): signup does the
+	// same work for a new address and a taken one, and sending is decided off
+	// the request.
+	registrationSvc := registration.NewService(regStore, userSvc, emailDisp, dispatcher, cfg.BaseURL)
+
+	// ── Password reset (#451) ─────────────────────────────────────────────────
+	// "Forgot password" queues its request on the same outbox channel as signup
+	// verification; the send-time step is the server's (SendPasswordReset), wired
+	// below once it exists. The link's host is BASE_URL, never the request's.
+	passwordResetSvc := passwordreset.NewService(passwordresetstore.New(q), userSvc, emailDisp, dispatcher, auStore,
+		adminSvc.SAMLEnabled, cfg.BaseURL, slog.Default())
 
 	// ── Plugin registry ───────────────────────────────────────────────────────
 	pluginRegistry := plugin.NewRegistry()
 
 	// ── Ticket service ────────────────────────────────────────────────────────
 	// txRunner groups each composite ticket write — the ticket row, its status
-	// history, its audit entry — into a single transaction.
-	txRunner := txrunner.New(sqlDB)
+	// history, its audit entry — into a single transaction, and writes the
+	// outbox rows for the change's event in that same transaction (#506). The
+	// staff fan-out (#441) happens in the worker, on the change's email row
+	// (see outboxSenders below), not on the request.
+	txRunner := txrunner.New(sqlDB, outboxChannels(), func() {
+		if outboxWorker != nil {
+			outboxWorker.Wake()
+		}
+	})
+	// The dispatcher is for what is not a change to a ticket: the guest's link
+	// resend.
 	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, txRunner, slaSvc)
+	// The SLA re-match a priority change makes is gated on the same live
+	// toggle as AttachPolicy (#443).
+	ticketSvc.SetSLAEnabled(slaToggle(adminSvc, slog.Default()))
+	// The ticket service needs the dispatcher and the dispatcher's redelivery
+	// needs the ticket service: this closes the loop.
+	webhookDisp.SetSource(server.NewWebhookEventSource(ticketSvc))
 	if err := ticketSvc.LoadSystemStatuses(ctx); err != nil {
 		return fmt.Errorf("loading system statuses: %w", err)
 	}
@@ -220,12 +429,22 @@ func run() error {
 	})
 
 	// ── HTTP server ───────────────────────────────────────────────────────────
+	// Passkeys. The relying party is derived from BASE_URL: a credential is
+	// bound to its origin, so that setting decides whether passkey
+	// authentication works at all rather than only how links are built. An
+	// unusable value turns passkeys off with a warning instead of stopping
+	// startup (#494); see configurePasskeys.
+	passkeyStore := webauthnstore.New(q)
+	passkeySvc, passkeyReason := configurePasskeys(cfg.BaseURL, adminSvc.SiteName(ctx), slog.Default())
+
 	srv := server.New(
 		cfg,
 		sessionStore,
 		userSvc,
 		ticketSvc,
 		categorySvc,
+		passkeySvc,
+		passkeyStore,
 		groupSvc,
 		tagSvc,
 		adminSvc,
@@ -237,6 +456,18 @@ func run() error {
 		authStore,
 		registrationSvc,
 		cannedResponseSvc,
+		// The verdict cache. The provider and the API key are not passed:
+		// both are settings an operator can change while this process runs,
+		// so they are read per request. The Budget that holds the counters is
+		// built inside New and lives as long as the server, which is the half
+		// that must not be per request.
+		server.WithReputationLookup(repStore),
+		server.WithAuditStore(auStore),
+		server.WithPasskeysUnavailable(passkeyReason),
+		server.WithEmailHealth(outboxStore),
+		server.WithEmailTemplates(emailTemplates, emailDisp),
+		server.WithWebhookRedeliverer(webhookDisp),
+		server.WithPasswordReset(passwordResetSvc),
 	)
 
 	srv.InitSAML(ctx)
@@ -247,13 +478,20 @@ func run() error {
 	// ── MCP server (mounted under /mcp) ───────────────────────────────────────
 	// srv supplies the visibility rule: MCP applies the same authority model as
 	// the REST API rather than a second copy of it.
-	mcpSrv := mcp.New(ticketSvc, adminSvc.TicketPrefix, srv, categorySvc)
+	mcpSrv := mcp.New(ticketSvc, adminSvc.TicketPrefix, srv, categorySvc, srv)
 
 	mux := http.NewServeMux()
 	// Wrapped, never bare: Handler() authenticates nothing on its own, and this
 	// mux sits outside srv's middleware chain. Mounted directly, every MCP tool
 	// was reachable with no credentials.
-	mux.Handle("/mcp/", srv.ProtectMCP(mcpSrv.Handler()))
+	mcpHandler := srv.ProtectMCP(mcpSrv.Handler())
+	// "/mcp" must be registered as well as "/mcp/": the mux answers an exact
+	// "/mcp" with a 307 to "/mcp/" before any handler runs, so without this line
+	// the Streamable HTTP endpoint is redirected ahead of the auth chain, and
+	// clients that do not re-POST across a redirect cannot connect. The CI smoke
+	// check on /mcp reads 307 instead of 401 if it goes missing.
+	mux.Handle("/mcp", mcpHandler)  // Streamable HTTP
+	mux.Handle("/mcp/", mcpHandler) // /mcp/ (Streamable HTTP alias), /mcp/sse, /mcp/message
 	mux.Handle("/api/", srv)
 	mux.Handle("/health", srv)
 	mux.Handle("/", server.NewSPAHandler(ui.FS()))
@@ -265,6 +503,29 @@ func run() error {
 	// authenticated at all.
 	sweepCtx, stopSweep := context.WithCancel(ctx)
 	defer stopSweep()
+
+	// The outbox worker. Only the email channel carries guest links, so only
+	// it gets the send-time step that creates them. Rows still queued at
+	// shutdown stay queued and are sent after the next start.
+	outboxSenders := outboxSenderMap(
+		// A staff row gets its address here, at send time (#441).
+		// A change's row is split here, first, into the requester's mail and
+		// one mail per staff member (#506); every other row goes on to be sent.
+		notify.NewChangeSplitter(
+			notify.NewStaffMailDispatcher(notify.NewGuestLinkDispatcher(emailDisp, srv.PrepareGuestLink), userSvc, srv),
+			outboxStore, func() { outboxWorker.Wake() },
+			userSvc, groupSvc, tStore, adminSvc.StaffEmailOverrides, slog.Default()),
+		webhookDisp,
+		notify.NewVerificationDispatcher(registrationSvc.SendVerification).WithPasswordReset(srv.SendPasswordReset),
+	)
+	if err := checkOutboxWiring(dispatcher.Channels(), outboxSenders); err != nil {
+		return fmt.Errorf("wiring the notification outbox: %w", err)
+	}
+	outboxWorker = notify.NewWorker(outboxStore, outboxSenders, slog.Default())
+	go outboxWorker.Run(sweepCtx)
+	// The opt-in weekly release check (#170). Does nothing, and makes no
+	// request, unless an administrator turned update_check_enabled on.
+	go updatecheck.New(adminSvc, slog.Default()).Run(sweepCtx)
 	go func() {
 		t := time.NewTicker(time.Hour)
 		defer t.Stop()
@@ -284,6 +545,86 @@ func run() error {
 			}
 		}
 	}()
+
+	// Breach stamps are facts about time passing, so like session expiry they
+	// cannot be computed on read: a ticket nobody touches still breaches.
+	// See DESIGN.md → SLA Tracking → Breach Evaluation.
+	//
+	// Always started — never gated on cfg.SLAEnabled — because whether the
+	// sweep actually does anything on a given tick is decided live, inside
+	// runSLASweepTick, by the same admin Settings toggle everything else SLA
+	// now reads (see slaSvc's wiring above). Gating the goroutine itself on
+	// the env var was the other half of the two-disconnected-gates bug: an
+	// admin enabling SLA tracking only through the Settings UI got a sweep
+	// that never ran until the process was restarted with SLA_ENABLED=true.
+	go func() {
+		t := time.NewTicker(slaSweepInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-sweepCtx.Done():
+				return
+			case <-t.C:
+				ran, res, err := runSLASweepTick(sweepCtx,
+					func(ctx context.Context) bool {
+						enabled, err := adminSvc.SLAEnabled(ctx)
+						if err != nil {
+							// Fail safe: skip this tick rather than sweep
+							// against a setting read that just failed, but
+							// log it — see admin.Service.SLAEnabled and #216.
+							slog.WarnContext(ctx, "reading SLA enabled setting failed; skipping this sweep tick", "error", err)
+							return false
+						}
+						return enabled
+					},
+					func(ctx context.Context, now time.Time) (sla.SweepResult, error) {
+						return slaPolicySvc.SweepBreaches(ctx, tStore, now)
+					}, time.Now())
+				if !ran {
+					continue
+				}
+				if err != nil {
+					// Partial failures are joined; res is still meaningful.
+					slog.WarnContext(sweepCtx, "sweeping SLA breaches failed", "error", err,
+						"evaluated", res.Evaluated, "stamped", res.Stamped)
+				}
+				if res.Stamped > 0 {
+					slog.InfoContext(sweepCtx, "stamped SLA breaches",
+						"evaluated", res.Evaluated, "stamped", res.Stamped)
+				}
+			}
+		}
+	}()
+
+	// Resolved tickets past the reopen window flip to Closed here, not on read:
+	// DESIGN.md → Ticket Lifecycle → Auto-close scheduling. Five minutes because
+	// the window is denominated in days; the interval is not a setting.
+	go func() {
+		t := time.NewTicker(5 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-sweepCtx.Done():
+				return
+			case <-t.C:
+				// Read per tick, never cached: the window is "as configured at
+				// the time the sweep runs".
+				days := adminSvc.ReopenWindowDays(sweepCtx)
+				n, err := ticketSvc.AutoClose(sweepCtx, days, autoCloseBatch)
+				if err != nil {
+					slog.WarnContext(sweepCtx, "auto-closing resolved tickets failed", "closed", n, "error", err)
+				}
+				if n > 0 {
+					slog.InfoContext(sweepCtx, "auto-closed resolved tickets", "count", n, "reopen_window_days", days)
+				}
+			}
+		}
+	}()
+
+	// The audit-log retention sweep (#129, #331): see runAuditRetention.
+	emitAuditRetentionLog(slog.Default(), adminSvc.AuditRetentionDays(sweepCtx))
+	go runAuditRetention(sweepCtx, slog.Default(), auditRetentionFirstRun, auditRetentionEvery,
+		adminSvc.AuditRetentionDays, auStore.DeleteOlderThan)
 
 	httpSrv := &http.Server{
 		Addr: fmt.Sprintf(":%d", cfg.HTTPPort),
@@ -310,4 +651,54 @@ func run() error {
 	}
 
 	return <-shutdownDone
+}
+
+// emitScanWarning says whether this instance is scanning attachments, and on
+// arm64 what turning it on costs. Separated from run() so it can be tested
+// without a config or a database.
+func emitScanWarning(log *slog.Logger, envAddr, settingAddr string) {
+	// The precedence is Server.scanner()'s, and it is copied rather than
+	// re-decided: if these two ever disagree the warning is wrong again,
+	// which is the defect this replaced.
+	addr := settingAddr
+	if addr == "" {
+		addr = envAddr
+	}
+	if addr == "" {
+		// Only the environment variable is named, though the saved
+		// attachment_scan_address would also do it: that key is reachable
+		// through the settings API and has no field on the settings screen,
+		// so telling somebody to go and set it there sends them looking for a
+		// control that is not written yet. One false instruction replaced by
+		// another is not a fix.
+		attrs := []any{
+			"impact", "uploaded files are accepted without being checked for malware",
+			"fix", "point CLAMAV_ADDR at a ClamAV daemon, for example tcp://clamav:3310",
+		}
+		if runtime.GOARCH == "arm64" {
+			attrs = append(attrs,
+				"note", "clamav/clamav is published for linux/amd64 only, so on this architecture it runs under emulation")
+		}
+		log.Warn("attachment scanning is OFF: no scanner address is configured", attrs...)
+		return
+	}
+	if runtime.GOARCH == "arm64" {
+		log.Info("attachment scanning is on, running under emulation on this architecture",
+			"scanner", addr,
+			"why", "clamav/clamav is published for linux/amd64 only")
+	}
+}
+
+// appEnvNotice returns a message and a flag indicating whether to log it.
+// The message is returned whenever APP_ENV is present in the environment,
+// whatever its value. Setting APP_ENV is harmless
+// but has no effect; the message helps developers understand that.
+func appEnvNotice(set bool) (string, bool) {
+	// Takes whether the variable is present in the environment, not the
+	// config value: Config.AppEnv defaults to "production", so the value
+	// cannot tell "unset" from "set to production".
+	if !set {
+		return "", false
+	}
+	return "APP_ENV is set but has no effect; it is ignored", true
 }

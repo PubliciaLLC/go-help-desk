@@ -1,3 +1,5 @@
+import type { SLATargetStatus } from '@/api/types'
+
 // Pure display helpers shared by the ticket and settings pages.
 //
 // priorityVariant was defined identically in TicketDetailPage.tsx and
@@ -29,4 +31,22 @@ export function fmtMin(m: number): string {
   const h = Math.floor(m / 60)
   const rem = m % 60
   return rem ? `${h}h ${rem}m` : `${h}h`
+}
+
+/**
+ * Tooltip text for one SLA target: "48m left", "1h 20m over", "Met with 12m
+ * to spare", "Met 1h 5m late".
+ *
+ * Outstanding vs. met is decided by met_at, not by remaining_min's sign — a
+ * met target can still read "over" (a late response) and an outstanding one
+ * can already be past its target while the sweep has not stamped a breach
+ * yet, which is exactly the live-vs-stamp distinction the color itself draws.
+ */
+export function slaTargetText(t: SLATargetStatus): string {
+  const remaining = fmtMin(Math.abs(t.remaining_min))
+  const over = t.remaining_min < 0
+  if (t.met_at == null) {
+    return over ? `${remaining} over` : `${remaining} left`
+  }
+  return over ? `Met ${remaining} late` : `Met with ${remaining} to spare`
 }

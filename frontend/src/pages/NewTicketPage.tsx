@@ -4,24 +4,37 @@ import { useQuery } from '@tanstack/react-query'
 import {
   createTicket,
   listPublicCategories,
+  listPublicItems,
   listPublicTypes,
   resolveFieldsForCTI,
   uploadAttachment,
 } from '@/api/tickets'
-import { listCategories, listTypes, listItems } from '@/api/admin'
 import { extractError } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
 import { Layout } from '@/components/Layout'
 import { AttachmentUpload, type UploadState } from '@/components/AttachmentUpload'
+import { RequesterPicker } from '@/components/ticket/RequesterPicker'
+import { ME, reporterFields, type Requester } from '@/components/ticket/requester'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { TextLimit } from '@/components/TextLimit'
+import { isOverLimit } from '@/lib/textLimit'
+import { MarkdownEditor } from '@/components/editor/MarkdownEditor'
 import { Select } from '@/components/ui/select'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import type { Assignment } from '@/api/types'
 
 const PRIORITIES = ['critical', 'high', 'medium', 'low'] as const
+
+// Staff and administrators are sent archived rows too, so they can recognise a
+// classification they know from older tickets. Nobody may newly pick one (the
+// server answers 400, #421), so they are listed but disabled, with the reason in
+// the label rather than leaving a greyed row unexplained.
+function optionLabel(row: { name: string; active: boolean }): string {
+  return row.active ? row.name : `${row.name} (archived)`
+}
 
 function CustomFieldInput({
   field,
@@ -92,29 +105,41 @@ export function NewTicketPage() {
   const [customFieldValues, setCustomFieldValues] = useState<Record<string, string>>({})
   const [files, setFiles] = useState<File[]>([])
   const [uploadStates, setUploadStates] = useState<Record<string, UploadState> | undefined>()
+  const [requester, setRequester] = useState<Requester>(ME)
+  // "phone" is only meaningful when filing for someone else (#130); it is
+  // kept while the requester changes and dropped at submit if that goes back
+  // to Me.
+  const [channel, setChannel] = useState<'web' | 'phone'>('web')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [createdTicketId, setCreatedTicketId] = useState<string | null>(null)
 
-  // Staff/admin use the admin endpoints (all categories/types/items, active or inactive).
-  // Regular users use the public endpoints (active only, no items).
+  // One set of endpoints for everybody. They answer according to who is
+  // asking: active rows for a guest or a reporting user, the whole tree for
+  // staff and administrators, which is what DESIGN.md's role table says.
+  //
+  // This used to pick a different endpoint by role — /admin/categories for
+  // staff — and that route is wrapped in RequireRole(admin). Staff got 403,
+  // the query failed, `categories` fell back to [] and the picker was empty.
+  // A category is required, so a staff member could not file a ticket at
+  // all, and the same 403 emptied the type and item pickers behind it.
   const { data: categories = [] } = useQuery({
-    queryKey: isStaffOrAdmin ? ['admin-categories'] : ['public-categories'],
-    queryFn: isStaffOrAdmin ? listCategories : listPublicCategories,
+    queryKey: ['public-categories'],
+    queryFn: listPublicCategories,
   })
 
   const { data: types = [] } = useQuery({
-    queryKey: isStaffOrAdmin
-      ? ['admin-types', categoryId]
-      : ['public-types', categoryId],
-    queryFn: () =>
-      isStaffOrAdmin ? listTypes(categoryId) : listPublicTypes(categoryId),
+    queryKey: ['public-types', categoryId],
+    queryFn: () => listPublicTypes(categoryId),
     enabled: !!categoryId,
   })
 
+  // Items are staff-only on the form itself — the role table gives a
+  // reporting user no item picker at all — so this stays gated on the role
+  // even though the endpoint would answer either way.
   const { data: items = [] } = useQuery({
-    queryKey: ['admin-items', categoryId, typeId],
-    queryFn: () => listItems(categoryId, typeId),
+    queryKey: ['public-items', categoryId, typeId],
+    queryFn: () => listPublicItems(categoryId, typeId),
     enabled: isStaffOrAdmin && !!categoryId && !!typeId,
   })
 
@@ -134,6 +159,7 @@ export function NewTicketPage() {
     setError('')
     if (!subject.trim()) { setError('Subject is required'); return }
     if (!categoryId) { setError('Category is required'); return }
+    if (isOverLimit(description)) { setError('The description is too long. Shorten it to send.'); return }
 
     // Validate required custom fields.
     for (const f of visibleFields) {
@@ -143,9 +169,18 @@ export function NewTicketPage() {
       }
     }
 
+    // Only staff and administrators choose a requester; the server refuses it
+    // from anybody else, so a requester's form never sends one.
+    const who = isStaffOrAdmin ? reporterFields(requester) : { fields: {} }
+    if ('error' in who) { setError(who.error); return }
+
     setSubmitting(true)
     try {
       const t = await createTicket({
+        ...who.fields,
+        ...(isStaffOrAdmin && requester.mode !== 'me' && channel === 'phone'
+          ? { source_channel: 'phone' as const }
+          : {}),
         subject,
         description,
         category_id: categoryId,
@@ -207,6 +242,37 @@ export function NewTicketPage() {
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-5">
+              {isStaffOrAdmin && (
+                <RequesterPicker value={requester} onChange={setRequester} disabled={isUploading} />
+              )}
+              {isStaffOrAdmin && requester.mode !== 'me' && (
+                <fieldset className="space-y-2">
+                  <legend className="text-sm font-medium text-gray-700">How did this reach you?</legend>
+                  <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-gray-700">
+                    <label className="flex items-center gap-1.5">
+                      <input
+                        type="radio"
+                        name="source-channel"
+                        checked={channel === 'web'}
+                        onChange={() => setChannel('web')}
+                        disabled={isUploading}
+                      />
+                      Web
+                    </label>
+                    <label className="flex items-center gap-1.5">
+                      <input
+                        type="radio"
+                        name="source-channel"
+                        checked={channel === 'phone'}
+                        onChange={() => setChannel('phone')}
+                        disabled={isUploading}
+                      />
+                      Phone call
+                    </label>
+                  </div>
+                </fieldset>
+              )}
+
               <div className="space-y-1">
                 <Label htmlFor="subject">Subject *</Label>
                 <Input
@@ -220,18 +286,18 @@ export function NewTicketPage() {
               </div>
 
               <div className="space-y-1">
-                <Label htmlFor="description">Description</Label>
-                <Textarea
-                  id="description"
+                <Label id="description-label">Description</Label>
+                <MarkdownEditor
                   value={description}
-                  onChange={(e) => setDescription(e.target.value)}
+                  onChange={setDescription}
+                  labelId="description-label"
                   placeholder="Full details of the request or issue"
-                  rows={5}
                   disabled={isUploading}
                 />
+                <TextLimit value={description} />
               </div>
 
-              <div className={`grid gap-4 ${isStaffOrAdmin ? 'grid-cols-3' : 'grid-cols-2'}`}>
+              <div className={`grid grid-cols-1 gap-4 ${isStaffOrAdmin ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
                 <div className="space-y-1">
                   <Label htmlFor="category">Category *</Label>
                   <Select
@@ -247,7 +313,7 @@ export function NewTicketPage() {
                   >
                     <option value="">Select…</option>
                     {categories.map((c) => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
+                      <option key={c.id} value={c.id} disabled={!c.active}>{optionLabel(c)}</option>
                     ))}
                   </Select>
                 </div>
@@ -266,7 +332,7 @@ export function NewTicketPage() {
                   >
                     <option value="">Select…</option>
                     {types.map((t) => (
-                      <option key={t.id} value={t.id}>{t.name}</option>
+                      <option key={t.id} value={t.id} disabled={!t.active}>{optionLabel(t)}</option>
                     ))}
                   </Select>
                 </div>
@@ -282,7 +348,7 @@ export function NewTicketPage() {
                     >
                       <option value="">Select…</option>
                       {items.map((i) => (
-                        <option key={i.id} value={i.id}>{i.name}</option>
+                        <option key={i.id} value={i.id} disabled={!i.active}>{optionLabel(i)}</option>
                       ))}
                     </Select>
                   </div>
@@ -337,7 +403,7 @@ export function NewTicketPage() {
                 />
               </div>
 
-              {error && <p className="text-sm text-red-600">{error}</p>}
+              {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
 
               {uploadDone && createdTicketId && (
                 <div className="rounded-md bg-yellow-50 border border-yellow-200 p-3 text-sm space-y-1">
@@ -354,7 +420,7 @@ export function NewTicketPage() {
 
               {!uploadDone && (
                 <div className="flex gap-3">
-                  <Button type="submit" disabled={submitting || isUploading}>
+                  <Button type="submit" disabled={submitting || isUploading || isOverLimit(description)}>
                     {submitting
                       ? 'Submitting…'
                       : isUploading

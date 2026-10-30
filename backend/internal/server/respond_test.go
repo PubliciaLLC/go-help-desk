@@ -1,0 +1,127 @@
+package server
+
+import (
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
+	"github.com/stretchr/testify/require"
+)
+
+// TestHandleError_MapsSentinelsToStatus runs entirely without a database
+// (package server, not server_test, so it can call the unexported handleError
+// directly): it pins the four sentinels this PR's fixes touch (#276, #277)
+// plus the 500 fallthrough, so a reshuffle of their specific arms in the
+// errors.Is chain is caught here instead of only through an integration
+// test. It does not cover every sentinel handleError maps — the rest are
+// exercised through their own handlers' integration tests. Runs in CI's
+// non-DB `go test ./...` step.
+func TestHandleError_MapsSentinelsToStatus(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantStatus int
+	}{
+		{
+			name:       "wrapped ticket.ErrNotClosed maps to 409 (#277, #349)",
+			err:        fmt.Errorf("creating follow-up: %w", ticket.ErrNotClosed),
+			wantStatus: http.StatusConflict,
+		},
+		{
+			name:       "wrapped ticket.ErrValidation maps to 400",
+			err:        fmt.Errorf("no valid reopen target status is configured: %w", ticket.ErrValidation),
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "ticket.ErrNotFound (attachment) maps to 404 (#418)",
+			err:        fmt.Errorf("getting attachment abc: %w", ticket.ErrNotFound),
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "group.ErrNotFound maps to 404 (#418)",
+			err:        fmt.Errorf("group abc: %w", group.ErrNotFound),
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "group.ErrValidation maps to 400 (#418)",
+			err:        fmt.Errorf("group name: %w", group.ErrValidation),
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "group.ErrInvalidReference maps to 400 (#418)",
+			err:        fmt.Errorf("scope reference: %w", group.ErrInvalidReference),
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "group.ErrNameTaken maps to 409 (#418)",
+			err:        fmt.Errorf("%w: NewName", group.ErrNameTaken),
+			wantStatus: http.StatusConflict,
+		},
+		{
+			name:       "auth.ErrNotFound (webhook/API key) maps to 404 (#418)",
+			err:        fmt.Errorf("webhook abc: %w", auth.ErrNotFound),
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "plugin.ErrNotFound maps to 404 (#418)",
+			err:        fmt.Errorf("plugin abc: %w", plugin.ErrNotFound),
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "category.ErrNotFound maps to 404 (#418)",
+			err:        fmt.Errorf("category abc: %w", category.ErrNotFound),
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "category.ErrValidation maps to 400 (#418)",
+			err:        fmt.Errorf("category name: %w", category.ErrValidation),
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "category.ErrCategoryInUse maps to 409 (#418)",
+			err:        fmt.Errorf("%w: attached to 2 tickets", category.ErrCategoryInUse),
+			wantStatus: http.StatusConflict,
+		},
+		{
+			name:       "category.ErrTypeInUse maps to 409 (#418)",
+			err:        fmt.Errorf("%w: attached to 1 ticket", category.ErrTypeInUse),
+			wantStatus: http.StatusConflict,
+		},
+		{
+			name:       "category.ErrItemInUse maps to 409 (#418)",
+			err:        fmt.Errorf("%w: attached to 3 tickets", category.ErrItemInUse),
+			wantStatus: http.StatusConflict,
+		},
+		{
+			name:       "sla.ErrValidation maps to 400 (#276)",
+			err:        sla.ErrValidation,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "sla.ErrUnknownCategory maps to 400 (#276)",
+			err:        sla.ErrUnknownCategory,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "an unrecognized error falls through to 500",
+			err:        errors.New("boom"),
+			wantStatus: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handleError(rec, tc.err)
+			require.Equal(t, tc.wantStatus, rec.Code)
+		})
+	}
+}

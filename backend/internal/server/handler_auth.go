@@ -1,19 +1,21 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/crewjam/saml/samlsp"
+	"github.com/google/uuid"
 	"github.com/gorilla/sessions"
-	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
@@ -47,15 +49,68 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 	// anyone their own account, because the correct password always works.
 	//
 	// (TOTP is the opposite case: verification is a cheap HMAC, so there the
-	// count has to gate before the check. It does — see CheckMFALock below.)
+	// count has to gate before the check. It does — see ClaimMFAAttempt.)
+	//
+	// What the counter could NOT do on its own is limit guessing, and
+	// measuring it said so: with a limit of three, eight wrong guesses
+	// answered 401 401 401 429 429 429 429 429, and every one of those 429s
+	// had still run the password check. Ignore the status code and the
+	// guesses were unlimited, bounded only by bcrypt — ten to fifteen a
+	// second per core. MFA is off by default, so on most instances that was
+	// the whole of the online defence.
+	//
+	// So an account over its budget waits before the password is checked.
+	// Measured, that costs a serial attacker about twenty times and costs one
+	// with a couple of hundred parallel connections nothing — a request that
+	// cannot get its turn goes ahead rather than being refused. Tarpit has
+	// the numbers and the reasoning for that trade. What it keeps is the
+	// property this ordering exists for: the right password always works, and
+	// nothing here can be used to keep somebody out of their own account.
 	loginKey := "login:" + loginRateKey(body.Email)
 
-	u, err := s.users.VerifyPassword(r.Context(), body.Email, body.Password)
+	if s.loginLimiter.Exceeded(loginKey) {
+		s.loginLimiter.Tarpit(r.Context(), loginKey, s.loginThrottleDelay)
+	}
+
+	u, err := s.users.VerifyPasswordForSignIn(r.Context(), body.Email, body.Password)
+	if errors.Is(err, user.ErrPasswordResetRequired) {
+		// The SAML restriction first: a non-administrator under SAML cannot use a
+		// password at all, so telling them to reset one would be wrong.
+		if !user.IsLocalAuthAllowed(u, s.adminSvc.SAMLEnabled(r.Context())) {
+			Error(w, http.StatusForbidden, "saml_required", "local login is disabled; use SAML")
+			return
+		}
+		// The password was right, so this is not a failed guess: it is not
+		// counted, and it does not reset the counter either. It costs the same
+		// as a wrong password (see VerifyPasswordForSignIn).
+		//
+		// Where the person goes from here depends on whether the server can send
+		// a reset link (#451). If it can, the link is sent now, by the same
+		// request the "Forgot password" page makes (#453, Erik 2026-10-19), so
+		// they are not left to find the page; if it cannot, an administrator
+		// has to do it.
+		//
+		// Only here, after the password was verified: a wrong password never
+		// reaches this branch, so this cannot be used to mail somebody else.
+		// Timing: the work added is one queue insert; the mail itself is sent
+		// by the outbox worker, off the request. The 403 already tells the
+		// caller the password was right, so there is nothing for timing to hide.
+		//
+		// Counted against the same per-address budget as "Forgot password", and
+		// the per-account budget applies when the worker sends. Over the budget
+		// nothing more is queued, and neither is anything when the queue insert
+		// fails; the message then says so rather than claiming a mail was sent.
+		resetByEmail := s.passwordResetAvailable()
+		queued := resetByEmail && s.loginLimiter.Allow(forgotPasswordKey(r)) &&
+			s.requestPasswordReset(r.Context(), u.Email)
+		Error(w, http.StatusForbidden, "password_reset_required", passwordResetRequiredMessage(resetByEmail, queued))
+		return
+	}
 	if err != nil {
 		// Only failures are counted, and the refusal happens here rather than
 		// before the check, so a legitimate user is never held out.
 		if !s.loginLimiter.Allow(loginKey) {
-			tooManyAttempts(w, time.Minute)
+			tooManyAttempts(w, s.loginLimiter.Remaining())
 			return
 		}
 		Error(w, http.StatusUnauthorized, "invalid_credentials", "invalid email or password")
@@ -67,32 +122,131 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// MFA gate: three outcomes after a valid password.
-	//   - enrolled user & MFA enabled → must verify TOTP (mfa_needed)
-	//   - not enrolled & role is in enforced list → must enroll before access (mfa_enrollment_needed)
-	//   - otherwise → session is fully authenticated
+	// The second-factor gate, after a valid password. There are four answers,
+	// and there used to be two.
+	//
+	//   verify TOTP    — a TOTP enrolment exists
+	//   verify passkey — a passkey is registered and no TOTP is
+	//   enrol         — neither, and this role must have one
+	//   nothing owed  — anything else; the session is fully authenticated
+	//
+	// The two booleans that used to carry this both keyed off u.MFAEnabled,
+	// which is the TOTP column rather than "this account has a second
+	// factor". That was a complete answer while TOTP was the only kind.
+	// Passkeys made it a wrong one: an account with a passkey and no TOTP
+	// read MFAEnabled false, so the server answered "you still need to
+	// enrol" on every sign-in and never once offered the key. It could not
+	// sign in again. There was no third outcome on the wire to say "you have
+	// a factor, use it, and it is not TOTP".
 	mfaEnabled := s.adminSvc.MFAEnabled(r.Context())
 	// The password was right, so prior failures for this address stop counting.
 	s.loginLimiter.Reset(loginKey)
 
-	mfaNeeded := mfaEnabled && u.MFAEnabled
-	mfaEnrollmentNeeded := mfaEnabled && !u.MFAEnabled && s.adminSvc.MFARequiredFor(r.Context(), string(u.Role))
-	mfaPassed := !mfaNeeded && !mfaEnrollmentNeeded
+	passkeys, err := s.passkeyStore.CountForUser(r.Context(), u.ID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
 
-	if err := s.writeSession(w, r, auth.SessionData{
+	// TOTP first when both exist: it is what the account had before, and a
+	// person who enrolled a key alongside it has not asked to stop using the
+	// authenticator they already have. The passkey route is still reachable
+	// directly for anyone who prefers it.
+	mfaNeeded := mfaEnabled && u.MFAEnabled
+	//
+	// Passkeys unavailable (#494): a key the server cannot check is not a
+	// factor, so it is never asked for. An account whose ONLY second factor is
+	// such a key is refused rather than let in on its password alone, or a
+	// stolen password would take over exactly the accounts that chose a
+	// stronger factor. That includes the last administrator: the way back is
+	// an administrator's MFA reset, or reset-factors on the server. The
+	// refusal comes after loginLimiter.Reset, so it never counts as a failed
+	// attempt, and before any session is written.
+	stranded := mfaEnabled && !u.MFAEnabled && passkeys > 0 && !s.passkeysAvailable()
+	if stranded {
+		Error(w, http.StatusForbidden, "passkey_unavailable",
+			"Your passkey can't be used on this server right now. Ask an administrator to reset your sign-in factors.")
+		return
+	}
+	passkeyNeeded := mfaEnabled && !u.MFAEnabled && passkeys > 0
+	mfaEnrollmentNeeded := mfaEnabled && !u.MFAEnabled && passkeys == 0 &&
+		s.adminSvc.MFARequiredFor(r.Context(), string(u.Role))
+	mfaPassed := !mfaNeeded && !passkeyNeeded && !mfaEnrollmentNeeded
+
+	sd := auth.SessionData{
 		UserID:    u.ID,
 		Role:      u.Role,
 		MFAPassed: mfaPassed,
-	}); err != nil {
+
+		MustChangePassword: u.MustChangePassword,
+		// Not the raw flag: see auth.SessionData.PasswordChangeNeedsNoFactor.
+		PasswordChangeNeedsNoFactor: u.MustChangePassword && !mfaNeeded && !passkeyNeeded,
+	}
+	// The limit is chosen here, where we know which factor is owed: five
+	// minutes to type a code, fifteen to install an app and enrol.
+	if !mfaPassed {
+		sd.PendingUntil = auth.PendingDeadline(time.Now(), mfaEnrollmentNeeded)
+	}
+
+	if err := s.writeSession(w, r, sd); err != nil {
 		handleError(w, err)
 		return
 	}
 
 	JSON(w, http.StatusOK, map[string]any{
-		"user":                  u,
-		"mfa_needed":            mfaNeeded,
-		"mfa_enrollment_needed": mfaEnrollmentNeeded,
+		"user":                     u,
+		"mfa_needed":               mfaNeeded,
+		"passkey_needed":           passkeyNeeded,
+		"mfa_enrollment_needed":    mfaEnrollmentNeeded,
+		"password_change_required": u.MustChangePassword,
 	})
+}
+
+// passwordResetRequiredMessage is what a person whose password hash is too old
+// to be used (#453) is told to do. With email on, the reset link has just been
+// sent; with email on but nothing queued (budget spent, or the queue failed) it
+// says so; without email, only an administrator can help.
+func passwordResetRequiredMessage(resetByEmail, queued bool) string {
+	const head = "Your password was saved in an older, weaker form and must be reset before you can sign in. "
+	if resetByEmail && !queued {
+		return head + "We could not send a reset link just now. Try again in a minute, or ask an administrator."
+	}
+	if resetByEmail {
+		return head + "We have emailed you a link to choose a new password: check your email. " +
+			"If it does not arrive, choose \"Forgot password\" on the sign-in page to be sent another, " +
+			"or ask an administrator to reset it for you."
+	}
+	return head + "Ask an administrator to reset it for you. " +
+		"(\"Forgot password\" is not available because this server cannot send email.)"
+}
+
+// samlAuthnMethodsAttr and samlMultipleAuthn are how Entra ID says, in a
+// SAML assertion, that the user completed MFA: the attribute holds
+// multipleauthn only then. For apps other than Salesforce the Entra
+// administrator must add the `amr` optional claim with include_granular_amr,
+// or the attribute is not sent and SSO sign-ins do not count as a proved
+// factor.
+const (
+	samlAuthnMethodsAttr = "http://schemas.microsoft.com/claims/authnmethodsreferences"
+	samlMultipleAuthn    = "http://schemas.microsoft.com/claims/multipleauthn"
+)
+
+// samlAssertedMFA reports whether a SAML assertion's attributes say the user
+// completed a second factor. Anything else fails closed.
+//
+// Looked up under both keys the SAML library can file it under: the
+// attribute's Name, or its FriendlyName when the provider sets one. Entra
+// sends no FriendlyName for this claim; a provider that did would otherwise
+// never count as MFA.
+func samlAssertedMFA(attrs map[string][]string) bool {
+	for _, key := range []string{samlAuthnMethodsAttr, "authnmethodsreferences"} {
+		for _, v := range attrs[key] {
+			if v == samlMultipleAuthn {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // POST /api/v1/auth/local/logout
@@ -126,7 +280,11 @@ func (s *Server) handleMFAVerify(w http.ResponseWriter, r *http.Request) {
 	// session that already passed the password, so burning someone's budget
 	// means you already hold their password — an alarm, not a denial of
 	// service.
-	if err := s.users.CheckMFALock(r.Context(), a.UserID); err != nil {
+	//
+	// Spent before the code is checked, not counted after it. The old order
+	// left a window: forty parallel wrong codes all read "not locked" and
+	// thirty-six of them were verified, against a limit of five.
+	if err := s.users.ClaimMFAAttempt(r.Context(), a.UserID); err != nil {
 		if errors.Is(err, user.ErrMFALocked) {
 			tooManyAttempts(w, user.MFALockDuration)
 			return
@@ -136,10 +294,6 @@ func (s *Server) handleMFAVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.users.VerifyMFACode(r.Context(), a.UserID, body.Code); err != nil {
-		if lockErr := s.users.RecordMFAFailure(r.Context(), a.UserID); lockErr != nil && !errors.Is(lockErr, user.ErrMFALocked) {
-			handleError(w, lockErr)
-			return
-		}
 		Error(w, http.StatusUnauthorized, "invalid_mfa_code", "invalid TOTP code")
 		return
 	}
@@ -148,9 +302,12 @@ func (s *Server) handleMFAVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.writeSession(w, r, auth.SessionData{
-		UserID:    a.UserID,
-		Role:      a.Role,
-		MFAPassed: true,
+		UserID:         a.UserID,
+		Role:           a.Role,
+		MFAPassed:      true,
+		FactorVerified: true,
+
+		MustChangePassword: a.MustChangePassword,
 	}); err != nil {
 		handleError(w, err)
 		return
@@ -196,10 +353,22 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /api/v1/auth/saml/login — initiates the IdP redirect.
-// We clone the request and rewrite the URL to the complete endpoint so that
-// crewjam uses /saml/complete as the RelayState, ensuring the browser lands
-// there after the ACS round-trip.
+// GET /api/v1/auth/saml/login — starts a fresh SAML sign-in at the IdP.
+//
+// It calls HandleStartAuthFlow directly. mw.ServeHTTP serves only the
+// metadata and ACS paths and 404s everything else (#390), and redirecting to
+// /saml/complete instead would let a "token" cookie already in the browser
+// answer for the IdP: a spent one would send the person to
+// /login?error=sso_session_used with no way to start over.
+//
+// The library records r.URL as where the browser goes after the ACS, so the
+// URL is replaced with /saml/complete: left as /saml/login, every successful
+// assertion would start another sign-in. It is a bare path on purpose. An
+// absolute URL built from the request would take its host from the Host
+// header and its scheme from r.TLS, which is nil behind a TLS-terminating
+// proxy, so the browser would be sent to http:// and its Secure "token"
+// cookie would not go with it. Nothing from the query is read, so this route
+// cannot be pointed anywhere else.
 func (s *Server) handleSAMLLogin(w http.ResponseWriter, r *http.Request) {
 	mw := s.samlHTTP()
 	if mw == nil {
@@ -207,17 +376,8 @@ func (s *Server) handleSAMLLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r2 := r.Clone(r.Context())
-	r2.URL = &url.URL{
-		Scheme: func() string {
-			if r.TLS != nil {
-				return "https"
-			}
-			return "http"
-		}(),
-		Host: r.Host,
-		Path: "/api/v1/auth/saml/complete",
-	}
-	mw.ServeHTTP(w, r2)
+	r2.URL = &url.URL{Path: "/api/v1/auth/saml/complete"}
+	mw.HandleStartAuthFlow(w, r2)
 }
 
 // POST /api/v1/auth/saml/acs — assertion consumer service.
@@ -249,7 +409,78 @@ func (s *Server) handleSAMLComplete(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusServiceUnavailable, "saml_not_configured", "SAML is not configured")
 		return
 	}
-	mw.RequireAccount(http.HandlerFunc(s.handleSAMLSession)).ServeHTTP(w, r)
+	mw.RequireAccount(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The library's "token" cookie is a signed JWT, valid for an hour,
+		// and RequireAccount accepts it in place of a fresh assertion. It is
+		// the library's own credential: revoking an app session (password
+		// change, MFA reset, a new factor) cannot reach it, so a browser
+		// still holding it could come back here and mint a new app session,
+		// with whatever MFA the original assertion claimed (#337).
+		//
+		// So it is spent here, the moment it has been read, and whatever the
+		// sign-in's outcome: this route is the only reader, and the app
+		// session written below is the credential from now on.
+		//
+		// Spent twice: the browser is told to delete the cookie (same name,
+		// domain and path the library set it with), and the SHA-256 of its signed
+		// input (header.payload) is recorded so a copy presented later is
+		// refused (SpendSAMLHandover). Both happen before the user is looked
+		// up, so a refused sign-in spends it too.
+		//
+		// The error branches below are defensive. CookieSessionProvider's
+		// DeleteSession can only fail on a malformed cookie lookup, which
+		// RequireAccount has just ruled out by reading it, so it is not
+		// reachable today; if a different SessionProvider is ever configured,
+		// failing closed is the safe default.
+		if err := mw.Session.DeleteSession(w, r); err != nil {
+			handleError(w, fmt.Errorf("clearing SAML login cookie: %w", err))
+			return
+		}
+
+		// Spent on the server too, not only in this browser: a copy taken
+		// before this hand-over is refused from now on (#337). Detached, like
+		// the session revocations: once the row is written, a client that
+		// hangs up must not turn it into a 500 for a cookie that is already
+		// spent.
+		cp, ok := mw.Session.(samlsp.CookieSessionProvider)
+		if !ok {
+			handleError(w, errors.New("SAML session provider is not cookie-based"))
+			return
+		}
+		c, err := r.Cookie(cp.Name)
+		if err != nil {
+			handleError(w, fmt.Errorf("reading SAML login cookie: %w", err))
+			return
+		}
+
+		// The spend key is the signed input (header.payload), never the
+		// signature segment. The verifier decodes the signature leniently, so
+		// one token has several spellings that all verify (the unused low bits
+		// of the last base64 character can be changed); each would hash
+		// differently, and a spent cookie could be replayed by respelling its
+		// signature (#337). header.payload is covered by the signature byte for
+		// byte and cannot be respelled without breaking verification. Not three
+		// segments cannot happen after RequireAccount; fail closed anyway.
+		parts := strings.Split(c.Value, ".")
+		if len(parts) != 3 {
+			handleError(w, errors.New("invalid SAML cookie format"))
+			return
+		}
+		spendKey := strings.Join(parts[:2], ".")
+
+		first, err := s.sessions.SpendSAMLHandover(context.WithoutCancel(r.Context()), spendKey)
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		if !first {
+			slog.Warn("spent SAML hand-over cookie presented again")
+			http.Redirect(w, r, "/login?error=sso_session_used", http.StatusSeeOther)
+			return
+		}
+
+		s.handleSAMLSession(w, r)
+	})).ServeHTTP(w, r)
 }
 
 // handleSAMLSession is the inner handler called by RequireAccount once the
@@ -269,38 +500,47 @@ func (s *Server) handleSAMLSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	nameID := claims.Subject
-	email := firstNonEmpty(
-		claims.Attributes.Get("email"),
-		claims.Attributes.Get("mail"),
-		claims.Attributes.Get("urn:oid:0.9.2342.19200300.100.1.3"),
-		nameID, // fall back to NameID when it is an email address
-	)
-	displayName := firstNonEmpty(
-		claims.Attributes.Get("displayName"),
-		claims.Attributes.Get("cn"),
-		claims.Attributes.Get("name"),
-		strings.Join([]string{
-			claims.Attributes.Get("givenName"),
-			claims.Attributes.Get("sn"),
-		}, " "),
-		email,
-	)
+	email, displayName := samlIdentity(nameID, claims.Attributes)
 
 	allowedDomains := s.adminSvc.AllowedEmailDomains(r.Context())
 	u, err := s.users.UpsertSAMLUser(r.Context(), nameID, email, displayName, allowedDomains)
 	if err != nil {
-		if errors.Is(err, user.ErrDomainNotAllowed) {
+		// Every refusal the upsert can make, not just the one. Only
+		// ErrDomainNotAllowed was mapped, so a disabled user's SAML login —
+		// and a provider that sent no subject, or no email — answered 500
+		// "an internal error occurred" and was logged as a fault on this
+		// server. Nothing is wrong with this server in any of those cases;
+		// the login was refused, and the person needs to be told which.
+		//
+		// The OIDC handler has mapped all of these since it was written.
+		// This is the same list, redirected rather than JSON because this
+		// endpoint is reached by a browser following the identity provider.
+		switch {
+		case errors.Is(err, user.ErrDomainNotAllowed):
 			http.Redirect(w, r, "/login?error=domain_not_allowed", http.StatusSeeOther)
-			return
+		case errors.Is(err, user.ErrUserDisabled):
+			http.Redirect(w, r, "/login?error=account_disabled", http.StatusSeeOther)
+		case errors.Is(err, user.ErrAccountLinkRefused):
+			http.Redirect(w, r, "/login?error=account_link_refused", http.StatusSeeOther)
+		case errors.Is(err, user.ErrEmailTaken):
+			http.Redirect(w, r, "/login?error=email_taken", http.StatusSeeOther)
+		case errors.Is(err, user.ErrSubjectRequired):
+			http.Redirect(w, r, "/login?error=invalid_assertion", http.StatusSeeOther)
+		case errors.Is(err, user.ErrEmailRequired):
+			http.Redirect(w, r, "/login?error=email_not_verified", http.StatusSeeOther)
+		case errors.Is(err, user.ErrValidation):
+			http.Redirect(w, r, "/login?error=invalid_email", http.StatusSeeOther)
+		default:
+			handleError(w, err)
 		}
-		handleError(w, err)
 		return
 	}
 
 	if err := s.writeSession(w, r, auth.SessionData{
-		UserID:    u.ID,
-		Role:      u.Role,
-		MFAPassed: true, // SAML authentication counts as MFA
+		UserID:         u.ID,
+		Role:           u.Role,
+		MFAPassed:      true, // SAML authentication counts as MFA
+		FactorVerified: samlAssertedMFA(claims.Attributes),
 	}); err != nil {
 		handleError(w, err)
 		return
@@ -353,43 +593,54 @@ func (s *Server) writeSession(w http.ResponseWriter, r *http.Request, sd auth.Se
 	}
 
 	session.Values[auth.SessionDataKey] = sd
+
+	// A half-signed-in session's row and cookie die with its deadline, so an
+	// abandoned one does not sit for the full seven days. The deadline in the
+	// payload is what is enforced; this is housekeeping. Rounded up and kept
+	// above zero, because MaxAge 0 means "use the default" and below 0 deletes.
+	if !sd.MFAPassed && sd.UserID != uuid.Nil && !sd.PendingUntil.IsZero() {
+		opts := *session.Options
+		opts.MaxAge = max(1, int(math.Ceil(time.Until(sd.PendingUntil).Seconds())))
+		session.Options = &opts
+	}
 	return session.Save(r, w)
 }
 
-// handleAuthProviders returns available authentication providers.
+// handleAuthProviders returns the sign-in methods the login page can use now.
+//
+// "Now" is the point (#421). oidc and saml are true when the provider is
+// loaded and a sign-in can start, which is what the login routes themselves
+// test; they used to echo the settings, so a provider whose identity server
+// never answered still got a button that led to a 503. local is always true,
+// as before, because the page still shows the password form; local_admin_only
+// says that form is limited to administrators (saml_enabled), the same test
+// local login applies.
 func (s *Server) handleAuthProviders(w http.ResponseWriter, r *http.Request) {
-
-	ctx := r.Context()
-
 	type Provider struct {
 		Name    string `json:"name"`
 		Enabled bool   `json:"enabled"`
 	}
 
-	response := struct {
-		Providers []Provider `json:"providers"`
+	JSON(w, http.StatusOK, struct {
+		Providers      []Provider `json:"providers"`
+		LocalAdminOnly bool       `json:"local_admin_only"`
+		// Passkeys is false when BASE_URL cannot be a relying-party id
+		// (#494), so the page does not offer a key it cannot check. Public
+		// on purpose: the reason is not, and only goes to administrators.
+		Passkeys bool `json:"passkeys"`
+		// PasswordReset is true when "Forgot password" can work (#451): the
+		// server can send the link. The sign-in page shows the link only then.
+		PasswordReset bool `json:"password_reset"`
 	}{
 		Providers: []Provider{
-			{
-				Name:    "local",
-				Enabled: true,
-			},
-			{
-				Name: "saml",
-				Enabled: s.adminSvc.SAMLEnabled(ctx) &&
-					s.adminSvc.SAMLConfigured(ctx),
-			},
-			{
-				Name: "oidc",
-				Enabled: func() bool {
-					v, _ := s.adminSvc.GetBool(ctx, admin.KeyOIDCEnabled)
-					return v
-				}(),
-			},
+			{Name: "local", Enabled: true},
+			{Name: "saml", Enabled: s.samlReachableNow()},
+			{Name: "oidc", Enabled: s.oidcReachableNow()},
 		},
-	}
-
-	json.NewEncoder(w).Encode(response)
+		LocalAdminOnly: s.adminSvc.SAMLEnabled(r.Context()),
+		Passkeys:       s.passkeysAvailable(),
+		PasswordReset:  s.passwordResetAvailable(),
+	})
 }
 
 // loginRateKey derives a fixed-size rate-limit key from a submitted email.

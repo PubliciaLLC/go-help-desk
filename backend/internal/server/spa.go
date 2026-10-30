@@ -15,11 +15,23 @@ type SPAHandler struct {
 
 // NewSPAHandler returns an http.Handler that serves static files from fsys and
 // falls back to index.html for all unmatched paths.
+// NewSPAHandler serves the built frontend, with the same security headers
+// every other response carries.
+//
+// The headers are applied here rather than left to the caller because this
+// handler is mounted on the bare ServeMux, outside the chi chain that sets
+// them for /api/. The result was that the pages which actually run script in
+// a browser — the whole UI, including every admin screen — were the only ones
+// served with no Content-Security-Policy, no X-Frame-Options and no nosniff,
+// while the JSON endpoints had all three. That is the wrong way round: CSP on
+// a JSON response does very little, and on the HTML it is the backstop for
+// exactly the kind of injected script the rest of this codebase works to
+// prevent.
 func NewSPAHandler(fsys fs.FS) http.Handler {
-	return &SPAHandler{
+	return securityHeaders(&SPAHandler{
 		fs:   fsys,
 		root: http.FileServer(http.FS(fsys)),
-	}
+	})
 }
 
 func (s *SPAHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

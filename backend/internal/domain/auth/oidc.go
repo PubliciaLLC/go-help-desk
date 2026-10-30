@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -53,6 +54,43 @@ type OIDCClaims struct {
 	FamilyName string `json:"family_name"`
 
 	PreferredUsername string `json:"preferred_username"`
+
+	// AMR lists how the provider authenticated the user (RFC 8176). Entra
+	// sends it in v2.0 ID tokens only when `amr` is added as an optional
+	// claim on the app registration.
+	AMR amrList `json:"amr"`
+}
+
+// amrList accepts amr as the array OIDC Core specifies or as a single string.
+// Before amr was read at all, a provider that sent a string broke nothing;
+// failing to decode one would turn every sign-in from it into a 500.
+type amrList []string
+
+func (l *amrList) UnmarshalJSON(b []byte) error {
+	var one string
+	if err := json.Unmarshal(b, &one); err == nil {
+		*l = amrList{one}
+		return nil
+	}
+	var many []string
+	if err := json.Unmarshal(b, &many); err != nil {
+		return err
+	}
+	*l = many
+	return nil
+}
+
+// AssertedMFA reports whether the provider says the user completed a second
+// factor: "mfa" in amr, the RFC 8176 value Entra, Okta and others send. A
+// provider that sends no amr fails closed — the sign-in still succeeds, it
+// just does not count as having proved a factor.
+func (c OIDCClaims) AssertedMFA() bool {
+	for _, m := range c.AMR {
+		if m == "mfa" {
+			return true
+		}
+	}
+	return false
 }
 
 // oidcFetchTimeout bounds discovery, JWKS fetches and token exchange.

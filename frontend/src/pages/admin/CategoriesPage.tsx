@@ -20,7 +20,7 @@ import {
   updateCategoryAssignment, updateTypeAssignment, updateItemAssignment,
   deleteCategoryAssignment, deleteTypeAssignment, deleteItemAssignment,
 } from '@/api/admin'
-import { extractError } from '@/api/client'
+import { extractError, extractErrorCode } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -29,10 +29,19 @@ import { Spinner } from '@/components/ui/spinner'
 import {
   ChevronRightIcon, ChevronDownIcon, PlusIcon, TrashIcon,
   GripVerticalIcon, PencilIcon, CheckIcon, XIcon, UsersRoundIcon, SlidersIcon,
+  ArchiveIcon, ArchiveRestoreIcon,
 } from 'lucide-react'
 import type { Category, TicketType, TicketItem, Group, Assignment } from '@/api/types'
 
 // ── Inline name editor ────────────────────────────────────────────────────────
+
+// Row actions (rename, archive, restore, delete) are hover-revealed on a mouse.
+// A touch screen has no hover, so there they are always shown and 44px square.
+const TOUCH_SIZE =
+  'pointer-coarse:inline-flex pointer-coarse:items-center pointer-coarse:justify-center ' +
+  'pointer-coarse:min-h-11 pointer-coarse:min-w-11'
+const ROW_BTN =
+  `opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 pointer-coarse:opacity-100 ${TOUCH_SIZE}`
 
 function InlineName({
   value,
@@ -71,7 +80,7 @@ function InlineName({
 
   if (editing) {
     return (
-      <div className="flex flex-1 items-center gap-1" onClick={(e) => e.stopPropagation()}>
+      <div className="flex min-w-0 flex-1 items-center gap-1" onClick={(e) => e.stopPropagation()}>
         <Input
           ref={inputRef}
           value={draft}
@@ -80,18 +89,18 @@ function InlineName({
             if (e.key === 'Enter') commit()
             if (e.key === 'Escape') cancel()
           }}
-          className="h-6 py-0 text-sm"
+          className="h-6 py-0 text-sm max-sm:min-w-0"
           disabled={saving}
         />
         <button
           onClick={commit}
           disabled={saving || !draft.trim()}
-          className="text-green-600 hover:text-green-700 disabled:opacity-40"
+          className={`text-green-600 hover:text-green-700 disabled:opacity-40 ${TOUCH_SIZE}`}
           title="Save"
         >
           <CheckIcon className="h-3.5 w-3.5" />
         </button>
-        <button onClick={cancel} className="text-gray-400 hover:text-gray-600" title="Cancel">
+        <button onClick={cancel} className={`text-gray-400 hover:text-gray-600 ${TOUCH_SIZE}`} title="Cancel">
           <XIcon className="h-3.5 w-3.5" />
         </button>
       </div>
@@ -99,17 +108,95 @@ function InlineName({
   }
 
   return (
-    <span className={`group/name flex flex-1 items-center gap-1 ${className ?? ''}`}>
-      <span>{value}</span>
+    <span className={`group/name flex min-w-0 flex-1 items-center gap-1 ${className ?? ''}`}>
+      <span className="min-w-0 wrap-anywhere">{value}</span>
       <button
         onClick={(e) => { e.stopPropagation(); setDraft(value); setEditing(true) }}
-        className="invisible text-gray-300 hover:text-gray-600 group-hover/name:visible"
+        className={`shrink-0 ${ROW_BTN} hover:text-gray-600 group-hover/name:visible`}
         title="Rename"
       >
         <PencilIcon className="h-3 w-3" />
       </button>
     </span>
   )
+}
+
+// ── Archive / restore ─────────────────────────────────────────────────────────
+
+type CtiKind = 'category' | 'type' | 'item'
+
+const IN_USE_CODES = new Set(['category_in_use', 'type_in_use', 'item_in_use'])
+
+// A delete refused because tickets use the entry (409) points at the way out.
+function deleteErrorText(err: unknown): string {
+  const message = extractError(err)
+  if (!IN_USE_CODES.has(extractErrorCode(err))) return message
+  return `${message.replace(/[.\s]+$/, '')}. Archive it instead to keep the tickets and hide it from new ones.`
+}
+
+// Archiving asks first because it changes what requesters see; restoring only
+// undoes it, so it does not.
+function ArchiveControl({
+  kind, name, archived, setActive, onChanged, iconClass,
+}: {
+  kind: CtiKind
+  name: string
+  archived: boolean
+  setActive: (active: boolean) => Promise<unknown>
+  onChanged: () => void
+  iconClass: string
+}) {
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const mutation = useMutation({
+    mutationFn: (active: boolean) => setActive(active),
+    onSuccess: () => {
+      onChanged()
+      setConfirmOpen(false)
+    },
+  })
+
+  if (archived) {
+    return (
+      <>
+        {mutation.isError && <span role="alert" className="text-xs text-red-600 max-sm:order-last max-sm:basis-full max-sm:text-right max-sm:wrap-anywhere">{extractError(mutation.error)}</span>}
+      <button
+        onClick={() => mutation.mutate(true)}
+        disabled={mutation.isPending}
+        className={`${ROW_BTN} hover:text-green-600`}
+        title={`Restore ${kind}`}
+      >
+        <ArchiveRestoreIcon className={iconClass} />
+      </button>
+      </>
+    )
+  }
+
+  return (
+    <>
+      <button
+        onClick={() => setConfirmOpen(true)}
+        className={`${ROW_BTN} hover:text-amber-600`}
+        title={`Archive ${kind}`}
+      >
+        <ArchiveIcon className={iconClass} />
+      </button>
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={(open) => { setConfirmOpen(open); if (!open) mutation.reset() }}
+        error={mutation.isError ? extractError(mutation.error) : undefined}
+        title={`Archive ${kind} "${name}"?`}
+        description="Requesters will no longer see it or be able to file new tickets under it. Tickets already filed keep it. You can restore it at any time."
+        confirmLabel={`Archive ${kind}`}
+        destructive={false}
+        isPending={mutation.isPending}
+        onConfirm={() => mutation.mutate(false)}
+      />
+    </>
+  )
+}
+
+function ArchivedBadge() {
+  return <span className="rounded bg-gray-200 px-1.5 py-0.5 text-xs text-gray-800">Archived</span>
 }
 
 // ── Groups subsection ─────────────────────────────────────────────────────────
@@ -155,6 +242,7 @@ function GroupsSubsection({
     mutationFn: (groupId: string) => removeGroupScope(groupId, { category_id: categoryId, type_id: typeId }),
     onSuccess: () => qc.invalidateQueries({ queryKey }),
   })
+  const removeError = removeMutation.isError ? extractError(removeMutation.error) : ''
 
   const assignedIds = new Set(assignedGroups.map((g) => g.id))
   const available = allGroups.filter((g) => !assignedIds.has(g.id))
@@ -165,16 +253,17 @@ function GroupsSubsection({
         <UsersRoundIcon className="h-3 w-3 text-gray-400" />
         <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">Groups</span>
       </div>
+      {removeError && <p role="alert" className="mb-2 text-xs text-red-600">{removeError}</p>}
       <div className="flex flex-wrap gap-1.5">
         {assignedGroups.map((g) => (
           <span
             key={g.id}
-            className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-medium text-blue-700"
+            className="inline-flex max-w-full items-center gap-1 rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-medium text-blue-700"
           >
-            {g.name}
+            <span className="min-w-0 wrap-anywhere">{g.name}</span>
             <button
               onClick={() => removeMutation.mutate(g.id)}
-              className="text-blue-400 hover:text-blue-700"
+              className="shrink-0 text-blue-400 hover:text-blue-700"
               title="Remove group"
             >
               <XIcon className="h-3 w-3" />
@@ -291,6 +380,7 @@ function FieldsSubsection({ scope }: { scope: FieldsScope }) {
     mutationFn: (assignmentId: string) => removeAssignment(assignmentId),
     onSuccess: () => qc.invalidateQueries({ queryKey }),
   })
+  const removeError = removeMutation.isError ? extractError(removeMutation.error) : ''
 
   const toggleMutation = useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: { visible_on_new?: boolean; required_on_new?: boolean } }) =>
@@ -321,6 +411,7 @@ function FieldsSubsection({ scope }: { scope: FieldsScope }) {
         <SlidersIcon className="h-3 w-3 text-gray-400" />
         <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">Fields</span>
       </div>
+      {removeError && <p role="alert" className="mb-2 text-xs text-red-600">{removeError}</p>}
       <div className="space-y-1">
         {(assignments as Assignment[]).map((a) => (
           <div key={a.id} className="group flex items-center gap-2 rounded px-2 py-1 hover:bg-gray-50 text-xs">
@@ -348,7 +439,7 @@ function FieldsSubsection({ scope }: { scope: FieldsScope }) {
             </label>
             <button
               onClick={() => removeMutation.mutate(a.id)}
-              className="invisible text-gray-300 hover:text-red-500 group-hover:visible"
+              className="opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 hover:text-red-500"
               title="Remove assignment"
             >
               <XIcon className="h-3.5 w-3.5" />
@@ -432,7 +523,7 @@ function SortableItemRow({
 
   return (
     <div ref={setNodeRef} style={style} className={isDragging ? 'opacity-50' : ''}>
-      <div className="group flex items-center gap-2 py-2 pl-3 pr-3 hover:bg-gray-50">
+      <div data-archived={!item.active} className={`group flex items-center max-sm:flex-wrap gap-2 py-2 pl-3 pr-3 hover:bg-gray-50`}>
         <button
           {...attributes}
           {...listeners}
@@ -443,6 +534,7 @@ function SortableItemRow({
         </button>
         <button
           onClick={() => setExpanded((v) => !v)}
+          aria-label={expanded ? 'Collapse' : 'Expand'}
           className="flex h-4 w-4 shrink-0 items-center justify-center text-gray-400 hover:text-gray-600"
         >
           {expanded ? <ChevronDownIcon className="h-3.5 w-3.5" /> : <ChevronRightIcon className="h-3.5 w-3.5" />}
@@ -451,25 +543,37 @@ function SortableItemRow({
         <InlineName
           value={item.name}
           onSave={(name) => renameMutation.mutateAsync(name)}
-          className="text-sm text-gray-700"
+          className={`text-sm text-gray-700 ${item.active ? '' : 'opacity-60'}`}
         />
-        <button
-          onClick={() => setConfirmOpen(true)}
-          disabled={deleteMutation.isPending}
-          className="invisible text-gray-300 hover:text-red-500 group-hover:visible"
-          title="Delete item"
-        >
-          <TrashIcon className="h-3.5 w-3.5" />
-        </button>
+        <div className="flex items-center gap-2 max-sm:basis-full max-sm:flex-wrap max-sm:justify-end">
+          {!item.active && <ArchivedBadge />}
+          <ArchiveControl
+            kind="item"
+            name={item.name}
+            archived={!item.active}
+            setActive={(active) => updateItem(categoryId, typeId, item.id, { active })}
+            onChanged={() => qc.invalidateQueries({ queryKey: ['admin', 'items', categoryId, typeId] })}
+            iconClass="h-3.5 w-3.5"
+          />
+          <button
+            onClick={() => setConfirmOpen(true)}
+            disabled={deleteMutation.isPending}
+            className={`${ROW_BTN} hover:text-red-500`}
+            title="Delete item"
+          >
+            <TrashIcon className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
       {expanded && (
-        <div className="ml-8 border-l border-gray-100 pl-2">
+        <div className="ml-8 max-sm:ml-4 border-l border-gray-100 pl-2">
           <FieldsSubsection scope={{ kind: 'item', categoryId, typeId, itemId: item.id }} />
         </div>
       )}
       <ConfirmDialog
         open={confirmOpen}
-        onOpenChange={setConfirmOpen}
+        onOpenChange={(open) => { setConfirmOpen(open); if (!open) deleteMutation.reset() }}
+        error={deleteMutation.isError ? deleteErrorText(deleteMutation.error) : undefined}
         title={`Delete item "${item.name}"?`}
         description="Tickets already classified with this item keep their classification but it can no longer be selected for new tickets."
         confirmLabel="Delete item"
@@ -546,7 +650,7 @@ function SortableTypeRow({
 
   return (
     <div ref={setNodeRef} style={style} className={isDragging ? 'opacity-50' : ''}>
-      <div className="group flex items-center gap-2 py-2.5 pl-2 pr-3 hover:bg-gray-50">
+      <div data-archived={!type.active} className={`group flex items-center max-sm:flex-wrap gap-2 py-2.5 pl-2 pr-3 hover:bg-gray-50`}>
         <button
           {...attributes}
           {...listeners}
@@ -557,6 +661,7 @@ function SortableTypeRow({
         </button>
         <button
           onClick={() => setExpanded((v) => !v)}
+          aria-label={expanded ? 'Collapse' : 'Expand'}
           className="flex h-5 w-5 shrink-0 items-center justify-center text-gray-400 hover:text-gray-600"
         >
           {expanded ? <ChevronDownIcon className="h-4 w-4" /> : <ChevronRightIcon className="h-4 w-4" />}
@@ -564,20 +669,32 @@ function SortableTypeRow({
         <InlineName
           value={type.name}
           onSave={(name) => renameMutation.mutateAsync(name)}
-          className="text-sm font-medium text-gray-800"
+          className={`text-sm font-medium text-gray-800 ${type.active ? '' : 'opacity-60'}`}
         />
-        <button
-          onClick={() => setConfirmOpen(true)}
-          disabled={deleteMutation.isPending}
-          className="invisible text-gray-300 hover:text-red-500 group-hover:visible"
-          title="Delete type"
-        >
-          <TrashIcon className="h-3.5 w-3.5" />
-        </button>
+        <div className="flex items-center gap-2 max-sm:basis-full max-sm:flex-wrap max-sm:justify-end">
+          {!type.active && <ArchivedBadge />}
+          <ArchiveControl
+            kind="type"
+            name={type.name}
+            archived={!type.active}
+            setActive={(active) => updateType(categoryId, type.id, { active })}
+            onChanged={() => qc.invalidateQueries({ queryKey: ['admin', 'types', categoryId] })}
+            iconClass="h-3.5 w-3.5"
+          />
+          <button
+            onClick={() => setConfirmOpen(true)}
+            disabled={deleteMutation.isPending}
+            className={`${ROW_BTN} hover:text-red-500`}
+            title="Delete type"
+          >
+            <TrashIcon className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
       <ConfirmDialog
         open={confirmOpen}
-        onOpenChange={setConfirmOpen}
+        onOpenChange={(open) => { setConfirmOpen(open); if (!open) deleteMutation.reset() }}
+        error={deleteMutation.isError ? deleteErrorText(deleteMutation.error) : undefined}
         title={`Delete type "${type.name}"?`}
         description="All items under this type will also be removed. Tickets already classified under them keep their classification."
         confirmLabel="Delete type"
@@ -586,7 +703,7 @@ function SortableTypeRow({
       />
 
       {expanded && (
-        <div className="ml-8 border-l border-gray-100 pl-2 pb-1">
+        <div className="ml-8 max-sm:ml-4 border-l border-gray-100 pl-2 pb-1">
           <GroupsSubsection categoryId={categoryId} typeId={type.id} />
           <FieldsSubsection scope={{ kind: 'type', categoryId, typeId: type.id }} />
           <div className="pt-1">
@@ -692,7 +809,7 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
 
   return (
     <div ref={setNodeRef} style={style} className={`border-b last:border-b-0 ${isDragging ? 'opacity-50' : ''}`}>
-      <div className="group flex items-center gap-2 px-4 py-3 hover:bg-gray-50">
+      <div data-archived={!cat.active} className={`group flex items-center max-sm:flex-wrap gap-2 px-4 py-3 hover:bg-gray-50`}>
         <button
           {...attributes}
           {...listeners}
@@ -703,6 +820,7 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
         </button>
         <button
           onClick={() => setExpanded((v) => !v)}
+          aria-label={expanded ? 'Collapse' : 'Expand'}
           className="flex h-5 w-5 shrink-0 items-center justify-center text-gray-500 hover:text-gray-700"
         >
           {expanded ? <ChevronDownIcon className="h-4 w-4" /> : <ChevronRightIcon className="h-4 w-4" />}
@@ -710,23 +828,32 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
         <InlineName
           value={cat.name}
           onSave={(name) => renameMutation.mutateAsync(name)}
-          className="text-sm font-semibold text-gray-900"
+          className={`text-sm font-semibold text-gray-900 ${cat.active ? '' : 'opacity-60'}`}
         />
-        {!cat.active && (
-          <span className="rounded bg-yellow-100 px-1.5 py-0.5 text-xs text-yellow-700">inactive</span>
-        )}
-        <button
-          onClick={() => setConfirmOpen(true)}
-          disabled={deleteMutation.isPending}
-          className="invisible text-gray-300 hover:text-red-500 group-hover:visible"
-          title="Delete category"
-        >
-          <TrashIcon className="h-4 w-4" />
-        </button>
+        <div className="flex items-center gap-2 max-sm:basis-full max-sm:flex-wrap max-sm:justify-end">
+          {!cat.active && <ArchivedBadge />}
+          <ArchiveControl
+            kind="category"
+            name={cat.name}
+            archived={!cat.active}
+            setActive={(active) => updateCategory(cat.id, { active })}
+            onChanged={() => qc.invalidateQueries({ queryKey: ['admin', 'categories'] })}
+            iconClass="h-4 w-4"
+          />
+          <button
+            onClick={() => setConfirmOpen(true)}
+            disabled={deleteMutation.isPending}
+            className={`${ROW_BTN} hover:text-red-500`}
+            title="Delete category"
+          >
+            <TrashIcon className="h-4 w-4" />
+          </button>
+        </div>
       </div>
       <ConfirmDialog
         open={confirmOpen}
-        onOpenChange={setConfirmOpen}
+        onOpenChange={(open) => { setConfirmOpen(open); if (!open) deleteMutation.reset() }}
+        error={deleteMutation.isError ? deleteErrorText(deleteMutation.error) : undefined}
         title={`Delete category "${cat.name}"?`}
         description="All types and items under this category will also be removed. Tickets already classified keep their classification."
         confirmLabel="Delete category"
@@ -735,7 +862,7 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
       />
 
       {expanded && (
-        <div className="ml-11 border-l border-gray-100 pl-2 pb-2">
+        <div className="ml-11 max-sm:ml-4 border-l border-gray-100 pl-2 pb-2">
           <GroupsSubsection categoryId={cat.id} />
           <FieldsSubsection scope={{ kind: 'category', categoryId: cat.id }} />
           <div className="pt-1">
@@ -827,15 +954,15 @@ export function CategoriesPage() {
   return (
     <Layout>
       <div className="space-y-6">
-        <div className="flex items-start justify-between">
-          <div>
+        <div className="flex flex-col items-start gap-3 sm:flex-row sm:justify-between sm:gap-0">
+          <div className="min-w-0">
             <h1 className="text-2xl font-bold text-gray-900">Categories</h1>
             <p className="mt-1 text-sm text-gray-500">
               Define the three-level classification hierarchy: Category → Type → Item.
               Expand any node to manage its linked groups and custom field assignments.
             </p>
           </div>
-          <Button onClick={() => setAddingCategory(true)} className="ml-6 shrink-0">
+          <Button onClick={() => setAddingCategory(true)} className="shrink-0 sm:ml-6">
             <PlusIcon className="mr-2 h-4 w-4" />
             New Category
           </Button>
@@ -861,7 +988,7 @@ export function CategoriesPage() {
               </Button>
               <Button variant="outline" onClick={() => { setAddingCategory(false); setCatName('') }}>Cancel</Button>
             </div>
-            {formError && <p className="mt-2 text-sm text-red-600">{formError}</p>}
+            {formError && <p role="alert" className="mt-2 text-sm text-red-600">{formError}</p>}
           </div>
         )}
 
@@ -872,7 +999,7 @@ export function CategoriesPage() {
             <p className="text-sm text-gray-500">No categories yet. Add one to get started.</p>
           </div>
         ) : (
-          <div className="rounded-lg border bg-white overflow-hidden">
+          <div className="rounded-lg border bg-white overflow-x-auto">
             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleCategoryDragEnd}>
               <SortableContext items={sorted.map((c) => c.id)} strategy={verticalListSortingStrategy}>
                 {sorted.map((cat) => (

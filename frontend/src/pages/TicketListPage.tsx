@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
-import { listTickets, updateTicket, type TicketScope } from '@/api/tickets'
+import { getTicket, listTickets, updateTicket, type TicketScope } from '@/api/tickets'
 import { listStatuses, listUsers } from '@/api/admin'
 import { useAuthStore } from '@/store/auth'
 import { Layout } from '@/components/Layout'
@@ -11,6 +11,9 @@ import { Badge } from '@/components/ui/badge'
 import { Spinner } from '@/components/ui/spinner'
 import { PlusIcon, SearchIcon } from 'lucide-react'
 import { priorityVariant } from '@/lib/format'
+import { ReopenedBadge } from '@/components/ticket/ReopenedBadge'
+import { SLAIndicator } from '@/components/ticket/SLAIndicator'
+import { apiRefusal, extractError } from '@/api/client'
 
 function emptyMessageFor(scope: TicketScope) {
   switch (scope) {
@@ -21,6 +24,12 @@ function emptyMessageFor(scope: TicketScope) {
     default:
       return 'No tickets are currently assigned to you or your groups.'
   }
+}
+
+// What the "Only <queue>" chip calls each queue.
+const QUEUE_NAMES: Partial<Record<TicketScope, string>> = {
+  mine: 'my tickets',
+  unassigned: 'unassigned',
 }
 
 // Matches the server's default. Larger pages mean fewer clicks; smaller ones
@@ -39,8 +48,16 @@ export function TicketListPage() {
   const [debouncedQuery, setDebouncedQuery] = useState('')
   const [includeClosed, setIncludeClosed] = useState(false)
   const [scope, setScope] = useState<TicketScope>('mine')
+  // The "Only <queue>" chip (#444). Off by default: a search covers everything
+  // the viewer can see until they narrow it.
+  const [onlyQueue, setOnlyQueue] = useState(false)
+  // Every new search starts wide: clearing the box resets the chip. Adjusted
+  // during render rather than in an effect, which would run a render late.
+  if (onlyQueue && query.trim() === '') setOnlyQueue(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkStatusId, setBulkStatusId] = useState('')
+  const [bulkError, setBulkError] = useState('')
+  const [jumpError, setJumpError] = useState('')
 
   // 300 ms debounce on the search box
   useEffect(() => {
@@ -65,21 +82,33 @@ export function TicketListPage() {
   // The server returns at most PAGE_SIZE rows. Before paging existed it
   // returned at most 100 and there was no way to ask for the rest, so anything
   // older than the hundredth ticket was unreachable by browsing.
-  const [page, setPage] = useState(0)
-
-  // Any change to what is being asked for starts again at the first page —
-  // otherwise a narrower search lands on an offset past its own results and
-  // shows an empty list.
-  useEffect(() => {
-    setPage(0)
-  }, [debouncedQuery, effectiveScope, reporterFilter])
+  //
+  // The page number is stored together with WHAT it is a page of. Any change
+  // to what is being asked for starts again at the first page — otherwise a
+  // narrower search lands on an offset past its own results and shows an
+  // empty list. Kept as one piece of state rather than a number plus an
+  // effect that resets it, because the effect ran a render late: the query
+  // fired once for the new search at the old offset, and that wasted request
+  // is the empty flash it was meant to prevent.
+  //
+  // A staff or admin search with the chip off asks for scope=visible instead
+  // of the selected queue. With an empty box the queue behaves as before.
+  // trim(): a box of spaces is an empty box, as it is for the queue today.
+  const searching = isStaffOrAdmin && debouncedQuery.trim() !== '' && !reporterFilter
+  const searchingAll = searching && !onlyQueue
+  const requestScope: TicketScope = searchingAll ? 'visible' : effectiveScope
+  const asking = `${debouncedQuery}\u0000${requestScope}\u0000${reporterFilter ?? ''}`
+  const [paged, setPaged] = useState({ asking, page: 0 })
+  const page = paged.asking === asking ? paged.page : 0
+  const setPage = (next: (p: number) => number) =>
+    setPaged({ asking, page: next(page) })
 
   const { data: allTickets = [], isFetching } = useQuery({
-    queryKey: ['tickets', { q: debouncedQuery || undefined, scope: effectiveScope, reporter: reporterFilter, page }],
+    queryKey: ['tickets', { q: debouncedQuery || undefined, scope: requestScope, reporter: reporterFilter, page }],
     queryFn: () =>
       listTickets({
         q: debouncedQuery || undefined,
-        scope: reporterFilter ? undefined : effectiveScope,
+        scope: reporterFilter ? undefined : requestScope,
         reporter_id: reporterFilter,
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
@@ -87,6 +116,10 @@ export function TicketListPage() {
     // Keeping the previous page visible while the next loads stops the table
     // collapsing to empty on every click.
     placeholderData: (previous) => previous,
+    // Re-polls only once this page has actually shown a live SLA status — an
+    // instance with SLA tracking off, or a page of tickets with no matching
+    // policy, never polls for it. See TicketDetailPage for the same choice.
+    refetchInterval: (query) => (query.state.data?.some(t => t.sla != null) ? 60_000 : false),
   })
 
   // A full page means there is probably another. The server returns an array,
@@ -105,6 +138,11 @@ export function TicketListPage() {
     if (statusFilter) list = list.filter(t => t.status_id === statusFilter)
     return list
   }, [allTickets, includeClosed, closedIds, statusFilter])
+
+  // Shown only when at least one row actually has a status to show — an
+  // instance with SLA tracking off, or a reporter whose tickets carry no
+  // policy, sees the same table it saw before this column existed.
+  const showSLAColumn = useMemo(() => tickets.some(t => t.sla != null), [tickets])
 
   function statusFor(id: string) {
     return statuses.find(s => s.id === id)
@@ -134,14 +172,37 @@ export function TicketListPage() {
   }
 
   const bulkMutation = useMutation({
+    // allSettled, not all: the calls go out in parallel, so when one is
+    // refused the others have already gone through. Promise.all rejected on
+    // the first failure and the page said nothing at all — leaving the
+    // selection highlighted over tickets that HAD changed, with no way to
+    // tell which. What comes back is a count and the server's own reason.
     mutationFn: async (statusId: string) => {
-      await Promise.all([...selectedIds].map(id => updateTicket(id, { status_id: statusId })))
+      const ids = [...selectedIds]
+      const results = await Promise.allSettled(
+        ids.map(id => updateTicket(id, { status_id: statusId })),
+      )
+      const refused = results.flatMap((r, i) =>
+        r.status === 'rejected' ? [{ id: ids[i], reason: extractError(r.reason) }] : [],
+      )
+      return { total: ids.length, refused }
     },
-    onSuccess: () => {
-      setSelectedIds(new Set())
-      setBulkStatusId('')
+    onSuccess: ({ total, refused }) => {
       qc.invalidateQueries({ queryKey: ['tickets'] })
+      if (refused.length === 0) {
+        setBulkError('')
+        setSelectedIds(new Set())
+        setBulkStatusId('')
+        return
+      }
+      // The ones that failed stay selected, so the next attempt is just
+      // another click on the same button.
+      setSelectedIds(new Set(refused.map(r => r.id)))
+      setBulkError(
+        `${total - refused.length} of ${total} updated. ${refused.length} refused: ${refused[0].reason}`,
+      )
     },
+    onError: (err) => setBulkError(extractError(err)),
   })
 
   return (
@@ -159,7 +220,7 @@ export function TicketListPage() {
 
         {/* Toolbar: search + scope + closed toggle */}
         <div className="flex items-center gap-3 flex-wrap">
-          <div className="relative flex-1 max-w-lg">
+          <div className="relative w-full md:flex-1 md:max-w-lg">
             <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
             <Input
               className="pl-9"
@@ -174,7 +235,7 @@ export function TicketListPage() {
                 <button
                   key={s}
                   type="button"
-                  onClick={() => setScope(s)}
+                  onClick={() => { setScope(s); setOnlyQueue(false) }}
                   className={
                     'px-3 py-1.5 capitalize transition-colors ' +
                     (scope === s
@@ -203,12 +264,22 @@ export function TicketListPage() {
               onClick={async () => {
                 const q = query.trim()
                 if (!q) return
+                setJumpError('')
                 try {
-                  const { getTicket } = await import('@/api/tickets')
                   const t = await getTicket(q)
                   navigate({ to: '/tickets/$id', params: { id: t.id } })
-                } catch {
-                  // not a valid tracking number / UUID — fall through to search results
+                } catch (err) {
+                  // DESIGN.md's "Ticket Search" says this shows an inline
+                  // error. It used to swallow every failure — a mistyped
+                  // number, a ticket outside this staff member's scope and a
+                  // server fault all looked identical, which is to say they
+                  // looked like the button doing nothing.
+                  const { status, message } = apiRefusal(err)
+                  setJumpError(
+                    status === 404 ? `No ticket matches "${q}".`
+                    : message ? message
+                    : `That ticket could not be opened${status ? ` (error ${status})` : ''}.`,
+                  )
                 }
               }}
             >
@@ -216,6 +287,38 @@ export function TicketListPage() {
             </Button>
           )}
         </div>
+
+        {jumpError && (
+          <p role="alert" className="text-sm text-red-600">{jumpError}</p>
+        )}
+
+        {/* Search reach (#444). Label while the box has text; the chip too, except on
+            the admin "all" queue, which is already everything. */}
+        {isStaffOrAdmin && (
+          <div className={searching ? 'flex items-center gap-2 text-sm' : 'sr-only'}>
+            {/* Always in the page, only its text changes: a live region added
+                together with its text is often not announced. */}
+            <span aria-live="polite" className="text-gray-500">
+              {searching && !onlyQueue ? 'Searching all tickets you can see' : ''}
+            </span>
+            {searching && QUEUE_NAMES[effectiveScope] && (
+              <button
+                type="button"
+                aria-pressed={onlyQueue}
+                onClick={() => setOnlyQueue(v => !v)}
+                className={
+                  'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium ' +
+                  (onlyQueue
+                    ? 'border-gray-900 bg-gray-900 text-white'
+                    : 'border-gray-300 bg-gray-100 text-gray-700 hover:bg-gray-200')
+                }
+              >
+                Only {QUEUE_NAMES[effectiveScope]}
+                {onlyQueue && <span aria-hidden="true">×</span>}
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Active status filter chip */}
         {statusFilter && (() => {
@@ -253,8 +356,13 @@ export function TicketListPage() {
           )
         })()}
 
-        {/* Bulk action bar */}
+        {/* Bulk action bar — desktop-only, like the selection checkboxes it
+            controls (see the table/card split below): below md there is
+            nothing left to select, so a bar surviving a resize down would
+            float with no controls under it and overflow the 390px card view
+            besides. */}
         {someSelected && isStaffOrAdmin && (
+          <div className="hidden space-y-2 md:block">
           <div className="flex items-center gap-3 rounded-md border border-blue-200 bg-blue-50 px-4 py-2 text-sm">
             <span className="text-blue-700 font-medium">{selectedIds.size} selected</span>
             <select
@@ -277,10 +385,14 @@ export function TicketListPage() {
             <button
               type="button"
               className="ml-auto text-xs text-gray-500 hover:text-gray-700"
-              onClick={() => setSelectedIds(new Set())}
+              onClick={() => { setSelectedIds(new Set()); setBulkError('') }}
             >
               Clear selection
             </button>
+          </div>
+          {bulkError && (
+            <p role="alert" className="text-sm text-red-600">{bulkError}</p>
+          )}
           </div>
         )}
 
@@ -296,73 +408,148 @@ export function TicketListPage() {
               : emptyMessageFor(effectiveScope)}
           </p>
         ) : (
-          <div className="overflow-hidden rounded-md border border-gray-200">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50 text-xs font-medium uppercase tracking-wider text-gray-500">
-                <tr>
-                  {isStaffOrAdmin && (
-                    <th className="w-8 px-3 py-2">
-                      <input
-                        type="checkbox"
-                        className="h-4 w-4 rounded border-gray-300"
-                        checked={allSelected}
-                        onChange={toggleAll}
-                      />
-                    </th>
-                  )}
-                  <th className="px-4 py-2 text-left">Ticket</th>
-                  <th className="px-4 py-2 text-left">Subject</th>
-                  <th className="px-4 py-2 text-left">Status</th>
-                  <th className="px-4 py-2 text-left">Priority</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100 bg-white">
-                {tickets.map(t => {
-                  const status = statusFor(t.status_id)
-                  return (
-                    <tr
-                      key={t.id}
-                      className={`cursor-pointer hover:bg-gray-50 ${selectedIds.has(t.id) ? 'bg-blue-50' : ''}`}
-                      onClick={() => navigate({ to: '/tickets/$id', params: { id: t.id } })}
-                    >
-                      {isStaffOrAdmin && (
-                        <td className="w-8 px-3 py-2" onClick={e => e.stopPropagation()}>
-                          <input
-                            type="checkbox"
-                            className="h-4 w-4 rounded border-gray-300"
-                            checked={selectedIds.has(t.id)}
-                            onChange={() => toggleOne(t.id)}
-                          />
+          <>
+            {/* Desktop: the table, with the selection column bulk actions
+                depend on. Bulk selection stays desktop-only (see DESIGN.md's
+                Small screens section) — a checkbox per card plus a floating
+                action bar is a different feature, not this one at a smaller
+                size, so the card view below has no selection UI at all. */}
+            <div className="hidden overflow-hidden rounded-md border border-gray-200 md:block">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 text-xs font-medium uppercase tracking-wider text-gray-500">
+                  <tr>
+                    {isStaffOrAdmin && (
+                      <th className="w-8 px-3 py-2">
+                        <input
+                          type="checkbox"
+                          aria-label="Select every ticket on this page"
+                          className="h-4 w-4 rounded border-gray-300"
+                          checked={allSelected}
+                          onChange={toggleAll}
+                        />
+                      </th>
+                    )}
+                    <th className="px-4 py-2 text-left">Ticket</th>
+                    <th className="px-4 py-2 text-left">Subject</th>
+                    <th className="px-4 py-2 text-left">Status</th>
+                    <th className="px-4 py-2 text-left">Priority</th>
+                    {showSLAColumn && <th className="px-4 py-2 text-left">SLA</th>}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 bg-white">
+                  {tickets.map(t => {
+                    const status = statusFor(t.status_id)
+                    return (
+                      <tr
+                        key={t.id}
+                        className={`cursor-pointer hover:bg-gray-50 ${selectedIds.has(t.id) ? 'bg-blue-50' : ''}`}
+                        onClick={() => navigate({ to: '/tickets/$id', params: { id: t.id } })}
+                      >
+                        {isStaffOrAdmin && (
+                          <td className="w-8 px-3 py-2" onClick={e => e.stopPropagation()}>
+                            <input
+                              type="checkbox"
+                              aria-label={`Select ticket ${t.tracking_number}`}
+                              className="h-4 w-4 rounded border-gray-300"
+                              checked={selectedIds.has(t.id)}
+                              onChange={() => toggleOne(t.id)}
+                            />
+                          </td>
+                        )}
+                        <td className="whitespace-nowrap px-4 py-2 font-mono text-xs text-gray-500">
+                          {t.tracking_number}
                         </td>
-                      )}
-                      <td className="whitespace-nowrap px-4 py-2 font-mono text-xs text-gray-500">
-                        {t.tracking_number}
-                      </td>
-                      <td className="px-4 py-2 font-medium text-gray-900 max-w-xs truncate">
-                        {t.subject}
-                      </td>
-                      <td className="px-4 py-2">
+                        <td className="px-4 py-2 font-medium text-gray-900 max-w-xs truncate">
+                          {/* A real link, not just a row click. The row was a
+                              <tr onClick>, which no amount of tabbing reaches,
+                              so a keyboard-only user had no way into a ticket
+                              at all — and a reporting user had no way in by any
+                              route, since "Jump to ticket" is staff-only.
+                              Anchors also give middle-click and copy-link. */}
+                          <Link
+                            to="/tickets/$id"
+                            params={{ id: t.id }}
+                            className="block truncate rounded-sm text-inherit hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                            title={t.subject}
+                          >
+                            {t.subject}
+                          </Link>
+                        </td>
+                        <td className="px-4 py-2">
+                          {status ? (
+                            <span
+                              className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium"
+                              title={status.name}
+                              style={{ borderColor: status.color, color: status.color }}
+                            >
+                              <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: status.color }} />
+                              {status.name}
+                            </span>
+                          ) : '—'}
+                        </td>
+                        <td className="px-4 py-2">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <Badge variant={priorityVariant(t.priority) as never}>
+                              {t.priority}
+                            </Badge>
+                            {isStaffOrAdmin && <ReopenedBadge reopenCount={t.reopen_count} statusName={status?.name} />}
+                          </div>
+                        </td>
+                        {showSLAColumn && (
+                          <td className="px-4 py-2">
+                            <div className="flex items-center gap-1.5">
+                              <SLAIndicator sla={t.sla} compact />
+                            </div>
+                          </td>
+                        )}
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Mobile: one card per ticket, the same table shrunk into a row
+                is not a mobile layout — it is the same table with less room.
+                The subject stays the anchor #9ff0e9a added: the card is a
+                link, not a click handler, so a keyboard or reporting user
+                reaches it the same way. */}
+            <ul className="space-y-2 md:hidden">
+              {tickets.map(t => {
+                const status = statusFor(t.status_id)
+                return (
+                  <li key={t.id} className="rounded-md border border-gray-200 bg-white p-3">
+                    <Link
+                      to="/tickets/$id"
+                      params={{ id: t.id }}
+                      className="block rounded-sm text-inherit focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-mono text-xs text-gray-500">{t.tracking_number}</span>
                         {status ? (
                           <span
-                            className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium"
+                            className="inline-flex min-w-0 items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium"
                             style={{ borderColor: status.color, color: status.color }}
                           >
-                            <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: status.color }} />
-                            {status.name}
+                            <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: status.color }} />
+                            <span className="min-w-0 wrap-anywhere">{status.name}</span>
                           </span>
                         ) : '—'}
-                      </td>
-                      <td className="px-4 py-2">
+                      </div>
+                      <p className="mt-1.5 wrap-anywhere font-medium text-gray-900">{t.subject}</p>
+                      <div className="mt-1.5 flex items-center gap-2">
                         <Badge variant={priorityVariant(t.priority) as never}>
                           {t.priority}
                         </Badge>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
+                        {isStaffOrAdmin && <ReopenedBadge reopenCount={t.reopen_count} statusName={status?.name} />}
+                        {showSLAColumn && <SLAIndicator sla={t.sla} compact />}
+                      </div>
+                    </Link>
+                  </li>
+                )
+              })}
+            </ul>
+          </>
         )}
 
         {/* Shown whenever there is more than one page to move between. The

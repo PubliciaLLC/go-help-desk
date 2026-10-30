@@ -7,11 +7,165 @@ package dbgen
 
 import (
 	"context"
+	"database/sql"
 	"time"
 
 	uuid "github.com/google/uuid"
+	"github.com/lib/pq"
 	"github.com/sqlc-dev/pqtype"
 )
+
+const countAuditLog = `-- name: CountAuditLog :one
+SELECT COUNT(*) FROM (
+  SELECT 1 FROM audit_log
+  WHERE ($1::text IS NULL OR entity_type = $1::text)
+    AND ($2::text IS NULL OR action = $2::text)
+    AND ($3::uuid IS NULL OR actor_id = $3::uuid)
+    AND ($4::timestamptz IS NULL OR created_at >= $4::timestamptz)
+    AND ($5::timestamptz IS NULL OR created_at <= $5::timestamptz)
+    AND (
+      $6::text IS NULL
+      OR entity_type ILIKE '%' || $6::text || '%'
+      OR action ILIKE '%' || $6::text || '%'
+    )
+    AND ($7::text[] IS NULL OR NOT (action = ANY ($7::text[])))
+  LIMIT $8
+) AS matched
+`
+
+type CountAuditLogParams struct {
+	EntityType     sql.NullString `json:"entity_type"`
+	Action         sql.NullString `json:"action"`
+	ActorID        uuid.NullUUID  `json:"actor_id"`
+	FromTs         sql.NullTime   `json:"from_ts"`
+	ToTs           sql.NullTime   `json:"to_ts"`
+	Q              sql.NullString `json:"q"`
+	ExcludeActions []string       `json:"exclude_actions"`
+	CountCap       int32          `json:"count_cap"`
+}
+
+// Same filters as SearchAuditLog, but BOUNDED: it counts at most count_cap
+// matches and stops, so the cost is that of finding count_cap rows, not of
+// scanning a table nobody prunes (#331). The caller asks for the cap plus one
+// and reads "more than the cap" off the result; an answer at or under the cap
+// is exact.
+func (q *Queries) CountAuditLog(ctx context.Context, arg CountAuditLogParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countAuditLog,
+		arg.EntityType,
+		arg.Action,
+		arg.ActorID,
+		arg.FromTs,
+		arg.ToTs,
+		arg.Q,
+		pq.Array(arg.ExcludeActions),
+		arg.CountCap,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countAuditLogScoped = `-- name: CountAuditLogScoped :one
+SELECT COUNT(*) FROM (
+  SELECT 1 FROM audit_log
+  WHERE ($1::text IS NULL OR entity_type = $1::text)
+    AND ($2::text IS NULL OR action = $2::text)
+    AND ($3::uuid IS NULL OR actor_id = $3::uuid)
+    AND ($4::timestamptz IS NULL OR created_at >= $4::timestamptz)
+    AND ($5::timestamptz IS NULL OR created_at <= $5::timestamptz)
+    AND (
+      $6::text IS NULL
+      OR entity_type ILIKE '%' || $6::text || '%'
+      OR action ILIKE '%' || $6::text || '%'
+    )
+    AND ($7::text[] IS NULL OR NOT (action = ANY ($7::text[])))
+    -- Staff scope (#330, #331). Only ticket entries on a ticket this staff
+    -- member may see: the same four ways in as ticket.CanView — reported by
+    -- them, assigned to them, assigned to a group of theirs, or inside a
+    -- Category/Type a group of theirs covers. The groups and rules arrive as
+    -- arrays from GetAuditTicketScope; see the note above CountAuditLogScoped
+    -- for why they are values and not subqueries. An entry whose ticket is
+    -- gone matches nothing, which is what "not yours" looks like too.
+    AND entity_type = 'ticket'
+    AND EXISTS (
+      SELECT 1 FROM tickets t
+      WHERE t.id = audit_log.entity_id
+        AND (
+          t.reporter_user_id = $8::uuid
+          OR t.assignee_user_id = $8::uuid
+          OR t.assignee_group_id = ANY ($9::uuid[])
+          OR t.category_id = ANY ($10::uuid[])
+          -- A rule with a type. type_id alone decides it: a type belongs to one
+          -- category, and the (category_id, type_id) foreign keys on tickets and
+          -- group_scopes (000013) hold both to it. The category test is
+          -- redundant on purpose: it lets this arm use tickets_category_id_idx,
+          -- so every arm of the OR has an index and the planner can collect a
+          -- small visible set with a BitmapOr instead of scanning tickets.
+          -- A ticket with no type is not covered here (NULL = ANY is not true).
+          OR (t.category_id = ANY ($11::uuid[])
+              AND t.type_id = ANY ($12::uuid[]))
+        )
+    )
+  LIMIT $13
+) AS matched
+`
+
+type CountAuditLogScopedParams struct {
+	EntityType       sql.NullString `json:"entity_type"`
+	Action           sql.NullString `json:"action"`
+	ActorID          uuid.NullUUID  `json:"actor_id"`
+	FromTs           sql.NullTime   `json:"from_ts"`
+	ToTs             sql.NullTime   `json:"to_ts"`
+	Q                sql.NullString `json:"q"`
+	ExcludeActions   []string       `json:"exclude_actions"`
+	UserID           uuid.UUID      `json:"user_id"`
+	GroupIds         []uuid.UUID    `json:"group_ids"`
+	CategoryIds      []uuid.UUID    `json:"category_ids"`
+	TypedCategoryIds []uuid.UUID    `json:"typed_category_ids"`
+	TypeIds          []uuid.UUID    `json:"type_ids"`
+	CountCap         int32          `json:"count_cap"`
+}
+
+// CountAuditLog for a staff member with ticket scope enforced, bounded the
+// same way.
+//
+// Why the scope arrives as arrays (#331). The best plan depends on how many
+// tickets the staff member sees, and only the values say that. A staff member
+// who sees five tickets is answered by collecting those five through the
+// tickets indexes and reading their entries through audit_log_entity_idx; one
+// who sees every ticket, with a narrow filter, by reading the filter's index
+// and checking each row's ticket by primary key; with no filter, by walking the
+// log and keeping what is visible. Written as subqueries on the user id, the
+// planner cannot tell these apart and picks one shape for everyone: #353's
+// visible-set-first count paid a full tickets pass on every narrow filter, and
+// the per-row EXISTS before it walked the whole log for a sparse staff member.
+// With the arrays as parameters each execution is planned from them. Measured
+// in #331. plan_cache_mode=auto kept every case on its custom plan; the generic
+// plan is far worse and must stay unchosen (see the benchmark notes).
+//
+// The predicate is not wrapped in "user_id IS NULL OR ...": that form cannot
+// become a join, which is what lets the planner start from the tickets side.
+// Administrators use CountAuditLog instead.
+func (q *Queries) CountAuditLogScoped(ctx context.Context, arg CountAuditLogScopedParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countAuditLogScoped,
+		arg.EntityType,
+		arg.Action,
+		arg.ActorID,
+		arg.FromTs,
+		arg.ToTs,
+		arg.Q,
+		pq.Array(arg.ExcludeActions),
+		arg.UserID,
+		pq.Array(arg.GroupIds),
+		pq.Array(arg.CategoryIds),
+		pq.Array(arg.TypedCategoryIds),
+		pq.Array(arg.TypeIds),
+		arg.CountCap,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
 
 const createAuditEntry = `-- name: CreateAuditEntry :exec
 INSERT INTO audit_log (id, actor_id, entity_type, entity_id, action, before, after, created_at)
@@ -43,10 +197,71 @@ func (q *Queries) CreateAuditEntry(ctx context.Context, arg CreateAuditEntryPara
 	return err
 }
 
+const deleteAuditLogBefore = `-- name: DeleteAuditLogBefore :execrows
+DELETE FROM audit_log WHERE created_at < $1
+`
+
+// The retention sweep's hard delete. No archive table — see audit.Store's
+// own comment on DeleteOlderThan for why.
+func (q *Queries) DeleteAuditLogBefore(ctx context.Context, createdAt time.Time) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteAuditLogBefore, createdAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const getAuditTicketScope = `-- name: GetAuditTicketScope :one
+SELECT
+  ARRAY(
+    SELECT gm.group_id FROM group_members gm
+    WHERE gm.user_id = $1::uuid
+  )::uuid[] AS group_ids,
+  ARRAY(
+    SELECT gs.category_id FROM group_scopes gs
+    JOIN group_members gm ON gm.group_id = gs.group_id
+    WHERE gm.user_id = $1::uuid AND gs.type_id IS NULL
+  )::uuid[] AS category_ids,
+  ARRAY(
+    SELECT gs.category_id FROM group_scopes gs
+    JOIN group_members gm ON gm.group_id = gs.group_id
+    WHERE gm.user_id = $1::uuid AND gs.type_id IS NOT NULL
+  )::uuid[] AS typed_category_ids,
+  ARRAY(
+    SELECT gs.type_id FROM group_scopes gs
+    JOIN group_members gm ON gm.group_id = gs.group_id
+    WHERE gm.user_id = $1::uuid AND gs.type_id IS NOT NULL
+  )::uuid[] AS type_ids
+`
+
+type GetAuditTicketScopeRow struct {
+	GroupIds         []uuid.UUID `json:"group_ids"`
+	CategoryIds      []uuid.UUID `json:"category_ids"`
+	TypedCategoryIds []uuid.UUID `json:"typed_category_ids"`
+	TypeIds          []uuid.UUID `json:"type_ids"`
+}
+
+// What a staff member's group membership grants, for the scoped audit
+// statements: their groups, the categories their groups cover whole (rules
+// without a type), and the rules with a type, as the category and the type of
+// each. The same facts ticket.CanView gets from server.staffScopeFor, read
+// here independently so the parity test compares two lookups, not one.
+func (q *Queries) GetAuditTicketScope(ctx context.Context, userID uuid.UUID) (GetAuditTicketScopeRow, error) {
+	row := q.db.QueryRowContext(ctx, getAuditTicketScope, userID)
+	var i GetAuditTicketScopeRow
+	err := row.Scan(
+		pq.Array(&i.GroupIds),
+		pq.Array(&i.CategoryIds),
+		pq.Array(&i.TypedCategoryIds),
+		pq.Array(&i.TypeIds),
+	)
+	return i, err
+}
+
 const listAuditByEntity = `-- name: ListAuditByEntity :many
 SELECT id, actor_id, entity_type, entity_id, action, before, after, created_at FROM audit_log
 WHERE entity_type = $1 AND entity_id = $2
-ORDER BY created_at DESC
+ORDER BY created_at DESC, id DESC
 LIMIT $3 OFFSET $4
 `
 
@@ -63,6 +278,194 @@ func (q *Queries) ListAuditByEntity(ctx context.Context, arg ListAuditByEntityPa
 		arg.EntityID,
 		arg.Limit,
 		arg.Offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AuditLog
+	for rows.Next() {
+		var i AuditLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.ActorID,
+			&i.EntityType,
+			&i.EntityID,
+			&i.Action,
+			&i.Before,
+			&i.After,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const searchAuditLog = `-- name: SearchAuditLog :many
+SELECT id, actor_id, entity_type, entity_id, action, before, after, created_at FROM audit_log
+WHERE ($1::text IS NULL OR entity_type = $1::text)
+  AND ($2::text IS NULL OR action = $2::text)
+  AND ($3::uuid IS NULL OR actor_id = $3::uuid)
+  AND ($4::timestamptz IS NULL OR created_at >= $4::timestamptz)
+  AND ($5::timestamptz IS NULL OR created_at <= $5::timestamptz)
+  AND (
+    $6::text IS NULL
+    OR entity_type ILIKE '%' || $6::text || '%'
+    OR action ILIKE '%' || $6::text || '%'
+  )
+  AND ($7::text[] IS NULL OR NOT (action = ANY ($7::text[])))
+ORDER BY created_at DESC, id DESC
+LIMIT $9 OFFSET $8
+`
+
+type SearchAuditLogParams struct {
+	EntityType     sql.NullString `json:"entity_type"`
+	Action         sql.NullString `json:"action"`
+	ActorID        uuid.NullUUID  `json:"actor_id"`
+	FromTs         sql.NullTime   `json:"from_ts"`
+	ToTs           sql.NullTime   `json:"to_ts"`
+	Q              sql.NullString `json:"q"`
+	ExcludeActions []string       `json:"exclude_actions"`
+	PageOffset     int32          `json:"page_offset"`
+	PageLimit      int32          `json:"page_limit"`
+}
+
+// The admin-wide audit view (#129), unscoped: an administrator, or staff while
+// ticket scope enforcement is off. Every filter is optional; see audit.Filter.
+// Staff with scope enforced use SearchAuditLogScoped.
+// id breaks the tie, because created_at alone does not order entries written
+// in the same microsecond — which happens inside a single request. Without a
+// total order, two pages of one listing can disagree about which tied row
+// comes first and the same entry appears twice, or not at all.
+func (q *Queries) SearchAuditLog(ctx context.Context, arg SearchAuditLogParams) ([]AuditLog, error) {
+	rows, err := q.db.QueryContext(ctx, searchAuditLog,
+		arg.EntityType,
+		arg.Action,
+		arg.ActorID,
+		arg.FromTs,
+		arg.ToTs,
+		arg.Q,
+		pq.Array(arg.ExcludeActions),
+		arg.PageOffset,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AuditLog
+	for rows.Next() {
+		var i AuditLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.ActorID,
+			&i.EntityType,
+			&i.EntityID,
+			&i.Action,
+			&i.Before,
+			&i.After,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const searchAuditLogScoped = `-- name: SearchAuditLogScoped :many
+SELECT id, actor_id, entity_type, entity_id, action, before, after, created_at FROM audit_log
+WHERE ($1::text IS NULL OR entity_type = $1::text)
+  AND ($2::text IS NULL OR action = $2::text)
+  AND ($3::uuid IS NULL OR actor_id = $3::uuid)
+  AND ($4::timestamptz IS NULL OR created_at >= $4::timestamptz)
+  AND ($5::timestamptz IS NULL OR created_at <= $5::timestamptz)
+  AND (
+    $6::text IS NULL
+    OR entity_type ILIKE '%' || $6::text || '%'
+    OR action ILIKE '%' || $6::text || '%'
+  )
+  AND ($7::text[] IS NULL OR NOT (action = ANY ($7::text[])))
+  -- Staff scope (#330, #331). Only ticket entries on a ticket this staff
+  -- member may see: the same four ways in as ticket.CanView — reported by
+  -- them, assigned to them, assigned to a group of theirs, or inside a
+  -- Category/Type a group of theirs covers. The groups and rules arrive as
+  -- arrays from GetAuditTicketScope; see the note above CountAuditLogScoped
+  -- for why they are values and not subqueries. An entry whose ticket is
+  -- gone matches nothing, which is what "not yours" looks like too.
+  AND entity_type = 'ticket'
+  AND EXISTS (
+    SELECT 1 FROM tickets t
+    WHERE t.id = audit_log.entity_id
+      AND (
+        t.reporter_user_id = $8::uuid
+        OR t.assignee_user_id = $8::uuid
+        OR t.assignee_group_id = ANY ($9::uuid[])
+        OR t.category_id = ANY ($10::uuid[])
+        -- A rule with a type. type_id alone decides it: a type belongs to one
+        -- category, and the (category_id, type_id) foreign keys on tickets and
+        -- group_scopes (000013) hold both to it. The category test is
+        -- redundant on purpose: it lets this arm use tickets_category_id_idx,
+        -- so every arm of the OR has an index and the planner can collect a
+        -- small visible set with a BitmapOr instead of scanning tickets.
+        -- A ticket with no type is not covered here (NULL = ANY is not true).
+        OR (t.category_id = ANY ($11::uuid[])
+            AND t.type_id = ANY ($12::uuid[]))
+      )
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT $14 OFFSET $13
+`
+
+type SearchAuditLogScopedParams struct {
+	EntityType       sql.NullString `json:"entity_type"`
+	Action           sql.NullString `json:"action"`
+	ActorID          uuid.NullUUID  `json:"actor_id"`
+	FromTs           sql.NullTime   `json:"from_ts"`
+	ToTs             sql.NullTime   `json:"to_ts"`
+	Q                sql.NullString `json:"q"`
+	ExcludeActions   []string       `json:"exclude_actions"`
+	UserID           uuid.UUID      `json:"user_id"`
+	GroupIds         []uuid.UUID    `json:"group_ids"`
+	CategoryIds      []uuid.UUID    `json:"category_ids"`
+	TypedCategoryIds []uuid.UUID    `json:"typed_category_ids"`
+	TypeIds          []uuid.UUID    `json:"type_ids"`
+	PageOffset       int32          `json:"page_offset"`
+	PageLimit        int32          `json:"page_limit"`
+}
+
+// SearchAuditLog for a staff member with ticket scope enforced. Same filters,
+// same order; the scope predicate is CountAuditLogScoped's, word for word.
+func (q *Queries) SearchAuditLogScoped(ctx context.Context, arg SearchAuditLogScopedParams) ([]AuditLog, error) {
+	rows, err := q.db.QueryContext(ctx, searchAuditLogScoped,
+		arg.EntityType,
+		arg.Action,
+		arg.ActorID,
+		arg.FromTs,
+		arg.ToTs,
+		arg.Q,
+		pq.Array(arg.ExcludeActions),
+		arg.UserID,
+		pq.Array(arg.GroupIds),
+		pq.Array(arg.CategoryIds),
+		pq.Array(arg.TypedCategoryIds),
+		pq.Array(arg.TypeIds),
+		arg.PageOffset,
+		arg.PageLimit,
 	)
 	if err != nil {
 		return nil, err

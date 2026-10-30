@@ -3,6 +3,7 @@ package server_test
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
@@ -22,23 +23,33 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/cannedresponsestore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/categorystore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/customfieldstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/emailtemplatestore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/groupstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/outboxstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/passwordresetstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/registrationstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/sessionstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/slastore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/tagstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/webauthnstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/cannedresponse"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/passwordreset"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/tag"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/webauthn"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 	"github.com/publiciallc/go-help-desk/backend/internal/server"
 	"github.com/publiciallc/go-help-desk/backend/internal/server/notify"
@@ -59,7 +70,10 @@ func allScopes() []string {
 	for i, s := range all {
 		out[i] = s.String()
 	}
-	return out
+	// users:write is no longer offered (keys can't write users), but a key
+	// stored before that still holds it, and the harness key stands for the
+	// most privileged one there is. The routes it would have opened refuse it.
+	return append(out, "users:write")
 }
 
 // harness is a test server wired against a real (rolled-back) DB transaction.
@@ -75,13 +89,25 @@ type harness struct {
 	groupSvc        *group.Service
 	userSvc         *user.Service
 	categorySvc     *category.Service
+	passkeySvc      *webauthn.Service
+	userStore       *userstore.Store
+	passkeyStore    webauthn.Store
+	customFieldSvc  *customfield.Service
 	cannedResponses *cannedresponse.Service
 	ticketSvc       *ticket.Service
 	ticketStore     *ticketstore.Store
+	slaSvc          *sla.Service
 	userID          uuid.UUID // the seeded reporting (RoleUser) user
 	sessions        *sessionstore.Store
 	authStore       *authstore.Store
-	attachDir       string // where uploads land, so a test can check the disk
+	auditStore      *auditstore.Store
+	tx              *sql.Tx             // the harness transaction, for SQL the generated queries do not offer
+	q               *dbgen.Queries      // raw queries on the test transaction, for fixtures the stores won't build
+	dispatcher      *sendTimeDispatcher // see newHarnessWith
+	attachDir       string              // where uploads land, so a test can check the disk
+	verifyMail      *verifyMailbox      // the signup verification links sent, so a test can follow one
+	resetMail       *resetMailbox       // the password reset links sent, so a test can follow one
+	resetQueue      *lateDispatcher     // where a reset request goes; swap in the real outbox to drive it through the worker
 }
 
 func newHarness(t *testing.T) (*harness, func()) {
@@ -98,15 +124,67 @@ func newHarnessWithRateLimit(t *testing.T, authRateLimit int) (*harness, func())
 	return newHarnessWith(t, authRateLimit, "")
 }
 
+// newHarnessWithThrottle builds a harness with both halves of the credential
+// throttle set: the per-minute budget and the delay an over-budget login
+// waits. Only the tarpit tests need a delay long enough to measure.
+func newHarnessWithThrottle(t *testing.T, authRateLimit int, delay time.Duration) (*harness, func()) {
+	t.Helper()
+	h, cleanup := newHarnessWith(t, authRateLimit, "")
+	h.srv.SetLoginThrottleDelayForTest(delay)
+	return h, cleanup
+}
+
 // newHarnessWith builds a harness with a scanner address, so a test can tell
 // "an address is configured" apart from "a scanner answers" — which is the
 // whole difference between reporting scanner health and reporting settings.
 func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harness, func()) {
 	t.Helper()
-	db, closeDB := testutil.NewDB(t)
-	q, rollback := testutil.TxQueries(t, db)
+	return newHarnessCfg(t, authRateLimit, clamAVAddr, nil)
+}
+
+// newHarnessCfg is newHarnessWith with a hook to adjust the config before the
+// server is built, for tests about what the configuration itself produces.
+func newHarnessCfg(t *testing.T, authRateLimit int, clamAVAddr string, mutate func(*config.Config)) (*harness, func()) {
+	t.Helper()
+	return newHarnessPasskeys(t, authRateLimit, clamAVAddr, mutate, true)
+}
+
+// newHarnessPasskeysOff is a harness started as main.go starts when BASE_URL
+// cannot be a relying-party id (#494): no passkey service at all.
+func newHarnessPasskeysOff(t *testing.T) (*harness, func()) {
+	t.Helper()
+	return newHarnessPasskeys(t, 0, "", nil, false)
+}
+
+func newHarnessPasskeys(t *testing.T, authRateLimit int, clamAVAddr string, mutate func(*config.Config), passkeysOn bool) (*harness, func()) {
+	t.Helper()
+	return newHarnessOn(t, testutil.NewDB, authRateLimit, clamAVAddr, mutate, passkeysOn)
+}
+
+// newIsolatedHarness is newHarness on a database of its own (#550).
+//
+// For a test that counts something a rollback does not give back. Tracking
+// numbers come from ticket_seq, and a sequence is not transactional: every
+// other package's test that creates a ticket moves it, so "the next number is
+// this one plus one" is only true where nobody else is drawing.
+func newIsolatedHarness(t *testing.T) (*harness, func()) {
+	t.Helper()
+	return newHarnessOn(t, testutil.NewIsolatedDB, 0, "", nil, true)
+}
+
+func newHarnessOn(t *testing.T, openDB func(*testing.T) (*testutil.DB, func()), authRateLimit int, clamAVAddr string, mutate func(*config.Config), passkeysOn bool) (*harness, func()) {
+	t.Helper()
+	db, closeDB := openDB(t)
+	q, tx, rollback := testutil.TxQueriesTx(t, db)
 
 	ctx := context.Background()
+
+	// Migration 000052 stores the staff-email overrides as off when it runs
+	// against a database that already has users, and the suite can be pointed at
+	// one (CLAUDE.md: the development database). Every test starts from the
+	// unset state; the delete rolls back with the rest.
+	_, err := tx.ExecContext(ctx, `DELETE FROM settings WHERE key LIKE 'staff_email_%_override'`)
+	require.NoError(t, err)
 
 	// Stores
 	uStore := userstore.New(q)
@@ -119,21 +197,35 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 	cfStore := customfieldstore.New(q)
 	tagSt := tagstore.New(q)
 	crStore := cannedresponsestore.New(q)
+	slStore := slastore.New(q)
 
 	// Services
 	// bcrypt at the production cost dominates this suite's runtime — ~140s of
 	// 152s under -race, hashing passwords no assertion depends on.
-	userSvc := user.NewService(uStore, user.WithBcryptCost(bcrypt.MinCost))
+	userSvc := user.NewService(uStore, user.WithBcryptCost(bcrypt.MinCost), user.WithAuditStore(auStore))
 	categorySvc := category.NewService(cStore)
 	groupSvc := group.NewService(gStore)
 	adminSvc := admin.NewService(aStore)
 	tagSvc := tag.NewService(tagSt)
 	customFieldSvc := customfield.NewService(cfStore)
 	cannedResponseSvc := cannedresponse.NewService(crStore)
-	dispatcher := notify.NewMulti() // no-op in tests
+	// slaPolicySvc is always wired into the ticket service here, unlike
+	// production's cfg.SLAEnabled gate: AttachPolicy/RecordFirstResponse/
+	// RecordResolved are no-ops for a ticket with no matching policy, so this
+	// changes nothing for the tests that never create one, and it is what
+	// lets an SLA test create a policy and then see the record a real ticket
+	// creation attaches to it.
+	slaPolicySvc := sla.NewService(slStore)
+	// No channel actually sends in tests, but the send-time guest-link step
+	// runs as soon as an event is dispatched, standing in for the outbox
+	// worker (#164): tests that check a guest link rotates, or that the
+	// resend budget is charged, see it happen the moment the request returns.
+	// Bound to the server once it exists; the ticket service needs a
+	// dispatcher before then.
+	dispatcher := &sendTimeDispatcher{next: notify.NewMulti()}
 	// Joins the harness transaction rather than beginning a second one; see
 	// testutil.JoiningTxRunner for why a real runner cannot work here.
-	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, testutil.NewJoiningTxRunner(q), nil)
+	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, testutil.NewJoiningTxRunner(q, dispatcher), slaPolicySvc)
 	require.NoError(t, ticketSvc.LoadSystemStatuses(ctx))
 
 	// Seed an admin user.
@@ -237,6 +329,14 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 		// times from one address in a few seconds, which is not an attack;
 		// TestAuthRateLimit covers the limiter with it switched on.
 		AuthRateLimitPerMinute: authRateLimit,
+		// The tarpit's duration, not its existence: the queueing and the
+		// bound still apply at 1ms, and the suite does not spend a second per
+		// over-budget login proving that time passes.
+		// TestLoginTarpit_SlowsAnOverBudgetAccount sets a measurable one.
+		AuthThrottleDelay: time.Millisecond,
+	}
+	if mutate != nil {
+		mutate(cfg)
 	}
 	// Derived exactly as main.go does, so tests exercise the real store rather
 	// than a shape production never uses.
@@ -255,27 +355,74 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 		SameSite: http.SameSiteLaxMode,
 	})
 
+	passkeySvc, passkeyStore := testPasskeys(q)
+	srvOpts := []server.Option{server.WithAuditStore(auStore)}
+	if !passkeysOn {
+		passkeySvc = nil
+		srvOpts = append(srvOpts, server.WithPasskeysUnavailable(passkeysOffReason))
+	}
+	verifyMail := &verifyMailbox{}
+	// Verification email is sent at once, through the same channel the outbox
+	// worker uses, so a test can follow the link straight after signing up.
+	// Its dispatcher needs the service, hence the late assignment.
+	verifyNow := &lateDispatcher{}
+	registrationSvc := registration.NewService(registrationstore.New(q), userSvc, verifyMail, verifyNow, "https://help.example.com")
+	verifyNow.Dispatcher = notify.NewVerificationDispatcher(registrationSvc.SendVerification)
+	// The same for "forgot password" (#451): sent at once through the channel
+	// the worker uses, with the send-time step the server provides.
+	resetMail := &resetMailbox{}
+	resetNow := &lateDispatcher{}
+	resetSvc := passwordreset.NewService(passwordresetstore.New(q), userSvc, resetMail, resetNow, auStore,
+		adminSvc.SAMLEnabled, "https://help.example.com", nil)
+	srvOpts = append(srvOpts, server.WithPasswordReset(resetSvc))
+	// The real webhook dispatcher over the harness transaction, so Redeliver
+	// writes a real outbox row a test can read.
+	webhookDisp := notify.NewWebhookDispatcher(authSt, "https://help.example.com", nil).
+		WithQueue(notify.WebhookQueue{Outbox: outboxstore.New(q), Hooks: authSt, History: authSt, Source: server.NewWebhookEventSource(ticketSvc)})
+	srvOpts = append(srvOpts, server.WithWebhookRedeliverer(webhookDisp))
+	srvOpts = append(srvOpts, server.WithEmailHealth(outboxstore.New(q)))
+	// The template editor (#158) over the harness transaction, so a test's
+	// saves roll back with it. The dispatcher is the real one: SMTP is off
+	// unless a test sets it, and preview needs none.
+	tmplStore := emailtemplatestore.New(q)
+	emailDisp, err := notify.NewEmailDispatcher(cfg)
+	require.NoError(t, err)
+	emailDisp.WithTemplates(tmplStore, adminSvc)
+	srvOpts = append(srvOpts, server.WithEmailTemplates(tmplStore, emailDisp))
 	srv := server.New(
 		cfg,
 		sessionStore,
 		userSvc,
 		ticketSvc,
 		categorySvc,
+		passkeySvc,
+		passkeyStore,
 		groupSvc,
 		tagSvc,
 		adminSvc,
 		customFieldSvc,
-		sla.NewService(slastore.New(q)),
+		slaPolicySvc,
 		plugin.NewRegistry(),
 		apiKeyLookup,
 		authSt,
 		authSt,
-		nil, // registration service not needed in integration tests
+		registrationSvc,
 		cannedResponseSvc,
+		srvOpts...,
 	)
 
+	dispatcher.prepare = srv.PrepareGuestLink
+	resetNow.Dispatcher = notify.NewVerificationDispatcher(registrationSvc.SendVerification).
+		WithPasswordReset(srv.SendPasswordReset)
 	h := &harness{
+		verifyMail:      verifyMail,
+		resetMail:       resetMail,
+		resetQueue:      resetNow,
+		dispatcher:      dispatcher,
 		srv:             srv,
+		q:               q,
+		tx:              tx,
+		slaSvc:          slaPolicySvc,
 		apiKey:          rawToken,
 		adminKey:        adminRawToken,
 		userKey:         userRawToken,
@@ -286,12 +433,17 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 		groupSvc:        groupSvc,
 		userSvc:         userSvc,
 		categorySvc:     categorySvc,
+		passkeySvc:      passkeySvc,
+		userStore:       uStore,
+		passkeyStore:    passkeyStore,
+		customFieldSvc:  customFieldSvc,
 		cannedResponses: cannedResponseSvc,
 		ticketSvc:       ticketSvc,
 		ticketStore:     tStore,
 		userID:          reportingUser.ID,
 		sessions:        sessionStore,
 		authStore:       authSt,
+		auditStore:      auStore,
 		attachDir:       cfg.AttachmentDir,
 	}
 	cleanup := func() {
@@ -817,7 +969,7 @@ func TestCreateUser_AsAdmin(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
+	resp := h.doAsAdminSession(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
 		"email":        "newuser@example.com",
 		"display_name": "New User",
 		"role":         "user",
@@ -848,7 +1000,7 @@ func TestUpdateUser_AsAdmin(t *testing.T) {
 	defer cleanup()
 
 	newName := "Staff Renamed"
-	resp := h.doAsAdmin(t, http.MethodPatch, fmt.Sprintf("/api/v1/admin/users/%s", h.staffID), map[string]any{
+	resp := h.doAsAdminSession(t, http.MethodPatch, fmt.Sprintf("/api/v1/admin/users/%s", h.staffID), map[string]any{
 		"display_name": newName,
 	})
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -863,7 +1015,7 @@ func TestDeleteUser_AsAdmin(t *testing.T) {
 	defer cleanup()
 
 	// Create a user to delete.
-	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
+	createResp := h.doAsAdminSession(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
 		"email":        "todelete@example.com",
 		"display_name": "To Delete",
 		"role":         "user",
@@ -873,7 +1025,7 @@ func TestDeleteUser_AsAdmin(t *testing.T) {
 	var created user.User
 	decodeJSON(t, createResp, &created)
 
-	resp := h.doAsAdmin(t, http.MethodDelete, fmt.Sprintf("/api/v1/admin/users/%s", created.ID), nil)
+	resp := h.doAsAdminSession(t, http.MethodDelete, fmt.Sprintf("/api/v1/admin/users/%s", created.ID), nil)
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
 }
 
@@ -966,6 +1118,146 @@ func TestCreateStatus_AsAdmin(t *testing.T) {
 	require.Equal(t, "Escalated", st["name"])
 }
 
+// TestCreateStatus_TrimsNameInResponse pins #285: AddStatus trims the name it
+// stores, but handleCreateStatus used to serialize its own pre-call copy of
+// the request body — which was never trimmed — so a name with trailing
+// whitespace came back untrimmed in the 201 response body while the stored
+// row (and the next GET) disagreed with it. handleCreateStatus now echoes
+// AddStatus's own returned Status instead.
+func TestCreateStatus_TrimsNameInResponse(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
+		"name":       "Awaiting Parts  ",
+		"sort_order": 10,
+		"color":      "#ff9900",
+	})
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var st map[string]any
+	decodeJSON(t, resp, &st)
+	require.Equal(t, "Awaiting Parts", st["name"], "the response body must echo the trimmed name, not the untrimmed request body")
+
+	listResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/statuses", nil)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	var statuses []map[string]any
+	decodeJSON(t, listResp, &statuses)
+	var found bool
+	for _, s := range statuses {
+		if s["id"] == st["id"] {
+			found = true
+			require.Equal(t, "Awaiting Parts", s["name"])
+		}
+	}
+	require.True(t, found, "the created status must be listed")
+}
+
+// TestCreateStatus_ReportsActiveInResponse pins #284: the 201 body from
+// POST /admin/statuses must say active:true, and the row it created must
+// agree when read back. Fixed as a side effect of #285: handleCreateStatus
+// now serializes AddStatus's own returned Status (which sets Active: true)
+// instead of its own pre-call copy, and the stored row is active via the
+// statuses.active DEFAULT TRUE column (migration 000007) — CreateStatus's
+// INSERT does not mention the column at all. The two sources agreeing is
+// coincidental rather than guaranteed, which is exactly what this test pins:
+// a later change to either one alone would be caught here.
+func TestCreateStatus_ReportsActiveInResponse(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
+		"name":       "Reports Active",
+		"sort_order": 12,
+		"color":      "#33cc33",
+	})
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var st map[string]any
+	decodeJSON(t, resp, &st)
+	require.Equal(t, true, st["active"], "the 201 body must report active:true")
+
+	listResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/statuses", nil)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	var statuses []map[string]any
+	decodeJSON(t, listResp, &statuses)
+	var found bool
+	for _, s := range statuses {
+		if s["id"] == st["id"] {
+			found = true
+			require.Equal(t, true, s["active"], "the stored row must also be active")
+		}
+	}
+	require.True(t, found, "the created status must be listed")
+}
+
+// TestUpdateStatus_TrimsNameInResponse is TestCreateStatus_TrimsNameInResponse's
+// PATCH counterpart, pinning the same #285 fix in SaveStatus/handleUpdateStatus.
+func TestUpdateStatus_TrimsNameInResponse(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
+		"name":       "Awaiting Vendor",
+		"sort_order": 11,
+		"color":      "#aabbcc",
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var created map[string]any
+	decodeJSON(t, createResp, &created)
+
+	resp := h.doAsAdmin(t, http.MethodPatch, fmt.Sprintf("/api/v1/admin/statuses/%s", created["id"]),
+		map[string]any{"name": "Awaiting Vendor Parts  "})
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var st map[string]any
+	decodeJSON(t, resp, &st)
+	require.Equal(t, "Awaiting Vendor Parts", st["name"], "the response body must echo the trimmed name, not the untrimmed request body")
+}
+
+// TestCreateStatus_DuplicateName_ReturnsConflict pins #278: statuses.name is
+// TEXT NOT NULL UNIQUE (statuses_name_key), and before AddStatus/CreateStatus
+// mapped the violation to ticket.ErrStatusNameTaken, creating a status with a
+// name that already exists (a seeded default, or one created moments before)
+// fell through handleError unrecognized and came back as a 500 rather than
+// the 409 an admin retyping an existing name should see.
+func TestCreateStatus_DuplicateName_ReturnsConflict(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	// "In Progress" collides with a seeded default status of that name
+	// (migration 000001).
+	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
+		"name":       "In Progress",
+		"sort_order": 14,
+		"color":      "#ff9900",
+	})
+	require.Equal(t, http.StatusConflict, resp.StatusCode)
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &errBody)
+	require.Equal(t, "status_name_taken", errBody.Error.Code)
+}
+
+// TestCreateStatus_EmptyName_ReturnsBadRequest pins the other half of #278:
+// NOT NULL alone doesn't reject "", so an empty name was accepted unvalidated
+// before AddStatus started checking it.
+func TestCreateStatus_EmptyName_ReturnsBadRequest(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
+		"name":       "   ",
+		"sort_order": 15,
+		"color":      "#ff9900",
+	})
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
 func TestDeleteStatus_Custom_AsAdmin(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
@@ -984,6 +1276,405 @@ func TestDeleteStatus_Custom_AsAdmin(t *testing.T) {
 	resp := h.doAsAdmin(t, http.MethodDelete,
 		fmt.Sprintf("/api/v1/admin/statuses/%s", st["id"]), nil)
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+}
+
+// TestDeleteStatus_System_AsAdmin pins #269: DELETE on a system status
+// (New, Resolved, Closed) has no inline handler guard the way rename and
+// deactivate do, so before RemoveStatus wrapped its refusal in
+// ticket.ErrSystemStatusImmutable this reached handleError as a bare,
+// unrecognized error and came back as a 500 internal_error rather than a
+// clean, expected refusal.
+func TestDeleteStatus_System_AsAdmin(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	listResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/statuses", nil)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	var statuses []map[string]any
+	decodeJSON(t, listResp, &statuses)
+
+	for _, name := range []string{ticket.StatusNameNew, ticket.StatusNameResolved, ticket.StatusNameClosed} {
+		t.Run(name, func(t *testing.T) {
+			var id string
+			for _, st := range statuses {
+				if st["name"] == name {
+					id = st["id"].(string)
+				}
+			}
+			require.NotEmpty(t, id, "seeded system status %q must exist", name)
+
+			resp := h.doAsAdmin(t, http.MethodDelete,
+				fmt.Sprintf("/api/v1/admin/statuses/%s", id), nil)
+			require.Equal(t, http.StatusForbidden, resp.StatusCode)
+			var errBody struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			decodeJSON(t, resp, &errBody)
+			require.Equal(t, "forbidden", errBody.Error.Code)
+			require.Contains(t, errBody.Error.Message, "cannot be deleted")
+		})
+	}
+}
+
+// TestDeleteStatus_UnknownID_Returns404 pins #273: getStatusByID used to
+// return a bare, untyped error on a miss, so RemoveStatus's failure fell
+// through handleError's switch unmatched and came back as a 500 rather than
+// the 404 an admin deleting an already-deleted (or mistyped) status id
+// should see.
+func TestDeleteStatus_UnknownID_Returns404(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doAsAdmin(t, http.MethodDelete,
+		fmt.Sprintf("/api/v1/admin/statuses/%s", uuid.New()), nil)
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &errBody)
+	require.Equal(t, "not_found", errBody.Error.Code)
+}
+
+// TestDeleteStatus_InUse_ReturnsConflict pins #275: a custom status that a
+// ticket currently has was still refused with a bare, unrecognized error
+// before RemoveStatus wrapped it in ticket.ErrStatusInUse, so this fell
+// through handleError's switch and came back as a 500 rather than the 409
+// (with the "deactivate instead" guidance) that a conflicting, expected
+// refusal should surface as.
+func TestDeleteStatus_InUse_ReturnsConflict(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
+		"name":       "Awaiting Parts In Use",
+		"sort_order": 12,
+		"color":      "#112233",
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var st map[string]any
+	decodeJSON(t, createResp, &st)
+
+	ticketResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject":     "needs the part",
+		"description": "x",
+		"category_id": h.catID.String(),
+	})
+	require.Equal(t, http.StatusCreated, ticketResp.StatusCode)
+	var tk ticket.Ticket
+	decodeJSON(t, ticketResp, &tk)
+
+	patchResp := h.doAsAdmin(t, http.MethodPatch, "/api/v1/tickets/"+tk.ID.String(), map[string]any{
+		"status_id": st["id"],
+	})
+	require.Equal(t, http.StatusOK, patchResp.StatusCode)
+
+	resp := h.doAsAdmin(t, http.MethodDelete,
+		fmt.Sprintf("/api/v1/admin/statuses/%s", st["id"]), nil)
+	require.Equal(t, http.StatusConflict, resp.StatusCode)
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &errBody)
+	require.Equal(t, "status_in_use", errBody.Error.Code)
+	require.Contains(t, errBody.Error.Message, "1 ticket(s)")
+	require.Contains(t, errBody.Error.Message, "deactivate")
+}
+
+// TestDeleteStatus_HistoryReferenced_ReturnsConflict pins #275's other
+// remaining refusal in the same function: zero tickets are currently in the
+// status, but a past transition through it still blocks the hard delete
+// (ticket_status_history has no ON DELETE action on the status foreign key).
+// Before wrapping this in ticket.ErrStatusInUse it fell through to a 500
+// exactly like the in-use case above.
+func TestDeleteStatus_HistoryReferenced_ReturnsConflict(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
+		"name":       "Awaiting Parts History",
+		"sort_order": 13,
+		"color":      "#334455",
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var st map[string]any
+	decodeJSON(t, createResp, &st)
+
+	ticketResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject":     "passed through the status",
+		"description": "x",
+		"category_id": h.catID.String(),
+	})
+	require.Equal(t, http.StatusCreated, ticketResp.StatusCode)
+	var tk ticket.Ticket
+	decodeJSON(t, ticketResp, &tk)
+
+	// Transition into the custom status, then out of it again, so the
+	// current count is zero but a history row still references it.
+	patchIn := h.doAsAdmin(t, http.MethodPatch, "/api/v1/tickets/"+tk.ID.String(), map[string]any{
+		"status_id": st["id"],
+	})
+	require.Equal(t, http.StatusOK, patchIn.StatusCode)
+
+	patchOut := h.doAsAdmin(t, http.MethodPatch, "/api/v1/tickets/"+tk.ID.String(), map[string]any{
+		"status_id": statusIDNamed(t, h, ticket.StatusNameResolved).String(),
+	})
+	require.Equal(t, http.StatusOK, patchOut.StatusCode)
+
+	resp := h.doAsAdmin(t, http.MethodDelete,
+		fmt.Sprintf("/api/v1/admin/statuses/%s", st["id"]), nil)
+	require.Equal(t, http.StatusConflict, resp.StatusCode)
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &errBody)
+	require.Equal(t, "status_in_use", errBody.Error.Code)
+	// Two history rows reference the custom status: the transition into it
+	// (to_status_id) and the transition out of it (from_status_id) — the
+	// count query matches either column (see CountStatusHistoryByStatus).
+	require.Contains(t, errBody.Error.Message, "2 past ticket transition(s)")
+	require.Contains(t, errBody.Error.Message, "deactivate")
+}
+
+// TestUpdateStatus_SystemStatusCannotBeRenamed pins #263: renaming a system
+// status broke the next server restart (LoadSystemStatuses looks them up by
+// name), so the admin API now refuses the rename outright rather than
+// writing it.
+func TestUpdateStatus_SystemStatusCannotBeRenamed(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	listResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/statuses", nil)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	var statuses []map[string]any
+	decodeJSON(t, listResp, &statuses)
+
+	for _, name := range []string{ticket.StatusNameNew, ticket.StatusNameResolved, ticket.StatusNameClosed} {
+		t.Run(name, func(t *testing.T) {
+			var id string
+			for _, st := range statuses {
+				if st["name"] == name {
+					id = st["id"].(string)
+				}
+			}
+			require.NotEmpty(t, id, "seeded system status %q must exist", name)
+
+			resp := h.doAsAdmin(t, http.MethodPatch,
+				fmt.Sprintf("/api/v1/admin/statuses/%s", id), map[string]any{"name": "Done"})
+			require.Equal(t, http.StatusForbidden, resp.StatusCode)
+			var errBody struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			decodeJSON(t, resp, &errBody)
+			require.Equal(t, "forbidden", errBody.Error.Code)
+			require.Contains(t, errBody.Error.Message, "cannot be renamed")
+
+			// The name must be unchanged.
+			getResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/statuses", nil)
+			require.Equal(t, http.StatusOK, getResp.StatusCode)
+			var after []map[string]any
+			decodeJSON(t, getResp, &after)
+			var stillNamed bool
+			for _, st := range after {
+				if st["id"] == id && st["name"] == name {
+					stillNamed = true
+				}
+			}
+			require.True(t, stillNamed, "system status %q must keep its name", name)
+		})
+	}
+
+	// The "restart" from the issue's reproduction: LoadSystemStatuses must
+	// still find New/Resolved/Closed by name after every refused rename.
+	require.NoError(t, h.ticketSvc.LoadSystemStatuses(ctx))
+}
+
+// TestUpdateStatus_SystemStatusOtherFieldsStillEditable pins that the #263
+// guard is scoped to the name field alone, and that resending the unchanged
+// name (an idempotent PATCH echoing the resource) is not treated as a rename.
+func TestUpdateStatus_SystemStatusOtherFieldsStillEditable(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	listResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/statuses", nil)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	var statuses []map[string]any
+	decodeJSON(t, listResp, &statuses)
+	var id string
+	for _, st := range statuses {
+		if st["name"] == ticket.StatusNameResolved {
+			id = st["id"].(string)
+		}
+	}
+	require.NotEmpty(t, id)
+
+	resp := h.doAsAdmin(t, http.MethodPatch, fmt.Sprintf("/api/v1/admin/statuses/%s", id), map[string]any{
+		"name":       ticket.StatusNameResolved,
+		"color":      "#123456",
+		"sort_order": 97,
+	})
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var st map[string]any
+	decodeJSON(t, resp, &st)
+	require.Equal(t, ticket.StatusNameResolved, st["name"])
+	require.Equal(t, "#123456", st["color"])
+	require.EqualValues(t, 97, st["sort_order"])
+}
+
+// TestUpdateStatus_CombinedRenameAndDeactivate_RefusesDeactivateFirst pins
+// the #272 finding: a single PATCH that both renames and deactivates a
+// system status is invalid two different ways at once. handleUpdateStatus
+// applies the name to the in-memory struct unconditionally and only then
+// checks Active inline (the rename check that used to run first was removed
+// by #269 in favor of SaveStatus's own refusal), so the caller sees 403
+// "cannot be deactivated" rather than "cannot be renamed" — the reverse of
+// what this same request got before #269's refactor. Both are a clean 403;
+// this only pins which message wins now.
+func TestUpdateStatus_CombinedRenameAndDeactivate_RefusesDeactivateFirst(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	listResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/statuses", nil)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	var statuses []map[string]any
+	decodeJSON(t, listResp, &statuses)
+	var id string
+	for _, st := range statuses {
+		if st["name"] == ticket.StatusNameClosed {
+			id = st["id"].(string)
+		}
+	}
+	require.NotEmpty(t, id)
+
+	resp := h.doAsAdmin(t, http.MethodPatch, fmt.Sprintf("/api/v1/admin/statuses/%s", id),
+		map[string]any{"name": "Done", "active": false})
+	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &errBody)
+	require.Equal(t, "forbidden", errBody.Error.Code)
+	require.Contains(t, errBody.Error.Message, "cannot be deactivated")
+
+	// The name must be unchanged: the request never reached SaveStatus.
+	getResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/statuses", nil)
+	require.Equal(t, http.StatusOK, getResp.StatusCode)
+	var after []map[string]any
+	decodeJSON(t, getResp, &after)
+	var stillNamed bool
+	for _, st := range after {
+		if st["id"] == id && st["name"] == ticket.StatusNameClosed {
+			stillNamed = true
+		}
+	}
+	require.True(t, stillNamed, "system status must keep its name after the combined request is refused")
+}
+
+// TestUpdateStatus_CustomStatusCanBeRenamed pins that the #263 refusal does
+// not spread to custom statuses, which remain freely renamable.
+func TestUpdateStatus_CustomStatusCanBeRenamed(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
+		"name":       "Awaiting Vendor",
+		"sort_order": 12,
+		"color":      "#aabbcc",
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var created map[string]any
+	decodeJSON(t, createResp, &created)
+
+	resp := h.doAsAdmin(t, http.MethodPatch,
+		fmt.Sprintf("/api/v1/admin/statuses/%s", created["id"]),
+		map[string]any{"name": "Awaiting Supplier"})
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var st map[string]any
+	decodeJSON(t, resp, &st)
+	require.Equal(t, "Awaiting Supplier", st["name"])
+}
+
+// TestUpdateStatus_RenameToDuplicateName_ReturnsConflict pins #278's other
+// half: renaming a status to a name that collides with another status's hits
+// the same statuses_name_key constraint CreateStatus does, and before
+// SaveStatus/UpdateStatus mapped it to ticket.ErrStatusNameTaken it fell
+// through handleError unrecognized and came back as a 500.
+func TestUpdateStatus_RenameToDuplicateName_ReturnsConflict(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
+		"name":       "Awaiting Approval",
+		"sort_order": 16,
+		"color":      "#aabbcc",
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var created map[string]any
+	decodeJSON(t, createResp, &created)
+
+	// "Pending" collides with a seeded default status of that name
+	// (migration 000001).
+	resp := h.doAsAdmin(t, http.MethodPatch,
+		fmt.Sprintf("/api/v1/admin/statuses/%s", created["id"]),
+		map[string]any{"name": "Pending"})
+	require.Equal(t, http.StatusConflict, resp.StatusCode)
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &errBody)
+	require.Equal(t, "status_name_taken", errBody.Error.Code)
+}
+
+// TestUpdateStatus_PendingIsRenamable_ByDesign is a decision pin, the shape
+// CLAUDE.md describes for ticket.Service.Close: Pending is a seeded *custom*
+// status (ticket.StatusNamePending), not a system one, so the #263 guard does
+// not cover it. See DESIGN.md → SLA Tracking → Timer Mechanics for why this is
+// accepted rather than "fixed" — renaming Pending only stops future SLA
+// pauses, a mild and reversible consequence, whereas protecting it would need
+// a special case keyed on the string "Pending".
+func TestUpdateStatus_PendingIsRenamable_ByDesign(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	listResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/statuses", nil)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	var statuses []map[string]any
+	decodeJSON(t, listResp, &statuses)
+	var id string
+	for _, st := range statuses {
+		if st["name"] == ticket.StatusNamePending {
+			id = st["id"].(string)
+		}
+	}
+	require.NotEmpty(t, id, "seeded Pending status must exist")
+
+	resp := h.doAsAdmin(t, http.MethodPatch,
+		fmt.Sprintf("/api/v1/admin/statuses/%s", id), map[string]any{"name": "Waiting on customer"})
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var st map[string]any
+	decodeJSON(t, resp, &st)
+	require.Equal(t, "Waiting on customer", st["name"])
 }
 
 // ── Admin: settings ───────────────────────────────────────────────────────────
@@ -1041,7 +1732,7 @@ func TestChangePassword_AsStaff(t *testing.T) {
 
 	sess := loggedIn(t, h)
 	res, body := sess.send(t, http.MethodPatch, "/api/v1/me/password", map[string]any{
-		"password": "newpassword123",
+		"current_password": "password", "new_password": "newpassword123",
 	})
 	require.Equal(t, http.StatusNoContent, res.StatusCode, "body: %s", body)
 }
@@ -1052,7 +1743,7 @@ func TestChangePassword_TooShort(t *testing.T) {
 
 	sess := loggedIn(t, h)
 	res, _ := sess.send(t, http.MethodPatch, "/api/v1/me/password", map[string]any{
-		"password": "short",
+		"current_password": "password", "new_password": "short",
 	})
 	require.Equal(t, http.StatusBadRequest, res.StatusCode)
 }
@@ -1087,6 +1778,69 @@ func TestLocalLogin_WrongPassword(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
 
+// An overlong password is an ordinary wrong password: the server does not
+// refuse it earlier. Bcrypt silently uses only the first 72 bytes and
+// compares. A long password that happens to match the first 72 bytes of
+// the stored password succeeds; otherwise it is an ordinary mismatch.
+func TestLocalLogin_AnOverlongPasswordIsAnOrdinaryWrongPassword(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	// Both wrong passwords — one short, one overlong — get the same 401 response
+	// with the same error code and message.
+	wrongResp := h.doUnauth(t, http.MethodPost, "/api/v1/auth/local/login", map[string]any{
+		"email":    "staff@test.local",
+		"password": "wrongpass",
+	})
+	defer wrongResp.Body.Close()
+
+	overlongResp := h.doUnauth(t, http.MethodPost, "/api/v1/auth/local/login", map[string]any{
+		"email":    "staff@test.local",
+		"password": strings.Repeat("x", 200),
+	})
+	defer overlongResp.Body.Close()
+
+	require.Equal(t, http.StatusUnauthorized, wrongResp.StatusCode)
+	require.Equal(t, http.StatusUnauthorized, overlongResp.StatusCode)
+
+	var wrongBody, overlongBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeJSON(t, wrongResp, &wrongBody)
+	decodeJSON(t, overlongResp, &overlongBody)
+	require.Equal(t, wrongBody.Error.Code, overlongBody.Error.Code,
+		"both wrong passwords must return the same error code")
+	require.Equal(t, wrongBody.Error.Message, overlongBody.Error.Message,
+		"both wrong passwords must return the same error message")
+
+	// Test that an overlong password whose first 72 bytes match signs in.
+	// Since staff@test.local was seeded with "password" (8 bytes), we create
+	// a new user with exactly 72 bytes, then try to log in with that password
+	// plus 100 extra bytes. Login truncates at 72, so it should match.
+	fullPassword := strings.Repeat("a", 72)
+	createResp := h.doAsAdminSession(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
+		"email":        "test72@example.com",
+		"display_name": "Test 72 Byte",
+		"role":         "user",
+		"password":     fullPassword,
+	})
+	defer createResp.Body.Close()
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+
+	// Log in with the 72-byte password plus 100 extra bytes; should succeed
+	// because bcrypt truncates and the first 72 bytes match.
+	signInResp := h.doUnauth(t, http.MethodPost, "/api/v1/auth/local/login", map[string]any{
+		"email":    "test72@example.com",
+		"password": fullPassword + strings.Repeat("x", 100),
+	})
+	defer signInResp.Body.Close()
+	require.Equal(t, http.StatusOK, signInResp.StatusCode,
+		"an overlong password whose first 72 bytes match must sign in")
+}
+
 func TestLogout(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
@@ -1099,9 +1853,13 @@ func TestLogout(t *testing.T) {
 
 // newBareHarness builds a test server with no seeded users, for testing the
 // first-run setup flow.
+//
+// On a database of its own (#543). /setup counts every row in users, and the
+// database package's tests commit real users to the shared one; a transaction
+// that is rolled back says nothing about rows other connections committed.
 func newBareHarness(t *testing.T) (*harness, func()) {
 	t.Helper()
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	q, rollback := testutil.TxQueries(t, db)
 
 	ctx := context.Background()
@@ -1129,7 +1887,7 @@ func newBareHarness(t *testing.T) (*harness, func()) {
 	dispatcher := notify.NewMulti()
 	// Joins the harness transaction rather than beginning a second one; see
 	// testutil.JoiningTxRunner for why a real runner cannot work here.
-	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, testutil.NewJoiningTxRunner(q), nil)
+	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, testutil.NewJoiningTxRunner(q, dispatcher), nil)
 	require.NoError(t, ticketSvc.LoadSystemStatuses(ctx))
 
 	apiKeyLookup := authmw.APIKeyAuthFunc(func(ctx context.Context, hashed string) (auth.APIKey, user.User, error) {
@@ -1159,12 +1917,15 @@ func newBareHarness(t *testing.T) (*harness, func()) {
 		Path: "/", MaxAge: 86400 * 7, HttpOnly: true, SameSite: http.SameSiteLaxMode,
 	})
 
+	passkeySvc, passkeyStore := testPasskeys(q)
 	srv := server.New(
 		cfg,
 		sessionStore,
 		userSvc,
 		ticketSvc,
 		categorySvc,
+		passkeySvc,
+		passkeyStore,
 		groupSvc,
 		tagSvc,
 		adminSvc,
@@ -1176,6 +1937,7 @@ func newBareHarness(t *testing.T) (*harness, func()) {
 		authSt,
 		nil, // registration service not needed in integration tests
 		cannedResponseSvc,
+		server.WithAuditStore(auStore),
 	)
 
 	h := &harness{srv: srv}
@@ -1554,8 +2316,11 @@ func TestListTicketCannedResponses_ScopeFiltering(t *testing.T) {
 }
 
 // TestListTicketCannedResponses_UserForbidden confirms the reporting user
-// (RoleUser) cannot reach the staff/admin-only picker endpoint — the one
-// route within ticketRouter that narrows below its top-level role check.
+// (RoleUser) cannot reach the staff/admin-only picker endpoint for a ticket
+// that is not theirs. The ticket here is reported by staff, not by this
+// user, so requireTicketAccess's visibility gate refuses the request before
+// the route's own staff/admin role check is ever reached — 404, not 403;
+// see #174.
 func TestListTicketCannedResponses_UserForbidden(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
@@ -1570,7 +2335,30 @@ func TestListTicketCannedResponses_UserForbidden(t *testing.T) {
 	decodeJSON(t, createResp, &tk)
 
 	resp := h.doAsUser(t, http.MethodGet, fmt.Sprintf("/api/v1/tickets/%s/canned-responses", tk.ID), nil)
-	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// TestListTicketCannedResponses_UserForbiddenOnOwnTicket pins the role check
+// the test above no longer reaches: the picker is staff/admin-only even for
+// a reporter who owns the ticket outright, so requireTicketAccess's
+// visibility gate passes here and the picker's own role check is what
+// refuses the request.
+func TestListTicketCannedResponses_UserForbiddenOnOwnTicket(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	createResp := h.doAsUser(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject":     "My own ticket",
+		"description": "Details",
+		"category_id": h.catID.String(),
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var tk ticket.Ticket
+	decodeJSON(t, createResp, &tk)
+
+	resp := h.doAsUser(t, http.MethodGet, fmt.Sprintf("/api/v1/tickets/%s/canned-responses", tk.ID), nil)
+	require.Equal(t, http.StatusForbidden, resp.StatusCode,
+		"the picker is staff/admin-only even on the reporter's own ticket")
 }
 
 // TestListTicketCannedResponses_TypeScopeFiltering covers the category+type
@@ -1630,4 +2418,57 @@ func TestListTicketCannedResponses_TypeScopeFiltering(t *testing.T) {
 	for _, cr := range crsB {
 		require.NotEqual(t, typeAScoped.ID, cr.ID, "type-A-scoped response must not appear for a type-B ticket")
 	}
+}
+
+// testPasskeys builds the passkey service and store the server needs. A fixed
+// https base URL rather than the harness's own: a relying party is bound to an
+// origin, and the ceremonies are not exercised here — the handlers that are
+// have their own tests.
+func testPasskeys(q *dbgen.Queries) (*webauthn.Service, webauthn.Store) {
+	svc, err := webauthn.NewService("https://help.test.local", "Go Help Desk", nil)
+	if err != nil {
+		panic("configuring test passkeys: " + err.Error())
+	}
+	return svc, webauthnstore.New(q)
+}
+
+// passkeyFor is a stored credential for tests that need one to exist. The
+// ceremonies are not exercised here; the fields are what the table keeps.
+func passkeyFor(userID uuid.UUID, credID string) webauthn.Credential {
+	return webauthn.Credential{
+		UserID:       userID,
+		CredentialID: []byte(credID),
+		PublicKey:    []byte("cose-public-key"),
+		Transports:   []string{"usb"},
+		Name:         "Test key",
+	}
+}
+
+// lateDispatcher is a Dispatcher assigned after it is handed out, for a
+// service whose channel needs the service itself.
+type lateDispatcher struct{ notification.Dispatcher }
+
+// sendTimeDispatcher runs the send-time guest-link step synchronously, as the
+// outbox worker would, then hands the event to next. With record set, it
+// instead only records what was queued — what a request does by itself,
+// before any worker has run.
+type sendTimeDispatcher struct {
+	next    notification.Dispatcher
+	prepare func(context.Context, notification.Event) (notification.Event, bool, error)
+	record  bool
+	queued  []notification.Event
+	// outbox, when set, receives every event instead: a test that drives the
+	// real outbox and worker end to end.
+	outbox notification.Dispatcher
+}
+
+func (d *sendTimeDispatcher) Dispatch(ctx context.Context, ev notification.Event) error {
+	if d.outbox != nil {
+		return d.outbox.Dispatch(ctx, ev)
+	}
+	if d.record {
+		d.queued = append(d.queued, ev)
+		return nil
+	}
+	return notify.NewGuestLinkDispatcher(d.next, d.prepare).Dispatch(ctx, ev)
 }
