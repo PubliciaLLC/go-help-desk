@@ -41,10 +41,16 @@ export function fmtMin(m: number): string {
  * met target can still read "over" (a late response) and an outstanding one
  * can already be past its target while the sweep has not stamped a breach
  * yet, which is exactly the live-vs-stamp distinction the color itself draws.
+ *
+ * remaining_min is truncated toward zero by the server, so it is 0 for
+ * anything within a minute of the target on either side, and the sign cannot
+ * say which. The color can: red means elapsed has reached the target, and
+ * green/amber mean it has not. A red zero therefore reads "<1m" late/over
+ * rather than "0m" to spare/left, which would call a missed target on time.
  */
 export function slaTargetText(t: SLATargetStatus): string {
-  const remaining = fmtMin(Math.abs(t.remaining_min))
-  const over = t.remaining_min < 0
+  const over = t.remaining_min < 0 || (t.remaining_min === 0 && t.color === 'red')
+  const remaining = t.remaining_min === 0 && over ? '<1m' : fmtMin(Math.abs(t.remaining_min))
   if (t.met_at == null) {
     return over ? `${remaining} over` : `${remaining} left`
   }
