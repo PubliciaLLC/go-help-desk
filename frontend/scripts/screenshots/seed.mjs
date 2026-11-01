@@ -1,7 +1,14 @@
 // Usage: SHOTS_BASE_URL=http://localhost:18080 DATABASE_URL=postgres://... [SHOTS_PASSWORD SHOTS_OUT SHOTS_REPUTATION=0] node frontend/scripts/screenshots/seed.mjs
+//        ... SHOTS_MAIL_DIR=<fake-smtp.mjs's FAKE_SMTP_DIR> node frontend/scripts/screenshots/seed.mjs --extras
+//
+// The first form seeds the instance for shots 01 to 28. --extras adds what the
+// 1.3.0 shots from 29 on need and must run after those have been captured: it
+// files a ticket, archives a category and changes settings, any of which would
+// alter the older shots (the ticket lists, the audit log, the dashboard counts).
+// It reads and rewrites seed.json, adding an "extras" key.
 import { request } from '@playwright/test'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -349,7 +356,91 @@ async function main() {
   for (const c of contexts) await c.dispose()
 }
 
-main().catch((e) => {
+// ── --extras: data for shots 29 and later ─────────────────────────────────────
+
+// The guest link is not stored anywhere but in the mail the guest was sent: the
+// server keeps only the token's hash. fake-smtp.mjs saved that mail. The newest
+// one to the guest holds the live token, because every event on an open ticket
+// rotates it.
+const guestPathFromMail = async (mailDir, to) => {
+  const deadline = Date.now() + 30_000
+  while (Date.now() < deadline) {
+    const names = existsSync(mailDir) ? readdirSync(mailDir).filter((n) => n.endsWith('.eml')) : []
+    names.sort((a, b) => parseInt(b, 10) - parseInt(a, 10))
+    for (const name of names) {
+      // The body is quoted-printable: undo the soft line breaks before matching.
+      const text = readFileSync(join(mailDir, name), 'latin1').replace(/=\r?\n/g, '')
+      if (!new RegExp(`^To:.*${to.replace(/[.]/g, '\\.')}`, 'mi').test(text)) continue
+      const m = /\/g#([A-Za-z0-9_-]+)/.exec(text)
+      if (m) return `/g#${m[1]}`
+    }
+    await new Promise((r) => setTimeout(r, 500))
+  }
+  throw new Error(`no mail to ${to} with a ticket link in ${mailDir} within 30 s`)
+}
+
+async function extras() {
+  const mailDir = process.env.SHOTS_MAIL_DIR
+  if (!mailDir) throw new Error('SHOTS_MAIL_DIR is required with --extras (the directory fake-smtp.mjs writes to)')
+  const seedPath = join(OUT, 'seed.json')
+  const seed = JSON.parse(readFileSync(seedPath, 'utf8'))
+
+  const admin = await login(P.admin.email)
+  const jordan = await login(P.jordan.email)
+  const users = await call(admin, 'GET', '/api/v1/admin/users', null, 200)
+  const casey = users.find((u) => u.email === P.casey.email)?.id
+  if (!casey) throw new Error('Casey Nguyen not found in the user list')
+
+  // Staff may create their own API keys (shot 36), and guests may attach files (shot 40).
+  await call(admin, 'PATCH', '/api/v1/admin/settings', { staff_can_create_api_keys: true, guest_attachments_enabled: true }, 204)
+
+  // A category that was retired: archived, so the page shows its Restore button (shot 33).
+  const cats = await call(admin, 'GET', '/api/v1/admin/categories', null, 200)
+  const software = cats.find((c) => c.name === 'Software')?.id
+  const office = (await call(admin, 'GET', `/api/v1/admin/categories/${software}/types`, null, 200)).find((t) => t.name === 'Office suite')?.id
+  if (!software || !office) throw new Error('Software / Office suite not found: run the main seed first')
+  const legacy = await call(admin, 'POST', '/api/v1/admin/categories', { name: 'Desk phones', sort_order: 4 }, 201)
+  await call(admin, 'PATCH', `/api/v1/admin/categories/${legacy.id}`, { active: false }, 200)
+
+  // T11: Jordan took a call from Casey and filed the ticket for them. The
+  // description was typed as plain text that happens to use Markdown marks (the
+  // API's default format), so it reads as typed until "Show formatted" is
+  // pressed; the reply is Markdown and shows formatted (shots 30, 35).
+  const t11 = await call(jordan, 'POST', '/api/v1/tickets', {
+    subject: 'Budget workbook keeps asking me to sign in',
+    description:
+      'Caller: Casey Nguyen, finance, desk ext. 4417.\n\n' +
+      '**What Casey sees**\n' +
+      '- Opens the budget workbook from the shared drive\n' +
+      '- A "Sign in to continue" box comes back every few minutes\n' +
+      '- Only on the laptop; the phone is fine\n\n' +
+      'Already tried: signing out and back in. No change.',
+    category_id: software,
+    type_id: office,
+    reporter_user_id: casey,
+    source_channel: 'phone',
+  }, 201)
+  await call(jordan, 'POST', `/api/v1/tickets/${t11.id}/replies`, {
+    body:
+      'Thanks, Casey. Two things to try while we look at your account:\n\n' +
+      '1. Close the workbook and quit **Excel** completely.\n' +
+      '2. Open it again from `Recent` and sign in once.\n\n' +
+      'If the box comes back, reply with the **time** it appeared.',
+    format: 'markdown',
+    internal: false,
+    notify_customer: false,
+  }, 201)
+
+  const guestPath = await guestPathFromMail(mailDir, PAT.email)
+
+  seed.extras = { tickets: { T11: { id: t11.id, tracking: t11.tracking_number } }, guestPath }
+  writeFileSync(seedPath, JSON.stringify(seed, null, 2) + '\n', { mode: 0o600 })
+  chmodSync(seedPath, 0o600)
+  console.log('X. extras seeded')
+  for (const c of contexts) await c.dispose()
+}
+
+(process.argv.includes('--extras') ? extras() : main()).catch((e) => {
   console.error(`seed failed: ${e.message}`)
   process.exitCode = 1
 })

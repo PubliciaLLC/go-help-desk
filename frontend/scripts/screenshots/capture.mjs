@@ -2,9 +2,13 @@
 //
 //   node frontend/scripts/screenshots/capture.mjs --phase pre-setup
 //   node frontend/scripts/screenshots/capture.mjs --phase main [--only 05,12]
+//   node frontend/scripts/screenshots/capture.mjs --phase extras [--only 31,33m]
 //
 // --phase pre-setup runs against the empty instance, before seed.mjs (shots 15,
-// 15m). --phase main needs $SHOTS_OUT/seed.json written by seed.mjs. Output is
+// 15m). --phase main needs $SHOTS_OUT/seed.json written by seed.mjs. --phase
+// extras (shots 29 and later) needs the same file after `seed.mjs --extras` has
+// added to it, and runs last because its data and settings changes would show in
+// the older shots. Output is
 // $SHOTS_OUT/png/*.png (default ${TMPDIR:-/tmp}/ghd-shots), plus
 // $SHOTS_OUT/manifest.txt listing exactly the PNG files this invocation wrote, one
 // name per line (overwritten by each invocation). Env: SHOTS_BASE_URL (pre-setup only; main reads seed.json),
@@ -45,12 +49,16 @@ const args = process.argv.slice(2)
 //
 // Each shot: file, phase, role (seed user key or null), path (string or fn of
 // seed), vp (viewport), mobile (bool), requires (seed.features flag, optional),
-// optional (bool), passkey (bool), prepare(page, ctx, seed), target:
-//   'viewport' | {tall: cap, exact?: bool} | {element: fn} | {union: fn}
-//   | {cutBetween: fn}  (crop height set to a gap between two cards)
+// optional (bool), passkey (bool), before(ctx, seed) (optional: set up state
+// through the API, after sign-in and before the page opens), css (optional: a
+// style sheet added just before the capture), prepare(page, ctx, seed), target:
+//   'viewport' | {tall: cap, exact?: bool} | {element: fn, padTop?, padBottom?}
+//   | {union: fn} | {cutBetween: fn}  (crop height set to a gap between two cards)
 // expect: [w, h] in device pixels, checked after capture (a mismatch is a failure).
 
 const ticketPath = (k) => (s) => `/tickets/${s.tickets[k].id}`
+// Tickets filed by `seed.mjs --extras`.
+const extraTicketPath = (k) => (s) => `/tickets/${s.extras.tickets[k].id}`
 
 // The quarantined-attachment row for the EICAR archive (shots 12, 13).
 const quarantinedRow = (page) => page.locator('div.border-red-300').filter({ hasText: 'invoice-2026-0417.txt.zip' })
@@ -79,6 +87,34 @@ async function waitActivity(page) {
 async function waitCirclKnown(page) {
   // CIRCL is the provider the reviewed shots depend on (design 3.2): it must say "known".
   await quarantinedRow(page).getByText(/CIRCL: known file/).first().waitFor({ timeout: DATA_WAIT })
+}
+
+const noticeBar = (page) => page.getByRole('region', { name: 'Server notices' })
+
+// Desktop shows a row's archive, restore and delete buttons only under the
+// pointer. A still image has no pointer, and the touch layout shows them all, so
+// the desktop shot is made to show them the same way.
+const ARCHIVE_BUTTONS_SHOWN = 'button[class*="group-hover:opacity-100"]{opacity:1!important}'
+
+// HTML for the "Ticket received" mail. Content templates may use only the
+// tracking number and the ticket link.
+const TEMPLATE_HTML = `<div style="font-family:Arial,Helvetica,sans-serif;max-width:560px;margin:0 auto;padding:24px;border:1px solid #e4e4e7">
+<h2 style="margin:0 0 12px;color:#1d4ed8">We have your request</h2>
+<p>Thanks for getting in touch. Your tracking number is <strong>{{.TrackingNumber}}</strong>.</p>
+<p><a href="{{.TicketURL}}" style="display:inline-block;padding:10px 16px;background:#1d4ed8;color:#ffffff;text-decoration:none;border-radius:4px">Open your ticket</a></p>
+<p style="color:#71717a;font-size:12px">Keep this number if you need to ask about the request.</p>
+</div>`
+
+// An OAuth client acts as a service user. One in no group sees no ticket while
+// ticket scope is on, which the server notice bar reports. Skipped when it
+// already exists, so the two notice shots can share it.
+async function ensureBlindOAuthClient(ctx) {
+  const name = 'Reporting export'
+  const list = await ctx.request.get('/api/v1/admin/oauth-clients')
+  if (!list.ok()) throw new Error(`oauth clients: HTTP ${list.status()}`)
+  if ((await list.json()).some((c) => c.name === name)) return
+  const r = await ctx.request.post('/api/v1/admin/oauth-clients', { data: { name, scopes: ['tickets:read'] } })
+  if (!r.ok()) throw new Error(`create oauth client: HTTP ${r.status()}`)
 }
 
 const SHOTS = [
@@ -326,6 +362,176 @@ const SHOTS = [
       await page.locator('#subject').fill('Cannot join the visitor Wi-Fi')
     },
   },
+
+  // ── Extras: the 1.3.0 screens added after the first set (phase "extras") ──
+  {
+    // Typed, not pasted: the editor turns the Markdown marks into formatting as
+    // they are typed. The card is cropped to the composer.
+    file: '29-reply-markdown-editor.png', phase: 'extras', role: 'jordan', path: extraTicketPath('T11'), vp: DESK,
+    target: { element: (page) => cardOf(page, 'Add work log entry') },
+    async prepare(page) {
+      await waitActivity(page)
+      const editor = page.getByRole('textbox', { name: 'Work log entry' })
+      await cardOf(page, 'Add work log entry').evaluate((el) => el.scrollIntoView({ block: 'center' }))
+      await editor.click()
+      await page.keyboard.type('Checked the laptop on site and **cleared the cached sign-in**. ')
+      await page.keyboard.type('The box has not come back after an hour:')
+      await page.keyboard.press('Enter')
+      await page.keyboard.type('- Cleared the cached credentials')
+      await page.keyboard.press('Enter')
+      await page.keyboard.type('Updated `Office` to the current build')
+      await page.keyboard.press('Enter')
+      await page.keyboard.press('Enter')
+      await page.keyboard.type('Casey will confirm on Friday.')
+      await waitVisible(editor.locator('strong'))
+      await waitVisible(editor.locator('li'))
+    },
+  },
+  {
+    // The description was filed as plain text, so it keeps its marks and offers
+    // "Show formatted"; the reply is Markdown and offers "Plain text".
+    file: '30-ticket-show-formatted.png', phase: 'extras', role: 'jordan', path: extraTicketPath('T11'), vp: DESK,
+    target: {
+      union: (page) => [
+        cardOf(page, 'Description'),
+        page.locator('div.rounded-lg.border').filter({ hasText: 'Two things to try' }),
+      ],
+    },
+    async prepare(page) {
+      await waitVisible(page.getByRole('button', { name: 'Show formatted' }))
+      await waitVisible(page.locator('div[data-md-body] strong'), DATA_WAIT)
+    },
+  },
+  {
+    // The email template editor with HTML open and the preview of it (the
+    // preview is a sandboxed frame). Nothing is saved.
+    file: '31-email-template-html.png', phase: 'extras', role: 'admin', path: '/admin/email-templates?t=ticket_created', vp: DESK,
+    target: { element: (page) => page.getByRole('form', { name: /^Edit / }) },
+    async prepare(page) {
+      await page.getByLabel('HTML', { exact: true }).fill(TEMPLATE_HTML)
+      await waitVisible(page.locator('iframe[title="HTML preview"]'), DATA_WAIT)
+      await page.locator('iframe[title="HTML preview"]').scrollIntoViewIfNeeded()
+      await page.waitForTimeout(500)
+    },
+  },
+  {
+    // A draft the server refuses: {{.Description}} is not a variable a template
+    // may use (ticket text stays out of mail by design). The editor checks every
+    // change, shows the error under the field and keeps Save off.
+    file: '32-email-template-refused.png', phase: 'extras', role: 'admin', path: '/admin/email-templates?t=ticket_created', vp: DESK,
+    target: { element: (page) => page.getByRole('form', { name: /^Edit / }) },
+    async prepare(page) {
+      await page.getByLabel('HTML', { exact: true }).fill(TEMPLATE_HTML.replace('</div>', '<p>{{.Description}}</p>\n</div>'))
+      await waitVisible(page.locator('[id$="-html-error"]'), DATA_WAIT)
+    },
+  },
+  {
+    file: '33-admin-categories-archive.png', phase: 'extras', role: 'admin', path: '/admin/categories', vp: DESK,
+    css: ARCHIVE_BUTTONS_SHOWN,
+    async prepare(page) {
+      await waitVisible(page.getByText('Archived', { exact: true }))
+    },
+  },
+  {
+    file: '33-admin-categories-archive-mobile.png', phase: 'extras', role: 'admin', path: '/admin/categories', vp: MOBILE,
+    mobile: true, optional: true,
+    async prepare(page) {
+      await waitVisible(page.getByText('Archived', { exact: true }))
+      // Each row is tall on a phone, so the archived one is below the fold.
+      await page.evaluate(() => {
+        const m = document.querySelector('main')
+        m.scrollTop = m.scrollHeight
+      })
+    },
+  },
+  {
+    // Staff filing for a requester: "Another user", found by search, and the
+    // "How did this reach you?" choice that appears once a requester is picked.
+    file: '34-staff-new-ticket-on-behalf.png', phase: 'extras', role: 'jordan', path: '/tickets/new', vp: DESK,
+    target: { tall: 1700 },
+    async prepare(page) {
+      await page.getByLabel('Another user').check()
+      await page.getByLabel('Search users').fill('casey')
+      await page.getByRole('button', { name: /Casey Nguyen/ }).click()
+      await page.getByLabel('Phone call').check()
+      await page.locator('#subject').fill('Shared drive is slow to open')
+      await page.getByRole('textbox', { name: 'Description' }).click()
+      await page.keyboard.type('Casey called: the finance share takes about a minute to open since this morning.')
+      await page.locator('#category').selectOption({ label: 'Software' })
+      await page.locator('#type').selectOption({ label: 'Office suite' })
+    },
+  },
+  {
+    // The "via phone" line in the ticket header, with the requester under the title.
+    file: '35-ticket-via-phone.png', phase: 'extras', role: 'jordan', path: extraTicketPath('T11'), vp: DESK,
+    target: {
+      element: (page) =>
+        page.getByTestId('source-channel-line').locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " space-y-1 ")][1]'),
+    },
+    async prepare(page) {
+      await waitVisible(page.getByTestId('source-channel-line').filter({ hasText: 'via phone' }))
+    },
+  },
+  {
+    // The key is made through the form, so the banner is the real one. The
+    // token is a throwaway: this instance is dropped at the end of the run.
+    file: '36-account-api-keys.png', phase: 'extras', role: 'jordan', path: '/account', vp: DESK,
+    target: { element: (page) => page.locator('section').filter({ has: page.getByRole('heading', { name: 'API keys', exact: true }) }) },
+    async prepare(page) {
+      await page.getByPlaceholder('Key name (e.g. my script)').fill('Nightly ticket export')
+      await page.getByLabel('tickets:read', { exact: true }).check()
+      await page.getByRole('button', { name: 'Create key' }).click()
+      await waitVisible(page.getByText('API key created', { exact: false }))
+    },
+  },
+  {
+    // The wizard shows for an install whose "seen" flag is off, which is what an
+    // upgraded install has; setup sets it on a fresh one. Turned off here through
+    // the settings API so no other shot is redirected to it.
+    file: '37-after-upgrade-wizard.png', phase: 'extras', role: 'admin', path: '/after-upgrade', vp: DESK,
+    target: { element: (page) => cardOf(page, 'After upgrading to 1.3.0') },
+    async before(ctx) {
+      const r = await ctx.request.patch('/api/v1/admin/settings', { data: { post_upgrade_130_seen: false } })
+      if (!r.ok()) throw new Error(`settings: HTTP ${r.status()}`)
+    },
+    async prepare(page) {
+      await waitVisible(page.getByRole('heading', { name: 'Weekly check for new releases' }))
+    },
+  },
+  {
+    // The only thing that puts a notice on this instance is an OAuth client whose
+    // service user is in no group, with ticket scope on (#420). Made in `before`
+    // so the pages above are captured without it.
+    file: '38-server-notice-collapsed.png', phase: 'extras', role: 'admin', path: '/tickets', vp: DESK,
+    before: ensureBlindOAuthClient,
+    target: { element: (page) => noticeBar(page), padBottom: 120 },
+    async prepare(page) {
+      await waitVisible(noticeBar(page).getByText('An OAuth client sees no tickets'), DATA_WAIT)
+    },
+  },
+  {
+    file: '39-server-notice-expanded.png', phase: 'extras', role: 'admin', path: '/tickets', vp: DESK,
+    before: ensureBlindOAuthClient,
+    target: { element: (page) => noticeBar(page), padBottom: 120 },
+    async prepare(page) {
+      await noticeBar(page).getByRole('button', { name: 'Details' }).click()
+      await waitVisible(noticeBar(page).getByRole('button', { name: /^Hide / }), DATA_WAIT)
+    },
+  },
+  {
+    // The link a guest was mailed, opened. The file goes up through the page's
+    // own control and is scanned like any other.
+    file: '40-guest-ticket-attach.png', phase: 'extras', path: (s) => s.extras.guestPath, vp: DESK,
+    async prepare(page) {
+      await waitVisible(page.getByRole('button', { name: 'Add files' }), DATA_WAIT)
+      await page.locator('input[type="file"]').setInputFiles({
+        name: 'visitor-wifi-prompt.txt',
+        mimeType: 'text/plain',
+        buffer: Buffer.from('The visitor Wi-Fi asks for an access code.\n'),
+      })
+      await waitVisible(page.getByText(/Attached: visitor-wifi-prompt\.txt/), DATA_WAIT)
+    },
+  },
 ]
 
 // Why a shot whose seed data flag is false is skipped. Printed on the SKIP line.
@@ -415,6 +621,8 @@ async function newContext(browser, shot) {
 async function fitTall(page, cap, exact) {
   const h = await page.evaluate(() => {
     const m = document.querySelector('main')
+    // The wizard and the guest page have no <main>: the document is the page.
+    if (!m) return 900
     return 900 + (m.scrollHeight - m.clientHeight)
   })
   const height = exact ? cap : Math.min(h, cap)
@@ -429,6 +637,7 @@ async function fitTall(page, cap, exact) {
 async function alignTop(locator, pad) {
   await locator.evaluate((el, p) => {
     const main = document.querySelector('main')
+    if (!main) return
     const m = main.getBoundingClientRect()
     const e = el.getBoundingClientRect()
     main.scrollTop += e.top - (m.top + p)
@@ -471,11 +680,13 @@ async function captureShot(browser, shot, s) {
   const ctx = await newContext(browser, shot)
   try {
     if (shot.role) await login(ctx, s.users[shot.role])
+    if (shot.before) await shot.before(ctx, s)
     const page = await ctx.newPage()
     const p = typeof shot.path === 'function' ? shot.path(s) : shot.path
     await page.goto(p, { waitUntil: 'domcontentloaded' })
     await settle(page)
     await shot.prepare(page, ctx, s)
+    if (shot.css) await page.addStyleTag({ content: shot.css })
     await settle(page, { keepFocus: false })
 
     const t = shot.target ?? 'viewport'
@@ -487,7 +698,7 @@ async function captureShot(browser, shot, s) {
       await settle(page)
     } else if (t.element) {
       await fitTall(page, 4000, false)
-      screenshotOpts.clip = await elementClip(page, [t.element(page)], { top: t.padTop ?? PAD })
+      screenshotOpts.clip = await elementClip(page, [t.element(page)], { top: t.padTop ?? PAD, bottom: t.padBottom ?? PAD })
     } else if (t.union) {
       // Grow the window to the whole page first, so no part of the union sits
       // behind <main>'s own scroll.
@@ -529,8 +740,8 @@ function argValue(name) {
   return i >= 0 ? args[i + 1] : undefined
 }
 const phase = argValue('--phase')
-if (phase !== 'pre-setup' && phase !== 'main') {
-  console.error('usage: capture.mjs --phase pre-setup|main [--only 05,12]')
+if (phase !== 'pre-setup' && phase !== 'main' && phase !== 'extras') {
+  console.error('usage: capture.mjs --phase pre-setup|main|extras [--only 05,12]')
   process.exit(2)
 }
 const onlyArg = argValue('--only')
@@ -544,12 +755,16 @@ if (only) {
 }
 
 let seed = null
-if (phase === 'main') {
+if (phase === 'main' || phase === 'extras') {
   if (!fs.existsSync(SEED_FILE)) {
-    console.error(`capture: ${SEED_FILE} not found; run seed.mjs first`)
+    console.error(`capture: ${SEED_FILE} not found; run seed.mjs first (seed.mjs --extras for --phase extras)`)
     process.exit(2)
   }
   seed = JSON.parse(fs.readFileSync(SEED_FILE, 'utf8'))
+  if (phase === 'extras' && !seed.extras) {
+    console.error('capture: seed.json has no "extras" key; run seed.mjs --extras first')
+    process.exit(2)
+  }
 }
 const BASE = process.env.SHOTS_BASE_URL || seed?.baseURL || 'http://localhost:18080'
 const PASSWORD = seed?.password || process.env.SHOTS_PASSWORD || PASSWORD_FALLBACK
