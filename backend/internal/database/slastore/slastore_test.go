@@ -294,3 +294,71 @@ func TestSetFirstResponse_OnTimeDoesNotStampABreach(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, rec.ResponseBreachedAt)
 }
+
+// A target met at exactly its length is breached, matching the indicator's
+// "at or past 100%" (DESIGN.md). One test, the three record-time statements,
+// elapsed == target in whole seconds: the frozen reading a met record carries.
+func TestRecordTimeStatements_ElapsedExactlyAtTargetStampsABreach(t *testing.T) {
+	const targetMin = 30
+	const targetSec = int64(targetMin * 60)
+
+	cases := []struct {
+		name  string
+		write func(ctx context.Context, sls *slastore.Store, id uuid.UUID, at time.Time) error
+		check func(t *testing.T, rec sla.Record, at time.Time)
+	}{
+		{
+			name: "SetFirstResponse",
+			write: func(ctx context.Context, sls *slastore.Store, id uuid.UUID, at time.Time) error {
+				return sls.SetFirstResponse(ctx, id, at, targetSec, targetSec)
+			},
+			check: func(t *testing.T, rec sla.Record, at time.Time) {
+				require.NotNil(t, rec.ResponseBreachedAt)
+				require.True(t, rec.ResponseBreachedAt.Equal(at))
+			},
+		},
+		{
+			name: "SetResolved",
+			write: func(ctx context.Context, sls *slastore.Store, id uuid.UUID, at time.Time) error {
+				return sls.SetResolved(ctx, id, at, targetSec, targetSec)
+			},
+			check: func(t *testing.T, rec sla.Record, at time.Time) {
+				require.NotNil(t, rec.ResolutionBreachedAt)
+				require.True(t, rec.ResolutionBreachedAt.Equal(at))
+			},
+		},
+		{
+			name: "SetResolvedAndFirstResponse",
+			write: func(ctx context.Context, sls *slastore.Store, id uuid.UUID, at time.Time) error {
+				return sls.SetResolvedAndFirstResponse(ctx, id, at, targetSec, targetSec, targetSec)
+			},
+			check: func(t *testing.T, rec sla.Record, at time.Time) {
+				require.NotNil(t, rec.ResolutionBreachedAt)
+				require.True(t, rec.ResolutionBreachedAt.Equal(at))
+				require.NotNil(t, rec.ResponseBreachedAt)
+				require.True(t, rec.ResponseBreachedAt.Equal(at))
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db, closeDB := testutil.NewDB(t)
+			defer closeDB()
+			q, rollback := testutil.TxQueries(t, db)
+			defer rollback()
+			ctx := context.Background()
+
+			us := userstore.New(q)
+			cs := categorystore.New(q)
+			ts := ticketstore.New(q)
+			sls := slastore.New(q)
+			id := seedTicketAndRecord(t, ctx, ts, cs, us, sls, targetMin, targetMin)
+
+			at := time.Now().UTC().Truncate(time.Millisecond)
+			require.NoError(t, tc.write(ctx, sls, id, at))
+			rec, err := sls.GetRecord(ctx, id)
+			require.NoError(t, err)
+			tc.check(t, rec, at)
+		})
+	}
+}

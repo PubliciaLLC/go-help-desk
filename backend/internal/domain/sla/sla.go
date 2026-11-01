@@ -120,17 +120,18 @@ func (r Record) Elapsed(t ticket.Ticket, at time.Time) time.Duration {
 	return ElapsedFrom(start, r.PausedSecondsAtStart, t, at)
 }
 
-// IsResponseBreached returns true when the response target has elapsed and no
-// first response has been recorded.
+// IsResponseBreached returns true when the response target has been reached or
+// passed and no first response has been recorded. Reaching it exactly counts, as
+// red does on the indicator (DESIGN.md: "at or past 100%").
 func IsResponseBreached(r Record, p Policy, t ticket.Ticket, now time.Time) bool {
 	if r.FirstResponseAt != nil {
 		return false // already responded
 	}
-	return r.Elapsed(t, now) > time.Duration(p.ResponseTargetMin)*time.Minute
+	return r.Elapsed(t, now) >= time.Duration(p.ResponseTargetMin)*time.Minute
 }
 
-// IsResolutionBreached returns true when the resolution target has elapsed and
-// the ticket has not been resolved.
+// IsResolutionBreached returns true when the resolution target has been reached or
+// passed (by the resolution time, once resolved).
 func IsResolutionBreached(r Record, p Policy, t ticket.Ticket, now time.Time) bool {
 	target := time.Duration(p.ResolutionTargetMin) * time.Minute
 	if r.ResolvedAt != nil {
@@ -152,9 +153,9 @@ func IsResolutionBreached(r Record, p Policy, t ticket.Ticket, now time.Time) bo
 		// migration 000028 could only estimate (#246) — see Record's doc
 		// comment.
 		if r.ResolutionElapsedAtMetSeconds != nil {
-			return time.Duration(*r.ResolutionElapsedAtMetSeconds)*time.Second > target
+			return time.Duration(*r.ResolutionElapsedAtMetSeconds)*time.Second >= target
 		}
-		return r.Elapsed(t, *r.ResolvedAt) > target
+		return r.Elapsed(t, *r.ResolvedAt) >= target
 	}
-	return r.Elapsed(t, now) > target
+	return r.Elapsed(t, now) >= target
 }

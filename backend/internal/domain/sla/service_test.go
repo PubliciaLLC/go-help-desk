@@ -115,7 +115,7 @@ func (f *fakeSLAStore) SetFirstResponse(_ context.Context, ticketID uuid.UUID, a
 	if r.FirstResponseAt == nil {
 		r.FirstResponseAt = &at
 		r.ResponseElapsedAtMetSeconds = &elapsedSeconds
-		if elapsedSeconds > responseTargetSeconds && r.ResponseBreachedAt == nil {
+		if elapsedSeconds >= responseTargetSeconds && r.ResponseBreachedAt == nil {
 			r.ResponseBreachedAt = &at
 		}
 	}
@@ -132,7 +132,7 @@ func (f *fakeSLAStore) SetResolved(_ context.Context, ticketID uuid.UUID, at tim
 	if r.ResolvedAt == nil {
 		r.ResolvedAt = &at
 		r.ResolutionElapsedAtMetSeconds = &elapsedSeconds
-		if elapsedSeconds > resolutionTargetSeconds && r.ResolutionBreachedAt == nil {
+		if elapsedSeconds >= resolutionTargetSeconds && r.ResolutionBreachedAt == nil {
 			r.ResolutionBreachedAt = &at
 		}
 	}
@@ -155,14 +155,14 @@ func (f *fakeSLAStore) SetResolvedAndFirstResponse(_ context.Context, ticketID u
 	if r.ResolvedAt == nil {
 		r.ResolvedAt = &at
 		r.ResolutionElapsedAtMetSeconds = &elapsedSeconds
-		if elapsedSeconds > resolutionTargetSeconds && r.ResolutionBreachedAt == nil {
+		if elapsedSeconds >= resolutionTargetSeconds && r.ResolutionBreachedAt == nil {
 			r.ResolutionBreachedAt = &at
 		}
 	}
 	if r.FirstResponseAt == nil {
 		r.FirstResponseAt = &at
 		r.ResponseElapsedAtMetSeconds = &elapsedSeconds
-		if elapsedSeconds > responseTargetSeconds && r.ResponseBreachedAt == nil {
+		if elapsedSeconds >= responseTargetSeconds && r.ResponseBreachedAt == nil {
 			r.ResponseBreachedAt = &at
 		}
 	}
@@ -716,7 +716,7 @@ func (f *swallowProbeStore) SetFirstResponse(_ context.Context, _ uuid.UUID, at 
 	if f.record.FirstResponseAt == nil {
 		f.record.FirstResponseAt = &at
 		f.record.ResponseElapsedAtMetSeconds = &elapsedSeconds
-		if elapsedSeconds > responseTargetSeconds && f.record.ResponseBreachedAt == nil {
+		if elapsedSeconds >= responseTargetSeconds && f.record.ResponseBreachedAt == nil {
 			f.record.ResponseBreachedAt = &at
 		}
 	}
@@ -734,7 +734,7 @@ func (f *swallowProbeStore) SetResolved(_ context.Context, _ uuid.UUID, at time.
 	if f.record.ResolvedAt == nil {
 		f.record.ResolvedAt = &at
 		f.record.ResolutionElapsedAtMetSeconds = &elapsedSeconds
-		if elapsedSeconds > resolutionTargetSeconds && f.record.ResolutionBreachedAt == nil {
+		if elapsedSeconds >= resolutionTargetSeconds && f.record.ResolutionBreachedAt == nil {
 			f.record.ResolutionBreachedAt = &at
 		}
 	}
@@ -757,14 +757,14 @@ func (f *swallowProbeStore) SetResolvedAndFirstResponse(_ context.Context, _ uui
 	if f.record.ResolvedAt == nil {
 		f.record.ResolvedAt = &at
 		f.record.ResolutionElapsedAtMetSeconds = &elapsedSeconds
-		if elapsedSeconds > resolutionTargetSeconds && f.record.ResolutionBreachedAt == nil {
+		if elapsedSeconds >= resolutionTargetSeconds && f.record.ResolutionBreachedAt == nil {
 			f.record.ResolutionBreachedAt = &at
 		}
 	}
 	if f.record.FirstResponseAt == nil {
 		f.record.FirstResponseAt = &at
 		f.record.ResponseElapsedAtMetSeconds = &elapsedSeconds
-		if elapsedSeconds > responseTargetSeconds && f.record.ResponseBreachedAt == nil {
+		if elapsedSeconds >= responseTargetSeconds && f.record.ResponseBreachedAt == nil {
 			f.record.ResponseBreachedAt = &at
 		}
 	}
@@ -1365,4 +1365,77 @@ func TestRecord_RestartedRecordFreezesFromItsOwnStart(t *testing.T) {
 		require.Nil(t, rec.ResolutionBreachedAt)
 		require.Nil(t, rec.ResponseBreachedAt)
 	})
+}
+
+// A target reached exactly is breached (DESIGN.md: "at or past"), and the
+// sweep must record it, not just the indicator. The ticket is created exactly
+// the target ago, so elapsed == target to the nanosecond.
+func TestEvaluateBreaches_ExactlyAtTargetStamps(t *testing.T) {
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	store := newFakeSLAStore()
+	policyID, ticketID := uuid.New(), uuid.New()
+	store.policies[policyID] = sla.Policy{ID: policyID, ResponseTargetMin: 30, ResolutionTargetMin: 120}
+	store.records[ticketID] = sla.Record{TicketID: ticketID, PolicyID: policyID}
+
+	svc := sla.NewService(store)
+
+	// Response only: 30 minutes old, so resolution (120) is still under.
+	tk := ticket.Ticket{ID: ticketID, CreatedAt: now.Add(-30 * time.Minute)}
+	require.NoError(t, svc.EvaluateBreaches(context.Background(), tk, now))
+	require.NotNil(t, store.records[ticketID].ResponseBreachedAt, "response target reached exactly")
+	require.Nil(t, store.records[ticketID].ResolutionBreachedAt)
+
+	// Resolution: 120 minutes old.
+	tk.CreatedAt = now.Add(-120 * time.Minute)
+	require.NoError(t, svc.EvaluateBreaches(context.Background(), tk, now))
+	require.NotNil(t, store.records[ticketID].ResolutionBreachedAt, "resolution target reached exactly")
+}
+
+func TestSweepBreaches_ExactlyAtTargetStampsOnce(t *testing.T) {
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	store := newFakeSLAStore()
+	policyID, ticketID := uuid.New(), uuid.New()
+	store.policies[policyID] = sla.Policy{ID: policyID, ResponseTargetMin: 30, ResolutionTargetMin: 30}
+	store.records[ticketID] = sla.Record{TicketID: ticketID, PolicyID: policyID}
+	store.candidates = []uuid.UUID{ticketID}
+
+	tickets := newFakeTickets()
+	tickets.tickets[ticketID] = ticket.Ticket{ID: ticketID, CreatedAt: now.Add(-30 * time.Minute)}
+
+	svc := sla.NewService(store)
+	res, err := svc.SweepBreaches(context.Background(), tickets, now)
+	require.NoError(t, err)
+	require.Equal(t, sla.SweepResult{Evaluated: 1, Stamped: 1}, res)
+	stamped := *store.records[ticketID].ResponseBreachedAt
+
+	// A later pass stamps nothing and leaves the first instant alone: the
+	// same moment is never recorded twice.
+	res, err = svc.SweepBreaches(context.Background(), tickets, now.Add(time.Minute))
+	require.NoError(t, err)
+	require.Equal(t, sla.SweepResult{Evaluated: 1, Stamped: 0}, res)
+	require.True(t, stamped.Equal(*store.records[ticketID].ResponseBreachedAt))
+}
+
+// The frozen whole-second reading handed to the store at record time. The
+// fake store mirrors the SQL's decision, so this pins that the service passes
+// the target and elapsed in the same unit (seconds), which is what makes
+// "elapsed == target" reachable at all.
+func TestRecordFirstResponseAndResolved_ExactlyAtTargetStamps(t *testing.T) {
+	created := time.Date(2026, 9, 13, 10, 0, 0, 0, time.UTC)
+	store := newFakeSLAStore()
+	policyID := uuid.New()
+	store.policies[policyID] = sla.Policy{ID: policyID, ResponseTargetMin: 30, ResolutionTargetMin: 60}
+
+	respID, resID := uuid.New(), uuid.New()
+	store.records[respID] = sla.Record{TicketID: respID, PolicyID: policyID}
+	store.records[resID] = sla.Record{TicketID: resID, PolicyID: policyID}
+	svc := sla.NewService(store)
+
+	require.NoError(t, svc.RecordFirstResponse(context.Background(),
+		ticket.Ticket{ID: respID, CreatedAt: created}, created.Add(30*time.Minute)))
+	require.NotNil(t, store.records[respID].ResponseBreachedAt, "response met exactly at target")
+
+	require.NoError(t, svc.RecordResolved(context.Background(),
+		ticket.Ticket{ID: resID, CreatedAt: created}, created.Add(60*time.Minute)))
+	require.NotNil(t, store.records[resID].ResolutionBreachedAt, "resolution met exactly at target")
 }

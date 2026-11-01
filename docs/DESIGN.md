@@ -4773,8 +4773,9 @@ breach can occur while nobody touches it — so, like ticket auto-close, this
 cannot be computed only on read. A periodic background sweep evaluates every
 open ticket with an attached policy and no existing breach timestamp for a
 target still outstanding, and stamps `response_breached_at` /
-`resolution_breached_at` the first time elapsed-toward-target exceeds the
-policy's minutes for that target. The stamp, once set, does not clear itself
+`resolution_breached_at` the first time elapsed-toward-target reaches or
+passes the policy's minutes for that target (reaching it exactly counts, the
+same instant the indicator turns red). The stamp, once set, does not clear itself
 if a ticket is later reopened or its policy changes — a breach that happened
 is a fact about what happened, not a live status. A priority change that
 re-matches the SLA does not clear it either: the breach stamp is carried onto
@@ -4794,8 +4795,9 @@ does not stop the pass.
 
 The sweep is not the only writer. When a first response or a resolution is
 recorded (`RecordFirstResponse` / `RecordResolved`), the same statement that
-stores the timestamp also stamps that target's breach if it was already
-exceeded at that instant. A late response or resolution is therefore
+stores the timestamp also stamps that target's breach if it had already
+reached or passed it at that instant (a target met at exactly its length is
+therefore recorded as breached). A late response or resolution is therefore
 stamped when it happens, even between sweep ticks. These record-time writes
 are not gated on the SLA toggle: a ticket that already has an SLA record
 gets its facts recorded truthfully while the feature is off. The toggle

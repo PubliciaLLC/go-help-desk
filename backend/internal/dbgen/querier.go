@@ -732,8 +732,8 @@ type Querier interface {
 	// at.After(*PendingSince), and now otherwise. A Pending ticket whose frozen
 	// elapsed time is still under target is therefore never selected. This
 	// prefilter must still return everything EvaluateBreaches would stamp — it
-	// stays a superset via <=, where Go's strict > decides the exact equality
-	// instant on a fresh read of the row — see
+	// is exact via <=, agreeing with the >= that decides it in Go on a fresh read
+	// of the row (an elapsed time equal to the target is a breach) — see
 	// TestSLAStore_ListBreachCandidates's superset invariant check.
 	ListSLABreachCandidates(ctx context.Context, now time.Time) ([]uuid.UUID, error)
 	// Severity order, most urgent first, the catch-all (no priority) last. Sorting

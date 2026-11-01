@@ -561,6 +561,10 @@ Replies and internal notes now appear in a ticket's Activity panel as "Erik Test
 - **Webhooks, MCP and email are unchanged.** The audit actions are separate from the `ticket.replied` and `ticket.note_added` webhook events.
 - **No migration.** Replies and notes are capped on their own in the feed (the newest 500), so a long conversation cannot push the ticket's other history off it.
 
+### An SLA Target Reached Exactly Now Counts as Breached
+
+A response or resolution that lands at exactly its target (elapsed time equal to the policy's minutes, to the second) is now recorded as breached, and the background sweep stamps a ticket whose clock reaches the target without waiting for it to pass. Before, the indicator turned red at exactly the target but nothing was recorded until one second later, so a target met at exactly its length showed red and never counted as breached. The record now agrees with the indicator and with DESIGN.md ("at or past 100%"). Breaches already recorded are unchanged, and nothing is recomputed for tickets already responded to or resolved.
+
 ### The Server Logs Which Migrations Ran (#525)
 
 The server now says what it did to the schema, once, at startup, before it opens the port:
