@@ -331,8 +331,8 @@ ORDER BY t.created_at
 // at.After(*PendingSince), and now otherwise. A Pending ticket whose frozen
 // elapsed time is still under target is therefore never selected. This
 // prefilter must still return everything EvaluateBreaches would stamp — it
-// stays a superset via <=, where Go's strict > decides the exact equality
-// instant on a fresh read of the row — see
+// is exact via <=, agreeing with the >= that decides it in Go on a fresh read
+// of the row (an elapsed time equal to the target is a breach) — see
 // TestSLAStore_ListBreachCandidates's superset invariant check.
 func (q *Queries) ListSLABreachCandidates(ctx context.Context, now time.Time) ([]uuid.UUID, error) {
 	rows, err := q.db.QueryContext(ctx, listSLABreachCandidates, now)
@@ -501,7 +501,7 @@ SET first_response_at = COALESCE(first_response_at, $2::timestamptz),
     response_elapsed_at_met_seconds = COALESCE(response_elapsed_at_met_seconds, $3::bigint),
     response_breached_at = CASE
         WHEN first_response_at IS NULL
-             AND $3::bigint > $4::bigint
+             AND $3::bigint >= $4::bigint
             THEN COALESCE(response_breached_at, $2::timestamptz)
         ELSE response_breached_at
     END
@@ -562,7 +562,7 @@ SET resolved_at = COALESCE(resolved_at, $2::timestamptz),
     resolution_elapsed_at_met_seconds = COALESCE(resolution_elapsed_at_met_seconds, $3::bigint),
     resolution_breached_at = CASE
         WHEN resolved_at IS NULL
-             AND $3::bigint > $4::bigint
+             AND $3::bigint >= $4::bigint
             THEN COALESCE(resolution_breached_at, $2::timestamptz)
         ELSE resolution_breached_at
     END
@@ -595,7 +595,7 @@ SET resolved_at = COALESCE(resolved_at, $2::timestamptz),
     resolution_elapsed_at_met_seconds = COALESCE(resolution_elapsed_at_met_seconds, $3::bigint),
     resolution_breached_at = CASE
         WHEN resolved_at IS NULL
-             AND $3::bigint > $4::bigint
+             AND $3::bigint >= $4::bigint
             THEN COALESCE(resolution_breached_at, $2::timestamptz)
         ELSE resolution_breached_at
     END,
@@ -603,7 +603,7 @@ SET resolved_at = COALESCE(resolved_at, $2::timestamptz),
     response_elapsed_at_met_seconds = COALESCE(response_elapsed_at_met_seconds, $3::bigint),
     response_breached_at = CASE
         WHEN first_response_at IS NULL
-             AND $3::bigint > $5::bigint
+             AND $3::bigint >= $5::bigint
             THEN COALESCE(response_breached_at, $2::timestamptz)
         ELSE response_breached_at
     END

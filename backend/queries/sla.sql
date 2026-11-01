@@ -111,7 +111,7 @@ SET first_response_at = COALESCE(first_response_at, sqlc.arg(at)::timestamptz),
     response_elapsed_at_met_seconds = COALESCE(response_elapsed_at_met_seconds, sqlc.arg(elapsed_seconds)::bigint),
     response_breached_at = CASE
         WHEN first_response_at IS NULL
-             AND sqlc.arg(elapsed_seconds)::bigint > sqlc.arg(response_target_seconds)::bigint
+             AND sqlc.arg(elapsed_seconds)::bigint >= sqlc.arg(response_target_seconds)::bigint
             THEN COALESCE(response_breached_at, sqlc.arg(at)::timestamptz)
         ELSE response_breached_at
     END
@@ -126,7 +126,7 @@ SET resolved_at = COALESCE(resolved_at, sqlc.arg(at)::timestamptz),
     resolution_elapsed_at_met_seconds = COALESCE(resolution_elapsed_at_met_seconds, sqlc.arg(elapsed_seconds)::bigint),
     resolution_breached_at = CASE
         WHEN resolved_at IS NULL
-             AND sqlc.arg(elapsed_seconds)::bigint > sqlc.arg(resolution_target_seconds)::bigint
+             AND sqlc.arg(elapsed_seconds)::bigint >= sqlc.arg(resolution_target_seconds)::bigint
             THEN COALESCE(resolution_breached_at, sqlc.arg(at)::timestamptz)
         ELSE resolution_breached_at
     END
@@ -162,7 +162,7 @@ SET resolved_at = COALESCE(resolved_at, sqlc.arg(at)::timestamptz),
     resolution_elapsed_at_met_seconds = COALESCE(resolution_elapsed_at_met_seconds, sqlc.arg(elapsed_seconds)::bigint),
     resolution_breached_at = CASE
         WHEN resolved_at IS NULL
-             AND sqlc.arg(elapsed_seconds)::bigint > sqlc.arg(resolution_target_seconds)::bigint
+             AND sqlc.arg(elapsed_seconds)::bigint >= sqlc.arg(resolution_target_seconds)::bigint
             THEN COALESCE(resolution_breached_at, sqlc.arg(at)::timestamptz)
         ELSE resolution_breached_at
     END,
@@ -170,7 +170,7 @@ SET resolved_at = COALESCE(resolved_at, sqlc.arg(at)::timestamptz),
     response_elapsed_at_met_seconds = COALESCE(response_elapsed_at_met_seconds, sqlc.arg(elapsed_seconds)::bigint),
     response_breached_at = CASE
         WHEN first_response_at IS NULL
-             AND sqlc.arg(elapsed_seconds)::bigint > sqlc.arg(response_target_seconds)::bigint
+             AND sqlc.arg(elapsed_seconds)::bigint >= sqlc.arg(response_target_seconds)::bigint
             THEN COALESCE(response_breached_at, sqlc.arg(at)::timestamptz)
         ELSE response_breached_at
     END
@@ -189,8 +189,8 @@ WHERE ticket_id = $1 AND superseded_at IS NULL;
 -- at.After(*PendingSince), and now otherwise. A Pending ticket whose frozen
 -- elapsed time is still under target is therefore never selected. This
 -- prefilter must still return everything EvaluateBreaches would stamp — it
--- stays a superset via <=, where Go's strict > decides the exact equality
--- instant on a fresh read of the row — see
+-- is exact via <=, agreeing with the >= that decides it in Go on a fresh read
+-- of the row (an elapsed time equal to the target is a breach) — see
 -- TestSLAStore_ListBreachCandidates's superset invariant check.
 SELECT r.ticket_id
 FROM sla_records r

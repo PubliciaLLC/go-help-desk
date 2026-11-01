@@ -1403,7 +1403,7 @@ function FeaturesPanel({
         <div>
           <SettingRow
             label="SLA tracking"
-            description="Track response and resolution targets per priority and category. A policy is attached when a ticket is created, a background sweep marks a target breached when it passes, and the queue shows each ticket's standing. This toggle is the switch; SLA_ENABLED in the environment turns it on at every start."
+            description="Track response and resolution targets per priority and category. A policy is attached when a ticket is created, a background sweep marks a target breached when it reaches or passes it, and the queue shows each ticket's standing. This toggle is the switch; SLA_ENABLED in the environment turns it on at every start."
           >
             <Toggle checked={bool('sla_enabled')} onChange={(v) => setBool('sla_enabled', v)} />
           </SettingRow>

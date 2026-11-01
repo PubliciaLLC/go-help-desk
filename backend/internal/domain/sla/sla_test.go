@@ -218,6 +218,38 @@ func TestIsResponseBreached(t *testing.T) {
 			want: true,
 		},
 		{
+			// A target reached exactly is breached: DESIGN.md SLA Indicators
+			// calls red "at or past 100%" and colorFor agrees.
+			name: "no pause, elapsed exactly at target",
+			tk:   ticket.Ticket{CreatedAt: pendingCreated},
+			now:  pendingCreated.Add(60 * min),
+			want: true,
+		},
+		{
+			name: "one second under target is not breached",
+			tk:   ticket.Ticket{CreatedAt: pendingCreated},
+			now:  pendingCreated.Add(60*min - time.Second),
+			want: false,
+		},
+		{
+			name: "a closed pause makes elapsed land exactly on target",
+			tk:   ticket.Ticket{CreatedAt: pendingCreated, SLAPausedSeconds: int64((5 * min).Seconds())},
+			now:  pendingCreated.Add(65 * min),
+			want: true,
+		},
+		{
+			// Paused ticket: elapsed is frozen at the pause start, so a
+			// whole-second frozen value of exactly the target is breached
+			// however long the ticket then sits in Pending.
+			name: "currently pending with elapsed frozen exactly at target",
+			tk: ticket.Ticket{
+				CreatedAt:    pendingCreated,
+				PendingSince: timePtr(pendingCreated.Add(60 * min)),
+			},
+			now:  pendingCreated.Add(300 * min),
+			want: true,
+		},
+		{
 			name:   "already responded is never a breach regardless of elapsed",
 			record: sla.Record{FirstResponseAt: &responded},
 			tk:     ticket.Ticket{CreatedAt: pendingCreated},
@@ -263,6 +295,55 @@ func TestIsResolutionBreached(t *testing.T) {
 				PendingSince: timePtr(pendingCreated.Add(30 * min)),
 			},
 			now:  pendingCreated.Add(120 * min),
+			want: false,
+		},
+		{
+			name: "unresolved, elapsed exactly at target",
+			tk:   ticket.Ticket{CreatedAt: pendingCreated},
+			now:  pendingCreated.Add(60 * min),
+			want: true,
+		},
+		{
+			name: "unresolved, one second under target",
+			tk:   ticket.Ticket{CreatedAt: pendingCreated},
+			now:  pendingCreated.Add(60*min - time.Second),
+			want: false,
+		},
+		{
+			name: "unresolved and paused with elapsed frozen exactly at target",
+			tk: ticket.Ticket{
+				CreatedAt:    pendingCreated,
+				PendingSince: timePtr(pendingCreated.Add(60 * min)),
+			},
+			now:  pendingCreated.Add(300 * min),
+			want: true,
+		},
+		{
+			name:   "resolved exactly at target, live recompute",
+			record: sla.Record{ResolvedAt: timePtr(pendingCreated.Add(60 * min))},
+			tk:     ticket.Ticket{CreatedAt: pendingCreated},
+			now:    pendingCreated.Add(10 * time.Hour),
+			want:   true,
+		},
+		{
+			// The frozen whole-second reading is what a met record carries.
+			name: "resolved with frozen elapsed exactly at target",
+			record: sla.Record{
+				ResolvedAt:                    timePtr(pendingCreated.Add(75 * min)),
+				ResolutionElapsedAtMetSeconds: int64Ptr(int64((60 * min).Seconds())),
+			},
+			tk:   ticket.Ticket{CreatedAt: pendingCreated, SLAPausedSeconds: int64((15 * min).Seconds())},
+			now:  pendingCreated.Add(10 * time.Hour),
+			want: true,
+		},
+		{
+			name: "resolved with frozen elapsed one second under target",
+			record: sla.Record{
+				ResolvedAt:                    timePtr(pendingCreated.Add(75 * min)),
+				ResolutionElapsedAtMetSeconds: int64Ptr(int64((60 * min).Seconds()) - 1),
+			},
+			tk:   ticket.Ticket{CreatedAt: pendingCreated, SLAPausedSeconds: int64((15 * min).Seconds())},
+			now:  pendingCreated.Add(10 * time.Hour),
 			want: false,
 		},
 		{
