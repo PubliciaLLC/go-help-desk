@@ -426,6 +426,8 @@ const SHOTS = [
     },
   },
   {
+    // The forced style also shows the rename pencils, which the touch layout
+    // shows too (it has no hover for any of them).
     file: '33-admin-categories-archive.png', phase: 'extras', role: 'admin', path: '/admin/categories', vp: DESK,
     css: ARCHIVE_BUTTONS_SHOWN,
     async prepare(page) {
@@ -474,7 +476,10 @@ const SHOTS = [
   },
   {
     // The key is made through the form, so the banner is the real one. The
-    // token is a throwaway: this instance is dropped at the end of the run.
+    // token is a throwaway (this instance is dropped at the end of the run), but
+    // it is still masked before the capture: the page keeps `GHD_` and the first
+    // 6 hex characters and replaces the rest with x's. Same length, so the layout
+    // is the real one; the shot throws if the length changes.
     file: '36-account-api-keys.png', phase: 'extras', role: 'jordan', path: '/account', vp: DESK,
     target: { element: (page) => page.locator('section').filter({ has: page.getByRole('heading', { name: 'API keys', exact: true }) }) },
     async prepare(page) {
@@ -482,6 +487,13 @@ const SHOTS = [
       await page.getByLabel('tickets:read', { exact: true }).check()
       await page.getByRole('button', { name: 'Create key' }).click()
       await waitVisible(page.getByText('API key created', { exact: false }))
+      const lengths = await page.locator('code').filter({ hasText: /^GHD_[0-9a-f]+$/ }).evaluate((el) => {
+        const before = el.textContent
+        const keep = 'GHD_'.length + 6
+        el.textContent = before.slice(0, keep) + 'x'.repeat(before.length - keep)
+        return [before.length, el.textContent.length]
+      })
+      if (lengths[0] !== lengths[1]) throw new Error(`token mask changed the length: ${lengths.join(' -> ')}`)
     },
   },
   {
