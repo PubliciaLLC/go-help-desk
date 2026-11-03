@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { screen } from '@testing-library/react'
+import { fireEvent, screen } from '@testing-library/react'
 import { renderWithQuery } from '@/test/render'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
@@ -40,6 +40,8 @@ describe('the Routing navigation entry', () => {
   it('is there for an administrator and points at /admin/routing', () => {
     signInAs('admin')
     renderWithQuery(<Layout>content</Layout>)
+    // The entry sits in a collapsed section until it is opened (admin nav sections).
+    fireEvent.click(screen.getByRole('button', { name: 'Tickets' }))
 
     const links = screen.getAllByRole('link', { name: 'Routing' })
     expect(links.length).toBeGreaterThan(0)
