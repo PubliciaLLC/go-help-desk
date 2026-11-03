@@ -81,7 +81,7 @@ func TestOAuthClient_ScopeEnforcementFollowsItsServiceUser(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&other))
 	outOfScope := other.ID
 
-	c := h.newServiceClient(t, "Nagios", "tickets:read", "audit:read")
+	c := h.newServiceClient(t, "Nagios", "tickets:read")
 
 	listIDs := func(t *testing.T) []uuid.UUID {
 		t.Helper()
@@ -103,27 +103,6 @@ func TestOAuthClient_ScopeEnforcementFollowsItsServiceUser(t *testing.T) {
 		res.Body.Close()
 		return res.StatusCode
 	}
-	auditedTickets := func(t *testing.T) []uuid.UUID {
-		t.Helper()
-		res := h.doWithBearer(t, c.Token, "/api/v1/admin/audit?limit=500")
-		defer res.Body.Close()
-		require.Equal(t, http.StatusOK, res.StatusCode)
-		var page struct {
-			Entries []struct {
-				EntityType string    `json:"entity_type"`
-				EntityID   uuid.UUID `json:"entity_id"`
-			} `json:"entries"`
-		}
-		require.NoError(t, json.NewDecoder(res.Body).Decode(&page))
-		var out []uuid.UUID
-		for _, e := range page.Entries {
-			if e.EntityType == "ticket" {
-				out = append(out, e.EntityID)
-			}
-		}
-		return out
-	}
-
 	t.Run("enforcement off: a group-less client sees what it always did", func(t *testing.T) {
 		// By id, any ticket: staff are not scoped while enforcement is off.
 		require.Equal(t, http.StatusOK, statusOf(inScope))
@@ -165,10 +144,10 @@ func TestOAuthClient_ScopeEnforcementFollowsItsServiceUser(t *testing.T) {
 		require.Equal(t, http.StatusOK, res.StatusCode)
 	})
 
-	t.Run("the audit view shows only tickets in scope", func(t *testing.T) {
-		seen := auditedTickets(t)
-		require.Contains(t, seen, inScope)
-		require.NotContains(t, seen, outOfScope)
+	t.Run("the admin-wide audit view is closed to it whatever it holds", func(t *testing.T) {
+		res := h.doWithBearer(t, c.Token, "/api/v1/admin/audit?limit=500")
+		res.Body.Close()
+		require.Equal(t, http.StatusForbidden, res.StatusCode)
 	})
 
 	t.Run("status counts count the client's tickets", func(t *testing.T) {

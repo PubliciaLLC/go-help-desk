@@ -9,7 +9,7 @@ import { clearDismissedNotices } from '@/lib/noticeDismissal'
 import { BrandLogo } from '@/components/BrandLogo'
 import { Button } from '@/components/ui/button'
 import { TicketIcon, UsersIcon, SettingsIcon, LogOutIcon, HomeIcon, FolderIcon, CircleDotIcon, ShieldIcon, UsersRoundIcon, TagIcon, SlidersIcon, KeyIcon, MessageSquareTextIcon, PlugIcon, WebhookIcon, RouteIcon, MenuIcon,
-  UserIcon, HistoryIcon, MailIcon, ChevronDownIcon,
+  UserIcon, HistoryIcon, MailIcon, ChevronDownIcon, WrenchIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { User } from '@/api/types'
@@ -41,9 +41,9 @@ function NavItem({ to, icon, label, onNavigate }: NavItemProps) {
   )
 }
 
-// The admin pages, grouped. Order is the order on screen. Audit Log is here
-// for administrators only: staff also reach /admin/audit (#129) but have no
-// sections, so for them it stays a flat entry above (see SidebarContent).
+// The admin pages, grouped. Order is the order on screen. Everything here is
+// administrators only, Audit Log included: staff read the history on a ticket,
+// not the whole log.
 const ADMIN_SECTIONS = [
   {
     id: 'people', label: 'People',
@@ -84,6 +84,11 @@ const ADMIN_SECTIONS = [
 
 const ADMIN_NAV_KEY = 'ghd.admin-nav-open'
 
+// The top-level "Admin" toggle shares the open/closed model with the four
+// sections under it, so it has an id of its own in the same list.
+const ADMIN_ID = 'admin'
+const NAV_IDS = [ADMIN_ID, ...ADMIN_SECTIONS.map((s) => s.id)]
+
 // Storage can be blocked (private windows, site data off) or hold something
 // another version wrote; neither may break the sidebar, so every access is
 // guarded and anything unrecognised reads as "nothing remembered".
@@ -91,7 +96,7 @@ function readRemembered(): Set<string> {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(ADMIN_NAV_KEY) ?? 'null')
     if (!Array.isArray(parsed)) return new Set()
-    return new Set(ADMIN_SECTIONS.map((s) => s.id).filter((id) => parsed.includes(id)))
+    return new Set(NAV_IDS.filter((id) => parsed.includes(id)))
   } catch {
     return new Set()
   }
@@ -99,7 +104,7 @@ function readRemembered(): Set<string> {
 
 function writeRemembered(ids: Set<string>) {
   try {
-    localStorage.setItem(ADMIN_NAV_KEY, JSON.stringify(ADMIN_SECTIONS.map((s) => s.id).filter((id) => ids.has(id))))
+    localStorage.setItem(ADMIN_NAV_KEY, JSON.stringify(NAV_IDS.filter((id) => ids.has(id))))
   } catch {
     // Not remembering is the whole cost of a blocked store.
   }
@@ -115,29 +120,32 @@ interface AdminNav {
   toggle: (id: string) => void
 }
 
-// A section is open if the visitor opened it (remembered per browser) or it
-// holds the page they are on. Only the first is stored: storing the second
-// would turn every section you ever visited into a permanently open one and
-// bring back the flat list. The current section is re-opened on every
-// navigation, so closing it by hand lasts until the next page, not for good.
+// Admin, and each section inside it, is open if the visitor opened it
+// (remembered per browser) or it holds the page they are on. Only the first is
+// stored: storing the second would turn every section you ever visited into a
+// permanently open one and bring back the flat list. Admin and the current
+// section are re-opened on every navigation, so closing them by hand lasts
+// until the next page, not for good.
 // State lives here, above both copies of the sidebar (permanent and drawer),
 // so toggling in one is seen by the other.
 function useAdminNav(pathname: string): AdminNav {
   const current = sectionOfPath(pathname)
+  // The page's section, and Admin around it, at both levels.
+  const currentIds = current ? [ADMIN_ID, current] : []
   const [remembered, setRemembered] = useState(readRemembered)
-  const [autoOpen, setAutoOpen] = useState(current)
+  const [autoOpen, setAutoOpen] = useState(currentIds)
   const [seenPath, setSeenPath] = useState(pathname)
   // Adjusting state while rendering (not in an effect) so the new page's
   // section is open in the same paint, not one frame later.
   if (seenPath !== pathname) {
     setSeenPath(pathname)
-    setAutoOpen(current)
+    setAutoOpen(currentIds)
   }
-  const isOpen = (id: string) => remembered.has(id) || autoOpen === id
+  const isOpen = (id: string) => remembered.has(id) || autoOpen.includes(id)
   function toggle(id: string) {
     const next = new Set(remembered)
     if (isOpen(id)) {
-      if (autoOpen === id) setAutoOpen(null)
+      setAutoOpen(autoOpen.filter((x) => x !== id))
       next.delete(id)
     } else {
       next.add(id)
@@ -152,37 +160,51 @@ function AdminSections({ nav, onNavigate }: { nav: AdminNav; onNavigate?: () => 
   // The permanent sidebar and the open drawer are both in the document, so
   // fixed ids would collide and aria-controls would point at the wrong copy.
   const uid = useId()
+  const adminOpen = nav.isOpen(ADMIN_ID)
+  const adminPanelId = `${uid}-admin-panel`
   return (
-    <>
-      {ADMIN_SECTIONS.map((s) => {
-        const open = nav.isOpen(s.id)
-        const headingId = `${uid}-${s.id}-heading`
-        const panelId = `${uid}-${s.id}-panel`
-        return (
-          <div key={s.id} className="pt-1 first:pt-2">
-            <button
-              type="button"
-              id={headingId}
-              aria-expanded={open}
-              aria-controls={panelId}
-              onClick={() => nav.toggle(s.id)}
-              className="flex w-full items-center justify-between rounded-md px-3 py-1 text-xs font-semibold uppercase tracking-wider text-gray-500 hover:bg-gray-100 hover:text-gray-900 pointer-coarse:min-h-11"
-            >
-              {s.label}
-              <ChevronDownIcon className={cn('h-4 w-4 transition-transform', !open && '-rotate-90')} />
-            </button>
-            {/* Closed panels stay in the document (hidden) so aria-controls
-                always resolves; hidden also takes their links out of the tab
-                order. */}
-            <div id={panelId} role="group" aria-labelledby={headingId} hidden={!open} className="space-y-1 pt-1">
-              {s.items.map((i) => (
-                <NavItem key={i.to} to={i.to} icon={i.icon} label={i.label} onNavigate={onNavigate} />
-              ))}
+    <div>
+      <button
+        type="button"
+        aria-expanded={adminOpen}
+        aria-controls={adminPanelId}
+        onClick={() => nav.toggle(ADMIN_ID)}
+        className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-900 pointer-coarse:min-h-11"
+      >
+        <WrenchIcon className="h-4 w-4" />
+        <span className="flex-1 text-left">Admin</span>
+        <ChevronDownIcon className={cn('h-4 w-4 transition-transform', !adminOpen && '-rotate-90')} />
+      </button>
+      {/* Closed panels stay in the document (hidden) so aria-controls always
+          resolves; hidden also takes their links out of the tab order. */}
+      <div id={adminPanelId} hidden={!adminOpen} className="ml-4 border-l border-gray-200 pl-2">
+        {ADMIN_SECTIONS.map((s) => {
+          const open = nav.isOpen(s.id)
+          const headingId = `${uid}-${s.id}-heading`
+          const panelId = `${uid}-${s.id}-panel`
+          return (
+            <div key={s.id} className="pt-1">
+              <button
+                type="button"
+                id={headingId}
+                aria-expanded={open}
+                aria-controls={panelId}
+                onClick={() => nav.toggle(s.id)}
+                className="flex w-full items-center justify-between rounded-md px-3 py-1 text-xs font-semibold uppercase tracking-wider text-gray-500 hover:bg-gray-100 hover:text-gray-900 pointer-coarse:min-h-11"
+              >
+                {s.label}
+                <ChevronDownIcon className={cn('h-4 w-4 transition-transform', !open && '-rotate-90')} />
+              </button>
+              <div id={panelId} role="group" aria-labelledby={headingId} hidden={!open} className="ml-2 space-y-1 pt-1">
+                {s.items.map((i) => (
+                  <NavItem key={i.to} to={i.to} icon={i.icon} label={i.label} onNavigate={onNavigate} />
+                ))}
+              </div>
             </div>
-          </div>
-        )
-      })}
-    </>
+          )
+        })}
+      </div>
+    </div>
   )
 }
 
@@ -210,13 +232,6 @@ function SidebarContent({ user, adminNav, branding, onNavigate, onLogout }: Side
       <nav className="flex-1 space-y-1 overflow-y-auto p-3">
         <NavItem to="/dashboard" icon={<HomeIcon className="h-4 w-4" />} label="Dashboard" onNavigate={onNavigate} />
         <NavItem to="/tickets" icon={<TicketIcon className="h-4 w-4" />} label="Tickets" onNavigate={onNavigate} />
-        {/* #129: staff see Audit Log too, scoped to their own tickets
-            server-side — it is not an admin-only screen. They have no admin
-            sections to put it in, so it stays a flat entry for them;
-            administrators find it under System. */}
-        {user?.role === 'staff' && (
-          <NavItem to="/admin/audit" icon={<HistoryIcon className="h-4 w-4" />} label="Audit Log" onNavigate={onNavigate} />
-        )}
         {user?.role === 'admin' && <AdminSections nav={adminNav} onNavigate={onNavigate} />}
       </nav>
 

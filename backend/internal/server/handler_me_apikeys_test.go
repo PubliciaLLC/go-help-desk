@@ -128,7 +128,7 @@ func TestMeAPIKeys_AStaffKeyActsAsStaff(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	h.allowStaffKeys(t)
-	k := h.mintMine(t, h.session(t, asStaff), "tickets:read", "audit:read", "groups:read")
+	k := h.mintMine(t, h.session(t, asStaff), "tickets:read", "groups:read")
 
 	res := requestWithKey(t, h, k.Token, "/api/v1/me")
 	b := readAll(t, res)
@@ -141,7 +141,7 @@ func TestMeAPIKeys_AStaffKeyActsAsStaff(t *testing.T) {
 	require.Equal(t, "staff", me.Role)
 	require.Equal(t, h.staffID.String(), me.ID)
 
-	for _, path := range []string{"/api/v1/admin/users", "/api/v1/admin/api-keys", "/api/v1/admin/settings"} {
+	for _, path := range []string{"/api/v1/admin/users", "/api/v1/admin/api-keys", "/api/v1/admin/settings", "/api/v1/admin/audit"} {
 		res := requestWithKey(t, h, k.Token, path)
 		res.Body.Close()
 		require.Equal(t, http.StatusForbidden, res.StatusCode, "%s must stay closed to a staff key", path)
@@ -163,6 +163,7 @@ func TestMeAPIKeys_ScopesNeverExceedTheOwnersRole(t *testing.T) {
 		{"a staff scope", []string{"tickets:write"}, http.StatusCreated, ""},
 		{"an admin-only scope", []string{"users:write"}, http.StatusBadRequest, "invalid_scope"},
 		{"admin-only read", []string{"settings:read"}, http.StatusBadRequest, "invalid_scope"},
+		{"the audit log, administrators only", []string{"audit:read"}, http.StatusBadRequest, "invalid_scope"},
 		{"credentials", []string{"credentials:write"}, http.StatusBadRequest, "invalid_scope"},
 		{"one admin-only scope among allowed ones", []string{"tickets:read", "webhooks:read"}, http.StatusBadRequest, "invalid_scope"},
 		{"a scope that does not exist", []string{"sprockets:read"}, http.StatusBadRequest, "invalid_scope"},
@@ -210,7 +211,7 @@ func TestMeAPIKeys_ScopeListIsTheCallersRole(t *testing.T) {
 		}
 		return out
 	}
-	require.ElementsMatch(t, []string{"tickets:read", "tickets:write", "groups:read", "audit:read"}, scopesOf(h.session(t, asStaff)))
+	require.ElementsMatch(t, []string{"tickets:read", "tickets:write", "groups:read"}, scopesOf(h.session(t, asStaff)))
 	require.Contains(t, scopesOf(h.session(t, asAdmin)), "settings:write")
 }
 

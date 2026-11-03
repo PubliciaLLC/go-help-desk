@@ -176,37 +176,10 @@ func TestAuditStore_Search_TotalCapAppliesAfterFiltersAndScope(t *testing.T) {
 		require.False(t, capped)
 	})
 
-	t.Run("staff scope is applied before the cap", func(t *testing.T) {
-		n, capped := total(audit.Filter{Action: "cap_wanted", ScopedTo: &f.staff.ID})
-		require.Equal(t, 7, n, "scope must decide what is counted, or the total reports tickets they cannot see")
-		require.False(t, capped)
-
-		n, capped = total(audit.Filter{Action: "cap_wanted"})
-		require.Equal(t, c, n)
-		require.True(t, capped, "the same filter unscoped has more than the cap")
-	})
-
-	t.Run("scope and filter together, over the cap, are capped", func(t *testing.T) {
-		plantMany(t, tx, "ticket", f.assignedTicket.ID, "cap_visible", c+3, newest)
-		n, capped := total(audit.Filter{Action: "cap_visible", ScopedTo: &f.staff.ID})
+	t.Run("more than the cap is capped, and says so", func(t *testing.T) {
+		n, capped := total(audit.Filter{Action: "cap_wanted"})
 		require.Equal(t, c, n)
 		require.True(t, capped)
-
-		// And the page is the visible sequence, whatever the count did.
-		pg, err := aus.Search(ctx, audit.Filter{Action: "cap_visible", ScopedTo: &f.staff.ID}, 50, c-10)
-		require.NoError(t, err)
-		require.Len(t, pg.Entries, 13)
-		require.False(t, pg.HasMore)
-		for _, e := range pg.Entries {
-			require.Equal(t, f.assignedTicket.ID, e.EntityID)
-		}
-	})
-
-	t.Run("a scope that sees nothing counts nothing", func(t *testing.T) {
-		nobody := uuid.New()
-		n, capped := total(audit.Filter{Action: "cap_wanted", ScopedTo: &nobody})
-		require.Zero(t, n)
-		require.False(t, capped)
 	})
 }
 

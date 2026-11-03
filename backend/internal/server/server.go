@@ -662,13 +662,6 @@ func (s *Server) buildRouter() *chi.Mux {
 		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff), authmw.RequireMFA).
 			With(authmw.DenyMachineCredentials).
 			Get("/users/lookup", s.handleLookupUsers)
-		// The admin-wide audit view (#129). Staff and admin only. A signed-in
-		// session needs no scope; a machine credential needs audit:read
-		// (#362), not tickets:read — for an admin's key the view covers every
-		// entity, MFA and password resets included.
-		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff), authmw.RequireMFA).
-			With(authmw.RequireResource(auth.ResourceAudit)).
-			Get("/admin/audit", s.handleListAdminAudit)
 		r.Mount("/admin", s.adminRouter())
 		r.Mount("/me", s.meRouter())
 	})

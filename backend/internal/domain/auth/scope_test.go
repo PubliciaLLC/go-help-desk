@@ -237,6 +237,8 @@ func TestScopesForRole(t *testing.T) {
 				"users:write", "settings:read", "settings:write",
 				"credentials:read", "credentials:write", "webhooks:write", "plugins:write",
 				"categories:write", "sla:write", "tags:write", "canned_responses:write",
+				// The admin-wide audit view is administrators only.
+				"audit:read",
 			} {
 				require.False(t, has(got, adminOnly), "%s must not be offered to %s", adminOnly, role)
 			}

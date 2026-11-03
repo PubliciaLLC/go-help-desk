@@ -2451,7 +2451,7 @@ paths:
       description: |
         Staff and administrators only, in a signed-in session (second factor required).
         The scopes POST /me/api-keys accepts for this caller: the whole catalogue for an
-        administrator, tickets, groups:read and audit:read for staff. A key acts at its
+        administrator, tickets and groups:read for staff. A key acts at its
         owner's role, so a scope outside that role would only look like access it does not have.
       tags: ['Account']
       x-ghd-handler: handleListMyAPIKeyScopes
@@ -3032,27 +3032,20 @@ paths:
       operationId: listAdminAudit
       summary: Search the audit log across every entity.
       description: |
-        Staff and administrators only (second factor required).
+        Administrators only (second factor required). Staff get 403, whatever
+        credential they use, including a key or an OAuth client acting as staff:
+        they read the history of a ticket they can see (the per-ticket history
+        and audit routes) and have no wider view. It was open to staff until
+        1.3.0 and narrowed to ticket entries in their scope.
         The admin-wide half of the audit trail, searchable across every
         entity type. Entries are newest first. Pages are read with limit and
         offset; has_more says whether another page exists.
-        Staff are narrowed twice. entity_type is forced to ticket whatever the
-        query asks for, and when ticket scope enforcement is on only entries on
-        tickets inside the caller's scope are returned. The page, the offset and
-        the total all come from the same filtered sequence. Administrators see
-        every entity.
-        Staff do not get followed and unfollowed entries unless the staff
-        follow-history setting (staff_can_view_follow_audit) is on; they are left
-        out of the page and the total, and asking for them by action returns
-        nothing.
-        The field-level before and after diff is returned to administrators
-        always, and to staff only when the staff change-history setting is on.
-        It is redacted by the same rule as the per-ticket feed. Every other
-        caller gets no before or after.
+        The field-level before and after diff is returned on every entry. It is
+        redacted by the same rule as the per-ticket feed.
         With the diff comes names, which gives the current name of each status
         and assignee id in it (see AuditNames); before and after still hold the
         ids exactly as stored.
-        total counts the matching entries the caller may see, up to 10,000.
+        total counts the matching entries, up to 10,000.
         When more match, total_capped is true and total is 10000, which means
         at least that many.
       tags: ['Audit']
@@ -3060,8 +3053,7 @@ paths:
       security:
         - sessionCookie: []
         - apiKey: ['audit:read']
-        - oauthClient: ['audit:read']
-      x-ghd-roles: [admin, staff]
+      x-ghd-roles: [admin]
       x-ghd-mfa: true
       parameters:
         - $ref: '#/components/parameters/Limit'
@@ -3069,7 +3061,7 @@ paths:
         - name: entity_type
           in: query
           required: false
-          description: Only entries for this entity type (for example ticket or user). Trimmed. Forced to ticket for staff.
+          description: Only entries for this entity type (for example ticket or user). Trimmed.
           schema:
             type: string
         - name: action
@@ -6109,7 +6101,7 @@ paths:
         this response, and cannot be shown again. It has the form GHD_ followed by 64
         hexadecimal characters. scopes is required: a non-empty list of
         resource:action values from GET /api/v1/admin/scopes, and none may exceed
-        the owner's role (for staff, tickets, groups:read and audit:read; for
+        the owner's role (for staff, tickets and groups:read; for
         an administrator, any): invalid_scope otherwise. expires_at is required unless
         the api_key_max_lifetime_years setting is Never (-1): 400 expires_at_required
         without it, and it must be a future RFC 3339 timestamp no later than that many

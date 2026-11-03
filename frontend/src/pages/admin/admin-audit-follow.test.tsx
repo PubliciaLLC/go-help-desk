@@ -23,7 +23,7 @@ import { AdminAuditPage } from './AdminAuditPage'
 beforeEach(() => {
   useAuthStore.setState({
     user: {
-      id: 'staff-1', email: 's@example.com', display_name: 'Sam Staff', role: 'staff', mfa_enabled: false,
+      id: 'admin-1', email: 'a@example.com', display_name: 'Ada Admin', role: 'admin', mfa_enabled: false,
       created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
     },
   })

@@ -118,51 +118,6 @@ func TestReplyAudit_RequesterStillGets403OnTheFeed(t *testing.T) {
 	require.NotContains(t, raw, "note_added")
 }
 
-func TestReplyAudit_StaffScopeAppliesInTheAdminView(t *testing.T) {
-	h, cleanup := newHarness(t)
-	defer cleanup()
-
-	// A ticket the staff member has no part in, with a reply and a note on it.
-	res := h.doAsAdmin(t, http.MethodPost, "/api/v1/tickets", map[string]any{
-		"subject": "not the staff user's business", "category_id": h.catID.String(), "priority": "low",
-	})
-	var created struct {
-		ID string `json:"id"`
-	}
-	decodeJSON(t, res, &created)
-	for _, internal := range []bool{false, true} {
-		res = h.doAsAdmin(t, http.MethodPost, "/api/v1/tickets/"+created.ID+"/replies",
-			map[string]any{"body": "words", "internal": internal})
-		res.Body.Close()
-		require.Equal(t, http.StatusCreated, res.StatusCode)
-	}
-	enableScope(t, h)
-
-	for _, who := range []struct {
-		name string
-		do   func(*testing.T, string, string, any) *http.Response
-		sees bool
-	}{
-		{"staff", h.do, false},
-		{"admin", h.doAsAdmin, true},
-	} {
-		res = who.do(t, http.MethodGet, "/api/v1/admin/audit?entity_type=ticket", nil)
-		var got adminAuditResponse
-		decodeJSON(t, res, &got)
-		saw := 0
-		for _, e := range got.Entries {
-			if e.EntityID == created.ID && (e.Action == "reply_added" || e.Action == "note_added") {
-				saw++
-			}
-		}
-		if who.sees {
-			require.Equal(t, 2, saw, who.name)
-		} else {
-			require.Zero(t, saw, "%s saw reply entries on a ticket outside their scope", who.name)
-		}
-	}
-}
-
 // exclude_action leaves entries out in the query, so the page, the offset and
 // the total still describe one sequence (as for the follow entries).
 func TestReplyAudit_ExcludeActionKeepsPagingAndTotalConsistent(t *testing.T) {
@@ -201,7 +156,7 @@ func TestReplyAudit_ExcludeActionKeepsPagingAndTotalConsistent(t *testing.T) {
 	for _, who := range []struct {
 		name string
 		do   func(*testing.T, string, string, any) *http.Response
-	}{{"admin", h.doAsAdmin}, {"staff", h.do}} {
+	}{{"admin", h.doAsAdmin}} {
 		whole := get(who.do, ex+"&limit=100")
 		for _, e := range whole.Entries {
 			require.NotContains(t, []string{"reply_added", "note_added"}, e.Action, who.name)

@@ -13,9 +13,7 @@ import (
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
-	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
-	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
 
 // adminAuditEntryView is one row of the admin-wide audit view. Shaped like
@@ -41,18 +39,8 @@ type adminAuditEntryView struct {
 
 type adminAuditListResponse struct {
 	Entries []adminAuditEntryView `json:"entries"`
-	// Total is the number of entries matching the filter that the caller may
-	// see, up to audit.TotalCap (see TotalCapped): for staff under scope
-	// enforcement that is the count of entries on tickets in their scope, from
-	// the same predicate that picks the page.
-	//
-	// It used to be withheld from staff. It was Search's own count, taken
-	// before scope was applied in Go, so a staff member who could see none of
-	// the matching entries still learned how many there were — with actor_id,
-	// action and from/to available, an oracle for dating activity on tickets
-	// they have no scope over. Scope is now part of the count's own WHERE
-	// clause, so there is nothing to withhold: the number says how many entries
-	// the caller can page through, and nothing about the ones they cannot.
+	// Total is the number of entries matching the filter, up to audit.TotalCap
+	// (see TotalCapped).
 	Total int `json:"total"`
 	// TotalCapped is true when more than audit.TotalCap entries match. Total is
 	// then audit.TotalCap and means "at least this many": counting a table
@@ -69,30 +57,19 @@ type adminAuditListResponse struct {
 // GET /api/v1/admin/audit
 //
 // #129's admin-wide half: searchable across every entity, not just one
-// ticket. Staff and admin only — a reporting user has no route here at all.
-// Gated by RequireResource(auth.ResourceAudit) (#362): a signed-in session
-// needs no scope, a machine credential needs audit:read. tickets:read does
-// not reach it, because for an admin's key it covers every entity.
+// ticket. Administrators only (Erik, 2026-11-03). Staff have the history of a
+// ticket they can see (handleListTicketAudit) and nothing wider: this view
+// used to be open to them, narrowed to ticket entries in their scope (#331),
+// and that narrowing went when the access did. The route sits under
+// adminRouter, so staff get 403 whatever credential they come with.
 //
-// Staff are narrowed twice, independently:
-//  1. entity_type is forced to "ticket" regardless of what the query string
-//     asks for — every other entity type (user, SLA policy, category, ...)
-//     is admin-only, full stop, unrelated to the staff setting below.
-//  2. With ticket scope enforced, only tickets in the caller's own scope
-//     survive. That is applied by the query itself (audit.Filter.ScopedTo),
-//     with the same predicate the scoped ticket listing uses, so the page, the
-//     offset and the total all describe one sequence — see the parity test in
-//     handler_admin_audit_scope_test.go, which holds that predicate equal to
-//     ticket.CanView. With enforcement off every ticket is visible to staff and
-//     nothing is applied.
+// A signed-in session needs no scope; a machine credential needs audit:read
+// (#362). tickets:read does not reach it, because for an admin's key it
+// covers every entity.
 //
-// The field-level diff is the same two gates as the per-ticket feed
-// (handleListTicketAudit, which this deliberately mirrors): admin always
-// sees it; staff only with admin.KeyStaffCanViewTicketChangeHistory on;
-// redacted either way — see audit.Redact.
+// Entries are shown with their diff, run through audit.Redact: the allow-list
+// of what the writers record applies to an administrator too.
 func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
-	actor := authmw.GetActor(r)
-	role := actor.Role
 	ctx := r.Context()
 
 	f, limit, offset, err := parseAdminAuditQuery(r)
@@ -101,42 +78,12 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if role == user.RoleStaff {
-		f.EntityType = "ticket"
-		vis, err := s.TicketVisibility(ctx, actor)
-		if err != nil {
-			handleError(w, err)
-			return
-		}
-		// Anything short of "all" narrows, so a mode this handler does not
-		// expect fails closed rather than open.
-		if vis != ticket.VisibilityAll {
-			f.ScopedTo = &actor.UserID
-		}
-	}
-
-	// Follow and unfollow entries (#441) are an administrator's to see unless
-	// the setting lets staff. Left out by the query itself, so the page, the
-	// offset and the total describe one sequence.
-	if role == user.RoleStaff && !s.adminSvc.StaffCanViewFollowAudit(ctx) {
-		f.ExcludeActions = append(f.ExcludeActions, ticket.FollowAuditActions()...)
-	}
-
 	page, err := s.auditStore.Search(ctx, f, limit, offset)
 	if err != nil {
 		handleError(w, err)
 		return
 	}
 	entries := page.Entries
-
-	showDiff := role == user.RoleAdmin ||
-		(role == user.RoleStaff && s.adminSvc.StaffCanViewTicketChangeHistory(ctx))
-
-	// As in the per-ticket feed: a viewer who may see follow entries always
-	// gets their before and after (redacted), so a removal on reassignment
-	// can say whose follow it was rather than read as its actor stopping.
-	showFollow := role == user.RoleAdmin ||
-		(role == user.RoleStaff && s.adminSvc.StaffCanViewFollowAudit(ctx))
 
 	maskRequesters := s.masksRequestersIn(ctx, admin.MaskRequesterNamesAdminLog)
 	views := make([]adminAuditEntryView, len(entries))
@@ -147,10 +94,8 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 			ID: e.ID, EntityType: e.EntityType, EntityID: e.EntityID,
 			Action: e.Action, ActorID: e.ActorID, CreatedAt: e.CreatedAt,
 		}
-		if showDiff || (showFollow && ticket.IsFollowAuditAction(e.Action)) {
-			v.Before, v.After = audit.Redact(e.Before, e.After)
-			diffs = append(diffs, v.Before, v.After)
-		}
+		v.Before, v.After = audit.Redact(e.Before, e.After)
+		diffs = append(diffs, v.Before, v.After)
 		if e.ActorID != nil {
 			a, cached := names[*e.ActorID]
 			if !cached {

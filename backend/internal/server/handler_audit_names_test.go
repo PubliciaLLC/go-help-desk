@@ -232,7 +232,8 @@ func TestAuditNames_MaskFollowsTheRoleNow(t *testing.T) {
 }
 
 // The staff diff setting: with it off a staff member gets no diff and so no
-// names; names are derived from the diff that is shown, never beside it.
+// names; names are derived from the diff that is shown, never beside it. Staff
+// read a ticket's feed only: the admin-wide view is administrators only.
 func TestAuditNames_StaffDiffSettingStillGatesThem(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
@@ -241,7 +242,7 @@ func TestAuditNames_StaffDiffSettingStillGatesThem(t *testing.T) {
 	newID := statusID(t, h, ticket.StatusNameNew)
 	plantEntry(t, h, id, "planted_status", map[string]any{"status_id": newID}, nil)
 
-	for _, view := range []string{"admin", "ticket"} {
+	for _, view := range []string{"ticket"} {
 		body, es := namesView(t, h, h.do, view, id)
 		e := entryNamed(t, es, "planted_status")
 		require.Empty(t, e.Before, view)
@@ -263,7 +264,7 @@ func TestAuditNames_StaffDiffSettingStillGatesThem(t *testing.T) {
 	require.NotContains(t, body, `"names"`)
 	require.NotContains(t, body, newID)
 
-	for _, view := range []string{"admin", "ticket"} {
+	for _, view := range []string{"ticket"} {
 		_, es := namesView(t, h, h.do, view, id)
 		e := entryNamed(t, es, "planted_status")
 		require.Equal(t, newID, e.Before["status_id"], view)
@@ -273,7 +274,7 @@ func TestAuditNames_StaffDiffSettingStillGatesThem(t *testing.T) {
 
 // Scope (#391): the lookup runs over the entries the viewer is already allowed
 // to see, so a name never reaches a staff member through an entry outside
-// their scope, and the page and total are unchanged by it.
+// their scope. Staff read a ticket's feed, and a ticket they cannot see is a 404.
 func TestAuditNames_ScopedStaffGetNothingBeyondTheirScope(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
@@ -289,7 +290,7 @@ func TestAuditNames_ScopedStaffGetNothingBeyondTheirScope(t *testing.T) {
 	plantEntry(t, h, inScope, "planted_in", map[string]any{"assignee_user_id": h.adminID.String()}, nil)
 	plantEntry(t, h, outScope, "planted_out", map[string]any{"assignee_user_id": hidden.ID.String()}, nil)
 
-	body, es := namesView(t, h, h.do, "admin", inScope)
+	body, es := namesView(t, h, h.do, "ticket", inScope)
 	require.Equal(t, namesResolve{Name: "Admin"}, entryNamed(t, es, "planted_in").Names[h.adminID.String()])
 	require.NotContains(t, body, "Zed Hidden")
 	require.NotContains(t, body, hidden.ID.String())

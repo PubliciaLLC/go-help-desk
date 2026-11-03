@@ -46,7 +46,8 @@ describe('the Webhooks navigation entry', () => {
   it('is there for an administrator and points at /admin/webhooks', () => {
     signInAs('admin')
     renderWithQuery(<Layout>content</Layout>)
-    // The entry sits in a collapsed section until it is opened (admin nav sections).
+    // The entry sits in a collapsed section of the collapsed Admin item until both are opened.
+    fireEvent.click(screen.getByRole('button', { name: 'Admin' }))
     fireEvent.click(screen.getByRole('button', { name: 'Integrations' }))
 
     const links = screen.getAllByRole('link', { name: 'Webhooks' })
