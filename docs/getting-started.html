@@ -202,7 +202,7 @@ SESSION_SECRET=&lt;at-least-32-random-chars&gt;</code></pre>
 <pre><code>CLAMAV_ADDR=tcp://clamav:3310
 COMPOSE_PROFILES=antivirus</code></pre>
 <p>The second line starts a ClamAV container, which downloads its signature database (about 300 MB) on first start. Until that finishes the scanner is unreachable, and once an address is set, uploads are refused with <code>503</code> while it is unreachable. The <code>clamav/clamav</code> image is published for amd64 only, so on Apple Silicon it runs under emulation. See <a href="#config-scanning">Virus scanning (ClamAV)</a> for the settings.</p>
-<p>If you skip this, administrators of an instance that already holds attachments see an amber <em>Attachments are not being scanned</em> banner until they choose a scan policy or set a scanner address. Choosing <em>Do not scan</em> under <em>Admin → Settings → Attachments → Malware scanning</em> clears it.</p>
+<p>If you skip this, administrators of an instance that already holds attachments see an amber <em>Attachments are not being scanned</em> banner until they choose a scan policy or set a scanner address. Choosing <em>Do not scan</em> under <em>Admin → System → Settings → Attachments → Malware scanning</em> clears it.</p>
 
 
 <h2 id="build-from-source">Building from source</h2>
@@ -236,7 +236,7 @@ ln -sfn "$(brew --prefix)/opt/docker-buildx/bin/docker-buildx" ~/.docker/cli-plu
 <p>Configuration is read from environment variables at startup. Variables marked <strong>required</strong> cause the server to exit with an error if unset or empty.</p>
 
 <ul>
-  <li>Environment variables control infrastructure. Feature switches (SAML, OIDC, MFA, SLA, guest submission, signup) and branding are managed under <em>Admin → Settings</em> and stored in the database.</li>
+  <li>Environment variables control infrastructure. Feature switches (SAML, OIDC, MFA, SLA, guest submission, signup) and branding are managed under <em>Admin → System → Settings</em> and stored in the database.</li>
   <li>Changing an auth-related setting requires a signed-in administrator. An API key cannot, whatever scopes it holds.</li>
   <li>Variables are read once, at startup. After you change <code>.env</code>, run <code>docker compose up -d</code> again.</li>
 </ul>
@@ -296,19 +296,19 @@ ln -sfn "$(brew --prefix)/opt/docker-buildx/bin/docker-buildx" ~/.docker/cli-plu
 <table class="param-table">
   <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
   <tbody>
-    <tr><td><code>CLAMAV_ADDR</code></td><td>unset</td><td>Address of a ClamAV daemon: <code>tcp://host:3310</code> or <code>unix:///path/to/clamd.sock</code>. When unset, attachments are not scanned. In Docker Compose, set it in <code>.env</code> together with <code>COMPOSE_PROFILES=antivirus</code>; see <a href="#virus-scanning">Virus scanning</a> under Quick start. An administrator can change the address under <em>Admin → Settings → Attachments → Malware scanning</em> without a restart.</td></tr>
+    <tr><td><code>CLAMAV_ADDR</code></td><td>unset</td><td>Address of a ClamAV daemon: <code>tcp://host:3310</code> or <code>unix:///path/to/clamd.sock</code>. When unset, attachments are not scanned. In Docker Compose, set it in <code>.env</code> together with <code>COMPOSE_PROFILES=antivirus</code>; see <a href="#virus-scanning">Virus scanning</a> under Quick start. An administrator can change the address under <em>Admin → System → Settings → Attachments → Malware scanning</em> without a restart.</td></tr>
   </tbody>
 </table>
-<p>Once an address is set, the scan policy defaults to <code>required</code>: an upload is refused with <code>503</code> and a <code>Retry-After</code> header while the scanner cannot be reached. Administrators can change the policy under <em>Admin → Settings → Attachments → Malware scanning</em>. See <a href="admin-guide.html#admin-attachments">Admin Guide: Attachments</a>.</p>
+<p>Once an address is set, the scan policy defaults to <code>required</code>: an upload is refused with <code>503</code> and a <code>Retry-After</code> header while the scanner cannot be reached. Administrators can change the policy under <em>Admin → System → Settings → Attachments → Malware scanning</em>. See <a href="admin-guide.html#admin-attachments">Admin Guide: Attachments</a>.</p>
 
 <h3 id="config-features">Feature switches</h3>
 <table class="param-table">
   <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
   <tbody>
-    <tr><td><code>SLA_ENABLED</code></td><td><code>false</code></td><td>Turns SLA tracking on at every start. It never turns it off. The switch is under <em>Admin → Settings</em>, in the SLA section, so this variable only lets an instance start with SLA tracking on.</td></tr>
+    <tr><td><code>SLA_ENABLED</code></td><td><code>false</code></td><td>Turns SLA tracking on at every start. It never turns it off. The switch is under <em>Admin → System → Settings</em>, in the SLA section, so this variable only lets an instance start with SLA tracking on.</td></tr>
   </tbody>
 </table>
-<p>Feature switches are set under <em>Admin → Settings</em> and stored in the database. Multi-factor authentication, guest submission (see <a href="tickets.html#tickets-create">Guest ticket submission</a>) and signup are switched there too. No environment variable controls SAML or OIDC. Configure them under <em>Admin → Settings</em>, in the SAML and OIDC sections. See <a href="authentication.html#auth-saml">Authentication: SAML 2.0</a>.</p>
+<p>Feature switches are set under <em>Admin → System → Settings</em> and stored in the database. Multi-factor authentication, guest submission (see <a href="tickets.html#tickets-create">Guest ticket submission</a>) and signup are switched there too. No environment variable controls SAML or OIDC. Configure them under <em>Admin → System → Settings</em>, in the SAML and OIDC sections. See <a href="authentication.html#auth-saml">Authentication: SAML 2.0</a>.</p>
 <p>The variables <code>MFA_ENABLED</code> and <code>GUEST_SUBMISSION_ENABLED</code> were removed in 1.3.0 because nothing read them. Setting them has no effect.</p>
 
 <h3 id="config-compose">With Docker Compose</h3>
@@ -320,7 +320,7 @@ ln -sfn "$(brew --prefix)/opt/docker-buildx/bin/docker-buildx" ~/.docker/cli-plu
 
 <h2 id="first-run">First-run setup</h2>
 
-<p>The <code>/setup</code> form also has an unticked box, <em>Check for new releases (contacts GitHub once a week; sends nothing about your server)</em>. Leave it unticked to keep the server from contacting GitHub at all; you can change it later under <em>Admin → Settings → General → Updates</em>. See <a href="admin-guide.html#admin-updates">Admin Guide: Updates</a>.</p>
+<p>The <code>/setup</code> form also has an unticked box, <em>Check for new releases (contacts GitHub once a week; sends nothing about your server)</em>. Leave it unticked to keep the server from contacting GitHub at all; you can change it later under <em>Admin → System → Settings → General → Updates</em>. See <a href="admin-guide.html#admin-updates">Admin Guide: Updates</a>.</p>
 
 <p>After completing the <code>/setup</code> wizard and creating your admin account, work through this checklist before inviting users:</p>
 
@@ -328,31 +328,31 @@ ln -sfn "$(brew --prefix)/opt/docker-buildx/bin/docker-buildx" ~/.docker/cli-plu
 
 <ol>
   <li>
-    <strong>Create your CTI hierarchy.</strong> Setup has already created the first Category. Go to <em>Admin → Categories</em> and add the rest. See the <a href="admin-guide.html#admin-cti">Admin Guide: Categories</a> for a worked example.
+    <strong>Create your CTI hierarchy.</strong> Setup has already created the first Category. Go to <em>Admin → Tickets → Categories</em> and add the rest. See the <a href="admin-guide.html#admin-cti">Admin Guide: Categories</a> for a worked example.
   </li>
   <li>
-    <strong>Review ticket statuses.</strong> The system creates five default statuses (New, In Progress, Pending, Resolved, Closed). Closed is terminal by default. If you need intermediate statuses (e.g. "Awaiting Vendor"), add them now under <em>Admin → Statuses</em>. See <a href="admin-guide.html#admin-statuses">Admin Guide: Statuses</a> and <a href="admin-guide.html#admin-closed-reopen">Reopening closed tickets</a>.
+    <strong>Review ticket statuses.</strong> The system creates five default statuses (New, In Progress, Pending, Resolved, Closed). Closed is terminal by default. If you need intermediate statuses (e.g. "Awaiting Vendor"), add them now under <em>Admin → Tickets → Statuses</em>. See <a href="admin-guide.html#admin-statuses">Admin Guide: Statuses</a> and <a href="admin-guide.html#admin-closed-reopen">Reopening closed tickets</a>.
   </li>
   <li>
     <strong>Create groups and assign scope.</strong> Define which staff teams handle which categories. See <a href="admin-guide.html#admin-groups">Admin Guide: Groups &amp; scope</a>.
   </li>
   <li>
-    <strong>Create or invite staff accounts.</strong> Create staff accounts from <em>Admin → Users</em>, or have staff register themselves and then promote their role. See <a href="admin-guide.html#admin-users">Admin Guide: Users &amp; roles</a>.
+    <strong>Create or invite staff accounts.</strong> Create staff accounts from <em>Admin → People → Users</em>, or have staff register themselves and then promote their role. See <a href="admin-guide.html#admin-users">Admin Guide: Users &amp; roles</a>.
   </li>
   <li>
     <strong>Configure email</strong> (optional). Set <code>SMTP_HOST</code> and <code>SMTP_FROM</code> (both are needed) and any other SMTP variables, then restart. See <a href="#config-email">Email (SMTP)</a>.
   </li>
   <li>
-    <strong>Configure SLA policies</strong> (optional). Turn on SLA tracking under <em>Admin → Settings</em>, then set response and resolution targets per priority or category in the SLA section. See <a href="admin-guide.html#admin-sla">Admin Guide: SLA policies</a>.
+    <strong>Configure SLA policies</strong> (optional). Turn on SLA tracking under <em>Admin → System → Settings</em>, then set response and resolution targets per priority or category in the SLA section. See <a href="admin-guide.html#admin-sla">Admin Guide: SLA policies</a>.
   </li>
   <li>
-    <strong>Set up SSO</strong> (optional). Configure SAML or OIDC under <em>Admin → Settings</em>, in the SAML and OIDC sections. OIDC is reloaded without a restart. See <a href="authentication.html#auth-saml">Authentication: SAML 2.0</a>.
+    <strong>Set up SSO</strong> (optional). Configure SAML or OIDC under <em>Admin → System → Settings</em>, in the SAML and OIDC sections. OIDC is reloaded without a restart. See <a href="authentication.html#auth-saml">Authentication: SAML 2.0</a>.
   </li>
   <li>
     <strong>Check the server warnings.</strong> Administrators see one slim bar above the page that opens (<em>Details</em>) to the notices (<a href="admin-guide.html#admin-server-warnings">Server warnings</a>). It shows a red notice while an example secret is in use, and another while attachment uploads are disabled because the attachment directory cannot be written. Replace the secret and restart before inviting users. Other notices say when email is not set up or not being delivered, when passkeys are unavailable because of <code>BASE_URL</code>, and when an OAuth client sees no tickets.
   </li>
   <li>
-    <strong>Decide audit retention.</strong> Choose whether the audit log is kept forever (the default) or pruned, and whether staff can see ticket change history. Both are under <em>Admin → Settings</em>, in the Audit log section. See <a href="admin-guide.html#admin-audit">Admin Guide: Audit log</a>.
+    <strong>Decide audit retention.</strong> Choose whether the audit log is kept forever (the default) or pruned, and whether staff can see ticket change history. Both are under <em>Admin → System → Settings</em>, in the Audit log section. See <a href="admin-guide.html#admin-audit">Admin Guide: Audit log</a>.
   </li>
 </ol>
 

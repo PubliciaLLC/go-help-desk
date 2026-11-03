@@ -122,7 +122,7 @@
 
 <p>Go Help Desk signs people in with a local password, or through an identity provider over SAML 2.0 or OpenID Connect. A password sign-in can require a second factor: an authenticator app (TOTP) or a passkey. Scripts and integrations use API keys or OAuth2 client credentials, and a guest reaches their one ticket through a private link.</p>
 
-<p>Every switch in the table below is an administrator setting under <em>Admin → Settings → Authentication</em> (or <em>General</em>, for guest submission), stored in the database and applied without a restart. None of them is an environment variable, and none can be changed by an API key or OAuth client: they need a signed-in administrator.</p>
+<p>Every switch in the table below is an administrator setting under <em>Admin → System → Settings → Authentication</em> (or <em>General</em>, for guest submission), stored in the database and applied without a restart. None of them is an environment variable, and none can be changed by an API key or OAuth client: they need a signed-in administrator.</p>
 
 <table>
   <thead><tr><th>Method</th><th>Who it's for</th><th>Default</th></tr></thead>
@@ -143,10 +143,10 @@
 <p>Users sign in with their email address and password. Passwords are hashed with bcrypt at cost 12. Releases up to 1.2 hashed at cost 10. An older hash keeps working, and is replaced by a cost-12 hash the next time its owner signs in with the password. Each cost step doubles the work, so checking a password now takes about four times as much server time as at cost 10.</p>
 
 <h3 id="auth-old-hash">Old password hashes expire</h3>
-<p>An older hash does not keep working forever. Once a set number of days has passed since 1.3.0 first started on your database, a correct password that is still stored in the old form is refused with <code>403 password_reset_required</code> and the message that it was saved in an older, weaker form and must be reset. The number of days is <em>Admin → Settings → Authentication → Passwords → Reset window for old passwords</em>: 30 by default, from 1 to 365, and changing it moves the deadline for everyone. Anyone who signs in before the deadline is upgraded automatically.</p>
+<p>An older hash does not keep working forever. Once a set number of days has passed since 1.3.0 first started on your database, a correct password that is still stored in the old form is refused with <code>403 password_reset_required</code> and the message that it was saved in an older, weaker form and must be reset. The number of days is <em>Admin → System → Settings → Authentication → Passwords → Reset window for old passwords</em>: 30 by default, from 1 to 365, and changing it moves the deadline for everyone. Anyone who signs in before the deadline is upgraded automatically.</p>
 <ul>
   <li><strong>Administrators are exempt</strong>, so the instance cannot lock itself out. They are upgraded at their next sign-in like everyone else.</li>
-  <li>Staff and users past the deadline are mailed a reset link by the refused sign-in itself when the server can send email (the message says to check email, and <em>Forgot password?</em> on the sign-in page sends another; see <a href="#auth-forgot-password">Forgot password</a>). If no link could be sent (for example because the account's stored address cannot be mailed, see <a href="upgrading-1.3.0.html#ascii-email">Addresses must be ASCII</a>) the message says "We could not send a reset link just now. Try again in a minute, or ask an administrator." An administrator can always set a new password under <em>Admin → Users → [user] → Reset password</em>, and with email off that is the only route.</li>
+  <li>Staff and users past the deadline are mailed a reset link by the refused sign-in itself when the server can send email (the message says to check email, and <em>Forgot password?</em> on the sign-in page sends another; see <a href="#auth-forgot-password">Forgot password</a>). If no link could be sent (for example because the account's stored address cannot be mailed, see <a href="upgrading-1.3.0.html#ascii-email">Addresses must be ASCII</a>) the message says "We could not send a reset link just now. Try again in a minute, or ask an administrator." An administrator can always set a new password under <em>Admin → People → Users → [user] → Reset password</em>, and with email off that is the only route.</li>
   <li>People who sign in rarely, such as seasonal staff, are the ones affected. New installs are not.</li>
   <li>When SAML restricts password sign-in to administrators, other accounts get the SAML refusal instead.</li>
 </ul>
@@ -165,7 +165,7 @@
 <h3>Account creation</h3>
 <p>Accounts are created in one of four ways:</p>
 <ul>
-  <li><strong>Admin-created</strong>: an administrator clicks <em>Add User</em> under <em>Admin → Users</em> and assigns any role.</li>
+  <li><strong>Admin-created</strong>: an administrator clicks <em>Add User</em> under <em>Admin → People → Users</em> and assigns any role.</li>
   <li><strong>Self-service signup</strong>: only when <em>Allow self-service signup</em> is on, which it is not by default. Signup is limited to the <em>Allowed email domains</em> (judged by the domain of the address as it will be stored, so <code>&lt;a@x.com&gt;</code> and <code>A@X.COM</code> both count as <code>x.com</code>) unless <em>Allow open registration</em> is on. A signup page at <code>/signup</code> asks only for an email address and sends a verification link, valid for 24 hours. The display name and password are chosen when the link is opened. A self-registered account gets the <em>User</em> role. Email must be configured, or no link is sent.</li>
   <li><strong>Signup addresses must be ASCII</strong>, and so must each allowed domain (use the <code>xn--</code> form for an internationalised domain); see <a href="upgrading-1.3.0.html#ascii-email">Addresses must be ASCII</a>.</li>
   <li><strong>SAML or OIDC</strong>: an account is created at the first sign-in through the identity provider. See <a href="#auth-saml">SAML 2.0</a> and <a href="#auth-oidc">OIDC</a>.</li>
@@ -176,7 +176,7 @@
 <img src="../screenshots/21-verify-email.png" alt="The Finish creating your account page: the email address is shown, with Display name and Password fields for the new account" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
 <h3>Password requirements</h3>
-<p>A password must be at least 8 characters and at most 72 bytes. There is no other complexity rule. Users change their own password on the <em>Your account</em> page, which asks for the current password first; a wrong one is shown inline and the person stays signed in. Through the API, <code>PATCH /api/v1/me/password</code> needs <code>current_password</code> and <code>new_password</code> (the old field name <code>password</code> is still read for the new one) and refuses a missing or wrong current password with <code>400 invalid_current_password</code> (a new password that is itself invalid is checked first, with <code>400 bad_request</code>). An administrator can set a new password for a user under <em>Admin → Users → [user] → Reset password</em>, which is shown only for accounts that have a password.</p>
+<p>A password must be at least 8 characters and at most 72 bytes. There is no other complexity rule. Users change their own password on the <em>Your account</em> page, which asks for the current password first; a wrong one is shown inline and the person stays signed in. Through the API, <code>PATCH /api/v1/me/password</code> needs <code>current_password</code> and <code>new_password</code> (the old field name <code>password</code> is still read for the new one) and refuses a missing or wrong current password with <code>400 invalid_current_password</code> (a new password that is itself invalid is checked first, with <code>400 bad_request</code>). An administrator can set a new password for a user under <em>Admin → People → Users → [user] → Reset password</em>, which is shown only for accounts that have a password.</p>
 
 <p>Repeated wrong passwords for one address are throttled: after <code>AUTH_RATE_LIMIT_PER_MINUTE</code> failures in a minute (10 by default), further attempts get <code>429</code>. Wrong current-password guesses on the change-password route are throttled the same way, per account, against a separate counter; the correct password always works.</p>
 
@@ -188,7 +188,7 @@
 
 <p>A password sign-in can be followed by a second factor: a six-digit code from an authenticator app (TOTP, RFC 6238: Google Authenticator, Authy, 1Password, Bitwarden and others), or a passkey or hardware security key. A passkey is used after the password, not instead of it.</p>
 
-<p>Second factors are checked only while <em>Admin → Settings → Authentication → Multi-factor authentication → Enable MFA</em> is on. It is off by default. A sign-in through SAML or OIDC is not asked for a local second factor; that is the identity provider's job.</p>
+<p>Second factors are checked only while <em>Admin → System → Settings → Authentication → Multi-factor authentication → Enable MFA</em> is on. It is off by default. A sign-in through SAML or OIDC is not asked for a local second factor; that is the identity provider's job.</p>
 
 <img src="../screenshots/22-account-passkeys.png" alt="The account page: a password form, a Passkeys section listing a passkey named Work laptop marked This device only, and an Authenticator app section with a Set up button" width="2880" height="1970" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
@@ -212,7 +212,7 @@
 <p>Five wrong codes in a row lock the account's code entry for 15 minutes.</p>
 
 <h3>Losing every factor</h3>
-<p>There are no recovery codes. A user who has lost their authenticator and every passkey is reset by an administrator: <em>Admin → Users → [user] → Reset MFA</em> clears the authenticator and every passkey and ends the user's sessions. They then sign in with their password and enrol again; if MFA is required for their role, they are asked to at that sign-in.</p>
+<p>There are no recovery codes. A user who has lost their authenticator and every passkey is reset by an administrator: <em>Admin → People → Users → [user] → Reset MFA</em> clears the authenticator and every passkey and ends the user's sessions. They then sign in with their password and enrol again; if MFA is required for their role, they are asked to at that sign-in.</p>
 <p>An administrator with no other administrator to reset them recovers on the server. <code>docker compose exec app /app/server reset-factors &lt;email&gt;</code> clears their authenticator and passkeys. <code>docker compose exec app /app/server unlock &lt;email&gt;</code> does that and more, for an account that is also disabled, locked out of code entry, or without a usable password. See <a href="getting-started.html#locked-out">Locked out?</a> and <a href="admin-guide.html#admin-users">Admin Guide: Users</a>.</p>
 
 <h3 id="auth-must-change">After an unlock: choosing a new password</h3>
@@ -231,7 +231,7 @@
 
 <h2 id="auth-saml">SAML 2.0 SSO</h2>
 
-<p>Go Help Desk acts as a SAML 2.0 Service Provider (SP) and works with any standards-compliant Identity Provider. It is configured entirely under <em>Admin → Settings → Authentication → SAML</em>. Saving the settings loads the IdP metadata, either by fetching it from a URL or from XML you paste or upload, and applies the change at once, with no restart.</p>
+<p>Go Help Desk acts as a SAML 2.0 Service Provider (SP) and works with any standards-compliant Identity Provider. It is configured entirely under <em>Admin → System → Settings → Authentication → SAML</em>. Saving the settings loads the IdP metadata, either by fetching it from a URL or from XML you paste or upload, and applies the change at once, with no restart.</p>
 
 <h3>General setup</h3>
 
@@ -263,7 +263,7 @@
   <div class="step-num">3</div>
   <div class="step-body">
     <h4>Enter the settings</h4>
-    <p>Under <em>Admin → Settings → Authentication → SAML</em>, turn on <em>Enable SAML login</em>, then choose how to give the IdP metadata, either <em>URL</em> (<em>IdP metadata URL</em>) or <em>XML</em> (paste it into <em>IdP metadata XML</em>, or use <em>Upload .xml</em> to load a file into the same box). Then fill in <em>SP certificate (PEM)</em> and <em>SP private key (PEM)</em>, and save. The two metadata choices are alternatives: a save that would leave both set is refused (<code>saml_metadata_conflict</code>). Pasted XML is checked before anything is saved. It is refused (<code>invalid_saml_metadata</code>) if it is not SAML metadata, has no identity provider section (often this server's own metadata pasted by mistake), or has no signing certificate; and a document over 256 KiB is refused (<code>saml_metadata_too_large</code>). The XML is shown again after saving, and it is never refreshed: when your identity provider changes its signing certificate, paste its new metadata. A URL is fetched again at each save and each restart. A save that would leave no administrator able to sign in is refused.</p>
+    <p>Under <em>Admin → System → Settings → Authentication → SAML</em>, turn on <em>Enable SAML login</em>, then choose how to give the IdP metadata, either <em>URL</em> (<em>IdP metadata URL</em>) or <em>XML</em> (paste it into <em>IdP metadata XML</em>, or use <em>Upload .xml</em> to load a file into the same box). Then fill in <em>SP certificate (PEM)</em> and <em>SP private key (PEM)</em>, and save. The two metadata choices are alternatives: a save that would leave both set is refused (<code>saml_metadata_conflict</code>). Pasted XML is checked before anything is saved. It is refused (<code>invalid_saml_metadata</code>) if it is not SAML metadata, has no identity provider section (often this server's own metadata pasted by mistake), or has no signing certificate; and a document over 256 KiB is refused (<code>saml_metadata_too_large</code>). The XML is shown again after saving, and it is never refreshed: when your identity provider changes its signing certificate, paste its new metadata. A URL is fetched again at each save and each restart. A save that would leave no administrator able to sign in is refused.</p>
   </div>
 </div>
 
@@ -351,12 +351,12 @@
 </details>
 
 <h3>Just-in-time user provisioning</h3>
-<p>When someone signs in through SAML for the first time, an account is created from the assertion with the <em>User</em> role, provided their email domain is on the <em>Allowed email domains</em> list (an empty list allows any domain; entries and addresses must be ASCII, see <a href="upgrading-1.3.0.html#ascii-email">Addresses must be ASCII</a>). Promote accounts to Staff or Admin from <em>Admin → Users</em>.</p>
+<p>When someone signs in through SAML for the first time, an account is created from the assertion with the <em>User</em> role, provided their email domain is on the <em>Allowed email domains</em> list (an empty list allows any domain; entries and addresses must be ASCII, see <a href="upgrading-1.3.0.html#ascii-email">Addresses must be ASCII</a>). Promote accounts to Staff or Admin from <em>Admin → People → Users</em>.</p>
 
 <p>Later sign-ins update the user's email address and name from the IdP, but never their role.</p>
 
 <h3>SP certificate rotation</h3>
-<p>Generate a new certificate and key, add the new certificate to your IdP's configuration (most IdPs accept a secondary certificate during a transition), then upload the new certificate and key under <em>Admin → Settings → Authentication → SAML</em> and save.</p>
+<p>Generate a new certificate and key, add the new certificate to your IdP's configuration (most IdPs accept a secondary certificate during a transition), then upload the new certificate and key under <em>Admin → System → Settings → Authentication → SAML</em> and save.</p>
 
 <div class="callout callout-warn">
   <p><strong>Administrator failsafe.</strong> Administrators can always sign in with their local password on the login page, even with SAML login enabled. Do not lose your administrator password.</p>
@@ -365,7 +365,7 @@
 
 <h2 id="auth-oidc">OpenID Connect (OIDC)</h2>
 
-<p>OIDC is configured under <em>Admin → Settings → Authentication → OIDC / OpenID Connect</em>: <em>Enable OIDC login</em>, the provider's <em>Issuer URL</em>, a <em>Client ID</em> and a <em>Client secret</em>. The secret is write-only; leaving it blank on a later save keeps the stored one. Register this redirect URL with the provider, which the settings page shows with a copy button:</p>
+<p>OIDC is configured under <em>Admin → System → Settings → Authentication → OIDC / OpenID Connect</em>: <em>Enable OIDC login</em>, the provider's <em>Issuer URL</em>, a <em>Client ID</em> and a <em>Client secret</em>. The secret is write-only; leaving it blank on a later save keeps the stored one. Register this redirect URL with the provider, which the settings page shows with a copy button:</p>
 <pre><code>&lt;BASE_URL&gt;/api/v1/auth/oidc/callback</code></pre>
 <p>Saving applies the change without a restart. The login page then offers <em>Sign in with OIDC</em>.</p>
 <ul>
@@ -377,7 +377,7 @@
 
 <h2 id="auth-guest">Guest access</h2>
 
-<p>Guest submission is off by default. Turn it on under <em>Admin → Settings → General → Submissions → Guest submission</em>. Up to and including 1.2.0 the pieces existed and did not connect: turning the toggle on produced no error and no guest tickets. It shipped as <a href="https://github.com/PubliciaLLC/go-help-desk/issues/154">issue #154</a>.</p>
+<p>Guest submission is off by default. Turn it on under <em>Admin → System → Settings → General → Submissions → Guest submission</em>. Up to and including 1.2.0 the pieces existed and did not connect: turning the toggle on produced no error and no guest tickets. It shipped as <a href="https://github.com/PubliciaLLC/go-help-desk/issues/154">issue #154</a>.</p>
 
 <p>A guest is not an account. There is no guest password, no guest session and no guest role — <strong>possession of a private link is the whole credential</strong>, and possession of the mailbox it was sent to is what earns it.</p>
 
@@ -436,14 +436,14 @@
 
 <h3>Who can have a key</h3>
 <ul>
-  <li><strong>Administrators</strong> always. <strong>Staff</strong> only while <em>Staff may create their own API keys</em> is on (<em>Admin → Settings → Authentication → API keys</em>; off by default, and only a signed-in administrator can change it). Turning it off stops new keys only: existing keys keep working, and staff can still list and revoke their own.</li>
+  <li><strong>Administrators</strong> always. <strong>Staff</strong> only while <em>Staff may create their own API keys</em> is on (<em>Admin → System → Settings → Authentication → API keys</em>; off by default, and only a signed-in administrator can change it). Turning it off stops new keys only: existing keys keep working, and staff can still list and revoke their own.</li>
   <li><strong>Requesters never own a key</strong>, and neither do service accounts. An administrator can issue a key on behalf of a staff member (or for themselves), never for another administrator.</li>
   <li>A key acts within its owner's <em>current</em> role. Promoting a staff member who holds an administrator-issued key leaves an administrator holding it; revoke it if that is not wanted.</li>
 </ul>
 
 <h3>Creating a key</h3>
 <ol>
-  <li>An administrator goes to <em>Admin → API Keys</em> and uses <em>Create new key</em>, choosing the owner (themselves or a staff member). Staff go to <em>Account → API keys</em>.</li>
+  <li>An administrator goes to <em>Admin → Integrations → API Keys</em> and uses <em>Create new key</em>, choosing the owner (themselves or a staff member). Staff go to <em>Account → API keys</em>.</li>
   <li>Give the key a descriptive name (e.g. <code>monitoring-script</code>), choose its scopes and an expiry date. A key must have at least one scope. Staff keys can carry <code>tickets:read</code>, <code>tickets:write</code>, <code>groups:read</code> and <code>audit:read</code> (<code>users:read</code> is no longer offered: its one staff route, the requester lookup, is session-only).</li>
   <li><strong>Every new key must expire</strong>, no later than the maximum lifetime: <em>Longest an API key may live</em>, a slider with stops of 1 to 5 years and Never (default 2 years; the settings page shows a red warning above 2). The form offers the longest allowed date by default. Only at Never may the date be left out. Keys made before the upgrade keep working; one with no expiry or one past the current limit is shown as "No expiry (longer than the current limit)" so it can be rotated.</li>
   <li>The key is shown <strong>exactly once</strong> after creation. Copy it into a secret manager or CI secret store. It cannot be retrieved later. The Copy button says "Copied!" only after the copy has worked; if the browser refuses, it says so, so copy the key by hand before you close the page. A key issued for you by an administrator is marked "Issued for you by an administrator" on your Account page.</li>
@@ -463,16 +463,16 @@
 <p>Before 1.3.0 a key acted as the administrator who created it, but only within the scopes it was given. There is no wildcard scope. <code>GET /api/v1/admin/scopes</code> lists them. See <a href="api.html#api-scopes">REST API: Scopes</a>.</p>
 
 <h3>OAuth clients</h3>
-<p>Under <em>Admin → OAuth Clients</em>, an administrator creates a client with its scopes. The client also gets a service user, named after it. The client exchanges its ID and secret for a short-lived bearer token at <code>POST /api/v1/auth/oauth/token</code> and sends it as <code>Authorization: Bearer &lt;token&gt;</code>. The client acts as its service user, at that user's role: staff by default, or user, never administrator. A client holding <code>tickets:write</code> can create tickets and replies, recorded under the client's name.</p>
+<p>Under <em>Admin → Integrations → OAuth Clients</em>, an administrator creates a client with its scopes. The client also gets a service user, named after it. The client exchanges its ID and secret for a short-lived bearer token at <code>POST /api/v1/auth/oauth/token</code> and sends it as <code>Authorization: Bearer &lt;token&gt;</code>. The client acts as its service user, at that user's role: staff by default, or user, never administrator. A client holding <code>tickets:write</code> can create tickets and replies, recorded under the client's name.</p>
 <ul>
-  <li>The service user appears under <em>Admin → Users</em> with a <em>Service</em> badge, and in the client list as <em>(service user)</em>. An administrator can rename it (which renames the client), set its role to staff or user, give it groups and disable it. Its email, the administrator role and a second-factor reset are refused (<code>409 service_account</code>). Disabling it stops the client.</li>
+  <li>The service user appears under <em>Admin → People → Users</em> with a <em>Service</em> badge, and in the client list as <em>(service user)</em>. An administrator can rename it (which renames the client), set its role to staff or user, give it groups and disable it. Its email, the administrator role and a second-factor reset are refused (<code>409 service_account</code>). Disabling it stops the client.</li>
   <li>The user's groups are the client's ticket scope. When staff are limited to their group scope, a client whose user is in no group sees no tickets; the client list says so, and the admin warning banner lists such clients.</li>
   <li>A service user never signs in: it has no password, second factor, passkey or SSO identity, and cannot be made an administrator. It is never emailed.</li>
   <li>Deleting the client deletes its service user. The tickets and replies it wrote keep its name.</li>
 </ul>
 
 <h3>Revoking a key</h3>
-<p>An administrator clicks <em>Revoke</em> next to the key on <em>Admin → API Keys</em>, and staff revoke their own under <em>Account → API keys</em>. Revocation is immediate: the next request with that key gets <code>401</code>. Disabling or deleting the key's owner also stops the key working. An administrator who resets someone's password can tick <em>Also revoke this person's API keys</em> to delete every key they own; a person changing their own password, <em>Forgot password</em>, <code>unlock</code> and <code>reset-factors</code> never touch keys.</p>
+<p>An administrator clicks <em>Revoke</em> next to the key on <em>Admin → Integrations → API Keys</em>, and staff revoke their own under <em>Account → API keys</em>. Revocation is immediate: the next request with that key gets <code>401</code>. Disabling or deleting the key's owner also stops the key working. An administrator who resets someone's password can tick <em>Also revoke this person's API keys</em> to delete every key they own; a person changing their own password, <em>Forgot password</em>, <code>unlock</code> and <code>reset-factors</code> never touch keys.</p>
 <p>A webhook that a key created, or last changed the URL of, is paused when the key is revoked or expires (see <a href="admin-guide.html#admin-webhook-paused">the admin guide</a>).</p>
 
 <h3>Key naming conventions</h3>

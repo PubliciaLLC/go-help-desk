@@ -635,7 +635,7 @@ embed:
 <h3>Error handling</h3>
 <p>Plugin errors (panics, traps, timeouts) are caught by the host and logged. They do not crash the application or affect other plugins. Each plugin's error count is tracked and visible in the admin panel under <em>Admin → Plugins → [plugin name]</em>.</p>
 
-<p>A plugin that errors on more than 50% of event deliveries in a 10-minute rolling window is automatically disabled, and an in-app notification is sent to admins. The threshold is configurable under <em>Admin → Settings → Plugin error threshold</em>. The plugin can be manually re-enabled after fixing the issue.</p>
+<p>A plugin that errors on more than 50% of event deliveries in a 10-minute rolling window is automatically disabled, and an in-app notification is sent to admins. The threshold is configurable under <em>Admin → System → Settings → Plugin error threshold</em>. The plugin can be manually re-enabled after fixing the issue.</p>
 
 <h3>Reviewing a plugin before enabling</h3>
 <p>Before enabling a third-party plugin, review its declared manifest:</p>

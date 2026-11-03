@@ -130,7 +130,7 @@
 <h1 class="docs-page-title" id="admin-overview">Admin Guide</h1>
 <p class="docs-page-sub">Configure and manage every aspect of your Go Help Desk installation.</p>
 
-<p>The admin panel is accessible from the sidebar when logged in as an Admin. All configuration in this guide is done through the admin panel unless a restart is required (only for environment variable changes).</p>
+<p>The admin pages are under <strong>Admin</strong> in the sidebar when you are signed in as an administrator. Admin expands into four sections: <strong>People</strong> (Users, Groups, Roles), <strong>Tickets</strong> (Categories, Statuses, Tags, Custom Fields, Canned Responses, Routing), <strong>Integrations</strong> (API Keys, OAuth Clients, Webhooks, Email Templates) and <strong>System</strong> (Settings, Audit Log). Click a section to open it; the section that holds the page you are on is always open. Paths in this guide are written in full, for example <em>Admin → System → Settings</em>. All configuration in this guide is done through the admin panel unless a restart is required (only for environment variable changes).</p>
 
 <div class="callout callout-note">
   <p><strong>What's new for administrators in 1.3.0</strong></p>
@@ -140,10 +140,10 @@
     <li><a href="#admin-statuses">Closed is terminal</a> by default. <a href="#admin-closed-reopen">Reopening closed tickets</a> is an opt-in setting, and a reopen window of 0 closes a Resolved ticket on the next sweep.</li>
     <li><a href="#admin-sla">SLA tracking</a> works end to end: timers pause while a ticket is Pending.</li>
     <li><a href="#admin-users">Account recovery</a>: an identity-provider lockout guard, and a <code>reset-factors</code> command for an account that has lost every second factor. MFA reset also clears passkeys.</li>
-    <li><a href="tickets.html#tickets-create">Guest submission</a> works. <code>guest_submission_enabled</code> needs a signed-in administrator, and switching it off also suspends every existing guest link until it is switched on again. <em>Guests may attach files</em> (<code>guest_attachments_enabled</code>, <em>Settings → General → Submissions</em>, session only) is <strong>off by default, including after an upgrade</strong>, and works only while guest submission is on. It has a per-file size slider (1 to 100 MB, 5 by default, never above the 25 MB instance maximum), a limit of files per ticket (1 to 50, default 5) and uploads per guest link per hour (1 to 30, default 3). See <a href="tickets.html#tickets-create">Guest ticket submission</a>.</li>
-    <li><a href="#admin-attachments">Attachment security</a>: content detection, malware scanning and reputation lookup, all configured under <em>Admin → Settings → Attachments</em>.</li>
-    <li><a href="#admin-staff-email">Staff email</a>: assignments, requester replies and reopens are emailed to staff, with three switches each person controls and an administrator override. On an upgraded install the overrides start as Off for everyone, so turn staff email on under Settings → Email when you are ready. Staff can also <a href="tickets.html#tickets-follow">follow tickets</a>.</li>
-    <li><a href="#admin-email-tpl">Email templates</a>: edit the wording of all 17 emails, with an optional HTML part, and a shared header and footer, under <em>Admin → Email Templates</em>.</li>
+    <li><a href="tickets.html#tickets-create">Guest submission</a> works. <code>guest_submission_enabled</code> needs a signed-in administrator, and switching it off also suspends every existing guest link until it is switched on again. <em>Guests may attach files</em> (<code>guest_attachments_enabled</code>, <em>Admin → System → Settings → General → Submissions</em>, session only) is <strong>off by default, including after an upgrade</strong>, and works only while guest submission is on. It has a per-file size slider (1 to 100 MB, 5 by default, never above the 25 MB instance maximum), a limit of files per ticket (1 to 50, default 5) and uploads per guest link per hour (1 to 30, default 3). See <a href="tickets.html#tickets-create">Guest ticket submission</a>.</li>
+    <li><a href="#admin-attachments">Attachment security</a>: content detection, malware scanning and reputation lookup, all configured under <em>Admin → System → Settings → Attachments</em>.</li>
+    <li><a href="#admin-staff-email">Staff email</a>: assignments, requester replies and reopens are emailed to staff, with three switches each person controls and an administrator override. On an upgraded install the overrides start as Off for everyone, so turn staff email on under Admin → System → Settings → Email when you are ready. Staff can also <a href="tickets.html#tickets-follow">follow tickets</a>.</li>
+    <li><a href="#admin-email-tpl">Email templates</a>: edit the wording of all 17 emails, with an optional HTML part, and a shared header and footer, under <em>Admin → Integrations → Email Templates</em>.</li>
     <li><a href="#admin-email-setup">Email setup rules</a>: SMTP must use TLS when a password is set, and a missing or failing mail setup shows as a banner instead of failing silently.</li>
     <li><a href="#admin-oauth-clients">OAuth clients</a> act as service users, so they can write tickets, and are managed from Users and OAuth Clients.</li>
     <li><a href="#admin-auto-assign">Routing</a> and a paged <a href="#admin-users-list">Users</a> list, <a href="#admin-cti-archive">archive and restore</a> for categories, types and items, and <a href="#admin-webhook-history">webhook History and Redeliver</a>, with <a href="#admin-webhook-filter">ticket filters</a> and retries.</li>
@@ -205,7 +205,7 @@ Facilities
   Ergonomics</code></pre>
 
 <h3>Managing the hierarchy</h3>
-<p>Navigate to <em>Admin → Categories</em>. The page shows a tree of all Categories with their Types and Items.</p>
+<p>Navigate to <em>Admin → Tickets → Categories</em>. The page shows a tree of all Categories with their Types and Items.</p>
 <ul>
   <li><strong>Add Category</strong> — click <em>New Category</em>. Give it a name. It appears immediately in the ticket form.</li>
   <li><strong>Add Type</strong> — click <em>Add Type</em> next to a Category. Types cannot exist without a parent Category.</li>
@@ -233,7 +233,7 @@ Facilities
 
 <h2 id="admin-users">Users &amp; roles</h2>
 
-<p>Manage accounts from <em>Admin → Users</em>. The page lists accounts with their role, login type, and join date. Click any row to open the user detail page.</p>
+<p>Manage accounts from <em>Admin → People → Users</em>. The page lists accounts with their role, login type, and join date. Click any row to open the user detail page.</p>
 
 <h3 id="admin-users-list">Finding accounts in a long list</h3>
 <p>The list is shown 50 accounts at a time, with <em>Previous</em> and <em>Next</em> buttons and a line such as <em>Showing 1-50 of 640</em>, so an instance with more than 200 accounts can reach every one of them. Narrow the list with the <em>Search name or email</em> box, the <em>All roles</em> drop-down, or the <em>Show</em> drop-down (<em>All accounts</em>, <em>People</em> or <em>Service accounts</em>). Without paging, the API still returns only the newest 200 accounts; ask for a page to go further.</p>
@@ -297,7 +297,7 @@ Facilities
 <h3 id="admin-password-age">Old password hashes</h3>
 <p>Releases before 1.3.0 stored passwords in a weaker form. 1.3.0 upgrades an account's stored password automatically the next time its owner signs in. People who do not sign in for a long time keep the old form, so after a deadline they are refused: a correct password on an old hash is rejected with <code>403 password_reset_required</code> and the message <em>Your password was saved in an older, weaker form and must be reset before you can sign in.</em></p>
 <ul>
-  <li><strong>The setting.</strong> <em>Admin → Settings → Authentication → Passwords</em>, <em>Reset window for old passwords</em> (<code>password_rehash_grace_days</code>). It is a number of days, 1 to 365, and the default is 30. A value below 1 is raised to 1 when you leave the field. The count starts the first time 1.3.0 runs against your database. Changing the number moves the deadline for everyone.</li>
+  <li><strong>The setting.</strong> <em>Admin → System → Settings → Authentication → Passwords</em>, <em>Reset window for old passwords</em> (<code>password_rehash_grace_days</code>). It is a number of days, 1 to 365, and the default is 30. A value below 1 is raised to 1 when you leave the field. The count starts the first time 1.3.0 runs against your database. Changing the number moves the deadline for everyone.</li>
   <li><strong>Administrators are exempt.</strong> An administrator is never refused for this, so the instance cannot lock itself out. Their password is upgraded at their next sign-in like everyone else's. Staff and requesters are not exempt.</li>
   <li><strong>New installs are not affected</strong>, and neither is anyone who signs in within the window.</li>
   <li><strong>How someone gets back in.</strong> When the server can send email, the refused sign-in itself mails the person a reset link (limited per address like <em>Forgot password?</em>) and the message tells them to check their email. If no link could be sent, the message says "We could not send a reset link just now. Try again in a minute, or ask an administrator." With email off, the message says to ask an administrator, and you set a new password for them from their user page (<em>Reset password</em>). Tell people who sign in rarely, such as seasonal staff, before the deadline, or reset them in advance.</li>
@@ -316,7 +316,7 @@ Facilities
 <p>Passkeys are tied to a domain name. If <code>BASE_URL</code> is an IP address, a single-word host such as <code>http://helpdesk:8080</code>, or contains non-ASCII characters, passkeys are switched off. The server still starts and everything else works, but every administrator sees a banner, <em>Passkeys are unavailable</em>, which gives the reason. Someone whose only second factor is a passkey cannot sign in while this lasts. They are told to ask an administrator to reset their sign-in factors; <em>Reset MFA</em> clears the passkey, and they then enrol an authenticator app. If the locked-out person is the last administrator, use <code>reset-factors</code> above. To get passkeys, give the instance a DNS name and set <code>BASE_URL</code> to it. Changing the domain makes passkeys registered under the old one stop working.</p>
 
 <h3>SAML metadata as a URL or pasted XML</h3>
-<p>Under <em>Admin → Settings → Authentication → SAML</em> the identity provider's metadata can be given as a URL the server fetches, or as XML you paste or upload. The two are alternatives, and a pasted copy is never refreshed. The steps and the refusals are in <a href="authentication.html#auth-saml">SAML 2.0 SSO</a>.</p>
+<p>Under <em>Admin → System → Settings → Authentication → SAML</em> the identity provider's metadata can be given as a URL the server fetches, or as XML you paste or upload. The two are alternatives, and a pasted copy is never refreshed. The steps and the refusals are in <a href="authentication.html#auth-saml">SAML 2.0 SSO</a>.</p>
 
 <h3>Identity-provider lockout guard</h3>
 <p>Saving SAML or OIDC settings is refused with <code>400 bad_request</code> when the change would leave no active administrator able to sign in, for example by turning off the only identity provider that an administrator without a password uses. Local password sign-in is not affected by these settings. A change that leaves only some administrators unable to sign in is saved, and the response carries a warning.</p>
@@ -324,7 +324,7 @@ Facilities
 
 <h2 id="admin-groups">Groups &amp; scope</h2>
 
-<p>Group membership decides which tickets a staff member can see only when <em>Limit staff to their group scope</em> is on, under <em>Admin → Settings → General → Ticket visibility</em>. It is off by default, and then every staff member can see every ticket. With it on, a staff member sees the tickets they reported, tickets assigned to them or to one of their groups, and tickets whose category and type one of their groups covers. A staff member in no group then sees almost nothing, and a ticket outside their visibility answers as not found, even by its tracking number. An admin always sees all tickets.</p>
+<p>Group membership decides which tickets a staff member can see only when <em>Limit staff to their group scope</em> is on, under <em>Admin → System → Settings → General → Ticket visibility</em>. It is off by default, and then every staff member can see every ticket. With it on, a staff member sees the tickets they reported, tickets assigned to them or to one of their groups, and tickets whose category and type one of their groups covers. A staff member in no group then sees almost nothing, and a ticket outside their visibility answers as not found, even by its tracking number. An admin always sees all tickets.</p>
 
 <h3>How scope is calculated</h3>
 <p>When a staff member loads their ticket queue, the system collects all CTI scope entries from all their groups, unions them, and returns tickets that match any of those entries.</p>
@@ -339,7 +339,7 @@ Facilities
 
 <h3>Creating and configuring a group</h3>
 <ol>
-  <li>Go to <em>Admin → Groups → New group</em>.</li>
+  <li>Go to <em>Admin → People → Groups → New group</em>.</li>
   <li>Give the group a name (e.g. "Tier 1 Support", "Networking").</li>
   <li>Under <em>Scope</em>, add one or more Category/Type pairs. Click <em>Add scope entry</em>, pick a Category, and optionally narrow to a Type.</li>
   <li>Under <em>Members</em>, add staff accounts.</li>
@@ -380,8 +380,8 @@ Facilities
 <p>When a ticket is created, Go Help Desk can automatically assign it without any manual intervention. Assignment follows a three-tier priority chain:</p>
 
 <ol>
-  <li><strong>CTI-scoped group</strong> — if the ticket's category or type matches a group's scope, the ticket is assigned to that group. This is the preferred path: configure group scopes under <em>Admin → Groups</em> and routing happens automatically based on what the ticket is about.</li>
-  <li><strong>Global group fallback</strong>: if no scoped group matches, the ticket is assigned to the catch-all group chosen on the <em>Admin → Routing</em> page (stored as <code>auto_assign_group_id</code>). Useful for a single catch-all team.</li>
+  <li><strong>CTI-scoped group</strong> — if the ticket's category or type matches a group's scope, the ticket is assigned to that group. This is the preferred path: configure group scopes under <em>Admin → People → Groups</em> and routing happens automatically based on what the ticket is about.</li>
+  <li><strong>Global group fallback</strong>: if no scoped group matches, the ticket is assigned to the catch-all group chosen on the <em>Admin → Tickets → Routing</em> page (stored as <code>auto_assign_group_id</code>). Useful for a single catch-all team.</li>
   <li><strong>Round-robin users</strong>: if no group fallback is configured, the ticket is assigned to the next person in the round-robin list on the same page (stored as <code>auto_assign_user_ids</code>). The system cycles through the list in the order the people were ticked.</li>
   <li><strong>Unassigned</strong> — if none of the above apply, the ticket is left unassigned and visible to all staff with scope for that CTI.</li>
 </ol>
@@ -391,7 +391,7 @@ Facilities
 </div>
 
 <h3>Configuring auto-assignment</h3>
-<p>CTI-scoped groups are configured per category/type from <em>Admin → Categories</em> (expand a row and use the <strong>Groups</strong> subsection). The two fallbacks are set on <em>Admin → Routing</em>. The page lists the four rules in order, says that the first one that matches wins, and notes that routing runs once, when the ticket is created.</p>
+<p>CTI-scoped groups are configured per category/type from <em>Admin → Tickets → Categories</em> (expand a row and use the <strong>Groups</strong> subsection). The two fallbacks are set on <em>Admin → Tickets → Routing</em>. The page lists the four rules in order, says that the first one that matches wins, and notes that routing runs once, when the ticket is created.</p>
 <ul>
   <li><strong>Catch-all group</strong>: a drop-down of your groups, with <em>None</em> as the default.</li>
   <li><strong>Round-robin staff</strong>: a list of staff and administrators with a tick box each. Tickets are dealt out to the ticked people in the order they were ticked. Someone who is suspended when their turn comes is skipped, and takes their turn again when re-enabled; they stay ticked. Anyone saved in the list who cannot take work right now, whether suspended or moved to a requester role, is labelled <em>(can't take work right now)</em> and can be unticked. A saved entry for a person who no longer exists is dropped when you save, and the page tells you so.</li>
@@ -409,7 +409,7 @@ Facilities
 
 <h2 id="admin-custom-fields">Custom fields</h2>
 
-<p>Custom fields let admins attach structured data to tickets beyond the built-in fields (subject, description, priority, CTI). They are managed from <em>Admin → Custom Fields</em>.</p>
+<p>Custom fields let admins attach structured data to tickets beyond the built-in fields (subject, description, priority, CTI). They are managed from <em>Admin → Tickets → Custom Fields</em>.</p>
 
 <h3>Field definitions</h3>
 <p>A <em>field definition</em> is the global blueprint for a field. It has:</p>
@@ -429,7 +429,7 @@ Facilities
 </ul>
 
 <h3>Assigning fields to CTI nodes</h3>
-<p>Fields are assigned from <em>Admin → Categories</em>. Expand a Category, Type, or Item row — each has a <strong>Fields</strong> subsection where you can assign any active field definition. Per assignment you configure:</p>
+<p>Fields are assigned from <em>Admin → Tickets → Categories</em>. Expand a Category, Type, or Item row — each has a <strong>Fields</strong> subsection where you can assign any active field definition. Per assignment you configure:</p>
 <ul>
   <li><strong>Visible on new</strong> — whether the field appears on the new-ticket form when that CTI node is selected.</li>
   <li><strong>Required on new</strong> — whether the field must be filled before the ticket can be submitted. Only applies when <em>visible on new</em> is also checked.</li>
@@ -444,7 +444,7 @@ Facilities
 
 <h2 id="admin-tags">Tags</h2>
 
-<p>Tags are free-form labels that staff attach to tickets to aid categorization, search, and filtering beyond the formal CTI hierarchy. They are managed from <em>Admin → Tags</em>.</p>
+<p>Tags are free-form labels that staff attach to tickets to aid categorization, search, and filtering beyond the formal CTI hierarchy. They are managed from <em>Admin → Tickets → Tags</em>.</p>
 
 <h3>How tags are created</h3>
 <p>Tags are created <em>on first use</em> — there is no separate "create tag" step. When a staff member adds a tag to a ticket and types a name that doesn't exist yet, the tag is created automatically. Tags are stored lowercase regardless of what was typed.</p>
@@ -453,7 +453,7 @@ Facilities
 <p>As staff type in the tag field on a ticket, existing active tags matching the prefix are suggested. Staff can select a suggestion or press Enter to create and apply a new tag with whatever they've typed.</p>
 
 <h3>Deactivating a tag</h3>
-<p>If an inappropriate or misspelled tag is created, admins can deactivate it from <em>Admin → Tags</em> by clicking <em>Deactivate</em>. Deactivated tags:</p>
+<p>If an inappropriate or misspelled tag is created, admins can deactivate it from <em>Admin → Tickets → Tags</em> by clicking <em>Deactivate</em>. Deactivated tags:</p>
 <ul>
   <li>No longer appear in autocomplete suggestions.</li>
   <li>Cannot be re-created by staff — if someone types the exact name of a deactivated tag, they receive an error explaining that only an admin can restore it.</li>
@@ -479,7 +479,7 @@ Facilities
 
 <h2 id="admin-canned-responses">Canned responses</h2>
 
-<p>Canned responses are reusable reply templates staff insert into ticket replies with one click, so common acknowledgements, fixes, and closure messages don't have to be retyped. They're managed from <em>Admin → Canned Responses</em>.</p>
+<p>Canned responses are reusable reply templates staff insert into ticket replies with one click, so common acknowledgements, fixes, and closure messages don't have to be retyped. They're managed from <em>Admin → Tickets → Canned Responses</em>.</p>
 
 <h3>Scope</h3>
 <p>Each canned response has a name, a body, and a scope:</p>
@@ -498,7 +498,7 @@ Facilities
 
 <h2 id="admin-statuses">Ticket statuses</h2>
 
-<p>Manage statuses from <em>Admin → Statuses</em>. Statuses represent where a ticket is in its lifecycle.</p>
+<p>Manage statuses from <em>Admin → Tickets → Statuses</em>. Statuses represent where a ticket is in its lifecycle.</p>
 
 <h3>System statuses</h3>
 <p>These are created automatically on first run and have special behavior. Their names and colors can be changed, but they cannot be deactivated or deleted.</p>
@@ -538,14 +538,14 @@ Facilities
 <p>Every status transition is automatically recorded on the ticket. The ticket detail page shows a chronological timeline that interleaves replies and status events. Status events show the old and new status (with their colors), who made the change, and the timestamp. The initial status on ticket creation is also recorded.</p>
 
 <h3>Reopen window</h3>
-<p>Configure how many days after Resolved a requester can reopen a ticket by replying. Set this from <em>Admin → Settings → General → Ticket lifecycle → Reopen window and auto-close</em>. The default is 7. Set it to 0 for no reopening at all: a Resolved ticket is closed, and read-only, on the next automatic sweep, about five minutes later.</p>
+<p>Configure how many days after Resolved a requester can reopen a ticket by replying. Set this from <em>Admin → System → Settings → General → Ticket lifecycle → Reopen window and auto-close</em>. The default is 7. Set it to 0 for no reopening at all: a Resolved ticket is closed, and read-only, on the next automatic sweep, about five minutes later.</p>
 
 <h3>Reopen target status</h3>
-<p>When a ticket is reopened, it is moved to the <strong>Reopen target status</strong>. Configure this from <em>Admin → Settings → General → Ticket lifecycle → Reopen target status</em>. The picker lists all active, non-system statuses — system statuses (Resolved, Closed) are excluded because transitioning a reopened ticket back into a terminal state would immediately re-trigger the close flow. If no target status is configured, the ticket is moved to the status named <strong>New</strong>. The same happens if the configured target has since been deactivated: every reopen goes to New, administrators see a banner, <em>The reopen target status is inactive</em>, asking for an active status, and the request that deactivates the target comes back with a warning.</p>
+<p>When a ticket is reopened, it is moved to the <strong>Reopen target status</strong>. Configure this from <em>Admin → System → Settings → General → Ticket lifecycle → Reopen target status</em>. The picker lists all active, non-system statuses — system statuses (Resolved, Closed) are excluded because transitioning a reopened ticket back into a terminal state would immediately re-trigger the close flow. If no target status is configured, the ticket is moved to the status named <strong>New</strong>. The same happens if the configured target has since been deactivated: every reopen goes to New, administrators see a banner, <em>The reopen target status is inactive</em>, asking for an active status, and the request that deactivates the target comes back with a warning.</p>
 <p>A reopen does more than change the status. It flags the ticket, raises its priority one level on the first reopen only, starts the SLA over, and emails staff. See <a href="tickets.html#tickets-reopen">Reopened tickets</a>.</p>
 
 <h3 id="admin-closed-reopen">Reopening closed tickets</h3>
-<p>Closed is terminal by default. <em>Reopening closed tickets</em>, under <em>Admin → Settings → General → Ticket lifecycle</em>, decides whether a Closed ticket can be force-reopened, and by whom:</p>
+<p>Closed is terminal by default. <em>Reopening closed tickets</em>, under <em>Admin → System → Settings → General → Ticket lifecycle</em>, decides whether a Closed ticket can be force-reopened, and by whom:</p>
 <table>
   <thead><tr><th>Setting</th><th>Stored value</th><th>Who can reopen a Closed ticket</th></tr></thead>
   <tbody>
@@ -560,7 +560,7 @@ Facilities
 
 <h2 id="admin-sla">SLA policies</h2>
 
-<p>SLA (Service Level Agreement) tracking is an optional feature. Enable it from <em>Admin → Settings → Features → SLA tracking</em>. It can also be pre-enabled at server startup by setting the <code>SLA_ENABLED=true</code> environment variable.</p>
+<p>SLA (Service Level Agreement) tracking is an optional feature. Enable it from <em>Admin → System → Settings → Features → SLA tracking</em>. It can also be pre-enabled at server startup by setting the <code>SLA_ENABLED=true</code> environment variable.</p>
 
 <p>Once the SLA tracking toggle is on, a <strong>SLA Policies</strong> management blade appears directly in the Features tab. Policies define the maximum time from ticket creation until a first response and until the ticket is resolved.</p>
 
@@ -624,12 +624,12 @@ Facilities
 
 <h2 id="admin-staff-email">Staff email about tickets</h2>
 
-<p>Staff and administrators are emailed about their own tickets, which earlier releases never did. <strong>On an install upgraded from an earlier version (one that already has users), all three staff email overrides start as <em>Off for everyone</em>, so no staff email is sent until an administrator changes them under <em>Settings → Email</em>.</strong> A fresh install is unchanged: each person's own switches start on and the overrides use each person's choice. Nothing is sent while email is not configured. Each person chooses what they get under <em>Your account → Email about tickets</em>; see <a href="tickets.html#tickets-staff-email">Email to staff</a> for what each switch covers.</p>
+<p>Staff and administrators are emailed about their own tickets, which earlier releases never did. <strong>On an install upgraded from an earlier version (one that already has users), all three staff email overrides start as <em>Off for everyone</em>, so no staff email is sent until an administrator changes them under <em>Admin → System → Settings → Email</em>.</strong> A fresh install is unchanged: each person's own switches start on and the overrides use each person's choice. Nothing is sent while email is not configured. Each person chooses what they get under <em>Your account → Email about tickets</em>; see <a href="tickets.html#tickets-staff-email">Email to staff</a> for what each switch covers.</p>
 
 <p><strong>One mail per person per change.</strong> A change is queued in the same step as the change itself, so a change that fails sends nothing. The server works out who is mailed a moment after the change commits. At most one mail goes to any address for one change (addresses are compared without regard to case). A person who qualifies for several reasons in one change, such as being assigned and following the ticket, gets one mail, for the first of assigned, reopened, and requester replied whose switch is on. When a guest's address is also a staff member's, the staff mail is the one sent. A person who files a ticket that auto-assignment then assigns to them gets one mail. If the server cannot look up a ticket's followers or a group's members, the whole change is retried and no mail for it goes out until everyone is known, the requester's included. It is tried 8 times over about an hour and then marked failed; the log says "staff email: could not work out who to notify". Assigning a ticket to who and what it already has sends no mail. Mail queued before the upgrade is sent as it was.</p>
 
 <h3>Overriding the switches for everyone</h3>
-<p>Under <em>Admin → Settings → Email</em>, the <em>Staff email about tickets</em> section has one drop-down for each switch. Each offers <em>Use each person's choice</em> (the default on a fresh install), <em>On for everyone</em> and <em>Off for everyone</em>; the last two ignore what people chose. On an upgraded install all three start as <em>Off for everyone</em>; an override you had already stored is kept. To turn staff email on, set them to <em>Use each person's choice</em> or <em>On for everyone</em>.</p>
+<p>Under <em>Admin → System → Settings → Email</em>, the <em>Staff email about tickets</em> section has one drop-down for each switch. Each offers <em>Use each person's choice</em> (the default on a fresh install), <em>On for everyone</em> and <em>Off for everyone</em>; the last two ignore what people chose. On an upgraded install all three start as <em>Off for everyone</em>; an override you had already stored is kept. To turn staff email on, set them to <em>Use each person's choice</em> or <em>On for everyone</em>.</p>
 <table>
   <thead><tr><th>Switch</th><th>Setting</th></tr></thead>
   <tbody>
@@ -648,7 +648,7 @@ Facilities
 
 <h2 id="admin-email-tpl">Email templates</h2>
 
-<p>Under <em>Admin → Email Templates</em> (also linked from <em>Settings → Email</em>) an administrator can edit the subject and body of every email the help desk sends, and a <strong>header</strong> and <strong>footer</strong> that go around all of them. Each can also have an optional HTML part (see <a href="#admin-email-html">The HTML part</a>); with none, the email is plain text. Until you edit something, every email is exactly what it was before the editor existed.</p>
+<p>Under <em>Admin → Integrations → Email Templates</em> (also linked from <em>Admin → System → Settings → Email</em>) an administrator can edit the subject and body of every email the help desk sends, and a <strong>header</strong> and <strong>footer</strong> that go around all of them. Each can also have an optional HTML part (see <a href="#admin-email-html">The HTML part</a>); with none, the email is plain text. Until you edit something, every email is exactly what it was before the editor existed.</p>
 
 <p>There are seventeen. Six go to requesters and guests, nine to staff, and two to people setting up or recovering an account:</p>
 
@@ -742,7 +742,7 @@ Read it here:
 
 <h2 id="admin-webhooks">Webhooks</h2>
 
-<p>Webhooks send ticket events to another system as an HTTP <code>POST</code>. Manage them from <em>Admin → Webhooks</em>. Each hook in the list has <em>Disable</em> or <em>Enable</em>, <em>History</em>, <em>Edit</em> and <em>Delete</em>.</p>
+<p>Webhooks send ticket events to another system as an HTTP <code>POST</code>. Manage them from <em>Admin → Integrations → Webhooks</em>. Each hook in the list has <em>Disable</em> or <em>Enable</em>, <em>History</em>, <em>Edit</em> and <em>Delete</em>.</p>
 
 <h3>Configuration</h3>
 <table class="param-table">
@@ -902,7 +902,7 @@ function verifySignature(secret, body, header) {
 
 <h2 id="admin-oauth-clients">OAuth clients</h2>
 
-<p>An OAuth client lets another system, such as a CI pipeline or a sync job, call the API with a client ID and secret exchanged for a short-lived token. Manage them from <em>Admin → OAuth Clients</em>. To create one, give it a name, pick its permissions (scopes) and click <em>Create</em>. The client ID and secret are shown once; the secret is not shown again. <em>Revoke</em> deletes a client: its existing tokens stop working immediately, and its service user is deleted.</p>
+<p>An OAuth client lets another system, such as a CI pipeline or a sync job, call the API with a client ID and secret exchanged for a short-lived token. Manage them from <em>Admin → Integrations → OAuth Clients</em>. To create one, give it a name, pick its permissions (scopes) and click <em>Create</em>. The client ID and secret are shown once; the secret is not shown again. <em>Revoke</em> deletes a client: its existing tokens stop working immediately, and its service user is deleted.</p>
 
 <h3>Each client acts as a service user</h3>
 <p>Every client has a <a href="#admin-service-users">service user</a>: an account made with the client and named after it, that the client acts as. The list shows it in the <em>Acts as</em> column, with a link to its page, and shows the service user's groups in the <em>Groups</em> column.</p>
@@ -916,9 +916,9 @@ function verifySignature(secret, body, header) {
 
 <h2 id="admin-api-keys">API keys</h2>
 
-<p>API keys are for scripts and integrations. Administrators manage them under <em>Admin → API Keys</em>. Staff can manage their own under <em>Account → API keys</em> when you allow it.</p>
+<p>API keys are for scripts and integrations. Administrators manage them under <em>Admin → Integrations → API Keys</em>. Staff can manage their own under <em>Account → API keys</em> when you allow it.</p>
 <h3>Settings</h3>
-<p>Both are under <em>Admin → Settings → Authentication → API keys</em>, and both are session-only: an API key or OAuth client cannot change them.</p>
+<p>Both are under <em>Admin → System → Settings → Authentication → API keys</em>, and both are session-only: an API key or OAuth client cannot change them.</p>
 <table class="param-table">
   <thead><tr><th>Setting</th><th>Default</th><th>What it does</th></tr></thead>
   <tbody>
@@ -938,7 +938,7 @@ function verifySignature(secret, body, header) {
 <h2 id="admin-updates">Updates and the After upgrading wizard</h2>
 
 <h3>Weekly check for new releases (off unless you choose it)</h3>
-<p>The server can check whether a newer release exists. <strong>It is off</strong> on a new install and stays off after an upgrade, and while it is off the server makes no request at all. Turn it on under <em>Admin → Settings → General → Updates</em> (<code>update_check_enabled</code>, session only: an API key or OAuth client cannot change it), or at first-run setup.</p>
+<p>The server can check whether a newer release exists. <strong>It is off</strong> on a new install and stays off after an upgrade, and while it is off the server makes no request at all. Turn it on under <em>Admin → System → Settings → General → Updates</em> (<code>update_check_enabled</code>, session only: an API key or OAuth client cannot change it), or at first-run setup.</p>
 <ul>
   <li><strong>What is sent.</strong> One <code>GET</code> to GitHub's public releases API (<code>https://api.github.com/repos/PubliciaLLC/go-help-desk/releases/latest</code>) with two headers of its own: <code>User-Agent: go-help-desk</code> (a fixed name, no version number) and <code>Accept: application/vnd.github+json</code>. No query string, body, cookie, instance identifier or usage data, and nothing about your server or version. GitHub sees your server's IP address, as any website would.</li>
   <li><strong>How often.</strong> At most once every 7 days, and not again after a restart until the week is up. A failed check is logged once and tried again the following week.</li>
@@ -973,19 +973,19 @@ function verifySignature(secret, body, header) {
 <h3>What is recorded</h3>
 <p>For tickets, the actions are <code>created</code>, <code>status_changed</code>, <code>assigned</code>, <code>unassigned</code>, <code>resolved</code>, <code>closed</code> and <code>reopened</code>, plus <code>priority_changed</code>, <code>sla_restarted</code> (a reopen starting the SLA over), <code>followed</code> and <code>unfollowed</code>, and <code>reply_added</code> (a public reply) and <code>note_added</code> (an internal note). The last two hold only the reply's id and whether it was internal, never the text, and they are written from the upgrade on: replies and notes written before it are not backfilled. In the Audit Log, a <strong>Hide replies and notes</strong> checkbox leaves them out when they crowd the log. A status change out of Resolved or Closed is recorded as <code>reopened</code> beside <code>status_changed</code>. Deleting a group records <code>unassigned</code> for every ticket it held. Changes to a ticket's category, type, item and custom fields are not recorded. Account actions are recorded too. An MFA reset, for example, records the authenticator and the passkeys it cleared, and whether it came from the command line.</p>
 
-<p>Replies and notes show as "<em>name</em> replied publicly" or "<em>name</em> added an internal note", with the time and no text. A guest shows as "A guest" and a deleted account as "Someone". The same people who see Activity today see them (staff and administrators; a requester still gets <code>403</code>), the requester-name masking setting applies, and staff see them in the admin audit view only for tickets in their scope. In a ticket's Activity feed the newest 500 replies and notes are shown, so a long conversation cannot push the ticket's other history off it. Webhooks, MCP and email are unchanged.</p>
+<p>Replies and notes show as "<em>name</em> replied publicly" or "<em>name</em> added an internal note", with the time and no text. A guest shows as "A guest" and a deleted account as "Someone". The same people who see Activity today see them (staff and administrators; a requester still gets <code>403</code>), the requester-name masking setting applies, and staff see them in a ticket's Activity feed, which they can open only for tickets in their scope. In a ticket's Activity feed the newest 500 replies and notes are shown, so a long conversation cannot push the ticket's other history off it. Webhooks, MCP and email are unchanged.</p>
 
 <h3>Where you can read it</h3>
 <ul>
-  <li><strong>On a ticket.</strong> Staff and administrators see an <em>Activity</em> feed on the ticket. The field-by-field diff is for administrators. Staff see it only when <em>Staff can view ticket change history</em> is on. That setting is off by default, and it is under <em>Admin → Settings → General → Audit log</em>. A change of status or assignee shows the status or person by name, with the id as a tooltip; if the status or account has since been deleted, the id is shown. The same names appear in the admin-wide Audit log, not only on a ticket. Names appear only to someone who is allowed to see the diff.</li>
-  <li><strong>Audit Log.</strong> A searchable view across entities, in the sidebar for administrators and staff. Staff see ticket entries only, and only for tickets they can see. Administrators see every entry, including account actions.</li>
+  <li><strong>On a ticket.</strong> Staff and administrators see an <em>Activity</em> feed on the ticket. The field-by-field diff is for administrators. Staff see it only when <em>Staff can view ticket change history</em> is on. That setting is off by default, and it is under <em>Admin → System → Settings → General → Audit log</em>. A change of status or assignee shows the status or person by name, with the id as a tooltip; if the status or account has since been deleted, the id is shown. The same names appear in the admin-wide Audit Log, not only on a ticket. Names appear only to someone who is allowed to see the diff.</li>
+  <li><strong>Audit Log.</strong> A searchable view across entities, under <em>Admin → System → Audit Log</em>, for administrators only. Administrators see every entry, including account actions. Staff do not have this page; they use each ticket's Activity feed.</li>
 </ul>
 
 <h3 id="admin-settings-audit">Follow history</h3>
-<p>When a staff member follows or stops following a ticket, the Activity feed and the Audit Log record it (<em>Started following</em> and <em>Stopped following</em>). Administrators always see these entries. Staff see them only when <em>Staff can view follow history</em> is on, under <em>Admin → Settings → General → Audit log</em> (<code>staff_can_view_follow_audit</code>, off by default). It is session-only: an API key or OAuth client cannot change it. Reporters never see these entries, and staff always see the current list of followers on a ticket whatever the setting says.</p>
+<p>When a staff member follows or stops following a ticket, the Activity feed and the Audit Log record it (<em>Started following</em> and <em>Stopped following</em>). Administrators always see these entries. Staff see them only when <em>Staff can view follow history</em> is on, under <em>Admin → System → Settings → General → Audit log</em> (<code>staff_can_view_follow_audit</code>, off by default). It is session-only: an API key or OAuth client cannot change it. Reporters never see these entries, and staff always see the current list of followers on a ticket whatever the setting says.</p>
 
 <h3>Requester names</h3>
-<p>By default, a requester is shown as <em>Requester (name hidden)</em> rather than by name in every audit view. Change this under <em>Admin → Settings → General → Privacy</em>, in <em>Mask requester names in Audit Trail</em>:</p>
+<p>By default, a requester is shown as <em>Requester (name hidden)</em> rather than by name in every audit view. Change this under <em>Admin → System → Settings → General → Privacy</em>, in <em>Mask requester names in Audit Trail</em>:</p>
 <table>
   <thead><tr><th>Choice</th><th>Requesters are masked in</th></tr></thead>
   <tbody>
@@ -998,19 +998,19 @@ function verifySignature(secret, body, header) {
 <img src="../screenshots/19-admin-settings-privacy.png" alt="The General settings tab: Limit staff to their group scope and Staff can view ticket change history switched on, audit Retention at 0 days, and Mask requester names in Audit Trail set to Everywhere under Privacy" width="1408" height="1974" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
 <h3>Retention</h3>
-<p>Set <em>Retention</em>, in days, under <em>Admin → Settings → General → Audit log</em>. The default is 0, which keeps every entry forever. The maximum is 36,525 days. When a value is set, a sweep deletes entries older than that. The first sweep runs two minutes after the server starts, and then once a day.</p>
+<p>Set <em>Retention</em>, in days, under <em>Admin → System → Settings → General → Audit log</em>. The default is 0, which keeps every entry forever. The maximum is 36,525 days. When a value is set, a sweep deletes entries older than that. The first sweep runs two minutes after the server starts, and then once a day.</p>
 <p>Retention is session-only. An API key or OAuth client cannot change it (<code>403 session_required</code>): shortening the retention would let a leaked key erase the record of what it had done.</p>
 
 <h3>API</h3>
 <ul>
-  <li><code>GET /api/v1/admin/audit</code> is the admin-wide view. A signed-in session needs no scope. An API key or OAuth client needs <code>audit:read</code>; <code>tickets:read</code> does not reach it.</li>
+  <li><code>GET /api/v1/admin/audit</code> is the admin-wide view, for administrators only. A signed-in administrator session needs no scope. An API key or OAuth client needs <code>audit:read</code>; <code>tickets:read</code> does not reach it.</li>
   <li><code>GET /api/v1/tickets/{id}/audit</code> is the per-ticket feed, and needs <code>tickets:read</code>.</li>
 </ul>
 <p>See the <a href="api-reference.html">API Reference</a> for the parameters and responses.</p>
 
 <h2 id="admin-attachments">Attachments <span class="badge-new">New in 1.3.0</span></h2>
 
-<p>Everything below lives under <em>Admin → Settings → Attachments</em>. The whole background — what is detected, the three storage tiers, and what the reputation lookup sends where — is on the <a href="attachment-security.html">Attachment Security</a> page. This section is the settings reference.</p>
+<p>Everything below lives under <em>Admin → System → Settings → Attachments</em>. The whole background — what is detected, the three storage tiers, and what the reputation lookup sends where — is on the <a href="attachment-security.html">Attachment Security</a> page. This section is the settings reference.</p>
 
 <img src="../screenshots/14-admin-settings-attachments.png" alt="Admin Settings, Attachments tab: the allowed file types, what happens when a file's content contradicts its name, the malware scanner address and policy, and the start of Reputation lookup with the VirusTotal and MetaDefender settings and their terms notices" width="2880" height="5200" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
@@ -1108,11 +1108,11 @@ function verifySignature(secret, body, header) {
 
 <p><code>GET /api/v1/admin/security-warnings</code> reports what scanning is <em>doing</em>, including a live reachability check rather than a restatement of the configuration — because an instance whose scanner container has died has an address configured and no protection, and those two facts must not look alike. It returns the effective policy, whether an address is configured, whether the scanner answers, and a sentence saying what that combination means.</p>
 
-<p>The same check is on the page. At the top of <em>Admin → Settings → Attachments → Malware scanning</em>, a status block shows the policy, whether a scanner address is configured, whether the scanner answers, and that sentence.</p>
+<p>The same check is on the page. At the top of <em>Admin → System → Settings → Attachments → Malware scanning</em>, a status block shows the policy, whether a scanner address is configured, whether the scanner answers, and that sentence.</p>
 
 <p>Administrators also see it as a banner. When the scan policy is not <code>off</code> and the live check fails, an <em>Attachment scanner unreachable</em> banner appears at the top of every page, with that sentence.</p>
 
-<p>A second banner, <em>Attachments are not being scanned</em>, is for an install that never chose. It appears when all three of these hold: no scan policy has ever been saved, no scanner address is set (in Settings or in <code>CLAMAV_ADDR</code>), and the instance already holds at least one attachment. That is what a Docker Compose install looks like after it upgrades from 1.2, which started the bundled ClamAV by itself. The banner says what to do: add <code>COMPOSE_PROFILES=antivirus</code> and <code>CLAMAV_ADDR=tcp://clamav:3310</code> to <code>docker/.env</code>, run <code>docker compose up -d</code>, then confirm the scanner address under <em>Admin → Settings → Attachments</em>. It goes away when a scanner address is set, or when you choose a scan policy under <em>Malware scanning</em>, including <em>Do not scan</em>. Scanning that is switched off on purpose that way is not bannered; the setting shows it.</p>
+<p>A second banner, <em>Attachments are not being scanned</em>, is for an install that never chose. It appears when all three of these hold: no scan policy has ever been saved, no scanner address is set (in Settings or in <code>CLAMAV_ADDR</code>), and the instance already holds at least one attachment. That is what a Docker Compose install looks like after it upgrades from 1.2, which started the bundled ClamAV by itself. The banner says what to do: add <code>COMPOSE_PROFILES=antivirus</code> and <code>CLAMAV_ADDR=tcp://clamav:3310</code> to <code>docker/.env</code>, run <code>docker compose up -d</code>, then confirm the scanner address under <em>Admin → System → Settings → Attachments</em>. It goes away when a scanner address is set, or when you choose a scan policy under <em>Malware scanning</em>, including <em>Do not scan</em>. Scanning that is switched off on purpose that way is not bannered; the setting shows it.</p>
 
 <h3>When uploads are disabled</h3>
 
@@ -1188,7 +1188,7 @@ function verifySignature(secret, body, header) {
 
 <h2 id="admin-branding">Branding</h2>
 
-<p>Customize the application's visual identity from <em>Admin → Settings → Branding</em>. Changes apply immediately with no restart required.</p>
+<p>Customize the application's visual identity from <em>Admin → System → Settings → Branding</em>. Changes apply immediately with no restart required.</p>
 
 <table>
   <thead><tr><th>Setting</th><th>Description</th></tr></thead>
@@ -1197,7 +1197,7 @@ function verifySignature(secret, body, header) {
     <tr>
       <td><strong>Logo</strong></td>
       <td>
-        Upload a logo file from <em>Admin → Settings → Branding → Upload logo</em>. Accepted formats: PNG, JPG, GIF. Maximum 2 MB.
+        Upload a logo file from <em>Admin → System → Settings → Branding → Upload logo</em>. Accepted formats: PNG, JPG, GIF. Maximum 2 MB.
         <ul style="margin:0.5rem 0 0; padding-left:1.25rem;">
           <li><strong>Target size: 320 × 64 px.</strong> Every accepted format is raster: images are proportionally scaled to fit within this bounding box and re-encoded as PNG, which also strips whatever metadata came with them. Images that already fit are kept at their original dimensions.</li>
           <li><strong>SVG is no longer accepted</strong> <span class="badge-new">Changed in 1.3.0</span>. It used to be, guarded by a sanitiser that parsed the XML and pattern-matched for scripts, event handlers and <code>javascript:</code> URIs. The <a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-p2wx-wvfr-7h3p">1.2.0 advisory</a> already contains one escape from that sanitiser. The logo is the one uploaded file this application renders inline on its own origin, so there is no safe subset worth maintaining. <strong>An SVG logo left on disk by an earlier release is no longer served</strong>: <code>GET /api/v1/logo</code> answers 404 as though no logo were set. Upload a PNG, JPG or GIF to get your logo back.</li>

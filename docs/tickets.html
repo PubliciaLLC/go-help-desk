@@ -188,7 +188,7 @@
 
 <h3>Guest ticket submission <span class="badge-new">New in 1.3.0</span></h3>
 
-<p>Guest submission is off by default. When it is enabled (<em>Admin → Settings</em>), the public form at <code>/submit</code> is reachable without logging in. Required: <strong>name</strong>, <strong>email</strong>, <strong>subject</strong> and <strong>category</strong>, which must be an active one. Phone is optional. Type, Item and priority are not shown and are not accepted: priority is always Medium on a guest ticket.</p>
+<p>Guest submission is off by default. When it is enabled (<em>Admin → System → Settings</em>), the public form at <code>/submit</code> is reachable without logging in. Required: <strong>name</strong>, <strong>email</strong>, <strong>subject</strong> and <strong>category</strong>, which must be an active one. Phone is optional. Type, Item and priority are not shown and are not accepted: priority is always Medium on a guest ticket.</p>
 
 <img src="../screenshots/28-guest-submit.png" alt="The guest submission form at /submit: name, email, optional phone, subject, description and category. There are no type, item or priority fields" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
@@ -197,7 +197,7 @@
 <h4>The guest link</h4>
 <ul>
   <li><strong>It opens one ticket and nothing else.</strong> A guest sees the subject, description, status, and the public replies — internal notes are never included, and staff names are not shown. They can post a reply, subject to the same lifecycle rules as anyone else, including the reopen window.</li>
-  <li><strong>Attaching files is off unless an administrator allows it.</strong> The setting <em>Guests may attach files</em> (<em>Admin → Settings → General → Submissions</em>) is off by default, including after an upgrade, and works only while guest submission is on. While it is off, <code>POST /api/v1/guest/attachments</code> answers the same generic <code>404</code> a bad link gets. When it is on, the guest page has an <em>Add files</em> button while the ticket is open, and says how many more files can be added (the count covers only files attached in the current visit to the page; the server holds the real limit). The submission form (<code>/submit</code>) has none: the link to attach from is emailed once the ticket exists. Uploads follow the same type, scanning and reputation rules as everyone else's and are download-only. The guest page does not list attachments, and a guest cannot download one.</li>
+  <li><strong>Attaching files is off unless an administrator allows it.</strong> The setting <em>Guests may attach files</em> (<em>Admin → System → Settings → General → Submissions</em>) is off by default, including after an upgrade, and works only while guest submission is on. While it is off, <code>POST /api/v1/guest/attachments</code> answers the same generic <code>404</code> a bad link gets. When it is on, the guest page has an <em>Add files</em> button while the ticket is open, and says how many more files can be added (the count covers only files attached in the current visit to the page; the server holds the real limit). The submission form (<code>/submit</code>) has none: the link to attach from is emailed once the ticket exists. Uploads follow the same type, scanning and reputation rules as everyone else's and are download-only. The guest page does not list attachments, and a guest cannot download one.</li>
   <li><strong>Guest upload limits.</strong> Each file is held to the lower of <em>Largest file a guest may attach</em> (a slider from 1 to 100 MB, 5 MB by default) and the instance maximum of 25 MB (<code>413</code> over it). At most 5 files per ticket from guests (an administrator can set 1 to 50; <code>409 guest_attachment_limit</code> over it), and at most 3 uploads an hour per guest link (1 to 30; <code>429</code> with <code>Retry-After</code> over it). A refusal decided before the scan (too large, wrong type, a bad name) does not use up the hour; one decided after it, or a server fault, does. Refused attempts also share a budget of 20 an hour per ticket, charged before the hourly upload budget and given back when the upload succeeds or is turned away by the hourly limit, so reaching it never uses up an hourly upload. The hourly count is kept in memory by each server instance. All of these settings are session-only.</li>
   <li><strong>It is replaced every time the help desk writes to them.</strong> A staff reply, a status change, a resolve or a reopen by staff each send a fresh link and invalidate the previous one immediately. There is no grace period, so the newest email is the one that works.</li>
   <li><strong>Closing the ticket stops the link being replaced, but does not revoke it.</strong> The last link sent still opens the ticket, read-only, until it expires. No mail is sent for the close. A guest can still open a follow-up from a closed ticket with the link.</li>
@@ -302,7 +302,7 @@
 
 
 <h3 id="tickets-reply-activity">Replies in the Activity feed</h3>
-<p>Staff and administrators see each reply and internal note in the ticket's <em>Activity</em> panel as "<em>name</em> replied publicly" or "<em>name</em> added an internal note", with the time and no text; the text stays in the conversation under its usual visibility rules. A guest shows as "A guest" and a deleted account as "Someone". Replies and notes written before the upgrade to 1.3.0 do not appear. The same entries are in the admin Audit Log, which has a <em>Hide replies and notes</em> option.</p>
+<p>Staff and administrators see each reply and internal note in the ticket's <em>Activity</em> panel as "<em>name</em> replied publicly" or "<em>name</em> added an internal note", with the time and no text; the text stays in the conversation under its usual visibility rules. A guest shows as "A guest" and a deleted account as "Someone". Replies and notes written before the upgrade to 1.3.0 do not appear. The same entries are in the admin Audit Log (administrators only), which has a <em>Hide replies and notes</em> option.</p>
 
 <h2 id="tickets-links">Linked tickets</h2>
 
@@ -374,7 +374,7 @@
 <p>Tags are for staff. Only staff and admins can see, add or remove them; the requester never sees the tags on their ticket.</p>
 
 <h3>Admin tag management</h3>
-<p>Admins can deactivate inappropriate tags or restore previously deactivated ones from <em>Admin → Tags</em>. See <a href="admin-guide.html#admin-tags">Tags</a> in the Admin Guide for details.</p>
+<p>Admins can deactivate inappropriate tags or restore previously deactivated ones from <em>Admin → Tickets → Tags</em>. See <a href="admin-guide.html#admin-tags">Tags</a> in the Admin Guide for details.</p>
 
 
 <h2 id="tickets-assignment">Assignment</h2>
@@ -396,7 +396,7 @@
 <p>Reassigning a ticket emails the new assignee, and the assigned group's members when it is assigned to a group, as described under <a href="#tickets-staff-email">Email to staff</a>. The person who made the change is never emailed about it. Assigning a ticket to the person and group it already has, or clearing a ticket that is already unassigned, changes nothing and sends no email or webhook. The old assignee is not told. The change is recorded in the ticket's Activity feed, and a <code>ticket.assigned</code> event goes to subscribed webhooks. A reassignment also ends the old assignee's <a href="#tickets-follow">follow</a> of the ticket, if they had one.</p>
 
 <h3>Assignment and scope</h3>
-<p>Scope controls what tickets a staff member sees in their default queue. Assignment overrides this for the assignee: if you are assigned a ticket outside your scope, it appears in your queue. Scope narrows what staff can see only when <em>Limit staff to their group scope</em> is on under <em>Admin → Settings → General → Ticket visibility</em>. It is off by default, and then every staff member can open any ticket and jump to it by its tracking number. Searching the list covers every ticket the staff member can see, not only their queue (see <a href="#tickets-search">Search</a>). With it on, a ticket outside a staff member's visibility answers as not found, even by its tracking number.</p>
+<p>Scope controls what tickets a staff member sees in their default queue. Assignment overrides this for the assignee: if you are assigned a ticket outside your scope, it appears in your queue. Scope narrows what staff can see only when <em>Limit staff to their group scope</em> is on under <em>Admin → System → Settings → General → Ticket visibility</em>. It is off by default, and then every staff member can open any ticket and jump to it by its tracking number. Searching the list covers every ticket the staff member can see, not only their queue (see <a href="#tickets-search">Search</a>). With it on, a ticket outside a staff member's visibility answers as not found, even by its tracking number.</p>
 
 
 <h2 id="tickets-priority">Changing priority</h2>
@@ -488,7 +488,7 @@
   <li><strong>Regular users</strong> see values in read-only form. If no values have been set, the card is not shown.</li>
 </ul>
 
-<p>Custom fields are configured by admins under <em>Admin → Custom Fields</em> and assigned to CTI nodes in <em>Admin → Categories</em>. See the <a href="admin-guide.html#admin-custom-fields">Admin Guide</a> for details.</p>
+<p>Custom fields are configured by admins under <em>Admin → Tickets → Custom Fields</em> and assigned to CTI nodes in <em>Admin → Tickets → Categories</em>. See the <a href="admin-guide.html#admin-custom-fields">Admin Guide</a> for details.</p>
 
 
 <h2 id="tickets-attachments">Attachments</h2>
@@ -512,7 +512,7 @@
 
 <h3>Allowed file types</h3>
 
-<p><strong>Which extensions this instance accepts is an operator setting</strong> <span class="badge-new">Changed in 1.3.0</span>, <code>attachment_allowed_types</code> under <em>Admin → Settings → Attachments</em>. It was a fixed list in the source up to and including 1.2.0. An empty list is a valid setting and means this instance takes no attachments at all.</p>
+<p><strong>Which extensions this instance accepts is an operator setting</strong> <span class="badge-new">Changed in 1.3.0</span>, <code>attachment_allowed_types</code> under <em>Admin → System → Settings → Attachments</em>. It was a fixed list in the source up to and including 1.2.0. An empty list is a valid setting and means this instance takes no attachments at all.</p>
 
 <p>The shipped default is the same set 1.2.0 accepted:</p>
 
@@ -567,7 +567,7 @@
 
 <p>A file the scanner identifies is refused with <code>422 infected</code> and the user is shown the scanner's name for it — unless the operator has set <code>attachment_infected_handling</code> to <code>quarantine</code>, in which case it is stored inside a password-protected archive and the ticket carries a warning banner. See the <a href="admin-guide.html#admin-attachments">Admin Guide</a> for both settings.</p>
 
-<p>Docker Compose does not scan by default. To scan with the bundled ClamAV, set <code>CLAMAV_ADDR=tcp://clamav:3310</code> and <code>COMPOSE_PROFILES=antivirus</code> in <code>docker/.env</code>; see <a href="getting-started.html#config-scanning">Getting Started: Virus scanning</a>. For other installs, point <code>CLAMAV_ADDR</code> at your own daemon (<code>tcp://host:port</code> or <code>unix:///path/to/clamd.sock</code>), or set the address under <em>Admin → Settings → Attachments</em>, which takes effect without a restart.</p>
+<p>Docker Compose does not scan by default. To scan with the bundled ClamAV, set <code>CLAMAV_ADDR=tcp://clamav:3310</code> and <code>COMPOSE_PROFILES=antivirus</code> in <code>docker/.env</code>; see <a href="getting-started.html#config-scanning">Getting Started: Virus scanning</a>. For other installs, point <code>CLAMAV_ADDR</code> at your own daemon (<code>tcp://host:port</code> or <code>unix:///path/to/clamd.sock</code>), or set the address under <em>Admin → System → Settings → Attachments</em>, which takes effect without a restart.</p>
 
 <h3>Downloads</h3>
 

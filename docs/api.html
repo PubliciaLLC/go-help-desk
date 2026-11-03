@@ -175,7 +175,7 @@
 <p>A scope is <code>resource:read</code> or <code>resource:write</code>, and write implies read on the same resource. The resources are:</p>
 <ul>
   <li><code>tickets</code>, <code>users</code>, <code>groups</code>, <code>categories</code>, <code>tags</code>, <code>canned_responses</code>, <code>sla</code>, <code>settings</code>, <code>plugins</code>, <code>webhooks</code> and <code>credentials</code>: read and write.</li>
-  <li><code>audit</code>: read only. No credential can write the audit log. The admin audit view needs <code>audit:read</code>; <code>tickets:read</code> does not reach it.</li>
+  <li><code>audit</code>: read only. No credential can write the audit log. The admin audit view (administrators only) needs <code>audit:read</code>; <code>tickets:read</code> does not reach it.</li>
 </ul>
 
 <ul>
