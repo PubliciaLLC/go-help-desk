@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 #
 # Regenerates the website screenshots from a freshly seeded 1.3.0 instance.
+# A run is three captures with two seeds between them: the empty instance (15),
+# the main seed (01 to 28), then the extras seed (29 and later). The extras come
+# last because they file a ticket, archive a category and change settings, which
+# would show in the older shots.
 #
 #   ./scripts/screenshots.sh                    build, seed and capture into a new output directory
 #   ./scripts/screenshots.sh --publish DIR      also copy the shots this run wrote into DIR/screenshots/
@@ -28,7 +32,8 @@
 #   The PostgreSQL database named by SHOTS_DB, dropped on exit unless --keep.
 #   A work directory under TMPDIR, named g.* and at most 61 characters long,
 #   holding the server binary, the attachments (including the quarantined test
-#   archive) and Chromium's profile. Removed on exit, even after a signal.
+#   archive), the mail the server sent (it holds working ticket links) and
+#   Chromium's profile. Removed on exit, even after a signal.
 #
 # Exposure: for the length of the run the server listens on every interface
 # (HTTP_PORT binds ":port"). Each run uses a random SHOTS_PASSWORD unless one is
@@ -39,6 +44,7 @@
 #   SHOTS_OUT                 output directory [a new mktemp directory under TMPDIR]
 #   SHOTS_PORT                HTTP port for the server [18080]
 #   FAKE_CLAMD_PORT           scanner stand-in port [13310]
+#   FAKE_SMTP_PORT            mail server stand-in port [13325]
 #   SHOTS_DB                  database name; must start with ghd_screenshots [ghd_screenshots]
 #   SHOTS_PG_ADMIN_URL        URL that may CREATE and DROP databases; its password is
 #                             passed through PG* variables, not on a command line
@@ -56,6 +62,13 @@
 # Inter 4.1 is downloaded once and checked against its SHA-256. If the download
 # fails, Liberation Sans is used and the run says so. Never run
 # `playwright install` here; the pinned Chromium is used.
+#
+# The server is started with SMTP_HOST pointing at a stand-in on 127.0.0.1 that
+# accepts and files every message (fake-smtp.mjs). Since #483 the settings API
+# refuses to turn on self-signup or guest submission while email is off, so the
+# seed cannot run without it. It also gives the guest ticket page (shot 40) its
+# link: the server stores only a hash of the token, so the mail is the one place
+# the token exists.
 #
 # Two parts of the capture contract are needed from frontend/scripts/screenshots/capture.mjs:
 #   --list               print the shot ids that --only accepts, one per line, and exit 0
@@ -110,6 +123,7 @@ fi
 out_given="${SHOTS_OUT:-}"
 port="${SHOTS_PORT:-18080}"
 clamd_port="${FAKE_CLAMD_PORT:-13310}"
+smtp_port="${FAKE_SMTP_PORT:-13325}"
 db="${SHOTS_DB:-ghd_screenshots}"
 admin_url="${SHOTS_PG_ADMIN_URL:-postgres://helpdesk:helpdesk@localhost:5432/postgres?sslmode=disable}"
 password="${SHOTS_PASSWORD:-}"
@@ -119,6 +133,7 @@ pinned_chromium=/opt/pw-browsers/chromium-1194/chrome-linux/chrome
 
 [[ "$port" =~ ^[0-9]+$ ]] || die "SHOTS_PORT must be a port number: got '$port'"
 [[ "$clamd_port" =~ ^[0-9]+$ ]] || die "FAKE_CLAMD_PORT must be a port number: got '$clamd_port'"
+[[ "$smtp_port" =~ ^[0-9]+$ ]] || die "FAKE_SMTP_PORT must be a port number: got '$smtp_port'"
 # Refused by name, not by checking the server: a typo must never reach the
 # development database, which the seed would otherwise populate.
 [[ "$db" =~ ^ghd_screenshots[A-Za-z0-9_]*$ ]] \
@@ -143,6 +158,7 @@ out=""
 work=""
 server_pid=""
 clamd_pid=""
+smtp_pid=""
 step_pid=""
 index_touched=0
 db_created=0
@@ -176,6 +192,10 @@ cleanup() {
   if [ -n "$clamd_pid" ]; then
     kill_tree "$clamd_pid"
     wait "$clamd_pid" 2>/dev/null
+  fi
+  if [ -n "$smtp_pid" ]; then
+    kill_tree "$smtp_pid"
+    wait "$smtp_pid" 2>/dev/null
   fi
   if [ "$index_touched" = 1 ]; then
     git -C "$root" checkout -- backend/internal/ui/dist/index.html 2>/dev/null \
@@ -228,7 +248,7 @@ preflight() {
   if [ -n "$(git -C "$root" status --porcelain -- backend/internal/ui/dist/index.html)" ]; then
     die "backend/internal/ui/dist/index.html has uncommitted changes. The run restores that file with git checkout, which would discard them. Commit or stash them first."
   fi
-  for f in fake-clamd.mjs seed.mjs capture.mjs; do
+  for f in fake-clamd.mjs fake-smtp.mjs seed.mjs capture.mjs; do
     [ -f "$shots/$f" ] || die "missing $shots/$f"
   done
   if [ -z "$chromium" ]; then
@@ -471,6 +491,24 @@ start_clamd() {
   die "scanner stand-in did not answer PONG"
 }
 
+# Plain SMTP with no password on a loopback address is the one thing the server
+# sends without TLS, so this needs no certificate. It writes each message to
+# $work/mail, which seed.mjs --extras reads.
+start_smtp() {
+  require_free_port "$smtp_port" "FAKE_SMTP_PORT"
+  step "starting the mail stand-in on 127.0.0.1:$smtp_port"
+  FAKE_SMTP_PORT="$smtp_port" FAKE_SMTP_DIR="$work/mail" node "$shots/fake-smtp.mjs" > "$out/smtp.log" 2>&1 &
+  smtp_pid=$!
+  local i
+  for i in $(seq 1 20); do
+    if port_open "$smtp_port"; then return 0; fi
+    kill -0 "$smtp_pid" 2>/dev/null || break
+    sleep 0.5
+  done
+  cat "$out/smtp.log" >&2 || true
+  die "mail stand-in did not start"
+}
+
 start_server() {
   require_free_port "$port" "SHOTS_PORT"
   mkdir -p "$work/attachments"
@@ -490,6 +528,9 @@ start_server() {
     export JWT_SECRET="$jwt_secret"
     export ATTACHMENT_DIR="$work/attachments"
     export CLAMAV_ADDR="tcp://127.0.0.1:$clamd_port"
+    export SMTP_HOST=127.0.0.1
+    export SMTP_PORT="$smtp_port"
+    export SMTP_FROM=helpdesk@example.com
     export AUTH_RATE_LIMIT_PER_MINUTE=0
     export GHD_ALLOW_ZERO_AUTH_THROTTLE=1
     export AUTH_THROTTLE_DELAY=0
@@ -521,13 +562,14 @@ export_for_node() {
   export SHOTS_PASSWORD="$password"
   export SHOTS_REPUTATION="${SHOTS_REPUTATION:-1}"
   export DATABASE_URL="$db_url"
+  export SHOTS_MAIL_DIR="$work/mail"
   if [ -n "$chromium" ]; then export SHOTS_CHROMIUM="$chromium"; fi
   if [ -n "${SHOTS_WEBHOOK_OK_URL:-}" ]; then export SHOTS_WEBHOOK_OK_URL; fi
 }
 
 node_capture() { ( cd "$fe" && node "$shots/capture.mjs" "$@" ); }
 # seed.json holds the seeded passwords, so the seed writes it under umask 077.
-node_seed() { ( umask 077; cd "$fe" && node "$shots/seed.mjs" ); }
+node_seed() { ( umask 077; cd "$fe" && node "$shots/seed.mjs" "$@" ); }
 
 # capture PHASE: each phase writes its own manifest; the file is moved aside so
 # the next phase cannot overwrite it.
@@ -549,10 +591,15 @@ seed() {
   chmod 600 "$out/seed.json"
 }
 
-# The run's manifest is the union of the two phases. It is what --publish and
+seed_extras() {
+  step "seeding the extras"
+  run_logged "$out/seed.log" node_seed --extras
+}
+
+# The run's manifest is the union of the three phases. It is what --publish and
 # the report read; png/ may hold shots from earlier runs that this one did not write.
 merge_manifest() {
-  cat "$work/manifest.pre-setup" "$work/manifest.main" | sort -u > "$out/manifest.txt"
+  cat "$work/manifest.pre-setup" "$work/manifest.main" "$work/manifest.extras" | sort -u > "$out/manifest.txt"
 }
 
 optimise() {
@@ -675,12 +722,15 @@ main() {
   build
   setup_db
   start_clamd
+  start_smtp
   start_server
   export_for_node
 
   capture pre-setup
   seed
   capture main
+  seed_extras
+  capture extras
   merge_manifest
   optimise
   report
