@@ -404,7 +404,13 @@ const SHOTS = [
   },
   {
     // The email template editor with HTML open and the preview of it (the
-    // preview is a sandboxed frame). Nothing is saved.
+    // preview is a sandboxed frame). Nothing is saved. The plain-text part of the
+    // preview prints the ticket link built from the server's BASE_URL, which is
+    // http://localhost:<port> here and cannot be changed (passkeys need it to be
+    // the browser's own origin). Before the capture the page text is changed to
+    // https://help.example.com. That is the editor's own <pre>, not the sandboxed
+    // frame, which has no script and shows the link only as a button's href, never
+    // as text. The shot throws if "localhost" is still on the page.
     file: '31-email-template-html.png', phase: 'extras', role: 'admin', path: '/admin/email-templates?t=ticket_created', vp: DESK,
     target: { element: (page) => page.getByRole('form', { name: /^Edit / }) },
     async prepare(page) {
@@ -412,6 +418,11 @@ const SHOTS = [
       await waitVisible(page.locator('iframe[title="HTML preview"]'), DATA_WAIT)
       await page.locator('iframe[title="HTML preview"]').scrollIntoViewIfNeeded()
       await page.waitForTimeout(500)
+      await page.locator('pre').evaluateAll((pres) => {
+        for (const pre of pres) pre.textContent = pre.textContent.replace(/http:\/\/localhost:\d+/g, 'https://help.example.com')
+      })
+      const left = await page.evaluate(() => document.body.innerText.includes('localhost'))
+      if (left) throw new Error('"localhost" is still visible in the template preview')
     },
   },
   {
