@@ -263,9 +263,15 @@ const SHOTS = [
   {
     file: '18-admin-webhooks.png', phase: 'main', role: 'admin', path: '/admin/webhooks', vp: DESK,
     requires: 'webhookDelivered',
-    target: { tall: 1500 },
-    async prepare(page) {
+    // All three hooks (Slack, Teams and the disabled Jira one, whose "No
+    // deliveries yet" sits at the bottom). 1500 cut the third one off; the cap is
+    // only a limit, the shot is as tall as the page.
+    target: { tall: 3000 },
+    async prepare(page, _ctx, seed) {
       await waitVisible(page.getByText(/Failing|Delivered/).first(), DATA_WAIT)
+      // With SHOTS_WEBHOOK_OK_URL the Slack hook must have been delivered.
+      if (seed?.features?.webhookOk) await waitVisible(page.getByText(/^Delivered/).first(), DATA_WAIT)
+      await waitVisible(page.getByText('No deliveries yet').first(), DATA_WAIT)
     },
   },
   {
