@@ -675,7 +675,7 @@ function GeneralPanel({
       <Section title="Audit log">
         <SettingRow
           label="Staff can view ticket change history"
-          description="When on, staff also see the field-level before/after detail on a ticket's Activity feed and in the admin-wide audit view — not just what happened and who did it, which staff already see either way. Admins always see this detail; reporters never do, regardless of this setting. Off by default: earlier versions shipped without this detail visible to staff at all."
+          description="When on, staff also see the field-level before/after detail on a ticket's Activity feed — not just what happened and who did it, which staff already see either way. Admins always see this detail; reporters never do, regardless of this setting. Off by default: earlier versions shipped without this detail visible to staff at all."
         >
           <Toggle
             label="Staff can view ticket change history"
@@ -685,7 +685,7 @@ function GeneralPanel({
         </SettingRow>
         <SettingRow
           label="Staff can view follow history"
-          description="When on, staff also see the entries recording who started and stopped following a ticket, on its Activity feed and in the admin-wide audit view. Admins always see them; reporters never do. Staff always see the current list of followers on a ticket, whatever this is set to. Off by default."
+          description="When on, staff also see the entries recording who started and stopped following a ticket, on its Activity feed. Admins always see them; reporters never do. Staff always see the current list of followers on a ticket, whatever this is set to. Off by default."
         >
           <Toggle
             label="Staff can view follow history"
