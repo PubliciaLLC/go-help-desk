@@ -566,7 +566,7 @@ const SHOTS = [
 // Why a shot whose seed data flag is false is skipped. Printed on the SKIP line.
 const SKIP_REASON = {
   reputation: 'seed.features.reputation is false (SHOTS_REPUTATION=0), so no provider lookups',
-  webhookDelivered: 'seed.features.webhookDelivered is false: not every enabled hook has a recorded delivery',
+  webhookDelivered: 'seed.features.webhookDelivered is false: not every enabled hook has a recorded delivery, or SHOTS_WEBHOOK_OK_URL did not answer with 2xx',
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
