@@ -25,6 +25,7 @@
            padding:0.12rem 0.45rem; border-radius:4px; white-space:nowrap; }
     .sev-critical { background:#fef2f2; color:#991b1b; border:1px solid #fecaca; }
     .sev-medium   { background:#fffbeb; color:#92400e; border:1px solid #fde68a; }
+    .sev-low      { background:#eff6ff; color:#1e40af; border:1px solid #bfdbfe; }
     .adv-meta { font-size:0.78rem; color:var(--muted); font-family:var(--mono); }
     .adv p { font-size:0.9rem; color:var(--ink-2); margin:0.35rem 0 0.6rem; line-height:1.55; }
     .fixed-in { font-size:0.82rem; color:var(--ink-2); }
@@ -85,7 +86,7 @@
 
   <div style="border:1px solid var(--border);border-left:3px solid var(--blue);border-radius:6px;padding:0.9rem 1.1rem;margin:1.5rem 0;background:var(--bg-2);">
     <strong>Run 1.3.0.</strong>
-    Every advisory below is fixed in <strong>v1.2.0</strong>, but only the 1.3 line receives
+    Every advisory below is fixed in <strong>v1.2.0</strong> or <strong>v1.3.0</strong>, but only the 1.3 line receives
     security fixes. From 1.2, read <a href="upgrading-1.3.0.html">Upgrading to 1.3.0</a>. From 1.1.1
     or earlier, read <a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a> first: credentials
     created in the 1.1.1 admin UI stop working, and everyone is signed out once.
@@ -93,6 +94,23 @@
 
   <h2 id="advisories">Advisories</h2>
   <p>Newest first. Severity is ours, assigned with GitHub's CVSS calculator.</p>
+
+  <div class="adv">
+    <div class="adv-head">
+      <span class="sev sev-low">Low</span>
+      <h3>An API key could revoke another administrator's key</h3>
+    </div>
+    <div class="adv-meta">GHSA-c9h9-j35r-w33m · affects 1.0.0 to 1.2.x · published with the 1.3.0 release</div>
+    <p>
+      An API key could delete another administrator's key if it knew the key's id. It could only
+      revoke, it needed an administrator's key and the other key's id, and it has been possible
+      since 1.0.0. From 1.3.0 an API key lists and revokes only itself, and a key answers
+      <code>404</code> for any other id.
+    </p>
+    <div class="fixed-in">Fixed in <strong>v1.3.0</strong> ·
+      <a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-c9h9-j35r-w33m">Read the advisory →</a>
+    </div>
+  </div>
 
   <div class="adv">
     <div class="adv-head">
@@ -198,7 +216,7 @@
   <p>Security fixes are issued for the <strong>1.3 release line only</strong>: 1.3.0 and its
      patch releases. Earlier versions, 1.2 included, are not backported. Two advisories reach back into 1.2, both fixed in 1.3.0:
      cross-site request forgery on the MCP routes, GHSA-3jmq-7vm4-cc7p (1.1.1 to 1.2.x), and an API key
-     able to revoke another administrator's key (1.0.0 to 1.2.0), published with 1.3.0. Apart from those
+     able to revoke another administrator's key, GHSA-c9h9-j35r-w33m (1.0.0 to 1.2.x), both published with 1.3.0. Apart from those
      two, no published advisory affects 1.2.0, and 1.2 receives no further fixes once 1.3.0 ships. Below 1.2 is not merely unsupported: every
      published advisory affects at least one of those versions, four of them rated critical.
      1.3.0 also carries hardening that 1.2 lacks; see the <a href="upgrading-1.3.0.html">upgrade page</a>. Upgrade to 1.3.</p>
