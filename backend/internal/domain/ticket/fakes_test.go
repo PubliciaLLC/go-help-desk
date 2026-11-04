@@ -605,11 +605,6 @@ func (f *fakeAuditStore) Search(_ context.Context, filter audit.Filter, limit, o
 	if f.err != nil {
 		return audit.Page{}, f.err
 	}
-	// Scope is a query's job and this double has no ticket table to apply it
-	// to; ignoring it would hand back entries the caller asked to have hidden.
-	if filter.ScopedTo != nil {
-		return audit.Page{}, errors.New("fakeAuditStore does not implement Filter.ScopedTo")
-	}
 	var matched []audit.Entry
 	for _, e := range f.entries {
 		if filter.EntityType != "" && e.EntityType != filter.EntityType {

@@ -227,7 +227,7 @@ func run() error {
 	cStore := categorystore.New(q)
 	gStore := groupstore.New(q)
 	aStore := adminstore.New(q)
-	auStore := auditstore.New(q).SnapshotOn(sqlDB)
+	auStore := auditstore.New(q)
 	slStore := slastore.New(q)
 	authStore := authstore.New(q)
 	cfStore := customfieldstore.New(q)

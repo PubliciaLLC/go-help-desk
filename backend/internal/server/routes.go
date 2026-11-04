@@ -172,6 +172,14 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.With(authmw.DenyMachineCredentials).Post("/{id}/password", s.handleAdminResetPassword)
 	})
 
+	// The admin-wide audit view (#129). Administrators only (Erik, 2026-11-03):
+	// staff read the history of a ticket they can see, not the whole log. It
+	// was open to staff, narrowed to ticket entries in their scope (#331).
+	// A signed-in session needs no scope; a machine credential needs audit:read
+	// (#362), not tickets:read: for an admin's key the view covers every
+	// entity, MFA and password resets included.
+	r.With(authmw.RequireResource(auth.ResourceAudit)).Get("/audit", s.handleListAdminAudit)
+
 	r.Route("/groups", func(r chi.Router) {
 		r.Use(authmw.RequireResource(auth.ResourceGroups))
 		r.Get("/", s.handleListGroups)

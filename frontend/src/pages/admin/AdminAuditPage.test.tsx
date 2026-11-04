@@ -27,15 +27,6 @@ function asAdmin() {
   })
 }
 
-function asStaff() {
-  useAuthStore.setState({
-    user: {
-      id: 'staff-1', email: 'staff@example.com', display_name: 'Sam Staff', role: 'staff',
-      mfa_enabled: false, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
-    },
-  })
-}
-
 function entry(overrides: Partial<AdminAuditEntry> = {}): AdminAuditEntry {
   return {
     id: 'e-1', entity_type: 'ticket', entity_id: 't-1', action: 'resolved',
@@ -78,18 +69,6 @@ describe('AdminAuditPage', () => {
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Audit Log' })).toBeTruthy())
 
     expect(screen.getByLabelText(/entity type/i)).toBeTruthy()
-  })
-
-  // Staff are forced to entity_type=ticket server-side no matter what the
-  // query string says — the control would let a staff member pick "user"
-  // and see an unexplained empty page, so it is not offered at all.
-  it('does not offer an entity-type filter to staff', async () => {
-    asStaff()
-    mockList({ entries: [], total: 0, has_more: false })
-    renderWithQuery(<AdminAuditPage />)
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Audit Log' })).toBeTruthy())
-
-    expect(screen.queryByLabelText(/entity type/i)).toBeNull()
   })
 
   it('sends an edited action filter to the server', async () => {
@@ -164,18 +143,6 @@ describe('AdminAuditPage', () => {
     expect((screen.getByRole('button', { name: /next/i }) as HTMLButtonElement).disabled).toBe(false)
   })
 
-  // Staff are counted by the same predicate that picks their page, so the
-  // total is what they can see and the range reads the same as it does for an
-  // admin.
-  it('shows the range and total for staff', async () => {
-    asStaff()
-    mockList({ entries: [entry()], total: 7, has_more: true })
-    renderWithQuery(<AdminAuditPage />)
-
-    await waitFor(() => expect(screen.getByText('1–1 of 7')).toBeTruthy())
-    expect((screen.getByRole('button', { name: /next/i }) as HTMLButtonElement).disabled).toBe(false)
-  })
-
   // The pager runs on has_more. The count is for display, and a page that has
   // already said it is the last must not offer a Next off the back of it.
   it('does not enable Next from a count when has_more is false', async () => {
@@ -231,14 +198,6 @@ describe('AdminAuditPage', () => {
 
     await waitFor(() => expect(screen.getByText('1–1 of 10,000+')).toBeTruthy())
     expect((screen.getByRole('button', { name: /next/i }) as HTMLButtonElement).disabled).toBe(true)
-  })
-
-  it('shows a capped total to staff the same way', async () => {
-    asStaff()
-    mockList({ entries: [entry()], total: 10000, total_capped: true, has_more: true })
-    renderWithQuery(<AdminAuditPage />)
-
-    await waitFor(() => expect(screen.getByText('1–1 of 10,000+')).toBeTruthy())
   })
 
   it('shows a masked requester distinctly from an account named "Requester"', async () => {

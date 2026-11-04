@@ -205,8 +205,8 @@ func ScopesForRole(role string) []Scope {
 			{ResourceTickets, ActionRead}, {ResourceTickets, ActionWrite},
 			// The assignee picker's group list, read only (groupsRouter).
 			{ResourceGroups, ActionRead},
-			// The admin-wide audit view, which staff may open (#129).
-			{ResourceAudit, ActionRead},
+			// No audit:read: the admin-wide audit view is administrators only.
+			// Staff read a ticket's history through tickets:read.
 			// No users:read. GET /users/lookup, the one staff-reachable route
 			// that needed it (#514), is session-only since #290: keys have no
 			// user lookup. A key files for someone with reporter_email.

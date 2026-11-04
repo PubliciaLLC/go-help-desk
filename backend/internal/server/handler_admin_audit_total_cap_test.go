@@ -17,8 +17,7 @@ import (
 
 // #331: `total` stops at audit.TotalCap and `total_capped` says it stopped.
 // The pager must not care: has_more is read off the page, so it is right on
-// both sides of the cap, for the admin and for staff alike — through the one
-// store call both go through.
+// both sides of the cap.
 
 type cappedPage struct {
 	Entries     []struct{ ID string } `json:"entries"`
@@ -32,9 +31,6 @@ func TestAdminAudit_TotalCapBoundary(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	// A ticket staff may see (assigned to them), with scope enforced, so the
-	// staff path is the scoped one. Admins are never scoped.
-	enableScope(t, h)
 	newSt, err := h.ticketStore.GetStatusByName(ctx, ticket.StatusNameNew)
 	require.NoError(t, err)
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -77,7 +73,7 @@ func TestAdminAudit_TotalCapBoundary(t *testing.T) {
 	actors := []struct {
 		name string
 		do   func(*testing.T, string, string, any) *http.Response
-	}{{"admin", h.doAsAdmin}, {"scoped staff", h.do}}
+	}{{"admin", h.doAsAdmin}}
 
 	for _, tc := range []struct {
 		n          int
@@ -135,7 +131,7 @@ func TestAdminAudit_TotalIsNotCappedForSmallInstances(t *testing.T) {
 		}))
 	}
 
-	for _, do := range []func(*testing.T, string, string, any) *http.Response{h.doAsAdmin, h.do} {
+	for _, do := range []func(*testing.T, string, string, any) *http.Response{h.doAsAdmin} {
 		resp := do(t, http.MethodGet, "/api/v1/admin/audit?action=fixture_small&limit=1", nil)
 		var p cappedPage
 		decodeJSON(t, resp, &p)

@@ -53,12 +53,6 @@ async function requireAdmin() {
   if (user?.role !== 'admin') throw redirect({ to: '/dashboard' })
 }
 
-async function requireStaffOrAdmin() {
-  await requireAuth()
-  const { user } = useAuthStore.getState()
-  if (user?.role !== 'admin' && user?.role !== 'staff') throw redirect({ to: '/dashboard' })
-}
-
 // ── Root ──────────────────────────────────────────────────────────────────────
 const rootRoute = createRootRoute()
 
@@ -202,12 +196,12 @@ const adminSettingsRoute = createRoute({
   component: SettingsPage,
 })
 
-// #129: staff and admin, not admin-only — the route's own guard matches the
-// backend's RequireRole(admin, staff) on GET /admin/audit.
+// #129: administrators only, as GET /admin/audit is. Staff read the history on
+// a ticket, not the whole log.
 const adminAuditRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/admin/audit',
-  beforeLoad: requireStaffOrAdmin,
+  beforeLoad: requireAdmin,
   component: AdminAuditPage,
 })
 

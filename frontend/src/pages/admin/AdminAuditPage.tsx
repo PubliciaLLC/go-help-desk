@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { listAdminAudit, listAssignableStaff, type AdminAuditFilters } from '@/api/admin'
-import { useAuthStore } from '@/store/auth'
 import { Layout } from '@/components/Layout'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -48,12 +47,9 @@ interface FilterState {
 const EMPTY_FILTERS: FilterState = { entityType: '', action: '', actorId: '', from: '', to: '', q: '', hideReplies: false }
 
 // #129's admin-wide half: searchable across every entity, not just one
-// ticket — see handleListAdminAudit. Staff reach this page too (the nav
-// link and the route are both staff+admin), scoped and diff-gated entirely
-// server-side; this page renders whatever it is sent and does not attempt
-// to re-derive who should see what.
+// ticket — see handleListAdminAudit. Administrators only: the route, the nav
+// entry and the API all refuse everyone else.
 export function AdminAuditPage() {
-  const role = useAuthStore((s) => s.user?.role)
   const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS)
   const [offset, setOffset] = useState(0)
 
@@ -99,32 +95,24 @@ export function AdminAuditPage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Audit Log</h1>
           <p className="mt-1 text-sm text-gray-500">
-            {role === 'staff'
-              ? 'Ticket changes within your own scope.'
-              : 'Every recorded change, across tickets, accounts and settings.'}
+            Every recorded change, across tickets, accounts and settings.
           </p>
         </div>
 
         <div className="grid grid-cols-2 gap-4 rounded-lg border bg-white p-4 md:grid-cols-3 lg:grid-cols-6">
-          {/* Staff are forced to entity_type=ticket server-side regardless of
-              this control, so it is only offered to admin — a staff member
-              picking "user" here would see an empty page for a reason the
-              page gives no way to discover. */}
-          {role === 'admin' && (
-            <div className="space-y-1">
-              <Label htmlFor="audit-entity-type">Entity type</Label>
-              <Select
-                id="audit-entity-type"
-                value={filters.entityType}
-                onChange={(e) => updateFilter('entityType', e.target.value)}
-              >
-                <option value="">All</option>
-                {ENTITY_TYPES.map((t) => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
-              </Select>
-            </div>
-          )}
+          <div className="space-y-1">
+            <Label htmlFor="audit-entity-type">Entity type</Label>
+            <Select
+              id="audit-entity-type"
+              value={filters.entityType}
+              onChange={(e) => updateFilter('entityType', e.target.value)}
+            >
+              <option value="">All</option>
+              {ENTITY_TYPES.map((t) => (
+                <option key={t} value={t}>{t}</option>
+              ))}
+            </Select>
+          </div>
           <div className="space-y-1">
             <Label htmlFor="audit-action">Action</Label>
             <Input

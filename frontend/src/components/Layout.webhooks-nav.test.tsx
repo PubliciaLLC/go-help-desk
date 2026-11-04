@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { screen } from '@testing-library/react'
+import { fireEvent, screen } from '@testing-library/react'
 import { renderWithQuery } from '@/test/render'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
@@ -46,6 +46,9 @@ describe('the Webhooks navigation entry', () => {
   it('is there for an administrator and points at /admin/webhooks', () => {
     signInAs('admin')
     renderWithQuery(<Layout>content</Layout>)
+    // The entry sits in a collapsed section of the collapsed Admin item until both are opened.
+    fireEvent.click(screen.getByRole('button', { name: 'Admin' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Integrations' }))
 
     const links = screen.getAllByRole('link', { name: 'Webhooks' })
     expect(links.length).toBeGreaterThan(0)

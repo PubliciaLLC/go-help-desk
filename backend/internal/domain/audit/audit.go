@@ -31,17 +31,11 @@ type Store interface {
 	// narrowing is in the query, so entries left out never count toward limit.
 	ListByEntityActions(ctx context.Context, entityType string, entityID uuid.UUID, f ActionFilter, limit, offset int) ([]Entry, error)
 
-	// Search answers the admin-wide audit view (#129): every field on Filter
+	// Search answers the admin-wide audit view (#129, administrators only): every field on Filter
 	// is optional and narrows the result, newest first, ties broken by id.
 	// Returns the matching page and what a pager needs, see Page. The count
 	// and the page come from the same predicate, so Total is the count of what
 	// the page pages.
-	//
-	// Search knows about staff ticket scope only through Filter.ScopedTo. With
-	// it unset every entity is returned; a caller that must not show every
-	// entity has to say so there rather than filter the page afterwards, which
-	// leaves the count and the offset describing a different sequence from the
-	// one the caller reads.
 	Search(ctx context.Context, f Filter, limit, offset int) (Page, error)
 
 	// DeleteOlderThan hard-deletes every entry created before cutoff and
@@ -104,19 +98,6 @@ type Filter struct {
 	// the page afterwards, which would leave the count and the offset
 	// describing a different sequence from the one the caller reads.
 	ExcludeActions []string
-
-	// ScopedTo, when set, restricts the result to ticket entries on tickets
-	// that staff member may see under the DESIGN.md staff scope: tickets they
-	// reported, are assigned, their groups are assigned, or that fall in a
-	// Category/Type their groups cover. It is ticket.CanView's staff branch
-	// applied inside the query, and server's parity test keeps the two equal.
-	//
-	// Anything that is not a ticket entry matches nothing, and neither does an
-	// entry whose ticket no longer exists — to the person asking that is the
-	// same as a ticket they may not see, so the answer cannot be used to tell
-	// the two apart. Callers that apply no scope (an administrator, or staff
-	// while scope enforcement is off) leave this nil.
-	ScopedTo *uuid.UUID
 }
 
 // sensitiveFragments marks a Before/After key as one whose value must never

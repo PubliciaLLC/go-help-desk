@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import { Link, useRouterState } from '@tanstack/react-router'
 import { useAuthStore } from '@/store/auth'
@@ -9,7 +9,7 @@ import { clearDismissedNotices } from '@/lib/noticeDismissal'
 import { BrandLogo } from '@/components/BrandLogo'
 import { Button } from '@/components/ui/button'
 import { TicketIcon, UsersIcon, SettingsIcon, LogOutIcon, HomeIcon, FolderIcon, CircleDotIcon, ShieldIcon, UsersRoundIcon, TagIcon, SlidersIcon, KeyIcon, MessageSquareTextIcon, PlugIcon, WebhookIcon, RouteIcon, MenuIcon,
-  UserIcon, HistoryIcon, MailIcon,
+  UserIcon, HistoryIcon, MailIcon, ChevronDownIcon, WrenchIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { User } from '@/api/types'
@@ -19,9 +19,13 @@ interface NavItemProps {
   icon: React.ReactNode
   label: string
   onNavigate?: () => void
+  // The links inside an Admin section: a little shorter, so a six-link section
+  // and the three headings still fit a laptop screen. Back to full height for a
+  // finger.
+  dense?: boolean
 }
 
-function NavItem({ to, icon, label, onNavigate }: NavItemProps) {
+function NavItem({ to, icon, label, onNavigate, dense }: NavItemProps) {
   const { location } = useRouterState()
   const active = location.pathname === to || location.pathname.startsWith(to + '/')
   return (
@@ -29,7 +33,8 @@ function NavItem({ to, icon, label, onNavigate }: NavItemProps) {
       to={to}
       onClick={onNavigate}
       className={cn(
-        'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+        'flex items-center gap-3 rounded-md px-3 text-sm font-medium transition-colors',
+        dense ? 'py-1.5 pointer-coarse:py-2' : 'py-2',
         active
           ? 'bg-blue-50 text-blue-700'
           : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
@@ -41,8 +46,197 @@ function NavItem({ to, icon, label, onNavigate }: NavItemProps) {
   )
 }
 
+// The admin pages, grouped. Order is the order on screen. Everything here is
+// administrators only, Audit Log included: staff read the history on a ticket,
+// not the whole log.
+const ADMIN_SECTIONS = [
+  {
+    id: 'people', label: 'People',
+    items: [
+      { to: '/admin/users', label: 'Users', icon: <UsersIcon className="h-4 w-4" /> },
+      { to: '/admin/groups', label: 'Groups', icon: <UsersRoundIcon className="h-4 w-4" /> },
+      { to: '/admin/roles', label: 'Roles', icon: <ShieldIcon className="h-4 w-4" /> },
+    ],
+  },
+  {
+    id: 'tickets', label: 'Tickets',
+    items: [
+      { to: '/admin/categories', label: 'Categories', icon: <FolderIcon className="h-4 w-4" /> },
+      { to: '/admin/statuses', label: 'Statuses', icon: <CircleDotIcon className="h-4 w-4" /> },
+      { to: '/admin/tags', label: 'Tags', icon: <TagIcon className="h-4 w-4" /> },
+      { to: '/admin/custom-fields', label: 'Custom Fields', icon: <SlidersIcon className="h-4 w-4" /> },
+      { to: '/admin/canned-responses', label: 'Canned Responses', icon: <MessageSquareTextIcon className="h-4 w-4" /> },
+      { to: '/admin/routing', label: 'Routing', icon: <RouteIcon className="h-4 w-4" /> },
+    ],
+  },
+  {
+    id: 'integrations', label: 'Integrations',
+    items: [
+      { to: '/admin/api-keys', label: 'API Keys', icon: <KeyIcon className="h-4 w-4" /> },
+      { to: '/admin/oauth-clients', label: 'OAuth Clients', icon: <PlugIcon className="h-4 w-4" /> },
+      { to: '/admin/webhooks', label: 'Webhooks', icon: <WebhookIcon className="h-4 w-4" /> },
+      { to: '/admin/email-templates', label: 'Email Templates', icon: <MailIcon className="h-4 w-4" /> },
+    ],
+  },
+  {
+    id: 'system', label: 'System',
+    items: [
+      { to: '/admin/settings', label: 'Settings', icon: <SettingsIcon className="h-4 w-4" /> },
+      { to: '/admin/audit', label: 'Audit Log', icon: <HistoryIcon className="h-4 w-4" /> },
+    ],
+  },
+]
+
+const ADMIN_NAV_KEY = 'ghd.admin-nav-open'
+
+// The top-level "Admin" toggle's id in the remembered list, beside the ids of
+// the sections.
+const ADMIN_ID = 'admin'
+
+// What the menu has open: Admin itself, and at most one section inside it.
+// One at a time (an accordion) because Admin plus a long section is already
+// what a 768-pixel-high laptop screen holds; two did not fit.
+interface NavState {
+  admin: boolean
+  section: string | null
+}
+
+const NOTHING_OPEN: NavState = { admin: false, section: null }
+
+// Storage can be blocked (private windows, site data off) or hold something
+// another version wrote; neither may break the sidebar, so every access is
+// guarded and anything unrecognised reads as "nothing remembered". That
+// includes a list with several sections in it: earlier builds could leave
+// several open and stored them all, which is not a state the menu has now, so
+// it is not guessed at.
+function readRemembered(): NavState {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(ADMIN_NAV_KEY) ?? 'null')
+    if (!Array.isArray(parsed)) return NOTHING_OPEN
+    const sections = ADMIN_SECTIONS.map((s) => s.id).filter((id) => parsed.includes(id))
+    if (sections.length > 1) return NOTHING_OPEN
+    return { admin: parsed.includes(ADMIN_ID), section: sections[0] ?? null }
+  } catch {
+    return NOTHING_OPEN
+  }
+}
+
+function writeRemembered(r: NavState) {
+  try {
+    const ids = [...(r.admin ? [ADMIN_ID] : []), ...(r.section ? [r.section] : [])]
+    localStorage.setItem(ADMIN_NAV_KEY, JSON.stringify(ids))
+  } catch {
+    // Not remembering is the whole cost of a blocked store.
+  }
+}
+
+function sectionOfPath(pathname: string): string | null {
+  const hit = ADMIN_SECTIONS.find((s) => s.items.some((i) => pathname === i.to || pathname.startsWith(i.to + '/')))
+  return hit?.id ?? null
+}
+
+interface AdminNav {
+  isOpen: (id: string) => boolean
+  toggle: (id: string) => void
+}
+
+// On an admin page the menu shows that page: Admin open, its section open, any
+// other section closed. Anywhere else it shows what the visitor last left open
+// by hand. Only by-hand choices are stored: storing what a page opened would
+// leave every section you ever visited open and bring the flat list back. A
+// by-hand close lasts until the next navigation, not for good.
+// State lives here, above both copies of the sidebar (permanent and drawer),
+// so toggling in one is seen by the other.
+function useAdminNav(pathname: string): AdminNav {
+  const current = sectionOfPath(pathname)
+  const [remembered, setRemembered] = useState(readRemembered)
+  const showing = (r: NavState): NavState => (current ? { admin: true, section: current } : r)
+  const [live, setLive] = useState(() => showing(remembered))
+  const [seenPath, setSeenPath] = useState(pathname)
+  // Adjusting state while rendering (not in an effect) so the new page's
+  // section is open in the same paint, not one frame later.
+  if (seenPath !== pathname) {
+    setSeenPath(pathname)
+    setLive(showing(remembered))
+  }
+  const isOpen = (id: string) => (id === ADMIN_ID ? live.admin : live.section === id)
+  function toggle(id: string) {
+    let nextLive: NavState
+    let nextRemembered: NavState
+    if (id === ADMIN_ID) {
+      nextLive = { ...live, admin: !live.admin }
+      nextRemembered = { ...remembered, admin: nextLive.admin }
+    } else if (live.section === id) {
+      // Closing forgets the section only if it was the remembered one: a page
+      // can have opened this one while another is what the visitor chose.
+      nextLive = { ...live, section: null }
+      nextRemembered = { ...remembered, section: remembered.section === id ? null : remembered.section }
+    } else {
+      nextLive = { ...live, section: id }
+      nextRemembered = { ...remembered, section: id }
+    }
+    setLive(nextLive)
+    setRemembered(nextRemembered)
+    writeRemembered(nextRemembered)
+  }
+  return { isOpen, toggle }
+}
+
+function AdminSections({ nav, onNavigate }: { nav: AdminNav; onNavigate?: () => void }) {
+  // The permanent sidebar and the open drawer are both in the document, so
+  // fixed ids would collide and aria-controls would point at the wrong copy.
+  const uid = useId()
+  const adminOpen = nav.isOpen(ADMIN_ID)
+  const adminPanelId = `${uid}-admin-panel`
+  return (
+    <div>
+      <button
+        type="button"
+        aria-expanded={adminOpen}
+        aria-controls={adminPanelId}
+        onClick={() => nav.toggle(ADMIN_ID)}
+        className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-900 pointer-coarse:min-h-11"
+      >
+        <WrenchIcon className="h-4 w-4" />
+        <span className="flex-1 text-left">Admin</span>
+        <ChevronDownIcon className={cn('h-4 w-4 transition-transform', !adminOpen && '-rotate-90')} />
+      </button>
+      {/* Closed panels stay in the document (hidden) so aria-controls always
+          resolves; hidden also takes their links out of the tab order. */}
+      <div id={adminPanelId} hidden={!adminOpen} className="ml-4 border-l border-gray-200 pl-2">
+        {ADMIN_SECTIONS.map((s) => {
+          const open = nav.isOpen(s.id)
+          const headingId = `${uid}-${s.id}-heading`
+          const panelId = `${uid}-${s.id}-panel`
+          return (
+            <div key={s.id}>
+              <button
+                type="button"
+                id={headingId}
+                aria-expanded={open}
+                aria-controls={panelId}
+                onClick={() => nav.toggle(s.id)}
+                className="flex w-full items-center justify-between rounded-md px-3 py-1 text-xs font-semibold uppercase tracking-wider text-gray-500 hover:bg-gray-100 hover:text-gray-900 pointer-coarse:min-h-11"
+              >
+                {s.label}
+                <ChevronDownIcon className={cn('h-4 w-4 transition-transform', !open && '-rotate-90')} />
+              </button>
+              <div id={panelId} role="group" aria-labelledby={headingId} hidden={!open} className="ml-2 space-y-1">
+                {s.items.map((i) => (
+                  <NavItem key={i.to} to={i.to} icon={i.icon} label={i.label} onNavigate={onNavigate} dense />
+                ))}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 interface SidebarContentProps {
   user: User | null
+  adminNav: AdminNav
   branding: { showLogo: boolean; logoURL: string; siteName: string; onLogoError: () => void }
   onNavigate?: () => void
   onLogout: () => void
@@ -50,7 +244,7 @@ interface SidebarContentProps {
 
 // The sidebar's actual content — branding, nav, sign-out — shared between the
 // permanent desktop <aside> and the mobile drawer so the two never drift.
-function SidebarContent({ user, branding, onNavigate, onLogout }: SidebarContentProps) {
+function SidebarContent({ user, adminNav, branding, onNavigate, onLogout }: SidebarContentProps) {
   return (
     <>
       <div className="flex h-14 items-center border-b px-4">
@@ -64,37 +258,7 @@ function SidebarContent({ user, branding, onNavigate, onLogout }: SidebarContent
       <nav className="flex-1 space-y-1 overflow-y-auto p-3">
         <NavItem to="/dashboard" icon={<HomeIcon className="h-4 w-4" />} label="Dashboard" onNavigate={onNavigate} />
         <NavItem to="/tickets" icon={<TicketIcon className="h-4 w-4" />} label="Tickets" onNavigate={onNavigate} />
-        {/* #129: staff see this too, scoped to their own tickets server-side
-            — it is not an admin-only screen, unlike everything in the
-            "Admin" section below. */}
-        {(user?.role === 'admin' || user?.role === 'staff') && (
-          <NavItem to="/admin/audit" icon={<HistoryIcon className="h-4 w-4" />} label="Audit Log" onNavigate={onNavigate} />
-        )}
-        {user?.role === 'admin' && (
-          <>
-            <div className="px-3 pt-4 pb-1">
-              <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">Admin</span>
-            </div>
-            <NavItem to="/admin/users" icon={<UsersIcon className="h-4 w-4" />} label="Users" onNavigate={onNavigate} />
-          </>
-        )}
-        {user?.role === 'admin' && (
-          <>
-            <NavItem to="/admin/groups" icon={<UsersRoundIcon className="h-4 w-4" />} label="Groups" onNavigate={onNavigate} />
-            <NavItem to="/admin/roles" icon={<ShieldIcon className="h-4 w-4" />} label="Roles" onNavigate={onNavigate} />
-            <NavItem to="/admin/categories" icon={<FolderIcon className="h-4 w-4" />} label="Categories" onNavigate={onNavigate} />
-            <NavItem to="/admin/statuses" icon={<CircleDotIcon className="h-4 w-4" />} label="Statuses" onNavigate={onNavigate} />
-            <NavItem to="/admin/tags" icon={<TagIcon className="h-4 w-4" />} label="Tags" onNavigate={onNavigate} />
-            <NavItem to="/admin/canned-responses" icon={<MessageSquareTextIcon className="h-4 w-4" />} label="Canned Responses" onNavigate={onNavigate} />
-            <NavItem to="/admin/custom-fields" icon={<SlidersIcon className="h-4 w-4" />} label="Custom Fields" onNavigate={onNavigate} />
-            <NavItem to="/admin/api-keys" icon={<KeyIcon className="h-4 w-4" />} label="API Keys" onNavigate={onNavigate} />
-            <NavItem to="/admin/oauth-clients" icon={<PlugIcon className="h-4 w-4" />} label="OAuth Clients" onNavigate={onNavigate} />
-            <NavItem to="/admin/webhooks" icon={<WebhookIcon className="h-4 w-4" />} label="Webhooks" onNavigate={onNavigate} />
-            <NavItem to="/admin/email-templates" icon={<MailIcon className="h-4 w-4" />} label="Email Templates" onNavigate={onNavigate} />
-            <NavItem to="/admin/routing" icon={<RouteIcon className="h-4 w-4" />} label="Routing" onNavigate={onNavigate} />
-            <NavItem to="/admin/settings" icon={<SettingsIcon className="h-4 w-4" />} label="Settings" onNavigate={onNavigate} />
-          </>
-        )}
+        {user?.role === 'admin' && <AdminSections nav={adminNav} onNavigate={onNavigate} />}
       </nav>
 
       <div className="border-t p-3 space-y-2">
@@ -122,6 +286,7 @@ interface LayoutProps {
 
 export function Layout({ children }: LayoutProps) {
   const { user, clear } = useAuthStore()
+  const adminNav = useAdminNav(useRouterState().location.pathname)
 
   const { name: siteName, logoURL, version } = useSiteBranding()
 
@@ -186,7 +351,7 @@ export function Layout({ children }: LayoutProps) {
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar — permanent from md up */}
         <aside className="hidden w-60 flex-col border-r bg-white md:flex">
-          <SidebarContent user={user} branding={branding} onLogout={handleLogout} />
+          <SidebarContent user={user} adminNav={adminNav} branding={branding} onLogout={handleLogout} />
         </aside>
 
         {/* Sidebar — a drawer below md, over the content rather than beside
@@ -204,6 +369,7 @@ export function Layout({ children }: LayoutProps) {
               <Dialog.Title className="sr-only">Navigation</Dialog.Title>
               <SidebarContent
                 user={user}
+                adminNav={adminNav}
                 branding={branding}
                 onLogout={handleLogout}
                 onNavigate={() => setDrawerOpen(false)}

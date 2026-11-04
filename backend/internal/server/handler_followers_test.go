@@ -308,12 +308,12 @@ func onlyFollow(actions []string) []string {
 	return out
 }
 
-// The admin-wide view follows the same rule, and its total agrees with its
-// page: the entries are left out by the query, not removed afterwards.
-func TestFollowAudit_AdminWideViewByRole(t *testing.T) {
+// The admin-wide view is administrators only, and an administrator always sees
+// follow entries; its total agrees with its page. Staff read follow entries on
+// the ticket's own feed, under the setting, and are refused the wide view.
+func TestFollowAudit_AdminWideViewIsAdministratorsOnly(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
-	ctx := context.Background()
 	tk := newStaffTicket(t, h)
 	staff, adm := h.session(t, asStaff), h.session(t, asAdmin)
 	require.Equal(t, http.StatusNoContent, status(t, h.doSession(t, staff, http.MethodPut, followPath(tk.ID), nil)))
@@ -321,26 +321,11 @@ func TestFollowAudit_AdminWideViewByRole(t *testing.T) {
 
 	adminActs, adminTotal := adminAuditActions(t, h, adm)
 	require.Equal(t, []string{"followed", "unfollowed"}, sortedFollow(onlyFollow(adminActs)))
+	require.GreaterOrEqual(t, adminTotal, len(adminActs))
 
-	staffActs, staffTotal := adminAuditActions(t, h, staff)
-	require.Empty(t, onlyFollow(staffActs))
-	require.Equal(t, adminTotal-2, staffTotal, "the count leaves them out too")
-
-	// Asking for them by name does not get round it.
-	res := h.doSession(t, staff, http.MethodGet, "/api/v1/admin/audit?action=followed", nil)
-	var body struct {
-		Entries []struct{} `json:"entries"`
-		Total   int        `json:"total"`
-	}
-	require.NoError(t, json.NewDecoder(res.Body).Decode(&body))
+	res := h.doSession(t, staff, http.MethodGet, "/api/v1/admin/audit?entity_type=ticket", nil)
 	res.Body.Close()
-	require.Empty(t, body.Entries)
-	require.Zero(t, body.Total)
-
-	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyStaffCanViewFollowAudit, true))
-	staffActs, staffTotal = adminAuditActions(t, h, staff)
-	require.Equal(t, []string{"followed", "unfollowed"}, sortedFollow(onlyFollow(staffActs)))
-	require.Equal(t, adminTotal, staffTotal)
+	require.Equal(t, http.StatusForbidden, res.StatusCode)
 }
 
 func sortedFollow(a []string) []string {
