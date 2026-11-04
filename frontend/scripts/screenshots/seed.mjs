@@ -394,7 +394,11 @@ const guestPathFromMail = async (mailDir, to) => {
     for (const name of names) {
       // The body is quoted-printable: undo the soft line breaks before matching.
       const text = readFileSync(join(mailDir, name), 'latin1').replace(/=\r?\n/g, '')
-      if (!new RegExp(`^To:.*${to.replace(/[.]/g, '\\.')}`, 'mi').test(text)) continue
+      // Plain string match on the To: line: no regex, so nothing in the address needs escaping.
+      const addressed = text
+        .split(/\r?\n/)
+        .some((l) => /^to:/i.test(l) && l.toLowerCase().includes(to.toLowerCase()))
+      if (!addressed) continue
       const m = /\/g#([A-Za-z0-9_-]+)/.exec(text)
       if (m) return `/g#${m[1]}`
     }
