@@ -269,8 +269,8 @@ const SHOTS = [
     target: { tall: 3000 },
     async prepare(page, _ctx, seed) {
       await waitVisible(page.getByText(/Failing|Delivered/).first(), DATA_WAIT)
-      // With SHOTS_WEBHOOK_OK_URL the Slack hook must have been delivered.
-      if (seed?.features?.webhookOk) await waitVisible(page.getByText(/^Delivered/).first(), DATA_WAIT)
+      // With SHOTS_WEBHOOK_OK_URL both enabled hooks (Slack and Teams) must show Delivered.
+      if (seed?.features?.webhookOk) await waitVisible(page.getByText(/^Delivered/).nth(1), DATA_WAIT)
       await waitVisible(page.getByText('No deliveries yet').first(), DATA_WAIT)
     },
   },
@@ -566,7 +566,7 @@ const SHOTS = [
 // Why a shot whose seed data flag is false is skipped. Printed on the SKIP line.
 const SKIP_REASON = {
   reputation: 'seed.features.reputation is false (SHOTS_REPUTATION=0), so no provider lookups',
-  webhookDelivered: 'seed.features.webhookDelivered is false: not every enabled hook has a recorded delivery, or SHOTS_WEBHOOK_OK_URL did not answer with 2xx',
+  webhookDelivered: 'seed.features.webhookDelivered is false: not every enabled hook has a recorded delivery, or SHOTS_WEBHOOK_OK_URL did not answer both hooks with 2xx',
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
