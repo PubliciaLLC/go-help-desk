@@ -173,7 +173,7 @@
 </ul>
 
 <img src="../screenshots/20-signup.png" alt="The self-registration page, which asks only for an email address, with a Create account button and a Sign in link" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
-<img src="../screenshots/21-verify-email.png" alt="The Finish creating your account page: the email address is shown, with Display name and Password fields for the new account" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/21-verify-email.png" alt="The Finish creating your account page: the email address is shown, with Display name, Password and Confirm password fields for the new account" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
 <h3>Password requirements</h3>
 <p>A password must be at least 8 characters and at most 72 bytes. There is no other complexity rule. Users change their own password on the <em>Your account</em> page, which asks for the current password first; a wrong one is shown inline and the person stays signed in. Through the API, <code>PATCH /api/v1/me/password</code> needs <code>current_password</code> and <code>new_password</code> (the old field name <code>password</code> is still read for the new one) and refuses a missing or wrong current password with <code>400 invalid_current_password</code> (a new password that is itself invalid is checked first, with <code>400 bad_request</code>). An administrator can set a new password for a user under <em>Admin → People → Users → [user] → Reset password</em>, which is shown only for accounts that have a password.</p>
@@ -190,7 +190,7 @@
 
 <p>Second factors are checked only while <em>Admin → System → Settings → Authentication → Multi-factor authentication → Enable MFA</em> is on. It is off by default. A sign-in through SAML or OIDC is not asked for a local second factor; that is the identity provider's job.</p>
 
-<img src="../screenshots/22-account-passkeys.png" alt="The account page: a password form, a Passkeys section listing a passkey named Work laptop marked This device only, and an Authenticator app section with a Set up button" width="2880" height="1970" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/22-account-passkeys.png" alt="The account page of a staff member: an Email about tickets section with three switches, a password form, a Passkeys section listing a passkey named Work laptop marked This device only, and an Authenticator app section with a Set up an authenticator app button" width="2880" height="2640" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
 <h3>Enrolling</h3>
 <p>Each user enrols on their own <em>Your account</em> page:</p>

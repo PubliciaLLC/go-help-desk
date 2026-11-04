@@ -638,6 +638,9 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 
 <p>Administrators can now archive and unarchive a category, type or item from <strong>Admin → Tickets → Categories</strong>. To file into it again, unarchive it there. Archiving changes only the row you pick: types under an archived category keep their own setting. On a touch screen the row buttons are always shown and are large enough to tap; with a mouse they appear when you point at the row.</p>
 
+<img src="../screenshots/33-admin-categories-archive.png" alt="Admin, Tickets, Categories with the sidebar's Tickets section open and four categories listed (Hardware, Software, Network, Accounts and Access) and a fifth, Desk phones, greyed out with an Archived badge. Each row has an archive icon (a restore icon on the archived row) and a delete icon" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">Admin → Tickets → Categories: an archived category stays in the list, greyed out and marked Archived.</p>
+
 <h2 id="service-users">OAuth clients act through a service user</h2>
 
 <p><strong>Who notices:</strong> administrators who use OAuth clients, and the integrations behind them.</p>
@@ -860,6 +863,9 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 <p><strong>Who notices:</strong> staff and administrators. This is new. Callers that send neither new field behave exactly as before, and there is no migration.</p>
 
 <p>On the New ticket page, staff and administrators get a <strong>Requester</strong> choice: <em>Me</em> (the default), <em>Another user</em> (search by name or address) or <em>Email address</em>. In the API, <code>POST /api/v1/tickets</code> takes <code>reporter_user_id</code> or <code>reporter_email</code> (at most one). A requester who sends either is refused with <code>403</code>.</p>
+
+<img src="../screenshots/34-staff-new-ticket-on-behalf.png" alt="The New ticket page as a staff member sees it when filing for someone else: Requester set to Another user (Casey Nguyen), a How did this reach you? choice with Phone call selected, then subject, a description editor, category, type, priority and attachments" width="2880" height="2088" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">Filing for someone else: the Requester choice, and How did this reach you? with Phone call selected.</p>
 <ul>
   <li><strong>A typed address</strong> is filed like a guest ticket, and the person is emailed the link to read and reply. It needs a name with every address (<code>400</code> without one), whether or not it has an account, so a refusal says nothing about the address; a phone number is optional. It is refused with <code>400</code> while guest submission is off and the address has no account, because the link would not open. If the address belongs to an account, the ticket is filed for that account.</li>
   <li><strong>40 uses of <code>reporter_email</code> an hour per staff member</strong>, then <code>429 rate_limited</code> with <code>Retry-After</code>. Every typed address that passes validation counts, account or not, and the guest-submission-off refusal counts too; a request refused by validation spends nothing, and a count, once taken, is never given back. Picking a user by <code>reporter_user_id</code> does not count. The count is kept in memory, so it resets when the server restarts and each server instance counts on its own. It is not configurable.</li>
@@ -874,6 +880,9 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 <p><strong>Who notices:</strong> staff and administrators, anyone who reports on where tickets come from, and integrations that sent a <code>source_channel</code> field. <strong>This is breaking for that last group.</strong></p>
 
 <p>1.3.0 records how each ticket arrived: <code>web</code>, <code>api</code>, <code>mcp</code>, <code>guest</code> or <code>phone</code>. <strong>Tickets that exist when you upgrade are all marked <code>web</code></strong>, because the channel was not recorded before and cannot be worked out afterwards. A ticket an integration opened over REST or MCP, or a guest submitted, reads <code>web</code> too. Use the upgrade date as the start of any report by channel.</p>
+
+<img src="../screenshots/35-ticket-via-phone.png" alt="The top of a ticket page: the tracking number, the opened date and the words via phone, the subject, the requester Casey Nguyen with an email address, and New and medium badges" width="1106" height="276" loading="lazy" style="width:100%;height:auto;max-width:553px;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">A ticket filed as a phone call shows via phone beside its opened date.</p>
 <ul>
   <li><strong>The server decides the channel; a caller cannot set it.</strong> <code>POST /api/v1/tickets</code> with an API key or OAuth client is <code>api</code>; the same call in a browser session is <code>web</code>; MCP is <code>mcp</code>; the guest form is <code>guest</code>. A follow-up records how the follow-up itself was made, not how the original arrived: a follow-up made in the web app of a phone ticket is <code>web</code>, and one made with an API key is <code>api</code>.</li>
   <li><strong>The one choice a person makes is <code>phone</code>.</strong> When staff or an administrator file for someone else on the New ticket page, <strong>How did this reach you?</strong> offers <em>Web</em> (the default) or <em>Phone call</em>. It does not appear when you file for yourself.</li>
@@ -906,6 +915,9 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
   <li>Every key issued or revoked is written to the audit log (<code>api_key_issued</code>, <code>api_key_revoked</code>; <code>api_keys_revoked</code> with a count when a reset revokes them). The key lists gain <code>created_by</code> and <code>beyond_limit</code>, and <code>GET /api/v1/me</code> gains <code>can_create_api_keys</code> and <code>api_key_max_lifetime_years</code>.</li>
   <li>Changing someone's role keeps their keys. A key acts within its owner's current role, so promoting a staff member who holds an administrator-issued key leaves an administrator holding it. Revoke it if that is not wanted.</li>
 </ul>
+
+<img src="../screenshots/36-account-api-keys.png" alt="The API keys section of the Your account page: a green notice, API key created, copy it now, with the one-time token and a Copy button; below it the new-key form with Tickets read and write and Groups read permissions, a required expiry date and a Create key button; and a list holding Nightly ticket export with tickets:read and a Revoke button" width="2016" height="1372" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">A staff member's own API keys on Your account: the token is shown once, and a key needs at least one permission and an expiry date.</p>
 
 <h3>Breaking: scripts that stop working</h3>
 <ul>
@@ -1061,6 +1073,9 @@ echo "ok: Postgres is bound to 127.0.0.1 only"</code></pre>
 
 <p><strong>Who notices:</strong> administrators, and any script that uploads as a guest. <strong>This is breaking: uploads are off after the upgrade.</strong></p>
 <p>Before this release a guest could attach a file through <code>POST /api/v1/guest/attachments</code> whenever guest submission was on. That is now off by default, including on an upgraded install. A new setting, <strong>Guests may attach files</strong> (<code>guest_attachments_enabled</code>, <em>Admin → System → Settings → General → Submissions</em>, under guest submission), controls it. Until an administrator turns it on, the route answers the generic <code>404 not_found</code> that a bad link gets. <strong>If your guests attach files today, turn the setting on after you upgrade.</strong></p>
+
+<img src="../screenshots/40-guest-ticket-attach.png" alt="A guest's ticket page: the subject, status and description, a reply editor with Send reply, and below it an Add files button with the allowed types, max 5 MB and up to 2 files now (5 per ticket), and the green line Attached: visitor-wifi-prompt.txt" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">A guest's ticket page with Add files turned on. The count of files left covers this visit only.</p>
 <ul>
   <li>It only takes effect while guest submission is on.</li>
   <li><strong>Per-file limit:</strong> <code>guest_attachment_max_mb</code>, a slider from 1 to 100 MB, 5 MB by default. A guest is held to the lower of it and the instance-wide 25 MB maximum. Over the limit is <code>413 too_large</code>, and the message names the limit.</li>
@@ -1099,10 +1114,16 @@ echo "ok: Postgres is bound to 127.0.0.1 only"</code></pre>
 
 <p><strong>Who notices:</strong> the first administrator who signs in after an upgrade to 1.3.0. They are taken once to a short wizard, "After upgrading to 1.3.0", with one step per question: the update check; staff email notifications (the upgrade turned them off); staff API keys and the longest an API key may live; the reset window for old passwords, with how many accounts are still on an old hash; and, only if guest submission is on, guest file uploads (which 1.3.0 switched off). Each step shows today's setting. <strong>Skip applies to the step you are on and leaves that setting unchanged.</strong> The wizard counts as seen only after <em>Finish</em>, or <em>Skip</em> on the last step; there is no way to skip all of it at once. A new install never sees it. See <a href="admin-guide.html#admin-updates">Admin Guide: Updates</a>.</p>
 
+<img src="../screenshots/37-after-upgrade-wizard.png" alt="Step 1 of 5 of the After upgrading to 1.3.0 wizard, Weekly check for new releases, with an unticked checkbox, Currently: off, and Back, Skip and Next buttons" width="1088" height="1280" loading="lazy" style="width:100%;height:auto;max-width:544px;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The first step of the wizard: what changed, today's setting, and Back, Skip and Next.</p>
+
 <h2 id="markdown">Markdown in ticket text</h2>
 
 <p><strong>Who notices:</strong> everyone who writes or reads tickets, and integrations that send Markdown-looking text or use MCP.</p>
 <p>Descriptions, replies and internal notes can now be written in Markdown, with a formatting editor in the web app. <strong>Text written before 1.3.0 stays plain text.</strong> 1.2 promised Markdown but never rendered it, so nothing already in the database is reinterpreted: every existing description and reply is marked <code>plain</code> (a migration, 000055) and is shown exactly as before. A reader can choose <strong>Show formatted</strong> on any plain post to see it through the new renderer. That changes only what that reader sees; nothing is stored.</p>
+
+<img src="../screenshots/30-ticket-show-formatted.png" alt="A ticket description stored as plain text, with the Markdown marks showing as typed and a Show formatted link under it, above a Timeline whose reply is already formatted (a numbered list, bold and code) with a Plain text link" width="1350" height="1170" loading="lazy" style="width:100%;height:auto;max-width:675px;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">Older text stays plain, with a Show formatted link. A reply written in the editor is formatted, with a Plain text link to see its source.</p>
 <ul>
   <li><strong>Who writes which format.</strong> The web app's editor writes Markdown. <strong>REST is unchanged unless it opts in:</strong> <code>POST /tickets</code>, <code>/tickets/{id}/replies</code>, <code>/guest/tickets</code> and <code>/guest/replies</code> take an optional <code>format</code> (<code>plain</code> or <code>markdown</code>) and default to <code>plain</code>. <strong>MCP <code>create_ticket</code> and <code>add_reply</code> default to <code>markdown</code></strong>, and their tool descriptions tell the agent to escape characters it means literally; pass <code>format: "plain"</code> to keep plain text. Any other value is <code>400 invalid_format</code> on REST and a tool error on MCP, and nothing is written.</li>
   <li><strong>Reading.</strong> <code>description_format</code> is on every ticket object and <code>body_format</code> on every reply, for staff, requesters and guests alike. A follow-up copies its original's format.</li>
@@ -1127,6 +1148,9 @@ echo "ok: Postgres is bound to 127.0.0.1 only"</code></pre>
 
 <p><strong>Who notices:</strong> administrators. This is new, and with nothing edited every email is byte for byte what it was before the editor existed. Migration 000057 adds the table that holds edits, and 000058 a column for the optional HTML part; both are safe to apply on a running instance.</p>
 <p>Under <strong>Admin → Integrations → Email Templates</strong> an administrator edits the subject and body of all 17 emails, and a shared <strong>header</strong> and <strong>footer</strong> that go around every one. Each email, and the header and footer, can also have an optional HTML part; with none, the email is plain text exactly as before. The Settings page links to it.</p>
+
+<img src="../screenshots/31-email-template-html.png" alt="The email template editor for Ticket received: the Subject, a plain-text Body, an HTML box holding a small branded layout with a button linking to the ticket, a Start from a basic layout button, Save and Send test, and below them a Preview showing the plain text part and the HTML part, with a note that images from other sites do not load in the preview" width="2016" height="3452" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The editor for one template: the text version, the HTML version, and a preview of both.</p>
 <ul>
   <li><strong>Still no ticket content.</strong> A template may hold only words, a few named values and <code>{{if .Name}}…{{else}}…{{end}}</code>. The ticket emails can print the tracking number and the ticket link; the verification and reset emails, their link; the header and footer, the help desk's name from Settings. Anything else is refused with its line and column. Every mail template must print its link outside any <code>if</code>, because a guest's link is replaced each time and an email without it would lock them out.</li>
   <li><strong>Limits:</strong> body 8 KiB, subject 200 bytes on one line.</li>

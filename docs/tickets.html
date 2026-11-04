@@ -132,6 +132,9 @@
   <li><strong>Another user</strong>: type at least two characters of a name or address and pick from the matches (at most ten). Disabled accounts, deleted accounts and the service accounts of OAuth clients are not offered.</li>
   <li><strong>Email address</strong>: for someone with no account. A <strong>name is required</strong> with every address, whether or not it has an account, and a phone number is optional. The ticket is filed like a guest ticket, and the person is emailed the link to read and reply. This is refused while guest submission is off, because the link would not open. If the address belongs to an account, the ticket is filed for that account instead (the name is ignored).</li>
 </ul>
+
+<img src="../screenshots/34-staff-new-ticket-on-behalf.png" alt="The New ticket page as a staff member sees it when filing for someone else: Requester set to Another user (Casey Nguyen), a How did this reach you? choice with Phone call selected, then subject, a description editor, category, type, priority and attachments" width="2880" height="2088" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">Filing for someone else: the Requester choice, and How did this reach you? with Phone call selected.</p>
 <ul>
   <li>The staff member is recorded as the one who filed it, in the ticket's history and in the audit log. The requester is its reporter.</li>
   <li>An existing user who is filed for gets the usual "We have received your ticket" email with a link to the ticket, once per address. Nothing is emailed when you file for yourself.</li>
@@ -143,6 +146,9 @@
 
 <h3 id="tickets-source">How a ticket arrived</h3>
 <p>Every ticket records how it arrived, and staff and administrators see it next to the opened date on the ticket page: <em>via web</em>, <em>via API</em>, <em>via MCP</em>, <em>via guest form</em> or <em>via phone</em>. The server works it out from the way the ticket came in; nobody types it. The one exception is <em>Phone call</em>, which staff pick when they file a ticket for someone else.</p>
+
+<img src="../screenshots/35-ticket-via-phone.png" alt="The top of a ticket page: the tracking number, the opened date and the words via phone, the subject, the requester Casey Nguyen with an email address, and New and medium badges" width="1106" height="276" loading="lazy" style="width:100%;height:auto;max-width:553px;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">A ticket filed as a phone call shows via phone beside its opened date.</p>
 <ul>
   <li>A follow-up records how the follow-up itself was made, not how the original arrived. A follow-up made in the web app of a phone ticket is <em>via web</em>.</li>
   <li>Requesters and guests never see it, because <em>via phone</em> would tell them that staff filed the ticket.</li>
@@ -190,7 +196,7 @@
 
 <p>Guest submission is off by default. When it is enabled (<em>Admin → System → Settings</em>), the public form at <code>/submit</code> is reachable without logging in. Required: <strong>name</strong>, <strong>email</strong>, <strong>subject</strong> and <strong>category</strong>, which must be an active one. Phone is optional. Type, Item and priority are not shown and are not accepted: priority is always Medium on a guest ticket.</p>
 
-<img src="../screenshots/28-guest-submit.png" alt="The guest submission form at /submit: name, email, optional phone, subject, description and category. There are no type, item or priority fields" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/28-guest-submit.png" alt="The guest submission form at /submit: name, email, optional phone, subject, a description editor with a formatting toolbar, and category. There are no type, item or priority fields" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
 <p>On success the page shows the ticket's <strong>tracking number</strong>, which can be quoted when following up by phone or email, and the server emails the address a <strong>private link to that one ticket</strong>. The link is the credential: there is no guest password and no guest account.</p>
 
@@ -205,6 +211,9 @@
   <li><strong>Switching guest submission off suspends every link.</strong> While the setting is off, a guest link answers <code>404</code>, the same as a link that never existed, so a guest in the middle of a conversation cannot read or reply. Links are suspended, not revoked: switch the setting back on and the ones that have not expired work again.</li>
   <li><strong>Lost it?</strong> <code>/track</code> takes a tracking number and the email address and mails a new link, replacing the old one. It always answers the same way whether or not those details matched anything, so it cannot be used to find out which tickets exist. A ticket whose stored address is not ASCII cannot get a new link this way; follow-ups on it still work. One request per ticket every five minutes.</li>
 </ul>
+
+<img src="../screenshots/40-guest-ticket-attach.png" alt="A guest's ticket page: the subject, status and description, a reply editor with Send reply, and below it an Add files button with the allowed types, max 5 MB and up to 2 files now (5 per ticket), and the green line Attached: visitor-wifi-prompt.txt" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">A guest's ticket page with Add files turned on. The count of files left covers this visit only.</p>
 
 <p>The token is stored only as a hash, and the emailed link carries it after a <code>#</code> so that it never reaches a server log. The page strips it out of the address bar as soon as it loads, so it survives neither browser history nor a screenshot of the URL.</p>
 
@@ -257,7 +266,7 @@
   <li><strong>Staff and admins</strong> can open a follow-up from any Closed ticket they can see. It copies the subject, description, category, type, item, priority and requester.</li>
   <li><strong>The requester</strong> can open one from their own Closed ticket: an account holder through their account, or a guest through their link. It copies the subject, description and category, and the type for an account holder, never for a guest. It starts at Medium priority, with no item, unassigned, and with a fresh SLA clock.</li>
 </ul>
-<img src="../screenshots/27-closed-ticket-requester.png" alt="A closed ticket as its requester sees it: a notice that the ticket is closed and read-only with a pointer to Create follow-up, the Create follow-up button at the top right, and a timeline ending Resolved to Closed" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/27-closed-ticket-requester.png" alt="A closed ticket as its requester sees it: a notice that the ticket is closed and read-only with a pointer to Create follow-up, the Create follow-up button at the top right, the description, a public reply in the Timeline, and Tags, Classification and Details panels" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
 <p>A requester can open one follow-up per closed ticket. A second request from a requester is refused with <code>409 follow_up_exists</code>, and a follow-up opened by staff counts towards that one. Staff and administrators are not limited. Staff, admins and the requester open one with <em>Create follow-up</em> on the ticket. The API routes are <code>POST /api/v1/tickets/{id}/follow-up</code> for a signed-in user and <code>POST /api/v1/guest/follow-up</code> for a guest link. A follow-up is the only write a guest can make on a closed ticket.</p>
 
@@ -464,8 +473,14 @@
 
 <p>Descriptions, replies and internal notes can be written in Markdown, through a formatting editor. The editor is in staff replies and notes, requester replies, the new ticket form, the guest form and guest replies. Its toolbar has Bold, Italic, Inline code, Link, Bulleted list, Numbered list, Quote and Code block. <strong>Switch to plain editor</strong> swaps it for an ordinary text box holding the same Markdown, and the plain box is also what you get while the editor loads or if it fails to load.</p>
 
+<img src="../screenshots/29-reply-markdown-editor.png" alt="The reply box on a ticket with a formatting toolbar (bold, italic, code, link, bulleted and numbered lists, quote, code block). The note being written has a bold phrase, a bulleted list with a code word and a closing line. Below are a Switch to plain editor link, the Internal note and Send ticket update email checkboxes, Add files and Save entry" width="1350" height="1022" loading="lazy" style="width:100%;height:auto;max-width:675px;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The formatting editor in a staff reply: a toolbar above the text, and a link to switch to a plain editor.</p>
+
 <h3>Old text stays plain</h3>
 <p>Each description and reply is stored with a format, <code>plain</code> or <code>markdown</code>. <strong>Everything written before 1.3.0 is plain text and is shown exactly as before.</strong> 1.2 promised Markdown but never rendered it, so nothing already in the database is reinterpreted. On a plain post, <strong>Show formatted</strong> shows it through the new renderer; on a Markdown post, <strong>Plain text</strong> shows the source exactly as stored, to copy it or check a suspicious link. Both buttons are the reader's choice: nothing is stored or sent.</p>
+
+<img src="../screenshots/30-ticket-show-formatted.png" alt="A ticket description stored as plain text, with the Markdown marks showing as typed and a Show formatted link under it, above a Timeline whose reply is already formatted (a numbered list, bold and code) with a Plain text link" width="1350" height="1170" loading="lazy" style="width:100%;height:auto;max-width:675px;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">Older text stays plain, with a Show formatted link. A reply written in the editor is formatted, with a Plain text link to see its source.</p>
 
 <h3>What is shown, and what never is</h3>
 <ul>

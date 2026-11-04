@@ -217,6 +217,9 @@ Facilities
 
 <h3 id="admin-cti-archive">Archiving a Category, Type or Item</h3>
 <p>Archiving hides an entry from new tickets while keeping every ticket already filed under it. Point at a row and use the archive icon (<em>Archive category</em>, <em>Archive type</em> or <em>Archive item</em>); on a touch screen the icons are always shown and are large enough to tap. You are asked to confirm, because requesters will no longer see it. An archived row shows an <em>Archived</em> badge. Its icon becomes <em>Restore</em>, which undoes it at once with no confirmation.</p>
+
+<img src="../screenshots/33-admin-categories-archive.png" alt="Admin, Tickets, Categories with the sidebar's Tickets section open and four categories listed (Hardware, Software, Network, Accounts and Access) and a fifth, Desk phones, greyed out with an Archived badge. Each row has an archive icon (a restore icon on the archived row) and a delete icon" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">Admin → Tickets → Categories: an archived category stays in the list, greyed out and marked Archived.</p>
 <ul>
   <li><strong>Nobody files new tickets into an archived entry</strong>: not requesters, not guests, and not staff or administrators either. Creating a ticket, or moving one to a different classification, with an archived Category, Type or Item is refused with <code>400</code>. This applies to the web screens, API keys and the MCP server alike.</li>
   <li><strong>Tickets already in it keep it.</strong> Editing such a ticket in other ways, or saving it with the classification it already has, still works.</li>
@@ -682,8 +685,14 @@ Facilities
   <li><strong>Audit.</strong> Each save and revert is recorded in the audit log with the full text, in the same step as the change. A test send records the template and never the address.</li>
 </ul>
 
+<img src="../screenshots/32-email-template-refused.png" alt="The same editor with a refused draft: the HTML contains a value the template may not use, and a red message under the HTML box reads Line 6, column 6: .Description is not available in this template. Save is greyed out and the preview says it appears when the draft is valid" width="2016" height="2200" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">A draft that is refused: the editor names the line and column and keeps Save off until it is fixed.</p>
+
 <h3 id="admin-email-html">The HTML part</h3>
 <p>Every template, and the header and footer, can have an optional <strong>HTML</strong> version beside its text one. Until some HTML is saved, every email is plain text exactly as before; nothing becomes multipart on upgrade, and there is no HTML shipped by default.</p>
+
+<img src="../screenshots/31-email-template-html.png" alt="The email template editor for Ticket received: the Subject, a plain-text Body, an HTML box holding a small branded layout with a button linking to the ticket, a Start from a basic layout button, Save and Send test, and below them a Preview showing the plain text part and the HTML part, with a note that images from other sites do not load in the preview" width="2016" height="3452" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The editor for one template: the text version, the HTML version, and a preview of both.</p>
 <ul>
   <li><strong>Once the header or footer has HTML, every email gets an HTML part.</strong> A template with HTML of its own uses it. One without has its text turned into paragraphs (a blank line starts a paragraph, a line break becomes a line break, links become clickable) and is wrapped in the HTML header and footer. A header or footer that has only text is carried into the HTML part the same way. A text-only header and footer alone make no HTML part. The email is sent as both, plain text first, and the plain-text part is always the text you edited, never made from the HTML.</li>
   <li><strong>Same values, no ticket content.</strong> The HTML uses the same values. A content template's HTML must print its link (outside any <code>{{if}}</code>, as text or as the whole <code>href</code> of a link); the header and footer do not have to. The only values allowed as a whole <code>href</code> are the ticket, verification and reset links. Ticket text still cannot reach an email.</li>
@@ -897,7 +906,7 @@ function verifySignature(secret, body, header) {
   <li>the hook's <a href="#admin-webhook-filter">ticket filter</a>, as it is now, does not admit the ticket (<code>409 webhook_filter_excludes</code>): change the filter first;</li>
   <li>the hook has a filter and the ticket has since been deleted, so the filter cannot be checked (<code>409 webhook_filter_unverifiable</code>). A hook with no filter is still sent.</li>
 </ul>
-<img src="../screenshots/18-admin-webhooks.png" alt="Admin Webhooks page: the New webhook form above a list of three hooks. Two show Failing · 405 as their last delivery, and the disabled third shows No deliveries yet" width="2880" height="2030" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/18-admin-webhooks.png" alt="Admin Webhooks page with the Admin, Integrations section open in the sidebar: the New webhook form above a list of hooks, where the first two (Slack and Microsoft Teams) show Failing · 405 as their last delivery, each with Disable, History, Edit and Delete buttons" width="2880" height="3000" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
 
 <h2 id="admin-oauth-clients">OAuth clients</h2>
@@ -917,6 +926,9 @@ function verifySignature(secret, body, header) {
 <h2 id="admin-api-keys">API keys</h2>
 
 <p>API keys are for scripts and integrations. Administrators manage them under <em>Admin → Integrations → API Keys</em>. Staff can manage their own under <em>Account → API keys</em> when you allow it.</p>
+
+<img src="../screenshots/36-account-api-keys.png" alt="The API keys section of the Your account page: a green notice, API key created, copy it now, with the one-time token and a Copy button; below it the new-key form with Tickets read and write and Groups read permissions, a required expiry date and a Create key button; and a list holding Nightly ticket export with tickets:read and a Revoke button" width="2016" height="1372" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">A staff member's own API keys on Your account: the token is shown once, and a key needs at least one permission and an expiry date.</p>
 <h3>Settings</h3>
 <p>Both are under <em>Admin → System → Settings → Authentication → API keys</em>, and both are session-only: an API key or OAuth client cannot change them.</p>
 <table class="param-table">
@@ -960,6 +972,11 @@ function verifySignature(secret, body, header) {
 <h2 id="admin-server-warnings">Server warnings</h2>
 
 <p>Administrators see problems with the server in <strong>one slim bar</strong> above the page, never a stack of banners. Where this guide says a "banner", it means a notice in this bar. The bar is one line: "N server problems need attention", or the notice's own title when there is exactly one, with a <strong>Details</strong> button that opens the full explanation of each notice.</p>
+
+<img src="../screenshots/38-server-notice-collapsed.png" alt="The top of a page with a slim amber server-notice bar reading An OAuth client sees no tickets, and a Details button at its right" width="2880" height="322" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The server-notice bar, collapsed to one line.</p>
+<img src="../screenshots/39-server-notice-expanded.png" alt="The same bar opened with Details: the notice title with a Hide link at its right, and the text Ticket scope is on, and Reporting export acts as a service user in no group, with an Open OAuth clients link" width="2880" height="444" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The bar opened: the notice, what to do about it, and Hide.</p>
 <ul>
   <li><strong>Red</strong> marks something broken now: exposed secrets, attachment storage that cannot be written, a virus scanner that cannot be reached (under either scan policy), email that is not being delivered, and an <a href="#admin-email-tpl">edited email template</a> that no longer works (one notice per template, with <em>Revert to default</em> and <em>Edit</em>). <strong>Amber</strong> marks a configuration notice, such as email not set up, passkeys unavailable, or attachments not being scanned. <strong>Blue</strong> is information only: a newer release is available (see <a href="#admin-updates">Updates</a>). It never counts as a problem.</li>
   <li><strong>Hide</strong> removes one notice for your current session. It returns at your next sign-in, after your session expires, or when the problem gets worse (for example a changed scanner policy, more failed email, another exposed secret). When every notice is hidden the bar goes away. Nothing about hiding is sent to the server. The one exception to "returns at your next sign-in" is the blue new-release notice: its <em>Hide</em> is remembered in your browser until a newer release appears.</li>
@@ -995,7 +1012,7 @@ function verifySignature(secret, body, header) {
   </tbody>
 </table>
 <p>Staff and administrator actors are always named. Masking changes only what is displayed: it is not an access control, and the ticket page itself still shows the requester's name.</p>
-<img src="../screenshots/19-admin-settings-privacy.png" alt="The General settings tab: Limit staff to their group scope and Staff can view ticket change history switched on, audit Retention at 0 days, and Mask requester names in Audit Trail set to Everywhere under Privacy" width="1408" height="1974" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/19-admin-settings-privacy.png" alt="The General settings tab: Limit staff to their group scope and Staff can view ticket change history switched on, Staff can view follow history off, audit Retention at 0 days, the update check off, and Mask requester names in Audit Trail set to Everywhere under Privacy" width="1408" height="2740" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
 <h3>Retention</h3>
 <p>Set <em>Retention</em>, in days, under <em>Admin → System → Settings → General → Audit log</em>. The default is 0, which keeps every entry forever. The maximum is 36,525 days. When a value is set, a sweep deletes entries older than that. The first sweep runs two minutes after the server starts, and then once a day.</p>
