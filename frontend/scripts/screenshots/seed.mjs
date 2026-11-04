@@ -95,16 +95,16 @@ const SETTINGS = () => clean({
 // so a local stand-in cannot answer a hook. The hooks go to the example hosts, which
 // answer a POST with 405, and the page shows "Failing · 405". To show a delivery that
 // worked, SHOTS_WEBHOOK_OK_URL names a public endpoint that answers a POST with 2xx:
-// the Slack hook then posts there and shows "Delivered", and the Teams hook is left on
-// example.org, so the page shows one of each. A hook posts Slack, Teams or Jira JSON
-// built from the seeded (made-up) tickets.
+// the Slack and Teams hooks then both post there and show "Delivered" (the disabled Jira
+// hook still has no deliveries). A hook posts Slack, Teams or Jira JSON built from the
+// seeded (made-up) tickets.
 const WEBHOOK_OK_URL = process.env.SHOTS_WEBHOOK_OK_URL
 const WEBHOOKS = [
-  // With an endpoint chosen, this hook fires once (one ticket is closed), not for every ticket
-  // filed: a shared test service answers a burst of POSTs with 429, and the server obeys its
-  // Retry-After, so the retry would land long after the seed has looked.
+  // With an endpoint chosen, each of the first two hooks fires once (one ticket is closed), not
+  // for every ticket filed: a shared test service answers a burst of POSTs with 429, and the
+  // server obeys its Retry-After, so the retry would land long after the seed has looked.
   { url: WEBHOOK_OK_URL || 'https://example.com/hooks/helpdesk', events: WEBHOOK_OK_URL ? ['ticket.closed'] : ['ticket.created', 'ticket.status_changed'], secret: 'screenshot-run-signing-secret', payload_format: 'slack', enabled: true },
-  { url: 'https://www.example.org/teams-webhook', events: ['ticket.resolved', 'ticket.closed'], payload_format: 'teams', enabled: true },
+  { url: WEBHOOK_OK_URL || 'https://www.example.org/teams-webhook', events: WEBHOOK_OK_URL ? ['ticket.closed'] : ['ticket.resolved', 'ticket.closed'], payload_format: 'teams', enabled: true },
   { url: 'https://www.example.net/jira-automation', events: ['*'], payload_format: 'jira', enabled: false },
 ]
 
@@ -317,16 +317,16 @@ async function main() {
     if (!delivered) console.warn('H. warning: not every enabled webhook recorded a delivery within 30 s')
     else console.log('H. webhook deliveries recorded')
     if (WEBHOOK_OK_URL) {
-      // The shot waits for "Delivered", so say here whether the endpoint answered.
+      // The shot waits for two "Delivered", so say here whether the endpoint answered both hooks.
       const hooks = await call(admin, 'GET', '/api/v1/admin/webhooks', null, 200)
-      const ours = hooks.find((h) => h.url === WEBHOOK_OK_URL)
-      features.webhookOk = ours?.last_delivery?.error === ''
+      const ours = hooks.filter((h) => h.url === WEBHOOK_OK_URL)
+      features.webhookOk = ours.length === 2 && ours.every((h) => h.last_delivery?.error === '')
       if (!features.webhookOk) {
-        console.warn(`H. last delivery to SHOTS_WEBHOOK_OK_URL: ${JSON.stringify(ours?.last_delivery ?? null)}`)
+        for (const h of ours) console.warn(`H. last delivery to SHOTS_WEBHOOK_OK_URL (${h.payload_format}): ${JSON.stringify(h.last_delivery ?? null)}`)
         // Shot 18 is gated on webhookDelivered, which a failed delivery also sets, so clear it:
-        // without this the shot would still be taken, with both hooks Failing.
+        // without this the shot would still be taken, with a hook Failing.
         features.webhookDelivered = false
-        console.warn('H. warning: SHOTS_WEBHOOK_OK_URL did not answer with 2xx; shot 18 will not be captured')
+        console.warn('H. warning: SHOTS_WEBHOOK_OK_URL did not answer both hooks with 2xx; shot 18 will not be captured')
       }
     }
   }
