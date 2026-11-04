@@ -908,7 +908,7 @@ function verifySignature(secret, body, header) {
   <li>the hook's <a href="#admin-webhook-filter">ticket filter</a>, as it is now, does not admit the ticket (<code>409 webhook_filter_excludes</code>): change the filter first;</li>
   <li>the hook has a filter and the ticket has since been deleted, so the filter cannot be checked (<code>409 webhook_filter_unverifiable</code>). A hook with no filter is still sent.</li>
 </ul>
-<img src="../screenshots/18-admin-webhooks.png" alt="Admin Webhooks page with the Admin, Integrations section open in the sidebar: the New webhook form above a list of three hooks. Slack posts to a public test service, httpbin.org, and shows Delivered · 200. Microsoft Teams shows Failing · 405. A disabled Jira Automation hook shows No deliveries yet and has an Enable button" width="2880" height="3174" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/18-admin-webhooks.png" alt="Admin Webhooks page with the Admin, Integrations section open in the sidebar: the New webhook form above a list of three hooks. The Slack and Microsoft Teams hooks both post to a public test service, httpbin.org, listen for ticket.closed and show Delivered · 200. A disabled Jira Automation hook shows No deliveries yet and has an Enable button" width="2880" height="3062" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
 
 <h2 id="admin-oauth-clients">OAuth clients</h2>
