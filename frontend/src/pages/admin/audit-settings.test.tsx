@@ -123,6 +123,19 @@ describe('the audit log settings', () => {
     expect(within(retentionField().parentElement!).queryByText(/0 keeps everything/)).toBeNull()
   })
 
+  // Staff do not have the admin-wide Audit Log page (#595); these two settings
+  // govern only what they see on a ticket's own Activity feed. The text must
+  // not send an administrator looking for a page staff cannot open.
+  it.each([
+    ['Staff can view ticket change history', /on a ticket's Activity feed/],
+    ['Staff can view follow history', /on its Activity feed/],
+  ])('"%s" describes the ticket Activity feed, not an audit view', async (label, where) => {
+    await renderSettings({})
+    const text = screen.getByText(label, { selector: 'div' }).parentElement!.textContent!
+    expect(text).toMatch(where)
+    expect(text).not.toMatch(/admin-wide|audit view/i)
+  })
+
   it('sends the toggle under its own key', async () => {
     const patch = await renderSettings({ staff_can_view_ticket_change_history: false })
     await userEvent.click(staffDiffToggle())

@@ -11223,7 +11223,7 @@ components:
           type: boolean
           description: >-
             Whether staff may see the followed and unfollowed entries in a
-            ticket's audit trail and in the admin-wide audit view.
+            ticket's audit trail. Staff have no admin-wide audit view.
             Administrators always can and requesters never can. Off by default.
             Session only.
         staff_can_create_api_keys:
