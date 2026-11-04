@@ -227,7 +227,33 @@ describe('what is open', () => {
     expect(adminOpen()).toBe(true)
   })
 
-  it('keeps the sections as they were when Admin is closed and opened again', async () => {
+  // One section at a time (an accordion): the menu has to fit a laptop screen
+  // with Admin open, and two long sections do not.
+  it('opens one section at a time: opening one closes the one that was open', async () => {
+    const user = userEvent.setup()
+    renderAt('/admin/users')
+    expect(openSections()).toEqual(['People'])
+
+    await user.click(heading('Integrations'))
+    expect(openSections()).toEqual(['Integrations'])
+    await user.click(heading('System'))
+    expect(openSections()).toEqual(['System'])
+    await user.click(heading('System'))
+    expect(openSections()).toEqual([])
+  })
+
+  it('closes the section the visitor opened when navigation opens the current page\'s', async () => {
+    const user = userEvent.setup()
+    const { rerender } = renderAt('/admin/users')
+    await user.click(heading('Integrations'))
+    expect(openSections()).toEqual(['Integrations'])
+
+    router.pathname = '/admin/groups'
+    rerender(<Layout>content</Layout>)
+    expect(openSections()).toEqual(['People'])
+  })
+
+  it('keeps the open section as it was when Admin is closed and opened again', async () => {
     const user = userEvent.setup()
     renderAt('/dashboard')
     await user.click(heading('Admin'))
@@ -285,12 +311,20 @@ describe('visibility by role', () => {
     const user = userEvent.setup()
     renderAt('/dashboard')
     await user.click(heading('Admin'))
-    for (const s of SECTIONS) await user.click(heading(s.name))
-
-    const names = linkNames()
-    for (const s of SECTIONS) for (const [label] of s.links) expect(names.filter((n) => n === label), label).toHaveLength(1)
-    expect(within(panelOf('System')).getByRole('link', { name: 'Audit Log' }).getAttribute('href')).toBe('/admin/audit')
-    expect(names.slice(0, 2)).toEqual(['Dashboard', 'Tickets'])
+    // One section is open at a time, so each is opened in turn.
+    const reached: string[] = []
+    for (const s of SECTIONS) {
+      await user.click(heading(s.name))
+      const names = linkNames()
+      expect(names.slice(0, 2)).toEqual(['Dashboard', 'Tickets'])
+      for (const [label, href] of s.links) {
+        expect(names.filter((n) => n === label), label).toHaveLength(1)
+        expect(within(panelOf(s.name)).getByRole('link', { name: label }).getAttribute('href')).toBe(href)
+        reached.push(label)
+      }
+    }
+    expect(reached).toHaveLength(15)
+    expect(reached).toContain('Audit Log')
   })
 
   // Audit Log is administrators only. Staff have the history on each ticket.
@@ -315,7 +349,7 @@ describe('visibility by role', () => {
 })
 
 describe('remembered state', () => {
-  it('writes what the visitor opened, and nothing for what only the current page opened', async () => {
+  it('writes the section the visitor opened, and nothing for what only the current page opened', async () => {
     const user = userEvent.setup()
     renderAt('/admin/users')
     expect(localStorage.getItem(STORAGE_KEY)).toBeNull()
@@ -324,25 +358,38 @@ describe('remembered state', () => {
     expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null')).toEqual(['integrations'])
   })
 
-  it('remembers Admin when the visitor opens it', async () => {
+  it('remembers Admin when the visitor opens it, and at most one section beside it', async () => {
     const user = userEvent.setup()
     renderAt('/dashboard')
     await user.click(heading('Admin'))
     expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null')).toEqual(['admin'])
+    await user.click(heading('System'))
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null')).toEqual(['admin', 'system'])
+    await user.click(heading('People'))
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null')).toEqual(['admin', 'people'])
   })
 
-  it('opens remembered Admin and sections next to the current one on the next visit', () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(['admin', 'integrations']))
-    renderAt('/admin/users')
-    expect(adminOpen()).toBe(true)
-    expect(openSections()).toEqual(['People', 'Integrations'])
-  })
-
-  it('opens remembered Admin and a remembered section where no section is current', () => {
+  it('opens the remembered Admin and section where no section is current', () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(['admin', 'system']))
     renderAt('/dashboard')
     expect(adminOpen()).toBe(true)
     expect(openSections()).toEqual(['System'])
+  })
+
+  it('lets the current page\'s section win over the remembered one', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(['admin', 'integrations']))
+    renderAt('/admin/users')
+    expect(adminOpen()).toBe(true)
+    expect(openSections()).toEqual(['People'])
+  })
+
+  it('returns to the remembered state when navigation leaves the admin pages', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(['admin', 'integrations']))
+    const { rerender } = renderAt('/admin/users')
+    router.pathname = '/dashboard'
+    rerender(<Layout>content</Layout>)
+    expect(adminOpen()).toBe(true)
+    expect(openSections()).toEqual(['Integrations'])
   })
 
   it('keeps a remembered section shut away while Admin itself is closed', () => {
@@ -354,12 +401,32 @@ describe('remembered state', () => {
 
   it('forgets what the visitor closed', async () => {
     const user = userEvent.setup()
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(['admin', 'integrations', 'system']))
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(['admin', 'integrations']))
     renderAt('/dashboard')
-    await user.click(heading('System'))
-    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null')).toEqual(['admin', 'integrations'])
+    await user.click(heading('Integrations'))
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null')).toEqual(['admin'])
     await user.click(heading('Admin'))
-    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null')).toEqual(['integrations'])
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null')).toEqual([])
+  })
+
+  it('does not forget the remembered section when the visitor closes the current page\'s', async () => {
+    const user = userEvent.setup()
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(['admin', 'integrations']))
+    renderAt('/admin/users')
+    await user.click(heading('People'))
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null')).toEqual(['admin', 'integrations'])
+  })
+
+  // Earlier builds let several sections stay open and stored them all. That
+  // is not a state the menu has now, so it is not guessed at.
+  it.each([
+    ['several sections', ['admin', 'integrations', 'system']],
+    ['two sections without Admin', ['people', 'tickets']],
+  ])('treats a stored value with %s as nothing remembered', (_name, ids) => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(ids))
+    renderAt('/dashboard')
+    expect(adminOpen()).toBe(false)
+    expect(openSections()).toEqual([])
   })
 
   it.each(['not json', '{"a":1}', '"people"', '[1,null,{}]'])('ignores a stored value of %s', (junk) => {
@@ -386,7 +453,7 @@ describe('remembered state', () => {
     expect(openSections()).toEqual(['People'])
 
     await act(async () => { await user.click(heading('System')) })
-    expect(openSections()).toEqual(['People', 'System'])
+    expect(openSections()).toEqual(['System'])
     await act(async () => { await user.click(heading('Admin')) })
     expect(adminOpen()).toBe(false)
     expect(getItem).toHaveBeenCalled()

@@ -49,7 +49,14 @@ async function openAdmin(page: Page, path: string) {
   await page.goto(path)
 }
 
-test.describe('the headings fit without scrolling, notice bar showing', () => {
+// Room to spare, not just a fit. The same page measures about 11px taller on
+// the Linux CI runner than on a Mac (system fonts lay the sidebar out
+// differently), and a test that passes with 0.5px to spare on one fails on the
+// other. Every heading, and the last link, must sit this far above the bottom
+// of the nav.
+const HEADROOM = 24
+
+test.describe('the headings fit with headroom to spare, notice bar showing', () => {
   // One page in each section, so each section gets its turn as the open one.
   // Tickets is the long one (six links) and the case that decides the height.
   const pages = [
@@ -74,6 +81,8 @@ test.describe('the headings fit without scrolling, notice bar showing', () => {
         }
 
         const navBox = (await nav.boundingBox())!
+        const navBottom = navBox.y + navBox.height
+        const headroom: Record<string, number> = {}
         for (const name of ['Admin', ...SECTIONS.map((s) => s.name)]) {
           const h = nav.getByRole('button', { name, exact: true })
           // IntersectionObserver honours clipping by the nav's own scroll box,
@@ -81,12 +90,20 @@ test.describe('the headings fit without scrolling, notice bar showing', () => {
           await expect(h, `${name} heading is not fully visible`).toBeInViewport({ ratio: 1 })
           const box = (await h.boundingBox())!
           expect(box.y, `${name} is above the nav`).toBeGreaterThanOrEqual(navBox.y)
-          expect(box.y + box.height, `${name} is below the nav's bottom edge`).toBeLessThanOrEqual(navBox.y + navBox.height)
           expect(box.y + box.height, `${name} is below the window`).toBeLessThanOrEqual(height)
+          headroom[name] = navBottom - (box.y + box.height)
         }
-        // The nav itself needs no scrollbar either.
-        const { scrollHeight, clientHeight } = await nav.evaluate((el) => ({ scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }))
-        expect(scrollHeight, 'the nav scrolls').toBeLessThanOrEqual(clientHeight)
+        // The last thing in the nav: a link when the section open is System.
+        const lastLinkBottom = await nav.evaluate((el) =>
+          Math.max(...Array.from(el.querySelectorAll('a')).filter((a) => a.getClientRects().length > 0).map((a) => a.getBoundingClientRect().bottom)),
+        )
+        headroom['last link'] = navBottom - lastLinkBottom
+
+        for (const [name, room] of Object.entries(headroom)) {
+          expect(room, `${name} has ${Math.round(room)}px above the bottom of the nav; wants ${HEADROOM}`).toBeGreaterThanOrEqual(HEADROOM)
+        }
+        // In the log, so a run on a different machine says how much room it had.
+        console.log(`headroom 1440x${height} ${p.path}: smallest ${Math.round(Math.min(...Object.values(headroom)))}px of ${HEADROOM}px wanted`)
       })
     }
   }

@@ -19,9 +19,13 @@ interface NavItemProps {
   icon: React.ReactNode
   label: string
   onNavigate?: () => void
+  // The links inside an Admin section: a little shorter, so a six-link section
+  // and the three headings still fit a laptop screen. Back to full height for a
+  // finger.
+  dense?: boolean
 }
 
-function NavItem({ to, icon, label, onNavigate }: NavItemProps) {
+function NavItem({ to, icon, label, onNavigate, dense }: NavItemProps) {
   const { location } = useRouterState()
   const active = location.pathname === to || location.pathname.startsWith(to + '/')
   return (
@@ -29,7 +33,8 @@ function NavItem({ to, icon, label, onNavigate }: NavItemProps) {
       to={to}
       onClick={onNavigate}
       className={cn(
-        'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+        'flex items-center gap-3 rounded-md px-3 text-sm font-medium transition-colors',
+        dense ? 'py-1.5 pointer-coarse:py-2' : 'py-2',
         active
           ? 'bg-blue-50 text-blue-700'
           : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
@@ -84,27 +89,42 @@ const ADMIN_SECTIONS = [
 
 const ADMIN_NAV_KEY = 'ghd.admin-nav-open'
 
-// The top-level "Admin" toggle shares the open/closed model with the four
-// sections under it, so it has an id of its own in the same list.
+// The top-level "Admin" toggle's id in the remembered list, beside the ids of
+// the sections.
 const ADMIN_ID = 'admin'
-const NAV_IDS = [ADMIN_ID, ...ADMIN_SECTIONS.map((s) => s.id)]
+
+// What the menu has open: Admin itself, and at most one section inside it.
+// One at a time (an accordion) because Admin plus a long section is already
+// what a 768-pixel-high laptop screen holds; two did not fit.
+interface NavState {
+  admin: boolean
+  section: string | null
+}
+
+const NOTHING_OPEN: NavState = { admin: false, section: null }
 
 // Storage can be blocked (private windows, site data off) or hold something
 // another version wrote; neither may break the sidebar, so every access is
-// guarded and anything unrecognised reads as "nothing remembered".
-function readRemembered(): Set<string> {
+// guarded and anything unrecognised reads as "nothing remembered". That
+// includes a list with several sections in it: earlier builds could leave
+// several open and stored them all, which is not a state the menu has now, so
+// it is not guessed at.
+function readRemembered(): NavState {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(ADMIN_NAV_KEY) ?? 'null')
-    if (!Array.isArray(parsed)) return new Set()
-    return new Set(NAV_IDS.filter((id) => parsed.includes(id)))
+    if (!Array.isArray(parsed)) return NOTHING_OPEN
+    const sections = ADMIN_SECTIONS.map((s) => s.id).filter((id) => parsed.includes(id))
+    if (sections.length > 1) return NOTHING_OPEN
+    return { admin: parsed.includes(ADMIN_ID), section: sections[0] ?? null }
   } catch {
-    return new Set()
+    return NOTHING_OPEN
   }
 }
 
-function writeRemembered(ids: Set<string>) {
+function writeRemembered(r: NavState) {
   try {
-    localStorage.setItem(ADMIN_NAV_KEY, JSON.stringify(NAV_IDS.filter((id) => ids.has(id))))
+    const ids = [...(r.admin ? [ADMIN_ID] : []), ...(r.section ? [r.section] : [])]
+    localStorage.setItem(ADMIN_NAV_KEY, JSON.stringify(ids))
   } catch {
     // Not remembering is the whole cost of a blocked store.
   }
@@ -120,38 +140,44 @@ interface AdminNav {
   toggle: (id: string) => void
 }
 
-// Admin, and each section inside it, is open if the visitor opened it
-// (remembered per browser) or it holds the page they are on. Only the first is
-// stored: storing the second would turn every section you ever visited into a
-// permanently open one and bring back the flat list. Admin and the current
-// section are re-opened on every navigation, so closing them by hand lasts
-// until the next page, not for good.
+// On an admin page the menu shows that page: Admin open, its section open, any
+// other section closed. Anywhere else it shows what the visitor last left open
+// by hand. Only by-hand choices are stored: storing what a page opened would
+// leave every section you ever visited open and bring the flat list back. A
+// by-hand close lasts until the next navigation, not for good.
 // State lives here, above both copies of the sidebar (permanent and drawer),
 // so toggling in one is seen by the other.
 function useAdminNav(pathname: string): AdminNav {
   const current = sectionOfPath(pathname)
-  // The page's section, and Admin around it, at both levels.
-  const currentIds = current ? [ADMIN_ID, current] : []
   const [remembered, setRemembered] = useState(readRemembered)
-  const [autoOpen, setAutoOpen] = useState(currentIds)
+  const showing = (r: NavState): NavState => (current ? { admin: true, section: current } : r)
+  const [live, setLive] = useState(() => showing(remembered))
   const [seenPath, setSeenPath] = useState(pathname)
   // Adjusting state while rendering (not in an effect) so the new page's
   // section is open in the same paint, not one frame later.
   if (seenPath !== pathname) {
     setSeenPath(pathname)
-    setAutoOpen(currentIds)
+    setLive(showing(remembered))
   }
-  const isOpen = (id: string) => remembered.has(id) || autoOpen.includes(id)
+  const isOpen = (id: string) => (id === ADMIN_ID ? live.admin : live.section === id)
   function toggle(id: string) {
-    const next = new Set(remembered)
-    if (isOpen(id)) {
-      setAutoOpen(autoOpen.filter((x) => x !== id))
-      next.delete(id)
+    let nextLive: NavState
+    let nextRemembered: NavState
+    if (id === ADMIN_ID) {
+      nextLive = { ...live, admin: !live.admin }
+      nextRemembered = { ...remembered, admin: nextLive.admin }
+    } else if (live.section === id) {
+      // Closing forgets the section only if it was the remembered one: a page
+      // can have opened this one while another is what the visitor chose.
+      nextLive = { ...live, section: null }
+      nextRemembered = { ...remembered, section: remembered.section === id ? null : remembered.section }
     } else {
-      next.add(id)
+      nextLive = { ...live, section: id }
+      nextRemembered = { ...remembered, section: id }
     }
-    setRemembered(next)
-    writeRemembered(next)
+    setLive(nextLive)
+    setRemembered(nextRemembered)
+    writeRemembered(nextRemembered)
   }
   return { isOpen, toggle }
 }
@@ -183,7 +209,7 @@ function AdminSections({ nav, onNavigate }: { nav: AdminNav; onNavigate?: () => 
           const headingId = `${uid}-${s.id}-heading`
           const panelId = `${uid}-${s.id}-panel`
           return (
-            <div key={s.id} className="pt-1">
+            <div key={s.id}>
               <button
                 type="button"
                 id={headingId}
@@ -195,9 +221,9 @@ function AdminSections({ nav, onNavigate }: { nav: AdminNav; onNavigate?: () => 
                 {s.label}
                 <ChevronDownIcon className={cn('h-4 w-4 transition-transform', !open && '-rotate-90')} />
               </button>
-              <div id={panelId} role="group" aria-labelledby={headingId} hidden={!open} className="ml-2 space-y-1 pt-1">
+              <div id={panelId} role="group" aria-labelledby={headingId} hidden={!open} className="ml-2 space-y-1">
                 {s.items.map((i) => (
-                  <NavItem key={i.to} to={i.to} icon={i.icon} label={i.label} onNavigate={onNavigate} />
+                  <NavItem key={i.to} to={i.to} icon={i.icon} label={i.label} onNavigate={onNavigate} dense />
                 ))}
               </div>
             </div>
