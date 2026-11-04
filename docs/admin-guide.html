@@ -930,7 +930,7 @@ function verifySignature(secret, body, header) {
 <ul>
   <li>Administrators always can own keys. Staff can while the first setting is on. Requesters and service accounts never own one.</li>
   <li>You can issue a key on a staff member's behalf (or for yourself) when you create it. Not for another administrator. The key list shows "Issued on their behalf", and the owner sees "Issued for you by an administrator".</li>
-  <li>A key acts within its owner's current role, and its scopes never exceed it. A staff key can carry <code>tickets:read</code>, <code>tickets:write</code>, <code>groups:read</code> and <code>audit:read</code> (<code>users:read</code> is no longer offered: its one staff route, the requester lookup, is session-only). Promoting a staff member who holds an administrator-issued key leaves an administrator holding it; revoke it if you do not want that.</li>
+  <li>A key acts within its owner's current role, and its scopes never exceed it. A staff key can carry <code>tickets:read</code>, <code>tickets:write</code> and <code>groups:read</code> (<code>audit:read</code> is for administrators' keys, and <code>users:read</code> is no longer offered: its one staff route, the requester lookup, is session-only). Promoting a staff member who holds an administrator-issued key leaves an administrator holding it; revoke it if you do not want that.</li>
   <li><strong>A key cannot create keys or OAuth clients</strong>, and <strong>cannot write users</strong>: it can read users and groups, but cannot create, change, disable or delete an account, set a password, clear a second factor, change an email, or change group membership or scope. It also cannot change <code>ticket_scope_enforced</code> or the auto-assignment settings. These need you, signed in. The scope <code>users:write</code> is no longer offered.</li>
   <li>Every key issued or revoked is written to the audit log (<code>api_key_issued</code>, <code>api_key_revoked</code>).</li>
 </ul>
@@ -982,7 +982,7 @@ function verifySignature(secret, body, header) {
 </ul>
 
 <h3 id="admin-settings-audit">Follow history</h3>
-<p>When a staff member follows or stops following a ticket, the Activity feed and the Audit Log record it (<em>Started following</em> and <em>Stopped following</em>). Administrators always see these entries. Staff see them only when <em>Staff can view follow history</em> is on, under <em>Admin → System → Settings → General → Audit log</em> (<code>staff_can_view_follow_audit</code>, off by default). It is session-only: an API key or OAuth client cannot change it. Reporters never see these entries, and staff always see the current list of followers on a ticket whatever the setting says.</p>
+<p>When a staff member follows or stops following a ticket, the Activity feed and the Audit Log record it (<em>Started following</em> and <em>Stopped following</em>). Administrators always see these entries. Staff see them, in a ticket's Activity feed only (they do not have the Audit Log), only when <em>Staff can view follow history</em> is on, under <em>Admin → System → Settings → General → Audit log</em> (<code>staff_can_view_follow_audit</code>, off by default). It is session-only: an API key or OAuth client cannot change it. Reporters never see these entries, and staff always see the current list of followers on a ticket whatever the setting says.</p>
 
 <h3>Requester names</h3>
 <p>By default, a requester is shown as <em>Requester (name hidden)</em> rather than by name in every audit view. Change this under <em>Admin → System → Settings → General → Privacy</em>, in <em>Mask requester names in Audit Trail</em>:</p>
@@ -1003,7 +1003,7 @@ function verifySignature(secret, body, header) {
 
 <h3>API</h3>
 <ul>
-  <li><code>GET /api/v1/admin/audit</code> is the admin-wide view, for administrators only. A signed-in administrator session needs no scope. An API key or OAuth client needs <code>audit:read</code>; <code>tickets:read</code> does not reach it.</li>
+  <li><code>GET /api/v1/admin/audit</code> is the admin-wide view, for administrators only. A signed-in administrator session needs no scope. An administrator's API key needs <code>audit:read</code>; <code>tickets:read</code> does not reach it. Staff, and OAuth clients (which act as a staff-level service user), are refused with <code>403</code>, and a staff key cannot be given <code>audit:read</code> (<code>400 invalid_scope</code>).</li>
   <li><code>GET /api/v1/tickets/{id}/audit</code> is the per-ticket feed, and needs <code>tickets:read</code>.</li>
 </ul>
 <p>See the <a href="api-reference.html">API Reference</a> for the parameters and responses.</p>
