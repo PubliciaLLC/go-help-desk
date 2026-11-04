@@ -91,8 +91,19 @@ const SETTINGS = () => clean({
   attachment_reputation_virustotal_key: REPUTATION ? 'screenshot-run-no-real-key' : undefined,
 })
 
+// The server refuses to deliver to loopback and private addresses (internal/safehttp),
+// so a local stand-in cannot answer a hook. The hooks go to the example hosts, which
+// answer a POST with 405, and the page shows "Failing · 405". To show a delivery that
+// worked, SHOTS_WEBHOOK_OK_URL names a public endpoint that answers a POST with 2xx:
+// the Slack hook then posts there and shows "Delivered", and the Teams hook is left on
+// example.org, so the page shows one of each. A hook posts Slack, Teams or Jira JSON
+// built from the seeded (made-up) tickets.
+const WEBHOOK_OK_URL = process.env.SHOTS_WEBHOOK_OK_URL
 const WEBHOOKS = [
-  { url: 'https://example.com/hooks/helpdesk', events: ['ticket.created', 'ticket.status_changed'], secret: 'screenshot-run-signing-secret', payload_format: 'slack', enabled: true },
+  // With an endpoint chosen, this hook fires once (one ticket is closed), not for every ticket
+  // filed: a shared test service answers a burst of POSTs with 429, and the server obeys its
+  // Retry-After, so the retry would land long after the seed has looked.
+  { url: WEBHOOK_OK_URL || 'https://example.com/hooks/helpdesk', events: WEBHOOK_OK_URL ? ['ticket.closed'] : ['ticket.created', 'ticket.status_changed'], secret: 'screenshot-run-signing-secret', payload_format: 'slack', enabled: true },
   { url: 'https://www.example.org/teams-webhook', events: ['ticket.resolved', 'ticket.closed'], payload_format: 'teams', enabled: true },
   { url: 'https://www.example.net/jira-automation', events: ['*'], payload_format: 'jira', enabled: false },
 ]
@@ -175,7 +186,7 @@ async function main() {
   ]
   for (const cr of canned) await call(admin, 'POST', '/api/v1/admin/canned-responses', clean(cr), 201)
 
-  const features = { webhooks: true, webhookDelivered: false, reputation: REPUTATION }
+  const features = { webhooks: true, webhookDelivered: false, webhookOk: false, reputation: REPUTATION }
   const hookIDs = []
   for (const wh of WEBHOOKS) {
     const r = await raw(admin, 'POST', '/api/v1/admin/webhooks', wh)
@@ -305,6 +316,19 @@ async function main() {
     features.webhookDelivered = delivered
     if (!delivered) console.warn('H. warning: not every enabled webhook recorded a delivery within 30 s')
     else console.log('H. webhook deliveries recorded')
+    if (WEBHOOK_OK_URL) {
+      // The shot waits for "Delivered", so say here whether the endpoint answered.
+      const hooks = await call(admin, 'GET', '/api/v1/admin/webhooks', null, 200)
+      const ours = hooks.find((h) => h.url === WEBHOOK_OK_URL)
+      features.webhookOk = ours?.last_delivery?.error === ''
+      if (!features.webhookOk) {
+        console.warn(`H. last delivery to SHOTS_WEBHOOK_OK_URL: ${JSON.stringify(ours?.last_delivery ?? null)}`)
+        // Shot 18 is gated on webhookDelivered, which a failed delivery also sets, so clear it:
+        // without this the shot would still be taken, with both hooks Failing.
+        features.webhookDelivered = false
+        console.warn('H. warning: SHOTS_WEBHOOK_OK_URL did not answer with 2xx; shot 18 will not be captured')
+      }
+    }
   }
 
   // Reputation lookups run after the upload returns; poll up to 30 s for the quarantined file's result.

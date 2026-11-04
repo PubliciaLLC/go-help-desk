@@ -53,7 +53,11 @@
 #   SHOTS_VERSION             footer version override, for previews only [unset: version.go]
 #   SHOTS_PASSWORD            password for every seeded account [random per run]
 #   SHOTS_REPUTATION          0 skips the CIRCL and VirusTotal lookups [1]
-#   SHOTS_WEBHOOK_OK_URL      optional public 2xx endpoint for a "Delivered" webhook state
+#   SHOTS_WEBHOOK_OK_URL      optional public endpoint that answers a POST with 2xx. The Slack hook
+#                             posts there, so shot 18 shows one "Delivered" and one "Failing" hook
+#                             (Teams stays on example.org, which answers 405). Unset: both show
+#                             "Failing · 405". A stand-in on this machine cannot do it: the server
+#                             refuses to deliver to loopback and private addresses.
 #   SHOTS_KEEP                1 leaves the database in place (same as --keep)
 #   SHOTS_ALLOW_FALLBACK_FONT 1 lets --publish run when Inter could not be
 #                             fetched and Liberation Sans is used instead. For
