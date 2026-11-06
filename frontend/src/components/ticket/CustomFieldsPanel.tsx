@@ -38,15 +38,17 @@ export function CustomFieldsPanel({
   isStaffOrAdmin,
 }: CustomFieldsPanelProps) {
   const qc = useQueryClient()
-  const { data: values, isLoading: valuesLoading } = useQuery<TicketFieldValue[]>({
+  const { data: values, isLoading: valuesLoading, isError: valuesFailed } = useQuery<TicketFieldValue[]>({
     queryKey: ['customFields', ticketId],
     queryFn: () => listTicketCustomFields(ticketId),
   })
   // The values list holds only fields with a value. The ticket's own fields, and
   // the order they appear in, come from its classification, the same call the
   // new-ticket form makes.
-  const { data: resolved, isLoading: resolvedLoading } = useQuery({
-    queryKey: ['ctiFields', categoryId, typeId, itemId],
+  // Not ['ctiFields', ...]: the Categories page caches a single level's
+  // assignments under that key, and sharing it would hand this card a partial list.
+  const { data: resolved, isLoading: resolvedLoading, isError: resolvedFailed } = useQuery({
+    queryKey: ['ctiFieldsResolved', categoryId, typeId, itemId],
     queryFn: () => resolveFieldsForCTI({ category_id: categoryId, type_id: typeId, item_id: itemId }),
   })
 
@@ -66,6 +68,23 @@ export function CustomFieldsPanel({
   // Wait for both, so staff do not see the card fill in field by field. A failed
   // resolve leaves `resolved` undefined and the card falls back to the values.
   if (valuesLoading || resolvedLoading) return null
+
+  // Without the values every field looks empty, and Save would clear them all.
+  // So a failed load offers nothing to edit, and says so.
+  if (valuesFailed) {
+    return isStaffOrAdmin ? (
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+            Custom Fields
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p role="alert" className="text-xs text-red-600">Couldn't load custom fields.</p>
+        </CardContent>
+      </Card>
+    ) : null
+  }
 
   const held = new Map((values ?? []).map((v) => [v.field_def_id, v]))
   const rows: Row[] = []
@@ -87,7 +106,7 @@ export function CustomFieldsPanel({
     placed.add(a.field_def_id)
     rows.push({
       id: a.field_def_id,
-      name: def?.name ?? v?.field_name ?? '',
+      name: v?.field_name ?? def?.name ?? '',
       type: def?.field_type ?? v?.field_type ?? 'text',
       options: def?.options ?? v?.options,
       value,
@@ -111,7 +130,10 @@ export function CustomFieldsPanel({
     })
   }
 
-  if (rows.length === 0) return null
+  // A failed resolve leaves only the stored values, all read-only. Staff are told
+  // why Edit is missing; a requester sees what they always did.
+  const resolveNotice = resolvedFailed && isStaffOrAdmin
+  if (rows.length === 0 && !resolveNotice) return null
 
   const canEdit = rows.some((r) => r.editable)
 
@@ -241,6 +263,11 @@ export function CustomFieldsPanel({
               Cancel
             </Button>
           </div>
+        )}
+        {resolveNotice && (
+          <p role="alert" className="text-xs text-red-600">
+            Couldn't load this ticket's fields, so they can't be edited. Reload to try again.
+          </p>
         )}
         {saveError && <p role="alert" className="text-xs text-red-600">{saveError}</p>}
       </CardContent>
