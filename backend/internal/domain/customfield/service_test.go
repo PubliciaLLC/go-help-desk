@@ -149,13 +149,15 @@ func TestResolveFieldsForCTI_OrdersByScopeLevel(t *testing.T) {
 	ctx := context.Background()
 	svc := customfield.NewService(newFakeStore())
 	cat, typ, item := uuid.New(), uuid.New(), uuid.New()
-	def := uuid.New()
+	// A different field at each level: one field at all three is shown once
+	// (bug 4), which is not what this test is about.
+	itemDef, catDef, typeDef := uuid.New(), uuid.New(), uuid.New()
 
-	ia, err := svc.CreateAssignment(ctx, def, customfield.ItemScope, item, 1, true, false)
+	ia, err := svc.CreateAssignment(ctx, itemDef, customfield.ItemScope, item, 1, true, false)
 	require.NoError(t, err)
-	ca, err := svc.CreateAssignment(ctx, def, customfield.CategoryScope, cat, 1, true, false)
+	ca, err := svc.CreateAssignment(ctx, catDef, customfield.CategoryScope, cat, 1, true, false)
 	require.NoError(t, err)
-	ta, err := svc.CreateAssignment(ctx, def, customfield.TypeScope, typ, 1, true, false)
+	ta, err := svc.CreateAssignment(ctx, typeDef, customfield.TypeScope, typ, 1, true, false)
 	require.NoError(t, err)
 
 	got, err := svc.ResolveFieldsForCTI(ctx, cat, &typ, &item)
@@ -165,6 +167,100 @@ func TestResolveFieldsForCTI_OrdersByScopeLevel(t *testing.T) {
 	got, err = svc.ResolveFieldsForCTI(ctx, cat, nil, nil)
 	require.NoError(t, err)
 	require.Len(t, got, 1, "no type or item means only the category's fields")
+}
+
+// Bug 4 (#603): a field attached at more than one of the ticket's levels
+// reaches the ticket once, not once per attachment.
+func TestResolveFields_FieldOnCategoryAndTypeAppearsOnce(t *testing.T) {
+	ctx := context.Background()
+	svc := customfield.NewService(newFakeStore())
+	cat, typ := uuid.New(), uuid.New()
+	def, other := uuid.New(), uuid.New()
+
+	_, err := svc.CreateAssignment(ctx, def, customfield.CategoryScope, cat, 1, true, false)
+	require.NoError(t, err)
+	_, err = svc.CreateAssignment(ctx, def, customfield.TypeScope, typ, 1, true, false)
+	require.NoError(t, err)
+	_, err = svc.CreateAssignment(ctx, other, customfield.CategoryScope, cat, 2, true, false)
+	require.NoError(t, err)
+
+	got, err := svc.ResolveFieldsForCTI(ctx, cat, &typ, nil)
+	require.NoError(t, err)
+	require.Len(t, got, 2, "one entry for the overlapped field, one for the other")
+
+	seen := map[uuid.UUID]int{}
+	for _, a := range got {
+		seen[a.FieldDefID]++
+	}
+	require.Equal(t, 1, seen[def], "the overlapped field appears once")
+	require.Equal(t, 1, seen[other], "a field attached once is untouched")
+}
+
+// The most specific attachment wins, for its settings and for its level.
+// The two attachments carry different settings so a loser leaking through
+// shows.
+func TestResolveFields_MostSpecificAttachmentWins(t *testing.T) {
+	cat, typ, item := uuid.New(), uuid.New(), uuid.New()
+	scopeID := map[customfield.ScopeType]uuid.UUID{
+		customfield.CategoryScope: cat,
+		customfield.TypeScope:     typ,
+		customfield.ItemScope:     item,
+	}
+
+	for _, tc := range []struct {
+		name                       string
+		general, specific          customfield.ScopeType
+		generalVisible, generalReq bool
+		specificVisible, specReq   bool
+	}{
+		{"category and type", customfield.CategoryScope, customfield.TypeScope, true, true, true, false},
+		{"type and item", customfield.TypeScope, customfield.ItemScope, true, false, true, true},
+		{"category and item", customfield.CategoryScope, customfield.ItemScope, false, false, true, true},
+		{"the specific one hides what the general one shows", customfield.CategoryScope, customfield.ItemScope, true, true, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			svc := customfield.NewService(newFakeStore())
+			def := uuid.New()
+
+			_, err := svc.CreateAssignment(ctx, def, tc.general, scopeID[tc.general], 1, tc.generalVisible, tc.generalReq)
+			require.NoError(t, err)
+			want, err := svc.CreateAssignment(ctx, def, tc.specific, scopeID[tc.specific], 1, tc.specificVisible, tc.specReq)
+			require.NoError(t, err)
+
+			got, err := svc.ResolveFieldsForCTI(ctx, cat, &typ, &item)
+			require.NoError(t, err)
+			require.Len(t, got, 1)
+			require.Equal(t, want.ID, got[0].ID, "the more specific attachment is the one returned")
+			require.Equal(t, tc.specific, got[0].ScopeType, "level")
+			require.Equal(t, tc.specificVisible, got[0].VisibleOnNew, "visible_on_new")
+			require.Equal(t, tc.specReq, got[0].RequiredOnNew, "required_on_new")
+		})
+	}
+}
+
+// An overlapped field is listed with its winning level's fields, so the
+// grouping the form shows agrees with the level reported.
+func TestResolveFields_OverlappedFieldSitsAtItsWinningLevel(t *testing.T) {
+	ctx := context.Background()
+	svc := customfield.NewService(newFakeStore())
+	cat, typ := uuid.New(), uuid.New()
+	moved, stays := uuid.New(), uuid.New()
+
+	_, err := svc.CreateAssignment(ctx, moved, customfield.CategoryScope, cat, 1, true, false)
+	require.NoError(t, err)
+	_, err = svc.CreateAssignment(ctx, stays, customfield.CategoryScope, cat, 2, true, false)
+	require.NoError(t, err)
+	_, err = svc.CreateAssignment(ctx, moved, customfield.TypeScope, typ, 1, true, false)
+	require.NoError(t, err)
+
+	got, err := svc.ResolveFieldsForCTI(ctx, cat, &typ, nil)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	require.Equal(t, stays, got[0].FieldDefID)
+	require.Equal(t, customfield.CategoryScope, got[0].ScopeType)
+	require.Equal(t, moved, got[1].FieldDefID)
+	require.Equal(t, customfield.TypeScope, got[1].ScopeType)
 }
 
 // Deleting an assignment that does not exist reports ErrNotFound (404 at the
