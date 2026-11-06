@@ -141,6 +141,12 @@ func TestSetValue(t *testing.T) {
 	sel.Active = false
 	require.NoError(t, svc.UpdateFieldDef(ctx, sel))
 	require.Error(t, svc.SetValue(ctx, ticketID, sel.ID, "blue"), "a deactivated field takes no new value")
+
+	// A clear is a write too. It used to reach DeleteValue before the active
+	// check and wipe the stored value.
+	store.values[key] = "red"
+	require.Error(t, svc.SetValue(ctx, ticketID, sel.ID, ""), "a deactivated field cannot be cleared")
+	require.Equal(t, "red", store.values[key], "a refused clear leaves the stored value alone")
 }
 
 // Category fields come first, then type, then item: the order the new-ticket
