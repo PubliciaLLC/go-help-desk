@@ -350,6 +350,13 @@ function FieldsSubsection({ scope }: { scope: FieldsScope }) {
   const assignedDefIds = new Set(assignments.map((a) => a.field_def_id))
   const available = allDefs.filter((d) => d.active && !assignedDefIds.has(d.id))
 
+  // The new-ticket form and the ticket page cache the resolved list under their
+  // own key (the one above holds a single level), so a change here clears both.
+  function invalidateAssignments() {
+    qc.invalidateQueries({ queryKey })
+    qc.invalidateQueries({ queryKey: ['ctiFieldsResolved'] })
+  }
+
   const addMutation = useMutation({
     mutationFn: () => {
       const input = { field_def_id: selectedDefId, sort_order: assignments.length + 1, visible_on_new: true, required_on_new: false }
@@ -360,7 +367,7 @@ function FieldsSubsection({ scope }: { scope: FieldsScope }) {
     onSuccess: () => {
       setAddingField(false)
       setSelectedDefId('')
-      qc.invalidateQueries({ queryKey })
+      invalidateAssignments()
     },
   })
 
@@ -378,14 +385,14 @@ function FieldsSubsection({ scope }: { scope: FieldsScope }) {
 
   const removeMutation = useMutation({
     mutationFn: (assignmentId: string) => removeAssignment(assignmentId),
-    onSuccess: () => qc.invalidateQueries({ queryKey }),
+    onSuccess: invalidateAssignments,
   })
   const removeError = removeMutation.isError ? extractError(removeMutation.error) : ''
 
   const toggleMutation = useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: { visible_on_new?: boolean; required_on_new?: boolean } }) =>
       updateAssignment(id, patch),
-    onSuccess: () => qc.invalidateQueries({ queryKey }),
+    onSuccess: invalidateAssignments,
   })
 
   if (assignments.length === 0 && !addingField) {

@@ -144,7 +144,7 @@ export function NewTicketPage() {
   })
 
   const { data: ctiFields = [] } = useQuery({
-    queryKey: ['ctiFields', categoryId, typeId, itemId],
+    queryKey: ['ctiFieldsResolved', categoryId, typeId, itemId],
     queryFn: () => resolveFieldsForCTI({
       category_id: categoryId,
       type_id: typeId || undefined,
