@@ -495,6 +495,12 @@ func TestReorder_SetsTheNumbersAndLeavesAttachmentsAlone(t *testing.T) {
 	var defs []customfield.FieldDef
 	require.NoError(t, json.Unmarshal(body, &defs))
 	require.Equal(t, []int{1, 2, 3}, []int{defs[0].SortOrder, defs[1].SortOrder, defs[2].SortOrder})
+	// It answers with the list, so with each field's place_count too.
+	for _, d := range defs {
+		require.NotNil(t, d.PlaceCount, d.Name)
+	}
+	require.Equal(t, 1, *defs[2].PlaceCount, "a is attached once")
+	require.Zero(t, *defs[0].PlaceCount)
 
 	got, err := h.customFieldSvc.GetAssignment(context.Background(), asg.ID)
 	require.NoError(t, err)

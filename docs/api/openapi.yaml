@@ -9920,7 +9920,7 @@ paths:
         field_def_ids must name every field definition exactly once, active and
         inactive alike. Position n (from 1) becomes the field's number (sort_order).
         Attachments are not changed. Answers 200 with the full list in the new order
-        (the same entries as GET /admin/custom-fields). Every field whose number
+        (the same entries as GET /admin/custom-fields), place_count included. Every field whose number
         changed is audited as custom_field_reordered, in the same transaction.
         A list that repeats an id, is not a list of UUIDs, or is missing is 400
         bad_request. A list that does not match the stored fields (one was added
@@ -11957,7 +11957,7 @@ components:
           description: Options no longer offered that tickets may still hold. Admin routes only.
         place_count:
           type: integer
-          description: How many places the field is attached to. Present on GET /admin/custom-fields only; 0 for a field on no form.
+          description: How many places the field is attached to. Present on the list responses (GET /admin/custom-fields and PUT /admin/custom-fields/order) and not on a single definition; 0 for a field on no form.
         sort_order: {type: integer, description: "The field's number. Orders fields within a level on both forms."}
         active:
           type: boolean
