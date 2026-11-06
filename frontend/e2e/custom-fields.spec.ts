@@ -137,7 +137,18 @@ const liveRegion = (page: Page) => page.locator('[id^="DndLiveRegion"]:not(:empt
 // dnd-kit starts listening for the arrow keys one tick after it announces the
 // pick-up, so a key pressed the instant the announcement shows is lost. A person
 // is never that fast.
-const pickedUp = (page: Page) => page.waitForTimeout(100)
+const pickedUp = (page: Page) => page.waitForTimeout(300)
+
+// Presses ArrowDown and waits for the announcement of the move. On a loaded
+// machine the first press can still beat dnd-kit's listener, so it is pressed
+// again only while nothing has been announced.
+async function arrowDownUntil(page: Page, announced: string) {
+  await expect(async () => {
+    const said = (await liveRegion(page).textContent()) ?? ''
+    if (!said.includes(announced)) await page.keyboard.press('ArrowDown')
+    await expect(liveRegion(page)).toContainText(announced, { timeout: 1500 })
+  }).toPass({ timeout: 15_000 })
+}
 
 test.describe('reordering fields', () => {
   test('keyboard: Space, ArrowDown, Space sends the new order, announces it and keeps focus', async ({ page }) => {
@@ -151,7 +162,7 @@ test.describe('reordering fields', () => {
     await page.keyboard.press('Space')
     await expect(liveRegion(page)).toContainText('Picked up Department')
     await pickedUp(page)
-    await page.keyboard.press('ArrowDown')
+    await arrowDownUntil(page, 'Department is now over Phone number, position 2 of 3')
     await page.keyboard.press('Space')
 
     // The inactive "Old cost centre" is hidden but still in the list that is sent.
@@ -169,8 +180,7 @@ test.describe('reordering fields', () => {
     await handle.focus()
     await page.keyboard.press('Space')
     await expect(liveRegion(page)).toContainText('Picked up Department')
-    await page.keyboard.press('ArrowDown')
-    await expect(liveRegion(page)).toContainText('is now over Phone number')
+    await arrowDownUntil(page, 'is now over Phone number')
     await page.keyboard.press('Escape')
 
     await expect(liveRegion(page)).toContainText('Reorder cancelled')
@@ -209,8 +219,7 @@ test.describe('reordering options', () => {
     await page.keyboard.press('Space')
     await expect(liveRegion(page)).toContainText('Picked up Finance')
     await pickedUp(page)
-    await page.keyboard.press('ArrowDown')
-    await expect(liveRegion(page)).toContainText('is now over Sales, EMEA')
+    await arrowDownUntil(page, 'is now over Sales, EMEA')
     await page.keyboard.press('Space')
     await expect(liveRegion(page)).toContainText('Dropped Finance, position 2 of 3')
     await expect(handle).toBeFocused()

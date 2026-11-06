@@ -138,7 +138,7 @@ function optionErrors(draft: OptionsDraft, retired: string[], attempted: boolean
 const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((v, i) => v === b[i])
 
 function OptionsEditor({
-  draft, usage, attempted, persisted,
+  draft, usage, attempted, persisted, showRetired = false, onShowRetired = () => {},
 }: {
   draft: OptionsDraft
   // Undefined while loading, or when the field is not created yet.
@@ -146,8 +146,11 @@ function OptionsEditor({
   attempted: boolean
   // False on the create form, where nothing is stored yet: no counts, no retiring.
   persisted: boolean
+  // Held by the row, not here: a Save rebuilds the form, and the retired list
+  // should not fold away under the option that was just retired.
+  showRetired?: boolean
+  onShowRetired?: (show: boolean) => void
 }) {
-  const [showRetired, setShowRetired] = useState(false)
   const { retired } = optionLists(draft, usage)
   const errors = optionErrors(draft, retired, attempted)
 
@@ -157,7 +160,7 @@ function OptionsEditor({
         <span className={LABEL}>Options</span>
         {persisted && (
           <label className={CHECK_LABEL}>
-            <input type="checkbox" checked={showRetired} onChange={(e) => setShowRetired(e.target.checked)} />
+            <input type="checkbox" checked={showRetired} onChange={(e) => onShowRetired(e.target.checked)} />
             Show retired
           </label>
         )}
@@ -245,7 +248,7 @@ function OptionsEditor({
 
 // ── Details ───────────────────────────────────────────────────────────────────
 
-function FieldDetails({ def }: { def: FieldDef }) {
+function FieldDetails({ def, showRetired, onShowRetired }: { def: FieldDef; showRetired: boolean; onShowRetired: (show: boolean) => void }) {
   const qc = useQueryClient()
   const ids = useId()
   const [name, setName] = useState(def.name)
@@ -343,7 +346,7 @@ function FieldDetails({ def }: { def: FieldDef }) {
         )}
       </div>
 
-      {type === 'select' && <OptionsEditor draft={draft} usage={usage} attempted={attempted} persisted />}
+      {type === 'select' && <OptionsEditor draft={draft} usage={usage} attempted={attempted} persisted showRetired={showRetired} onShowRetired={onShowRetired} />}
 
       {attempted && !name.trim() && <p role="alert" className="text-sm text-red-600">A field needs a name.</p>}
       {error && <p role="alert" className="text-sm text-red-600 wrap-anywhere">{error}</p>}
@@ -707,6 +710,7 @@ function FieldRow({
 }) {
   const qc = useQueryClient()
   const [confirmOpen, setConfirmOpen] = useState(false)
+  const [showRetired, setShowRetired] = useState(false)
 
   // The list carries place_count, so a closed row needs no call of its own.
   const count = def.place_count
@@ -770,7 +774,7 @@ function FieldRow({
         <div className="space-y-5 border-t bg-gray-50 px-3 py-4 sm:ml-12">
           <section className="space-y-2">
             <h3 className={SECTION_HEAD}>Details</h3>
-            <FieldDetails key={signature} def={def} />
+            <FieldDetails key={signature} def={def} showRetired={showRetired} onShowRetired={setShowRetired} />
           </section>
           <section className="space-y-2 border-t pt-4">
             <h3 className={SECTION_HEAD}>Where it appears</h3>

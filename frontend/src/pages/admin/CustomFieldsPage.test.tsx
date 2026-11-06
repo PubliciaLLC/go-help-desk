@@ -500,6 +500,19 @@ describe('Options', () => {
     )
   })
 
+  it('keeps Show retired on after a Save, so the option just retired stays in view', async () => {
+    const { server, row } = await openDept()
+    await userEvent.click(within(row).getByRole('checkbox', { name: 'Show retired' }))
+    await userEvent.click(within(row).getByRole('button', { name: 'Retire Finance' }))
+    await userEvent.click(within(row).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(server.patch).toHaveBeenCalled())
+    // The saved field comes back and the form is rebuilt from it.
+    expect(await within(row).findByRole('button', { name: 'Bring back Finance' })).toBeTruthy()
+    await waitFor(() => expect(server.calls.get.filter((u) => u === '/admin/custom-fields').length).toBeGreaterThan(1))
+    expect((within(row).getByRole('checkbox', { name: 'Show retired' }) as HTMLInputElement).checked).toBe(true)
+    expect(within(row).getByRole('button', { name: 'Bring back Finance' })).toBeTruthy()
+  })
+
   it('Bring back moves a retired option to the end of the options in use', async () => {
     const { server, row } = await openDept()
     await userEvent.click(within(row).getByRole('checkbox', { name: 'Show retired' }))
