@@ -113,11 +113,14 @@ function fakeServer(opts: { defs?: FieldDef[]; placements?: Record<string, Field
   const usage = structuredClone(opts.usage ?? USAGE)
   const calls = { get: [] as string[] }
   const fail: { patch?: unknown; put?: unknown } = {}
+  // While set, the list GET waits for it: lets a test look at the page before a refetch lands.
+  const hold: { list?: Promise<void> } = {}
 
   const get = vi.spyOn(api, 'get').mockImplementation((async (url: string) => {
     calls.get.push(url)
     const m = url.match(/^\/admin\/custom-fields\/([^/]+)\/(assignments|usage)$/)
     // place_count is on the list only, as on the real API.
+    if (url === '/admin/custom-fields' && hold.list) await hold.list
     if (url === '/admin/custom-fields') return { data: defs.map((d) => ({ ...d, place_count: (placements[d.id] ?? []).length })) }
     if (m && m[2] === 'assignments') return { data: placements[m[1]] ?? [] }
     if (m && m[2] === 'usage') return { data: usage[m[1]] }
@@ -177,7 +180,9 @@ function fakeServer(opts: { defs?: FieldDef[]; placements?: Record<string, Field
     return { data: {} }
   }) as never)
 
-  return { get, post, patch, put, del, calls, fail, setPlacements: (id: string, p: FieldPlacement[]) => { placements[id] = p } }
+  return { get, post, patch, put, del, calls, fail, hold, setUsage: (id: string, u: FieldUsage) => { usage[id] = u },
+    // Someone else changes a definition.
+    changeDef: (id: string, over: Partial<FieldDef>) => { defs = defs.map((d) => (d.id === id ? { ...d, ...over } : d)) }, setPlacements: (id: string, p: FieldPlacement[]) => { placements[id] = p } }
 }
 
 beforeEach(() => {
@@ -303,6 +308,19 @@ describe('Show inactive', () => {
 
     await userEvent.click(within(row).getByRole('button', { name: 'Reactivate Old cost centre' }))
     await waitFor(() => expect(server.patch).toHaveBeenCalledWith('/admin/custom-fields/f-old', { active: true }))
+  })
+})
+
+describe('Reactivate', () => {
+  it('shows a refusal as an alert on the row, with the dialog closed', async () => {
+    const { server } = await renderPage()
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Show inactive' }))
+    const row = await rowOf('Old cost centre')
+    server.fail.patch = refusal(500, 'internal_error', 'could not save')
+    await userEvent.click(within(row).getByRole('button', { name: 'Reactivate Old cost centre' }))
+
+    expect((await within(row).findByRole('alert')).textContent).toContain('could not save')
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 })
 
@@ -443,6 +461,63 @@ describe('Details', () => {
     await userEvent.type(name, 'xyz')
     await userEvent.click(within(row).getByRole('button', { name: 'Cancel' }))
     expect((within(row).getByLabelText('Name') as HTMLInputElement).value).toBe('Asset Tag')
+  })
+})
+
+describe('A definition changed elsewhere while its row is open', () => {
+  const NOTICE = 'This field was changed elsewhere. Cancel to load the latest.'
+  const refetchList = (qc: { invalidateQueries: (o: { queryKey: string[]; exact: boolean }) => Promise<void> }) =>
+    qc.invalidateQueries({ queryKey: ['admin', 'custom-fields'], exact: true })
+
+  it('keeps unsaved edits, says so, and lets Save through (last writer wins)', async () => {
+    const { server, queryClient } = await renderPage()
+    const row = await expand('Asset Tag')
+    const name = await within(row).findByLabelText('Name')
+    await userEvent.clear(name)
+    await userEvent.type(name, 'Asset number')
+
+    server.changeDef('f-asset', { name: 'Asset Tag (EU)' })
+    await refetchList(queryClient)
+
+    expect(await within(row).findByText(NOTICE)).toBeTruthy()
+    expect((within(row).getByLabelText('Name') as HTMLInputElement).value).toBe('Asset number')
+
+    await userEvent.click(within(row).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(server.patch).toHaveBeenCalledWith('/admin/custom-fields/f-asset', { name: 'Asset number' }))
+  })
+
+  it('Cancel loads the latest', async () => {
+    const { server, queryClient } = await renderPage()
+    const row = await expand('Asset Tag')
+    await userEvent.type(await within(row).findByLabelText('Name'), ' x')
+    server.changeDef('f-asset', { name: 'Asset Tag (EU)' })
+    await refetchList(queryClient)
+    await within(row).findByText(NOTICE)
+
+    await userEvent.click(within(row).getByRole('button', { name: 'Cancel' }))
+    expect((within(row).getByLabelText('Name') as HTMLInputElement).value).toBe('Asset Tag (EU)')
+    expect(within(row).queryByText(NOTICE)).toBeNull()
+  })
+
+  it('shows the latest at once when nothing was edited, with no notice', async () => {
+    const { server, queryClient } = await renderPage()
+    const row = await expand('Asset Tag')
+    await within(row).findByLabelText('Name')
+
+    server.changeDef('f-asset', { name: 'Asset Tag (EU)' })
+    await refetchList(queryClient)
+
+    await waitFor(() => expect((within(row).getByLabelText('Name') as HTMLInputElement).value).toBe('Asset Tag (EU)'))
+    expect(within(row).queryByText(NOTICE)).toBeNull()
+  })
+
+  it('does not call an unchanged refetch a change', async () => {
+    const { queryClient } = await renderPage()
+    const row = await expand('Asset Tag')
+    await userEvent.type(await within(row).findByLabelText('Name'), ' x')
+    await refetchList(queryClient)
+    expect(within(row).queryByText(NOTICE)).toBeNull()
+    expect((within(row).getByLabelText('Name') as HTMLInputElement).value).toBe('Asset Tag x')
   })
 })
 
@@ -589,6 +664,41 @@ describe('Options', () => {
     expect((await within(row).findByRole('alert')).textContent).toContain('option "IT" is in use; retire it instead')
     await waitFor(() =>
       expect(server.calls.get.filter((u) => u === '/admin/custom-fields/f-dept/usage').length).toBeGreaterThan(before),
+    )
+  })
+
+  it('puts a refused delete back, with its fresh count, so it can be retired without Cancel', async () => {
+    const { server, row } = await openDept()
+    // Someone files a ticket with IT after the counts were read.
+    server.setUsage('f-dept', {
+      tickets_with_value: 35,
+      values: [
+        { value: 'Finance', tickets: 17 }, { value: 'Sales, EMEA', tickets: 14 }, { value: 'IT', tickets: 1 },
+        { value: 'Marketing', tickets: 3 }, { value: 'Legal', tickets: 0 },
+      ],
+    })
+    server.fail.patch = refusal(409, 'conflict', 'option "IT" is in use; retire it instead')
+    // Another edit in the same draft must survive the refusal.
+    await userEvent.click(within(row).getByRole('button', { name: 'Add option' }))
+    await userEvent.type(within(row).getByLabelText('Option 4'), 'Ops')
+    await userEvent.click(within(row).getByRole('button', { name: 'Delete IT' }))
+    await userEvent.click(within(row).getByRole('button', { name: 'Save' }))
+
+    await within(row).findByRole('alert')
+    const retire = await within(row).findByRole('button', { name: 'Retire IT' })
+    expect(within(row).getByText('1 ticket')).toBeTruthy()
+    expect(within(row).queryByRole('button', { name: 'Delete IT' })).toBeNull()
+    expect(within(row).getByDisplayValue('Ops')).toBeTruthy()
+
+    // And the retire goes through.
+    server.fail.patch = undefined
+    await userEvent.click(retire)
+    await userEvent.click(within(row).getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(server.patch).toHaveBeenLastCalledWith('/admin/custom-fields/f-dept', {
+        options: ['Finance', 'Sales, EMEA', 'Ops'],
+        retired_options: ['Marketing', 'Legal', 'IT'],
+      }),
     )
   })
 })
@@ -792,10 +902,15 @@ describe('Reorder', () => {
   it('puts the old order back and shows the error when the save fails', async () => {
     const { server } = await renderPage()
     server.fail.put = refusal(409, 'conflict', 'the field list has changed; reload and try again')
+    // Hold the refetch that follows a failed save, so what is on screen is the
+    // page's own rollback and not the server's list coming back.
+    let release: () => void = () => {}
+    server.hold.list = new Promise<void>((r) => { release = r })
     await userEvent.click(screen.getByRole('button', { name: 'stub: move last to first' }))
 
     expect((await screen.findByRole('alert')).textContent).toContain('the field list has changed; reload and try again')
     const names = screen.getAllByRole('button', { name: /^Reorder / }).map((b) => b.getAttribute('aria-label'))
     expect(names).toEqual(['Reorder Department', 'Reorder Phone number', 'Reorder Asset Tag'])
+    release()
   })
 })

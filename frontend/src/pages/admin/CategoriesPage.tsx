@@ -345,10 +345,13 @@ function FieldsSubsection({ scope }: { scope: FieldsScope }) {
   const available = allDefs.filter((d) => d.active && !assignedDefIds.has(d.id))
 
   // The new-ticket form and the ticket page cache the resolved list under their
-  // own key (the one above holds a single level), so a change here clears both.
+  // own key (the one above holds a single level), and the Custom Fields page
+  // keeps each field's place count and places under ['admin', 'custom-fields'],
+  // so a change here clears all three.
   function invalidateAssignments() {
     qc.invalidateQueries({ queryKey })
     qc.invalidateQueries({ queryKey: ['ctiFieldsResolved'] })
+    qc.invalidateQueries({ queryKey: ['admin', 'custom-fields'] })
   }
 
   const addMutation = useMutation({

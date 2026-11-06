@@ -254,15 +254,20 @@ test.describe('the Categories page and this one edit the same places', () => {
     await form.getByRole('button', { name: 'Add' }).click()
     await expect(page.getByRole('button', { name: 'Remove Hardware' })).toBeVisible()
 
-    await page.goto('/admin/categories')
+    // Through the sidebar, not page.goto: a reload throws the query cache away,
+    // and the cache (30 s fresh) is exactly what could show the old places.
+    await page.getByRole('link', { name: 'Categories', exact: true }).click()
     await page.getByRole('button', { name: 'Expand' }).first().click()
     await expect(page.getByRole('link', { name: 'Asset Tag' })).toBeVisible()
     await page.getByTitle('Remove assignment').last().click()
     await expect(page.getByRole('link', { name: 'Asset Tag' })).toHaveCount(0)
 
-    await page.goto('/admin/custom-fields')
+    await page.getByRole('link', { name: 'Custom Fields', exact: true }).click()
+    const row = page.getByRole('group', { name: 'Asset Tag', exact: true })
+    await expect(row.getByText('Not on any form yet')).toBeVisible()
     await rowToggle(page, 'Asset Tag').click()
-    await expect(page.getByText('Not on any form yet.')).toBeVisible()
+    await expect(row.getByText('Not on any form yet.')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Remove Hardware' })).toHaveCount(0)
   })
 
   test('a link from the Categories page opens that field', async ({ page }) => {

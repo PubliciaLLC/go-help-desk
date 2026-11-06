@@ -76,12 +76,14 @@ export function SortableList<T extends SortableItem>({ items, onReorder, renderI
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   )
 
-  // Where the item was last announced as being over. Measured in Chromium
-  // (e2e/custom-fields.spec.ts), a keyboard drop's onDragEnd carries an `over`
-  // one move behind what was announced, which would drop the item back where it
-  // started. onDragOver is the event that matches the announcement, so the drop
-  // follows it. Cleared on the next pick-up, not at the drop, so the "Dropped"
-  // announcement can read it too.
+  // Where the item was last announced as being over. Without this, a keyboard
+  // drop sometimes lands one place short: onDragEnd's `over` can be the item the
+  // drag started on although onDragOver had already reported the next one. It is
+  // intermittent (measured in Chromium during review of #609: about 4 of 40
+  // keyboard drops short without this, 0 of 40 with it), so it will not show on a
+  // first try; do not remove this because it cannot be reproduced. onDragOver
+  // is the event that matches the announcement, so the drop follows it. Cleared
+  // on the next pick-up, not at the drop, so the "Dropped" announcement reads it too.
   const lastOver = useRef<string | null>(null)
 
   const { labelOf, position } = describe(items)

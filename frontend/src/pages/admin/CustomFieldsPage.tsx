@@ -60,6 +60,7 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 // original is how a rename is told apart from a new option.
 interface OptionRow { key: string; original: string | null; text: string }
 interface RetiredRow { key: string; text: string }
+interface RemovedOption { retired: boolean; text: string; index: number }
 
 function useOptionsDraft(options: string[], retired: string[]) {
   const seq = useRef(0)
@@ -67,13 +68,23 @@ function useOptionsDraft(options: string[], retired: string[]) {
   const initialRetired = () => retired.map((o): RetiredRow => ({ key: `r:${o}`, text: o }))
   const [rows, setRows] = useState<OptionRow[]>(initialRows)
   const [retiredRows, setRetiredRows] = useState<RetiredRow[]>(initialRetired)
+  // Options deleted from the draft since the page loaded, and where they were:
+  // if the server refuses a delete because a ticket now holds the option, it
+  // goes back so it can be retired instead.
+  const [removed, setRemoved] = useState<RemovedOption[]>([])
 
   return {
     rows,
     retiredRows,
     setText: (key: string, text: string) => setRows((rs) => rs.map((r) => (r.key === key ? { ...r, text } : r))),
     add: () => setRows((rs) => [...rs, { key: `new-${seq.current++}`, original: null, text: '' }]),
-    remove: (key: string) => setRows((rs) => rs.filter((r) => r.key !== key)),
+    remove: (key: string) => {
+      const index = rows.findIndex((r) => r.key === key)
+      const row = rows[index]
+      // An option typed in since the load was never stored; nothing to put back.
+      if (row && row.original !== null) setRemoved((rm) => [...rm, { retired: false, text: row.original as string, index }])
+      setRows((rs) => rs.filter((r) => r.key !== key))
+    },
     move: (keys: string[]) => setRows((rs) => keys.flatMap((k) => rs.find((r) => r.key === k) ?? [])),
     // Retiring acts on the text the option was loaded with: an edit typed since
     // is not what tickets hold.
@@ -89,8 +100,29 @@ function useOptionsDraft(options: string[], retired: string[]) {
       setRetiredRows((rr) => rr.filter((r) => r.key !== key))
       setRows((rs) => [...rs, { key: `o:${row.text}`, original: row.text, text: row.text }])
     },
-    removeRetired: (key: string) => setRetiredRows((rr) => rr.filter((r) => r.key !== key)),
-    reset: () => { setRows(initialRows()); setRetiredRows(initialRetired()) },
+    removeRetired: (key: string) => {
+      const index = retiredRows.findIndex((r) => r.key === key)
+      const row = retiredRows[index]
+      if (row) setRemoved((rm) => [...rm, { retired: true, text: row.text, index }])
+      setRetiredRows((rr) => rr.filter((r) => r.key !== key))
+    },
+    // Puts back the deleted options a ticket holds, each where it was.
+    restoreHeld: (held: (text: string) => boolean) => {
+      const back = removed.filter((r) => held(r.text))
+      if (back.length === 0) return
+      setRemoved((rm) => rm.filter((r) => !held(r.text)))
+      setRows((rs) => back.filter((r) => !r.retired).reduce((acc, r) => {
+        const next = [...acc]
+        next.splice(Math.min(r.index, next.length), 0, { key: `o:${r.text}`, original: r.text, text: r.text })
+        return next
+      }, rs))
+      setRetiredRows((rr) => back.filter((r) => r.retired).reduce((acc, r) => {
+        const next = [...acc]
+        next.splice(Math.min(r.index, next.length), 0, { key: `r:${r.text}`, text: r.text })
+        return next
+      }, rr))
+    },
+    reset: () => { setRows(initialRows()); setRetiredRows(initialRetired()); setRemoved([]) },
   }
 }
 type OptionsDraft = ReturnType<typeof useOptionsDraft>
@@ -134,6 +166,9 @@ function optionErrors(draft: OptionsDraft, retired: string[], attempted: boolean
   }
   return byKey
 }
+
+// What makes two copies of a definition the same, for the parts the Details form edits.
+const definitionKey = (d: FieldDef) => JSON.stringify([d.name, d.field_type, d.options, d.retired_options])
 
 const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((v, i) => v === b[i])
 
@@ -248,7 +283,20 @@ function OptionsEditor({
 
 // ── Details ───────────────────────────────────────────────────────────────────
 
-function FieldDetails({ def, showRetired, onShowRetired }: { def: FieldDef; showRetired: boolean; onShowRetired: (show: boolean) => void }) {
+function FieldDetails({
+  def, showRetired, onShowRetired, changedElsewhere, onDirtyChange, onSaved, onCancel,
+}: {
+  // The definition this form was built from, not necessarily the latest.
+  def: FieldDef
+  showRetired: boolean
+  onShowRetired: (show: boolean) => void
+  // The stored definition is no longer the one this form started from.
+  changedElsewhere: boolean
+  onDirtyChange: (dirty: boolean) => void
+  onSaved: (saved: FieldDef) => void
+  // Drop the edits and rebuild from the latest definition.
+  onCancel: () => void
+}) {
   const qc = useQueryClient()
   const ids = useId()
   const [name, setName] = useState(def.name)
@@ -274,18 +322,34 @@ function FieldDetails({ def, showRetired, onShowRetired }: { def: FieldDef; show
   }
   const dirty = Object.keys(patch).length > 0
 
+  // The row holds off rebuilding this form while it has unsaved edits.
+  useEffect(() => {
+    onDirtyChange(dirty)
+    return () => onDirtyChange(false)
+  }, [dirty, onDirtyChange])
+
   const saveMutation = useMutation({
     mutationFn: () => updateFieldDef(def.id, patch),
-    onSuccess: () => {
+    onSuccess: (saved) => {
       setError('')
       setAttempted(false)
+      // Only the form is rebuilt from the response; the list is refetched, since
+      // a PATCH response has no place_count.
+      onSaved(saved)
       qc.invalidateQueries({ queryKey: FIELDS_KEY })
       invalidateForms(qc)
     },
-    onError: (err) => {
+    onError: async (err) => {
       setError(extractError(err))
-      // The refusal usually means a count was out of date.
-      qc.invalidateQueries({ queryKey: usageKey(def.id) })
+      // The refusal usually means a count was out of date: read them again, and
+      // put back any option deleted from the draft that a ticket holds now, so
+      // it can be retired without starting the edit over.
+      try {
+        const fresh = await qc.fetchQuery({ queryKey: usageKey(def.id), queryFn: () => getFieldUsage(def.id), staleTime: 0 })
+        draft.restoreHeld((text) => (ticketsHolding(fresh, text) ?? 0) > 0)
+      } catch {
+        // The counts could not be read; the error above stands.
+      }
     },
   })
 
@@ -297,14 +361,6 @@ function FieldDetails({ def, showRetired, onShowRetired }: { def: FieldDef; show
       if (Object.keys(optionErrors(draft, retired, true)).length > 0) return
     }
     saveMutation.mutate()
-  }
-
-  function cancel() {
-    setName(def.name)
-    setType(def.field_type)
-    draft.reset()
-    setAttempted(false)
-    setError('')
   }
 
   function changeType(next: FieldType) {
@@ -350,8 +406,11 @@ function FieldDetails({ def, showRetired, onShowRetired }: { def: FieldDef; show
 
       {attempted && !name.trim() && <p role="alert" className="text-sm text-red-600">A field needs a name.</p>}
       {error && <p role="alert" className="text-sm text-red-600 wrap-anywhere">{error}</p>}
+      {changedElsewhere && (
+        <p role="status" className="text-sm text-amber-700">This field was changed elsewhere. Cancel to load the latest.</p>
+      )}
       <div className="flex justify-end gap-2">
-        <Button size="sm" variant="outline" className={BTN_TOUCH} onClick={cancel} disabled={saveMutation.isPending}>Cancel</Button>
+        <Button size="sm" variant="outline" className={BTN_TOUCH} onClick={onCancel} disabled={saveMutation.isPending}>Cancel</Button>
         <Button size="sm" className={BTN_TOUCH} onClick={save} disabled={!dirty || saveMutation.isPending}>
           {saveMutation.isPending ? 'Saving…' : 'Save'}
         </Button>
@@ -724,9 +783,18 @@ function FieldRow({
     },
   })
 
-  // Rebuild the form when the stored field changes under it (after a Save, or
-  // someone else's edit) rather than patching its state in an effect.
-  const signature = JSON.stringify([def.name, def.field_type, def.options, def.retired_options])
+  // The form is built from `base`, a copy of the definition. When the stored one
+  // changes under it (someone else's edit, found by a refetch) the form is
+  // rebuilt from it, unless it holds unsaved edits: those are kept, with a
+  // notice, and a Save then overwrites the other change (last writer wins).
+  // Done while rendering, as React advises for state that follows from data
+  // that has just arrived.
+  const [base, setBase] = useState(def)
+  const [formEpoch, setFormEpoch] = useState(0)
+  const [formDirty, setFormDirty] = useState(false)
+  const changedElsewhere = definitionKey(def) !== definitionKey(base)
+  if (changedElsewhere && !formDirty) setBase(def)
+  const rebuild = (from: FieldDef) => { setBase(from); setFormEpoch((e) => e + 1) }
 
   return (
     <div role="group" aria-label={def.name} id={`cf-${def.id}`} className="border-b last:border-b-0">
@@ -770,11 +838,25 @@ function FieldRow({
         )}
       </div>
 
+      {/* Reactivate has no dialog to carry its error; Deactivate shows its own inside the dialog. */}
+      {activeMutation.isError && !confirmOpen && (
+        <p role="alert" className="px-3 pb-2 text-sm text-red-600 wrap-anywhere sm:ml-12">{extractError(activeMutation.error)}</p>
+      )}
+
       {expanded && (
         <div className="space-y-5 border-t bg-gray-50 px-3 py-4 sm:ml-12">
           <section className="space-y-2">
             <h3 className={SECTION_HEAD}>Details</h3>
-            <FieldDetails key={signature} def={def} showRetired={showRetired} onShowRetired={setShowRetired} />
+            <FieldDetails
+              key={`${definitionKey(base)}:${formEpoch}`}
+              def={base}
+              showRetired={showRetired}
+              onShowRetired={setShowRetired}
+              changedElsewhere={changedElsewhere}
+              onDirtyChange={setFormDirty}
+              onSaved={rebuild}
+              onCancel={() => rebuild(def)}
+            />
           </section>
           <section className="space-y-2 border-t pt-4">
             <h3 className={SECTION_HEAD}>Where it appears</h3>
