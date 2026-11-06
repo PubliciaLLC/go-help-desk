@@ -371,3 +371,71 @@ describe('custom field entries', () => {
     expect(row.textContent).not.toContain('·')
   })
 })
+
+describe('a failed load or refresh', () => {
+  // /admin/audit answers normally until `failAudit` is set, then rejects.
+  function mockFlaky() {
+    const state = { failAudit: false }
+    vi.spyOn(api, 'get').mockImplementation(((url: string) => {
+      if (url === '/admin/audit') {
+        if (state.failAudit) return Promise.reject(new Error('boom'))
+        return Promise.resolve({ data: { entries: [entry()], total: 1, total_capped: false, has_more: false } })
+      }
+      return Promise.resolve({ data: [] })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any)
+    return state
+  }
+
+  it('with nothing loaded, shows the full error', async () => {
+    const state = mockFlaky()
+    state.failAudit = true
+    renderWithQuery(<AdminAuditPage />)
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toBe('Could not load the audit log.')
+    expect(screen.queryByRole('table')).toBeNull()
+  })
+
+  it('with results on screen, keeps them and says the refresh failed', async () => {
+    const state = mockFlaky()
+    const { queryClient } = renderWithQuery(<AdminAuditPage />)
+    await screen.findByText('Resolved')
+
+    state.failAudit = true
+    await queryClient.invalidateQueries({ queryKey: ['adminAudit'] })
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toBe("Couldn't refresh the results. Showing what was loaded before.")
+    expect(screen.getByText('Resolved')).toBeTruthy()
+    expect(screen.queryByText('Could not load the audit log.')).toBeNull()
+  })
+
+  it('takes the notice down once a refresh works', async () => {
+    const state = mockFlaky()
+    const { queryClient } = renderWithQuery(<AdminAuditPage />)
+    await screen.findByText('Resolved')
+    state.failAudit = true
+    await queryClient.invalidateQueries({ queryKey: ['adminAudit'] })
+    expect((await screen.findByRole('alert')).textContent).toContain("Couldn't refresh the results")
+
+    state.failAudit = false
+    await queryClient.invalidateQueries({ queryKey: ['adminAudit'] })
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+    expect(screen.getByText('Resolved')).toBeTruthy()
+  })
+
+  it("shows the full error when a changed filter fails, not the previous filter's results", async () => {
+    const state = mockFlaky()
+    renderWithQuery(<AdminAuditPage />)
+    await screen.findByText('Resolved')
+
+    // A new filter is a new query key with no data of its own.
+    state.failAudit = true
+    await userEvent.type(screen.getByLabelText('Action'), 'x')
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toBe('Could not load the audit log.')
+    expect(screen.queryByText('Resolved')).toBeNull()
+  })
+})
