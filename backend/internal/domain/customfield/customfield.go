@@ -92,13 +92,14 @@ type Usage struct {
 type Reason string
 
 const (
-	ReasonInvalidFieldID Reason = "invalid_field_id" // the key is not a UUID
-	ReasonNotOnTicket    Reason = "not_on_ticket"    // not on the ticket's category, type or item
-	ReasonInactive       Reason = "inactive"
-	ReasonRetiredOption  Reason = "retired_option"
-	ReasonNotAnOption    Reason = "not_an_option"
-	ReasonNotANumber     Reason = "not_a_number"
-	ReasonNotSaved       Reason = "not_saved" // anything else
+	ReasonInvalidFieldID   Reason = "invalid_field_id"   // the key is not a UUID
+	ReasonDuplicateFieldID Reason = "duplicate_field_id" // two keys spell the same field id; neither is written
+	ReasonNotOnTicket      Reason = "not_on_ticket"      // not on the ticket's category, type or item
+	ReasonInactive         Reason = "inactive"
+	ReasonRetiredOption    Reason = "retired_option"
+	ReasonNotAnOption      Reason = "not_an_option"
+	ReasonNotANumber       Reason = "not_a_number"
+	ReasonNotSaved         Reason = "not_saved" // anything else
 )
 
 // Warning is one value dropped when a ticket was created. FieldID is the key

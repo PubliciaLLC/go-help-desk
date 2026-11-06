@@ -3260,7 +3260,9 @@ paths:
         value means "no value" and is skipped without a word. Any other entry that
         is not written is listed in `warnings` in the 201 response, one entry per
         key as it was sent, sorted by field_id, each with a reason:
-        `invalid_field_id` (the key is not a UUID), `not_on_ticket` (the field is
+        `invalid_field_id` (the key is not a UUID), `duplicate_field_id` (two keys spell the
+        same field id, for example in upper and lower case; neither is written and
+        each is listed), `not_on_ticket` (the field is
         not attached to the ticket's category, type or item; an id that names no
         field is this too), `inactive` (the field is deactivated),
         `retired_option` (a select value that has been retired),
@@ -9879,7 +9881,7 @@ paths:
                 retired_options:
                   type: array
                   items: {type: string}
-                  description: Replacement list of retired options. Absent leaves the list unchanged; an empty list clears it, which deletes the retired options no ticket holds.
+                  description: Replacement list of retired options. Absent leaves the list unchanged; an empty list clears it, which deletes the retired options no ticket holds. Like options, it is stored as sent for any field type and only select fields use it; the rules about retiring apply to select fields only.
                 sort_order:
                   type: integer
                   description: New display order. Absent leaves it unchanged.
@@ -9920,7 +9922,7 @@ paths:
         field_def_ids must name every field definition exactly once, active and
         inactive alike. Position n (from 1) becomes the field's number (sort_order).
         Attachments are not changed. Answers 200 with the full list in the new order
-        (the same entries as GET /admin/custom-fields). Every field whose number
+        (the same entries as GET /admin/custom-fields), place_count included. Every field whose number
         changed is audited as custom_field_reordered, in the same transaction.
         A list that repeats an id, is not a list of UUIDs, or is missing is 400
         bad_request. A list that does not match the stored fields (one was added
@@ -11957,7 +11959,7 @@ components:
           description: Options no longer offered that tickets may still hold. Admin routes only.
         place_count:
           type: integer
-          description: How many places the field is attached to. Present on GET /admin/custom-fields only; 0 for a field on no form.
+          description: How many places the field is attached to. Present on the list responses (GET /admin/custom-fields and PUT /admin/custom-fields/order) and not on a single definition; 0 for a field on no form.
         sort_order: {type: integer, description: "The field's number. Orders fields within a level on both forms."}
         active:
           type: boolean
@@ -11973,7 +11975,7 @@ components:
           description: The key exactly as sent. A string because for invalid_field_id it is not a UUID.
         reason:
           type: string
-          enum: [invalid_field_id, not_on_ticket, inactive, retired_option, not_an_option, not_a_number, not_saved]
+          enum: [invalid_field_id, duplicate_field_id, not_on_ticket, inactive, retired_option, not_an_option, not_a_number, not_saved]
     CustomFieldPlaceNode:
       type: object
       required: [id, name, active]

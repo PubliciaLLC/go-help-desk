@@ -400,7 +400,7 @@ func TestCustomFieldAudit_TheAdminAuditViewShowsNamesAndPaths(t *testing.T) {
 	defer cleanup()
 	c, tp, _ := mkCTI(t, h)
 	def := h.mkField(t, "Dept", customfield.FieldTypeSelect, []string{"Sales"}, 1)
-	_, err := h.customFieldSvc.CreateAssignment(customfield.WithActor(context.Background(), h.adminID), def.ID, customfield.TypeScope, tp.ID, 1, true, false)
+	_, err := h.customFieldSvc.CreateAssignment(context.Background(), def.ID, customfield.TypeScope, tp.ID, 1, true, false, &h.adminID)
 	require.NoError(t, err)
 	code, out := h.patchField(t, def.ID, map[string]any{"options": []string{"Sales", "Marketing"}})
 	require.Equal(t, http.StatusOK, code, string(out))

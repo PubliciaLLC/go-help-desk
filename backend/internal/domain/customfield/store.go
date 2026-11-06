@@ -25,11 +25,11 @@ type Held interface {
 // entry committed apart from the change it describes is not a history. Where
 // the entries depend on state the transaction reads (the row before it is
 // changed, the field's name, the node's path), the method takes a function that
-// builds them from it. On the two creates they are optional, so a caller that
-// only wants the row (a test fixture) can leave them out.
+// builds them from it. The two creates take them like the rest; a
+// fixture that wants only the row passes nil.
 type Store interface {
 	// Field definitions
-	CreateFieldDef(ctx context.Context, def FieldDef, entries ...audit.Entry) (FieldDef, error)
+	CreateFieldDef(ctx context.Context, def FieldDef, entries []audit.Entry) (FieldDef, error)
 	// ListFieldDefs is every definition in field-number order with PlaceCount set.
 	ListFieldDefs(ctx context.Context) ([]FieldDef, error)
 	GetFieldDef(ctx context.Context, id uuid.UUID) (FieldDef, error)
@@ -50,7 +50,7 @@ type Store interface {
 	CountValuesByValue(ctx context.Context, fieldDefID uuid.UUID) (map[string]int, error)
 
 	// Assignments of field defs to CTI nodes
-	CreateAssignment(ctx context.Context, a Assignment, entry ...func(AssignmentInfo) audit.Entry) (Assignment, error)
+	CreateAssignment(ctx context.Context, a Assignment, entry func(AssignmentInfo) audit.Entry) (Assignment, error)
 	ListAssignments(ctx context.Context, scopeType ScopeType, scopeID uuid.UUID) ([]Assignment, error)
 	// ListPlacements is where a field is attached, in tree order.
 	ListPlacements(ctx context.Context, fieldDefID uuid.UUID) ([]Placement, error)
@@ -61,6 +61,11 @@ type Store interface {
 	DeleteAssignment(ctx context.Context, id uuid.UUID, entry func(before Assignment, info AssignmentInfo) audit.Entry) error
 
 	// Field values on tickets
+	// UpsertValue and DeleteValue write one value without locking its definition.
+	//
+	// Deprecated: nothing in production calls them; SetValues is the write path and
+	// it locks. They stay in the interface because implementations and tests
+	// outside this package use them, and nothing is removed without a deprecation.
 	UpsertValue(ctx context.Context, ticketID, fieldDefID uuid.UUID, value string) error
 	DeleteValue(ctx context.Context, ticketID, fieldDefID uuid.UUID) error
 	ListValuesForTicket(ctx context.Context, ticketID uuid.UUID) ([]TicketFieldValue, error)

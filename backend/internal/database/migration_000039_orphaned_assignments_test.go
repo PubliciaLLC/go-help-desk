@@ -35,7 +35,7 @@ func TestMigration039_DeletesOnlyOrphanedFieldAssignments(t *testing.T) {
 	require.NoError(t, cs.CreateItem(ctx, it))
 	def, err := fs.CreateFieldDef(ctx, customfield.FieldDef{
 		ID: uuid.New(), Name: "M39-" + uuid.NewString()[:8], FieldType: customfield.FieldTypeText, Active: true,
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	mk := func(scope customfield.ScopeType, id uuid.UUID) uuid.UUID {
@@ -43,12 +43,12 @@ func TestMigration039_DeletesOnlyOrphanedFieldAssignments(t *testing.T) {
 		if scope != customfield.CategoryScope { // one assignment per (field, scope, id), so any field will do
 			d, err = fs.CreateFieldDef(ctx, customfield.FieldDef{
 				ID: uuid.New(), Name: "M39-" + uuid.NewString()[:8], FieldType: customfield.FieldTypeText, Active: true,
-			})
+			}, nil)
 			require.NoError(t, err)
 		}
 		a, err := fs.CreateAssignment(ctx, customfield.Assignment{
 			ID: uuid.New(), FieldDefID: d.ID, ScopeType: scope, ScopeID: id,
-		})
+		}, nil)
 		require.NoError(t, err)
 		return a.ID
 	}

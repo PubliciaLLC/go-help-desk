@@ -120,7 +120,7 @@ func TestCreateTicket_AReporterIsHeldToTheRoleTable(t *testing.T) {
 		// nowhere — the shape an administrator uses for a field they are
 		// setting up, or one they have deliberately kept off the reporter's
 		// form.
-		def, err := h.customFieldSvc.CreateFieldDef(ctx, "Cost centre", "text", nil, 1)
+		def, err := h.customFieldSvc.CreateFieldDef(ctx, "Cost centre", "text", nil, 1, nil)
 		require.NoError(t, err)
 
 		tk := createTicketAsUser(t, h, "Mine")

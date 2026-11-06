@@ -51,14 +51,14 @@ func (h *harness) cfRaw(t *testing.T, method, path, body string) *http.Response 
 
 func (h *harness) mkField(t *testing.T, name string, ft customfield.FieldType, opts []string, number int) customfield.FieldDef {
 	t.Helper()
-	d, err := h.customFieldSvc.CreateFieldDef(context.Background(), name, ft, opts, number)
+	d, err := h.customFieldSvc.CreateFieldDef(context.Background(), name, ft, opts, number, nil)
 	require.NoError(t, err)
 	return d
 }
 
 func (h *harness) attach(t *testing.T, def customfield.FieldDef, scope customfield.ScopeType, id uuid.UUID, attachmentOrder int) customfield.Assignment {
 	t.Helper()
-	a, err := h.customFieldSvc.CreateAssignment(context.Background(), def.ID, scope, id, attachmentOrder, true, false)
+	a, err := h.customFieldSvc.CreateAssignment(context.Background(), def.ID, scope, id, attachmentOrder, true, false, nil)
 	require.NoError(t, err)
 	return a
 }
@@ -443,7 +443,7 @@ func TestListFieldDefs_PlaceCount(t *testing.T) {
 
 	asg, err := h.customFieldSvc.ListAssignments(context.Background(), customfield.ItemScope, it.ID)
 	require.NoError(t, err)
-	require.NoError(t, h.customFieldSvc.DeleteAssignment(context.Background(), asg[0].ID))
+	require.NoError(t, h.customFieldSvc.DeleteAssignment(context.Background(), asg[0].ID, nil))
 	require.Equal(t, 2, placeCounts(t, h)[three.ID])
 }
 
@@ -484,7 +484,7 @@ func TestReorder_SetsTheNumbersAndLeavesAttachmentsAlone(t *testing.T) {
 	b := h.mkField(t, "B", customfield.FieldTypeText, nil, 2)
 	inactive := h.mkField(t, "C inactive", customfield.FieldTypeText, nil, 3)
 	inactive.Active = false
-	require.NoError(t, h.customFieldSvc.UpdateFieldDef(context.Background(), inactive))
+	require.NoError(t, h.customFieldSvc.UpdateFieldDef(context.Background(), inactive, nil))
 	asg := h.attach(t, a, customfield.CategoryScope, h.catID, 77)
 
 	code, body := h.cf(t, http.MethodPut, cfAdmin+"/order", map[string]any{
@@ -495,6 +495,12 @@ func TestReorder_SetsTheNumbersAndLeavesAttachmentsAlone(t *testing.T) {
 	var defs []customfield.FieldDef
 	require.NoError(t, json.Unmarshal(body, &defs))
 	require.Equal(t, []int{1, 2, 3}, []int{defs[0].SortOrder, defs[1].SortOrder, defs[2].SortOrder})
+	// It answers with the list, so with each field's place_count too.
+	for _, d := range defs {
+		require.NotNil(t, d.PlaceCount, d.Name)
+	}
+	require.Equal(t, 1, *defs[2].PlaceCount, "a is attached once")
+	require.Zero(t, *defs[0].PlaceCount)
 
 	got, err := h.customFieldSvc.GetAssignment(context.Background(), asg.ID)
 	require.NoError(t, err)
@@ -847,4 +853,27 @@ func TestNewCustomFieldRoutes_Auth(t *testing.T) {
 		code, body := h.cfKey(t, http.MethodGet, cfAdmin, nil)
 		require.Equal(t, http.StatusOK, code, string(body))
 	})
+}
+
+// options has always been stored as sent for any field type, and only select
+// fields use them (the create route's description says so). retired_options is
+// treated the same, so a text field takes both and ignores both: nothing shows
+// them on a ticket, and the rules about retiring apply to select fields only.
+func TestPatch_NonSelectFieldTakesRetiredOptionsLikeOptions(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	text := h.mkField(t, "Serial", customfield.FieldTypeText, nil, 1)
+
+	code, body := h.patchField(t, text.ID, map[string]any{"options": []string{"a"}})
+	require.Equal(t, http.StatusOK, code, string(body))
+	code, body = h.patchField(t, text.ID, map[string]any{"retired_options": []string{"b"}})
+	require.Equal(t, http.StatusOK, code, string(body))
+
+	got := h.storedDef(t, text.ID)
+	require.Equal(t, []string{"a"}, got.Options)
+	require.Equal(t, []string{"b"}, got.RetiredOptions)
+
+	// And it changes nothing about how the field is written: any text is a value.
+	tk := h.newTicket(t, nil, nil)
+	require.NoError(t, h.customFieldSvc.SetValue(context.Background(), tk.ID, text.ID, "b"))
 }

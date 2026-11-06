@@ -31,9 +31,9 @@ func newAtomicFixture(t *testing.T, h *harness) atomicFixture {
 	t.Helper()
 	ctx := context.Background()
 	mk := func(name string, ft customfield.FieldType, opts []string, order int) customfield.FieldDef {
-		def, err := h.customFieldSvc.CreateFieldDef(ctx, name, ft, opts, order)
+		def, err := h.customFieldSvc.CreateFieldDef(ctx, name, ft, opts, order, nil)
 		require.NoError(t, err)
-		_, err = h.customFieldSvc.CreateAssignment(ctx, def.ID, customfield.CategoryScope, h.catID, order, true, false)
+		_, err = h.customFieldSvc.CreateAssignment(ctx, def.ID, customfield.CategoryScope, h.catID, order, true, false, nil)
 		require.NoError(t, err)
 		return def
 	}
@@ -79,7 +79,7 @@ func TestPutCustomFields_ARefusedEntryWritesNothing(t *testing.T) {
 	defer cleanup()
 	f := newAtomicFixture(t, h)
 	// A real field that no scope assigns, so this ticket does not have it.
-	detached, err := h.customFieldSvc.CreateFieldDef(context.Background(), "Elsewhere", customfield.FieldTypeText, nil, 9)
+	detached, err := h.customFieldSvc.CreateFieldDef(context.Background(), "Elsewhere", customfield.FieldTypeText, nil, 9, nil)
 	require.NoError(t, err)
 
 	for name, bad := range map[string]map[string]string{
@@ -106,7 +106,7 @@ func TestPutCustomFields_ADeactivatedEntryWritesNothing(t *testing.T) {
 	defer cleanup()
 	f := newAtomicFixture(t, h)
 	f.number.Active = false
-	require.NoError(t, h.customFieldSvc.UpdateFieldDef(context.Background(), f.number))
+	require.NoError(t, h.customFieldSvc.UpdateFieldDef(context.Background(), f.number, nil))
 
 	for range 20 {
 		require.Equal(t, http.StatusBadRequest, f.put(t, h, map[string]string{
@@ -177,7 +177,7 @@ func TestSetValues_RealTransaction_CommitsAllOrRollsBackAll(t *testing.T) {
 	for _, id := range []uuid.UUID{a, b} {
 		_, err := store.CreateFieldDef(ctx, customfield.FieldDef{
 			ID: id, Name: "F-" + id.String()[:8], FieldType: customfield.FieldTypeText, Active: true,
-		})
+		}, nil)
 		require.NoError(t, err)
 	}
 
