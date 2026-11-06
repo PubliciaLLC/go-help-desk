@@ -500,7 +500,7 @@
 <h3>On the new-ticket form</h3>
 <ul>
   <li>When you select a Category, Type, or Item, the fields attached to those with <em>Show on new-ticket form</em> turned on appear on the form. Requesters and guests do not pick an item, and a guest's form has no custom fields at all.</li>
-  <li>A required field is marked with an asterisk, and the form will not submit until it is filled.</li>
+  <li>A required field is marked with an asterisk, and the form will not submit until it is filled. Only the form holds to this: the server does not check it, so a script that creates a ticket through the API is not held to a required field.</li>
   <li>Fields appear grouped by level (the category's, then the type's, then the item's), and within a level by the order the admin set on the Custom Fields page. A field attached at more than one level appears once.</li>
   <li>A deactivated field is not offered. A select field offers only the options in use, not retired ones.</li>
   <li>A number field accepts only a number.</li>
@@ -516,7 +516,7 @@
   <li>A field that has been <strong>deactivated</strong> but holds a value is still shown, read-only and marked <em>Inactive</em>. Nobody can change or clear it. An inactive field with no value is not shown.</li>
   <li>A <strong>select</strong> value that has since been retired is still shown. It can be kept or replaced, but not chosen again.</li>
   <li>A field that holds a value but is no longer attached to the ticket's category, type or item is shown read-only after the others.</li>
-  <li><strong>Regular users</strong> see only the fields that hold a value, in read-only form. If no values have been set, the card is not shown. Guests see no custom fields.</li>
+  <li><strong>Regular users</strong> see only the fields that hold a value, and the ticket page shows them read-only: only staff and admins get <em>Edit</em>. Through the API, a requester can still change the custom fields on their own ticket until it is Closed, after which the server answers <code>409 ticket_closed</code>. If no values have been set, the card is not shown. Guests see no custom fields.</li>
 </ul>
 
 <p>Custom fields are configured by admins under <em>Admin → Tickets → Custom Fields</em>, where each field is attached to the categories, types and items it belongs on (the same attachments can be made in <em>Admin → Tickets → Categories</em>). See the <a href="admin-guide.html#admin-custom-fields">Admin Guide</a> for details.</p>

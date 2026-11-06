@@ -422,7 +422,7 @@ Facilities
 <p>The page is one list of fields. Each row shows the name, the type and how many places the field is attached to (<em>On 3 places</em>, or <em>Not on any form yet</em>). Click a row to open it. An open row has three parts: <strong>Details</strong> (name, type and, for a select field, its options), <strong>Where it appears</strong>, and a <strong>Deactivate…</strong> button.</p>
 <ul>
   <li><strong>New field</strong> asks for a name and a type: Text, Text area, Number or Select. A select field needs at least one option. The name must be unique.</li>
-  <li><strong>Drag to reorder.</strong> Each row has a drag handle that works with a pointer and with the keyboard. The new order is saved when you drop. See <a href="#admin-cf-order">Order</a> below.</li>
+  <li><strong>Drag to reorder.</strong> Each row has a drag handle that works with a pointer and with the keyboard. The new order is saved when you drop. If someone else added a field since you opened the page, the save is refused and the page shows "the field list has changed; reload and try again". See <a href="#admin-cf-order">Order</a> below.</li>
   <li><strong>Show inactive</strong> lists deactivated fields too, marked <em>Inactive</em>, each with a <strong>Reactivate</strong> button.</li>
   <li>A link such as <code>/admin/custom-fields?field=&lt;id&gt;</code> opens the page with that field already open. The field names on the Categories page use it.</li>
 </ul>
@@ -469,7 +469,7 @@ Facilities
 <p>The <strong>Where it appears</strong> part of an open field lists every category, type and item it is attached to, as a path such as <em>Hardware › Laptop</em>, with an <em>Archived</em> badge on a place that is archived. Per place you set:</p>
 <ul>
   <li><strong>Show on new-ticket form</strong> — whether the field appears on the new-ticket form when that place is selected.</li>
-  <li><strong>Required</strong> — whether the form will not submit until the field is filled. It is available only while <em>Show on new-ticket form</em> is on.</li>
+  <li><strong>Required</strong> — whether the form will not submit until the field is filled. It is available only while <em>Show on new-ticket form</em> is on. Only the form holds to it: the server does not check it, so a script that creates a ticket through the API is not held to a required field.</li>
   <li>The <strong>×</strong> button removes the field from that place.</li>
 </ul>
 <p>Under the list, one sentence says what the places add up to, such as <em>Shown when a ticket is filed under Hardware (any type), required.</em> <strong>Add a place</strong> opens a picker: choose a category, then optionally a type (<em>Whole category</em> is the default), then optionally an item (<em>Whole type</em>). A place the field already has, or that would overlap one it has, is greyed out and says why.</p>
@@ -488,7 +488,7 @@ Facilities
   <li><strong>Staff and admins</strong> see every active field the ticket has, empty or not, and click <em>Edit</em> to fill or change any of them at any time after the ticket is created. <em>Save</em> sends only the fields they changed, and the server writes all of them or none: if one is refused, nothing is saved.</li>
   <li>An inactive field that holds a value is shown read-only and marked <em>Inactive</em>. An inactive field with no value is not shown.</li>
   <li>A field that holds a value but is no longer attached to the ticket's category, type or item is shown read-only after the item level.</li>
-  <li><strong>Regular users</strong> see only the fields that hold a value, in read-only form. Guests see no custom fields.</li>
+  <li><strong>Regular users</strong> see only the fields that hold a value, and the ticket page shows them read-only: only staff and admins get <em>Edit</em>. Through the API, a requester can still change the custom fields on their own ticket until it is Closed, after which the server answers <code>409 ticket_closed</code>. Guests see no custom fields.</li>
 </ul>
 
 <h3>Audit</h3>

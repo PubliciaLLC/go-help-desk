@@ -1,2 +1,2 @@
-6e196755e196cf274a06e09c0663a677cee2b052
-# app docs/api/openapi.yaml at this commit, taken from ref cf-a-backend. See scripts/openapi-sync.sh.
+b77126916c1dadf9108ed3112ffc0d2f9aced83a
+# app docs/api/openapi.yaml at this commit, taken from ref v1.3.0-beta. See scripts/openapi-sync.sh.
