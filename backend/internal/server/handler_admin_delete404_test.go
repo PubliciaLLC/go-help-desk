@@ -163,9 +163,9 @@ func deleteCases() []deleteCase {
 func mkAssignment(t *testing.T, h *harness, scope customfield.ScopeType, scopeID uuid.UUID) uuid.UUID {
 	t.Helper()
 	ctx := context.Background()
-	def, err := h.customFieldSvc.CreateFieldDef(ctx, "F-"+uuid.NewString()[:8], customfield.FieldTypeText, nil, 1)
+	def, err := h.customFieldSvc.CreateFieldDef(ctx, "F-"+uuid.NewString()[:8], customfield.FieldTypeText, nil, 1, nil)
 	require.NoError(t, err)
-	a, err := h.customFieldSvc.CreateAssignment(ctx, def.ID, scope, scopeID, 1, true, false)
+	a, err := h.customFieldSvc.CreateAssignment(ctx, def.ID, scope, scopeID, 1, true, false, nil)
 	require.NoError(t, err)
 	return a.ID
 }

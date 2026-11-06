@@ -360,7 +360,7 @@ func TestCTIPaths_AMismatchedChainAnswers404(t *testing.T) {
 	cat, typ := "/categories/", "/types/"
 	itm := "/items/"
 	fld := "/fields/"
-	def, err := h.customFieldSvc.CreateFieldDef(ctx, "F-"+uuid.NewString()[:8], customfield.FieldTypeText, nil, 1)
+	def, err := h.customFieldSvc.CreateFieldDef(ctx, "F-"+uuid.NewString()[:8], customfield.FieldTypeText, nil, 1, nil)
 	require.NoError(t, err)
 	newAssignment := map[string]any{"field_def_id": def.ID, "sort_order": 1}
 
@@ -418,7 +418,7 @@ func TestCTIPaths_ACorrectChainStillWorks(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	c, tp, it := mkCTI(t, h)
-	def, err := h.customFieldSvc.CreateFieldDef(context.Background(), "F-"+uuid.NewString()[:8], customfield.FieldTypeText, nil, 1)
+	def, err := h.customFieldSvc.CreateFieldDef(context.Background(), "F-"+uuid.NewString()[:8], customfield.FieldTypeText, nil, 1, nil)
 	require.NoError(t, err)
 
 	base := adminAPI + "/categories/" + c.ID.String()
@@ -432,7 +432,7 @@ func TestCTIPaths_ACorrectChainStillWorks(t *testing.T) {
 		res = h.doAsAdmin(t, http.MethodPost, p+"/fields", map[string]any{"field_def_id": def.ID})
 		res.Body.Close()
 		require.Equal(t, http.StatusCreated, res.StatusCode, p)
-		def, err = h.customFieldSvc.CreateFieldDef(context.Background(), "F-"+uuid.NewString()[:8], customfield.FieldTypeText, nil, 1)
+		def, err = h.customFieldSvc.CreateFieldDef(context.Background(), "F-"+uuid.NewString()[:8], customfield.FieldTypeText, nil, 1, nil)
 		require.NoError(t, err)
 	}
 }

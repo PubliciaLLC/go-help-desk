@@ -64,7 +64,8 @@ var requesterNeverTicketKeys = []string{
 //	can_reopen  always false for a requester; kept for the same reason
 //	replies     already filtered by VisibleReplies (no internal notes)
 //	links       ticket-to-ticket ids and a type: no content, and the REST links route sends the same to a requester
-var requesterWrapperKeys = []string{"sla", "can_reopen", "replies", "links"}
+//	warnings    custom field values dropped when the ticket was created (#603): the ids the requester sent themselves and a reason code
+var requesterWrapperKeys = []string{"sla", "can_reopen", "replies", "links", "warnings"}
 
 // guestTicketKeys are the Ticket keys a guest receives: a subset of the
 // requester's, since a guest has no account and needs only to read their own

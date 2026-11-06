@@ -15,7 +15,7 @@ import (
 func TestService_CallerMistakesAreErrValidation(t *testing.T) {
 	ctx := context.Background()
 	svc := customfield.NewService(newFakeStore())
-	sel, err := svc.CreateFieldDef(ctx, "Pick", customfield.FieldTypeSelect, []string{"a"}, 1)
+	sel, err := svc.CreateFieldDef(ctx, "Pick", customfield.FieldTypeSelect, []string{"a"}, 1, nil)
 	require.NoError(t, err)
 	off := customfield.FieldDef{ID: uuid.New(), Name: "Off", FieldType: customfield.FieldTypeText}
 
@@ -24,13 +24,19 @@ func TestService_CallerMistakesAreErrValidation(t *testing.T) {
 		call func() error
 		msg  string
 	}{
-		{"blank name on create", func() error { _, err := svc.CreateFieldDef(ctx, " ", customfield.FieldTypeText, nil, 1); return err },
+		{"blank name on create", func() error {
+			_, err := svc.CreateFieldDef(ctx, " ", customfield.FieldTypeText, nil, 1, nil)
+			return err
+		},
 			"field name is required"},
-		{"unknown type on create", func() error { _, err := svc.CreateFieldDef(ctx, "x", "colour", nil, 1); return err },
+		{"unknown type on create", func() error { _, err := svc.CreateFieldDef(ctx, "x", "colour", nil, 1, nil); return err },
 			`invalid field type "colour"`},
-		{"select without options on create", func() error { _, err := svc.CreateFieldDef(ctx, "x", customfield.FieldTypeSelect, nil, 1); return err },
+		{"select without options on create", func() error {
+			_, err := svc.CreateFieldDef(ctx, "x", customfield.FieldTypeSelect, nil, 1, nil)
+			return err
+		},
 			"select fields require at least one option"},
-		{"blank name on update", func() error { d := sel; d.Name = " "; return svc.UpdateFieldDef(ctx, d) },
+		{"blank name on update", func() error { d := sel; d.Name = " "; return svc.UpdateFieldDef(ctx, d, nil) },
 			"field name is required"},
 		{"value outside the options", func() error { return svc.SetValue(ctx, uuid.New(), sel.ID, "zzz") },
 			`value "zzz" is not a valid option for field "Pick"`},

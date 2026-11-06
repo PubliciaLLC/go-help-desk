@@ -139,7 +139,7 @@ func TestPatchCTI_StillRefusesABlankName(t *testing.T) {
 func TestPatchFieldDef_ReturnsSavedTrimmedRow(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
-	def, err := h.customFieldSvc.CreateFieldDef(context.Background(), "Asset tag", customfield.FieldTypeText, nil, 1)
+	def, err := h.customFieldSvc.CreateFieldDef(context.Background(), "Asset tag", customfield.FieldTypeText, nil, 1, nil)
 	require.NoError(t, err)
 
 	res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/custom-fields/"+def.ID.String(),
@@ -306,7 +306,7 @@ func TestCustomFieldErrors_StatusAndCode(t *testing.T) {
 			}, 400, "bad_request"},
 		{"create with a taken name is a conflict",
 			func(t *testing.T, h *harness) *http.Response {
-				_, err := h.customFieldSvc.CreateFieldDef(context.Background(), "Taken", customfield.FieldTypeText, nil, 1)
+				_, err := h.customFieldSvc.CreateFieldDef(context.Background(), "Taken", customfield.FieldTypeText, nil, 1, nil)
 				require.NoError(t, err)
 				return h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/custom-fields",
 					map[string]any{"name": "Taken", "field_type": "text"})
@@ -314,16 +314,16 @@ func TestCustomFieldErrors_StatusAndCode(t *testing.T) {
 		{"patch to a taken name is a conflict",
 			func(t *testing.T, h *harness) *http.Response {
 				ctx := context.Background()
-				_, err := h.customFieldSvc.CreateFieldDef(ctx, "One", customfield.FieldTypeText, nil, 1)
+				_, err := h.customFieldSvc.CreateFieldDef(ctx, "One", customfield.FieldTypeText, nil, 1, nil)
 				require.NoError(t, err)
-				two, err := h.customFieldSvc.CreateFieldDef(ctx, "Two", customfield.FieldTypeText, nil, 1)
+				two, err := h.customFieldSvc.CreateFieldDef(ctx, "Two", customfield.FieldTypeText, nil, 1, nil)
 				require.NoError(t, err)
 				return h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/custom-fields/"+two.ID.String(),
 					map[string]any{"name": "One"})
 			}, 409, "conflict"},
 		{"patch with an invalid type is a validation error",
 			func(t *testing.T, h *harness) *http.Response {
-				d, err := h.customFieldSvc.CreateFieldDef(context.Background(), "Typed", customfield.FieldTypeText, nil, 1)
+				d, err := h.customFieldSvc.CreateFieldDef(context.Background(), "Typed", customfield.FieldTypeText, nil, 1, nil)
 				require.NoError(t, err)
 				return h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/custom-fields/"+d.ID.String(),
 					map[string]any{"field_type": "colour"})
@@ -331,9 +331,9 @@ func TestCustomFieldErrors_StatusAndCode(t *testing.T) {
 		{"assigning the same field twice is a conflict",
 			func(t *testing.T, h *harness) *http.Response {
 				c, _, _ := mkCTI(t, h)
-				d, err := h.customFieldSvc.CreateFieldDef(context.Background(), "Dup", customfield.FieldTypeText, nil, 1)
+				d, err := h.customFieldSvc.CreateFieldDef(context.Background(), "Dup", customfield.FieldTypeText, nil, 1, nil)
 				require.NoError(t, err)
-				_, err = h.customFieldSvc.CreateAssignment(context.Background(), d.ID, customfield.CategoryScope, c.ID, 1, true, false)
+				_, err = h.customFieldSvc.CreateAssignment(context.Background(), d.ID, customfield.CategoryScope, c.ID, 1, true, false, nil)
 				require.NoError(t, err)
 				return h.doAsAdmin(t, http.MethodPost, ctiBase+"/"+c.ID.String()+"/fields",
 					map[string]any{"field_def_id": d.ID})
@@ -372,7 +372,7 @@ func TestAssignment_VisibleOnNewDefaultsToFalseAndHonoursTrue(t *testing.T) {
 	defer cleanup()
 	c, _, _ := mkCTI(t, h)
 	mk := func(extra map[string]any) map[string]any {
-		d, err := h.customFieldSvc.CreateFieldDef(context.Background(), "F-"+uuid.NewString()[:8], customfield.FieldTypeText, nil, 1)
+		d, err := h.customFieldSvc.CreateFieldDef(context.Background(), "F-"+uuid.NewString()[:8], customfield.FieldTypeText, nil, 1, nil)
 		require.NoError(t, err)
 		body := map[string]any{"field_def_id": d.ID}
 		for k, v := range extra {

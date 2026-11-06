@@ -148,9 +148,11 @@ func TestFilterForViewer_RequesterGetsOnlyTheAllowedList(t *testing.T) {
 		CanReopen bool   `json:"can_reopen"`
 		Replies   []any  `json:"replies,omitempty"`
 		Links     []any  `json:"links,omitempty"`
+		Warnings  []any  `json:"warnings,omitempty"`
 		Extra     string `json:"surprise,omitempty"`
 	}
-	wrapped := view{Ticket: tk, Replies: []any{map[string]any{"id": "r", "body": "hi"}}, Links: []any{map[string]any{"source_id": "a"}}, Extra: "x"}
+	wrapped := view{Ticket: tk, Replies: []any{map[string]any{"id": "r", "body": "hi"}}, Links: []any{map[string]any{"source_id": "a"}},
+		Warnings: []any{map[string]any{"field_id": "f", "reason": "inactive"}}, Extra: "x"}
 
 	allowed := asSet(append(ticket.RequesterTicketKeys(), ticket.RequesterWrapperKeys()...))
 	ticketAllowed := asSet(ticket.RequesterTicketKeys())
@@ -295,4 +297,37 @@ func TestFilterForViewer_BigIntegersSurviveUnchanged(t *testing.T) {
 	require.NoError(t, err)
 	b, _ = json.Marshal(got)
 	require.Contains(t, string(b), "9007199254740993")
+}
+
+// The keys a requester sees, spelled out and not read from the lists under test:
+// a key added to or dropped from either list shows up here as a change someone
+// has to make on purpose. "warnings" is the custom field values that were not
+// written when the ticket was created (#603).
+func TestFilterForViewer_RequesterSeesExactlyTheseKeys(t *testing.T) {
+	type view struct {
+		ticket.Ticket
+		SLA       any   `json:"sla"`
+		CanReopen bool  `json:"can_reopen"`
+		Replies   []any `json:"replies,omitempty"`
+		Links     []any `json:"links,omitempty"`
+		Warnings  []any `json:"warnings,omitempty"`
+		Extra     any   `json:"surprise,omitempty"`
+	}
+	wrapped := view{
+		Ticket: filledTicket(t), Replies: []any{"r"}, Links: []any{"l"},
+		Warnings: []any{map[string]any{"field_id": "f", "reason": "inactive"}}, Extra: "x",
+	}
+	got, err := ticket.FilterForViewer(user.RoleUser, wrapped)
+	require.NoError(t, err)
+
+	want := []string{
+		// the ticket
+		"id", "tracking_number", "subject", "description", "description_format",
+		"status_id", "priority", "category_id", "type_id", "item_id",
+		"created_at", "resolved_at", "assignee_user_id", "resolution_notes",
+		// wrapped around it
+		"sla", "can_reopen", "replies", "links", "warnings",
+	}
+	sort.Strings(want)
+	require.Equal(t, want, sorted(keysOf(t, got)))
 }
