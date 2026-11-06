@@ -4451,8 +4451,12 @@ Defined globally under **Admin → Custom Fields**. Each definition has:
 - **Options** (select only): an ordered list of the values that may be chosen,
   stored as a JSON array of strings, so an option may contain a comma. The admin
   page edits them as a list: add, edit, reorder, retire, bring back, delete.
-  Blank and duplicate options are refused by the page.
-- **Retired options** (select only): see *Options: retiring and deleting*.
+  Blank and duplicate options are refused by the page; the API does not check
+  for them. On any other type the server stores `options` as sent and nothing
+  reads it.
+- **Retired options** (select only): see *Options: retiring and deleting*. On
+  any other type `retired_options` is stored as sent, like `options`, and
+  nothing reads it.
 - **Field number** (`sort_order`): orders fields within each level. Set by
   dragging on the Custom Fields page, with a pointer or the keyboard. See
   *Display order*.
@@ -4461,6 +4465,15 @@ Defined globally under **Admin → Custom Fields**. Each definition has:
 Every change an administrator makes to a definition, its options or its
 attachments is written to the audit log in the same transaction as the change.
 See *Audit*.
+
+`GET /admin/custom-fields` returns every definition, inactive ones included, in
+field-number order, each with `place_count`: the number of categories, types and
+items the field is attached to (0 for a field on no form). `PUT
+/admin/custom-fields/order` sets the numbers: the body lists every definition
+exactly once, position *n* becoming number *n*, and the answer is the same list
+as `GET`. A list that repeats an id is `400 bad_request`; a list that does not
+match the stored definitions (one was added since the page read them) is
+`409 conflict` and writes nothing.
 
 ### Deactivating a field
 
@@ -4472,8 +4485,8 @@ A field can be deactivated whether or not tickets use it.
 - Nobody can write it: `PUT /tickets/{id}/custom-fields` refuses a value for it,
   an empty one (a clear) included, with `400 bad_request`. On ticket creation a
   value for it is dropped and reported in `warnings` (see *Values*).
-- The admin list hides inactive fields. **Show inactive** lists them, marked,
-  each with **Reactivate**.
+- The Custom Fields page hides inactive fields. **Show inactive** lists them,
+  marked, each with **Reactivate**. The API list always includes them.
 
 Reactivating restores the field as it was: deactivation does not touch its
 attachments, options or number.
@@ -4522,7 +4535,10 @@ Each attachment has:
 
 - **Show on new-ticket form** (`visible_on_new`)
 - **Required on new-ticket form** (`required_on_new`): only meaningful while
-  shown; the page disables it when the field is not shown.
+  shown; the page disables it when the field is not shown. Only the
+  new-ticket form holds a person to it. The server does not refuse a ticket
+  created without a value for a required field, so an API client is not held
+  to it.
 
 A field reaches a ticket once, however many of the ticket's category, type and
 item it is attached to. The most specific attachment wins — item over type over
@@ -4556,9 +4572,12 @@ An assignment goes with the node it is attached to. Deleting a category, type or
 
 Entries use entity type `custom_field` and the field definition's id, so a
 field's whole history — attachments included — is one entity. Actions, and what
-each records, are listed in the API documentation. Every entry carries the
-field's name on both sides; option entries carry the option's text, and
-attachment entries the place's path. The audit view shows all three: they are
+each records, are listed in the API documentation. The actor is passed to every
+change explicitly and is the administrator making the request; a credential
+with no person behind it is recorded as the system. Every entry carries the
+field's name in each state it records (before and after, where both exist);
+option entries carry the option's text, and attachment entries the place's
+path. The audit view shows all three: they are
 text an administrator wrote, not ticket content. Attachments removed by
 deleting a category, type or item are recorded as detached, in the same
 statement as the delete.
@@ -4570,15 +4589,21 @@ Stored normalized in `ticket_custom_field_values` (one row per ticket + field de
 On ticket creation, custom field values are written after the ticket exists
 and never fail the request. A value that is not written is reported in the 201
 response's `warnings` array, one entry per dropped field with a reason:
-`invalid_field_id`, `not_on_ticket`, `inactive`, `retired_option`,
-`not_an_option`, `not_a_number` or `not_saved`. An empty value means "no value"
-and is not a warning. The key is absent when nothing was dropped.
+`invalid_field_id`, `duplicate_field_id`, `not_on_ticket`, `inactive`,
+`retired_option`, `not_an_option`, `not_a_number` or `not_saved`. The entry's
+`field_id` is the key exactly as sent, and entries are sorted by it. Two keys
+that spell the same field id (upper and lower case, say) get
+`duplicate_field_id` and neither is written, because which value to keep would
+be luck. An empty value means "no value" and is not a warning. The key is
+absent when nothing was dropped.
 
 A `number` field accepts a decimal number: after leading and trailing spaces
 are removed, what Go's `strconv.ParseFloat` accepts, except NaN, infinity,
-out-of-range values and hexadecimal. The trimmed text is stored as written, not
+out-of-range values, hexadecimal and underscores. The trimmed text is stored as written, not
 reformatted. `PUT /tickets/{id}/custom-fields` refuses anything else with
-`400 bad_request`. Values stored before 1.3.0 are left as they are and shown as
+`400 bad_request`. It writes all of its entries or none, and it refuses a request
+in which two keys spell the same field id (`field_def_id is listed twice`)
+rather than pick one. Values stored before 1.3.0 are left as they are and shown as
 they are; since the ticket page sends only the fields that changed, such a value
 blocks only a save that changes that field.
 
