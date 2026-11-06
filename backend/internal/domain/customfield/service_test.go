@@ -32,7 +32,7 @@ func newFakeStore() *fakeStore {
 	}
 }
 
-func (f *fakeStore) CreateFieldDef(_ context.Context, d customfield.FieldDef, entries ...audit.Entry) (customfield.FieldDef, error) {
+func (f *fakeStore) CreateFieldDef(_ context.Context, d customfield.FieldDef, entries []audit.Entry) (customfield.FieldDef, error) {
 	f.defs[d.ID] = d
 	f.audit = append(f.audit, entries...)
 	return d, nil
@@ -121,11 +121,9 @@ func (f *fakeStore) CountValuesByValue(_ context.Context, id uuid.UUID) (map[str
 func (f *fakeStore) info(a customfield.Assignment) customfield.AssignmentInfo {
 	return customfield.AssignmentInfo{FieldName: f.defs[a.FieldDefID].Name, ScopePath: "path"}
 }
-func (f *fakeStore) CreateAssignment(_ context.Context, a customfield.Assignment, entry ...func(customfield.AssignmentInfo) audit.Entry) (customfield.Assignment, error) {
+func (f *fakeStore) CreateAssignment(_ context.Context, a customfield.Assignment, entry func(customfield.AssignmentInfo) audit.Entry) (customfield.Assignment, error) {
 	f.assignments[a.ID] = a
-	for _, build := range entry {
-		f.audit = append(f.audit, build(f.info(a)))
-	}
+	f.audit = append(f.audit, entry(f.info(a)))
 	return a, nil
 }
 func (f *fakeStore) ListAssignments(_ context.Context, st customfield.ScopeType, id uuid.UUID) ([]customfield.Assignment, error) {

@@ -35,7 +35,7 @@ func (s *Service) CreateFieldDef(ctx context.Context, name string, fieldType Fie
 		SortOrder: sortOrder,
 		Active:    true,
 	}
-	return s.store.CreateFieldDef(ctx, def, entriesForCreated(actorID, def)...)
+	return s.store.CreateFieldDef(ctx, def, entriesForCreated(actorID, def))
 }
 
 // ListFieldDefs is every definition with PlaceCount set, in field-number order.

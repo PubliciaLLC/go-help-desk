@@ -177,7 +177,7 @@ func TestSetValues_RealTransaction_CommitsAllOrRollsBackAll(t *testing.T) {
 	for _, id := range []uuid.UUID{a, b} {
 		_, err := store.CreateFieldDef(ctx, customfield.FieldDef{
 			ID: id, Name: "F-" + id.String()[:8], FieldType: customfield.FieldTypeText, Active: true,
-		})
+		}, nil)
 		require.NoError(t, err)
 	}
 

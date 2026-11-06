@@ -72,7 +72,7 @@ func writeEntries(ctx context.Context, q *dbgen.Queries, entries ...audit.Entry)
 
 // ── Field definitions ──────────────────────────────────────────────────────────
 
-func (s *Store) CreateFieldDef(ctx context.Context, def customfield.FieldDef, entries ...audit.Entry) (customfield.FieldDef, error) {
+func (s *Store) CreateFieldDef(ctx context.Context, def customfield.FieldDef, entries []audit.Entry) (customfield.FieldDef, error) {
 	var out customfield.FieldDef
 	err := s.inTx(ctx, "field definition", func(q *dbgen.Queries) error {
 		row, err := q.CreateCustomFieldDef(ctx, dbgen.CreateCustomFieldDefParams{
@@ -238,7 +238,7 @@ func (s *Store) CountValuesByValue(ctx context.Context, fieldDefID uuid.UUID) (m
 
 // ── Assignments ───────────────────────────────────────────────────────────────
 
-func (s *Store) CreateAssignment(ctx context.Context, a customfield.Assignment, entry ...func(customfield.AssignmentInfo) audit.Entry) (customfield.Assignment, error) {
+func (s *Store) CreateAssignment(ctx context.Context, a customfield.Assignment, entry func(customfield.AssignmentInfo) audit.Entry) (customfield.Assignment, error) {
 	var out customfield.Assignment
 	err := s.inTx(ctx, "field attachment", func(q *dbgen.Queries) error {
 		row, err := q.CreateCustomFieldAssignment(ctx, dbgen.CreateCustomFieldAssignmentParams{
@@ -254,19 +254,14 @@ func (s *Store) CreateAssignment(ctx context.Context, a customfield.Assignment, 
 			return mapWriteError("creating assignment", err, alreadyAssigned, "field_def_id does not name a field")
 		}
 		out = assignmentFromRow(row)
-		if len(entry) == 0 {
+		if entry == nil {
 			return nil
 		}
 		info, err := assignmentInfo(ctx, q, out)
 		if err != nil {
 			return err
 		}
-		for _, build := range entry {
-			if err := writeEntries(ctx, q, build(info)); err != nil {
-				return err
-			}
-		}
-		return nil
+		return writeEntries(ctx, q, entry(info))
 	})
 	if err != nil {
 		return customfield.Assignment{}, err
