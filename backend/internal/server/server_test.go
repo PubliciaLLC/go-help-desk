@@ -194,7 +194,7 @@ func newHarnessOn(t *testing.T, openDB func(*testing.T) (*testutil.DB, func()), 
 	aStore := adminstore.New(q)
 	auStore := auditstore.New(q)
 	authSt := authstore.New(q)
-	cfStore := customfieldstore.New(q)
+	cfStore := customfieldstore.New(q, nil)
 	tagSt := tagstore.New(q)
 	crStore := cannedresponsestore.New(q)
 	slStore := slastore.New(q)
@@ -1871,7 +1871,7 @@ func newBareHarness(t *testing.T) (*harness, func()) {
 	aStore := adminstore.New(q)
 	auStore := auditstore.New(q)
 	authSt := authstore.New(q)
-	cfStore := customfieldstore.New(q)
+	cfStore := customfieldstore.New(q, nil)
 	tagSt := tagstore.New(q)
 	crStore := cannedresponsestore.New(q)
 

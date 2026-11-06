@@ -25,7 +25,7 @@ func TestMigration039_DeletesOnlyOrphanedFieldAssignments(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = tx.Rollback() }()
 	q := dbgen.New(tx)
-	cs, fs := categorystore.New(q), customfieldstore.New(q)
+	cs, fs := categorystore.New(q), customfieldstore.New(q, nil)
 
 	cat := category.Category{ID: uuid.New(), Name: "M39 " + uuid.NewString()[:8], SortOrder: 1, Active: true}
 	require.NoError(t, cs.CreateCategory(ctx, cat))

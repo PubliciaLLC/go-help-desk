@@ -91,13 +91,14 @@ type CustomFieldAssignment struct {
 }
 
 type CustomFieldDef struct {
-	ID        uuid.UUID             `json:"id"`
-	Name      string                `json:"name"`
-	FieldType string                `json:"field_type"`
-	Options   pqtype.NullRawMessage `json:"options"`
-	SortOrder int32                 `json:"sort_order"`
-	Active    bool                  `json:"active"`
-	CreatedAt time.Time             `json:"created_at"`
+	ID             uuid.UUID             `json:"id"`
+	Name           string                `json:"name"`
+	FieldType      string                `json:"field_type"`
+	Options        pqtype.NullRawMessage `json:"options"`
+	SortOrder      int32                 `json:"sort_order"`
+	Active         bool                  `json:"active"`
+	CreatedAt      time.Time             `json:"created_at"`
+	RetiredOptions pqtype.NullRawMessage `json:"retired_options"`
 }
 
 type EmailTemplateOverride struct {

@@ -156,7 +156,7 @@ func TestCannedResponseStore_CascadeOnCategoryDelete(t *testing.T) {
 	require.NoError(t, s.Create(ctx, typeScoped))
 
 	// Deleting the category cascades to both scoped responses; the global one stays.
-	require.NoError(t, cs.DeleteCategory(ctx, cat.ID))
+	require.NoError(t, cs.DeleteCategory(ctx, cat.ID, nil))
 
 	got, err := s.List(ctx)
 	require.NoError(t, err)
@@ -185,7 +185,7 @@ func TestCannedResponseStore_CascadeOnTypeDelete(t *testing.T) {
 	require.NoError(t, s.Create(ctx, typeScoped))
 
 	// Deleting only the type removes the type-scoped response; the category one stays.
-	require.NoError(t, cs.DeleteType(ctx, tp.ID))
+	require.NoError(t, cs.DeleteType(ctx, tp.ID, nil))
 
 	got, err := s.List(ctx)
 	require.NoError(t, err)

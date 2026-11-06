@@ -1,12 +1,15 @@
 package server_test
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 )
 
 // TestListEndpointsReturnEmptyArrayNotNull pins a contract the whole frontend
@@ -82,4 +85,24 @@ func TestSettingsEndpointReturnsObjectNotNull(t *testing.T) {
 	body := strings.TrimSpace(string(b))
 	require.NotEqual(t, "null", body, "an empty settings map must serialise as {}, not null")
 	require.True(t, strings.HasPrefix(body, "{"), "expected a JSON object, got: %s", body)
+}
+
+// The two list routes the Custom Fields page added answer [] and never null for
+// an empty list. They are browser-session only, so they cannot go in the
+// API-key table above.
+func TestCustomFieldListRoutesReturnEmptyArrayNotNull(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	def, err := h.customFieldSvc.CreateFieldDef(context.Background(), "Nowhere", customfield.FieldTypeText, nil, 1)
+	require.NoError(t, err)
+
+	res := h.doAsAdminSession(t, http.MethodGet, "/api/v1/admin/custom-fields/"+def.ID.String()+"/assignments", nil)
+	body := strings.TrimSpace(string(readAll(t, res)))
+	require.Equal(t, "[]", body, "a field on no form")
+
+	_, err = h.tx.Exec(`DELETE FROM custom_field_defs`)
+	require.NoError(t, err)
+	res = h.doAsAdminSession(t, http.MethodPut, "/api/v1/admin/custom-fields/order", map[string]any{"field_def_ids": []string{}})
+	body = strings.TrimSpace(string(readAll(t, res)))
+	require.Equal(t, "[]", body, "no fields at all")
 }

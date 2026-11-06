@@ -148,9 +148,11 @@ func TestFilterForViewer_RequesterGetsOnlyTheAllowedList(t *testing.T) {
 		CanReopen bool   `json:"can_reopen"`
 		Replies   []any  `json:"replies,omitempty"`
 		Links     []any  `json:"links,omitempty"`
+		Warnings  []any  `json:"warnings,omitempty"`
 		Extra     string `json:"surprise,omitempty"`
 	}
-	wrapped := view{Ticket: tk, Replies: []any{map[string]any{"id": "r", "body": "hi"}}, Links: []any{map[string]any{"source_id": "a"}}, Extra: "x"}
+	wrapped := view{Ticket: tk, Replies: []any{map[string]any{"id": "r", "body": "hi"}}, Links: []any{map[string]any{"source_id": "a"}},
+		Warnings: []any{map[string]any{"field_id": "f", "reason": "inactive"}}, Extra: "x"}
 
 	allowed := asSet(append(ticket.RequesterTicketKeys(), ticket.RequesterWrapperKeys()...))
 	ticketAllowed := asSet(ticket.RequesterTicketKeys())

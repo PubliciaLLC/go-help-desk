@@ -28,6 +28,25 @@ func (s *Server) handleListFieldDefs(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, defs)
 }
 
+// fieldAdminContext is the request's context carrying who is changing a field,
+// for the audit entries the change writes in its own transaction. A credential
+// with no person behind it is audited as the system (actor_id is a foreign key
+// to users, and the nil UUID names nobody).
+func fieldAdminContext(r *http.Request) context.Context {
+	if a := authmw.GetActor(r); a != nil && a.UserID != uuid.Nil {
+		return customfield.WithActor(r.Context(), a.UserID)
+	}
+	return r.Context()
+}
+
+// actorIDOf is the same person as a pointer, for the calls that take one.
+func actorIDOf(r *http.Request) *uuid.UUID {
+	if a := authmw.GetActor(r); a != nil && a.UserID != uuid.Nil {
+		return &a.UserID
+	}
+	return nil
+}
+
 func (s *Server) handleCreateFieldDef(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name      string                `json:"name"`
@@ -39,7 +58,7 @@ func (s *Server) handleCreateFieldDef(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	def, err := s.customFields.CreateFieldDef(r.Context(), body.Name, body.FieldType, body.Options, body.SortOrder)
+	def, err := s.customFields.CreateFieldDef(fieldAdminContext(r), body.Name, body.FieldType, body.Options, body.SortOrder)
 	if err != nil {
 		handleError(w, err)
 		return
@@ -53,48 +72,84 @@ func (s *Server) handleUpdateFieldDef(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid field def id")
 		return
 	}
-	existing, err := s.customFields.GetFieldDef(r.Context(), id)
-	if err != nil {
-		handleFieldDefNotFound(w, err)
-		return
-	}
 	var body struct {
 		Name      *string                `json:"name"`
 		FieldType *customfield.FieldType `json:"field_type"`
 		Options   []string               `json:"options"`
-		SortOrder *int                   `json:"sort_order"`
-		Active    *bool                  `json:"active"`
+		// Retired options are moved here from options, never added: a value
+		// that was not an option cannot be retired. Omitted means no change;
+		// an empty list clears them (deleting the ones nobody holds).
+		RetiredOptions []string `json:"retired_options"`
+		SortOrder      *int     `json:"sort_order"`
+		Active         *bool    `json:"active"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	if body.Name != nil {
-		existing.Name = *body.Name
+	// Applied to the row as it is under the lock the service takes, not to a
+	// copy read here: an option delete or a type change is decided against what
+	// tickets hold at that moment.
+	saved, err := s.customFields.PatchFieldDef(fieldAdminContext(r), id, customfield.FieldDefPatch{
+		Name: body.Name, FieldType: body.FieldType, Options: body.Options, RetiredOptions: body.RetiredOptions,
+		SortOrder: body.SortOrder, Active: body.Active,
+	})
+	if err != nil {
+		handleFieldDefNotFound(w, err)
+		return
 	}
-	if body.FieldType != nil {
-		existing.FieldType = *body.FieldType
+	JSON(w, http.StatusOK, saved)
+}
+
+// handleReorderFieldDefs sets every field's number from the order of the list.
+func (s *Server) handleReorderFieldDefs(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		// A pointer: a missing key and null are 400, an empty list is not.
+		FieldDefIDs *[]uuid.UUID `json:"field_def_ids"`
 	}
-	if body.Options != nil {
-		existing.Options = body.Options
+	if err := DecodeJSON(r, &body); err != nil || body.FieldDefIDs == nil {
+		Error(w, http.StatusBadRequest, "bad_request", "field_def_ids is required: a list of field ids")
+		return
 	}
-	if body.SortOrder != nil {
-		existing.SortOrder = *body.SortOrder
-	}
-	if body.Active != nil {
-		existing.Active = *body.Active
-	}
-	if err := s.customFields.UpdateFieldDef(r.Context(), existing); err != nil {
+	if err := s.customFields.ReorderFieldDefs(fieldAdminContext(r), *body.FieldDefIDs); err != nil {
 		handleError(w, err)
 		return
 	}
-	// The saved row, not the edited copy: the name is trimmed on the way in.
-	saved, err := s.customFields.GetFieldDef(r.Context(), existing.ID)
+	s.handleListFieldDefs(w, r)
+}
+
+// handleFieldDefUsage is how many tickets hold a value for the field, and each
+// of its values.
+func (s *Server) handleFieldDefUsage(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid field def id")
+		return
+	}
+	usage, err := s.customFields.Usage(r.Context(), id)
 	if err != nil {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, saved)
+	JSON(w, http.StatusOK, usage)
+}
+
+// handleListFieldPlacements is where the field is attached, with the names.
+func (s *Server) handleListFieldPlacements(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid field def id")
+		return
+	}
+	places, err := s.customFields.ListPlacements(r.Context(), id)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	if places == nil {
+		places = []customfield.Placement{}
+	}
+	JSON(w, http.StatusOK, places)
 }
 
 // ── Admin: CTI field assignments ──────────────────────────────────────────────
@@ -140,7 +195,7 @@ func (s *Server) handleCreateAssignment(w http.ResponseWriter, r *http.Request) 
 	if body.VisibleOnNew != nil {
 		visibleOnNew = *body.VisibleOnNew
 	}
-	a, err := s.customFields.CreateAssignment(r.Context(), body.FieldDefID, scopeType, scopeID, body.SortOrder, visibleOnNew, body.RequiredOnNew)
+	a, err := s.customFields.CreateAssignment(fieldAdminContext(r), body.FieldDefID, scopeType, scopeID, body.SortOrder, visibleOnNew, body.RequiredOnNew)
 	if err != nil {
 		handleError(w, err)
 		return
@@ -171,7 +226,7 @@ func (s *Server) handleUpdateAssignment(w http.ResponseWriter, r *http.Request) 
 	if body.RequiredOnNew != nil {
 		existing.RequiredOnNew = *body.RequiredOnNew
 	}
-	if err := s.customFields.UpdateAssignment(r.Context(), existing); err != nil {
+	if err := s.customFields.UpdateAssignment(fieldAdminContext(r), existing); err != nil {
 		handleError(w, err)
 		return
 	}
@@ -183,7 +238,7 @@ func (s *Server) handleDeleteAssignment(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if err := s.customFields.DeleteAssignment(r.Context(), existing.ID); err != nil {
+	if err := s.customFields.DeleteAssignment(fieldAdminContext(r), existing.ID); err != nil {
 		handleError(w, err)
 		return
 	}
@@ -278,6 +333,12 @@ func (s *Server) handlePutTicketCustomFields(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// All or nothing. Every entry is parsed and held to the check above before
+	// anything is written, and SetValues then checks the rest and writes in one
+	// transaction. The loop that stood here wrote entry by entry, in map order,
+	// so one refused entry left the ones before it saved and the ones after it
+	// not, differently on each try.
+	values := make(map[uuid.UUID]string, len(body))
 	for fieldDefIDStr, value := range body {
 		fieldDefID, err := uuid.Parse(fieldDefIDStr)
 		if err != nil {
@@ -289,10 +350,17 @@ func (s *Server) handlePutTicketCustomFields(w http.ResponseWriter, r *http.Requ
 				"field_def_id is not a field on this ticket: "+fieldDefIDStr)
 			return
 		}
-		if err := s.customFields.SetValue(r.Context(), ticketID, fieldDefID, value); err != nil {
-			handleError(w, err)
+		// Two keys can spell one UUID (case, braces); ranging over the map
+		// would keep whichever came last, a different one each time.
+		if _, dup := values[fieldDefID]; dup {
+			Error(w, http.StatusBadRequest, "bad_request", "field_def_id is listed twice: "+fieldDefIDStr)
 			return
 		}
+		values[fieldDefID] = value
+	}
+	if err := s.customFields.SetValues(r.Context(), ticketID, values); err != nil {
+		handleError(w, err)
+		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

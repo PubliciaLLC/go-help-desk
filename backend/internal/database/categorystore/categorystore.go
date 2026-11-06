@@ -56,7 +56,11 @@ func (s *Store) UpdateCategory(ctx context.Context, c category.Category) error {
 // records count because the delete cascades to the category's SLA policies,
 // and sla_records.policy_id is RESTRICT. A ticket filed between the counts and
 // the delete still trips the foreign key; that is mapped to the same sentinel.
-func (s *Store) DeleteCategory(ctx context.Context, id uuid.UUID) error {
+//
+// actorID is who deleted it, for the audit entries the delete writes for each
+// custom field attachment it takes with it (queries/categories.sql); nil when
+// there is none.
+func (s *Store) DeleteCategory(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error {
 	tickets, err := s.q.CountTicketsByCategory(ctx, id)
 	if err != nil {
 		return fmt.Errorf("counting tickets for category %s: %w", id, err)
@@ -68,7 +72,7 @@ func (s *Store) DeleteCategory(ctx context.Context, id uuid.UUID) error {
 	if tickets > 0 || records > 0 {
 		return fmt.Errorf("%w: it is used by %d ticket(s) and %d SLA record(s)", category.ErrCategoryInUse, tickets, records)
 	}
-	n, err := s.q.DeleteCategory(ctx, id)
+	n, err := s.q.DeleteCategory(ctx, dbgen.DeleteCategoryParams{ID: id, ActorID: database.NullUUID(actorID)})
 	if err != nil {
 		if isForeignKeyViolation(err) {
 			return fmt.Errorf("%w: %s was attached to it while it was being deleted", category.ErrCategoryInUse, blocker(err))
@@ -130,7 +134,7 @@ func (s *Store) UpdateType(ctx context.Context, t category.Type) error {
 
 // DeleteType refuses a type that tickets use. A ticket holding one of its
 // items holds the type too, so the one count covers the cascade to items.
-func (s *Store) DeleteType(ctx context.Context, id uuid.UUID) error {
+func (s *Store) DeleteType(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error {
 	tickets, err := s.q.CountTicketsByType(ctx, database.NullUUID(&id))
 	if err != nil {
 		return fmt.Errorf("counting tickets for type %s: %w", id, err)
@@ -138,7 +142,7 @@ func (s *Store) DeleteType(ctx context.Context, id uuid.UUID) error {
 	if tickets > 0 {
 		return fmt.Errorf("%w: it is used by %d ticket(s)", category.ErrTypeInUse, tickets)
 	}
-	n, err := s.q.DeleteType(ctx, id)
+	n, err := s.q.DeleteType(ctx, dbgen.DeleteTypeParams{ID: id, ActorID: database.NullUUID(actorID)})
 	if err != nil {
 		if isForeignKeyViolation(err) {
 			return fmt.Errorf("%w: %s was attached to it while it was being deleted", category.ErrTypeInUse, blocker(err))
@@ -198,7 +202,7 @@ func (s *Store) UpdateItem(ctx context.Context, i category.Item) error {
 	})
 }
 
-func (s *Store) DeleteItem(ctx context.Context, id uuid.UUID) error {
+func (s *Store) DeleteItem(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error {
 	tickets, err := s.q.CountTicketsByItem(ctx, database.NullUUID(&id))
 	if err != nil {
 		return fmt.Errorf("counting tickets for item %s: %w", id, err)
@@ -206,7 +210,7 @@ func (s *Store) DeleteItem(ctx context.Context, id uuid.UUID) error {
 	if tickets > 0 {
 		return fmt.Errorf("%w: it is used by %d ticket(s)", category.ErrItemInUse, tickets)
 	}
-	n, err := s.q.DeleteItem(ctx, id)
+	n, err := s.q.DeleteItem(ctx, dbgen.DeleteItemParams{ID: id, ActorID: database.NullUUID(actorID)})
 	if err != nil {
 		if isForeignKeyViolation(err) {
 			return fmt.Errorf("%w: %s was attached to it while it was being deleted", category.ErrItemInUse, blocker(err))
