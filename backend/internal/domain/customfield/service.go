@@ -89,8 +89,10 @@ func (s *Service) DeleteAssignment(ctx context.Context, id uuid.UUID) error {
 }
 
 // ResolveFieldsForCTI returns the union of field assignments for the given
-// category, type, and item, ordered by scope level (category → type → item)
-// then by sort_order within each level.
+// category, type, and item, one entry per field, ordered by scope level
+// (category → type → item) then by sort_order within each level. A field
+// attached at more than one level is returned once, as its most specific
+// attachment (item over type over category).
 func (s *Service) ResolveFieldsForCTI(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID) ([]Assignment, error) {
 	var result []Assignment
 
@@ -116,22 +118,37 @@ func (s *Service) ResolveFieldsForCTI(ctx context.Context, categoryID uuid.UUID,
 		result = append(result, itemFields...)
 	}
 
-	return result, nil
+	// One entry per field. The list is built category, type, item, so a field's
+	// last entry is its most specific attachment; that one's settings and level
+	// apply. Filtering in place keeps the level-by-level order above.
+	last := make(map[uuid.UUID]int, len(result))
+	for i, a := range result {
+		last[a.FieldDefID] = i
+	}
+	kept := result[:0]
+	for i, a := range result {
+		if last[a.FieldDefID] == i {
+			kept = append(kept, a)
+		}
+	}
+	return kept, nil
 }
 
 // SetValue upserts or deletes a custom field value on a ticket.
 // An empty value string deletes the row. Validates that the field is active
 // and that select values are within the allowed options.
 func (s *Service) SetValue(ctx context.Context, ticketID, fieldDefID uuid.UUID, value string) error {
-	if value == "" {
-		return s.store.DeleteValue(ctx, ticketID, fieldDefID)
-	}
 	def, err := s.store.GetFieldDef(ctx, fieldDefID)
 	if err != nil {
 		return fmt.Errorf("field not found: %w", err)
 	}
+	// Before the empty-value branch: a clear is a write too. Checking after it
+	// let a caller wipe the stored value of a deactivated field by sending "".
 	if !def.Active {
 		return Invalid(fmt.Sprintf("field %q is deactivated", def.Name))
+	}
+	if value == "" {
+		return s.store.DeleteValue(ctx, ticketID, fieldDefID)
 	}
 	if def.FieldType == FieldTypeSelect && !slices.Contains(def.Options, value) {
 		return Invalid(fmt.Sprintf("value %q is not a valid option for field %q", value, def.Name))
