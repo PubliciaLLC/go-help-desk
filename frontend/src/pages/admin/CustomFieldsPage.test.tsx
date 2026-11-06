@@ -112,7 +112,7 @@ function fakeServer(opts: { defs?: FieldDef[]; placements?: Record<string, Field
   const placements = structuredClone(opts.placements ?? PLACEMENTS)
   const usage = structuredClone(opts.usage ?? USAGE)
   const calls = { get: [] as string[] }
-  const fail: { patch?: unknown; put?: unknown } = {}
+  const fail: { patch?: unknown; put?: unknown; list?: unknown } = {}
   // While set, the list GET waits for it: lets a test look at the page before a refetch lands.
   const hold: { list?: Promise<void> } = {}
 
@@ -121,6 +121,7 @@ function fakeServer(opts: { defs?: FieldDef[]; placements?: Record<string, Field
     const m = url.match(/^\/admin\/custom-fields\/([^/]+)\/(assignments|usage)$/)
     // place_count is on the list only, as on the real API.
     if (url === '/admin/custom-fields' && hold.list) await hold.list
+    if (url === '/admin/custom-fields' && fail.list) throw fail.list
     if (url === '/admin/custom-fields') return { data: defs.map((d) => ({ ...d, place_count: (placements[d.id] ?? []).length })) }
     if (m && m[2] === 'assignments') return { data: placements[m[1]] ?? [] }
     if (m && m[2] === 'usage') return { data: usage[m[1]] }
@@ -511,6 +512,22 @@ describe('A definition changed elsewhere while its row is open', () => {
     expect(within(row).queryByText(NOTICE)).toBeNull()
   })
 
+  it('takes the latest once the edits that held the form back are undone by hand', async () => {
+    const { server, queryClient } = await renderPage()
+    const row = await expand('Asset Tag')
+    const name = await within(row).findByLabelText('Name')
+    await userEvent.type(name, ' x')
+    server.changeDef('f-asset', { name: 'Asset Tag (EU)' })
+    await refetchList(queryClient)
+    await within(row).findByText(NOTICE)
+
+    // Typing the original name back leaves nothing unsaved.
+    await userEvent.clear(name)
+    await userEvent.type(name, 'Asset Tag')
+    await waitFor(() => expect((within(row).getByLabelText('Name') as HTMLInputElement).value).toBe('Asset Tag (EU)'))
+    expect(within(row).queryByText(NOTICE)).toBeNull()
+  })
+
   it('does not call an unchanged refetch a change', async () => {
     const { queryClient } = await renderPage()
     const row = await expand('Asset Tag')
@@ -765,6 +782,28 @@ describe('After a Save, before the list comes back', () => {
     release()
   })
 
+  it('Cancel in the window goes back to what was saved, not to the old row', async () => {
+    const { server, row } = await openDeptHere()
+    const release = await holdListThen(server)
+    await userEvent.click(within(row).getByRole('button', { name: 'Delete IT' }))
+    await userEvent.click(within(row).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(server.patch).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(within(row).queryByDisplayValue('IT')).toBeNull())
+
+    await userEvent.click(within(row).getByRole('button', { name: 'Cancel' }))
+    expect(within(row).queryByDisplayValue('IT')).toBeNull()
+    await userEvent.click(within(row).getByRole('button', { name: 'Add option' }))
+    await userEvent.type(within(row).getByLabelText('Option 3'), 'Ops')
+    release()
+    // The refetch lands with the saved definition: not a change by someone else.
+    await waitFor(() => expect(server.calls.get.filter((u) => u === '/admin/custom-fields').length).toBeGreaterThan(1))
+    expect(within(row).queryByText(/changed elsewhere/)).toBeNull()
+
+    await userEvent.click(within(row).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(server.patch).toHaveBeenCalledTimes(2))
+    expect(server.patch).toHaveBeenLastCalledWith('/admin/custom-fields/f-dept', { options: ['Finance', 'Sales, EMEA', 'Ops'] })
+  })
+
   it('a retire saved, then another edit in the window: the second Save does not re-offer the option', async () => {
     const { server, row } = await openDeptHere()
     const release = await holdListThen(server)
@@ -992,5 +1031,37 @@ describe('Reorder', () => {
     const names = screen.getAllByRole('button', { name: /^Reorder / }).map((b) => b.getAttribute('aria-label'))
     expect(names).toEqual(['Reorder Department', 'Reorder Phone number', 'Reorder Asset Tag'])
     release()
+  })
+})
+
+describe('When the list cannot be loaded', () => {
+  it('with nothing loaded yet, shows the full-page error and no list', async () => {
+    const server = fakeServer()
+    server.fail.list = refusal(500, 'internal_error', 'boom')
+    renderWithQuery(<CustomFieldsPage />)
+    expect((await screen.findByRole('alert')).textContent).toBe('Could not load custom fields.')
+    expect(screen.queryByRole('button', { name: /^Reorder / })).toBeNull()
+  })
+
+  it('with the list already on screen, keeps it and says the refresh failed', async () => {
+    const { server, queryClient } = await renderPage()
+    server.fail.list = refusal(500, 'internal_error', 'boom')
+    await queryClient.invalidateQueries({ queryKey: ['admin', 'custom-fields'], exact: true })
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toBe("Couldn't refresh the list. Showing what was loaded before.")
+    expect(screen.getByRole('button', { name: /^Reorder Department/ })).toBeTruthy()
+    expect(screen.queryByText('Could not load custom fields.')).toBeNull()
+  })
+
+  it('takes the notice down once a refresh works', async () => {
+    const { server, queryClient } = await renderPage()
+    server.fail.list = refusal(500, 'internal_error', 'boom')
+    await queryClient.invalidateQueries({ queryKey: ['admin', 'custom-fields'], exact: true })
+    await screen.findByRole('alert')
+
+    server.fail.list = undefined
+    await queryClient.invalidateQueries({ queryKey: ['admin', 'custom-fields'], exact: true })
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
   })
 })

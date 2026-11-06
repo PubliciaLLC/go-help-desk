@@ -51,6 +51,9 @@ const CHECK_LABEL = `inline-flex cursor-pointer select-none items-center gap-2 t
 const LABEL = 'block text-xs font-medium uppercase tracking-wide text-gray-500'
 const SECTION_HEAD = 'text-xs font-semibold uppercase tracking-wide text-gray-500'
 
+// One empty list, so the effect that reads the list is not re-run on every render before it loads.
+const NO_FIELDS: FieldDef[] = []
+
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
 
 // ── Options ───────────────────────────────────────────────────────────────────
@@ -871,7 +874,10 @@ function FieldRow({
               changedElsewhere={elsewhere}
               onDirtyChange={setFormDirty}
               onSaved={rebuild}
-              onCancel={() => rebuild(def)}
+              // Back to the last copy known to be current: what this form was built from,
+              // unless the list has since produced a newer one. Not the list's row
+              // as it is: between a Save and its refetch that is the pre-save row.
+              onCancel={() => rebuild(elsewhere ? def : base)}
             />
           </section>
           <section className="space-y-2 border-t pt-4">
@@ -1029,7 +1035,8 @@ export function CustomFieldsPage() {
   const [focusPlaceFor, setFocusPlaceFor] = useState<string | null>(null)
   const [reorderError, setReorderError] = useState('')
 
-  const { data: defs = [], isLoading, isError } = useQuery({ queryKey: FIELDS_KEY, queryFn: listFieldDefs })
+  const { data, isLoading, isError } = useQuery({ queryKey: FIELDS_KEY, queryFn: listFieldDefs })
+  const defs = data ?? NO_FIELDS
 
   // A link to an inactive field would otherwise open nothing: show inactive
   // ones, once. Adjusted while rendering, as React advises for state that
@@ -1128,10 +1135,14 @@ export function CustomFieldsPage() {
 
         {isLoading ? (
           <div className="flex justify-center py-12"><Spinner /></div>
-        ) : isError ? (
+        ) : isError && !data ? (
+          // Nothing to show. A failed refresh with a list already loaded is the notice below.
           <p role="alert" className="text-sm text-red-600">Could not load custom fields.</p>
         ) : (
           <div className="space-y-2">
+            {isError && (
+              <p role="alert" className="text-sm text-red-600">Couldn't refresh the list. Showing what was loaded before.</p>
+            )}
             <p className="text-sm text-gray-500">
               Drag to set the order fields appear in. On a ticket, fields still appear by level: the category's first, then the type's, then the item's.
             </p>
