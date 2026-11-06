@@ -8,6 +8,7 @@ import { Select } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { AuditDiff } from '@/components/AuditDiff'
+import { CustomFieldAuditContext } from '@/components/admin/CustomFieldAuditContext'
 import { followRemovalLabel, isFollowAction } from '@/lib/followAudit'
 import { isReplyAction, replyActionLabel } from '@/lib/replyAudit'
 import { EyeOffIcon } from 'lucide-react'
@@ -19,7 +20,7 @@ const PAGE_SIZE = 50
 // own comment: "ticket", "user", "group", etc.) — a starting set, not an
 // enum the server enforces. The filter still accepts any string typed
 // directly; this is only what the dropdown offers.
-const ENTITY_TYPES = ['ticket', 'user', 'group', 'sla_policy', 'category']
+const ENTITY_TYPES = ['ticket', 'user', 'group', 'sla_policy', 'category', 'custom_field']
 
 function labelFor(action: string): string {
   return action.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase())
@@ -198,6 +199,7 @@ export function AdminAuditPage() {
                       </td>
                       <td className="px-4 py-3">
                         <span className="font-medium text-gray-900">{isReplyAction(e.action) ? replyActionLabel(e.action) : (followRemovalLabel(e) ?? labelFor(e.action))}</span>
+                        {e.entity_type === 'custom_field' && <CustomFieldAuditContext before={e.before} after={e.after} />}
                         {/* A follow entry's diff only repeats what its label says. */}
                         {!isFollowAction(e.action) && !isReplyAction(e.action) && <AuditDiff before={e.before} after={e.after} names={e.names} />}
                         {e.entity_type === 'email_template' && e.before && !e.after && <RemovedTemplateText before={e.before} />}

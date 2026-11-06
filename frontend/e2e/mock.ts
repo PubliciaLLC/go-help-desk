@@ -401,9 +401,24 @@ export async function mockAdminApi(page: Page, opts: { short?: boolean } = {}) {
     '/api/v1/admin/canned-responses': [
       { id: 'cr-1', name: n, body: d, sort_order: 1, created_at: '2026-09-20T10:05:00Z' },
     ],
+    // One select field with a long option and a long retired option, and one
+    // inactive field (hidden until Show inactive is on).
     '/api/v1/admin/custom-fields': [
-      { id: 'fld-long', name: n, field_type: 'select', options: [d], sort_order: 1, active: true, created_at: '2026-09-20T10:05:00Z' },
+      { id: 'fld-long', name: n, field_type: 'select', options: [d], retired_options: [opts.short ? 'Retired' : 'R'.repeat(300)], place_count: 1, sort_order: 1, active: true, created_at: '2026-09-20T10:05:00Z' },
+      { id: 'fld-off', name: n, field_type: 'number', place_count: 0, sort_order: 2, active: false, created_at: '2026-09-20T10:05:00Z' },
     ],
+    '/api/v1/admin/custom-fields/fld-long/assignments': [
+      {
+        id: 'asg-1', field_def_id: 'fld-long', scope_type: 'item', scope_id: 'it-1', sort_order: 0, visible_on_new: true, required_on_new: true,
+        category: { id: 'cat-1', name: n, active: true }, type: { id: 'ty-1', name: n, active: true }, item: { id: 'it-1', name: n, active: false },
+      },
+    ],
+    '/api/v1/admin/custom-fields/fld-long/usage': {
+      tickets_with_value: 3,
+      values: [{ value: d, tickets: 3 }, { value: opts.short ? 'Retired' : 'R'.repeat(300), tickets: 0 }],
+    },
+    '/api/v1/admin/custom-fields/fld-off/assignments': [],
+    '/api/v1/admin/custom-fields/fld-off/usage': { tickets_with_value: 0, values: [] },
     '/api/v1/admin/api-keys': [
       {
         id: 'key-1', name: n, user_id: LONG_USER.id, owner_name: n, owner_email: opts.short ? 'a@b.co' : LONG_EMAIL,

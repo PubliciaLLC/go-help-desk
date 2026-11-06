@@ -983,6 +983,14 @@ async function expandTree(page: Page) {
   }
 }
 
+// Opens the one custom field's row (the page lists it among the first), with
+// its usage counts loaded, so the options editor and places are on screen.
+async function openCustomField(page: Page) {
+  await page.getByRole('button', { expanded: false }).filter({ hasText: /^(N{8}|Short)/ }).first().click()
+  await expect(page.getByRole('checkbox', { name: 'Show retired' })).toBeVisible()
+  await page.waitForLoadState('networkidle')
+}
+
 const ADMIN_PAGES: { name: string; path: string; ready: string | RegExp; short?: boolean; tab?: string; act?: (page: Page) => Promise<void> }[] = [
   { name: 'users', path: '/admin/users', ready: 'Users' },
   { name: 'users (short data)', path: '/admin/users', ready: 'Users', short: true },
@@ -1009,6 +1017,17 @@ const ADMIN_PAGES: { name: string; path: string; ready: string | RegExp; short?:
   { name: 'roles (short data)', path: '/admin/roles', ready: 'Roles', short: true },
   { name: 'categories (short data)', path: '/admin/categories', ready: 'Categories', short: true },
   { name: 'categories (short data): tree expanded', path: '/admin/categories', ready: 'Categories', short: true, act: expandTree },
+  { name: 'custom fields: field expanded', path: '/admin/custom-fields', ready: /Custom/, act: openCustomField },
+  { name: 'custom fields (short data): field expanded', path: '/admin/custom-fields', ready: /Custom/, short: true, act: openCustomField },
+  {
+    name: 'custom fields: retired options shown', path: '/admin/custom-fields', ready: /Custom/,
+    act: async (p) => { await openCustomField(p); await p.getByRole('checkbox', { name: 'Show retired' }).check() },
+  },
+  {
+    name: 'custom fields: Add a place', path: '/admin/custom-fields', ready: /Custom/,
+    act: async (p) => { await openCustomField(p); await p.getByRole('button', { name: 'Add a place' }).click() },
+  },
+  { name: 'custom fields: Show inactive', path: '/admin/custom-fields', ready: /Custom/, act: (p) => p.getByRole('checkbox', { name: 'Show inactive' }).check() },
   { name: 'users: add form', path: '/admin/users', ready: 'Users', act: (p) => p.getByRole('button', { name: 'Add User' }).click() },
   { name: 'groups: members open', path: '/admin/groups', ready: 'Groups', act: (p) => p.getByRole('button', { name: 'Members' }).first().click() },
   { name: 'groups: name editor open', path: '/admin/groups', ready: 'Groups', act: (p) => p.getByTitle('Edit group').first().click() },
