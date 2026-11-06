@@ -854,3 +854,26 @@ func TestNewCustomFieldRoutes_Auth(t *testing.T) {
 		require.Equal(t, http.StatusOK, code, string(body))
 	})
 }
+
+// options has always been stored as sent for any field type, and only select
+// fields use them (the create route's description says so). retired_options is
+// treated the same, so a text field takes both and ignores both: nothing shows
+// them on a ticket, and the rules about retiring apply to select fields only.
+func TestPatch_NonSelectFieldTakesRetiredOptionsLikeOptions(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	text := h.mkField(t, "Serial", customfield.FieldTypeText, nil, 1)
+
+	code, body := h.patchField(t, text.ID, map[string]any{"options": []string{"a"}})
+	require.Equal(t, http.StatusOK, code, string(body))
+	code, body = h.patchField(t, text.ID, map[string]any{"retired_options": []string{"b"}})
+	require.Equal(t, http.StatusOK, code, string(body))
+
+	got := h.storedDef(t, text.ID)
+	require.Equal(t, []string{"a"}, got.Options)
+	require.Equal(t, []string{"b"}, got.RetiredOptions)
+
+	// And it changes nothing about how the field is written: any text is a value.
+	tk := h.newTicket(t, nil, nil)
+	require.NoError(t, h.customFieldSvc.SetValue(context.Background(), tk.ID, text.ID, "b"))
+}

@@ -9879,7 +9879,7 @@ paths:
                 retired_options:
                   type: array
                   items: {type: string}
-                  description: Replacement list of retired options. Absent leaves the list unchanged; an empty list clears it, which deletes the retired options no ticket holds.
+                  description: Replacement list of retired options. Absent leaves the list unchanged; an empty list clears it, which deletes the retired options no ticket holds. Like options, it is stored as sent for any field type and only select fields use it; the rules about retiring apply to select fields only.
                 sort_order:
                   type: integer
                   description: New display order. Absent leaves it unchanged.
