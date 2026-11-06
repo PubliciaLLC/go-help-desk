@@ -93,7 +93,7 @@ func TestSettingsEndpointReturnsObjectNotNull(t *testing.T) {
 func TestCustomFieldListRoutesReturnEmptyArrayNotNull(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
-	def, err := h.customFieldSvc.CreateFieldDef(context.Background(), "Nowhere", customfield.FieldTypeText, nil, 1)
+	def, err := h.customFieldSvc.CreateFieldDef(context.Background(), "Nowhere", customfield.FieldTypeText, nil, 1, nil)
 	require.NoError(t, err)
 
 	res := h.doAsAdminSession(t, http.MethodGet, "/api/v1/admin/custom-fields/"+def.ID.String()+"/assignments", nil)

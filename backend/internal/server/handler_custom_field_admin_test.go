@@ -51,14 +51,14 @@ func (h *harness) cfRaw(t *testing.T, method, path, body string) *http.Response 
 
 func (h *harness) mkField(t *testing.T, name string, ft customfield.FieldType, opts []string, number int) customfield.FieldDef {
 	t.Helper()
-	d, err := h.customFieldSvc.CreateFieldDef(context.Background(), name, ft, opts, number)
+	d, err := h.customFieldSvc.CreateFieldDef(context.Background(), name, ft, opts, number, nil)
 	require.NoError(t, err)
 	return d
 }
 
 func (h *harness) attach(t *testing.T, def customfield.FieldDef, scope customfield.ScopeType, id uuid.UUID, attachmentOrder int) customfield.Assignment {
 	t.Helper()
-	a, err := h.customFieldSvc.CreateAssignment(context.Background(), def.ID, scope, id, attachmentOrder, true, false)
+	a, err := h.customFieldSvc.CreateAssignment(context.Background(), def.ID, scope, id, attachmentOrder, true, false, nil)
 	require.NoError(t, err)
 	return a
 }
@@ -443,7 +443,7 @@ func TestListFieldDefs_PlaceCount(t *testing.T) {
 
 	asg, err := h.customFieldSvc.ListAssignments(context.Background(), customfield.ItemScope, it.ID)
 	require.NoError(t, err)
-	require.NoError(t, h.customFieldSvc.DeleteAssignment(context.Background(), asg[0].ID))
+	require.NoError(t, h.customFieldSvc.DeleteAssignment(context.Background(), asg[0].ID, nil))
 	require.Equal(t, 2, placeCounts(t, h)[three.ID])
 }
 
@@ -484,7 +484,7 @@ func TestReorder_SetsTheNumbersAndLeavesAttachmentsAlone(t *testing.T) {
 	b := h.mkField(t, "B", customfield.FieldTypeText, nil, 2)
 	inactive := h.mkField(t, "C inactive", customfield.FieldTypeText, nil, 3)
 	inactive.Active = false
-	require.NoError(t, h.customFieldSvc.UpdateFieldDef(context.Background(), inactive))
+	require.NoError(t, h.customFieldSvc.UpdateFieldDef(context.Background(), inactive, nil))
 	asg := h.attach(t, a, customfield.CategoryScope, h.catID, 77)
 
 	code, body := h.cf(t, http.MethodPut, cfAdmin+"/order", map[string]any{

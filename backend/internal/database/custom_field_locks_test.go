@@ -61,7 +61,7 @@ func newLockFixture(t *testing.T) *lockFixture {
 
 func (f *lockFixture) field(name string, ft customfield.FieldType, opts ...string) customfield.FieldDef {
 	f.t.Helper()
-	d, err := f.svc.CreateFieldDef(context.Background(), name, ft, opts, 1)
+	d, err := f.svc.CreateFieldDef(context.Background(), name, ft, opts, 1, nil)
 	require.NoError(f.t, err)
 	return d
 }
@@ -143,7 +143,7 @@ func TestDeleteOption_ConcurrentValueWriteIsSerialised(t *testing.T) {
 
 		deleted := make(chan error, 1)
 		go func() {
-			_, err := f.svc.PatchFieldDef(context.Background(), sel.ID, customfield.FieldDefPatch{Options: []string{"Dell"}})
+			_, err := f.svc.PatchFieldDef(context.Background(), sel.ID, customfield.FieldDefPatch{Options: []string{"Dell"}}, nil)
 			deleted <- err
 		}()
 		require.True(t, stillWaiting(deleted), "the delete ran while a write held the definition")
@@ -207,7 +207,7 @@ func TestDeleteOption_ConcurrentValueWriteIsSerialised(t *testing.T) {
 			}()
 			go func() {
 				defer wg.Done()
-				_, delErr = f.svc.PatchFieldDef(context.Background(), sel.ID, customfield.FieldDefPatch{Options: []string{"keep"}})
+				_, delErr = f.svc.PatchFieldDef(context.Background(), sel.ID, customfield.FieldDefPatch{Options: []string{"keep"}}, nil)
 			}()
 			wg.Wait()
 
@@ -246,7 +246,7 @@ func TestTypeLock_ConcurrentValueWriteIsSerialised(t *testing.T) {
 
 		changed := make(chan error, 1)
 		go func() {
-			_, err := f.svc.PatchFieldDef(context.Background(), def.ID, customfield.FieldDefPatch{FieldType: &number})
+			_, err := f.svc.PatchFieldDef(context.Background(), def.ID, customfield.FieldDefPatch{FieldType: &number}, nil)
 			changed <- err
 		}()
 		require.True(t, stillWaiting(changed))
@@ -302,7 +302,7 @@ func TestDeactivate_ConcurrentValueWriteIsSerialised(t *testing.T) {
 
 		deactivated := make(chan error, 1)
 		go func() {
-			_, err := f.svc.PatchFieldDef(context.Background(), def.ID, customfield.FieldDefPatch{Active: &off})
+			_, err := f.svc.PatchFieldDef(context.Background(), def.ID, customfield.FieldDefPatch{Active: &off}, nil)
 			deactivated <- err
 		}()
 		require.True(t, stillWaiting(deactivated), "the deactivation did not wait for a write in flight")
@@ -353,7 +353,8 @@ func TestDeactivate_ConcurrentValueWriteIsSerialised(t *testing.T) {
 func TestCustomFieldAudit_RolledBackWithTheChange(t *testing.T) {
 	f := newLockFixture(t)
 	ctx := context.Background()
-	ghost := customfield.WithActor(ctx, uuid.New())
+	ghostID := uuid.New() // no such user: the audit entry's foreign key refuses it
+	ghost := &ghostID
 	def := f.field("Dept", customfield.FieldTypeSelect, "Sales")
 	other := f.field("Other", customfield.FieldTypeText)
 	count := func(q string, args ...any) (n int) {
@@ -363,7 +364,7 @@ func TestCustomFieldAudit_RolledBackWithTheChange(t *testing.T) {
 
 	t.Run("a change to a definition", func(t *testing.T) {
 		name := "Department"
-		_, err := f.svc.PatchFieldDef(ghost, def.ID, customfield.FieldDefPatch{Name: &name, Options: []string{"Sales", "EMEA"}})
+		_, err := f.svc.PatchFieldDef(ctx, def.ID, customfield.FieldDefPatch{Name: &name, Options: []string{"Sales", "EMEA"}}, ghost)
 		require.Error(t, err)
 		got, err := f.svc.GetFieldDef(ctx, def.ID)
 		require.NoError(t, err)
@@ -371,17 +372,17 @@ func TestCustomFieldAudit_RolledBackWithTheChange(t *testing.T) {
 		require.Equal(t, []string{"Sales"}, got.Options)
 	})
 	t.Run("a new definition", func(t *testing.T) {
-		_, err := f.svc.CreateFieldDef(ghost, "Brand new", customfield.FieldTypeText, nil, 1)
+		_, err := f.svc.CreateFieldDef(ctx, "Brand new", customfield.FieldTypeText, nil, 1, ghost)
 		require.Error(t, err)
 		require.Zero(t, count(`SELECT count(*) FROM custom_field_defs WHERE name = 'Brand new'`), "the field must not exist without its audit entry")
 	})
 	t.Run("an attachment", func(t *testing.T) {
-		_, err := f.svc.CreateAssignment(ghost, def.ID, customfield.CategoryScope, f.categoryID(), 1, true, false)
+		_, err := f.svc.CreateAssignment(ctx, def.ID, customfield.CategoryScope, f.categoryID(), 1, true, false, ghost)
 		require.Error(t, err)
 		require.Zero(t, count(`SELECT count(*) FROM custom_field_assignments`))
 	})
 	t.Run("a reorder", func(t *testing.T) {
-		err := f.svc.ReorderFieldDefs(ghost, []uuid.UUID{other.ID, def.ID})
+		err := f.svc.ReorderFieldDefs(ctx, []uuid.UUID{other.ID, def.ID}, ghost)
 		require.Error(t, err)
 		got, err := f.svc.GetFieldDef(ctx, other.ID)
 		require.NoError(t, err)
@@ -389,7 +390,7 @@ func TestCustomFieldAudit_RolledBackWithTheChange(t *testing.T) {
 	})
 	t.Run("and with no actor, the system's change commits with its entries", func(t *testing.T) {
 		name := "Department"
-		_, err := f.svc.PatchFieldDef(ctx, def.ID, customfield.FieldDefPatch{Name: &name})
+		_, err := f.svc.PatchFieldDef(ctx, def.ID, customfield.FieldDefPatch{Name: &name}, nil)
 		require.NoError(t, err)
 		es, err := auditstore.New(f.db.Queries).ListByEntity(ctx, "custom_field", def.ID, 20, 0)
 		require.NoError(t, err)

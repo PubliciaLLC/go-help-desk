@@ -209,7 +209,7 @@ func TestCreateFieldDef_Validation(t *testing.T) {
 		{"select with options", "Pick", customfield.FieldTypeSelect, []string{"a"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			def, err := customfield.NewService(newFakeStore()).CreateFieldDef(ctx, tc.in, tc.ft, tc.options, 1)
+			def, err := customfield.NewService(newFakeStore()).CreateFieldDef(ctx, tc.in, tc.ft, tc.options, 1, nil)
 			if tc.wantErr {
 				require.Error(t, err)
 				return
@@ -221,7 +221,7 @@ func TestCreateFieldDef_Validation(t *testing.T) {
 }
 
 func TestCreateFieldDef_TrimsName(t *testing.T) {
-	def, err := customfield.NewService(newFakeStore()).CreateFieldDef(context.Background(), "  Serial  ", customfield.FieldTypeText, nil, 1)
+	def, err := customfield.NewService(newFakeStore()).CreateFieldDef(context.Background(), "  Serial  ", customfield.FieldTypeText, nil, 1, nil)
 	require.NoError(t, err)
 	require.Equal(t, "Serial", def.Name)
 }
@@ -232,7 +232,7 @@ func TestSetValue(t *testing.T) {
 	svc := customfield.NewService(store)
 	ticketID := uuid.New()
 
-	sel, err := svc.CreateFieldDef(ctx, "Colour", customfield.FieldTypeSelect, []string{"red", "blue"}, 1)
+	sel, err := svc.CreateFieldDef(ctx, "Colour", customfield.FieldTypeSelect, []string{"red", "blue"}, 1, nil)
 	require.NoError(t, err)
 	key := [2]uuid.UUID{ticketID, sel.ID}
 
@@ -249,7 +249,7 @@ func TestSetValue(t *testing.T) {
 		"an unknown field keeps its not-found cause so the HTTP layer can say 404")
 
 	sel.Active = false
-	require.NoError(t, svc.UpdateFieldDef(ctx, sel))
+	require.NoError(t, svc.UpdateFieldDef(ctx, sel, nil))
 	require.Error(t, svc.SetValue(ctx, ticketID, sel.ID, "blue"), "a deactivated field takes no new value")
 
 	// A clear is a write too. It used to reach DeleteValue before the active
@@ -265,11 +265,11 @@ func TestSetValues(t *testing.T) {
 	svc := customfield.NewService(store)
 	ticketID := uuid.New()
 
-	text, err := svc.CreateFieldDef(ctx, "Serial", customfield.FieldTypeText, nil, 1)
+	text, err := svc.CreateFieldDef(ctx, "Serial", customfield.FieldTypeText, nil, 1, nil)
 	require.NoError(t, err)
-	sel, err := svc.CreateFieldDef(ctx, "Colour", customfield.FieldTypeSelect, []string{"red", "blue"}, 2)
+	sel, err := svc.CreateFieldDef(ctx, "Colour", customfield.FieldTypeSelect, []string{"red", "blue"}, 2, nil)
 	require.NoError(t, err)
-	old, err := svc.CreateFieldDef(ctx, "Old", customfield.FieldTypeText, nil, 3)
+	old, err := svc.CreateFieldDef(ctx, "Old", customfield.FieldTypeText, nil, 3, nil)
 	require.NoError(t, err)
 	key := func(id uuid.UUID) [2]uuid.UUID { return [2]uuid.UUID{ticketID, id} }
 	store.values[key(old.ID)] = "stale"
@@ -285,10 +285,10 @@ func TestSetValues(t *testing.T) {
 
 	// One bad entry among good ones: none of them lands. Each case starts from
 	// the same stored state so "nothing written" is a comparison, not a hope.
-	inactive, err := svc.CreateFieldDef(ctx, "Retired", customfield.FieldTypeText, nil, 4)
+	inactive, err := svc.CreateFieldDef(ctx, "Retired", customfield.FieldTypeText, nil, 4, nil)
 	require.NoError(t, err)
 	inactive.Active = false
-	require.NoError(t, svc.UpdateFieldDef(ctx, inactive))
+	require.NoError(t, svc.UpdateFieldDef(ctx, inactive, nil))
 
 	for _, tc := range []struct {
 		name    string
@@ -325,11 +325,11 @@ func TestResolveFieldsForCTI_OrdersByScopeLevel(t *testing.T) {
 	// (bug 4), which is not what this test is about.
 	itemDef, catDef, typeDef := uuid.New(), uuid.New(), uuid.New()
 
-	ia, err := svc.CreateAssignment(ctx, itemDef, customfield.ItemScope, item, 1, true, false)
+	ia, err := svc.CreateAssignment(ctx, itemDef, customfield.ItemScope, item, 1, true, false, nil)
 	require.NoError(t, err)
-	ca, err := svc.CreateAssignment(ctx, catDef, customfield.CategoryScope, cat, 1, true, false)
+	ca, err := svc.CreateAssignment(ctx, catDef, customfield.CategoryScope, cat, 1, true, false, nil)
 	require.NoError(t, err)
-	ta, err := svc.CreateAssignment(ctx, typeDef, customfield.TypeScope, typ, 1, true, false)
+	ta, err := svc.CreateAssignment(ctx, typeDef, customfield.TypeScope, typ, 1, true, false, nil)
 	require.NoError(t, err)
 
 	got, err := svc.ResolveFieldsForCTI(ctx, cat, &typ, &item)
@@ -349,11 +349,11 @@ func TestResolveFields_FieldOnCategoryAndTypeAppearsOnce(t *testing.T) {
 	cat, typ := uuid.New(), uuid.New()
 	def, other := uuid.New(), uuid.New()
 
-	_, err := svc.CreateAssignment(ctx, def, customfield.CategoryScope, cat, 1, true, false)
+	_, err := svc.CreateAssignment(ctx, def, customfield.CategoryScope, cat, 1, true, false, nil)
 	require.NoError(t, err)
-	_, err = svc.CreateAssignment(ctx, def, customfield.TypeScope, typ, 1, true, false)
+	_, err = svc.CreateAssignment(ctx, def, customfield.TypeScope, typ, 1, true, false, nil)
 	require.NoError(t, err)
-	_, err = svc.CreateAssignment(ctx, other, customfield.CategoryScope, cat, 2, true, false)
+	_, err = svc.CreateAssignment(ctx, other, customfield.CategoryScope, cat, 2, true, false, nil)
 	require.NoError(t, err)
 
 	got, err := svc.ResolveFieldsForCTI(ctx, cat, &typ, nil)
@@ -395,9 +395,9 @@ func TestResolveFields_MostSpecificAttachmentWins(t *testing.T) {
 			svc := customfield.NewService(newFakeStore())
 			def := uuid.New()
 
-			_, err := svc.CreateAssignment(ctx, def, tc.general, scopeID[tc.general], 1, tc.generalVisible, tc.generalReq)
+			_, err := svc.CreateAssignment(ctx, def, tc.general, scopeID[tc.general], 1, tc.generalVisible, tc.generalReq, nil)
 			require.NoError(t, err)
-			want, err := svc.CreateAssignment(ctx, def, tc.specific, scopeID[tc.specific], 1, tc.specificVisible, tc.specReq)
+			want, err := svc.CreateAssignment(ctx, def, tc.specific, scopeID[tc.specific], 1, tc.specificVisible, tc.specReq, nil)
 			require.NoError(t, err)
 
 			got, err := svc.ResolveFieldsForCTI(ctx, cat, &typ, &item)
@@ -419,11 +419,11 @@ func TestResolveFields_OverlappedFieldSitsAtItsWinningLevel(t *testing.T) {
 	cat, typ := uuid.New(), uuid.New()
 	moved, stays := uuid.New(), uuid.New()
 
-	_, err := svc.CreateAssignment(ctx, moved, customfield.CategoryScope, cat, 1, true, false)
+	_, err := svc.CreateAssignment(ctx, moved, customfield.CategoryScope, cat, 1, true, false, nil)
 	require.NoError(t, err)
-	_, err = svc.CreateAssignment(ctx, stays, customfield.CategoryScope, cat, 2, true, false)
+	_, err = svc.CreateAssignment(ctx, stays, customfield.CategoryScope, cat, 2, true, false, nil)
 	require.NoError(t, err)
-	_, err = svc.CreateAssignment(ctx, moved, customfield.TypeScope, typ, 1, true, false)
+	_, err = svc.CreateAssignment(ctx, moved, customfield.TypeScope, typ, 1, true, false, nil)
 	require.NoError(t, err)
 
 	got, err := svc.ResolveFieldsForCTI(ctx, cat, &typ, nil)
@@ -441,12 +441,12 @@ func TestResolveFields_OverlappedFieldSitsAtItsWinningLevel(t *testing.T) {
 func TestDeleteAssignment_UnknownIDIsErrNotFound(t *testing.T) {
 	ctx := context.Background()
 	svc := customfield.NewService(newFakeStore())
-	a, err := svc.CreateAssignment(ctx, uuid.New(), customfield.CategoryScope, uuid.New(), 1, true, false)
+	a, err := svc.CreateAssignment(ctx, uuid.New(), customfield.CategoryScope, uuid.New(), 1, true, false, nil)
 	require.NoError(t, err)
 
-	require.NoError(t, svc.DeleteAssignment(ctx, a.ID))
-	require.ErrorIs(t, svc.DeleteAssignment(ctx, a.ID), customfield.ErrNotFound, "second delete")
-	require.ErrorIs(t, svc.DeleteAssignment(ctx, uuid.New()), customfield.ErrNotFound, "never existed")
+	require.NoError(t, svc.DeleteAssignment(ctx, a.ID, nil))
+	require.ErrorIs(t, svc.DeleteAssignment(ctx, a.ID, nil), customfield.ErrNotFound, "second delete")
+	require.ErrorIs(t, svc.DeleteAssignment(ctx, uuid.New(), nil), customfield.ErrNotFound, "never existed")
 }
 
 // ── Reorder ──────────────────────────────────────────────────────────────────
@@ -458,7 +458,7 @@ func TestReorderFieldDefs(t *testing.T) {
 		svc := customfield.NewService(store)
 		var defs []customfield.FieldDef
 		for i, n := range []string{"A", "B", "C"} {
-			d, err := svc.CreateFieldDef(ctx, n, customfield.FieldTypeText, nil, i+1)
+			d, err := svc.CreateFieldDef(ctx, n, customfield.FieldTypeText, nil, i+1, nil)
 			require.NoError(t, err)
 			defs = append(defs, d)
 		}
@@ -468,7 +468,7 @@ func TestReorderFieldDefs(t *testing.T) {
 
 	t.Run("position n becomes number n", func(t *testing.T) {
 		svc, store, d := mk()
-		require.NoError(t, svc.ReorderFieldDefs(ctx, []uuid.UUID{d[2].ID, d[0].ID, d[1].ID}))
+		require.NoError(t, svc.ReorderFieldDefs(ctx, []uuid.UUID{d[2].ID, d[0].ID, d[1].ID}, nil))
 		require.Equal(t, 1, store.defs[d[2].ID].SortOrder)
 		require.Equal(t, 2, store.defs[d[0].ID].SortOrder)
 		require.Equal(t, 3, store.defs[d[1].ID].SortOrder)
@@ -476,7 +476,7 @@ func TestReorderFieldDefs(t *testing.T) {
 	})
 	t.Run("a repeated id is the caller's mistake", func(t *testing.T) {
 		svc, store, d := mk()
-		err := svc.ReorderFieldDefs(ctx, []uuid.UUID{d[0].ID, d[0].ID, d[1].ID})
+		err := svc.ReorderFieldDefs(ctx, []uuid.UUID{d[0].ID, d[0].ID, d[1].ID}, nil)
 		require.ErrorIs(t, err, customfield.ErrValidation)
 		require.Equal(t, 1, store.defs[d[0].ID].SortOrder)
 	})
@@ -488,13 +488,13 @@ func TestReorderFieldDefs(t *testing.T) {
 			"one too many":  {d[0].ID, d[1].ID, d[2].ID, uuid.New()},
 			"empty vs some": {},
 		} {
-			require.ErrorIs(t, svc.ReorderFieldDefs(ctx, ids), customfield.ErrConflict, name)
+			require.ErrorIs(t, svc.ReorderFieldDefs(ctx, ids, nil), customfield.ErrConflict, name)
 		}
 		require.Equal(t, 1, store.defs[d[0].ID].SortOrder, "nothing was written")
 		require.Empty(t, store.audit)
 	})
 	t.Run("no fields and an empty list", func(t *testing.T) {
-		require.NoError(t, customfield.NewService(newFakeStore()).ReorderFieldDefs(ctx, []uuid.UUID{}))
+		require.NoError(t, customfield.NewService(newFakeStore()).ReorderFieldDefs(ctx, []uuid.UUID{}, nil))
 	})
 }
 
@@ -541,7 +541,7 @@ func TestPatchFieldDef_OptionRules(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newFakeStore()
 			svc := customfield.NewService(store)
-			def, err := svc.CreateFieldDef(ctx, "Pick", customfield.FieldTypeSelect, tc.options, 1)
+			def, err := svc.CreateFieldDef(ctx, "Pick", customfield.FieldTypeSelect, tc.options, 1, nil)
 			require.NoError(t, err)
 			def.RetiredOptions = tc.retired
 			store.defs[def.ID] = def
@@ -550,7 +550,7 @@ func TestPatchFieldDef_OptionRules(t *testing.T) {
 			}
 			store.audit = nil
 
-			got, err := svc.PatchFieldDef(ctx, def.ID, tc.patch)
+			got, err := svc.PatchFieldDef(ctx, def.ID, tc.patch, nil)
 			if tc.wantErr != nil {
 				require.ErrorIs(t, err, tc.wantErr)
 				require.Equal(t, def, store.defs[def.ID], "a refused change writes nothing")
@@ -567,30 +567,30 @@ func TestPatchFieldDef_TypeChangeAfterTheValueIsCleared(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore()
 	svc := customfield.NewService(store)
-	def, err := svc.CreateFieldDef(ctx, "Cost", customfield.FieldTypeText, nil, 1)
+	def, err := svc.CreateFieldDef(ctx, "Cost", customfield.FieldTypeText, nil, 1, nil)
 	require.NoError(t, err)
 	ticket := uuid.New()
 	number := customfield.FieldTypeNumber
 
 	require.NoError(t, svc.SetValue(ctx, ticket, def.ID, "abc"))
-	_, err = svc.PatchFieldDef(ctx, def.ID, customfield.FieldDefPatch{FieldType: &number})
+	_, err = svc.PatchFieldDef(ctx, def.ID, customfield.FieldDefPatch{FieldType: &number}, nil)
 	require.ErrorIs(t, err, customfield.ErrConflict)
 
 	require.NoError(t, svc.SetValue(ctx, ticket, def.ID, ""))
-	_, err = svc.PatchFieldDef(ctx, def.ID, customfield.FieldDefPatch{FieldType: &number})
+	_, err = svc.PatchFieldDef(ctx, def.ID, customfield.FieldDefPatch{FieldType: &number}, nil)
 	require.NoError(t, err, "unlocked again once no ticket holds a value")
 }
 
 func TestPatchFieldDef_AuditsWithTheActor(t *testing.T) {
+	ctx := context.Background()
 	store := newFakeStore()
 	svc := customfield.NewService(store)
 	actor := uuid.New()
-	ctx := customfield.WithActor(context.Background(), actor)
 
-	def, err := svc.CreateFieldDef(ctx, "Dept", customfield.FieldTypeText, nil, 1)
+	def, err := svc.CreateFieldDef(ctx, "Dept", customfield.FieldTypeText, nil, 1, &actor)
 	require.NoError(t, err)
 	name := "Department"
-	_, err = svc.PatchFieldDef(ctx, def.ID, customfield.FieldDefPatch{Name: &name})
+	_, err = svc.PatchFieldDef(ctx, def.ID, customfield.FieldDefPatch{Name: &name}, &actor)
 	require.NoError(t, err)
 
 	require.Len(t, store.audit, 2)
@@ -602,11 +602,79 @@ func TestPatchFieldDef_AuditsWithTheActor(t *testing.T) {
 		require.Equal(t, def.ID, e.EntityID)
 	}
 
-	// No actor in the context: the system made the change.
+	// A nil actor is the system: the change is made and the entry has no actor.
 	order := 7
-	_, err = svc.PatchFieldDef(context.Background(), def.ID, customfield.FieldDefPatch{SortOrder: &order})
+	_, err = svc.PatchFieldDef(ctx, def.ID, customfield.FieldDefPatch{SortOrder: &order}, nil)
 	require.NoError(t, err)
 	require.Nil(t, store.audit[len(store.audit)-1].ActorID)
+}
+
+// Every method of the Service that changes data records the actor it is given,
+// on every entry it writes.
+func TestEveryMutatingMethodRecordsItsActor(t *testing.T) {
+	ctx := context.Background()
+	actor := uuid.New()
+	scope := uuid.New()
+
+	for name, do := range map[string]func(svc *customfield.Service, store *fakeStore, def customfield.FieldDef) error{
+		"CreateFieldDef": func(svc *customfield.Service, _ *fakeStore, _ customfield.FieldDef) error {
+			_, err := svc.CreateFieldDef(ctx, "Another", customfield.FieldTypeSelect, []string{"a", "b"}, 2, &actor)
+			return err
+		},
+		"PatchFieldDef": func(svc *customfield.Service, _ *fakeStore, def customfield.FieldDef) error {
+			n := "Renamed"
+			_, err := svc.PatchFieldDef(ctx, def.ID, customfield.FieldDefPatch{Name: &n}, &actor)
+			return err
+		},
+		"UpdateFieldDef": func(svc *customfield.Service, _ *fakeStore, def customfield.FieldDef) error {
+			def.Active = false
+			return svc.UpdateFieldDef(ctx, def, &actor)
+		},
+		"ReorderFieldDefs": func(svc *customfield.Service, store *fakeStore, def customfield.FieldDef) error {
+			other, err := svc.CreateFieldDef(ctx, "Second", customfield.FieldTypeText, nil, 1, nil)
+			if err != nil {
+				return err
+			}
+			store.audit = nil
+			return svc.ReorderFieldDefs(ctx, []uuid.UUID{other.ID, def.ID}, &actor)
+		},
+		"CreateAssignment": func(svc *customfield.Service, _ *fakeStore, def customfield.FieldDef) error {
+			_, err := svc.CreateAssignment(ctx, def.ID, customfield.CategoryScope, scope, 1, true, false, &actor)
+			return err
+		},
+		"UpdateAssignment": func(svc *customfield.Service, store *fakeStore, def customfield.FieldDef) error {
+			a, err := svc.CreateAssignment(ctx, def.ID, customfield.CategoryScope, scope, 1, true, false, nil)
+			if err != nil {
+				return err
+			}
+			store.audit = nil
+			a.RequiredOnNew = true
+			return svc.UpdateAssignment(ctx, a, &actor)
+		},
+		"DeleteAssignment": func(svc *customfield.Service, store *fakeStore, def customfield.FieldDef) error {
+			a, err := svc.CreateAssignment(ctx, def.ID, customfield.CategoryScope, scope, 1, true, false, nil)
+			if err != nil {
+				return err
+			}
+			store.audit = nil
+			return svc.DeleteAssignment(ctx, a.ID, &actor)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := newFakeStore()
+			svc := customfield.NewService(store)
+			def, err := svc.CreateFieldDef(ctx, "Dept", customfield.FieldTypeText, nil, 5, nil)
+			require.NoError(t, err)
+			store.audit = nil
+
+			require.NoError(t, do(svc, store, def))
+			require.NotEmpty(t, store.audit, "the change was audited")
+			for _, e := range store.audit {
+				require.NotNil(t, e.ActorID, e.Action)
+				require.Equal(t, actor, *e.ActorID, e.Action)
+			}
+		})
+	}
 }
 
 // ── Values: retired options and numbers ──────────────────────────────────────
@@ -615,7 +683,7 @@ func TestSetValue_RefusesARetiredOption(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore()
 	svc := customfield.NewService(store)
-	def, err := svc.CreateFieldDef(ctx, "Pick", customfield.FieldTypeSelect, []string{"a", "b"}, 1)
+	def, err := svc.CreateFieldDef(ctx, "Pick", customfield.FieldTypeSelect, []string{"a", "b"}, 1, nil)
 	require.NoError(t, err)
 	def.Options, def.RetiredOptions = []string{"a"}, []string{"b"}
 	store.defs[def.ID] = def
@@ -634,9 +702,9 @@ func TestSetValues_NumberFields(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore()
 	svc := customfield.NewService(store)
-	num, err := svc.CreateFieldDef(ctx, "Cost", customfield.FieldTypeNumber, nil, 1)
+	num, err := svc.CreateFieldDef(ctx, "Cost", customfield.FieldTypeNumber, nil, 1, nil)
 	require.NoError(t, err)
-	other, err := svc.CreateFieldDef(ctx, "Serial", customfield.FieldTypeText, nil, 2)
+	other, err := svc.CreateFieldDef(ctx, "Serial", customfield.FieldTypeText, nil, 2, nil)
 	require.NoError(t, err)
 	ticket := uuid.New()
 	key := [2]uuid.UUID{ticket, num.ID}
@@ -664,14 +732,14 @@ func TestUsage(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore()
 	svc := customfield.NewService(store)
-	sel, err := svc.CreateFieldDef(ctx, "Brand", customfield.FieldTypeSelect, []string{"Dell", "HP"}, 1)
+	sel, err := svc.CreateFieldDef(ctx, "Brand", customfield.FieldTypeSelect, []string{"Dell", "HP"}, 1, nil)
 	require.NoError(t, err)
 	sel.RetiredOptions = []string{"Acer"}
 	store.defs[sel.ID] = sel
 	for _, v := range []string{"Dell", "Dell", "Acer", "Zebra", "Apple"} {
 		store.values[[2]uuid.UUID{uuid.New(), sel.ID}] = v
 	}
-	text, err := svc.CreateFieldDef(ctx, "Serial", customfield.FieldTypeText, nil, 2)
+	text, err := svc.CreateFieldDef(ctx, "Serial", customfield.FieldTypeText, nil, 2, nil)
 	require.NoError(t, err)
 	store.values[[2]uuid.UUID{uuid.New(), text.ID}] = "SN"
 
@@ -705,9 +773,9 @@ func TestSetCreationValues_WarningsNameEachDroppedField(t *testing.T) {
 	svc := customfield.NewService(store)
 	cat := uuid.New()
 	mk := func(name string, ft customfield.FieldType, opts []string) customfield.FieldDef {
-		d, err := svc.CreateFieldDef(ctx, name, ft, opts, 1)
+		d, err := svc.CreateFieldDef(ctx, name, ft, opts, 1, nil)
 		require.NoError(t, err)
-		_, err = svc.CreateAssignment(ctx, d.ID, customfield.CategoryScope, cat, 1, true, false)
+		_, err = svc.CreateAssignment(ctx, d.ID, customfield.CategoryScope, cat, 1, true, false, nil)
 		require.NoError(t, err)
 		return d
 	}
@@ -719,7 +787,7 @@ func TestSetCreationValues_WarningsNameEachDroppedField(t *testing.T) {
 	pick.Options, pick.RetiredOptions = []string{"a"}, []string{"b"}
 	store.defs[pick.ID] = pick
 	num := mk("Cost", customfield.FieldTypeNumber, nil)
-	elsewhere, err := svc.CreateFieldDef(ctx, "Elsewhere", customfield.FieldTypeText, nil, 9)
+	elsewhere, err := svc.CreateFieldDef(ctx, "Elsewhere", customfield.FieldTypeText, nil, 9, nil)
 	require.NoError(t, err)
 	ticket := uuid.New()
 	unknown := uuid.New()

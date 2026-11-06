@@ -28,18 +28,9 @@ func (s *Server) handleListFieldDefs(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, defs)
 }
 
-// fieldAdminContext is the request's context carrying who is changing a field,
-// for the audit entries the change writes in its own transaction. A credential
-// with no person behind it is audited as the system (actor_id is a foreign key
-// to users, and the nil UUID names nobody).
-func fieldAdminContext(r *http.Request) context.Context {
-	if a := authmw.GetActor(r); a != nil && a.UserID != uuid.Nil {
-		return customfield.WithActor(r.Context(), a.UserID)
-	}
-	return r.Context()
-}
-
-// actorIDOf is the same person as a pointer, for the calls that take one.
+// actorIDOf is who is making the request, as the actor the audit entries record.
+// A credential with no person behind it is the system (nil): actor_id is a
+// foreign key to users, and the nil UUID names nobody.
 func actorIDOf(r *http.Request) *uuid.UUID {
 	if a := authmw.GetActor(r); a != nil && a.UserID != uuid.Nil {
 		return &a.UserID
@@ -58,7 +49,7 @@ func (s *Server) handleCreateFieldDef(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	def, err := s.customFields.CreateFieldDef(fieldAdminContext(r), body.Name, body.FieldType, body.Options, body.SortOrder)
+	def, err := s.customFields.CreateFieldDef(r.Context(), body.Name, body.FieldType, body.Options, body.SortOrder, actorIDOf(r))
 	if err != nil {
 		handleError(w, err)
 		return
@@ -90,10 +81,10 @@ func (s *Server) handleUpdateFieldDef(w http.ResponseWriter, r *http.Request) {
 	// Applied to the row as it is under the lock the service takes, not to a
 	// copy read here: an option delete or a type change is decided against what
 	// tickets hold at that moment.
-	saved, err := s.customFields.PatchFieldDef(fieldAdminContext(r), id, customfield.FieldDefPatch{
+	saved, err := s.customFields.PatchFieldDef(r.Context(), id, customfield.FieldDefPatch{
 		Name: body.Name, FieldType: body.FieldType, Options: body.Options, RetiredOptions: body.RetiredOptions,
 		SortOrder: body.SortOrder, Active: body.Active,
-	})
+	}, actorIDOf(r))
 	if err != nil {
 		handleFieldDefNotFound(w, err)
 		return
@@ -111,7 +102,7 @@ func (s *Server) handleReorderFieldDefs(w http.ResponseWriter, r *http.Request) 
 		Error(w, http.StatusBadRequest, "bad_request", "field_def_ids is required: a list of field ids")
 		return
 	}
-	if err := s.customFields.ReorderFieldDefs(fieldAdminContext(r), *body.FieldDefIDs); err != nil {
+	if err := s.customFields.ReorderFieldDefs(r.Context(), *body.FieldDefIDs, actorIDOf(r)); err != nil {
 		handleError(w, err)
 		return
 	}
@@ -195,7 +186,7 @@ func (s *Server) handleCreateAssignment(w http.ResponseWriter, r *http.Request) 
 	if body.VisibleOnNew != nil {
 		visibleOnNew = *body.VisibleOnNew
 	}
-	a, err := s.customFields.CreateAssignment(fieldAdminContext(r), body.FieldDefID, scopeType, scopeID, body.SortOrder, visibleOnNew, body.RequiredOnNew)
+	a, err := s.customFields.CreateAssignment(r.Context(), body.FieldDefID, scopeType, scopeID, body.SortOrder, visibleOnNew, body.RequiredOnNew, actorIDOf(r))
 	if err != nil {
 		handleError(w, err)
 		return
@@ -226,7 +217,7 @@ func (s *Server) handleUpdateAssignment(w http.ResponseWriter, r *http.Request) 
 	if body.RequiredOnNew != nil {
 		existing.RequiredOnNew = *body.RequiredOnNew
 	}
-	if err := s.customFields.UpdateAssignment(fieldAdminContext(r), existing); err != nil {
+	if err := s.customFields.UpdateAssignment(r.Context(), existing, actorIDOf(r)); err != nil {
 		handleError(w, err)
 		return
 	}
@@ -238,7 +229,7 @@ func (s *Server) handleDeleteAssignment(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if err := s.customFields.DeleteAssignment(fieldAdminContext(r), existing.ID); err != nil {
+	if err := s.customFields.DeleteAssignment(r.Context(), existing.ID, actorIDOf(r)); err != nil {
 		handleError(w, err)
 		return
 	}

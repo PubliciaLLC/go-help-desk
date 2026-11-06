@@ -1,7 +1,6 @@
 package customfield
 
 import (
-	"context"
 	"slices"
 	"sort"
 	"time"
@@ -29,22 +28,9 @@ import (
 // never ticket content, which is what lets audit.shownKeys show them.
 const auditEntityType = "custom_field"
 
-type actorKey struct{}
-
-// WithActor returns ctx carrying the administrator whose change this is, for
-// the audit entries the Service writes. The Service methods take no actor of
-// their own so that a caller with none (a test, a job) is audited as the system
-// rather than being unable to call them.
-func WithActor(ctx context.Context, userID uuid.UUID) context.Context {
-	return context.WithValue(ctx, actorKey{}, userID)
-}
-
-func actorFrom(ctx context.Context) *uuid.UUID {
-	if id, ok := ctx.Value(actorKey{}).(uuid.UUID); ok {
-		return &id
-	}
-	return nil
-}
+// Every Service method that changes data takes the administrator as an explicit
+// actor (*uuid.UUID, nil for the system), so a caller that forgets it does not
+// compile. The actor is the user id audit_log.actor_id refers to.
 
 // AssignmentInfo is what an attachment's audit entry says beyond the
 // attachment itself: the field's name and where it is attached, read in the

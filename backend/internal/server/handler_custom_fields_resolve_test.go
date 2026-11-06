@@ -30,7 +30,7 @@ func newOverlapFixture(t *testing.T, h *harness) overlapFixture {
 	require.NoError(t, err)
 	item, err := h.categorySvc.CreateItem(ctx, typ.ID, "Laptop", 1)
 	require.NoError(t, err)
-	def, err := h.customFieldSvc.CreateFieldDef(ctx, "Asset tag", customfield.FieldTypeText, nil, 1)
+	def, err := h.customFieldSvc.CreateFieldDef(ctx, "Asset tag", customfield.FieldTypeText, nil, 1, nil)
 	require.NoError(t, err)
 
 	base := "/api/v1/admin/categories/" + h.catID.String()

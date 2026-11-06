@@ -16,7 +16,7 @@ type Service struct{ store Store }
 // NewService returns a Service backed by the given Store.
 func NewService(store Store) *Service { return &Service{store: store} }
 
-func (s *Service) CreateFieldDef(ctx context.Context, name string, fieldType FieldType, options []string, sortOrder int) (FieldDef, error) {
+func (s *Service) CreateFieldDef(ctx context.Context, name string, fieldType FieldType, options []string, sortOrder int, actorID *uuid.UUID) (FieldDef, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return FieldDef{}, Invalid("field name is required")
@@ -35,7 +35,7 @@ func (s *Service) CreateFieldDef(ctx context.Context, name string, fieldType Fie
 		SortOrder: sortOrder,
 		Active:    true,
 	}
-	return s.store.CreateFieldDef(ctx, def, entriesForCreated(actorFrom(ctx), def)...)
+	return s.store.CreateFieldDef(ctx, def, entriesForCreated(actorID, def)...)
 }
 
 // ListFieldDefs is every definition with PlaceCount set, in field-number order.
@@ -66,8 +66,8 @@ type FieldDefPatch struct {
 // definition it enforces what tickets make true: an option some ticket holds
 // cannot be removed (retire it instead), and the type cannot change once any
 // ticket holds a value. Both are Conflict.
-func (s *Service) PatchFieldDef(ctx context.Context, id uuid.UUID, p FieldDefPatch) (FieldDef, error) {
-	return s.change(ctx, id, func(cur FieldDef) FieldDef {
+func (s *Service) PatchFieldDef(ctx context.Context, id uuid.UUID, p FieldDefPatch, actorID *uuid.UUID) (FieldDef, error) {
+	return s.change(ctx, id, actorID, func(cur FieldDef) FieldDef {
 		if p.Name != nil {
 			cur.Name = *p.Name
 		}
@@ -93,16 +93,15 @@ func (s *Service) PatchFieldDef(ctx context.Context, id uuid.UUID, p FieldDefPat
 // UpdateFieldDef replaces the definition with def, under the same rules and the
 // same audit as PatchFieldDef. The routes use PatchFieldDef; this is the
 // whole-definition form for a caller that holds all of it.
-func (s *Service) UpdateFieldDef(ctx context.Context, def FieldDef) error {
-	_, err := s.change(ctx, def.ID, func(cur FieldDef) FieldDef {
+func (s *Service) UpdateFieldDef(ctx context.Context, def FieldDef, actorID *uuid.UUID) error {
+	_, err := s.change(ctx, def.ID, actorID, func(cur FieldDef) FieldDef {
 		def.CreatedAt = cur.CreatedAt
 		return def
 	})
 	return err
 }
 
-func (s *Service) change(ctx context.Context, id uuid.UUID, apply func(cur FieldDef) FieldDef) (FieldDef, error) {
-	actor := actorFrom(ctx)
+func (s *Service) change(ctx context.Context, id uuid.UUID, actor *uuid.UUID, apply func(cur FieldDef) FieldDef) (FieldDef, error) {
 	return s.store.UpdateFieldDef(ctx, id, func(cur FieldDef, held Held) (FieldDef, []audit.Entry, error) {
 		next := apply(cur)
 		next.Name = strings.TrimSpace(next.Name)
@@ -173,7 +172,7 @@ func checkChange(cur, next FieldDef, held Held) error {
 // repeated id is the caller's mistake (Invalid); a list that does not match the
 // stored fields is stale (Conflict), because a field was added since it was
 // read, and nothing is written.
-func (s *Service) ReorderFieldDefs(ctx context.Context, ids []uuid.UUID) error {
+func (s *Service) ReorderFieldDefs(ctx context.Context, ids []uuid.UUID, actor *uuid.UUID) error {
 	seen := make(map[uuid.UUID]bool, len(ids))
 	for _, id := range ids {
 		if seen[id] {
@@ -181,7 +180,6 @@ func (s *Service) ReorderFieldDefs(ctx context.Context, ids []uuid.UUID) error {
 		}
 		seen[id] = true
 	}
-	actor := actorFrom(ctx)
 	return s.store.ReorderFieldDefs(ctx, func(cur []FieldDef) ([]uuid.UUID, []audit.Entry, error) {
 		stale := Conflict("the field list has changed; reload and try again")
 		if len(cur) != len(ids) {
@@ -245,7 +243,7 @@ func (s *Service) ListPlacements(ctx context.Context, id uuid.UUID) ([]Placement
 	return s.store.ListPlacements(ctx, id)
 }
 
-func (s *Service) CreateAssignment(ctx context.Context, fieldDefID uuid.UUID, scopeType ScopeType, scopeID uuid.UUID, sortOrder int, visibleOnNew, requiredOnNew bool) (Assignment, error) {
+func (s *Service) CreateAssignment(ctx context.Context, fieldDefID uuid.UUID, scopeType ScopeType, scopeID uuid.UUID, sortOrder int, visibleOnNew, requiredOnNew bool, actor *uuid.UUID) (Assignment, error) {
 	a := Assignment{
 		ID:            uuid.New(),
 		FieldDefID:    fieldDefID,
@@ -255,7 +253,6 @@ func (s *Service) CreateAssignment(ctx context.Context, fieldDefID uuid.UUID, sc
 		VisibleOnNew:  visibleOnNew,
 		RequiredOnNew: requiredOnNew,
 	}
-	actor := actorFrom(ctx)
 	return s.store.CreateAssignment(ctx, a, func(info AssignmentInfo) audit.Entry { return entryAttached(actor, info, a) })
 }
 
@@ -267,15 +264,13 @@ func (s *Service) GetAssignment(ctx context.Context, id uuid.UUID) (Assignment, 
 	return s.store.GetAssignment(ctx, id)
 }
 
-func (s *Service) UpdateAssignment(ctx context.Context, a Assignment) error {
-	actor := actorFrom(ctx)
+func (s *Service) UpdateAssignment(ctx context.Context, a Assignment, actor *uuid.UUID) error {
 	return s.store.UpdateAssignment(ctx, a, func(before Assignment, info AssignmentInfo) []audit.Entry {
 		return entriesForAttachmentChange(actor, info, before, a)
 	})
 }
 
-func (s *Service) DeleteAssignment(ctx context.Context, id uuid.UUID) error {
-	actor := actorFrom(ctx)
+func (s *Service) DeleteAssignment(ctx context.Context, id uuid.UUID, actor *uuid.UUID) error {
 	return s.store.DeleteAssignment(ctx, id, func(before Assignment, info AssignmentInfo) audit.Entry {
 		return entryDetached(actor, info, before)
 	})

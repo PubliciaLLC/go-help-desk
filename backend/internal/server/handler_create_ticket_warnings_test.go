@@ -44,7 +44,7 @@ func newWarnFixture(t *testing.T, h *harness) warnFixture {
 	}
 	f.retired = f.selectF
 	f.inactive.Active = false
-	require.NoError(t, h.customFieldSvc.UpdateFieldDef(ctx, f.inactive))
+	require.NoError(t, h.customFieldSvc.UpdateFieldDef(ctx, f.inactive, nil))
 	code, body := h.patchField(t, f.selectF.ID, map[string]any{"options": []string{"red", "blue"}, "retired_options": []string{"green"}})
 	require.Equal(t, http.StatusOK, code, string(body))
 	return f
