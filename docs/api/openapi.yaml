@@ -3239,7 +3239,8 @@ paths:
         ticket as created, before that routing and before custom fields are
         written, so assignee_user_id and assignee_group_id are absent from it
         even when routing assigned the ticket. Read the ticket again to see the
-        assignee.
+        assignee. When a custom field value was not written, the body also has a
+        `warnings` array (see below); otherwise that key is absent.
         What the caller may set depends on the role.
         - Staff and administrators may set every field, including item_id and
           priority.
@@ -3254,10 +3255,20 @@ paths:
         subject is required after trimming. description is optional. subject is
         limited to 500 bytes and description to 50,000 bytes. type_id must belong
         to category_id, and for staff an item_id must belong to type_id.
-        custom_fields maps custom field ids to values. Empty values, and ids that
-        are not fields of this ticket's classification, are skipped without an
-        error. They are written after the ticket exists, so a failure there does
-        not fail the request.
+        custom_fields maps custom field ids to values. They are written after the
+        ticket exists, in one transaction, and never fail the request. An empty
+        value means "no value" and is skipped without a word. Any other entry that
+        is not written is listed in `warnings` in the 201 response, one entry per
+        key as it was sent, sorted by field_id, each with a reason:
+        `invalid_field_id` (the key is not a UUID), `not_on_ticket` (the field is
+        not attached to the ticket's category, type or item; an id that names no
+        field is this too), `inactive` (the field is deactivated),
+        `retired_option` (a select value that has been retired),
+        `not_an_option` (a select value in neither list), `not_a_number` (a number
+        field's value is not a number; see putTicketCustomFields) and `not_saved`
+        (anything else, including the lookup failing; every non-empty entry then
+        gets this reason and nothing was written). Requesters receive `warnings`
+        on their own tickets too: it names only the keys they sent.
         An OAuth client creates the ticket as its service user, which becomes
         the reporter, and needs the tickets:write scope. Nobody is mailed for a
         service user.
@@ -3332,7 +3343,7 @@ paths:
                   description: Ignored for a reporting user, who always gets medium. Defaults to medium when absent.
                   $ref: '#/components/schemas/Priority'
                 custom_fields:
-                  description: Field id to value. Values are strings. Unknown or empty entries are skipped.
+                  description: Field id to value. Values are strings. Empty entries are skipped; other entries that are not written are listed in `warnings`.
                   type: object
                   additionalProperties:
                     type: string
@@ -3360,11 +3371,19 @@ paths:
                   description: With reporter_email and no account behind it, the guest's phone. Optional.
       responses:
         '201':
-          description: The ticket as created, before routing assigned it.
+          description: The ticket as created, before routing assigned it, with `warnings` when a custom field value was dropped.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Ticket'
+                allOf:
+                  - $ref: '#/components/schemas/Ticket'
+                  - type: object
+                    properties:
+                      warnings:
+                        type: array
+                        description: Custom field values that were not written. Absent when nothing was dropped.
+                        items:
+                          $ref: '#/components/schemas/CustomFieldWarning'
         '400':
           description: |
             `invalid_format` when format is present and is not exactly plain or markdown
@@ -3416,6 +3435,13 @@ paths:
         new-ticket form. Every signed-in role may call it. category_id is
         required. type_id and item_id are optional, and each must be a UUID when
         it is sent. Answers an empty array when no field applies.
+        One entry per field: a field attached at more than one of the three levels
+        is listed once, at its most specific level, with that attachment's settings.
+        Entries are grouped by level (the category's, then the type's, then the
+        item's) and within a level ordered by the field's own number
+        (field_def.sort_order) and then its name. The attachment's sort_order is
+        returned but nothing orders by it. field_def.options lists the options in
+        use only; retired options are not returned on this route.
       tags: ['Tickets']
       x-ghd-handler: handleResolveFieldsForCTI
       security:
@@ -4016,9 +4042,19 @@ paths:
         field this ticket has through its classification, and a select field's
         value must be one of its options. An empty string clears that value.
         Answers 204 with no body. The id is a UUID or a tracking number.
-        The entries are written one at a time, in no particular order, with no
-        transaction around them. If one entry is refused, the entries written
-        before it stay saved, and the response is 400.
+        All or nothing: every entry is checked under a lock on its definition, and
+        either all are written, in one transaction, or none is and the response is
+        400. A refused entry therefore leaves the ticket as it was. Send only the
+        fields that changed.
+        An entry is refused when its field is deactivated (a clear included), when a
+        select value is not one of the options in use (a retired option is refused
+        too, though a ticket that already holds it keeps showing it), when a number
+        field's value is not a number, or when two keys spell the same field. A
+        number is what Go's strconv.ParseFloat reads after leading and trailing
+        space is removed, except NaN, infinity, out-of-range values, hexadecimal and
+        underscores; it is stored as written, trimmed (1.50 stays 1.50). A value
+        stored before 1.3.0 is left as it is, and blocks only a save that changes
+        that field.
         A reporting user cannot change a Closed ticket (409 ticket_closed). Staff
         and administrators can.
         A ticket the caller may not see answers 404 not_found, the same answer as a
@@ -4051,8 +4087,10 @@ paths:
           description: |
             `bad_request`: invalid JSON (for example a value that is not a
             string); invalid field_def_id (a key that is not a UUID); a field that
-            is not on this ticket; or a value the field refuses (not one of a
-            select field's options, or the field is deactivated).
+            is not on this ticket; the same field twice under different spellings of
+            its id; or a value the field refuses (not one of a select field's options
+            in use, a retired option, a value that is not a number for a number
+            field, or the field is deactivated). Nothing is written.
           content:
             application/json:
               schema:
@@ -9685,8 +9723,11 @@ paths:
       description: >-
         Administrators only (second factor required).
         Lists every custom field definition as a bare array, including deactivated
-        ones. Each entry's active flag says which are active. Definitions are never
-        deleted.
+        ones, in field-number order. Each entry's active flag says which are active.
+        Definitions are never deleted. Each entry carries place_count, the number of
+        places (categories, types and items) the field is attached to, counted in
+        the same query as the list; it is 0 for a field on no form. It counts what
+        GET /admin/custom-fields/{id}/assignments returns.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleListFieldDefs
       security:
@@ -9715,8 +9756,8 @@ paths:
         must be unique across definitions. field_type is one of text, textarea, number
         or select. A select field needs at least one option. options are stored as
         sent for any field type, and only select fields use them. sort_order defaults
-        to 0. A value the validation refuses is 400 bad_request, with the reason as the
-        message. A name already in use is 409 conflict. Any other failure is a 500
+        to 0. Every option is recorded in the audit log. A value the validation refuses
+        is 400 bad_request, with the reason as the message. A name already in use is 409 conflict. Any other failure is a 500
         internal_error. No message carries database text.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleCreateFieldDef
@@ -9783,6 +9824,33 @@ paths:
         values are kept. A refused value is 400 bad_request with the reason as the
         message, a name already in use is 409 conflict, and an unknown id is 404
         not_found. The response is the saved row.
+
+        The change is applied to the row as it is under a lock, in one transaction
+        with its audit entries. Two refusals are 409 conflict: removing a value from
+        both options and retired_options while any ticket holds it ("option is in use;
+        retire it instead"), and changing field_type once any ticket holds a value for
+        the field ("the type can't change once a ticket has a value for this field").
+        Retire an option by moving it from options to retired_options. A value enters
+        retired_options only from options, is never in both lists, and a select field
+        keeps at least one option in use (400 otherwise). Renaming an option that
+        tickets hold is retiring the old text and adding the new.
+
+        Audit. Every change is written to the audit log in the same transaction, as
+        entity_type `custom_field` with the definition's id, so a field's whole history
+        including its attachments is one entity. Every entry carries field_name on both
+        sides. Actions: custom_field_created (also one custom_field_option_added per
+        option), custom_field_renamed, custom_field_type_changed,
+        custom_field_deactivated, custom_field_reactivated, custom_field_reordered (a
+        field's number changed, here or by PUT /admin/custom-fields/order),
+        custom_field_option_added (option_value, position from 1),
+        custom_field_option_moved (option_value, position before and after; one entry
+        per option moved), custom_field_option_retired and
+        custom_field_option_restored (option_value, retired), custom_field_option_deleted
+        (option_value), custom_field_attached, custom_field_attachment_changed and
+        custom_field_detached (assignment_id, scope_type, scope_id, scope_path,
+        visible_on_new, required_on_new; node_deleted too on the detach written when a
+        category, type or item is deleted). scope_path is a snapshot such as
+        "Hardware › Laptop". A refused change writes no entry.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleUpdateFieldDef
       security:
@@ -9807,7 +9875,11 @@ paths:
                 options:
                   type: array
                   items: {type: string}
-                  description: Replacement list of allowed values. Absent leaves the list unchanged.
+                  description: Replacement list of the options in use. Absent leaves the list unchanged. A value dropped from both lists while a ticket holds it is 409.
+                retired_options:
+                  type: array
+                  items: {type: string}
+                  description: Replacement list of retired options. Absent leaves the list unchanged; an empty list clears it, which deletes the retired options no ticket holds.
                 sort_order:
                   type: integer
                   description: New display order. Absent leaves it unchanged.
@@ -9829,10 +9901,153 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '409':
-          description: "conflict: another field already has this name."
+          description: |-
+            conflict: another field already has this name; an option a ticket holds
+            would be removed (retire it instead); or the type would change while any
+            ticket holds a value. Nothing is changed.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/admin/custom-fields/order:
+    put:
+      operationId: reorderFieldDefs
+      summary: Set the order of all custom fields.
+      description: |-
+        Administrators only, in a signed-in session (second factor required). An API
+        key or OAuth client is refused with 403 session_required.
+        field_def_ids must name every field definition exactly once, active and
+        inactive alike. Position n (from 1) becomes the field's number (sort_order).
+        Attachments are not changed. Answers 200 with the full list in the new order
+        (the same entries as GET /admin/custom-fields). Every field whose number
+        changed is audited as custom_field_reordered, in the same transaction.
+        A list that repeats an id, is not a list of UUIDs, or is missing is 400
+        bad_request. A list that does not match the stored fields (one was added
+        meanwhile, or one is missing or unknown) is 409 conflict, "the field list has
+        changed; reload and try again", and nothing is written. With no fields, `[]`
+        answers 200 `[]`.
+      tags: ['Admin: Catalogue']
+      x-ghd-handler: handleReorderFieldDefs
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [field_def_ids]
+              properties:
+                field_def_ids:
+                  type: array
+                  items: {$ref: '#/components/schemas/Uuid'}
+      responses:
+        '200':
+          description: Every field definition in the new order.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/CustomFieldDef'}
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: "conflict: the list does not match the stored fields."
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/admin/custom-fields/{id}/assignments:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Field definition UUID. A malformed value is 400 bad_request.
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: listFieldDefPlacements
+      summary: List where a custom field is attached.
+      description: |-
+        Administrators only, in a signed-in session (second factor required). An API
+        key or OAuth client is refused with 403 session_required.
+        Every category, type and item the field is attached to, in tree order:
+        categories by number and name, and under each the whole category's own
+        attachment first, then each type's, each followed by its items'. Each entry
+        carries the names and active flags of its path (type and item are null above
+        their level), so an archived node can be marked. An attachment whose node no
+        longer exists is not returned. A field attached nowhere answers `[]`; an
+        unknown id is 404 not_found.
+      tags: ['Admin: Catalogue']
+      x-ghd-handler: handleListFieldPlacements
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      responses:
+        '200':
+          description: The places, as a bare array (never null).
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/CustomFieldPlacement'}
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/admin/custom-fields/{id}/usage:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Field definition UUID. A malformed value is 400 bad_request.
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getFieldDefUsage
+      summary: How many tickets hold a value for a custom field.
+      description: |-
+        Administrators only, in a signed-in session (second factor required). An API
+        key or OAuth client is refused with 403 session_required.
+        tickets_with_value counts the tickets that hold any value for the field. For a
+        select field values has one entry for every option in use, then every retired
+        option, then every stored value in neither list (alphabetically), each with
+        its count; 0 for one no ticket holds. For any other type values is `[]`.
+        The counts are advisory, because a value can be written after they are read;
+        PATCH /admin/custom-fields/{id} is what enforces the rules about them. Each
+        query reads one range of the (field_def_id, value) index, so call it when a
+        field is opened and not for the whole list. Unknown id is 404 not_found.
+      tags: ['Admin: Catalogue']
+      x-ghd-handler: handleFieldDefUsage
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      responses:
+        '200':
+          description: The counts.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CustomFieldUsage'}
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
   /api/v1/admin/sla/policies:
@@ -11724,7 +11939,9 @@ components:
       description: >-
         A custom field definition. options is present
         only when the definition has options. The server stores options as sent for any
-        field type, and only select fields use them.
+        field type, and only select fields use them. options holds the options in use
+        only. retired_options, on the admin routes only, holds the retired ones and is
+        absent when there are none; the ticket routes never return it.
       type: object
       required: [id, name, field_type, sort_order, active, created_at]
       properties:
@@ -11734,17 +11951,79 @@ components:
         options:
           type: array
           items: {type: string}
-        sort_order: {type: integer}
+        retired_options:
+          type: array
+          items: {type: string}
+          description: Options no longer offered that tickets may still hold. Admin routes only.
+        place_count:
+          type: integer
+          description: How many places the field is attached to. Present on GET /admin/custom-fields only; 0 for a field on no form.
+        sort_order: {type: integer, description: "The field's number. Orders fields within a level on both forms."}
         active:
           type: boolean
           description: False once the definition is deactivated.
         created_at: {type: string, format: date-time}
+    CustomFieldWarning:
+      description: A custom field value that was sent with a new ticket and not written.
+      type: object
+      required: [field_id, reason]
+      properties:
+        field_id:
+          type: string
+          description: The key exactly as sent. A string because for invalid_field_id it is not a UUID.
+        reason:
+          type: string
+          enum: [invalid_field_id, not_on_ticket, inactive, retired_option, not_an_option, not_a_number, not_saved]
+    CustomFieldPlaceNode:
+      type: object
+      required: [id, name, active]
+      properties:
+        id: {$ref: '#/components/schemas/Uuid'}
+        name: {type: string}
+        active: {type: boolean, description: False for an archived node.}
+    CustomFieldPlacement:
+      description: A field attached to a category, type or item, with the names of the path.
+      type: object
+      required: [id, field_def_id, scope_type, scope_id, sort_order, visible_on_new, required_on_new, category, type, item]
+      properties:
+        id: {$ref: '#/components/schemas/Uuid'}
+        field_def_id: {$ref: '#/components/schemas/Uuid'}
+        scope_type: {type: string, enum: [category, type, item]}
+        scope_id: {$ref: '#/components/schemas/Uuid'}
+        sort_order:
+          type: integer
+          description: The attachment's own number. Stored and returned; nothing orders by it.
+        visible_on_new: {type: boolean}
+        required_on_new: {type: boolean}
+        category: {$ref: '#/components/schemas/CustomFieldPlaceNode'}
+        type:
+          oneOf:
+            - $ref: '#/components/schemas/CustomFieldPlaceNode'
+            - {type: 'null'}
+        item:
+          oneOf:
+            - $ref: '#/components/schemas/CustomFieldPlaceNode'
+            - {type: 'null'}
+    CustomFieldUsage:
+      type: object
+      required: [tickets_with_value, values]
+      properties:
+        tickets_with_value: {type: integer}
+        values:
+          type: array
+          description: One entry per value of a select field (never null); empty for any other type.
+          items:
+            type: object
+            required: [value, tickets]
+            properties:
+              value: {type: string}
+              tickets: {type: integer}
     FieldAssignment:
       description: >-
         A custom field attached to a category, type or item. field_def is
         present only in list responses. There it carries id, name, field_type, options
-        and active, and its sort_order is 0 and created_at is the zero time. It is absent
-        from create and update responses.
+        and active, and its sort_order is the field's own number and created_at is the zero
+        time. It is absent from create and update responses.
       type: object
       required: [id, field_def_id, scope_type, scope_id, sort_order, visible_on_new, required_on_new]
       properties:

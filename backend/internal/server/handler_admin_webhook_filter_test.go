@@ -333,7 +333,7 @@ func TestWebhookUpdate_RefusesAFilterNamingADeletedCategoryOrGroup(t *testing.T)
 
 	cat, err := h.categorySvc.CreateCategory(ctx, "Gone", 99)
 	require.NoError(t, err)
-	require.NoError(t, h.categorySvc.DeleteCategory(ctx, cat.ID))
+	require.NoError(t, h.categorySvc.DeleteCategory(ctx, cat.ID, nil))
 	grp, err := h.groupSvc.Create(ctx, "Gone", "")
 	require.NoError(t, err)
 	_, err = h.ticketSvc.DeleteGroup(ctx, nil, grp.ID)

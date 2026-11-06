@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
@@ -514,24 +515,15 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	// field — but only for fields this ticket actually has. Without the
 	// check, any field id supplied on creation was stored, including one
 	// assigned to no scope and therefore offered to nobody.
-	if len(body.CustomFields) > 0 {
-		allowed, err := s.customFields.ResolveFieldsForCTI(r.Context(), t.CategoryID, t.TypeID, t.ItemID)
-		if err == nil {
-			onTicket := make(map[uuid.UUID]bool, len(allowed))
-			for _, a := range allowed {
-				onTicket[a.FieldDefID] = true
-			}
-			for fieldDefIDStr, value := range body.CustomFields {
-				if value == "" {
-					continue
-				}
-				fieldDefID, parseErr := uuid.Parse(fieldDefIDStr)
-				if parseErr != nil || !onTicket[fieldDefID] {
-					continue
-				}
-				_ = s.customFields.SetValue(r.Context(), t.ID, fieldDefID, value)
-			}
-		}
+	//
+	// What is not written is not silent: each non-empty entry that was dropped
+	// comes back in the response's warnings, with a reason. The key is absent
+	// when nothing was dropped, so a response with nothing dropped is what it
+	// always was.
+	warnings, err := s.customFields.SetCreationValues(r.Context(), t.ID, t.CategoryID, t.TypeID, t.ItemID, body.CustomFields)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "saving custom field values on a new ticket failed; the ticket was created without them",
+			"ticket_id", t.ID, "error", err)
 	}
 
 	// Read back, so the response carries whoever the routing assigned, as
@@ -539,7 +531,15 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	if fresh, err := s.tickets.GetByID(r.Context(), t.ID); err == nil {
 		t = fresh
 	}
-	JSON(w, http.StatusCreated, viewerJSON(authmw.GetActor(r), t))
+	JSON(w, http.StatusCreated, viewerJSON(authmw.GetActor(r), createdTicket{Ticket: t, Warnings: warnings}))
+}
+
+// createdTicket is POST /tickets' 201 body: the ticket, plus the custom field
+// values that were not written. Embedded, so the ticket's own keys are exactly
+// what they were.
+type createdTicket struct {
+	ticket.Ticket
+	Warnings []customfield.Warning `json:"warnings,omitempty"`
 }
 
 // onBehalfMailPerHour is the most tickets one member of staff can file for

@@ -42,6 +42,8 @@ type Querier interface {
 	// WHICH rule refused them. This one is what binds.
 	AdoptUserByOIDCSubject(ctx context.Context, arg AdoptUserByOIDCSubjectParams) (uuid.UUID, error)
 	AnyAttachmentExists(ctx context.Context) (bool, error)
+	// ── Usage ─────────────────────────────────────────────────────────────────────
+	AnyCustomFieldValue(ctx context.Context, fieldDefID uuid.UUID) (bool, error)
 	// Which level of a classification being NEWLY picked is archived: 'category',
 	// 'type', 'item', or '' when none is. Highest level first, so a ticket aimed at
 	// an archived category is told about the category, not the type under it.
@@ -153,6 +155,8 @@ type Querier interface {
 	// and reads "more than the cap" off the result; an answer at or under the cap
 	// is exact.
 	CountAuditLog(ctx context.Context, arg CountAuditLogParams) (int64, error)
+	CountCustomFieldValues(ctx context.Context, fieldDefID uuid.UUID) (int64, error)
+	CountCustomFieldValuesByValue(ctx context.Context, fieldDefID uuid.UUID) ([]CountCustomFieldValuesByValueRow, error)
 	// Only what a guest uploaded: staff and reporter files do not count toward the
 	// guest cap (#445).
 	CountGuestAttachments(ctx context.Context, ticketID uuid.UUID) (int64, error)
@@ -265,7 +269,14 @@ type Querier interface {
 	// key, so they were left pointing at nothing. One statement, so the assignments
 	// and the node go together or not at all: if the delete is refused (a ticket
 	// arrived meanwhile), the assignments stay.
-	DeleteCategory(ctx context.Context, id uuid.UUID) (int64, error)
+	//
+	// Each assignment taken is audited as custom_field_detached in the same statement
+	// (#603), so the entries and the delete also go together or not at all. Names are
+	// read from the statement's snapshot, which is how the entry can say where the
+	// field was attached after the node is gone. sqlc.narg(actor_id) is the
+	// administrator; NULL when there is none. The path text matches
+	// GetAssignmentScopePath.
+	DeleteCategory(ctx context.Context, arg DeleteCategoryParams) (int64, error)
 	DeleteCustomFieldAssignment(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteCustomFieldValue(ctx context.Context, arg DeleteCustomFieldValueParams) error
 	DeleteEmailTemplateOverride(ctx context.Context, name string) error
@@ -277,7 +288,7 @@ type Querier interface {
 	// revokes (#349), and a Closed ticket's links are added to, never replaced.
 	DeleteGuestAccessTokensForTicket(ctx context.Context, ticketID uuid.UUID) error
 	// As DeleteCategory: the item's field assignments go in the same statement.
-	DeleteItem(ctx context.Context, id uuid.UUID) (int64, error)
+	DeleteItem(ctx context.Context, arg DeleteItemParams) (int64, error)
 	DeleteNotification(ctx context.Context, id uuid.UUID) error
 	// Deletes the client and soft-deletes its service user in one statement, still
 	// reporting rows affected so an unknown id stays a 404 (#431). The user is
@@ -300,7 +311,7 @@ type Querier interface {
 	DeleteTicketLink(ctx context.Context, arg DeleteTicketLinkParams) error
 	// As DeleteCategory: the type's own and its items' field assignments go in the
 	// same statement.
-	DeleteType(ctx context.Context, id uuid.UUID) (int64, error)
+	DeleteType(ctx context.Context, arg DeleteTypeParams) (int64, error)
 	// Removes one credential, and reports whether it was this user's to remove.
 	//
 	// Scoped by user_id as well as id, in the statement rather than by a check in
@@ -404,7 +415,14 @@ type Querier interface {
 	// and the predicate required an exact match, so tiers 3 and 4 could neither be
 	// stored nor matched.
 	FindSLAPolicy(ctx context.Context, arg FindSLAPolicyParams) (SlaPolicy, error)
+	// One value from the list that some ticket holds; no row when none does.
+	FirstHeldCustomFieldValue(ctx context.Context, arg FirstHeldCustomFieldValueParams) (string, error)
 	GetAPIKeyByHash(ctx context.Context, hashedToken string) (ApiKey, error)
+	// The path of a node as the audit log records it: "Hardware", "Hardware › Laptop",
+	// "Hardware › Laptop › Dell". A snapshot, so an entry still reads correctly after
+	// a rename or a delete. The node-delete statements in categories.sql build the
+	// same text.
+	GetAssignmentScopePath(ctx context.Context, arg GetAssignmentScopePathParams) (string, error)
 	GetAttachmentByID(ctx context.Context, id uuid.UUID) (Attachment, error)
 	// The cached verdict for one hash from one provider.
 	//
@@ -417,6 +435,8 @@ type Querier interface {
 	// The ticket's current record, locked for the duration of a re-match.
 	GetCurrentSLARecordForUpdate(ctx context.Context, ticketID uuid.UUID) (SlaRecord, error)
 	GetCustomFieldAssignment(ctx context.Context, id uuid.UUID) (CustomFieldAssignment, error)
+	// Locked, so the audit entry's "before" is the row this transaction then writes.
+	GetCustomFieldAssignmentForUpdate(ctx context.Context, id uuid.UUID) (CustomFieldAssignment, error)
 	GetCustomFieldDef(ctx context.Context, id uuid.UUID) (CustomFieldDef, error)
 	GetEmailTemplateOverrides(ctx context.Context, names []string) ([]EmailTemplateOverride, error)
 	GetGroup(ctx context.Context, id uuid.UUID) (Group, error)
@@ -620,6 +640,12 @@ type Querier interface {
 	// Deliberately narrow: an id, a display name and that flag. No email, no
 	// role, no login state — that is the administrator's view.
 	ListAssignableStaff(ctx context.Context) ([]ListAssignableStaffRow, error)
+	// Where a field is attached, in tree order: category by number and name, and
+	// under each the category's own attachment first, then each type's, each followed
+	// by its items'. The category join is an inner join on purpose: an attachment
+	// whose node is gone (scope_id has no foreign key) has no category and is not
+	// returned. ListCustomFieldDefs counts places with the same joins.
+	ListAssignmentsForFieldDef(ctx context.Context, fieldDefID uuid.UUID) ([]ListAssignmentsForFieldDefRow, error)
 	ListAssignmentsForScope(ctx context.Context, arg ListAssignmentsForScopeParams) ([]ListAssignmentsForScopeRow, error)
 	ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]Attachment, error)
 	ListAuditByEntity(ctx context.Context, arg ListAuditByEntityParams) ([]AuditLog, error)
@@ -630,7 +656,11 @@ type Querier interface {
 	ListAuditByEntityActions(ctx context.Context, arg ListAuditByEntityActionsParams) ([]AuditLog, error)
 	ListCannedResponses(ctx context.Context) ([]CannedResponse, error)
 	ListCategories(ctx context.Context, dollar_1 bool) ([]Category, error)
-	ListCustomFieldDefs(ctx context.Context) ([]CustomFieldDef, error)
+	// place_count is how many places the field is attached to, counted in this one
+	// query so the admin list does not ask once per field. It counts exactly what
+	// ListAssignmentsForFieldDef returns: an attachment whose category, type or item
+	// is gone (scope_id has no foreign key) is not a place, so it is not counted.
+	ListCustomFieldDefs(ctx context.Context) ([]ListCustomFieldDefsRow, error)
 	ListCustomFieldValuesForTicket(ctx context.Context, ticketID uuid.UUID) ([]ListCustomFieldValuesForTicketRow, error)
 	ListEmailTemplateOverrides(ctx context.Context) ([]EmailTemplateOverride, error)
 	ListEnabledWebhookConfigs(ctx context.Context) ([]WebhookConfig, error)
@@ -772,6 +802,15 @@ type Querier interface {
 	ListWebhookConfigs(ctx context.Context) ([]WebhookConfig, error)
 	// No event column: the history shows outcomes, never content.
 	ListWebhookDeliveries(ctx context.Context, webhookID uuid.UUID) ([]ListWebhookDeliveriesRow, error)
+	// Every definition, locked, in id order (the order LockCustomFieldDefsForShare
+	// takes them in). Reordering rewrites all the numbers, so it holds them all.
+	LockAllCustomFieldDefsForUpdate(ctx context.Context) ([]CustomFieldDef, error)
+	// The exclusive side of the lock above. An admin change takes the definition
+	// FOR UPDATE and so waits for every value write that holds it FOR SHARE, and
+	// blocks every one that starts after, until it commits. What it checks (is the
+	// option held, does any ticket have a value) is therefore still true when it
+	// writes.
+	LockCustomFieldDefForUpdate(ctx context.Context, id uuid.UUID) (CustomFieldDef, error)
 	// Takes a shared row lock on each named definition, in id order, held until the
 	// transaction ends. A value write holds it while it checks the definition, so a
 	// change that takes the row FOR UPDATE (deactivate, retire an option) waits for
@@ -854,6 +893,9 @@ type Querier interface {
 	RemoveGroupScope(ctx context.Context, arg RemoveGroupScopeParams) (int64, error)
 	RemoveTicketFollower(ctx context.Context, arg RemoveTicketFollowerParams) (int64, error)
 	RemoveTicketTag(ctx context.Context, arg RemoveTicketTagParams) error
+	// Position n (from 1) becomes the field's number. Only rows whose number
+	// changes are written.
+	ReorderCustomFieldDefs(ctx context.Context, ids []uuid.UUID) error
 	RestoreTag(ctx context.Context, id uuid.UUID) (int64, error)
 	RestoreUser(ctx context.Context, id uuid.UUID) error
 	RetryNotification(ctx context.Context, arg RetryNotificationParams) error

@@ -1,0 +1,11 @@
+-- Retired options of a select custom field (#603).
+--
+-- A retired option is no longer offered on new tickets or in edits, but tickets
+-- that already hold it keep showing it. It is stored apart from `options` so that
+-- `options` stays what it always was, a plain list of the values that may be
+-- chosen: every reader that predates retiring keeps working without knowing this
+-- column exists. A value is in one list or the other, never both.
+--
+-- NULL means none retired, which is every row today. A nullable column with no
+-- default: no row is rewritten.
+ALTER TABLE custom_field_defs ADD COLUMN retired_options JSONB;
