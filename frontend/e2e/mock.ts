@@ -404,8 +404,8 @@ export async function mockAdminApi(page: Page, opts: { short?: boolean } = {}) {
     // One select field with a long option and a long retired option, and one
     // inactive field (hidden until Show inactive is on).
     '/api/v1/admin/custom-fields': [
-      { id: 'fld-long', name: n, field_type: 'select', options: [d], retired_options: [opts.short ? 'Retired' : 'R'.repeat(300)], sort_order: 1, active: true, created_at: '2026-09-20T10:05:00Z' },
-      { id: 'fld-off', name: n, field_type: 'number', sort_order: 2, active: false, created_at: '2026-09-20T10:05:00Z' },
+      { id: 'fld-long', name: n, field_type: 'select', options: [d], retired_options: [opts.short ? 'Retired' : 'R'.repeat(300)], place_count: 1, sort_order: 1, active: true, created_at: '2026-09-20T10:05:00Z' },
+      { id: 'fld-off', name: n, field_type: 'number', place_count: 0, sort_order: 2, active: false, created_at: '2026-09-20T10:05:00Z' },
     ],
     '/api/v1/admin/custom-fields/fld-long/assignments': [
       {

@@ -190,6 +190,12 @@ export function CustomFieldsPanel({
             className="h-7 text-xs"
           >
             <option value="">—</option>
+            {/* The options here are only those in use. A value the ticket holds
+                that is not one of them was retired since: keep it as the current
+                choice, but never offer it to pick. */}
+            {r.value && !(r.options ?? []).includes(r.value) && (
+              <option value={r.value} disabled>{r.value} (retired)</option>
+            )}
             {(r.options ?? []).map((opt) => (
               <option key={opt} value={opt}>{opt}</option>
             ))}

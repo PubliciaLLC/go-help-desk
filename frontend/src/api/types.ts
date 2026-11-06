@@ -636,6 +636,9 @@ export interface FieldDef {
   options?: string[]
   // Admin calls only: options that tickets may still hold but nobody can pick.
   retired_options?: string[]
+  // How many places the field is attached to. GET /admin/custom-fields only:
+  // a POST or PATCH response does not carry it.
+  place_count?: number
   sort_order: number
   active: boolean
   created_at: string

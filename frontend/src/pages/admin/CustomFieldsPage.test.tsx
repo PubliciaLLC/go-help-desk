@@ -117,7 +117,8 @@ function fakeServer(opts: { defs?: FieldDef[]; placements?: Record<string, Field
   const get = vi.spyOn(api, 'get').mockImplementation((async (url: string) => {
     calls.get.push(url)
     const m = url.match(/^\/admin\/custom-fields\/([^/]+)\/(assignments|usage)$/)
-    if (url === '/admin/custom-fields') return { data: defs }
+    // place_count is on the list only, as on the real API.
+    if (url === '/admin/custom-fields') return { data: defs.map((d) => ({ ...d, place_count: (placements[d.id] ?? []).length })) }
     if (m && m[2] === 'assignments') return { data: placements[m[1]] ?? [] }
     if (m && m[2] === 'usage') return { data: usage[m[1]] }
     if (url === '/admin/categories') return { data: TREE.categories }
@@ -136,6 +137,21 @@ function fakeServer(opts: { defs?: FieldDef[]; placements?: Record<string, Field
       usage['f-new'] = { tickets_with_value: 0, values: [] }
       return { data: created }
     }
+    // Attaching a place: POST /admin/categories/:c[/types/:t[/items/:i]]/fields
+    const at = url.match(/^\/admin\/categories\/([^/]+)(?:\/types\/([^/]+))?(?:\/items\/([^/]+))?\/fields$/)
+    if (at) {
+      const cat = TREE.categories.find((c) => c.id === at[1])!
+      const type = at[2] ? (TREE.types[at[1]] as { id: string; name: string; active: boolean }[]).find((t) => t.id === at[2]) : undefined
+      const item = at[3] ? (TREE.items[at[2]] as { id: string; name: string; active: boolean }[]).find((i) => i.id === at[3]) : undefined
+      const id = `a-new-${(placements[body.field_def_id as string] ?? []).length}`
+      const added = placement(id, body.field_def_id as string, {
+        scope_type: item ? 'item' : type ? 'type' : 'category', scope_id: (item ?? type ?? cat).id, category: cat,
+        type: type ? node(type.id, type.name) : null, item: item ? node(item.id, item.name) : null,
+        visible_on_new: body.visible_on_new as boolean, required_on_new: body.required_on_new as boolean,
+      })
+      placements[added.field_def_id] = [...(placements[added.field_def_id] ?? []), added]
+      return { data: added }
+    }
     return { data: { id: 'a-new', ...body } }
   }) as never)
 
@@ -152,10 +168,14 @@ function fakeServer(opts: { defs?: FieldDef[]; placements?: Record<string, Field
   const put = vi.spyOn(api, 'put').mockImplementation((async (_url: string, body: { field_def_ids: string[] }) => {
     if (fail.put) throw fail.put
     defs = body.field_def_ids.map((id, n) => ({ ...defs.find((d) => d.id === id)!, sort_order: n + 1 }))
-    return { data: defs }
+    return { data: defs.map((d) => ({ ...d, place_count: (placements[d.id] ?? []).length })) }
   }) as never)
 
-  const del = vi.spyOn(api, 'delete').mockResolvedValue({ data: {} } as never)
+  const del = vi.spyOn(api, 'delete').mockImplementation((async (url: string) => {
+    const id = url.split('/').pop()!
+    for (const k of Object.keys(placements)) placements[k] = placements[k].filter((p) => p.id !== id)
+    return { data: {} }
+  }) as never)
 
   return { get, post, patch, put, del, calls, fail, setPlacements: (id: string, p: FieldPlacement[]) => { placements[id] = p } }
 }
@@ -217,14 +237,49 @@ describe('header and list', () => {
     expect(await within(await rowOf('Asset Tag')).findByText('Not on any form yet')).toBeTruthy()
   })
 
-  it('loads usage only for a row that is opened', async () => {
+  it('reads place counts from the list and loads places and usage only for a row that is opened', async () => {
     const { server } = await renderPage()
-    await waitFor(() => expect(server.calls.get).toContain('/admin/custom-fields/f-asset/assignments'))
-    expect(server.calls.get.some((u) => u.endsWith('/usage'))).toBe(false)
+    await within(await rowOf('Department')).findByText('On 2 places')
+    expect(server.calls.get.some((u) => u.endsWith('/assignments') || u.endsWith('/usage'))).toBe(false)
 
     await expand('Department')
     await waitFor(() => expect(server.calls.get).toContain('/admin/custom-fields/f-dept/usage'))
-    expect(server.calls.get).not.toContain('/admin/custom-fields/f-asset/usage')
+    expect(server.calls.get).toContain('/admin/custom-fields/f-dept/assignments')
+    expect(server.calls.get.some((u) => u.includes('f-asset'))).toBe(false)
+  })
+
+  it('keeps a row\'s place count after a save, whose response has none', async () => {
+    const { server } = await renderPage()
+    const row = await expand('Asset Tag')
+    const name = await within(row).findByLabelText('Name')
+    await userEvent.clear(name)
+    await userEvent.type(name, 'Asset number')
+    await userEvent.click(within(row).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(server.patch).toHaveBeenCalled())
+    // Department was not touched; its count must still be there, and the renamed row shows its own.
+    expect(await within(await rowOf('Asset number')).findByText('Not on any form yet')).toBeTruthy()
+    expect(within(await rowOf('Department')).getByText('On 2 places')).toBeTruthy()
+  })
+
+  it('clears the resolved-fields cache the new-ticket form and ticket card read, when a place is added', async () => {
+    const { queryClient } = await renderPage()
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    const row = await expand('Asset Tag')
+    const form = within(await within(row).findByRole('group', { name: 'Add a place' }))
+    await userEvent.selectOptions(form.getByLabelText('Category'), 'c-3')
+    await userEvent.click(form.getByRole('button', { name: 'Add' }))
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['ctiFieldsResolved'] }))
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['ctiFields'] })
+  })
+
+  it('refreshes the count on the row after a place is added', async () => {
+    await renderPage()
+    const row = await expand('Asset Tag')
+    await within(row).findByText('Not on any form yet.')
+    const form = within(await within(row).findByRole('group', { name: 'Add a place' }))
+    await userEvent.selectOptions(form.getByLabelText('Category'), 'c-3')
+    await userEvent.click(form.getByRole('button', { name: 'Add' }))
+    expect(await within(row).findByText('On 1 place')).toBeTruthy()
   })
 
   it('opens the row named by ?field= and, for an inactive field, shows it', async () => {
@@ -312,6 +367,19 @@ describe('Create', () => {
     expect(within(row).getByText('Where it appears')).toBeTruthy()
     expect(within(row).getByText('Not on any form yet.')).toBeTruthy()
     await waitFor(() => expect(document.activeElement).toBe(within(row).getByRole('button', { name: 'Add a place' })))
+  })
+
+  it('takes the banner down once the new field has a place', async () => {
+    await openForm()
+    await userEvent.type(screen.getByLabelText('Name'), 'Serial')
+    await userEvent.click(screen.getByRole('button', { name: 'Create field' }))
+    await screen.findByRole('status')
+
+    const row = await rowOf('Serial')
+    const form = within(await within(row).findByRole('group', { name: 'Add a place' }))
+    await userEvent.selectOptions(form.getByLabelText('Category'), 'c-3')
+    await userEvent.click(form.getByRole('button', { name: 'Add' }))
+    await waitFor(() => expect(screen.queryByRole('status')).toBeNull())
   })
 
   it('refuses a blank option and a select with no options, and sends nothing', async () => {

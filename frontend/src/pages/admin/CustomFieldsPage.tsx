@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useSearch } from '@tanstack/react-router'
 import {
   listFieldDefs, createFieldDef, updateFieldDef, reorderFieldDefs, listFieldPlacements, getFieldUsage,
@@ -36,9 +36,14 @@ const FIELDS_KEY = ['admin', 'custom-fields'] as const
 const placesKey = (id: string) => [...FIELDS_KEY, id, 'assignments'] as const
 const usageKey = (id: string) => [...FIELDS_KEY, id, 'usage'] as const
 
-// The new-ticket form and the Categories page both show a field and its
-// settings; anything that changes either must refresh them.
-const CTI_FIELDS_KEY = ['ctiFields'] as const
+// What the Categories page, the new-ticket form and the ticket card cached about
+// a field or its places: the first holds one level's attachments, the second a
+// classification's resolved fields (cached for 30 seconds, so a stale list would
+// outlive the change). Anything that changes either must clear both.
+function invalidateForms(qc: QueryClient) {
+  qc.invalidateQueries({ queryKey: ['ctiFields'] })
+  qc.invalidateQueries({ queryKey: ['ctiFieldsResolved'] })
+}
 
 // Small buttons are h-8; a finger needs 44px.
 const BTN_TOUCH = 'pointer-coarse:min-h-11 pointer-coarse:min-w-11'
@@ -272,7 +277,7 @@ function FieldDetails({ def }: { def: FieldDef }) {
       setError('')
       setAttempted(false)
       qc.invalidateQueries({ queryKey: FIELDS_KEY })
-      qc.invalidateQueries({ queryKey: CTI_FIELDS_KEY })
+      invalidateForms(qc)
     },
     onError: (err) => {
       setError(extractError(err))
@@ -419,7 +424,9 @@ function PlacesSection({ def, autoFocusAdd }: { def: FieldDef; autoFocusAdd: boo
 
   function refresh() {
     qc.invalidateQueries({ queryKey: [...FIELDS_KEY, def.id] })
-    qc.invalidateQueries({ queryKey: CTI_FIELDS_KEY })
+    // The list's place_count for this row.
+    qc.invalidateQueries({ queryKey: FIELDS_KEY, exact: true })
+    invalidateForms(qc)
   }
 
   const toggleMutation = useMutation({
@@ -701,17 +708,15 @@ function FieldRow({
   const qc = useQueryClient()
   const [confirmOpen, setConfirmOpen] = useState(false)
 
-  // Every row asks for its places, not only an open one: the summary on the
-  // closed row ("Not on any form yet") is the whole point of the list.
-  const placesQuery = useQuery({ queryKey: placesKey(def.id), queryFn: () => listFieldPlacements(def.id) })
-  const count = placesQuery.data?.length
+  // The list carries place_count, so a closed row needs no call of its own.
+  const count = def.place_count
 
   const activeMutation = useMutation({
     mutationFn: (active: boolean) => updateFieldDef(def.id, { active }),
     onSuccess: () => {
       setConfirmOpen(false)
       qc.invalidateQueries({ queryKey: FIELDS_KEY })
-      qc.invalidateQueries({ queryKey: CTI_FIELDS_KEY })
+      invalidateForms(qc)
     },
   })
 
@@ -807,7 +812,7 @@ function CreateForm({
   defs, onCreated, onCancel,
 }: {
   defs: FieldDef[]
-  onCreated: (created: FieldDef) => void
+  onCreated: (created: FieldDef) => Promise<void>
   onCancel: () => void
 }) {
   const ids = useId()
@@ -884,13 +889,12 @@ function CreateForm({
 
 // Says the field it just made is on no form. It goes away once a place exists,
 // since by then it is no longer true.
-function CreatedBanner({ created, onDismiss }: { created: { id: string; name: string }; onDismiss: () => void }) {
-  const { data: places } = useQuery({ queryKey: placesKey(created.id), queryFn: () => listFieldPlacements(created.id) })
-  if (places && places.length > 0) return null
+function CreatedBanner({ name, placeCount, onDismiss }: { name: string; placeCount: number | undefined; onDismiss: () => void }) {
+  if (placeCount) return null
   return (
     <div role="status" className="flex items-start justify-between gap-3 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-900">
       <p className="min-w-0 wrap-anywhere">
-        {created.name} created. It isn't on any ticket form yet. Choose where it appears.
+        {name} created. It isn't on any ticket form yet. Choose where it appears.
       </p>
       <button
         type="button"
@@ -962,8 +966,11 @@ export function CustomFieldsPage() {
       if (ctx?.previous) qc.setQueryData(FIELDS_KEY, ctx.previous)
       setReorderError(extractError(err))
     },
-    onSuccess: (data) => { if (Array.isArray(data)) qc.setQueryData(FIELDS_KEY, data) },
-    onSettled: () => qc.invalidateQueries({ queryKey: FIELDS_KEY, exact: true }),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: FIELDS_KEY, exact: true })
+      // Field numbers order the fields on both forms.
+      invalidateForms(qc)
+    },
   })
 
   function toggle(id: string) {
@@ -975,9 +982,10 @@ export function CustomFieldsPage() {
     })
   }
 
-  function handleCreated(def: FieldDef) {
-    qc.setQueryData<FieldDef[]>(FIELDS_KEY, (old = []) => [...old, def])
-    qc.invalidateQueries({ queryKey: FIELDS_KEY, exact: true })
+  // The row is opened once the refetched list has it: a POST response has no
+  // place_count and is never put in the list.
+  async function handleCreated(def: FieldDef) {
+    await qc.invalidateQueries({ queryKey: FIELDS_KEY, exact: true })
     setAdding(false)
     setCreated({ id: def.id, name: def.name })
     setExpanded((s) => new Set(s).add(def.id))
@@ -1006,7 +1014,13 @@ export function CustomFieldsPage() {
           </div>
         </div>
 
-        {created && <CreatedBanner created={created} onDismiss={() => setCreated(null)} />}
+        {created && (
+          <CreatedBanner
+            name={created.name}
+            placeCount={defs.find((d) => d.id === created.id)?.place_count}
+            onDismiss={() => setCreated(null)}
+          />
+        )}
 
         {adding && <CreateForm defs={defs} onCreated={handleCreated} onCancel={() => setAdding(false)} />}
 

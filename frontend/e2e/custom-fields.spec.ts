@@ -69,7 +69,10 @@ async function mockFields(page: Page) {
     const body = () => req.postDataJSON() as Record<string, unknown>
     let m: RegExpMatchArray | null
 
-    if (path === '/custom-fields' && method === 'GET') return route.fulfill({ json: state.defs })
+    // place_count is on the list only, as on the real API.
+    if (path === '/custom-fields' && method === 'GET') {
+      return route.fulfill({ json: state.defs.map((d) => ({ ...d, place_count: state.places.filter((p) => p.fieldId === d.id).length })) })
+    }
     if (path === '/custom-fields' && method === 'POST') {
       const b = body()
       const def: Def = { id: 'f-new', name: b.name as string, field_type: b.field_type as string, options: b.options as string[] | undefined, sort_order: b.sort_order as number, active: true, created_at: D }
@@ -80,7 +83,7 @@ async function mockFields(page: Page) {
       const ids = (body().field_def_ids as string[])
       state.puts.push(ids)
       state.defs = ids.map((id, n) => ({ ...state.defs.find((d) => d.id === id)!, sort_order: n + 1 }))
-      return route.fulfill({ json: state.defs })
+      return route.fulfill({ json: state.defs.map((d) => ({ ...d, place_count: state.places.filter((p) => p.fieldId === d.id).length })) })
     }
     if ((m = path.match(/^\/custom-fields\/([^/]+)\/assignments$/)) && method === 'GET') {
       return route.fulfill({ json: state.places.filter((p) => p.fieldId === m![1]).map(placement) })
