@@ -309,7 +309,28 @@ export async function mockApi(
     // an administrator opening the dashboard is sent to /after-upgrade, which
     // is not what these layout tests are about (see after-upgrade.spec.ts).
     '/api/v1/admin/settings': { post_upgrade_130_seen: true },
-    '/api/v1/tickets/fields': [],
+    // The mock ticket's field as the ticket page resolves it: active and attached
+    // to the ticket's category. Without it the value is "detached", read-only,
+    // and the card shows no Edit button for the tap-target scan to measure.
+    '/api/v1/tickets/fields': [
+      {
+        id: 'asg-1',
+        field_def_id: CUSTOM_FIELDS[0].field_def_id,
+        field_def: {
+          id: CUSTOM_FIELDS[0].field_def_id,
+          name: CUSTOM_FIELDS[0].field_name,
+          field_type: CUSTOM_FIELDS[0].field_type,
+          sort_order: 1,
+          active: true,
+          created_at: '2026-09-20T10:00:00Z',
+        },
+        scope_type: 'category',
+        scope_id: TICKET_DETAIL.category_id,
+        sort_order: 1,
+        visible_on_new: true,
+        required_on_new: false,
+      },
+    ],
   }
 
   await page.route('**/api/v1/**', async (route) => {

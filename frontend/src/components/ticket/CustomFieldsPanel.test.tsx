@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { screen, waitFor } from '@testing-library/react'
+import { useQuery } from '@tanstack/react-query'
 import userEvent from '@testing-library/user-event'
 import { renderWithQuery } from '@/test/render'
 import { CustomFieldsPanel } from './CustomFieldsPanel'
@@ -259,5 +260,73 @@ describe('CustomFieldsPanel, requester', () => {
     const { container } = setup({ fields: [assignment(region, 'category')], values: [], staff: false })
     await waitFor(() => expect(ticketsApi.listTicketCustomFields).toHaveBeenCalled())
     expect(container.innerHTML).toBe('')
+  })
+})
+
+describe('CustomFieldsPanel, when a load fails', () => {
+  it('staff: a failed value load offers no Edit and never writes', async () => {
+    const region = def('f1', 'Region')
+    const put = vi.spyOn(ticketsApi, 'putTicketCustomFields').mockResolvedValue()
+    vi.spyOn(ticketsApi, 'resolveFieldsForCTI').mockResolvedValue([assignment(region, 'category')])
+    vi.spyOn(ticketsApi, 'listTicketCustomFields').mockRejectedValue(new Error('boom'))
+    renderWithQuery(
+      <CustomFieldsPanel ticketId="t1" categoryId="c1" typeId="ty1" itemId="i1" isStaffOrAdmin />
+    )
+
+    // Without the values every field would look empty, and Save would clear them all.
+    expect((await screen.findByRole('alert')).textContent).toBe("Couldn't load custom fields.")
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+    expect(screen.queryByText('Region')).toBeNull()
+    expect(put).not.toHaveBeenCalled()
+  })
+
+  it('staff: a failed field load keeps the stored values read-only and says why', async () => {
+    const region = def('f1', 'Region')
+    vi.spyOn(ticketsApi, 'listTicketCustomFields').mockResolvedValue([held(region, 'EMEA')])
+    vi.spyOn(ticketsApi, 'resolveFieldsForCTI').mockRejectedValue(new Error('boom'))
+    renderWithQuery(
+      <CustomFieldsPanel ticketId="t1" categoryId="c1" typeId="ty1" itemId="i1" isStaffOrAdmin />
+    )
+
+    expect(await screen.findByText('EMEA')).toBeTruthy()
+    expect((await screen.findByRole('alert')).textContent).toMatch(/Couldn't load this ticket's fields/)
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+  })
+
+  it('requester: a failed load shows no error, as before', async () => {
+    vi.spyOn(ticketsApi, 'listTicketCustomFields').mockRejectedValue(new Error('boom'))
+    vi.spyOn(ticketsApi, 'resolveFieldsForCTI').mockResolvedValue([])
+    const { container } = renderWithQuery(
+      <CustomFieldsPanel ticketId="t1" categoryId="c1" typeId="ty1" itemId="i1" isStaffOrAdmin={false} />
+    )
+    await waitFor(() => expect(ticketsApi.listTicketCustomFields).toHaveBeenCalled())
+    expect(container.innerHTML).toBe('')
+  })
+})
+
+describe('CustomFieldsPanel, query cache', () => {
+  // The Categories page caches one level's assignments under
+  // ['ctiFields', category, type, item]. The panel needs the whole resolved
+  // list, so it must not share that key.
+  it('is not served the Categories page\'s item-level list', async () => {
+    const tier = def('f1', 'Tier')
+    const region = def('f2', 'Region')
+    const itemOnly = [assignment(region, 'item')]
+    vi.spyOn(ticketsApi, 'resolveFieldsForCTI').mockResolvedValue([assignment(tier, 'category'), ...itemOnly])
+    vi.spyOn(ticketsApi, 'listTicketCustomFields').mockResolvedValue([held(tier, 't'), held(region, 'r')])
+
+    function CategoriesPageQuery() {
+      useQuery({ queryKey: ['ctiFields', 'c1', 'ty1', 'i1'], queryFn: async () => itemOnly })
+      return null
+    }
+    renderWithQuery(
+      <>
+        <CategoriesPageQuery />
+        <CustomFieldsPanel ticketId="t1" categoryId="c1" typeId="ty1" itemId="i1" isStaffOrAdmin />
+      </>
+    )
+
+    await screen.findByText('Tier')
+    expect(labels()).toEqual(['Tier', 'Region'])
   })
 })
