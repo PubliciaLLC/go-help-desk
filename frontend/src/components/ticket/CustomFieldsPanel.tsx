@@ -87,7 +87,7 @@ export function CustomFieldsPanel({
     placed.add(a.field_def_id)
     rows.push({
       id: a.field_def_id,
-      name: def?.name ?? v?.field_name ?? '',
+      name: v?.field_name ?? def?.name ?? '',
       type: def?.field_type ?? v?.field_type ?? 'text',
       options: def?.options ?? v?.options,
       value,
