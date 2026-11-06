@@ -488,7 +488,7 @@ Facilities
 <p>Custom field values are displayed in the <strong>Custom Fields</strong> sidebar card on the ticket detail page, in the order above.</p>
 <ul>
   <li><strong>Staff and admins</strong> see every active field the ticket has, empty or not, and click <em>Edit</em> to fill or change any of them at any time after the ticket is created. <em>Save</em> sends only the fields they changed, and the server writes all of them or none: if one is refused, nothing is saved.</li>
-  <li>An inactive field that holds a value is shown read-only and marked <em>Inactive</em>. An inactive field with no value is not shown.</li>
+  <li>An inactive field that holds a value is shown read-only. Staff and admins see it marked <em>Inactive</em>; requesters do not. An inactive field with no value is not shown.</li>
   <li>A field that holds a value but is no longer attached to the ticket's category, type or item is shown read-only after the item level.</li>
   <li><strong>Regular users</strong> see only the fields that hold a value, and the ticket page shows them read-only: only staff and admins get <em>Edit</em>. Through the API, a requester can still change the custom fields on their own ticket until it is Closed, after which the server answers <code>409 ticket_closed</code>. Guests see no custom fields.</li>
 </ul>
