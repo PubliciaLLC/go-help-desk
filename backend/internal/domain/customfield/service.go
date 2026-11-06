@@ -123,15 +123,17 @@ func (s *Service) ResolveFieldsForCTI(ctx context.Context, categoryID uuid.UUID,
 // An empty value string deletes the row. Validates that the field is active
 // and that select values are within the allowed options.
 func (s *Service) SetValue(ctx context.Context, ticketID, fieldDefID uuid.UUID, value string) error {
-	if value == "" {
-		return s.store.DeleteValue(ctx, ticketID, fieldDefID)
-	}
 	def, err := s.store.GetFieldDef(ctx, fieldDefID)
 	if err != nil {
 		return fmt.Errorf("field not found: %w", err)
 	}
+	// Before the empty-value branch: a clear is a write too. Checking after it
+	// let a caller wipe the stored value of a deactivated field by sending "".
 	if !def.Active {
 		return Invalid(fmt.Sprintf("field %q is deactivated", def.Name))
+	}
+	if value == "" {
+		return s.store.DeleteValue(ctx, ticketID, fieldDefID)
 	}
 	if def.FieldType == FieldTypeSelect && !slices.Contains(def.Options, value) {
 		return Invalid(fmt.Sprintf("value %q is not a valid option for field %q", value, def.Name))

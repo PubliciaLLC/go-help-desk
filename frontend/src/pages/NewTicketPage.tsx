@@ -152,7 +152,10 @@ export function NewTicketPage() {
     }),
     enabled: !!categoryId,
   })
-  const visibleFields = ctiFields.filter((f) => f.visible_on_new)
+  // The resolver keeps inactive fields (the ticket page needs them), but the
+  // server refuses every write to one, so the form must not offer it. This also
+  // keeps a required inactive field from blocking submit.
+  const visibleFields = ctiFields.filter((f) => f.visible_on_new && f.field_def?.active)
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
