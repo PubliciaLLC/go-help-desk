@@ -22,7 +22,7 @@ func TestDeletedOAuthClient_TokenStopsWorking(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/oauth-clients", map[string]any{
+	resp := h.createCredential(t, "/api/v1/admin/oauth-clients", map[string]any{
 		"name": "integration", "scopes": []string{"tickets:read"},
 	})
 	require.Equal(t, http.StatusCreated, resp.StatusCode)

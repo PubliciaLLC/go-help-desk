@@ -55,16 +55,19 @@ func nearMiss(token string) string {
 }
 
 // seedGuestTicket files a guest ticket through the service and returns it with
-// the token the creation minted.
+// the token the creation minted. It also enables guest submission, since the
+// token routes check the setting.
 func seedGuestTicket(t *testing.T, h *harness) (ticket.Ticket, string) {
 	t.Helper()
+	ctx := context.Background()
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, true))
 	email := "guest@test.local"
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Printer jammed", Description: "again", CategoryID: h.catID,
 		GuestEmail: &email, GuestName: "Ada",
 	})
 	require.NoError(t, err)
-	token, err := h.ticketSvc.IssueGuestToken(context.Background(), tk.ID)
+	token, err := h.ticketSvc.IssueGuestToken(ctx, tk.ID)
 	require.NoError(t, err)
 	require.NotEmpty(t, token)
 	return tk, token
@@ -143,9 +146,9 @@ func TestGuest_ViewHidesInternalNotesAndStaffIdentities(t *testing.T) {
 
 	newStatus := statusIDNamed(t, h, ticket.StatusNameNew)
 	staff := ticket.Actor{UserID: &h.staffID, Role: user.RoleStaff}
-	_, err := h.ticketSvc.AddReply(ctx, tk.ID, "We are on it", false, true, "guest@test.local", staff, 7, newStatus)
+	_, err := h.ticketSvc.AddReply(ctx, tk.ID, "We are on it", ticket.TextFormatPlain, false, true, "guest@test.local", staff, 7, newStatus)
 	require.NoError(t, err)
-	_, err = h.ticketSvc.AddReply(ctx, tk.ID, "INTERNAL: cost code 4471", true, false, "", staff, 7, newStatus)
+	_, err = h.ticketSvc.AddReply(ctx, tk.ID, "INTERNAL: cost code 4471", ticket.TextFormatPlain, true, false, "", staff, 7, newStatus)
 	require.NoError(t, err)
 
 	// The reply rotated the link, so fetch a current one.
@@ -192,6 +195,51 @@ func TestGuest_SubmissionIsRefusedUntilEnabled(t *testing.T) {
 	require.NotEmpty(t, out["tracking_number"])
 	require.Len(t, out, 1,
 		"the response carries the tracking number and nothing else — not the id, and never the token")
+}
+
+// #389: a quoted local part that needs its quotes loses them when parsed, and
+// what is left cannot be mailed, so the guest would never be sent their link.
+// Refused at the door with a 400 that says why, rather than accepted and
+// silently never answered.
+func TestGuest_AnAddressThatNeedsQuotesIsRefused(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeyGuestSubmissionEnabled, true))
+
+	res := h.doGuest(t, http.MethodPost, "/api/v1/guest/tickets", "", map[string]any{
+		"subject": "Door will not open", "description": "it sticks",
+		"category_id": h.catID.String(), "guest_email": `"john doe"@example.com`, "guest_name": "John",
+	})
+	defer res.Body.Close()
+	require.Equal(t, http.StatusBadRequest, res.StatusCode)
+	body, err := io.ReadAll(res.Body)
+	require.NoError(t, err)
+	require.Contains(t, string(body), "quotation marks")
+}
+
+// #389: quotes that were never needed are dropped and the address is kept, so
+// "john"@example.com is accepted and stored as john@example.com.
+func TestGuest_AnAddressWithUnneededQuotesIsStoredWithoutThem(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, true))
+
+	res := h.doGuest(t, http.MethodPost, "/api/v1/guest/tickets", "", map[string]any{
+		"subject": "Door will not open", "description": "it sticks",
+		"category_id": h.catID.String(), "guest_email": `"john"@example.com`, "guest_name": "John",
+	})
+	defer res.Body.Close()
+	require.Equal(t, http.StatusCreated, res.StatusCode)
+	var out map[string]string
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&out))
+
+	tk, err := h.ticketSvc.GetByTrackingNumber(ctx, ticket.TrackingNumber(out["tracking_number"]))
+	require.NoError(t, err)
+	full, err := h.ticketSvc.GetByID(ctx, tk.ID)
+	require.NoError(t, err)
+	require.NotNil(t, full.GuestEmail)
+	require.Equal(t, "john@example.com", *full.GuestEmail)
 }
 
 // A guest cannot choose their own priority: that is a queue anyone on the
@@ -267,7 +315,7 @@ func TestGuest_CanReplyToTheirOwnTicketOnly(t *testing.T) {
 
 	// A second guest ticket's token must not reach the first.
 	other := "other@test.local"
-	tk2, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk2, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Other", Description: "x", CategoryID: h.catID,
 		GuestEmail: &other, GuestName: "Bo",
 	})
@@ -282,11 +330,19 @@ func TestGuest_CanReplyToTheirOwnTicketOnly(t *testing.T) {
 		"one token, one ticket — and no parameter to change")
 }
 
-// Expiry and closure are decided inside the query, not in Go. This exercises
-// that against the real database: the domain fake asserts the same rules, and
-// a fake that were more permissive than Postgres would make every other guest
-// test optimistic.
-func TestGuest_ClosingTheTicketStopsTheLinkAtTheQuery(t *testing.T) {
+// Closing STOPS ROTATING the link; it does not revoke it (#349).
+//
+// This test was TestGuest_ClosingTheTicketStopsTheLinkAtTheQuery and pinned
+// the opposite: after a close, reading answered 404 because the query refused
+// a closed ticket. The rule now: a closed ticket is an archive its requester
+// may still READ with the last link sent, until it expires. Writing is refused
+// with the same 404 a bad link gets, so the refusal does not reveal that the
+// ticket exists.
+//
+// Run against the real database: the domain fake asserts the same rules, and a
+// fake more permissive than Postgres would make every other guest test
+// optimistic.
+func TestGuest_ClosingTheTicketLeavesTheLinkReadOnly(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	ctx := context.Background()
@@ -301,25 +357,36 @@ func TestGuest_ClosingTheTicketStopsTheLinkAtTheQuery(t *testing.T) {
 
 	res = h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket", token, nil)
 	defer res.Body.Close()
-	require.Equal(t, http.StatusNotFound, res.StatusCode,
-		"closing revokes, and the query refuses even if a row somehow survived")
+	require.Equal(t, http.StatusOK, res.StatusCode,
+		"closing stops rotating, it does not revoke: the archive stays readable")
+	var view struct {
+		Status string `json:"status"`
+	}
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&view))
+	require.Equal(t, ticket.StatusNameClosed, view.Status)
 
-	// And replying is refused too, not merely reading.
+	// Replying is refused — and refused as a bad link is, not as "closed".
 	reply := h.doGuest(t, http.MethodPost, "/api/v1/guest/replies", token,
 		map[string]any{"body": "hello?"})
 	defer reply.Body.Close()
 	require.Equal(t, http.StatusNotFound, reply.StatusCode)
+	replies, err := h.ticketSvc.ListReplies(ctx, tk.ID)
+	require.NoError(t, err)
+	require.Empty(t, replies)
 }
 
-// The closure clause in GetTicketByGuestToken, exercised where only it can
-// answer.
+// The closure rule exercised where only the status can answer.
 //
-// The earlier version of this closed the ticket, which deletes the row — so it
-// passed with the clause removed, and was decorative for the thing it claimed
-// to test. Here the row is left in place and the ticket closed underneath it,
-// which is the state the clause exists for: a token that outlived its DELETE,
-// or a close that revoked nothing because the delete failed.
-func TestGuest_AQueryRefusesATokenOnAClosedTicketEvenIfTheRowSurvives(t *testing.T) {
+// This was TestGuest_AQueryRefusesATokenOnAClosedTicketEvenIfTheRowSurvives:
+// it closed the ticket underneath a surviving token row and asserted the QUERY
+// refused it, which was the revocation rule's second line. There is no
+// revocation to back up any more (#349), so the pinned rule is reversed: the
+// query serves a closed ticket to a read, and the write lookup — which keys
+// on the ticket's status, not on how the ticket came to be closed — refuses
+// it. The row is left in place and the ticket closed without going through
+// Close(), so a rule that only worked when Close() deleted something would
+// fail here.
+func TestGuest_AQueryServesAClosedTicketToAReadAndTheWriteLookupRefusesIt(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	ctx := context.Background()
@@ -329,7 +396,7 @@ func TestGuest_AQueryRefusesATokenOnAClosedTicketEvenIfTheRowSurvives(t *testing
 	res.Body.Close()
 	require.Equal(t, http.StatusOK, res.StatusCode, "precondition")
 
-	// Close the ticket without going through Close(), so the token row stays.
+	// Close the ticket without going through Close().
 	full, err := h.ticketSvc.GetByID(ctx, tk.ID)
 	require.NoError(t, err)
 	now := time.Now()
@@ -339,13 +406,24 @@ func TestGuest_AQueryRefusesATokenOnAClosedTicketEvenIfTheRowSurvives(t *testing
 
 	res = h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket", token, nil)
 	defer res.Body.Close()
-	require.Equal(t, http.StatusNotFound, res.StatusCode,
-		"the query must refuse a live row against a closed ticket")
+	require.Equal(t, http.StatusOK, res.StatusCode,
+		"the query must serve a closed ticket to a link that is still live")
+
+	reply := h.doGuest(t, http.MethodPost, "/api/v1/guest/replies", token, map[string]any{"body": "x"})
+	defer reply.Body.Close()
+	require.Equal(t, http.StatusNotFound, reply.StatusCode)
 }
 
-// The same clause on the re-request lookup, for the same reason: a resend must
-// not resurrect access to a closed ticket.
-func TestGuest_ResendFindsNothingForAClosedTicket(t *testing.T) {
+// The re-request lookup finds a closed ticket (#349).
+//
+// This was TestGuest_ResendFindsNothingForAClosedTicket: "a resend must not
+// resurrect access to a closed ticket". Closing no longer revokes anything, so
+// there is no access to resurrect; the decision (DESIGN.md → Guest Submission)
+// is that a guest may ask for a link to READ their archived ticket. Both halves
+// must still match. The link it is sent is read-only, which the write routes
+// below enforce, and is added beside the existing ones rather than rotating
+// them.
+func TestGuest_ResendStillFindsAClosedTicket(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	ctx := context.Background()
@@ -361,9 +439,11 @@ func TestGuest_ResendFindsNothingForAClosedTicket(t *testing.T) {
 	full.ClosedAt = &now
 	require.NoError(t, h.ticketStore.Update(ctx, full))
 
-	_, err = h.ticketSvc.GuestTicketIDFor(ctx, tk.TrackingNumber, "guest@test.local")
-	require.ErrorIs(t, err, ticket.ErrGuestTokenNotFound,
-		"a closed ticket must not be reachable by re-request")
+	id, err := h.ticketSvc.GuestTicketIDFor(ctx, tk.TrackingNumber, "guest@test.local")
+	require.NoError(t, err, "a closed ticket is archived, not erased")
+	require.Equal(t, tk.ID, id)
+	_, err = h.ticketSvc.GuestTicketIDFor(ctx, tk.TrackingNumber, "someone@else.test")
+	require.ErrorIs(t, err, ticket.ErrGuestTokenNotFound, "both halves still have to match")
 }
 
 // from_you is how a guest tells their own words from support's. Asserting only
@@ -375,10 +455,10 @@ func TestGuest_FromYouDistinguishesTheTwoSides(t *testing.T) {
 	tk, token := seedGuestTicket(t, h)
 
 	staff := ticket.Actor{UserID: &h.staffID, Role: user.RoleStaff}
-	_, err := h.ticketSvc.AddReply(ctx, tk.ID, "We are on it", false, true,
+	_, err := h.ticketSvc.AddReply(ctx, tk.ID, "We are on it", ticket.TextFormatPlain, false, true,
 		"guest@test.local", staff, 7, statusIDNamed(t, h, ticket.StatusNameNew))
 	require.NoError(t, err)
-	_, err = h.ticketSvc.AddGuestReply(ctx, tk.ID, "thank you", 7, statusIDNamed(t, h, ticket.StatusNameNew))
+	_, err = h.ticketSvc.AddGuestReply(ctx, tk.ID, "thank you", ticket.TextFormatPlain, 7, statusIDNamed(t, h, ticket.StatusNameNew))
 	require.NoError(t, err)
 
 	// The staff reply rotated the link, so use a current one.
@@ -405,12 +485,12 @@ func TestGuest_FromYouDistinguishesTheTwoSides(t *testing.T) {
 }
 
 // Closing by status change is pinned in the domain suite
-// (TestGuestToken_StatusChangeToClosedMintsNothing), where the dispatched
-// event is visible. A server-level version lived here and was decorative: both
-// its assertions hold whether the branch revokes or rotates, because
-// closed_at gates the query either way.
+// (TestGuestToken_StatusChangeToClosedChangesNothing), where the dispatched
+// event is visible. A server-level version lived here and was decorative: it
+// could not tell a close that mails a link from one that mails nothing.
 
-// The per-ticket resend budget lives in the handler, and the budget is the
+// The per-ticket resend budget lives in Server.PrepareGuestLink, charged at
+// send time, and the budget is the
 // RateLimiter's contract, so it is asserted where it can actually be observed:
 // the limiter directly, and the endpoint answering identically either way.
 //
@@ -511,8 +591,13 @@ func TestGuest_AnExpiredRowIsRefusedByTheQuery(t *testing.T) {
 
 	raw, hashed, err := auth.GenerateToken()
 	require.NoError(t, err)
+	// An hour, not a second. The row's expiry comes from this process's clock
+	// and the query compares it against Postgres's, so a one-second margin is
+	// a race between two machines' idea of now — it passes almost always and
+	// fails in CI for reasons nobody can reproduce. An hour is as expired as a
+	// second for what this test asks, and it is not a race.
 	require.NoError(t, h.ticketStore.CreateGuestToken(ctx, uuid.New(), tk.ID, hashed,
-		time.Now().Add(-time.Second)))
+		time.Now().Add(-time.Hour)))
 
 	res := h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket", raw, nil)
 	defer res.Body.Close()
@@ -647,4 +732,74 @@ func TestGuest_AMissDoesNotSpendTheTicketsBudget(t *testing.T) {
 	defer gone.Body.Close()
 	require.Equal(t, http.StatusNotFound, gone.StatusCode,
 		"misses must not have spent the budget the customer needs")
+}
+
+// When guest submission is switched off, all three token routes answer 404:
+// existing links are revoked and cannot read, reply, or upload until the
+// setting is turned back on.
+func TestGuest_TokenRoutesRefusedWhenSubmissionDisabled(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// Enable submission and seed a guest ticket.
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, true))
+	_, token := seedGuestTicket(t, h)
+	setGuestUploads(t, h, true) // off by default (#445)
+
+	// Verify all three token routes work with the setting ON.
+	getRes := h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket", token, nil)
+	getRes.Body.Close()
+	require.Equal(t, http.StatusOK, getRes.StatusCode, "GET /guest/ticket should work with setting ON")
+
+	replyRes := h.doGuest(t, http.MethodPost, "/api/v1/guest/replies", token,
+		map[string]any{"body": "test reply"})
+	replyRes.Body.Close()
+	require.Equal(t, http.StatusCreated, replyRes.StatusCode, "POST /guest/replies should work with setting ON")
+
+	attachRes := h.doGuest(t, http.MethodPost, "/api/v1/guest/attachments", token, nil)
+	attachRes.Body.Close()
+	require.Equal(t, http.StatusBadRequest, attachRes.StatusCode, "POST /guest/attachments needs multipart form; testing that it reaches the handler")
+
+	// Turn submission OFF.
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, false))
+
+	// All three token routes should now return 404 with the standard guest not-found body.
+	expectedBody := `{"error":{"code":"not_found","message":"not found"}}` + "\n"
+
+	getRes = h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket", token, nil)
+	getBody, _ := io.ReadAll(getRes.Body)
+	getRes.Body.Close()
+	require.Equal(t, http.StatusNotFound, getRes.StatusCode, "GET /guest/ticket should be 404 with setting OFF")
+	require.Equal(t, expectedBody, string(getBody), "GET /guest/ticket body should match")
+
+	replyRes = h.doGuest(t, http.MethodPost, "/api/v1/guest/replies", token,
+		map[string]any{"body": "test reply"})
+	replyBody, _ := io.ReadAll(replyRes.Body)
+	replyRes.Body.Close()
+	require.Equal(t, http.StatusNotFound, replyRes.StatusCode, "POST /guest/replies should be 404 with setting OFF")
+	require.Equal(t, expectedBody, string(replyBody), "POST /guest/replies body should match")
+
+	attachRes = h.doGuest(t, http.MethodPost, "/api/v1/guest/attachments", token, nil)
+	attachBody, _ := io.ReadAll(attachRes.Body)
+	attachRes.Body.Close()
+	require.Equal(t, http.StatusNotFound, attachRes.StatusCode, "POST /guest/attachments should be 404 with setting OFF")
+	require.Equal(t, expectedBody, string(attachBody), "POST /guest/attachments body should match")
+
+	// Turn submission back ON.
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, true))
+
+	// All three token routes should work again.
+	getRes = h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket", token, nil)
+	getRes.Body.Close()
+	require.Equal(t, http.StatusOK, getRes.StatusCode, "GET /guest/ticket should work again with setting ON")
+
+	replyRes = h.doGuest(t, http.MethodPost, "/api/v1/guest/replies", token,
+		map[string]any{"body": "test reply"})
+	replyRes.Body.Close()
+	require.Equal(t, http.StatusCreated, replyRes.StatusCode, "POST /guest/replies should work again with setting ON")
+
+	attachRes = h.doGuest(t, http.MethodPost, "/api/v1/guest/attachments", token, nil)
+	attachRes.Body.Close()
+	require.Equal(t, http.StatusBadRequest, attachRes.StatusCode, "POST /guest/attachments should reach handler with setting ON")
 }

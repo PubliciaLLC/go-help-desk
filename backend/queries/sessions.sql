@@ -10,14 +10,34 @@
 -- load. This costs no extra round trip, since the session lookup already
 -- queries the database on every authenticated request.
 --
+-- A service user (an OAuth client's identity, #420) never signs in, so no
+-- session for one loads either. Nothing writes such a session; this keeps the
+-- guarantee from depending on that.
+--
 -- LEFT JOIN, and user_id IS NULL passes: the OIDC flow writes state (nonce,
 -- PKCE verifier) into a session before anybody has authenticated, and an inner
 -- join would drop those and break the login it is protecting.
-SELECT sqlc.embed(s) FROM sessions s
+-- The role comes back with it, and it is the one in the database rather than
+-- the one in the cookie.
+--
+-- The session payload carries a role, written when the session was minted.
+-- That made the cookie the authority on what somebody may do, and it went
+-- stale exactly when it mattered: demoting an administrator revokes their
+-- sessions, but a request already in flight — a password change, which the
+-- account holder can time and which spends 50-odd milliseconds hashing —
+-- finished afterwards and minted a NEW session carrying the role it had read
+-- on the way in. The demotion was in the database and the attacker was an
+-- administrator again. Measured: the demotion landed 52ms into a 93ms
+-- request, and the re-issued cookie read /admin/users afterwards.
+--
+-- Disabling and deleting were never vulnerable to this, because the join
+-- below already drops those rows on every request. Role was the one piece of
+-- authority left being carried rather than looked up.
+SELECT sqlc.embed(s), u.role AS user_role FROM sessions s
 LEFT JOIN users u ON u.id = s.user_id
 WHERE s.id = $1
   AND s.expires_at > clock_timestamp()
-  AND (s.user_id IS NULL OR (u.disabled = FALSE AND u.deleted_at IS NULL));
+  AND (s.user_id IS NULL OR (u.disabled = FALSE AND u.deleted_at IS NULL AND u.service_account = FALSE));
 
 -- name: UpsertSession :exec
 -- The lifetime is a duration in seconds, not a timestamp, so that expires_at is
@@ -60,3 +80,17 @@ DELETE FROM sessions WHERE user_id = $1;
 
 -- name: DeleteExpiredSessions :execrows
 DELETE FROM sessions WHERE expires_at <= clock_timestamp();
+
+-- name: SpendSAMLHandover :execrows
+-- One row affected: this is the cookie's first use. Zero: it was spent before.
+-- ON CONFLICT rather than SELECT-then-INSERT, so that two concurrent requests
+-- carrying the same cookie cannot both see "not spent" (#337).
+INSERT INTO spent_saml_handovers (token_hash) VALUES ($1)
+ON CONFLICT (token_hash) DO NOTHING;
+
+-- name: DeleteStaleSAMLHandovers :exec
+-- A row only has to outlive the cookie it records. The cookie lives 5 minutes
+-- (auth.SAMLHandoverMaxAge). A day leaves a wide margin for clock differences
+-- between the replica that minted the cookie (whose clock sets its expiry) and
+-- this database (whose clock sets spent_at).
+DELETE FROM spent_saml_handovers WHERE spent_at < clock_timestamp() - interval '1 day';

@@ -170,13 +170,16 @@ func (q *Queries) RemoveTicketTag(ctx context.Context, arg RemoveTicketTagParams
 	return err
 }
 
-const restoreTag = `-- name: RestoreTag :exec
+const restoreTag = `-- name: RestoreTag :execrows
 UPDATE tags SET deleted_at = NULL WHERE id = $1
 `
 
-func (q *Queries) RestoreTag(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.ExecContext(ctx, restoreTag, id)
-	return err
+func (q *Queries) RestoreTag(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, restoreTag, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const searchActiveTags = `-- name: SearchActiveTags :many
@@ -211,11 +214,16 @@ func (q *Queries) SearchActiveTags(ctx context.Context, name string) ([]Tag, err
 	return items, nil
 }
 
-const softDeleteTag = `-- name: SoftDeleteTag :exec
-UPDATE tags SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL
+const softDeleteTag = `-- name: SoftDeleteTag :execrows
+UPDATE tags SET deleted_at = COALESCE(deleted_at, now()) WHERE id = $1
 `
 
-func (q *Queries) SoftDeleteTag(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.ExecContext(ctx, softDeleteTag, id)
-	return err
+// A tag that is already deleted keeps its original deleted_at but still counts
+// as found, so only an unknown id reports zero rows.
+func (q *Queries) SoftDeleteTag(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, softDeleteTag, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

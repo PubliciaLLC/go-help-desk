@@ -27,7 +27,7 @@ func TestProtectMCP_RealSSETransport_Streams(t *testing.T) {
 	defer cleanup()
 
 	prefix := func(context.Context) string { return "GHD" }
-	mcpSrv := mcp.New(h.ticketSvc, prefix, h.srv, h.categorySvc)
+	mcpSrv := mcp.New(h.ticketSvc, prefix, h.srv, h.categorySvc, h.srv)
 	handler := h.srv.ProtectMCP(mcpSrv.Handler())
 
 	ts := httptest.NewServer(handler)

@@ -42,7 +42,7 @@ describe('the token never travels in a URL', () => {
     const [path, body, config] = post.mock.calls[0]
     expect(path).toBe('/replies')
     expect(path).not.toContain('secret-token')
-    expect(body).toEqual({ body: 'hi' })
+    expect(body).toEqual({ body: 'hi', format: 'markdown' })
     expect(config.headers.Authorization).toBe('Guest secret-token')
   })
 })
@@ -83,6 +83,8 @@ describe('creating a ticket', () => {
     })
 
     expect(post.mock.calls[0][0]).toBe('/tickets')
+    // #443: the guest form uses the editor, so it says so.
+    expect(post.mock.calls[0][1]).toHaveProperty('format', 'markdown')
     // The instance is created with baseURL /api/v1/guest, which is what makes
     // that path the guest route rather than the one behind RequireRole.
   })

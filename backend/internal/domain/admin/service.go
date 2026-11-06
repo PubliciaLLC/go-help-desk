@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/antivirus"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
@@ -93,6 +95,22 @@ func (s *Service) SAMLEnabled(ctx context.Context) bool {
 	return v
 }
 
+// SetSAMLEnabled persists whether SAML authentication is enabled — read by
+// user.IsLocalAuthAllowed to decide whether non-admins keep password login
+// once SAML is configured (a stricter posture an operator opts into
+// separately from whether SAML itself is configured at all). #304 first
+// treated this as also gating whether the SAML middleware loads, the way
+// oidc_enabled gates OIDC — that conflated two different questions under
+// one flag operators already use for the first one, and would have flipped
+// existing SAML deployments into refusing every non-admin's password login
+// the moment the flag's OTHER meaning was backfilled to true. Reverted
+// before merge; middleware reachability depends only on the three config
+// fields being present, as it always has. See PR #304's thread and
+// buildSAMLMiddleware's own comment.
+func (s *Service) SetSAMLEnabled(ctx context.Context, v bool) error {
+	return s.SetBool(ctx, KeySAMLEnabled, v)
+}
+
 // GetSAMLConfig returns the three SAML SP fields stored in settings.
 // Missing keys are returned as empty strings (treated as unconfigured).
 func (s *Service) GetSAMLConfig(ctx context.Context) (metadataURL, certPEM, keyPEM string) {
@@ -121,10 +139,11 @@ func (s *Service) GetOIDCConfig(ctx context.Context) auth.OIDCConfig {
 	}
 }
 
-// SAMLConfigured returns true when all three SAML fields are non-empty.
+// SAMLConfigured returns true when the IdP metadata (a URL or XML), the
+// certificate and the key are all non-empty.
 func (s *Service) SAMLConfigured(ctx context.Context) bool {
 	u, c, k := s.GetSAMLConfig(ctx)
-	return u != "" && c != "" && k != ""
+	return (u != "" || s.GetSAMLMetadataXML(ctx) != "") && c != "" && k != ""
 }
 
 // OIDCConfigured returns true when required OIDC settings exist.
@@ -180,13 +199,77 @@ func (s *Service) SetSAMLConfig(ctx context.Context, metadataURL, certPEM, keyPE
 	return nil
 }
 
+// GetSAMLMetadataXML returns the pasted IdP metadata, or "" when the metadata
+// is given by URL or not at all.
+func (s *Service) GetSAMLMetadataXML(ctx context.Context) string {
+	v, _ := s.GetString(ctx, KeySAMLMetadataXML)
+	return v
+}
+
+// SetSAMLMetadataXML persists the pasted IdP metadata. "" clears it.
+func (s *Service) SetSAMLMetadataXML(ctx context.Context, xml string) error {
+	if err := s.SetString(ctx, KeySAMLMetadataXML, xml); err != nil {
+		return fmt.Errorf("saving saml_metadata_xml: %w", err)
+	}
+	return nil
+}
+
 // GuestSubmissionEnabled returns whether unauthenticated ticket submission is allowed.
 func (s *Service) GuestSubmissionEnabled(ctx context.Context) bool {
 	v, _ := s.GetBool(ctx, KeyGuestSubmissionEnabled)
 	return v
 }
 
-// SLAEnabled returns whether SLA tracking is active.
+// GuestAttachmentsEnabled reports whether a guest may attach files from the web
+// page (#445). Off by default, upgrades included: before this setting a guest
+// could upload through the API whenever guest submission was on, and that is
+// now closed until an administrator opens it.
+//
+// It is only ever true while guest submission is on. Reading both here, rather
+// than in each caller, is what makes "dependent on guest submission" a property
+// of the setting and not something a handler has to remember.
+func (s *Service) GuestAttachmentsEnabled(ctx context.Context) bool {
+	if !s.GuestSubmissionEnabled(ctx) {
+		return false
+	}
+	v, _ := s.GetBool(ctx, KeyGuestAttachmentsEnabled)
+	return v
+}
+
+// GuestAttachmentMaxMB is a guest's per-file maximum in megabytes (#445), 1 to
+// 100, 5 until an administrator says otherwise. Unset, unreadable or out of
+// range reads as the default: a damaged row must not quietly lift the cap.
+// The instance-wide attachment maximum still applies on top; the handler takes
+// the lower of the two.
+func (s *Service) GuestAttachmentMaxMB(ctx context.Context) int {
+	v, err := s.GetInt(ctx, KeyGuestAttachmentMaxMB)
+	if err != nil || !ValidGuestAttachmentMaxMB(v) {
+		return GuestAttachmentMaxMBDefault
+	}
+	return v
+}
+
+// GuestAttachmentMaxPerTicket is the most files guests may attach to one ticket
+// (#445), 1 to 50, 5 by default. Unset, unreadable or out of range reads as the
+// default: a damaged row must not quietly lift the cap.
+func (s *Service) GuestAttachmentMaxPerTicket(ctx context.Context) int {
+	v, err := s.GetInt(ctx, KeyGuestAttachmentMaxPerTicket)
+	if err != nil || !ValidGuestAttachmentMaxPerTicket(v) {
+		return GuestAttachmentMaxPerTicketDefault
+	}
+	return v
+}
+
+// GuestAttachmentUploadsPerHour is how many uploads one guest link may make in
+// an hour (#445), 1 to 30, 3 by default, with the same fallback.
+func (s *Service) GuestAttachmentUploadsPerHour(ctx context.Context) int {
+	v, err := s.GetInt(ctx, KeyGuestAttachmentUploadsPerHour)
+	if err != nil || !ValidGuestAttachmentUploadsPerHour(v) {
+		return GuestAttachmentUploadsPerHourDefault
+	}
+	return v
+}
+
 // TicketPrefix returns the configured tracking-number prefix, falling back to
 // the default when unset or invalid.
 func (s *Service) TicketPrefix(ctx context.Context) string {
@@ -210,9 +293,119 @@ func (s *Service) TicketScopeEnforced(ctx context.Context) bool {
 	return v
 }
 
-func (s *Service) SLAEnabled(ctx context.Context) bool {
-	v, _ := s.GetBool(ctx, KeySLAEnabled)
+// StaffCanViewTicketChangeHistory returns whether staff may see the
+// field-level before/after diff on an audit entry, on top of the
+// action/actor/timestamp every staff member already sees. Off by default.
+func (s *Service) StaffCanViewTicketChangeHistory(ctx context.Context) bool {
+	v, _ := s.GetBool(ctx, KeyStaffCanViewTicketChangeHistory)
 	return v
+}
+
+// StaffCanViewFollowAudit returns whether staff may see the entries recording
+// who followed and unfollowed a ticket (#441). Off by default; administrators
+// always see them and requesters never do.
+func (s *Service) StaffCanViewFollowAudit(ctx context.Context) bool {
+	v, _ := s.GetBool(ctx, KeyStaffCanViewFollowAudit)
+	return v
+}
+
+// StaffCanCreateAPIKeys returns whether staff may create their own API keys
+// (#450). Off by default. Administrators do not consult it, and a requester is
+// refused whatever it says. Turning it off does not touch keys that already
+// exist: it stops new ones being made.
+func (s *Service) StaffCanCreateAPIKeys(ctx context.Context) bool {
+	v, _ := s.GetBool(ctx, KeyStaffCanCreateAPIKeys)
+	return v
+}
+
+// APIKeyMaxLifetimeYears is the longest a new API key may live, in years (1 to
+// 5), or APIKeyNoLimit (#450). Unset, unreadable or not one of those reads as
+// the default of 2: a damaged row must not quietly lift the cap.
+func (s *Service) APIKeyMaxLifetimeYears(ctx context.Context) int {
+	v, err := s.GetInt(ctx, KeyAPIKeyMaxLifetimeYears)
+	if err != nil || !ValidAPIKeyMaxLifetime(v) {
+		return APIKeyMaxLifetimeDefault
+	}
+	return v
+}
+
+// AuditRetentionDays returns the audit-log retention window in days, or
+// AuditRetentionForever when entries are kept indefinitely.
+//
+// Unset means forever, and that is the important part. Every release before
+// this one kept the audit log for good, because nothing pruned it — so a
+// default that prunes would delete history on upgrade from a file the
+// operator never edited, which is exactly the shape CLAUDE.md's "existing
+// behaviour must not change" rule exists to stop. An audit log is also the
+// worst thing in the system to shorten by accident: it is the record you
+// reach for after something has already gone wrong, and it cannot be
+// reconstructed.
+//
+// So pruning is opt-in. An operator who wants a window sets one; an operator
+// who does nothing keeps what they have always had.
+//
+// A negative value, or one that cannot be read, is also forever. This is the
+// "safe fallback, not a refusal" shape used by ReopenWindowDays, pointed in
+// the direction that loses nothing: a misconfigured retention setting should
+// fail towards keeping evidence, never towards destroying it.
+func (s *Service) AuditRetentionDays(ctx context.Context) int {
+	v, err := s.GetInt(ctx, KeyAuditRetentionDays)
+	if err != nil || v <= 0 {
+		return AuditRetentionForever
+	}
+	// Clamped here as well as at the handler. A value large enough to wrap
+	// AddDate turns the sweep's cutoff into a future date and deletes the
+	// whole log — the opposite of what somebody typing a huge number means —
+	// and the handler is not the only way a row can get into the table. The
+	// invariant this function is documented to hold is that a misconfigured
+	// value never destroys evidence; without this clamp that was true at the
+	// bottom of the range and false at the top.
+	if v > AuditRetentionMaxDays {
+		return AuditRetentionMaxDays
+	}
+	return v
+}
+
+// PasswordRehashGraceDays returns N, the days an account may stay on a password
+// hash below the current cost. Unset, unreadable or out of range is the
+// default: an unreadable row must neither refuse everyone now nor never.
+func (s *Service) PasswordRehashGraceDays(ctx context.Context) int {
+	v, err := s.GetInt(ctx, KeyPasswordRehashGraceDays)
+	if err != nil || v < PasswordRehashGraceMin || v > PasswordRehashGraceMax {
+		return PasswordRehashGraceDefault
+	}
+	return v
+}
+
+// PasswordRehashDeadline is when sign-in starts refusing hashes below the
+// current cost: the recorded first run of 1.3.0 plus N days. It reports false
+// when no start is recorded or it cannot be read, in which case nothing is
+// refused. Failing open is deliberate: the alternative is locking everyone out
+// over a damaged row. Implements user.PasswordExpiry.
+func (s *Service) PasswordRehashDeadline(ctx context.Context) (time.Time, bool) {
+	raw, err := s.GetString(ctx, KeyPasswordRehashStartedAt)
+	if err != nil {
+		return time.Time{}, false
+	}
+	started, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return started.AddDate(0, 0, s.PasswordRehashGraceDays(ctx)), true
+}
+
+// SLAEnabled returns whether SLA tracking is active, and any error reading
+// the underlying setting.
+//
+// Unlike every other *Enabled helper on this Service, the read failure is
+// returned rather than swallowed: a caller here gates whether SLA facts
+// (first_response_at, resolved_at) get recorded at all, and CLAUDE.md keeps
+// logging out of domain code, so the caller — cmd/server's gatedSLA, or the
+// handler in internal/server/ticket_view.go — is where a transient read
+// failure can actually be reported instead of silently defaulting to
+// "disabled" with nothing to explain why. See #216.
+func (s *Service) SLAEnabled(ctx context.Context) (bool, error) {
+	return s.GetBool(ctx, KeySLAEnabled)
 }
 
 // MFAEnabled returns whether MFA is available.
@@ -260,6 +453,50 @@ func (s *Service) ReopenTargetStatusName(ctx context.Context) string {
 	return v
 }
 
+// ClosedReopenPolicy returns the closed_reopen_policy setting: "off",
+// "admin" or "staff_admin" (the values are ticket.ReopenPolicy*). Read on every
+// call, never cached, because the ticket service decides a force-reopen with it
+// on the locked row. Unset, unreadable or unrecognised is "off" — Closed stays
+// terminal — never a permissive value.
+func (s *Service) ClosedReopenPolicy(ctx context.Context) string {
+	v, err := s.GetString(ctx, KeyClosedReopenPolicy)
+	if err != nil {
+		return "off"
+	}
+	switch v {
+	case "admin", "staff_admin":
+		return v
+	}
+	return "off"
+}
+
+// Requester-name masking values (#362).
+const (
+	MaskRequesterNamesAdminLog   = "admin_log"
+	MaskRequesterNamesTicketLog  = "ticket_log"
+	MaskRequesterNamesEverywhere = "everywhere"
+)
+
+// ValidMaskRequesterNames reports whether v is one of the three values.
+func ValidMaskRequesterNames(v string) bool {
+	switch v {
+	case MaskRequesterNamesAdminLog, MaskRequesterNamesTicketLog, MaskRequesterNamesEverywhere:
+		return true
+	}
+	return false
+}
+
+// AuditMaskRequesterNames returns where audit views mask requester names.
+// Unset, unreadable or unrecognised is "everywhere", the most masking: a
+// typo or a damaged row must never show requester names.
+func (s *Service) AuditMaskRequesterNames(ctx context.Context) string {
+	v, err := s.GetString(ctx, KeyAuditMaskRequesterNames)
+	if err != nil || !ValidMaskRequesterNames(v) {
+		return MaskRequesterNamesEverywhere
+	}
+	return v
+}
+
 // SiteName returns the configured site name, defaulting to "Go Help Desk".
 func (s *Service) SiteName(ctx context.Context) string {
 	v, err := s.GetString(ctx, KeySiteName)
@@ -303,6 +540,11 @@ func (s *Service) OpenRegistrationEnabled(ctx context.Context) bool {
 // ListAll returns all settings as raw JSON map.
 func (s *Service) ListAll(ctx context.Context) (map[string][]byte, error) {
 	return s.store.List(ctx)
+}
+
+// GetRaw returns the stored JSON for a key, or an error when there is none.
+func (s *Service) GetRaw(ctx context.Context, key string) ([]byte, error) {
+	return s.store.Get(ctx, key)
 }
 
 // SetRaw persists a raw JSON value for the given key.
@@ -363,6 +605,14 @@ func (s *Service) AttachmentScanPolicy(ctx context.Context, addrConfigured bool)
 	return antivirus.PolicyOff
 }
 
+// AttachmentScanPolicyExplicit reports whether an administrator has saved a
+// scan policy. Absent and invalid values both mean no: neither is a choice,
+// and AttachmentScanPolicy derives a default for each.
+func (s *Service) AttachmentScanPolicyExplicit(ctx context.Context) bool {
+	v, _ := s.GetString(ctx, KeyAttachmentScanPolicy)
+	return antivirus.ValidPolicy(v)
+}
+
 // AttachmentScanAddress is the operator's override for where the scanner
 // lives, empty when the environment value should stand.
 //
@@ -371,4 +621,232 @@ func (s *Service) AttachmentScanPolicy(ctx context.Context, addrConfigured bool)
 func (s *Service) AttachmentScanAddress(ctx context.Context) string {
 	v, _ := s.GetString(ctx, KeyAttachmentScanAddress)
 	return strings.TrimSpace(v)
+}
+
+// DefaultAllowedTypes is what an instance accepts as an attachment when the
+// operator has never said otherwise.
+//
+// It is exactly the set that was hard-coded in the upload handler before this
+// setting existed, neither trimmed to look safer nor extended from memory: an
+// instance that upgrades and never touches the setting must accept precisely
+// what it accepted before. The extension-to-MIME map in the server package
+// still needs an entry for every extension here.
+func DefaultAllowedTypes() []string {
+	return []string{".pdf", ".docx", ".xlsx", ".txt", ".log", ".jpg", ".jpeg", ".png", ".bmp"}
+}
+
+// AllowedTypes is what this instance accepts as an attachment, as a set of
+// lowercase extensions with the leading dot, ready for a membership test.
+//
+// It stopped being a security boundary when every download became
+// application/octet-stream with an attachment disposition and nothing is
+// rendered (#165 step 1). What is left is a policy choice about what a
+// deployment is willing to hold, which belongs to the operator: an IT team
+// triaging a suspicious .exe has a real reason to attach one, and a deployment
+// that wants PDF and nothing else has an equally real reason to say so.
+//
+// An absent, null or unparseable value means unset and falls back to the
+// default. An empty array does not: it is an operator saying this instance
+// takes no attachments at all, which is a legitimate choice.
+func (s *Service) AllowedTypes(ctx context.Context) map[string]bool {
+	list := DefaultAllowedTypes()
+	if raw, err := s.store.Get(ctx, KeyAttachmentAllowedTypes); err == nil {
+		var stored []string
+		if err := json.Unmarshal(raw, &stored); err == nil && stored != nil {
+			list = stored
+		}
+	}
+
+	set := make(map[string]bool, len(list)+1)
+	for _, ext := range list {
+		ext = strings.ToLower(strings.TrimSpace(ext))
+		set[ext] = true
+		// .jpg and .jpeg name one format, so allowing either allows both —
+		// the same normalisation attachment.IsMismatch applies, for the same
+		// reason. An operator who writes ".jpg" means JPEG images, and being
+		// surprised that ".jpeg" also works is a far smaller problem than
+		// being surprised that it does not, which reads as a broken setting.
+		switch ext {
+		case ".jpg":
+			set[".jpeg"] = true
+		case ".jpeg":
+			set[".jpg"] = true
+		}
+	}
+	return set
+}
+
+// InfectedHandling decides what happens to an upload the scanner identified as
+// malicious: InfectedHandlingRefuse or InfectedHandlingQuarantine.
+//
+// Defaults to "refuse", which is what every instance that upgrades into this
+// feature has. An ordinary help desk fielding printer problems should not
+// start storing malware because nobody said otherwise; an operator who wants
+// it should have said so.
+//
+// An unrecognised stored value falls back to "refuse" as well, never to
+// "quarantine" — the same rule as the scan policy, and here the value being
+// misread decides whether malware is written to disk.
+//
+// It only ever decides what to do with a verdict the scanner actually
+// returned. With the scan policy "off", or the scanner unreachable under
+// "permissive", nothing is ever identified as infected and this setting does
+// nothing at all.
+// ReputationEnabled reports whether this instance asks the named provider
+// about quarantined attachment hashes.
+//
+// False for every provider by default, and false for a name this build does
+// not know. All four off is a supported configuration and not a broken one:
+// it means attachments are judged by this instance's own scanner alone, which
+// is a complete answer and the deliberate choice of an operator who cannot
+// send customer file hashes to a third party.
+//
+// Whether the provider can actually run is a second question — a commercial
+// one still needs its key — and it is asked by reputation.CanLookup. The
+// settings endpoint refuses the combination that makes the two disagree, so
+// "enabled and silently doing nothing" is not a state an operator can reach
+// through the API.
+func (s *Service) ReputationEnabled(ctx context.Context, provider string) bool {
+	enabledKey, _, ok := ReputationSettingKeys(provider)
+	if !ok {
+		return false
+	}
+	v, _ := s.GetBool(ctx, enabledKey)
+	return v
+}
+
+// ReputationKey is the API key for one provider.
+//
+// Per provider, which the single key this replaced could not do: switching
+// from VirusTotal to MetaDefender used to destroy the key you had already
+// pasted, and an operator holding keys for two services had to choose between
+// them.
+//
+// Empty for CIRCL, always, because there is no such setting: it authenticates
+// nobody. Empty is also the answer for a provider this build does not know.
+//
+// The value is stored write-only — the settings endpoint accepts it and never
+// echoes it back — and it must stay that way on this side too: never logged,
+// never wrapped into an error, never returned to a client. The only thing it
+// is for is an outbound request header.
+//
+// Trimmed because an operator pasting a key picks up a trailing newline often
+// enough to matter, and because a setting containing nothing but spaces should
+// read as unconfigured rather than as a key the provider will reject.
+func (s *Service) ReputationKey(ctx context.Context, provider string) string {
+	_, apiKeyKey, ok := ReputationSettingKeys(provider)
+	if !ok || apiKeyKey == "" {
+		return ""
+	}
+	v, _ := s.GetString(ctx, apiKeyKey)
+	return strings.TrimSpace(v)
+}
+
+// EnabledReputationProviders is every provider this instance asks, in
+// ReputationProviders order.
+//
+// Ordered rather than a set, because the order decides which provider's answer
+// summarises the row when two are equally serious, and an order that came out
+// of map iteration would make that summary change between renders.
+//
+// An empty slice is the ordinary state of a fresh instance and means the
+// reputation block is absent from the payload entirely — not "not checked
+// yet", which describes a lookup that was attempted and did not finish.
+func (s *Service) EnabledReputationProviders(ctx context.Context) []string {
+	var out []string
+	for _, p := range ReputationProviders() {
+		if s.ReputationEnabled(ctx, p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func (s *Service) InfectedHandling(ctx context.Context) string {
+	v, _ := s.GetString(ctx, KeyAttachmentInfectedHandling)
+	if v == InfectedHandlingQuarantine {
+		return InfectedHandlingQuarantine
+	}
+	return InfectedHandlingRefuse
+}
+
+// MismatchHandling decides what happens to an upload whose content contradicts
+// its extension, where the detected type is not on the allowlist either:
+// MismatchHandlingRefuse or MismatchHandlingWrap.
+//
+// Defaults to "refuse", which is what every release before this feature did.
+// A file that lied about its type was answered with a 415, and an upgrade
+// nobody opted into must not quietly start storing one instead.
+//
+// An unrecognised stored value falls back to "refuse" as well, never to
+// "wrap" — the same rule, and the same direction, as InfectedHandling: a typo
+// must not land on the permissive option.
+//
+// It governs one condition and swaps only the action taken on it. A mismatch
+// whose detected type IS accepted is flagged and stored under its own name
+// either way, and a file the scanner identified is governed by
+// InfectedHandling instead; this setting never applies to it.
+func (s *Service) MismatchHandling(ctx context.Context) string {
+	v, _ := s.GetString(ctx, KeyAttachmentMismatchHandling)
+	if v == MismatchHandlingWrap {
+		return MismatchHandlingWrap
+	}
+	return MismatchHandlingRefuse
+}
+
+// ReputationRefresh is how often this instance re-checks a stored verdict:
+// "weekly", "biweekly" (the default), "monthly", "quarterly" or "never".
+//
+// Anything unrecognised falls back to the default rather than to "never", and
+// the direction matters: a typo must not silently switch automatic re-checking
+// off, because the symptom is a verdict that stays on screen looking current
+// for as long as the instance lives.
+func (s *Service) ReputationRefresh(ctx context.Context) string {
+	v, _ := s.GetString(ctx, KeyAttachmentReputationRefresh)
+	if ValidReputationRefresh(v) {
+		return v
+	}
+	return ReputationRefreshBiweekly
+}
+
+// ReputationRefreshInterval is the same setting as a duration: how old a
+// non-detected verdict may be before the next lookup re-fetches it.
+//
+// Zero means "never", and it is the caller's job to read it that way. An
+// interval of zero compared against an age would make every verdict stale on
+// every render — the exact opposite of the setting, spending the operator's
+// allowance to do it.
+func (s *Service) ReputationRefreshInterval(ctx context.Context) time.Duration {
+	const day = 24 * time.Hour
+	switch s.ReputationRefresh(ctx) {
+	case ReputationRefreshWeekly:
+		return 7 * day
+	case ReputationRefreshMonthly:
+		return 30 * day
+	case ReputationRefreshQuarterly:
+		return 90 * day
+	case ReputationRefreshNever:
+		return 0
+	default:
+		return 14 * day
+	}
+}
+
+// StaffEmailOverrides reads the administrator's override of each staff-email
+// switch (#441). Read on every call, never cached, so a change applies to the
+// next email. Unset, unreadable or unrecognised is "user": the person's own
+// switch, never a forced one.
+func (s *Service) StaffEmailOverrides(ctx context.Context) notification.StaffOverrides {
+	mode := func(key string) notification.OverrideMode {
+		v, err := s.GetString(ctx, key)
+		if err != nil || !notification.ValidOverrideMode(v) {
+			return notification.OverrideUser
+		}
+		return notification.OverrideMode(v)
+	}
+	return notification.StaffOverrides{
+		Assigned: mode(KeyStaffEmailAssignedOverride),
+		Activity: mode(KeyStaffEmailActivityOverride),
+		Group:    mode(KeyStaffEmailGroupOverride),
+	}
 }

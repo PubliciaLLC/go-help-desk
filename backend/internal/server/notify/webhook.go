@@ -5,32 +5,189 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/tls"
+	"database/sql"
 	"encoding/hex"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/publiciallc/go-help-desk/backend/internal/safehttp"
+	"io"
+	"log/slog"
+	"maps"
+	"net"
 	"net/http"
+	"net/url"
+	"slices"
+	"strconv"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/authstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 )
 
-// WebhookStore is the interface needed to load enabled webhook configs.
+// WebhookEvents is the list of event types that can be subscribed to via
+// webhooks. The list and IsWebhookEvent live in the notification package (#506),
+// where the transaction runner needs them to decide which channels carry a
+// change.
+var WebhookEvents = notification.WebhookEvents
+
+// IsWebhookEvent reports whether e is "*" or one of WebhookEvents.
+// Exact, case-sensitive, untrimmed: the same comparison hookSubscribes makes.
+func IsWebhookEvent(e string) bool { return notification.IsWebhookEvent(e) }
+
+// Delivery error classes stored on the hook. A class, never a message: see
+// migration 000034, whose CHECK lists exactly these.
+const (
+	DeliveryHTTPStatus     = "http_status" // a response came back, not 2xx
+	DeliveryTimeout        = "timeout"
+	DeliveryDNS            = "dns"
+	DeliveryTLS            = "tls"
+	DeliveryBlockedAddress = "blocked_address" // safehttp refused an internal address
+	DeliveryConnection     = "connection"      // refused, reset, closed without a response
+	DeliveryOther          = "other"
+)
+
+// DeliveryErrors lists every class, for the test that pins it to the CHECK.
+var DeliveryErrors = []string{DeliveryHTTPStatus, DeliveryTimeout, DeliveryDNS, DeliveryTLS, DeliveryBlockedAddress, DeliveryConnection, DeliveryOther}
+
+// Why a queued retry was dropped (#499). The history shows one of these beside
+// the "dropped" result. Like DeliveryErrors it is a class, never text, and the
+// list is pinned to the CHECK on webhook_deliveries.drop_reason (migration
+// 000051). A deleted hook is not here: its history goes with it.
+const (
+	DropDisabled     = "disabled"     // the hook was switched off
+	DropUnsubscribed = "unsubscribed" // the hook no longer lists the event
+	DropURLChanged   = "url_changed"  // the hook was pointed somewhere else
+	DropFilter       = "filter"       // the hook's ticket filter no longer admits the ticket
+	DropPaused       = "paused"       // its API key, or that key's owner, is no longer active (#450)
+	DropUnbuildable  = "unbuildable"  // the body cannot be built, and would not be next time either
+)
+
+// DropReasons lists every reason, for the test that pins it to the CHECK.
+var DropReasons = []string{DropDisabled, DropUnsubscribed, DropURLChanged, DropFilter, DropPaused, DropUnbuildable}
+
+// WebhookStore is the interface needed to load enabled webhook configs and record delivery results.
 type WebhookStore interface {
 	ListEnabledWebhooks(ctx context.Context) ([]authstore.WebhookConfig, error)
+	RecordWebhookDelivery(ctx context.Context, id uuid.UUID, url string, d authstore.WebhookDelivery) error
 }
+
+// WebhookLookup reads one hook, for the delivery of a queued row.
+type WebhookLookup interface {
+	GetWebhook(ctx context.Context, id uuid.UUID) (authstore.WebhookConfig, error)
+}
+
+// WebhookHistory keeps each delivery's attempts and the event Redeliver sends
+// again (#448).
+type WebhookHistory interface {
+	RecordWebhookAttempt(ctx context.Context, a authstore.WebhookAttempt) error
+	// MarkWebhookDeliveryDropped turns a delivery's "retrying" entry into
+	// "dropped" (#499). A delivery that is not retrying is left as it is.
+	MarkWebhookDeliveryDropped(ctx context.Context, hookID, deliveryID uuid.UUID, reason string) error
+	GetWebhookDeliveryEvent(ctx context.Context, hookID, deliveryID uuid.UUID) ([]byte, error)
+}
+
+// TicketFacts are the values a chat or ITSM message names, read from the ticket
+// as it is now.
+type TicketFacts struct {
+	Subject        string
+	TrackingNumber string
+	StatusName     string // the ticket's current status
+	Priority       string
+	// State is the ticket as it is now, for the webhook filter (#413). Nil when
+	// the source cannot say.
+	State *notification.TicketState
+}
+
+// EventSource reads the ticket fresh, so Redeliver can rebuild a chat message
+// without the history having kept any content.
+type EventSource interface {
+	// TicketFacts reports false when the ticket no longer exists.
+	TicketFacts(ctx context.Context, ticketID uuid.UUID) (TicketFacts, bool, error)
+	// PublicReplyBody returns the text of a reply that exists on that ticket and
+	// is public. It reports false for a missing, deleted or internal reply, and
+	// never returns the text of a note.
+	PublicReplyBody(ctx context.Context, ticketID, replyID uuid.UUID) (string, bool, error)
+}
+
+// EventRewriter is implemented by an outbox that can replace the event of a
+// queued row. The webhook dispatcher uses it to clear a failed row's content.
+type EventRewriter interface {
+	RewriteEvent(ctx context.Context, id uuid.UUID, event []byte) error
+}
+
+// WebhookQueue is what turns a webhook send from fire-and-forget into
+// per-hook, retried deliveries (#448). Without one a dispatcher sends at once
+// and never retries.
+type WebhookQueue struct {
+	Outbox  notification.Outbox
+	Hooks   WebhookLookup
+	History WebhookHistory
+	Wake    func() // asks the worker to look now; may be nil
+	// Source lets Redeliver rebuild a chat or ITSM message from the ticket as it
+	// is now. May be nil, in which case such a replay has its headline only.
+	Source EventSource
+}
+
+// Redeliver refusals.
+var (
+	ErrWebhookNotFound  = errors.New("webhook not found")
+	ErrWebhookDisabled  = errors.New("webhook is disabled")
+	ErrDeliveryNotFound = errors.New("delivery not found")
+
+	// ErrWebhookNotSubscribed: the hook no longer lists the delivery's event.
+	ErrWebhookNotSubscribed = errors.New("webhook is not subscribed to this event")
+	// ErrWebhookFilterExcludes: the hook's ticket filter, as it is now, does not
+	// admit the ticket the delivery was about (#413).
+	ErrWebhookFilterExcludes = errors.New("webhook filter does not admit this ticket")
+	// ErrWebhookFilterUnverifiable: the hook has a ticket filter and the ticket
+	// cannot be read (it was deleted), so the filter cannot be checked (#499).
+	ErrWebhookFilterUnverifiable = errors.New("webhook filter cannot be checked: the ticket cannot be read")
+)
 
 // WebhookDispatcher sends HTTP POST payloads to configured webhook URLs.
 type WebhookDispatcher struct {
-	store  WebhookStore
-	client *http.Client
+	store   WebhookStore
+	client  *http.Client
+	baseURL string // used only to build the staff ticket link chat/ITSM formats carry
+	log     *slog.Logger
+	queue   *WebhookQueue
+}
+
+// SetSource sets the queue's EventSource after construction, for wiring where
+// the source (the ticket service) needs the dispatcher to exist first. The
+// dispatcher must have a queue.
+func (d *WebhookDispatcher) SetSource(src EventSource) {
+	d.queue.Source = src
+}
+
+// WithQueue makes the dispatcher queue one retried delivery per subscribed
+// hook instead of sending at once. The webhook outbox channel then does two
+// jobs, told apart by Event.TargetWebhook: an event with none is fanned out
+// into one row per hook; an event with one is delivered to that hook.
+func (d *WebhookDispatcher) WithQueue(q WebhookQueue) *WebhookDispatcher {
+	d.queue = &q
+	return d
 }
 
 // NewWebhookDispatcher returns a WebhookDispatcher with sensible timeouts.
-func NewWebhookDispatcher(store WebhookStore) *WebhookDispatcher {
+// baseURL is the same value the email dispatcher uses for ticket links
+// (cfg.BaseURL); it is never used to reach the hook target itself.
+// log is used to report delivery failures and other operational issues.
+func NewWebhookDispatcher(store WebhookStore, baseURL string, log *slog.Logger) *WebhookDispatcher {
+	if log == nil {
+		// send runs unrecovered in its own goroutine; a nil logger would
+		// panic there on the first delivery failure and take the process
+		// down with it. Defaulting here removes that trap for any caller
+		// that builds a dispatcher without one.
+		log = slog.Default()
+	}
 	return &WebhookDispatcher{
-		store: store,
+		store:   store,
+		baseURL: baseURL,
+		log:     log,
 		// Guarded: the URL is operator-supplied and the app container can
 		// reach the database, the antivirus daemon and cloud metadata, none
 		// of which are reachable from outside.
@@ -41,24 +198,431 @@ func NewWebhookDispatcher(store WebhookStore) *WebhookDispatcher {
 // Dispatch sends the event as JSON to every enabled webhook that subscribes
 // to this event type. Failures are logged but do not propagate.
 func (d *WebhookDispatcher) Dispatch(ctx context.Context, event notification.Event) error {
+	// guest.link_resent (and any other event type not in WebhookEvents) is
+	// deliberately excluded from webhooks — IsWebhookEvent already rejects it
+	// on create/update — but hookSubscribes has no event-type filter of its
+	// own, so a "*" (or legacy empty-events) subscription would otherwise
+	// receive it anyway, contradicting that exclusion. Filtered here, before
+	// any hook is considered, rather than inside hookSubscribes: it is a
+	// property of the EVENT, not of any one hook's subscription shape. See
+	// #212.
+	if !slices.ContainsFunc(event.AllKinds(), func(k notification.EventType) bool { return IsWebhookEvent(string(k)) }) {
+		return nil
+	}
+	if d.queue != nil {
+		if event.TargetWebhook != uuid.Nil {
+			return d.deliverQueued(ctx, event)
+		}
+		return d.fanOut(ctx, event)
+	}
+
 	hooks, err := d.store.ListEnabledWebhooks(ctx)
 	if err != nil {
+		// A DB error listing hooks means zero deliveries to every webhook;
+		// previously this was indistinguishable from "nothing subscribed".
+		// See #213.
+		d.log.ErrorContext(ctx, "webhook dispatch skipped: could not list enabled webhooks",
+			"event", event.Type, "error", err)
 		return nil // store failure is non-fatal
 	}
 
-	payload, err := json.Marshal(event)
+	for _, hook := range hooks {
+		if d.paused(ctx, hook) {
+			continue
+		}
+		// One delivery per change, labelled with the first kind this hook
+		// subscribes to (#506, ruling 6).
+		ev, ok := forHook(hook, event)
+		if !ok {
+			continue
+		}
+		// The ticket filter (#413) decides whether this hook fires for this
+		// event, and nothing else: the body below is built the same way for
+		// every hook. A filtered-out event is not a delivery, so nothing is
+		// recorded for the hook.
+		if !d.admits(ctx, hook, ev) {
+			continue
+		}
+		// The raw wire body every "raw" (and empty-format) subscription
+		// receives, ids only (rawBody). bodyFor reshapes the full event per
+		// format for the others; it never touches these bytes for those hooks.
+		payload, err := rawBody(ev)
+		if err != nil {
+			d.log.ErrorContext(ctx, "webhook skipped: event could not be marshalled",
+				"webhook_id", hook.ID, "event", ev.Type, "error", err)
+			continue
+		}
+		body, err := bodyFor(hook, ev, payload, d.baseURL)
+		if err != nil {
+			// Unknown payload_format: skip this hook rather than falling
+			// back to raw. A Slack URL fed the full raw event is a
+			// delivery bug, not a degraded-but-working delivery.
+			d.log.WarnContext(ctx, "webhook skipped: payload could not be built",
+				"webhook_id", hook.ID, "payload_format", hook.PayloadFormat,
+				"event", ev.Type, "error", err)
+			continue
+		}
+		// Fire-and-forget per webhook, as before; the result is recorded on the
+		// hook so a failing one shows on the admin page (#157), not only in the log.
+		go func(hook authstore.WebhookConfig, body []byte, label notification.EventType) {
+			res, _ := d.post(context.Background(), hook, body, uuid.New(), label)
+			d.record(hook, res)
+		}(hook, body, ev.Type)
+	}
+	return nil
+}
+
+// paused reports whether the hook is paused because the API key that made or
+// last re-pointed it is no longer active: revoked, expired, or its owner disabled or deleted (#450). Nothing is sent, which
+// is how a disabled hook is treated; a queued retry that finds the hook paused
+// is marked dropped (DropPaused) by deliverQueued. The reason shows on the
+// admin page, and here as a log line.
+func (d *WebhookDispatcher) paused(ctx context.Context, hook authstore.WebhookConfig) bool {
+	if !hook.Paused {
+		return false
+	}
+	d.log.InfoContext(ctx, "webhook not sent: its API key, or that key's owner, is no longer active",
+		"webhook_id", hook.ID)
+	return true
+}
+
+// admits reports whether the hook's ticket filter lets the event through. An
+// event with no ticket state (queued before #413) is let through and logged: an
+// extra message beats a missed one.
+func (d *WebhookDispatcher) admits(ctx context.Context, hook authstore.WebhookConfig, ev notification.Event) bool {
+	admit, known := hook.Filter.Admits(ev.Ticket)
+	if !known {
+		d.log.WarnContext(ctx, "webhook filter not evaluated: event carries no ticket state; delivering",
+			"webhook_id", hook.ID, "event", ev.Type, "ticket_id", ev.TicketID)
+	}
+	return admit
+}
+
+// fanOut turns the webhook channel's one row for an event into one row per
+// subscribed hook, so each is retried on its own and a healthy hook is never
+// sent again because another failed (#448). A hook is subscribed when any kind
+// of the change is one it lists (subscribedKind), and gets one row for the
+// change, however many kinds match (#506, ruling 6).
+//
+// The per-hook row ids derive from the fan-out row's id, and the outbox
+// ignores a repeated id, so running this again after a crash (between queueing
+// and settling) reuses the same delivery ids. That stops a row still waiting
+// from being queued twice; a row already sent and deleted would be queued
+// again, with the same X-GHD-Delivery, which a receiver can drop.
+//
+// Each row holds the event as that hook needs it (rowFor): never an address,
+// and for a raw hook no content at all.
+func (d *WebhookDispatcher) fanOut(ctx context.Context, ev notification.Event) error {
+	hooks, err := d.store.ListEnabledWebhooks(ctx)
 	if err != nil {
+		// Unlike the unqueued path this is worth failing: the worker tries
+		// again, where there it meant zero deliveries (#213).
+		return fmt.Errorf("listing enabled webhooks: %w", err)
+	}
+	parent := RowID(ctx)
+	var first error
+	for _, hook := range hooks {
+		if d.paused(ctx, hook) {
+			continue
+		}
+		if _, ok := subscribedKind(hook, ev); !ok {
+			continue
+		}
+		// The ticket filter (#413) is applied here first: a hook it turns away
+		// gets no row, so no delivery id, no retry and no history entry. A row
+		// that was queued is judged again at every attempt (deliverQueued) and
+		// by Redeliver, against the filter as it is then.
+		if !d.admits(ctx, hook, ev) {
+			continue
+		}
+		perHook := rowFor(ev, hook)
+		perHook.TargetWebhook = hook.ID
+		perHook.TargetURLHash = urlHash(hook.URL)
+		row, err := encodeEvent(perHook)
+		if err != nil {
+			first = errors.Join(first, fmt.Errorf("encoding event for webhook %s: %w", hook.ID, err))
+			continue
+		}
+		id := uuid.New()
+		if parent != uuid.Nil {
+			id = uuid.NewSHA1(parent, hook.ID[:])
+		}
+		if err := d.queue.Outbox.Enqueue(ctx, id, "webhook", row); err != nil {
+			first = errors.Join(first, err)
+		}
+	}
+	if d.queue.Wake != nil {
+		d.queue.Wake()
+	}
+	return first
+}
+
+// deliverQueued makes one attempt at one hook's row. nil settles the row
+// (delivered, or not worth another try); an error has the worker try again
+// on its schedule, or give up after the last attempt.
+func (d *WebhookDispatcher) deliverQueued(ctx context.Context, ev notification.Event) error {
+	hook, err := d.queue.Hooks.GetWebhook(ctx, ev.TargetWebhook)
+	switch {
+	case errors.Is(err, auth.ErrNotFound):
+		// Deleted since the event was queued. Its history went with it, so there
+		// is no "retrying" entry left to mark.
+		return nil
+	case err != nil:
+		return fmt.Errorf("loading webhook: %w", err)
+	}
+	if !hook.Enabled {
+		d.markDropped(ctx, hook.ID, DropDisabled)
+		return nil
+	}
+	// Settled, like a disabled hook: its key was revoked or expired since the
+	// event was queued. Judged on every attempt, so it stops retries too.
+	if d.paused(ctx, hook) {
+		d.markDropped(ctx, hook.ID, DropPaused)
+		return nil
+	}
+	// Settled, not failed, like a disabled or deleted hook: an administrator
+	// who removed this event from the hook, or pointed it somewhere else, did
+	// not ask for the queued copy to follow. Checked on every attempt, so it
+	// stops retries too. Only the URL is fingerprinted: the current secret is
+	// used, so a receiver that rotated its key gets the retry signed with the
+	// new one.
+	//
+	// The label is worked out again here, from the subscription as it is now: a
+	// hook that dropped the kind it was queued for but lists another the change
+	// carries is sent that one.
+	ev, subscribed := forHook(hook, ev)
+	if !subscribed {
+		d.markDropped(ctx, hook.ID, DropUnsubscribed)
+		return nil
+	}
+	if ev.TargetURLHash != urlHash(hook.URL) {
+		d.log.InfoContext(ctx, "webhook delivery dropped: the hook's URL changed since it was queued",
+			"webhook_id", hook.ID, "event", ev.Type)
+		d.markDropped(ctx, hook.ID, DropURLChanged)
+		return nil
+	}
+	// The ticket filter as it is now (#413), against the attributes the row
+	// took from the ticket when the event was raised. An administrator who
+	// tightened the filter has stopped what is still queued, retries included.
+	// Settled exactly like a URL change above: no failure, and a retrying
+	// history entry is marked dropped. A
+	// row with no attributes (queued before #413) cannot be judged and is sent;
+	// admits logs that.
+	if !d.admits(ctx, hook, ev) {
+		d.log.InfoContext(ctx, "webhook delivery dropped: the hook's filter no longer admits the ticket",
+			"webhook_id", hook.ID, "event", ev.Type)
+		d.markDropped(ctx, hook.ID, DropFilter)
+		return nil
+	}
+	// rawBody re-marshals an event that was just decoded from JSON, so this
+	// cannot fail in practice and has no test; the mark is here so that if it
+	// ever does, the entry does not stay on "retrying".
+	raw, err := rawBody(ev)
+	if err != nil {
+		d.log.ErrorContext(ctx, "webhook skipped: event could not be marshalled",
+			"webhook_id", hook.ID, "event", ev.Type, "error", err)
+		d.markDropped(ctx, hook.ID, DropUnbuildable)
+		return nil // the same bytes would fail every time
+	}
+	body, err := bodyFor(hook, ev, raw, d.baseURL)
+	if err != nil {
+		d.log.WarnContext(ctx, "webhook skipped: payload could not be built",
+			"webhook_id", hook.ID, "payload_format", hook.PayloadFormat,
+			"event", ev.Type, "error", err)
+		d.markDropped(ctx, hook.ID, DropUnbuildable)
 		return nil
 	}
 
-	for _, hook := range hooks {
-		if !hookSubscribes(hook, event.Type) {
-			continue
+	// The row's id is the delivery id: it does not change between attempts.
+	deliveryID := RowID(ctx)
+	if deliveryID == uuid.Nil {
+		deliveryID = uuid.New()
+	}
+	res, retryAfter := d.post(ctx, hook, body, deliveryID, ev.Type)
+	d.record(hook, res)
+
+	retry := shouldRetry(res)
+	d.recordAttempt(hook, deliveryID, ev, res, retry && !LastAttempt(ctx))
+	if !retry {
+		return nil // settled: the row is deleted, nothing is kept
+	}
+	if LastAttempt(ctx) {
+		d.scrubFailedRow(ctx, ev)
+	}
+	// A class and a status, never a message: this is what lands in last_error.
+	err = fmt.Errorf("webhook delivery failed: %s (status %d)", res.Error, res.Status)
+	if retryAfter > 0 {
+		err = &notification.RetryAfterError{Err: err, After: retryAfter}
+	}
+	return err
+}
+
+// shouldRetry reports whether another attempt could plausibly do better:
+// connection errors, timeouts, 5xx and 429. A refused address, any other
+// status and a request that could not be built would fail the same way again.
+func shouldRetry(r authstore.WebhookDelivery) bool {
+	switch r.Error {
+	case DeliveryTimeout, DeliveryDNS, DeliveryTLS, DeliveryConnection:
+		return true
+	case DeliveryHTTPStatus:
+		return r.Status >= 500 || r.Status == http.StatusTooManyRequests
+	}
+	return false
+}
+
+// parseRetryAfter reads a Retry-After header: seconds, or an HTTP date. Zero
+// when absent, malformed or already past.
+func parseRetryAfter(v string, now time.Time) time.Duration {
+	if v == "" {
+		return 0
+	}
+	// Capped here as well as by the worker: a count of seconds too large for a
+	// Duration would wrap to a small or negative one on multiplication.
+	if secs, err := strconv.ParseInt(v, 10, 64); err == nil {
+		if secs >= int64(maxRetryAfter/time.Second) {
+			return maxRetryAfter
 		}
-		// Fire-and-forget per webhook; don't block on failures.
-		go d.send(hook, payload)
+		return time.Duration(max(secs, 0)) * time.Second
+	}
+	if at, err := http.ParseTime(v); err == nil {
+		return min(max(at.Sub(now), 0), maxRetryAfter)
+	}
+	return 0
+}
+
+// Redeliver queues the event of an earlier delivery to the same hook again,
+// as a new delivery with a new id: a receiver that de-duplicates by id would
+// otherwise drop the replay, which is the opposite of what was asked.
+func (d *WebhookDispatcher) Redeliver(ctx context.Context, hookID, deliveryID uuid.UUID) error {
+	if d.queue == nil {
+		return errors.New("webhook delivery is not queued")
+	}
+	hook, err := d.queue.Hooks.GetWebhook(ctx, hookID)
+	switch {
+	case errors.Is(err, auth.ErrNotFound):
+		return ErrWebhookNotFound
+	case err != nil:
+		return fmt.Errorf("loading webhook: %w", err)
+	}
+	if !hook.Enabled || hook.Paused {
+		return ErrWebhookDisabled
+	}
+	stored, err := d.queue.History.GetWebhookDeliveryEvent(ctx, hookID, deliveryID)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return ErrDeliveryNotFound
+	case err != nil:
+		return fmt.Errorf("loading delivery: %w", err)
+	}
+	ev, err := decodeEvent(stored)
+	if err != nil {
+		return fmt.Errorf("reading stored event: %w", err)
+	}
+	// Refused up front, with a reason, rather than queued and then dropped at
+	// send time where nobody would see why.
+	if _, ok := subscribedKind(hook, ev); !ok {
+		return ErrWebhookNotSubscribed
+	}
+	// The ticket as it is now, when something needs it: the filter, for its
+	// attributes (the kept copy has none by design), and a chat or ITSM message,
+	// for its content. A raw hook with no filter reads nothing. A hook with a
+	// filter whose ticket cannot be read (gone, or no source wired) is refused:
+	// the filter cannot be checked, and a replay is something an administrator
+	// asked for just now, so it is told why (#499). A ticket that is read but
+	// carries no attributes (a source that cannot say) still fails open in
+	// admits, like a queued row without them; the production source always
+	// fills them. An unfiltered hook is replayed whether or not the ticket
+	// exists.
+	var facts TicketFacts
+	var found bool
+	if (!hook.Filter.IsEmpty() || !isRaw(hook)) && d.queue.Source != nil {
+		if facts, found, err = d.queue.Source.TicketFacts(ctx, ev.TicketID); err != nil {
+			return fmt.Errorf("reading ticket for redelivery: %w", err)
+		}
+	}
+	if !found && !hook.Filter.IsEmpty() {
+		return ErrWebhookFilterUnverifiable
+	}
+	if found {
+		ev.Ticket = facts.State // also what the queued row is re-checked with
+	}
+	if !d.admits(ctx, hook, ev) {
+		return ErrWebhookFilterExcludes
+	}
+	// A chat or ITSM message is rebuilt from the ticket as it is now, because the
+	// kept copy has no content. A raw hook gets the kept copy as it is.
+	if !isRaw(hook) && found {
+		if ev, err = d.rebuild(ctx, ev, facts); err != nil {
+			return err
+		}
+	}
+	ev.TargetWebhook = hookID
+	ev.TargetURLHash = urlHash(hook.URL)
+	row, err := encodeEvent(ev)
+	if err != nil {
+		return fmt.Errorf("encoding event: %w", err)
+	}
+	if err := d.queue.Outbox.Enqueue(ctx, uuid.New(), "webhook", row); err != nil {
+		return err
+	}
+	if d.queue.Wake != nil {
+		d.queue.Wake()
 	}
 	return nil
+}
+
+// rebuild fills a kept event with the ticket as it is now (facts): the current
+// subject, tracking number and status name, the priority of a creation, and the
+// text of the reply it announced only if that reply still exists and is public.
+// A note never gets text, and its reply is not even looked up. A ticket that is
+// gone is not rebuilt (the caller skips this), so the message is its headline
+// only.
+func (d *WebhookDispatcher) rebuild(ctx context.Context, ev notification.Event, facts TicketFacts) (notification.Event, error) {
+	ev.Subject, ev.TrackingNumber, ev.StatusName = facts.Subject, facts.TrackingNumber, facts.StatusName
+	ev.Payload = maps.Clone(ev.Payload)
+	if ev.Payload == nil {
+		ev.Payload = map[string]any{}
+	}
+	switch ev.Type {
+	case notification.EventTicketCreated:
+		ev.Payload["Priority"] = facts.Priority
+	case notification.EventTicketReplied:
+		ev.Payload["internal"] = false
+		raw, _ := ev.Payload["reply_id"].(string)
+		replyID, perr := uuid.Parse(raw)
+		if perr != nil {
+			break
+		}
+		body, ok, err := d.queue.Source.PublicReplyBody(ctx, ev.TicketID, replyID)
+		if err != nil {
+			return ev, fmt.Errorf("reading reply for redelivery: %w", err)
+		}
+		if ok {
+			ev.Payload["ReplyBody"] = body
+		}
+	case notification.EventTicketNoteAdded:
+		ev.Payload["internal"] = true
+	}
+	return ev, nil
+}
+
+// scrubFailedRow clears a chat or ITSM row's content once its delivery has
+// finally failed. The worker keeps a failed row for 30 days, and by then the
+// message it was built for is never going to be sent. Ids stay.
+func (d *WebhookDispatcher) scrubFailedRow(ctx context.Context, ev notification.Event) {
+	rw, ok := d.queue.Outbox.(EventRewriter)
+	id := RowID(ctx)
+	if !ok || id == uuid.Nil {
+		return
+	}
+	scrubbed, err := encodeEvent(historyEvent(ev))
+	if err == nil {
+		err = rw.RewriteEvent(ctx, id, scrubbed)
+	}
+	if err != nil {
+		d.log.WarnContext(ctx, "webhook row kept with its content after the last failed attempt",
+			"webhook_id", ev.TargetWebhook, "error", err)
+	}
 }
 
 // Signature headers on outbound webhooks. Both carry the same HMAC-SHA256
@@ -73,12 +637,35 @@ const (
 	LegacySignatureHeader = "X-OHD-Signature"
 )
 
-func (d *WebhookDispatcher) send(hook authstore.WebhookConfig, payload []byte) {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, hook.URL, bytes.NewReader(payload))
+// Delivery headers (#448). X-GHD-Delivery names one delivery and is the same
+// on every retry of it, so a receiver can drop a duplicate; X-GHD-Event is the
+// event type, so it can route without parsing the body.
+const (
+	DeliveryHeader = "X-GHD-Delivery"
+	EventHeader    = "X-GHD-Event"
+)
+
+// send makes one unnamed attempt; see post.
+func (d *WebhookDispatcher) send(hook authstore.WebhookConfig, payload []byte) authstore.WebhookDelivery {
+	res, _ := d.post(context.Background(), hook, payload, uuid.New(), "")
+	return res
+}
+
+// post makes one attempt and returns its result, and how long the receiver
+// asked us to wait (Retry-After) when it refused with a status.
+func (d *WebhookDispatcher) post(ctx context.Context, hook authstore.WebhookConfig, payload []byte,
+	deliveryID uuid.UUID, eventType notification.EventType) (authstore.WebhookDelivery, time.Duration) {
+	at := time.Now().UTC()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, hook.URL, bytes.NewReader(payload))
 	if err != nil {
-		return
+		d.log.Warn("webhook request could not be built", "webhook_id", hook.ID)
+		return authstore.WebhookDelivery{At: at, Error: DeliveryOther}, 0
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(DeliveryHeader, deliveryID.String())
+	if eventType != "" {
+		req.Header.Set(EventHeader, string(eventType))
+	}
 	if hook.Secret != "" {
 		sig := hmacSHA256(hook.Secret, payload)
 
@@ -98,22 +685,146 @@ func (d *WebhookDispatcher) send(hook authstore.WebhookConfig, payload []byte) {
 	}
 	resp, err := d.client.Do(req)
 	if err != nil {
-		return
+		d.log.Warn("webhook delivery failed", "webhook_id", hook.ID, "payload_format", hook.PayloadFormat, "error", withoutURL(err))
+		return authstore.WebhookDelivery{At: at, Error: classifyDeliveryError(err)}, 0
 	}
 	defer resp.Body.Close()
-	// Retry logic for v2: for now, accept any 2xx.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		d.log.Warn("webhook delivery rejected", "webhook_id", hook.ID, "payload_format", hook.PayloadFormat, "status", resp.StatusCode)
+		// The DB CHECK constraint only allows 0 or 100..999. Go's HTTP client
+		// accepts any 3-digit status (e.g., "099" parses as 99, "000" as 0).
+		// Store 0 for out-of-range values to keep the record valid.
+		status := resp.StatusCode
+		if status < 100 || status > 999 {
+			status = 0
+		}
+		return authstore.WebhookDelivery{At: at, Status: status, Error: DeliveryHTTPStatus},
+			parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+	}
+	return authstore.WebhookDelivery{At: at, Status: resp.StatusCode}, 0
 }
 
-func hookSubscribes(hook authstore.WebhookConfig, eventType notification.EventType) bool {
-	if len(hook.Events) == 0 {
-		return true // empty = all events
+// subscribedKind says whether the hook is to be told of a change, and under
+// what name. A hook fires when ANY kind of the change is one it lists, or it
+// lists "*" or nothing, and it fires once however many match (#506, ruling 6).
+//
+// The name it is told is the first kind, in the fixed order, that the hook
+// subscribes to: for "*" simply the first kind. So a hook subscribed to
+// ticket.status_changed alone is told ticket.status_changed for a change that
+// also reopened the ticket, exactly as before.
+func subscribedKind(hook authstore.WebhookConfig, ev notification.Event) (notification.EventType, bool) {
+	kinds := subscribedKinds(hook, ev)
+	if len(kinds) == 0 {
+		return "", false
 	}
-	for _, e := range hook.Events {
-		if e == string(eventType) || e == "*" {
-			return true
+	return kinds[0], true
+}
+
+// subscribedKinds are the kinds of the change this hook subscribes to, in the
+// fixed order. For "*" or no list, every kind a webhook can carry (a name
+// outside WebhookEvents, guest.link_resent, is never sent, whatever "*" says).
+func subscribedKinds(hook authstore.WebhookConfig, ev notification.Event) []notification.EventType {
+	all := len(hook.Events) == 0 || slices.Contains(hook.Events, "*")
+	var out []notification.EventType
+	for _, k := range ev.AllKinds() {
+		if all && IsWebhookEvent(string(k)) || !all && slices.Contains(hook.Events, string(k)) {
+			out = append(out, k)
 		}
 	}
-	return false
+	return out
+}
+
+// forHook is the change as this hook is told of it: Type the name it is sent
+// under and Kinds only those the hook subscribes to, so nothing built from the
+// event (the chat "Also" line) can name a kind the channel did not ask for, an
+// internal note in particular. Worked out from the subscription as it is now,
+// at every attempt. ok is false when the hook subscribes to none of them.
+func forHook(hook authstore.WebhookConfig, ev notification.Event) (notification.Event, bool) {
+	kinds := subscribedKinds(hook, ev)
+	if len(kinds) == 0 {
+		return ev, false
+	}
+	ev.Type, ev.Kinds = kinds[0], kinds
+	// A routed create is one event with one ActorID, the creator's. Routing is
+	// the system's act (as in 1.2.x, and as its audit entry says), so a hook told
+	// ticket.assigned is told of nobody; one told ticket.created still gets the
+	// creator. Decided here, per attempt, from the name the hook is sent under.
+	if ev.Type == notification.EventTicketAssigned && ev.RoutedAssignment {
+		ev.ActorID = nil
+	}
+	return ev, true
+}
+
+// classifyDeliveryError categorizes a delivery error into one of the delivery
+// error classes. The order matters: a blocked address and a DNS failure both
+// arrive inside a *net.OpError, and a timeout can arrive as anything that
+// implements net.Error.
+func classifyDeliveryError(err error) string {
+	var ne net.Error
+	var dns *net.DNSError
+	var cv *tls.CertificateVerificationError
+	var rh tls.RecordHeaderError
+	var op *net.OpError
+	switch {
+	case errors.Is(err, safehttp.ErrBlockedAddress):
+		return DeliveryBlockedAddress
+	case errors.As(err, &ne) && ne.Timeout():
+		return DeliveryTimeout
+	case errors.As(err, &dns):
+		return DeliveryDNS
+	case errors.As(err, &cv), errors.As(err, &rh):
+		return DeliveryTLS
+	case errors.As(err, &op), errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return DeliveryConnection
+	}
+	return DeliveryOther
+}
+
+// record stores a delivery's result. Its own short timeout and a background
+// context: the outbox row that started this delivery is already settled.
+// A failure to record is logged and dropped; it must not affect delivery.
+func (d *WebhookDispatcher) record(hook authstore.WebhookConfig, r authstore.WebhookDelivery) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := d.store.RecordWebhookDelivery(ctx, hook.ID, hook.URL, r); err != nil {
+		d.log.Warn("webhook delivery result not recorded", "webhook_id", hook.ID, "error", err)
+	}
+}
+
+// recordAttempt adds an attempt to the hook's delivery history. Like record:
+// its own short timeout, and a failure is logged and dropped.
+func (d *WebhookDispatcher) recordAttempt(hook authstore.WebhookConfig, deliveryID uuid.UUID,
+	ev notification.Event, r authstore.WebhookDelivery, retrying bool) {
+	stored, err := encodeEvent(historyEvent(ev))
+	if err != nil {
+		d.log.Warn("webhook delivery history not recorded", "webhook_id", hook.ID, "error", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := d.queue.History.RecordWebhookAttempt(ctx, authstore.WebhookAttempt{
+		DeliveryID: deliveryID, HookID: hook.ID, EventType: string(ev.Type), Event: stored,
+		Result: r, Retrying: retrying,
+	}); err != nil {
+		d.log.Warn("webhook delivery history not recorded", "webhook_id", hook.ID, "error", err)
+	}
+}
+
+// markDropped turns the delivery's "retrying" history entry into "dropped"
+// (#499), so it does not say retrying for a retry that will never come. Like
+// recordAttempt, history is best effort: a failure is logged and the row is
+// settled all the same. A first attempt that was dropped has no entry, and the
+// store leaves it that way.
+func (d *WebhookDispatcher) markDropped(ctx context.Context, hookID uuid.UUID, reason string) {
+	deliveryID := RowID(ctx)
+	if d.queue == nil || deliveryID == uuid.Nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := d.queue.History.MarkWebhookDeliveryDropped(ctx, hookID, deliveryID, reason); err != nil {
+		d.log.Warn("webhook delivery history not updated", "webhook_id", hookID, "error", err)
+	}
 }
 
 func hmacSHA256(secret string, payload []byte) string {
@@ -122,5 +833,12 @@ func hmacSHA256(secret string, payload []byte) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// Prevent unused import
-var _ = fmt.Sprintf
+// withoutURL removes the URL that http.Client wraps around every error.
+// The URL in *url.Error can contain credentials, so we unwrap it before logging.
+func withoutURL(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Err
+	}
+	return err
+}

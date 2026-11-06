@@ -102,6 +102,14 @@ func TestTools_RefuseWithoutAuthenticatedActor(t *testing.T) {
 			},
 		},
 		{
+			name: "create_follow_up",
+			call: func(ctx context.Context) (*mcpgo.CallToolResult, error) {
+				return s.handleCreateFollowUp(ctx, callToolRequest("create_follow_up", map[string]any{
+					"ticket_id": ticketID,
+				}))
+			},
+		},
+		{
 			name: "list_categories",
 			call: func(ctx context.Context) (*mcpgo.CallToolResult, error) {
 				return s.handleListCategories(ctx, callToolRequest("list_categories", map[string]any{}))
@@ -151,7 +159,7 @@ func TestActorFrom_RoundTrips(t *testing.T) {
 // reporter_user_id survives deliberately: it names the SUBJECT of a ticket, not
 // the caller, because staff legitimately open tickets on someone's behalf.
 func TestRegisterTools_DeclareNoCallerIdentity(t *testing.T) {
-	s := New(nil, nil, nil, nil)
+	s := New(nil, nil, nil, nil, nil)
 
 	tools := s.mcp.ListTools()
 	require.NotEmpty(t, tools, "tools must be registered")

@@ -39,9 +39,9 @@ const deleteGuestAccessTokensForTicket = `-- name: DeleteGuestAccessTokensForTic
 DELETE FROM guest_access_tokens WHERE ticket_id = $1
 `
 
-// Rotation and revocation are the same operation: remove what the ticket has.
-// Rotation then inserts a replacement in the same transaction; revocation
-// does not.
+// Rotation: remove what the ticket has, then insert a replacement in the same
+// transaction. Used only for a ticket that is not Closed — closing no longer
+// revokes (#349), and a Closed ticket's links are added to, never replaced.
 func (q *Queries) DeleteGuestAccessTokensForTicket(ctx context.Context, ticketID uuid.UUID) error {
 	_, err := q.db.ExecContext(ctx, deleteGuestAccessTokensForTicket, ticketID)
 	return err
@@ -51,35 +51,43 @@ const getTicketByGuestToken = `-- name: GetTicketByGuestToken :one
 SELECT t.id, t.tracking_number, t.subject, t.description, t.category_id, t.type_id,
        t.item_id, t.priority, t.status_id, t.assignee_user_id, t.assignee_group_id,
        t.reporter_user_id, t.guest_email, t.resolution_notes, t.resolved_at,
-       t.closed_at, t.created_at, t.updated_at, t.guest_name, t.guest_phone
+       t.closed_at, t.created_at, t.updated_at, t.guest_name, t.guest_phone,
+       t.pending_since, t.sla_paused_seconds, t.reopen_count, t.last_reopened_at, t.paused_seconds_at_last_reopen,
+       t.description_format, t.source_channel
 FROM guest_access_tokens g
 JOIN tickets t ON t.id = g.ticket_id
 WHERE g.token_hash = $1
   AND g.expires_at > clock_timestamp()
-  AND t.closed_at IS NULL
 `
 
 type GetTicketByGuestTokenRow struct {
-	ID              uuid.UUID      `json:"id"`
-	TrackingNumber  string         `json:"tracking_number"`
-	Subject         string         `json:"subject"`
-	Description     string         `json:"description"`
-	CategoryID      uuid.UUID      `json:"category_id"`
-	TypeID          uuid.NullUUID  `json:"type_id"`
-	ItemID          uuid.NullUUID  `json:"item_id"`
-	Priority        string         `json:"priority"`
-	StatusID        uuid.UUID      `json:"status_id"`
-	AssigneeUserID  uuid.NullUUID  `json:"assignee_user_id"`
-	AssigneeGroupID uuid.NullUUID  `json:"assignee_group_id"`
-	ReporterUserID  uuid.NullUUID  `json:"reporter_user_id"`
-	GuestEmail      sql.NullString `json:"guest_email"`
-	ResolutionNotes sql.NullString `json:"resolution_notes"`
-	ResolvedAt      sql.NullTime   `json:"resolved_at"`
-	ClosedAt        sql.NullTime   `json:"closed_at"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
-	GuestName       string         `json:"guest_name"`
-	GuestPhone      string         `json:"guest_phone"`
+	ID                        uuid.UUID      `json:"id"`
+	TrackingNumber            string         `json:"tracking_number"`
+	Subject                   string         `json:"subject"`
+	Description               string         `json:"description"`
+	CategoryID                uuid.UUID      `json:"category_id"`
+	TypeID                    uuid.NullUUID  `json:"type_id"`
+	ItemID                    uuid.NullUUID  `json:"item_id"`
+	Priority                  string         `json:"priority"`
+	StatusID                  uuid.UUID      `json:"status_id"`
+	AssigneeUserID            uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID           uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID            uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail                sql.NullString `json:"guest_email"`
+	ResolutionNotes           sql.NullString `json:"resolution_notes"`
+	ResolvedAt                sql.NullTime   `json:"resolved_at"`
+	ClosedAt                  sql.NullTime   `json:"closed_at"`
+	CreatedAt                 time.Time      `json:"created_at"`
+	UpdatedAt                 time.Time      `json:"updated_at"`
+	GuestName                 string         `json:"guest_name"`
+	GuestPhone                string         `json:"guest_phone"`
+	PendingSince              sql.NullTime   `json:"pending_since"`
+	SlaPausedSeconds          int64          `json:"sla_paused_seconds"`
+	ReopenCount               int32          `json:"reopen_count"`
+	LastReopenedAt            sql.NullTime   `json:"last_reopened_at"`
+	PausedSecondsAtLastReopen int64          `json:"paused_seconds_at_last_reopen"`
+	DescriptionFormat         string         `json:"description_format"`
+	SourceChannel             string         `json:"source_channel"`
 }
 
 // Resolves a raw token's hash to the ticket it names, in one round trip.
@@ -90,9 +98,11 @@ type GetTicketByGuestTokenRow struct {
 // clock_timestamp() rather than now() for the same reason as sessions: now()
 // is the transaction's start time, so two clocks were deciding one lifetime.
 //
-// Closed tickets are excluded: closing revokes access, and doing it in the
-// query means a token that outlived its DELETE by a moment still reaches
-// nothing.
+// Closed tickets are NOT excluded (#349): closing stops rotating the link
+// instead of revoking it, so the last link sent keeps reading the archive until
+// it expires. Whether a link may WRITE is decided by the caller from the
+// ticket's status (ticket.Service.TicketForGuestWrite), so the one query serves
+// both and the write refusal is the same "not found" as any bad link.
 // The explicit column list, not sqlc.embed: tickets carries a search_vector
 // that no caller wants and that has no Go type worth naming. This is the same
 // list GetTicketByID selects, so both map through one row shape.
@@ -120,6 +130,13 @@ func (q *Queries) GetTicketByGuestToken(ctx context.Context, tokenHash string) (
 		&i.UpdatedAt,
 		&i.GuestName,
 		&i.GuestPhone,
+		&i.PendingSince,
+		&i.SlaPausedSeconds,
+		&i.ReopenCount,
+		&i.LastReopenedAt,
+		&i.PausedSecondsAtLastReopen,
+		&i.DescriptionFormat,
+		&i.SourceChannel,
 	)
 	return i, err
 }
@@ -129,7 +146,6 @@ SELECT id FROM tickets
 WHERE tracking_number = $1
   AND guest_email IS NOT NULL
   AND lower(guest_email) = lower($2)
-  AND closed_at IS NULL
 `
 
 type GetTicketIDByTrackingAndGuestEmailParams struct {
@@ -142,8 +158,9 @@ type GetTicketIDByTrackingAndGuestEmailParams struct {
 // answers 202 either way so this cannot be used to test whether either
 // exists.
 //
-// Closed tickets are excluded so a re-request cannot resurrect access that
-// closing revoked.
+// Closed tickets match (#349): closing no longer revokes access, so a guest may
+// still ask for a link to read their archived ticket. The send-time step adds
+// a read-only link beside the existing ones rather than rotating them.
 func (q *Queries) GetTicketIDByTrackingAndGuestEmail(ctx context.Context, arg GetTicketIDByTrackingAndGuestEmailParams) (uuid.UUID, error) {
 	row := q.db.QueryRowContext(ctx, getTicketIDByTrackingAndGuestEmail, arg.TrackingNumber, arg.Lower)
 	var id uuid.UUID

@@ -80,7 +80,10 @@ func captureSMTP(t *testing.T) (addr string, received chan string) {
 					received <- body.String()
 					continue
 				}
-				body.WriteString(line)
+				// Undo dot-stuffing (RFC 5321 4.5.2), as a real server does: a
+				// long HTML line wrapped by quoted-printable can start a line
+				// with ".", which the client doubles on the wire.
+				body.WriteString(strings.TrimPrefix(line, "."))
 				continue
 			}
 			switch {
@@ -196,7 +199,7 @@ func TestEmail_VerificationLinkComesFromConfigNotTheRequest(t *testing.T) {
 	addr, received := captureSMTP(t)
 	d := dispatcherFor(t, addr)
 
-	require.NoError(t, d.SendVerificationEmail(
+	require.NoError(t, d.SendVerificationEmail(context.Background(),
 		"user@example.com", "the-secret-token", "https://help.example.com"))
 
 	raw := <-received
@@ -222,7 +225,7 @@ func TestEmail_VerificationLinkHostFollowsTheConfiguredBaseURL(t *testing.T) {
 		t.Run(base, func(t *testing.T) {
 			addr, received := captureSMTP(t)
 			d := dispatcherFor(t, addr)
-			require.NoError(t, d.SendVerificationEmail("user@example.com", "tok", base))
+			require.NoError(t, d.SendVerificationEmail(context.Background(), "user@example.com", "tok", base))
 			raw := strings.ReplaceAll(<-received, "=\r\n", "")
 			require.Contains(t, raw, base+"/verify-email")
 			require.NotContains(t, raw, "127.0.0.1")

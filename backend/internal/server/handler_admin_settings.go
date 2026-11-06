@@ -1,15 +1,31 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"github.com/publiciallc/go-help-desk/backend/internal/antivirus"
+	"errors"
+	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
+	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 
+	"github.com/google/uuid"
+	"github.com/publiciallc/go-help-desk/backend/internal/antivirus"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/reputation"
+	"github.com/publiciallc/go-help-desk/backend/internal/updatecheck"
+	"github.com/publiciallc/go-help-desk/backend/internal/version"
+
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // Admin instance settings, and the denylist of keys never returned to a client.
@@ -23,8 +39,152 @@ import (
 // PATCH /admin/settings but never returned by the settings dump. The dedicated
 // endpoints blank them for the same reason (see handleGetOIDCConfig).
 var secretSettingKeys = map[string]struct{}{
-	admin.KeyOIDCClientSecret: {},
-	admin.KeySAMLKeyPEM:       {},
+	admin.KeyOIDCClientSecret:   {},
+	admin.KeySAMLKeyPEM:         {},
+	admin.KeyAttachmentVTAPIKey: {},
+
+	// The deprecated single reputation key. Read by nothing, still writable,
+	// and still never echoed: a secret does not stop being a secret on its way
+	// to being deleted.
+	admin.KeyAttachmentReputationAPIKey: {},
+
+	// One key per commercial reputation provider. Accepted on PATCH, never
+	// echoed by the settings dump: an admin session that can read one back can
+	// exfiltrate the operator's key to whatever the provider's terms attach to
+	// it. There are three of them now, and a provider added here and forgotten
+	// is a key the settings dump hands out.
+	//
+	// CIRCL has no entry because it has no key setting at all.
+	admin.KeyAttachmentReputationVirusTotalKey:   {},
+	admin.KeyAttachmentReputationMetaDefenderKey: {},
+	admin.KeyAttachmentReputationPolySwarmKey:    {},
+}
+
+// attachmentExtPattern is what an entry in the attachment allowlist may look
+// like. Deliberately narrow: an extension is compared against
+// strings.ToLower(filepath.Ext(name)), so an entry with no leading dot, an
+// uppercase letter or an inner space can never match any upload. Accepting one
+// would leave the setting doing nothing while reporting success.
+var attachmentExtPattern = regexp.MustCompile(`^\.[a-z0-9]{1,16}$`)
+
+// choiceSetting is a setting whose value is one of a fixed set of strings.
+type choiceSetting struct {
+	valid func(string) bool
+
+	// fallback is what the setting's reader enforces for a stored value that
+	// valid refuses. Empty when that depends on another setting, in which
+	// case the dump reports the setting as unset, which is how the reader
+	// treats it.
+	fallback string
+
+	// code and message are the 400 a PATCH gets for a value valid refuses.
+	// code is also what null and a wrong type answer; message is only for a
+	// string valid refuses.
+	code, message string
+
+	// strict means decode with unmarshalSetting (rejects null as an error);
+	// false means bare json.Unmarshal (null becomes "" and is validated).
+	strict bool
+
+	// wrongType is the error message for a wrong-type value (non-string),
+	// sent when strict=false. When strict=true, unmarshalSetting handles it.
+	wrongType string
+}
+
+// choiceSettings is every choice-list setting, for both the PATCH that
+// refuses a value outside the list and the dump that reports a stored one
+// (#383).
+//
+// The dump reports the value in force, not the stored bytes. A client that
+// sends the dump back (the settings page did until #394) sends every setting on
+// each save, so a stored value the PATCH refuses (only a direct database edit can
+// put one there) used to come back on every save and fail it, on every tab, until
+// someone changed that one dropdown. Each fallback must be what the setting's
+// reader returns for an unrecognised value;
+// TestSettings_DumpReportsEveryChoiceSettingInForce holds them to it.
+var choiceSettings = map[string]choiceSetting{
+	// Anything else reads as off, so Closed stays terminal. Null and wrong types are refused by name (#349).
+	admin.KeyClosedReopenPolicy: {ticket.ValidClosedReopenPolicy, ticket.ReopenPolicyOff,
+		"invalid_closed_reopen_policy", "closed reopen policy must be one of: off, admin, staff_admin",
+		true, ""},
+	// Anything else reads as everywhere, the most masking (#362). Null and wrong types are refused by name.
+	admin.KeyAuditMaskRequesterNames: {admin.ValidMaskRequesterNames, admin.MaskRequesterNamesEverywhere,
+		"invalid_audit_mask_requester_names", "audit_mask_requester_names must be one of: admin_log, ticket_log, everywhere",
+		true, ""},
+	// No fallback, on purpose: an unrecognised value follows the scanner address (required with one, off without), so reporting today's answer would let a save pin it. Decoded bare for compatibility: null gets the invalid_scan_policy refusal, not a null error.
+	admin.KeyAttachmentScanPolicy: {antivirus.ValidPolicy, "",
+		"invalid_scan_policy", "scan policy must be one of: off, required, permissive",
+		false, "scan policy must be a string"},
+	// Anything else reads as refuse. Decoded bare for compatibility: null gets the invalid_* refusal, not a null error.
+	admin.KeyAttachmentInfectedHandling: {admin.ValidInfectedHandling, admin.InfectedHandlingRefuse,
+		"invalid_infected_handling", "infected attachment handling must be one of: refuse, quarantine",
+		false, "infected attachment handling must be a string"},
+	// Anything else reads as refuse. "quarantine" is refused here, not read as wrap (see the PATCH). Decoded bare for compatibility, as above.
+	admin.KeyAttachmentMismatchHandling: {admin.ValidMismatchHandling, admin.MismatchHandlingRefuse,
+		"invalid_mismatch_handling", "mismatched attachment handling must be one of: refuse, wrap",
+		false, "mismatched attachment handling must be a string"},
+	// Anything else reads as "user": the person's own switch decides (#441). Decoded bare, as above.
+	admin.KeyStaffEmailAssignedOverride: staffEmailOverrideSetting,
+	admin.KeyStaffEmailActivityOverride: staffEmailOverrideSetting,
+	admin.KeyStaffEmailGroupOverride:    staffEmailOverrideSetting,
+	// Anything else reads as biweekly, never "never". Decoded bare for compatibility, as above.
+	admin.KeyAttachmentReputationRefresh: {admin.ValidReputationRefresh, admin.ReputationRefreshBiweekly,
+		"invalid_reputation_refresh", "reputation refresh must be one of: weekly, biweekly, monthly, quarterly, never",
+		false, "reputation refresh must be a string"},
+}
+
+// staffEmailOverrideSetting is shared by the three staff-email overrides: same
+// values, same refusal, same reader fallback.
+var staffEmailOverrideSetting = choiceSetting{notification.ValidOverrideMode, string(notification.OverrideUser),
+	"invalid_staff_email_override", "a staff email override must be one of: user, on, off",
+	false, "a staff email override must be a string"}
+
+// refuseChoice writes the 400 for a choice-list key in body that the setting
+// refuses, and reports whether it did. Whatever is wrong with the value (null,
+// a wrong type, empty, unknown) the code is the setting's own. It is called at the position each
+// check always had in handleUpdateSettings, not in a loop over the table: a
+// request with two bad values names whichever is checked first, and that
+// order is part of what clients see.
+func refuseChoice(w http.ResponseWriter, body map[string]json.RawMessage, key string) bool {
+	raw, ok := body[key]
+	if !ok {
+		return false
+	}
+	c := choiceSettings[key]
+	var v string
+	if c.strict {
+		// Null and a wrong type are refused under the setting's own code, like
+		// every other refusal of it (#420); only the message differs.
+		if err := unmarshalSetting(raw, key, &v); err != nil {
+			Error(w, http.StatusBadRequest, c.code, err.Error())
+			return true
+		}
+	} else if err := json.Unmarshal(raw, &v); err != nil {
+		// Bare Unmarshal: null is no error here, it decodes to "" and gets
+		// the setting's own refusal below.
+		Error(w, http.StatusBadRequest, c.code, c.wrongType)
+		return true
+	}
+	if !c.valid(v) {
+		Error(w, http.StatusBadRequest, c.code, c.message)
+		return true
+	}
+	return false
+}
+
+// inForce is what the settings dump reports for this setting's stored bytes:
+// the value itself when valid accepts it, otherwise the fallback. ok is false
+// when the setting should be reported as unset.
+func (c choiceSetting) inForce(stored []byte) (json.RawMessage, bool) {
+	var v string
+	if json.Unmarshal(stored, &v) != nil || !c.valid(v) {
+		if c.fallback == "" {
+			return nil, false
+		}
+		v = c.fallback
+	}
+	b, _ := json.Marshal(v)
+	return b, true
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -34,9 +194,43 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Convert raw bytes to JSON-parseable map, omitting secrets.
-	out := make(map[string]json.RawMessage, len(all))
+	//
+	// A secret is replaced by a "<key>_set" boolean rather than simply
+	// dropped. Dropping it alone leaves the administration UI unable to tell
+	// a configured key from an absent one — the key is missing from the dump
+	// either way — so the page can only say "we cannot show you whether this
+	// is set", which is useless to the person deciding whether to paste a new
+	// one. The dedicated OIDC and SAML endpoints already report a `configured`
+	// flag for exactly this reason; the settings dump had no equivalent.
+	//
+	// The flag says whether a non-empty value is stored and nothing else. It
+	// cannot be used to confirm a guess at the value, which is what echoing
+	// the secret itself would allow.
+	out := make(map[string]json.RawMessage, len(all)+len(secretSettingKeys))
+
+	// Every declared secret gets a flag, whether or not a row exists. Emitting
+	// one only for keys already in the table leaves an unset secret with no
+	// flag at all — which is the state this exists to describe, and would put
+	// the UI back where it started, unable to tell "not configured" from
+	// "the server did not say".
+	for k := range secretSettingKeys {
+		out[k+"_set"] = json.RawMessage("false")
+	}
 	for k, v := range all {
+		// A row the server keeps, not a setting: it is not writable, and the
+		// page sends this dump back on save, so listing it would make every
+		// save refuse an unknown key.
+		if admin.IsServerKeptKey(k) {
+			continue
+		}
 		if _, secret := secretSettingKeys[k]; secret {
+			out[k+"_set"] = json.RawMessage(strconv.FormatBool(hasSecretValue(v)))
+			continue
+		}
+		if c, ok := choiceSettings[k]; ok {
+			if eff, ok := c.inForce(v); ok {
+				out[k] = eff
+			}
 			continue
 		}
 		out[k] = json.RawMessage(v)
@@ -68,6 +262,118 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The settings dump emits a synthetic "<key>_set" boolean for every
+	// write-only secret, so the UI can tell a stored key from an absent one
+	// without the key itself ever being returned. It is a fact about the
+	// table, not a row in it.
+	//
+	// Nothing stopped a client sending it straight back. A page that reads the
+	// dump, edits one field and PATCHes the whole object wrote real settings
+	// rows called oidc_client_secret_set, saml_key_pem_set and
+	// attachment_reputation_virustotal_key_set — rows nothing ever reads,
+	// sitting in the settings table looking like configuration. The frontend
+	// has been doing exactly that since the flags landed.
+	//
+	// So the "_set" suffix is reserved: no declared setting key ends in it,
+	// and none may, because the dump would then be unable to tell the flag
+	// from the setting. A key ending in "_set" is refused by name rather than
+	// dropped, for the same reason as everything else in this handler — a
+	// value accepted and then ignored is worse than a refusal.
+	for k := range body {
+		// The start of the password-reset clock is known (a migration seeds
+		// it) but not writable: restarting it would hand everyone a new grace
+		// period. Refused by name, like the presence flags.
+		if admin.IsServerKeptKey(k) {
+			Error(w, http.StatusBadRequest, "readonly_setting",
+				k+" is recorded by the server and cannot be changed")
+			return
+		}
+		if strings.HasSuffix(k, "_set") {
+			Error(w, http.StatusBadRequest, "readonly_setting",
+				k+" is a read-only presence flag from the settings dump, not a setting; "+
+					"send the key itself to change it")
+			return
+		}
+	}
+
+	// A key that is not a setting is refused, and with it the whole body (#421).
+	// It used to be stored: "mfa_enabld": true answered 204, wrote a row nothing
+	// reads and left the real setting as it was, so the operator believed a
+	// control had changed. The body is refused whole rather than the known
+	// keys written, because half a settings change is a state nobody asked
+	// for, and this runs before any validation below can write anything.
+	//
+	// Sorted, so the key named is always the same one for the same body.
+	var unknown []string
+	for k := range body {
+		if !admin.IsKnownKey(k) {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) > 0 {
+		slices.Sort(unknown)
+		Error(w, http.StatusBadRequest, "unknown_setting",
+			fmt.Sprintf("%q is not a setting; nothing was changed", unknown[0]))
+		return
+	}
+
+	// The name is printed by the email header and footer, so a long one can push
+	// an email's HTML part over the size limit.
+	if raw, ok := body[admin.KeySiteName]; ok && s.refuseSiteNameTooLongForEmail(w, r, raw) {
+		return
+	}
+
+	// guest_submission_enabled decides whether anonymous people on the
+	// internet can file tickets into this instance, and — since the category
+	// catalogue stopped being anonymous (see requireSignedInOrGuestsEnabled
+	// in server.go) — also whether that catalogue is readable without a
+	// session. It had no validation case at all: a JSON string, a number, or
+	// the literal null was accepted and read back as false by GetBool's own
+	// silent fallback, the same "accepted and then ignored" shape this
+	// handler refuses everywhere else. unmarshalSetting is what the #304
+	// round found necessary for the identical shape on the SSO keys — null
+	// unmarshals into a bool as a silent no-op, not an error, so a bare type
+	// check alone would still miss it. See #177.
+	if raw, ok := body[admin.KeyGuestSubmissionEnabled]; ok {
+		var enabled bool
+		if err := unmarshalSetting(raw, "guest_submission_enabled", &enabled); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+
+	// Signup and guest submission both end in an email: the verification link,
+	// the guest's ticket link. With email off they look like they work and
+	// deliver nothing, so turning either ON is refused (#456).
+	//
+	// Compared against the stored value, not just the incoming one: the
+	// settings page PATCHes the whole object, so an install that already has
+	// either on with email off would otherwise get a 400 on every unrelated
+	// save. Those installs are warned (security-warnings), not switched off.
+	if !s.cfg.EmailEnabled() {
+		for _, key := range []string{admin.KeySelfSignupEnabled, admin.KeyGuestSubmissionEnabled} {
+			raw, ok := body[key]
+			if !ok {
+				continue
+			}
+			// Anything that is not a boolean is not "turning it on"; it keeps
+			// whatever treatment it had before (guest_submission_enabled is
+			// already refused above, self_signup_enabled is stored as sent).
+			var want bool
+			if json.Unmarshal(raw, &want) != nil {
+				continue
+			}
+			if want {
+				if already, _ := s.adminSvc.GetBool(r.Context(), key); !already {
+					Error(w, http.StatusBadRequest, "email_required",
+						key+" cannot be turned on while email is not configured: "+
+							"it sends an email the person needs. Set SMTP_HOST and SMTP_FROM first")
+					return
+				}
+			}
+		}
+	}
+
 	// Validate before writing anything. ticket.go documents the prefix as
 	// "enforced where the setting is saved rather than where a ticket is
 	// created" — nothing enforced it, so an invalid prefix was accepted with a
@@ -86,22 +392,181 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Retention decides how long evidence is kept, so a value that is
+	// accepted and then ignored is the worst case of the rule below: an
+	// operator who types "90" and gets a silent fallback believes they have a
+	// 90-day window and has an unbounded table.
+	//
+	// unmarshalSetting, not a bare json.Unmarshal: the bare form treats the
+	// literal null as a no-op that returns no error, so {"audit_retention_days":
+	// null} answered 204 and silently turned a configured 30-day window into
+	// "forever". That is the third time this repo has shipped that shape —
+	// #177 and #304 were the first two, and this helper exists because of
+	// them. Using it was the whole point of it existing.
+	//
+	// Zero and negative ARE valid and mean forever (admin.AuditRetentionDays).
+	// What is refused is a value that is not a number, and a value so large
+	// that it wraps.
+	if raw, ok := body[admin.KeyAuditRetentionDays]; ok {
+		var days int
+		if err := unmarshalSetting(raw, "audit_retention_days", &days); err != nil {
+			handleError(w, err)
+			return
+		}
+		if days > admin.AuditRetentionMaxDays {
+			Error(w, http.StatusBadRequest, "bad_request", fmt.Sprintf(
+				"audit retention must be at most %d days (about a century); 0 or less keeps entries forever",
+				admin.AuditRetentionMaxDays))
+			return
+		}
+	}
+
+	// How many days an old password hash keeps working (#453). A value the
+	// reader would replace with the default is refused instead, so the number
+	// an admin typed is the number in force. 0 would refuse everyone at once.
+	if raw, ok := body[admin.KeyPasswordRehashGraceDays]; ok {
+		var days int
+		if err := unmarshalSetting(raw, "password_rehash_grace_days", &days); err != nil {
+			handleError(w, err)
+			return
+		}
+		if days < admin.PasswordRehashGraceMin || days > admin.PasswordRehashGraceMax {
+			Error(w, http.StatusBadRequest, "bad_request", fmt.Sprintf(
+				"password reset grace period must be between %d and %d days",
+				admin.PasswordRehashGraceMin, admin.PasswordRehashGraceMax))
+			return
+		}
+	}
+
+	// Who may force-reopen a Closed ticket (#349). The reader falls back to
+	// "off", so a typo would leave an operator who just opened this up
+	// believing Closed tickets can be reopened — safe, and baffling. Refused by
+	// name instead, and null with it.
+	if refuseChoice(w, body, admin.KeyClosedReopenPolicy) {
+		return
+	}
+
+	// Requester-name masking (#362): one of three values. The reader falls
+	// back to "everywhere", so a typo would leave an operator who meant to
+	// narrow it believing they had; refused by name instead, and null too.
+	if refuseChoice(w, body, admin.KeyAuditMaskRequesterNames) {
+		return
+	}
+
+	// The diff toggle is a bool and nothing else, null included.
+	if raw, ok := body[admin.KeyStaffCanViewTicketChangeHistory]; ok {
+		var on bool
+		if err := unmarshalSetting(raw, "staff_can_view_ticket_change_history", &on); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+
+	// And the follow-entries toggle (#441).
+	if raw, ok := body[admin.KeyStaffCanViewFollowAudit]; ok {
+		var on bool
+		if err := unmarshalSetting(raw, "staff_can_view_follow_audit", &on); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+
+	// And the staff API-key toggle (#450). A bool and nothing else: a string
+	// "false" would read back as off, and a JSON null as off too.
+	if raw, ok := body[admin.KeyStaffCanCreateAPIKeys]; ok {
+		var on bool
+		if err := unmarshalSetting(raw, "staff_can_create_api_keys", &on); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+
+	// The update check (#170) and the post-upgrade wizard's seen flag: booleans
+	// and nothing else. A string "true", a number or an object would be stored
+	// and read back as off, so the operator would believe they had chosen.
+	for _, key := range []string{admin.KeyUpdateCheckEnabled, admin.KeyPostUpgrade130Seen} {
+		if raw, ok := body[key]; ok {
+			var on bool
+			if err := unmarshalSetting(raw, key, &on); err != nil {
+				handleError(w, err)
+				return
+			}
+		}
+	}
+
+	// The key lifetime (#450): exactly one of the slider's six stops, 1 to 5
+	// years or -1 for Never. 0 and 6 are refused, not clamped, because the
+	// reader would replace them with the default of 2 and the number an
+	// administrator typed would not be the number in force.
+	if raw, ok := body[admin.KeyAPIKeyMaxLifetimeYears]; ok {
+		var years int
+		if err := unmarshalSetting(raw, "api_key_max_lifetime_years", &years); err != nil {
+			handleError(w, err)
+			return
+		}
+		if !admin.ValidAPIKeyMaxLifetime(years) {
+			Error(w, http.StatusBadRequest, "bad_request",
+				"api_key_max_lifetime_years must be 1, 2, 3, 4 or 5 years, or -1 for no limit")
+			return
+		}
+	}
+
+	// Guest uploads (#445). The size is a slider of 1 to 100 MB; a value off it
+	// is refused, not clamped, because the reader would replace it with the
+	// default and the number typed would not be the number in force. The
+	// switch is checked for type for the same reason: "yes" stored as a
+	// string reads as off, and the administrator would think it was on.
+	if raw, ok := body[admin.KeyGuestAttachmentMaxMB]; ok {
+		var mb int
+		if err := unmarshalSetting(raw, admin.KeyGuestAttachmentMaxMB, &mb); err != nil {
+			handleError(w, err)
+			return
+		}
+		if !admin.ValidGuestAttachmentMaxMB(mb) {
+			Error(w, http.StatusBadRequest, "bad_request", "guest_attachment_max_mb must be between 1 and 100")
+			return
+		}
+	}
+	for _, c := range []struct {
+		key    string
+		valid  func(int) bool
+		lo, hi int
+	}{
+		{admin.KeyGuestAttachmentMaxPerTicket, admin.ValidGuestAttachmentMaxPerTicket,
+			admin.GuestAttachmentMaxPerTicketMin, admin.GuestAttachmentMaxPerTicketMax},
+		{admin.KeyGuestAttachmentUploadsPerHour, admin.ValidGuestAttachmentUploadsPerHour,
+			admin.GuestAttachmentUploadsPerHourMin, admin.GuestAttachmentUploadsPerHourMax},
+	} {
+		raw, ok := body[c.key]
+		if !ok {
+			continue
+		}
+		var n int
+		if err := unmarshalSetting(raw, c.key, &n); err != nil {
+			handleError(w, err)
+			return
+		}
+		if !c.valid(n) {
+			Error(w, http.StatusBadRequest, "bad_request",
+				fmt.Sprintf("%s must be between %d and %d", c.key, c.lo, c.hi))
+			return
+		}
+	}
+	if raw, ok := body[admin.KeyGuestAttachmentsEnabled]; ok {
+		var on bool
+		if err := unmarshalSetting(raw, admin.KeyGuestAttachmentsEnabled, &on); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+
 	// Same reasoning as the prefix above: a value that is accepted and then
 	// ignored is worse than a refusal, and here the ignored value is a
 	// security control. An unrecognised policy falls back to "required", so a
 	// typo would silently refuse every upload rather than disable scanning —
 	// safe, but baffling. Refusing it says what is wrong instead.
-	if raw, ok := body[admin.KeyAttachmentScanPolicy]; ok {
-		var policy string
-		if err := json.Unmarshal(raw, &policy); err != nil {
-			Error(w, http.StatusBadRequest, "bad_request", "scan policy must be a string")
-			return
-		}
-		if !antivirus.ValidPolicy(policy) {
-			Error(w, http.StatusBadRequest, "invalid_scan_policy",
-				"scan policy must be one of: off, required, permissive")
-			return
-		}
+	if refuseChoice(w, body, admin.KeyAttachmentScanPolicy) {
+		return
 	}
 
 	// The scanner address is a network target an operator supplies, so it goes
@@ -112,6 +577,10 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	// What is checked is that it is a well-formed address of a scheme we can
 	// dial, so a typo fails at save time rather than at the first upload.
 	if raw, ok := body[admin.KeyAttachmentScanAddress]; ok {
+		if err := refuseNullSetting(raw, admin.KeyAttachmentScanAddress); err != nil {
+			handleError(w, err)
+			return
+		}
 		var addr string
 		if err := json.Unmarshal(raw, &addr); err != nil {
 			Error(w, http.StatusBadRequest, "bad_request", "scanner address must be a string")
@@ -124,13 +593,414 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// And what happens to an upload the scanner calls infected. The reader
+	// falls back to "refuse", so a typo here would quietly refuse malware an
+	// infosec team had deliberately asked to keep — safe, and baffling for
+	// exactly the operator who went looking for this setting.
+	if refuseChoice(w, body, admin.KeyAttachmentInfectedHandling) {
+		return
+	}
+
+	// And what happens to a file whose content contradicts its name. Same
+	// reasoning as the setting above, which this deliberately mirrors: the
+	// reader falls back to "refuse", so a typo would quietly go on refusing
+	// the mislabelled files a triage team had just asked to keep — safe, and
+	// baffling for exactly the operator who went looking for this setting.
+	//
+	// "quarantine" is the value most likely to be typed here by mistake,
+	// because it is the other setting's word, and it is refused rather than
+	// charitably read as "wrap": guessing at intent is how an operator ends
+	// up with a policy nobody wrote.
+	if refuseChoice(w, body, admin.KeyAttachmentMismatchHandling) {
+		return
+	}
+
+	// Enabling a provider requires its key, and the whole write is refused
+	// when one is missing.
+	//
+	// Same rule as every other setting in this handler — a value accepted and
+	// then ignored is worse than a refusal — and here the ignored value is a
+	// provider an operator believes is answering. "Enabled with no key" was a
+	// reachable state under the setting this replaced, and it looked exactly
+	// like a provider that had nothing to say.
+	if err := validateReputationConfig(r.Context(), s.adminSvc, body); err != nil {
+		Error(w, http.StatusBadRequest, "invalid_reputation_config", err.Error())
+		return
+	}
+
+	// And how often a stored verdict is re-checked. The reader falls back to
+	// biweekly, so a typo would leave an operator who chose "never" to save
+	// quota still spending it, or one who chose "weekly" reading a verdict a
+	// fortnight old — and in both cases the page looks exactly as it should.
+	if refuseChoice(w, body, admin.KeyAttachmentReputationRefresh) {
+		return
+	}
+
+	// The staff-email overrides (#441). A typo would be read as "leave it to
+	// the user", so an administrator who meant to force a switch off would
+	// believe they had; refused by name instead.
+	for _, key := range []string{admin.KeyStaffEmailAssignedOverride, admin.KeyStaffEmailActivityOverride, admin.KeyStaffEmailGroupOverride} {
+		if refuseChoice(w, body, key) {
+			return
+		}
+	}
+
+	// What this instance accepts as an attachment. Same reasoning again, and
+	// here the ignored value decides what the deployment will hold: an
+	// operator who types "exe" instead of ".exe" and sees a 204 has been told
+	// their instance now takes executables when it does not.
+	//
+	// The whole write is refused rather than the bad entry dropped, because a
+	// list silently missing one of its entries is the same lie in a quieter
+	// form.
+	if raw, ok := body[admin.KeyAttachmentAllowedTypes]; ok {
+		if err := refuseNullSetting(raw, admin.KeyAttachmentAllowedTypes); err != nil {
+			handleError(w, err)
+			return
+		}
+		var types []string
+		if err := json.Unmarshal(raw, &types); err != nil {
+			Error(w, http.StatusBadRequest, "bad_request",
+				`allowed attachment types must be a JSON array of extension strings, e.g. [".pdf", ".png"]`)
+			return
+		}
+		for _, ext := range types {
+			if !attachmentExtPattern.MatchString(ext) {
+				Error(w, http.StatusBadRequest, "invalid_allowed_types",
+					fmt.Sprintf("%q is not an attachment extension: each entry is a leading dot "+
+						"followed by 1-16 lowercase letters or digits, e.g. \".pdf\"", ext))
+				return
+			}
+		}
+	}
+
+	// Allowed domains must be ASCII, so that they compare reliably. Refused at
+	// save rather than silently inert.
+	if raw, ok := body[admin.KeyAllowedEmailDomains]; ok {
+		var domains []string
+		if err := json.Unmarshal(raw, &domains); err == nil {
+			for _, d := range domains {
+				for i := 0; i < len(d); i++ {
+					if d[i] >= 0x80 {
+						Error(w, http.StatusBadRequest, "invalid_allowed_email_domains",
+							fmt.Sprintf("%q must be ASCII: use the xn-- form for an internationalised domain", d))
+						return
+					}
+				}
+			}
+		}
+	}
+
+	// Routing fallbacks (#447). These used to be saved as given and read back
+	// leniently: an id that did not parse, or named nobody, was skipped at
+	// routing time, so a typo saved cleanly and tickets quietly stayed
+	// unassigned. Refused by name instead, before anything is written.
+	if err := s.validateAutoAssign(r.Context(), body); err != nil {
+		var refusal autoAssignRefusal
+		if errors.As(err, &refusal) {
+			Error(w, http.StatusBadRequest, "invalid_auto_assign", refusal.Error())
+		} else {
+			handleError(w, err) // a failed lookup is our fault, not a bad id
+		}
+		return
+	}
+
+	// #300's guard, and the reason it lives here too rather than only on the
+	// two dedicated PUT endpoints: this generic PATCH can set oidc_enabled or
+	// blank a SAML field exactly as they would, since AuthCriticalKeys() only
+	// blocks MACHINE credentials from touching these — a signed-in human
+	// session reaches them the same way it reaches the dedicated endpoints,
+	// and unlike those, this one had no guard at all. See ssoSettingsWarning's
+	// own comment for why the reachability read here is the simpler
+	// field-completeness kind rather than a real construction attempt.
+	warning, err := s.ssoSettingsWarning(r.Context(), body)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+
+	// Turning ticket scope on shows what it will do to OAuth clients (#420).
+	// A client sees what its service user's groups cover, so one whose user is
+	// in no group goes from seeing what it saw before to seeing nothing, and
+	// nothing else would say so. It warns and does not refuse: the setting is
+	// the administrator's to turn on. The Security warnings banner keeps
+	// saying it until every client has a group or is switched off.
+	scopeWarning, err := s.scopeEnforcementWarning(r.Context(), body)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	warning = joinWarnings(warning, scopeWarning)
+
 	for k, v := range body {
 		if err := s.adminSvc.SetRaw(r.Context(), k, []byte(v)); err != nil {
 			handleError(w, err)
 			return
 		}
 	}
+
+	if warning != "" {
+		JSON(w, http.StatusOK, map[string]any{"warning": warning})
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// scopeEnforcementWarning names the OAuth clients that will see no tickets once
+// this PATCH has turned ticket scope enforcement on. Empty unless the body
+// switches it from off to on: turning it on again repeats nothing, and turning
+// it off warns of nothing.
+func (s *Server) scopeEnforcementWarning(ctx context.Context, body map[string]json.RawMessage) (string, error) {
+	raw, ok := body[admin.KeyTicketScopeEnforced]
+	if !ok {
+		return "", nil
+	}
+	var on bool
+	if err := json.Unmarshal(raw, &on); err != nil || !on || s.adminSvc.TicketScopeEnforced(ctx) {
+		return "", nil
+	}
+	names, err := s.authStore.ListOAuthClientsWithoutGroups(ctx)
+	if err != nil {
+		return "", err
+	}
+	return scopeWarningFor(names), nil
+}
+
+// scopeWarningFor is the sentence for a list of client names; empty for none.
+// Shared with the Security warnings banner's wording so they cannot drift.
+func scopeWarningFor(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	return "Ticket scope is now enforced. These OAuth clients will see no tickets until their " +
+		"service user is added to a group: " + strings.Join(names, ", ") + "."
+}
+
+// joinWarnings puts two warnings in one message; either may be empty.
+func joinWarnings(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	}
+	return a + " " + b
+}
+
+// autoAssignRefusal is a verdict on the request: the id is wrong, or names
+// someone who cannot take work. Any other error from validateAutoAssign is a
+// failed lookup and is not the administrator's mistake.
+type autoAssignRefusal string
+
+func (e autoAssignRefusal) Error() string { return string(e) }
+
+func refusef(format string, a ...any) error { return autoAssignRefusal(fmt.Sprintf(format, a...)) }
+
+// validateAutoAssign checks the two routing fallbacks in a settings body.
+//
+// The group must exist. Each user must exist and be able to hold work, which
+// is staff or admin; a reporting user is refused because the assignment would
+// refuse them at routing time and the round-robin would skip them forever. A
+// disabled account is accepted: it is skipped while disabled and takes its
+// turn again when re-enabled, which is what an administrator suspending
+// someone for a week expects. Empty string, empty list and null clear a
+// setting; clearing is how an administrator turns the fallback off.
+func (s *Server) validateAutoAssign(ctx context.Context, body map[string]json.RawMessage) error {
+	if raw, ok := body[admin.KeyAutoAssignGroupID]; ok && !isJSONNull(raw) {
+		var v string
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return autoAssignRefusal("auto_assign_group_id must be a group id, or empty to turn it off")
+		}
+		if v != "" {
+			id, err := uuid.Parse(v)
+			if err != nil {
+				return refusef("auto_assign_group_id %q is not a group id", v)
+			}
+			if _, err := s.groups.GetByID(ctx, id); err != nil {
+				if errors.Is(err, group.ErrNotFound) {
+					return refusef("auto_assign_group_id: no group with id %s", id)
+				}
+				return fmt.Errorf("checking auto_assign_group_id: %w", err)
+			}
+		}
+	}
+
+	if raw, ok := body[admin.KeyAutoAssignUserIDs]; ok && !isJSONNull(raw) {
+		var ids []string
+		if err := json.Unmarshal(raw, &ids); err != nil {
+			return autoAssignRefusal("auto_assign_user_ids must be a list of user ids")
+		}
+		for _, v := range ids {
+			id, err := uuid.Parse(v)
+			if err != nil {
+				return refusef("auto_assign_user_ids: %q is not a user id", v)
+			}
+			u, err := s.users.GetByID(ctx, id)
+			if errors.Is(err, user.ErrNotFound) || errors.Is(err, userstore.ErrNotFound) {
+				return refusef("auto_assign_user_ids: no user with id %s", id)
+			}
+			if err != nil {
+				return fmt.Errorf("checking auto_assign_user_ids: %w", err)
+			}
+			if u.ServiceAccount {
+				// Assignment refuses a service user, so round-robin would skip it
+				// forever (#420).
+				return refusef("auto_assign_user_ids: %s is a service account, not a staff member", u.DisplayName)
+			}
+			if u.Role != user.RoleStaff && u.Role != user.RoleAdmin {
+				return refusef("auto_assign_user_ids: %s is not a staff member or administrator", u.DisplayName)
+			}
+		}
+	}
+	return nil
+}
+
+func isJSONNull(raw json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+}
+
+// ssoSettingsWarning runs #300's stranding guard against a generic
+// PATCH /admin/settings body, when it touches any key that decides SAML's or
+// OIDC's reachability. Merges the body's candidate values over what is
+// currently stored — a key the caller left out keeps its stored value, same
+// as the dedicated endpoints' own "omitted preserves" contract — then reads
+// reachability with samlFieldsLookConfigured/oidcFieldsLookConfigured rather
+// than by actually building the middleware/provider: this endpoint does not
+// live-reload either one today (a pre-existing gap this fix does not widen
+// its scope to close), so there is no real construction attempt to observe
+// here the way the two dedicated endpoints now have. The field-only read is
+// still a genuine improvement over the no-check-at-all this PATCH had before
+// — it is what stopped this route being a complete, unconditional bypass of
+// the dedicated endpoints' own refusal.
+//
+// saml_enabled is deliberately NOT one of the keys this watches. #304's
+// first draft treated it as SAML's counterpart to oidc_enabled; it turned
+// out to already be a real, unrelated setting (user.IsLocalAuthAllowed
+// reads it to decide whether non-admins keep password login once SAML is
+// configured), and reverting that draft took SAML reachability back to
+// depending on the three config fields alone — see samlFieldsLookConfigured
+// and buildSAMLMiddleware's own comments.
+//
+// Every merge step below refuses on a JSON type mismatch, INCLUDING the
+// literal null, rather than discarding the error and keeping the old value
+// — found by review on #304, in two rounds: a malformed value
+// (oidc_enabled sent as the JSON STRING "false" rather than the boolean
+// false, say) would previously leave THIS guard reasoning about the OLD
+// value, concluding truthfully-but-uselessly that nothing about
+// reachability changed; the JSON literal null is the same failure mode by a
+// different mechanism — encoding/json's Unmarshal treats null into a
+// non-pointer destination as a silent no-op, no error at all, so the
+// type-mismatch check alone still let {"oidc_enabled": null} straight
+// through against a sole OIDC-only administrator. Either way the SetRaw
+// loop below persists the malformed value regardless, and the real reader
+// every other code path uses (GetBool/GetString, under OIDCEnabled/
+// GetOIDCConfig/GetSAMLConfig) fails the identical unmarshal and silently
+// returns the zero value, flipping the persisted setting to disabled/blank
+// from that write onward. validateReputationConfig's own comment two
+// hundred lines up already refuses the type-mismatch shape for the
+// reputation toggles ("a setting accepted and then ignored is worse than a
+// refusal"); unmarshalSetting below is that same rule, extended to also
+// catch null, for every SSO key this function reads.
+func (s *Server) ssoSettingsWarning(ctx context.Context, body map[string]json.RawMessage) (string, error) {
+	touchesSAML := false
+	touchesOIDC := false
+	for _, k := range []string{admin.KeySAMLMetadataURL, admin.KeySAMLMetadataXML, admin.KeySAMLCertPEM, admin.KeySAMLKeyPEM} {
+		if _, ok := body[k]; ok {
+			touchesSAML = true
+		}
+	}
+	for _, k := range []string{admin.KeyOIDCEnabled, admin.KeyOIDCIssuerURL, admin.KeyOIDCClientID, admin.KeyOIDCClientSecret} {
+		if _, ok := body[k]; ok {
+			touchesOIDC = true
+		}
+	}
+	if !touchesSAML && !touchesOIDC {
+		return "", nil
+	}
+
+	c := s.storedSAMLSettings(ctx)
+	if raw, ok := body[admin.KeySAMLMetadataURL]; ok {
+		if err := unmarshalSetting(raw, "saml_metadata_url", &c.MetadataURL); err != nil {
+			return "", err
+		}
+	}
+	if raw, ok := body[admin.KeySAMLMetadataXML]; ok {
+		if err := unmarshalSetting(raw, "saml_metadata_xml", &c.MetadataXML); err != nil {
+			return "", err
+		}
+	}
+	if raw, ok := body[admin.KeySAMLCertPEM]; ok {
+		if err := unmarshalSetting(raw, "saml_cert_pem", &c.CertPEM); err != nil {
+			return "", err
+		}
+	}
+	if raw, ok := body[admin.KeySAMLKeyPEM]; ok {
+		if err := unmarshalSetting(raw, "saml_key_pem", &c.KeyPEM); err != nil {
+			return "", err
+		}
+	}
+	// The same refusals as PUT /admin/saml, reported the way this door reports
+	// every SSO refusal: 400 bad_request with the message.
+	if _, msg := c.metadataRefusal(); msg != "" {
+		return "", fmt.Errorf("%w: %s", user.ErrValidation, msg)
+	}
+
+	cfg := s.adminSvc.GetOIDCConfig(ctx)
+	if raw, ok := body[admin.KeyOIDCEnabled]; ok {
+		if err := unmarshalSetting(raw, "oidc_enabled", &cfg.Enabled); err != nil {
+			return "", err
+		}
+	}
+	if raw, ok := body[admin.KeyOIDCIssuerURL]; ok {
+		if err := unmarshalSetting(raw, "oidc_issuer_url", &cfg.IssuerURL); err != nil {
+			return "", err
+		}
+	}
+	if raw, ok := body[admin.KeyOIDCClientID]; ok {
+		if err := unmarshalSetting(raw, "oidc_client_id", &cfg.ClientID); err != nil {
+			return "", err
+		}
+	}
+	if raw, ok := body[admin.KeyOIDCClientSecret]; ok {
+		if err := unmarshalSetting(raw, "oidc_client_secret", &cfg.ClientSecret); err != nil {
+			return "", err
+		}
+	}
+
+	// Same refusal as handleSaveOIDCConfig, and for the same reason: this
+	// route can set oidc_enabled independently of the other three OIDC keys
+	// (a request touching only oidc_enabled still reaches here), so it needs
+	// the identical guard against persisting "enabled but incomplete" — see
+	// errIncompleteOIDCConfig's own comment.
+	if cfg.Enabled && !oidcConfigComplete(cfg) {
+		return "", errIncompleteOIDCConfig
+	}
+
+	return s.refuseIfOrphaning(ctx, samlFieldsLookConfigured(c), oidcFieldsLookConfigured(cfg))
+}
+
+// refuseNullSetting is unmarshalSetting's null half, for the settings whose
+// wrong-type refusal already has wording clients see and which must keep it.
+func refuseNullSetting(raw json.RawMessage, name string) error {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return fmt.Errorf("%w: %s must not be null", user.ErrValidation, name)
+	}
+	return nil
+}
+
+// unmarshalSetting decodes a PATCH /admin/settings field into dst, refusing
+// both a JSON type mismatch and the literal null — see ssoSettingsWarning's
+// own comment for why null needs its own check: encoding/json's Unmarshal
+// treats null into a non-pointer destination as a silent no-op rather than
+// an error, so a type check alone does not catch it.
+func unmarshalSetting[T any](raw json.RawMessage, name string, dst *T) error {
+	if err := refuseNullSetting(raw, name); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(raw, dst); err != nil {
+		return fmt.Errorf("%w: %s has the wrong type", user.ErrValidation, name)
+	}
+	return nil
 }
 
 // securityWarnings is what an administrator needs to know about how this
@@ -149,6 +1019,106 @@ type securityWarnings struct {
 	// whose scanner had been dead for a month looked exactly like a healthy
 	// one from the admin UI.
 	AttachmentScanning scanStatus `json:"attachment_scanning"`
+
+	// AttachmentStorage says whether uploads can be stored (#458). Probed on
+	// each read, not remembered from startup, so it clears the moment the
+	// directory is fixed.
+	AttachmentStorage storageStatus `json:"attachment_storage"`
+
+	// OAuthClientsWithoutGroups names the switched-on OAuth clients that see no
+	// tickets because ticket scope is enforced and their service user is in no
+	// group (#420). Always an array, empty when scope is not enforced. It stays
+	// until every such client has a group or is disabled, which is why it is a
+	// banner and not only the sentence on the save that turned scope on.
+	OAuthClientsWithoutGroups []string `json:"oauth_clients_without_groups"`
+
+	// ReopenTarget says whether the configured reopen target status has been
+	// deactivated. Reopened tickets go to New meanwhile.
+	ReopenTarget reopenTargetStatus `json:"reopen_target"`
+
+	// Passkeys says whether passkeys can be used on this instance (#494).
+	// They cannot when BASE_URL is an IP address, a single-label host or
+	// non-ASCII, because a passkey is bound to a domain name.
+	Passkeys passkeyStatus `json:"passkeys"`
+
+	// Email says whether mail can be sent and whether it is being delivered
+	// (#455, #456). Additive.
+	Email emailStatus `json:"email"`
+
+	// Update is set when the opt-in update check (#170) has found a release
+	// newer than the one running. Absent otherwise, including while the check
+	// is off. Read from the stored answer: this endpoint never causes a request.
+	Update *updatecheck.Available `json:"update,omitempty"`
+}
+
+type reopenTargetStatus struct {
+	// Inactive is true when the setting names an existing, deactivated status.
+	Inactive bool `json:"inactive"`
+	// Name is the configured status name, set whenever Inactive is.
+	Name string `json:"name,omitempty"`
+}
+
+// reopenTargetInactive reports the configured reopen target when it names a
+// deactivated status. A name that matches nothing is not reported here: it
+// already falls back to New and nobody picked a retired status.
+func (s *Server) reopenTargetInactive(ctx context.Context) (reopenTargetStatus, error) {
+	if s.reopenTargetCheck != nil {
+		return s.reopenTargetCheck(ctx)
+	}
+	statuses, err := s.tickets.ListStatuses(ctx)
+	if err != nil {
+		return reopenTargetStatus{}, err
+	}
+	want := s.adminSvc.ReopenTargetStatusName(ctx)
+	for _, st := range statuses {
+		if st.Name == want && !st.Active {
+			return reopenTargetStatus{Inactive: true, Name: want}, nil
+		}
+	}
+	return reopenTargetStatus{}, nil
+}
+
+// reopenTargetWarning is the sentence for an inactive target, shared by the
+// security warnings banner and the status response.
+func reopenTargetWarning(name string) string {
+	return "The reopen target status \"" + name + "\" is inactive, so reopened tickets are going to \"New\" instead. " +
+		"Pick an active status under Settings, Ticket lifecycle, Reopen target status."
+}
+
+type passkeyStatus struct {
+	Available bool `json:"available"`
+	// Reason is why not, in the library's words. Empty when Available.
+	Reason string `json:"reason"`
+}
+
+// emailStatus never carries a credential or an address: names of unset
+// variables, two flags, and the worker's already-redacted error text.
+type emailStatus struct {
+	// Enabled is false until both SMTP_HOST and SMTP_FROM are set.
+	Enabled bool `json:"enabled"`
+	// Missing names the unset variables while Enabled is false.
+	Missing []string `json:"missing"`
+	// SignupWithoutEmail and GuestSubmissionWithoutEmail say a feature that
+	// sends email is on although email is not configured. Refused when
+	// turning it on; reported for installs that already had it on.
+	SignupWithoutEmail          bool `json:"signup_without_email"`
+	GuestSubmissionWithoutEmail bool `json:"guest_submission_without_email"`
+	// Failing is true while email rows are retrying after an error or gave up
+	// in the last day; LastError is the newest error text.
+	Failing      bool   `json:"failing"`
+	FailingCount int    `json:"failing_count"`
+	LastError    string `json:"last_error"`
+	// BrokenTemplates are edited email templates that no longer work with this
+	// release (#158). A mail that uses one fails; reverting it clears the entry.
+	BrokenTemplates []brokenTemplate `json:"broken_templates"`
+}
+
+type storageStatus struct {
+	// Writable is false while uploads are being refused with 503.
+	Writable bool `json:"writable"`
+	// Problem is the operating system's reason, without the path. Empty when
+	// Writable.
+	Problem string `json:"problem"`
 }
 
 type scanStatus struct {
@@ -165,6 +1135,17 @@ type scanStatus struct {
 	// because the combination of policy and reachability is not obvious and
 	// this is the sentence an administrator actually needs.
 	Effect string `json:"effect"`
+
+	// PolicyExplicit reports that an administrator saved a valid policy, as
+	// opposed to the default being derived from whether an address exists.
+	PolicyExplicit bool `json:"policy_explicit"`
+
+	// StaleOff is scanning off by default rather than by choice (#459): no
+	// policy was ever saved, no scanner address is set anywhere, and the
+	// instance already holds attachments. That is the state of a 1.2 install
+	// whose scanner was opt-in under Compose; a deliberate "Do not scan"
+	// makes PolicyExplicit true and clears it.
+	StaleOff bool `json:"stale_off"`
 }
 
 // handleGetSecurityWarnings reports configuration problems that cannot be
@@ -174,10 +1155,72 @@ type scanStatus struct {
 // Telling an anonymous visitor that this instance signs sessions with a
 // publicly known key is not a warning, it is an invitation.
 func (s *Server) handleGetSecurityWarnings(w http.ResponseWriter, r *http.Request) {
+	problem := attachmentStorageProblem(s.cfg.AttachmentDir)
+	unscoped := []string{}
+	if s.adminSvc.TicketScopeEnforced(r.Context()) {
+		names, err := s.authStore.ListOAuthClientsWithoutGroups(r.Context())
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		if names != nil {
+			unscoped = names
+		}
+	}
+	// An unreadable status list must not hide the other warnings: log it and
+	// report no problem with the reopen target.
+	reopen, err := s.reopenTargetInactive(r.Context())
+	if err != nil {
+		slog.ErrorContext(r.Context(), "checking the reopen target for the security warnings failed", "error", err)
+		reopen = reopenTargetStatus{}
+	}
+	var update *updatecheck.Available
+	if n, ok := updatecheck.Notice(r.Context(), s.adminSvc, version.Version); ok {
+		update = &n
+	}
 	JSON(w, http.StatusOK, securityWarnings{
-		InsecureSecrets:    s.cfg.InsecureSecrets(),
-		AttachmentScanning: s.scanStatus(r.Context()),
+		Update:                    update,
+		ReopenTarget:              reopen,
+		InsecureSecrets:           s.cfg.InsecureSecrets(),
+		AttachmentScanning:        s.scanStatus(r.Context()),
+		AttachmentStorage:         storageStatus{Writable: problem == "", Problem: problem},
+		OAuthClientsWithoutGroups: unscoped,
+		Passkeys:                  s.passkeyStatus(),
+		Email:                     s.emailStatus(r.Context()),
 	})
+}
+
+func (s *Server) passkeyStatus() passkeyStatus {
+	if s.passkeysAvailable() {
+		return passkeyStatus{Available: true}
+	}
+	reason := s.passkeysReason
+	if reason == "" {
+		reason = "BASE_URL cannot be used as a passkey domain"
+	}
+	return passkeyStatus{Reason: reason}
+}
+
+func (s *Server) emailStatus(ctx context.Context) emailStatus {
+	st := emailStatus{Enabled: s.cfg.EmailEnabled(), Missing: []string{}, BrokenTemplates: s.brokenTemplates(ctx)}
+	if s.cfg.SMTPHost == "" {
+		st.Missing = append(st.Missing, "SMTP_HOST")
+	}
+	if s.cfg.SMTPFrom == "" {
+		st.Missing = append(st.Missing, "SMTP_FROM")
+	}
+	if !st.Enabled {
+		st.SignupWithoutEmail = s.adminSvc.SelfSignupEnabled(ctx)
+		st.GuestSubmissionWithoutEmail = s.adminSvc.GuestSubmissionEnabled(ctx)
+	}
+	if s.emailHealth != nil {
+		// A failed read reports nothing wrong: a warning that fires on a
+		// database hiccup is worse than one that stays quiet.
+		if h, err := s.emailHealth.EmailHealth(ctx); err == nil && h.Failing > 0 {
+			st.Failing, st.FailingCount, st.LastError = true, h.Failing, h.LastError
+		}
+	}
+	return st
 }
 
 // scanStatus pings the scanner rather than reporting what the settings say.
@@ -194,6 +1237,13 @@ func (s *Server) scanStatus(ctx context.Context) scanStatus {
 		Policy:     string(policy),
 		Configured: configured,
 		Reachable:  reachable,
+
+		PolicyExplicit: s.adminSvc.AttachmentScanPolicyExplicit(ctx),
+	}
+	if policy == antivirus.PolicyOff && !st.PolicyExplicit && !configured {
+		// A failed lookup reads as "no attachments": a banner that cries
+		// wolf on a database hiccup is worse than one that stays quiet.
+		st.StaleOff, _ = s.tickets.AnyAttachmentExists(ctx)
 	}
 	switch {
 	case policy == antivirus.PolicyOff:
@@ -222,4 +1272,101 @@ func validScannerAddr(addr string) bool {
 	default:
 		return false
 	}
+}
+
+// hasSecretValue reports whether a stored secret holds anything.
+//
+// A JSON string is stored, so "" and a value of only whitespace both mean
+// unset — an operator who pasted a stray space has not configured a key, and
+// telling them they have would send them looking for a fault somewhere else.
+func hasSecretValue(raw []byte) bool {
+	var v string
+	if err := json.Unmarshal(raw, &v); err != nil {
+		// Not a string: something wrote this key by another route. Present,
+		// whatever it is.
+		return len(raw) > 0
+	}
+	return strings.TrimSpace(v) != ""
+}
+
+// validateReputationConfig refuses two settings writes: one that would leave a
+// commercial reputation provider enabled with no API key, and one whose toggle
+// is not a boolean at all.
+//
+// It reads the STORED value for anything the write does not mention, because a
+// PATCH is a patch: enabling VirusTotal in one request when its key was pasted
+// in a previous one has to be allowed, and pasting the key and the toggle in
+// the same request has to be allowed too. Validating the body alone would
+// refuse the first, and validating the stored settings alone would refuse the
+// second.
+//
+// EVERY provider's toggle is type-checked, including CIRCL's, and that is the
+// part it is easy to skip. CIRCL has no key clause — hashlookup authenticates
+// nobody, and a rule demanding one would leave the one keyless provider
+// permanently unusable — but skipping the whole provider to reach that
+// conclusion skipped the type check with it. The reader is GetBool, which
+// answers false for anything that is not a JSON boolean, so a CIRCL toggle of
+// "yes" was stored, answered 204, and read back as off: the operator is told
+// their provider is on and the provider is never asked. A setting accepted and
+// then ignored is the failure this handler refuses everywhere else.
+//
+// It looks only at providers the write mentions: a write that includes neither a
+// provider's toggle nor its key is not refused because of that provider's stored
+// state. See #394.
+//
+// The error message names the PROVIDER and never the key. There are three keys
+// now, and an error string is the easiest place for a write-only secret to
+// escape into a log.
+func validateReputationConfig(ctx context.Context, adminSvc *admin.Service, body map[string]json.RawMessage) error {
+	for _, p := range reputation.ProviderNames() {
+		enabledKey, apiKeyKey, ok := admin.ReputationSettingKeys(p)
+		if !ok {
+			continue
+		}
+
+		// Only a provider this write mentions. The stored state of one it does not
+		// mention is not this request's to judge: a provider enabled with no key can
+		// only come from a database edit, and checking it here refused every write to
+		// the settings, including the one that would fix it (#394). Such a provider
+		// does no lookups (reputation.CanLookup), so nothing is accepted and ignored.
+		_, togglePresent := body[enabledKey]
+		keyPresent := false
+		if apiKeyKey != "" {
+			_, keyPresent = body[apiKeyKey]
+		}
+		if !togglePresent && !keyPresent {
+			continue
+		}
+
+		enabled := adminSvc.ReputationEnabled(ctx, p)
+		if raw, present := body[enabledKey]; present {
+			if err := refuseNullSetting(raw, enabledKey); err != nil {
+				return err
+			}
+			if err := json.Unmarshal(raw, &enabled); err != nil {
+				return fmt.Errorf("the %s toggle must be true or false", reputation.DisplayName(p))
+			}
+		}
+		// Past the type check, the rest is the key rule, and it applies only
+		// to a provider that is on and has a key to be missing.
+		if !enabled || apiKeyKey == "" || !reputation.NeedsKey(p) {
+			continue
+		}
+
+		key := adminSvc.ReputationKey(ctx, p)
+		if raw, present := body[apiKeyKey]; present {
+			var v string
+			if err := json.Unmarshal(raw, &v); err != nil {
+				return fmt.Errorf("the %s API key must be a string", reputation.DisplayName(p))
+			}
+			// Trimmed for the same reason the reader trims: a setting holding
+			// nothing but spaces is not a key, and accepting it would put the
+			// instance back in the state this rule exists to remove.
+			key = strings.TrimSpace(v)
+		}
+		if key == "" {
+			return fmt.Errorf("%s cannot be enabled without an API key", reputation.DisplayName(p))
+		}
+	}
+	return nil
 }

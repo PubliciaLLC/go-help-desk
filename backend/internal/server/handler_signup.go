@@ -13,12 +13,20 @@ import (
 )
 
 // GET /api/v1/auth/signup/status — public; tells the frontend whether to show signup.
+//
+// open_registration is what Register will do, not the setting: a non-empty
+// domain list overrides open registration (registration.isEmailDomainAllowed),
+// so the setting alone claimed "anyone may sign up" for an instance that only
+// admitted listed domains (#421). restricted_by_domain_list is that override,
+// reported so the admin page can say why. Who may sign up is unchanged.
 func (s *Server) handleSignupStatus(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	restricted := len(s.adminSvc.AllowedEmailDomains(ctx)) > 0
 	JSON(w, http.StatusOK, map[string]any{
-		"enabled":           s.adminSvc.SelfSignupEnabled(ctx),
-		"open_registration": s.adminSvc.OpenRegistrationEnabled(ctx),
-		"saml_enabled":      s.adminSvc.SAMLEnabled(ctx),
+		"enabled":                   s.adminSvc.SelfSignupEnabled(ctx),
+		"open_registration":         s.adminSvc.OpenRegistrationEnabled(ctx) && !restricted,
+		"restricted_by_domain_list": restricted,
+		"saml_enabled":              s.adminSvc.SAMLEnabled(ctx),
 	})
 }
 
@@ -36,14 +44,15 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 	// guessing, and a shared bucket behind a proxy throttles registrations
 	// rather than locking anyone out of their own account.
 	if !s.loginLimiter.Allow("signup:" + authmw.ClientAddr(r)) {
-		tooManyAttempts(w, time.Minute)
+		tooManyAttempts(w, s.loginLimiter.Remaining())
 		return
 	}
 
 	var body struct {
-		Email       string `json:"email"`
-		DisplayName string `json:"display_name"`
-		Password    string `json:"password"`
+		Email string `json:"email"`
+		// No password (#360) and no display name (#374): both are chosen on
+		// the verification page. Either sent here by an older client is
+		// ignored.
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -53,9 +62,18 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 	allowedDomains := s.adminSvc.AllowedEmailDomains(ctx)
 	openReg := s.adminSvc.OpenRegistrationEnabled(ctx)
 
-	err := s.registration.Register(ctx, body.Email, body.DisplayName, body.Password, allowedDomains, openReg)
+	err := s.registration.Register(ctx, body.Email, allowedDomains, openReg)
 	if err != nil {
 		switch {
+		case errors.Is(err, registration.ErrAlreadyRegistered):
+			// Deliberately the same answer as a successful registration. The
+			// person is not told whether the address is taken — that would
+			// make this endpoint a way to find out who has an account here —
+			// and no verification email is sent, so nobody follows a link
+			// that cannot work. Somebody who genuinely has an account and has
+			// forgotten will reach for the login page, which is where the
+			// answer belongs.
+			signupAccepted(w)
 		case errors.Is(err, registration.ErrDomainNotAllowed):
 			Error(w, http.StatusUnprocessableEntity, "domain_not_allowed", "your email domain is not permitted")
 		case errors.Is(err, registration.ErrOpenRegistrationRequired):
@@ -66,15 +84,70 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	signupAccepted(w)
+}
+
+// signupAccepted is the one answer this endpoint gives whether or not the
+// address could be registered.
+//
+// Identical on purpose. Anything that distinguished them would make signing
+// up a way to find out who already has an account here.
+func signupAccepted(w http.ResponseWriter) {
 	JSON(w, http.StatusAccepted, map[string]string{
 		"message": "Check your email to complete registration.",
 	})
 }
 
-// POST /api/v1/auth/verify-email — exchange a token for an active session.
+// GET /api/v1/auth/verify-email?token= — what a verification link is for,
+// without using it (#370): the address, and nothing else. The page shows it,
+// gives a password manager the address, and says a dead link is dead before a
+// password is typed. The token is the only key, and whoever holds it was
+// mailed exactly this address.
+func (s *Server) handleLookupVerification(w http.ResponseWriter, r *http.Request) {
+	tokenID, err := uuid.Parse(r.URL.Query().Get("token"))
+	if err != nil {
+		Error(w, http.StatusUnprocessableEntity, "token_invalid", "invalid verification token")
+		return
+	}
+	pr, err := s.registration.Lookup(r.Context(), tokenID)
+	if isVerificationVerdict(err) {
+		verificationRefused(w, err)
+		return
+	}
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, map[string]string{"email": pr.Email})
+}
+
+// isVerificationVerdict reports whether err is a verdict on the link: unknown,
+// used or replaced, expired, or an address that has gained an account since the
+// link was mailed. Only a verdict is a 422; anything else is a fault and a 500,
+// on the lookup and the POST alike (#373). One list for both, so they cannot
+// drift apart.
+func isVerificationVerdict(err error) bool {
+	return errors.Is(err, registration.ErrNotFound) || errors.Is(err, registration.ErrTokenExpired) ||
+		errors.Is(err, registration.ErrAlreadyRegistered)
+}
+
+// verificationRefused answers a verdict on a link (see isVerificationVerdict).
+// The lookup and the verification answer a verdict the same way.
+func verificationRefused(w http.ResponseWriter, err error) {
+	if errors.Is(err, registration.ErrTokenExpired) {
+		Error(w, http.StatusUnprocessableEntity, "token_expired", "verification link has expired")
+		return
+	}
+	Error(w, http.StatusUnprocessableEntity, "token_invalid", "invalid or already used verification token")
+}
+
+// POST /api/v1/auth/verify-email — exchange a token, and the display name and
+// password the account will have, for an active session.
 func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Token string `json:"token"`
+		Token       string `json:"token"`
+		DisplayName string `json:"display_name"`
+		Password    string `json:"password"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -87,24 +160,42 @@ func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	u, err := s.registration.Verify(r.Context(), tokenID)
+	u, err := s.registration.Verify(r.Context(), tokenID, body.DisplayName, body.Password)
 	if err != nil {
-		if errors.Is(err, registration.ErrTokenExpired) {
-			Error(w, http.StatusUnprocessableEntity, "token_expired", "verification link has expired")
+		if errors.Is(err, registration.ErrDisplayNameRequired) {
+			Error(w, http.StatusBadRequest, "display_name_required", err.Error())
 			return
 		}
-		Error(w, http.StatusUnprocessableEntity, "token_invalid", "invalid or already used verification token")
+		if errors.Is(err, registration.ErrPasswordTooShort) {
+			Error(w, http.StatusBadRequest, "password_too_short", err.Error())
+			return
+		}
+		if errors.Is(err, registration.ErrPasswordTooLong) {
+			Error(w, http.StatusBadRequest, "password_too_long", err.Error())
+			return
+		}
+		if isVerificationVerdict(err) {
+			verificationRefused(w, err)
+			return
+		}
+		handleError(w, err)
 		return
 	}
 
 	mfaEnabled := s.adminSvc.MFAEnabled(r.Context())
 	mfaEnrollmentNeeded := mfaEnabled && s.adminSvc.MFARequiredFor(r.Context(), string(u.Role))
 
-	if err := s.writeSession(w, r, auth.SessionData{
+	sd := auth.SessionData{
 		UserID:    u.ID,
 		Role:      u.Role,
 		MFAPassed: !mfaEnrollmentNeeded,
-	}); err != nil {
+	}
+	// Only enrolment can be owed here: a new account has no factor yet.
+	if mfaEnrollmentNeeded {
+		sd.PendingUntil = auth.PendingDeadline(time.Now(), true)
+	}
+
+	if err := s.writeSession(w, r, sd); err != nil {
 		handleError(w, err)
 		return
 	}

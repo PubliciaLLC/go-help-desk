@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { Ticket, Reply, TicketLink, LinkType, Tag, Attachment, Category, TicketType, TicketItem, StatusHistoryEntry, Assignment, TicketFieldValue, CannedResponse } from './types'
+import type { Ticket, Reply, TicketLink, LinkType, Tag, Attachment, Category, TicketType, TicketItem, StatusHistoryEntry, TicketAuditEntry, TicketFollower, Assignment, TicketFieldValue, CannedResponse, Priority } from './types'
 
 export interface CreateTicketInput {
   subject: string
@@ -12,9 +12,34 @@ export interface CreateTicketInput {
   guest_name?: string
   guest_phone?: string
   custom_fields?: Record<string, string>
+  // Staff and administrators only (#444): who the ticket is for when it is not
+  // the caller. At most one; the server refuses both, and refuses either from
+  // a requester.
+  reporter_user_id?: string
+  reporter_email?: string
+  // The one channel a person picks (#130): staff who took a call and are
+  // filing for the caller. Sent only with one of the two fields above, from the
+  // web form; the server refuses it from an API key and without a requester.
+  source_channel?: 'phone'
 }
 
-export type TicketScope = 'mine' | 'unassigned' | 'all'
+// A person the requester picker offers: all it draws, and no more.
+export interface RequesterHit {
+  id: string
+  display_name: string
+  email: string
+}
+
+// Accounts to file a ticket for, found by name or address. Staff and
+// administrators only; the server answers 400 under two characters and returns
+// at most ten.
+export async function lookupRequesters(q: string): Promise<RequesterHit[]> {
+  const res = await api.get<RequesterHit[]>('/users/lookup', { params: { q } })
+  return res.data ?? []
+}
+
+// 'visible' is every ticket the caller can see, for staff/admin search (#444).
+export type TicketScope = 'mine' | 'unassigned' | 'all' | 'visible'
 
 export async function listTickets(params?: {
   assignee_group_id?: string
@@ -29,7 +54,9 @@ export async function listTickets(params?: {
 }
 
 export async function createTicket(input: CreateTicketInput): Promise<Ticket> {
-  const res = await api.post<Ticket>('/tickets', input)
+  // The description comes from the Markdown editor (or its textarea fallback),
+  // so it is Markdown. A REST client that says nothing gets plain; this one says.
+  const res = await api.post<Ticket>('/tickets', { ...input, format: 'markdown' })
   return res.data
 }
 
@@ -51,6 +78,9 @@ export async function updateTicket(
     category_id?: string
     type_id?: string | null
     item_id?: string | null
+    // Staff and admin only; refused (409 ticket_closed) on a Resolved or
+    // Closed ticket. The server re-matches the SLA policy (#443).
+    priority?: Priority
   }
 ): Promise<Ticket> {
   const res = await api.patch<Ticket>(`/tickets/${id}`, patch)
@@ -62,8 +92,19 @@ export async function resolveTicket(id: string, notes?: string): Promise<Ticket>
   return res.data
 }
 
+// Force-reopens a Closed ticket. Refused (409) unless the instance's
+// closed_reopen_policy lets the caller's role; the ticket response's
+// can_reopen says whether to offer it.
 export async function reopenTicket(id: string): Promise<Ticket> {
   const res = await api.post<Ticket>(`/tickets/${id}/reopen`, {})
+  return res.data
+}
+
+// The way forward from a Closed ticket (#349): a new ticket, linked to it,
+// that starts open. Available whether or not the instance lets anyone reopen a
+// closed ticket (closed_reopen_policy, off by default).
+export async function createFollowUp(id: string): Promise<Ticket> {
+  const res = await api.post<Ticket>(`/tickets/${id}/follow-up`, {})
   return res.data
 }
 
@@ -82,6 +123,25 @@ export async function listStatusHistory(ticketId: string): Promise<StatusHistory
   return res.data
 }
 
+export async function listTicketFollowers(ticketId: string): Promise<TicketFollower[]> {
+  const res = await api.get<TicketFollower[]>(`/tickets/${ticketId}/followers`)
+  return res.data ?? []
+}
+
+// Both are idempotent and answer 204 (#441).
+export async function followTicket(ticketId: string): Promise<void> {
+  await api.put(`/tickets/${ticketId}/follow`)
+}
+
+export async function unfollowTicket(ticketId: string): Promise<void> {
+  await api.delete(`/tickets/${ticketId}/follow`)
+}
+
+export async function listTicketAudit(ticketId: string): Promise<TicketAuditEntry[]> {
+  const res = await api.get<TicketAuditEntry[]>(`/tickets/${ticketId}/audit`)
+  return res.data
+}
+
 export async function addReply(
   ticketId: string,
   body: string,
@@ -92,6 +152,8 @@ export async function addReply(
     body,
     internal,
     notify_customer: notifyCustomer,
+    // Written in the Markdown editor; see createTicket.
+    format: 'markdown',
   })
   return res.data
 }
@@ -115,6 +177,24 @@ export async function removeLink(
   linkType: LinkType
 ): Promise<void> {
   await api.delete(`/tickets/${ticketId}/links/${targetId}/${linkType}`)
+}
+
+export function duplicateResolutionNotes(targetTrackingNumber: string): string {
+  return `Duplicate of ${targetTrackingNumber}`
+}
+
+export async function addDuplicateLinkAndResolve(
+  ticketId: string,
+  targetId: string,
+  resolutionNotes: string
+): Promise<Ticket> {
+  const res = await api.post<Ticket>(`/tickets/${ticketId}/links`, {
+    target_id: targetId,
+    link_type: 'duplicate_of',
+    resolve_as_duplicate: true,
+    resolution_notes: resolutionNotes,
+  })
+  return res.data
 }
 
 // ── Tags ──────────────────────────────────────────────────────────────────────
@@ -168,6 +248,32 @@ export async function uploadAttachment(ticketId: string, file: File): Promise<At
   const res = await api.post<Attachment>(`/tickets/${ticketId}/attachments`, form, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
+  return res.data
+}
+
+/**
+ * Asks the configured reputation service about this attachment again.
+ *
+ * Returns the attachment with its refreshed verdict. Refused with 409 on a
+ * detection (engines do not un-flag a file), 429 when the same hash was
+ * checked inside the last seven days, and 503 when there is no lookup
+ * configured or the day's allowance is spent — each carrying a message that
+ * says which.
+ */
+// `provider` re-checks one service rather than every enabled one. The expanded
+// attachment row gives each service its own control, because each verdict has
+// its own expiry clock; omitting it keeps the original behaviour, which the
+// row's own merged control still wants.
+export async function recheckAttachmentReputation(
+  ticketId: string,
+  attachmentId: string,
+  provider?: string
+): Promise<Attachment> {
+  const path = `/tickets/${ticketId}/attachments/${attachmentId}/reputation`
+  const res = await api.post<Attachment>(
+    provider ? `${path}?provider=${encodeURIComponent(provider)}` : path,
+    {}
+  )
   return res.data
 }
 

@@ -40,7 +40,7 @@ func (f *fakeCategoryStore) UpdateCategory(_ context.Context, c category.Categor
 	f.cats[c.ID] = c
 	return nil
 }
-func (f *fakeCategoryStore) DeleteCategory(_ context.Context, id uuid.UUID) error {
+func (f *fakeCategoryStore) DeleteCategory(_ context.Context, id uuid.UUID, _ *uuid.UUID) error {
 	delete(f.cats, id)
 	return nil
 }
@@ -66,7 +66,7 @@ func (f *fakeCategoryStore) UpdateType(_ context.Context, t category.Type) error
 	f.types[t.ID] = t
 	return nil
 }
-func (f *fakeCategoryStore) DeleteType(_ context.Context, id uuid.UUID) error {
+func (f *fakeCategoryStore) DeleteType(_ context.Context, id uuid.UUID, _ *uuid.UUID) error {
 	delete(f.types, id)
 	return nil
 }
@@ -94,7 +94,7 @@ func (f *fakeCategoryStore) UpdateItem(_ context.Context, i category.Item) error
 	f.items[i.ID] = i
 	return nil
 }
-func (f *fakeCategoryStore) DeleteItem(_ context.Context, id uuid.UUID) error {
+func (f *fakeCategoryStore) DeleteItem(_ context.Context, id uuid.UUID, _ *uuid.UUID) error {
 	delete(f.items, id)
 	return nil
 }

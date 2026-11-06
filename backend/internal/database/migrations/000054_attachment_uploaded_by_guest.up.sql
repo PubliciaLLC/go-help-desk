@@ -1,0 +1,11 @@
+-- Who uploaded an attachment, as far as the guest cap needs to know (#445).
+--
+-- The cap on "files a guest can attach to a ticket" must count only guest
+-- uploads, and nothing recorded who uploaded a file: a guest ticket has no
+-- reporter account, so a staff file and a guest file looked the same. A flag,
+-- not an actor id, because a guest has no id and the cap needs nothing else.
+--
+-- Rows that exist stay false. Guest uploads made before this migration are not
+-- counted toward the cap, which errs towards letting a guest add a file, and
+-- the hourly rate still bounds them.
+ALTER TABLE attachments ADD COLUMN uploaded_by_guest BOOLEAN NOT NULL DEFAULT false;

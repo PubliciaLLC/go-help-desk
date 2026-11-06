@@ -12,6 +12,8 @@ type ConfirmDialogProps = {
   cancelLabel?: string
   destructive?: boolean
   isPending?: boolean
+  // A failure to show inside the dialog, which stays open.
+  error?: string
   onConfirm: () => void
 }
 
@@ -24,6 +26,7 @@ export function ConfirmDialog({
   cancelLabel = 'Cancel',
   destructive = true,
   isPending = false,
+  error,
   onConfirm,
 }: ConfirmDialogProps) {
   return (
@@ -42,6 +45,11 @@ export function ConfirmDialog({
             <Dialog.Description asChild>
               <div className="mt-2 text-sm text-gray-600">{description}</div>
             </Dialog.Description>
+          )}
+          {error && (
+            <p role="alert" className="mt-3 text-sm text-red-600">
+              {error}
+            </p>
           )}
           <div className="mt-5 flex justify-end gap-2">
             <Button size="sm" variant="outline" onClick={() => onOpenChange(false)} disabled={isPending}>

@@ -137,7 +137,7 @@ func TestAdminResetMFA(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, before.MFAEnabled, "precondition: the user is enrolled")
 
-	res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+h.staffID.String(),
+	res := h.doAsAdminSession(t, http.MethodPatch, "/api/v1/admin/users/"+h.staffID.String(),
 		map[string]any{"reset_mfa": true})
 	res.Body.Close()
 	require.Equal(t, http.StatusOK, res.StatusCode,

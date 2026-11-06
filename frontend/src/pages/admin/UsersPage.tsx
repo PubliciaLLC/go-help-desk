@@ -1,7 +1,8 @@
 import { useState } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { authTypeLabel } from '@/lib/authType'
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { listUsers, createUser } from '@/api/admin'
+import { listUsersPage, createUser, USERS_PER_PAGE } from '@/api/admin'
 import { extractError } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
@@ -11,10 +12,12 @@ import { Select } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
 import { Spinner } from '@/components/ui/spinner'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { PlusIcon } from 'lucide-react'
+import { PlusIcon, SearchIcon } from 'lucide-react'
 import type { Role } from '@/api/types'
 
 const ROLES: Role[] = ['admin', 'staff', 'user']
+
+type Show = 'all' | 'people' | 'service'
 
 function roleBadge(role: Role) {
   if (role === 'admin') return 'destructive'
@@ -31,11 +34,29 @@ export function UsersPage() {
   const [role, setRole] = useState<Role>('user')
   const [password, setPassword] = useState('')
   const [formError, setFormError] = useState('')
+  const [show, setShow] = useState<Show>('all')
 
-  const { data: users = [], isLoading } = useQuery({
-    queryKey: ['admin', 'users'],
-    queryFn: () => listUsers(),
+  // The box is a draft until submitted, so each keystroke is not a request.
+  const [searchDraft, setSearchDraft] = useState('')
+  const [search, setSearch] = useState('')
+  const [roleFilter, setRoleFilter] = useState<Role | ''>('')
+  const [page, setPage] = useState(1)
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['admin', 'users', { page, search, roleFilter, show }],
+    queryFn: () => listUsersPage(page, {
+      q: search,
+      role: roleFilter,
+      serviceAccount: show === 'all' ? undefined : show === 'service',
+    }),
+    // Keep the old rows on screen while the next page loads rather than
+    // flashing a spinner between every click.
+    placeholderData: keepPreviousData,
   })
+  const users = data?.users ?? []
+  const total = data?.total ?? 0
+  const firstShown = (page - 1) * USERS_PER_PAGE + 1
+  const lastShown = (page - 1) * USERS_PER_PAGE + users.length
 
   const createMutation = useMutation({
     mutationFn: () => createUser({ email, display_name: displayName, role, password }),
@@ -54,15 +75,30 @@ export function UsersPage() {
   return (
     <Layout>
       <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
             <h1 className="text-2xl font-bold text-gray-900">Users</h1>
             <p className="mt-1 text-sm text-gray-500">Click a user to edit their profile, groups, and account settings.</p>
           </div>
-          <Button onClick={() => setShowCreate(!showCreate)}>
-            <PlusIcon className="mr-2 h-4 w-4" />
-            Add User
-          </Button>
+          <div className="flex flex-wrap items-center gap-3">
+            <Select
+              aria-label="Show"
+              value={show}
+              onChange={(e) => {
+                setShow(e.target.value as Show)
+                setPage(1)
+              }}
+              className="w-44"
+            >
+              <option value="all">All accounts</option>
+              <option value="people">People</option>
+              <option value="service">Service accounts</option>
+            </Select>
+            <Button onClick={() => setShowCreate(!showCreate)}>
+              <PlusIcon className="mr-2 h-4 w-4" />
+              Add User
+            </Button>
+          </div>
         </div>
 
         {showCreate && (
@@ -91,7 +127,7 @@ export function UsersPage() {
                   <Input value={password} onChange={(e) => setPassword(e.target.value)} type="password" />
                 </div>
               </div>
-              {formError && <p className="mt-2 text-sm text-red-600">{formError}</p>}
+              {formError && <p role="alert" className="mt-2 text-sm text-red-600">{formError}</p>}
               <div className="mt-4 flex gap-2">
                 <Button onClick={() => createMutation.mutate()} disabled={createMutation.isPending}>
                   {createMutation.isPending ? 'Creating…' : 'Create'}
@@ -102,10 +138,45 @@ export function UsersPage() {
           </Card>
         )}
 
+        <form
+          role="search"
+          className="flex flex-wrap items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault()
+            setSearch(searchDraft.trim())
+            setPage(1)
+          }}
+        >
+          <Input
+            type="search"
+            aria-label="Search users"
+            placeholder="Search name or email"
+            value={searchDraft}
+            onChange={(e) => setSearchDraft(e.target.value)}
+            className="max-w-xs"
+          />
+          <Button type="submit" variant="outline">
+            <SearchIcon className="mr-2 h-4 w-4" />
+            Search
+          </Button>
+          <Select
+            aria-label="Filter by role"
+            value={roleFilter}
+            onChange={(e) => {
+              setRoleFilter(e.target.value as Role | '')
+              setPage(1)
+            }}
+            className="w-40"
+          >
+            <option value="">All roles</option>
+            {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+          </Select>
+        </form>
+
         {isLoading ? (
           <div className="flex justify-center py-12"><Spinner /></div>
         ) : (
-          <div className="rounded-lg border bg-white overflow-hidden">
+          <div className="rounded-lg border bg-white overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 text-xs text-gray-500 uppercase">
                 <tr>
@@ -124,17 +195,20 @@ export function UsersPage() {
                     onClick={() => navigate({ to: '/admin/users/$id', params: { id: u.id } })}
                   >
                     <td className="px-4 py-3">
-                      <span className="font-medium text-gray-900">{u.display_name}</span>
+                      <span className="font-medium text-gray-900 wrap-anywhere">{u.display_name}</span>
+                      {u.service_account && (
+                        <Badge variant="secondary" className="ml-2 text-[10px]">Service</Badge>
+                      )}
                       {u.disabled && (
                         <Badge variant="secondary" className="ml-2 text-[10px]">Disabled</Badge>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-gray-600">{u.email}</td>
+                    <td className="px-4 py-3 text-gray-600 wrap-anywhere">{u.email}</td>
                     <td className="px-4 py-3">
                       <Badge variant={roleBadge(u.role) as never}>{u.role}</Badge>
                     </td>
                     <td className="px-4 py-3 text-gray-500 text-xs">
-                      {u.auth_type === 'saml' ? 'SSO' : u.auth_type === 'both' ? 'Local + SSO' : 'Local'}
+                      {authTypeLabel(u.auth_type)}
                     </td>
                     <td className="px-4 py-3 text-gray-500">{new Date(u.created_at).toLocaleDateString()}</td>
                   </tr>
@@ -144,6 +218,16 @@ export function UsersPage() {
                 )}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {total > 0 && (
+          <div className="flex items-center justify-between text-sm text-gray-600">
+            <span>Showing {firstShown}-{lastShown} of {total}</span>
+            <div className="flex gap-2">
+              <Button variant="outline" disabled={page <= 1} onClick={() => setPage(page - 1)}>Previous</Button>
+              <Button variant="outline" disabled={lastShown >= total} onClick={() => setPage(page + 1)}>Next</Button>
+            </div>
           </div>
         )}
       </div>

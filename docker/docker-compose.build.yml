@@ -1,0 +1,22 @@
+# Build the application from source instead of pulling a published image.
+#
+#     docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#
+# This is a supported path, not a fallback. Some people self-host precisely so
+# they can build what they run rather than trust an image somebody else
+# produced, and that is a reasonable thing to want from an AGPL product.
+#
+# It needs Docker's buildx plugin. Without it, Compose falls back to the
+# classic builder, which does not populate $BUILDPLATFORM, and the Dockerfile's
+# build stages then have no correct platform to fall back to — see #297 and
+# #301. Docker Desktop ships buildx; colima and some Linux installations do
+# not.
+#
+# `image:` is repeated here so the built result is tagged rather than left
+# dangling, and so `docker compose down --rmi local` can find it.
+services:
+  app:
+    image: ghcr.io/publiciallc/go-help-desk:${GHD_VERSION:-1.3.0}
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile

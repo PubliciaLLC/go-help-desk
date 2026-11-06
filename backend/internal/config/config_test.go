@@ -20,7 +20,6 @@ func TestLoad_RequiredFields(t *testing.T) {
 				"DATABASE_URL":   "postgres://user:pass@localhost/db",
 				"BASE_URL":       "https://helpdesk.example.com",
 				"SESSION_SECRET": "supersecret",
-				"JWT_SECRET":     "jwtsecret",
 			},
 			wantErr: false,
 		},
@@ -29,7 +28,6 @@ func TestLoad_RequiredFields(t *testing.T) {
 			env: map[string]string{
 				"BASE_URL":       "https://helpdesk.example.com",
 				"SESSION_SECRET": "supersecret",
-				"JWT_SECRET":     "jwtsecret",
 			},
 			wantErr: true,
 		},
@@ -38,9 +36,17 @@ func TestLoad_RequiredFields(t *testing.T) {
 			env: map[string]string{
 				"DATABASE_URL":   "postgres://user:pass@localhost/db",
 				"SESSION_SECRET": "supersecret",
-				"JWT_SECRET":     "jwtsecret",
 			},
 			wantErr: true,
+		},
+		{
+			name: "JWT_SECRET can be absent (generated from database)",
+			env: map[string]string{
+				"DATABASE_URL":   "postgres://user:pass@localhost/db",
+				"BASE_URL":       "https://helpdesk.example.com",
+				"SESSION_SECRET": "supersecret",
+			},
+			wantErr: false,
 		},
 	}
 
@@ -76,7 +82,7 @@ func TestLoad_Defaults(t *testing.T) {
 	for _, key := range []string{
 		"DATABASE_URL", "BASE_URL", "SESSION_SECRET", "JWT_SECRET",
 		"HTTP_PORT", "SMTP_PORT", "ATTACHMENT_DIR", "APP_ENV",
-		"SAML_ENABLED", "GUEST_SUBMISSION_ENABLED", "SLA_ENABLED", "MFA_ENABLED",
+		"SAML_ENABLED", "SLA_ENABLED",
 	} {
 		os.Unsetenv(key)
 	}
@@ -96,9 +102,7 @@ func TestLoad_Defaults(t *testing.T) {
 	require.Equal(t, 587, cfg.SMTPPort)
 	require.Equal(t, "/data/attachments", cfg.AttachmentDir)
 	require.Equal(t, "production", cfg.AppEnv)
-	require.False(t, cfg.GuestSubmissionEnabled)
 	require.False(t, cfg.SLAEnabled)
-	require.False(t, cfg.MFAEnabled)
 }
 
 func TestConfig_EmailEnabled(t *testing.T) {
@@ -115,6 +119,86 @@ func TestConfig_EmailEnabled(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			require.Equal(t, tc.want, tc.cfg.EmailEnabled())
+		})
+	}
+}
+
+func TestLoad_WithAPPENV(t *testing.T) {
+	for _, key := range []string{
+		"DATABASE_URL", "BASE_URL", "SESSION_SECRET", "JWT_SECRET",
+		"HTTP_PORT", "SMTP_PORT", "ATTACHMENT_DIR", "APP_ENV",
+		"SAML_ENABLED", "SLA_ENABLED",
+	} {
+		os.Unsetenv(key)
+	}
+	os.Setenv("DATABASE_URL", "postgres://user:pass@localhost/db")
+	os.Setenv("BASE_URL", "https://helpdesk.example.com")
+	os.Setenv("SESSION_SECRET", "s")
+	os.Setenv("JWT_SECRET", "j")
+	os.Setenv("APP_ENV", "development")
+	t.Cleanup(func() {
+		for _, key := range []string{"DATABASE_URL", "BASE_URL", "SESSION_SECRET", "JWT_SECRET", "APP_ENV"} {
+			os.Unsetenv(key)
+		}
+	})
+
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	require.Equal(t, "development", cfg.AppEnv)
+}
+
+func TestLoad_AuthThrottleDelay(t *testing.T) {
+	setRequired := func() {
+		os.Setenv("DATABASE_URL", "postgres://user:pass@localhost/db")
+		os.Setenv("BASE_URL", "https://helpdesk.example.com")
+		os.Setenv("SESSION_SECRET", "s")
+		os.Setenv("JWT_SECRET", "j")
+	}
+	cleanupRequired := func() {
+		for _, key := range []string{"DATABASE_URL", "BASE_URL", "SESSION_SECRET", "JWT_SECRET", "AUTH_THROTTLE_DELAY", "GHD_ALLOW_ZERO_AUTH_THROTTLE"} {
+			os.Unsetenv(key)
+		}
+	}
+
+	cases := []struct {
+		name      string
+		value     string
+		allowZero bool
+		wantErr   bool
+		errMsg    string
+	}{
+		{name: "unset (default 1s)", value: "", allowZero: false, wantErr: false},
+		{name: "1s accepted", value: "1s", allowZero: false, wantErr: false},
+		{name: "2m accepted", value: "2m", allowZero: false, wantErr: false},
+		{name: "0 refused", value: "0", allowZero: false, wantErr: true, errMsg: "AUTH_THROTTLE_DELAY"},
+		{name: "0s refused", value: "0s", allowZero: false, wantErr: true, errMsg: "AUTH_THROTTLE_DELAY"},
+		{name: "-1s refused", value: "-1s", allowZero: false, wantErr: true, errMsg: "AUTH_THROTTLE_DELAY"},
+		{name: "0 allowed with GHD_ALLOW_ZERO_AUTH_THROTTLE=1", value: "0", allowZero: true, wantErr: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cleanupRequired()
+			setRequired()
+			if tc.value != "" {
+				os.Setenv("AUTH_THROTTLE_DELAY", tc.value)
+			}
+			if tc.allowZero {
+				os.Setenv("GHD_ALLOW_ZERO_AUTH_THROTTLE", "1")
+			}
+			t.Cleanup(cleanupRequired)
+
+			_, err := config.Load()
+			if tc.wantErr {
+				require.Error(t, err, "expected an error but got none")
+				if tc.errMsg != "" {
+					require.Contains(t, err.Error(), tc.errMsg, "error message does not contain expected text")
+					// The switch is for tests; telling operators about it invites its use.
+					require.NotContains(t, err.Error(), "GHD_ALLOW_ZERO_AUTH_THROTTLE")
+				}
+			} else {
+				require.NoError(t, err)
+			}
 		})
 	}
 }

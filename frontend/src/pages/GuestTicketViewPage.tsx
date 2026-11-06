@@ -1,9 +1,21 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { addGuestReply, getGuestTicket, GuestLinkInvalid } from '@/api/guest'
+import { getSiteConfig } from '@/api/admin'
+import {
+  addGuestReply,
+  createGuestFollowUp,
+  getGuestTicket,
+  GuestFollowUpRateLimited,
+  GuestLinkInvalid,
+  uploadGuestAttachment,
+} from '@/api/guest'
+import { AttachmentUpload, type UploadState } from '@/components/AttachmentUpload'
 import { Button } from '@/components/ui/button'
-import { Textarea } from '@/components/ui/textarea'
+import { TextLimit } from '@/components/TextLimit'
+import { isOverLimit } from '@/lib/textLimit'
+import { MarkdownEditor } from '@/components/editor/MarkdownEditor'
+import { TicketText } from '@/components/TicketText'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
 // The ticket a guest reached by link.
@@ -41,6 +53,48 @@ export function GuestTicketViewPage() {
     enabled: token !== '',
   })
 
+  // Whether this instance lets guests attach (#445), and the per-file limit
+  // that applies. A failed or slow lookup leaves the control hidden: offering a
+  // button that can only fail is worse than not offering one.
+  const { data: site } = useQuery({ queryKey: ['site-config'], queryFn: getSiteConfig, retry: false })
+  const canAttach = site?.guest_attachments_enabled === true && typeof site.guest_attachment_max_bytes === 'number'
+
+  // Two limits, and the page offers only what both allow at once: the ticket's
+  // cap, less what this visit has attached, and the hour's uploads. Offering
+  // five when the hour allows three would hand the guest two refusals.
+  const perTicket = site?.guest_attachment_max_per_ticket ?? 5
+  const perHour = site?.guest_attachment_uploads_per_hour ?? perTicket
+
+  const [uploadStates, setUploadStates] = useState<Record<string, UploadState> | undefined>()
+  const [uploading, setUploading] = useState<File[]>([])
+  const [attached, setAttached] = useState<string[]>([])
+  const [uploadErrors, setUploadErrors] = useState<string[]>([])
+
+  // Position plus name: two files may share a name, and a state keyed by name
+  // alone would show one row's progress on both.
+  const stateKey = (f: File, i: number) => `${i}:${f.name}`
+
+  // Each chosen file is sent as soon as it is chosen, one after another. There
+  // is no draft to submit: a guest attachment belongs to the ticket, not to a
+  // reply. The server's reason is shown for a refusal, never the file's content.
+  async function sendFiles(files: File[]) {
+    if (files.length === 0) return
+    setUploading(files)
+    setUploadErrors([])
+    setUploadStates(Object.fromEntries(files.map((f, i) => [stateKey(f, i), { status: 'pending' as const }])))
+    for (const [i, f] of files.entries()) {
+      setUploadStates((s) => ({ ...s, [stateKey(f, i)]: { status: 'uploading' } }))
+      try {
+        await uploadGuestAttachment(token, f)
+        setAttached((a) => [...a, f.name])
+      } catch (err) {
+        setUploadErrors((e) => [...e, `${f.name}: ${err instanceof Error ? err.message : 'The file could not be uploaded.'}`])
+      }
+    }
+    setUploading([])
+    setUploadStates(undefined)
+  }
+
   const send = useMutation({
     mutationFn: () => addGuestReply(token, reply.trim()),
     onSuccess: () => {
@@ -48,6 +102,10 @@ export function GuestTicketViewPage() {
       qc.invalidateQueries({ queryKey: ['guest-ticket', token] })
     },
   })
+
+  // A follow-up of a closed ticket (#349): a new ticket, linked to this one,
+  // whose own link is emailed. The response holds only its tracking number.
+  const followUp = useMutation({ mutationFn: () => createGuestFollowUp(token) })
 
   if (isLoading) {
     return <Shell><p className="text-sm text-gray-500">Loading…</p></Shell>
@@ -92,11 +150,11 @@ export function GuestTicketViewPage() {
           <CardContent className="space-y-3 text-sm text-gray-700">
             <p>
               {error instanceof GuestLinkInvalid
-                ? 'Links are replaced each time we update your ticket, and stop working once a ticket is closed.'
+                ? 'Links are replaced each time we update your ticket, and stop working 30 days after they are sent.'
                 : 'We could not open that ticket.'}
             </p>
             <p>
-              If your ticket is still open, you can{' '}
+              You can{' '}
               <a href="/track" className="text-blue-600 underline">request a new link</a>{' '}
               with your tracking number and email address.
             </p>
@@ -111,13 +169,13 @@ export function GuestTicketViewPage() {
       <Card>
         <CardHeader>
           <div className="flex items-baseline justify-between gap-3 flex-wrap">
-            <CardTitle className="text-lg">{ticket.subject}</CardTitle>
+            <CardTitle className="text-lg wrap-anywhere">{ticket.subject}</CardTitle>
             <span className="text-xs font-mono text-gray-500">{ticket.tracking_number}</span>
           </div>
-          <p className="text-sm text-gray-500 mt-1">Status: {ticket.status}</p>
+          <p className="text-sm text-gray-500 mt-1 wrap-anywhere">Status: {ticket.status}</p>
         </CardHeader>
         <CardContent className="space-y-4">
-          <p className="text-sm whitespace-pre-wrap text-gray-800">{ticket.description}</p>
+          <TicketText text={ticket.description} format={ticket.description_format} className="text-sm text-gray-800" />
 
           <div className="space-y-3 border-t pt-4">
             {ticket.replies.length === 0 && (
@@ -138,34 +196,107 @@ export function GuestTicketViewPage() {
                   {r.from_you ? 'You' : 'Support'} ·{' '}
                   {new Date(r.created_at).toLocaleString()}
                 </p>
-                <p className="whitespace-pre-wrap text-gray-800">{r.body}</p>
+                <TicketText text={r.body} format={r.body_format} className="text-gray-800" />
               </div>
             ))}
           </div>
 
-          <form
-            className="space-y-2 border-t pt-4"
-            onSubmit={(e) => {
-              e.preventDefault()
-              if (reply.trim()) send.mutate()
-            }}
-          >
-            <Textarea
-              value={reply}
-              onChange={(e) => setReply(e.target.value)}
-              rows={4}
-              placeholder="Add a reply…"
-              aria-label="Add a reply"
-            />
-            {send.isError && (
-              <p className="text-sm text-red-600">
-                We could not add your reply. The ticket may have been closed.
+          {/* A closed ticket is an archive: this link still reads it, and
+              nothing writes to it (#349). Said here rather than leaving a
+              reply box that could only fail. */}
+          {ticket.status === 'Closed' ? (
+            <div role="note" className="space-y-3 border-t pt-4 text-sm text-gray-600">
+              <p>
+                This ticket is closed, so it can no longer be replied to. If you
+                still need help, you can open a follow-up ticket based on it.
               </p>
-            )}
-            <Button type="submit" disabled={!reply.trim() || send.isPending}>
-              {send.isPending ? 'Sending…' : 'Send reply'}
-            </Button>
-          </form>
+              {followUp.isSuccess ? (
+                <p role="status" className="text-green-700">
+                  Your follow-up ticket is{' '}
+                  <span className="font-mono">{followUp.data}</span>. We have
+                  emailed you a link to it.
+                </p>
+              ) : (
+                <>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => followUp.mutate()}
+                    disabled={followUp.isPending}
+                  >
+                    {followUp.isPending ? 'Creating…' : 'Create follow-up'}
+                  </Button>
+                  {followUp.isError && (
+                    <p role="alert" className="text-red-600">
+                      {followUp.error instanceof GuestFollowUpRateLimited
+                        ? 'Too many attempts. Please wait a minute and try again.'
+                        : 'We could not create a follow-up. One may already exist for this ticket; look for the email we sent you.'}
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
+          ) : (
+            <form
+              className="space-y-2 border-t pt-4"
+              onSubmit={(e) => {
+                e.preventDefault()
+                if (reply.trim() && !isOverLimit(reply)) send.mutate()
+              }}
+            >
+              <span id="guest-reply-label" className="sr-only">Add a reply</span>
+              <MarkdownEditor
+                value={reply}
+                onChange={setReply}
+                labelId="guest-reply-label"
+                placeholder="Add a reply…"
+              />
+              <TextLimit value={reply} />
+              {send.isError && (
+                <p role="alert" className="text-sm text-red-600">
+                  We could not add your reply. The ticket may have been closed.
+                </p>
+              )}
+              <Button type="submit" disabled={!reply.trim() || isOverLimit(reply) || send.isPending}>
+                {send.isPending ? 'Sending…' : 'Send reply'}
+              </Button>
+            </form>
+          )}
+
+          {ticket.status !== 'Closed' && canAttach && (
+            <div className="space-y-2 border-t pt-4">
+              {/* The page cannot see files from an earlier visit (the guest read
+                  has no attachment list), so this counts this visit's only. The
+                  server holds the real cap and says so when it is reached. */}
+              {attached.length >= perTicket ? (
+                <p className="text-sm text-gray-600">You have attached the most files that can be added to this ticket.</p>
+              ) : attached.length >= perHour ? (
+                <p className="text-sm text-gray-600">You have used this hour&apos;s uploads. Reload this page later to add more.</p>
+              ) : (
+              <AttachmentUpload
+                maxFiles={Math.min(perTicket - attached.length, perHour - attached.length)}
+                maxFilesNote={
+                  perHour < perTicket
+                    ? `up to ${perHour - attached.length} ${perHour - attached.length === 1 ? 'file' : 'files'} now (${perTicket} per ticket)`
+                    : undefined
+                }
+                files={uploading}
+                onChange={(next) => sendFiles(next.slice(uploading.length))}
+                uploadStates={uploadStates}
+                stateKey={stateKey}
+                maxBytes={site!.guest_attachment_max_bytes}
+              />
+              )}
+              {attached.length > 0 && (
+                <p role="status" className="text-sm text-green-700 wrap-anywhere">
+                  Attached: {attached.join(', ')}
+                </p>
+              )}
+              {uploadErrors.map((m, i) => (
+                <p key={i} role="alert" className="text-sm text-red-600 wrap-anywhere">{m}</p>
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
     </Shell>

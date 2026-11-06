@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react'
-import { useParams, useNavigate } from '@tanstack/react-router'
+import { authTypeLabel } from '@/lib/authType'
+import { useParams, useNavigate, Link } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   getUser, updateUser, adminResetPassword, deleteUser,
   listGroups, addGroupMember, removeGroupMember,
 } from '@/api/admin'
-import { extractError } from '@/api/client'
+import { extractError, extractErrorCode } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -18,10 +19,12 @@ import { ArrowLeftIcon, ShieldCheckIcon, ShieldOffIcon } from 'lucide-react'
 import type { Role } from '@/api/types'
 
 const ROLES: Role[] = ['admin', 'staff', 'user']
+// A service user is never an administrator: the database refuses it (#420).
+const SERVICE_ROLES: Role[] = ['staff', 'user']
 
 function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-lg border bg-white">
+    <div className="min-w-0 rounded-lg border bg-white">
       <div className="border-b px-5 py-3">
         <h2 className="text-sm font-semibold text-gray-700">{title}</h2>
       </div>
@@ -54,7 +57,18 @@ export function UserDetailPage() {
   // ── Password state ──────────────────────────────────────────────────────────
   const [newPassword, setNewPassword] = useState('')
   const [passwordError, setPasswordError] = useState('')
+  // Shared by the account actions below. Each of them could be refused with a
+  // reason the server spells out — "this is the only administrator, so it
+  // cannot be disabled, demoted or deleted" is the one that bites — and each
+  // of them used to drop it: the button said "Disabling…", came back, and the
+  // account was still enabled with nothing said. The role change beside them
+  // showed its error all along, so the same refusal was explained on one
+  // button and swallowed on the next.
+  const [actionError, setActionError] = useState('')
   const [passwordSaved, setPasswordSaved] = useState(false)
+  // Unticked every time: revoking someone's keys is a decision made for this
+  // reset, not a preference that carries over to the next one (#450).
+  const [revokeKeys, setRevokeKeys] = useState(false)
 
   // ── Group state ─────────────────────────────────────────────────────────────
   const [addGroupId, setAddGroupId] = useState('')
@@ -93,11 +107,19 @@ export function UserDetailPage() {
   function invalidate() {
     qc.invalidateQueries({ queryKey: ['admin', 'users', id] })
     qc.invalidateQueries({ queryKey: ['admin', 'users'] })
+    // A group added to (or a disable of) a service user is what clears the
+    // "OAuth clients see no tickets" banner; without this it stays up to five
+    // minutes after the fix.
+    qc.invalidateQueries({ queryKey: ['security-warnings'] })
   }
 
   // ── Profile mutation ────────────────────────────────────────────────────────
   const profileMutation = useMutation({
-    mutationFn: () => updateUser(id, { display_name: displayName, email, role }),
+    // A service user's address is made by the system, so it is never sent back.
+    mutationFn: () =>
+      updateUser(id, user?.service_account
+        ? { display_name: displayName, role }
+        : { display_name: displayName, email, role }),
     onSuccess: () => {
       setProfileSaved(true)
       setProfileError('')
@@ -110,20 +132,23 @@ export function UserDetailPage() {
   // ── Toggle disabled ─────────────────────────────────────────────────────────
   const toggleDisabledMutation = useMutation({
     mutationFn: (disabled: boolean) => updateUser(id, { disabled }),
-    onSuccess: () => invalidate(),
+    onSuccess: () => { setActionError(''); invalidate() },
+    onError: (err) => setActionError(extractError(err)),
   })
 
   // ── Reset MFA ───────────────────────────────────────────────────────────────
   const resetMFAMutation = useMutation({
     mutationFn: () => updateUser(id, { reset_mfa: true }),
-    onSuccess: () => invalidate(),
+    onSuccess: () => { setActionError(''); invalidate() },
+    onError: (err) => setActionError(extractError(err)),
   })
 
   // ── Password reset ──────────────────────────────────────────────────────────
   const passwordMutation = useMutation({
-    mutationFn: () => adminResetPassword(id, newPassword),
+    mutationFn: () => adminResetPassword(id, newPassword, revokeKeys),
     onSuccess: () => {
       setNewPassword('')
+      setRevokeKeys(false)
       setPasswordSaved(true)
       setPasswordError('')
       setTimeout(() => setPasswordSaved(false), 2500)
@@ -144,27 +169,29 @@ export function UserDetailPage() {
 
   const removeFromGroupMutation = useMutation({
     mutationFn: (groupId: string) => removeGroupMember(groupId, id),
-    onSuccess: () => invalidate(),
+    onSuccess: () => { setGroupError(''); invalidate() },
+    onError: (err) => setGroupError(extractError(err)),
   })
 
   // ── Delete ──────────────────────────────────────────────────────────────────
   const deleteMutation = useMutation({
     mutationFn: () => deleteUser(id),
     onSuccess: () => navigate({ to: '/admin/users' }),
+    // Deleting the only administrator is refused. The dialog used to close
+    // on its own and leave the account sitting there.
+    onError: () => setConfirmDelete(false),
   })
 
   if (isLoading || !user) {
     return <Layout><div className="flex justify-center py-16"><Spinner /></div></Layout>
   }
 
+  // mfa_enabled is the TOTP flag alone; a passkey is a second factor too.
+  const isService = !!user.service_account
+  const hasSecondFactor = !isService && (user.mfa_enabled || (user.passkey_count ?? 0) > 0)
+
   const memberGroupIds = new Set(user.groups.map((g) => g.id))
   const availableGroups = allGroups.filter((g) => !memberGroupIds.has(g.id))
-
-  function authTypeLabel(t: string) {
-    if (t === 'saml') return 'SSO (SAML)'
-    if (t === 'both') return 'Local + SSO'
-    return 'Local'
-  }
 
   return (
     <Layout>
@@ -178,13 +205,26 @@ export function UserDetailPage() {
             <ArrowLeftIcon className="h-3.5 w-3.5" />
             Back to Users
           </button>
-          <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-bold text-gray-900">{user.display_name}</h1>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="min-w-0 text-2xl font-bold text-gray-900 wrap-anywhere">{user.display_name}</h1>
+            {isService && <Badge variant="secondary" className="text-xs">Service</Badge>}
             {user.disabled && (
               <Badge variant="secondary" className="text-xs">Disabled</Badge>
             )}
           </div>
-          <p className="mt-1 text-sm text-gray-500">{user.email}</p>
+          {isService ? (
+            <p className="mt-1 text-sm text-gray-500">
+              The account an OAuth client acts as. It never signs in. Renaming it renames the
+              client, its groups are the client&apos;s ticket scope, and disabling it stops the
+              client. It is deleted by deleting the client on the{' '}
+              <Link to="/admin/oauth-clients" className="text-blue-600 hover:underline">
+                OAuth clients
+              </Link>{' '}
+              page.
+            </p>
+          ) : (
+            <p className="mt-1 text-sm text-gray-500 wrap-anywhere">{user.email}</p>
+          )}
         </div>
 
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
@@ -197,21 +237,23 @@ export function UserDetailPage() {
                 disabled={user.disabled}
               />
             </FieldRow>
-            <FieldRow label="Email address">
-              <Input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                disabled={user.disabled}
-              />
-            </FieldRow>
+            {!isService && (
+              <FieldRow label="Email address">
+                <Input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  disabled={user.disabled}
+                />
+              </FieldRow>
+            )}
             <FieldRow label="Role">
               <Select
                 value={role}
                 onChange={(e) => setRole(e.target.value as Role)}
                 disabled={user.disabled}
               >
-                {ROLES.map((r) => (
+                {(isService ? SERVICE_ROLES : ROLES).map((r) => (
                   <option key={r} value={r} className="capitalize">{r}</option>
                 ))}
               </Select>
@@ -219,7 +261,7 @@ export function UserDetailPage() {
             {user.disabled && (
               <p className="text-xs text-amber-600">Enable the account to edit profile fields.</p>
             )}
-            {profileError && <p className="text-sm text-red-600">{profileError}</p>}
+            {profileError && <p role="alert" className="text-sm text-red-600">{profileError}</p>}
             <div className="flex items-center gap-3 pt-1">
               <Button
                 size="sm"
@@ -244,12 +286,13 @@ export function UserDetailPage() {
               </div>
               <div>
                 <p className="text-xs text-gray-400 mb-0.5">Login type</p>
-                <p className="font-medium text-gray-800">{authTypeLabel(user.auth_type)}</p>
+                <p className="font-medium text-gray-800">{authTypeLabel(user.auth_type, true)}</p>
               </div>
+              {!isService && (
               <div>
                 <p className="text-xs text-gray-400 mb-0.5">MFA</p>
                 <div className="flex items-center gap-1.5">
-                  {user.mfa_enabled ? (
+                  {hasSecondFactor ? (
                     <>
                       <ShieldCheckIcon className="h-4 w-4 text-green-600" />
                       <span className="font-medium text-green-700">Enrolled</span>
@@ -262,6 +305,7 @@ export function UserDetailPage() {
                   )}
                 </div>
               </div>
+              )}
               <div>
                 <p className="text-xs text-gray-400 mb-0.5">Status</p>
                 <p className={`font-medium ${user.disabled ? 'text-red-600' : 'text-green-700'}`}>
@@ -272,11 +316,11 @@ export function UserDetailPage() {
 
             <div className="border-t pt-3 space-y-3">
               {/* MFA reset */}
-              {user.mfa_enabled && (
+              {hasSecondFactor && (
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm font-medium text-gray-700">Reset MFA</p>
-                    <p className="text-xs text-gray-500">Clears the TOTP secret — user re-enrolls on next login.</p>
+                    <p className="text-xs text-gray-500">Clears the authenticator and every passkey, and signs them out everywhere — user re-enrols on next login.</p>
                   </div>
                   <Button
                     variant="outline"
@@ -289,6 +333,10 @@ export function UserDetailPage() {
                 </div>
               )}
 
+              {actionError && (
+                <p role="alert" className="text-sm text-red-600">{actionError}</p>
+              )}
+
               {/* Enable / Disable */}
               <div className="flex items-center justify-between">
                 <div>
@@ -296,9 +344,13 @@ export function UserDetailPage() {
                     {user.disabled ? 'Enable account' : 'Disable account'}
                   </p>
                   <p className="text-xs text-gray-500">
-                    {user.disabled
-                      ? 'Allow this user to sign in again.'
-                      : 'Prevent this user from signing in. Tickets and history are preserved.'}
+                    {isService
+                      ? user.disabled
+                        ? 'Let the OAuth client work again.'
+                        : 'Stops the OAuth client: its requests are refused until this is enabled again.'
+                      : user.disabled
+                        ? 'Allow this user to sign in again.'
+                        : 'Prevent this user from signing in. Tickets and history are preserved.'}
                   </p>
                 </div>
                 <Button
@@ -315,7 +367,7 @@ export function UserDetailPage() {
               </div>
 
               {/* Password reset */}
-              {user.has_password && (
+              {user.has_password && !isService && (
                 <div className="space-y-2 border-t pt-3">
                   <p className="text-sm font-medium text-gray-700">Reset password</p>
                   <div className="flex gap-2">
@@ -335,7 +387,16 @@ export function UserDetailPage() {
                       {passwordMutation.isPending ? 'Setting…' : 'Set password'}
                     </Button>
                   </div>
-                  {passwordError && <p className="text-sm text-red-600">{passwordError}</p>}
+                  <label className="flex items-center gap-2 text-sm text-gray-600">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-gray-300"
+                      checked={revokeKeys}
+                      onChange={(e) => setRevokeKeys(e.target.checked)}
+                    />
+                    Also revoke this person&apos;s API keys
+                  </label>
+                  {passwordError && <p role="alert" className="text-sm text-red-600">{passwordError}</p>}
                   {passwordSaved && <p className="text-sm text-green-600">Password updated.</p>}
                 </div>
               )}
@@ -350,8 +411,8 @@ export function UserDetailPage() {
           ) : (
             <div className="divide-y rounded-md border">
               {user.groups.map((g) => (
-                <div key={g.id} className="flex items-center justify-between px-4 py-2.5">
-                  <div>
+                <div key={g.id} className="flex items-center justify-between gap-2 px-4 py-2.5">
+                  <div className="min-w-0 wrap-anywhere">
                     <span className="text-sm font-medium text-gray-800">{g.name}</span>
                     {g.description && (
                       <span className="ml-2 text-xs text-gray-400">{g.description}</span>
@@ -360,7 +421,7 @@ export function UserDetailPage() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="text-gray-400 hover:text-red-600"
+                    className="shrink-0 text-gray-400 hover:text-red-600"
                     onClick={() => removeFromGroupMutation.mutate(g.id)}
                     disabled={removeFromGroupMutation.isPending}
                   >
@@ -376,7 +437,7 @@ export function UserDetailPage() {
               <Select
                 value={addGroupId}
                 onChange={(e) => setAddGroupId(e.target.value)}
-                className="flex-1"
+                className="min-w-0 flex-1"
               >
                 <option value="">Add to group…</option>
                 {availableGroups.map((g) => (
@@ -392,7 +453,7 @@ export function UserDetailPage() {
               </Button>
             </div>
           )}
-          {groupError && <p className="text-sm text-red-600">{groupError}</p>}
+          {groupError && <p role="alert" className="text-sm text-red-600">{groupError}</p>}
         </SectionCard>
 
         {/* ── Danger zone ─────────────────────────────────────────────────── */}
@@ -403,6 +464,19 @@ export function UserDetailPage() {
             will show a removed user. This cannot be undone — disable the account instead if
             you may need to restore access.
           </p>
+          {deleteMutation.isError && (
+            <p role="alert" className="text-sm font-medium text-red-700 mb-3">
+              {extractError(deleteMutation.error)}
+              {extractErrorCode(deleteMutation.error) === 'service_account' && (
+                <>
+                  {' '}
+                  <Link to="/admin/oauth-clients" className="underline">
+                    Go to OAuth clients
+                  </Link>
+                </>
+              )}
+            </p>
+          )}
           <Button
             size="sm"
             variant="outline"

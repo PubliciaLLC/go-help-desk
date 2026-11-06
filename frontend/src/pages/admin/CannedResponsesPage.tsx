@@ -153,7 +153,7 @@ function EditRow({
       <td colSpan={5} className="px-4 py-4 bg-gray-50">
         <div className="space-y-3">
           <CannedResponseFields form={form} onChange={setForm} categories={categories} />
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
           <div className="flex gap-2">
             <Button
               size="sm"
@@ -259,7 +259,7 @@ export function CannedResponsesPage() {
           </CardHeader>
           <CardContent className="space-y-3">
             <CannedResponseFields form={form} onChange={setForm} categories={categories} />
-            {createError && <p className="text-sm text-red-600">{createError}</p>}
+            {createError && <p role="alert" className="text-sm text-red-600">{createError}</p>}
             <Button
               size="sm"
               onClick={() => createMutation.mutate()}
@@ -274,7 +274,7 @@ export function CannedResponsesPage() {
         {isLoading ? (
           <div className="flex justify-center py-12"><Spinner /></div>
         ) : (
-          <div className="rounded-lg border bg-white overflow-hidden">
+          <div className="rounded-lg border bg-white overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 text-xs text-gray-500 uppercase">
                 <tr>
@@ -296,9 +296,10 @@ export function CannedResponsesPage() {
                     />
                   ) : (
                     <tr key={r.id}>
-                      <td className="px-4 py-3 font-medium text-gray-900">{r.name}</td>
-                      <td className="px-4 py-3 text-gray-500">{bodyPreview(r.body)}</td>
-                      <td className="px-4 py-3 text-gray-500">{scopeLabel(r)}</td>
+                      <td className="px-4 py-3 font-medium text-gray-900 wrap-anywhere">{r.name}</td>
+                      {/* Cut at 80 characters, so the whole body is on hover. */}
+                      <td className="px-4 py-3 text-gray-500 wrap-anywhere" title={r.body}>{bodyPreview(r.body)}</td>
+                      <td className="px-4 py-3 text-gray-500 wrap-anywhere">{scopeLabel(r)}</td>
                       <td className="px-4 py-3 text-gray-500">{r.sort_order}</td>
                       <td className="px-4 py-3 text-right">
                         <div className="flex justify-end gap-2">

@@ -2,19 +2,26 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
+	"github.com/publiciallc/go-help-desk/backend/internal/server/notify"
 )
 
-// The guest surface. Four routes, each doing one thing, mounted outside the
+// The guest surface. Five routes, each doing one thing, mounted outside the
 // ticket router.
 //
 // Deliberately not achieved by relaxing RequireRole on /tickets. Doing that
@@ -57,7 +64,7 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 	// Keyed on the source address, like signup, which is the only key there is
 	// when there is no account to key on.
 	if !s.loginLimiter.Allow("guest-submit:" + authmw.ClientAddr(r)) {
-		tooManyAttempts(w, time.Minute)
+		tooManyAttempts(w, s.loginLimiter.Remaining())
 		return
 	}
 
@@ -70,15 +77,27 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 	// No custom_fields either, for now: the fields a guest may fill are
 	// category-level and visible_on_new, and nothing here enforces that yet.
 	var body struct {
-		Subject     string    `json:"subject"`
-		Description string    `json:"description"`
-		CategoryID  uuid.UUID `json:"category_id"`
-		GuestEmail  string    `json:"guest_email"`
-		GuestName   string    `json:"guest_name"`
-		GuestPhone  string    `json:"guest_phone"`
+		Subject     string          `json:"subject"`
+		Description string          `json:"description"`
+		Format      json.RawMessage `json:"format"` // optional; see restTextFormat
+		CategoryID  uuid.UUID       `json:"category_id"`
+		GuestEmail  string          `json:"guest_email"`
+		GuestName   string          `json:"guest_name"`
+		GuestPhone  string          `json:"guest_phone"`
+		// Refused when present: the visitor does not choose a channel (#130).
+		SourceChannel json.RawMessage `json:"source_channel"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+	if _, refusal := restCreateChannel(nil, body.SourceChannel, false); refusal != "" {
+		Error(w, http.StatusBadRequest, "bad_request", refusal)
+		return
+	}
+	descFormat, err := restTextFormat(body.Format)
+	if err != nil {
+		handleError(w, err)
 		return
 	}
 
@@ -119,14 +138,16 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 	// Priority is not taken from the request. A guest setting their own ticket
 	// to critical is a queue anyone on the internet can jump.
 	in := ticket.CreateInput{
-		Subject:        body.Subject,
-		Description:    body.Description,
-		CategoryID:     body.CategoryID,
-		Priority:       ticket.PriorityMedium,
-		GuestEmail:     &email,
-		GuestName:      name,
-		GuestPhone:     strings.TrimSpace(body.GuestPhone),
-		TrackingPrefix: s.adminSvc.TicketPrefix(ctx),
+		Subject:           body.Subject,
+		Description:       body.Description,
+		DescriptionFormat: descFormat,
+		SourceChannel:     ticket.ChannelGuest,
+		CategoryID:        body.CategoryID,
+		Priority:          ticket.PriorityMedium,
+		GuestEmail:        &email,
+		GuestName:         name,
+		GuestPhone:        strings.TrimSpace(body.GuestPhone),
+		TrackingPrefix:    s.adminSvc.TicketPrefix(ctx),
 	}
 	t, err := s.tickets.Create(ctx, in)
 	if err != nil {
@@ -142,13 +163,18 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 	// the token goes by email, so possession of the mailbox is the credential.
 	// Answering with it here would hand access to whoever sent the request,
 	// which is not necessarily whoever owns the address.
-	JSON(w, http.StatusCreated, map[string]string{
+	JSON(w, http.StatusCreated, guestJSON(map[string]string{
 		"tracking_number": string(t.TrackingNumber),
-	})
+	}))
 }
 
 // GET /api/v1/guest/ticket
 func (s *Server) handleGuestGetTicket(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if !s.adminSvc.GuestSubmissionEnabled(ctx) {
+		Error(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
 	t, ok := s.guestTicketFromRequest(r)
 	if !ok {
 		Error(w, http.StatusNotFound, "not_found", "not found")
@@ -176,15 +202,27 @@ func (s *Server) handleGuestGetTicket(w http.ResponseWriter, r *http.Request) {
 	// Marshalling ticket.Ticket would ship assignee ids, group ids, the
 	// reporter id and the resolution notes to someone with no account, and
 	// would keep doing so as fields are added.
-	JSON(w, http.StatusOK, map[string]any{
-		"tracking_number": t.TrackingNumber,
-		"subject":         t.Subject,
-		"description":     t.Description,
-		"status":          statusName,
-		"created_at":      t.CreatedAt,
-		"updated_at":      t.UpdatedAt,
-		"replies":         guestReplyView(ticket.VisibleReplies(replies, user.RoleUser)),
-	})
+	JSON(w, http.StatusOK, guestJSON(map[string]any{
+		"tracking_number":    t.TrackingNumber,
+		"subject":            t.Subject,
+		"description":        t.Description,
+		"description_format": t.DescriptionFormat,
+		"status":             statusName,
+		"created_at":         t.CreatedAt,
+		"replies":            guestReplyView(ticket.VisibleReplies(replies, user.RoleUser)),
+	}))
+}
+
+// guestJSON runs a guest's ticket response through the guest allowed list, the
+// subset of the requester's (ticket.FilterForGuest): there is one definition of
+// what a requester or guest may see of a ticket, and a key added to a map above
+// is hidden until it is added there on purpose.
+func guestJSON(v any) any {
+	out, err := ticket.FilterForGuest(v)
+	if err != nil {
+		return map[string]string{} // never the unfiltered value
+	}
+	return out
 }
 
 // guestReplyView strips a reply to what a guest may see. RoleUser has already
@@ -194,9 +232,10 @@ func guestReplyView(replies []ticket.Reply) []map[string]any {
 	out := make([]map[string]any, 0, len(replies))
 	for _, r := range replies {
 		out = append(out, map[string]any{
-			"id":         r.ID,
-			"body":       r.Body,
-			"created_at": r.CreatedAt,
+			"id":          r.ID,
+			"body":        r.Body,
+			"body_format": r.BodyFormat,
+			"created_at":  r.CreatedAt,
 			// A reply with no author is the guest's own: nothing else writes
 			// one. That is all a guest needs to tell the two apart, and it
 			// names nobody.
@@ -206,18 +245,42 @@ func guestReplyView(replies []ticket.Reply) []map[string]any {
 	return out
 }
 
+// guestWriteError answers a failed guest write. A ticket that closed after the
+// middleware let the request through (the lookup and the write are not one
+// transaction) is refused with the same 404 as the middleware's, not the 409
+// "this ticket is closed" a signed-in reporter gets: a guest write is never
+// told the ticket exists in a state that refuses it (#349).
+func guestWriteError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ticket.ErrClosed) {
+		Error(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
+	handleError(w, err)
+}
+
 // POST /api/v1/guest/replies
 func (s *Server) handleGuestAddReply(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if !s.adminSvc.GuestSubmissionEnabled(ctx) {
+		Error(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
 	t, ok := s.guestTicketFromRequest(r)
 	if !ok {
 		Error(w, http.StatusNotFound, "not_found", "not found")
 		return
 	}
 	var body struct {
-		Body string `json:"body"`
+		Body   string          `json:"body"`
+		Format json.RawMessage `json:"format"` // optional; see restTextFormat
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+	format, err := restTextFormat(body.Format)
+	if err != nil {
+		handleError(w, err)
 		return
 	}
 	if strings.TrimSpace(body.Body) == "" {
@@ -225,24 +288,185 @@ func (s *Server) handleGuestAddReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
 	reopenStatusID, err := s.reopenTargetStatusID(ctx)
 	if err != nil {
 		handleError(w, err)
 		return
 	}
-	reply, err := s.tickets.AddGuestReply(ctx, t.ID, body.Body,
+	reply, err := s.tickets.AddGuestReply(ctx, t.ID, body.Body, format,
 		s.adminSvc.ReopenWindowDays(ctx), reopenStatusID)
+	if err != nil {
+		guestWriteError(w, err)
+		return
+	}
+	JSON(w, http.StatusCreated, map[string]any{
+		"id":          reply.ID,
+		"body":        reply.Body,
+		"body_format": reply.BodyFormat,
+		"created_at":  reply.CreatedAt,
+		"from_you":    true,
+	})
+}
+
+// POST /api/v1/guest/attachments
+//
+// Same multipart pipeline as handleUploadAttachment (storeUploadedAttachment
+// — size cap, filename rules, the operator's allowlist, image recompression,
+// virus scanning), reached with a token instead of a ticket id in the path.
+//
+// Deliberately not `/tickets/{id}/attachments/{token}`: the token is a bearer
+// credential for the whole ticket, and a token in the URL is a token in
+// Referer headers, browser history, proxy logs and error reports — everywhere
+// else in this codebase it travels in the Authorization header instead. A
+// path id alongside it would also give a guest something to tamper with; see
+// guestRouter's own comment for why every route here takes its ticket from
+// the token and nothing else.
+//
+// Gated on guest_submission_enabled. When the setting is off, existing guest
+// links are revoked and cannot upload until the setting is turned back on (#424).
+//
+// And on guest_attachments_enabled (#445), off by default. It refuses with the
+// same 404 body as a bad link and as guest submission being off, like every
+// other guest refusal: a different answer would tell an anonymous caller which
+// setting is in force. The per-file limit is the lower of the guest setting and
+// the instance-wide maximum.
+func (s *Server) handleGuestUploadAttachment(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if !s.adminSvc.GuestAttachmentsEnabled(ctx) { // includes guest submission
+		Error(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
+	t, ok := s.guestTicketFromRequest(r)
+	if !ok {
+		Error(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
+
+	// The lifecycle half of CanUserUpdate — see AddGuestReply and
+	// CanGuestUploadAttachment for why there is no ownership check here: the
+	// token already settled which ticket this is.
+	reopenDays := s.adminSvc.ReopenWindowDays(r.Context())
+	if err := s.tickets.CanGuestUploadAttachment(r.Context(), t.ID, reopenDays); err != nil {
+		guestWriteError(w, err)
+		return
+	}
+
+	// The per-ticket cap, then the hourly rate. The cap first, so a refusal
+	// for a full ticket does not also spend the guest's hour. Neither is a
+	// transaction with the insert: two uploads racing can both pass the cap by
+	// the number in flight, which the rate bounds (at most the hourly figure).
+	maxFiles := s.adminSvc.GuestAttachmentMaxPerTicket(ctx)
+	have, err := s.tickets.CountGuestAttachments(ctx, t.ID)
 	if err != nil {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusCreated, map[string]any{
-		"id":         reply.ID,
-		"body":       reply.Body,
-		"created_at": reply.CreatedAt,
-		"from_you":   true,
-	})
+	if have >= maxFiles {
+		Error(w, http.StatusConflict, "guest_attachment_limit", guestLimitMessage(maxFiles))
+		return
+	}
+	// Refused attempts have a budget of their own, charged up front in one
+	// locked step (Take) so parallel refusals cannot all slip under it, and given
+	// back below when the upload is accepted. Charged BEFORE the hourly budget:
+	// an attempt turned away here has done nothing and must not cost an hourly
+	// upload (#559), and the two windows drift, so it could lock a guest out for
+	// up to an extra hour.
+	refusalKey := t.ID.String()
+	okRefusal, refusalWindow := s.guestRefusalLimiter.Take(refusalKey)
+	if !okRefusal {
+		w.Header().Set("Retry-After", strconv.Itoa(max(1, int(math.Ceil(s.guestRefusalLimiter.Remaining().Seconds())))))
+		Error(w, http.StatusTooManyRequests, "rate_limited",
+			"Too many of this ticket's uploads were refused. Please try again later.")
+		return
+	}
+
+	perHour := s.adminSvc.GuestAttachmentUploadsPerHour(ctx)
+	ok, window := s.guestUploadLimiter.TakeWithLimit(t.ID.String(), perHour)
+	if !ok {
+		// Not a refusal of a file: nothing was read or scanned.
+		s.guestRefusalLimiter.Refund(refusalKey, refusalWindow)
+		secs := max(1, int(math.Ceil(s.guestUploadLimiter.Remaining().Seconds())))
+		w.Header().Set("Retry-After", strconv.Itoa(secs))
+		Error(w, http.StatusTooManyRequests, "rate_limited",
+			fmt.Sprintf("You can attach at most %d files an hour to this ticket. Please try again later.", perHour))
+		return
+	}
+
+	// The hourly unit is spent before the work, so parallel uploads cannot all
+	// pass a budget with one slot left; it is given back when the guest's own
+	// file was refused before the scan (see refundable). A malware verdict and a
+	// server fault are not refunded: the first is the abuse this limit exists
+	// for, the second is not the guest's mistake but also not a reason to let a
+	// retry storm through.
+	rec := &refusalRecorder{ResponseWriter: w}
+	s.storeUploadedAttachment(rec, r, t.ID, ticket.Actor{Role: user.RoleUser}, s.guestAttachmentMaxBytes(ctx), maxFiles)
+	if rec.status < 400 {
+		s.guestRefusalLimiter.Refund(refusalKey, refusalWindow) // accepted: not a refusal
+	}
+	if refundable(rec.status, rec.code()) {
+		s.guestUploadLimiter.Refund(t.ID.String(), window)
+	}
+}
+
+// POST /api/v1/guest/follow-up
+//
+// A guest opens a follow-up of the CLOSED ticket their link names (#349). A
+// deliberate exception to "every guest write route refuses a closed ticket":
+// it resolves the link for a read, because only a closed ticket is wanted, and
+// every outcome that would say something about a LINK or a TICKET'S STATE is the
+// same generic 404 a bad link gets — an open ticket, a bad link, guest
+// submission switched off, a follow-up already opened — so the route is not an
+// oracle for which links are real or what state a ticket is in. The one
+// exception is deliberate: an archived category or type is a 400 naming the
+// reason, as a direct submission of that category is. By then the caller holds a
+// good link to a closed ticket and already knows the category it was filed
+// under, so the refusal tells them nothing they could not see; a generic 404
+// there would only leave them unable to tell why they cannot continue. The order
+// matters for the same reason: Closed is checked first, then the
+// instance setting, and only then the per-address budget (a 429 would say the
+// link was good and the ticket closed).
+//
+// It is a guest ticket creation, so it is held to what POST /guest/tickets is:
+// the same switch, the same per-address budget (shared, not a second one), and
+// category only; the body is ignored, so there is no field to set. The new
+// ticket is for the same guest (address, name, phone from the original). Its
+// link goes by the ordinary guest-ticket-created mail, as a normal guest
+// ticket's does, and is NOT in the response: the answer is the new tracking
+// number and nothing else, as for a normal submission.
+func (s *Server) handleGuestFollowUp(w http.ResponseWriter, r *http.Request) {
+	t, ok := s.guestTicketFromRequest(r)
+	if !ok || !s.tickets.IsClosed(t) {
+		Error(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
+	ctx := r.Context()
+	if !s.adminSvc.GuestSubmissionEnabled(ctx) {
+		Error(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
+	if !s.loginLimiter.Allow("guest-submit:" + authmw.ClientAddr(r)) {
+		tooManyAttempts(w, s.loginLimiter.Remaining())
+		return
+	}
+	created, err := s.tickets.CreateRequesterFollowUp(ctx, t.ID, s.adminSvc.TicketPrefix(ctx), ticket.ChannelGuest,
+		ticket.Actor{Role: user.RoleUser}, s.requesterClassificationOpen,
+		s.routing(ctx, t.CategoryID, nil)...) // a guest's follow-up carries no type
+	if err != nil {
+		switch {
+		case errors.Is(err, ticket.ErrNotClosed), errors.Is(err, ticket.ErrFollowUpExists),
+			errors.Is(err, ticket.ErrForbidden):
+			// Not a state the guest is told about.
+			Error(w, http.StatusNotFound, "not_found", "not found")
+		case errors.Is(err, ticket.ErrValidation):
+			Error(w, http.StatusBadRequest, "bad_request", err.Error())
+		default:
+			handleError(w, err)
+		}
+		return
+	}
+	JSON(w, http.StatusCreated, guestJSON(map[string]string{
+		"tracking_number": string(created.TrackingNumber),
+	}))
 }
 
 // POST /api/v1/guest/resend
@@ -256,64 +480,140 @@ func (s *Server) handleGuestResend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.loginLimiter.Allow("guest-resend:" + authmw.ClientAddr(r)) {
-		tooManyAttempts(w, time.Minute)
+		tooManyAttempts(w, s.loginLimiter.Remaining())
 		return
 	}
 	var body struct {
 		TrackingNumber string `json:"tracking_number"`
 		Email          string `json:"email"`
 	}
-	if err := DecodeJSON(r, &body); err != nil {
+	// No body is the same as {}: this route answers 202 whatever it is asked,
+	// so an empty request is not a malformed one (#421).
+	if err := DecodeJSON(r, &body); err != nil && !errors.Is(err, io.EOF) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
 
-	// Synchronous, and the response says nothing either way.
-	//
-	// There is a timing signal here and it is worth naming rather than hiding:
-	// a match rotates the token and dials a mail server, a miss runs one
-	// SELECT, and SMTP dominates. Someone who already holds a tracking number
-	// AND an address can time this to learn whether they go together.
-	//
-	// It was briefly a goroutine. That is the wrong fix twice over: it puts an
-	// unbounded number of background database users behind an unauthenticated
-	// endpoint, and it is not this endpoint's problem to solve. Every
-	// notification in this application is delivered on the request goroutine —
-	// filing a ticket and replying to one carry the same signal, which is why
-	// the SMTP dial timeout exists at all. The fix is asynchronous delivery
-	// for all of them, tracked separately, not a goroutine here.
-	s.resendGuestLink(r.Context(), strings.TrimSpace(body.TrackingNumber), strings.TrimSpace(body.Email))
+	// The same work whether or not the two halves match: one queued event,
+	// no lookup (#164). Matching, the per-ticket budget and the rotation all
+	// happen at send time, in PrepareGuestLink, off the request — so this
+	// handler's timing no longer says whether a tracking number and an
+	// address go together. The response says nothing either way.
+	tn, email := strings.TrimSpace(body.TrackingNumber), strings.TrimSpace(body.Email)
+	if tn != "" && email != "" {
+		if err := s.tickets.RequestGuestLink(ctx, tn, email); err != nil {
+			slog.ErrorContext(ctx, "guest link request could not be queued", "error", err)
+		}
+	}
 
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// resendGuestLink mails a fresh link when the two halves match a ticket that
-// still accepts access. Failures are swallowed on purpose: the caller learns
-// nothing either way.
-func (s *Server) resendGuestLink(ctx context.Context, trackingNumber, email string) {
-	if trackingNumber == "" || email == "" {
-		return
+// PrepareGuestLink is the send-time step for a guest link (#164), run by the
+// email channel just before it sends. A resend request arrives naming only
+// what the guest typed: it is matched here against a ticket — closed or not
+// (#349) — and charged to that ticket's budget. Every guest link then gets a
+// token from the ticket service: on an open ticket it replaces the previous
+// one, on a closed ticket it is added beside the existing ones and can only
+// read. ok is false when there is nobody to send to; the request that asked
+// learns nothing either way.
+func (s *Server) PrepareGuestLink(ctx context.Context, ev notification.Event) (notification.Event, bool, error) {
+	if ev.Type == notification.EventGuestLinkResent && ev.TicketID == uuid.Nil {
+		id, err := s.tickets.GuestTicketIDFor(ctx, ticket.TrackingNumber(ev.TrackingNumber), ev.Recipient)
+		if errors.Is(err, ticket.ErrGuestTokenNotFound) {
+			return ev, false, nil
+		}
+		if err != nil {
+			return ev, false, err
+		}
+		// A second budget, keyed on the ticket rather than the caller, and far
+		// tighter than the per-address one.
+		//
+		// The address budget bounds nothing useful here: on an open ticket a
+		// resend rotates (on a closed one it only adds a read-only link, so
+		// there is no lockout to cause, but the same budget bounds the mail),
+		// so anyone who can guess a tracking number — they are sequential — and
+		// knows the address could replace the link the customer is holding ten
+		// times a minute, from as many addresses as they like. That is a
+		// sustained lockout, not merely an inbox flood.
+		//
+		// Checked after the match, so a miss consumes nothing and the budget
+		// cannot be probed to learn which tickets exist. Charged once per
+		// request, on its first attempt: charging every attempt refused the
+		// retry of a send that had failed, and the request was dropped with
+		// the guest's old link already rotated away (#164 round 1). Outside
+		// the worker the attempt is 0, which is a first attempt too.
+		if notify.Attempt(ctx) <= 1 && !s.guestResendLimiter.Allow(id.String()) {
+			return ev, false, nil
+		}
+		ev.TicketID = id
 	}
-	ticketID, err := s.tickets.GuestTicketIDFor(ctx, ticket.TrackingNumber(trackingNumber), email)
-	if err != nil {
-		return
+	return s.tickets.IssueGuestLink(ctx, ev)
+}
+
+// guestAttachmentMaxBytes is what a guest may upload per file: the
+// administrator's figure, never above the instance-wide maximum (#445).
+func (s *Server) guestAttachmentMaxBytes(ctx context.Context) int64 {
+	return min(int64(s.adminSvc.GuestAttachmentMaxMB(ctx))<<20, attachMaxBytes)
+}
+
+func guestLimitMessage(maxFiles int) string {
+	return fmt.Sprintf("This ticket already has the most files a guest can attach (%d).", maxFiles)
+}
+
+// refusalRecorder remembers the status and error code of what the upload
+// pipeline answered, so the handler can tell a validation refusal from a fault.
+// It passes everything through untouched.
+type refusalRecorder struct {
+	http.ResponseWriter
+	status int
+	body   []byte
+}
+
+func (r *refusalRecorder) WriteHeader(code int) {
+	if r.status == 0 {
+		r.status = code
 	}
-	// A second budget, keyed on the ticket rather than the caller, and far
-	// tighter than the per-address one.
-	//
-	// The address budget bounds nothing useful here: a resend rotates, so
-	// anyone who can guess a tracking number — they are sequential — and knows
-	// the address could replace the link the customer is holding ten times a
-	// minute, from as many addresses as they like. That is a sustained lockout,
-	// not merely an inbox flood.
-	//
-	// Checked after the lookup, so a miss consumes nothing and the budget
-	// cannot be probed to learn which tickets exist.
-	if !s.guestResendLimiter.Allow(ticketID.String()) {
-		return
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *refusalRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
 	}
-	// Minting and mailing both happen in the service, which already holds the
-	// dispatcher. Whatever it returns is discarded: the caller answered 202
-	// before this ran and must not say anything different now.
-	_ = s.tickets.ResendGuestLink(ctx, ticketID)
+	if len(r.body) < 1024 { // an error body is tiny; a success body is not read
+		r.body = append(r.body, b...)
+	}
+	return r.ResponseWriter.Write(b)
+}
+
+// Unwrap lets http.NewResponseController reach the real writer.
+func (r *refusalRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
+func (r *refusalRecorder) code() string {
+	var e errResponse
+	if json.Unmarshal(r.body, &e) != nil {
+		return ""
+	}
+	return e.Error.Code
+}
+
+// guestRefusalsPerHour is the fixed budget of refused guest uploads per ticket
+// per hour. Not a setting: it exists to bound abuse of the refund, not to tune.
+const guestRefusalsPerHour = 20
+
+// refundable: refusals decided BEFORE the scanner, which cost the server
+// nothing but reading a body. Refusals after the scan (invalid_image,
+// invalid_file) are not refundable: the scan is the expensive part, and
+// refunding them lets a guest make the server scan without limit. A malware
+// verdict, a 5xx and the in-transaction cap keep their unit too.
+func refundable(status int, code string) bool {
+	if status < 400 || status >= 500 {
+		return false
+	}
+	switch code {
+	case "too_large", "bad_request", "invalid_filename", "unsupported_type":
+		return true
+	}
+	return false
 }

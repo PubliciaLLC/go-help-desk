@@ -42,7 +42,7 @@ func TestAdminUserUpdate_MalformedEmailIs400NotAServerError(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+h.userID.String(),
+	res := h.doAsAdminSession(t, http.MethodPatch, "/api/v1/admin/users/"+h.userID.String(),
 		map[string]any{"email": "not-an-address"})
 	defer res.Body.Close()
 	require.Equal(t, http.StatusBadRequest, res.StatusCode)

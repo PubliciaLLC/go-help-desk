@@ -2,10 +2,13 @@ package database_test
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/adminstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/auditstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/authstore"
@@ -14,13 +17,16 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/slastore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	"github.com/publiciallc/go-help-desk/backend/internal/server/notify"
 	"github.com/publiciallc/go-help-desk/backend/internal/testutil"
 	"github.com/stretchr/testify/require"
 )
@@ -207,7 +213,7 @@ func TestTicketStore_CreateAndGet(t *testing.T) {
 	require.NoError(t, err)
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	tk := ticket.Ticket{
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2024, 1),
 		Subject:        "Printer broken",
@@ -255,7 +261,7 @@ func TestTicketStore_TypeCategoryMismatch(t *testing.T) {
 	require.NoError(t, err)
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	tk := ticket.Ticket{
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2024, 2),
 		Subject:        "Mismatched CTI",
@@ -294,7 +300,7 @@ func TestTicketStore_Reply(t *testing.T) {
 	require.NoError(t, err)
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	tk := ticket.Ticket{
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2024, 2),
 		Subject:        "No internet",
@@ -308,7 +314,7 @@ func TestTicketStore_Reply(t *testing.T) {
 	}
 	require.NoError(t, ts.Create(ctx, tk))
 
-	reply := ticket.Reply{
+	reply := ticket.Reply{BodyFormat: ticket.TextFormatPlain,
 		ID:        uuid.New(),
 		TicketID:  tk.ID,
 		AuthorID:  &reporter.ID,
@@ -333,6 +339,99 @@ func TestTicketStore_NotFound(t *testing.T) {
 	ts := ticketstore.New(q)
 	_, err := ts.GetByID(context.Background(), uuid.New())
 	require.ErrorIs(t, err, ticketstore.ErrNotFound)
+}
+
+// TestTicketStore_PersistsSLAPause covers the two new columns from migration
+// 000025 (#181): every read path in ticketstore explicitly lists the tickets
+// table's columns rather than using SELECT *, so a query left off that list
+// fails silently (it compiles, and the field just always reads zero) rather
+// than with an error. This round-trips through Update, GetByID,
+// GetByIDForUpdate and ListAll, which is the query the one-off round-trip
+// case above would not have caught.
+func TestTicketStore_PersistsSLAPause(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	us := userstore.New(q)
+	cs := categorystore.New(q)
+	ts := ticketstore.New(q)
+
+	reporter := user.User{
+		ID: uuid.New(), Email: "sla-pause@example.com", DisplayName: "Reporter",
+		Role: user.RoleUser, CreatedAt: time.Now().UTC().Truncate(time.Millisecond), UpdatedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	require.NoError(t, us.Create(ctx, reporter))
+
+	cat := category.Category{ID: uuid.New(), Name: "SLA pause", SortOrder: 1, Active: true}
+	require.NoError(t, cs.CreateCategory(ctx, cat))
+
+	newSt, err := ts.GetStatusByName(ctx, ticket.StatusNameNew)
+	require.NoError(t, err)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
+		ID:             uuid.New(),
+		TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2026, 900001),
+		Subject:        "SLA pause round trip",
+		CategoryID:     cat.ID,
+		Priority:       ticket.PriorityMedium,
+		StatusID:       newSt.ID,
+		ReporterUserID: &reporter.ID,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	require.NoError(t, ts.Create(ctx, tk))
+
+	// Fresh ticket: not pending, zero accumulated.
+	got, err := ts.GetByID(ctx, tk.ID)
+	require.NoError(t, err)
+	require.Nil(t, got.PendingSince)
+	require.Zero(t, got.SLAPausedSeconds)
+
+	// Set both fields.
+	pendingSince := now.Add(-5 * time.Minute)
+	got.PendingSince = &pendingSince
+	got.SLAPausedSeconds = 42
+	require.NoError(t, ts.Update(ctx, got))
+
+	reread, err := ts.GetByID(ctx, tk.ID)
+	require.NoError(t, err)
+	require.NotNil(t, reread.PendingSince)
+	require.True(t, reread.PendingSince.Equal(pendingSince))
+	require.Equal(t, int64(42), reread.SLAPausedSeconds)
+
+	// GetByIDForUpdate reads the same columns.
+	locked, err := ts.GetByIDForUpdate(ctx, tk.ID)
+	require.NoError(t, err)
+	require.NotNil(t, locked.PendingSince)
+	require.Equal(t, int64(42), locked.SLAPausedSeconds)
+
+	// A listing query must carry the fields too — this is what catches a
+	// SELECT column list that was missed on one of the eighteen ticket reads.
+	all, err := ts.ListAll(ctx, 100, 0)
+	require.NoError(t, err)
+	var found bool
+	for _, l := range all {
+		if l.ID == tk.ID {
+			found = true
+			require.NotNil(t, l.PendingSince)
+			require.Equal(t, int64(42), l.SLAPausedSeconds)
+		}
+	}
+	require.True(t, found)
+
+	// Clearing PendingSince (leaving Pending) writes back to NULL, not to a
+	// zero-value time.Time that would round-trip as "epoch" instead of unset.
+	reread.PendingSince = nil
+	require.NoError(t, ts.Update(ctx, reread))
+
+	cleared, err := ts.GetByID(ctx, tk.ID)
+	require.NoError(t, err)
+	require.Nil(t, cleared.PendingSince)
+	require.Equal(t, int64(42), cleared.SLAPausedSeconds, "clearing the interval must not touch the accumulated total")
 }
 
 // TestTicketStore_ScopedListsAndCounts covers the admin-scope list helpers
@@ -369,7 +468,7 @@ func TestTicketStore_ScopedListsAndCounts(t *testing.T) {
 	mkTicket := func(subject string, assigneeUser *uuid.UUID, assigneeGroup *uuid.UUID) ticket.Ticket {
 		seq, err := ts.NextSeq(ctx)
 		require.NoError(t, err)
-		tk := ticket.Ticket{
+		tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 			ID:              uuid.New(),
 			TrackingNumber:  ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2024, seq),
 			Subject:         subject,
@@ -488,7 +587,7 @@ func TestTicketStore_FullTextSearch(t *testing.T) {
 	mkTicket := func(subject, description string, createdAt time.Time) ticket.Ticket {
 		seq, err := ts.NextSeq(ctx)
 		require.NoError(t, err)
-		tk := ticket.Ticket{
+		tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 			ID:             uuid.New(),
 			TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2024, seq),
 			Subject:        subject,
@@ -569,7 +668,7 @@ func TestTicketStore_FullTextSearch(t *testing.T) {
 		// subject/description don't — so query "jam" matches it ONLY via the
 		// tracking_number ILIKE branch (rank 0), while it still content-matches
 		// subjectMatch and descriptionMatch (both contain "jammed").
-		trackingOnly := ticket.Ticket{
+		trackingOnly := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 			ID:             uuid.New(),
 			TrackingNumber: "JAM-SPECIAL-001",
 			Subject:        "Special hardware unit",
@@ -594,6 +693,17 @@ func TestTicketStore_FullTextSearch(t *testing.T) {
 		require.Contains(t, ids[:2], descriptionMatch.ID)
 		require.Equal(t, trackingOnly.ID, ids[2], "the tracking-number-only match should sort last")
 	})
+}
+
+func TestTicketStore_GetAttachmentByID_NotFound(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ts := ticketstore.New(q)
+	_, err := ts.GetAttachmentByID(context.Background(), uuid.New())
+	require.ErrorIs(t, err, ticket.ErrNotFound)
 }
 
 // ── Group store ──────────────────────────────────────────────────────────────
@@ -680,7 +790,9 @@ func TestGroupStore(t *testing.T) {
 	require.Empty(t, scopes)
 
 	// Delete.
-	require.NoError(t, gs.Delete(ctx, g.ID))
+	// Groups are deleted through the ticket store, which unassigns their tickets
+	// in the same transaction (#419); the group store has no delete of its own.
+	require.NoError(t, ticketstore.New(q).DeleteGroup(ctx, g.ID))
 	_, err = gs.GetByID(ctx, g.ID)
 	require.Error(t, err)
 }
@@ -794,7 +906,7 @@ func TestSLAStore_Records(t *testing.T) {
 	require.NoError(t, err)
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	tk := ticket.Ticket{
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		ID:             uuid.New(),
 		TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2025, 99),
 		Subject:        "SLA test ticket",
@@ -834,6 +946,71 @@ func TestSLAStore_Records(t *testing.T) {
 	updated, err := ss.GetRecord(ctx, tk.ID)
 	require.NoError(t, err)
 	require.NotNil(t, updated.FirstResponseAt)
+}
+
+// TestSLAStore_DeletePolicy_RefusesPolicyWithRecords pins #261: a policy with
+// at least one attached SLA record is refused with sla.ErrPolicyInUse naming
+// how many tickets depend on it, rather than the raw foreign-key 500 that
+// DELETE FROM sla_policies used to surface as. TestSLAStore_Policies:859
+// already covers deleting a policy with zero records.
+func TestSLAStore_DeletePolicy_RefusesPolicyWithRecords(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	ss := slastore.New(q)
+	us := userstore.New(q)
+	cs := categorystore.New(q)
+	ts := ticketstore.New(q)
+
+	u := user.User{
+		ID: uuid.New(), Email: "sla-inuse@example.com", DisplayName: "SLA In Use User",
+		Role: user.RoleUser, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	require.NoError(t, us.Create(ctx, u))
+
+	cat := category.Category{ID: uuid.New(), Name: "SLAInUseCat", SortOrder: 1, Active: true}
+	require.NoError(t, cs.CreateCategory(ctx, cat))
+
+	newSt, err := ts.GetStatusByName(ctx, ticket.StatusNameNew)
+	require.NoError(t, err)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
+		ID:             uuid.New(),
+		TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2025, 98),
+		Subject:        "SLA in-use test ticket",
+		CategoryID:     cat.ID,
+		Priority:       ticket.PriorityHigh,
+		StatusID:       newSt.ID,
+		ReporterUserID: &u.ID,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	require.NoError(t, ts.Create(ctx, tk))
+
+	p := sla.Policy{
+		ID:                  uuid.New(),
+		Name:                "SLAInUseTest",
+		Priority:            prio(ticket.PriorityHigh),
+		ResponseTargetMin:   30,
+		ResolutionTargetMin: 240,
+	}
+	require.NoError(t, ss.CreatePolicy(ctx, p))
+
+	rec := sla.Record{TicketID: tk.ID, PolicyID: p.ID}
+	require.NoError(t, ss.CreateRecord(ctx, rec))
+
+	err = ss.DeletePolicy(ctx, p.ID)
+	require.ErrorIs(t, err, sla.ErrPolicyInUse)
+	require.Contains(t, err.Error(), "1 ticket(s)")
+
+	// The refusal took the count path before issuing a DELETE, so the policy
+	// is still there and the transaction is not aborted.
+	_, err = ss.GetPolicy(ctx, p.ID)
+	require.NoError(t, err)
 }
 
 // FindPolicy must choose by specificity, not by insertion order, so every case
@@ -954,6 +1131,372 @@ func TestSLAStore_FindPolicyTiers(t *testing.T) {
 	}
 }
 
+// TestSLAStore_ListBreachCandidates exercises the sweep's selection query
+// directly, against a fixed policy (30-minute response target, 120-minute
+// resolution target). Each case seeds one ticket's sla_records columns
+// directly and checks whether its id is returned for a fixed `now`.
+//
+// pendingAt is the ticket's age (time since CreatedAt) when its *current*
+// Pending interval started; zero means the ticket is not currently Pending.
+// pausedSec is SLAPausedSeconds: time already paused by earlier, now-closed
+// Pending intervals, before the current one (if any) opened. Together with
+// age they pin down PendingSince and SLAPausedSeconds the same way
+// applyStatusTimestamps would have set them.
+//
+// Every case that has a record and is not closed also asserts the superset
+// invariant: whatever sla.IsResponseBreached / IsResolutionBreached would
+// newly stamp, this query must have already returned as a candidate. That
+// is what guards against SQL's pause-aware elapsed time drifting out of sync
+// with sla.Elapsed.
+func TestSLAStore_ListBreachCandidates(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	cases := []struct {
+		name                 string
+		age                  time.Duration
+		firstResponseAt      bool
+		resolvedAt           bool
+		responseBreachedAt   bool
+		resolutionBreachedAt bool
+		closed               bool
+		noRecord             bool
+		pendingAt            time.Duration
+		pausedSec            int64
+		want                 bool
+	}{
+		{name: "no response, age past response target", age: 40 * time.Minute, want: true},
+		{name: "no response, age under response target", age: 10 * time.Minute, want: false},
+		{name: "responded, unresolved, age past resolution target", age: 3 * time.Hour, firstResponseAt: true, want: true},
+		{name: "responded, unresolved, age between the two targets", age: 40 * time.Minute, firstResponseAt: true, want: false},
+		{name: "response already stamped, resolution outstanding and overdue", age: 3 * time.Hour, responseBreachedAt: true, want: true},
+		{name: "both targets already stamped", age: 3 * time.Hour, responseBreachedAt: true, resolutionBreachedAt: true, want: false},
+		{name: "responded and resolved", age: 3 * time.Hour, firstResponseAt: true, resolvedAt: true, want: false},
+		{name: "closed ticket, overdue", age: 3 * time.Hour, closed: true, want: false},
+		{name: "no SLA record at all", age: 3 * time.Hour, noRecord: true, want: false},
+
+		// #200: pause-aware selection.
+		{
+			name: "pending, entered before response target, wall-clock past both",
+			age:  3 * time.Hour, pendingAt: 10 * time.Minute, want: false,
+		},
+		{
+			name: "pending, breached then parked, never stamped",
+			age:  3 * time.Hour, pendingAt: 40 * time.Minute, want: true,
+		},
+		{
+			name: "pending, responded, parked between the two targets",
+			age:  3 * time.Hour, firstResponseAt: true, pendingAt: 40 * time.Minute, want: false,
+		},
+		{
+			name: "pending, parked past resolution target, response stamped",
+			age:  3 * time.Hour, responseBreachedAt: true, pendingAt: 130 * time.Minute, want: true,
+		},
+		{
+			name: "pending, parked past both targets, both stamped",
+			age:  3 * time.Hour, responseBreachedAt: true, resolutionBreachedAt: true, pendingAt: 130 * time.Minute, want: false,
+		},
+		{
+			name: "pending, earlier pauses keep frozen elapsed under target",
+			age:  3 * time.Hour, pendingAt: 170 * time.Minute, pausedSec: int64((150 * time.Minute) / time.Second), want: false,
+		},
+		{
+			name: "not pending, earlier pauses keep elapsed under target",
+			age:  60 * time.Minute, pausedSec: int64((40 * time.Minute) / time.Second), want: false,
+		},
+		{
+			name: "not pending, earlier pauses, elapsed exactly at target",
+			age:  70 * time.Minute, pausedSec: int64((40 * time.Minute) / time.Second), want: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q, rollback := testutil.TxQueries(t, db)
+			defer rollback()
+
+			ctx := context.Background()
+			ss := slastore.New(q)
+			us := userstore.New(q)
+			cs := categorystore.New(q)
+			ts := ticketstore.New(q)
+
+			u := user.User{
+				ID: uuid.New(), Email: uuid.NewString() + "@example.com", DisplayName: "Candidate",
+				Role: user.RoleUser, CreatedAt: now, UpdatedAt: now,
+			}
+			require.NoError(t, us.Create(ctx, u))
+			cat := category.Category{ID: uuid.New(), Name: "Cand " + tc.name, SortOrder: 1, Active: true}
+			require.NoError(t, cs.CreateCategory(ctx, cat))
+			newSt, err := ts.GetStatusByName(ctx, ticket.StatusNameNew)
+			require.NoError(t, err)
+
+			createdAt := now.Add(-tc.age)
+			tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
+				ID:             uuid.New(),
+				TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2025, 700),
+				Subject:        "Candidate test ticket",
+				CategoryID:     cat.ID,
+				Priority:       ticket.PriorityHigh,
+				StatusID:       newSt.ID,
+				ReporterUserID: &u.ID,
+				CreatedAt:      createdAt,
+				UpdatedAt:      createdAt,
+			}
+			require.NoError(t, ts.Create(ctx, tk))
+
+			needsUpdate := tc.closed || tc.pendingAt > 0 || tc.pausedSec > 0
+			if tc.pendingAt > 0 {
+				pendingSt, err := ts.GetStatusByName(ctx, ticket.StatusNamePending)
+				require.NoError(t, err)
+				tk.StatusID = pendingSt.ID
+				pendingSince := createdAt.Add(tc.pendingAt)
+				tk.PendingSince = &pendingSince
+			}
+			tk.SLAPausedSeconds = tc.pausedSec
+			if tc.closed {
+				closedAt := now
+				tk.ClosedAt = &closedAt
+			}
+			if needsUpdate {
+				require.NoError(t, ts.Update(ctx, tk))
+			}
+
+			var policy sla.Policy
+			if !tc.noRecord {
+				policy = sla.Policy{
+					ID: uuid.New(), Name: "Cand policy " + tc.name,
+					ResponseTargetMin: 30, ResolutionTargetMin: 120,
+				}
+				require.NoError(t, ss.CreatePolicy(ctx, policy))
+
+				rec := sla.Record{TicketID: tk.ID, PolicyID: policy.ID}
+				stamp := createdAt.Add(time.Minute) // any time before `now`; only nil-ness matters here
+				if tc.firstResponseAt {
+					rec.FirstResponseAt = &stamp
+				}
+				if tc.resolvedAt {
+					rec.ResolvedAt = &stamp
+				}
+				if tc.responseBreachedAt {
+					rec.ResponseBreachedAt = &stamp
+				}
+				if tc.resolutionBreachedAt {
+					rec.ResolutionBreachedAt = &stamp
+				}
+				require.NoError(t, ss.CreateRecord(ctx, rec))
+			}
+
+			got, err := ss.ListBreachCandidates(ctx, now)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, containsUUID(got, tk.ID))
+
+			// Superset invariant: anything Go would newly stamp must already
+			// have been a candidate.
+			if !tc.noRecord && !tc.closed {
+				loaded, err := ts.GetByID(ctx, tk.ID)
+				require.NoError(t, err)
+				rec, err := ss.GetRecord(ctx, tk.ID)
+				require.NoError(t, err)
+
+				goWants := (rec.ResponseBreachedAt == nil && sla.IsResponseBreached(rec, policy, loaded, now)) ||
+					(rec.ResolvedAt == nil && rec.ResolutionBreachedAt == nil && sla.IsResolutionBreached(rec, policy, loaded, now))
+				if goWants {
+					require.True(t, got != nil && containsUUID(got, tk.ID), "SQL candidate query missed a ticket Go would stamp")
+				}
+			}
+		})
+	}
+}
+
+// TestSLAStore_ListBreachCandidates_LeavingPending is the #200 scenario named
+// in the issue's third bullet: a ticket parked in Pending under target, then
+// released, becomes a candidate again once real (unpaused) elapsed time
+// catches up — and the sweep actually stamps it then.
+func TestSLAStore_ListBreachCandidates_LeavingPending(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	ss := slastore.New(q)
+	us := userstore.New(q)
+	cs := categorystore.New(q)
+	ts := ticketstore.New(q)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	u := user.User{
+		ID: uuid.New(), Email: uuid.NewString() + "@example.com", DisplayName: "LeavingPending",
+		Role: user.RoleUser, CreatedAt: now, UpdatedAt: now,
+	}
+	require.NoError(t, us.Create(ctx, u))
+	cat := category.Category{ID: uuid.New(), Name: "LeavingPending cat", SortOrder: 1, Active: true}
+	require.NoError(t, cs.CreateCategory(ctx, cat))
+
+	pendingSt, err := ts.GetStatusByName(ctx, ticket.StatusNamePending)
+	require.NoError(t, err)
+	newSt, err := ts.GetStatusByName(ctx, ticket.StatusNameNew)
+	require.NoError(t, err)
+
+	createdAt := now.Add(-3 * time.Hour)
+	pendingSince := createdAt.Add(10 * time.Minute)
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
+		ID:             uuid.New(),
+		TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2025, 800),
+		Subject:        "Leaving pending test ticket",
+		CategoryID:     cat.ID,
+		Priority:       ticket.PriorityHigh,
+		StatusID:       pendingSt.ID,
+		ReporterUserID: &u.ID,
+		CreatedAt:      createdAt,
+		UpdatedAt:      createdAt,
+	}
+	require.NoError(t, ts.Create(ctx, tk))
+
+	// Create does not persist PendingSince/SLAPausedSeconds (only Update
+	// does, matching how applyStatusTimestamps sets them on a real status
+	// transition), so entering Pending is itself a separate Update call.
+	tk.PendingSince = &pendingSince
+	require.NoError(t, ts.Update(ctx, tk))
+
+	policy := sla.Policy{ID: uuid.New(), Name: "LeavingPending policy", ResponseTargetMin: 30, ResolutionTargetMin: 120}
+	require.NoError(t, ss.CreatePolicy(ctx, policy))
+	require.NoError(t, ss.CreateRecord(ctx, sla.Record{TicketID: tk.ID, PolicyID: policy.ID}))
+
+	// 1. Still Pending, frozen elapsed (10m) under target: not a candidate.
+	got, err := ss.ListBreachCandidates(ctx, now)
+	require.NoError(t, err)
+	require.False(t, containsUUID(got, tk.ID))
+
+	// 2. Leave Pending the way applyStatusTimestamps does: clear
+	// PendingSince, fold the closed interval into SLAPausedSeconds, and move
+	// off the Pending status.
+	tk.PendingSince = nil
+	tk.SLAPausedSeconds += int64((170 * time.Minute) / time.Second)
+	tk.StatusID = newSt.ID
+	require.NoError(t, ts.Update(ctx, tk))
+
+	// Real elapsed is still only 10m (age 3h - paused 170m = 10m): still not
+	// a candidate at the same instant.
+	got, err = ss.ListBreachCandidates(ctx, now)
+	require.NoError(t, err)
+	require.False(t, containsUUID(got, tk.ID))
+
+	// 3. 20 minutes later, real elapsed reaches 30m: now a candidate.
+	later := now.Add(20 * time.Minute)
+	got, err = ss.ListBreachCandidates(ctx, later)
+	require.NoError(t, err)
+	require.True(t, containsUUID(got, tk.ID))
+
+	// 4. A sweep at that point stamps it, and it drops out of the next sweep
+	// at the same instant.
+	svc := sla.NewService(ss)
+	res, err := svc.SweepBreaches(ctx, ts, now.Add(21*time.Minute))
+	require.NoError(t, err)
+	require.Equal(t, 1, res.Stamped)
+
+	got, err = ss.ListBreachCandidates(ctx, now.Add(21*time.Minute))
+	require.NoError(t, err)
+	require.False(t, containsUUID(got, tk.ID))
+}
+
+func containsUUID(ids []uuid.UUID, id uuid.UUID) bool {
+	for _, v := range ids {
+		if v == id {
+			return true
+		}
+	}
+	return false
+}
+
+// TestSLAStore_StampBreaches pins the lost-update guard the design relies on:
+// StampBreaches only ever fills a NULL breach column, never overwrites one
+// already set, and never touches any column it does not own.
+func TestSLAStore_StampBreaches(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	ss := slastore.New(q)
+	us := userstore.New(q)
+	cs := categorystore.New(q)
+	ts := ticketstore.New(q)
+
+	u := user.User{
+		ID: uuid.New(), Email: "stamp@example.com", DisplayName: "Stamp",
+		Role: user.RoleUser, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	require.NoError(t, us.Create(ctx, u))
+	cat := category.Category{ID: uuid.New(), Name: "StampCat", SortOrder: 1, Active: true}
+	require.NoError(t, cs.CreateCategory(ctx, cat))
+	newSt, err := ts.GetStatusByName(ctx, ticket.StatusNameNew)
+	require.NoError(t, err)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	tk := ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
+		ID:             uuid.New(),
+		TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2025, 701),
+		Subject:        "Stamp test ticket",
+		CategoryID:     cat.ID,
+		Priority:       ticket.PriorityHigh,
+		StatusID:       newSt.ID,
+		ReporterUserID: &u.ID,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	require.NoError(t, ts.Create(ctx, tk))
+
+	p := sla.Policy{ID: uuid.New(), Name: "StampPolicy", ResponseTargetMin: 30, ResolutionTargetMin: 120}
+	require.NoError(t, ss.CreatePolicy(ctx, p))
+	require.NoError(t, ss.CreateRecord(ctx, sla.Record{TicketID: tk.ID, PolicyID: p.ID}))
+
+	// First stamp: response only.
+	t1 := now.Add(10 * time.Minute)
+	require.NoError(t, ss.StampBreaches(ctx, tk.ID, &t1, nil))
+
+	rec, err := ss.GetRecord(ctx, tk.ID)
+	require.NoError(t, err)
+	require.NotNil(t, rec.ResponseBreachedAt)
+	require.True(t, t1.Equal(*rec.ResponseBreachedAt))
+	require.Nil(t, rec.ResolutionBreachedAt)
+
+	// A later stamp for both columns: the already-set response column must
+	// not move, and the still-NULL resolution column must be filled in.
+	t2 := now.Add(20 * time.Minute)
+	require.NoError(t, ss.StampBreaches(ctx, tk.ID, &t2, &t2))
+
+	rec, err = ss.GetRecord(ctx, tk.ID)
+	require.NoError(t, err)
+	require.True(t, t1.Equal(*rec.ResponseBreachedAt), "response stamp must not move once set")
+	require.NotNil(t, rec.ResolutionBreachedAt)
+	require.True(t, t2.Equal(*rec.ResolutionBreachedAt))
+
+	// The lost-update guard: a first_response_at written through UpdateRecord
+	// (the request path) between two stamp calls must survive a later stamp.
+	firstResp := now.Add(5 * time.Minute)
+	rec.FirstResponseAt = &firstResp
+	require.NoError(t, ss.UpdateRecord(ctx, rec))
+
+	t3 := now.Add(30 * time.Minute)
+	require.NoError(t, ss.StampBreaches(ctx, tk.ID, &t3, &t3))
+
+	rec, err = ss.GetRecord(ctx, tk.ID)
+	require.NoError(t, err)
+	require.NotNil(t, rec.FirstResponseAt, "a stamp call must not clear a field it does not own")
+	require.True(t, firstResp.Equal(*rec.FirstResponseAt))
+	require.True(t, t1.Equal(*rec.ResponseBreachedAt))
+	require.True(t, t2.Equal(*rec.ResolutionBreachedAt))
+
+	// Stamping a ticket id with no sla_records row is a silent no-op.
+	require.NoError(t, ss.StampBreaches(ctx, uuid.New(), &t1, nil))
+}
+
 // ── Admin store ──────────────────────────────────────────────────────────────
 
 func TestAdminStore(t *testing.T) {
@@ -1039,6 +1582,77 @@ func TestAuthStore_APIKeys(t *testing.T) {
 	require.Error(t, err)
 }
 
+// created_by records who issued a key (#450): the owner for a key they made
+// themselves, an administrator for one issued on their behalf. DeleteForUser is
+// the self-service revoke; it must not be able to touch somebody else's key.
+func TestAuthStore_APIKeys_CreatedByAndOwnerScopedDelete(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	as := authstore.New(q)
+	us := userstore.New(q)
+
+	mk := func(email string, role user.Role) user.User {
+		u := user.User{
+			ID: uuid.New(), Email: email, DisplayName: email,
+			Role: role, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		}
+		require.NoError(t, us.Create(ctx, u))
+		return u
+	}
+	owner := mk("owner-450@example.com", user.RoleStaff)
+	other := mk("other-450@example.com", user.RoleStaff)
+	admin := mk("admin-450@example.com", user.RoleAdmin)
+
+	newKey := func(userID uuid.UUID, createdBy *uuid.UUID) auth.APIKey {
+		_, hashed, err := auth.GenerateToken()
+		require.NoError(t, err)
+		k := auth.APIKey{
+			ID: uuid.New(), Name: "k", HashedToken: hashed, UserID: userID,
+			CreatedBy: createdBy, Scopes: []string{"tickets:read"},
+			CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
+		}
+		require.NoError(t, as.CreateAPIKey(ctx, k))
+		return k
+	}
+
+	issued := newKey(owner.ID, &admin.ID)
+	legacy := newKey(owner.ID, nil)
+
+	got, err := as.GetByHash(ctx, issued.HashedToken)
+	require.NoError(t, err)
+	require.NotNil(t, got.CreatedBy)
+	require.Equal(t, admin.ID, *got.CreatedBy)
+
+	got, err = as.GetByHash(ctx, legacy.HashedToken)
+	require.NoError(t, err)
+	require.Nil(t, got.CreatedBy, "a key with no recorded issuer reads back as nil, not as the zero UUID")
+
+	list, err := as.ListByUser(ctx, owner.ID)
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+
+	withOwner, err := as.ListWithOwner(ctx, &issued.ID)
+	require.NoError(t, err)
+	require.Len(t, withOwner, 1)
+	require.NotNil(t, withOwner[0].CreatedBy)
+	require.Equal(t, admin.ID, *withOwner[0].CreatedBy)
+
+	// Somebody else's key is "not found", the same answer as a key that does
+	// not exist, and it is still there afterwards.
+	err = as.DeleteForUser(ctx, issued.ID, other.ID)
+	require.ErrorIs(t, err, auth.ErrNotFound)
+	_, err = as.GetByHash(ctx, issued.HashedToken)
+	require.NoError(t, err)
+
+	require.NoError(t, as.DeleteForUser(ctx, issued.ID, owner.ID))
+	_, err = as.GetByHash(ctx, issued.HashedToken)
+	require.Error(t, err)
+}
+
 func TestAuthStore_OAuthClients(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
@@ -1058,6 +1672,7 @@ func TestAuthStore_OAuthClients(t *testing.T) {
 		Name:         "Test App",
 		Scopes:       []string{"tickets:read"},
 		CreatedAt:    time.Now().UTC().Truncate(time.Millisecond),
+		UserID:       uuid.New(), // every client acts through a service user (#420)
 	}
 	require.NoError(t, as.CreateOAuthClient(ctx, c))
 
@@ -1124,6 +1739,444 @@ func TestAuthStore_Webhooks(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestAuthStore_WebhookDelivery_NoneUntilRecorded(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	as := authstore.New(q)
+
+	wh := authstore.WebhookConfig{
+		ID:        uuid.New(),
+		URL:       "https://example.com/hook",
+		Events:    []string{"ticket.created"},
+		Secret:    "secret",
+		Enabled:   true,
+		CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	require.NoError(t, as.CreateWebhook(ctx, wh))
+
+	got, err := as.GetWebhook(ctx, wh.ID)
+	require.NoError(t, err)
+	require.Nil(t, got.LastDelivery, "before any record, LastDelivery must be nil")
+
+	list, err := as.ListWebhooks(ctx)
+	require.NoError(t, err)
+	for _, w := range list {
+		if w.ID == wh.ID {
+			require.Nil(t, w.LastDelivery, "ListWebhooks: LastDelivery must be nil before recorded")
+		}
+	}
+
+	enabled, err := as.ListEnabledWebhooks(ctx)
+	require.NoError(t, err)
+	for _, w := range enabled {
+		if w.ID == wh.ID {
+			require.Nil(t, w.LastDelivery, "ListEnabledWebhooks: LastDelivery must be nil before recorded")
+		}
+	}
+}
+
+func TestAuthStore_WebhookDelivery_RecordedAndReadBackEverywhere(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	as := authstore.New(q)
+
+	wh := authstore.WebhookConfig{
+		ID:        uuid.New(),
+		URL:       "https://example.com/hook",
+		Events:    []string{"ticket.created"},
+		Secret:    "secret",
+		Enabled:   true,
+		CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	require.NoError(t, as.CreateWebhook(ctx, wh))
+
+	t1 := time.Now().UTC().Truncate(time.Microsecond)
+	d1 := authstore.WebhookDelivery{At: t1, Status: 503, Error: "http_status"}
+	require.NoError(t, as.RecordWebhookDelivery(ctx, wh.ID, wh.URL, d1))
+
+	got, err := as.GetWebhook(ctx, wh.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.LastDelivery)
+	require.Equal(t, t1, got.LastDelivery.At)
+	require.Equal(t, 503, got.LastDelivery.Status)
+	require.Equal(t, "http_status", got.LastDelivery.Error)
+
+	list, err := as.ListWebhooks(ctx)
+	require.NoError(t, err)
+	for _, w := range list {
+		if w.ID == wh.ID {
+			require.NotNil(t, w.LastDelivery)
+			require.Equal(t, t1, w.LastDelivery.At)
+			require.Equal(t, 503, w.LastDelivery.Status)
+			require.Equal(t, "http_status", w.LastDelivery.Error)
+		}
+	}
+
+	enabled, err := as.ListEnabledWebhooks(ctx)
+	require.NoError(t, err)
+	for _, w := range enabled {
+		if w.ID == wh.ID {
+			require.NotNil(t, w.LastDelivery)
+			require.Equal(t, t1, w.LastDelivery.At)
+			require.Equal(t, 503, w.LastDelivery.Status)
+			require.Equal(t, "http_status", w.LastDelivery.Error)
+		}
+	}
+
+	// Record a newer success, which should overwrite
+	t2 := t1.Add(1 * time.Second)
+	d2 := authstore.WebhookDelivery{At: t2, Status: 200, Error: ""}
+	require.NoError(t, as.RecordWebhookDelivery(ctx, wh.ID, wh.URL, d2))
+
+	got, err = as.GetWebhook(ctx, wh.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.LastDelivery)
+	require.Equal(t, t2, got.LastDelivery.At)
+	require.Equal(t, 200, got.LastDelivery.Status)
+	require.Equal(t, "", got.LastDelivery.Error)
+}
+
+func TestAuthStore_WebhookDelivery_OlderAttemptDoesNotOverwriteNewer(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	as := authstore.New(q)
+
+	wh := authstore.WebhookConfig{
+		ID:        uuid.New(),
+		URL:       "https://example.com/hook",
+		Events:    []string{"ticket.created"},
+		Secret:    "secret",
+		Enabled:   true,
+		CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	require.NoError(t, as.CreateWebhook(ctx, wh))
+
+	t1 := time.Now().UTC().Truncate(time.Microsecond)
+	d1 := authstore.WebhookDelivery{At: t1.Add(10 * time.Second), Status: 500, Error: "http_status"}
+	require.NoError(t, as.RecordWebhookDelivery(ctx, wh.ID, wh.URL, d1))
+
+	got, err := as.GetWebhook(ctx, wh.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.LastDelivery)
+	require.Equal(t, 500, got.LastDelivery.Status)
+
+	// Try to record an older success, which should be rejected
+	d2 := authstore.WebhookDelivery{At: t1, Status: 200, Error: ""}
+	require.NoError(t, as.RecordWebhookDelivery(ctx, wh.ID, wh.URL, d2))
+
+	got, err = as.GetWebhook(ctx, wh.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.LastDelivery)
+	require.Equal(t, t1.Add(10*time.Second), got.LastDelivery.At, "older attempt must not overwrite newer one")
+	require.Equal(t, 500, got.LastDelivery.Status)
+	require.Equal(t, "http_status", got.LastDelivery.Error)
+}
+
+func TestAuthStore_WebhookDelivery_ResultForAnOldURLIsIgnored(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	as := authstore.New(q)
+
+	wh := authstore.WebhookConfig{
+		ID:        uuid.New(),
+		URL:       "https://example.com/hook",
+		Events:    []string{"ticket.created"},
+		Secret:    "secret",
+		Enabled:   true,
+		CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	require.NoError(t, as.CreateWebhook(ctx, wh))
+
+	// Record with a different URL
+	d := authstore.WebhookDelivery{At: time.Now().UTC(), Status: 503, Error: "http_status"}
+	require.NoError(t, as.RecordWebhookDelivery(ctx, wh.ID, "https://example.com/old", d))
+
+	got, err := as.GetWebhook(ctx, wh.ID)
+	require.NoError(t, err)
+	require.Nil(t, got.LastDelivery, "result for an old URL must not be stored")
+}
+
+func TestAuthStore_WebhookDelivery_URLChangeClearsItOtherEditsKeepIt(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	as := authstore.New(q)
+
+	wh := authstore.WebhookConfig{
+		ID:        uuid.New(),
+		URL:       "https://example.com/hook",
+		Events:    []string{"ticket.created"},
+		Secret:    "secret",
+		Enabled:   true,
+		CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	require.NoError(t, as.CreateWebhook(ctx, wh))
+
+	// Record a delivery result
+	t1 := time.Now().UTC().Truncate(time.Microsecond)
+	d := authstore.WebhookDelivery{At: t1, Status: 503, Error: "http_status"}
+	require.NoError(t, as.RecordWebhookDelivery(ctx, wh.ID, wh.URL, d))
+
+	got, err := as.GetWebhook(ctx, wh.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.LastDelivery)
+
+	// Update with same URL but different enabled/events/secret/format: result kept
+	wh.Enabled = false
+	wh.Events = []string{"ticket.updated"}
+	wh.Secret = "newsecret"
+	wh.PayloadFormat = "slack"
+	require.NoError(t, as.UpdateWebhook(ctx, wh))
+
+	got, err = as.GetWebhook(ctx, wh.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.LastDelivery, "result kept when other fields change")
+	require.Equal(t, t1, got.LastDelivery.At)
+	require.Equal(t, 503, got.LastDelivery.Status)
+
+	// Update with different URL: result cleared
+	wh.URL = "https://example.com/newhook"
+	require.NoError(t, as.UpdateWebhook(ctx, wh))
+
+	got, err = as.GetWebhook(ctx, wh.ID)
+	require.NoError(t, err)
+	require.Nil(t, got.LastDelivery, "result cleared when URL changes")
+}
+
+func TestAuthStore_WebhookDelivery_DeletedHookIsANoop(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	as := authstore.New(q)
+
+	unknownID := uuid.New()
+	d := authstore.WebhookDelivery{At: time.Now().UTC(), Status: 503, Error: "http_status"}
+	// Recording against a deleted/unknown id should not error
+	require.NoError(t, as.RecordWebhookDelivery(ctx, unknownID, "https://example.com/hook", d))
+}
+
+func TestMigration_WebhookLastDeliveryRefusesFreeText(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+
+	ctx := context.Background()
+
+	// set writes one column of a fresh row, in a transaction of its own: a
+	// refused statement aborts the transaction it ran in.
+	set := func(column string, value any) error {
+		tx, err := db.SQL.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer tx.Rollback()
+		id := uuid.New()
+		_, err = tx.ExecContext(ctx, `INSERT INTO webhook_configs (id, url) VALUES ($1, $2)`, id, "https://example.com/hook")
+		require.NoError(t, err)
+		_, err = tx.ExecContext(ctx, `UPDATE webhook_configs SET `+column+` = $1 WHERE id = $2`, value, id)
+		return err
+	}
+	// Refused by the CHECK in particular (check_violation). Any error would
+	// also pass for a misspelt column or a length limit standing in for it.
+	requireCheckViolation := func(err error, what string) {
+		t.Helper()
+		var pgErr *pgconn.PgError
+		require.True(t, errors.As(err, &pgErr), "%s: expected a Postgres error, got: %v", what, err)
+		require.Equal(t, "23514", pgErr.Code, "%s: expected check_violation, got: %v", what, err)
+	}
+
+	requireCheckViolation(set("last_delivery_error", "connection refused to https://x/tok"), "free-text error")
+	requireCheckViolation(set("last_delivery_status", 42), "status 42")
+
+	// Every class the dispatcher can record, read from the list it records
+	// from, so a class added there without a migration fails here.
+	for _, class := range append([]string{""}, notify.DeliveryErrors...) {
+		require.NoError(t, set("last_delivery_error", class), "error class %q must be accepted", class)
+	}
+}
+
+// A row inserted before the payload_format column existed — or by any code
+// that still constructs the INSERT without it — must read back as "raw", not
+// NULL and not an empty string, so nothing changes about how existing
+// subscriptions are dispatched. The CHECK constraint is the last line of
+// defense against a bad value that got past the admin handler's own check.
+func TestMigration_WebhookPayloadFormatDefaultsToRawAndChecksValue(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+
+	ctx := context.Background()
+	tx, err := db.SQL.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer tx.Rollback()
+
+	id := uuid.New()
+	_, err = tx.ExecContext(ctx, `INSERT INTO webhook_configs (id, url) VALUES ($1, $2)`,
+		id, "https://example.com/hook")
+	require.NoError(t, err)
+
+	var format string
+	require.NoError(t, tx.QueryRowContext(ctx,
+		`SELECT payload_format FROM webhook_configs WHERE id = $1`, id).Scan(&format))
+	require.Equal(t, "raw", format,
+		"a row inserted without payload_format must default to raw, not NULL")
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO webhook_configs (id, url, payload_format) VALUES ($1, $2, $3)`,
+		uuid.New(), "https://example.com/hook2", "xml")
+	require.Error(t, err,
+		"the CHECK constraint must refuse a value outside raw|slack|teams|discord|jira")
+}
+
+// #413: a hook's ticket filter. '{}' is "no filter", so a hook inserted
+// without one, as every hook before #413 was, keeps firing for every ticket.
+// The CHECK refuses anything that is not an object.
+func TestMigration_WebhookTicketFilterDefaultsToEmptyAndMustBeAnObject(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+
+	ctx := context.Background()
+	tx, err := db.SQL.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer tx.Rollback()
+
+	id := uuid.New()
+	_, err = tx.ExecContext(ctx, `INSERT INTO webhook_configs (id, url) VALUES ($1, $2)`,
+		id, "https://example.com/hook")
+	require.NoError(t, err)
+
+	var filter string
+	require.NoError(t, tx.QueryRowContext(ctx,
+		`SELECT ticket_filter::text FROM webhook_configs WHERE id = $1`, id).Scan(&filter))
+	require.JSONEq(t, `{}`, filter,
+		"a row inserted without ticket_filter must read as no filter, not NULL or an array")
+
+	// Each refusal runs in a savepoint: after one failed statement Postgres
+	// aborts the whole transaction, so the second insert would fail for that
+	// reason alone and the test would prove nothing about the second value.
+	for _, bad := range []string{`'[]'::jsonb`, `'"critical"'::jsonb`} {
+		_, err = tx.ExecContext(ctx, `SAVEPOINT bad_filter`)
+		require.NoError(t, err)
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO webhook_configs (id, url, ticket_filter) VALUES ($1, $2, `+bad+`)`,
+			uuid.New(), "https://example.com/bad")
+		require.ErrorContains(t, err, "violates check constraint",
+			"the CHECK must refuse %s", bad)
+		_, err = tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT bad_filter`)
+		require.NoError(t, err)
+	}
+}
+
+// fullFilter is a filter with every kind of condition set and invert on, so a
+// round trip that drops any part of it shows.
+func fullFilter() notification.WebhookFilter {
+	return notification.WebhookFilter{
+		CategoryIDs: []uuid.UUID{uuid.MustParse("aaaaaaaa-0000-0000-0000-000000000001"), uuid.MustParse("aaaaaaaa-0000-0000-0000-000000000002")},
+		Priorities:  []string{"critical"},
+		GroupIDs:    []uuid.UUID{uuid.MustParse("bbbbbbbb-0000-0000-0000-000000000001")},
+		Invert:      true,
+	}
+}
+
+// Every read path returns the filter a create stored, and an update that sends
+// the empty filter clears it.
+func TestAuthStore_WebhookFilter_RoundTrips(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	as := authstore.New(q)
+
+	wh := authstore.WebhookConfig{
+		ID:        uuid.New(),
+		URL:       "https://example.com/hook",
+		Events:    []string{"ticket.created"},
+		Enabled:   true,
+		CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
+		Filter:    fullFilter(),
+	}
+	require.NoError(t, as.CreateWebhook(ctx, wh))
+
+	got, err := as.GetWebhook(ctx, wh.ID)
+	require.NoError(t, err)
+	require.Equal(t, wh.Filter, got.Filter)
+
+	list, err := as.ListWebhooks(ctx)
+	require.NoError(t, err)
+	require.Equal(t, wh.Filter, findWebhook(t, list, wh.ID).Filter)
+
+	enabled, err := as.ListEnabledWebhooks(ctx)
+	require.NoError(t, err)
+	require.Equal(t, wh.Filter, findWebhook(t, enabled, wh.ID).Filter)
+
+	wh.Filter = notification.WebhookFilter{}
+	require.NoError(t, as.UpdateWebhook(ctx, wh))
+	got, err = as.GetWebhook(ctx, wh.ID)
+	require.NoError(t, err)
+	require.True(t, got.Filter.IsEmpty(), "an update with the empty filter must clear the stored one")
+}
+
+// A hook created with no filter reads back with none, and its JSON carries the
+// empty filter with arrays, as the API promises.
+func TestAuthStore_WebhookWithoutAFilterReadsBackEmpty(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	as := authstore.New(q)
+
+	wh := authstore.WebhookConfig{
+		ID:        uuid.New(),
+		URL:       "https://example.com/hook",
+		Events:    []string{"ticket.created"},
+		Enabled:   true,
+		CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	require.NoError(t, as.CreateWebhook(ctx, wh))
+
+	got, err := as.GetWebhook(ctx, wh.ID)
+	require.NoError(t, err)
+	require.True(t, got.Filter.IsEmpty())
+
+	raw, err := json.Marshal(got)
+	require.NoError(t, err)
+	require.Contains(t, string(raw), `"filter":{"category_ids":[],"priorities":[],"group_ids":[],"invert":false}`)
+}
+
+// findWebhook returns the hook with id from list, failing the test if absent.
+func findWebhook(t *testing.T, list []authstore.WebhookConfig, id uuid.UUID) authstore.WebhookConfig {
+	t.Helper()
+	for _, w := range list {
+		if w.ID == id {
+			return w
+		}
+	}
+	require.FailNow(t, "webhook not in list", "id %s", id)
+	return authstore.WebhookConfig{}
+}
+
 // ── Audit store ──────────────────────────────────────────────────────────────
 
 func TestAuditStore(t *testing.T) {
@@ -1165,6 +2218,180 @@ func TestAuditStore(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 }
+
+// TestAuditStore_Search covers the admin-wide view's query: every Filter
+// field narrows the result independently, and the total count reflects the
+// filter, not the page.
+//
+// Every case filters by one of the two actors created for this test, rather
+// than asserting an absolute count with no filter at all — TxQueries
+// isolates writes between tests, but not from rows this database already
+// holds outside any test's transaction, and this suite is also run against a
+// long-lived database (see scripts/test-db.sh's "test" mode), not only a
+// fresh one per run.
+func TestAuditStore_Search(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	aus := auditstore.New(q)
+	us := userstore.New(q)
+
+	actor := seedTestUser(t, ctx, us, "audit-search-actor")
+	otherActor := seedTestUser(t, ctx, us, "audit-search-other-actor")
+	ticketID := uuid.New()
+	userID := uuid.New()
+
+	require.NoError(t, aus.Create(ctx, audit.Entry{
+		ID: uuid.New(), ActorID: &actor, EntityType: "ticket", EntityID: ticketID, Action: "resolved",
+	}))
+	require.NoError(t, aus.Create(ctx, audit.Entry{
+		ID: uuid.New(), ActorID: &otherActor, EntityType: "ticket", EntityID: ticketID, Action: "closed",
+	}))
+	require.NoError(t, aus.Create(ctx, audit.Entry{
+		ID: uuid.New(), ActorID: &actor, EntityType: "user", EntityID: userID, Action: "mfa_reset",
+	}))
+
+	cases := []struct {
+		name   string
+		filter audit.Filter
+		want   int
+	}{
+		{name: "actor narrows to everything they did", filter: audit.Filter{ActorID: &actor}, want: 2},
+		{name: "actor and entity type both apply", filter: audit.Filter{ActorID: &actor, EntityType: "ticket"}, want: 1},
+		{name: "actor and action both apply", filter: audit.Filter{ActorID: &actor, Action: "mfa_reset"}, want: 1},
+		{name: "actor and q both apply, matching entity_type", filter: audit.Filter{ActorID: &actor, Q: "tick"}, want: 1},
+		{name: "actor and q both apply, matching action", filter: audit.Filter{ActorID: &actor, Q: "reset"}, want: 1},
+		{name: "an actor with no entries matches nothing", filter: audit.Filter{ActorID: ptrUUID(uuid.New())}, want: 0},
+		{name: "the other actor's own entry", filter: audit.Filter{ActorID: &otherActor}, want: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pg, err := aus.Search(ctx, tc.filter, 10, 0)
+			got, total := pg.Entries, pg.Total
+			require.NoError(t, err)
+			require.Equal(t, tc.want, total)
+			require.Len(t, got, tc.want)
+		})
+	}
+
+	// The total reflects the filter, not the page: this actor has 2 entries,
+	// the page is capped to 1, and the count must still say 2.
+	pg, err := aus.Search(ctx, audit.Filter{ActorID: &actor}, 1, 0)
+	got, total := pg.Entries, pg.Total
+	require.NoError(t, err)
+	require.Equal(t, 2, total)
+	require.Len(t, got, 1)
+}
+
+// TestAuditStore_Search_DateRange covers From/To, which the table-driven
+// case above can't: it needs entries whose only difference is time, and the
+// harness writes CreatedAt as time.Now() on every Create. Scoped to this
+// test's own actor for the same reason as TestAuditStore_Search.
+func TestAuditStore_Search_DateRange(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	aus := auditstore.New(q)
+	us := userstore.New(q)
+
+	actor := seedTestUser(t, ctx, us, "audit-daterange-actor")
+	require.NoError(t, aus.Create(ctx, audit.Entry{
+		ID: uuid.New(), ActorID: &actor, EntityType: "ticket", EntityID: uuid.New(), Action: "created",
+	}))
+	byThisActor := audit.Filter{ActorID: &actor}
+
+	now := time.Now()
+	future := now.Add(time.Hour)
+	past := now.Add(-time.Hour)
+
+	f := byThisActor
+	f.From, f.To = &past, &future
+	pg, err := aus.Search(ctx, f, 10, 0)
+	total := pg.Total
+	require.NoError(t, err)
+	require.Equal(t, 1, total, "entry created just now must fall inside a window that spans an hour either side")
+
+	f = byThisActor
+	f.From = &future
+	pg, err = aus.Search(ctx, f, 10, 0)
+	total = pg.Total
+	require.NoError(t, err)
+	require.Equal(t, 0, total, "a From set an hour in the future must exclude an entry created now")
+
+	f = byThisActor
+	f.To = &past
+	pg, err = aus.Search(ctx, f, 10, 0)
+	total = pg.Total
+	require.NoError(t, err)
+	require.Equal(t, 0, total, "a To set an hour in the past must exclude an entry created now")
+}
+
+func TestAuditStore_DeleteOlderThan(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	aus := auditstore.New(q)
+	us := userstore.New(q)
+
+	actor := seedTestUser(t, ctx, us, "audit-retention-actor")
+
+	// aus.Create always stamps CreatedAt as time.Now(), so the "old" entry is
+	// written directly through the same transaction's Queries instead, with
+	// an explicit CreatedAt — the one field Create won't let a caller set.
+	oldID, newID := uuid.New(), uuid.New()
+	require.NoError(t, q.CreateAuditEntry(ctx, dbgen.CreateAuditEntryParams{
+		ID: oldID, ActorID: uuid.NullUUID{UUID: actor, Valid: true},
+		EntityType: "ticket", EntityID: uuid.New(), Action: "created",
+		CreatedAt: time.Now().AddDate(0, 0, -400),
+	}))
+	require.NoError(t, aus.Create(ctx, audit.Entry{
+		ID: newID, ActorID: &actor, EntityType: "ticket", EntityID: uuid.New(), Action: "created",
+	}))
+
+	cutoff := time.Now().AddDate(0, 0, -365)
+	n, err := aus.DeleteOlderThan(ctx, cutoff)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, n, int64(1), "must delete at least the one entry this test planted before the cutoff")
+
+	// Scoped to this actor rather than the deleted count above, since a
+	// shared long-lived test database may hold other rows past the cutoff —
+	// what must hold regardless is that THIS test's old entry is gone and
+	// its new one is not.
+	pg, err := aus.Search(ctx, audit.Filter{ActorID: &actor}, 10, 0)
+	remaining, total := pg.Entries, pg.Total
+	require.NoError(t, err)
+	require.Equal(t, 1, total, "only this actor's entry older than the cutoff should be gone")
+	require.Len(t, remaining, 1)
+	require.Equal(t, newID, remaining[0].ID)
+}
+
+// seedTestUser creates a minimal staff user for FK-constrained tests
+// (audit_log.actor_id references users.id) and returns its ID. The email is
+// randomised so repeated runs against a long-lived database never collide.
+func seedTestUser(t *testing.T, ctx context.Context, us *userstore.Store, label string) uuid.UUID {
+	t.Helper()
+	u := user.User{
+		ID:          uuid.New(),
+		Email:       label + "-" + uuid.New().String() + "@test.local",
+		DisplayName: label,
+		Role:        user.RoleStaff,
+		CreatedAt:   time.Now().UTC().Truncate(time.Millisecond),
+		UpdatedAt:   time.Now().UTC().Truncate(time.Millisecond),
+	}
+	require.NoError(t, us.Create(ctx, u))
+	return u.ID
+}
+
+func ptrUUID(u uuid.UUID) *uuid.UUID { return &u }
 
 func prio(p ticket.Priority) *ticket.Priority { return &p }
 

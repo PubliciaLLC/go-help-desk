@@ -1,17 +1,21 @@
 package server_test
 
 import (
+	"context"
 	"net/http"
 	"testing"
 
+	"github.com/google/uuid"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/stretchr/testify/require"
 )
 
 // An omitted priority is the catch-all tier DESIGN.md documents, and an unknown
-// one used to reach the column's CHECK constraint — a 500 for what is plainly a
-// bad request.
+// one used to reach the column's CHECK constraint, whose raw driver error came
+// back as the 400's message — a status that happened to be right, for a
+// message that gave away table names and constraint names to the caller.
 
 func TestCreateSLAPolicy_PriorityIsOptionalAndValidated(t *testing.T) {
 	h, cleanup := newHarness(t)
@@ -54,10 +58,12 @@ func TestCreateSLAPolicy_PriorityIsOptionalAndValidated(t *testing.T) {
 			resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/sla/policies", tc.body)
 			require.Equal(t, tc.wantStatus, resp.StatusCode)
 			if tc.wantStatus != http.StatusCreated {
-				// The status alone does not distinguish a rejection from a
-				// database CHECK violation reported as one: the handler maps
-				// every store error to 400 too. The message is what says the
-				// request never reached the column.
+				// The status alone would not distinguish a domain rejection
+				// from a database CHECK violation: before #276 the handler
+				// mapped every store error to 400 too. Now only
+				// sla.ErrValidation (and sla.ErrUnknownCategory) map to 400 —
+				// see handleError — but the message is still what confirms
+				// this is the validation error, not some other 400.
 				var errBody struct {
 					Error struct {
 						Message string `json:"message"`
@@ -134,3 +140,144 @@ func TestUpdateSLAPolicy_ClearPriority(t *testing.T) {
 }
 
 func priorityOf(p ticket.Priority) *ticket.Priority { return &p }
+
+// TestCreateSLAPolicy_UnknownCategory_ReturnsBadRequest pins #276: a
+// category_id that names no row used to reach the client as the raw Postgres
+// foreign-key violation text under a 400 rather than a message a reader can
+// act on. The FK violation aborts the harness's shared test transaction, so
+// this request has to be the last statement in the test — same constraint as
+// TestCreateStatus_DuplicateName_ReturnsConflict.
+func TestCreateSLAPolicy_UnknownCategory_ReturnsBadRequest(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/sla/policies", map[string]any{
+		"name":                  "Unknown category",
+		"category_id":           uuid.New().String(),
+		"response_target_min":   60,
+		"resolution_target_min": 480,
+	})
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &errBody)
+	require.Equal(t, "bad_request", errBody.Error.Code)
+	require.Contains(t, errBody.Error.Message, "category does not exist")
+	require.NotContains(t, errBody.Error.Message, "violates")
+	require.NotContains(t, errBody.Error.Message, "sla_policies")
+}
+
+// TestUpdateSLAPolicy_UnknownCategory_ReturnsBadRequest is the PATCH
+// counterpart of TestCreateSLAPolicy_UnknownCategory_ReturnsBadRequest (#276).
+// Same transaction-abort constraint: the update that trips the FK violation
+// has to be the last statement in the test.
+func TestUpdateSLAPolicy_UnknownCategory_ReturnsBadRequest(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/sla/policies", map[string]any{
+		"name":                  "Valid at first",
+		"response_target_min":   60,
+		"resolution_target_min": 480,
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var created sla.Policy
+	decodeJSON(t, createResp, &created)
+
+	resp := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/sla/policies/"+created.ID.String(),
+		map[string]any{"category_id": uuid.New().String()})
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &errBody)
+	require.Equal(t, "bad_request", errBody.Error.Code)
+	require.Contains(t, errBody.Error.Message, "category does not exist")
+	require.NotContains(t, errBody.Error.Message, "violates")
+	require.NotContains(t, errBody.Error.Message, "sla_policies")
+}
+
+// TestDeleteSLAPolicy_InUse_Returns409 pins #261: a policy attached to at
+// least one ticket's SLA record is refused with 409 policy_in_use naming how
+// many tickets depend on it, rather than the 500 that sla_records' ON DELETE
+// RESTRICT foreign key used to surface as. The GET afterward also proves the
+// refusal took the count path and never issued (and aborted on) a failing
+// DELETE inside the shared test transaction.
+func TestDeleteSLAPolicy_InUse_Returns409(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeySLAEnabled, true))
+
+	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/sla/policies", map[string]any{
+		"name":                  "Catch-all",
+		"response_target_min":   60,
+		"resolution_target_min": 480,
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var policy sla.Policy
+	decodeJSON(t, createResp, &policy)
+
+	createTicketForSLA(t, h, "First ticket under the policy")
+	createTicketForSLA(t, h, "Second ticket under the policy")
+
+	deleteResp := h.doAsAdmin(t, http.MethodDelete, "/api/v1/admin/sla/policies/"+policy.ID.String(), nil)
+	require.Equal(t, http.StatusConflict, deleteResp.StatusCode)
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeJSON(t, deleteResp, &errBody)
+	require.Equal(t, "policy_in_use", errBody.Error.Code)
+	require.Contains(t, errBody.Error.Message, "2 ticket(s)")
+
+	listResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/sla/policies", nil)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	var list []sla.Policy
+	decodeJSON(t, listResp, &list)
+	var found bool
+	for _, p := range list {
+		if p.ID == policy.ID {
+			found = true
+		}
+	}
+	require.True(t, found, "policy must still be listed after the refused delete")
+}
+
+// TestDeleteSLAPolicy_Unused_Returns204 pins the existing behaviour: a policy
+// with no attached tickets deletes cleanly.
+func TestDeleteSLAPolicy_Unused_Returns204(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeySLAEnabled, true))
+
+	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/sla/policies", map[string]any{
+		"name":                  "Unused",
+		"response_target_min":   60,
+		"resolution_target_min": 480,
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var policy sla.Policy
+	decodeJSON(t, createResp, &policy)
+
+	deleteResp := h.doAsAdmin(t, http.MethodDelete, "/api/v1/admin/sla/policies/"+policy.ID.String(), nil)
+	require.Equal(t, http.StatusNoContent, deleteResp.StatusCode)
+
+	listResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/sla/policies", nil)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	var list []sla.Policy
+	decodeJSON(t, listResp, &list)
+	for _, p := range list {
+		require.NotEqual(t, policy.ID, p.ID, "deleted policy must not still be listed")
+	}
+}

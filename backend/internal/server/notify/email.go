@@ -5,18 +5,25 @@ package notify
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
 	"embed"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"mime/quotedprintable"
 	"net"
 	"net/mail"
+	"net/netip"
 	"net/smtp"
 	"strings"
 	"text/template"
 	"time"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/config"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/emailtemplate"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 )
 
@@ -26,9 +33,29 @@ var templateFS embed.FS
 // EmailDispatcher sends email notifications on ticket events.
 // It is a no-op when SMTP is not configured.
 type EmailDispatcher struct {
-	cfg       *config.Config
+	cfg *config.Config
+	// templates holds the compiled defaults, by file name. An admin's edited
+	// version, when there is one, is read at send time instead (#158).
 	templates *template.Template
+	overrides emailtemplate.Reader
+	site      SiteNamer
 }
+
+// SiteNamer supplies the help desk's name for the shared header and footer.
+// It is the one value in those that is not fixed text.
+type SiteNamer interface {
+	SiteName(ctx context.Context) string
+}
+
+// WithTemplates lets the admin's edited templates, header and footer take
+// effect. Without it every mail is the compiled default.
+func (d *EmailDispatcher) WithTemplates(r emailtemplate.Reader, site SiteNamer) *EmailDispatcher {
+	d.overrides, d.site = r, site
+	return d
+}
+
+// ErrEmailNotConfigured is returned by SendTest when SMTP is not set up.
+var ErrEmailNotConfigured = errors.New("email is not configured")
 
 // NewEmailDispatcher loads templates and returns an EmailDispatcher.
 // Returns a no-op dispatcher when SMTP is not configured.
@@ -51,9 +78,16 @@ func sanitizeHeader(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// ErrPermanent marks a delivery error that retrying cannot fix, such as an
+// email template that does not render. The outbox worker fails the row at once
+// on it instead of retrying (#456).
+var ErrPermanent = errors.New("permanent delivery error")
+
 // Dispatch sends an email for supported event types. Unsupported events are
-// silently ignored — the dispatcher never returns an error to the caller.
-func (d *EmailDispatcher) Dispatch(_ context.Context, event notification.Event) error {
+// silently ignored. A template that fails to render, or a failed send, is
+// returned: the outbox worker retries the second and fails the first at once
+// (ErrPermanent), and either shows up in the admin email-health warning.
+func (d *EmailDispatcher) Dispatch(ctx context.Context, event notification.Event) error {
 	if !d.cfg.EmailEnabled() {
 		return nil
 	}
@@ -63,12 +97,362 @@ func (d *EmailDispatcher) Dispatch(_ context.Context, event notification.Event) 
 		return nil
 	}
 
-	var buf bytes.Buffer
-	if err := d.templates.ExecuteTemplate(&buf, templateName, data); err != nil {
-		return nil // template failure is non-fatal
+	view, _ := data.(map[string]string)
+	subject, body, htmlBody, err := d.compose(ctx, strings.TrimSuffix(templateName, ".tmpl"), subject, view)
+	if err != nil {
+		return err
+	}
+	return d.sendMessage(to, subject, body, htmlBody)
+}
+
+// compose builds the subject, the plain-text part and, when the template has
+// one, the HTML part of one mail: the template's edited version if the admin
+// saved one, else the compiled default, wrapped in the shared header and footer
+// (empty unless the admin wrote them).
+//
+// The HTML part exists when the template has saved HTML, OR when the header or
+// footer does: once either has HTML, every mail is multipart, and a template
+// with no HTML of its own has its text turned into paragraphs (links made
+// clickable) and wrapped in them (htmlFromText). With no HTML saved anywhere a
+// mail is one text part, exactly as before. The text part is never generated
+// from the HTML: it is the separately edited text template.
+//
+// An edited version that no longer validates FAILS the mail, permanently,
+// naming the template; it does not fall back to the default. The admin chose
+// that knowing a reset or guest link could be missed (#158), and in return the
+// failure is never quiet: it reaches the email-health warning, the startup log
+// and the broken-template notice, and reverting is one click.
+func (d *EmailDispatcher) compose(ctx context.Context, name, defaultSubject string, view map[string]string) (subject string, text, htmlPart []byte, err error) {
+	def, ok := LookupTemplate(name)
+	if !ok {
+		return "", nil, nil, fmt.Errorf("no email template %q: %w", name, ErrPermanent)
+	}
+	ovs, err := d.storedOverrides(ctx, name, NameHeader, NameFooter)
+	if err != nil {
+		return "", nil, nil, err
 	}
 
-	return d.send(to, subject, buf.Bytes())
+	subject, content := defaultSubject, ""
+	ov, edited := ovs[name]
+	if edited {
+		subject, content, err = RenderTemplate(def, ov.Subject, ov.Body, view)
+		if err != nil {
+			return "", nil, nil, &staleTemplateError{label: def.Label, err: err}
+		}
+	} else {
+		var buf bytes.Buffer
+		if err := d.templates.ExecuteTemplate(&buf, name+".tmpl", view); err != nil {
+			// Used to be swallowed ("non-fatal"), which made the worker delete the
+			// row as delivered: a broken template lost every mail silently.
+			return "", nil, nil, fmt.Errorf("rendering %s.tmpl: %w: %w", name, ErrPermanent, err)
+		}
+		content = buf.String()
+	}
+
+	header, err := d.renderShell(ctx, ovs, NameHeader)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	footer, err := d.renderShell(ctx, ovs, NameFooter)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	text = []byte(header + content + footer)
+
+	ownHTML, textSource := "", def.DefaultBody
+	if edited {
+		ownHTML, textSource = ov.HTML, ov.Body
+	}
+	if ownHTML != "" || ovs[NameHeader].HTML != "" || ovs[NameFooter].HTML != "" {
+		htmlPart, err = d.composeHTML(ctx, def, ownHTML, textSource, view, ovs)
+		if err != nil {
+			return "", nil, nil, err
+		}
+	}
+	return subject, text, htmlPart, nil
+}
+
+// composeHTML renders the HTML part: the template's HTML between the saved
+// header's and footer's. The length limit is on the whole, which is what a mail
+// client clips.
+func (d *EmailDispatcher) composeHTML(ctx context.Context, def TemplateDef, src, text string, view map[string]string, ovs map[string]emailtemplate.Override) ([]byte, error) {
+	var content string
+	var err error
+	if src != "" {
+		content, err = RenderHTML(def, src, view)
+		if err != nil {
+			return nil, &staleTemplateError{label: def.Label, err: err}
+		}
+	} else {
+		// No HTML of its own: the text, as paragraphs. The text was rendered
+		// from the same source a moment ago, so it is valid.
+		content, err = d.contentFromText(def, text, view)
+		if err != nil {
+			return nil, err
+		}
+	}
+	header, err := d.renderShellHTML(ctx, ovs, NameHeader)
+	if err != nil {
+		return nil, err
+	}
+	footer, err := d.renderShellHTML(ctx, ovs, NameFooter)
+	if err != nil {
+		return nil, err
+	}
+	return joinHTML(def, header, content, footer)
+}
+
+// contentFromText is a template's text as the HTML part's body.
+func (d *EmailDispatcher) contentFromText(def TemplateDef, text string, view map[string]string) (string, error) {
+	src, err := htmlFromText(def, text)
+	if err != nil {
+		return "", fmt.Errorf("email template %q: turning the text into HTML: %w: %w", def.Label, ErrPermanent, err)
+	}
+	out, err := RenderHTMLUnchecked(def, src, view)
+	if err != nil {
+		return "", fmt.Errorf("email template %q: rendering the text as HTML: %w: %w", def.Label, ErrPermanent, err)
+	}
+	return out, nil
+}
+
+// joinHTML puts the three pieces together and holds the whole to the cap.
+func joinHTML(def TemplateDef, header, content, footer string) ([]byte, error) {
+	if n := len(header) + len(content) + len(footer); n > MaxRenderedHTMLBytes {
+		return nil, fmt.Errorf("email template %q: the HTML part comes to %d bytes with the header and footer, and mail clients cut off what is over 100 KiB; shorten it: %w",
+			def.Label, n, ErrPermanent)
+	}
+	joined := header + content + footer
+	// The bytes that will be sent get the same markup check as the source did.
+	if te := checkRenderedHTML(joined); te != nil {
+		return nil, fmt.Errorf("email template %q: the HTML that would be sent is refused (%s): %w", def.Label, te.Message, ErrPermanent)
+	}
+	return []byte(joined), nil
+}
+
+// storedOverrides reads the rows for these names in one lookup. A failed read
+// is returned as it is, so the worker retries: the database having a bad
+// moment is not the template's fault, and sending the default instead would
+// quietly drop the admin's wording.
+func (d *EmailDispatcher) storedOverrides(ctx context.Context, names ...string) (map[string]emailtemplate.Override, error) {
+	if d.overrides == nil {
+		return nil, nil
+	}
+	ovs, err := d.overrides.Overrides(ctx, names...)
+	if err != nil {
+		return nil, fmt.Errorf("reading edited email templates: %w", err)
+	}
+	return ovs, nil
+}
+
+func (d *EmailDispatcher) siteName(ctx context.Context) string {
+	if d.site == nil {
+		return "Go Help Desk"
+	}
+	return d.site.SiteName(ctx)
+}
+
+// renderShell renders the saved header or footer, or "" when there is none.
+func (d *EmailDispatcher) renderShell(ctx context.Context, ovs map[string]emailtemplate.Override, name string) (string, error) {
+	ov, ok := ovs[name]
+	if !ok {
+		return "", nil
+	}
+	def, _ := LookupTemplate(name)
+	_, text, err := RenderTemplate(def, ov.Subject, ov.Body, map[string]string{"SiteName": d.siteName(ctx)})
+	if err != nil {
+		return "", &staleTemplateError{label: def.Label, err: err}
+	}
+	return text, nil
+}
+
+// renderShellHTML renders the saved header's or footer's HTML part: its HTML, or
+// when it has only text, that text as paragraphs (so a text-only footer is not
+// lost from an HTML part that exists because the header has HTML). "" when it
+// has neither. Whether an HTML part exists at all is decided by the caller.
+func (d *EmailDispatcher) renderShellHTML(ctx context.Context, ovs map[string]emailtemplate.Override, name string) (string, error) {
+	ov, ok := ovs[name]
+	if !ok {
+		return "", nil
+	}
+	def, _ := LookupTemplate(name)
+	vars := map[string]string{"SiteName": d.siteName(ctx)}
+	switch {
+	case ov.HTML != "":
+		out, err := RenderHTML(def, ov.HTML, vars)
+		if err != nil {
+			return "", &staleTemplateError{label: def.Label, err: err}
+		}
+		return out, nil
+	case ov.Body != "":
+		return d.shellTextAsHTML(def, ov.Body, vars)
+	}
+	return "", nil
+}
+
+func (d *EmailDispatcher) shellTextAsHTML(def TemplateDef, text string, vars map[string]string) (string, error) {
+	src, err := htmlFromText(def, text)
+	if err == nil {
+		var out string
+		if out, err = RenderHTMLUnchecked(def, src, vars); err == nil {
+			return out, nil
+		}
+	}
+	return "", &staleTemplateError{label: def.Label, err: err}
+}
+
+// staleTemplateError is an edited template that does not validate any more.
+// Its text is what the outbox keeps as the failure reason and the admin reads,
+// so it names the template and the problem and holds no address.
+type staleTemplateError struct {
+	label string
+	err   error
+}
+
+func (e *staleTemplateError) Error() string {
+	return fmt.Sprintf("email template %q: your edited version does not work with this release (%s); revert it under Admin, Email templates",
+		e.label, e.err)
+}
+
+func (e *staleTemplateError) Unwrap() error { return e.err }
+
+// Is makes it permanent: the text cannot change by itself, so the worker fails
+// the row at once instead of retrying.
+func (e *staleTemplateError) Is(target error) bool { return target == ErrPermanent }
+
+// Preview is a draft rendered with sample data, as it would be mailed. HTML is
+// empty when the draft has no HTML part.
+type Preview struct {
+	Subject string `json:"subject"`
+	Body    string `json:"body"`
+	HTML    string `json:"html"`
+}
+
+// PreviewDraft is PreviewDraftHTML for a draft with no HTML part.
+func (d *EmailDispatcher) PreviewDraft(ctx context.Context, def TemplateDef, subject, body, trackingPrefix string) (Preview, error) {
+	return d.PreviewDraftHTML(ctx, def, subject, body, "", trackingPrefix)
+}
+
+// PreviewDraftHTML renders an unsaved draft of def with sample data, inside the
+// saved header and footer. Drafting the header or footer itself shows it
+// around a sample ticket mail. Nothing is sent or stored. An invalid draft is
+// an *InvalidTemplateError holding every problem, text and HTML together, so
+// the editor can mark each field; a draft whose HTML part would come to more
+// than the size limit once joined with the header and footer is one too.
+func (d *EmailDispatcher) PreviewDraftHTML(ctx context.Context, def TemplateDef, subject, body, htmlSrc, trackingPrefix string) (Preview, error) {
+	errs := append(ValidateTemplate(def, subject, body), ValidateHTML(def, htmlSrc)...)
+	if len(errs) > 0 {
+		return Preview{}, &InvalidTemplateError{Errors: errs}
+	}
+	names := make([]string, 0, len(contentDefs)+2)
+	for _, t := range Templates() {
+		names = append(names, t.Name)
+	}
+	ovs, err := d.storedOverrides(ctx, names...)
+	if err != nil {
+		return Preview{}, err
+	}
+	if te := CheckJoinedHTML(def, ovs, emailtemplate.Override{Name: def.Name, Subject: subject, Body: body, HTML: htmlSrc}, d.siteName(ctx)); te != nil {
+		return Preview{}, &InvalidTemplateError{Errors: []TemplateError{*te}}
+	}
+
+	vars := SampleVars(def, d.cfg.BaseURL, trackingPrefix)
+	if _, has := vars["SiteName"]; has {
+		vars["SiteName"] = d.siteName(ctx) // the real name, not the sample's
+	}
+	renderedSubject, renderedBody, err := RenderTemplate(def, subject, body, vars)
+	if err != nil {
+		return Preview{}, err
+	}
+	renderedHTML, err := RenderHTML(def, htmlSrc, vars)
+	if err != nil {
+		return Preview{}, err
+	}
+	header, err := d.renderShell(ctx, ovs, NameHeader)
+	if err != nil {
+		return Preview{}, err
+	}
+	footer, err := d.renderShell(ctx, ovs, NameFooter)
+	if err != nil {
+		return Preview{}, err
+	}
+	headerHTML, err := d.renderShellHTML(ctx, ovs, NameHeader)
+	if err != nil {
+		return Preview{}, err
+	}
+	footerHTML, err := d.renderShellHTML(ctx, ovs, NameFooter)
+	if err != nil {
+		return Preview{}, err
+	}
+	// Which parts have HTML of their own decides whether there is an HTML part;
+	// a text-only shell is carried into one, it does not make one.
+	headerOwn, footerOwn := ovs[NameHeader].HTML != "", ovs[NameFooter].HTML != ""
+	// The draft of a shell replaces what is saved for it, text or HTML.
+	if def.Shell {
+		shellHTML := renderedHTML
+		if shellHTML == "" && body != "" {
+			if shellHTML, err = d.shellTextAsHTML(def, body, vars); err != nil {
+				return Preview{}, err
+			}
+		}
+		if def.Name == NameHeader {
+			headerOwn, headerHTML = htmlSrc != "", shellHTML
+		} else {
+			footerOwn, footerHTML = htmlSrc != "", shellHTML
+		}
+		if body == "" && htmlSrc == "" {
+			if def.Name == NameHeader {
+				headerHTML = ""
+			} else {
+				footerHTML = ""
+			}
+		}
+	}
+	switch def.Name {
+	case NameHeader:
+		header = renderedBody
+	case NameFooter:
+		footer = renderedBody
+	}
+
+	contentDef, contentHTML, contentText := def, renderedHTML, body
+	if def.Shell {
+		// Around a sample mail, so the admin sees it in place.
+		sample, _ := LookupTemplate("ticket_created")
+		sampleVars := SampleVars(sample, d.cfg.BaseURL, trackingPrefix)
+		renderedSubject, renderedBody, err = RenderTemplate(sample, sample.DefaultSubject, sample.DefaultBody, sampleVars)
+		if err != nil {
+			return Preview{}, err
+		}
+		contentDef, contentHTML, contentText, vars = sample, "", sample.DefaultBody, sampleVars
+	}
+	p := Preview{Subject: renderedSubject, Body: header + renderedBody + footer}
+	if contentHTML != "" || headerOwn || footerOwn {
+		if contentHTML == "" {
+			if contentHTML, err = d.contentFromText(contentDef, contentText, vars); err != nil {
+				return Preview{}, err
+			}
+		}
+		joined, err := joinHTML(def, headerHTML, contentHTML, footerHTML)
+		if err != nil {
+			return Preview{}, err
+		}
+		p.HTML = string(joined)
+	}
+	return p, nil
+}
+
+// SendTest mails a preview to one address with "[Test] " in front of the
+// subject, so it cannot be mistaken for a real notification. The caller picks
+// the address; the request that triggers this carries none.
+func (d *EmailDispatcher) SendTest(_ context.Context, to string, p Preview) error {
+	if !d.cfg.EmailEnabled() {
+		return ErrEmailNotConfigured
+	}
+	var htmlBody []byte
+	if p.HTML != "" {
+		htmlBody = []byte(p.HTML)
+	}
+	return d.sendMessage(to, "[Test] "+p.Subject, []byte(p.Body), htmlBody)
 }
 
 // eventToEmail decides what to send. It deliberately sends no content.
@@ -109,7 +493,11 @@ func (d *EmailDispatcher) eventToEmail(event notification.Event) (templateName, 
 	// The SPA reads location.hash and clears it. The server never learns it
 	// except as an Authorization header on the API calls that need it.
 	path := "/tickets/" + event.TicketID.String()
-	if event.GuestToken != "" {
+	// Staff sign in; a guest credential has no place in their mail, whatever
+	// the event carries.
+	isStaffMail := event.Type == notification.EventStaffAssigned || event.Type == notification.EventStaffRequesterReplied ||
+		event.Type == notification.EventStaffReopened
+	if event.GuestToken != "" && !isStaffMail {
 		path = "/g#" + event.GuestToken
 	}
 	view := map[string]string{
@@ -117,53 +505,109 @@ func (d *EmailDispatcher) eventToEmail(event notification.Event) (templateName, 
 		"TicketURL":      strings.TrimRight(d.cfg.BaseURL, "/") + path,
 	}
 
-	// A missing tracking number costs the subject line its reference but must
-	// not cost the customer the notification.
-	ref := "your ticket"
-	if event.TrackingNumber != "" {
-		ref = "[" + event.TrackingNumber + "]"
+	templateName, ok = emailTemplateFor(event)
+	if !ok {
+		return "", "", "", nil, false
 	}
+	// The default subject is the registry's text, so the one the editor shows
+	// as "the default" is the one a never-edited instance sends. A missing
+	// tracking number costs the subject its reference, not the customer the
+	// notification.
+	def, found := LookupTemplate(strings.TrimSuffix(templateName, ".tmpl"))
+	if !found {
+		return "", "", "", nil, false
+	}
+	subject, err := execute(def, def.DefaultSubject, view)
+	if err != nil {
+		return "", "", "", nil, false
+	}
+	return templateName, subject, event.Recipient, view, true
+}
 
+// emailTemplateFor picks the template for an event.
+//
+// ticket_status_changed, ticket_resolved and ticket_reopened send only to a
+// guest — Recipient is empty for a ticket with a reporter account, so
+// eventToEmail returns before here. An account holder signs in and sees a
+// status change; mailing them every transition would be a stream of email
+// nobody asked for, carrying a link they do not need. They exist because
+// rotation has to deliver its replacement: each invalidates the link already
+// in the guest's inbox, so each has to carry the new one or the guest is
+// locked out.
+//
+// Staff mail (#441) follows the same no-content rule: the tracking number and
+// a link to the ticket behind the sign-in, nothing a requester wrote.
+// Somebody mailed because of their group is told it is their group's ticket,
+// and a follower that it is one they follow: "assigned to you" would be false
+// for them.
+func emailTemplateFor(event notification.Event) (string, bool) {
+	staff := func(base string) (string, bool) {
+		switch event.StaffReason {
+		case notification.SwitchGroup:
+			return base + "_group.tmpl", true
+		case notification.SwitchFollow:
+			return base + "_follow.tmpl", true
+		}
+		return base + ".tmpl", true
+	}
 	switch event.Type {
 	case notification.EventTicketCreated:
-		return "ticket_created.tmpl", "We have received " + ref, event.Recipient, view, true
+		return "ticket_created.tmpl", true
 	case notification.EventTicketReplied:
-		return "ticket_replied.tmpl", "There is a new reply on " + ref, event.Recipient, view, true
-
-	// These three send only to a guest — Recipient is empty for a ticket with
-	// a reporter account, which returns above. An account holder signs in and
-	// sees a status change; mailing them every transition would be a stream of
-	// email nobody asked for, carrying a link they do not need.
-	//
-	// They exist because rotation has to deliver its replacement: each of these
-	// invalidates the link already in the guest's inbox, so each has to carry
-	// the new one or the guest is locked out.
+		return "ticket_replied.tmpl", true
 	case notification.EventTicketStatusChanged:
-		return "ticket_status_changed.tmpl", "There is an update on " + ref, event.Recipient, view, true
+		return "ticket_status_changed.tmpl", true
 	case notification.EventTicketResolved:
-		return "ticket_resolved.tmpl", "We have resolved " + ref, event.Recipient, view, true
+		return "ticket_resolved.tmpl", true
 	case notification.EventTicketReopened:
-		return "ticket_reopened.tmpl", "We have reopened " + ref, event.Recipient, view, true
+		return "ticket_reopened.tmpl", true
+	case notification.EventStaffAssigned:
+		return staff("staff_assigned")
+	case notification.EventStaffRequesterReplied:
+		return staff("staff_requester_replied")
+	case notification.EventStaffReopened:
+		return staff("staff_reopened")
 	case notification.EventGuestLinkResent:
-		return "guest_link.tmpl", "Your link to " + ref, event.Recipient, view, true
+		return "guest_link.tmpl", true
 	}
-	return "", "", "", nil, false
+	return "", false
 }
 
 // SendVerificationEmail sends a transactional email containing the account
 // verification link. It implements registration.Mailer.
-func (d *EmailDispatcher) SendVerificationEmail(to, token, baseURL string) error {
+func (d *EmailDispatcher) SendVerificationEmail(ctx context.Context, to, token, baseURL string) error {
 	if !d.cfg.EmailEnabled() {
 		return nil
 	}
-	verifyURL := baseURL + "/verify-email?token=" + token
-	var buf bytes.Buffer
-	if err := d.templates.ExecuteTemplate(&buf, "email_verification.tmpl", map[string]string{
-		"VerifyURL": verifyURL,
-	}); err != nil {
-		return fmt.Errorf("rendering verification email: %w", err)
+	return d.sendAccountMail(ctx, to, "email_verification", map[string]string{
+		"VerifyURL": baseURL + "/verify-email?token=" + token,
+	})
+}
+
+// SendPasswordResetEmail sends the link a "forgot password" request is
+// answered with (#451). It implements passwordreset.Mailer. The link's host
+// comes from baseURL, which the caller takes from configuration, never from a
+// request.
+func (d *EmailDispatcher) SendPasswordResetEmail(ctx context.Context, to, token, baseURL string) error {
+	if !d.cfg.EmailEnabled() {
+		return nil
 	}
-	return d.send(to, "Verify your email address", buf.Bytes())
+	return d.sendAccountMail(ctx, to, "password_reset", map[string]string{
+		"ResetURL": baseURL + "/reset-password?token=" + token,
+	})
+}
+
+func (d *EmailDispatcher) sendAccountMail(ctx context.Context, to, name string, view map[string]string) error {
+	def, _ := LookupTemplate(name)
+	defaultSubject, err := execute(def, def.DefaultSubject, view)
+	if err != nil {
+		return fmt.Errorf("rendering %s subject: %w: %w", name, ErrPermanent, err)
+	}
+	subject, body, htmlBody, err := d.compose(ctx, name, defaultSubject, view)
+	if err != nil {
+		return err
+	}
+	return d.sendMessage(to, subject, body, htmlBody)
 }
 
 // send builds a MIME message with sanitized headers and quoted-printable-encoded
@@ -188,6 +632,14 @@ func validateSendAddresses(to, from string) (toAddr, fromAddr *mail.Address, err
 }
 
 func (d *EmailDispatcher) send(to, subject string, body []byte) error {
+	return d.sendMessage(to, subject, body, nil)
+}
+
+// sendMessage is send with an optional HTML part. With none the message is one
+// text/plain part, byte for byte what it was before the HTML part existed; with
+// one it is multipart/alternative, text first (the last part is the one a
+// client prefers).
+func (d *EmailDispatcher) sendMessage(to, subject string, body, htmlBody []byte) error {
 	toAddr, fromAddr, err := validateSendAddresses(to, d.cfg.SMTPFrom)
 	if err != nil {
 		return err
@@ -202,24 +654,59 @@ func (d *EmailDispatcher) send(to, subject string, body []byte) error {
 	fmt.Fprintf(&msg, "To: <%s>\r\n", toAddr.Address)
 	fmt.Fprintf(&msg, "Subject: %s\r\n", sanitizeHeader(subject))
 	msg.WriteString("MIME-Version: 1.0\r\n")
-	msg.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
-	msg.WriteString("Content-Transfer-Encoding: quoted-printable\r\n")
-	msg.WriteString("\r\n")
 
-	qp := quotedprintable.NewWriter(&msg)
+	if len(htmlBody) == 0 {
+		msg.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
+		msg.WriteString("Content-Transfer-Encoding: quoted-printable\r\n")
+		msg.WriteString("\r\n")
+		if err := writeQP(&msg, body); err != nil {
+			return err
+		}
+	} else {
+		boundary, err := newBoundary()
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(&msg, "Content-Type: multipart/alternative; boundary=%s\r\n\r\n", boundary)
+		for _, part := range []struct {
+			mediaType string
+			body      []byte
+		}{{"text/plain", body}, {"text/html", htmlBody}} {
+			fmt.Fprintf(&msg, "--%s\r\nContent-Type: %s; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n", boundary, part.mediaType)
+			if err := writeQP(&msg, part.body); err != nil {
+				return err
+			}
+			// The line break before a delimiter belongs to the delimiter.
+			msg.WriteString("\r\n")
+		}
+		fmt.Fprintf(&msg, "--%s--\r\n", boundary)
+	}
+
+	opts := smtpOptionsFor(d.cfg)
+	opts.Timeout = smtpTimeout
+	return sendMail(opts, fromAddr.Address, toAddr.Address, msg.Bytes())
+}
+
+func writeQP(w io.Writer, body []byte) error {
+	qp := quotedprintable.NewWriter(w)
 	if _, err := qp.Write(body); err != nil {
 		return fmt.Errorf("encoding body: %w", err)
 	}
 	if err := qp.Close(); err != nil {
 		return fmt.Errorf("closing encoder: %w", err)
 	}
+	return nil
+}
 
-	addr := fmt.Sprintf("%s:%d", d.cfg.SMTPHost, d.cfg.SMTPPort)
-	var auth smtp.Auth
-	if d.cfg.SMTPUser != "" {
-		auth = smtp.PlainAuth("", d.cfg.SMTPUser, d.cfg.SMTPPassword, d.cfg.SMTPHost)
+// newBoundary is random per message. A quoted-printable body cannot contain a
+// line that starts with "--" and this many random characters, so no part can
+// end the message early; it is also what stops a guessable one being aimed at.
+func newBoundary() (string, error) {
+	b := make([]byte, 24)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("creating a MIME boundary: %w", err)
 	}
-	return sendMailWithTimeout(addr, auth, fromAddr.Address, toAddr.Address, msg.Bytes(), smtpTimeout)
+	return hex.EncodeToString(b), nil
 }
 
 // smtpTimeout bounds a single delivery end to end.
@@ -232,24 +719,104 @@ func (d *EmailDispatcher) send(to, subject string, body []byte) error {
 // every goroutine that touched email piled up until the relay recovered.
 const smtpTimeout = 20 * time.Second
 
-// sendMailWithTimeout is net/smtp.SendMail with a dial timeout and a deadline
-// covering the whole conversation.
-func sendMailWithTimeout(addr string, auth smtp.Auth, from, to string, msg []byte, timeout time.Duration) error {
-	conn, err := net.DialTimeout("tcp", addr, timeout)
+// smtpOptions is everything one delivery needs to know about the server.
+type smtpOptions struct {
+	Addr     string // host:port
+	User     string
+	Password string
+	// Implicit means TLS from the first byte (port 465), not STARTTLS.
+	Implicit bool
+	Timeout  time.Duration
+
+	// Test hooks. Production leaves both nil: RootCAs nil means the system
+	// roots, and verification is never switched off, only extended.
+	RootCAs *x509.CertPool
+	dial    func(network, addr string, timeout time.Duration) (net.Conn, error)
+}
+
+// usesImplicitTLS reports whether a port is the implicit-TLS submission port.
+// Chosen by port rather than a setting: 465 speaks TLS from the first byte, so
+// a STARTTLS client waited on a banner that never came and hung until the
+// timeout. No working setup changes.
+func usesImplicitTLS(port int) bool { return port == 465 }
+
+func smtpOptionsFor(cfg *config.Config) smtpOptions {
+	return smtpOptions{
+		Addr:     fmt.Sprintf("%s:%d", cfg.SMTPHost, cfg.SMTPPort),
+		User:     cfg.SMTPUser,
+		Password: cfg.SMTPPassword,
+		Implicit: usesImplicitTLS(cfg.SMTPPort),
+	}
+}
+
+// isPrivateIP reports loopback, RFC 1918 (10/8, 172.16/12, 192.168/16) and
+// IPv6 unique local addresses (fc00::/7), and nothing else. Link-local and
+// carrier-grade NAT ranges are deliberately not private here.
+func isPrivateIP(ip net.IP) bool {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	addr = addr.Unmap()
+	return addr.IsLoopback() || addr.IsPrivate()
+}
+
+// peerIP is the address the connection actually reached, not the one the
+// configured name resolved to some time earlier: the rule is about where the
+// bytes go.
+func peerIP(conn net.Conn) net.IP {
+	if a, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
+		return a.IP
+	}
+	host, _, err := net.SplitHostPort(conn.RemoteAddr().String())
+	if err != nil {
+		return nil
+	}
+	return net.ParseIP(host)
+}
+
+// The TLS rule, the whole of it:
+//
+//   - A password is never sent unencrypted, to any address, private or not.
+//     Implicit TLS on 465, STARTTLS everywhere else; if STARTTLS is not
+//     offered the send fails. A man in the middle stripping STARTTLS from the
+//     greeting therefore costs a failed send, not a password.
+//   - With no password, plain SMTP is allowed only to a private address
+//     (loopback, RFC 1918, fc00::/7): an internal relay. A public address
+//     still requires TLS. STARTTLS is used whenever it is offered.
+//
+// sendMail is net/smtp.SendMail with those rules, a dial timeout, and a
+// deadline covering the whole conversation.
+func sendMail(o smtpOptions, from, to string, msg []byte) error {
+	dial := o.dial
+	if dial == nil {
+		dial = net.DialTimeout
+	}
+	conn, err := dial("tcp", o.Addr, o.Timeout)
 	if err != nil {
 		return fmt.Errorf("dialing SMTP server: %w", err)
 	}
 	// One deadline for the whole exchange, so a relay that answers the dial and
 	// then stalls mid-conversation cannot hold the goroutine either.
-	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+	if err := conn.SetDeadline(time.Now().Add(o.Timeout)); err != nil {
 		_ = conn.Close()
 		return fmt.Errorf("setting SMTP deadline: %w", err)
 	}
 
-	host, _, err := net.SplitHostPort(addr)
+	host, _, err := net.SplitHostPort(o.Addr)
 	if err != nil {
 		_ = conn.Close()
 		return fmt.Errorf("parsing SMTP address: %w", err)
+	}
+	tlsCfg := &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12, RootCAs: o.RootCAs}
+
+	if o.Implicit {
+		tc := tls.Client(conn, tlsCfg)
+		if err := tc.Handshake(); err != nil {
+			_ = conn.Close()
+			return fmt.Errorf("SMTP implicit TLS: %w", err)
+		}
+		conn = tc
 	}
 
 	c, err := smtp.NewClient(conn, host)
@@ -259,16 +826,29 @@ func sendMailWithTimeout(addr string, auth smtp.Auth, from, to string, msg []byt
 	}
 	defer func() { _ = c.Close() }()
 
-	if ok, _ := c.Extension("STARTTLS"); ok {
-		if err := c.StartTLS(&tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}); err != nil {
-			return fmt.Errorf("STARTTLS: %w", err)
+	if !o.Implicit {
+		if ok, _ := c.Extension("STARTTLS"); ok {
+			if err := c.StartTLS(tlsCfg); err != nil {
+				return fmt.Errorf("STARTTLS: %w", err)
+			}
+		} else if o.Password != "" {
+			return errors.New("SMTP server does not offer STARTTLS, and SMTP_PASSWORD is set: " +
+				"refusing to send the password unencrypted")
+		} else if !isPrivateIP(peerIP(conn)) {
+			return errors.New("SMTP server does not offer STARTTLS and is not on a private address: " +
+				"refusing to send mail unencrypted")
 		}
 	}
-	if auth != nil {
-		if ok, _ := c.Extension("AUTH"); ok {
-			if err := c.Auth(auth); err != nil {
-				return fmt.Errorf("SMTP auth: %w", err)
-			}
+
+	// After STARTTLS: AUTH is often advertised only on the encrypted session.
+	// Sending anonymously when credentials are configured would hide a broken
+	// relay behind apparent success.
+	if o.User != "" {
+		if ok, _ := c.Extension("AUTH"); !ok {
+			return errors.New("SMTP server does not offer AUTH but SMTP_USER is set")
+		}
+		if err := c.Auth(smtp.PlainAuth("", o.User, o.Password, host)); err != nil {
+			return fmt.Errorf("SMTP auth: %w", err)
 		}
 	}
 	if err := c.Mail(from); err != nil {

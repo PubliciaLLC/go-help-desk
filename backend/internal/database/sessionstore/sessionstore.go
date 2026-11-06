@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/gob"
 	"fmt"
@@ -27,6 +28,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // sessionIDBytes is the entropy in a session id.
@@ -146,6 +148,28 @@ func (s *Store) New(r *http.Request, name string) (*sessions.Session, error) {
 		session.Values = map[any]any{}
 		return session, nil
 	}
+	// The role is taken from the database, not from what the cookie was
+	// carrying.
+	//
+	// A session payload records the role it was minted with, and that went
+	// stale in the one case where it mattered: demoting somebody revokes
+	// their sessions, but a request already in flight finishes afterwards and
+	// can mint a new session from the role it read on the way in. A password
+	// change is the worst of those — the account holder picks the moment and
+	// it spends fifty-odd milliseconds hashing. The demotion was in the
+	// database and the attacker was an administrator again.
+	//
+	// Overwriting it here rather than fixing that one handler is the point: a
+	// handler that carries a role forward is an ordinary thing to write, and
+	// there is no longer a stale one to carry. Disabled and deleted have
+	// worked this way all along, in the join above.
+	if row.UserRole.Valid {
+		if sd, ok := session.Values[auth.SessionDataKey].(auth.SessionData); ok {
+			sd.Role = user.Role(row.UserRole.String)
+			session.Values[auth.SessionDataKey] = sd
+		}
+	}
+
 	session.ID = id
 	session.IsNew = false
 	return session, nil
@@ -229,6 +253,33 @@ func (s *Store) DeleteForUser(ctx context.Context, userID uuid.UUID) error {
 // on read, so this is housekeeping rather than a security control.
 func (s *Store) DeleteExpired(ctx context.Context) (int64, error) {
 	return s.q.DeleteExpiredSessions(ctx)
+}
+
+// SpendSAMLHandover records that the SAML library's hand-over cookie has been
+// exchanged for an app session, and reports whether this was its first use.
+//
+// Callers must pass the signed input (header.payload), not the raw cookie
+// value with the signature. The JWT verifier decodes base64 leniently, so one
+// token has several spellings that all verify; different spellings of the
+// signature segment would hash differently and defeat the single-use record
+// (#337).
+//
+// The cookie is a stateless JWT, so nothing else can invalidate it: without
+// this record, a copy captured before the hand-over could mint a new session
+// after every revocation until it expired (#337).
+//
+// Rows older than a day are purged first. That is housekeeping, done here
+// rather than in the hourly sweep because nothing else writes the table.
+func (s *Store) SpendSAMLHandover(ctx context.Context, token string) (bool, error) {
+	if err := s.q.DeleteStaleSAMLHandovers(ctx); err != nil {
+		return false, fmt.Errorf("purging spent SAML hand-overs: %w", err)
+	}
+	sum := sha256.Sum256([]byte(token))
+	n, err := s.q.SpendSAMLHandover(ctx, sum[:])
+	if err != nil {
+		return false, fmt.Errorf("spending SAML hand-over: %w", err)
+	}
+	return n == 1, nil
 }
 
 func newSessionID() (string, error) {

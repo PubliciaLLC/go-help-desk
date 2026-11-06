@@ -9,9 +9,6 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
 export function SignupPage() {
   const [email, setEmail] = useState('')
-  const [displayName, setDisplayName] = useState('')
-  const [password, setPassword] = useState('')
-  const [confirm, setConfirm] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [done, setDone] = useState(false)
@@ -19,13 +16,9 @@ export function SignupPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError('')
-    if (password !== confirm) {
-      setError('Passwords do not match.')
-      return
-    }
     setLoading(true)
     try {
-      await signup(email, displayName, password)
+      await signup(email)
       setDone(true)
     } catch (err) {
       const msg = extractError(err)
@@ -49,7 +42,7 @@ export function SignupPage() {
           {done ? (
             <div className="space-y-3 text-sm text-gray-700">
               <p>
-                Check your email for a verification link. Click it to activate your account and sign in.
+                Check your email for a verification link. Click it to choose your name and password and activate your account.
               </p>
               <p>
                 <Link to="/login" className="text-blue-600 hover:underline">
@@ -70,40 +63,7 @@ export function SignupPage() {
                   autoComplete="email"
                 />
               </div>
-              <div className="space-y-1">
-                <Label htmlFor="display_name">Display name</Label>
-                <Input
-                  id="display_name"
-                  type="text"
-                  value={displayName}
-                  onChange={(e) => setDisplayName(e.target.value)}
-                  required
-                  autoComplete="name"
-                />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="password">Password</Label>
-                <Input
-                  id="password"
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                  autoComplete="new-password"
-                />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="confirm">Confirm password</Label>
-                <Input
-                  id="confirm"
-                  type="password"
-                  value={confirm}
-                  onChange={(e) => setConfirm(e.target.value)}
-                  required
-                  autoComplete="new-password"
-                />
-              </div>
-              {error && <p className="text-sm text-red-600">{error}</p>}
+              {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
               <Button type="submit" className="w-full" disabled={loading}>
                 {loading ? 'Creating account…' : 'Create account'}
               </Button>

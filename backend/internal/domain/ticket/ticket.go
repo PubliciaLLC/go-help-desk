@@ -31,6 +31,20 @@ func (p Priority) Valid() bool {
 	return false
 }
 
+// Raised is the next level up, and the highest level raised is itself. Used by
+// the first-reopen bump (#464).
+func (p Priority) Raised() Priority {
+	switch p {
+	case PriorityLow:
+		return PriorityMedium
+	case PriorityMedium:
+		return PriorityHigh
+	case PriorityHigh, PriorityCritical:
+		return PriorityCritical
+	}
+	return p
+}
+
 // StatusKind distinguishes the three system statuses from admin-defined ones.
 // Resolved and Closed have hardcoded lifecycle semantics; New is the starting
 // point. Everything else is Custom.
@@ -46,6 +60,15 @@ const (
 	StatusNameNew      = "New"
 	StatusNameResolved = "Resolved"
 	StatusNameClosed   = "Closed"
+
+	// StatusNamePending is a seeded *custom* status (migration 000001), not a
+	// system one, so there is no cached ID for it the way there is for the
+	// three above. It is identified by name, matching how
+	// lifecycleAllowsReply already compares Resolved/Closed. Known
+	// consequence, accepted: an admin who renames the status stops future
+	// SLA pauses (see sla.Elapsed and applyStatusTimestamps). Documented in
+	// DESIGN.md → SLA Tracking → Timer Mechanics (#263).
+	StatusNamePending = "Pending"
 )
 
 // Status represents a ticket state. System statuses have special lifecycle
@@ -85,6 +108,17 @@ const (
 	LinkDuplicateOf LinkType = "duplicate_of"
 )
 
+// Valid reports whether lt is one of the four link types. The database enforces the
+// same set with a CHECK constraint; this lets a caller reject a bad value with
+// a useful message instead of a constraint violation.
+func (lt LinkType) Valid() bool {
+	switch lt {
+	case LinkRelatedTo, LinkParentChild, LinkCausedBy, LinkDuplicateOf:
+		return true
+	}
+	return false
+}
+
 // TicketLink records a directional relationship between two tickets.
 // Both tickets are identified by UUID; no embedding is done to keep the
 // type flat.
@@ -94,6 +128,58 @@ type TicketLink struct {
 	LinkType       LinkType  `json:"link_type"`
 }
 
+// TextFormat says how a stored piece of ticket text is displayed. Every
+// description and reply carries one; nothing is guessed from the text.
+type TextFormat string
+
+const (
+	TextFormatPlain    TextFormat = "plain"
+	TextFormatMarkdown TextFormat = "markdown"
+)
+
+// ErrInvalidTextFormat is returned for any format that is not exactly "plain"
+// or "markdown", an empty one included: the domain never fills in a default
+// because the right default differs by caller (REST plain, MCP markdown).
+var ErrInvalidTextFormat = errors.New("format must be \"plain\" or \"markdown\"")
+
+// ParseTextFormat accepts only the two exact lower-case values.
+func ParseTextFormat(s string) (TextFormat, error) {
+	switch f := TextFormat(s); f {
+	case TextFormatPlain, TextFormatMarkdown:
+		return f, nil
+	}
+	return "", ErrInvalidTextFormat
+}
+
+// SourceChannel is how a ticket arrived (#130). It is derived from the entry
+// point by the server, never asserted by the caller; the one value a person
+// chooses is ChannelPhone, and only a member of staff filing on someone's
+// behalf in the web form. "email" is reserved for inbound mail and is not a
+// valid value yet (adding it is a migration).
+type SourceChannel string
+
+const (
+	ChannelWeb   SourceChannel = "web"   // the web app, or a browser session's REST call
+	ChannelAPI   SourceChannel = "api"   // REST with an API key or OAuth client
+	ChannelMCP   SourceChannel = "mcp"   // an MCP tool
+	ChannelGuest SourceChannel = "guest" // the unauthenticated guest form
+	ChannelPhone SourceChannel = "phone" // staff filing for a caller, picked in the web form
+)
+
+// ErrInvalidSourceChannel is returned for a channel outside the list above,
+// an empty one included: the domain never fills in a default, because the
+// right value is the entry point's to name.
+var ErrInvalidSourceChannel = fmt.Errorf("%w: source_channel must be one of web, api, mcp, guest, phone", ErrValidation)
+
+// Valid reports whether c is one of the five values.
+func (c SourceChannel) Valid() bool {
+	switch c {
+	case ChannelWeb, ChannelAPI, ChannelMCP, ChannelGuest, ChannelPhone:
+		return true
+	}
+	return false
+}
+
 // TrackingNumber is the human-readable identifier for a ticket, e.g.
 // "GHD-2024-000001". It is unique across all tickets and never reused.
 type TrackingNumber string
@@ -101,26 +187,55 @@ type TrackingNumber string
 // Ticket is the central entity of the system. All business state lives here.
 // Optional foreign keys are represented as pointers to make "not set" explicit.
 type Ticket struct {
-	ID              uuid.UUID      `json:"id"`
-	TrackingNumber  TrackingNumber `json:"tracking_number"`
-	Subject         string         `json:"subject"`
-	Description     string         `json:"description"`
-	CategoryID      uuid.UUID      `json:"category_id"`
-	TypeID          *uuid.UUID     `json:"type_id,omitempty"`
-	ItemID          *uuid.UUID     `json:"item_id,omitempty"`
-	Priority        Priority       `json:"priority"`
-	StatusID        uuid.UUID      `json:"status_id"`
-	AssigneeUserID  *uuid.UUID     `json:"assignee_user_id,omitempty"`
-	AssigneeGroupID *uuid.UUID     `json:"assignee_group_id,omitempty"`
-	ReporterUserID  *uuid.UUID     `json:"reporter_user_id,omitempty"`
-	GuestEmail      *string        `json:"guest_email,omitempty"`
-	GuestName       string         `json:"guest_name,omitempty"`
-	GuestPhone      string         `json:"guest_phone,omitempty"`
-	ResolutionNotes *string        `json:"resolution_notes,omitempty"`
-	ResolvedAt      *time.Time     `json:"resolved_at,omitempty"`
-	ClosedAt        *time.Time     `json:"closed_at,omitempty"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
+	ID             uuid.UUID      `json:"id"`
+	TrackingNumber TrackingNumber `json:"tracking_number"`
+	Subject        string         `json:"subject"`
+	Description    string         `json:"description"`
+	// DescriptionFormat says how Description is shown: plain or markdown
+	// (#443). Stored with the text, never guessed from it.
+	DescriptionFormat TextFormat `json:"description_format"`
+	// SourceChannel is how the ticket arrived. Staff and administrators only
+	// on the wire (see requester_view.go).
+	SourceChannel   SourceChannel `json:"source_channel"`
+	CategoryID      uuid.UUID     `json:"category_id"`
+	TypeID          *uuid.UUID    `json:"type_id,omitempty"`
+	ItemID          *uuid.UUID    `json:"item_id,omitempty"`
+	Priority        Priority      `json:"priority"`
+	StatusID        uuid.UUID     `json:"status_id"`
+	AssigneeUserID  *uuid.UUID    `json:"assignee_user_id,omitempty"`
+	AssigneeGroupID *uuid.UUID    `json:"assignee_group_id,omitempty"`
+	ReporterUserID  *uuid.UUID    `json:"reporter_user_id,omitempty"`
+	GuestEmail      *string       `json:"guest_email,omitempty"`
+	GuestName       string        `json:"guest_name,omitempty"`
+	GuestPhone      string        `json:"guest_phone,omitempty"`
+	ResolutionNotes *string       `json:"resolution_notes,omitempty"`
+	ResolvedAt      *time.Time    `json:"resolved_at,omitempty"`
+	ClosedAt        *time.Time    `json:"closed_at,omitempty"`
+	CreatedAt       time.Time     `json:"created_at"`
+	UpdatedAt       time.Time     `json:"updated_at"`
+
+	// PendingSince is when the ticket entered its current Pending interval; nil
+	// when it is not Pending. SLAPausedSeconds is the sum of every Pending
+	// interval that has already closed. Both are maintained by
+	// applyStatusTimestamps and read by sla.Elapsed; nothing else writes them.
+	// Staff and administrators only on the wire (see requester_view.go).
+	PendingSince     *time.Time `json:"pending_since,omitempty"`
+	SLAPausedSeconds int64      `json:"sla_paused_seconds"`
+
+	// ReopenCount is how many times the ticket has been moved from Resolved or
+	// Closed back to an open status (#464). It is never reset: the badge reads
+	// "> 0 and open", and the priority bump applies only when it was 0.
+	// Omitted when 0. A requester never receives it: the count is staff
+	// information, and requester_view.go's allowed list leaves it out.
+	ReopenCount int `json:"reopen_count,omitempty"`
+
+	// LastReopenedAt and PausedSecondsAtLastReopen are the instant of the most
+	// recent reopen and the ticket's Pending total at that instant. They are
+	// where the SLA clock resumes from when a priority change gives a ticket
+	// with no current record one back after a reopen that started none. Not on
+	// the wire.
+	LastReopenedAt            *time.Time `json:"-"`
+	PausedSecondsAtLastReopen int64      `json:"-"`
 }
 
 // Reply is a message on a ticket thread, from either a staff member or the
@@ -134,8 +249,18 @@ type Reply struct {
 	// That is the only way it is NULL — every other path passes the acting
 	// user — so a reply with no author on a ticket with a guest address came
 	// from the customer. TestReply_OnlyGuestsWriteAnAuthorlessReply pins it.
-	AuthorID       *uuid.UUID `json:"author_id,omitempty"`
-	Body           string     `json:"body"`
+	AuthorID *uuid.UUID `json:"author_id,omitempty"`
+	// AuthorName is the author's display name, read alongside the reply.
+	//
+	// Carried on the reply because the page cannot look it up: a reporting
+	// user is not allowed to list users and should not be, so without this
+	// the thread had nothing to render but the id — and rendered it, as a
+	// bare UUID against every message from a registered account. Empty for a
+	// guest's reply, which has no account behind it.
+	AuthorName string `json:"author_name,omitempty"`
+	Body       string `json:"body"`
+	// BodyFormat is the Body's TextFormat (#443).
+	BodyFormat     TextFormat `json:"body_format"`
 	Internal       bool       `json:"internal"`
 	NotifyCustomer bool       `json:"notify_customer"`
 	CreatedAt      time.Time  `json:"created_at"`
@@ -150,7 +275,277 @@ type Attachment struct {
 	MimeType    string    `json:"mime_type"`
 	SizeBytes   int64     `json:"size_bytes"`
 	StoragePath string    `json:"-"` // never sent to clients
-	CreatedAt   time.Time `json:"created_at"`
+
+	// UploadedByGuest is true for a file a guest attached through their link
+	// (#445). The guest cap counts these and nothing else. Never sent to
+	// clients.
+	UploadedByGuest bool      `json:"-"`
+	CreatedAt       time.Time `json:"created_at"`
+
+	// What the upload actually was, recorded when it arrived. All three are
+	// pointers because nil is a fact: the file predates the inspection, and
+	// "not recorded" must never be rendered as "nothing wrong".
+
+	// DetectedMime is what the content sniffs as, independent of the claimed
+	// extension. Compared against the filename to flag a mismatch, which is
+	// shown and never blocks.
+	DetectedMime *string `json:"detected_mime"`
+
+	// SHA256 is of the bytes as uploaded — before image recompression and
+	// before quarantine wrapping — hex encoded. For a recompressed image it is
+	// therefore not the hash of the file on disk.
+	SHA256 *string `json:"sha256"`
+
+	// VirusName is the scanner's name for the detection on a quarantined
+	// upload, e.g. Eicar-Test-Signature. nil means the file was not identified
+	// as malicious.
+	VirusName *string `json:"virus_name"`
+
+	// ContentMismatch is whether the content contradicted the name the file
+	// was uploaded under, decided when it arrived.
+	//
+	// Recorded rather than recomputed on read. The comparison needs the name
+	// the uploader claimed, and for any file we renamed — a suspicious wrap,
+	// or an infected file stored as sample.pdf.zip — the stored name is ours,
+	// so recomputing compares ".zip" against the content and reports a
+	// truthfully named file as lying. nil means nothing was inspected.
+	ContentMismatch *bool `json:"mismatch"`
+
+	// ReputationURL is where a person can read a public report on this file's
+	// hash. VirusTotal, on the attachments worth a second opinion.
+	//
+	// Two separate rules decide it, and conflating them is how one of them
+	// gets deleted. It does NOT follow the per-provider toggles — see below.
+	// It DOES follow whether this instance found anything about the file
+	// worth investigating: the scanner named it, or the content contradicts
+	// its name. An ordinary attachment whose content matches its name and
+	// which the scanner passed carries the hash and no link, because a link
+	// and a line of explanatory text under every holiday-request PDF is the
+	// noise that teaches people to stop reading the rows that matter. See
+	// worthLookingUp in the server package.
+	//
+	// NOT a function of which providers are enabled, and the distinction is
+	// the whole reason this field is not gated. A LOOKUP is this server
+	// sending a customer's file hash to a third party: the operator's
+	// decision, their API allowance, and what the per-provider toggles govern.
+	// A LINK sends nothing from this server. It is an anchor the analyst
+	// clicks in their own browser, under their own account or none, exactly as
+	// if they had copied the hash off the page and pasted it themselves —
+	// which they can do anyway, because the hash is right there with a copy
+	// control. Switching VirusTotal off means "do not send my customers'
+	// hashes to VirusTotal from my server", not "my staff may never look at
+	// VirusTotal", and collapsing the two takes a decision away from the
+	// analyst that was never the operator's to make.
+	//
+	// VirusTotal specifically because its page is the one every analyst
+	// already knows: no account needed and the full report renders logged out.
+	// MetaDefender's public page announces itself as a reduced view, and CIRCL
+	// has no per-hash web UI at all. An enabled provider's own link sits next
+	// to its own verdict in Reputation.Providers instead, where a link and a
+	// verdict from the same service belong together.
+	//
+	// Filled in at the HTTP boundary rather than read from storage, and nil
+	// when there is no hash to look up.
+	ReputationURL *string `json:"reputation_url"`
+
+	// Reputation is what the enabled reputation services said, when this file
+	// was a candidate for a lookup at all.
+	//
+	// nil means NOTHING WAS ATTEMPTED: no provider is enabled, or this file
+	// was never a candidate — an ordinary attachment, or one with no hash. It
+	// does NOT mean a lookup failed. A failed lookup is a provider entry with
+	// state "unavailable", because an operator whose key has been rejected
+	// needs to see that, and a reader needs to be able to tell "we could not
+	// ask" from "we did not ask".
+	//
+	// With every toggle off the block is absent and that is the complete
+	// answer, not a degraded one: the local scanner's verdict stands on its
+	// own. No warning, no banner, and specifically no "not checked yet" —
+	// that phrase belongs to a lookup that was attempted and did not finish.
+	//
+	// Filled in at the HTTP boundary like ReputationURL, and for the same
+	// reason: the verdicts belong to whichever providers are enabled now.
+	Reputation *AttachmentReputation `json:"reputation"`
+}
+
+// AttachmentReputation is what the enabled reputation services said about one
+// file: the worst single answer, for the row, and every provider's own answer
+// under it, for the expanded view.
+//
+// A second struct rather than internal/reputation's own because this package
+// is domain and may not import infrastructure. The states are spelled there; a
+// test pins that the two agree.
+//
+// The summary fields repeat one entry of Providers rather than aggregating
+// across them, and that is deliberate: 62 of 81 engines is a fact about
+// VirusTotal's analysis, and averaging it with a catalogue hit from CIRCL
+// would produce a number no service ever said. Which entry is repeated is
+// named by ProviderKey and marked by AttachmentProviderVerdict.Inline, so the
+// summary is never a claim from nowhere.
+type AttachmentReputation struct {
+	// State is the worst verdict across every provider that answered:
+	//
+	//	detected  >  unseen  >  unscanned  >  clean  >  known
+	//
+	// "unseen" outranks "clean" because only quarantined files reach here —
+	// every hash is one the local scanner already called malicious — so a file
+	// no service has ever seen is a novel sample, and more concerning than one
+	// seventy engines examined and passed.
+	//
+	// "unavailable" is not in that ordering at all: it is a failed lookup
+	// rather than a verdict, and it must never displace a real answer, so
+	// VirusTotal timing out while CIRCL says "known" reads "known" here. It
+	// appears as this field's value only when NOTHING answered, which is the
+	// honest summary of a row whose every provider is failing. It is always
+	// present in Providers either way.
+	State string `json:"state"`
+
+	// Detected and Total are the engines that flagged the file and the engines
+	// that ran. Pointers because nil is a fact: only a completed analysis has
+	// numbers, and 0 of 0 reads as "nothing found anything" — the false
+	// reassurance this feature exists to avoid.
+	Detected *int `json:"detected"`
+	Total    *int `json:"total"`
+
+	// ThreatName is the provider's own consensus name for what it found, and
+	// is often empty. Attacker-influenced text — a malware author picks the
+	// filename the engines name it after — so it is escaped on the way to a
+	// browser like any other untrusted string.
+	ThreatName string `json:"threat_name"`
+
+	// AnalysedAt is when the PROVIDER last analysed the file, not when we
+	// asked. Staff read it to judge whether a clean verdict predates the
+	// sample's first appearance in the wild.
+	AnalysedAt *time.Time `json:"analysed_at"`
+
+	// Provider is the service whose verdict is summarised above, as a person
+	// reads it: "VirusTotal", "MetaDefender". ProviderKey is the same service
+	// as a machine reads it: "virustotal", "metadefender".
+	//
+	// Here because the UI cannot work it out for itself and must not try. Which
+	// providers are enabled is session-gated configuration staff cannot read,
+	// and a frontend that guessed from a link's host would be holding a second
+	// copy of provider knowledge to drift from this one. Attribution is the
+	// point: "VirusTotal has never seen this file" is a claim with a source,
+	// and "the reputation service has never seen this file" is a claim from
+	// nowhere.
+	//
+	// Both are empty when nothing answered, because then the summary belongs
+	// to no one.
+	Provider    string `json:"provider"`
+	ProviderKey string `json:"provider_key"`
+
+	// KnownFeeds names the feeds that carry a file whose State is "known", and
+	// is empty on every other state.
+	//
+	// "known" is the one verdict in this feature that renders as reassurance,
+	// and it earns that by having a source: a named feed has this exact hash
+	// on file. The state deliberately stops there, because how much that is
+	// worth depends entirely on which feed — an Authenticode signature
+	// assertion is a claim that the file is signed and trusted, while an NSRL
+	// catalogue entry means only that it appeared in a software distribution,
+	// and NSRL catalogues hacking tools.
+	//
+	// So a renderer MUST name the feed: "known file, signed by Microsoft
+	// Windows" and "known file, catalogued by NSRL" are not the same sentence,
+	// and "known good" is neither of them.
+	KnownFeeds []string `json:"known_feeds"`
+
+	// FetchedAt is when WE last asked, as against AnalysedAt, when the
+	// provider last looked. It is what the "check again" control is enabled
+	// on: a verdict may be re-checked by hand once every seven days.
+	//
+	// A pointer because nil is a fact here too — a verdict from a cache that
+	// records no fetch time has an age nobody knows — though against the
+	// database it is always set, because attachment_reputation.fetched_at is
+	// NOT NULL.
+	FetchedAt *time.Time `json:"fetched_at"`
+
+	// Providers is every enabled provider's own answer, in a fixed order, one
+	// entry each — including the ones that failed.
+	//
+	// The list is the reason for having more than one provider. They answer
+	// different questions: VirusTotal counts engines, CIRCL says whether a
+	// catalogue has the file on record, and a sample one calls "detected"
+	// while another calls "known" is telling staff something either alone
+	// would hide. Flattening four statements into a summary and sending only
+	// that would throw away exactly what made the second, third and fourth
+	// lookup worth making.
+	//
+	// Never empty when this struct is non-nil: a block with no providers under
+	// it would be a verdict with no source.
+	Providers []AttachmentProviderVerdict `json:"providers"`
+}
+
+// AttachmentProviderVerdict is one service's statement about one file at one
+// time, for the expanded view of an attachment row.
+//
+// Each carries its own timestamps and its own eligibility for a re-check
+// because each is genuinely separate: the cache is keyed by hash AND provider,
+// so every verdict has its own expiry clock and its own Check again control.
+// A shared "last checked" across four providers would be wrong for at least
+// three of them.
+type AttachmentProviderVerdict struct {
+	// Provider is the name as a person reads it, ProviderKey as a machine
+	// does. The second is what the re-check endpoint's ?provider= takes, and
+	// what matches this entry against AttachmentReputation.ProviderKey.
+	Provider    string `json:"provider"`
+	ProviderKey string `json:"provider_key"`
+
+	// State is this provider's own verdict, and unlike the summary above it
+	// may be "unavailable": the lookup was attempted and did not finish — a
+	// spent allowance, a provider that is down, a key that was rejected. An
+	// operator has to be able to see their key failing, and hiding it behind a
+	// sibling's good answer is how a dead integration goes unnoticed for a
+	// month.
+	State string `json:"state"`
+
+	// Detected and Total are the engines that flagged the file and the engines
+	// that ran, for the providers that run engines. Pointers because nil is a
+	// fact: 0 of 0 reads as "nothing found anything", which is the false
+	// reassurance this feature exists to avoid. Always nil for a catalogue
+	// answer, where no engine ran at all.
+	Detected *int `json:"detected"`
+	Total    *int `json:"total"`
+
+	// ThreatName is this provider's own consensus name for what it found, and
+	// is often empty. Attacker-influenced text, escaped on the way to a
+	// browser like any other untrusted string.
+	ThreatName string `json:"threat_name"`
+
+	// KnownFeeds names the feeds that carry a file whose State is "known", and
+	// is empty on every other state. The feed is the evidence: an Authenticode
+	// signature assertion and an NSRL catalogue entry are not the same claim,
+	// and NSRL catalogues hacking tools, so a renderer must name the feed
+	// rather than say "known good".
+	KnownFeeds []string `json:"known_feeds"`
+
+	// AnalysedAt is when THIS provider last analysed the file; FetchedAt is
+	// when we last asked them. Both nil when there is nothing to say.
+	AnalysedAt *time.Time `json:"analysed_at"`
+	FetchedAt  *time.Time `json:"fetched_at"`
+
+	// LinkURL is this provider's own page for the hash, beside its own
+	// verdict, and nil for a provider that has no per-hash page — CIRCL,
+	// whose root serves a Swagger document. A link to a page that cannot
+	// answer the question the reader clicked it with is worse than no link.
+	//
+	// Distinct from Attachment.ReputationURL, which is the VirusTotal link
+	// carried by any attachment this instance found worth a second opinion,
+	// whatever is enabled.
+	LinkURL *string `json:"link_url"`
+
+	// Recheckable reports whether the Check again control should be armed for
+	// this provider: the verdict can still change, and the seven-day floor has
+	// passed. It deliberately does not consult the budget, which can be spent
+	// between the render and the click — a control that promised otherwise
+	// would be lying either way round.
+	Recheckable bool `json:"recheckable"`
+
+	// Inline marks the entry the summary above was taken from, so the row's
+	// single line can be traced to the service that said it. Exactly one entry
+	// carries it when anything answered, and none when nothing did.
+	Inline bool `json:"inline"`
 }
 
 // DefaultTrackingPrefix is used when an instance has not set one.
@@ -205,13 +600,170 @@ func GenerateTrackingNumber(prefix string, year int, seq int64) TrackingNumber {
 // Errors returned by rule functions.
 var (
 	ErrForbidden = errors.New("forbidden")
-	ErrClosed    = errors.New("ticket is closed")
+	// ErrClosed is the refusal for anything a Closed ticket does not accept.
+	// Closed is archived read-only (#349): a requester — guest or account
+	// holder — can read it and change nothing, and nobody can move it out of
+	// Closed unless closed_reopen_policy lets their role (never a requester;
+	// off by default). 409, the ticket's state rather than the caller's
+	// permissions, and fine to say to a reporter about their own ticket (they
+	// can already see it); never used to answer for a ticket the caller may not
+	// see, which gets the not-found refusal first.
+	ErrClosed = errors.New("ticket is closed")
+
+	// ErrGuestAttachmentLimit: the ticket already holds the most files a guest
+	// may attach (#445). 409.
+	ErrGuestAttachmentLimit = errors.New("ticket already has the most files a guest can attach")
 	// ErrReopenWindowClosed is separate from ErrForbidden on purpose: the
 	// caller owns the ticket and has the right to reopen it in general. What
 	// expired is the window, and telling them "you do not have permission"
 	// sends them to an administrator for something no administrator can grant.
 	ErrReopenWindowClosed = errors.New("the reopen window for this ticket has closed")
+	ErrInvalidLinkType    = errors.New("invalid link type")
+	ErrLinkAlreadyExists  = errors.New("link already exists")
+	// ErrSelfLink is bad input, not a fault — wrapped like ErrInvalidLinkType
+	// so the HTTP layer maps it to 400 instead of falling through to 500. See
+	// #192: AddLink and ResolveAsDuplicate both used to refuse a self-link
+	// with a bare fmt.Errorf, which handleError has nothing to recognise.
+	ErrSelfLink = errors.New("cannot link a ticket to itself")
+	// ErrSystemStatusImmutable is returned by SaveStatus and RemoveStatus when
+	// asked to rename or delete a system status (New, Resolved, Closed).
+	// System statuses are found by name at startup (LoadSystemStatuses) and
+	// compared by name in lifecycle rules, so either operation reaching the
+	// store would reintroduce the restart-crash hazard #263 closed. Wrapped
+	// rather than returned bare — like ErrSelfLink and ErrPolicyInUse in the
+	// sla package — so handleError maps it to a clean refusal instead of
+	// falling through to 500. The HTTP handler (handleUpdateStatus) has no
+	// inline rename check of its own: #269 removed it in favor of relying
+	// entirely on this refusal. (handleUpdateStatus does still check Active
+	// inline before a system status ever reaches SaveStatus, which is why a
+	// request that both renames and deactivates a system status is refused
+	// for the deactivate, not the rename — see #272.) RemoveStatus's delete
+	// refusal was never duplicated at the handler either.
+	ErrSystemStatusImmutable = errors.New("system status is immutable")
+	// ErrNotFound is what a lookup of a ticket that does not exist wraps. The
+	// store's own sentinel is this same value, so callers outside the database
+	// layer (internal/mcp) can tell a real miss from a failure without
+	// importing it. See #174.
+	ErrNotFound = errors.New("not found")
+	// ErrStatusNotFound is returned by getStatusByID (and so by SaveStatus and
+	// RemoveStatus) when no status matches the given ID — a nonexistent or
+	// already-deleted id, most commonly. Wrapped for the same reason
+	// ErrSystemStatusImmutable is: the bare error it replaces reached
+	// handleError unrecognized and came back as a 500, though the fault was
+	// in the request, not the server. See #273.
+	ErrStatusNotFound = errors.New("status not found")
+	// ErrStatusInUse is returned by RemoveStatus when a custom status cannot
+	// be hard-deleted: either a ticket currently has this status, or a past
+	// ticket_status_history entry references it (the table has no ON DELETE
+	// action on that foreign key, so a zero current-count status can still
+	// fail the DELETE). Wrapped for the same reason ErrSystemStatusImmutable
+	// and ErrStatusNotFound are: both refusals used to be bare fmt.Errorf,
+	// reaching handleError unrecognized and coming back as a 500 for an
+	// ordinary, expected refusal. See #275 (found four review rounds into
+	// #264, the same pass that added the two sentinels above it). 409, not
+	// 403 or 404: this is the sla.ErrPolicyInUse shape — a conflicting state
+	// the caller can resolve by deactivating instead, not a permissions or
+	// existence problem.
+	ErrStatusInUse = errors.New("status is in use")
+	// ErrStatusNameTaken is returned by AddStatus and SaveStatus when the
+	// requested name collides with another status's: statuses.name is TEXT NOT
+	// NULL UNIQUE (statuses_name_key), and until now nothing checked that
+	// ahead of the write, so the constraint violation reached handleError
+	// unrecognized and came back as a 500 for an admin typing a name that
+	// already exists (e.g. "In Progress") — the same shape as
+	// ErrLinkAlreadyExists (#195) and sla.ErrPolicyInUse, wrapped for the same
+	// reason. See #278.
+	ErrStatusNameTaken = errors.New("a status with this name already exists")
+	// ErrStatusInactive is returned by UpdateStatus for a move into a status an
+	// administrator has deactivated. Inactive means retired, for every role:
+	// tickets already in it stay and can move out. 409, like ErrStatusInUse:
+	// the status's state refuses, not the caller's permissions.
+	ErrStatusInactive = errors.New("status is inactive")
+	// ErrInvalidStatusName is returned by AddStatus and SaveStatus when the
+	// name is empty (after trimming). NOT NULL alone doesn't reject "", so an
+	// empty name was silently accepted before this check existed. See #278.
+	ErrInvalidStatusName = errors.New("status name must not be empty")
+	// ErrNotClosed is returned by Reopen and CreateFollowUp for a ticket that
+	// is not Closed: both are ways out of a closed ticket, and an open one
+	// needs neither. See #277 for why it is a sentinel. 409, like ErrClosed:
+	// the ticket's state, not the caller's permissions, is what refuses.
+	ErrNotClosed = errors.New("ticket is not closed")
+	// ErrFollowUpExists is a requester's second follow-up of one closed ticket
+	// (#349): they get one, so the action cannot become a stream of tickets.
+	// Staff are not limited. 409.
+	ErrFollowUpExists = errors.New("a follow-up of this ticket already exists")
 )
+
+// The three values of the closed_reopen_policy setting (#349): whether a Closed
+// ticket can be force-reopened at all and, if so, by whom.
+//
+//	off          (the default) Closed is terminal for every role
+//	admin        an administrator may force-reopen
+//	staff_admin  staff and administrators may
+//
+// Requesters (reporting users, guests, and API keys or OAuth clients acting as
+// one) never may, whatever the value. The follow-up is available in every mode.
+const (
+	ReopenPolicyOff        = "off"
+	ReopenPolicyAdmin      = "admin"
+	ReopenPolicyStaffAdmin = "staff_admin"
+)
+
+// ValidClosedReopenPolicy reports whether v is a value the setting accepts.
+// Used to refuse a write; the reader treats anything else as off.
+func ValidClosedReopenPolicy(v string) bool {
+	return v == ReopenPolicyOff || v == ReopenPolicyAdmin || v == ReopenPolicyStaffAdmin
+}
+
+// CanForceReopen is the one predicate for leaving Closed: every route that can
+// do it (the reopen endpoint, a status change, Resolve, Resolve-as-duplicate,
+// over REST and MCP alike) asks it, through Service.forceReopenPolicy. Two
+// surfaces deciding one rule on their own is how GHSA-2x4f-j4jv-m2cm happened.
+//
+// An unset or unrecognised policy is off, never a permissive value, and the
+// RoleUser case is false in every mode on purpose: a requester's refusal does
+// not depend on the setting.
+func CanForceReopen(policy string, role user.Role) bool {
+	switch policy {
+	case ReopenPolicyAdmin:
+		return role == user.RoleAdmin
+	case ReopenPolicyStaffAdmin:
+		return role == user.RoleAdmin || role == user.RoleStaff
+	}
+	return false
+}
+
+// ReopenRefusedError is the refusal of a force-reopen by the policy in force.
+// It is an ErrClosed (409 ticket_closed, like every refusal of a closed
+// ticket), and its text says why — disabled, or restricted to administrators —
+// and where to go instead. Only staff and admin can meet it; a requester is
+// refused earlier, by role, and is never told about the setting.
+type ReopenRefusedError struct{ msg string }
+
+func (e *ReopenRefusedError) Error() string { return e.msg }
+
+// Is makes it an ErrClosed.
+func (e *ReopenRefusedError) Is(target error) bool { return target == ErrClosed }
+
+func reopenRefusal(policy string) error {
+	if policy == ReopenPolicyAdmin {
+		return &ReopenRefusedError{"reopening closed tickets is restricted to administrators on this " +
+			"instance; ask an administrator, or create a follow-up ticket instead"}
+	}
+	return &ReopenRefusedError{"reopening closed tickets is disabled on this instance; " +
+		"create a follow-up ticket instead"}
+}
+
+// closedRefusal is the one place that says a Closed ticket accepts no write
+// from its requester. lifecycleAllowsReply (replies and uploads, guest and
+// account holder) and CanRequesterWrite (everything else a requester can do)
+// both ask it, so the rule cannot be spelled two ways.
+func closedRefusal(status Status) error {
+	if status.Name == StatusNameClosed {
+		return ErrClosed
+	}
+	return nil
+}
 
 // CanUserUpdate returns nil if the actor may modify this ticket.
 // Rules:
@@ -259,8 +811,8 @@ func CanGuestUpdate(t Ticket, status Status, reopenWindowDays int) error {
 // lifecycleAllowsReply holds the rules that do not depend on who is asking:
 // whether the ticket's own state accepts another reply at all.
 func lifecycleAllowsReply(t Ticket, status Status, reopenWindowDays int) error {
-	if status.Name == StatusNameClosed {
-		return ErrClosed
+	if err := closedRefusal(status); err != nil {
+		return err
 	}
 	if status.Name == StatusNameResolved {
 		if t.ResolvedAt == nil {
@@ -295,6 +847,18 @@ func CanAssign(role user.Role) error {
 	return nil
 }
 
+// CanChangePriority returns nil if the actor with the given role may change a
+// ticket's priority: staff and admin (#443). A predicate, because two callers
+// need the answer at different moments: ChangePriority applies it under the row
+// lock, and the PATCH handler asks it before saving anything else in the same
+// request, so a refused request changes nothing.
+func CanChangePriority(role user.Role) error {
+	if role != user.RoleStaff && role != user.RoleAdmin {
+		return ErrForbidden
+	}
+	return nil
+}
+
 // CanTransitionStatus returns nil if the actor with the given role may move
 // a ticket from one status to another.
 // Rules:
@@ -310,6 +874,12 @@ func CanTransitionStatus(to Status, role user.Role) error {
 		return ErrForbidden
 	}
 	return nil
+}
+
+// DuplicateResolutionNotes is the default resolution note for a ticket
+// resolved as a duplicate.
+func DuplicateResolutionNotes(targetTrackingNumber TrackingNumber) string {
+	return "Duplicate of " + string(targetTrackingNumber)
 }
 
 // VisibleReplies drops internal notes for a caller who is not staff.

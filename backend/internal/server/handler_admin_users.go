@@ -1,11 +1,20 @@
 package server
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
@@ -26,47 +35,89 @@ type adminUserSummary struct {
 	DisplayName string    `json:"display_name"`
 	Role        user.Role `json:"role"`
 	Disabled    bool      `json:"disabled"`
-	AuthType    string    `json:"auth_type"` // "local", "saml", "both"
-	MFAEnabled  bool      `json:"mfa_enabled"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	AuthType    string    `json:"auth_type"` // "local", "saml", "oidc", "both" (local+saml), or "+"-joined ("local+oidc", "saml+oidc", "local+saml+oidc"); "service" for a service account
+	// ServiceAccount: the identity an OAuth client acts as. Listed here so an
+	// administrator can rename it, give it groups and switch it off, and
+	// badged "Service" because it can never sign in.
+	ServiceAccount bool      `json:"service_account"`
+	MFAEnabled     bool      `json:"mfa_enabled"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // adminUserDetail extends the summary with group memberships.
 type adminUserDetail struct {
 	adminUserSummary
-	HasPassword bool          `json:"has_password"`
-	Groups      []group.Group `json:"groups"`
+	HasPassword bool `json:"has_password"`
+	// PasskeyCount lets the page tell "has a second factor" from "has TOTP":
+	// MFAEnabled is the TOTP flag only, so a passkey-only account read as
+	// having nothing to reset (#307).
+	PasskeyCount int           `json:"passkey_count"`
+	Groups       []group.Group `json:"groups"`
 }
 
+// authTypeOf names the ways an account can sign in, read off what it holds: a
+// password hash, a SAML subject, an OIDC subject. One method is its own name;
+// several are joined with "+" in that order. "both" is local plus SAML and
+// keeps the meaning it has always had. An account with nothing yet reads
+// "local", as before.
 func authTypeOf(u user.User) string {
-	hasLocal := u.PasswordHash != ""
-	hasSAML := u.SAMLSubject != ""
-	switch {
-	case hasLocal && hasSAML:
-		return "both"
-	case hasSAML:
-		return "saml"
-	default:
+	// First, before anything is read off the row: a service account is none of
+	// the sign-in methods below and never signs in (#420).
+	if u.ServiceAccount {
+		return "service"
+	}
+	var methods []string
+	if u.PasswordHash != "" {
+		methods = append(methods, "local")
+	}
+	if u.SAMLSubject != "" {
+		methods = append(methods, "saml")
+	}
+	if u.OIDCSubject != "" {
+		methods = append(methods, "oidc")
+	}
+	switch got := strings.Join(methods, "+"); got {
+	case "":
 		return "local"
+	case "local+saml":
+		return "both"
+	default:
+		return got
 	}
 }
 
 func toAdminSummary(u user.User) adminUserSummary {
 	return adminUserSummary{
-		ID:          u.ID,
-		Email:       u.Email,
-		DisplayName: u.DisplayName,
-		Role:        u.Role,
-		Disabled:    u.Disabled,
-		AuthType:    authTypeOf(u),
-		MFAEnabled:  u.MFAEnabled,
-		CreatedAt:   u.CreatedAt,
-		UpdatedAt:   u.UpdatedAt,
+		ID:             u.ID,
+		Email:          u.Email,
+		DisplayName:    u.DisplayName,
+		Role:           u.Role,
+		Disabled:       u.Disabled,
+		AuthType:       authTypeOf(u),
+		ServiceAccount: u.ServiceAccount,
+		MFAEnabled:     u.MFAEnabled,
+		CreatedAt:      u.CreatedAt,
+		UpdatedAt:      u.UpdatedAt,
 	}
 }
 
+// Paged mode of GET /admin/users (#449), switched on by ?page= and by nothing
+// else. The list used to ignore every query parameter and answer with the
+// newest 200 accounts, and the frontend sent limit and offset anyway, so
+// honouring those (or q, or role) for a client that never asked for a page
+// would change what it gets. A new parameter name cannot have been sent by an
+// old client.
+const (
+	usersDefaultPerPage = 50
+	usersMaxPerPage     = 200
+)
+
 func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Has("page") {
+		s.handleListUsersPaged(w, r)
+		return
+	}
 	users, err := s.users.ListAdmin(r.Context(), 200, 0)
 	if err != nil {
 		handleError(w, err)
@@ -79,6 +130,66 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, out)
 }
 
+// handleListUsersPaged answers a bare array, like the unpaged list, with the
+// number of matches in X-Total-Count so a client can show "n of N". A page past
+// the end is an empty array, not an error.
+func (s *Server) handleListUsersPaged(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+
+	page, err := strconv.Atoi(q.Get("page"))
+	if err != nil || page < 1 {
+		Error(w, http.StatusBadRequest, "bad_request", "page must be a whole number, 1 or more")
+		return
+	}
+	perPage := usersDefaultPerPage
+	if v := q.Get("per_page"); v != "" {
+		perPage, err = strconv.Atoi(v)
+		if err != nil || perPage < 1 {
+			Error(w, http.StatusBadRequest, "bad_request", "per_page must be a whole number, 1 or more")
+			return
+		}
+		perPage = min(perPage, usersMaxPerPage)
+	}
+	role := q.Get("role")
+	switch user.Role(role) {
+	case "", user.RoleAdmin, user.RoleStaff, user.RoleUser:
+	default:
+		Error(w, http.StatusBadRequest, "bad_request", "role must be one of: admin, staff, user")
+		return
+	}
+
+	// service_account=true is only service users, false only people, absent (or
+	// empty) everyone. Paged mode only, like q and role.
+	var serviceAccount *bool
+	switch v := q.Get("service_account"); v {
+	case "":
+	case "true", "false":
+		b := v == "true"
+		serviceAccount = &b
+	default:
+		Error(w, http.StatusBadRequest, "bad_request", "service_account must be true or false")
+		return
+	}
+
+	// The store takes an int32. A page number big enough to overflow it is
+	// past the end of any table, so it gets the same empty answer.
+	offset := math.MaxInt32
+	if page-1 <= (math.MaxInt32-perPage)/perPage {
+		offset = (page - 1) * perPage
+	}
+	users, total, err := s.users.SearchAdmin(r.Context(), role, strings.TrimSpace(q.Get("q")), serviceAccount, perPage, offset)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	out := make([]adminUserSummary, len(users))
+	for i, u := range users {
+		out[i] = toAdminSummary(u)
+	}
+	w.Header().Set("X-Total-Count", strconv.FormatInt(total, 10))
+	JSON(w, http.StatusOK, out)
+}
+
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Email       string `json:"email"`
@@ -88,10 +199,6 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
-		return
-	}
-	if user.Role(body.Role) == user.RoleAdmin &&
-		denyMachineAdminTakeover(w, r, "create an administrator") {
 		return
 	}
 	u, err := s.users.Create(r.Context(), user.CreateUserInput{
@@ -118,17 +225,32 @@ func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	groups, err := s.groups.ListGroupsForUser(r.Context(), id)
+	detail, err := s.adminUserDetailFor(r.Context(), u)
 	if err != nil {
 		handleError(w, err)
 		return
 	}
-	detail := adminUserDetail{
+	JSON(w, http.StatusOK, detail)
+}
+
+// adminUserDetailFor is the one place the detail view is built, so GET and
+// PATCH cannot disagree about what it carries (PATCH once answered
+// passkey_count: 0 for every account).
+func (s *Server) adminUserDetailFor(ctx context.Context, u user.User) (adminUserDetail, error) {
+	groups, err := s.groups.ListGroupsForUser(ctx, u.ID)
+	if err != nil {
+		return adminUserDetail{}, err
+	}
+	passkeys, err := s.passkeyStore.CountForUser(ctx, u.ID)
+	if err != nil {
+		return adminUserDetail{}, err
+	}
+	return adminUserDetail{
 		adminUserSummary: toAdminSummary(u),
 		HasPassword:      u.PasswordHash != "",
+		PasskeyCount:     int(passkeys),
 		Groups:           groups,
-	}
-	JSON(w, http.StatusOK, detail)
+	}, nil
 }
 
 func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
@@ -149,30 +271,128 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Administrators are managed by administrators, not by automation.
+	// Every field is checked before the first write (#419). The steps below
+	// each commit on their own, so a request refused halfway — a disable
+	// followed by an email that does not parse — had already disabled the
+	// account and ended its sessions, and still answered 400.
 	//
-	// Before any mutation, because the disable below used to be applied before
-	// the promotion guard further down — a refused request that had already
-	// disabled the account.
-	//
-	// Guarding only promotion left the reverse open: demote an administrator,
-	// then reset the password of what is now a staff account, then sign in.
-	// Three requests. The rule is therefore the whole account, in either
-	// direction: a machine credential may not change an administrator's role,
-	// email, enabled state, password or MFA, and may not create or promote one.
-	if isMachine(r) {
-		if s.denyMachineTargetingAdmin(w, r, id, "modify an administrator") {
+	// Before the machine check as well, so a session and an API key meet the
+	// same checks in the same order: a malformed body is a 400 to both.
+	if body.Role != nil && !user.Role(*body.Role).Valid() {
+		handleError(w, fmt.Errorf("%w: invalid role", user.ErrValidation))
+		return
+	}
+	// An address that is invalid is refused unless it is the one the account
+	// already holds: an account stored before addresses had to be ASCII must
+	// still be renamed or given a new role. Decided below, once the account is
+	// read, and still before the first write.
+	var emailErr error
+	if body.Email != nil {
+		_, emailErr = user.ValidateEmail(*body.Email)
+	}
+	if body.DisplayName != nil {
+		if _, err := user.ValidateDisplayName(*body.DisplayName); err != nil {
+			handleError(w, err)
 			return
 		}
+	}
+
+	// A deleted account is not there to change. Asked before the first write
+	// for the same reason as the validation above: the steps below would
+	// otherwise reach the deleted row one at a time, applying some and then
+	// answering 404 for the rest.
+	target, err := s.users.GetByIDAdmin(r.Context(), id)
+	if err != nil {
+		if emailErr != nil {
+			err = emailErr
+		}
+		handleError(w, err)
+		return
+	}
+	emailUnchanged := body.Email != nil && strings.TrimSpace(*body.Email) == target.Email
+	if emailErr != nil && !emailUnchanged {
+		handleError(w, emailErr)
+		return
+	}
+	if target.DeletedAt != nil {
+		handleError(w, fmt.Errorf("user %s: %w", id, user.ErrNotFound))
+		return
+	}
+
+	// A service user follows its OAuth client (#434, Erik): it can be renamed
+	// (the client takes the name), given groups, disabled, and set to staff or
+	// user (Q2, 2026-10-13: "admin is never allowed"). Refused here, whole and
+	// before the first write, because the page hiding the fields stops nobody
+	// who sends the request: its address (made up, not for a person to
+	// change), the admin role, and an MFA reset (for a factor it can never
+	// hold; reset_mfa:false asks for nothing and is not refused). 409
+	// service_account, as the delete refusal answers. Groups are not on this
+	// route (group membership is).
+	if target.ServiceAccount {
+		var refused []string
+		if body.Email != nil {
+			refused = append(refused, "email")
+		}
 		if body.Role != nil && user.Role(*body.Role) == user.RoleAdmin {
-			denyMachineAdminTakeover(w, r, "promote a user to administrator")
+			refused = append(refused, "role admin")
+		}
+		if body.ResetMFA {
+			refused = append(refused, "reset_mfa")
+		}
+		if len(refused) > 0 {
+			msg := "This is the service account for an OAuth client."
+			if name, err := s.authStore.OAuthClientNameForUser(r.Context(), id); err == nil {
+				msg = "This is the service account for OAuth client " + name + "."
+			}
+			Error(w, http.StatusConflict, "service_account", msg+" Only its name, groups, disabled state and a role of staff or user can be changed; refused: "+
+				strings.Join(refused, ", ")+".")
 			return
+		}
+	}
+
+	// The two refusals that depend on what the database holds, asked now for
+	// the same reason: an MFA reset followed by a refused demotion had already
+	// cleared the factors, and a disable followed by a taken address had
+	// already disabled the account. These are checks, not locks, so a request
+	// that loses a race still reaches the guarded statements below, which
+	// refuse on their own; this only closes the ordinary case.
+	if target.Role == user.RoleAdmin && !target.Disabled &&
+		((body.Disabled != nil && *body.Disabled) || (body.Role != nil && user.Role(*body.Role) != user.RoleAdmin)) {
+		admins, err := s.users.ListActiveAdmins(r.Context())
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		if len(admins) <= 1 {
+			handleError(w, user.ErrLastAdmin)
+			return
+		}
+	}
+	if body.Email != nil && !emailUnchanged {
+		addr, err := user.ValidateEmail(*body.Email)
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		if addr != strings.ToLower(target.Email) {
+			taken, err := s.users.EmailIsTaken(r.Context(), addr)
+			if err != nil {
+				handleError(w, err)
+				return
+			}
+			if taken {
+				handleError(w, user.ErrEmailTaken)
+				return
+			}
 		}
 	}
 
 	// Disable/enable toggle (processed before any profile update).
 	if body.Disabled != nil {
 		if *body.Disabled {
+			// Disable refuses the last active administrator itself — the
+			// check and the write are one statement, because asking first
+			// and writing second lost the race to two parallel requests.
 			if err := s.users.Disable(r.Context(), id); err != nil {
 				handleError(w, err)
 				return
@@ -203,14 +423,22 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	// for a rare one, so the requirement was removed. Password reset remains
 	// available separately when an administrator judges it warranted.
 	if body.ResetMFA {
-		if err := s.users.ResetMFA(r.Context(), id); err != nil {
+		actor := authmw.GetActor(r)
+		var actorID *uuid.UUID
+		if actor != nil {
+			actorID = &actor.UserID
+		}
+		if err := s.users.ResetMFA(r.Context(), id, actorID); err != nil {
 			handleError(w, err)
 			return
 		}
-		// An existing session carries MFAPassed=true, and handleMFAEnrollStart
-		// passes that straight in as allowReenroll — so without this, whoever
-		// holds a cookie minted before the reset can enrol their own
-		// authenticator afterwards, no password needed.
+		// Belt and braces. ResetMFA's statement (ClearFactors) already ended
+		// this account's sessions in the same write, so this finds nothing to
+		// delete today. It is kept because an existing session carries
+		// MFAPassed=true and handleMFAEnrollStart passes that straight in as
+		// allowReenroll, so whoever holds a cookie minted before the reset
+		// could enrol their own authenticator afterwards, no password needed,
+		// should ResetMFA ever stop ending sessions itself.
 		if err := s.sessions.DeleteForUser(r.Context(), id); err != nil {
 			handleError(w, err)
 			return
@@ -228,26 +456,66 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		if body.DisplayName != nil {
 			u.DisplayName = *body.DisplayName
 		}
-		if body.Email != nil {
-			u.Email = *body.Email
+		if body.Email != nil && !emailUnchanged {
+			// Lowercased and trimmed, the same as Create, SAML and OIDC.
+			// Without it an administrator who typed a capital letter stored
+			// the address verbatim, and login — which lowercases before
+			// looking up — could no longer find the account under either
+			// spelling. The user was locked out and nothing said why.
+			u.Email = strings.ToLower(strings.TrimSpace(*body.Email))
 		}
-		if body.Role != nil {
-			u.Role = user.Role(*body.Role)
-		}
-		// A role change must not leave the old role live in an existing
-		// session, which carries Role in its payload. Only for a role change:
-		// renaming someone should not sign them out.
+		// A role change is its own operation, not part of the profile write.
+		//
+		// It revokes sessions, it is refused to machine credentials, and it
+		// is the one that can leave an instance with no administrator — so it
+		// goes through the statement that checks and writes together. Folding
+		// it into the general update would put the guard back in front of the
+		// write, which is where it lost.
 		roleChanged := body.Role != nil && user.Role(*body.Role) != originalRole
-
-		if err := s.users.Update(r.Context(), u); err != nil {
-			handleError(w, err)
-			return
-		}
 		if roleChanged {
+			if err := s.users.SetRole(r.Context(), id, user.Role(*body.Role)); err != nil {
+				handleError(w, err)
+				return
+			}
+			// And carried into the profile write below, which writes the role
+			// column too.
+			//
+			// Without this the request undid itself: SetRole wrote the new
+			// role and Update immediately wrote the old one back, so nobody
+			// could be promoted or demoted — while the target was still
+			// signed out for a change that did not happen. It answered 200
+			// and the response carried the old role, which is the shape that
+			// gets believed.
+			u.Role = user.Role(*body.Role)
+
+			// Revoked HERE, straight after the role is committed — not after
+			// the profile write below.
+			//
+			// A session carries the role in its payload, so a demoted
+			// administrator with a live cookie is still an administrator
+			// until it is revoked. Doing that after the profile write meant
+			// any failure in between — a blank display name, an email that
+			// belongs to somebody else — left the demotion committed and the
+			// session alive, answering 400. Retrying then saw the role
+			// already changed, so roleChanged was false and it never revoked
+			// at all: a demoted account kept full authority for the life of
+			// the cookie, and could promote itself straight back.
+			//
+			// The order that survives a failure is: change the authority,
+			// then revoke what was granted under the old one, then do the
+			// cosmetic part.
 			if err := s.sessions.DeleteForUser(r.Context(), id); err != nil {
 				handleError(w, err)
 				return
 			}
+		}
+		// Only the address and the name. Update writes the whole row from
+		// the copy read at the top of this handler, so a password set, an MFA
+		// enrolment or another administrator's role change that landed in
+		// between would be written back.
+		if err := s.users.UpdateProfile(r.Context(), id, u.Email, u.DisplayName); err != nil {
+			handleError(w, err)
+			return
 		}
 	}
 
@@ -257,15 +525,10 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	groups, err := s.groups.ListGroupsForUser(r.Context(), id)
+	detail, err := s.adminUserDetailFor(r.Context(), u)
 	if err != nil {
 		handleError(w, err)
 		return
-	}
-	detail := adminUserDetail{
-		adminUserSummary: toAdminSummary(u),
-		HasPassword:      u.PasswordHash != "",
-		Groups:           groups,
 	}
 	JSON(w, http.StatusOK, detail)
 }
@@ -276,77 +539,120 @@ func isMachine(r *http.Request) bool {
 	return a != nil && a.Machine
 }
 
-// denyMachineAdminTakeover refuses a machine credential that is reaching for
-// administrator credentials.
-//
-// Refusing only the credential's own owner closed the path and not the outcome.
-// Every API key that reaches /admin is administrator-owned, because only an
-// administrator can mint one and it acts at its owner's role — so with
-// users:write the long way round was four requests: create a second
-// administrator, sign in as them, reset the original owner's password. Promoting
-// an existing user to administrator gets there too.
-//
-// So the rule is about administrators rather than about self: a machine
-// credential may not create one, promote to one, or reset one's credentials.
-// That closes every route to holding an administrator's password, including the
-// self-target that started this.
-//
-// Managing non-administrator users — provisioning, deprovisioning, resetting a
-// forgotten password — is ordinary automation and stays available.
-func denyMachineAdminTakeover(w http.ResponseWriter, r *http.Request, why string) bool {
-	if !isMachine(r) {
-		return false
-	}
-	Error(w, http.StatusForbidden, "session_required",
-		"an API key or OAuth client cannot "+why+"; this requires a signed-in session")
-	return true
-}
-
-// denyMachineTargetingAdmin refuses when the target account is an administrator.
-func (s *Server) denyMachineTargetingAdmin(w http.ResponseWriter, r *http.Request, target uuid.UUID, why string) bool {
-	if !isMachine(r) {
-		return false
-	}
-	u, err := s.users.GetByID(r.Context(), target)
-	if err != nil {
-		// Fail closed: if the target cannot be read, it cannot be shown to be
-		// safe to act on.
-		handleError(w, err)
-		return true
-	}
-	if u.Role != user.RoleAdmin {
-		return false
-	}
-	return denyMachineAdminTakeover(w, r, why)
-}
-
 func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid user ID")
 		return
 	}
-	if s.denyMachineTargetingAdmin(w, r, id, "reset an administrator's password") {
-		return
-	}
 	var body struct {
 		NewPassword string `json:"new_password"`
+		// Also revoke every API key the account owns (#450). Off unless sent:
+		// a reset is often a routine one, and a script's key is not the thing
+		// being fixed. Someone resetting because a credential leaked ticks it.
+		RevokeAPIKeys bool `json:"revoke_api_keys"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	if err := s.users.AdminSetPassword(r.Context(), id, body.NewPassword); err != nil {
+	// The body is decoded and checked before the account is looked at (#419).
+	// The machine check below reads the target, so with it first an API key
+	// was told 404 or 403 before its password was ever validated, while a
+	// session reached the password check first and got a 400.
+	if err := user.CheckNewPassword(body.NewPassword); err != nil {
 		handleError(w, err)
 		return
 	}
-	// An administrator resetting someone's password is usually responding to a
-	// compromise, so any session opened with the old one has to go.
-	if err := s.sessions.DeleteForUser(r.Context(), id); err != nil {
+	actor := authmw.GetActor(r)
+	var actorID *uuid.UUID
+	if actor != nil {
+		actorID = &actor.UserID
+	}
+	if err := s.users.AdminSetPassword(r.Context(), id, body.NewPassword, actorID); err != nil {
+		handleError(w, err)
+		return
+	}
+	if err := s.finishAdminReset(r.Context(), actorID, id, body.RevokeAPIKeys); err != nil {
+		var notEnded *sessionsNotEndedError
+		if errors.As(err, &notEnded) {
+			slog.ErrorContext(r.Context(), "ending sessions after a password reset failed", "user_id", id, "error", notEnded.err)
+			msg := "The password was reset, but existing sessions were NOT ended."
+			if body.RevokeAPIKeys {
+				msg = "The password was reset, but existing sessions were NOT ended and API keys were NOT revoked."
+			}
+			Error(w, http.StatusInternalServerError, "sessions_not_ended", msg)
+			return
+		}
+		var notRevoked *keysNotRevokedError
+		if errors.As(err, &notRevoked) {
+			// Said exactly: the reset is done, the keys are not gone. A plain
+			// 500 would read as "nothing happened", and the administrator
+			// asked for the keys to go because they feared a leak.
+			slog.ErrorContext(r.Context(), "revoking API keys after a password reset failed", "user_id", id, "error", notRevoked.err)
+			Error(w, http.StatusInternalServerError, "keys_not_revoked",
+				"The password was reset, but the API keys were NOT revoked. Revoke them from Admin → API Keys.")
+			return
+		}
 		handleError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// sessionsNotEndedError marks a failure to end the account's sessions after
+// the password changed: the old sessions are still live, and so are any keys the
+// caller asked to have revoked.
+type sessionsNotEndedError struct{ err error }
+
+func (e *sessionsNotEndedError) Error() string { return "ending sessions: " + e.err.Error() }
+func (e *sessionsNotEndedError) Unwrap() error { return e.err }
+
+// keysNotRevokedError marks the one failure that happens after the password has
+// changed and the sessions are gone.
+type keysNotRevokedError struct{ err error }
+
+func (e *keysNotRevokedError) Error() string { return "revoking API keys: " + e.err.Error() }
+func (e *keysNotRevokedError) Unwrap() error { return e.err }
+
+// finishAdminReset is what follows AdminSetPassword: the account's sessions end
+// (a reset usually answers a compromise) and, when asked, its API keys go.
+//
+// All of it is detached from the request, from the moment the password has
+// changed. The sessions come first, so a client that hangs up there would
+// otherwise stop the keys it asked to have revoked from ever being revoked.
+// Not one transaction with the password: that is already changed.
+func (s *Server) finishAdminReset(reqCtx context.Context, actorID *uuid.UUID, id uuid.UUID, revokeKeys bool) error {
+	ctx := context.WithoutCancel(reqCtx)
+	if err := s.sessions.DeleteForUser(ctx, id); err != nil {
+		return &sessionsNotEndedError{err}
+	}
+	if revokeKeys {
+		if err := s.revokeUserAPIKeys(ctx, actorID, id); err != nil {
+			return &keysNotRevokedError{err}
+		}
+	}
+	return nil
+}
+
+// revokeUserAPIKeys deletes every key the user owns and audits how many.
+//
+// Detached from the request with context.WithoutCancel, as the audit write is:
+// the password has already changed, and a client that hangs up now must not
+// decide whether the keys it asked to have revoked are still there.
+func (s *Server) revokeUserAPIKeys(reqCtx context.Context, actorID *uuid.UUID, id uuid.UUID) error {
+	ctx := context.WithoutCancel(reqCtx)
+	n, err := s.authStore.DeleteAllForUser(ctx, id)
+	if err != nil {
+		return err
+	}
+	if actorID != nil && s.auditStore != nil {
+		s.writeAudit(ctx, audit.Entry{
+			ID: uuid.New(), ActorID: actorID, EntityType: "user", EntityID: id,
+			Action: "api_keys_revoked", After: map[string]any{"keys_revoked": n}, CreatedAt: time.Now(),
+		})
+	}
+	return nil
 }
 
 func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
@@ -355,9 +661,18 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid user ID")
 		return
 	}
-	if s.denyMachineTargetingAdmin(w, r, id, "delete an administrator") {
+	// A service user is deleted by deleting its OAuth client. Deleting it alone
+	// would leave the client listed and permanently dead, so say so, naming it.
+	if u, err := s.users.GetByIDAdmin(r.Context(), id); err == nil && u.ServiceAccount {
+		msg := "This is the service account for an OAuth client. Delete the client instead."
+		if name, err := s.authStore.OAuthClientNameForUser(r.Context(), id); err == nil {
+			msg = "This is the service account for OAuth client " + name + ". Delete the client instead."
+		}
+		Error(w, http.StatusConflict, "service_account", msg)
 		return
 	}
+	// SoftDelete refuses the last active administrator itself: setup does not
+	// reopen, so the instance would be left with no way in at all.
 	if err := s.users.SoftDelete(r.Context(), id); err != nil {
 		handleError(w, err)
 		return
@@ -368,5 +683,94 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	// And their open tickets go back in the queue.
+	//
+	// The assignee column kept pointing at the soft-deleted row, which no
+	// longer appears in the user list — so the ticket showed as "Unassigned"
+	// on the page, was NOT in the unassigned queue because the column was not
+	// null, and was in nobody's "assigned to me". It sat in the gap between
+	// the two lists with nothing to prompt anyone to pick it up. Disabling an
+	// account does not have this problem, because a disabled user is still in
+	// the list.
+	//
+	// Not fatal if it fails: the account is already gone and refusing the
+	// request now would leave the caller unsure whether it worked. Logged
+	// instead, with the count, because an administrator watching a departure
+	// wants to know how many tickets just landed back in the queue.
+	actor := authmw.GetActor(r)
+	var actorID uuid.UUID
+	if actor != nil {
+		actorID = actor.UserID
+	}
+	moved, err := s.tickets.UnassignForUser(r.Context(), actorID, id)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "could not unassign the deleted user's tickets",
+			"user_id", id, "error", err)
+	} else if moved > 0 {
+		slog.InfoContext(r.Context(), "returned the deleted user's open tickets to the queue",
+			"user_id", id, "tickets", moved)
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// GET /api/v1/staff — who work can be given to.
+//
+// Staff-readable on purpose, and deliberately narrow: an id and a display
+// name, which is what assigning a ticket needs and what staff already see on
+// every ticket they can read. No email, no role, no login state — that is the
+// administrator's view and it stays there.
+func (s *Server) handleListAssignableStaff(w http.ResponseWriter, r *http.Request) {
+	staff, err := s.users.ListAssignableStaff(r.Context())
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	if staff == nil {
+		staff = []user.AssignableStaff{}
+	}
+	JSON(w, http.StatusOK, staff)
+}
+
+// The requester picker's floor (#444). A query shorter than this is refused
+// rather than answered, and a broad one gets at most ten (the ceiling is the
+// query's own LIMIT), so the lookup is a way to find a person and not a way to
+// list everyone.
+const userLookupMinQuery = 2
+
+// userLookupHit is all the picker draws: who, and the address a typed
+// reporter_email would have been.
+type userLookupHit struct {
+	ID          uuid.UUID `json:"id"`
+	DisplayName string    `json:"display_name"`
+	Email       string    `json:"email"`
+}
+
+// GET /api/v1/users/lookup?q= — find accounts to file a ticket for.
+//
+// Staff and administrators in a signed-in session only: an API key or OAuth
+// client is refused whatever scopes it holds (#290, no user lookup for
+// machine credentials; an administrator's key reads accounts with GET
+// /admin/users?page=1&q=). Any role of account can be a requester, so unlike
+// /staff it is not limited to staff; unlike /admin/users it returns three
+// fields, never pages, and never answers a short query. Service identities,
+// deleted accounts and disabled accounts are not found.
+func (s *Server) handleLookupUsers(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if utf8.RuneCountInString(q) < userLookupMinQuery {
+		Error(w, http.StatusBadRequest, "bad_request",
+			fmt.Sprintf("q must be at least %d characters", userLookupMinQuery))
+		return
+	}
+	// One bounded read: disabled, deleted and service accounts are excluded by
+	// the query, which also caps the answer at ten.
+	users, err := s.users.LookupRequesters(r.Context(), q)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	out := make([]userLookupHit, 0, len(users))
+	for _, u := range users {
+		out = append(out, userLookupHit{ID: u.ID, DisplayName: u.DisplayName, Email: u.Email})
+	}
+	JSON(w, http.StatusOK, out)
 }

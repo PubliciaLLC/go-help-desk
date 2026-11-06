@@ -29,7 +29,7 @@ func TestAttachmentDownload_RefusesToBeRendered(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Fetch dest", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})

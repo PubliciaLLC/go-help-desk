@@ -17,12 +17,17 @@ package safehttp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
 	"time"
 )
+
+// ErrBlockedAddress is wrapped by every refusal to dial an internal address,
+// so callers can tell it apart from an ordinary network failure.
+var ErrBlockedAddress = errors.New("refusing to connect")
 
 // Client returns an HTTP client that refuses to connect to private, loopback,
 // link-local or otherwise internal addresses.
@@ -92,24 +97,24 @@ func inExtraInternalRange(ip net.IP) bool {
 func checkIP(ip net.IP) error {
 	switch {
 	case ip.IsLoopback():
-		return fmt.Errorf("refusing to connect to loopback address %s", ip)
+		return fmt.Errorf("%w to loopback address %s", ErrBlockedAddress, ip)
 	case ip.IsPrivate():
-		return fmt.Errorf("refusing to connect to private address %s", ip)
+		return fmt.Errorf("%w to private address %s", ErrBlockedAddress, ip)
 	case ip.IsLinkLocalUnicast(), ip.IsLinkLocalMulticast():
 		// 169.254.169.254 is the cloud metadata endpoint on every major
 		// provider, and it hands out credentials to anyone who asks.
-		return fmt.Errorf("refusing to connect to link-local address %s", ip)
+		return fmt.Errorf("%w to link-local address %s", ErrBlockedAddress, ip)
 	case inExtraInternalRange(ip):
 		// net.IP.IsPrivate covers only RFC1918 and IPv6 ULA. The ranges below
 		// are not "private" by that definition but are just as internal in
 		// practice — 100.64.0.0/10 is carrier-grade NAT, and 100.100.100.200
 		// is the metadata endpoint on Alibaba and Tencent clouds, which the
 		// link-local check does not catch.
-		return fmt.Errorf("refusing to connect to internal address %s", ip)
+		return fmt.Errorf("%w to internal address %s", ErrBlockedAddress, ip)
 	case ip.IsUnspecified():
-		return fmt.Errorf("refusing to connect to unspecified address %s", ip)
+		return fmt.Errorf("%w to unspecified address %s", ErrBlockedAddress, ip)
 	case ip.IsMulticast(), ip.IsInterfaceLocalMulticast():
-		return fmt.Errorf("refusing to connect to multicast address %s", ip)
+		return fmt.Errorf("%w to multicast address %s", ErrBlockedAddress, ip)
 	}
 	// IPv6 unique-local (fc00::/7) is the v6 equivalent of a private range and
 	// IsPrivate covers it, but IPv4-mapped v6 addresses arrive as 16 bytes and
