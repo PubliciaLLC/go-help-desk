@@ -89,8 +89,10 @@ func (s *Service) DeleteAssignment(ctx context.Context, id uuid.UUID) error {
 }
 
 // ResolveFieldsForCTI returns the union of field assignments for the given
-// category, type, and item, ordered by scope level (category → type → item)
-// then by sort_order within each level.
+// category, type, and item, one entry per field, ordered by scope level
+// (category → type → item) then by sort_order within each level. A field
+// attached at more than one level is returned once, as its most specific
+// attachment (item over type over category).
 func (s *Service) ResolveFieldsForCTI(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID) ([]Assignment, error) {
 	var result []Assignment
 
@@ -116,7 +118,20 @@ func (s *Service) ResolveFieldsForCTI(ctx context.Context, categoryID uuid.UUID,
 		result = append(result, itemFields...)
 	}
 
-	return result, nil
+	// One entry per field. The list is built category, type, item, so a field's
+	// last entry is its most specific attachment; that one's settings and level
+	// apply. Filtering in place keeps the level-by-level order above.
+	last := make(map[uuid.UUID]int, len(result))
+	for i, a := range result {
+		last[a.FieldDefID] = i
+	}
+	kept := result[:0]
+	for i, a := range result {
+		if last[a.FieldDefID] == i {
+			kept = append(kept, a)
+		}
+	}
+	return kept, nil
 }
 
 // checkWritable is the rule for a write to one field: it must be active, and a
