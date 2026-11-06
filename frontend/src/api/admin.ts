@@ -1,6 +1,6 @@
 import axios from 'axios'
 import { api, extractErrorCode } from './client'
-import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, WebhookDeliveryRecord, WebhookFilter, WebhookPayloadFormat, Tag, CannedResponse, FieldDef, Assignment, ScopeType, SLAPolicy, ScopeInfo, OAuthClient, AdminAuditListResponse } from './types'
+import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, WebhookDeliveryRecord, WebhookFilter, WebhookPayloadFormat, Tag, CannedResponse, FieldDef, FieldPlacement, FieldUsage, Assignment, ScopeType, SLAPolicy, ScopeInfo, OAuthClient, AdminAuditListResponse } from './types'
 import type { Role } from './types'
 
 // DELETE where a not_found 404 means the row is already gone (#418). That is the
@@ -514,9 +514,27 @@ export async function createFieldDef(input: {
 
 export async function updateFieldDef(
   id: string,
-  patch: Partial<Pick<FieldDef, 'name' | 'field_type' | 'options' | 'sort_order' | 'active'>>
+  patch: Partial<Pick<FieldDef, 'name' | 'field_type' | 'options' | 'retired_options' | 'sort_order' | 'active'>>
 ): Promise<FieldDef> {
   const res = await api.patch<FieldDef>(`/admin/custom-fields/${id}`, patch)
+  return res.data
+}
+
+// Every place the field is attached, in tree order.
+export async function listFieldPlacements(id: string): Promise<FieldPlacement[]> {
+  const res = await api.get<FieldPlacement[]>(`/admin/custom-fields/${id}/assignments`)
+  return res.data
+}
+
+// How many tickets hold a value for the field, and for each of its options.
+export async function getFieldUsage(id: string): Promise<FieldUsage> {
+  const res = await api.get<FieldUsage>(`/admin/custom-fields/${id}/usage`)
+  return res.data
+}
+
+// `ids` must name every field definition, active and inactive, exactly once.
+export async function reorderFieldDefs(ids: string[]): Promise<FieldDef[]> {
+  const res = await api.put<FieldDef[]>('/admin/custom-fields/order', { field_def_ids: ids })
   return res.data
 }
 

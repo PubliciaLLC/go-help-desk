@@ -69,4 +69,30 @@ describe('Categories page, field attachments', () => {
       expect(keys).toContain(JSON.stringify(['ctiFieldsResolved']))
     })
   })
+
+  // The Custom Fields page keeps each field's place count and places under
+  // ['admin', 'custom-fields'], fresh for 30 s; a change made here has to clear them.
+  it('clears the Custom Fields page\'s place counts and places too', async () => {
+    vi.spyOn(api, 'get').mockImplementation(((url: string) => {
+      if (url === '/admin/categories') {
+        return Promise.resolve({ data: [{ id: 'c-1', name: 'Hardware', sort_order: 1, active: true }] })
+      }
+      if (url === '/admin/categories/c-1/fields') return Promise.resolve({ data: [ASSIGNMENT] })
+      return Promise.resolve({ data: [] })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vi.spyOn(api, 'delete').mockResolvedValue({ data: {} } as any)
+
+    const { queryClient } = renderWithQuery(<CategoriesPage />)
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Expand' }))
+    await userEvent.click(await screen.findByTitle('Remove assignment'))
+
+    await waitFor(() => {
+      const keys = invalidate.mock.calls.map((c) => JSON.stringify(c[0]?.queryKey))
+      expect(keys).toContain(JSON.stringify(['admin', 'custom-fields']))
+    })
+  })
 })

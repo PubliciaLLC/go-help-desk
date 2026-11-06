@@ -263,6 +263,49 @@ describe('CustomFieldsPanel, requester', () => {
   })
 })
 
+describe('CustomFieldsPanel, a retired option', () => {
+  // The ticket routes list only the options in use. A ticket that still holds a
+  // retired one has to show it as the current choice, and not let it be picked.
+  it('shows a held retired value as the current choice, labelled (retired) and disabled', async () => {
+    const tier = def('f1', 'Tier', { field_type: 'select', options: ['Gold', 'Silver'] })
+    setup({ fields: [assignment(tier, 'category')], values: [held(tier, 'Bronze')], staff: true })
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    const select = screen.getByLabelText('Tier') as HTMLSelectElement
+    expect(select.value).toBe('Bronze')
+    const retired = screen.getByRole('option', { name: 'Bronze (retired)' }) as HTMLOptionElement
+    expect(retired.disabled).toBe(true)
+    expect(retired.selected).toBe(true)
+  })
+
+  it('keeps the retired choice listed after staff pick another, and still saves only the change', async () => {
+    const tier = def('f1', 'Tier', { field_type: 'select', options: ['Gold', 'Silver'] })
+    const region = def('f2', 'Region')
+    const put = vi.spyOn(ticketsApi, 'putTicketCustomFields').mockResolvedValue()
+    setup({ fields: [assignment(tier, 'category'), assignment(region, 'category')], values: [held(tier, 'Bronze')], staff: true })
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    await userEvent.type(screen.getByLabelText('Region'), 'EMEA')
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    // A ticket holding a retired option can still save another field.
+    await waitFor(() => expect(put).toHaveBeenCalledWith('t1', { f2: 'EMEA' }))
+  })
+
+  it('offers no retired entry for a value that is in use, or for an empty field', async () => {
+    const tier = def('f1', 'Tier', { field_type: 'select', options: ['Gold', 'Silver'] })
+    setup({ fields: [assignment(tier, 'category')], values: [held(tier, 'Gold')], staff: true })
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    expect(screen.queryByRole('option', { name: /retired/ })).toBeNull()
+  })
+
+  it('shows a requester the plain value, with no label', async () => {
+    const tier = def('f1', 'Tier', { field_type: 'select', options: ['Gold', 'Silver'] })
+    setup({ fields: [assignment(tier, 'category')], values: [held(tier, 'Bronze')], staff: false })
+    expect(await screen.findByText('Bronze')).toBeTruthy()
+    expect(screen.queryByText(/retired/)).toBeNull()
+  })
+})
+
 describe('CustomFieldsPanel, when a load fails', () => {
   it('staff: a failed value load offers no Edit and never writes', async () => {
     const region = def('f1', 'Region')

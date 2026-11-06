@@ -190,6 +190,16 @@ export function CustomFieldsPanel({
             className="h-7 text-xs"
           >
             <option value="">—</option>
+            {/* The options here are only those in use. A value the ticket holds
+                that is not one of them was retired since: keep it as the current
+                choice, but never offer it to pick. "(retired)" marks any held
+                value missing from `options`, which also covers one stored before
+                1.3 that was never an option: the ticket routes do not carry
+                `retired_options`, so the card cannot tell the two apart. That is
+                intended. */}
+            {r.value && !(r.options ?? []).includes(r.value) && (
+              <option value={r.value} disabled>{r.value} (retired)</option>
+            )}
             {(r.options ?? []).map((opt) => (
               <option key={opt} value={opt}>{opt}</option>
             ))}
