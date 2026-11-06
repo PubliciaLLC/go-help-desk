@@ -233,7 +233,7 @@ Facilities
 <p>Each expanded Category or Type row shows a <strong>Groups</strong> subsection — the groups currently handling tickets at that node. You can add or remove groups directly from here without navigating to the Groups page. See <a href="#admin-groups">Groups &amp; scope</a> for how scope is calculated. Items do not have a group management section.</p>
 
 <h3>Custom fields in the CTI editor</h3>
-<p>Each expanded Category, Type, or Item row shows a <strong>Fields</strong> subsection where you assign custom fields to that node. See <a href="#admin-custom-fields">Custom fields</a> for the full explanation.</p>
+<p>Each expanded Category, Type, or Item row shows a <strong>Fields</strong> subsection where you assign custom fields to that node. Each field's name links to the Custom Fields page, and a note says the order is set there. The same places can be managed from the field's own row on that page. See <a href="#admin-custom-fields">Custom fields</a> for the full explanation.</p>
 
 
 <h2 id="admin-users">Users &amp; roles</h2>
@@ -416,6 +416,17 @@ Facilities
 
 <p>Custom fields let admins attach structured data to tickets beyond the built-in fields (subject, description, priority, CTI). They are managed from <em>Admin → Tickets → Custom Fields</em>.</p>
 
+<p><strong>A field appears on a ticket only where you attach it</strong>, to a category, a type or an item. Creating a field attaches it nowhere: after <strong>Create field</strong> the new field opens on <strong>Where it appears</strong>, with a note that it is not on any form yet.</p>
+
+<h3>The Custom Fields page</h3>
+<p>The page is one list of fields. Each row shows the name, the type and how many places the field is attached to (<em>On 3 places</em>, or <em>Not on any form yet</em>). Click a row to open it. An open row has three parts: <strong>Details</strong> (name, type and, for a select field, its options), <strong>Where it appears</strong>, and a <strong>Deactivate…</strong> button.</p>
+<ul>
+  <li><strong>New field</strong> asks for a name and a type: Text, Text area, Number or Select. A select field needs at least one option. The name must be unique.</li>
+  <li><strong>Drag to reorder.</strong> Each row has a drag handle that works with a pointer and with the keyboard. The new order is saved when you drop. See <a href="#admin-cf-order">Order</a> below.</li>
+  <li><strong>Show inactive</strong> lists deactivated fields too, marked <em>Inactive</em>, each with a <strong>Reactivate</strong> button.</li>
+  <li>A link such as <code>/admin/custom-fields?field=&lt;id&gt;</code> opens the page with that field already open. The field names on the Categories page use it.</li>
+</ul>
+
 <h3>Field definitions</h3>
 <p>A <em>field definition</em> is the global blueprint for a field. It has:</p>
 <ul>
@@ -424,27 +435,67 @@ Facilities
     <ul>
       <li><code>text</code> — single-line text input</li>
       <li><code>textarea</code> — multi-line text input</li>
-      <li><code>number</code> — numeric input</li>
+      <li><code>number</code> — numeric input. It accepts only a number: a decimal such as <code>12</code>, <code>-3.5</code> or <code>1e3</code>, with spaces around it ignored. Hexadecimal, <code>NaN</code>, <code>Infinity</code> and digit groups like <code>1_000</code> are refused. The value is stored as typed (<code>1.50</code> stays <code>1.50</code>).</li>
       <li><code>select</code> — dropdown of predefined options (set on the field definition)</li>
     </ul>
   </li>
-  <li><strong>Options</strong> (select only) — comma-separated list of allowed values (e.g. "IT, HR, Finance").</li>
-  <li><strong>Sort order</strong> — controls display order within a CTI level.</li>
-  <li><strong>Active</strong> — inactive fields are hidden from new-ticket forms. Existing values are preserved for history. Field definitions are never hard-deleted.</li>
+  <li><strong>Options</strong> (select only) — an ordered list of the values that may be chosen. They are edited as a list, so an option may contain a comma. See <a href="#admin-cf-options">Options</a>.</li>
+  <li><strong>Field number</strong> — the field's place in the order. You set it by dragging; you never type it.</li>
+  <li><strong>Active</strong> — see <a href="#admin-cf-deactivate">Deactivating a field</a>. Field definitions are never hard-deleted.</li>
 </ul>
+<p><strong>The type is fixed once a ticket holds a value for the field.</strong> The page then shows the type as plain text with a note saying how many tickets have a value, and the API refuses a change of <code>field_type</code> with <code>409 conflict</code>. Until then the type can be changed.</p>
 
-<h3>Assigning fields to CTI nodes</h3>
-<p>Fields are assigned from <em>Admin → Tickets → Categories</em>. Expand a Category, Type, or Item row — each has a <strong>Fields</strong> subsection where you can assign any active field definition. Per assignment you configure:</p>
+<h3 id="admin-cf-options">Options</h3>
+<p>Open a select field to edit its options. Each option shows how many tickets hold it. You can add, rename, reorder (drag), retire and delete options, and <strong>Save</strong> applies the whole edit. Blank and duplicate options are refused.</p>
 <ul>
-  <li><strong>Visible on new</strong> — whether the field appears on the new-ticket form when that CTI node is selected.</li>
-  <li><strong>Required on new</strong> — whether the field must be filled before the ticket can be submitted. Only applies when <em>visible on new</em> is also checked.</li>
-  <li><strong>Sort order</strong> — drag to reorder within the node.</li>
+  <li><strong>Retire</strong> takes an option out of use without losing it. A retired option is not offered on new tickets or when editing a ticket. Tickets that already hold it keep showing it, and the ticket's edit box lists it greyed out as <em>Value (retired)</em>. The server refuses to set a ticket to a retired option (<code>400 bad_request</code>).</li>
+  <li><strong>Show retired</strong> lists the retired options, each with <strong>Bring back</strong>, which returns it to use.</li>
+  <li><strong>Delete</strong> is offered only on an option no ticket holds. The server checks again when you save, under a lock on the field, and answers <code>409 conflict</code> if any ticket holds the value, whichever client sent the change. To remove a value that tickets hold, retire it instead.</li>
+  <li><strong>Rename.</strong> Renaming an option that tickets hold retires the old text and adds the new text in its place, so those tickets keep showing the old text. Renaming an unused option edits it in place.</li>
+  <li>A select field always keeps at least one option in use.</li>
 </ul>
 
-<p>The fields available on a ticket are the <em>union</em> of all fields assigned to its selected category, type, and item, ordered by scope level (category → type → item) then sort order.</p>
+<h3 id="admin-cf-deactivate">Deactivating a field</h3>
+<p><strong>Deactivate…</strong> works whether or not tickets use the field, and asks you to confirm.</p>
+<ul>
+  <li>The field is not shown on the new-ticket form.</li>
+  <li>On a ticket that holds a value it is still shown, read-only, marked <em>Inactive</em> for staff. On a ticket with no value it is not shown.</li>
+  <li>Nobody can write it. The API refuses a value for it, an empty one (a clear) included, with <code>400 bad_request</code>. A value sent with a new ticket is dropped and reported (see <a href="tickets.html#tickets-custom-fields">Custom fields on tickets</a>).</li>
+  <li>The list hides it unless <strong>Show inactive</strong> is on.</li>
+</ul>
+<p><strong>Reactivate</strong> restores the field as it was: deactivating does not touch its places, options or number.</p>
+
+<h3>Where it appears</h3>
+<p>The <strong>Where it appears</strong> part of an open field lists every category, type and item it is attached to, as a path such as <em>Hardware › Laptop</em>, with an <em>Archived</em> badge on a place that is archived. Per place you set:</p>
+<ul>
+  <li><strong>Show on new-ticket form</strong> — whether the field appears on the new-ticket form when that place is selected.</li>
+  <li><strong>Required</strong> — whether the form will not submit until the field is filled. It is available only while <em>Show on new-ticket form</em> is on.</li>
+  <li>The <strong>×</strong> button removes the field from that place.</li>
+</ul>
+<p>Under the list, one sentence says what the places add up to, such as <em>Shown when a ticket is filed under Hardware (any type), required.</em> <strong>Add a place</strong> opens a picker: choose a category, then optionally a type (<em>Whole category</em> is the default), then optionally an item (<em>Whole type</em>). A place the field already has, or that would overlap one it has, is greyed out and says why.</p>
+<p>Places can be managed from either side. The <strong>Fields</strong> subsection of an expanded category, type or item on <em>Admin → Tickets → Categories</em> reads and writes the same attachments. On that page a field's name links to the Custom Fields page, and the order is set only on Custom Fields (the Categories page says so).</p>
+
+<p><strong>A field reaches a ticket once</strong>, however many of the ticket's category, type and item it is attached to. The most specific attachment wins — item over type over category — for its settings and for the level the field is shown at. The API does not refuse an overlapping attachment. The Custom Fields page does not offer one, and lists any that exist with a note saying which place's settings apply.</p>
+<p>Requesters do not pick an item, so a field shown only at the item level is seen on the new-ticket form by staff only.</p>
+
+<h3 id="admin-cf-order">Order</h3>
+<p>Fields are grouped by level — the category's first, then the type's, then the item's — and within each level ordered by field number, lowest first, then by name. The new-ticket form and the ticket page use the same order, so a field sits in the same place on both. A field's level is the level of its most specific attachment.</p>
+<p>The page sets the number of every field from the order of the list. A field you create goes last. Hidden (inactive) fields keep their place in the order while you drag the visible ones. Each place also has a <code>sort_order</code>, which the API still accepts, stores and returns, but nothing orders by it.</p>
 
 <h3>Ticket detail page</h3>
-<p>Custom field values are displayed in the <strong>Custom Fields</strong> sidebar card on the ticket detail page. Staff and admins can click <em>Edit</em> to update any value at any time after the ticket is created. Regular users see values in read-only form.</p>
+<p>Custom field values are displayed in the <strong>Custom Fields</strong> sidebar card on the ticket detail page, in the order above.</p>
+<ul>
+  <li><strong>Staff and admins</strong> see every active field the ticket has, empty or not, and click <em>Edit</em> to fill or change any of them at any time after the ticket is created. <em>Save</em> sends only the fields they changed, and the server writes all of them or none: if one is refused, nothing is saved.</li>
+  <li>An inactive field that holds a value is shown read-only and marked <em>Inactive</em>. An inactive field with no value is not shown.</li>
+  <li>A field that holds a value but is no longer attached to the ticket's category, type or item is shown read-only after the item level.</li>
+  <li><strong>Regular users</strong> see only the fields that hold a value, in read-only form. Guests see no custom fields.</li>
+</ul>
+
+<h3>Audit</h3>
+<p>Every change an administrator makes to a field, its options or its places is recorded in the <a href="#admin-audit">Audit Log</a>, in the same step as the change, with entity type <code>custom_field</code> (a choice in that page's entity filter). The actions are <code>custom_field_created</code>, <code>_renamed</code>, <code>_type_changed</code>, <code>_deactivated</code>, <code>_reactivated</code>, <code>_reordered</code>, <code>_option_added</code>, <code>_option_moved</code>, <code>_option_retired</code>, <code>_option_restored</code>, <code>_option_deleted</code>, <code>_attached</code>, <code>_attachment_changed</code> and <code>_detached</code>. An entry names the field, and where it applies the option's text or the place's path, as text an administrator wrote. Deleting a category, type or item records a <code>custom_field_detached</code> entry for each place it removed, in the same statement as the delete. A change the server refuses writes no entry.</p>
+
+<h3>Custom fields and the API</h3>
+<p>The page uses three calls that are new in 1.3.0: <code>GET /api/v1/admin/custom-fields/{id}/assignments</code> (where a field is attached), <code>PUT /api/v1/admin/custom-fields/order</code> and <code>GET /api/v1/admin/custom-fields/{id}/usage</code> (how many tickets hold the field, and each option). They need an administrator signed in through the browser; an API key or OAuth client gets <code>403</code>. The other custom-field routes still accept an administrator's API key. <code>GET /api/v1/admin/custom-fields</code> adds <code>place_count</code> to each field, and the admin routes return <code>retired_options</code> for a select field that has any. See the <a href="api-reference.html">API reference</a>, and <a href="upgrading-1.3.0.html#custom-fields">Upgrading</a> for what changes on upgrade.</p>
 
 
 <h2 id="admin-tags">Tags</h2>
@@ -990,7 +1041,7 @@ function verifySignature(secret, body, header) {
 <p>The audit log records who changed what, and when. It can be read in two places, and it is kept forever unless you set a retention period.</p>
 
 <h3>What is recorded</h3>
-<p>For tickets, the actions are <code>created</code>, <code>status_changed</code>, <code>assigned</code>, <code>unassigned</code>, <code>resolved</code>, <code>closed</code> and <code>reopened</code>, plus <code>priority_changed</code>, <code>sla_restarted</code> (a reopen starting the SLA over), <code>followed</code> and <code>unfollowed</code>, and <code>reply_added</code> (a public reply) and <code>note_added</code> (an internal note). The last two hold only the reply's id and whether it was internal, never the text, and they are written from the upgrade on: replies and notes written before it are not backfilled. In the Audit Log, a <strong>Hide replies and notes</strong> checkbox leaves them out when they crowd the log. A status change out of Resolved or Closed is recorded as <code>reopened</code> beside <code>status_changed</code>. Deleting a group records <code>unassigned</code> for every ticket it held. Changes to a ticket's category, type, item and custom fields are not recorded. Account actions are recorded too. An MFA reset, for example, records the authenticator and the passkeys it cleared, and whether it came from the command line.</p>
+<p>For tickets, the actions are <code>created</code>, <code>status_changed</code>, <code>assigned</code>, <code>unassigned</code>, <code>resolved</code>, <code>closed</code> and <code>reopened</code>, plus <code>priority_changed</code>, <code>sla_restarted</code> (a reopen starting the SLA over), <code>followed</code> and <code>unfollowed</code>, and <code>reply_added</code> (a public reply) and <code>note_added</code> (an internal note). The last two hold only the reply's id and whether it was internal, never the text, and they are written from the upgrade on: replies and notes written before it are not backfilled. In the Audit Log, a <strong>Hide replies and notes</strong> checkbox leaves them out when they crowd the log. A status change out of Resolved or Closed is recorded as <code>reopened</code> beside <code>status_changed</code>. Deleting a group records <code>unassigned</code> for every ticket it held. Changes to a ticket's category, type, item and custom field values are not recorded. Changes an administrator makes to a custom field itself, its options and its places are (see <a href="#admin-custom-fields">Custom fields</a>). Account actions are recorded too. An MFA reset, for example, records the authenticator and the passkeys it cleared, and whether it came from the command line.</p>
 
 <p>Replies and notes show as "<em>name</em> replied publicly" or "<em>name</em> added an internal note", with the time and no text. A guest shows as "A guest" and a deleted account as "Someone". The same people who see Activity today see them (staff and administrators; a requester still gets <code>403</code>), the requester-name masking setting applies, and staff see them in a ticket's Activity feed, which they can open only for tickets in their scope. In a ticket's Activity feed the newest 500 replies and notes are shown, so a long conversation cannot push the ticket's other history off it. Webhooks, MCP and email are unchanged.</p>
 
