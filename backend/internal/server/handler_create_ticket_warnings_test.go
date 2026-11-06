@@ -193,10 +193,14 @@ func TestCreateTicket_RequesterReceivesWarnings(t *testing.T) {
 	require.NotContains(t, m, "reporter_user_id", "the rest of a requester's view is as it was")
 }
 
-// A failure that is none of the above is not_saved for every non-empty entry,
-// and the ticket is still created. The trigger refuses the write the way a full
-// disk or a lost connection would.
-func TestCreateTicket_AFailedWriteIsNotSaved(t *testing.T) {
+// A failure that is none of the above is reported as not_saved for every
+// non-empty entry that reached the write, and the ticket is still created. The
+// trigger refuses the write the way a full disk or a lost connection would.
+//
+// This checks the response only. That nothing is stored when a write fails needs
+// a real transaction, which this harness does not open; see
+// TestSetCreationValues_AFailedWriteStoresNothing.
+func TestCreateTicket_AFailedWriteIsReportedAsNotSaved(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	f := newWarnFixture(t, h)
@@ -220,5 +224,5 @@ func TestCreateTicket_AFailedWriteIsNotSaved(t *testing.T) {
 		{FieldID: "not-a-uuid", Reason: customfield.ReasonInvalidFieldID},
 	}
 	sort.Slice(want, func(i, j int) bool { return want[i].FieldID < want[j].FieldID })
-	require.Equal(t, want, got.Warnings, "all or nothing: the valid number was not written either")
+	require.Equal(t, want, got.Warnings, "every entry that reached the write is reported, the valid number included")
 }

@@ -409,3 +409,54 @@ func (f *lockFixture) categoryID() uuid.UUID {
 	require.NoError(f.t, f.db.SQL.QueryRow(`SELECT id FROM categories LIMIT 1`).Scan(&id))
 	return id
 }
+
+// ── Creation is all or nothing ───────────────────────────────────────────────
+
+// When the write of one value fails, none of the ticket's values is stored and
+// each non-empty entry is reported as not_saved. Needs a real transaction: in the
+// rolled-back harness nothing could be read back after the failure.
+func TestSetCreationValues_AFailedWriteStoresNothing(t *testing.T) {
+	f := newLockFixture(t)
+	ctx := context.Background()
+	catID := f.categoryID()
+	first := f.field("Serial", customfield.FieldTypeText)
+	last := f.field("Colour", customfield.FieldTypeText)
+	// Values are written in id order: the failing entry must come second, so the
+	// valid one has been written when it fails.
+	if first.ID.String() > last.ID.String() {
+		first, last = last, first
+	}
+	for _, d := range []customfield.FieldDef{first, last} {
+		_, err := f.svc.CreateAssignment(ctx, d.ID, customfield.CategoryScope, catID, 1, true, false, nil)
+		require.NoError(t, err)
+	}
+	// The trigger refuses one value, the way a full disk or a lost connection
+	// would refuse a write.
+	_, err := f.db.SQL.ExecContext(ctx, `
+		CREATE FUNCTION refuse_boom() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN IF NEW.value = 'boom' THEN RAISE EXCEPTION 'boom'; END IF; RETURN NEW; END $$;
+		CREATE TRIGGER refuse_boom BEFORE INSERT OR UPDATE ON ticket_custom_field_values
+		FOR EACH ROW EXECUTE FUNCTION refuse_boom();`)
+	require.NoError(t, err)
+
+	warnings, err := f.svc.SetCreationValues(ctx, f.ticketID, catID, nil, nil, map[string]string{
+		first.ID.String(): "7", last.ID.String(): "boom",
+	})
+	require.Error(t, err, "the failure is returned for the caller to log")
+	require.Len(t, warnings, 2)
+	for _, w := range warnings {
+		require.Equal(t, customfield.ReasonNotSaved, w.Reason)
+	}
+	var n int
+	require.NoError(t, f.db.SQL.QueryRow(`SELECT count(*) FROM ticket_custom_field_values WHERE ticket_id = $1`, f.ticketID).Scan(&n))
+	require.Zero(t, n, "the valid entry must not be stored when another failed")
+
+	// And the same entries without the failure are stored together.
+	warnings, err = f.svc.SetCreationValues(ctx, f.ticketID, catID, nil, nil, map[string]string{
+		first.ID.String(): "7", last.ID.String(): "fine",
+	})
+	require.NoError(t, err)
+	require.Empty(t, warnings)
+	require.NoError(t, f.db.SQL.QueryRow(`SELECT count(*) FROM ticket_custom_field_values WHERE ticket_id = $1`, f.ticketID).Scan(&n))
+	require.Equal(t, 2, n)
+}
