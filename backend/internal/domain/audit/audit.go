@@ -213,6 +213,20 @@ var shownKeys = map[string]bool{
 	// stay hidden.
 	// Shown for EVERY entity type, so no other writer may reuse these key names.
 	"templatename": true, "templatesubject": true, "templatebody": true, "templatehtml": true,
+	// A change to a custom field, its options or where it is attached (#603).
+	// Fixed values first: a type, flags, numbers and ids.
+	"fieldtype": true, "sortorder": true, "active": true, "position": true, "retired": true,
+	"assignmentid": true, "scopetype": true, "scopeid": true,
+	"visibleonnew": true, "requiredonnew": true, "nodedeleted": true,
+	// Then free text: the field's name, an option's text and the path of the
+	// category, type or item a field is attached to ("Hardware › Laptop"). An
+	// administrator wrote all three and none of them can hold ticket content;
+	// showing them is the history, since there is no versions table, and without
+	// the name an entry cannot say which field it is about. Named field_name,
+	// option_value and scope_path because the plain "name" and "value" are where
+	// other entries keep text that stays hidden.
+	// Shown for EVERY entity type, so no other writer may reuse these key names.
+	"fieldname": true, "optionvalue": true, "scopepath": true,
 }
 
 // Redact returns copies of before/after showing only allow-listed keys

@@ -22,9 +22,9 @@ func inactiveFieldOnTicket(t *testing.T, h *harness, value string) (ticketID, fi
 	t.Helper()
 	ctx := context.Background()
 
-	def, err := h.customFieldSvc.CreateFieldDef(ctx, "Cost centre", customfield.FieldTypeText, nil, 1)
+	def, err := h.customFieldSvc.CreateFieldDef(ctx, "Cost centre", customfield.FieldTypeText, nil, 1, nil)
 	require.NoError(t, err)
-	_, err = h.customFieldSvc.CreateAssignment(ctx, def.ID, customfield.CategoryScope, h.catID, 1, true, false)
+	_, err = h.customFieldSvc.CreateAssignment(ctx, def.ID, customfield.CategoryScope, h.catID, 1, true, false, nil)
 	require.NoError(t, err)
 
 	res := h.do(t, http.MethodPost, "/api/v1/tickets", map[string]any{
@@ -45,7 +45,7 @@ func inactiveFieldOnTicket(t *testing.T, h *harness, value string) (ticketID, fi
 	}
 
 	def.Active = false
-	require.NoError(t, h.customFieldSvc.UpdateFieldDef(ctx, def))
+	require.NoError(t, h.customFieldSvc.UpdateFieldDef(ctx, def, nil))
 	return created.ID, def.ID.String()
 }
 

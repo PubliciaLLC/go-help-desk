@@ -41,8 +41,8 @@ func (s *Service) UpdateCategory(ctx context.Context, c Category) error {
 	return s.store.UpdateCategory(ctx, c)
 }
 
-func (s *Service) DeleteCategory(ctx context.Context, id uuid.UUID) error {
-	return s.store.DeleteCategory(ctx, id)
+func (s *Service) DeleteCategory(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error {
+	return s.store.DeleteCategory(ctx, id, actorID)
 }
 
 func (s *Service) GetCategory(ctx context.Context, id uuid.UUID) (Category, error) {
@@ -84,8 +84,8 @@ func (s *Service) UpdateType(ctx context.Context, tp Type) error {
 	return s.store.UpdateType(ctx, tp)
 }
 
-func (s *Service) DeleteType(ctx context.Context, id uuid.UUID) error {
-	return s.store.DeleteType(ctx, id)
+func (s *Service) DeleteType(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error {
+	return s.store.DeleteType(ctx, id, actorID)
 }
 
 func (s *Service) GetType(ctx context.Context, id uuid.UUID) (Type, error) {
@@ -126,8 +126,8 @@ func (s *Service) UpdateItem(ctx context.Context, it Item) error {
 	return s.store.UpdateItem(ctx, it)
 }
 
-func (s *Service) DeleteItem(ctx context.Context, id uuid.UUID) error {
-	return s.store.DeleteItem(ctx, id)
+func (s *Service) DeleteItem(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error {
+	return s.store.DeleteItem(ctx, id, actorID)
 }
 
 func (s *Service) GetItem(ctx context.Context, id uuid.UUID) (Item, error) {

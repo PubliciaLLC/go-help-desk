@@ -243,6 +243,13 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.Get("/", s.handleListFieldDefs)
 		r.Post("/", s.handleCreateFieldDef)
 		r.Patch("/{id}", s.handleUpdateFieldDef)
+
+		// Browser session only (Erik, 2026-11-05): the three calls the Custom
+		// Fields page added. /usage is the same rule by default, not a separate
+		// ruling. The routes above predate the rule and still accept an API key.
+		r.With(authmw.DenyMachineCredentials).Put("/order", s.handleReorderFieldDefs)
+		r.With(authmw.DenyMachineCredentials).Get("/{id}/assignments", s.handleListFieldPlacements)
+		r.With(authmw.DenyMachineCredentials).Get("/{id}/usage", s.handleFieldDefUsage)
 	})
 
 	r.Route("/sla/policies", func(r chi.Router) {

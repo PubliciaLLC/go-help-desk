@@ -189,7 +189,7 @@ func (s *Server) handleDeleteCategory(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid ID")
 		return
 	}
-	if err := s.categories.DeleteCategory(r.Context(), id); err != nil {
+	if err := s.categories.DeleteCategory(r.Context(), id, actorIDOf(r)); err != nil {
 		handleError(w, err)
 		return
 	}
@@ -278,7 +278,7 @@ func (s *Server) handleDeleteType(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.categories.DeleteType(r.Context(), *p.typ); err != nil {
+	if err := s.categories.DeleteType(r.Context(), *p.typ, actorIDOf(r)); err != nil {
 		handleError(w, err)
 		return
 	}
@@ -365,7 +365,7 @@ func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.categories.DeleteItem(r.Context(), *p.item); err != nil {
+	if err := s.categories.DeleteItem(r.Context(), *p.item, actorIDOf(r)); err != nil {
 		handleError(w, err)
 		return
 	}
