@@ -223,6 +223,9 @@ const adminCustomFieldsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/admin/custom-fields',
   beforeLoad: requireAdmin,
+  // ?field=<id> opens that field's row; the Categories page links here.
+  validateSearch: (search: Record<string, unknown>): { field?: string } =>
+    typeof search.field === 'string' && search.field ? { field: search.field } : {},
   component: CustomFieldsPage,
 })
 

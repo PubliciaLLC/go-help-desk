@@ -632,10 +632,40 @@ export interface FieldDef {
   id: string
   name: string
   field_type: FieldType
+  // The options in use. Always a plain list of strings, whatever retired.
   options?: string[]
+  // Admin calls only: options that tickets may still hold but nobody can pick.
+  retired_options?: string[]
   sort_order: number
   active: boolean
   created_at: string
+}
+
+// One place a field is attached, from GET /admin/custom-fields/{id}/assignments.
+// category is always set; type and item are set from the level the place sits at.
+export interface PlacementNode {
+  id: string
+  name: string
+  active: boolean
+}
+
+export interface FieldPlacement {
+  id: string
+  field_def_id: string
+  scope_type: ScopeType
+  scope_id: string
+  sort_order: number
+  visible_on_new: boolean
+  required_on_new: boolean
+  category: PlacementNode
+  type: PlacementNode | null
+  item: PlacementNode | null
+}
+
+// GET /admin/custom-fields/{id}/usage. `values` is [] for anything but a select.
+export interface FieldUsage {
+  tickets_with_value: number
+  values: { value: string; tickets: number }[]
 }
 
 export interface Assignment {

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import {
   DndContext, closestCenter, PointerSensor, useSensor, useSensors,
   type DragEndEvent,
@@ -26,6 +27,7 @@ import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
+import { TOUCH_SIZE, ROW_BTN } from '@/components/admin/touchTargets'
 import {
   ChevronRightIcon, ChevronDownIcon, PlusIcon, TrashIcon,
   GripVerticalIcon, PencilIcon, CheckIcon, XIcon, UsersRoundIcon, SlidersIcon,
@@ -34,14 +36,6 @@ import {
 import type { Category, TicketType, TicketItem, Group, Assignment } from '@/api/types'
 
 // ── Inline name editor ────────────────────────────────────────────────────────
-
-// Row actions (rename, archive, restore, delete) are hover-revealed on a mouse.
-// A touch screen has no hover, so there they are always shown and 44px square.
-const TOUCH_SIZE =
-  'pointer-coarse:inline-flex pointer-coarse:items-center pointer-coarse:justify-center ' +
-  'pointer-coarse:min-h-11 pointer-coarse:min-w-11'
-const ROW_BTN =
-  `opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 pointer-coarse:opacity-100 ${TOUCH_SIZE}`
 
 function InlineName({
   value,
@@ -411,12 +405,15 @@ function FieldsSubsection({ scope }: { scope: FieldsScope }) {
         <SlidersIcon className="h-3 w-3 text-gray-400" />
         <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">Fields</span>
       </div>
+      <p className="mb-2 text-xs text-gray-400">Order is set on Custom Fields.</p>
       {removeError && <p role="alert" className="mb-2 text-xs text-red-600">{removeError}</p>}
       <div className="space-y-1">
         {(assignments as Assignment[]).map((a) => (
           <div key={a.id} className="group flex items-center gap-2 rounded px-2 py-1 hover:bg-gray-50 text-xs">
             <span className="flex-1 font-medium text-gray-700">
-              {a.field_def?.name ?? a.field_def_id}
+              <Link to="/admin/custom-fields" search={{ field: a.field_def_id }} className="hover:text-blue-600 hover:underline">
+                {a.field_def?.name ?? a.field_def_id}
+              </Link>
               <span className="ml-1.5 text-gray-400 font-normal">{a.field_def?.field_type}</span>
             </span>
             <label className="flex items-center gap-1 text-gray-500 cursor-pointer select-none">

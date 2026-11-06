@@ -309,3 +309,65 @@ describe('AdminAuditPage', () => {
     })
   })
 })
+
+describe('custom field entries', () => {
+  const field = (overrides: Partial<AdminAuditEntry>) =>
+    entry({ entity_type: 'custom_field', entity_id: 'f-1', ...overrides })
+
+  it('offers custom_field in the entity-type filter', async () => {
+    mockList({ entries: [], total: 0, has_more: false })
+    renderWithQuery(<AdminAuditPage />)
+    const select = await screen.findByLabelText(/entity type/i)
+    expect(within(select).getByRole('option', { name: 'custom_field' })).toBeTruthy()
+  })
+
+  it('names the field on a create entry, which has no diff', async () => {
+    mockList({
+      entries: [field({ action: 'custom_field_created', before: null, after: { field_name: 'Department', field_type: 'select', sort_order: 1, active: true } })],
+      total: 1, has_more: false,
+    })
+    renderWithQuery(<AdminAuditPage />)
+    const row = (await screen.findByText('Custom field created')).closest('tr')!
+    expect(within(row).getByText('Department')).toBeTruthy()
+  })
+
+  it('names the field and option on an option-deleted entry', async () => {
+    mockList({
+      entries: [field({ action: 'custom_field_option_deleted', before: { field_name: 'Department', option_value: 'Marketing' }, after: null })],
+      total: 1, has_more: false,
+    })
+    renderWithQuery(<AdminAuditPage />)
+    const row = (await screen.findByText('Custom field option deleted')).closest('tr')!
+    expect(row.textContent).toContain('Department · option "Marketing"')
+  })
+
+  it('names the field and place on an attached entry', async () => {
+    mockList({
+      entries: [field({ action: 'custom_field_attached', before: null, after: { field_name: 'Department', scope_path: 'Hardware › Laptop' } })],
+      total: 1, has_more: false,
+    })
+    renderWithQuery(<AdminAuditPage />)
+    const row = (await screen.findByText('Custom field attached')).closest('tr')!
+    expect(row.textContent).toContain('Department · Hardware › Laptop')
+  })
+
+  it('shows only the label when the entry has no allow-listed text', async () => {
+    mockList({
+      entries: [field({ action: 'custom_field_deactivated', before: null, after: null })],
+      total: 1, has_more: false,
+    })
+    renderWithQuery(<AdminAuditPage />)
+    const row = (await screen.findByText('Custom field deactivated')).closest('tr')!
+    expect(row.textContent).not.toContain('·')
+  })
+
+  it('adds no context line to other entity types', async () => {
+    mockList({
+      entries: [entry({ entity_type: 'category', action: 'updated', before: { field_name: 'x' }, after: { field_name: 'y' } })],
+      total: 1, has_more: false,
+    })
+    renderWithQuery(<AdminAuditPage />)
+    const row = (await screen.findByText('Updated')).closest('tr')!
+    expect(row.textContent).not.toContain('·')
+  })
+})
