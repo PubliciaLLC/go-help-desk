@@ -138,8 +138,10 @@ func checkWritable(def FieldDef, value string) error {
 }
 
 // SetValue upserts or deletes a custom field value on a ticket.
-// An empty value string deletes the row. Validates that the field is active
-// and that select values are within the allowed options.
+// The active check comes first (checkWritable), so an empty value on a
+// deactivated field is refused like any other write; on an active field an
+// empty value deletes the row. A select value must be one of the field's
+// options.
 func (s *Service) SetValue(ctx context.Context, ticketID, fieldDefID uuid.UUID, value string) error {
 	def, err := s.store.GetFieldDef(ctx, fieldDefID)
 	if err != nil {
