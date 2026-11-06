@@ -61,6 +61,11 @@ type Store interface {
 	DeleteAssignment(ctx context.Context, id uuid.UUID, entry func(before Assignment, info AssignmentInfo) audit.Entry) error
 
 	// Field values on tickets
+	// UpsertValue and DeleteValue write one value without locking its definition.
+	//
+	// Deprecated: nothing in production calls them; SetValues is the write path and
+	// it locks. They stay in the interface because implementations and tests
+	// outside this package use them, and nothing is removed without a deprecation.
 	UpsertValue(ctx context.Context, ticketID, fieldDefID uuid.UUID, value string) error
 	DeleteValue(ctx context.Context, ticketID, fieldDefID uuid.UUID) error
 	ListValuesForTicket(ctx context.Context, ticketID uuid.UUID) ([]TicketFieldValue, error)

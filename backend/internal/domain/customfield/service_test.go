@@ -18,10 +18,12 @@ import (
 // contract the real store now has (#418): deleting an id that names nothing
 // returns an error wrapping ErrNotFound.
 type fakeStore struct {
-	defs        map[uuid.UUID]customfield.FieldDef
-	assignments map[uuid.UUID]customfield.Assignment
-	values      map[[2]uuid.UUID]string
-	audit       []audit.Entry // what the store was asked to write with each change
+	defs           map[uuid.UUID]customfield.FieldDef
+	assignments    map[uuid.UUID]customfield.Assignment
+	values         map[[2]uuid.UUID]string
+	audit          []audit.Entry // what the store was asked to write with each change
+	lockedWrites   int           // calls to SetValues, the path that locks the definitions
+	unlockedWrites int           // calls to UpsertValue and DeleteValue, which do not
 }
 
 func newFakeStore() *fakeStore {
@@ -156,10 +158,12 @@ func (f *fakeStore) DeleteAssignment(_ context.Context, id uuid.UUID, entry func
 	return nil
 }
 func (f *fakeStore) UpsertValue(_ context.Context, t, d uuid.UUID, v string) error {
+	f.unlockedWrites++
 	f.values[[2]uuid.UUID{t, d}] = v
 	return nil
 }
 func (f *fakeStore) DeleteValue(_ context.Context, t, d uuid.UUID) error {
+	f.unlockedWrites++
 	delete(f.values, [2]uuid.UUID{t, d})
 	return nil
 }
@@ -171,6 +175,7 @@ func (f *fakeStore) ListValuesForTicket(context.Context, uuid.UUID) ([]customfie
 // definitions of the entries that name one, and what it returns is what is
 // written, nothing if it refuses.
 func (f *fakeStore) SetValues(_ context.Context, ticketID uuid.UUID, entries map[uuid.UUID]string, decide func(map[uuid.UUID]customfield.FieldDef) (map[uuid.UUID]string, error)) error {
+	f.lockedWrites++
 	defs := map[uuid.UUID]customfield.FieldDef{}
 	for id := range entries {
 		if d, ok := f.defs[id]; ok {
@@ -832,4 +837,21 @@ func TestSetCreationValues_WarningsNameEachDroppedField(t *testing.T) {
 		require.NoError(t, err)
 		require.Nil(t, w)
 	})
+}
+
+// SetValue is SetValues with one entry, so it takes the same lock on the
+// definition. A write that skipped the lock could land between an admin
+// change's check and its commit.
+func TestSetValue_TakesTheLockedPath(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	svc := customfield.NewService(store)
+	def, err := svc.CreateFieldDef(ctx, "Serial", customfield.FieldTypeText, nil, 1, nil)
+	require.NoError(t, err)
+	ticket := uuid.New()
+
+	require.NoError(t, svc.SetValue(ctx, ticket, def.ID, "SN-1"))
+	require.NoError(t, svc.SetValue(ctx, ticket, def.ID, ""))
+	require.Equal(t, 2, store.lockedWrites, "a set and a clear both go through SetValues")
+	require.Zero(t, store.unlockedWrites, "nothing is written without the lock")
 }

@@ -91,8 +91,11 @@ func (s *Service) PatchFieldDef(ctx context.Context, id uuid.UUID, p FieldDefPat
 }
 
 // UpdateFieldDef replaces the definition with def, under the same rules and the
-// same audit as PatchFieldDef. The routes use PatchFieldDef; this is the
-// whole-definition form for a caller that holds all of it.
+// same audit as PatchFieldDef.
+//
+// Deprecated: the routes use PatchFieldDef, which applies a patch to the row as
+// it is under the lock; this takes a whole definition read earlier. It stays
+// because tests call it.
 func (s *Service) UpdateFieldDef(ctx context.Context, def FieldDef, actorID *uuid.UUID) error {
 	_, err := s.change(ctx, def.ID, actorID, func(cur FieldDef) FieldDef {
 		def.CreatedAt = cur.CreatedAt
@@ -368,22 +371,15 @@ func refusal(def FieldDef, value string, reason Reason) error {
 	return Invalid(fmt.Sprintf("value %q is not a valid option for field %q", value, def.Name))
 }
 
-// SetValue upserts or deletes a custom field value on a ticket, under the rule
-// in checkValue. The routes use SetValues, which also locks the definition; this
-// does not.
+// SetValue is SetValues for one field, so it takes the same lock on the
+// definition: a write that skipped it could land between an admin change's check
+// and its commit.
+//
+// Deprecated: nothing in production calls it any more; the routes write through
+// SetValues and creation through SetCreationValues. It stays because tests call
+// it, and CLAUDE.md asks that nothing be removed without a deprecation first.
 func (s *Service) SetValue(ctx context.Context, ticketID, fieldDefID uuid.UUID, value string) error {
-	def, err := s.store.GetFieldDef(ctx, fieldDefID)
-	if err != nil {
-		return fmt.Errorf("field not found: %w", err)
-	}
-	stored, reason := checkValue(def, value)
-	if reason != "" {
-		return refusal(def, value, reason)
-	}
-	if stored == "" {
-		return s.store.DeleteValue(ctx, ticketID, fieldDefID)
-	}
-	return s.store.UpsertValue(ctx, ticketID, fieldDefID, stored)
+	return s.SetValues(ctx, ticketID, map[uuid.UUID]string{fieldDefID: value})
 }
 
 // SetValues is SetValue for several fields of one ticket, all or none: every
