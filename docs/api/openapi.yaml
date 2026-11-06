@@ -3260,7 +3260,9 @@ paths:
         value means "no value" and is skipped without a word. Any other entry that
         is not written is listed in `warnings` in the 201 response, one entry per
         key as it was sent, sorted by field_id, each with a reason:
-        `invalid_field_id` (the key is not a UUID), `not_on_ticket` (the field is
+        `invalid_field_id` (the key is not a UUID), `duplicate_field_id` (two keys spell the
+        same field id, for example in upper and lower case; neither is written and
+        each is listed), `not_on_ticket` (the field is
         not attached to the ticket's category, type or item; an id that names no
         field is this too), `inactive` (the field is deactivated),
         `retired_option` (a select value that has been retired),
@@ -11973,7 +11975,7 @@ components:
           description: The key exactly as sent. A string because for invalid_field_id it is not a UUID.
         reason:
           type: string
-          enum: [invalid_field_id, not_on_ticket, inactive, retired_option, not_an_option, not_a_number, not_saved]
+          enum: [invalid_field_id, duplicate_field_id, not_on_ticket, inactive, retired_option, not_an_option, not_a_number, not_saved]
     CustomFieldPlaceNode:
       type: object
       required: [id, name, active]

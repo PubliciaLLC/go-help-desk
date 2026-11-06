@@ -466,16 +466,29 @@ func (s *Service) SetCreationValues(ctx context.Context, ticketID, categoryID uu
 	var warnings []Warning
 	entries := make(map[uuid.UUID]string, len(keys))
 	keyOf := make(map[uuid.UUID]string, len(keys))
+	// Two keys can spell one id (case, braces). Which value to keep would be luck,
+	// so neither is written, and each is reported; PUT refuses the request for the
+	// same thing.
+	spelled := make(map[uuid.UUID][]string, len(keys))
 	for _, key := range keys {
 		id, err := uuid.Parse(key)
-		switch {
-		case err != nil:
+		if err != nil {
 			warnings = append(warnings, Warning{FieldID: key, Reason: ReasonInvalidFieldID})
+			continue
+		}
+		spelled[id] = append(spelled[id], key)
+	}
+	for id, ks := range spelled {
+		switch {
+		case len(ks) > 1:
+			for _, key := range ks {
+				warnings = append(warnings, Warning{FieldID: key, Reason: ReasonDuplicateFieldID})
+			}
 		case !onTicket[id]:
-			warnings = append(warnings, Warning{FieldID: key, Reason: ReasonNotOnTicket})
+			warnings = append(warnings, Warning{FieldID: ks[0], Reason: ReasonNotOnTicket})
 		default:
-			entries[id] = raw[key]
-			keyOf[id] = key
+			entries[id] = raw[ks[0]]
+			keyOf[id] = ks[0]
 		}
 	}
 	if len(entries) == 0 {

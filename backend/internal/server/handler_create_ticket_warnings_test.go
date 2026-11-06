@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -225,4 +226,23 @@ func TestCreateTicket_AFailedWriteIsReportedAsNotSaved(t *testing.T) {
 	}
 	sort.Slice(want, func(i, j int) bool { return want[i].FieldID < want[j].FieldID })
 	require.Equal(t, want, got.Warnings, "every entry that reached the write is reported, the valid number included")
+}
+
+// PUT refuses two spellings of one field with a 400. Creation never refuses: it
+// drops both and says so.
+func TestCreateTicket_TwoSpellingsOfOneFieldAreBothReported(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	f := newWarnFixture(t, h)
+	lower, upper := f.good.ID.String(), strings.ToUpper(f.good.ID.String())
+
+	code, got, raw := h.createWith(t, h.do, map[string]string{lower: "one", upper: "two", f.number.ID.String(): "5"})
+	require.Equal(t, http.StatusCreated, code, string(raw))
+	want := []customfield.Warning{
+		{FieldID: lower, Reason: customfield.ReasonDuplicateFieldID},
+		{FieldID: upper, Reason: customfield.ReasonDuplicateFieldID},
+	}
+	sort.Slice(want, func(i, j int) bool { return want[i].FieldID < want[j].FieldID })
+	require.Equal(t, want, got.Warnings)
+	require.Equal(t, map[string]string{f.number.ID.String(): "5"}, h.storedValues(t, got.ID))
 }

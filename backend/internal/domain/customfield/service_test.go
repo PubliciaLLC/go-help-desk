@@ -855,3 +855,47 @@ func TestSetValue_TakesTheLockedPath(t *testing.T) {
 	require.Equal(t, 2, store.lockedWrites, "a set and a clear both go through SetValues")
 	require.Zero(t, store.unlockedWrites, "nothing is written without the lock")
 }
+
+// Two keys that spell one field id differently (case) cannot both be honoured,
+// and which one wins would be luck. PUT refuses the request; creation never
+// refuses, so both are dropped and each is reported, and nothing is written for
+// that field.
+func TestSetCreationValues_TwoSpellingsOfOneFieldAreDroppedAndReported(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	svc := customfield.NewService(store)
+	cat := uuid.New()
+	dup, err := svc.CreateFieldDef(ctx, "Serial", customfield.FieldTypeText, nil, 1, nil)
+	require.NoError(t, err)
+	other, err := svc.CreateFieldDef(ctx, "Other", customfield.FieldTypeText, nil, 2, nil)
+	require.NoError(t, err)
+	for _, d := range []customfield.FieldDef{dup, other} {
+		_, err := svc.CreateAssignment(ctx, d.ID, customfield.CategoryScope, cat, 1, true, false, nil)
+		require.NoError(t, err)
+	}
+	lower, upper := dup.ID.String(), strings.ToUpper(dup.ID.String())
+	ticket := uuid.New()
+
+	for range 10 { // map order is random; the answer must not be
+		warnings, err := svc.SetCreationValues(ctx, ticket, cat, nil, nil, map[string]string{
+			lower: "one", upper: "two", other.ID.String(): "kept",
+		})
+		require.NoError(t, err)
+		want := []customfield.Warning{
+			{FieldID: lower, Reason: customfield.ReasonDuplicateFieldID},
+			{FieldID: upper, Reason: customfield.ReasonDuplicateFieldID},
+		}
+		slices.SortFunc(want, func(a, b customfield.Warning) int { return strings.Compare(a.FieldID, b.FieldID) })
+		require.Equal(t, want, warnings)
+		require.NotContains(t, store.values, [2]uuid.UUID{ticket, dup.ID}, "neither spelling was written")
+		require.Equal(t, "kept", store.values[[2]uuid.UUID{ticket, other.ID}], "the rest is written")
+	}
+
+	t.Run("an empty value is no value, so it is not a second spelling", func(t *testing.T) {
+		tk := uuid.New()
+		warnings, err := svc.SetCreationValues(ctx, tk, cat, nil, nil, map[string]string{lower: "one", upper: ""})
+		require.NoError(t, err)
+		require.Nil(t, warnings)
+		require.Equal(t, "one", store.values[[2]uuid.UUID{tk, dup.ID}])
+	})
+}
