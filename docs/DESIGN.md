@@ -4451,14 +4451,15 @@ Defined globally under **Admin → Custom Fields**. Each definition has:
 - **Options** (select only): an ordered list of the values that may be chosen,
   stored as a JSON array of strings, so an option may contain a comma. The admin
   page edits them as a list: add, edit, reorder, retire, bring back, delete.
-  Blank and duplicate options are refused by the page; the API does not check
-  for them. On any other type the server stores `options` as sent and nothing
+  Blank and duplicate options (a retired option's text counts) are refused by
+  the page; the API does not check for them. On any other type the server stores `options` as sent and nothing
   reads it.
 - **Retired options** (select only): see *Options: retiring and deleting*. On
   any other type `retired_options` is stored as sent, like `options`, and
   nothing reads it.
 - **Field number** (`sort_order`): orders fields within each level. Set by
-  dragging on the Custom Fields page, with a pointer or the keyboard. See
+  dragging on the Custom Fields page, with a pointer or the keyboard (Space to
+  pick up, arrow keys to move, Space to drop). See
   *Display order*.
 - **Active flag**: field defs are never hard-deleted — only deactivated.
 
@@ -4485,7 +4486,7 @@ A field can be deactivated whether or not tickets use it.
 - Nobody can write it: `PUT /tickets/{id}/custom-fields` refuses a value for it,
   an empty one (a clear) included, with `400 bad_request`. On ticket creation a
   value for it is dropped and reported in `warnings` (see *Values*).
-- The Custom Fields page hides inactive fields. **Show inactive** lists them,
+- The Custom Fields page asks for confirmation before it deactivates a field, and hides inactive fields. **Show inactive** lists them,
   marked, each with **Reactivate**. The API list always includes them.
 
 Reactivating restores the field as it was: deactivation does not touch its
@@ -4495,18 +4496,24 @@ attachments, options or number.
 
 Retiring an option works the same way as deactivating a field. A retired option
 is not offered on new tickets or in edits. Tickets that already hold it keep
-showing it. The server refuses a write that sets a ticket to it, with
-`400 bad_request`. **Show retired** in the options editor lists retired options,
-each with **Bring back**.
+showing it: in edit mode on the ticket page it stays as the current choice,
+labelled "(retired)" and disabled, so it can be kept but not picked again. The
+server refuses a write that sets a ticket to it, with `400 bad_request`.
+**Show retired** in the options editor lists retired options, each with
+**Bring back**.
 
 An option can be deleted only while no ticket holds it. The page offers
 **Delete** only on an option it has counted as unused. The server checks again,
 under a lock on the definition row taken in the transaction that writes the
 change, and answers `409 conflict` if any ticket holds the value. This applies
 to any `PATCH` that removes a value from both lists, whichever client sends it.
+If the server refuses a delete the page had counted as safe (a ticket took the
+option since), the page reads the counts again and puts the option back where it
+was, so it can be retired without starting the edit over.
 
 Renaming an option that tickets hold retires the old text and adds the new text
-in its place. Renaming an unused option edits it in place.
+in its place. Renaming an unused option edits it in place. An option whose
+count the page could not read is treated as held.
 
 Retired options are stored in `custom_field_defs.retired_options`, a JSON array
 of strings, separate from `options`. `options` holds only the options in use, so
@@ -4519,8 +4526,8 @@ in use.
 
 A field appears on a ticket only when it is attached to the ticket's category,
 type or item. Creating a field attaches it nowhere, and the page says so: after
-**Create field**, the new field opens on **Where it appears** with "Not on any
-form yet".
+**Create field**, a notice says the field is on no form yet, and the new field
+opens on **Where it appears** with "Not on any form yet".
 
 Attachments are managed from either side, and both write the same
 `custom_field_assignments` rows through the same per-node routes:
@@ -4529,7 +4536,13 @@ Attachments are managed from either side, and both write the same
   category, type and item the field is attached to; **Add a place** picks a
   category, then optionally a type, then optionally an item;
 - from the node, on **Admin → Categories**: the **Fields** subsection of an
-  expanded category, type or item, as before.
+  expanded category, type or item, as before. Each field name there links to the
+  field on the Custom Fields page, and the order is set only on that page.
+
+The Custom Fields page keeps the list it has loaded. If a field was changed
+elsewhere while a form for it holds unsaved edits, the edits are kept with a
+notice, and a Save then overwrites the other change; **Cancel** loads the latest.
+The server still refuses to remove an option a ticket holds, whoever saves.
 
 Each attachment has:
 
