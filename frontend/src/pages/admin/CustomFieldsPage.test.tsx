@@ -667,9 +667,9 @@ describe('Options', () => {
     )
   })
 
-  it('puts a refused delete back, with its fresh count, so it can be retired without Cancel', async () => {
+  it('puts back a refused delete a ticket now holds, where it was, and keeps the unused ones deleted', async () => {
     const { server, row } = await openDept()
-    // Someone files a ticket with IT after the counts were read.
+    // Someone files a ticket with IT after the counts were read; Legal stays at 0.
     server.setUsage('f-dept', {
       tickets_with_value: 35,
       values: [
@@ -678,17 +678,24 @@ describe('Options', () => {
       ],
     })
     server.fail.patch = refusal(409, 'conflict', 'option "IT" is in use; retire it instead')
+    await userEvent.click(within(row).getByRole('checkbox', { name: 'Show retired' }))
     // Another edit in the same draft must survive the refusal.
     await userEvent.click(within(row).getByRole('button', { name: 'Add option' }))
     await userEvent.type(within(row).getByLabelText('Option 4'), 'Ops')
     await userEvent.click(within(row).getByRole('button', { name: 'Delete IT' }))
+    await userEvent.click(within(row).getByRole('button', { name: 'Delete Legal' }))
     await userEvent.click(within(row).getByRole('button', { name: 'Save' }))
 
     await within(row).findByRole('alert')
     const retire = await within(row).findByRole('button', { name: 'Retire IT' })
     expect(within(row).getByText('1 ticket')).toBeTruthy()
     expect(within(row).queryByRole('button', { name: 'Delete IT' })).toBeNull()
-    expect(within(row).getByDisplayValue('Ops')).toBeTruthy()
+    // IT is back where it was (third), ahead of the option typed in since.
+    expect([1, 2, 3, 4].map((n) => (within(row).queryByLabelText(`Option ${n}`) as HTMLInputElement | null)?.value))
+      .toEqual(['Finance', 'Sales, EMEA', 'IT', 'Ops'])
+    // Legal was unused, so its delete stands.
+    expect(within(row).queryByText('Legal')).toBeNull()
+    expect(within(row).queryByRole('button', { name: /Legal/ })).toBeNull()
 
     // And the retire goes through.
     server.fail.patch = undefined
@@ -697,12 +704,85 @@ describe('Options', () => {
     await waitFor(() =>
       expect(server.patch).toHaveBeenLastCalledWith('/admin/custom-fields/f-dept', {
         options: ['Finance', 'Sales, EMEA', 'Ops'],
-        retired_options: ['Marketing', 'Legal', 'IT'],
+        retired_options: ['Marketing', 'IT'],
       }),
     )
   })
 })
 
+describe('After a Save, before the list comes back', () => {
+  // The list is refetched after a Save; until it lands the row still holds the
+  // old definition. The form is built from what the server saved and must not
+  // go back to that old copy, or a second Save would send it again.
+  async function holdListThen(server: Awaited<ReturnType<typeof renderPage>>['server']) {
+    let release: () => void = () => {}
+    server.hold.list = new Promise<void>((r) => { release = r })
+    return () => { server.hold.list = undefined; release() }
+  }
+
+  async function openDeptHere() {
+    const view = await renderPage()
+    const row = await expand('Department')
+    await within(row).findByText('Fixed: 34 tickets have a value for this field.')
+    return { ...view, row }
+  }
+
+  it('keeps the saved value in the form and Save disabled for the whole window', async () => {
+    const { server } = await renderPage()
+    const row = await expand('Asset Tag')
+    const name = await within(row).findByLabelText('Name')
+    await userEvent.clear(name)
+    await userEvent.type(name, 'Asset number')
+    const release = await holdListThen(server)
+    await userEvent.click(within(row).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(server.patch).toHaveBeenCalled())
+
+    // Give the page every chance to snap back to the old row, then look.
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 20))
+    expect((within(row).getByLabelText('Name') as HTMLInputElement).value).toBe('Asset number')
+    expect((within(row).getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(within(row).queryByText(/changed elsewhere/)).toBeNull()
+
+    release()
+    await waitFor(() => expect(within(screen.getByRole('group', { name: 'Asset number' })).getByLabelText('Name')).toBeTruthy())
+    expect((within(row).getByLabelText('Name') as HTMLInputElement).value).toBe('Asset number')
+  })
+
+  it('a delete saved, then another edit in the window: the second Save does not bring the option back', async () => {
+    const { server, row } = await openDeptHere()
+    const release = await holdListThen(server)
+    await userEvent.click(within(row).getByRole('button', { name: 'Delete IT' }))
+    await userEvent.click(within(row).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(server.patch).toHaveBeenCalledTimes(1))
+    await within(row).findByRole('button', { name: 'Add option' })
+    expect(within(row).queryByDisplayValue('IT')).toBeNull()
+
+    await userEvent.click(within(row).getByRole('button', { name: 'Add option' }))
+    await userEvent.type(within(row).getByLabelText('Option 3'), 'Ops')
+    await userEvent.click(within(row).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(server.patch).toHaveBeenCalledTimes(2))
+    expect(server.patch).toHaveBeenLastCalledWith('/admin/custom-fields/f-dept', { options: ['Finance', 'Sales, EMEA', 'Ops'] })
+    release()
+  })
+
+  it('a retire saved, then another edit in the window: the second Save does not re-offer the option', async () => {
+    const { server, row } = await openDeptHere()
+    const release = await holdListThen(server)
+    await userEvent.click(within(row).getByRole('button', { name: 'Retire IT' }))
+    await userEvent.click(within(row).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(server.patch).toHaveBeenCalledTimes(1))
+    await within(row).findByRole('button', { name: 'Add option' })
+    expect(within(row).queryByDisplayValue('IT')).toBeNull()
+
+    await userEvent.click(within(row).getByRole('button', { name: 'Add option' }))
+    await userEvent.type(within(row).getByLabelText('Option 3'), 'Ops')
+    await userEvent.click(within(row).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(server.patch).toHaveBeenCalledTimes(2))
+    // IT is already retired by the first save, so the lists differ from it only by Ops.
+    expect(server.patch).toHaveBeenLastCalledWith('/admin/custom-fields/f-dept', { options: ['Finance', 'Sales, EMEA', 'Ops'] })
+    release()
+  })
+})
 // Opens the Add a place form of an expanded row and returns queries inside it.
 // A row with no places has it open already; clicking again does not close it.
 async function openAddPlace(row: HTMLElement) {

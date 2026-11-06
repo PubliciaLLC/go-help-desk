@@ -783,18 +783,34 @@ function FieldRow({
     },
   })
 
-  // The form is built from `base`, a copy of the definition. When the stored one
-  // changes under it (someone else's edit, found by a refetch) the form is
-  // rebuilt from it, unless it holds unsaved edits: those are kept, with a
-  // notice, and a Save then overwrites the other change (last writer wins).
-  // Done while rendering, as React advises for state that follows from data
-  // that has just arrived.
+  // The form is built from `base`, a copy of the definition. When the list's copy
+  // changes (someone else's edit, found by a refetch) the form is rebuilt from
+  // it, unless it holds unsaved edits: those are kept, with a notice, and a Save
+  // then overwrites the other change (last writer wins).
+  //
+  // Only a change in the list's copy counts. After this form's own Save, `base`
+  // is the saved definition while the list still holds the old row until its
+  // refetch lands; comparing `base` with the list then would snap the form back
+  // to the old row, and a Save in that window would send the old option lists
+  // again. Done while rendering, as React advises for state that follows from
+  // data that has just arrived.
   const [base, setBase] = useState(def)
+  const [lastDef, setLastDef] = useState(def)
+  const [elsewhere, setElsewhere] = useState(false)
   const [formEpoch, setFormEpoch] = useState(0)
   const [formDirty, setFormDirty] = useState(false)
-  const changedElsewhere = definitionKey(def) !== definitionKey(base)
-  if (changedElsewhere && !formDirty) setBase(def)
-  const rebuild = (from: FieldDef) => { setBase(from); setFormEpoch((e) => e + 1) }
+  if (definitionKey(def) !== definitionKey(lastDef)) {
+    setLastDef(def)
+    if (definitionKey(def) !== definitionKey(base)) {
+      if (formDirty) setElsewhere(true)
+      else setBase(def)
+    }
+  } else if (elsewhere && !formDirty) {
+    // The edits that held the form back are gone; take the latest.
+    setBase(def)
+    setElsewhere(false)
+  }
+  const rebuild = (from: FieldDef) => { setBase(from); setElsewhere(false); setFormEpoch((e) => e + 1) }
 
   return (
     <div role="group" aria-label={def.name} id={`cf-${def.id}`} className="border-b last:border-b-0">
@@ -852,7 +868,7 @@ function FieldRow({
               def={base}
               showRetired={showRetired}
               onShowRetired={setShowRetired}
-              changedElsewhere={changedElsewhere}
+              changedElsewhere={elsewhere}
               onDirtyChange={setFormDirty}
               onSaved={rebuild}
               onCancel={() => rebuild(def)}
