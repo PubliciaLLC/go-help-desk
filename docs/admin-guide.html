@@ -423,6 +423,7 @@ Facilities
 <ul>
   <li><strong>New field</strong> asks for a name and a type: Text, Text area, Number or Select. A select field needs at least one option. The name must be unique.</li>
   <li><strong>Drag to reorder.</strong> Each row has a drag handle that works with a pointer and with the keyboard. The new order is saved when you drop. If someone else added a field since you opened the page, the save is refused and the page shows "the field list has changed; reload and try again". See <a href="#admin-cf-order">Order</a> below.</li>
+  <li>If the list cannot be refreshed after it has loaded, the page keeps showing it and says "Couldn't refresh the list. Showing what was loaded before."</li>
   <li><strong>Show inactive</strong> lists deactivated fields too, marked <em>Inactive</em>, each with a <strong>Reactivate</strong> button.</li>
   <li>A link such as <code>/admin/custom-fields?field=&lt;id&gt;</code> opens the page with that field already open. The field names on the Categories page use it.</li>
 </ul>
@@ -448,11 +449,12 @@ Facilities
 <h3 id="admin-cf-options">Options</h3>
 <p>Open a select field to edit its options. Each option shows how many tickets hold it. You can add, rename, reorder (drag), retire and delete options, and <strong>Save</strong> applies the whole edit. Blank and duplicate options are refused.</p>
 <ul>
-  <li><strong>Retire</strong> takes an option out of use without losing it. A retired option is not offered on new tickets or when editing a ticket. Tickets that already hold it keep showing it, and the ticket's edit box lists it greyed out as <em>Value (retired)</em>. The server refuses to set a ticket to a retired option (<code>400 bad_request</code>).</li>
+  <li><strong>Retire</strong> takes an option out of use without losing it. A retired option is not offered on new tickets or when editing a ticket. Tickets that already hold it keep showing it, and the ticket's edit box lists it greyed out as <em>Value (retired)</em>. The card marks any held value that is not among the options in use this way, so it also marks a value stored before 1.3 that was never an option. The server refuses to set a ticket to a retired option (<code>400 bad_request</code>).</li>
   <li><strong>Show retired</strong> lists the retired options, each with <strong>Bring back</strong>, which returns it to use.</li>
-  <li><strong>Delete</strong> is offered only on an option no ticket holds. The server checks again when you save, under a lock on the field, and answers <code>409 conflict</code> if any ticket holds the value, whichever client sent the change. To remove a value that tickets hold, retire it instead.</li>
+  <li><strong>Delete</strong> is offered only on an option no ticket holds. The server checks again when you save, under a lock on the field, and answers <code>409 conflict</code> if any ticket holds the value, whichever client sent the change. When the page gets that refusal it puts the option back where it was in the list, so you can retire it instead without starting the edit over. To remove a value that tickets hold, retire it.</li>
   <li><strong>Rename.</strong> Renaming an option that tickets hold retires the old text and adds the new text in its place, so those tickets keep showing the old text. Renaming an unused option edits it in place.</li>
   <li>A select field always keeps at least one option in use.</li>
+  <li><strong>Cancel</strong> drops your unsaved edits to the field. If someone else changes the field while you are editing it, your edits are kept and the page says "This field was changed elsewhere. Cancel to load the latest." <strong>Save</strong> then overwrites their change: the last save wins.</li>
 </ul>
 
 <h3 id="admin-cf-deactivate">Deactivating a field</h3>
