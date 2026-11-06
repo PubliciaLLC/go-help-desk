@@ -64,6 +64,7 @@ func (f atomicFixture) put(t *testing.T, h *harness, body map[string]string) int
 func (f atomicFixture) stored(t *testing.T, h *harness) map[string]string {
 	t.Helper()
 	res := h.do(t, http.MethodGet, "/api/v1/tickets/"+f.ticketID+"/custom-fields", nil)
+	defer res.Body.Close()
 	var got []customfield.TicketFieldValue
 	decodeJSON(t, res, &got)
 	out := map[string]string{}
