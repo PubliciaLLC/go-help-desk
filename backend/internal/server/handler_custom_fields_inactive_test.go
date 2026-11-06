@@ -85,6 +85,7 @@ func TestPutCustomFields_InactiveFieldKeepsItsStoredValue(t *testing.T) {
 	}
 
 	res := h.do(t, http.MethodGet, "/api/v1/tickets/"+ticketID+"/custom-fields", nil)
+	defer res.Body.Close()
 	var got []customfield.TicketFieldValue
 	decodeJSON(t, res, &got)
 	require.Len(t, got, 1)

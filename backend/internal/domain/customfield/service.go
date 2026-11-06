@@ -134,26 +134,70 @@ func (s *Service) ResolveFieldsForCTI(ctx context.Context, categoryID uuid.UUID,
 	return kept, nil
 }
 
-// SetValue upserts or deletes a custom field value on a ticket.
-// An empty value string deletes the row. Validates that the field is active
-// and that select values are within the allowed options.
-func (s *Service) SetValue(ctx context.Context, ticketID, fieldDefID uuid.UUID, value string) error {
-	def, err := s.store.GetFieldDef(ctx, fieldDefID)
-	if err != nil {
-		return fmt.Errorf("field not found: %w", err)
-	}
+// checkWritable is the rule for a write to one field: it must be active, and a
+// select value must be one of its options. An empty value is a clear, which is
+// held to the first rule and exempt from the second.
+func checkWritable(def FieldDef, value string) error {
 	// Before the empty-value branch: a clear is a write too. Checking after it
 	// let a caller wipe the stored value of a deactivated field by sending "".
 	if !def.Active {
 		return Invalid(fmt.Sprintf("field %q is deactivated", def.Name))
 	}
 	if value == "" {
-		return s.store.DeleteValue(ctx, ticketID, fieldDefID)
+		return nil
 	}
 	if def.FieldType == FieldTypeSelect && !slices.Contains(def.Options, value) {
 		return Invalid(fmt.Sprintf("value %q is not a valid option for field %q", value, def.Name))
 	}
+	return nil
+}
+
+// SetValue upserts or deletes a custom field value on a ticket.
+// The active check comes first (checkWritable), so an empty value on a
+// deactivated field is refused like any other write; on an active field an
+// empty value deletes the row. A select value must be one of the field's
+// options.
+func (s *Service) SetValue(ctx context.Context, ticketID, fieldDefID uuid.UUID, value string) error {
+	def, err := s.store.GetFieldDef(ctx, fieldDefID)
+	if err != nil {
+		return fmt.Errorf("field not found: %w", err)
+	}
+	if err := checkWritable(def, value); err != nil {
+		return err
+	}
+	if value == "" {
+		return s.store.DeleteValue(ctx, ticketID, fieldDefID)
+	}
 	return s.store.UpsertValue(ctx, ticketID, fieldDefID, value)
+}
+
+// SetValues is SetValue for several fields of one ticket, all or none: every
+// entry is checked under a lock on its definition before any is written, so one
+// refused entry leaves the ticket as it was. Whether each field belongs to the
+// ticket is the caller's to settle first; this knows only the definitions.
+func (s *Service) SetValues(ctx context.Context, ticketID uuid.UUID, values map[uuid.UUID]string) error {
+	if len(values) == 0 {
+		return nil
+	}
+	return s.store.SetValues(ctx, ticketID, values, func(defs map[uuid.UUID]FieldDef) error {
+		// Sorted so a request with two bad entries gets the same answer every
+		// time, not whichever the map happened to yield first.
+		ids := make([]uuid.UUID, 0, len(values))
+		for id := range values {
+			ids = append(ids, id)
+		}
+		slices.SortFunc(ids, func(a, b uuid.UUID) int { return strings.Compare(a.String(), b.String()) })
+		for _, id := range ids {
+			def, ok := defs[id]
+			if !ok {
+				return fmt.Errorf("field not found: %w", ErrNotFound)
+			}
+			if err := checkWritable(def, values[id]); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (s *Service) ListValuesForTicket(ctx context.Context, ticketID uuid.UUID) ([]TicketFieldValue, error) {

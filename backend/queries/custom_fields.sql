@@ -11,6 +11,17 @@ SELECT * FROM custom_field_defs ORDER BY sort_order, name;
 -- name: GetCustomFieldDef :one
 SELECT * FROM custom_field_defs WHERE id = $1;
 
+-- Takes a shared row lock on each named definition, in id order, held until the
+-- transaction ends. A value write holds it while it checks the definition, so a
+-- change that takes the row FOR UPDATE (deactivate, retire an option) waits for
+-- the write instead of landing between its check and its insert. Sorted so two
+-- writers naming the same fields lock them in the same order and cannot deadlock.
+-- name: LockCustomFieldDefsForShare :many
+SELECT * FROM custom_field_defs
+WHERE id = ANY(sqlc.arg(ids)::uuid[])
+ORDER BY id
+FOR SHARE;
+
 -- name: UpdateCustomFieldDef :exec
 UPDATE custom_field_defs
 SET name = $2, field_type = $3, options = $4, sort_order = $5, active = $6

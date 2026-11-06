@@ -772,6 +772,12 @@ type Querier interface {
 	ListWebhookConfigs(ctx context.Context) ([]WebhookConfig, error)
 	// No event column: the history shows outcomes, never content.
 	ListWebhookDeliveries(ctx context.Context, webhookID uuid.UUID) ([]ListWebhookDeliveriesRow, error)
+	// Takes a shared row lock on each named definition, in id order, held until the
+	// transaction ends. A value write holds it while it checks the definition, so a
+	// change that takes the row FOR UPDATE (deactivate, retire an option) waits for
+	// the write instead of landing between its check and its insert. Sorted so two
+	// writers naming the same fields lock them in the same order and cannot deadlock.
+	LockCustomFieldDefsForShare(ctx context.Context, ids []uuid.UUID) ([]CustomFieldDef, error)
 	// Held until the transaction ends. FOR UPDATE below locks a row only when there
 	// is one, so two first-time saves of one template would both read "no override"
 	// and the second would overwrite the first (and record the shipped text as what

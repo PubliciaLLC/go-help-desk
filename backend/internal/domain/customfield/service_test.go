@@ -83,6 +83,29 @@ func (f *fakeStore) ListValuesForTicket(context.Context, uuid.UUID) ([]customfie
 	return nil, nil
 }
 
+// SetValues follows the contract the real store has: check sees the
+// definitions of the entries that name one, and nothing is written unless it
+// returns nil.
+func (f *fakeStore) SetValues(_ context.Context, ticketID uuid.UUID, entries map[uuid.UUID]string, check func(map[uuid.UUID]customfield.FieldDef) error) error {
+	defs := map[uuid.UUID]customfield.FieldDef{}
+	for id := range entries {
+		if d, ok := f.defs[id]; ok {
+			defs[id] = d
+		}
+	}
+	if err := check(defs); err != nil {
+		return err
+	}
+	for id, v := range entries {
+		if v == "" {
+			delete(f.values, [2]uuid.UUID{ticketID, id})
+		} else {
+			f.values[[2]uuid.UUID{ticketID, id}] = v
+		}
+	}
+	return nil
+}
+
 func TestCreateFieldDef_Validation(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -147,6 +170,62 @@ func TestSetValue(t *testing.T) {
 	store.values[key] = "red"
 	require.Error(t, svc.SetValue(ctx, ticketID, sel.ID, ""), "a deactivated field cannot be cleared")
 	require.Equal(t, "red", store.values[key], "a refused clear leaves the stored value alone")
+}
+
+func TestSetValues(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	svc := customfield.NewService(store)
+	ticketID := uuid.New()
+
+	text, err := svc.CreateFieldDef(ctx, "Serial", customfield.FieldTypeText, nil, 1)
+	require.NoError(t, err)
+	sel, err := svc.CreateFieldDef(ctx, "Colour", customfield.FieldTypeSelect, []string{"red", "blue"}, 2)
+	require.NoError(t, err)
+	old, err := svc.CreateFieldDef(ctx, "Old", customfield.FieldTypeText, nil, 3)
+	require.NoError(t, err)
+	key := func(id uuid.UUID) [2]uuid.UUID { return [2]uuid.UUID{ticketID, id} }
+	store.values[key(old.ID)] = "stale"
+
+	t.Run("every entry is written, a blank one clears", func(t *testing.T) {
+		require.NoError(t, svc.SetValues(ctx, ticketID, map[uuid.UUID]string{
+			text.ID: "SN-1", sel.ID: "red", old.ID: "",
+		}))
+		require.Equal(t, "SN-1", store.values[key(text.ID)])
+		require.Equal(t, "red", store.values[key(sel.ID)])
+		require.NotContains(t, store.values, key(old.ID))
+	})
+
+	// One bad entry among good ones: none of them lands. Each case starts from
+	// the same stored state so "nothing written" is a comparison, not a hope.
+	inactive, err := svc.CreateFieldDef(ctx, "Retired", customfield.FieldTypeText, nil, 4)
+	require.NoError(t, err)
+	inactive.Active = false
+	require.NoError(t, svc.UpdateFieldDef(ctx, inactive))
+
+	for _, tc := range []struct {
+		name    string
+		entries map[uuid.UUID]string
+		wantErr error
+	}{
+		{"option outside the list", map[uuid.UUID]string{text.ID: "SN-2", sel.ID: "green"}, customfield.ErrValidation},
+		{"deactivated field", map[uuid.UUID]string{text.ID: "SN-2", inactive.ID: "x"}, customfield.ErrValidation},
+		{"clear of a deactivated field", map[uuid.UUID]string{text.ID: "SN-2", inactive.ID: ""}, customfield.ErrValidation},
+		{"unknown field", map[uuid.UUID]string{text.ID: "SN-2", uuid.New(): "x"}, customfield.ErrNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := map[[2]uuid.UUID]string{}
+			for k, v := range store.values {
+				before[k] = v
+			}
+			require.ErrorIs(t, svc.SetValues(ctx, ticketID, tc.entries), tc.wantErr)
+			require.Equal(t, before, store.values, "a refused entry leaves every other entry unwritten")
+		})
+	}
+
+	t.Run("nothing to write is not an error", func(t *testing.T) {
+		require.NoError(t, svc.SetValues(ctx, ticketID, nil))
+	})
 }
 
 // Category fields come first, then type, then item: the order the new-ticket

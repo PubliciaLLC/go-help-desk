@@ -7,19 +7,30 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/dbretry"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/sqlc-dev/pqtype"
 )
 
 // Store implements customfield.Store.
-type Store struct{ q *dbgen.Queries }
+type Store struct {
+	q  *dbgen.Queries
+	db *sql.DB // nil: SetValues joins the transaction q is already bound to
+}
 
-// New returns a Store backed by the given Queries.
-func New(q *dbgen.Queries) *Store { return &Store{q: q} }
+// New returns a Store backed by the given Queries. db is what SetValues opens
+// its transaction on. The integration harness passes nil: it already wraps each
+// test in a transaction that is rolled back, over the Queries it gives every
+// store, and a second transaction on another connection could not see the
+// rows that one has written (testutil.JoiningTxRunner is the same trade). A nil
+// db therefore does not exercise commit or rollback.
+func New(q *dbgen.Queries, db *sql.DB) *Store { return &Store{q: q, db: db} }
 
 // ── Field definitions ──────────────────────────────────────────────────────────
 
@@ -203,6 +214,71 @@ func (s *Store) ListValuesForTicket(ctx context.Context, ticketID uuid.UUID) ([]
 		}
 	}
 	return out, nil
+}
+
+// SetValues locks the named definitions FOR SHARE in id order, lets check
+// refuse the batch, and writes every entry in the same transaction. The lock is
+// what makes check's answer still true when the rows are written: an admin
+// change to a definition takes the row FOR UPDATE and waits for this
+// transaction to finish.
+func (s *Store) SetValues(ctx context.Context, ticketID uuid.UUID, entries map[uuid.UUID]string, check func(map[uuid.UUID]customfield.FieldDef) error) error {
+	if s.db == nil {
+		return s.setValues(ctx, s.q, ticketID, entries, check)
+	}
+	// Run again when Postgres aborts the transaction to break a lock cycle
+	// (dbretry has the rules). Each attempt starts clean and check is called
+	// afresh.
+	return dbretry.Do(ctx, nil, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("beginning transaction: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }() // a no-op once committed
+		if err := s.setValues(ctx, s.q.WithTx(tx), ticketID, entries, check); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing field values: %w", err)
+		}
+		return nil
+	})
+}
+
+func (s *Store) setValues(ctx context.Context, q *dbgen.Queries, ticketID uuid.UUID, entries map[uuid.UUID]string, check func(map[uuid.UUID]customfield.FieldDef) error) error {
+	// Sorted: the lock query returns rows in id order, and writing in the same
+	// order keeps two batches that name the same fields from taking the rows of
+	// ticket_custom_field_values in opposite orders.
+	ids := make([]uuid.UUID, 0, len(entries))
+	for id := range entries {
+		ids = append(ids, id)
+	}
+	slices.SortFunc(ids, func(a, b uuid.UUID) int { return strings.Compare(a.String(), b.String()) })
+
+	rows, err := q.LockCustomFieldDefsForShare(ctx, ids)
+	if err != nil {
+		return fmt.Errorf("locking field defs: %w", err)
+	}
+	defs := make(map[uuid.UUID]customfield.FieldDef, len(rows))
+	for _, r := range rows {
+		defs[r.ID] = defFromRow(r)
+	}
+	if err := check(defs); err != nil {
+		return err
+	}
+
+	for _, id := range ids {
+		if entries[id] == "" {
+			if err := q.DeleteCustomFieldValue(ctx, dbgen.DeleteCustomFieldValueParams{TicketID: ticketID, FieldDefID: id}); err != nil {
+				return fmt.Errorf("clearing field value: %w", err)
+			}
+			continue
+		}
+		err := q.UpsertCustomFieldValue(ctx, dbgen.UpsertCustomFieldValueParams{TicketID: ticketID, FieldDefID: id, Value: entries[id]})
+		if err := mapWriteError("saving field value", err, "", "the ticket or the field does not exist"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
