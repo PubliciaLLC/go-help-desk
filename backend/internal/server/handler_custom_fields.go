@@ -278,6 +278,12 @@ func (s *Server) handlePutTicketCustomFields(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// All or nothing. Every entry is parsed and held to the check above before
+	// anything is written, and SetValues then checks the rest and writes in one
+	// transaction. The loop that stood here wrote entry by entry, in map order,
+	// so one refused entry left the ones before it saved and the ones after it
+	// not, differently on each try.
+	values := make(map[uuid.UUID]string, len(body))
 	for fieldDefIDStr, value := range body {
 		fieldDefID, err := uuid.Parse(fieldDefIDStr)
 		if err != nil {
@@ -289,10 +295,11 @@ func (s *Server) handlePutTicketCustomFields(w http.ResponseWriter, r *http.Requ
 				"field_def_id is not a field on this ticket: "+fieldDefIDStr)
 			return
 		}
-		if err := s.customFields.SetValue(r.Context(), ticketID, fieldDefID, value); err != nil {
-			handleError(w, err)
-			return
-		}
+		values[fieldDefID] = value
+	}
+	if err := s.customFields.SetValues(r.Context(), ticketID, values); err != nil {
+		handleError(w, err)
+		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

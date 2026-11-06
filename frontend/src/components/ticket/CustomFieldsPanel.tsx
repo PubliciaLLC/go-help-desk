@@ -54,7 +54,7 @@ export function CustomFieldsPanel({
   const [saveError, setSaveError] = useState('')
 
   const saveMutation = useMutation({
-    mutationFn: () => putTicketCustomFields(ticketId, editValues!),
+    mutationFn: (changed: Record<string, string>) => putTicketCustomFields(ticketId, changed),
     onSuccess: () => {
       setEditValues(null)
       setSaveError('')
@@ -114,6 +114,23 @@ export function CustomFieldsPanel({
   if (rows.length === 0) return null
 
   const canEdit = rows.some((r) => r.editable)
+
+  // Only what differs from what is stored. The server checks every field it is
+  // sent, so sending a field the staff member did not touch lets a stale value
+  // (an option since retired, say) refuse a save that was about something else.
+  function save() {
+    const changed: Record<string, string> = {}
+    for (const r of rows) {
+      const next = editValues?.[r.id]
+      if (r.editable && next !== undefined && next !== r.value) changed[r.id] = next
+    }
+    if (Object.keys(changed).length === 0) {
+      setEditValues(null)
+      setSaveError('')
+      return
+    }
+    saveMutation.mutate(changed)
+  }
 
   function renderInput(r: Row) {
     const id = `custom-field-${r.id}`
@@ -210,7 +227,7 @@ export function CustomFieldsPanel({
             <Button
               size="sm"
               className="h-7 text-xs"
-              onClick={() => saveMutation.mutate()}
+              onClick={save}
               disabled={saveMutation.isPending}
             >
               {saveMutation.isPending ? 'Saving…' : 'Save'}

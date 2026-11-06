@@ -152,6 +152,89 @@ describe('CustomFieldsPanel, staff', () => {
   })
 })
 
+// Bug 3 (#603): Save used to send every editable field, so one stale value the
+// server now refuses (a retired option, say) blocked a change to any other field.
+describe('CustomFieldsPanel, Save sends only what changed', () => {
+  it('sends only the field that was edited', async () => {
+    const region = def('f1', 'Region')
+    const owner = def('f2', 'Owner')
+    const put = vi.spyOn(ticketsApi, 'putTicketCustomFields').mockResolvedValue()
+    setup({
+      fields: [assignment(region, 'category'), assignment(owner, 'category')],
+      values: [held(region, 'EMEA'), held(owner, 'Ada')],
+      staff: true,
+    })
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    await userEvent.type(screen.getByLabelText('Owner'), ' L')
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(put).toHaveBeenCalledWith('t1', { f2: 'Ada L' }))
+  })
+
+  it('sends an emptied field as an empty string, which clears it', async () => {
+    const region = def('f1', 'Region')
+    const put = vi.spyOn(ticketsApi, 'putTicketCustomFields').mockResolvedValue()
+    setup({ fields: [assignment(region, 'category')], values: [held(region, 'EMEA')], staff: true })
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    await userEvent.clear(screen.getByLabelText('Region'))
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(put).toHaveBeenCalledWith('t1', { f1: '' }))
+  })
+
+  it('does not send a field that was changed and then put back', async () => {
+    const region = def('f1', 'Region')
+    const owner = def('f2', 'Owner')
+    const put = vi.spyOn(ticketsApi, 'putTicketCustomFields').mockResolvedValue()
+    setup({
+      fields: [assignment(region, 'category'), assignment(owner, 'category')],
+      values: [held(region, 'EMEA')],
+      staff: true,
+    })
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    await userEvent.type(screen.getByLabelText('Region'), 'X')
+    await userEvent.type(screen.getByLabelText('Region'), '{Backspace}')
+    await userEvent.type(screen.getByLabelText('Owner'), 'Ada')
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(put).toHaveBeenCalledWith('t1', { f2: 'Ada' }))
+  })
+
+  it('sends nothing, and leaves edit mode, when nothing changed', async () => {
+    const region = def('f1', 'Region')
+    const put = vi.spyOn(ticketsApi, 'putTicketCustomFields').mockResolvedValue()
+    setup({ fields: [assignment(region, 'category')], values: [held(region, 'EMEA')], staff: true })
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Save' })).toBeNull())
+    expect(put).not.toHaveBeenCalled()
+  })
+
+  it('lets a ticket holding a retired option save another field', async () => {
+    // The stored value is no longer among the field's options. It is not sent,
+    // so the server has nothing to refuse it for.
+    const colour = def('f1', 'Region', { field_type: 'select', options: ['red', 'blue'] })
+    const owner = def('f2', 'Owner')
+    const put = vi.spyOn(ticketsApi, 'putTicketCustomFields').mockResolvedValue()
+    setup({
+      fields: [assignment(colour, 'category'), assignment(owner, 'category')],
+      values: [held(colour, 'green')],
+      staff: true,
+    })
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    await userEvent.type(screen.getByLabelText('Owner'), 'Ada')
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(put).toHaveBeenCalledWith('t1', { f2: 'Ada' }))
+  })
+})
+
 describe('CustomFieldsPanel, requester', () => {
   it('shows only fields that hold a value, in the resolved order, with no Edit', async () => {
     const tier = def('f1', 'Tier')

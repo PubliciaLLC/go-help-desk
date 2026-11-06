@@ -10,6 +10,7 @@ import (
 	"time"
 
 	uuid "github.com/google/uuid"
+	"github.com/lib/pq"
 	"github.com/sqlc-dev/pqtype"
 )
 
@@ -308,6 +309,49 @@ func (q *Queries) ListCustomFieldValuesForTicket(ctx context.Context, ticketID u
 			&i.FieldOptions,
 			&i.Value,
 			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockCustomFieldDefsForShare = `-- name: LockCustomFieldDefsForShare :many
+SELECT id, name, field_type, options, sort_order, active, created_at FROM custom_field_defs
+WHERE id = ANY($1::uuid[])
+ORDER BY id
+FOR SHARE
+`
+
+// Takes a shared row lock on each named definition, in id order, held until the
+// transaction ends. A value write holds it while it checks the definition, so a
+// change that takes the row FOR UPDATE (deactivate, retire an option) waits for
+// the write instead of landing between its check and its insert. Sorted so two
+// writers naming the same fields lock them in the same order and cannot deadlock.
+func (q *Queries) LockCustomFieldDefsForShare(ctx context.Context, ids []uuid.UUID) ([]CustomFieldDef, error) {
+	rows, err := q.db.QueryContext(ctx, lockCustomFieldDefsForShare, pq.Array(ids))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CustomFieldDef
+	for rows.Next() {
+		var i CustomFieldDef
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.FieldType,
+			&i.Options,
+			&i.SortOrder,
+			&i.Active,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
