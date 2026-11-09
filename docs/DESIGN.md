@@ -410,11 +410,14 @@ ticket's own guest columns, and `follow_up_of` says what it continues.
   annotate and attach to one (the decision above). Staff do that over the API or
   MCP, not from the page.
 - **Custom-field edits are not atomic with a close.** A reporter's custom-field
-  edit is checked once (`CanRequesterWrite`) and then written value by value
-  through the custom-field service, which is outside the ticket transaction. A
-  close landing after the check leaves **all** the values in that request
-  written on a closed ticket, and a close landing mid-loop leaves the remainder.
-  Replies, uploads and links, which carry the thread, are atomic.
+  edit (through the API; the ticket page offers Edit only to staff and admin) is
+  checked once (`CanRequesterWrite`) and then written in a single transaction of
+  its own through the custom-field service (`SetValues`), which is outside the
+  ticket transaction and does not look at the ticket's status. The request's
+  values are therefore written together or not at all, never in part. A close
+  landing after the check still leaves **all** the values in that request
+  written on a closed ticket. Replies, uploads and links, which carry the
+  thread, are atomic.
 
 - Statuses are customizable — admins can add intermediate statuses, but
   New, Resolved and Closed are system statuses with special behavior. The
@@ -4443,26 +4446,188 @@ Admins can attach arbitrary structured data to tickets beyond the fixed fields (
 Defined globally under **Admin → Custom Fields**. Each definition has:
 
 - **Name** (unique)
-- **Type**: `text`, `textarea`, `number`, `select`
-- **Options** (select only): list of allowed values
-- **Sort order**: controls display order
-- **Active flag**: field defs are never hard-deleted — only deactivated. Deactivated fields do not appear on new ticket forms but existing values are preserved for history.
+- **Type**: `text`, `textarea`, `number`, `select`. The type can be changed
+  only while no ticket holds a value for the field; after that
+  `PATCH /admin/custom-fields/{id}` refuses a change with `409 conflict`, and
+  the admin page shows the type as fixed. A `number` field accepts only a
+  number; see *Values*.
+- **Options** (select only): an ordered list of the values that may be chosen,
+  stored as a JSON array of strings, so an option may contain a comma. The admin
+  page edits them as a list: add, edit, reorder, retire, bring back, delete.
+  Blank and duplicate options (a retired option's text counts) are refused by
+  the page. The API refuses only a value that is in both `options` and
+  `retired_options` (`400 bad_request`); it does not check for a blank value or
+  for a duplicate within one list. On any other type the server stores `options`
+  as sent and nothing reads it.
+- **Retired options** (select only): see *Options: retiring and deleting*. On
+  any other type `retired_options` is stored as sent, like `options`, and
+  nothing reads it.
+- **Field number** (`sort_order`): orders fields within each level. Set by
+  dragging on the Custom Fields page, with a pointer or the keyboard (Space to
+  pick up, arrow keys to move, Space to drop). See
+  *Display order*.
+- **Active flag**: field defs are never hard-deleted — only deactivated.
 
-### Assignment to CTI Nodes
+Every change an administrator makes to a definition, its options or its
+attachments is written to the audit log in the same transaction as the change.
+See *Audit*.
 
-Fields are assigned to CTI nodes (category, type, or item) from the CTI editor (**Admin → Categories**). Each assignment has:
+`GET /admin/custom-fields` returns every definition, inactive ones included, in
+field-number order, each with `place_count`: the number of categories, types and
+items the field is attached to (0 for a field on no form). `PUT
+/admin/custom-fields/order` sets the numbers: the body lists every definition
+exactly once, position *n* becoming number *n*, and the answer is the same list
+as `GET`. A list that repeats an id is `400 bad_request`; a list that does not
+match the stored definitions (one was added since the page read them) is
+`409 conflict` and writes nothing.
 
-- **Visible on new**: whether the field appears on the new-ticket form
-- **Required on new**: whether the field must be filled before the form can be submitted
-- **Sort order**: display order within the node
+### Deactivating a field
 
-The fields available on a ticket are the union of all fields assigned to its selected category, type, and item, ordered by scope level (category → type → item) then sort order within each level.
+A field can be deactivated whether or not tickets use it.
+
+- It is not shown on the new-ticket form.
+- On a ticket that holds a value it is still shown, read-only, to everyone who
+  could see it before. On a ticket with no value it is not shown.
+- Nobody can write it: `PUT /tickets/{id}/custom-fields` refuses a value for it,
+  an empty one (a clear) included, with `400 bad_request`. On ticket creation a
+  value for it is dropped and reported in `warnings` (see *Values*).
+- The Custom Fields page asks for confirmation before it deactivates a field, and hides inactive fields. **Show inactive** lists them,
+  marked, each with **Reactivate**. The API list always includes them.
+
+Reactivating restores the field as it was: deactivation does not touch its
+attachments, options or number.
+
+### Options: retiring and deleting
+
+Retiring an option works the same way as deactivating a field. A retired option
+is not offered on new tickets or in edits. Tickets that already hold it keep
+showing it: in edit mode on the ticket page it stays as the current choice,
+labelled "(retired)" and disabled, so it can be kept but not picked again. The
+server refuses a write that sets a ticket to it, with `400 bad_request`.
+**Show retired** in the options editor lists retired options, each with
+**Bring back**.
+
+An option can be deleted only while no ticket holds it. The page offers
+**Delete** only on an option it has counted as unused. The server checks again,
+under a lock on the definition row taken in the transaction that writes the
+change, and answers `409 conflict` if any ticket holds the value. This applies
+to any `PATCH` that removes a value from both lists, whichever client sends it.
+If the server refuses a delete the page had counted as safe (a ticket took the
+option since), the page reads the counts again and puts the option back where it
+was, so it can be retired without starting the edit over.
+
+Renaming an option that tickets hold retires the old text and adds the new text
+in its place. Renaming an unused option edits it in place. An option whose
+count the page could not read is treated as held.
+
+Retired options are stored in `custom_field_defs.retired_options`, a JSON array
+of strings, separate from `options`. `options` holds only the options in use, so
+every reader that predates retiring still gets a plain list of strings it may
+offer. An option is in one list or the other, never both. A value enters
+`retired_options` only from `options`. A select field needs at least one option
+in use.
+
+### Where a field appears
+
+A field appears on a ticket only when it is attached to the ticket's category,
+type or item. Creating a field attaches it nowhere, and the page says so: after
+**Create field**, a notice says the field is on no form yet, and the new field
+opens on **Where it appears** with "Not on any form yet".
+
+Attachments are managed from either side, and both write the same
+`custom_field_assignments` rows through the same per-node routes:
+
+- from the field, on **Admin → Custom Fields**: **Where it appears** lists every
+  category, type and item the field is attached to; **Add a place** picks a
+  category, then optionally a type, then optionally an item;
+- from the node, on **Admin → Categories**: the **Fields** subsection of an
+  expanded category, type or item, as before. Each field name there links to the
+  field on the Custom Fields page, and the order is set only on that page.
+
+The Custom Fields page refreshes its list. When a field is found to have changed
+elsewhere while its form holds unsaved edits, the edits are kept, with a notice,
+and a Save then overwrites the other change; **Cancel** loads the latest. A form
+with no unsaved edits is rebuilt from the latest copy.
+The server still refuses to remove an option a ticket holds, whoever saves.
+
+Each attachment has:
+
+- **Show on new-ticket form** (`visible_on_new`)
+- **Required on new-ticket form** (`required_on_new`): only meaningful while
+  shown; the page disables it when the field is not shown. Only the
+  new-ticket form holds a person to it. The server does not refuse a ticket
+  created without a value for a required field, so an API client is not held
+  to it.
+
+A field reaches a ticket once, however many of the ticket's category, type and
+item it is attached to. The most specific attachment wins — item over type over
+category — for its settings and for the level the field is shown at. The API
+does not refuse an overlapping attachment. The Custom Fields page does not offer
+one, and lists any that exist with a note saying which settings apply.
+
+On the ticket page, staff see every active field the ticket has, empty or not,
+and every inactive field that holds a value. Requesters see fields that hold a
+value. Guests see no custom fields.
+
+### Display order
+
+Fields are grouped by level — the category's, then the type's, then the
+item's — and within each level ordered by field number, lowest first, ties
+broken by name. The new-ticket form and the ticket page use the same order, so
+a field sits in the same place on both. A field's level is the level of its
+most specific attachment. An inactive field that holds a value keeps its level.
+A field that holds a value but is no longer attached to the ticket's category,
+type or item comes after the item level, by field number then name, read-only.
+
+`GET /tickets/{id}/custom-fields` keeps its own order (field number, then name);
+the page applies the grouping.
+
+`custom_field_assignments.sort_order` is still accepted, stored and returned by
+the assignment routes, so no caller breaks, but nothing orders by it.
 
 An assignment goes with the node it is attached to. Deleting a category, type or item deletes its assignments in the same statement (a category's include those of its types and items), so a delete that is refused for tickets in use leaves them alone. `custom_field_assignments.scope_id` has no foreign key, which is why this is done in the delete itself. Assignment routes check the whole path: the item must belong to the type, the type to the category, and the assignment to the scope the path ends at; a mismatch, or a scope that does not exist, answers `404`.
 
+### Audit
+
+Entries use entity type `custom_field` and the field definition's id, so a
+field's whole history — attachments included — is one entity. Actions, and what
+each records, are listed in the API documentation. The actor is passed to every
+change explicitly. It is the signed-in administrator; for an API key, the key's
+owner; for an OAuth client, the client's service user (the existing custom-field
+routes still accept both). Every route that changes a field sits behind the
+administrator gate, so there is always an actor and no route records the
+system. Every entry carries the
+field's name in each state it records (before and after, where both exist);
+option entries carry the option's text, and attachment entries the place's
+path. The audit view shows all three: they are
+text an administrator wrote, not ticket content. Attachments removed by
+deleting a category, type or item are recorded as detached, in the same
+statement as the delete.
+
 ### Values
 
-Stored normalized in `ticket_custom_field_values` (one row per ticket + field def, `value TEXT`) for filterability — not as a JSON blob. Values are edited with `PUT /tickets/{id}/custom-fields`, restricted to fields the ticket actually has (those assigned to its category, type and item, for every role). Staff and admin can edit at any time after creation, from the ticket detail page; a reporting user can edit the fields on their own ticket until it is Closed, and is refused with `409 ticket_closed` after (Closed is read-only to every requester).
+Stored normalized in `ticket_custom_field_values` (one row per ticket + field def, `value TEXT`) for filterability — not as a JSON blob. Values are edited with `PUT /tickets/{id}/custom-fields`, restricted to fields the ticket actually has (those assigned to its category, type and item, for every role). Staff and admin can edit at any time after creation, from the ticket detail page, except a deactivated field, which is read-only; a reporting user can edit the fields on their own ticket through the API until it is Closed, and is refused with `409 ticket_closed` after (Closed is read-only to every requester). The ticket page offers **Edit** only to staff and admin.
+
+On ticket creation, custom field values are written after the ticket exists
+and never fail the request. A value that is not written is reported in the 201
+response's `warnings` array, one entry per dropped field with a reason:
+`invalid_field_id`, `duplicate_field_id`, `not_on_ticket`, `inactive`,
+`retired_option`, `not_an_option`, `not_a_number` or `not_saved`. The entry's
+`field_id` is the key exactly as sent, and entries are sorted by it. Two keys
+that spell the same field id (upper and lower case, say) get
+`duplicate_field_id` and neither is written, because which value to keep would
+be luck. An empty value means "no value" and is not a warning. The key is
+absent when nothing was dropped.
+
+A `number` field accepts a decimal number: after leading and trailing spaces
+are removed, what Go's `strconv.ParseFloat` accepts, except NaN, infinity,
+out-of-range values, hexadecimal and underscores. The trimmed text is stored as written, not
+reformatted. `PUT /tickets/{id}/custom-fields` refuses anything else with
+`400 bad_request`. It writes all of its entries or none, and it refuses a request
+in which two keys spell the same field id (`field_def_id is listed twice`)
+rather than pick one. Values stored before 1.3.0 are left as they are and shown as
+they are; since the ticket page sends only the fields that changed, such a value
+blocks only a save that changes that field.
 
 Guests are shown no custom fields at all. The guest endpoint accepts none — a deliberate choice, since what an anonymous visitor may write into an operator's own fields is the operator's decision — and the public form no longer offers them. It did offer them for a while and threw the answers away on submit, which also meant a field marked required could stop a visitor filing a ticket at all. The field endpoints do not filter by role: the fields a ticket has are resolved from its own category, type and item, and `PUT /tickets/{id}/custom-fields` accepts any of them from any role that may write to the ticket. What a reporting user is offered follows from what they can pick (category and type, never an item), so in practice they see category and type fields, while staff and admin, who can pick all three, see all levels.
 
