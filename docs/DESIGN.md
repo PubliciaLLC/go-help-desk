@@ -410,11 +410,14 @@ ticket's own guest columns, and `follow_up_of` says what it continues.
   annotate and attach to one (the decision above). Staff do that over the API or
   MCP, not from the page.
 - **Custom-field edits are not atomic with a close.** A reporter's custom-field
-  edit is checked once (`CanRequesterWrite`) and then written value by value
-  through the custom-field service, which is outside the ticket transaction. A
-  close landing after the check leaves **all** the values in that request
-  written on a closed ticket, and a close landing mid-loop leaves the remainder.
-  Replies, uploads and links, which carry the thread, are atomic.
+  edit (through the API; the ticket page offers Edit only to staff and admin) is
+  checked once (`CanRequesterWrite`) and then written in a single transaction of
+  its own through the custom-field service (`SetValues`), which is outside the
+  ticket transaction and does not look at the ticket's status. The request's
+  values are therefore written together or not at all, never in part. A close
+  landing after the check still leaves **all** the values in that request
+  written on a closed ticket. Replies, uploads and links, which carry the
+  thread, are atomic.
 
 - Statuses are customizable — admins can add intermediate statuses, but
   New, Resolved and Closed are system statuses with special behavior. The
@@ -4452,8 +4455,10 @@ Defined globally under **Admin → Custom Fields**. Each definition has:
   stored as a JSON array of strings, so an option may contain a comma. The admin
   page edits them as a list: add, edit, reorder, retire, bring back, delete.
   Blank and duplicate options (a retired option's text counts) are refused by
-  the page; the API does not check for them. On any other type the server stores `options` as sent and nothing
-  reads it.
+  the page. The API refuses only a value that is in both `options` and
+  `retired_options` (`400 bad_request`); it does not check for a blank value or
+  for a duplicate within one list. On any other type the server stores `options`
+  as sent and nothing reads it.
 - **Retired options** (select only): see *Options: retiring and deleting*. On
   any other type `retired_options` is stored as sent, like `options`, and
   nothing reads it.
@@ -4539,9 +4544,10 @@ Attachments are managed from either side, and both write the same
   expanded category, type or item, as before. Each field name there links to the
   field on the Custom Fields page, and the order is set only on that page.
 
-The Custom Fields page keeps the list it has loaded. If a field was changed
-elsewhere while a form for it holds unsaved edits, the edits are kept with a
-notice, and a Save then overwrites the other change; **Cancel** loads the latest.
+The Custom Fields page refreshes its list. When a field is found to have changed
+elsewhere while its form holds unsaved edits, the edits are kept, with a notice,
+and a Save then overwrites the other change; **Cancel** loads the latest. A form
+with no unsaved edits is rebuilt from the latest copy.
 The server still refuses to remove an option a ticket holds, whoever saves.
 
 Each attachment has:
@@ -4586,8 +4592,11 @@ An assignment goes with the node it is attached to. Deleting a category, type or
 Entries use entity type `custom_field` and the field definition's id, so a
 field's whole history — attachments included — is one entity. Actions, and what
 each records, are listed in the API documentation. The actor is passed to every
-change explicitly and is the administrator making the request; a credential
-with no person behind it is recorded as the system. Every entry carries the
+change explicitly. It is the signed-in administrator; for an API key, the key's
+owner; for an OAuth client, the client's service user (the existing custom-field
+routes still accept both). Every route that changes a field sits behind the
+administrator gate, so there is always an actor and no route records the
+system. Every entry carries the
 field's name in each state it records (before and after, where both exist);
 option entries carry the option's text, and attachment entries the place's
 path. The audit view shows all three: they are
@@ -4597,7 +4606,7 @@ statement as the delete.
 
 ### Values
 
-Stored normalized in `ticket_custom_field_values` (one row per ticket + field def, `value TEXT`) for filterability — not as a JSON blob. Values are edited with `PUT /tickets/{id}/custom-fields`, restricted to fields the ticket actually has (those assigned to its category, type and item, for every role). Staff and admin can edit at any time after creation, from the ticket detail page, except a deactivated field, which is read-only; a reporting user can edit the fields on their own ticket until it is Closed, and is refused with `409 ticket_closed` after (Closed is read-only to every requester).
+Stored normalized in `ticket_custom_field_values` (one row per ticket + field def, `value TEXT`) for filterability — not as a JSON blob. Values are edited with `PUT /tickets/{id}/custom-fields`, restricted to fields the ticket actually has (those assigned to its category, type and item, for every role). Staff and admin can edit at any time after creation, from the ticket detail page, except a deactivated field, which is read-only; a reporting user can edit the fields on their own ticket through the API until it is Closed, and is refused with `409 ticket_closed` after (Closed is read-only to every requester). The ticket page offers **Edit** only to staff and admin.
 
 On ticket creation, custom field values are written after the ticket exists
 and never fail the request. A value that is not written is reported in the 201
