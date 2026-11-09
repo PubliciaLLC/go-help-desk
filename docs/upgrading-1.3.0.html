@@ -117,6 +117,7 @@
       <li><a href="#markdown">Markdown in ticket text</a></li>
       <li><a href="#reply-limit">Reply size limit</a></li>
       <li><a href="#email-templates">Editable email wording</a></li>
+      <li><a href="#custom-fields">Custom fields</a></li>
       <li><a href="#known-gaps">Not in 1.3.0</a></li>
       <li><a href="#steps">Doing the upgrade</a></li>
     </ul>
@@ -276,6 +277,7 @@
   <li><strong>Tickets record how they arrived.</strong> Web, API, MCP, guest form or phone. Staff see it on the ticket; requesters and guests do not. <a href="#source-channel">Details</a></li>
   <li><strong>Markdown in ticket text.</strong> A formatting editor, strict rendering, and old text left as plain text. <a href="#markdown">Details</a></li>
   <li><strong>Editable email wording.</strong> Administrators edit all 17 emails, with an optional HTML part, and a shared header and footer under <strong>Admin → Integrations → Email Templates</strong>, with a check as they type and a test send. <a href="#email-templates">Details</a></li>
+  <li><strong>A new Custom Fields page.</strong> One sortable list, options that can be retired and brought back, a list of the places each field appears, and an audit entry for every change. A field's type is fixed once tickets hold a value, number fields accept only numbers, and a new ticket's <code>201</code> response lists any custom field value that was not written. <a href="#custom-fields">Details</a></li>
   <li><strong>Search finds more.</strong> Staff search covers every ticket they can see, with a chip to narrow it to the queue. <a href="#staff-search">Details</a></li>
   <li><strong>One delivery per change.</strong> A webhook gets one delivery for one change, however many things it changed, and nothing is sent for a change that failed. <a href="#one-event">Details</a></li>
   <li><strong>Webhook retries, history and a ticket filter.</strong> <a href="#webhooks">Details</a></li>
@@ -949,11 +951,11 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 <h2 id="migration-log">The server log says which migrations ran</h2>
 
 <p><strong>Who notices:</strong> operators.</p>
-<p>At startup, before it opens the port, the server logs what it did to the database schema. <code>database migrated from 21 to 58</code> means an upgrade from 1.2.0: the first number is the version the database was at, the second the version it is at now (a new database says <code>from 0</code>). <code>database schema at 58, no migrations needed</code> is an ordinary restart. The line also carries <code>from</code> and <code>to</code> fields. Use it to check that an upgrade ran before you look anywhere else. A failed migration still stops the start with <code>running migrations: …</code>.</p>
+<p>At startup, before it opens the port, the server logs what it did to the database schema. <code>database migrated from 21 to 59</code> means an upgrade from 1.2.0: the first number is the version the database was at, the second the version it is at now (a new database says <code>from 0</code>). <code>database schema at 59, no migrations needed</code> is an ordinary restart. The line also carries <code>from</code> and <code>to</code> fields. Use it to check that an upgrade ran before you look anywhere else. A failed migration still stops the start with <code>running migrations: …</code>.</p>
 
 <h2 id="rollback">Rolling back to 1.2.0</h2>
 
-<p>Migrations are forward-only as far as the server is concerned: it never runs one backwards, and there is no command for it. <strong>A rollback is possible by hand. It discards everything that only 1.3.0 has, and it removes 1.3.0's security fixes.</strong> Take it only if you must. This procedure was run end to end: a database upgraded from 1.2.0 with 1.3.0 activity on it was taken back to version 21, its schema matched a 1.2.0 database (same tables, columns, indexes and constraints; the one difference is below), and the 1.2.0 server then started on it and signed people in, served tickets, attachments, API keys and OAuth tokens, and kept the replies and tickets written under 1.3.0.</p>
+<p>Migrations are forward-only as far as the server is concerned: it never runs one backwards, and there is no command for it. <strong>A rollback is possible by hand. It discards everything that only 1.3.0 has, and it removes 1.3.0's security fixes.</strong> Take it only if you must. The rollback script was rehearsed several times, most recently at version 58 and at version 59. In each of those two runs a database made by the real 1.2.0 server was upgraded, taken back to version 21 with the script, and checked: its schema matched a 1.2.0 database (same tables, columns, indexes and constraints; the one difference is below), and the 1.2.0 server started on it. The run at 59 had custom field data and checked sign-in, tickets, field values, attachment hashes, writing a value and creating a ticket. The run at 58 checked the tickets written under 1.3.0, including those filed by an API key, an OAuth client, MCP, the guest form and the phone. Neither run used Compose: both ran the plain 1.2.0 binary, the script's <code>PSQL=</code> line was changed to use a local <code>psql</code>, and the down files came from a beta checkout, so the loopback step below was not part of either.</p>
 <h3 id="rollback-security">Security: what you give up</h3>
 <p>1.2.0 does not have these 1.3.0 fixes, and a rollback runs without them. Weigh that before you start, and put the instance behind your own network controls until you move forward again:</p>
 <ul>
@@ -1005,6 +1007,8 @@ Pending signups that 1.3.0 created without a name or password (000032, 000033).
 <strong>Source channel</strong> (000056): <code>tickets.source_channel</code> is dropped, so every recorded <code>api</code>, <code>mcp</code>, <code>guest</code> and <code>phone</code> value is lost. Re-upgrading marks every ticket <code>web</code> again.
 </li><li>
 <strong>Edited email wording</strong> (000057, 000058): the table <code>email_template_overrides</code> is dropped, so every edited email, the shared header and footer, and every HTML part go back to the shipped text. The text of each save, HTML included, stays in the <code>audit_log</code> table. 1.2.0 has no audit page, so after a rollback it can be read only with SQL; it shows in the Audit Log again after you upgrade again. Rolling back 000058 alone drops only the HTML parts.
+</li><li>
+<strong>Retired options</strong> (000059): the column <code>custom_field_defs.retired_options</code> is dropped, so the list of retired options of every select field is forgotten. The options in use are kept, and tickets keep the values they hold, retired ones included. Upgrading again does not bring the retired list back: a formerly retired option is then in neither list, a ticket that holds it keeps showing it, and it cannot be newly set on another ticket.
 </li></ul>
 <p><strong>Not undone</strong> (they repair or seed data and have no inverse; their <code>down</code> does nothing): <code>000028</code>, <code>000039</code>, <code>000052</code> and <code>000053</code>. The three staff-email overrides <code>000052</code> stored stay in the settings table, and the tickets <code>000053</code> returned to the queue stay unassigned. 1.2.0 never reads those settings. Settings rows 1.3.0 wrote stay in the table. Passwords hashed at the new cost still work on 1.2.0.</p>
 <p><strong>One difference from a 1.2.0 database:</strong> <code>ticket_replies.guest_token</code> is the last column of the table instead of the fourth. Nothing reads columns by position.</p>
@@ -1067,7 +1071,7 @@ echo "ok: Postgres is bound to 127.0.0.1 only"</code></pre>
 </li><li>
 <strong>Check it.</strong> Sign in as an administrator, open a few tickets, and download an attachment. <code>SELECT version, dirty FROM schema_migrations</code> should say <code>21 | f</code>. <code>docker compose port db 5432</code> should say <code>127.0.0.1:5432</code>.
 </li></ol>
-<p>To go forward again, run <code>git checkout -- docker-compose.yml</code> in <code>go-help-desk/docker</code> to drop the edit from step 3, then <code>git checkout v1.3.0</code> (it refuses while the file is changed) and start it: it runs every migration from 22, and says so in the log (<code>database migrated from 21 to 58</code>).</p>
+<p>To go forward again, run <code>git checkout -- docker-compose.yml</code> in <code>go-help-desk/docker</code> to drop the edit from step 3, then <code>git checkout v1.3.0</code> (it refuses while the file is changed) and start it: it runs every migration from 22, and says so in the log (<code>database migrated from 21 to 59</code>).</p>
 
 <h2 id="guest-attachments">Guests can no longer upload until you turn it on</h2>
 
@@ -1164,6 +1168,38 @@ echo "ok: Postgres is bound to 127.0.0.1 only"</code></pre>
   <li><strong>Audit:</strong> each save and revert is recorded with the full text, HTML included, in the same step as the change. A test send records the template, not the address.</li>
 </ul>
 <p>See <a href="admin-guide.html#admin-email-tpl">Email templates</a> in the admin guide.</p>
+
+<h2 id="custom-fields">Custom fields: a new admin page, and stricter rules</h2>
+
+<p><strong>Who notices:</strong> administrators, staff who fill in custom fields, and scripts that edit fields or file tickets with <code>custom_fields</code>. Migration 000059 adds one nullable column, and no row is rewritten.</p>
+<p><strong>New:</strong> <em>Admin → Tickets → Custom Fields</em> is one sortable list. Open a field to edit its options, see and change <em>Where it appears</em>, or deactivate it. Select options can be retired (kept for the tickets that hold them, no longer offered) and brought back, and an option can be deleted only while no ticket holds it. A field's type is fixed once a ticket holds a value. <a href="admin-guide.html#admin-custom-fields">Custom fields</a> in the admin guide has the details.</p>
+
+<h3>What looks different after the upgrade</h3>
+<ul>
+  <li><strong>Field order changes.</strong> On both the new-ticket form and the ticket page, fields are grouped by level: the category's first, then the type's, then the item's. Within each level they are sorted by field number, then by name. On the new-ticket form the order within a level used to follow each attachment's own <code>sort_order</code>. The ticket page used to show one list sorted by field number, and now groups by level. <strong>An install where every field has number 0 becomes alphabetical within each level.</strong> To set an order, drag the fields on <em>Admin → Tickets → Custom Fields</em>.</li>
+  <li><strong>An attachment's <code>sort_order</code> is ignored.</strong> It is still accepted, stored and returned. No data is changed.</li>
+  <li><strong>Deactivated fields no longer appear on the new-ticket form</strong>, and nobody can change them, including clearing them. Values already stored still show. The admin list hides them unless <strong>Show inactive</strong> is on.</li>
+  <li><strong>A field attached at more than one level is shown once</strong>, at its most specific level, with that level's settings.</li>
+  <li><strong>Staff now see empty fields</strong> on the ticket page, so they can fill them in. Requesters still see only fields that hold a value.</li>
+  <li><strong>Ticket saves are all or nothing.</strong> The ticket page sends only the fields that changed, so a stale value in a field you did not touch cannot block the save.</li>
+  <li><strong>Number fields accept only numbers.</strong> A value that is not one is refused with <code>400 bad_request</code>. Values stored before the upgrade are left as they are and shown as they are; one blocks only a save that changes that field.</li>
+</ul>
+
+<h3>API changes</h3>
+<ul>
+  <li><strong>Breaking: <code>PATCH /api/v1/admin/custom-fields/{id}</code> answers <code>409 conflict</code></strong> when it changes <code>field_type</code> while any ticket holds a value for the field, and when it removes an option that any ticket holds. It used to accept both. Retire an option that is in use by moving it from <code>options</code> to the new <code>retired_options</code> instead of removing it. A value enters <code>retired_options</code> only from <code>options</code>, is never in both lists, and a select field keeps at least one option in use.</li>
+  <li><strong><code>PUT /api/v1/tickets/{id}/custom-fields</code> writes every entry or none.</strong> It used to write the entries one at a time, so a refused entry left the ones before it saved. It also answers <code>400</code> for a deactivated field (a clear included), a retired option, a number field's non-number, and two keys that spell one field id differently.</li>
+  <li><strong><code>POST /api/v1/tickets</code> may include <code>warnings</code></strong> in its <code>201</code> response: one entry per custom field value that was not written, each with a <code>reason</code> (<code>invalid_field_id</code>, <code>duplicate_field_id</code>, <code>not_on_ticket</code>, <code>inactive</code>, <code>retired_option</code>, <code>not_an_option</code>, <code>not_a_number</code> or <code>not_saved</code>). The key is absent when nothing was dropped, so a response with nothing dropped is unchanged. Before, such values were skipped without a word.</li>
+  <li><strong>New admin calls</strong> <code>GET /api/v1/admin/custom-fields/{id}/assignments</code>, <code>PUT /api/v1/admin/custom-fields/order</code> and <code>GET /api/v1/admin/custom-fields/{id}/usage</code> need an administrator signed in through the browser. An API key or OAuth client gets <code>403</code>. The existing custom-field routes still accept an administrator's API key.</li>
+  <li><code>GET /api/v1/admin/custom-fields</code> returns fields in field-number order with <code>place_count</code>, and select fields carry <code>retired_options</code> on the admin routes. The ticket routes never return <code>retired_options</code>, and <code>options</code> still lists only the options in use. <code>GET /api/v1/tickets/fields</code> returns one entry per field, grouped by level and ordered by field number then name.</li>
+</ul>
+
+<h3>Audit and migration</h3>
+<ul>
+  <li><strong>Every admin change to a custom field is audited</strong>, in the same step as the change: the field, its options and its places. Deleting a category, type or item also records each field attachment it removed. The <a href="admin-guide.html#admin-audit">Audit Log</a> shows the field name, the option's text and the place's path.</li>
+  <li><strong>Migration 000059</strong> adds the nullable column <code>custom_field_defs.retired_options</code>. No row is rewritten.</li>
+</ul>
+<p><strong>What to check:</strong> any script that edits custom fields through the admin API, and any that sets a number field. See <a href="admin-guide.html#admin-custom-fields">Custom fields</a> and <a href="tickets.html#tickets-custom-fields">Custom fields on tickets</a>.</p>
 
 <h2 id="known-gaps">What is not in 1.3.0</h2>
 
