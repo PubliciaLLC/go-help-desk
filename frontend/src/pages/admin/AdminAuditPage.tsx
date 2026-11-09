@@ -174,10 +174,16 @@ export function AdminAuditPage() {
 
         {isLoading ? (
           <div className="flex justify-center py-12"><Spinner /></div>
-        ) : isError ? (
+        ) : isError && !data ? (
+          // Nothing to show. That includes a changed filter or page: each is its own
+          // query key with no placeholderData, so it never inherits the last results.
+          // A failed refresh with results already loaded is the notice below.
           <p role="alert" className="text-sm text-red-600">Could not load the audit log.</p>
         ) : (
           <>
+            {isError && (
+              <p role="alert" className="text-sm text-red-600">Couldn't refresh the results. Showing what was loaded before.</p>
+            )}
             <div className="rounded-lg border bg-white overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-gray-50 text-xs text-gray-500 uppercase">
