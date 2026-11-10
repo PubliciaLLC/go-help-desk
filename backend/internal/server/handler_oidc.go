@@ -233,15 +233,17 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sd.UserID = u.ID
-	sd.Role = u.Role
-	sd.MFAPassed = true
-	sd.FactorVerified = claims.AssertedMFA()
-	sd.OIDCState = ""
-	sd.OIDCNonce = ""
-	sd.OIDCCodeVerifier = ""
-
-	if err := s.writeSession(w, r, sd); err != nil {
+	// Built fresh, as the SAML handler does. The session loaded above belongs
+	// to whatever this browser did before the redirect, and the login start
+	// keeps it on purpose; copying it forward would carry that sign-in's
+	// MustChangePassword, staged factor and pending-MFA deadline onto the
+	// identity the provider vouched for.
+	if err := s.writeSession(w, r, auth.SessionData{
+		UserID:         u.ID,
+		Role:           u.Role,
+		MFAPassed:      true,
+		FactorVerified: claims.AssertedMFA(),
+	}); err != nil {
 		handleError(w, err)
 		return
 	}
