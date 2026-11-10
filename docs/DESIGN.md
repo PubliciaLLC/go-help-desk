@@ -3515,6 +3515,8 @@ on the existing webhook feature instead of as plugins.
   the original, and a status-change message names the status the ticket has
   now. Redeliver is refused with
   `409 webhook_disabled` for a disabled hook,
+  `409 webhook_paused` for a paused one (its API key is no longer active; it
+  needs re-approving, and enabling does not help),
   `409 webhook_not_subscribed` when the hook no longer lists that event, and
   `409 webhook_filter_excludes` when the hook's ticket filter, as it is now,
   does not admit the ticket, and `409 webhook_filter_unverifiable` when the

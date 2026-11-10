@@ -76,3 +76,32 @@ func TestDispatch_WithoutAQueueSkipsAPausedHook(t *testing.T) {
 	require.Eventually(t, func() bool { return rc.count() >= 1 }, 2e9, 10e6)
 	require.Equal(t, 1, rc.count(), "only the hook that is not paused is sent to")
 }
+
+// A replay on a paused hook is refused as paused: enabling it would not help,
+// so the caller has to be able to tell the two apart. Paused still matches
+// ErrWebhookDisabled (TestQueue_PausedHookGetsNothing relies on that); the
+// reverse must not hold, or a disabled hook would be told to re-approve.
+func TestRedeliver_PausedAndDisabledAreToldApart(t *testing.T) {
+	rc := newReceiver(t, 200)
+	hook := hookFor(rc.srv.URL)
+	rig := newQueueRig(t, rc.srv.Client(), hook)
+	require.NoError(t, rig.front.Dispatch(context.Background(), fixtureReplyEvent(false)))
+	rig.drain(t)
+	delivery := rig.hooks.last().DeliveryID
+
+	set := func(enabled, paused bool) {
+		rig.hooks.mu.Lock()
+		defer rig.hooks.mu.Unlock()
+		h := rig.hooks.hooks[hook.ID]
+		h.Enabled, h.Paused = enabled, paused
+		rig.hooks.hooks[hook.ID] = h
+	}
+
+	set(true, true)
+	require.ErrorIs(t, rig.disp.Redeliver(context.Background(), hook.ID, delivery), ErrWebhookPaused)
+
+	set(false, false)
+	err := rig.disp.Redeliver(context.Background(), hook.ID, delivery)
+	require.ErrorIs(t, err, ErrWebhookDisabled)
+	require.NotErrorIs(t, err, ErrWebhookPaused)
+}
