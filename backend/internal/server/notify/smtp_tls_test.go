@@ -68,6 +68,7 @@ func TestSendMail_TLSRule(t *testing.T) {
 	cases := []struct {
 		name         string
 		password     string // "" means no password
+		userOnly     bool   // a user name with no password
 		implicit     bool
 		hideSTARTTLS bool
 		peer         string
@@ -87,6 +88,14 @@ func TestSendMail_TLSRule(t *testing.T) {
 		{name: "no password, private, no STARTTLS", peer: privateIP, hideSTARTTLS: true},
 		{name: "no password, loopback, no STARTTLS", peer: "127.0.0.1", hideSTARTTLS: true},
 		{name: "no password, public, no STARTTLS", peer: publicIP, hideSTARTTLS: true, wantErr: "STARTTLS"},
+
+		// A user name is a credential too: AUTH PLAIN sends it in the clear, and
+		// "no password" must not be read as "nothing to protect".
+		{name: "user only, private, no STARTTLS", userOnly: true, peer: privateIP, hideSTARTTLS: true, wantErr: "STARTTLS"},
+		{name: "user only, loopback, no STARTTLS", userOnly: true, peer: "127.0.0.1", hideSTARTTLS: true, wantErr: "STARTTLS"},
+		{name: "user only, public, no STARTTLS", userOnly: true, peer: publicIP, hideSTARTTLS: true, wantErr: "STARTTLS"},
+		{name: "user only, private, STARTTLS", userOnly: true, peer: privateIP},
+		{name: "user only, private, implicit TLS (465)", userOnly: true, implicit: true, peer: privateIP},
 		{name: "no password, public, STARTTLS", peer: publicIP},
 		{name: "no password, private, STARTTLS", peer: privateIP},
 		{name: "no password, public, implicit TLS (465)", implicit: true, peer: publicIP},
@@ -102,7 +111,7 @@ func TestSendMail_TLSRule(t *testing.T) {
 				Addr: srv.addr(), Password: tc.password, Implicit: tc.implicit,
 				Timeout: 5 * time.Second, RootCAs: srv.pool, dial: dialAs(tc.peer),
 			}
-			if tc.password != "" {
+			if tc.password != "" || tc.userOnly {
 				opts.User = "user"
 			}
 			err := sendMail(opts, "from@example.com", "to@example.com", testMsg)
@@ -118,7 +127,7 @@ func TestSendMail_TLSRule(t *testing.T) {
 			}
 			require.NoError(t, err)
 			require.Equal(t, 1, delivered)
-			if tc.password != "" {
+			if tc.password != "" || tc.userOnly {
 				require.Equal(t, 1, auth)
 			}
 		})

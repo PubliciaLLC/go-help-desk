@@ -834,6 +834,11 @@ func sendMail(o smtpOptions, from, to string, msg []byte) error {
 		} else if o.Password != "" {
 			return errors.New("SMTP server does not offer STARTTLS, and SMTP_PASSWORD is set: " +
 				"refusing to send the password unencrypted")
+		} else if o.User != "" {
+			// AUTH PLAIN goes out below for any user name, so a user with no
+			// password still puts a credential on the wire.
+			return errors.New("SMTP server does not offer STARTTLS, and SMTP_USER is set: " +
+				"refusing to send credentials unencrypted")
 		} else if !isPrivateIP(peerIP(conn)) {
 			return errors.New("SMTP server does not offer STARTTLS and is not on a private address: " +
 				"refusing to send mail unencrypted")

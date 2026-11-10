@@ -3660,7 +3660,10 @@ on the existing webhook feature instead of as plugins.
     elsewhere, and if the server does not offer STARTTLS the send fails with
     `SMTP server does not offer STARTTLS, and SMTP_PASSWORD is set: refusing
     to send the password unencrypted`. Someone on the path stripping STARTTLS
-    from the greeting therefore costs a failed send, not the password.
+    from the greeting therefore costs a failed send, not the password. A user
+    name with no password is treated the same way, because AUTH PLAIN would send
+    the name in the clear: the send fails with `SMTP server does not offer
+    STARTTLS, and SMTP_USER is set: refusing to send credentials unencrypted`.
   - **With no password, plain SMTP is allowed only to a private address**:
     loopback, RFC 1918 (10/8, 172.16/12, 192.168/16) or IPv6 ULA (fc00::/7).
     STARTTLS is still used whenever it is offered. A public address with no
