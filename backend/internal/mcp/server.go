@@ -1142,8 +1142,11 @@ func (s *Server) handleListCategories(ctx context.Context, req mcpgo.CallToolReq
 	if s.categories == nil {
 		return errResult("category catalogue is not available")
 	}
+	// Retired entries are for staff and admin only, as on REST
+	// (catalogueIsFullyVisible): anyone else gets active entries whatever they
+	// ask for, rather than an error that would say there is something to see.
 	includeInactive, _ := req.GetArguments()["include_inactive"].(bool)
-	activeOnly := !includeInactive
+	activeOnly := !(includeInactive && requireStaff(actorFrom(ctx)))
 
 	cats, err := s.categories.ListCategories(ctx, activeOnly)
 	if err != nil {
