@@ -234,6 +234,23 @@ type Server struct {
 	// something sniffed from the Authorizer; nil means reporter_email is
 	// refused rather than guessed at.
 	onBehalf OnBehalfResolver
+
+	// reopenWindowDays is the configured reopen window, read per call like the
+	// REST reply handler does. A function for the same reason as prefix.
+	reopenWindowDays func(context.Context) int
+}
+
+// defaultReopenWindowDays is what the setting reads as when nothing is stored
+// (admin.Service.ReopenWindowDays). Only a Server built without WithReopenWindowDays
+// uses it, which is a test.
+const defaultReopenWindowDays = 7
+
+// WithReopenWindowDays supplies the reopen window setting. A method rather than
+// a constructor argument because most callers of New are tests that never reach
+// a code path that reads it.
+func (s *Server) WithReopenWindowDays(f func(context.Context) int) *Server {
+	s.reopenWindowDays = f
+	return s
 }
 
 // OnBehalfResolver is the REST handler's rule for filing a ticket for someone
@@ -853,7 +870,10 @@ func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) 
 
 	isInternal, _ := args["internal"].(bool)
 
-	const reopenWindowDays = 7
+	reopenWindowDays := defaultReopenWindowDays
+	if s.reopenWindowDays != nil {
+		reopenWindowDays = s.reopenWindowDays(ctx)
+	}
 	// An internal note is a note to colleagues, so it never notifies the
 	// reporter; a public reply does, to the same address the REST reply uses.
 	notifyRequester := !isInternal
