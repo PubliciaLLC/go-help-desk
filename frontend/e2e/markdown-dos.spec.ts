@@ -90,6 +90,57 @@ test('a normal post is still formatted, and soon', async ({ page }) => {
   await expect(page.locator('[data-md-body] strong').first()).toHaveText('bold', { timeout: 3000 })
 })
 
+// The budget itself: BUDGET_MS (1 s) in lib/markdownBackend.ts. The inputs above
+// are refused by the length and complexity limits or finish in time, so none of
+// them proves that a worker which does NOT answer is cut off. This forces that:
+// the worker script is served with a hook that spins forever on one marker text
+// (nothing the parser does is slow enough to rely on), and everything else
+// still runs the real parser.
+test('a post that overruns the time budget is shown as written, its worker is terminated, and the next post formats', async ({
+  page,
+}) => {
+  test.setTimeout(30_000)
+  await page.route('**/markdown.worker*', async (route) => {
+    const response = await route.fetch()
+    const hook = `
+;{
+  const real = self.onmessage
+  self.onmessage = (e) => {
+    if (e.data.text.includes('OVERRUN-ME')) for (;;);
+    real(e)
+  }
+}
+`
+    await route.fulfill({ response, body: (await response.text()) + hook })
+  })
+
+  const workers: { closed: boolean }[] = []
+  page.on('worker', (w) => {
+    const entry = { closed: false }
+    workers.push(entry)
+    w.on('close', () => (entry.closed = true))
+  })
+
+  await mockApi(page, {
+    replies: [
+      { ...REPLIES[0], id: 'r-overrun', body: 'OVERRUN-ME **never formatted**', body_format: 'markdown' },
+      { ...REPLIES[0], id: 'r-next', body: 'the **next** post', body_format: 'markdown' },
+    ],
+  })
+  await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+
+  // The hung post is shown as written, with the note. Only the budget can end it.
+  await expect(page.getByText(/too complex to format/i).first()).toBeVisible({ timeout: 8000 })
+  await expect(page.getByText('OVERRUN-ME **never formatted**')).toBeVisible()
+  expect(workers.length, 'the hook never reached a worker: the test is not exercising anything').toBeGreaterThan(0)
+  // Terminated, not merely abandoned: a spinning worker left alive would keep a core busy.
+  await expect.poll(() => workers[0].closed, { message: 'the worker that overran was not terminated' }).toBe(true)
+
+  // The next post is formatted by a fresh worker.
+  await expect(page.locator('[data-md-body] strong').filter({ hasText: 'next' })).toBeVisible({ timeout: 8000 })
+  expect(workers.length, 'the next post should have started a new worker').toBeGreaterThan(1)
+})
+
 // Memory: every formatted post holds a tree and its elements. 220 replies of
 // 50 KB each took 3.76 GB of heap when all were formatted. Posts now format only
 // near the screen and the page has a budget, so the heap stays bounded however
