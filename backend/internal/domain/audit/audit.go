@@ -187,6 +187,9 @@ var shownKeys = map[string]bool{
 	"id": true, "statusid": true, "priority": true,
 	"assigneeuserid": true, "assigneegroupid": true, "followupof": true,
 	"forcedreopen": true, "closedreopenpolicy": true,
+	// A reclassification (1.3.0 audit D3): the ticket's category, type and item,
+	// as ids.
+	"categoryid": true, "typeid": true, "itemid": true,
 	"passkeysremoved": true, "totpcleared": true, "sessionsrevoked": true,
 	"osuser": true, "host": true, "source": true,
 	// The priority change and SLA re-match (#443b): why the priority changed

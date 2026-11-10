@@ -621,6 +621,18 @@ Auto-assignment (**Admin → Routing**, and a group's own category and type scop
 - **Existing tickets are not touched.** Only tickets created after the upgrade are routed.
 - **A follow-up** is routed on its original's category and type; a guest's own follow-up on the category alone, as before.
 
+### Reclassifying a Ticket Re-matches Its SLA Policy and Is Audited
+
+Changing a ticket's category (`PATCH /tickets/{id}` with `category_id`, or the category picker on the ticket page) now does two things it did not do before.
+
+- **The SLA policy is matched again.** A policy is matched on priority and category, so a new category can mean a different policy. Before, the ticket kept the policy of the category it was filed under, and its targets stayed measured against that. Now the new category's policy takes over, in the same change. **The clock is not restarted**: the time already elapsed still counts, and a target already met stays met, exactly as when staff change a priority. Only a reopen restarts a clock. If no policy matches the new category, the ticket shows no SLA from then on; if the old record had none and the new category has one, the ticket gets one whose clock runs from its creation, so it can already be breached.
+- **It is audited.** A `classified` entry now appears on the ticket's Activity feed and in the admin audit view, with who changed it, the old and new category, type and item (as ids), and what happened to the SLA. It is written in the same transaction as the change. Before, a reclassification left no entry. Changes made before the upgrade are not backfilled.
+
+- **Resolved and Closed tickets** can still be reclassified, but their SLA record is left as it was.
+- **A change of type or item alone** is audited but never changes the SLA, since a policy is matched on category.
+- **If SLA tracking is off**, nothing is re-matched (the entry says `sla_off`).
+- **No migration, no setting.** Nothing is recomputed for tickets reclassified before the upgrade.
+
 ### The Server Logs Which Migrations Ran (#525)
 
 The server now says what it did to the schema, once, at startup, before it opens the port:

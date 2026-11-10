@@ -264,8 +264,9 @@ same request is not saved first.
 **One PATCH, one outcome (#468, #506).** `PATCH /tickets/{id}` can change a
 ticket's status, assignment, classification and priority in one request. It is
 one service call, `Update`, in **one transaction**, in that order (the priority
-last, so a category changed in the same request is the one its SLA policy is
-matched against). A refusal at any step leaves nothing saved and writes no audit
+last; a category changed in the same request is re-matched first and the priority
+then re-matches again, so the ticket ends on one current record under the policy
+for both). A refusal at any step leaves nothing saved and writes no audit
 entry, and the request announces one event (Ticket Events: One Change, One
 Event). The handler still decides every refusal it can before the transaction
 starts: an invalid priority value, a priority or assignment or reclassification
@@ -476,7 +477,7 @@ Staff and administrators can **follow** a ticket to hear about its activity with
 
 `GET /api/v1/tickets/{id}/audit` (#129) answers "who changed this ticket, and when" from the audit log the domain layer already writes, without database access. Shown on the ticket detail page next to the status timeline. **Staff and administrators only** (Erik, 2026-10-15: requesters and guests see the current state of the ticket and its conversation, not its history or its audit trail): the route sits behind the same role gate as tags and followers, so a requester gets `403 forbidden` on a ticket they can see, and `404` on one they cannot, as for every route under `/tickets/{id}` (`requireTicketAccess` answers first). `GET /tickets/{id}/history` is gated the same way. Guests have neither route. Public replies stay visible to requesters; internal notes stay hidden.
 
-This route only *reads* the audit log; it does not change what the domain layer writes to it. What gets written is narrower than "every mutation": `created`, `status_changed`, `assigned`, `unassigned` (an assignment cleared, or a departing user's tickets returned to the queue, #326), `resolved`, `closed`, `followed` and `unfollowed` (Ticket Followers above; withheld from staff unless `staff_can_view_follow_audit` is on, and from requesters always), and `reopened` (every reopen: a requester's reply that reopens a Resolved ticket, a status change out of Resolved or Closed, and `POST /reopen`; a move out of Closed is a force-reopen allowed only by `closed_reopen_policy` (#349) and says so with `forced_reopen` and the policy in its "after"), `priority_changed` (#443: the "after" says why the priority changed, `manual` or `reopened`, what happened to the ticket's SLA, and the ids of the SLA policy and record in force before and after) and `sla_restarted` (#443, #464: written by a reopen that replaces an SLA record, with the id of the record it replaced and, when one starts, the new one; a reopen that starts a first clock on a ticket that had none replaced nothing and writes nothing; a staff priority change never writes it). A reply and an internal note are recorded too, as `reply_added` (a public reply) and `note_added` (an internal note). Each is written in the same transaction as the reply, by its author; a guest's has no actor. The entry carries only `reply_id` and `internal` in its "after" and never the text (`audit.Redact` allow-lists exactly those two keys). The feed shows it as a sentence such as "Erik Test added an internal note", a requester's name is masked like any other action's, and a reply by a deleted account reads "Someone". Replies and notes written before this existed are not backfilled. Reply and note entries are fetched on their own, with a cap of their own (like follows), so a long conversation cannot push a ticket's history off its feed. CTI reclassification and custom-field edits are not recorded. Those are gaps in what `ticket.Service` writes, not something this route introduces.
+This route only *reads* the audit log; it does not change what the domain layer writes to it. What gets written is narrower than "every mutation": `created`, `status_changed`, `assigned`, `unassigned` (an assignment cleared, or a departing user's tickets returned to the queue, #326), `resolved`, `closed`, `followed` and `unfollowed` (Ticket Followers above; withheld from staff unless `staff_can_view_follow_audit` is on, and from requesters always), and `reopened` (every reopen: a requester's reply that reopens a Resolved ticket, a status change out of Resolved or Closed, and `POST /reopen`; a move out of Closed is a force-reopen allowed only by `closed_reopen_policy` (#349) and says so with `forced_reopen` and the policy in its "after"), `classified` (1.3.0: a change of category, type or item, by id, with the actor; a change of category also says what happened to the ticket's SLA, with the same `sla_outcome` and policy and record ids as `priority_changed`, see SLA Tracking → Re-matching when the category changes; the entry is written in the same transaction as the change, and a request that changes nothing writes none), `priority_changed` (#443: the "after" says why the priority changed, `manual` or `reopened`, what happened to the ticket's SLA, and the ids of the SLA policy and record in force before and after) and `sla_restarted` (#443, #464: written by a reopen that replaces an SLA record, with the id of the record it replaced and, when one starts, the new one; a reopen that starts a first clock on a ticket that had none replaced nothing and writes nothing; a staff priority change never writes it). A reply and an internal note are recorded too, as `reply_added` (a public reply) and `note_added` (an internal note). Each is written in the same transaction as the reply, by its author; a guest's has no actor. The entry carries only `reply_id` and `internal` in its "after" and never the text (`audit.Redact` allow-lists exactly those two keys). The feed shows it as a sentence such as "Erik Test added an internal note", a requester's name is masked like any other action's, and a reply by a deleted account reads "Someone". Replies and notes written before this existed are not backfilled. Reply and note entries are fetched on their own, with a cap of their own (like follows), so a long conversation cannot push a ticket's history off its feed. Custom-field edits on a ticket are not recorded. Those are gaps in what `ticket.Service` writes, not something this route introduces.
 
 (The paragraphs below about what a *reporting user* sees in this feed describe the code's response shaping, which a requester no longer reaches: the route is refused to them. They still apply to the staff and administrator views where they mention the diff.)
 
@@ -3863,7 +3864,7 @@ raises into the transaction's collector; none dispatches after the commit.
 | `UpdateStatus` (MCP `update_ticket_status`; REST `PATCH status_id` runs the same in-transaction step inside `Update`) | the status kinds | `new_status_id`; recipient = guest (none when closing); guest-link flag unless closing |
 | `Assign` (MCP `assign_ticket`; REST `PATCH` assignee or `clear_assignee` runs the same step inside `Update`) | `ticket.assigned`, only when the assignee user or group moved. A clear of an assigned ticket is a change; a clear of an unassigned one, or assigning the person and group already held, raises nothing (ruling 16). The audit entry is still written, as for a same-status move. | |
 | `ChangePriority` (no production caller: REST `PATCH priority` runs its step inside `Update`) | `ticket.priority_changed`, only when the priority moved | |
-| `UpdateCTI` (no production caller: REST `PATCH category_id` runs its step inside `Update`) | `ticket.classified`, only when category, type or item changed. Now in a transaction; still writes no audit entry. | |
+| `UpdateCTI` (no production caller: REST `PATCH category_id` runs its step inside `Update`) | `ticket.classified`, only when category, type or item changed. Now in a transaction, and writes a `classified` audit entry in it (1.3.0). | |
 | `Update` (REST `PATCH /tickets/{id}`, `handler_tickets.go`; it calls the in-transaction step functions of the four rows above) | whatever its steps raise, merged | see *One transaction* |
 | `addReply` (REST reply, MCP `add_reply`, guest reply) | `ticket.replied`, or `ticket.note_added` for an internal note. A requester's reply that reopens a Resolved ticket adds the status kinds (`status_changed`, `reopened`) and, on the ticket's first reopen, `priority_changed` if the priority moved (a critical ticket cannot be raised). | `reply_id`, `internal`, `ReplyBody` (public only); recipient = reporter when "notify customer" is on; `FromRequester` true for the requester's public reply **including one that reopens** |
 | `Resolve` (REST resolve) | the status kinds into Resolved (`status_changed`, `resolved`). On an already-Resolved ticket with new notes: `ticket.resolved` only. | `new_status_id`; recipient = guest; guest-link flag |
@@ -4314,7 +4315,6 @@ webhooks.
   order after a retry, as before.
 - Events for writes that announce nothing: `RemoveLink`, attachments, follow and
   unfollow, and the bulk `UnassignForUser` and `DeleteGroup`.
-- An audit entry for a classification change (`UpdateCTI` still writes none).
 - A plugin API.
 - `reply_id` on the raw wire. A receiver still cannot tell which reply a
   `ticket.replied` delivery means without listing replies.
@@ -4745,6 +4745,8 @@ When a ticket is created, the system selects an SLA policy by specificity:
 
 #### Re-matching when priority changes
 
+The same re-match runs when the **category** changes: see *Re-matching when the category changes* below.
+
 A ticket can change priority after it is created (staff and admin,
 `PATCH /tickets/{id}`, #443). The SLA policy is then matched again, by the same
 four tiers, against the new priority and the ticket's category, and the change
@@ -4880,6 +4882,31 @@ pass. The window is
 milliseconds. Closing it would need the write to report rows affected and the
 recording code to retry once, which changes the store signatures; it is left
 until there is a real report.
+
+#### Re-matching when the category changes
+
+A policy is matched on priority and category, so reclassifying a ticket can mean
+a different policy (1.3.0; until then a reclassified ticket kept the policy of
+its old category). `PATCH /tickets/{id}` with a new `category_id` (and
+`ticket.Service.UpdateCTI`) matches the policy again, by the same four tiers, in
+the reclassification's own transaction, and writes a `classified` audit entry
+carrying the same outcome vocabulary as a priority change (`sla_outcome` and the
+policy and record ids before and after).
+
+- **The clock is kept.** A reclassification is a staff change, and a staff change
+  never restarts a clock: the new record takes the old record's start and pause
+  base and its met and breach facts, exactly as for a priority change, with the
+  same outcomes (`rematched`, `unchanged`, `attached`, `removed`, `sla_off`).
+  Only a reopen restarts a clock.
+- **Only the category matters.** A change of type or item alone cannot change the
+  match; it is audited, with no SLA outcome.
+- **Resolved and Closed tickets are reclassified but not re-matched.** Staff may
+  still reclassify a finished ticket (it is not refused, unlike a priority
+  change), but its SLA record is left as it was: what it was measured against is a
+  fact about what happened. Its entry carries no SLA outcome.
+- **Gated on the toggle**, as for a priority change: with SLA tracking off nothing
+  is re-matched and the entry says `sla_off`.
+- **Atomic.** The classification, the SLA rows and the entry commit together.
 
 ### Timer Mechanics (pause / resume)
 
