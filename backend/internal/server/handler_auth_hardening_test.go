@@ -29,13 +29,35 @@ func TestHalfAuthenticatedSession_CannotReadReferenceData(t *testing.T) {
 		map[string]any{"email": "staff@test.local", "password": "password"})
 	require.Equal(t, http.StatusOK, res.StatusCode)
 
-	for _, path := range []string{"/api/v1/tags", "/api/v1/statuses"} {
+	// /categories is the catalogue the guest form shares, so it sits behind
+	// requireSignedInOrGuestsEnabled rather than RequireMFA.
+	for _, path := range []string{"/api/v1/tags", "/api/v1/statuses", "/api/v1/categories"} {
 		t.Run(path, func(t *testing.T) {
 			res, body := s.send(t, http.MethodGet, path, nil)
 			require.Equal(t, http.StatusForbidden, res.StatusCode,
 				"reachable before the MFA challenge was answered; body %s", body)
 		})
 	}
+}
+
+// The same session, held at "change your password first" instead of at the MFA
+// challenge, reaches nothing else either, the shared catalogue included.
+func TestPasswordChangeSession_CannotReadTheCategoryCatalogue(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	_, err := h.tx.ExecContext(ctx, `UPDATE users SET must_change_password = true WHERE id = $1`, h.staffID)
+	require.NoError(t, err)
+
+	s := &session{h: h}
+	res, _ := s.send(t, http.MethodPost, "/api/v1/auth/local/login",
+		map[string]any{"email": "staff@test.local", "password": "password"})
+	require.Equal(t, http.StatusOK, res.StatusCode)
+
+	res, body := s.send(t, http.MethodGet, "/api/v1/categories", nil)
+	require.Equal(t, http.StatusForbidden, res.StatusCode, "body %s", body)
+	require.Contains(t, string(body), "password_change_required")
 }
 
 // The TOTP budget lives on the user row, not in process memory. That is the

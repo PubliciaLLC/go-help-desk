@@ -979,8 +979,16 @@ func (s *Server) SetLoginThrottleDelayForTest(d time.Duration) {
 // operator saying they do not want anonymous people filing tickets here, and
 // therefore do not want the anonymous internet reading their category tree.
 func (s *Server) requireSignedInOrGuestsEnabled(next http.Handler) http.Handler {
+	signedIn := authmw.RequireMFA(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if authmw.GetActor(r) != nil || s.adminSvc.GuestSubmissionEnabled(r.Context()) {
+		// A session is not "signed in" until it has answered the second factor
+		// and owes no password change; a half-signed-in one is refused the way
+		// every other route refuses it, not waved through as an actor.
+		if authmw.GetActor(r) != nil {
+			signedIn.ServeHTTP(w, r)
+			return
+		}
+		if s.adminSvc.GuestSubmissionEnabled(r.Context()) {
 			next.ServeHTTP(w, r)
 			return
 		}
