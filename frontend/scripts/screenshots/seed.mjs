@@ -155,6 +155,11 @@ async function main() {
   for (const [name, sort] of [['Screen', 0], ['Battery', 1], ['Keyboard', 2]]) {
     items[name] = (await call(admin, 'POST', `/api/v1/admin/categories/${cats.Hardware}/types/${types.Hardware.Laptop}/items`, { name, sort_order: sort }, 201)).id
   }
+  // SHOTS_HW_FIELD=1: a field on Hardware, so shot 06 shows the Fields section with one in it (see screenshots.sh).
+  if (process.env.SHOTS_HW_FIELD === '1') {
+    const f = await call(admin, 'POST', '/api/v1/admin/custom-fields', { name: 'Serial number', field_type: 'text' }, 201)
+    await call(admin, 'POST', `/api/v1/admin/categories/${cats.Hardware}/fields`, { field_def_id: f.id, sort_order: 1, visible_on_new: true, required_on_new: false }, 201)
+  }
   console.log('B. catalogue created')
 
   // C. People: users, then the disabled account, then groups with scopes (scopes before tickets, or auto-assign does nothing).
@@ -459,9 +464,32 @@ async function extras() {
     notify_customer: false,
   }, 201)
 
+  // Custom fields (shot 41): a select field with held values, an option at no
+  // tickets, a retired option and two places. T1 (Hardware / Laptop) and T4
+  // (Hardware / Printer) hold values, so those two options cannot be deleted.
+  const hw = cats.find((c) => c.name === 'Hardware')?.id
+  const hwTypes = await call(admin, 'GET', `/api/v1/admin/categories/${hw}/types`, null, 200)
+  const laptop = hwTypes.find((t) => t.name === 'Laptop')?.id
+  const printer = hwTypes.find((t) => t.name === 'Printer')?.id
+  if (!hw || !laptop || !printer) throw new Error('Hardware / Laptop / Printer not found: run the main seed first')
+  const field = (body) => call(admin, 'POST', '/api/v1/admin/custom-fields', body, 201)
+  const place = (def, typeId, sort) =>
+    call(admin, 'POST', `/api/v1/admin/categories/${hw}/types/${typeId}/fields`, { field_def_id: def.id, sort_order: sort, visible_on_new: true, required_on_new: false }, 201)
+  const assetTag = await field({ name: 'Asset tag', field_type: 'text', sort_order: 1 })
+  const warranty = await field({ name: 'Warranty (months)', field_type: 'number', sort_order: 2 })
+  const condition = await field({ name: 'Condition on arrival', field_type: 'select', options: ['Like new', 'Good', 'Worn', 'Damaged', 'Refurbished'], sort_order: 3 })
+  await place(assetTag, laptop, 1)
+  await place(warranty, laptop, 2)
+  await place(condition, laptop, 3)
+  await place(condition, printer, 1)
+  const setValue = (key, def, value) => call(admin, 'PUT', `/api/v1/tickets/${seed.tickets[key].id}/custom-fields`, { [def.id]: value }, 204)
+  await setValue('T1', condition, 'Good')
+  await setValue('T4', condition, 'Worn')
+  await call(admin, 'PATCH', `/api/v1/admin/custom-fields/${condition.id}`, { options: ['Like new', 'Good', 'Worn', 'Damaged'], retired_options: ['Refurbished'] }, 200)
+
   const guestPath = await guestPathFromMail(mailDir, PAT.email)
 
-  seed.extras = { tickets: { T11: { id: t11.id, tracking: t11.tracking_number } }, guestPath }
+  seed.extras = { tickets: { T11: { id: t11.id, tracking: t11.tracking_number } }, guestPath, fields: { condition: condition.id } }
   writeFileSync(seedPath, JSON.stringify(seed, null, 2) + '\n', { mode: 0o600 })
   chmodSync(seedPath, 0o600)
   console.log('X. extras seeded')
