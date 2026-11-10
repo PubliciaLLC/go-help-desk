@@ -34,6 +34,10 @@ var ErrBlockedAddress = errors.New("refusing to connect")
 func Client(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout: timeout,
+		// A redirect is the receiver saying "not here", not "accepted". Following
+		// it turns a POST into a bodyless GET whose 200 is then recorded as a
+		// delivery. Return the 3xx itself so it is recorded with its real code.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		Transport: &http.Transport{
 			DialContext:           guardedDial,
 			TLSHandshakeTimeout:   timeout,
