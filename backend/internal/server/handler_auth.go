@@ -603,6 +603,14 @@ func (s *Server) writeSession(w http.ResponseWriter, r *http.Request, sd auth.Se
 		opts.MaxAge = max(1, int(math.Ceil(time.Until(sd.PendingUntil).Seconds())))
 		session.Options = &opts
 	}
+
+	// A session with no user is the pre-login state. Anyone can create one
+	// (GET /auth/oidc/login), so it gets a short row rather than seven days.
+	if sd.UserID == uuid.Nil {
+		opts := *session.Options
+		opts.MaxAge = int(auth.PreLoginWindow.Seconds())
+		session.Options = &opts
+	}
 	return session.Save(r, w)
 }
 
