@@ -795,6 +795,10 @@ e.g. "Security key, added 3 March") and created/last-used timestamps.
   context that does not belong to the request (as webhook dispatch does): it
   answers "which key is still in use", but a sign-in must not wait on it or fail
   because of it.
+  An API key's `last_used_at` is written the same way (detached context, a
+  failure is logged and ignored) but inline rather than in a goroutine, at most
+  once per five minutes per key, judged from the value the key lookup already
+  returned.
 
 **Enrolment.** `POST /me/passkeys/register/start` mints a challenge and stages
 it **in the session**; `POST /me/passkeys/register/finish` verifies the
@@ -2615,7 +2619,7 @@ Serves both the frontend SPA and external integrations.
 - `GET /api/v1/setup/status` — whether first-run setup is needed; `POST /api/v1/setup` creates the first administrator (and the first category, see Ticket Classification). It answers `409 already_configured` once **any** user row exists, disabled and deleted accounts included, so setup never reopens.
 - `/api/v1/auth/*` — `POST /local/login`, `POST /local/logout`, `GET /providers`, `POST /oauth/token` (OAuth client credentials), the SAML and OIDC sign-in routes, and `GET /signup/status`, `POST /signup`, `GET` and `POST /verify-email` (see Authentication). `POST /local/mfa/verify` and `POST /local/passkey/*` need the session the password step produced and are refused to machine credentials.
 - `/api/v1/guest/*` — `POST /tickets` (submit) and `POST /resend` (re-request a link) are public, throttled, and answer `404` while guest submission is off. `GET /ticket`, `POST /follow-up`, `POST /replies` and `POST /attachments` are authenticated by the per-ticket link token alone (see Guest Submission); `POST /follow-up`, `GET /ticket`, `POST /replies` and `POST /attachments` answer `404` while guest submission is off (#424).
-- `GET /api/v1/categories` and its `/{id}/types` and `/{id}/types/{typeId}/items` children — public **only while guest submission is on**, because the guest form needs them; otherwise they require an authenticated caller (a session, API key or OAuth token). Active entries for a guest or a reporting user, all of them for staff and administrators.
+- `GET /api/v1/categories` and its `/{id}/types` and `/{id}/types/{typeId}/items` children — public **only while guest submission is on**, because the guest form needs them; otherwise they require a fully signed-in caller (a session that has passed MFA and owes no password change, an API key or an OAuth token; a half-signed-in session gets `403` like every other route). Active entries for a guest or a reporting user, all of them for staff and administrators.
 
 Everything else under `/api/v1` requires a session, API key or OAuth token, and the role and scope rules below.
 
@@ -2700,7 +2704,11 @@ only shape in which a session can be revoked. Logout, a password change, an MFA
 reset, a role change, disabling and deleting all take effect on the next
 request. A session whose owner is disabled or deleted stops loading whether or
 not anything deleted it, and the session id rotates on login and on any
-privilege change. Lifetime is 7 days. SAML's library cookie is not a
+privilege change. Lifetime is 7 days, except a session that belongs to nobody
+yet (the OIDC state, a passkey challenge), which lives 10 minutes: anyone can
+create one with `GET /auth/oidc/login`. The OIDC callback builds a fresh
+session rather than editing the one the browser held, so a previous sign-in's
+password-change or enrolment state cannot ride onto it. SAML's library cookie is not a
 session; it is spent at hand-over (see Authentication → SAML).
 
 **The generated JWT signing key is stored unencrypted in `instance_secrets`,
