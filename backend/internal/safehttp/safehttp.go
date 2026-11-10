@@ -136,6 +136,20 @@ func checkIP(ip net.IP) error {
 // It is a convenience, not the boundary: the dialer is the boundary, because a
 // name that passes here can resolve somewhere else by the time it is used.
 func ValidateURL(raw string) error {
+	// Bounded here for callers that have no context of their own: the system
+	// resolver can otherwise hold the caller for as long as it likes.
+	ctx, cancel := context.WithTimeout(context.Background(), validateLookupTimeout)
+	defer cancel()
+	return ValidateURLContext(ctx, raw)
+}
+
+// validateLookupTimeout bounds the lookup ValidateURL makes for a caller that
+// supplies no context.
+const validateLookupTimeout = 10 * time.Second
+
+// ValidateURLContext is ValidateURL with the name lookup tied to ctx, so a
+// request that is cancelled or times out stops waiting on DNS.
+func ValidateURLContext(ctx context.Context, raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("invalid URL: %w", err)
@@ -146,12 +160,12 @@ func ValidateURL(raw string) error {
 	if u.Hostname() == "" {
 		return fmt.Errorf("URL has no host")
 	}
-	ips, err := net.LookupIP(u.Hostname())
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, u.Hostname())
 	if err != nil {
 		return fmt.Errorf("resolving %q: %w", u.Hostname(), err)
 	}
 	for _, ip := range ips {
-		if err := checkIP(ip); err != nil {
+		if err := checkIP(ip.IP); err != nil {
 			return err
 		}
 	}
