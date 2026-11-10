@@ -312,6 +312,57 @@ func TestUpdate_TwoFirstSavesOfOneNameAreSerialisedToo(t *testing.T) {
 	require.Equal(t, "bB", got[name].Body)
 }
 
+// The joined size limit of a template is measured against the shared header
+// and footer, rows a save of the template does not lock. Read before the
+// transaction, they could be replaced by a save that committed in between, so
+// two saves that each fit (a larger body, a larger header) both committed and
+// together went past the limit. Save hands the decision every stored row, read
+// inside the transaction, and holds off every other save while it decides: a
+// save of ANOTHER name waits, and then sees this one's row.
+func TestSave_SavesOfDifferentNamesAreSerialisedAndSeeEachOthersRows(t *testing.T) {
+	s, q, nameA := newStore(t)
+	ctx := context.Background()
+	nameB := "zz_store_" + uuid.NewString()
+	t.Cleanup(func() { _ = q.DeleteEmailTemplateOverride(ctx, nameB) })
+
+	aInside := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	letGo := func() { once.Do(func() { close(release) }) }
+	defer letGo() // a failed assertion must not leave A holding the lock
+	aDone := make(chan error, 1)
+	go func() {
+		aDone <- s.Save(ctx, nameA, func(prev *emailtemplate.Override, _ map[string]emailtemplate.Override) (*emailtemplate.Override, *audit.Entry, error) {
+			close(aInside)
+			<-release
+			return &emailtemplate.Override{Name: nameA, Subject: "s", Body: "from A"}, nil, nil
+		})
+	}()
+	<-aInside
+
+	bSaw := make(chan map[string]emailtemplate.Override, 1)
+	bDone := make(chan error, 1)
+	go func() {
+		bDone <- s.Save(ctx, nameB, func(prev *emailtemplate.Override, stored map[string]emailtemplate.Override) (*emailtemplate.Override, *audit.Entry, error) {
+			bSaw <- stored
+			return &emailtemplate.Override{Name: nameB, Subject: "s", Body: "from B"}, nil, nil
+		})
+	}()
+	select {
+	case <-bSaw:
+		letGo()
+		<-aDone
+		<-bDone
+		t.Fatal("B decided while A was deciding: each would measure the other's rows as they were before")
+	case <-time.After(300 * time.Millisecond):
+	}
+	letGo()
+	require.NoError(t, <-aDone)
+	stored := <-bSaw
+	require.Equal(t, "from A", stored[nameA].Body, "B decided against A's committed row")
+	require.NoError(t, <-bDone)
+}
+
 func TestUpdate_ADecisionToRemoveDeletesAndAnErrorChangesNothing(t *testing.T) {
 	s, _, name := newStore(t)
 	ctx := context.Background()

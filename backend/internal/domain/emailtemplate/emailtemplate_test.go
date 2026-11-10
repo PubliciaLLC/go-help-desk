@@ -86,3 +86,9 @@ func TestApplyContract_EntryIsToldWhatWasThereAndMayDeclineToWrite(t *testing.T)
 		t.Fatalf("a revert left the row: %+v", got)
 	}
 }
+
+func (r *recorder) Save(ctx context.Context, name string, decide func(prev *emailtemplate.Override, stored map[string]emailtemplate.Override) (*emailtemplate.Override, *audit.Entry, error)) error {
+	return r.Update(ctx, name, func(prev *emailtemplate.Override) (*emailtemplate.Override, *audit.Entry, error) {
+		return decide(prev, r.rows)
+	})
+}
