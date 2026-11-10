@@ -4101,7 +4101,7 @@ and each staff member's mail, then `outboxstore.Store.Split`
 the change's row in **one transaction**. A failure part way leaves nothing
 queued and the change's row to be tried again. The transaction deletes the
 change's row **first**, and only the call that deleted it queues anything
-(#513): a split that outlasts the 300-second claim lease lets a second worker
+(#513): a split that outlasts the 10-minute claim lease (`Worker.Lease`) lets a second worker
 claim and split the same row, and the first split's children may be sent and
 deleted by then, so `ON CONFLICT` alone would queue them again and the mail go
 out twice. The second worker finds no row to delete, queues nothing and
