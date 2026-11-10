@@ -39,7 +39,8 @@ const (
 
 	// bodyTransferTimeout is how long one attachment body may take to arrive
 	// or to leave, replacing the server-wide 15s read and 30s write deadlines
-	// for these two routes alone.
+	// for these two routes alone. An upload extends both (the write deadline
+	// runs while the body is still arriving); a download extends the write one.
 	//
 	// Those deadlines cover a whole request, body included, and the app is
 	// exposed directly in docker-compose with no proxy in front. At 15
@@ -634,6 +635,13 @@ func (s *Server) storeUploadedAttachment(w http.ResponseWriter, r *http.Request,
 
 	if err := http.NewResponseController(w).SetReadDeadline(time.Now().Add(bodyTransferTimeout)); err != nil {
 		slog.DebugContext(r.Context(), "could not extend the upload read deadline", "error", err)
+	}
+	// The write deadline too: net/http starts it when the request headers are
+	// read, so it runs while the body is still arriving. A body slower than
+	// WriteTimeout was stored and then answered on a dead connection, and the
+	// client's retry made a duplicate.
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(bodyTransferTimeout)); err != nil {
+		slog.DebugContext(r.Context(), "could not extend the upload write deadline", "error", err)
 	}
 
 	// Cap the body before parsing it, not after.
