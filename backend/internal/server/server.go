@@ -112,7 +112,7 @@ func (s *Server) ProtectMCP(next http.Handler) http.Handler {
 		authmw.RequireMFA(next),
 	)
 	chain = authmw.BearerAuth(s.cfg.JWTSecret, s.oauthClientStore.GetWithUser)(chain)
-	chain = authmw.APIKeyAuth(s.apiKeyLookup)(chain)
+	chain = authmw.APIKeyAuth(s.apiKeyLookup, s.apiKeyUsedHook())(chain)
 	chain = authmw.SessionAuth(s.sessions)(chain)
 
 	// /mcp/ is mounted on the bare ServeMux, not on the chi router, so it never
@@ -149,6 +149,8 @@ type OAuthClientLookup interface {
 // AuthStoreIface is the server-facing interface for auth key management.
 type AuthStoreIface interface {
 	CreateAPIKey(ctx context.Context, k auth.APIKey) error
+	// UpdateLastUsed records a key's use; APIKeyAuth calls it, throttled.
+	UpdateLastUsed(ctx context.Context, id uuid.UUID, at time.Time) error
 	Delete(ctx context.Context, id uuid.UUID) error
 	// DeleteForUser is Delete limited to a key the user owns (#450).
 	DeleteForUser(ctx context.Context, id, userID uuid.UUID) error
@@ -592,7 +594,7 @@ func (s *Server) buildRouter() *chi.Mux {
 
 	// Auth middleware chain: each layer runs only when no prior actor is set.
 	r.Use(authmw.SessionAuth(s.sessions))
-	r.Use(authmw.APIKeyAuth(s.apiKeyLookup))
+	r.Use(authmw.APIKeyAuth(s.apiKeyLookup, s.apiKeyUsedHook()))
 	r.Use(authmw.BearerAuth(s.cfg.JWTSecret, s.oauthClientStore.GetWithUser))
 
 	// Health check — no auth required.
@@ -968,6 +970,15 @@ func (s *Server) scanner(ctx context.Context) *antivirus.Scanner {
 // tests about the delay itself need one long enough to measure.
 func (s *Server) SetLoginThrottleDelayForTest(d time.Duration) {
 	s.loginThrottleDelay = d
+}
+
+// apiKeyUsedHook is APIKeyAuth's last_used_at hook, or nil (no recording) for a
+// Server built without a store, as the route-only one the spec tests walk is.
+func (s *Server) apiKeyUsedHook() authmw.APIKeyMarkUsedFunc {
+	if s.authStore == nil {
+		return nil
+	}
+	return s.authStore.UpdateLastUsed
 }
 
 // requireSignedInOrGuestsEnabled admits any authenticated caller, and an

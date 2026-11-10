@@ -100,7 +100,7 @@ func TestAPIKeyAuth_ValidKey_SetsActor(t *testing.T) {
 	})
 
 	var captured *Actor
-	handler := APIKeyAuth(lookup)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	handler := APIKeyAuth(lookup, nil)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		captured = GetActor(r)
 	}))
 
@@ -133,7 +133,7 @@ func TestAPIKeyAuth_ExpiredKey_PassesThrough(t *testing.T) {
 	})
 
 	var captured *Actor
-	handler := APIKeyAuth(lookup)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	handler := APIKeyAuth(lookup, nil)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		captured = GetActor(r)
 	}))
 
@@ -155,7 +155,7 @@ func TestAPIKeyAuth_SkipsWhenActorAlreadySet(t *testing.T) {
 	})
 
 	var captured *Actor
-	handler := APIKeyAuth(lookup)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	handler := APIKeyAuth(lookup, nil)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		captured = GetActor(r)
 	}))
 
@@ -307,7 +307,7 @@ func TestAPIKeyAuth_DisabledUser_AttachesNoActor(t *testing.T) {
 			})
 
 			var got *Actor
-			h := APIKeyAuth(lookup)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h := APIKeyAuth(lookup, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				got = GetActor(r)
 				w.WriteHeader(http.StatusOK)
 			}))
@@ -338,7 +338,7 @@ func TestAPIKeyAuth_SoftDeletedUser_AttachesNoActor(t *testing.T) {
 	})
 
 	var got *Actor
-	h := APIKeyAuth(lookup)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := APIKeyAuth(lookup, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got = GetActor(r)
 	}))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
