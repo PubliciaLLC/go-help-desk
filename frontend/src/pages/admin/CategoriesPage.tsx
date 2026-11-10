@@ -391,6 +391,8 @@ function FieldsSubsection({ scope }: { scope: FieldsScope }) {
       updateAssignment(id, patch),
     onSuccess: invalidateAssignments,
   })
+  const addError = addMutation.isError ? extractError(addMutation.error) : ''
+  const toggleError = toggleMutation.isError ? extractError(toggleMutation.error) : ''
 
   if (assignments.length === 0 && !addingField) {
     return (
@@ -417,6 +419,8 @@ function FieldsSubsection({ scope }: { scope: FieldsScope }) {
       </div>
       <p className="mb-2 text-xs text-gray-400">Order is set on Custom Fields.</p>
       {removeError && <p role="alert" className="mb-2 text-xs text-red-600">{removeError}</p>}
+      {toggleError && <p role="alert" className="mb-2 text-xs text-red-600">{toggleError}</p>}
+      {addError && <p role="alert" className="mb-2 text-xs text-red-600">{addError}</p>}
       <div className="space-y-1">
         {(assignments as Assignment[]).map((a) => (
           <div key={a.id} className="group flex items-center gap-2 rounded px-2 py-1 hover:bg-gray-50 text-xs">
