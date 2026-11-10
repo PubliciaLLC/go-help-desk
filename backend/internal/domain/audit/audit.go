@@ -174,7 +174,8 @@ const redactedPlaceholder = "[redacted]"
 // reason, SLA outcome and record ids), UnassignForUser, DeleteGroup,
 // user.ResetMFA, the API key audit paths in handler_admin_credentials.go and
 // cmd/server/resetfactors.go (whose os_user and host say who ran it, as
-// actor_name does for everyone else).
+// actor_name does for everyone else), and the OAuth client and webhook paths in
+// credentials_audit.go.
 //
 // An allow-list, not a deny-list, because of #362: the audit view is built
 // not to display protected or sensitive data — PII, and data under FERPA,
@@ -227,6 +228,24 @@ var shownKeys = map[string]bool{
 	// other entries keep text that stays hidden.
 	// Shown for EVERY entity type, so no other writer may reuse these key names.
 	"fieldname": true, "optionvalue": true, "scopepath": true,
+	// An OAuth client or webhook being created, changed or deleted. Fixed values
+	// and flags first. events is joined into one string, like scopes, because
+	// the view drops arrays; filter is one JSON string of ids and priorities, for
+	// the same reason. signed says a webhook has a signing secret, and
+	// signature_changed and url_changed say a change replaced the secret or the
+	// URL. The secret and the URL themselves are never written (the URL's path
+	// and query are where its token lives), and the flags are not named for the
+	// secret because "secret" in a key name is redacted, and a flag is the point.
+	"serviceuserid": true, "events": true, "enabled": true, "payloadformat": true,
+	"signed": true, "signaturechanged": true, "urlchanged": true, "filter": true,
+	// Then text an administrator wrote: a client's name and a webhook's host.
+	// Neither can hold ticket content, and without them a delete leaves nothing
+	// to say which client or hook it was. Named client_name and url_host because
+	// the plain "name" and "host" mean other things elsewhere: "host" is already
+	// shown for the command-line factor reset, where it names the machine the
+	// command ran on.
+	// Shown for EVERY entity type, so no other writer may reuse these key names.
+	"clientname": true, "urlhost": true,
 }
 
 // Redact returns copies of before/after showing only allow-listed keys

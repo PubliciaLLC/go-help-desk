@@ -238,6 +238,28 @@ func (q *Queries) GetOAuthClientByClientID(ctx context.Context, clientID string)
 	return i, err
 }
 
+const getOAuthClientForUpdate = `-- name: GetOAuthClientForUpdate :one
+SELECT id, client_id, hashed_secret, name, scopes, created_at, user_id FROM oauth_clients WHERE id = $1 FOR UPDATE
+`
+
+// The client as it is while its delete is written, for the audit entry that
+// says what was removed. FOR UPDATE so a concurrent delete waits, and the entry
+// cannot describe a client the other delete already took.
+func (q *Queries) GetOAuthClientForUpdate(ctx context.Context, id uuid.UUID) (OauthClient, error) {
+	row := q.db.QueryRowContext(ctx, getOAuthClientForUpdate, id)
+	var i OauthClient
+	err := row.Scan(
+		&i.ID,
+		&i.ClientID,
+		&i.HashedSecret,
+		&i.Name,
+		pq.Array(&i.Scopes),
+		&i.CreatedAt,
+		&i.UserID,
+	)
+	return i, err
+}
+
 const getOAuthClientNameByUser = `-- name: GetOAuthClientNameByUser :one
 SELECT name FROM oauth_clients WHERE user_id = $1
 `
@@ -308,6 +330,32 @@ SELECT id, url, events, secret, enabled, created_at, payload_format, last_delive
 
 func (q *Queries) GetWebhookConfig(ctx context.Context, id uuid.UUID) (WebhookConfig, error) {
 	row := q.db.QueryRowContext(ctx, getWebhookConfig, id)
+	var i WebhookConfig
+	err := row.Scan(
+		&i.ID,
+		&i.Url,
+		pq.Array(&i.Events),
+		&i.Secret,
+		&i.Enabled,
+		&i.CreatedAt,
+		&i.PayloadFormat,
+		&i.LastDeliveryAt,
+		&i.LastDeliveryStatus,
+		&i.LastDeliveryError,
+		&i.TicketFilter,
+		&i.ApiKeyID,
+	)
+	return i, err
+}
+
+const getWebhookConfigForUpdate = `-- name: GetWebhookConfigForUpdate :one
+SELECT id, url, events, secret, enabled, created_at, payload_format, last_delivery_at, last_delivery_status, last_delivery_error, ticket_filter, api_key_id FROM webhook_configs WHERE id = $1 FOR UPDATE
+`
+
+// The hook as it is while its change is written, for the audit entry's
+// "before". FOR UPDATE so two edits cannot both claim the same before.
+func (q *Queries) GetWebhookConfigForUpdate(ctx context.Context, id uuid.UUID) (WebhookConfig, error) {
+	row := q.db.QueryRowContext(ctx, getWebhookConfigForUpdate, id)
 	var i WebhookConfig
 	err := row.Scan(
 		&i.ID,

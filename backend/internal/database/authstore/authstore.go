@@ -11,8 +11,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/auditstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/dbretry"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -21,12 +24,64 @@ import (
 // Store implements both auth.APIKeyStore and auth.OAuthClientStore.
 type Store struct {
 	q *dbgen.Queries
+	// db is what the audited writes open their transactions on. nil: they join
+	// the transaction q is already bound to, or run unwrapped if there is none.
+	db *sql.DB
 	// now is the application clock, the one APIKeyAuth judges expiry by.
 	now func() time.Time
 }
 
-// New returns a Store backed by the given Queries.
+// New returns a Store backed by the given Queries. Its audited writes
+// (CreateOAuthClientAudited and the others) join whatever transaction q is
+// bound to and open none of their own, which is what the integration harness
+// needs (it wraps each test in a transaction it rolls back, the trade
+// customfieldstore.New and testutil.JoiningTxRunner document). Production uses
+// NewWithDB, so that a change and its audit entry really commit together.
 func New(q *dbgen.Queries) *Store { return &Store{q: q, now: time.Now} }
+
+// NewWithDB is New with db for the audited writes to begin their transactions on.
+func NewWithDB(q *dbgen.Queries, db *sql.DB) *Store { return &Store{q: q, db: db, now: time.Now} }
+
+// inTx runs fn in one transaction: its statements and the audit entry it
+// writes commit together or not at all. Run again when Postgres aborts the
+// transaction to break a lock cycle (dbretry has the rules); every attempt
+// starts clean, so fn must not keep state between calls.
+func (s *Store) inTx(ctx context.Context, what string, fn func(q *dbgen.Queries) error) error {
+	if s.db == nil {
+		return fn(s.q)
+	}
+	return dbretry.Do(ctx, nil, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("beginning transaction: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }() // a no-op once committed
+		if err := fn(s.q.WithTx(tx)); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing %s: %w", what, err)
+		}
+		return nil
+	})
+}
+
+// with is s on q, a transaction's Queries.
+func (s *Store) with(q *dbgen.Queries) *Store {
+	c := *s
+	c.q = q
+	return &c
+}
+
+// writeEntry puts the audit entry in the caller's transaction. A failure is
+// returned, and rolls the change back with it: an administrator's change to a
+// credential is not allowed to land unrecorded.
+func writeEntry(ctx context.Context, q *dbgen.Queries, e audit.Entry) error {
+	if err := auditstore.New(q).Create(ctx, e); err != nil {
+		return fmt.Errorf("writing audit entry: %w", err)
+	}
+	return nil
+}
 
 // ── APIKeyStore ──────────────────────────────────────────────────────────────
 
@@ -246,6 +301,41 @@ func (s *Store) DeleteOAuthClient(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("OAuth client %s: %w", id, auth.ErrNotFound)
 	}
 	return nil
+}
+
+// CreateOAuthClientAudited is CreateOAuthClient with its audit entry, in one
+// transaction: the client, its service user and the entry exist together or
+// not at all. The entry is built by the caller and must not carry the secret.
+func (s *Store) CreateOAuthClientAudited(ctx context.Context, c auth.OAuthClient, entry audit.Entry) error {
+	return s.inTx(ctx, "OAuth client", func(q *dbgen.Queries) error {
+		if err := s.with(q).CreateOAuthClient(ctx, c); err != nil {
+			return err
+		}
+		return writeEntry(ctx, q, entry)
+	})
+}
+
+// DeleteOAuthClientAudited is DeleteOAuthClient with its audit entry, in one
+// transaction. entry gets the client as it is when the delete is written, so
+// the entry says what was removed; a client that is not there is auth.ErrNotFound
+// and writes no entry.
+func (s *Store) DeleteOAuthClientAudited(ctx context.Context, id uuid.UUID, entry func(before auth.OAuthClient) audit.Entry) error {
+	return s.inTx(ctx, "OAuth client delete", func(q *dbgen.Queries) error {
+		r, err := q.GetOAuthClientForUpdate(ctx, id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("OAuth client %s: %w", id, auth.ErrNotFound)
+		}
+		if err != nil {
+			return fmt.Errorf("getting OAuth client %s: %w", id, err)
+		}
+		if err := s.with(q).DeleteOAuthClient(ctx, id); err != nil {
+			return err
+		}
+		return writeEntry(ctx, q, entry(auth.OAuthClient{
+			ID: r.ID, ClientID: r.ClientID, HashedSecret: r.HashedSecret, Name: r.Name,
+			Scopes: r.Scopes, CreatedAt: r.CreatedAt, UserID: r.UserID,
+		}))
+	})
 }
 
 func (s *Store) ListOAuthClients(ctx context.Context) ([]auth.OAuthClient, error) {
@@ -473,6 +563,68 @@ func (s *Store) DeleteWebhook(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("webhook %s: %w", id, auth.ErrNotFound)
 	}
 	return nil
+}
+
+// CreateWebhookAudited is CreateWebhook with its audit entry, in one
+// transaction. The entry is built by the caller and must carry neither the
+// URL (its path and query are where the token lives) nor the signing secret.
+func (s *Store) CreateWebhookAudited(ctx context.Context, wh WebhookConfig, entry audit.Entry) error {
+	return s.inTx(ctx, "webhook", func(q *dbgen.Queries) error {
+		if err := s.with(q).CreateWebhook(ctx, wh); err != nil {
+			return err
+		}
+		return writeEntry(ctx, q, entry)
+	})
+}
+
+// UpdateWebhookAudited is UpdateWebhook with its audit entry, in one
+// transaction, so an edit that clears the delivery history writes its entry in
+// the same breath. entry gets the hook as it is when the change is written
+// (locked, so it is the real before) and answers nil when nothing worth
+// recording changed. A hook that is not there is auth.ErrNotFound.
+func (s *Store) UpdateWebhookAudited(ctx context.Context, wh WebhookConfig, entry func(before WebhookConfig) *audit.Entry) error {
+	return s.inTx(ctx, "webhook change", func(q *dbgen.Queries) error {
+		before, err := s.with(q).lockWebhook(ctx, wh.ID)
+		if err != nil {
+			return err
+		}
+		if err := s.with(q).UpdateWebhook(ctx, wh); err != nil {
+			return err
+		}
+		if e := entry(before); e != nil {
+			return writeEntry(ctx, q, *e)
+		}
+		return nil
+	})
+}
+
+// DeleteWebhookAudited is DeleteWebhook with its audit entry, in one
+// transaction. entry gets the hook as it was, so the entry says what was
+// removed; a hook that is not there is auth.ErrNotFound and writes no entry.
+func (s *Store) DeleteWebhookAudited(ctx context.Context, id uuid.UUID, entry func(before WebhookConfig) audit.Entry) error {
+	return s.inTx(ctx, "webhook delete", func(q *dbgen.Queries) error {
+		before, err := s.with(q).lockWebhook(ctx, id)
+		if err != nil {
+			return err
+		}
+		if err := s.with(q).DeleteWebhook(ctx, id); err != nil {
+			return err
+		}
+		return writeEntry(ctx, q, entry(before))
+	})
+}
+
+// lockWebhook reads a hook FOR UPDATE, for the audited writes that need its
+// state as the change finds it.
+func (s *Store) lockWebhook(ctx context.Context, id uuid.UUID) (WebhookConfig, error) {
+	r, err := s.q.GetWebhookConfigForUpdate(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return WebhookConfig{}, fmt.Errorf("webhook %s: %w", id, auth.ErrNotFound)
+	}
+	if err != nil {
+		return WebhookConfig{}, fmt.Errorf("getting webhook %s: %w", id, err)
+	}
+	return webhookFromRow(r)
 }
 
 func (s *Store) ListEnabledWebhooks(ctx context.Context) ([]WebhookConfig, error) {

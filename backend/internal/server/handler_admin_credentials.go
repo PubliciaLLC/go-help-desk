@@ -448,7 +448,7 @@ func (s *Server) handleCreateOAuthClient(w http.ResponseWriter, r *http.Request)
 		CreatedAt:    time.Now(),
 		UserID:       uuid.New(), // its service user, created in the same statement
 	}
-	if err := s.authStore.CreateOAuthClient(r.Context(), client); err != nil {
+	if err := s.authStore.CreateOAuthClientAudited(r.Context(), client, oauthClientCreatedEntry(authmw.GetActor(r).UserID, client)); err != nil {
 		handleError(w, err)
 		return
 	}
@@ -469,7 +469,10 @@ func (s *Server) handleDeleteOAuthClient(w http.ResponseWriter, r *http.Request)
 		Error(w, http.StatusBadRequest, "bad_request", "invalid ID")
 		return
 	}
-	if err := s.authStore.DeleteOAuthClient(r.Context(), id); err != nil {
+	actor := authmw.GetActor(r).UserID
+	if err := s.authStore.DeleteOAuthClientAudited(r.Context(), id, func(before auth.OAuthClient) audit.Entry {
+		return oauthClientDeletedEntry(actor, before)
+	}); err != nil {
 		handleError(w, err)
 		return
 	}
@@ -651,7 +654,7 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		PayloadFormat: payloadFormat,
 		Filter:        filter,
 	}
-	if err := s.authStore.CreateWebhook(r.Context(), wh); err != nil {
+	if err := s.authStore.CreateWebhookAudited(r.Context(), wh, webhookCreatedEntry(authmw.GetActor(r).UserID, wh)); err != nil {
 		handleError(w, err)
 		return
 	}
@@ -747,7 +750,10 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 		existing.Filter = f
 	}
-	if err := s.authStore.UpdateWebhook(r.Context(), existing); err != nil {
+	actor := authmw.GetActor(r).UserID
+	if err := s.authStore.UpdateWebhookAudited(r.Context(), existing, func(before authstore.WebhookConfig) *audit.Entry {
+		return webhookUpdatedEntry(actor, before, existing)
+	}); err != nil {
 		handleError(w, err)
 		return
 	}
@@ -801,7 +807,10 @@ func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid ID")
 		return
 	}
-	if err := s.authStore.DeleteWebhook(r.Context(), id); err != nil {
+	actor := authmw.GetActor(r).UserID
+	if err := s.authStore.DeleteWebhookAudited(r.Context(), id, func(before authstore.WebhookConfig) audit.Entry {
+		return webhookDeletedEntry(actor, before)
+	}); err != nil {
 		handleError(w, err)
 		return
 	}

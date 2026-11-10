@@ -48,3 +48,22 @@ func TestRedact_DenyListAppliesToAllowListedNames(t *testing.T) {
 		t.Fatalf("got %v", got["api_key"])
 	}
 }
+
+// The OAuth client and webhook entries record names, a fixed vocabulary and
+// flags, and every key survives Redact. A webhook's URL, its signing secret and
+// a client's secret are not among them: the writer records the URL's host as
+// url_host, and whether a secret exists or changed as signed and
+// signature_changed (a key named for the secret itself would be redacted).
+func TestRedact_CredentialKeysAreShown(t *testing.T) {
+	entry := map[string]any{
+		"client_name": "Nightly sync", "scopes": "tickets:read", "service_user_id": "u",
+		"url_host": "example.com", "url_changed": true, "events": "ticket.created", "enabled": true,
+		"payload_format": "slack", "filter": `{"priorities":["high"]}`, "signed": true, "signature_changed": true,
+	}
+	got, _ := Redact(entry, nil)
+	for k, v := range entry {
+		if got[k] != v {
+			t.Errorf("%s: got %v, want %v", k, got[k], v)
+		}
+	}
+}

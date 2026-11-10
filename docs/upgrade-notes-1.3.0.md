@@ -412,6 +412,17 @@ A select field's options used to be a list you could only replace. A ticket that
 - **Three new admin calls**, for the Custom Fields page: `GET /admin/custom-fields/{id}/assignments` (every place a field is attached), `PUT /admin/custom-fields/order` (the order of all fields) and `GET /admin/custom-fields/{id}/usage` (how many tickets hold the field and each of its options). They refuse API keys and OAuth clients with `403 session_required`: use a browser session. The existing custom-field routes still accept them. `PUT /admin/custom-fields/order` takes `field_def_ids`, which must name every definition exactly once; a repeated id is `400 bad_request`, a list that no longer matches the stored fields is `409 conflict` with nothing written, and the answer is the full list in the new order. `GET /admin/custom-fields` and that answer now carry `place_count`, the number of categories, types and items the field is attached to (0 for a field on no form).
 - **Every admin change to a custom field is now audited**, in the same transaction as the change: the definition, its options and its attachments, under the entity type `custom_field` and the field's id. The actor is the signed-in administrator; for an API key, the key's owner; for an OAuth client, its service user. Every route that changes a field sits behind the administrator gate, so there is always an actor. Deleting a category, type or item also records each field attachment it removed, in the same statement as the delete. The Audit Log shows the field's name, the option text and the place, which are text an administrator wrote.
 
+### OAuth Client and Webhook Changes Are Audited
+
+Creating and deleting an OAuth client, and creating, editing and deleting a webhook, now write to the Audit Log (**Admin → System → Audit Log**), the way issuing and revoking an API key already does. Until now they left no entry.
+
+- **What is written.** Entity types `oauth_client` and `webhook`; actions `oauth_client_created`, `oauth_client_deleted`, `webhook_created`, `webhook_updated` and `webhook_deleted`. The actor is the signed-in administrator, or the owner of the API key that changed a webhook. An OAuth client has no edit call, so it has no update action.
+- **In the same transaction as the change.** A client or webhook change whose audit entry cannot be written is not made, and the request fails with a `500`. API key entries are still best effort.
+- **No secret and no URL token is stored.** A client's entry holds its name, scopes and service user id, never its secret. A webhook's entry holds the URL's **host only**, its events, whether it is on, its payload format, its ticket filter (ids and priorities) and whether a signing secret is set. An edit that replaces the URL or the signing secret is marked `url_changed` or `signature_changed`; the old and new values are not recorded. An edit that repeats what is stored writes no entry.
+- **The Audit Log page** offers `oauth_client` and `webhook` in its entity-type filter, and shows a client's name and scopes, or a hook's host and events, on the rows for creates and deletes.
+- **Not covered:** re-approving a paused webhook (`POST /admin/webhooks/{id}/reapprove`) writes no entry yet. Entries are not written for changes made before the upgrade.
+- **No migration, no setting.** Rolling back to 1.2.0 loses nothing: the entries stay in the `audit_log` table, which 1.2.0 has no page for, and show again after you upgrade.
+
 ## Changed behaviour
 
 ### Custom Fields: Order, Deactivation and Where a Field Appears (#603)
