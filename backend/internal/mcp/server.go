@@ -891,7 +891,7 @@ func buildListFilter(args map[string]any, vis ticket.Visibility, actorID uuid.UU
 		}
 		id, err := uuid.Parse(v)
 		if err != nil {
-			return nil, fmt.Errorf("invalid %s", key)
+			return nil, fmt.Errorf("%w: invalid %s", ticket.ErrValidation, key)
 		}
 		return &id, nil
 	}
@@ -909,7 +909,7 @@ func buildListFilter(args map[string]any, vis ticket.Visibility, actorID uuid.UU
 	if v, ok := args["priority"].(string); ok && v != "" {
 		p := ticket.Priority(v)
 		if !p.Valid() {
-			return f, fmt.Errorf("priority must be one of: critical, high, medium, low")
+			return f, fmt.Errorf("%w: priority must be one of: critical, high, medium, low", ticket.ErrValidation)
 		}
 		f.Priority = &p
 	}
@@ -1211,6 +1211,16 @@ func storeErr(ctx context.Context, op string, err error) (*mcpgo.CallToolResult,
 	// retrying a move that can never succeed.
 	if errors.Is(err, ticket.ErrClosed) || errors.Is(err, ticket.ErrNotClosed) {
 		return errResult(err.Error())
+	}
+	// A move into a retired or nonexistent status is about the status the
+	// caller named, and REST answers it with a 409 or 404 for the same reason.
+	if errors.Is(err, ticket.ErrStatusInactive) || errors.Is(err, ticket.ErrStatusNotFound) {
+		return errResult(err.Error())
+	}
+	// A role boundary working as designed. The wrapped text names internals
+	// ("status transition not allowed"), so the sentence is REST's own.
+	if errors.Is(err, ticket.ErrForbidden) {
+		return errResult("you do not have permission to perform this action")
 	}
 	slog.ErrorContext(ctx, "mcp tool failed", "op", op, "error", err)
 	return errResult(op + " failed")
