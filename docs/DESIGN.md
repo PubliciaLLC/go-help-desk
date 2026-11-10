@@ -293,8 +293,8 @@ refusal and names the follow-up instead.
 mode. It creates a **new** ticket from the closed one, through the same creation
 path as any ticket (`Service.create`): the same validation, tracking number,
 opening status history, audit entry (carrying `follow_up_of`), "created"
-notification and routing. REST applies the auto-assignment rules like a new
-ticket; MCP's `create_ticket` does not, so neither does `create_follow_up`.
+notification and routing. Every door applies the auto-assignment rules, as for a new
+ticket (REST, the guest form and MCP alike).
 Three doors, one creation path:
 
 | Who | Route | Notes |
@@ -692,7 +692,7 @@ Scope does two separate jobs: it can restrict what staff see, and it routes new 
 3. `auto_assign_user_ids`: a list of staff the tickets are dealt out to round-robin. The rotation is in memory, per server process. A listed user the assignment refuses (deleted, disabled or no longer staff) is skipped and the next one tried, so a departed colleague does not silently take every Nth ticket out of the queue.
 4. Otherwise the ticket stays unassigned.
 
-Routing is best-effort in one respect: a candidate that cannot be given a ticket (a departed colleague still on the round-robin list, a group that no longer exists) is skipped for the next, and if none is acceptable the ticket is left unassigned and the creation succeeds. A database error while checking a candidate is not skipped: it aborts the create. It runs for tickets created through `POST /tickets` and for follow-ups (`POST /tickets/{id}/follow-up`, `POST /guest/follow-up`). It does **not** run for MCP `create_ticket` and `create_follow_up`, and a new guest submission (`POST /guest/tickets`) does not call it either. `auto_assign_group_id` (a UUID string) and `auto_assign_user_ids` (an array of UUID strings) are set on **Admin → Routing** (a group picker and a staff checklist, with the rules above listed in order) or through `PATCH /admin/settings`. Saving is checked: a group id that names no group, or a user id that names no one or someone who is neither staff nor an administrator, is refused with 400 `invalid_auto_assign` and nothing in the request is written (before #447 such an id was saved and then skipped at routing time). An empty value clears the setting.
+Routing is best-effort in one respect: a candidate that cannot be given a ticket (a departed colleague still on the round-robin list, a group that no longer exists) is skipped for the next, and if none is acceptable the ticket is left unassigned and the creation succeeds. A database error while checking a candidate is not skipped: it aborts the create. It runs for every door that creates a ticket: `POST /tickets`, a guest submission (`POST /guest/tickets`), MCP `create_ticket`, and the three follow-ups (`POST /tickets/{id}/follow-up`, `POST /guest/follow-up`, MCP `create_follow_up`). They all call the one routing rule (`Server.Routing`; MCP reaches it through `mcp.Router`), so a rule cannot apply to one door and not another. Until 1.3.0 the guest form and the two MCP tools skipped it, so a ticket filed through them was never given to anyone; a follow-up is routed on its original's category and type, the guest form and a guest's follow-up on the category alone. `auto_assign_group_id` (a UUID string) and `auto_assign_user_ids` (an array of UUID strings) are set on **Admin → Routing** (a group picker and a staff checklist, with the rules above listed in order) or through `PATCH /admin/settings`. Saving is checked: a group id that names no group, or a user id that names no one or someone who is neither staff nor an administrator, is refused with 400 `invalid_auto_assign` and nothing in the request is written (before #447 such an id was saved and then skipped at routing time). An empty value clears the setting.
 
 ### Branding
 
@@ -2693,7 +2693,7 @@ Tests: `TestOriginPolicy_Allows` (the comparison), `TestMCPOrigin_*` (the check 
 | Browser (SPA) | Session cookies | HttpOnly cookie carrying an opaque id; the session itself is a row in Postgres. Backed by local auth, SAML or OIDC. |
 | Formal integrations (JIRA, chatbots, CI) | OAuth2 client credentials | client_id + client_secret → short-lived JWT, scoped per integration. The client acts as its own service user (see [OAuth Clients and Service Users](#oauth-clients-and-service-users)) |
 | Lightweight scripting / webhooks | API keys | Hashed bearer tokens with scoped permissions |
-| MCP | Inherits from above | Served at `/mcp` (Streamable HTTP) and `/mcp/sse` + `/mcp/message` (SSE), behind the same authentication chain as `/api/`, and scopes are enforced per tool. It calls the domain services directly, not the REST API, so a rule that lives in a REST handler does not apply to it unless the tool repeats it (for example, `create_ticket` does not run auto-assignment). |
+| MCP | Inherits from above | Served at `/mcp` (Streamable HTTP) and `/mcp/sse` + `/mcp/message` (SSE), behind the same authentication chain as `/api/`, and scopes are enforced per tool. It calls the domain services directly, not the REST API, so a rule that lives in a REST handler does not apply to it unless the tool repeats it (for example, MCP repeats the REST create's routing by calling the same rule, `Server.Routing`, rather than carrying a copy). |
 
 Sessions are server-side rows, not self-contained cookies, because that is the
 only shape in which a session can be revoked. Logout, a password change, an MFA
@@ -4037,7 +4037,7 @@ transaction, and the collector merges them.
   The priority is last so that a category changed in the same request is the
   one its SLA policy is matched against.
 - **Create, then auto-assign.** Routing is inside the create's transaction. The
-  handler still works out the candidates before the transaction (`routing` in
+  handler still works out the candidates before the transaction (`Routing` in
   `handler_tickets.go`: the CTI group, else the global group, else the
   round-robin users) and passes them in `CreateInput.AutoAssign`. Inside the
   transaction, the first candidate that `checkAssignable` accepts is assigned; a
@@ -4051,9 +4051,9 @@ transaction, and the collector merges them.
   `ticket.created` still gets the creator (ruling 17). Limit: only create's routing
   sets the flag and create raises no manual assignment in the same transaction; if
   a future change lets one transaction raise both, the merge would null the
-  human's actor under `ticket.assigned`, and per-kind actors would be needed. Guest create, MCP `create_ticket` and MCP `create_follow_up` do not auto-assign, as before.
+  human's actor under `ticket.assigned`, and per-kind actors would be needed. Guest create, MCP `create_ticket` and MCP `create_follow_up` route the same way (they did not before 1.3.0).
   - **Round-robin takes its turn up front.** When no group routes the ticket,
-    `roundRobin` advances its counter with one atomic add as `routing` runs,
+    `roundRobin` advances its counter with one atomic add as `Routing` runs,
     before the transaction, and offers the whole user list rotated from that
     slot. A create that is then refused still used a turn, and two overlapping
     creates each get their own.
@@ -4315,7 +4315,6 @@ webhooks.
 - Events for writes that announce nothing: `RemoveLink`, attachments, follow and
   unfollow, and the bulk `UnassignForUser` and `DeleteGroup`.
 - An audit entry for a classification change (`UpdateCTI` still writes none).
-- Auto-assignment for guest-created and MCP-created tickets.
 - A plugin API.
 - `reply_id` on the raw wire. A receiver still cannot tell which reply a
   `ticket.replied` delivery means without listing replies.

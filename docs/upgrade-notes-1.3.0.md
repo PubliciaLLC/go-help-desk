@@ -612,6 +612,15 @@ Replies and internal notes now appear in a ticket's Activity panel as "Erik Test
 
 A response or resolution that lands at exactly its target (elapsed time equal to the policy's minutes, to the second) is now recorded as breached, and the background sweep stamps a ticket whose clock reaches the target without waiting for it to pass. Before, the indicator turned red at exactly the target but nothing was recorded until one second later, so a target met at exactly its length showed red and never counted as breached. The record now agrees with the indicator and with DESIGN.md ("at or past 100%"). Breaches already recorded are unchanged, and nothing is recomputed for tickets already responded to or resolved.
 
+### Guest Tickets and MCP Tickets Are Now Routed Like Any Other
+
+Auto-assignment (**Admin → Routing**, and a group's own category and type scope) now runs for every way a ticket can be created. Before, it ran for `POST /tickets` and for the REST follow-ups only; a ticket from the public guest form (`POST /guest/tickets`) and a ticket made with the MCP tools `create_ticket` or `create_follow_up` was left unassigned however the rules were set.
+
+- **What you will see:** if you route tickets, new guest and MCP tickets now arrive assigned to the group or staff member the rules pick, with the same `assigned` entry (no actor) and the same `ticket.created` plus `ticket.assigned` event as a REST ticket. Staff may be mailed about a ticket they would not have been mailed about before.
+- **Nothing changes if no routing is set.** With no group rule and no auto-assign group or users, these tickets stay unassigned as before.
+- **Existing tickets are not touched.** Only tickets created after the upgrade are routed.
+- **A follow-up** is routed on its original's category and type; a guest's own follow-up on the category alone, as before.
+
 ### The Server Logs Which Migrations Ran (#525)
 
 The server now says what it did to the schema, once, at startup, before it opens the port:
