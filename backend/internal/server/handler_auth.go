@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -336,7 +337,9 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusUnauthorized, "invalid_client", "invalid client credentials")
 		return
 	}
-	if auth.HashToken(body.ClientSecret) != client.HashedSecret {
+	// Constant time, so how much of the digest matched is not visible in the
+	// response time. Both sides are fixed-length hex, so length leaks nothing.
+	if subtle.ConstantTimeCompare([]byte(auth.HashToken(body.ClientSecret)), []byte(client.HashedSecret)) != 1 {
 		Error(w, http.StatusUnauthorized, "invalid_client", "invalid client credentials")
 		return
 	}
