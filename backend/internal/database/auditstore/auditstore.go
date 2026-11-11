@@ -64,6 +64,7 @@ func (s *Store) Search(ctx context.Context, f audit.Filter, limit, offset int) (
 		return audit.Page{}, err
 	}
 	// Only a search with text has a window; without q the floor is not looked up.
+	windowReached := false
 	if f.Q != "" {
 		floor, err := s.q.AuditDiffSearchFloor(ctx, dbgen.AuditDiffSearchFloorParams{
 			EntityType: p.entityType, Action: p.action, ActorID: p.actorID, FromTs: p.from, ToTs: p.to,
@@ -72,6 +73,11 @@ func (s *Store) Search(ctx context.Context, f audit.Filter, limit, offset int) (
 		switch {
 		case err == nil:
 			p.diffFloor = sql.NullTime{Time: floor, Valid: true}
+			// The floor is the window'th entry, so the window was filled. With exactly
+			// that many entries nothing was left out, but the viewer's advice (narrow
+			// the search) holds there too, and telling the two apart would cost a
+			// second query on every search.
+			windowReached = true
 		case errors.Is(err, sql.ErrNoRows):
 			// Fewer entries than the window: nothing is left out.
 		default:
@@ -92,7 +98,10 @@ func (s *Store) Search(ctx context.Context, f audit.Filter, limit, offset int) (
 	if capped {
 		total = audit.TotalCap
 	}
-	return audit.Page{Entries: toEntries(rows), Total: total, TotalCapped: capped, HasMore: hasMore}, nil
+	return audit.Page{
+		Entries: toEntries(rows), Total: total, TotalCapped: capped,
+		DetailsWindowReached: windowReached, HasMore: hasMore,
+	}, nil
 }
 
 func (s *Store) search(ctx context.Context, p searchParamValues, limit, offset int) ([]dbgen.AuditLog, int64, error) {

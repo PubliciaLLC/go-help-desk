@@ -35,11 +35,15 @@ function entry(overrides: Partial<AdminAuditEntry> = {}): AdminAuditEntry {
   }
 }
 
-// total_capped is always sent by the server; most tests do not care about it.
-type ListFixture = Omit<AdminAuditListResponse, 'total_capped'> & { total_capped?: boolean }
+// total_capped and details_window_reached are always sent by the server; most
+// tests do not care about them.
+type ListFixture = Omit<AdminAuditListResponse, 'total_capped' | 'details_window_reached'> & {
+  total_capped?: boolean
+  details_window_reached?: boolean
+}
 
-function mockList({ total_capped = false, ...rest }: ListFixture) {
-  const response: AdminAuditListResponse = { ...rest, total_capped }
+function mockList({ total_capped = false, details_window_reached = false, ...rest }: ListFixture) {
+  const response: AdminAuditListResponse = { ...rest, total_capped, details_window_reached }
   vi.spyOn(api, 'get').mockImplementation(((url: string) => {
     if (url === '/admin/audit') return Promise.resolve({ data: response })
     if (url === '/staff') return Promise.resolve({ data: [] })
@@ -161,6 +165,29 @@ describe('AdminAuditPage', () => {
     renderWithQuery(<AdminAuditPage />)
 
     await waitFor(() => expect(screen.getByText('1–1 of 10,000+')).toBeTruthy())
+  })
+
+  // The server searches the change details of the newest 100,000 matching
+  // entries only, and says when a search filled that window.
+  it('tells the viewer to narrow the search when the change-details window was reached', async () => {
+    mockList({ entries: [entry()], total: 1, details_window_reached: true, has_more: false })
+    renderWithQuery(<AdminAuditPage />)
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          'Change details are searched in the newest 100,000 matching entries. Add a date, type or action filter to search further back.',
+        ),
+      ).toBeTruthy(),
+    )
+  })
+
+  it('says nothing about the window when it was not reached', async () => {
+    mockList({ entries: [entry()], total: 1, has_more: false })
+    renderWithQuery(<AdminAuditPage />)
+
+    await waitFor(() => expect(screen.getByText('Resolved')).toBeTruthy())
+    expect(screen.queryByText(/Change details are searched/)).toBeNull()
   })
 
   it('shows an uncapped total of exactly the cap without a plus', async () => {

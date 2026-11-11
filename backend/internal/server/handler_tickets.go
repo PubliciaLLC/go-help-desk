@@ -1256,9 +1256,11 @@ func (s *Server) maskStatusHistory(ctx context.Context, history []ticket.StatusH
 	for i, h := range history {
 		out[i] = statusHistoryEntryView{StatusHistoryEntry: h}
 	}
-	if !s.masksRequestersIn(ctx, admin.MaskRequesterNamesTicketLog) {
-		return out
-	}
+	// The lookup runs under every value of the setting: "a deleted account" is
+	// not the requester mask's to decide, so it is withheld even where the
+	// ticket log does not mask requesters (admin_log). Only the "Requester"
+	// label is behind the setting.
+	maskRequesters := s.masksRequestersIn(ctx, admin.MaskRequesterNamesTicketLog)
 	seen := map[uuid.UUID]bool{}
 	var ids []uuid.UUID
 	for _, h := range history {
@@ -1275,8 +1277,9 @@ func (s *Server) maskStatusHistory(ctx context.Context, history []ticket.StatusH
 	// from this lookup, so an account the lookup does not return still has its
 	// name in the row, and must not be shown. One that is not returned is a
 	// deleted account, of any role, and is called that (owner, 2026-11-11); one
-	// whose role is a requester's is masked. When the lookup itself fails nothing
-	// is known, so every name is withheld as the requester mask.
+	// whose role is a requester's is masked, where the setting masks. When the
+	// lookup itself fails nothing is known, so every name is withheld as the
+	// requester mask, whatever the setting.
 	roles := map[uuid.UUID]user.Role{}
 	users, err := s.users.GetByIDs(ctx, ids)
 	if err != nil {
@@ -1296,7 +1299,7 @@ func (s *Server) maskStatusHistory(ctx context.Context, history []ticket.StatusH
 			out[i].ChangedByName, out[i].ChangedByMasked = "Requester", true
 		case !found:
 			out[i].ChangedByName = deletedAccountName
-		case role == user.RoleUser:
+		case maskRequesters && role == user.RoleUser:
 			out[i].ChangedByName, out[i].ChangedByMasked = "Requester", true
 		}
 	}

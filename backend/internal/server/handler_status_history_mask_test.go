@@ -84,25 +84,33 @@ func TestStatusHistory_DeletedAccountIsMaskedAsDeletedAccount(t *testing.T) {
 		{"staff", func(h *harness) func(*testing.T, string, string, any) *http.Response { return h.do },
 			func(h *harness) string { return h.staffID.String() }, "Staff"},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			h, cleanup := newHarness(t)
-			defer cleanup()
-			ctx := context.Background()
-			id := createTicketVia(t, h, tc.do(h))
-			deletedID := tc.id(h)
-			require.NoError(t, h.userStore.SoftDelete(ctx, uuid.MustParse(deletedID)))
+		// Every value of the setting: a deleted account's name is not the
+		// requester mask's to withhold, so it is withheld whether or not the
+		// ticket log masks requesters (admin_log does not).
+		for _, setting := range []string{
+			admin.MaskRequesterNamesEverywhere, admin.MaskRequesterNamesTicketLog, admin.MaskRequesterNamesAdminLog,
+		} {
+			t.Run(tc.name+"/"+setting, func(t *testing.T) {
+				h, cleanup := newHarness(t)
+				defer cleanup()
+				ctx := context.Background()
+				require.NoError(t, h.adminSvc.SetString(ctx, admin.KeyAuditMaskRequesterNames, setting))
+				id := createTicketVia(t, h, tc.do(h))
+				deletedID := tc.id(h)
+				require.NoError(t, h.userStore.SoftDelete(ctx, uuid.MustParse(deletedID)))
 
-			var seen bool
-			for _, r := range statusHistoryAsAdmin(t, h, id) {
-				if r.ChangedByUserID == nil || *r.ChangedByUserID != deletedID {
-					continue
+				var seen bool
+				for _, r := range statusHistoryAsAdmin(t, h, id) {
+					if r.ChangedByUserID == nil || *r.ChangedByUserID != deletedID {
+						continue
+					}
+					seen = true
+					require.NotContains(t, r.ChangedByName, tc.realName, "a deleted account's name must not be sent")
+					require.Equal(t, "Deleted account", r.ChangedByName)
 				}
-				seen = true
-				require.NotContains(t, r.ChangedByName, tc.realName, "a deleted account's name must not be sent")
-				require.Equal(t, "Deleted account", r.ChangedByName)
-			}
-			require.True(t, seen, "the deleted account's row is on the timeline")
-		})
+				require.True(t, seen, "the deleted account's row is on the timeline")
+			})
+		}
 	}
 }
 

@@ -17,6 +17,11 @@ import type { AdminAuditEntry } from '@/api/types'
 
 const PAGE_SIZE = 50
 
+// audit.DiffSearchWindow on the server: how many of the newest matching entries a
+// search of the change details covers. The response says only whether the window
+// was reached, so a change to the server's value must be made here too.
+const DIFF_SEARCH_WINDOW = 100_000
+
 // Known entity types an audit entry can name today (audit.Entry.EntityType's
 // own comment: "ticket", "user", "group", etc.) — a starting set, not an
 // enum the server enforces. The filter still accepts any string typed
@@ -231,6 +236,12 @@ export function AdminAuditPage() {
                 </tbody>
               </table>
             </div>
+
+            {data?.details_window_reached && (
+              <p className="text-sm text-gray-500">
+                Change details are searched in the newest {DIFF_SEARCH_WINDOW.toLocaleString('en-US')} matching entries. Add a date, type or action filter to search further back.
+              </p>
+            )}
 
             <div className="flex items-center justify-between">
               <p className="text-sm text-gray-500">

@@ -80,6 +80,14 @@ type Page struct {
 	// TotalCap and means "at least this many".
 	TotalCapped bool
 
+	// DetailsWindowReached is true when a search with text had at least
+	// DiffSearchWindow entries to look through, so the change details of any
+	// older ones were not searched. A page that says so can tell the viewer to
+	// narrow the search; one that does not is complete. Entries older than the
+	// window are still matched on entity, action and actor either way. False
+	// for a search without text, which has no window.
+	DetailsWindowReached bool
+
 	// HasMore reports whether an entry exists after this page. It does not
 	// depend on Total, which stops at TotalCap while a pager keeps going.
 	HasMore bool

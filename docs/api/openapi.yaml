@@ -11235,7 +11235,7 @@ components:
       description: |
         One page of the admin-wide audit view.
       type: object
-      required: [entries, total, total_capped, has_more]
+      required: [entries, total, total_capped, details_window_reached, has_more]
       properties:
         entries:
           type: array
@@ -11247,6 +11247,9 @@ components:
         total_capped:
           type: boolean
           description: True when more than 10,000 entries match. Always sent, so a client can tell this from an older server.
+        details_window_reached:
+          type: boolean
+          description: True when a search with q looked through the newest 100,000 matching entries and stopped, so the change details of older entries were not searched (they are still matched on entity type, action and actor). Adding a date, entity type, actor or action filter moves the window back. Always sent; false for a request without q.
         has_more:
           type: boolean
           description: True when another page exists. Read from the page itself, so it keeps working past the cap.

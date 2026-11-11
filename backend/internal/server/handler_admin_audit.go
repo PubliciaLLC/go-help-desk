@@ -14,7 +14,6 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
-	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
 
 // adminAuditEntryView is one row of the admin-wide audit view. Shaped like
@@ -49,6 +48,11 @@ type adminAuditListResponse struct {
 	// stops there. Always sent, false included, so a client does not have to
 	// tell "not capped" from "an older server".
 	TotalCapped bool `json:"total_capped"`
+	// DetailsWindowReached is true when a search with q stopped at
+	// audit.DiffSearchWindow entries and did not look in the change details of
+	// the older ones (they are still matched on entity, action and actor). Always
+	// sent, false included, for the reason TotalCapped is.
+	DetailsWindowReached bool `json:"details_window_reached"`
 	// HasMore reports whether another page exists. It is read off the page
 	// itself (one row past it), not derived from Total, which stops at the cap
 	// while a pager keeps going. This is the client's only paging rule.
@@ -134,7 +138,8 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	JSON(w, http.StatusOK, adminAuditListResponse{
-		Entries: views, Total: page.Total, TotalCapped: page.TotalCapped, HasMore: page.HasMore,
+		Entries: views, Total: page.Total, TotalCapped: page.TotalCapped,
+		DetailsWindowReached: page.DetailsWindowReached, HasMore: page.HasMore,
 	})
 }
 
@@ -258,18 +263,33 @@ func auditActorName(u user.User, maskRequesters bool) auditActor {
 // the write, so a crash between the two loses the entry; the setting is
 // admin-only, so the person who could change it unrecorded already holds the
 // capability, as for a factor reset.
-func (s *Server) auditMaskChange(r *http.Request, before string) {
-	after := s.adminSvc.AuditMaskRequesterNames(r.Context())
+func (s *Server) auditMaskChange(ctx context.Context, actor uuid.UUID, before string) {
+	after := s.adminSvc.AuditMaskRequesterNames(ctx)
 	if after == before || s.auditStore == nil {
 		return
 	}
-	actor := authmw.GetActor(r).UserID
-	s.writeAudit(r.Context(), audit.Entry{
+	s.writeAudit(ctx, audit.Entry{
 		ID: uuid.New(), ActorID: &actor, EntityType: auditEntitySetting,
 		EntityID: settingEntityID(admin.KeyAuditMaskRequesterNames), Action: auditActionMaskChanged,
 		Before: map[string]any{"requester_name_mask": before}, After: map[string]any{"requester_name_mask": after},
 		CreatedAt: time.Now(),
 	})
+}
+
+// saveAuditMask stores the mask setting and records the change, both detached
+// from the request. The read-back of the new value in auditMaskChange is a
+// database call too: on a cancelled request context it fails, reads as the
+// default, and an entry for a real change is skipped. The save is detached for
+// the reason the audit write is: once it commits, a client that hangs up must
+// not get a false 500 for a change that landed (pgx reports `context canceled`
+// after an autocommit write completes), nor suppress the entry.
+func (s *Server) saveAuditMask(ctx context.Context, actor uuid.UUID, raw []byte, before string) error {
+	ctx = context.WithoutCancel(ctx)
+	if err := s.adminSvc.SetRaw(ctx, admin.KeyAuditMaskRequesterNames, raw); err != nil {
+		return err
+	}
+	s.auditMaskChange(ctx, actor, before)
+	return nil
 }
 
 const (

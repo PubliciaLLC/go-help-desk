@@ -54,6 +54,16 @@ func TestSearch_ChangeDetailsAreSearchedInTheNewestWindowOnly(t *testing.T) {
 		return out
 	}
 
+	reached := func(f audit.Filter) bool {
+		f.ActorID = &actor
+		pg, err := s.Search(ctx, f, 50, 0)
+		require.NoError(t, err)
+		return pg.DetailsWindowReached
+	}
+	require.True(t, reached(audit.Filter{Q: "zz-window-needle"}), "5 entries pass the other filters, the window is 3: the search left some out")
+	require.False(t, reached(audit.Filter{}), "no text, no change-details search, no window")
+	require.False(t, reached(audit.Filter{Q: "zz-window-needle", Action: "act_a"}), "one entry passes the other filters: the window covers it all")
+
 	require.ElementsMatch(t, ids[2:], found(audit.Filter{Q: "zz-window-needle"}),
 		"the newest 3 of 5: the change details of the older two are not searched")
 	require.ElementsMatch(t, ids[:1], found(audit.Filter{Q: "act_a"}),

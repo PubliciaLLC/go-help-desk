@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -146,3 +147,15 @@ func (s *Server) SetAdminServiceForTest(a *admin.Service) { s.adminSvc = a }
 
 // ReloadSAMLForTest runs the reload startup and the settings PATCH use.
 func (s *Server) ReloadSAMLForTest(ctx context.Context) error { return s.reloadSAML(ctx) }
+
+// SaveAuditMaskForTest is the mask setting's save and audit entry, which the
+// handler runs on the request's context, so a test can hand it one that is
+// already cancelled: the router would never let such a request reach the
+// handler to begin with.
+func (s *Server) SaveAuditMaskForTest(ctx context.Context, actor uuid.UUID, raw []byte, before string) error {
+	return s.saveAuditMask(ctx, actor, raw, before)
+}
+
+// SetAuditStoreForTest swaps the store behind the audit view, so a test can
+// make it answer with a page the real store only produces at scale.
+func (s *Server) SetAuditStoreForTest(st audit.Store) { s.auditStore = st }

@@ -91,3 +91,22 @@ func TestAuditMaskSetting_RefusedValueIsNotAudited(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, res.StatusCode)
 	require.Len(t, maskSettingEntries(t, h), before)
 }
+
+// An administrator who hangs up right after saving must not suppress the entry,
+// nor get an error for a change that landed. The save and the read-back of the
+// new value both run on a context the client cannot cancel.
+func TestAuditMaskSetting_ChangeIsAuditedWhenTheClientHangsUp(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	before := len(maskSettingEntries(t, h))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := h.srv.SaveAuditMaskForTest(ctx, h.adminID, []byte(`"`+admin.MaskRequesterNamesTicketLog+`"`), admin.MaskRequesterNamesEverywhere)
+	require.NoError(t, err)
+
+	require.Equal(t, admin.MaskRequesterNamesTicketLog, h.adminSvc.AuditMaskRequesterNames(context.Background()), "the save landed")
+	es := maskSettingEntries(t, h)
+	require.Len(t, es, before+1, "and the entry for it was written")
+	require.Equal(t, map[string]any{"requester_name_mask": admin.MaskRequesterNamesTicketLog}, es[0].After)
+}

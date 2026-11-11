@@ -156,6 +156,11 @@ export interface AdminAuditListResponse {
    * server's cap and means "at least this many". Show it as "n+".
    */
   total_capped: boolean
+  /**
+   * True when a search with `q` stopped at the server's window of newest
+   * entries and did not look in the change details of older ones. Always sent.
+   */
+  details_window_reached: boolean
   /** Whether another page exists. The pager runs on this; `total` is for display. */
   has_more: boolean
 }
