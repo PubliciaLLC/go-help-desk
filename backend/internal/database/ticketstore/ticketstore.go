@@ -1039,17 +1039,43 @@ func (s *Store) listFilteredAt(ctx context.Context, f ticket.Filter, now time.Ti
 		ResultLimit:     pageInt32(f.Limit),
 		ResultOffset:    pageInt32(f.Offset),
 	}
-	// The caller's groups go in as an array, not a subquery, for the queue
-	// "mine" only: see the comment on mine_group_ids in the query for why the
-	// planner needs to be handed them. Never nil, like the other arrays.
+	// The caller's groups, and what those groups cover, go in as plain arrays and
+	// not as subqueries: see mine_group_ids and the scoped arms in the query for
+	// why the planner needs to be handed them. Never nil, like the other arrays.
+	// Read only for the cases that use them: the queue "mine", and staff under
+	// scope enforcement.
 	p.MineGroupIds = []uuid.UUID{}
-	if f.Queue == ticket.QueueMine {
+	p.ScopeGroupIds = []uuid.UUID{}
+	p.ScopeCategoryIds = []uuid.UUID{}
+	p.ScopeTypeCategoryIds = []uuid.UUID{}
+	p.ScopeTypeIds = []uuid.UUID{}
+	scoped := f.Visibility == ticket.VisibilityScoped
+	if f.Queue == ticket.QueueMine || scoped {
 		groups, err := s.q.ListGroupsForUser(ctx, f.ActorID)
 		if err != nil {
 			return ticket.ListResult{}, fmt.Errorf("listing the caller's groups: %w", err)
 		}
 		for _, g := range groups {
-			p.MineGroupIds = append(p.MineGroupIds, g.ID)
+			if f.Queue == ticket.QueueMine {
+				p.MineGroupIds = append(p.MineGroupIds, g.ID)
+			}
+			if scoped {
+				p.ScopeGroupIds = append(p.ScopeGroupIds, g.ID)
+			}
+		}
+	}
+	if scoped {
+		rows, err := s.q.ListStaffScopeRows(ctx, f.ActorID)
+		if err != nil {
+			return ticket.ListResult{}, fmt.Errorf("listing the caller's group scopes: %w", err)
+		}
+		for _, r := range rows {
+			if r.TypeID.Valid {
+				p.ScopeTypeCategoryIds = append(p.ScopeTypeCategoryIds, r.CategoryID)
+				p.ScopeTypeIds = append(p.ScopeTypeIds, r.TypeID.UUID)
+			} else {
+				p.ScopeCategoryIds = append(p.ScopeCategoryIds, r.CategoryID)
+			}
 		}
 	}
 	if r := strings.TrimSpace(f.Requester); r != "" {

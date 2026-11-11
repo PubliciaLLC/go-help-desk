@@ -370,6 +370,14 @@ ORDER BY
   created_at DESC
 LIMIT $2 OFFSET $3;
 
+-- name: ListStaffScopeRows :many
+-- The category/type pairs the caller's groups cover, for ListTicketsFiltered's
+-- scoped visibility. type_id NULL means the whole category.
+SELECT gs.group_id, gs.category_id, gs.type_id
+FROM group_scopes gs
+JOIN group_members gm ON gm.group_id = gs.group_id
+WHERE gm.user_id = $1;
+
 -- name: ListTicketsFiltered :many
 -- The one list query: every optional filter, the visibility rule and the sort,
 -- in one statement, so a caller never chooses among single-purpose queries and
@@ -452,21 +460,28 @@ WHERE
       AND (
         t.reporter_user_id = sqlc.arg(actor_id)::uuid
         OR t.assignee_user_id = sqlc.arg(actor_id)::uuid
-        OR t.assignee_group_id IN (SELECT gm.group_id FROM group_members gm WHERE gm.user_id = sqlc.arg(actor_id)::uuid)
-        -- The category/type scope, as two uncorrelated sets rather than the
-        -- correlated EXISTS ListTicketsVisibleToStaff uses: a hashed set is probed
-        -- once per ticket, where EXISTS re-ran its join for every ticket the other
-        -- filters let through (a scoped staff member's text search took 140 ms at
-        -- 200k tickets, against 14 ms). Same answer:
+        -- The caller's groups and the categories and types those groups cover
+        -- arrive as plain arrays, read by the store just before this runs, for
+        -- the reason given at mine_group_ids below. As subqueries the planner
+        -- could not tell a staff member in no group from one in every group,
+        -- assumed most tickets match, and walked the whole of tickets_created_at_idx
+        -- discarding every row that did not: 1M tickets read 205k buffers and took
+        -- 0.9 s for a staff member with 10 assignments, and the cost grew with the
+        -- table. As arrays an empty set folds away and each arm that remains can
+        -- use an index (reporter, assignee, group, category).
+        -- Same answer as ListTicketsVisibleToStaff:
         -- TestListFiltered_ScopedVisibilityMatchesStaffQuery holds them together.
+        OR t.assignee_group_id = ANY(sqlc.arg(scope_group_ids)::uuid[])
+        OR t.category_id = ANY(sqlc.arg(scope_category_ids)::uuid[])
+        -- One type of a category: the type conjunct is what lets an index
+        -- (tickets_type_id_idx) serve the arm, and the pair test is the rule.
+        -- The conjunct is implied by the pair, so it never changes the answer.
         -- A ticket with no type never matches the row comparison, as it never
         -- matched gs.type_id = t.type_id.
-        OR t.category_id IN (SELECT gs.category_id FROM group_scopes gs
-                             JOIN group_members gm ON gm.group_id = gs.group_id
-                             WHERE gm.user_id = sqlc.arg(actor_id)::uuid AND gs.type_id IS NULL)
-        OR (t.category_id, t.type_id) IN (SELECT gs.category_id, gs.type_id FROM group_scopes gs
-                                          JOIN group_members gm ON gm.group_id = gs.group_id
-                                          WHERE gm.user_id = sqlc.arg(actor_id)::uuid AND gs.type_id IS NOT NULL)
+        OR (t.type_id = ANY(sqlc.arg(scope_type_ids)::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest(sqlc.arg(scope_type_category_ids)::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest(sqlc.arg(scope_type_ids)::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
       )
     )
   )

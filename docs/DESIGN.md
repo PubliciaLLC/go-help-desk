@@ -3320,10 +3320,14 @@ so they are not removed as dead weight:
   disables it and the signup limit with it. The MFA failed-attempt count is on
   the user row and does survive a restart.
 - **Ticket list paging.** `GET /tickets` takes `?limit=` (default 100, maximum
-  200) and `?offset=`. Offset-based, not page-based. The staff view merges the
-  caller's own tickets with each of their groups', so it reads each source to
-  the end of the requested page and slices after merging — pushing the window
-  into each query returns limit × (1 + groups) rows.
+  200) and `?offset=`. Offset-based, not page-based. The window is cut in SQL by
+  the one list query (`ListTicketsFiltered`), whatever the caller's role or queue,
+  so a page is exactly `limit` rows and no source is read past it. Before 1.3.0
+  the staff "mine" view merged the caller's own tickets with each of their groups'
+  in Go, reading every source to the end of the requested page and slicing after
+  the merge, because pushing the window into each of those queries returned
+  limit × (1 + groups) rows. SLA status is still attached only to the page that is
+  returned, never to rows the response throws away.
 - **Uploaded images are capped by what decoding them will cost**, checked from
   the header before any decode. A byte-size limit is not a memory limit:
   compressed formats expand, and a 169 KB PNG decodes to 142 MB. Two bounds

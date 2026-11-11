@@ -99,7 +99,7 @@ func viewerJSON(actor *authmw.Actor, v any) any {
 // regardless of how many tickets are on the page. Callers pass the page
 // after it has already been paged — never before, which would compute SLA for
 // rows the response throws away (a list's page is cut in SQL now; it used to be
-// cut in Go after a merge, see CLAUDE.md's "Ticket list paging" note).
+// cut in Go after a merge, see DESIGN.md's "Ticket list paging" note).
 //
 // SLA visibility is staff/admin only: a reporting user must not see the
 // indicator, the policy name, the targets, or the breach/late status on their

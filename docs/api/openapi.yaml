@@ -3321,6 +3321,16 @@ paths:
           schema:
             type: string
             enum: [breached, at_risk]
+        - name: search_replies
+          in: query
+          required: false
+          description: >-
+            true or false (the default is false for the API). Accepted with q to also search reply text;
+            any other value is 400. It has no effect yet: reply search ships separately, and until it
+            does the response never carries the X-Replies-Searched or X-Reply-Index headers.
+          schema:
+            type: boolean
+            default: false
         - name: sort
           in: query
           required: false

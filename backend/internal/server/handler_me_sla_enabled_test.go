@@ -59,3 +59,64 @@ func TestMe_SLAEnabled(t *testing.T) {
 	require.NoError(t, json.NewDecoder(site.Body).Decode(&cfg))
 	require.NotContains(t, cfg, "sla_enabled", "the public site config does not carry it")
 }
+
+// The key is absent, not false, when the setting cannot be read: a client reads
+// false as "tracking is off" and would hide the SLA controls over a transient
+// error.
+func TestMe_SLAEnabled_UnreadableSettingLeavesTheKeyOut(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	// A value that is JSON but not a bool, so reading it as one fails.
+	_, err := h.tx.ExecContext(context.Background(),
+		`INSERT INTO settings (key, value) VALUES ($1, '"maybe"') ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+		admin.KeySLAEnabled)
+	require.NoError(t, err)
+
+	res := h.doAsAdmin(t, http.MethodGet, "/api/v1/me", nil)
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	var body map[string]json.RawMessage
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&body))
+	require.NotContains(t, body, "sla_enabled")
+	require.Contains(t, body, "can_create_api_keys", "the rest of /me is still answered")
+}
+
+// An OAuth client's /me is the fixed machine/role/scopes answer and never
+// reaches the account view, so it has no such key.
+func TestMe_SLAEnabled_NotOnAnOAuthClient(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeySLAEnabled, true))
+
+	resp := h.createCredential(t, "/api/v1/admin/oauth-clients", map[string]any{
+		"name": "integration", "scopes": []string{"tickets:read"},
+	})
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	var created struct {
+		ClientID     string `json:"client_id"`
+		ClientSecret string `json:"client_secret"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&created))
+	token := h.oauthToken(t, created.ClientID, created.ClientSecret)
+
+	res := h.doWithBearer(t, token, "/api/v1/me")
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	var body map[string]json.RawMessage
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&body))
+	require.Contains(t, body, "machine")
+	require.NotContains(t, body, "sla_enabled")
+}
+
+// PATCH /me/email-preferences answers with the same account view as GET /me.
+func TestMe_SLAEnabled_OnTheEmailPreferencesAnswer(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeySLAEnabled, true))
+	s := loggedIn(t, h)
+
+	res, body := s.send(t, http.MethodPatch, "/api/v1/me/email-preferences", map[string]any{"email_notify_group": false})
+	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
+	var got map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(body, &got))
+	require.Equal(t, "true", string(got["sla_enabled"]))
+}
