@@ -381,6 +381,12 @@ Since #506, auto-assignment happens in the create's own transaction, so `ticket.
 
 This adds a column to `webhook_configs` through a migration that runs at start-up.
 
+A filter can also name **types and items** (#631), combined with the categories by AND. No migration: the filter is stored as JSON and the two new keys (`type_ids`, `item_ids`) are left out while empty, so existing filters read as before. A filter that could never match, such as a type outside the ticked categories, is refused with `400 contradictory_filter`. If you roll back to a binary without this, it ignores the new keys and the hook widens to every ticket the other conditions allow.
+
+### OAuth Clients: Rotate a Secret (#622)
+
+Admin, OAuth clients, **Rotate secret** (or `POST /api/v1/admin/oauth-clients/{id}/rotate-secret`) replaces a client's secret at once. The old secret and every access token issued under it stop working immediately; the integration needs the new secret, which is shown once. Access tokens issued before this version carry no secret version and stay valid until they expire (at most an hour). No migration.
+
 ### New Environment Variables (Compose-Forwarded)
 
 The following variables are now honoured when set in `docker/.env`. They are automatically forwarded to the app container and have sensible defaults in Docker Compose:

@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/publiciallc/go-help-desk/backend/internal/safehttp"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +20,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -564,6 +567,81 @@ func checkEvents(w http.ResponseWriter, events []string) bool {
 	return true
 }
 
+// maxFilterCTIIDs caps type_ids and item_ids. Each id is looked up one by one,
+// so the list is what bounds the work a request can cause; no real hook names
+// anywhere near this many.
+const maxFilterCTIIDs = 200
+
+// checkFilterTypesAndItems validates the type and item conditions (#631): the
+// ids must exist, and (D37) must not contradict the conditions above them. A
+// type outside the ticked categories, or an item outside the ticked types or
+// categories, can never match a ticket (the conditions combine by AND), and a
+// hook that can never fire is refused like the empty inverted filter is.
+// Inactive types and items are accepted, as inactive categories are.
+func (s *Server) checkFilterTypesAndItems(w http.ResponseWriter, ctx context.Context, f notification.WebhookFilter) bool {
+	if len(f.TypeIDs) > maxFilterCTIIDs || len(f.ItemIDs) > maxFilterCTIIDs {
+		Error(w, http.StatusBadRequest, "invalid_filter",
+			fmt.Sprintf("type_ids and item_ids may each hold at most %d ids", maxFilterCTIIDs))
+		return false
+	}
+	// category of each type seen, so an item's type is read once.
+	typeCategory := make(map[uuid.UUID]uuid.UUID, len(f.TypeIDs))
+	typeOf := func(id uuid.UUID) (uuid.UUID, bool, error) {
+		if c, ok := typeCategory[id]; ok {
+			return c, true, nil
+		}
+		t, err := s.categories.GetType(ctx, id)
+		if errors.Is(err, category.ErrNotFound) {
+			return uuid.Nil, false, nil
+		}
+		if err != nil {
+			return uuid.Nil, false, err
+		}
+		typeCategory[id] = t.CategoryID
+		return t.CategoryID, true, nil
+	}
+	ticked := func(list []uuid.UUID, id uuid.UUID) bool { return len(list) == 0 || slices.Contains(list, id) }
+
+	for _, id := range f.TypeIDs {
+		cat, ok, err := typeOf(id)
+		if err != nil {
+			handleError(w, err)
+			return false
+		}
+		if !ok {
+			Error(w, http.StatusBadRequest, "unknown_filter_type", "no type "+id.String())
+			return false
+		}
+		if !ticked(f.CategoryIDs, cat) {
+			Error(w, http.StatusBadRequest, "contradictory_filter",
+				"type "+id.String()+" is not in any of the categories in the filter, so it could never match")
+			return false
+		}
+	}
+	for _, id := range f.ItemIDs {
+		it, err := s.categories.GetItem(ctx, id)
+		if errors.Is(err, category.ErrNotFound) {
+			Error(w, http.StatusBadRequest, "unknown_filter_item", "no item "+id.String())
+			return false
+		}
+		if err != nil {
+			handleError(w, err)
+			return false
+		}
+		cat, ok, err := typeOf(it.TypeID)
+		if err != nil {
+			handleError(w, err)
+			return false
+		}
+		if !ticked(f.TypeIDs, it.TypeID) || (ok && !ticked(f.CategoryIDs, cat)) {
+			Error(w, http.StatusBadRequest, "contradictory_filter",
+				"item "+id.String()+" is not under any of the types or categories in the filter, so it could never match")
+			return false
+		}
+	}
+	return true
+}
+
 // checkFilter decodes and validates a webhook's ticket filter (#413). It
 // writes the refusal and returns false when the filter is not acceptable. The
 // checks run in this order and the first failure wins, so a refusal names one
@@ -578,7 +656,7 @@ func (s *Server) checkFilter(w http.ResponseWriter, ctx context.Context, raw jso
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&f); err != nil {
 		Error(w, http.StatusBadRequest, "invalid_filter",
-			"filter must be an object with category_ids, priorities, group_ids and invert")
+			"filter must be an object with category_ids, type_ids, item_ids, priorities, group_ids and invert")
 		return notification.WebhookFilter{}, false
 	}
 	for _, p := range f.Priorities {
@@ -619,6 +697,9 @@ func (s *Server) checkFilter(w http.ResponseWriter, ctx context.Context, raw jso
 			Error(w, http.StatusBadRequest, "unknown_filter_group", "no group "+id.String())
 			return notification.WebhookFilter{}, false
 		}
+	}
+	if !s.checkFilterTypesAndItems(w, ctx, f) {
+		return notification.WebhookFilter{}, false
 	}
 	// Inverted with nothing to invert matches no ticket: a hook that can never
 	// fire is a mistake to refuse, not to store.

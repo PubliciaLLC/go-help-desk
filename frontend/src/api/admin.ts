@@ -369,6 +369,14 @@ export async function createOAuthClient(input: {
   return res.data
 }
 
+/** Replaces the client's secret at once; the old one and every token issued under it stop working (#622). */
+export async function rotateOAuthClientSecret(id: string): Promise<{ id: string; client_id: string; client_secret: string }> {
+  const res = await api.post<{ id: string; client_id: string; client_secret: string }>(
+    `/admin/oauth-clients/${id}/rotate-secret`,
+  )
+  return res.data
+}
+
 export async function deleteOAuthClient(id: string): Promise<void> {
   await deleteIfPresent(`/admin/oauth-clients/${id}`)
 }

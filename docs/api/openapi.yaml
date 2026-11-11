@@ -7167,6 +7167,67 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /api/v1/admin/oauth-clients/{id}/rotate-secret:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The OAuth client's id, as listed by GET /api/v1/admin/oauth-clients.
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: rotateOAuthClientSecret
+      summary: Replace an OAuth client's secret.
+      description: >-
+        Administrators only, in a signed-in session (second factor required). An API key is
+        refused with 403 session_required and an OAuth client by the role check: minting a
+        secret is creating a credential. The new secret replaces the old one at once, with no
+        overlap, and every access token issued under the old secret is refused from the next
+        request. A token that carries no secret version (issued before this existed) is still
+        accepted until it expires. The client_id and the service user do not change.
+        The client_secret is returned once.
+        Audited in the same transaction (entity_type oauth_client, action
+        oauth_client_secret_rotated); the entry holds the name, scopes and service user id and
+        credential_replaced true, never a secret or a hash.
+      tags: ['Admin: Credentials']
+      x-ghd-handler: handleRotateOAuthClientSecret
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      responses:
+        '200':
+          description: Rotated. client_secret is shown only in this response.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, client_id, client_secret]
+                properties:
+                  id:
+                    $ref: '#/components/schemas/Uuid'
+                  client_id:
+                    type: string
+                  client_secret:
+                    type: string
+                    description: The raw secret, 64 hexadecimal characters. Shown once.
+        '400':
+          description: bad_request, message "invalid ID", when the path id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: not_found, for an id that names no OAuth client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /api/v1/admin/oauth-clients/{id}:
     parameters:
       - name: id
@@ -8288,10 +8349,12 @@ paths:
             list of valid names in the message. invalid_url when the scheme is not http or
             https, the host is missing, or the host does not resolve or resolves to an
             internal address. invalid_payload_format when payload_format is not one of the
-            five. invalid_filter when filter is not an object of those four keys or an id is not
-            a UUID. invalid_filter_priority for a priority that is not critical, high, medium or
+            five. invalid_filter when filter is not an object of the WebhookFilter keys, an id is
+            not a UUID, or type_ids or item_ids holds more than 200 ids. invalid_filter_priority for a priority that is not critical, high, medium or
             low. unknown_filter_category or unknown_filter_group for an id that names no category
-            (inactive ones are accepted) or no group. empty_inverted_filter when invert is true
+            (inactive ones are accepted) or no group; unknown_filter_type or unknown_filter_item
+            likewise. contradictory_filter for a type outside the ticked categories or an item
+            outside the ticked types or categories. empty_inverted_filter when invert is true
             with no condition, which would match no ticket.
           content:
             application/json:
@@ -11800,8 +11863,14 @@ components:
         delivery is tested against the ticket as it was when the event happened; a Redeliver,
         which has no stored classification, against the ticket as it is now. category matches
         the ticket's category, so all its types and items are included. group is the group the
-        ticket is assigned to; an unassigned ticket never matches it. Responses always carry
-        all four keys.
+        ticket is assigned to; an unassigned ticket never matches it. type_ids and item_ids
+        (#631) match the ticket's type and item and combine with the categories by AND; a
+        ticket with no type or item never matches one. A filter that could never match is
+        refused with 400 contradictory_filter (a type outside the ticked categories, an item
+        outside the ticked types or categories); unknown ids are unknown_filter_type and
+        unknown_filter_item; each of the two lists holds at most 200 ids. Responses always
+        carry category_ids, priorities, group_ids and invert, and carry type_ids and item_ids
+        only while they are not empty.
         The filter is read as it is now, not once: when the event is fanned out to the hooks,
         at every attempt of a queued delivery (retries included) and at Redeliver. An event
         it filters out at the fan-out creates no delivery: no X-GHD-Delivery, no retry and no
@@ -11821,6 +11890,14 @@ components:
           items: {$ref: '#/components/schemas/Priority'}
         group_ids:
           type: array
+          items: {$ref: '#/components/schemas/Uuid'}
+        type_ids:
+          type: array
+          maxItems: 200
+          items: {$ref: '#/components/schemas/Uuid'}
+        item_ids:
+          type: array
+          maxItems: 200
           items: {$ref: '#/components/schemas/Uuid'}
         invert:
           type: boolean
