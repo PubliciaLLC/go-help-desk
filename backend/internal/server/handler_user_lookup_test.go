@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -278,4 +279,136 @@ func TestUserLookup_MostlyDisabledMatchesStillAnswerTenInOrderWithoutRepeats(t *
 		want = append(want, fmt.Sprintf("mass%03d@test.local", i))
 	}
 	require.Equal(t, want, got, "the first ten enabled matches by display name")
+}
+
+// GET /users/lookup?id= (advanced search, PR D): the ticket list's requester
+// chip turns the account id in its URL back into a name after a reload. It is
+// the same lookup as ?q= with the same rules, so these tests pin the ways it
+// must not differ: session only, same people left out, same three fields.
+
+func lookupByIDPath(id string) string { return "/api/v1/users/lookup?id=" + url.QueryEscape(id) }
+
+func TestUserLookupByID_StaffAndAdminGetTheAccount(t *testing.T) {
+	for name, caller := range map[string]who{"staff": asStaff, "admin": asAdmin} {
+		t.Run(name, func(t *testing.T) {
+			h, cleanup := newHarness(t)
+			defer cleanup()
+			res := h.doSession(t, h.session(t, caller), http.MethodGet, lookupByIDPath(h.userID.String()), nil)
+			body := readBody(t, res)
+			require.Equal(t, http.StatusOK, res.StatusCode, body)
+			// A single object holding the picker's three fields and nothing else.
+			var row map[string]any
+			require.NoError(t, json.Unmarshal([]byte(body), &row))
+			require.Equal(t, map[string]any{
+				"id": h.userID.String(), "display_name": "Reporting User", "email": "user@test.local",
+			}, row)
+		})
+	}
+}
+
+func TestUserLookupByID_RequesterAndAnonymousAreRefused(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	res := h.doAsUser(t, http.MethodGet, lookupByIDPath(h.userID.String()), nil)
+	body := readBody(t, res)
+	require.Equal(t, http.StatusForbidden, res.StatusCode, body)
+	require.NotContains(t, body, "user@test.local", "the refusal leaks nothing")
+
+	res = h.doUnauth(t, http.MethodGet, lookupByIDPath(h.userID.String()), nil)
+	res.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, res.StatusCode)
+}
+
+// Same ruling as ?q= (#290): no key or OAuth client resolves an id into a name
+// and an address, whatever scopes it holds, so ids cannot be walked either.
+func TestUserLookupByID_RefusesMachineCredentials(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	client := h.newOverScopedServiceClient(t, "Directory scraper", "users:read")
+	path := lookupByIDPath(h.userID.String())
+	cases := []struct {
+		name string
+		res  func() *http.Response
+	}{
+		{"staff key with every default scope", func() *http.Response {
+			return withKey(t, h, h.apiKey, http.MethodGet, path, nil)
+		}},
+		{"admin key", func() *http.Response {
+			return withKey(t, h, h.adminKey, http.MethodGet, path, nil)
+		}},
+		{"key with users:read", func() *http.Response {
+			return withKey(t, h, mintKey(t, h, []string{"users:read"}), http.MethodGet, path, nil)
+		}},
+		{"OAuth client with users:read", func() *http.Response {
+			return h.doBearer(t, client.Token, http.MethodGet, path, nil)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := tc.res()
+			body := readBody(t, res)
+			require.Equal(t, http.StatusForbidden, res.StatusCode, body)
+			require.Contains(t, body, "session_required")
+			require.NotContains(t, body, "user@test.local", "the refusal leaks nothing")
+		})
+	}
+}
+
+// An id that names nobody, a deleted account, a disabled one and a service
+// identity all answer the same 404: the lookup must not tell a caller which
+// ids are real accounts that happen to be excluded.
+func TestUserLookupByID_UnknownAndExcludedAccountsAreTheSame404(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	mk := func(email, name string) uuid.UUID {
+		u, err := h.userSvc.Create(ctx, user.CreateUserInput{
+			Email: email, DisplayName: name, Role: user.RoleUser, Password: "a-real-passphrase",
+		})
+		require.NoError(t, err)
+		return u.ID
+	}
+	deleted := mk("gone-byid@test.local", "Gone ById")
+	require.NoError(t, h.userSvc.SoftDelete(ctx, deleted))
+	disabled := mk("off-byid@test.local", "Off ById")
+	require.NoError(t, h.userSvc.Disable(ctx, disabled))
+	service := uuid.New()
+	_, err := h.tx.ExecContext(ctx, `INSERT INTO users (id, email, display_name, role, service_account)
+		VALUES ($1, 'svc-byid@test.local', 'Svc ById', 'staff', true)`, service)
+	require.NoError(t, err)
+
+	var want string
+	for name, id := range map[string]uuid.UUID{
+		"unknown": uuid.New(), "deleted": deleted, "disabled": disabled, "service identity": service,
+	} {
+		res := staffLookup(t, h, lookupByIDPath(id.String()))
+		body := readBody(t, res)
+		require.Equal(t, http.StatusNotFound, res.StatusCode, "%s: %s", name, body)
+		require.NotContains(t, body, "byid@test.local", "%s: the refusal leaks nothing", name)
+		if want == "" {
+			want = body
+		}
+		require.Equal(t, want, body, "%s answers differently from the others", name)
+	}
+}
+
+// Not an id, or an id with a query beside it: a mistake in the caller, said so
+// rather than guessed at.
+func TestUserLookupByID_RejectsMalformedRequests(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	for _, path := range []string{
+		"/api/v1/users/lookup?id=",
+		lookupByIDPath("not-a-uuid"),
+		lookupByIDPath("Reporting"),
+		lookupByIDPath(h.userID.String()) + "&q=Reporting",
+	} {
+		res := staffLookup(t, h, path)
+		res.Body.Close()
+		require.Equal(t, http.StatusBadRequest, res.StatusCode, path)
+	}
 }

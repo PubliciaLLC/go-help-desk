@@ -6044,7 +6044,7 @@ paths:
   /api/v1/users/lookup:
     get:
       operationId: lookupUsers
-      summary: Find accounts to file a ticket for.
+      summary: Find accounts to file a ticket for, or look one up by id.
       description: |
         Staff and administrators only, in a signed-in session (second factor required). An API key is refused with 403 session_required and an OAuth
         client likewise, whatever scopes it holds, users:read included: there
@@ -6061,6 +6061,17 @@ paths:
         OAuth client's identity) are not. q must be at least 2 characters after trimming; a
         shorter or missing q is 400, so the endpoint cannot list the directory.
         Not paged.
+
+        Give id instead of q to look up one account: the ticket list's requester
+        chip uses it to turn the account id in its address back into a name
+        after a reload. It is the same route, so the same rules apply: a
+        signed-in staff or administrator session only (an API key or OAuth
+        client is refused with 403 session_required), and the same accounts
+        are left out. The answer is that one account as a single object, not an
+        array. A malformed id, or id together with q, is 400. An id that names
+        nobody, and one that names a disabled, deleted or service account, get
+        the same 404, so the endpoint does not say which ids are real accounts.
+        Exactly one of q and id is required.
       tags: ['Reference data']
       x-ghd-handler: handleLookupUsers
       security:
@@ -6070,28 +6081,41 @@ paths:
       parameters:
         - name: q
           in: query
-          required: true
-          description: What to look for. At least 2 characters after trimming.
+          required: false
+          description: What to look for. At least 2 characters after trimming. Required unless id is given; not allowed with it.
           schema:
             type: string
             minLength: 2
+        - name: id
+          in: query
+          required: false
+          description: Look up this one account instead of searching. Required unless q is given; not allowed with it.
+          schema:
+            $ref: '#/components/schemas/Uuid'
       responses:
         '200':
-          description: The matching accounts, up to 10, as a bare array (never null).
+          description: With q, the matching accounts, up to 10, as a bare array (never null). With id, that one account as a single object.
           content:
             application/json:
               schema:
-                type: array
-                maxItems: 10
-                items:
-                  type: object
-                  required: [id, display_name, email]
-                  properties:
-                    id: {$ref: '#/components/schemas/Uuid'}
-                    display_name: {type: string}
-                    email: {type: string}
+                oneOf:
+                  - type: array
+                    maxItems: 10
+                    items:
+                      type: object
+                      required: [id, display_name, email]
+                      properties:
+                        id: {$ref: '#/components/schemas/Uuid'}
+                        display_name: {type: string}
+                        email: {type: string}
+                  - type: object
+                    required: [id, display_name, email]
+                    properties:
+                      id: {$ref: '#/components/schemas/Uuid'}
+                      display_name: {type: string}
+                      email: {type: string}
         '400':
-          description: "`bad_request`: q is missing or shorter than 2 characters."
+          description: "`bad_request`: q is missing or shorter than 2 characters, id is not a UUID, or both q and id were sent."
           content:
             application/json:
               schema:
@@ -6100,6 +6124,12 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          description: "`not_found`: with id, no such account, or one that is disabled, deleted or a service account. The two are not told apart."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /api/v1/admin/api-keys:
     get:
       operationId: listAPIKeys

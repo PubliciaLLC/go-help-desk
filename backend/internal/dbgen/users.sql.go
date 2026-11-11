@@ -965,6 +965,46 @@ func (q *Queries) ListUsersAdmin(ctx context.Context, arg ListUsersAdminParams) 
 	return items, nil
 }
 
+const lookupRequesterByID = `-- name: LookupRequesterByID :one
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account, email_notify_assigned, email_notify_activity, email_notify_group, must_change_password FROM users
+WHERE id = $1
+  AND deleted_at IS NULL
+  AND disabled = FALSE
+  AND NOT service_account
+`
+
+// The same lookup by id (the ticket list's requester chip after a reload).
+// Carries the same three exclusions as LookupRequesters, in the query, so an
+// id that names a disabled, deleted or service account is no different from
+// one that names nobody.
+func (q *Queries) LookupRequesterByID(ctx context.Context, id uuid.UUID) (User, error) {
+	row := q.db.QueryRowContext(ctx, lookupRequesterByID, id)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.DisplayName,
+		&i.Role,
+		&i.PasswordHash,
+		&i.MfaSecret,
+		&i.MfaEnabled,
+		&i.SamlSubject,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+		&i.Disabled,
+		&i.OidcSubject,
+		&i.MfaFailedAttempts,
+		&i.MfaLockedUntil,
+		&i.ServiceAccount,
+		&i.EmailNotifyAssigned,
+		&i.EmailNotifyActivity,
+		&i.EmailNotifyGroup,
+		&i.MustChangePassword,
+	)
+	return i, err
+}
+
 const lookupRequesters = `-- name: LookupRequesters :many
 SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account, email_notify_assigned, email_notify_activity, email_notify_group, must_change_password FROM users
 WHERE deleted_at IS NULL
