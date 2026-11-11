@@ -820,9 +820,9 @@ func TestMigration060_TicketFilterIndexes(t *testing.T) {
 	}
 }
 
-// 000062 adds the index the scoped list uses for a group that covers one type
+// 000061 adds the index the scoped list uses for a group that covers one type
 // of a category. Index only, and partial: most tickets have no type.
-func TestMigration062_TicketTypeIndex(t *testing.T) {
+func TestMigration061_TicketTypeIndex(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
 	ctx := context.Background()
@@ -837,9 +837,9 @@ func TestMigration062_TicketTypeIndex(t *testing.T) {
 		return ok
 	}
 	require.True(t, have(), "exists once the migrations have run")
-	execMigrationFile(t, ctx, tx, "migrations/000062_ticket_type_index.down.sql", nil)
+	execMigrationFile(t, ctx, tx, "migrations/000061_ticket_type_index.down.sql", nil)
 	require.False(t, have(), "down drops it")
-	execMigrationFile(t, ctx, tx, "migrations/000062_ticket_type_index.up.sql", nil)
-	execMigrationFile(t, ctx, tx, "migrations/000062_ticket_type_index.up.sql", nil) // IF NOT EXISTS: running twice is harmless
+	execMigrationFile(t, ctx, tx, "migrations/000061_ticket_type_index.up.sql", nil)
+	execMigrationFile(t, ctx, tx, "migrations/000061_ticket_type_index.up.sql", nil) // IF NOT EXISTS: running twice is harmless
 	require.True(t, have(), "up restores it")
 }
