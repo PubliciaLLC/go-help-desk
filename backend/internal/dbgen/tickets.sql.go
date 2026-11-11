@@ -885,24 +885,29 @@ func (q *Queries) ListResolvedTicketsBefore(ctx context.Context, arg ListResolve
 }
 
 const listStaffScopeRows = `-- name: ListStaffScopeRows :many
-SELECT gs.group_id, gs.category_id, gs.type_id
+SELECT gs.category_id, gs.type_id
 FROM group_scopes gs
 JOIN group_members gm ON gm.group_id = gs.group_id
 WHERE gm.user_id = $1
 `
 
+type ListStaffScopeRowsRow struct {
+	CategoryID uuid.UUID     `json:"category_id"`
+	TypeID     uuid.NullUUID `json:"type_id"`
+}
+
 // The category/type pairs the caller's groups cover, for ListTicketsFiltered's
 // scoped visibility. type_id NULL means the whole category.
-func (q *Queries) ListStaffScopeRows(ctx context.Context, userID uuid.UUID) ([]GroupScope, error) {
+func (q *Queries) ListStaffScopeRows(ctx context.Context, userID uuid.UUID) ([]ListStaffScopeRowsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listStaffScopeRows, userID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []GroupScope
+	var items []ListStaffScopeRowsRow
 	for rows.Next() {
-		var i GroupScope
-		if err := rows.Scan(&i.GroupID, &i.CategoryID, &i.TypeID); err != nil {
+		var i ListStaffScopeRowsRow
+		if err := rows.Scan(&i.CategoryID, &i.TypeID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

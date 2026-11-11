@@ -373,7 +373,7 @@ LIMIT $2 OFFSET $3;
 -- name: ListStaffScopeRows :many
 -- The category/type pairs the caller's groups cover, for ListTicketsFiltered's
 -- scoped visibility. type_id NULL means the whole category.
-SELECT gs.group_id, gs.category_id, gs.type_id
+SELECT gs.category_id, gs.type_id
 FROM group_scopes gs
 JOIN group_members gm ON gm.group_id = gs.group_id
 WHERE gm.user_id = $1;

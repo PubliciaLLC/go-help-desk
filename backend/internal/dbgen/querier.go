@@ -765,7 +765,7 @@ type Querier interface {
 	ListSettings(ctx context.Context) ([]Setting, error)
 	// The category/type pairs the caller's groups cover, for ListTicketsFiltered's
 	// scoped visibility. type_id NULL means the whole category.
-	ListStaffScopeRows(ctx context.Context, userID uuid.UUID) ([]GroupScope, error)
+	ListStaffScopeRows(ctx context.Context, userID uuid.UUID) ([]ListStaffScopeRowsRow, error)
 	ListStatuses(ctx context.Context) ([]Status, error)
 	// The list staff see on the ticket. Soft-deleted accounts are left out: there
 	// is nobody to show. A disabled account is shown, because the row is still
