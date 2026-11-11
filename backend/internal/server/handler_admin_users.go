@@ -387,6 +387,19 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Not your own second factor (D3). The same bypass as removing your own
+	// passkey through the admin route: adminRouter checks only MFAPassed, which
+	// a session that owed no factor has without proving one, so this would clear
+	// the account's factors around requireFactorOrFirstEnrolment. Refused whole
+	// and before any write, like the other refusals here, and after the two that
+	// depend on the database so that a request refused for those keeps its
+	// answer (the last administrator is a 400 whether or not reset_mfa is set).
+	// reset_mfa:false asks for nothing and is not refused.
+	if actor := authmw.GetActor(r); body.ResetMFA && actor != nil && actor.UserID == id {
+		Error(w, http.StatusConflict, "own_account", ownSecondFactorMessage)
+		return
+	}
+
 	// Disable/enable toggle (processed before any profile update).
 	if body.Disabled != nil {
 		if *body.Disabled {
