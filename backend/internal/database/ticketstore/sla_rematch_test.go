@@ -112,11 +112,11 @@ func TestCurrentSLARecordForUpdate(t *testing.T) {
 			want: ticket.SLAFacts{ResolvedAt: &at, ResolutionElapsedAtMetSeconds: ptr(int64(90))},
 		},
 		"response_breached_at": {
-			set:  func(f *rematchStoreFx) error { return f.ss.StampBreaches(f.ctx, f.tk.ID, &at, nil) },
+			set:  func(f *rematchStoreFx) error { return f.ss.StampBreaches(f.ctx, f.recordID(), &at, nil) },
 			want: ticket.SLAFacts{ResponseBreachedAt: &at},
 		},
 		"resolution_breached_at": {
-			set:  func(f *rematchStoreFx) error { return f.ss.StampBreaches(f.ctx, f.tk.ID, nil, &at) },
+			set:  func(f *rematchStoreFx) error { return f.ss.StampBreaches(f.ctx, f.recordID(), nil, &at) },
 			want: ticket.SLAFacts{ResolutionBreachedAt: &at},
 		},
 	}

@@ -676,26 +676,34 @@ func (q *Queries) SetSLAResolvedAndFirstResponse(ctx context.Context, arg SetSLA
 	return result.RowsAffected()
 }
 
-const stampSLABreaches = `-- name: StampSLABreaches :exec
+const stampSLABreaches = `-- name: StampSLABreaches :execrows
 UPDATE sla_records
 SET response_breached_at   = COALESCE(response_breached_at,   $2::timestamptz),
     resolution_breached_at = COALESCE(resolution_breached_at, $3::timestamptz)
-WHERE ticket_id = $1 AND superseded_at IS NULL
+WHERE id = $1 AND superseded_at IS NULL
 `
 
 type StampSLABreachesParams struct {
-	TicketID             uuid.UUID    `json:"ticket_id"`
+	ID                   uuid.UUID    `json:"id"`
 	ResponseBreachedAt   sql.NullTime `json:"response_breached_at"`
 	ResolutionBreachedAt sql.NullTime `json:"resolution_breached_at"`
 }
 
+// Addressed by the id of the record the caller evaluated, like SetSLAFirstResponse
+// (#623): the breach was decided from that record's clock and policy, and means
+// nothing on a record that replaced it. Zero rows is a superseded record, and the
+// caller skips; the next sweep evaluates the new one.
+//
 // Sets only the breach columns, and only where still NULL. Two evaluators
 // racing on the same row cannot overwrite each other's stamp or, worse, the
 // request path's first_response_at / resolved_at. A stamp, once set, is a
 // fact about what happened (DESIGN.md) and is never cleared here.
-func (q *Queries) StampSLABreaches(ctx context.Context, arg StampSLABreachesParams) error {
-	_, err := q.db.ExecContext(ctx, stampSLABreaches, arg.TicketID, arg.ResponseBreachedAt, arg.ResolutionBreachedAt)
-	return err
+func (q *Queries) StampSLABreaches(ctx context.Context, arg StampSLABreachesParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, stampSLABreaches, arg.ID, arg.ResponseBreachedAt, arg.ResolutionBreachedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const supersedeSLARecord = `-- name: SupersedeSLARecord :execrows

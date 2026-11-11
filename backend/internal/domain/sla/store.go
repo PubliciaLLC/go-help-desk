@@ -140,12 +140,15 @@ type Store interface {
 	// at the equality instant, from a fresh read of the row.
 	ListBreachCandidates(ctx context.Context, now time.Time) ([]uuid.UUID, error)
 
-	// StampBreaches sets response and/or resolution as the record's breach
-	// timestamps for ticketID, but never overwrites a column that is already
-	// set (first writer wins) and never touches any other column — unlike
+	// StampBreaches sets response and/or resolution as the breach timestamps
+	// of record recordID, but never overwrites a column that is already set
+	// (first writer wins) and never touches any other column — unlike
 	// UpdateRecord, which is a full-row read-modify-write and so is not safe
 	// to use for a stamp decided from a possibly-stale read. A nil argument
-	// leaves that column untouched. Stamping a ticket with no record is a
-	// silent no-op.
-	StampBreaches(ctx context.Context, ticketID uuid.UUID, response, resolution *time.Time) error
+	// leaves that column untouched.
+	//
+	// Addressed by record id like the Set* writes above (#623): the breach was
+	// decided from that record's clock and policy, so a record a re-match has
+	// superseded since is ErrRecordSuperseded and nothing is written.
+	StampBreaches(ctx context.Context, recordID uuid.UUID, response, resolution *time.Time) error
 }

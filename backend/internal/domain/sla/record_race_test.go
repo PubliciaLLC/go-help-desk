@@ -224,3 +224,26 @@ func TestRecordWrite_ARecordRemovedMeanwhileIsNotAnError(t *testing.T) {
 		})
 	}
 }
+
+// The sweep's stamp is addressed to the record it evaluated too: a record
+// superseded between the read and the stamp is skipped, not an error, and not
+// counted as a stamp. The next sweep pass evaluates whatever replaced it.
+func TestSweepBreaches_ARecordSupersededBeforeTheStampIsSkipped(t *testing.T) {
+	store, tk, _, strict, at := raceFixture(t)
+	rec := store.records[tk.ID]
+	rec.PolicyID = strict.ID // already breached at three hours
+	store.records[tk.ID] = rec
+	restart := at.Add(time.Second)
+	store.onPolicyRead = func(int) { replaceRecord(store.fakeSLAStore, tk.ID, strict.ID, &restart) }
+	store.candidates = []uuid.UUID{tk.ID}
+	tickets := newFakeTickets()
+	tickets.tickets[tk.ID] = tk
+
+	res, err := sla.NewService(store).SweepBreaches(context.Background(), tickets, at)
+
+	require.NoError(t, err)
+	require.Equal(t, sla.SweepResult{Evaluated: 1, Stamped: 0}, res)
+	cur := store.records[tk.ID]
+	require.Nil(t, cur.ResponseBreachedAt)
+	require.Nil(t, cur.ResolutionBreachedAt)
+}

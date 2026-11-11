@@ -215,14 +215,14 @@ func (f *fakeSLAStore) ListRecordsForTicket(_ context.Context, ticketID uuid.UUI
 
 // StampBreaches applies the same COALESCE semantics the real query does:
 // only a currently-nil column is set, and nothing else on the record changes.
-func (f *fakeSLAStore) StampBreaches(_ context.Context, ticketID uuid.UUID, response, resolution *time.Time) error {
+func (f *fakeSLAStore) StampBreaches(_ context.Context, recordID uuid.UUID, response, resolution *time.Time) error {
 	f.stampCalls++
 	if f.stampErr != nil {
 		return f.stampErr
 	}
-	r, ok := f.records[ticketID]
-	if !ok {
-		return nil // no record for this ticket: a silent no-op, like the real query.
+	r, err := f.find(recordID)
+	if err != nil {
+		return err
 	}
 	if r.ResponseBreachedAt == nil {
 		r.ResponseBreachedAt = response
@@ -230,7 +230,7 @@ func (f *fakeSLAStore) StampBreaches(_ context.Context, ticketID uuid.UUID, resp
 	if r.ResolutionBreachedAt == nil {
 		r.ResolutionBreachedAt = resolution
 	}
-	f.records[ticketID] = r
+	f.records[r.TicketID] = r
 	return nil
 }
 

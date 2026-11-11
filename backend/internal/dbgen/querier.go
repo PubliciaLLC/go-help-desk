@@ -1063,11 +1063,16 @@ type Querier interface {
 	// ON CONFLICT rather than SELECT-then-INSERT, so that two concurrent requests
 	// carrying the same cookie cannot both see "not spent" (#337).
 	SpendSAMLHandover(ctx context.Context, tokenHash []byte) (int64, error)
+	// Addressed by the id of the record the caller evaluated, like SetSLAFirstResponse
+	// (#623): the breach was decided from that record's clock and policy, and means
+	// nothing on a record that replaced it. Zero rows is a superseded record, and the
+	// caller skips; the next sweep evaluates the new one.
+	//
 	// Sets only the breach columns, and only where still NULL. Two evaluators
 	// racing on the same row cannot overwrite each other's stamp or, worse, the
 	// request path's first_response_at / resolved_at. A stamp, once set, is a
 	// fact about what happened (DESIGN.md) and is never cleared here.
-	StampSLABreaches(ctx context.Context, arg StampSLABreachesParams) error
+	StampSLABreaches(ctx context.Context, arg StampSLABreachesParams) (int64, error)
 	// The only write a re-match ever makes to an existing record. Every fact on
 	// the row stays as it was; the row simply stops being current.
 	SupersedeSLARecord(ctx context.Context, arg SupersedeSLARecordParams) (int64, error)

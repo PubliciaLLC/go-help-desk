@@ -165,7 +165,7 @@ func (s *Store) UpdateRecord(ctx context.Context, r sla.Record) error {
 	})
 }
 
-// The three Set* writes are addressed by record id and report a record that
+// The three Set* writes and StampBreaches are addressed by record id and report a record that
 // is no longer current as sla.ErrRecordSuperseded (#623). A record that is
 // current but already holds the fact is not that error: the statement matches
 // it and changes nothing.
@@ -263,15 +263,13 @@ func (s *Store) ListBreachCandidates(ctx context.Context, now time.Time) ([]uuid
 	return ids, nil
 }
 
-func (s *Store) StampBreaches(ctx context.Context, ticketID uuid.UUID, response, resolution *time.Time) error {
-	if err := s.q.StampSLABreaches(ctx, dbgen.StampSLABreachesParams{
-		TicketID:             ticketID,
+func (s *Store) StampBreaches(ctx context.Context, recordID uuid.UUID, response, resolution *time.Time) error {
+	n, err := s.q.StampSLABreaches(ctx, dbgen.StampSLABreachesParams{
+		ID:                   recordID,
 		ResponseBreachedAt:   database.NullTime(response),
 		ResolutionBreachedAt: database.NullTime(resolution),
-	}); err != nil {
-		return fmt.Errorf("stamping SLA breaches for ticket %s: %w", ticketID, err)
-	}
-	return nil
+	})
+	return recordWrite(n, err, "stamping SLA breaches", recordID)
 }
 
 func policyFromRow(r dbgen.SlaPolicy) sla.Policy {

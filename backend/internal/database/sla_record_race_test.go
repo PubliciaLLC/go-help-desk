@@ -366,3 +366,29 @@ func (s *everyReadReMatchedStore) GetPolicy(ctx context.Context, id uuid.UUID) (
 	s.onPolicyRead()
 	return s.Store.GetPolicy(ctx, id)
 }
+
+// The breach sweep reads a record, decides a breach from its clock and policy,
+// and stamps it. A reopen restart committing between the read and the stamp
+// must not leave that breach on the new record, whose clock has only just
+// started. A stamp is permanent, so nothing would ever clear it. The sweep just
+// skips: the next pass evaluates the new record from its own clock.
+func TestSLARecordRace_RestartBetweenSweepReadAndStampLeavesNoStamp(t *testing.T) {
+	f := newChangePriorityFx(t)
+	lenient, strict := f.racePolicies(t)
+	tk := f.tk
+	// The record under the strict policy is breached on both targets at 3h.
+	require.NoError(t, f.ss.CreateRecord(f.ctx, sla.Record{TicketID: tk.ID, PolicyID: strict.ID}))
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	var newID uuid.UUID
+	store := &interposeStore{Store: f.ss, hook: func() {
+		restart := now.Add(time.Second)
+		newID = f.reMatchNow(t, tk.ID, lenient.ID, &restart)
+	}}
+
+	require.NoError(t, sla.NewService(store).EvaluateBreaches(f.ctx, tk, now))
+
+	cur := f.currentOf(t, tk.ID)
+	require.Equal(t, newID, cur.ID, "the hook ran: the record changed under the sweep")
+	require.False(t, cur.ResponseBreachedAt.Valid, "a breach decided on the old clock is not stamped on the new one")
+	require.False(t, cur.ResolutionBreachedAt.Valid)
+}

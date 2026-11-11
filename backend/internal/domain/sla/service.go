@@ -212,7 +212,14 @@ func (s *Service) evaluate(ctx context.Context, t ticket.Ticket, now time.Time) 
 	if response == nil && resolution == nil {
 		return false, nil
 	}
-	if err := s.store.StampBreaches(ctx, t.ID, response, resolution); err != nil {
+	err = s.store.StampBreaches(ctx, record.ID, response, resolution)
+	if errors.Is(err, ErrRecordSuperseded) {
+		// A re-match replaced the record after it was read (#623): the breach
+		// was decided from the old clock and policy and must not land on the
+		// new record. Skip; the next pass evaluates whatever replaced it.
+		return false, nil
+	}
+	if err != nil {
 		return false, fmt.Errorf("stamping SLA breaches: %w", err)
 	}
 	return true, nil

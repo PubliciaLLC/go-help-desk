@@ -446,10 +446,10 @@ func (s *tinySLAStore) ListRecordsForTicket(context.Context, uuid.UUID) ([]sla.R
 func (s *tinySLAStore) ListBreachCandidates(context.Context, time.Time) ([]uuid.UUID, error) {
 	return nil, nil
 }
-func (s *tinySLAStore) StampBreaches(_ context.Context, ticketID uuid.UUID, response, resolution *time.Time) error {
-	r, ok := s.records[ticketID]
-	if !ok {
-		return nil
+func (s *tinySLAStore) StampBreaches(_ context.Context, recordID uuid.UUID, response, resolution *time.Time) error {
+	r, err := s.find(recordID)
+	if err != nil {
+		return err
 	}
 	if r.ResponseBreachedAt == nil {
 		r.ResponseBreachedAt = response
@@ -457,7 +457,7 @@ func (s *tinySLAStore) StampBreaches(_ context.Context, ticketID uuid.UUID, resp
 	if r.ResolutionBreachedAt == nil {
 		r.ResolutionBreachedAt = resolution
 	}
-	s.records[ticketID] = r
+	s.records[r.TicketID] = r
 	return nil
 }
 

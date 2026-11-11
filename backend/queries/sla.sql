@@ -235,7 +235,12 @@ ORDER BY t.created_at;
 SELECT * FROM sla_records
 WHERE ticket_id = ANY(sqlc.arg('ticket_ids')::uuid[]) AND superseded_at IS NULL;
 
--- name: StampSLABreaches :exec
+-- name: StampSLABreaches :execrows
+-- Addressed by the id of the record the caller evaluated, like SetSLAFirstResponse
+-- (#623): the breach was decided from that record's clock and policy, and means
+-- nothing on a record that replaced it. Zero rows is a superseded record, and the
+-- caller skips; the next sweep evaluates the new one.
+--
 -- Sets only the breach columns, and only where still NULL. Two evaluators
 -- racing on the same row cannot overwrite each other's stamp or, worse, the
 -- request path's first_response_at / resolved_at. A stamp, once set, is a
@@ -243,7 +248,7 @@ WHERE ticket_id = ANY(sqlc.arg('ticket_ids')::uuid[]) AND superseded_at IS NULL;
 UPDATE sla_records
 SET response_breached_at   = COALESCE(response_breached_at,   sqlc.narg(response_breached_at)::timestamptz),
     resolution_breached_at = COALESCE(resolution_breached_at, sqlc.narg(resolution_breached_at)::timestamptz)
-WHERE ticket_id = $1 AND superseded_at IS NULL;
+WHERE id = $1 AND superseded_at IS NULL;
 
 -- name: CountSLARecordsByCategory :one
 -- Deleting a category cascades to its SLA policies, and sla_records.policy_id

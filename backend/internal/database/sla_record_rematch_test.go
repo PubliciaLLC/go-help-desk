@@ -159,13 +159,13 @@ func TestSLARecordSuperseded_IsInvisibleToEveryCurrentQuery(t *testing.T) {
 	require.False(t, containsUUID(got, tk.ID), "a superseded record is never a sweep candidate")
 
 	// Every write leaves the superseded row alone. The ones addressed by record
-	// id say so (#623: the caller's reading is stale); the ones addressed by
-	// ticket find no current row and change nothing.
+	// id say so (#623: the caller's reading is stale); UpdateRecord, addressed
+	// by ticket, finds no current row and changes nothing.
 	late := f.now.Add(time.Minute)
 	require.ErrorIs(t, f.ss.SetFirstResponse(f.ctx, oldID, late, 60, 1800), sla.ErrRecordSuperseded)
 	require.ErrorIs(t, f.ss.SetResolved(f.ctx, oldID, late, 60, 7200), sla.ErrRecordSuperseded)
 	require.ErrorIs(t, f.ss.SetResolvedAndFirstResponse(f.ctx, oldID, late, 60, 7200, 1800), sla.ErrRecordSuperseded)
-	require.NoError(t, f.ss.StampBreaches(f.ctx, tk.ID, &late, &late))
+	require.ErrorIs(t, f.ss.StampBreaches(f.ctx, oldID, &late, &late), sla.ErrRecordSuperseded)
 	require.NoError(t, f.ss.UpdateRecord(f.ctx, sla.Record{TicketID: tk.ID, PolicyID: old.ID, FirstResponseAt: &late}))
 	require.Equal(t, before, f.all(t, tk.ID)[oldID], "the superseded row is byte-identical after every write")
 
