@@ -104,3 +104,44 @@ func TestLookupRequesters_OneQueryTenEnabledAccounts(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, got)
 }
+
+// The id form of the lookup leaves out the same accounts, in the query itself,
+// and answers ErrNotFound for all of them.
+func TestLookupRequesterByID_ExcludesWhatTheSearchExcludes(t *testing.T) {
+	db, closeDB := freshDatabase(t)
+	defer closeDB()
+	ctx := context.Background()
+	store := userstore.New(dbgen.New(db.SQL))
+
+	live := user.User{
+		ID: uuid.New(), Email: "byid-live@test.local", DisplayName: "ById Live",
+		Role: user.RoleUser, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	require.NoError(t, store.Create(ctx, live))
+	got, err := store.LookupRequesterByID(ctx, live.ID)
+	require.NoError(t, err)
+	require.Equal(t, live.ID, got.ID)
+	require.Equal(t, "ById Live", got.DisplayName)
+
+	off := user.User{
+		ID: uuid.New(), Email: "byid-off@test.local", DisplayName: "ById Off",
+		Role: user.RoleUser, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	require.NoError(t, store.Create(ctx, off))
+	require.NoError(t, store.Disable(ctx, off.ID))
+
+	deleted, svc := uuid.New(), uuid.New()
+	_, err = db.SQL.ExecContext(ctx, `INSERT INTO users (id, email, display_name, role, deleted_at)
+		VALUES ($1, 'byid-del@test.local', 'ById Deleted', 'user', now())`, deleted)
+	require.NoError(t, err)
+	_, err = db.SQL.ExecContext(ctx, `INSERT INTO users (id, email, display_name, role, service_account)
+		VALUES ($1, 'byid-svc@test.local', 'ById Service', 'staff', true)`, svc)
+	require.NoError(t, err)
+
+	for name, id := range map[string]uuid.UUID{
+		"unknown": uuid.New(), "disabled": off.ID, "deleted": deleted, "service": svc,
+	} {
+		_, err := store.LookupRequesterByID(ctx, id)
+		require.ErrorIs(t, err, user.ErrNotFound, name)
+	}
+}
