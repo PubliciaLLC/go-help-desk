@@ -66,6 +66,9 @@ type fakeStore struct {
 	// a priority with no entry matches none.
 	slaRecords  []fakeSLARecord
 	slaPolicies map[ticket.Priority]uuid.UUID
+	// matchSLA, when set, decides the match instead (a test that needs the
+	// category to matter); slaPolicies ignores it.
+	matchSLA func(p ticket.Priority, categoryID uuid.UUID) *uuid.UUID
 
 	// Injectable failures.
 	errUpdate        error
@@ -151,7 +154,10 @@ func (f *fakeStore) LatestSupersededSLARecord(_ context.Context, ticketID uuid.U
 	}, nil
 }
 
-func (f *fakeStore) MatchSLAPolicy(_ context.Context, p ticket.Priority, _ uuid.UUID) (*uuid.UUID, error) {
+func (f *fakeStore) MatchSLAPolicy(_ context.Context, p ticket.Priority, categoryID uuid.UUID) (*uuid.UUID, error) {
+	if f.matchSLA != nil {
+		return f.matchSLA(p, categoryID), nil
+	}
 	if id, ok := f.slaPolicies[p]; ok {
 		return &id, nil
 	}

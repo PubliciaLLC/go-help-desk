@@ -746,6 +746,7 @@ type userLookupHit struct {
 }
 
 // GET /api/v1/users/lookup?q= — find accounts to file a ticket for.
+// GET /api/v1/users/lookup?id= — the same lookup for one account.
 //
 // Staff and administrators in a signed-in session only: an API key or OAuth
 // client is refused whatever scopes it holds (#290, no user lookup for
@@ -755,6 +756,10 @@ type userLookupHit struct {
 // fields, never pages, and never answers a short query. Service identities,
 // deleted accounts and disabled accounts are not found.
 func (s *Server) handleLookupUsers(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Has("id") {
+		s.handleLookupUserByID(w, r)
+		return
+	}
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	if utf8.RuneCountInString(q) < userLookupMinQuery {
 		Error(w, http.StatusBadRequest, "bad_request",
@@ -773,4 +778,33 @@ func (s *Server) handleLookupUsers(w http.ResponseWriter, r *http.Request) {
 		out = append(out, userLookupHit{ID: u.ID, DisplayName: u.DisplayName, Email: u.Email})
 	}
 	JSON(w, http.StatusOK, out)
+}
+
+// handleLookupUserByID answers ?id=: one account as a bare userLookupHit, for
+// the ticket list's requester chip, which holds only an id after a reload. It
+// is the same lookup as ?q= (same route, so the same session-only and role
+// rules) and leaves out the same accounts. An unknown id and an excluded
+// account get one fixed 404, not handleError's, whose text repeats the id and
+// would let a caller tell the two apart from the wording of the refusal.
+func (s *Server) handleLookupUserByID(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	if query.Has("q") {
+		Error(w, http.StatusBadRequest, "bad_request", "give id or q, not both")
+		return
+	}
+	id, err := uuid.Parse(strings.TrimSpace(query.Get("id")))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "id must be a UUID")
+		return
+	}
+	u, err := s.users.LookupRequesterByID(r.Context(), id)
+	if errors.Is(err, user.ErrNotFound) {
+		Error(w, http.StatusNotFound, "not_found", "no such account")
+		return
+	}
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, userLookupHit{ID: u.ID, DisplayName: u.DisplayName, Email: u.Email})
 }

@@ -734,6 +734,7 @@ export function TicketDetailPage() {
               typeId={ticket.type_id}
               itemId={ticket.item_id}
               canEdit={isStaffOrAdmin}
+              locked={statusName === 'Resolved' || statusName === 'Closed'}
             />
 
             <Card>
