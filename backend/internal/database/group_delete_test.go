@@ -36,7 +36,7 @@ type groupFixture struct {
 
 func newGroupFixture(t *testing.T) *groupFixture {
 	t.Helper()
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	t.Cleanup(closeDB)
 	ctx := context.Background()
 	q := db.Queries
