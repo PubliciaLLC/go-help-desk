@@ -792,14 +792,15 @@ e.g. "Security key, added 3 March") and created/last-used timestamps.
   false-positive cost; it is logged and gates nothing (the shape of
   `KnownMalicious` in `circl.go`).
 - The ceremonies are `github.com/go-webauthn/webauthn`'s; nothing is hand-rolled.
-- `last_used_at` is written off the authentication path, in a goroutine with a
-  context that does not belong to the request (as webhook dispatch does): it
-  answers "which key is still in use", but a sign-in must not wait on it or fail
-  because of it.
-  An API key's `last_used_at` is written the same way (detached context, a
-  failure is logged and ignored) but inline rather than in a goroutine, at most
-  once per five minutes per key, judged from the value the key lookup already
-  returned.
+- A passkey's `last_used_at` is written in a goroutine, off the response path,
+  with a context that does not belong to the request (as webhook dispatch
+  does): it answers "which key is still in use", but a sign-in must not wait on
+  it or fail because of it.
+- An API key's `last_used_at` is written inline, in the request, not in a
+  goroutine, but also with a context that does not belong to the request, so a
+  client that hangs up does not drop it. A failure is logged and ignored. It is
+  written at most once per five minutes per key, judged from the value the key
+  lookup already returned.
 
 **Enrolment.** `POST /me/passkeys/register/start` mints a challenge and stages
 it **in the session**; `POST /me/passkeys/register/finish` verifies the

@@ -130,7 +130,8 @@ type APIKeyAuthFunc func(ctx context.Context, hashed string) (auth.APIKey, user.
 // administrator does, which is not a revocation mechanism at all.
 type OAuthClientLookupFunc func(ctx context.Context, clientID string) (auth.OAuthClient, user.User, error)
 
-// APIKeyMarkUsedFunc is called asynchronously to update last_used_at.
+// APIKeyMarkUsedFunc is called inline, once the request is authenticated, to
+// update last_used_at; see APIKeyAuth.
 type APIKeyMarkUsedFunc func(ctx context.Context, id uuid.UUID, at time.Time) error
 
 // apiKeyUsedGranularity is how stale last_used_at may get before a request
