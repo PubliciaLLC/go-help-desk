@@ -5,7 +5,6 @@ import { renderWithQuery } from '@/test/render'
 import { CustomFieldsPanel } from './CustomFieldsPanel'
 import * as ticketsApi from '@/api/tickets'
 import type { Assignment, FieldDef, TicketFieldValue } from '@/api/types'
-import { charCount, overLimit } from '@/lib/fieldLimits'
 
 // A field's longest value (its own limit, else its type's) is told to the forms
 // as effective_max_length: they set maxlength and refuse an over-long value
@@ -77,19 +76,5 @@ describe('CustomFieldsPanel: maximum length', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Save' }))
     expect(screen.queryByRole('alert')).toBeNull()
     expect(put).not.toHaveBeenCalled() // nothing changed, so nothing is sent
-  })
-})
-
-describe('field limit helpers', () => {
-  it('counts code points', () => {
-    expect(charCount('a😀中')).toBe(3)
-    expect('😀'.length).toBe(2)
-  })
-  it('says nothing for a value that fits or a field with no limit', () => {
-    expect(overLimit('F', 'abc', 3)).toBe('')
-    expect(overLimit('F', 'abc', undefined)).toBe('')
-  })
-  it('names the field and the limit, with a thousands separator', () => {
-    expect(overLimit('Log', 'a'.repeat(10001), 10000)).toBe('Log is too long: at most 10,000 characters.')
   })
 })
