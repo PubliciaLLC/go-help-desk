@@ -3232,6 +3232,12 @@ func (s *Service) ListFiltered(ctx context.Context, f Filter) ([]Ticket, error) 
 	return s.store.ListFiltered(ctx, f)
 }
 
+// SearchFiltered is Store.SearchFiltered: a Filter's tickets and the status of
+// its reply search.
+func (s *Service) SearchFiltered(ctx context.Context, f Filter) (ListResult, error) {
+	return s.store.SearchFiltered(ctx, f)
+}
+
 // ReplyMatches is Store.ReplyMatches: the reply each ticket of a page matched
 // through, read with the same Filter that listed them.
 func (s *Service) ReplyMatches(ctx context.Context, f Filter, ticketIDs []uuid.UUID) (map[uuid.UUID]ReplyMatch, error) {

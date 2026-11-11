@@ -795,11 +795,24 @@ type Querier interface {
 	// combine. include_internal comes from the actor's role and nothing else
 	// (ticket.IncludeInternalFor); for a requester it is false, and an internal note
 	// is then never read, so it cannot decide which tickets match. The snippet read
-	// (ReplyMatchesForTickets) applies the same condition. The expression must be
-	// spelled to_tsvector('english', r.body) exactly, or the planner will not use
-	// ticket_replies_body_fts_idx (migration 000061). The visibility rule and every
-	// filter below still apply to the ticket, so a reply hit cannot bring in a
-	// ticket the viewer cannot see.
+	// (ReplyMatchesForTickets) applies the same condition.
+	//
+	// It matches ticket_replies.body_tsv, a stored column the migration adds and a
+	// trigger keeps current. The store sets search_replies false until the
+	// background fill and the two indexes are done (ReplySearchReady), so this arm
+	// never runs against a half-filled column.
+	//
+	// It looks at only the reply_cap NEWEST matching replies of the tickets the
+	// viewer may see, so a word in a quarter of all replies is not matched, joined
+	// and deduplicated a million times over. The recency index lets the planner
+	// walk replies newest first and stop; the content index serves the rare words.
+	// The cap is applied AFTER the viewer's visibility, with the same predicate as
+	// the main query below (rt is that ticket): applied before it, a requester's
+	// own matches would be crowded out by everyone else's, and a ticket the viewer
+	// may see could be missed because newer matches elsewhere used up the cap. The
+	// main query still applies visibility and every filter itself, so this can
+	// only narrow what it returns. Keep the two predicates in step: a store test
+	// searches as a scoped member of staff and a requester with a cap of one.
 	// Single values are NULL-means-absent and arrays are cardinality(...) = 0, so
 	// one prepared statement serves every combination. The store always passes a
 	// non-nil array.

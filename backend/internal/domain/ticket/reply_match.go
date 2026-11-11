@@ -34,3 +34,41 @@ type ReplyMatch struct {
 	CreatedAt time.Time `json:"created_at"`
 	Snippet   string    `json:"snippet"`
 }
+
+// RepliesStatus says what became of a request to search replies. It is empty
+// unless replies were asked for (Filter.SearchReplies with searchable words).
+type RepliesStatus string
+
+const (
+	// RepliesNotRequested: replies were not asked for, so there is nothing to say.
+	RepliesNotRequested RepliesStatus = ""
+	// RepliesSearched: the reply arm ran to the end.
+	RepliesSearched RepliesStatus = "searched"
+	// RepliesPreparing: the server is still filling and indexing the replies
+	// after an upgrade (internal/database/replyindex). Replies were skipped;
+	// the page says "Reply search is still being prepared."
+	RepliesPreparing RepliesStatus = "preparing"
+	// RepliesTimedOut: the reply arm took longer than the limit and was dropped.
+	// The tickets are those matching on subject, description and number. The page
+	// says the replies were not fully searched.
+	RepliesTimedOut RepliesStatus = "timed_out"
+)
+
+// ListResult is a page of tickets and what became of the reply search that
+// helped choose it. A caller that wants the flag reads RepliesSearched.
+type ListResult struct {
+	Tickets []Ticket
+	Replies RepliesStatus
+}
+
+// RepliesSearched is the `replies_searched` flag of a response: false only when
+// replies were asked for and not (fully) searched. When they were not asked for
+// there is nothing to flag, and it is true.
+func (r ListResult) RepliesSearched() bool {
+	return r.Replies != RepliesPreparing && r.Replies != RepliesTimedOut
+}
+
+// ReplyMatchesApply says whether a caller should read ReplyMatches for this
+// page: only when the reply arm ran. A page chosen without it must not show
+// reply excerpts as if replies had been searched.
+func (r ListResult) ReplyMatchesApply() bool { return r.Replies == RepliesSearched }

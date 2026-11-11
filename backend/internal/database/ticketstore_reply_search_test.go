@@ -3,6 +3,7 @@ package database_test
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/database/categorystore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/replyindex"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
@@ -185,6 +187,7 @@ func has(ids []uuid.UUID, tk ticket.Ticket) bool {
 // A ticket whose only match is an internal note is absent for a requester and
 // present for staff.
 func TestReplySearch_OnlyAnInternalNoteMatches(t *testing.T) {
+	testutil.EnsureReplySearchReady(t)
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
 	q, rollback := testutil.TxQueries(t, db)
@@ -209,6 +212,7 @@ func TestReplySearch_OnlyAnInternalNoteMatches(t *testing.T) {
 
 // Replies are searched only when asked for, whoever is asking.
 func TestReplySearch_OffUnlessAskedFor(t *testing.T) {
+	testutil.EnsureReplySearchReady(t)
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
 	q, rollback := testutil.TxQueries(t, db)
@@ -225,6 +229,7 @@ func TestReplySearch_OffUnlessAskedFor(t *testing.T) {
 // A ticket that matches on its own subject must not show a snippet from an
 // internal note to a requester, even when that note is the newest matching reply.
 func TestReplySearch_NoSnippetFromAnInternalNote(t *testing.T) {
+	testutil.EnsureReplySearchReady(t)
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
 	q, rollback := testutil.TxQueries(t, db)
@@ -245,6 +250,7 @@ func TestReplySearch_NoSnippetFromAnInternalNote(t *testing.T) {
 // The words of a search must all be in ONE reply. A public reply and an internal
 // note cannot combine into a match.
 func TestReplySearch_WordsMustShareOneReply(t *testing.T) {
+	testutil.EnsureReplySearchReady(t)
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
 	q, rollback := testutil.TxQueries(t, db)
@@ -267,6 +273,7 @@ func TestReplySearch_WordsMustShareOneReply(t *testing.T) {
 // Visibility still applies: a reply hit cannot bring in a ticket the viewer may
 // not see.
 func TestReplySearch_ReplyHitDoesNotWidenVisibility(t *testing.T) {
+	testutil.EnsureReplySearchReady(t)
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
 	q, rollback := testutil.TxQueries(t, db)
@@ -290,6 +297,7 @@ func TestReplySearch_ReplyHitDoesNotWidenVisibility(t *testing.T) {
 // Matches and snippets: the newest matching reply, marked with control
 // characters, no author, cut to length.
 func TestReplyMatches_Snippet(t *testing.T) {
+	testutil.EnsureReplySearchReady(t)
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
 	q, rollback := testutil.TxQueries(t, db)
@@ -350,6 +358,7 @@ func countRune(s string, r rune) int {
 // Ranking: a ticket that matches on its own subject or description comes before
 // one that matches only through a reply.
 func TestReplySearch_TicketTextOutranksReplyOnly(t *testing.T) {
+	testutil.EnsureReplySearchReady(t)
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
 	q, rollback := testutil.TxQueries(t, db)
@@ -375,6 +384,7 @@ func TestReplySearch_TicketTextOutranksReplyOnly(t *testing.T) {
 // identical: ids, order and snippets. This fails for any way an internal note
 // influences a requester's results, including ones nobody has thought of yet.
 func TestReplySearch_RequesterResultsDoNotDependOnInternalNotes(t *testing.T) {
+	testutil.EnsureReplySearchReady(t)
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
 	q, tx, rollback := testutil.TxQueriesTx(t, db)
@@ -442,37 +452,185 @@ func (p *planRecorder) QueryContext(ctx context.Context, query string, args ...i
 	return p.tx.QueryContext(ctx, query, args...)
 }
 
-// The match query has to be able to use ticket_replies_body_fts_idx. The index
-// is an expression index, so the planner can use it only if the query spells the
-// expression exactly as the migration does; a query that drifted to another
-// spelling would still return the right rows, by scanning every reply.
-//
-// On a table this small the planner would never choose it, so the test takes
-// away the alternatives: sequential scans are off and ticket_replies_ticket_idx
-// is dropped (in a transaction that rolls back, in a database of this test's
-// own, because DROP INDEX locks the table). What is left is the GIN index, or a
-// plan that says Seq Scan.
-func TestReplySearch_MatchQueryUsesTheReplyIndex(t *testing.T) {
+// The match query has to be able to use both of its indexes: the content index
+// for a rare word, and the recency index to walk replies newest first for a
+// common one. A table this small is never planned that way on its own, so each
+// test takes the alternatives away (in a transaction that rolls back, in a
+// database of the test's own) and looks at what is left. If the query stopped
+// matching the column, or stopped ordering by created_at, the plan would say
+// Seq Scan.
+func TestReplySearch_MatchQueryCanUseItsIndexes(t *testing.T) {
 	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
-	_, tx, rollback := testutil.TxQueriesTx(t, db)
-	defer rollback()
-	f := newReplySearchFixture(t, dbgen.New(tx))
 	ctx := context.Background()
-	for _, stmt := range []string{`DROP INDEX ticket_replies_ticket_idx`, `SET LOCAL enable_seqscan = off`, `ANALYZE ticket_replies`} {
-		_, err := tx.ExecContext(ctx, stmt)
-		require.NoError(t, err, stmt)
+	prep := replyindex.New(db.SQL, slog.New(slog.DiscardHandler))
+	prep.Pause = 0
+	_, err := prep.Prepare(ctx) // an empty table: just builds the indexes
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		name  string
+		off   []string
+		index string
+	}{
+		{"content index", []string{"enable_seqscan", "enable_indexscan"}, "ticket_replies_body_tsv_idx"},
+		{"recency index", []string{"enable_seqscan", "enable_bitmapscan"}, "ticket_replies_created_at_idx"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, tx, rollback := testutil.TxQueriesTx(t, db)
+			defer rollback()
+			f := newReplySearchFixture(t, dbgen.New(tx))
+			for _, setting := range tc.off {
+				_, err := tx.ExecContext(ctx, `SET LOCAL `+setting+` = off`)
+				require.NoError(t, err)
+			}
+			_, err := tx.ExecContext(ctx, `ANALYZE ticket_replies`)
+			require.NoError(t, err)
+
+			rec := &planRecorder{DBTX: tx, tx: tx}
+			// A long limit: with the alternatives switched off the plan can be slow,
+			// and a statement cancelled by the limit would end this transaction.
+			ts := ticketstore.New(dbgen.New(rec)).WithReplyLimits(ticketstore.DefaultReplyCap, time.Minute)
+			res, err := ts.SearchFiltered(ctx, ticket.Filter{
+				ActorID: f.staff.ID, Visibility: ticket.VisibilityAll, Limit: 50,
+				Query: wordPublic, SearchReplies: true, IncludeInternal: true,
+			})
+			require.NoError(t, err)
+			require.Equal(t, ticket.RepliesSearched, res.Replies)
+			// The first statement recorded is the readiness check; the list is the last.
+			plan := rec.plans[len(rec.plans)-1]
+			require.Contains(t, plan, tc.index, "plan:\n%s", plan)
+		})
+	}
+}
+
+// Until the background fill and the index build are done, a search that asks
+// for replies skips them and says so: it answers with the tickets that match
+// on their own text, never with a scan of every reply, and never with a
+// half-filled column's partial answer. Once ready, the same search finds the
+// reply-only ticket.
+func TestReplySearch_SkippedWhilePreparing(t *testing.T) {
+	db, closeDB := testutil.NewIsolatedDB(t) // no indexes yet
+	defer closeDB()
+	ctx := context.Background()
+
+	_, tx, rollback := testutil.TxQueriesTx(t, db)
+	f := newReplySearchFixture(t, dbgen.New(tx))
+	ts := ticketstore.New(dbgen.New(tx))
+	fl := ticket.Filter{ActorID: f.staff.ID, Visibility: ticket.VisibilityAll, Limit: 50, Query: wordSubject, SearchReplies: true, IncludeInternal: true}
+
+	res, err := ts.SearchFiltered(ctx, fl)
+	require.NoError(t, err)
+	require.Equal(t, ticket.RepliesPreparing, res.Replies)
+	require.False(t, res.RepliesSearched())
+	require.False(t, res.ReplyMatchesApply())
+	var ids []uuid.UUID
+	for _, tk := range res.Tickets {
+		ids = append(ids, tk.ID)
+	}
+	require.True(t, has(ids, f.laptop), "the subject match is still found")
+
+	// A word that only a reply holds finds nothing yet, not an error.
+	fl.Query = wordPublic
+	res, err = ts.SearchFiltered(ctx, fl)
+	require.NoError(t, err)
+	require.Equal(t, ticket.RepliesPreparing, res.Replies)
+	require.Empty(t, res.Tickets)
+	rollback()
+
+	prep := replyindex.New(db.SQL, slog.New(slog.DiscardHandler))
+	prep.Pause = 0
+	_, err = prep.Prepare(ctx)
+	require.NoError(t, err)
+
+	_, tx, rollback = testutil.TxQueriesTx(t, db)
+	defer rollback()
+	f = newReplySearchFixture(t, dbgen.New(tx))
+	ts = ticketstore.New(dbgen.New(tx))
+	fl.ActorID = f.staff.ID
+	res, err = ts.SearchFiltered(ctx, fl)
+	require.NoError(t, err)
+	require.Equal(t, ticket.RepliesSearched, res.Replies)
+	require.True(t, res.RepliesSearched())
+	require.NotEmpty(t, res.Tickets, "the same search finds the reply-only ticket once ready")
+}
+
+// A search that asks for replies and runs out of time answers without them and
+// says so, instead of failing or holding the request.
+func TestReplySearch_TimeLimitDropsTheReplyArm(t *testing.T) {
+	testutil.EnsureReplySearchReady(t)
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+	f := newReplySearchFixture(t, q)
+	ctx := context.Background()
+
+	fl := ticket.Filter{ActorID: f.staff.ID, Visibility: ticket.VisibilityAll, Limit: 50, Query: wordSubject, SearchReplies: true, IncludeInternal: true}
+	// A limit that has passed before the statement starts.
+	res, err := ticketstore.New(q).WithReplyLimits(ticketstore.DefaultReplyCap, time.Nanosecond).SearchFiltered(ctx, fl)
+	require.NoError(t, err)
+	require.Equal(t, ticket.RepliesTimedOut, res.Replies)
+	require.False(t, res.RepliesSearched())
+	require.False(t, res.ReplyMatchesApply(), "no excerpts for a page chosen without replies")
+	var ids []uuid.UUID
+	for _, tk := range res.Tickets {
+		ids = append(ids, tk.ID)
+	}
+	require.True(t, has(ids, f.laptop), "the tickets that match on their own text are still returned")
+
+	// The caller's own cancelled context is the caller's, not a time limit.
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	_, err = ticketstore.New(q).SearchFiltered(cancelled, fl)
+	require.Error(t, err)
+
+	// Not asked for: nothing to flag.
+	fl.SearchReplies = false
+	res, err = ticketstore.New(q).WithReplyLimits(ticketstore.DefaultReplyCap, time.Nanosecond).SearchFiltered(ctx, fl)
+	require.NoError(t, err)
+	require.Equal(t, ticket.RepliesNotRequested, res.Replies)
+	require.True(t, res.RepliesSearched())
+}
+
+// The cap on reply matches is applied AFTER the viewer's visibility. If it were
+// applied before, a requester's own matches would be crowded out by everyone
+// else's newer ones, and a word common across the help desk would find nothing
+// in their own tickets.
+func TestReplySearch_CapIsAppliedToWhatTheViewerMaySee(t *testing.T) {
+	testutil.EnsureReplySearchReady(t)
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+	f := newReplySearchFixture(t, q)
+	ts := ticketstore.New(q).WithReplyLimits(1, ticketstore.DefaultReplyTimeout)
+
+	// wordPublic is in three public replies: printer's, both's, and (newest of
+	// all) the other requester's. A cap of one keeps only the newest the viewer
+	// may see.
+	run := func(role user.Role, vis ticket.Visibility, actor uuid.UUID) map[uuid.UUID]bool {
+		fl := ticket.Filter{ActorID: actor, Visibility: vis, Limit: 50, Query: wordPublic, SearchReplies: true,
+			IncludeInternal: ticket.IncludeInternalFor(role)}
+		res, err := ts.SearchFiltered(context.Background(), fl)
+		require.NoError(t, err)
+		require.Equal(t, ticket.RepliesSearched, res.Replies)
+		got := map[uuid.UUID]bool{}
+		for _, tk := range res.Tickets {
+			got[tk.ID] = true
+		}
+		return got
 	}
 
-	rec := &planRecorder{DBTX: tx, tx: tx}
-	ts := ticketstore.New(dbgen.New(rec))
-	_, err := ts.ListFiltered(ctx, ticket.Filter{
-		ActorID: f.staff.ID, Visibility: ticket.VisibilityAll, Limit: 50,
-		Query: wordPublic, SearchReplies: true, IncludeInternal: true,
-	})
-	require.NoError(t, err)
-	require.Len(t, rec.plans, 1)
-	require.Contains(t, rec.plans[0], "ticket_replies_body_fts_idx", "plan:\n%s", rec.plans[0])
+	all := run(user.RoleStaff, ticket.VisibilityAll, f.staff.ID)
+	require.Equal(t, map[uuid.UUID]bool{f.foreign.ID: true}, all, "an administrator's newest match is the other requester's ticket")
+
+	mine := run(user.RoleUser, ticket.VisibilityReporter, f.requester.ID)
+	require.Equal(t, map[uuid.UUID]bool{f.both.ID: true}, mine,
+		"the requester's newest match, not nothing because newer matches belong to someone else")
+
+	scoped := run(user.RoleStaff, ticket.VisibilityScoped, f.requester.ID)
+	require.Equal(t, map[uuid.UUID]bool{f.both.ID: true}, scoped, "the same for the staff scope")
 }
 
 func deleteInternalNotes(t *testing.T, tx *sql.Tx) {

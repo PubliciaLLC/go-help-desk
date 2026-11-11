@@ -21,7 +21,20 @@ import (
 )
 
 // Store implements ticket.Store and ticket.StatusStore.
-type Store struct{ q *dbgen.Queries }
+type Store struct {
+	q            *dbgen.Queries
+	replyCap     int
+	replyTimeout time.Duration
+}
+
+const (
+	// DefaultReplyCap is how many of the newest matching replies a reply search
+	// looks at (see reply_hits in ListTicketsFiltered).
+	DefaultReplyCap = 2000
+	// DefaultReplyTimeout is how long a search that includes replies may run
+	// before the reply arm is dropped and the page is answered without it.
+	DefaultReplyTimeout = 2 * time.Second
+)
 
 // New returns a Store backed by the given Queries.
 // pageInt32 narrows a page bound to what the generated queries accept.
@@ -45,7 +58,17 @@ func pageInt32(n int) int32 {
 	return int32(n)
 }
 
-func New(q *dbgen.Queries) *Store { return &Store{q: q} }
+func New(q *dbgen.Queries) *Store {
+	return &Store{q: q, replyCap: DefaultReplyCap, replyTimeout: DefaultReplyTimeout}
+}
+
+// WithReplyLimits returns a Store with a different reply cap and time limit, for
+// a test that needs a cap of one or a limit that has already passed.
+func (s *Store) WithReplyLimits(replyCap int, timeout time.Duration) *Store {
+	c := *s
+	c.replyCap, c.replyTimeout = replyCap, timeout
+	return &c
+}
 
 // ── ticket.Store ────────────────────────────────────────────────────────────
 
@@ -979,13 +1002,85 @@ func TicketNotFoundError(id string) error {
 // decide them. Every other criterion is ANDed with them, so a filter can only
 // narrow what the caller may see.
 func (s *Store) ListFiltered(ctx context.Context, f ticket.Filter) ([]ticket.Ticket, error) {
-	return s.ListFilteredAt(ctx, f, time.Now())
+	res, err := s.SearchFilteredAt(ctx, f, time.Now())
+	return res.Tickets, err
 }
 
 // ListFilteredAt is ListFiltered with the instant the SLA filter and sort judge
 // outstanding targets by. ListFiltered passes the wall clock; a test passes a
 // fixed instant to put tickets exactly on the 80% and 100% boundaries.
 func (s *Store) ListFilteredAt(ctx context.Context, f ticket.Filter, now time.Time) ([]ticket.Ticket, error) {
+	res, err := s.SearchFilteredAt(ctx, f, now)
+	return res.Tickets, err
+}
+
+// SearchFiltered is ListFiltered that also says what became of the reply search.
+func (s *Store) SearchFiltered(ctx context.Context, f ticket.Filter) (ticket.ListResult, error) {
+	return s.SearchFilteredAt(ctx, f, time.Now())
+}
+
+// SearchFilteredAt decides whether the reply arm may run, runs the list, and
+// drops the arm if it is too slow.
+//
+//   - Replies are searched only once the background fill and both indexes are
+//     done (replyindex.Ready). Before that the search SKIPS replies rather than
+//     scanning them: without the index a scan parses every reply, which at the
+//     sizes this is built for is minutes, and a half-filled column would give
+//     answers that are silently incomplete. The page says it is still being
+//     prepared.
+//   - With replies, the whole statement runs under a time limit (two seconds).
+//     When it runs out the statement is cancelled and answered again without
+//     the reply arm, so the caller still gets the tickets that match on their
+//     own text, and RepliesTimedOut says what is missing.
+func (s *Store) SearchFilteredAt(ctx context.Context, f ticket.Filter, now time.Time) (ticket.ListResult, error) {
+	var res ticket.ListResult
+	var err error
+	if !f.SearchReplies || buildSearchTSQuery(f.Query) == "" {
+		f.SearchReplies = false
+		res.Tickets, err = s.list(ctx, f, now)
+		return res, err
+	}
+
+	ready, err := s.q.ReplySearchReady(ctx)
+	if err != nil {
+		return res, fmt.Errorf("checking reply search: %w", err)
+	}
+	if !ready {
+		f.SearchReplies = false
+		res.Replies = ticket.RepliesPreparing
+		res.Tickets, err = s.list(ctx, f, now)
+		return res, err
+	}
+
+	limited, cancel := context.WithTimeout(ctx, s.replyTimeout)
+	defer cancel()
+	res.Tickets, err = s.list(limited, f, now)
+	switch {
+	case err == nil:
+		res.Replies = ticket.RepliesSearched
+		return res, nil
+	case ctx.Err() == nil && isTimeout(err):
+		// Our limit, not the caller's: answer without the reply arm.
+		f.SearchReplies = false
+		res.Replies = ticket.RepliesTimedOut
+		res.Tickets, err = s.list(ctx, f, now)
+		return res, err
+	}
+	return res, err
+}
+
+// isTimeout says whether err is a statement cancelled by a context deadline,
+// however the driver words it.
+func isTimeout(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var pg *pgconn.PgError
+	return errors.As(err, &pg) && pg.Code == "57014" // query_canceled
+}
+
+// list runs ListTicketsFiltered for f exactly as it stands.
+func (s *Store) list(ctx context.Context, f ticket.Filter, now time.Time) ([]ticket.Ticket, error) {
 	sortKey, sortDir := f.ResolvedSort()
 	p := dbgen.ListTicketsFilteredParams{
 		Now:           now,
@@ -1024,6 +1119,7 @@ func (s *Store) ListFilteredAt(ctx context.Context, f ticket.Filter, now time.Ti
 		// role; ReplyMatches reads the same two for the snippets.
 		SearchReplies:   f.SearchReplies,
 		IncludeInternal: f.IncludeInternal,
+		ReplyCap:        pageInt32(s.replyCap),
 		ResultLimit:     pageInt32(f.Limit),
 		ResultOffset:    pageInt32(f.Offset),
 	}

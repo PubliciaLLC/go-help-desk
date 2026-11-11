@@ -450,6 +450,10 @@ func (f *fakeStore) ListFiltered(context.Context, ticket.Filter) ([]ticket.Ticke
 	return nil, nil
 }
 
+func (f *fakeStore) SearchFiltered(context.Context, ticket.Filter) (ticket.ListResult, error) {
+	return ticket.ListResult{}, nil
+}
+
 func (f *fakeStore) ReplyMatches(context.Context, ticket.Filter, []uuid.UUID) (map[uuid.UUID]ticket.ReplyMatch, error) {
 	return nil, nil
 }
