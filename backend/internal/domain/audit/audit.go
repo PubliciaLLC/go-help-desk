@@ -252,6 +252,8 @@ var shownKeys = map[string]bool{
 	// command ran on.
 	// Shown for EVERY entity type, so no other writer may reuse these key names.
 	"clientname": true, "urlhost": true,
+	// A client's secret being replaced (#622): the fact, not the secret.
+	"credentialreplaced": true,
 }
 
 // Redact returns copies of before/after showing only allow-listed keys

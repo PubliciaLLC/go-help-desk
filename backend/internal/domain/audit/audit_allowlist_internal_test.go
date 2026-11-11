@@ -58,7 +58,7 @@ func TestRedact_CredentialKeysAreShown(t *testing.T) {
 	entry := map[string]any{
 		"client_name": "Nightly sync", "scopes": "tickets:read", "service_user_id": "u",
 		"url_host": "example.com", "url_changed": true, "events": "ticket.created", "enabled": true,
-		"payload_format": "slack", "filter": `{"priorities":["high"]}`, "signed": true, "signature_changed": true, "key_linked": false,
+		"payload_format": "slack", "filter": `{"priorities":["high"]}`, "signed": true, "signature_changed": true, "key_linked": false, "credential_replaced": true,
 	}
 	got, _ := Redact(entry, nil)
 	for k, v := range entry {

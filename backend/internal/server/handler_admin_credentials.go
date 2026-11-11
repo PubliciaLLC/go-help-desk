@@ -469,6 +469,36 @@ func (s *Server) handleCreateOAuthClient(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+// handleRotateOAuthClientSecret replaces a client's secret at once (#622, D15).
+// The client id and service user stay the same; tokens issued under the old
+// secret stop working because their version no longer matches (BearerAuth, D16).
+func (s *Server) handleRotateOAuthClientSecret(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid ID")
+		return
+	}
+	raw, hashed, err := auth.GenerateToken()
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	actor := authmw.GetActor(r).UserID
+	var clientID string
+	if err := s.authStore.RotateOAuthClientSecretAudited(r.Context(), id, hashed, func(before auth.OAuthClient) audit.Entry {
+		clientID = before.ClientID
+		return oauthClientRotatedEntry(actor, before)
+	}); err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, map[string]any{
+		"id":            id,
+		"client_id":     clientID,
+		"client_secret": raw,
+	})
+}
+
 func (s *Server) handleDeleteOAuthClient(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
