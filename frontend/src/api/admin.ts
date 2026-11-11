@@ -731,6 +731,30 @@ export interface SecurityWarnings {
   email?: EmailWarning
 
   /**
+   * The live SAML IdP signing certificate is expired or expires within 30 days
+   * (#619). Absent when it is fine or SAML is not loaded. An expired one fails
+   * every SAML sign-in.
+   */
+  saml_idp_certificate?: { expires_at: string; expired: boolean }
+
+  /**
+   * The hourly refresh of the SAML IdP metadata cannot run or declined what it
+   * fetched (#619). `http_url`: the metadata URL is not https, so it is never
+   * refreshed. `entity_id_changed`: the refreshed metadata names another
+   * entity and was not applied. `new_certificate`: the identity provider
+   * published a signing certificate that is not trusted yet; `new_certificates`
+   * carries each one's SHA-256 fingerprint and expiry, to compare with the
+   * provider's, and an administrator must re-save the SAML settings to trust it.
+   * `metadata_invalid`: the refreshed metadata has a signing certificate that
+   * cannot be read (or none), so it was not applied.
+   * Absent otherwise.
+   */
+  saml_metadata_refresh?: {
+    problem: 'http_url' | 'entity_id_changed' | 'new_certificate' | 'metadata_invalid'
+    new_certificates?: { sha256: string; expires_at: string }[]
+  }
+
+  /**
    * A stable release newer than the one running, found by the opt-in update
    * check (#170). Absent when none was found or the check is off.
    */

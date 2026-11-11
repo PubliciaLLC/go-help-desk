@@ -42,6 +42,41 @@ func TestOIDC_RefusesANonASCIIEmail(t *testing.T) {
 	}
 }
 
+// An account that already holds a non-ASCII address (it predates the rule) must
+// be able to sign in through OIDC when the list holds the domain's xn-- form,
+// which is the only form the settings page accepts (#620).
+func TestOIDC_ExistingNonASCIIDomainAccountSignsInWithTheXNForm(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		allowed string
+		want    string // empty: signed in
+	}{
+		{"the xn-- form is listed", `["xn--bcher-kva.de"]`, ""},
+		{"another domain is listed", `["example.test"]`, "domain_not_allowed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			oh, cleanup := newOIDCHarness(t)
+			defer cleanup()
+			ctx := context.Background()
+			require.NoError(t, oh.userStore.Create(ctx, user.User{
+				ID: uuid.New(), Email: "jim@bücher.de", DisplayName: "Jim", Role: user.RoleUser,
+				OIDCSubject: "sub-idn", CreatedAt: time.Now(), UpdatedAt: time.Now(),
+			}))
+			require.NoError(t, oh.adminSvc.SetRaw(ctx, admin.KeyAllowedEmailDomains, []byte(tc.allowed)))
+
+			resp := oh.login(t, fakeOIDCClaims{Subject: "sub-idn", Email: "jim@bücher.de", EmailVerified: true, Name: "Jim"})
+			if tc.want != "" {
+				requireLoginRefused(t, oh.harness, resp, tc.want)
+				return
+			}
+			require.Equal(t, http.StatusSeeOther, resp.StatusCode)
+			require.Equal(t, "/", resp.Header.Get("Location"))
+			_, authed := whoami(t, oh.harness, resp.Cookies())
+			require.True(t, authed)
+		})
+	}
+}
+
 func TestSAML_RefusesANonASCIIEmail(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
@@ -151,6 +186,24 @@ func TestAdminSettings_RefusesANonASCIIAllowedDomain(t *testing.T) {
 		map[string]any{admin.KeyAllowedEmailDomains: []string{"xn--crp-6ka.test", "corp.test"}})
 	res.Body.Close()
 	require.Equal(t, http.StatusNoContent, res.StatusCode)
+}
+
+// The entry is still refused, with no silent rewriting, but the message names
+// the form to type instead (#620).
+func TestAdminSettings_RefusedAllowedDomainNamesTheXNForm(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	status, body := patchSettings(t, h, map[string]any{admin.KeyAllowedEmailDomains: []string{"bücher.de"}})
+	require.Equal(t, http.StatusBadRequest, status, body)
+	require.Contains(t, body, "invalid_allowed_email_domains")
+	require.Contains(t, body, "xn--bcher-kva.de")
+	require.Empty(t, h.adminSvc.AllowedEmailDomains(context.Background()), "nothing was saved")
+
+	// Not convertible: refused as before, with no form to suggest.
+	status, body = patchSettings(t, h, map[string]any{admin.KeyAllowedEmailDomains: []string{"-bücher.de"}})
+	require.Equal(t, http.StatusBadRequest, status, body)
+	require.NotContains(t, body, "xn--bcher")
 }
 
 // The routes that take a typed address all end at user.ValidateEmail. These pin

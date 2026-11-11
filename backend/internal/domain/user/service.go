@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/net/idna"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -778,7 +779,35 @@ func emailDomain(email string) (string, bool) {
 	if len(parts) != 2 || parts[1] == "" {
 		return "", false
 	}
-	return parts[1], true
+	return ASCIIDomain(parts[1]), true
+}
+
+// ASCIIDomain is the form a domain is compared in: the xn-- form of an
+// internationalised one, which is how the allowed-domains list holds it (#620).
+// Without it an existing account at bücher.de could never match, so OIDC refused
+// it on every sign-in.
+//
+// A domain that does not convert, or whose conversion is plain ASCII, is returned
+// as it was and so still fails closed. The second case is UTS-46 mapping, such as
+// fullwidth letters, folding a different spelling onto an ASCII domain: that
+// was refused before and stays refused, so this only ever widens matching for
+// real xn-- domains.
+func ASCIIDomain(domain string) string {
+	ascii := true
+	for i := 0; i < len(domain); i++ {
+		if domain[i] >= 0x80 {
+			ascii = false
+			break
+		}
+	}
+	if ascii {
+		return domain
+	}
+	converted, err := idna.Lookup.ToASCII(domain)
+	if err != nil || !strings.Contains(converted, "xn--") {
+		return domain
+	}
+	return converted
 }
 
 // UpsertSAMLUser creates or updates a user record based on a SAML assertion.

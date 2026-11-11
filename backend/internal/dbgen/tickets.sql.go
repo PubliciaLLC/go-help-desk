@@ -11,6 +11,7 @@ import (
 	"time"
 
 	uuid "github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 const anyAttachmentExists = `-- name: AnyAttachmentExists :one
@@ -1276,35 +1277,118 @@ func (q *Queries) ListTicketsByStatus(ctx context.Context, arg ListTicketsByStat
 }
 
 const listTicketsFiltered = `-- name: ListTicketsFiltered :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format, source_channel FROM tickets t
+SELECT t.id, t.tracking_number, t.subject, t.description, t.category_id, t.type_id, t.item_id, t.priority, t.status_id, t.assignee_user_id, t.assignee_group_id, t.reporter_user_id, t.guest_email, t.resolution_notes, t.resolved_at, t.closed_at, t.created_at, t.updated_at, t.guest_name, t.guest_phone, t.pending_since, t.sla_paused_seconds, t.reopen_count, t.last_reopened_at, t.paused_seconds_at_last_reopen, t.description_format, t.source_channel
+FROM tickets t
+LEFT JOIN LATERAL (
+  SELECT CASE
+           WHEN e.response   >= make_interval(mins => p.response_target_min)
+             OR e.resolution >= make_interval(mins => p.resolution_target_min) THEN 0
+           WHEN e.response   >= make_interval(secs => (p.response_target_min::bigint   * 48)::double precision)
+             OR e.resolution >= make_interval(secs => (p.resolution_target_min::bigint * 48)::double precision) THEN 1
+           ELSE 2
+         END AS bucket
+  FROM sla_records r
+  JOIN sla_policies p ON p.id = r.policy_id
+  CROSS JOIN LATERAL (
+    SELECT
+      CASE WHEN r.first_response_at IS NOT NULL AND r.response_elapsed_at_met_seconds IS NOT NULL
+           THEN make_interval(secs => r.response_elapsed_at_met_seconds::double precision)
+           ELSE LEAST(COALESCE(t.pending_since, COALESCE(r.first_response_at, $1::timestamptz)),
+                      COALESCE(r.first_response_at, $1::timestamptz))
+                - (COALESCE(r.started_at, t.created_at)
+                   + make_interval(secs => (t.sla_paused_seconds - r.paused_seconds_at_start)::double precision))
+      END AS response,
+      CASE WHEN r.resolved_at IS NOT NULL AND r.resolution_elapsed_at_met_seconds IS NOT NULL
+           THEN make_interval(secs => r.resolution_elapsed_at_met_seconds::double precision)
+           ELSE LEAST(COALESCE(t.pending_since, COALESCE(r.resolved_at, $1::timestamptz)),
+                      COALESCE(r.resolved_at, $1::timestamptz))
+                - (COALESCE(r.started_at, t.created_at)
+                   + make_interval(secs => (t.sla_paused_seconds - r.paused_seconds_at_start)::double precision))
+      END AS resolution
+  ) e
+  WHERE ($2::text <> '' OR $3::text = 'sla')
+    AND r.ticket_id = t.id
+    AND r.superseded_at IS NULL
+) sb ON TRUE
 WHERE
   (
-    $1::bool
+    $4::bool
     OR (
-      $2::bool
-      AND t.reporter_user_id = $3::uuid
+      $5::bool
+      AND t.reporter_user_id = $6::uuid
     )
     OR (
-      NOT $1::bool
-      AND NOT $2::bool
+      NOT $4::bool
+      AND NOT $5::bool
       AND (
-        t.reporter_user_id = $3::uuid
-        OR t.assignee_user_id = $3::uuid
-        OR t.assignee_group_id IN (SELECT gm.group_id FROM group_members gm WHERE gm.user_id = $3::uuid)
-        OR EXISTS (
-          SELECT 1 FROM group_scopes gs
-          JOIN group_members gm ON gm.group_id = gs.group_id
-          WHERE gm.user_id = $3::uuid
-            AND gs.category_id = t.category_id
-            AND (gs.type_id IS NULL OR gs.type_id = t.type_id)
-        )
+        t.reporter_user_id = $6::uuid
+        OR t.assignee_user_id = $6::uuid
+        OR t.assignee_group_id IN (SELECT gm.group_id FROM group_members gm WHERE gm.user_id = $6::uuid)
+        -- The category/type scope, as two uncorrelated sets rather than the
+        -- correlated EXISTS ListTicketsVisibleToStaff uses: a hashed set is probed
+        -- once per ticket, where EXISTS re-ran its join for every ticket the other
+        -- filters let through (a scoped staff member's text search took 140 ms at
+        -- 200k tickets, against 14 ms). Same answer:
+        -- TestListFiltered_ScopedVisibilityMatchesStaffQuery holds them together.
+        -- A ticket with no type never matches the row comparison, as it never
+        -- matched gs.type_id = t.type_id.
+        OR t.category_id IN (SELECT gs.category_id FROM group_scopes gs
+                             JOIN group_members gm ON gm.group_id = gs.group_id
+                             WHERE gm.user_id = $6::uuid AND gs.type_id IS NULL)
+        OR (t.category_id, t.type_id) IN (SELECT gs.category_id, gs.type_id FROM group_scopes gs
+                                          JOIN group_members gm ON gm.group_id = gs.group_id
+                                          WHERE gm.user_id = $6::uuid AND gs.type_id IS NOT NULL)
       )
     )
   )
-  AND ($4::uuid IS NULL OR t.status_id = $4::uuid)
-  AND ($5::text IS NULL OR t.priority = $5::text)
-  AND ($6::uuid IS NULL OR t.category_id = $6::uuid)
-  AND ($7::uuid IS NULL OR t.assignee_user_id = $7::uuid)
+  -- queue: 'any' | 'mine' | 'unassigned'. Set by the handler, never the caller.
+  AND (
+    $7::text = 'any'
+    OR ($7::text = 'unassigned'
+        AND t.assignee_user_id IS NULL AND t.assignee_group_id IS NULL)
+    -- mine_group_ids is the caller's groups, read by the store just before this
+    -- runs and passed as a plain array. That is deliberate: the planner cannot
+    -- know how many groups a subquery will return, assumes a lot, and then walks
+    -- the whole created_at index looking for rows a user with few or no
+    -- assignments does not have (83-95 ms at 200k tickets for an administrator).
+    -- Given the array itself it sees an empty or two-element list, and drives the
+    -- queue from the two assignee indexes instead (0.8 ms).
+    OR ($7::text = 'mine' AND (
+        t.assignee_user_id = $6::uuid
+        OR t.assignee_group_id = ANY($8::uuid[])))
+  )
+  AND (cardinality($9::uuid[]) = 0 OR t.status_id = ANY($9::uuid[]))
+  -- IS DISTINCT FROM, not <>: if the Closed status were ever missing the
+  -- subquery is NULL, and <> would then exclude every ticket.
+  AND (NOT $10::bool
+       OR t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Closed' AND s.kind = 'system'))
+  AND (cardinality($11::text[]) = 0 OR t.priority = ANY($11::text[]))
+  AND ($12::uuid IS NULL OR t.category_id = $12::uuid)
+  AND ($13::uuid IS NULL OR t.type_id = $13::uuid)
+  AND ($14::uuid IS NULL OR t.item_id = $14::uuid)
+  AND ($15::uuid IS NULL OR t.assignee_user_id = $15::uuid)
+  AND ($16::uuid IS NULL OR t.assignee_group_id = $16::uuid)
+  AND ($17::uuid IS NULL OR t.reporter_user_id = $17::uuid)
+  -- requester_pattern is '%' || LIKE-escaped text || '%', built in the store.
+  -- It matches the ticket's guest fields and the reporting account's name and
+  -- email. Deleted and disabled accounts are included on purpose: their tickets
+  -- still exist and the ticket page still names them.
+  AND ($18::text IS NULL
+       OR t.guest_name ILIKE $18::text
+       OR t.guest_email ILIKE $18::text
+       -- ARRAY(subquery), not IN (subquery), so all three arms can be indexes
+       -- feeding one BitmapOr (see the queue arm above for the same reason).
+       OR t.reporter_user_id = ANY(ARRAY(SELECT u.id FROM users u
+                                         WHERE u.display_name ILIKE $18::text
+                                            OR u.email ILIKE $18::text)))
+  AND ($19::timestamptz IS NULL OR t.created_at >= $19::timestamptz)
+  AND ($20::timestamptz IS NULL OR t.created_at < $20::timestamptz)
+  AND ($21::timestamptz IS NULL OR t.updated_at >= $21::timestamptz)
+  AND ($22::timestamptz IS NULL OR t.updated_at < $22::timestamptz)
+  AND (cardinality($23::text[]) = 0 OR t.source_channel = ANY($23::text[]))
+  AND ($2::text = ''
+       OR ($2::text = 'breached' AND sb.bucket = 0)
+       OR ($2::text = 'at_risk' AND sb.bucket = 1))
   -- ` + "`" + `searching` + "`" + ` says whether the caller asked for a search at all, which is
   -- NOT the same as search_query being empty. A term like "???" contains no
   -- indexable tokens, so buildSearchTSQuery yields "" — and keying off that
@@ -1312,32 +1396,70 @@ WHERE
   -- though each one matched. A search that tokenises to nothing must match on
   -- the tracking number or not at all.
   AND (
-    NOT $8::bool
-    OR t.tracking_number ILIKE $9::text
+    NOT $24::bool
+    OR t.tracking_number ILIKE $25::text
     OR (
-      $10::text <> ''
-      AND t.search_vector @@ to_tsquery('english', $10::text)
+      $26::text <> ''
+      AND t.search_vector @@ to_tsquery('english', $26::text)
     )
   )
 ORDER BY
-  CASE WHEN $10::text <> '' THEN ts_rank(t.search_vector, to_tsquery('english', $10::text)) ELSE 0 END DESC,
-  t.created_at DESC
-LIMIT $12 OFFSET $11
+  CASE WHEN $3::text = 'relevance' AND $26::text <> ''
+       THEN ts_rank(t.search_vector, to_tsquery('english', $26::text)) END DESC,
+  CASE WHEN $3::text = 'number' AND $27::text = 'asc' THEN t.tracking_number END ASC,
+  CASE WHEN $3::text = 'number' AND $27::text = 'desc' THEN t.tracking_number END DESC,
+  CASE WHEN $3::text = 'subject' AND $27::text = 'asc' THEN lower(t.subject) END ASC,
+  CASE WHEN $3::text = 'subject' AND $27::text = 'desc' THEN lower(t.subject) END DESC,
+  -- Status order is each status's place in (sort_order, name), looked up in an
+  -- array built once per query. A join or a subquery per ticket cost 85 to
+  -- 684 ms at 200k when sorting by status, and a join cost every other list too.
+  CASE WHEN $3::text = 'status'
+       THEN array_position((SELECT array_agg(s.id ORDER BY s.sort_order, s.name) FROM statuses s), t.status_id)
+            * CASE WHEN $27::text = 'asc' THEN 1 ELSE -1 END END ASC,
+  CASE WHEN $3::text = 'priority'
+       THEN (CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END)
+            * CASE WHEN $27::text = 'asc' THEN 1 ELSE -1 END END ASC,
+  CASE WHEN $3::text = 'sla'
+       THEN COALESCE(sb.bucket, 2) * CASE WHEN $27::text = 'asc' THEN 1 ELSE -1 END END ASC,
+  CASE WHEN $3::text = 'created' AND $27::text = 'asc' THEN t.created_at END ASC,
+  CASE WHEN $3::text = 'created' AND $27::text = 'desc' THEN t.created_at END DESC,
+  CASE WHEN $3::text = 'updated' AND $27::text = 'asc' THEN t.updated_at END ASC,
+  CASE WHEN $3::text = 'updated' AND $27::text = 'desc' THEN t.updated_at END DESC,
+  t.created_at DESC,
+  t.id
+LIMIT $29 OFFSET $28
 `
 
 type ListTicketsFilteredParams struct {
-	Unrestricted    bool           `json:"unrestricted"`
-	ReporterOnly    bool           `json:"reporter_only"`
-	ActorID         uuid.UUID      `json:"actor_id"`
-	StatusID        uuid.NullUUID  `json:"status_id"`
-	Priority        sql.NullString `json:"priority"`
-	CategoryID      uuid.NullUUID  `json:"category_id"`
-	AssigneeUserID  uuid.NullUUID  `json:"assignee_user_id"`
-	Searching       bool           `json:"searching"`
-	TrackingPattern string         `json:"tracking_pattern"`
-	SearchQuery     string         `json:"search_query"`
-	ResultOffset    int32          `json:"result_offset"`
-	ResultLimit     int32          `json:"result_limit"`
+	Now              time.Time      `json:"now"`
+	Sla              string         `json:"sla"`
+	SortKey          string         `json:"sort_key"`
+	Unrestricted     bool           `json:"unrestricted"`
+	ReporterOnly     bool           `json:"reporter_only"`
+	ActorID          uuid.UUID      `json:"actor_id"`
+	Queue            string         `json:"queue"`
+	MineGroupIds     []uuid.UUID    `json:"mine_group_ids"`
+	StatusIds        []uuid.UUID    `json:"status_ids"`
+	ExcludeClosed    bool           `json:"exclude_closed"`
+	Priorities       []string       `json:"priorities"`
+	CategoryID       uuid.NullUUID  `json:"category_id"`
+	TypeID           uuid.NullUUID  `json:"type_id"`
+	ItemID           uuid.NullUUID  `json:"item_id"`
+	AssigneeUserID   uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID  uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterID       uuid.NullUUID  `json:"reporter_id"`
+	RequesterPattern sql.NullString `json:"requester_pattern"`
+	CreatedAfter     sql.NullTime   `json:"created_after"`
+	CreatedBefore    sql.NullTime   `json:"created_before"`
+	UpdatedAfter     sql.NullTime   `json:"updated_after"`
+	UpdatedBefore    sql.NullTime   `json:"updated_before"`
+	SourceChannels   []string       `json:"source_channels"`
+	Searching        bool           `json:"searching"`
+	TrackingPattern  string         `json:"tracking_pattern"`
+	SearchQuery      string         `json:"search_query"`
+	SortDir          string         `json:"sort_dir"`
+	ResultOffset     int32          `json:"result_offset"`
+	ResultLimit      int32          `json:"result_limit"`
 }
 
 type ListTicketsFilteredRow struct {
@@ -1370,9 +1492,11 @@ type ListTicketsFilteredRow struct {
 	SourceChannel             string         `json:"source_channel"`
 }
 
-// The MCP list surface: one query carrying every optional filter plus the
-// visibility rule, rather than the caller choosing among the eight
-// single-purpose list/search queries above and then filtering in Go.
+// The one list query: every optional filter, the visibility rule and the sort,
+// in one statement, so a caller never chooses among single-purpose queries and
+// then filters in Go. Filtering and paginating in the same statement is what
+// keeps pages full: a page fetched and then filtered returns short pages and
+// skips rows.
 //
 // Visibility is three cases, not a patchable special case:
 //
@@ -1381,22 +1505,67 @@ type ListTicketsFilteredRow struct {
 //	otherwise      — the DESIGN.md staff scope (same predicate as
 //	                 ListTicketsVisibleToStaff)
 //
-// Every other filter is NULL-means-absent, so one prepared statement serves
-// all combinations. Filtering and paginating in the same statement is what
-// keeps pages full: a page fetched and then filtered returns short pages and
-// skips rows.
+// Every other criterion is a further AND, so a filter can only narrow what the
+// caller may already see. Nothing below widens it.
+//
+// Single values are NULL-means-absent and arrays are cardinality(...) = 0, so
+// one prepared statement serves every combination. The store always passes a
+// non-nil array.
+//
+// The SLA bucket joins the CURRENT record only and is computed only when the
+// filter or the sort asks for it (the first condition in the lateral is a
+// parameter-only test, so the planner evaluates it once, not per ticket). It is
+// a lateral join and not a correlated subquery because the planner can hash
+// join it: as a subquery, sorting by SLA took 1 s at 200k instead of 0.25 s. It
+// reproduces sla.StatusFor, the live read the list indicator shows, NOT the
+// breach stamps: StatusFor never reads them, and a target met on time keeps
+// its frozen reading. Per target, with elapsed as sla.ElapsedFrom has it
+// (the clock stops at pending_since or at the instant the target was met):
+//
+//	a met target with a frozen reading  -> that reading
+//	anything else                       -> LEAST(COALESCE(pending_since, at), at)
+//	                                       - start - pause, with at = the met
+//	                                       instant, or now while outstanding
+//
+// 0 = a target at or past 100% (red), 1 = otherwise one at or past 80%
+// (amber, exactly target_min * 48 seconds), 2 = everything else. This is the
+// third copy of the formula, after sla.ElapsedFrom and ListSLABreachCandidates;
+// TestListFiltered_SLAAgreesWithStatusFor holds it to the first.
+// sort_key and sort_dir come from Filter.ResolvedSort, already validated. Each
+// CASE is NULL for every row unless it is the chosen column, so exactly one of
+// them orders the result; with the parameters known the planner folds the rest
+// away. Integer ranks take their direction from a sign instead of a second term.
+// Every sort ends with created_at DESC, id, so equal rows keep a stable order
+// across pages.
 func (q *Queries) ListTicketsFiltered(ctx context.Context, arg ListTicketsFilteredParams) ([]ListTicketsFilteredRow, error) {
 	rows, err := q.db.QueryContext(ctx, listTicketsFiltered,
+		arg.Now,
+		arg.Sla,
+		arg.SortKey,
 		arg.Unrestricted,
 		arg.ReporterOnly,
 		arg.ActorID,
-		arg.StatusID,
-		arg.Priority,
+		arg.Queue,
+		pq.Array(arg.MineGroupIds),
+		pq.Array(arg.StatusIds),
+		arg.ExcludeClosed,
+		pq.Array(arg.Priorities),
 		arg.CategoryID,
+		arg.TypeID,
+		arg.ItemID,
 		arg.AssigneeUserID,
+		arg.AssigneeGroupID,
+		arg.ReporterID,
+		arg.RequesterPattern,
+		arg.CreatedAfter,
+		arg.CreatedBefore,
+		arg.UpdatedAfter,
+		arg.UpdatedBefore,
+		pq.Array(arg.SourceChannels),
 		arg.Searching,
 		arg.TrackingPattern,
 		arg.SearchQuery,
+		arg.SortDir,
 		arg.ResultOffset,
 		arg.ResultLimit,
 	)

@@ -75,6 +75,23 @@ describe('ScopePicker', () => {
     expect(screen.getByText(/cannot do anything/i)).toBeDefined()
   })
 
+  // A resource that gates one query parameter has no write action, and
+  // "requester search: read" alone does not say what is being granted.
+  it('explains requester_search:read, and offers no write box for it', async () => {
+    const onChange = vi.fn()
+    const withSearch: ScopeInfo[] = [
+      ...catalogue,
+      { scope: 'requester_search:read', resource: 'requester_search', action: 'read' },
+    ]
+    render(<ScopePicker catalogue={withSearch} selected={[]} onChange={onChange} />)
+
+    expect(screen.getByText('Search tickets by requester name or email (free text)')).toBeDefined()
+    expect(screen.queryByLabelText('requester_search:write')).toBeNull()
+
+    await userEvent.click(screen.getByLabelText('requester_search:read'))
+    expect(onChange).toHaveBeenCalledWith(['requester_search:read'])
+  })
+
   it('drops the warning once something is selected', () => {
     render(<ScopePicker catalogue={catalogue} selected={['tickets:read']} onChange={vi.fn()} />)
     expect(screen.queryByText(/cannot do anything/i)).toBeNull()

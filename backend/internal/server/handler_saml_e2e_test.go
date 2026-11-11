@@ -165,3 +165,77 @@ func TestSAMLSignIn_ACSRefusesWithoutTrackingCookie(t *testing.T) {
 		require.NotEqual(t, "token", c.Name)
 	}
 }
+
+// acsPost plays the browser's POST of a signed response to the ACS.
+func acsPost(t *testing.T, h *harness, form url.Values, tracking *http.Cookie) *http.Response {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/saml/acs", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(tracking)
+	rr := httptest.NewRecorder()
+	h.srv.ServeHTTP(rr, req)
+	res := rr.Result()
+	res.Body.Close()
+	return res
+}
+
+// samlLoginStart runs the login redirect and returns the IdP-signed form and
+// the tracking cookie a browser would be holding.
+func samlLoginStart(t *testing.T, h *harness, idp *fakeIdP) (url.Values, *http.Cookie) {
+	t.Helper()
+	res := h.rawGet(t, "/api/v1/auth/saml/login", nil)
+	res.Body.Close()
+	require.Equal(t, http.StatusFound, res.StatusCode)
+	var tracking *http.Cookie
+	for _, c := range res.Cookies() {
+		if strings.HasPrefix(c.Name, "saml_") {
+			tracking = c
+		}
+	}
+	require.NotNil(t, tracking)
+	return idp.sign(t, res.Header.Get("Location"), "sso@test.local"), tracking
+}
+
+// A signed assertion is good for one sign-in. The library validates the
+// response and its tracking cookie but remembers nothing, so a captured body
+// plus the browser's tracking cookie would otherwise mint a fresh hand-over
+// token on every replay until the assertion expired (#618).
+func TestSAMLACS_RefusesAReplayedAssertion(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	idp := newFakeIdP(t, h.cfgBaseURL()+"/api/v1/auth/saml/acs")
+	require.NoError(t, h.adminSvc.SetSAMLConfig(ctx, idp.srv.URL, validSAMLCert, validSAMLKey))
+	h.srv.InitSAML(ctx)
+
+	form, tracking := samlLoginStart(t, h, idp)
+
+	first := acsPost(t, h, form, tracking)
+	require.Equal(t, http.StatusFound, first.StatusCode)
+
+	second := acsPost(t, h, form, tracking)
+	require.Equal(t, http.StatusForbidden, second.StatusCode)
+	for _, c := range second.Cookies() {
+		require.NotEqual(t, "token", c.Name, "a replay must not be handed a session token")
+	}
+}
+
+// If the ledger cannot be written the assertion is refused: failing open here
+// would turn a database outage into a replay window.
+func TestSAMLACS_FailsClosedWhenTheLedgerFails(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	idp := newFakeIdP(t, h.cfgBaseURL()+"/api/v1/auth/saml/acs")
+	require.NoError(t, h.adminSvc.SetSAMLConfig(ctx, idp.srv.URL, validSAMLCert, validSAMLKey))
+	h.srv.InitSAML(ctx)
+
+	form, tracking := samlLoginStart(t, h, idp)
+	h.srv.FailSAMLSpendForTest()
+
+	res := acsPost(t, h, form, tracking)
+	require.Equal(t, http.StatusForbidden, res.StatusCode)
+	for _, c := range res.Cookies() {
+		require.NotEqual(t, "token", c.Name)
+	}
+}
