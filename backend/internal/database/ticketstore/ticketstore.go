@@ -588,6 +588,14 @@ func (s *Store) CreateAttachment(ctx context.Context, a ticket.Attachment) error
 	})
 }
 
+func (s *Store) QuarantinedTicketIDs(ctx context.Context, ticketIDs []uuid.UUID) ([]uuid.UUID, error) {
+	ids, err := s.q.ListQuarantinedTicketIDs(ctx, ticketIDs)
+	if err != nil {
+		return nil, fmt.Errorf("listing tickets with quarantined attachments: %w", err)
+	}
+	return ids, nil
+}
+
 func (s *Store) CountGuestAttachments(ctx context.Context, ticketID uuid.UUID) (int, error) {
 	n, err := s.q.CountGuestAttachments(ctx, ticketID)
 	return int(n), err

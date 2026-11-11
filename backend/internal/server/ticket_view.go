@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -44,6 +45,14 @@ type ticketView struct {
 	// read only, so a list pays no lookup; sent to every role, since it is a
 	// requester's own new ticket. Absent otherwise.
 	FollowUp *ticket.FollowUpRef `json:"follow_up,omitempty"`
+
+	// HasQuarantinedAttachment is whether any file on this ticket was held by
+	// the scanner (attachments.virus_name IS NOT NULL), so staff scanning the
+	// queue can tell without opening each ticket (#628). Staff and
+	// administrators only: it is not on the requester allowed list, and
+	// ticketViews does not look it up for anyone else. omitempty, so a ticket
+	// without one carries no key at all.
+	HasQuarantinedAttachment bool `json:"has_quarantined_attachment,omitempty"`
 }
 
 // ticketRequester is the Requester line of the staff ticket page.
@@ -125,8 +134,9 @@ func (s *Server) ticketViews(ctx context.Context, ts []ticket.Ticket, actor *aut
 	for i, t := range ts {
 		views[i] = ticketView{Ticket: t}
 	}
-	// Only staff and administrators get the SLA status and can_reopen. Any other
-	// role, one this code does not recognise included, gets neither.
+	// Only staff and administrators get the SLA status, can_reopen and the
+	// quarantine marker. Any other role, one this code does not recognise
+	// included, gets none of them.
 	if actor == nil || (actor.Role != user.RoleStaff && actor.Role != user.RoleAdmin) {
 		return views, nil
 	}
@@ -140,6 +150,20 @@ func (s *Server) ticketViews(ctx context.Context, ts []ticket.Ticket, actor *aut
 			policy = s.adminSvc.ClosedReopenPolicy(ctx)
 		}
 		views[i].CanReopen = ticket.CanForceReopen(policy, actor.Role)
+	}
+	// One query for the page. A failure leaves the marker off rather than
+	// failing the list: it is an aid to scanning the queue, and the ticket page
+	// still shows the warning per file.
+	ids := make([]uuid.UUID, len(ts))
+	for i, t := range ts {
+		ids[i] = t.ID
+	}
+	quarantined, err := s.tickets.QuarantinedTicketIDs(ctx, ids)
+	if err != nil {
+		slog.WarnContext(ctx, "reading which tickets hold quarantined attachments failed; omitting the marker", "error", err)
+	}
+	for i := range views {
+		views[i].HasQuarantinedAttachment = quarantined[views[i].ID]
 	}
 	enabled, err := s.adminSvc.SLAEnabled(ctx)
 	if err != nil {
