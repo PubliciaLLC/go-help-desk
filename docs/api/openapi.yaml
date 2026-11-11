@@ -688,8 +688,12 @@ paths:
         POST /auth/local/passkey/start and, on success, rotates the session with the
         second factor marked as passed. The challenge is consumed on every call,
         whether the answer verifies or not, so a failed attempt must start again.
-        A challenge expires five minutes after it was issued. The sign count is
-        recorded but not enforced. Reachable with a session only (403
+        A challenge expires five minutes after it was issued. A key whose sign count
+        did not advance past the one on record (a counter of zero reported by a key
+        that has only ever reported zero is not that) is refused with 401
+        passkey_suspect, the account's sessions all end and an audit entry
+        (passkey_clone_suspected) is written: a copied key shows itself this way.
+        Reachable with a session only (403
         session_required for an API key or OAuth client). The body is read by
         the WebAuthn library, not by the server's JSON decoder, and is capped at
         64 KiB (413 too_large above that, before the challenge is touched). A body
@@ -730,7 +734,9 @@ paths:
           description: >-
             Either no session (unauthorized, text/plain, from the auth middleware)
             or an answer that did not verify, including a body that is not JSON
-            (assertion_refused, application/json, from the handler).
+            (assertion_refused, application/json, from the handler), or a key whose
+            sign count did not advance (passkey_suspect, application/json): the
+            sessions of the account have all been ended.
           content:
             text/plain:
               schema: {$ref: '#/components/schemas/Error'}
@@ -2826,7 +2832,9 @@ paths:
       description: |
         Removes one of the caller's passkeys. An id that belongs to another account answers the same 404 as an
         id that does not exist. A session that has only passed the password cannot remove a factor from an
-        account that already has one: the answer is 403 mfa_required. Session only.
+        account that already has one: the answer is 403 mfa_required. Every other session of the account ends,
+        in the same statement as the removal, and the session that made the request stays signed in. A
+        passkey_removed audit entry is written with the caller as the actor (best effort). Session only.
       tags: ['Account']
       x-ghd-handler: handleDeletePasskey
       security:
@@ -7663,7 +7671,8 @@ paths:
         answers 400, and an email address another account holds answers 409
         email_taken. A refused request changes nothing: disabled true with an
         invalid or taken email leaves the account enabled, and reset_mfa with a
-        refused demotion leaves the factors in place. The writes themselves are
+        refused demotion leaves the factors in place. reset_mfa on your own account
+        is refused whole, with 409 own_account. The writes themselves are
         still separate steps, so a request that loses a race with another
         administrator, or a failure of the database partway through, can leave the
         earlier ones applied. The last
@@ -7740,7 +7749,10 @@ paths:
         '409':
           description: >-
             email_taken, when the new address belongs to another account, deleted accounts
-            included. service_account, when the account is a service account (an
+            included. own_account, when reset_mfa is true and the account is the caller's
+            own: an administrator cannot clear their own second factor here (the Account
+            page is the way, or another administrator, or reset-factors on the server), and
+            nothing in the request is applied. service_account, when the account is a service account (an
             OAuth client's identity) and the body carries email, a role of admin,
             or reset_mfa true (reset_mfa false is accepted: it asks for nothing):
             the whole request is refused and nothing in it is
@@ -7812,6 +7824,133 @@ paths:
             "This is the service account for OAuth client <name>. Delete the
             client instead." and an interface should show it as written. Nothing
             is changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/admin/users/{id}/passkeys:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The user's UUID.
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: adminListPasskeys
+      summary: List a user's passkeys.
+      description: >-
+        Administrators only (second factor required). The same list GET /me/passkeys
+        gives the owner: the key's label, transports, whether it can sync, and when it
+        was added and last used. Key material and the credential id are never returned.
+        An unknown id answers 404, so a mistyped id does not read as "no keys". It does
+        not depend on passkeys being available on the instance (BASE_URL), so a lost
+        key can be cleaned up while they are off.
+      tags: ['Admin: Users']
+      x-ghd-handler: handleAdminListPasskeys
+      security:
+        - sessionCookie: []
+        - apiKey: ['users:read']
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      responses:
+        '200':
+          description: The account's passkeys. An empty array when there are none.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Passkey'}
+        '400':
+          description: >-
+            bad_request, message "invalid user ID", when the path id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: >-
+            not_found, when no account has this id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/admin/users/{id}/passkeys/{credId}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The user's UUID.
+        schema:
+          type: string
+          format: uuid
+      - name: credId
+        in: path
+        required: true
+        description: The passkey's UUID, as listed by GET /admin/users/{id}/passkeys.
+        schema:
+          type: string
+          format: uuid
+    delete:
+      operationId: adminDeletePasskey
+      summary: Remove one of a user's passkeys.
+      description: >-
+        Administrators only, in a signed-in session (second factor required). Keys can't
+        change how a person signs in: an API key is refused with 403 session_required (an
+        OAuth client, by the role check, with 403 forbidden). Removes that one key and ends
+        every session the account has, whether or not it was the last factor, because the
+        key is presumed lost or compromised. The removal and the sessions ending are one
+        statement. The credential is matched on its owner in that statement: an id that is
+        another account's answers the same 404 as one that does not exist, and ends no
+        session. The removal is recorded in the audit log (passkey_removed_by_admin, with the
+        key's id and not its label) on a best-effort basis. Your own account is refused with
+        409 own_account: use the Account page. Reset MFA on the user page still clears every
+        factor at once. It does not depend on passkeys being available on the instance.
+      tags: ['Admin: Users']
+      x-ghd-handler: handleAdminDeletePasskey
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          description: >-
+            bad_request, "invalid user ID" or "invalid credential id", when a path id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: >-
+            The authentication middleware refuses with text/plain: forbidden (role),
+            mfa_required (second factor not passed) or session_required (an API key).
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/Error'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: >-
+            not_found, "no such passkey on this account", when the id does not exist or is not this
+            user's.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: >-
+            own_account, when the user is the caller. The message points to the Account page.
           content:
             application/json:
               schema:

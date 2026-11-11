@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/webauthn"
 	"github.com/stretchr/testify/require"
 )
 
@@ -90,6 +91,31 @@ func TestResetMFA_ClearsPasskeysToo(t *testing.T) {
 	require.Len(t, au.entries, 1)
 	require.Equal(t, 2, au.entries[0].After["passkeys_removed"],
 		"the audit entry must say the reset covered passkeys, and how many")
+}
+
+// #615: one passkey, the id and nothing else, and an entry only for a removal
+// that happened.
+func TestAdminRemovePasskey_RecordsOnlyARemovalThatHappened(t *testing.T) {
+	store := newFakeUserStore()
+	au := &fakeAuditStore{}
+	target := seedActiveUser(store)
+	store.passkeys[target.ID] = 2
+	actorID, keyID := uuid.New(), uuid.New()
+	svc := user.NewService(store, user.WithAuditStore(au))
+
+	require.NoError(t, svc.AdminRemovePasskey(context.Background(), target.ID, keyID, &actorID))
+	require.Equal(t, 1, store.passkeys[target.ID], "exactly one key goes")
+	require.Len(t, au.entries, 1)
+	e := au.entries[0]
+	require.Equal(t, "passkey_removed_by_admin", e.Action)
+	require.Equal(t, target.ID, e.EntityID)
+	require.Equal(t, actorID, *e.ActorID)
+	require.Equal(t, map[string]any{"passkey_id": keyID.String(), "sessions_revoked": true}, e.After)
+
+	// Nothing left to remove: refused, and not recorded as done.
+	store.passkeys[target.ID] = 0
+	require.ErrorIs(t, svc.AdminRemovePasskey(context.Background(), target.ID, keyID, &actorID), webauthn.ErrNotFound)
+	require.Len(t, au.entries, 1, "a removal that removed nothing was recorded")
 }
 
 func TestResetMFA_NilActorIsRecordedAsNoActor(t *testing.T) {
