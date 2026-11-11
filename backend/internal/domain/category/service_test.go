@@ -98,6 +98,33 @@ func (f *fakeCategoryStore) DeleteItem(_ context.Context, id uuid.UUID, _ *uuid.
 	delete(f.items, id)
 	return nil
 }
+func (f *fakeCategoryStore) CategoryNames(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]string, error) {
+	out := map[uuid.UUID]string{}
+	for _, id := range ids {
+		if c, ok := f.cats[id]; ok {
+			out[id] = c.Name
+		}
+	}
+	return out, nil
+}
+func (f *fakeCategoryStore) TypeNames(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]string, error) {
+	out := map[uuid.UUID]string{}
+	for _, id := range ids {
+		if t, ok := f.types[id]; ok {
+			out[id] = t.Name
+		}
+	}
+	return out, nil
+}
+func (f *fakeCategoryStore) ItemNames(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]string, error) {
+	out := map[uuid.UUID]string{}
+	for _, id := range ids {
+		if i, ok := f.items[id]; ok {
+			out[id] = i.Name
+		}
+	}
+	return out, nil
+}
 func (f *fakeCategoryStore) ListItems(_ context.Context, typeID uuid.UUID, _ bool) ([]category.Item, error) {
 	var out []category.Item
 	for _, i := range f.items {

@@ -27,6 +27,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
 
 // Admin instance settings, and the denylist of keys never returned to a client.
@@ -785,8 +786,15 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	warning = joinWarnings(warning, scopeWarning)
 
+	maskBefore := s.adminSvc.AuditMaskRequesterNames(r.Context())
 	for k, v := range body {
-		if err := s.adminSvc.SetRaw(r.Context(), k, []byte(v)); err != nil {
+		var err error
+		if k == admin.KeyAuditMaskRequesterNames {
+			err = s.saveAuditMask(r.Context(), authmw.GetActor(r).UserID, []byte(v), maskBefore)
+		} else {
+			err = s.adminSvc.SetRaw(r.Context(), k, []byte(v))
+		}
+		if err != nil {
 			handleError(w, err)
 			return
 		}

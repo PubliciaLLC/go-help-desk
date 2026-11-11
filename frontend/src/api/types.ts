@@ -112,6 +112,9 @@ export interface StatusHistoryEntry {
   to_status_color: string
   changed_by_user_id: string | null
   changed_by_name: string
+  // True when changed_by_name is the "Requester" mask (audit_mask_requester_names),
+  // not an account's own name.
+  changed_by_masked?: boolean
   created_at: string
 }
 
@@ -153,6 +156,18 @@ export interface AdminAuditListResponse {
    * server's cap and means "at least this many". Show it as "n+".
    */
   total_capped: boolean
+  /**
+   * True when `q` was also looked for in the change details, which the server
+   * does only inside a date range (`from` and `to`) of at most 90 days. False
+   * without `q`. Always sent.
+   */
+  details_searched: boolean
+  /**
+   * Why a search with `q` did not look in the change details: it had no date
+   * range. Absent when it did, and when there was no `q`. (A range over 90 days
+   * with `q` is not a reason but a 400, `date_range_too_long`.)
+   */
+  details_skipped_reason?: 'no_date_range'
   /** Whether another page exists. The pager runs on this; `total` is for display. */
   has_more: boolean
 }

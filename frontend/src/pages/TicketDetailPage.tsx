@@ -597,7 +597,9 @@ export function TicketDetailPage() {
                           <span style={{ color: h.to_status_color || undefined }} className="font-medium">
                             {h.to_status_name}
                           </span>
-                          {h.changed_by_name ? ` · ${h.changed_by_name}` : ' · System'}
+                          {h.changed_by_masked
+                            ? ' · Requester (name hidden)'
+                            : h.changed_by_name ? ` · ${h.changed_by_name}` : ' · System'}
                         </>
                       ) : (
                         <>

@@ -260,9 +260,11 @@ type Querier interface {
 	// revoke them too (#450). Returns how many, which the audit entry records.
 	DeleteAllAPIKeysForUser(ctx context.Context, userID uuid.UUID) (int64, error)
 	DeleteAttachment(ctx context.Context, id uuid.UUID) error
-	// The retention sweep's hard delete. No archive table — see audit.Store's
-	// own comment on DeleteOlderThan for why.
-	DeleteAuditLogBefore(ctx context.Context, createdAt time.Time) (int64, error)
+	// The retention sweep's hard delete, one batch (#629). No archive table — see
+	// audit.Store's own comment on DeleteOlderThan for why. Oldest first, so the
+	// created_at index serves it; SKIP LOCKED so a row someone else holds is left
+	// for the next sweep and not waited on.
+	DeleteAuditLogBatch(ctx context.Context, arg DeleteAuditLogBatchParams) (int64, error)
 	DeleteCannedResponse(ctx context.Context, id uuid.UUID) (int64, error)
 	// Takes the custom-field assignments of the category, of its types and of
 	// their items with it (#419). custom_field_assignments.scope_id has no foreign
@@ -432,6 +434,9 @@ type Querier interface {
 	GetAttachmentReputation(ctx context.Context, arg GetAttachmentReputationParams) (AttachmentReputation, error)
 	GetCannedResponse(ctx context.Context, id uuid.UUID) (CannedResponse, error)
 	GetCategory(ctx context.Context, id uuid.UUID) (Category, error)
+	// The audit view's name lookup (1.3.0): one statement for every id on a page,
+	// never one per id. An id with no row is simply absent from the result.
+	GetCategoryNamesByIDs(ctx context.Context, ids []uuid.UUID) ([]GetCategoryNamesByIDsRow, error)
 	// The ticket's current record, locked for the duration of a re-match.
 	GetCurrentSLARecordForUpdate(ctx context.Context, ticketID uuid.UUID) (SlaRecord, error)
 	GetCustomFieldAssignment(ctx context.Context, id uuid.UUID) (CustomFieldAssignment, error)
@@ -442,6 +447,7 @@ type Querier interface {
 	GetGroup(ctx context.Context, id uuid.UUID) (Group, error)
 	GetInstanceSecret(ctx context.Context, name string) ([]byte, error)
 	GetItem(ctx context.Context, id uuid.UUID) (Item, error)
+	GetItemNamesByIDs(ctx context.Context, ids []uuid.UUID) ([]GetItemNamesByIDsRow, error)
 	// The record a ticket most recently stopped having. Read, in the same
 	// transaction that holds the ticket's row lock, when a ticket with no current
 	// record gets one back, so the new clock resumes where the last one ran.
@@ -557,6 +563,7 @@ type Querier interface {
 	// a read-only link beside the existing ones rather than rotating them.
 	GetTicketIDByTrackingAndGuestEmail(ctx context.Context, arg GetTicketIDByTrackingAndGuestEmailParams) (uuid.UUID, error)
 	GetType(ctx context.Context, id uuid.UUID) (Type, error)
+	GetTypeNamesByIDs(ctx context.Context, ids []uuid.UUID) ([]GetTypeNamesByIDsRow, error)
 	// This is the lookup behind password login, OIDC adoption by address and
 	// password reset, so it is where a service account (an OAuth client's
 	// identity, #420) is kept from ever signing in: it simply is not found. A miss
@@ -1039,6 +1046,23 @@ type Querier interface {
 	// total order, two pages of one listing can disagree about which tied row
 	// comes first and the same entry appears twice, or not at all.
 	SearchAuditLog(ctx context.Context, arg SearchAuditLogParams) ([]AuditLog, error)
+	// SearchAuditLog for a search with text (q). The WHERE is the same, kept in step
+	// by hand; only the ORDER BY differs. With q the planner cannot tell how few rows
+	// match, expects plenty, and walks created_at backwards fetching every row from the
+	// heap to find the first page. Adding an interval to created_at takes that
+	// ordering away from the index, so a search reads the table once, in parallel.
+	// Kept after the date-range rule (audit.DetailsSearchMaxDays) because the range
+	// does not remove the need: on 2,000,000 entries over two years, for a text that
+	// matches nothing, the page took 0.6 to 2.1 seconds this way and 1.1 to 9.3 the
+	// other, whether the search had a 90-day range or none. The price is a text that
+	// matches plenty (a first page the index would have found at once): 0.6 to 3.5
+	// seconds here against a few milliseconds. The listing with no q keeps the
+	// index, where stopping after a page is the point.
+	// id breaks the tie, because created_at alone does not order entries written
+	// in the same microsecond — which happens inside a single request. Without a
+	// total order, two pages of one listing can disagree about which tied row
+	// comes first and the same entry appears twice, or not at all.
+	SearchAuditLogText(ctx context.Context, arg SearchAuditLogTextParams) ([]AuditLog, error)
 	SearchTicketsByAssigneeGroup(ctx context.Context, arg SearchTicketsByAssigneeGroupParams) ([]SearchTicketsByAssigneeGroupRow, error)
 	SearchTicketsByAssigneeUser(ctx context.Context, arg SearchTicketsByAssigneeUserParams) ([]SearchTicketsByAssigneeUserRow, error)
 	SearchTicketsByReporter(ctx context.Context, arg SearchTicketsByReporterParams) ([]SearchTicketsByReporterRow, error)

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithQuery } from '@/test/render'
 import { api } from '@/api/client'
@@ -35,11 +35,15 @@ function entry(overrides: Partial<AdminAuditEntry> = {}): AdminAuditEntry {
   }
 }
 
-// total_capped is always sent by the server; most tests do not care about it.
-type ListFixture = Omit<AdminAuditListResponse, 'total_capped'> & { total_capped?: boolean }
+// total_capped and details_searched are always sent by the server; most tests do
+// not care about them.
+type ListFixture = Omit<AdminAuditListResponse, 'total_capped' | 'details_searched'> & {
+  total_capped?: boolean
+  details_searched?: boolean
+}
 
-function mockList({ total_capped = false, ...rest }: ListFixture) {
-  const response: AdminAuditListResponse = { ...rest, total_capped }
+function mockList({ total_capped = false, details_searched = false, ...rest }: ListFixture) {
+  const response: AdminAuditListResponse = { ...rest, total_capped, details_searched }
   vi.spyOn(api, 'get').mockImplementation(((url: string) => {
     if (url === '/admin/audit') return Promise.resolve({ data: response })
     if (url === '/staff') return Promise.resolve({ data: [] })
@@ -161,6 +165,80 @@ describe('AdminAuditPage', () => {
     renderWithQuery(<AdminAuditPage />)
 
     await waitFor(() => expect(screen.getByText('1–1 of 10,000+')).toBeTruthy())
+  })
+
+  // The change details are searched only inside a date range of at most 90 days
+  // (#629). With text and no range, the page says so and the date pickers it
+  // points at are the ones above.
+  it('asks for a date range when there is text and no range, and the server left the details out', async () => {
+    mockList({
+      entries: [entry()], total: 1, has_more: false,
+      details_skipped_reason: 'no_date_range',
+    })
+    renderWithQuery(<AdminAuditPage />)
+    await waitFor(() => expect(screen.getByText('Resolved')).toBeTruthy())
+    await userEvent.type(screen.getByLabelText(/^search$/i), 'laptop')
+
+    await waitFor(() =>
+      expect(
+        screen.getByText('Pick a date range of up to 90 days to also search inside change details'),
+      ).toBeTruthy(),
+    )
+  })
+
+  // A text search over a date range longer than 90 days (date_range_too_long), or
+  // with From after To (invalid_date_range), is refused with a 400. The page shows
+  // the server's message by the From and To fields and keeps what was typed,
+  // instead of the generic load failure.
+  it.each([
+    ['date_range_too_long', 'the date range of a search with text can be at most 90 days: shorten from and to, or search without text', '2026-01-01T00:00', '2026-09-01T00:00'],
+    ['invalid_date_range', 'from must not be later than to', '2026-09-01T00:00', '2026-01-01T00:00'],
+  ])('shows the server refusal %s by the date fields and keeps the filters', async (code, message, from, to) => {
+    vi.spyOn(api, 'get').mockImplementation(((url: string, config?: { params?: Record<string, unknown> }) => {
+      if (url === '/admin/audit') {
+        if (config?.params?.q && config?.params?.from && config?.params?.to) {
+          return Promise.reject(
+            Object.assign(new Error('Request failed with status code 400'), {
+              isAxiosError: true,
+              response: { status: 400, data: { error: { code, message } } },
+            }),
+          )
+        }
+        return Promise.resolve({ data: { entries: [entry()], total: 1, total_capped: false, details_searched: false, has_more: false } })
+      }
+      return Promise.resolve({ data: [] })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any)
+    renderWithQuery(<AdminAuditPage />)
+    await waitFor(() => expect(screen.getByText('Resolved')).toBeTruthy())
+
+    await userEvent.type(screen.getByLabelText(/^search$/i), 'laptop')
+    fireEvent.change(screen.getByLabelText(/^from$/i), { target: { value: from } })
+    fireEvent.change(screen.getByLabelText(/^to$/i), { target: { value: to } })
+
+    const alert = await screen.findByText(message)
+    expect(alert.getAttribute('role')).toBe('alert')
+    expect(screen.queryByText('Could not load the audit log.')).toBeNull()
+    expect((screen.getByLabelText(/^search$/i) as HTMLInputElement).value).toBe('laptop')
+    expect((screen.getByLabelText(/^from$/i) as HTMLInputElement).value).toBe(from)
+    expect((screen.getByLabelText(/^to$/i) as HTMLInputElement).value).toBe(to)
+  })
+
+  it('says nothing when the details were searched', async () => {
+    mockList({ entries: [entry()], total: 1, details_searched: true, has_more: false })
+    renderWithQuery(<AdminAuditPage />)
+    await waitFor(() => expect(screen.getByText('Resolved')).toBeTruthy())
+    await userEvent.type(screen.getByLabelText(/^search$/i), 'laptop')
+
+    expect(screen.queryByText(/search inside change details/)).toBeNull()
+  })
+
+  it('says nothing without text, whatever the server sent', async () => {
+    mockList({ entries: [entry()], total: 1, has_more: false, details_skipped_reason: 'no_date_range' })
+    renderWithQuery(<AdminAuditPage />)
+    await waitFor(() => expect(screen.getByText('Resolved')).toBeTruthy())
+
+    expect(screen.queryByText(/search inside change details/)).toBeNull()
   })
 
   it('shows an uncapped total of exactly the cap without a plus', async () => {

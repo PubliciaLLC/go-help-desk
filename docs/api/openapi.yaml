@@ -3091,9 +3091,10 @@ paths:
         - name: q
           in: query
           required: false
-          description: Case-insensitive substring match against entity_type or action (nothing else is searched). Trimmed. Must be valid UTF-8 without NUL bytes.
+          description: Case-insensitive substring, matched literally (% and _ are text), at most 200 characters. Matches entity_type, action, the display name and email of the actor (an account that still exists; a requester is left out while the admin log masks requester names), and, only when the request has both from and to at most 90 days apart (plus an hour, for a clock change), the text values of the change details at the keys the view shows, and no others (see details_searched in the response). With q, a from and to more than 90 days apart is refused with 400 date_range_too_long; without q any range is allowed. Trimmed. Must be valid UTF-8 without NUL bytes.
           schema:
             type: string
+            maxLength: 200
         - name: actor_id
           in: query
           required: false
@@ -3126,6 +3127,10 @@ paths:
             `bad_request`. The message names the problem: actor_id must be a UUID,
             from or to must be an RFC 3339 timestamp, or entity_type, action or q
             is not valid UTF-8 or contains a NUL byte.
+            `date_range_too_long` when q is sent with a from and to more than 90
+            days (and an hour, for a clock change) apart; the message names the
+            limit. `invalid_date_range` when q is sent with a from later than to.
+            Without q any range is allowed, and a reversed one answers an empty page.
           content:
             application/json:
               schema:
@@ -4391,8 +4396,11 @@ paths:
         Staff and administrators only (second factor required). Every status
         transition on the ticket, oldest first. A reporting user is refused with
         403 forbidden, as for the audit feed. Status names and
-        colours are read from the statuses table when the request is served. The
-        id is a UUID or a tracking number.
+        colours are read from the statuses table when the request is served. A
+        requester's name is masked (changed_by_name Requester, changed_by_masked
+        true) under the audit_mask_requester_names setting, as in the audit feed.
+        An account that has been deleted, of any role, is Deleted account.
+        The id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -11517,6 +11525,9 @@ components:
             - type: 'null'
         changed_by_name:
           type: string
+        changed_by_masked:
+          description: True when changed_by_name is the Requester mask, not the account's own name. Omitted otherwise.
+          type: boolean
         created_at:
           type: string
           format: date-time
@@ -11639,7 +11650,7 @@ components:
       description: |
         One page of the admin-wide audit view.
       type: object
-      required: [entries, total, total_capped, has_more]
+      required: [entries, total, total_capped, details_searched, has_more]
       properties:
         entries:
           type: array
@@ -11651,6 +11662,13 @@ components:
         total_capped:
           type: boolean
           description: True when more than 10,000 entries match. Always sent, so a client can tell this from an older server.
+        details_searched:
+          type: boolean
+          description: True when q was also looked for in the change details, which is done only when the request has both from and to, at most 90 days apart. False without q. Always sent.
+        details_skipped_reason:
+          type: string
+          enum: [no_date_range]
+          description: Present when q was sent without a date range (from or to is missing), so the change details were not searched. q was still matched on entity type, action and actor. A range over 90 days with q is not a reason but a 400 date_range_too_long.
         has_more:
           type: boolean
           description: True when another page exists. Read from the page itself, so it keeps working past the cap.

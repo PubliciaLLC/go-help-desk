@@ -6,6 +6,7 @@ import { renderHast } from '@/lib/markdownComponents'
 import { formatMarkdown, type FormatResult } from '@/lib/markdownRunner'
 import { pageBudget } from '@/lib/pageBudget'
 import { MAX_FORMATTED_CHARS } from '@/lib/markdownLimits'
+import { plainRows } from '@/lib/plainRows'
 import type { TextFormat } from '@/api/types'
 
 interface Props {
@@ -17,6 +18,69 @@ interface Props {
 }
 
 const plainClass = 'whitespace-pre-wrap wrap-anywhere'
+
+// Plain text longer than this is laid out only when it scrolls near the screen
+// (content-visibility: auto, see .lazy-layout in index.css). 220 replies of 50 KB
+// took 3.3 s to lay out at once. Short posts are left alone: skipping them saves
+// nothing and every one would swap an estimate for its real height on scrolling.
+const LAZY_LAYOUT_CHARS = 5_000
+
+// How wide one Latin character is in the post's own font, in pixels, with room
+// for what wrapping loses at the end of each row (part of a word that moved to
+// the next one: 6 to 10 percent measured). Measured, not assumed: half the font size
+// (Safari's and Chrome's sans-serif on a Mac) was 10 percent low in the wider
+// sans-serif of a Linux CI runner, which showed as a 2,000 px jump in WebKit, and
+// 20 percent low in a monospace font. A sentence with a normal letter mix, so
+// the average is a reader's, not the width of one letter.
+const LATIN_SAMPLE = 'Thanks for getting back to us. We tried restarting the service twice, but the error is still there.'
+const WRAP_LOSS = 1.1
+function latinCharWidth(el: HTMLElement, fontSize: number): number {
+  const style = getComputedStyle(el)
+  const ctx = document.createElement('canvas').getContext('2d')
+  if (ctx) {
+    ctx.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`
+    const width = ctx.measureText(LATIN_SAMPLE).width / LATIN_SAMPLE.length
+    if (width > 0) return width * WRAP_LOSS
+  }
+  return 0.5 * fontSize
+}
+
+// The plain text of a post. A long one is laid out only when it scrolls near the
+// screen, and until then the browser needs a height for it. Too small a guess
+// and the page grows under the reader as posts are drawn, and Safari, which does
+// not hold the reader's place when content above them changes size, jumps; so the
+// guess is the post's own rows at the box's own width, and the browser remembers
+// the real height once it has drawn the post (`auto` in .lazy-layout).
+function PlainText({ text, className }: { text: string; className?: string }) {
+  const lazy = text.length > LAZY_LAYOUT_CHARS
+  const ref = useRef<HTMLParagraphElement>(null)
+  useEffect(() => {
+    const el = ref.current
+    if (!lazy || !el || typeof ResizeObserver === 'undefined') return
+    const fontSize = parseFloat(getComputedStyle(el).fontSize)
+    const charWidth = latinCharWidth(el, fontSize)
+    // A wide character is a font size wide, whatever the font's Latin letters are.
+    const wideUnits = fontSize / charWidth
+    let width = -1
+    const observer = new ResizeObserver(() => {
+      // Also fires when the post is drawn and its height changes; the width is
+      // all the estimate depends on.
+      if (el.clientWidth === width) return
+      width = el.clientWidth
+      // Within about 7 percent of the drawn height for English and Chinese prose
+      // in sans-serif and monospace fonts, and exact for text written a line at
+      // a time.
+      el.style.setProperty('--text-rows', String(plainRows(text, width / charWidth, wideUnits)))
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [text, lazy])
+  return (
+    <p ref={ref} className={cn(plainClass, lazy && 'lazy-layout', className)}>
+      {text}
+    </p>
+  )
+}
 
 // A document the parser cannot handle (pathological nesting) falls back to the
 // stored source rather than taking the page down with it.
@@ -134,7 +198,7 @@ function FullText({ text, format, className }: Props) {
           <Formatted tree={tree} className={className} />
         </FallbackToSource>
       ) : (
-        <p className={cn(plainClass, className)}>{text}</p>
+        <PlainText text={text} className={className} />
       )}
       {refusal && <p className="mt-1 text-xs text-gray-500">Shown as plain text: {refusal}.</p>}
       {text.trim() !== '' && (

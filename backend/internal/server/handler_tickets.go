@@ -1158,7 +1158,75 @@ func (s *Server) handleListStatusHistory(w http.ResponseWriter, r *http.Request)
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, history)
+	JSON(w, http.StatusOK, s.maskStatusHistory(r.Context(), history))
+}
+
+// statusHistoryEntryView is a status timeline row as sent: the entry, with
+// changed_by_masked when its name was withheld, so the label "Requester" is not
+// mistaken for an account called that (the same flag as actor_masked).
+type statusHistoryEntryView struct {
+	ticket.StatusHistoryEntry
+	ChangedByMasked bool `json:"changed_by_masked,omitempty"`
+}
+
+// maskStatusHistory applies the requester-name mask to the status timeline, by
+// the rule the Activity feed beside it uses (auditActorName, the ticket log
+// view): who changed a status is audit output, so it must not name a requester
+// where the feed would not. changed_by_user_id stays, as actor_id does. One
+// lookup for all the people on the timeline.
+func (s *Server) maskStatusHistory(ctx context.Context, history []ticket.StatusHistoryEntry) []statusHistoryEntryView {
+	out := make([]statusHistoryEntryView, len(history))
+	for i, h := range history {
+		out[i] = statusHistoryEntryView{StatusHistoryEntry: h}
+	}
+	// The lookup runs under every value of the setting: "a deleted account" is
+	// not the requester mask's to decide, so it is withheld even where the
+	// ticket log does not mask requesters (admin_log). Only the "Requester"
+	// label is behind the setting.
+	maskRequesters := s.masksRequestersIn(ctx, admin.MaskRequesterNamesTicketLog)
+	seen := map[uuid.UUID]bool{}
+	var ids []uuid.UUID
+	for _, h := range history {
+		if h.ChangedByUserID != nil && !seen[*h.ChangedByUserID] {
+			seen[*h.ChangedByUserID] = true
+			ids = append(ids, *h.ChangedByUserID)
+		}
+	}
+	if len(ids) == 0 {
+		return out
+	}
+	// Fails closed: a name stays only for an account positively found and known
+	// to be staff or an administrator. The name on the row comes from a join, not
+	// from this lookup, so an account the lookup does not return still has its
+	// name in the row, and must not be shown. One that is not returned is a
+	// deleted account, of any role, and is called that (owner, 2026-11-11); one
+	// whose role is a requester's is masked, where the setting masks. When the
+	// lookup itself fails nothing is known, so every name is withheld as the
+	// requester mask, whatever the setting.
+	roles := map[uuid.UUID]user.Role{}
+	users, err := s.users.GetByIDs(ctx, ids)
+	if err != nil {
+		slog.ErrorContext(ctx, "resolving status history roles failed", "error", err)
+	}
+	for _, u := range users {
+		roles[u.ID] = u.Role
+	}
+	for i := range out {
+		id := out[i].ChangedByUserID
+		if id == nil {
+			continue
+		}
+		role, found := roles[*id]
+		switch {
+		case err != nil:
+			out[i].ChangedByName, out[i].ChangedByMasked = "Requester", true
+		case !found:
+			out[i].ChangedByName = deletedAccountName
+		case maskRequesters && role == user.RoleUser:
+			out[i].ChangedByName, out[i].ChangedByMasked = "Requester", true
+		}
+	}
+	return out
 }
 
 // ticketAuditEntryView is what handleListTicketAudit returns: enough to
@@ -1254,8 +1322,9 @@ func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
 					a = auditActorName(u, maskRequesters)
 				case errors.Is(err, user.ErrNotFound):
 					// Account since deleted; actor_id stays (it is a fact
-					// about what happened), only the name is left blank —
-					// there is nobody left to resolve it to.
+					// about what happened). The view says "Deleted account",
+					// of any role, and never the name (owner, 2026-11-11).
+					a = auditActor{name: deletedAccountName}
 				default:
 					slog.ErrorContext(r.Context(), "resolving audit actor name failed", "actor_id", *e.ActorID, "error", err)
 				}

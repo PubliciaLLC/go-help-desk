@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { listAdminAudit, listAssignableStaff, type AdminAuditFilters } from '@/api/admin'
+import { extractError, extractErrorCode } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -16,6 +17,14 @@ import { EyeOffIcon } from 'lucide-react'
 import type { AdminAuditEntry } from '@/api/types'
 
 const PAGE_SIZE = 50
+
+// audit.DetailsSearchMaxDays on the server: the longest date range inside which a
+// search looks in the change details. The response says why it did not, not how
+// long the limit is, so a change to the server's value must be made here too.
+const DETAILS_SEARCH_MAX_DAYS = 90
+
+// The 400 codes the server answers a bad date range with, on a text search.
+const DATE_RANGE_REFUSALS = ['date_range_too_long', 'invalid_date_range']
 
 // Known entity types an audit entry can name today (audit.Entry.EntityType's
 // own comment: "ticket", "user", "group", etc.) — a starting set, not an
@@ -67,7 +76,7 @@ export function AdminAuditPage() {
     offset,
   }
 
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, error } = useQuery({
     queryKey: ['adminAudit', apiFilters],
     queryFn: () => listAdminAudit(apiFilters),
   })
@@ -81,6 +90,12 @@ export function AdminAuditPage() {
     setFilters((f) => ({ ...f, [key]: value }))
     setOffset(0)
   }
+
+  // A text search over a range longer than the limit, or with From after To, is a
+  // 400 with its own code. It is the person's input to fix, so it is shown by the
+  // fields that caused it and not as a failure to load.
+  const rangeRefusal =
+    isError && DATE_RANGE_REFUSALS.includes(extractErrorCode(error)) ? extractError(error) : ''
 
   const entries = data?.entries ?? []
   const total = data?.total ?? 0
@@ -159,9 +174,12 @@ export function AdminAuditPage() {
               id="audit-q"
               value={filters.q}
               onChange={(e) => updateFilter('q', e.target.value)}
-              placeholder="entity or action"
+              placeholder="entity, action, person or change"
             />
           </div>
+          {rangeRefusal && (
+            <p role="alert" className="col-span-full text-sm text-red-600">{rangeRefusal}</p>
+          )}
           <div className="flex items-center gap-2 col-span-full">
             <input
               id="audit-hide-replies"
@@ -173,9 +191,16 @@ export function AdminAuditPage() {
           </div>
         </div>
 
+        {filters.q.trim() && data?.details_skipped_reason && (
+          // The date pickers it points at are the From and To above.
+          <p className="-mt-3 text-sm text-gray-500">
+            Pick a date range of up to {DETAILS_SEARCH_MAX_DAYS} days to also search inside change details
+          </p>
+        )}
+
         {isLoading ? (
           <div className="flex justify-center py-12"><Spinner /></div>
-        ) : isError && !data ? (
+        ) : rangeRefusal && !data ? null : isError && !data ? (
           // Nothing to show. That includes a changed filter or page: each is its own
           // query key with no placeholderData, so it never inherits the last results.
           // A failed refresh with results already loaded is the notice below.

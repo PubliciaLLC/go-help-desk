@@ -124,8 +124,9 @@ func TestAuditNames_StatusAndAssigneeResolveBesideTheRawIds(t *testing.T) {
 	}
 }
 
-// A row that is gone leaves the id as the only thing to show: no name, and no
-// error.
+// A status that is gone leaves the id as the only thing to show: no name, and
+// no error. A user that cannot be found is shown as "Deleted account" (owner,
+// 2026-11-11), beside the id.
 func TestAuditNames_MissingRowsFallBackToTheId(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
@@ -140,12 +141,13 @@ func TestAuditNames_MissingRowsFallBackToTheId(t *testing.T) {
 			e := entryNamed(t, es, "planted_gone")
 			require.Equal(t, goneStatus, e.Before["status_id"])
 			require.Equal(t, goneUser, e.Before["assignee_user_id"])
-			require.Empty(t, e.Names)
+			require.Equal(t, map[string]namesResolve{goneUser: {Name: "Deleted account"}}, e.Names)
 		})
 	}
 }
 
-// A soft-deleted account is "gone" to every lookup; the diff must not name it.
+// A soft-deleted account is "gone" to every lookup; the diff never names it, and
+// says "Deleted account" for any role.
 func TestAuditNames_DeletedUserIsNotNamed(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
@@ -158,7 +160,7 @@ func TestAuditNames_DeletedUserIsNotNamed(t *testing.T) {
 	require.NoError(t, h.userSvc.SoftDelete(ctx, u.ID))
 
 	body, es := namesView(t, h, h.doAsAdmin, "admin", id)
-	require.Empty(t, entryNamed(t, es, "planted_left").Names)
+	require.Equal(t, map[string]namesResolve{u.ID.String(): {Name: "Deleted account"}}, entryNamed(t, es, "planted_left").Names)
 	require.NotContains(t, body, "Leaver Person")
 }
 

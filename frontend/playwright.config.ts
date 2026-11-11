@@ -10,8 +10,8 @@ const executablePath = existsSync(sandboxChrome) ? sandboxChrome : undefined
 
 // Layout-only tests: every backend call is mocked in the test itself (see
 // e2e/mock.ts), so this never needs Postgres or the Go server — just the
-// Vite dev server serving the built React app. Kept out of the vitest run
-// (jsdom does not compute real layout, which is the entire thing being
+// Vite preview server serving the production build of the React app. Kept out
+// of the vitest run (jsdom does not compute real layout, which is the entire thing being
 // checked here: no CSS engine, no media queries, no actual box sizes).
 // Port is overridable so parallel worktrees can each run their own server.
 const port = Number(process.env.PW_PORT ?? 5183)
@@ -19,6 +19,8 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
   throw new Error(`PW_PORT must be a port number (1-65535), got "${process.env.PW_PORT}"`)
 }
 const origin = `http://127.0.0.1:${port}`
+const dev = process.env.PW_DEV === '1'
+const outDir = `dist-e2e-${port}`
 
 export default defineConfig({
   testDir: './e2e',
@@ -72,18 +74,29 @@ export default defineConfig({
     },
   ],
   webServer: {
-    // Vite binds to `localhost` by default, not 127.0.0.1 — on at least one
-    // CI runner that is not the same address, so the readiness poll below
-    // never saw it come up and the whole job timed out. Pinning the host
-    // makes the bind address match what's being polled instead of relying on
-    // however the runner resolves the difference.
-    command: `npm run dev -- --host 127.0.0.1 --port ${port} --strictPort`,
+    // The production build, not the dev server. Vite's dev server serves every
+    // module separately, re-optimises dependencies and reloads the page mid-test
+    // when it finds a new one, and drops its hot-reload socket under load (all seen
+    // as flakes in markdown-dos.spec.ts); and what ships is the bundle, so the
+    // bundle is what should be tested (it has no dev-only React checks, and a
+    // worker is a hashed file, not a module the dev server transforms).
+    // PW_DEV=1 opts back into the dev server, for a test being written.
+    //
+    // Built into its own directory per port: `dist` belongs to the CSP project
+    // and to the backend embed, and two runs on different ports must not empty
+    // each other's files. Skips `tsc -b`: the build job type-checks.
+    // Binds 127.0.0.1 explicitly: on at least one CI runner `localhost` resolves
+    // to a different address than the readiness poll below, and the job timed out.
+    command: dev
+      ? `npm run dev -- --host 127.0.0.1 --port ${port} --strictPort`
+      : `npx vite build --outDir ${outDir} --emptyOutDir && npx vite preview --outDir ${outDir} --host 127.0.0.1 --port ${port} --strictPort`,
     url: origin,
     // Off by default: a fixed port plus reuse meant a run silently tested
     // whatever other checkout already held it. Set PW_REUSE=1 only when you
     // know the server on PW_PORT is this checkout's.
     reuseExistingServer: process.env.PW_REUSE === '1',
-    timeout: 60_000,
+    // Covers the build when there is one (about a minute on a loaded runner).
+    timeout: 180_000,
     stdout: 'pipe',
     stderr: 'pipe',
   },

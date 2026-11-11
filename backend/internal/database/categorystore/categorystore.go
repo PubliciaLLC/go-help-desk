@@ -41,6 +41,45 @@ func (s *Store) GetCategory(ctx context.Context, id uuid.UUID) (category.Categor
 	return category.Category{ID: r.ID, Name: r.Name, SortOrder: int(r.SortOrder), Active: r.Active}, nil
 }
 
+// CategoryNames, TypeNames and ItemNames name every id given in one statement,
+// for a page that holds many (the audit view). An id with no row is left out of
+// the map; it is not an error.
+func (s *Store) CategoryNames(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]string, error) {
+	rows, err := s.q.GetCategoryNamesByIDs(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("getting category names: %w", err)
+	}
+	out := make(map[uuid.UUID]string, len(rows))
+	for _, r := range rows {
+		out[r.ID] = r.Name
+	}
+	return out, nil
+}
+
+func (s *Store) TypeNames(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]string, error) {
+	rows, err := s.q.GetTypeNamesByIDs(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("getting type names: %w", err)
+	}
+	out := make(map[uuid.UUID]string, len(rows))
+	for _, r := range rows {
+		out[r.ID] = r.Name
+	}
+	return out, nil
+}
+
+func (s *Store) ItemNames(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]string, error) {
+	rows, err := s.q.GetItemNamesByIDs(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("getting item names: %w", err)
+	}
+	out := make(map[uuid.UUID]string, len(rows))
+	for _, r := range rows {
+		out[r.ID] = r.Name
+	}
+	return out, nil
+}
+
 func (s *Store) UpdateCategory(ctx context.Context, c category.Category) error {
 	return s.q.UpdateCategory(ctx, dbgen.UpdateCategoryParams{
 		ID:        c.ID,
