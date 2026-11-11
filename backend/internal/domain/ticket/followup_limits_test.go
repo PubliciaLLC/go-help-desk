@@ -236,10 +236,10 @@ func TestFollowUpOf(t *testing.T) {
 
 func seeAll(ticket.Ticket) (bool, error) { return true, nil }
 
-// The caller says which tickets the viewer may open. A follow-up link can point
-// at somebody else's ticket (migration 000064 marked every parent_child link),
-// and what the page is told must not name a ticket the viewer cannot see. The
-// newest one they CAN see is the answer; none visible is the same as none.
+// The caller says which tickets the viewer may open. The marker does not
+// guarantee a link's target is the viewer's, and what the page is told must not
+// name a ticket the viewer cannot see. The newest one they CAN see is the
+// answer; none visible is the same as none.
 func TestFollowUpOf_OnlyNamesATicketTheViewerMayOpen(t *testing.T) {
 	ctx := context.Background()
 	staff := ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff}

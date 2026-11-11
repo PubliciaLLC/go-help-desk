@@ -438,8 +438,9 @@ func (s *Service) IsClosed(t Ticket) bool { return t.StatusID == s.sys.closedID 
 // a follow-up: a parent_child link out of it that the follow-up action wrote
 // (TicketLink.FollowUp, #625). A parent_child link someone made by hand is not
 // one and does not use up the requester's one follow-up. Links that existed
-// before the marker was added were all backfilled as follow-ups, so what
-// counted before still counts.
+// before the marker was added were backfilled only where both tickets belong to
+// one requester (the same account or guest address, which every real follow-up
+// is), so a real follow-up from before still counts.
 func (s *Service) refuseSecondFollowUp(ctx context.Context, st Store, closedID uuid.UUID) error {
 	links, err := st.ListLinks(ctx, closedID)
 	if err != nil {
@@ -460,10 +461,11 @@ func (s *Service) refuseSecondFollowUp(ctx context.Context, st Store, closedID u
 // is not a follow-up.
 //
 // canSee is the caller's view rule for the target, because only the caller
-// knows who is asking. A link marked follow_up can still point at somebody
-// else's ticket (the migration marked every parent_child link that existed),
-// and the answer names the ticket by id and tracking number, so a target the
-// viewer cannot open is skipped, and none left reads as no follow-up.
+// knows who is asking. The marker does not guarantee the target is the
+// viewer's: the migration backfills only links between one requester's
+// tickets, but a row written another way would otherwise name somebody else's
+// ticket by id and tracking number. A target the viewer cannot open is
+// skipped, and none left reads as no follow-up.
 func (s *Service) FollowUpOf(ctx context.Context, closedID uuid.UUID, canSee func(Ticket) (bool, error)) (*FollowUpRef, error) {
 	links, err := s.store.ListLinks(ctx, closedID)
 	if err != nil {

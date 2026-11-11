@@ -1179,12 +1179,31 @@ func (s *Store) DeleteGuestTokensForTicket(ctx context.Context, ticketID uuid.UU
 	return nil
 }
 
+// expiredTokenBatch is how many expired guest tokens one DELETE removes, as the
+// audit retention purge does: the first sweep after an upgrade meets every
+// expired row at once, and one statement for all of them would hold them all
+// locked and write them to the WAL in one go.
+const expiredTokenBatch = 5000
+
+// DeleteExpiredGuestTokens deletes in batches. A short batch means nothing is
+// left to take, or that someone else holds the rest (SKIP LOCKED): the next
+// sweep gets those. The total is returned with an error too, because batches
+// already committed stay deleted.
 func (s *Store) DeleteExpiredGuestTokens(ctx context.Context) (int64, error) {
-	n, err := s.q.DeleteExpiredGuestAccessTokens(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("deleting expired guest access tokens: %w", err)
+	var total int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return total, fmt.Errorf("deleting expired guest access tokens: %w", err)
+		}
+		n, err := s.q.DeleteExpiredGuestAccessTokens(ctx, expiredTokenBatch)
+		if err != nil {
+			return total, fmt.Errorf("deleting expired guest access tokens: %w", err)
+		}
+		total += n
+		if n < expiredTokenBatch {
+			return total, nil
+		}
 	}
-	return n, nil
 }
 
 func (s *Store) TicketIDByTrackingAndGuestEmail(ctx context.Context, tn ticket.TrackingNumber, email string) (uuid.UUID, error) {

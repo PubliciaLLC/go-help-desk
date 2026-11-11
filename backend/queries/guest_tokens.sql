@@ -61,5 +61,13 @@ WHERE tracking_number = $1
 -- nothing (GetTicketByGuestToken filters on expiry), so this only stops the
 -- table growing, by one row per mail sent on a closed ticket among others.
 -- clock_timestamp() for the same reason as the lookup: one clock decides a
--- token's lifetime. Uses idx_guest_access_tokens_expires_at.
-DELETE FROM guest_access_tokens WHERE expires_at <= clock_timestamp();
+-- token's lifetime. One batch, oldest first so idx_guest_access_tokens_expires_at
+-- serves it; SKIP LOCKED so a row someone else holds is left for the next sweep
+-- and not waited on.
+DELETE FROM guest_access_tokens WHERE id IN (
+  SELECT old.id FROM guest_access_tokens AS old
+  WHERE old.expires_at <= clock_timestamp()
+  ORDER BY old.expires_at
+  LIMIT sqlc.arg(batch_size)
+  FOR UPDATE SKIP LOCKED
+);

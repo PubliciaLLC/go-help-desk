@@ -288,8 +288,10 @@ type Querier interface {
 	// nothing (GetTicketByGuestToken filters on expiry), so this only stops the
 	// table growing, by one row per mail sent on a closed ticket among others.
 	// clock_timestamp() for the same reason as the lookup: one clock decides a
-	// token's lifetime. Uses idx_guest_access_tokens_expires_at.
-	DeleteExpiredGuestAccessTokens(ctx context.Context) (int64, error)
+	// token's lifetime. One batch, oldest first so idx_guest_access_tokens_expires_at
+	// serves it; SKIP LOCKED so a row someone else holds is left for the next sweep
+	// and not waited on.
+	DeleteExpiredGuestAccessTokens(ctx context.Context, batchSize int32) (int64, error)
 	DeleteExpiredSessions(ctx context.Context) (int64, error)
 	DeleteFailedNotificationsBefore(ctx context.Context, failedAt sql.NullTime) (int64, error)
 	DeleteGroup(ctx context.Context, id uuid.UUID) (int64, error)

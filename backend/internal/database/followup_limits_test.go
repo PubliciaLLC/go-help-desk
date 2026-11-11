@@ -165,6 +165,43 @@ func TestTicketStore_FollowUpLinkFlagAndTheTokenSweep(t *testing.T) {
 		require.NoError(t, err)
 		require.Zero(t, n, "nothing left to sweep")
 	})
+
+	// The first sweep after an upgrade meets every expired row at once. It goes
+	// in batches (5,000, as the audit retention purge does), and a row somebody
+	// else holds is left for the next sweep instead of waited on.
+	t.Run("a backlog is deleted in batches, and a locked row is skipped not waited on", func(t *testing.T) {
+		const backlog = 12001 // more than two batches, and not a multiple of one
+		_, err := db.SQL.Exec(`INSERT INTO guest_access_tokens (id, ticket_id, token_hash, expires_at, created_at)
+			SELECT gen_random_uuid(), $1, 'backlog-' || g, now() - interval '1 hour', now() - interval '31 days'
+			FROM generate_series(1, $2) AS g`, a.ID, backlog)
+		require.NoError(t, err)
+		require.NoError(t, ts.CreateGuestToken(ctx, uuid.New(), a.ID, "live-2", time.Now().Add(time.Hour)))
+
+		held, err := db.SQL.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		defer func() { _ = held.Rollback() }()
+		var heldID uuid.UUID
+		require.NoError(t, held.QueryRow(`SELECT id FROM guest_access_tokens WHERE token_hash = 'backlog-1' FOR UPDATE`).Scan(&heldID))
+
+		// A deadline, so a sweep that waits on the held row fails here and does
+		// not hang the suite.
+		sweepCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		n, err := ts.DeleteExpiredGuestTokens(sweepCtx)
+
+		require.NoError(t, err, "the sweep must not wait on a row another transaction holds")
+		require.EqualValues(t, backlog-1, n)
+		var left int
+		require.NoError(t, db.SQL.QueryRow(`SELECT count(*) FROM guest_access_tokens WHERE token_hash LIKE 'backlog-%'`).Scan(&left))
+		require.Equal(t, 1, left, "only the held row is left")
+
+		require.NoError(t, held.Commit())
+		n, err = ts.DeleteExpiredGuestTokens(ctx)
+		require.NoError(t, err)
+		require.EqualValues(t, 1, n, "the next sweep takes it")
+		_, err = ts.TicketByGuestToken(ctx, "live-2")
+		require.NoError(t, err, "a live token is never swept")
+	})
 }
 
 // #625 item 2, against real Postgres on separate connections: requesters who
