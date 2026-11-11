@@ -637,7 +637,7 @@ did.
 | **Role** | `staff` or `user`, set by an administrator on the Users page; the actor's role is the stored one. Never `admin` (CHECK, and a 409 `service_account` before it). |
 | **Signs in** | Never. Password login, SSO adoption by address, password reset, passkeys and MFA enrolment all refuse it, and no session for one loads. The login lookups (`GetUserByEmail` and the two subject lookups) do not return it; the session lookup skips it. |
 | **Seen** | Listed on **Admin → Users** with `service_account: true` and `auth_type: "service"` (the page shows a "Service" badge and a filter for it). It can be renamed, given groups, disabled and set to staff or user, and nothing else: `PATCH /admin/users/{id}` answers `409 service_account` to a body carrying `email`, a `role` of `admin`, or `reset_mfa: true`, and applies none of it (a `reset_mfa: false` asks for nothing and is accepted; a `role` of `staff` or `user` is accepted, Q2 on #434). The page never sent the refused ones; the server now refuses them too. Renaming it renames its OAuth client in the same statement, so the two names cannot drift. The password route (`POST /admin/users/{id}/password`), MFA reset and API keys issued on its behalf are refused as well. Disabling it stops its client on the next request, and enabling it again restores it. It **cannot be deleted on its own**: `DELETE /admin/users/{id}` answers `409 service_account` with "This is the service account for OAuth client <name>. Delete the client instead.", because a client left listed with a dead user is worse than a refusal. It is left out of assignee pickers (`GET /staff`), assignment (`IsAssignableUser`, so round-robin skips it) and the plain user list. |
-| **Scopes** | A client may be created only with scopes its service user's role can use. The user is made `staff`, so `POST /admin/oauth-clients` answers `400 invalid_scope` for anything beyond `auth.ScopesForRole("staff")` (for example `audit:read`, `settings:*`, `users:*`, `credentials:*`), exactly as a key owned by staff is refused (#450), and the picker on the OAuth clients page offers only the staff scopes. Checked at creation only: a client that already holds a wider scope, or whose user is later changed to `user`, keeps it, and the role check at request time still refuses what the role cannot reach. |
+| **Scopes** | A client may be created only with scopes its service user's role can use. The user is made `staff`, so `POST /admin/oauth-clients` answers `400 invalid_scope` for anything beyond `auth.ScopesForRole("staff")` (for example `audit:read`, `settings:*`, `users:*`, `credentials:*`), exactly as a key owned by staff is refused (#450), and the picker on the OAuth clients page offers only the staff scopes. That list includes `requester_search:read`, which is never implied and has to be ticked on purpose. Checked at creation only: a client that already holds a wider scope, or whose user is later changed to `user`, keeps it, and the role check at request time still refuses what the role cannot reach. |
 | **Writes** | Under its scopes, a client creates tickets and replies **as its user**. The audit trail and authorship show the client's name. |
 | **Mail** | Never. A service user's address is made up (`oauth-<client id>@service-account.invalid`, which can never receive mail), and requester mail is not queued for a ticket it reported. Staff notifications go out as normal. |
 | **Scope** | Ticket scope enforcement (`ticket_scope_enforced`) applies to its user like any staff member's: it sees what its groups cover. Turning enforcement on warns, on that save, which clients have a user in no group; the Security warnings banner (`oauth_clients_without_groups`) keeps saying so until each has a group or is disabled. |
@@ -2750,13 +2750,14 @@ sessions do not: a session **is** the user, with whatever their role allows.
 Scopes exist to give a machine credential *less* than its owner, and there is
 nothing to narrow when a person is driving.
 
-A scope is `resource:action`, where action is `read` or `write`. `audit` has
-only `read`.
+A scope is `resource:action`, where action is `read` or `write`. `audit` and
+`requester_search` have only `read`.
 
 | Resource | Covers |
 |----------|--------|
 | `tickets` | Tickets and everything under `/tickets/{id}` — replies, links, tags, attachments, custom fields, status transitions — plus the staff picker (`/staff`) |
 | `audit` | The admin-wide audit view (`/admin/audit`), administrators only: staff get `403` whatever scope their credential holds, and a key owned by staff cannot be given `audit:read`. A signed-in administrator needs no scope; an administrator's API key needs `audit:read`, which an administrator grants on purpose and which `tickets:read` does not imply. There is no `audit:write`: only the running server writes audit entries, so granting it to an API key or OAuth client is refused like an unknown scope, and one stored before the refusal ([#371](https://github.com/PubliciaLLC/go-help-desk/issues/371)) grants nothing, not even `audit:read` |
+| `requester_search` | The free-text `requester` filter on `GET /tickets` and the same argument of the MCP `list_tickets` tool: tickets whose reporter's name or email, or whose guest name or email, contains the text. **It gates a parameter, not a route**, so the handler checks it and the router cannot. It is **never implied** by another scope (`tickets:read`, `users:read` and `tickets:write` do not grant it, and a key that exists before the scope does not gain it), and nothing is implied by it. A key owned by **staff or an administrator** may hold it, and so may an OAuth client, whose service user is staff; a requester never owns a key. A browser session needs no scope: staff and administrators may send free text on the web (Erik, 2026-11-10: "free text on web, api keys need explicit freetext search permission"). It does **not** open `GET /users/lookup`, which stays session-only ([#290](https://github.com/PubliciaLLC/go-help-desk/issues/290)), and the id-based `reporter_id` filter needs only `tickets:read`. There is no `requester_search:write`: it is refused like an unknown scope, and one stored by hand grants nothing |
 | `users` | Reading users, and the requester lookup (`GET /users/lookup`, #444). **Read only for keys:** keys can't write users, so `users:write` is no longer offered by the catalogue or the pickers (it still parses, so a stored key or a script that names it keeps working, and it opens nothing) |
 | `groups` | Groups, their members, and their category/type scopes. `groups:write` covers creating, renaming and deleting groups; **membership and scope writes are session-only** (keys can't write users), so it opens neither |
 | `categories` | Categories, types, items, and custom-field assignments |
@@ -2777,8 +2778,8 @@ Four rules govern them:
    [OAuth Clients and Service Users](#oauth-clients-and-service-users)).
 2. **An empty scope list denies everything.** A credential with no scopes
    reaches nothing at all.
-3. **Write implies read** on the same resource, except `audit`, which has no
-   write scope. An integration that may create tickets but not read them back
+3. **Write implies read** on the same resource, except `audit` and
+   `requester_search`, which have no write scope. An integration that may create tickets but not read them back
    is not a useful shape.
 4. **There is no wildcard.** A credential that should reach everything lists
    every scope it needs. This keeps what a credential can do legible from the
@@ -2788,6 +2789,14 @@ Four rules govern them:
 The action is taken from the HTTP method — `GET` and `HEAD` need `read`,
 everything else needs `write` — and enforced per route group rather than per
 handler, so a route added later cannot forget it.
+
+`requester_search:read` is the one exception: it is checked in the handler, on
+the `requester` parameter, because the route it rides on (`GET /tickets`) is the
+same one `tickets:read` opens. `TestScopesForRole_MatchTheRouter` derives the
+scope table from the router and would call a parameter scope unused, so the
+exception is a short named list in `internal/server/parameter_scopes_test.go`;
+a second test requires every entry on it to be exercised by a handler test.
+Add to that list only a scope that truly gates a parameter.
 
 **MCP is covered too.** Every MCP message is a POST, so the action cannot come
 from the method; each tool declares what it needs at registration. The read
@@ -2980,7 +2989,7 @@ one is a permission decision with one switch and no per-user exceptions.
   *make*, so it takes the stricter reading.)
 - **A key's scopes never exceed its owner's role.** `auth.ScopesForRole` is the
   table: an administrator may carry any scope; staff `tickets:read|write`,
-  `groups:read` (not `audit:read`, the admin-wide audit view being administrators only; not `users:read`: the one staff route that needed it, the requester lookup, is session-only since #290); a requester none, since requesters never own a
+  `groups:read` and `requester_search:read` (not `audit:read`, the admin-wide audit view being administrators only; not `users:read`: the one staff route that needed it, the requester lookup, is session-only since #290); a requester none, since requesters never own a
   key (an existing requester key still acts within the role check). It is checked
   against the key's *owner*, so an administrator issuing a key for a staff member is
   limited by what staff can do; a scope outside it is `400 invalid_scope`.
@@ -2992,7 +3001,8 @@ one is a permission decision with one switch and no per-user exceptions.
   and `TestScopesForRole_MatchTheRouter` derives the same answer from the
   router's own middleware for administrators and staff, fails if an
   administrator-only scope is offered to staff, and fails if a scope the router lets a role use is
-  missing from the table.
+  missing from the table. Scopes that gate a parameter rather than a route
+  (`requester_search:read`) are added to the derived set from a named list.
 - **Every issue and revoke is audited**, a person's own keys and keys issued or
   revoked on someone's behalf alike (`entity_type` `api_key`; actions
   `api_key_issued` and `api_key_revoked`; the entry carries the owner's id,

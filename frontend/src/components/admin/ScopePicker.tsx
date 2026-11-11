@@ -1,6 +1,16 @@
 import type { ScopeInfo } from '@/api/types'
 
 /**
+ * Resources whose name alone does not say what is being granted. Keyed by
+ * resource, shown under its label. requester_search gates one query parameter
+ * on the ticket list rather than a set of routes, so "requester search: read"
+ * would otherwise be a guess.
+ */
+const RESOURCE_HELP: Record<string, string> = {
+  requester_search: 'Search tickets by requester name or email (free text)',
+}
+
+/**
  * Picks the scopes a credential carries.
  *
  * There is no "all" shortcut on purpose. A credential that should reach
@@ -66,7 +76,12 @@ export function ScopePicker({
       <div className="rounded border divide-y">
         {[...byResource.entries()].map(([resource, scopes]) => (
           <div key={resource} className="flex items-center justify-between gap-4 px-3 py-2">
-            <span className="text-sm capitalize text-gray-800">{label(resource)}</span>
+            <div>
+              <span className="text-sm capitalize text-gray-800">{label(resource)}</span>
+              {RESOURCE_HELP[resource] && (
+                <p className="text-xs text-gray-500">{RESOURCE_HELP[resource]}</p>
+              )}
+            </div>
             <div className="flex gap-4">
               {scopes.map((s) => (
                 <label

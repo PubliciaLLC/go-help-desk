@@ -57,6 +57,22 @@ const (
 	// credential is created, and one already stored grants nothing — not
 	// even audit:read through write-implies-read (#371).
 	ResourceAudit = "audit"
+
+	// ResourceRequesterSearch gates the free-text `requester` filter on
+	// GET /tickets and the same argument of the MCP list_tickets tool. It is
+	// the first scope that gates a parameter instead of a route: the route is
+	// the same GET /tickets that tickets:read opens, so no router middleware
+	// can express it and the handler checks it.
+	//
+	// It is implied by nothing. Free text over every ticket a key can see maps
+	// names and addresses to tickets in bulk, and #290 removed directory search
+	// from machine credentials, so an owner has to give it back on purpose. A
+	// key that exists when this ships does not gain it. Like audit it has no
+	// write action (there is nothing to write), so ParseScope refuses
+	// requester_search:write and a stored one grants nothing.
+	//
+	// It does not open GET /users/lookup, which stays session-only.
+	ResourceRequesterSearch = "requester_search"
 )
 
 // Scope is one resource and one action.
@@ -71,11 +87,15 @@ var resources = []string{
 	ResourceTickets, ResourceUsers, ResourceGroups, ResourceCategories,
 	ResourceTags, ResourceCannedResponses, ResourceSLA, ResourceSettings,
 	ResourcePlugins, ResourceWebhooks, ResourceCredentials, ResourceAudit,
+	ResourceRequesterSearch,
 }
 
 // writable reports whether a resource has a write scope. The audit log has
-// none: no credential may write it (#371).
-func writable(resource string) bool { return resource != ResourceAudit }
+// none: no credential may write it (#371). requester_search has none either:
+// it is a read-only permission on one query parameter.
+func writable(resource string) bool {
+	return resource != ResourceAudit && resource != ResourceRequesterSearch
+}
 
 // offeredWritable reports whether the catalogue and the pickers offer a write
 // scope for a resource. users:write is not offered: keys can't write users
@@ -205,6 +225,9 @@ func ScopesForRole(role string) []Scope {
 			{ResourceTickets, ActionRead}, {ResourceTickets, ActionWrite},
 			// The assignee picker's group list, read only (groupsRouter).
 			{ResourceGroups, ActionRead},
+			// Free-text requester search on GET /tickets. Not a route, so the
+			// router test cannot derive it: it reads parameterScopes instead.
+			{ResourceRequesterSearch, ActionRead},
 			// No audit:read: the admin-wide audit view is administrators only.
 			// Staff read a ticket's history through tickets:read.
 			// No users:read. GET /users/lookup, the one staff-reachable route

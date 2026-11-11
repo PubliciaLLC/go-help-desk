@@ -7271,7 +7271,7 @@ paths:
       description: >-
         Administrators only (second factor required).
         Returns every scope a credential can hold, as resource:action pairs. Write
-        implies read on the same resource, and the audit resource has only read.
+        implies read on the same resource, and the audit and requester_search resources have only read.
         There is no wildcard scope. The admin UI builds its picker from this list,
         so it cannot drift from what the server enforces. With ?role=staff or
         ?role=admin the list is only what a key owned by that role may carry

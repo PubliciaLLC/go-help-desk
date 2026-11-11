@@ -272,3 +272,63 @@ func TestUsersWriteIsNotOfferedButStillParses(t *testing.T) {
 	require.True(t, auth.Allows([]string{"users:write"}, auth.Scope{Resource: auth.ResourceUsers, Action: auth.ActionRead}),
 		"and write still implies read")
 }
+
+// requester_search:read gates a query parameter (free-text requester search on
+// GET /tickets), not a route. Free text over many visible tickets maps names and
+// addresses to tickets in bulk, which #290 took away from machine credentials,
+// so only an explicit grant gives it back.
+func TestRequesterSearchScope(t *testing.T) {
+	const scope = "requester_search:read"
+	need := auth.Scope{Resource: auth.ResourceRequesterSearch, Action: auth.ActionRead}
+
+	t.Run("it is in the catalogue, read only", func(t *testing.T) {
+		require.Contains(t, scopeStrings(auth.All()), scope)
+		require.NotContains(t, scopeStrings(auth.All()), "requester_search:write")
+		require.NoError(t, auth.ValidateScopes([]string{scope}))
+	})
+
+	// Same refusal as audit:write, same reason: there is nothing to write.
+	t.Run("there is no write scope", func(t *testing.T) {
+		err := auth.ValidateScopes([]string{"requester_search:write"})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "requester_search:write")
+		_, ok := auth.Subset([]string{"requester_search:write"}, []string{"requester_search:write"})
+		require.False(t, ok)
+	})
+
+	// Rule 4: no wildcard, and a key that exists today must not gain free-text
+	// search when this ships. Nothing else implies it, write scopes included.
+	t.Run("nothing implies it", func(t *testing.T) {
+		for _, granted := range [][]string{
+			{"tickets:read"}, {"tickets:write"}, {"users:read"}, {"users:write"},
+			{"audit:read"}, {"credentials:write"}, {"settings:write"},
+			{"*"}, {"requester_search:*"}, {"requester_search:write"}, {"requester:read"},
+		} {
+			require.False(t, auth.Allows(granted, need), "%v must not grant %s", granted, scope)
+		}
+		require.True(t, auth.Allows([]string{scope}, need))
+	})
+
+	t.Run("it implies nothing else", func(t *testing.T) {
+		for _, other := range []string{"tickets:read", "users:read", "audit:read"} {
+			sc, err := auth.ParseScope(other)
+			require.NoError(t, err)
+			require.False(t, auth.Allows([]string{scope}, sc), "%s must not grant %s", scope, other)
+		}
+	})
+
+	t.Run("staff and administrators may hold it, requesters may not", func(t *testing.T) {
+		require.Contains(t, scopeStrings(auth.ScopesForRole("admin")), scope)
+		require.Contains(t, scopeStrings(auth.ScopesForRole("staff")), scope)
+		require.NoError(t, auth.WithinRole("admin", []string{scope}))
+		require.NoError(t, auth.WithinRole("staff", []string{scope}))
+		require.Error(t, auth.WithinRole("user", []string{scope}))
+		require.Error(t, auth.WithinRole("", []string{scope}))
+	})
+
+	// A credential cannot pass on a search permission it does not hold.
+	t.Run("a credential cannot mint it for itself", func(t *testing.T) {
+		_, ok := auth.Subset([]string{"credentials:write", "tickets:write"}, []string{scope})
+		require.False(t, ok)
+	})
+}
