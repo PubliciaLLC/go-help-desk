@@ -37,7 +37,7 @@ import (
 // because the defect and the fix are both about row lock acquisition order —
 // a fake store has no locking to get wrong.
 func TestResolveAsDuplicate_OppositeDirectionsDoNotDeadlock(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	t.Cleanup(closeDB)
 	ctx := context.Background()
 

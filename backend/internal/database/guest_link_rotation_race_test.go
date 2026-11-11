@@ -29,7 +29,7 @@ import (
 // Real Postgres on separate connections: the defect and the fix are both
 // about row locking, and a single transaction would serialise them.
 func TestIssueGuestLink_ConcurrentSendsLeaveOneWorkingLink(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	t.Cleanup(closeDB)
 	ctx := context.Background()
 	q := db.Queries

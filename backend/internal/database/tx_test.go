@@ -19,7 +19,7 @@ import (
 // Against a real pool, since a rolled-back harness transaction cannot show a
 // commit.
 func TestInTx(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 	ctx := context.Background()
 	q := dbgen.New(db.SQL)
