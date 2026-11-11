@@ -2598,6 +2598,8 @@ operator adds — `mime_type` falls back to what the detector said, and to
 type column is not an answer. None of this is a decision about how the file is
 served: every download is `application/octet-stream` regardless.
 
+**The ticket list marks a ticket that holds a quarantined file** (#628): a quiet red "Quarantined file" badge beside Priority, next to Reopened, in the table and on the mobile card. The ticket JSON carries `has_quarantined_attachment: true` for staff and administrators only, and only when true (omitted otherwise, and never sent to a requester). It is decided by one query per page of tickets (`attachments.virus_name IS NOT NULL`, using `attachments_ticket_idx`), after the page is cut, so it costs one extra query however many tickets are listed. If that query fails the list is still sent, without the marker. It is not a count and not a per-file list: the ticket page shows each file.
+
 ### Reputation lookup
 
 A quarantined sample is worth asking the world about, so the SHA-256 can be
@@ -2667,12 +2669,13 @@ verdict, its own `analysed_at`, its own `fetched_at`, its own link and its own
 *Check again* control where the state allows one.
 
 The wire carries an `inline` flag saying which of those lines the one-line
-summary was taken from, and **nothing renders it yet**. The intent is that the
-summary's source is marked, so the row's single sentence does not look as
-though it came from nowhere; today a reader has to work it out from the
-verdict ordering. Tracked as an issue. Stated here rather than left implied
-because this document is what the next person builds from, and a sentence
-describing a marker that does not exist is how a gap becomes invisible.
+summary was copied from, and the expanded view marks it: a quiet grey
+"· shown in the summary" at the end of that line's details, with
+`aria-current="true"` on the line, so the row's single sentence has a visible
+source. The marker follows the flag and never this build's own ranking. It is
+absent when nothing answered (the summary belongs to nobody, so no line is
+marked), before the list is expanded, and in the single-provider layout, where
+there is no list to mark.
 
 **All four off is a supported configuration, not a broken one.** It means
 attachments are judged by this instance's own scanner alone, which is a complete
@@ -2904,6 +2907,7 @@ Exposes help desk operations as an MCP server for AI tool integration, over two 
 |------|-----------------|-------|
 | `get_ticket` | any signed-in user | By UUID or tracking number. Returns the reply thread and linked tickets; internal notes are omitted for reporting users. `include_replies` (default `true`): `false` returns the ticket alone, without replies or links. |
 | `list_tickets` | any signed-in user | Optional `assignee_user_id`, `status_id`, `priority`, `category_id`, `q` filters. `limit` defaults to 20 and is clamped to 100; `offset` pages the full result set. |
+| `list_attachments` | any signed-in user | `ticket_id` is a UUID or tracking number; a ticket the caller may not see answers the same "not found" as one that does not exist. Metadata for each file: `id`, `filename`, `mime_type`, `size_bytes`, `created_at`, `detected_mime`, `sha256`, `virus_name`, `mismatch` and `quarantined` (`virus_name` is set). `mismatch` is `null` for a file that predates the inspection, which is not the same as `false`. **No file content** (attachments are download-only) and **no reputation lookup**: that spends the operator's provider allowance, so it stays in the web interface. |
 | `list_categories` | any signed-in user | The Category/Type/Item tree, nested, for filling in CTI. Active entries only; `include_inactive: true` adds retired ones, for staff and administrators only, as on the REST catalogue; for anyone else the flag is ignored and they get active entries (no error). |
 | `list_statuses` | any signed-in user | The statuses this instance defines. |
 | `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` or `reporter_email` (with `guest_name`, always required with the address) names the subject of the ticket; both are absent by default and the caller is the subject. `description` is Markdown unless `format: "plain"` is passed (#443); an invalid `format` is a tool error. The ticket is recorded as `mcp` (#130), including one filed for someone else; a `source_channel` argument is a tool error and nothing is written. |
@@ -2940,7 +2944,7 @@ in this beta's bug-fix branch rather than deferred to a major version — see
 
 **SSE sessions are bound to their actor** (#495). The stream `GET /mcp/sse` records who opened it: the user and the credential it came in on (the API key, the OAuth client, or the browser session). A `POST /mcp/message` for that `sessionId` is processed only when its own authenticated actor is the same user on the same credential. Anyone else, an unknown or missing `sessionId`, and a stream that has closed all get the same `403` (`forbidden`, "session not available to this caller"), so the answer does not reveal which ids exist, and the body is not read. The same person on a different key is a different actor. The record is held in memory and dropped when the stream ends. Tests: `TestMCPSSE_SessionBoundToActor`, `TestOwnerOf`.
 
-**Request body size** (#481). Every `POST` body on both transports (`/mcp`, `/mcp/`, `/mcp/message`) is capped at 1 MiB, the same as the REST API's JSON cap. A request is one JSON-RPC call and the largest arguments any tool takes are a ticket description or a reply body; MCP has no attachment tool. Over the cap the server answers `413` with `{"error":{"code":"request_too_large",...}}` and closes the connection; it reads no more than 1 MiB + 1 byte to decide, whether or not the client declared a length (before, a 100 MB body allocated 340 to 712 MB). `mcp.MaxRequestBody` is the constant. Tests: `TestMCPBodyLimit`, `TestHandler_OversizeBodyIs413WithJSONEnvelope`.
+**Request body size** (#481). Every `POST` body on both transports (`/mcp`, `/mcp/`, `/mcp/message`) is capped at 1 MiB, the same as the REST API's JSON cap. A request is one JSON-RPC call and the largest arguments any tool takes are a ticket description or a reply body; MCP takes no file upload (`list_attachments` returns metadata only). Over the cap the server answers `413` with `{"error":{"code":"request_too_large",...}}` and closes the connection; it reads no more than 1 MiB + 1 byte to decide, whether or not the client declared a length (before, a 100 MB body allocated 340 to 712 MB). `mcp.MaxRequestBody` is the constant. Tests: `TestMCPBodyLimit`, `TestHandler_OversizeBodyIs413WithJSONEnvelope`.
 
 A browser-based MCP client served from an origin other than `BASE_URL` cannot use any MCP route. It could not before either: the MCP routes grant no CORS preflight, so the browser never sent the request.
 

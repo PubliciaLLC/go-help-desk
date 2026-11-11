@@ -719,6 +719,10 @@ type Querier interface {
 	// disagree (#523). One clock, one rule.
 	ListPausedWebhookIDs(ctx context.Context, now time.Time) ([]uuid.UUID, error)
 	ListPlugins(ctx context.Context) ([]Plugin, error)
+	// Which of these tickets hold a file the scanner held back. One row per ticket
+	// however many files, because the ticket list shows a marker, not a count. Uses
+	// the attachments ticket_id index; the page is already cut, so $1 is one page.
+	ListQuarantinedTicketIDs(ctx context.Context, ticketIds []uuid.UUID) ([]uuid.UUID, error)
 	// The author's display name comes back with the reply.
 	//
 	// Without it the ticket page had nothing but author_id to render, and rendered

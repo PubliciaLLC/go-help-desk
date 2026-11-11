@@ -11284,7 +11284,7 @@ components:
         assignee_user_id and resolution_notes. Everything else here
         (assignee_group_id, reporter_user_id, guest_email, guest_name,
         guest_phone, closed_at, updated_at, pending_since, sla_paused_seconds,
-        reopen_count, source_channel) is for staff and administrators only. The same list applies to every
+        reopen_count, source_channel, has_quarantined_attachment) is for staff and administrators only. The same list applies to every
         response that carries a ticket, MCP included.
       type: object
       required: [id, tracking_number, subject, description, description_format, category_id, priority, status_id, created_at]
@@ -11344,6 +11344,9 @@ components:
         reopen_count:
           type: integer
           description: How many times the ticket has been moved from Resolved or Closed back to an open status (#464). Never reset. Staff and administrators only, and omitted when 0; a requester never receives the key (see Ticket). The Reopened badge shows while this is above 0 and the ticket is open. 0 for a ticket reopened before 1.3.0.
+        has_quarantined_attachment:
+          type: boolean
+          description: True when any file attached to the ticket was identified as malicious by the scanner and quarantined (#628). Staff and administrators only, and present only when true; a requester never receives the key (see Ticket). Sent on the list and on a single ticket read.
         created_at:
           type: string
           format: date-time

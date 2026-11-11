@@ -3300,6 +3300,23 @@ func (s *Service) ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]At
 	return s.store.ListAttachments(ctx, ticketID)
 }
 
+// QuarantinedTicketIDs reports which of the given tickets hold a quarantined
+// attachment, as a set. One query for a whole page of the ticket list.
+func (s *Service) QuarantinedTicketIDs(ctx context.Context, ticketIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
+	if len(ticketIDs) == 0 {
+		return nil, nil
+	}
+	ids, err := s.store.QuarantinedTicketIDs(ctx, ticketIDs)
+	if err != nil {
+		return nil, fmt.Errorf("finding tickets with quarantined attachments: %w", err)
+	}
+	out := make(map[uuid.UUID]bool, len(ids))
+	for _, id := range ids {
+		out[id] = true
+	}
+	return out, nil
+}
+
 // DeleteAttachment removes attachment metadata from the DB. Callers are
 // responsible for deleting the file on disk.
 func (s *Service) DeleteAttachment(ctx context.Context, id uuid.UUID) error {
