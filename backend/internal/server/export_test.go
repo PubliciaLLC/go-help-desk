@@ -151,3 +151,11 @@ func (s *Server) SetAdminServiceForTest(a *admin.Service) { s.adminSvc = a }
 
 // ReloadSAMLForTest runs the reload startup and the settings PATCH use.
 func (s *Server) ReloadSAMLForTest(ctx context.Context) error { return s.reloadSAML(ctx) }
+
+// RefuseSuspectedCloneForTest runs the clone refusal on a request whose
+// context a test has already cancelled: the refusal sits after the ceremony,
+// which needs the live context, so there is no way to hang up at exactly that
+// point through the router.
+func (s *Server) RefuseSuspectedCloneForTest(w http.ResponseWriter, r *http.Request, userID, passkeyID uuid.UUID) {
+	s.refuseSuspectedClone(w, r, userID, passkeyID)
+}

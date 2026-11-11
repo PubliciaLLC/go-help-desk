@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -114,4 +115,26 @@ func TestPasskeySignIn_ZeroCounterForeverStillSignsIn(t *testing.T) {
 
 	res, body := signInWithKey(t, h, s, key, 0)
 	require.Equal(t, http.StatusNoContent, res.StatusCode, "body: %s", body)
+}
+
+// A client that hangs up must not stop the sessions from ending or the audit
+// entry from being written: both run on a context that is not the request's.
+func TestPasskeySignIn_CloneRefusalSurvivesTheClientHangingUp(t *testing.T) {
+	h, _, _ := cloneHarness(t, 5)
+	require.Equal(t, 1, sessionCount(t, h), "precondition: one session")
+	creds, err := h.passkeyStore.ListByUser(context.Background(), h.staffID)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/local/passkey/finish", nil).WithContext(ctx)
+	rr := httptest.NewRecorder()
+	h.srv.RefuseSuspectedCloneForTest(rr, req, h.staffID, creds[0].ID)
+
+	require.Equal(t, http.StatusUnauthorized, rr.Code, "body: %s", rr.Body.String())
+	require.Zero(t, sessionCount(t, h), "hanging up left a session alive")
+	entries, err := h.auditStore.ListByEntity(context.Background(), "user", h.staffID, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "hanging up suppressed the audit entry")
+	require.Equal(t, "passkey_clone_suspected", entries[0].Action)
 }

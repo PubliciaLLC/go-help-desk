@@ -817,15 +817,32 @@ e.g. "Security key, added 3 March") and created/last-used timestamps.
   refused; how many such authenticators exist is not known. Refusal is per assertion,
   not a ban: a key that later asserts a count above the stored one signs in
   again, which is also why a clone and its original keep tripping each other. The
-  remedy is to remove the key (its owner from the Account page, or an
-  administrator from the user page) and register a new one; Reset MFA does it
-  too. **A sole administrator whose only second factor is the refused key cannot
-  do that alone** (the key blocks the second step, and enrolment refuses a session
-  that has not proved the factor the account already has), so the way back is
-  `reset-factors` on the server, below. That case is possible today only for an
-  administrator with MFA enforced and a single key; it does not touch the
-  last-administrator guard, because the password is still a way in and the
-  factors are not what that guard watches.
+  remedy is to remove the key and register a new one. The key's owner cannot do
+  that from the Account page when the key is their only way past the second step
+  (the key blocks that step, and enrolment refuses a session that has not proved
+  the factor the account already has), so who can recover depends on who is
+  locked out.
+  **Who can be locked out:** any account, of any role, while sign-in MFA is on
+  server-wide, that holds no TOTP and whose registered key (or every one of its
+  keys) is refused. The sign-in asks for the key whenever MFA is on and a passkey
+  is the account's only factor (`handler_auth.go`), whether or not the account's
+  role is one MFA is enforced for, so enforcement is not a condition. An account
+  that also has a TOTP signs in with it and is not locked out, and an account
+  with a second, unaffected key signs in with that one. **How each recovers:** a
+  staff member or requester has an administrator remove the key (user page) or
+  Reset MFA. An administrator has another administrator do the same, since
+  nobody can Reset MFA on their own account. **A sole administrator has no one to
+  ask**, so the way back is `reset-factors` on the server, below. It does not
+  touch the last-administrator guard, because the password is still a way in and
+  the factors are not what that guard watches.
+- **Counter wraparound is refused like a clone.** The counter is 32 bits. A key
+  that reaches the maximum and wraps to 0 asserts a count at or below the stored
+  one, and the stored one is not zero, so the rule above refuses it, and it keeps
+  being refused: the stored counter is never lowered, so the key would have to
+  climb past the old maximum again. It is refused until the key is removed and
+  registered again, the same remedy and the same recoveries as a suspected clone.
+  No real authenticator is expected to get there (4 billion sign-ins), so it is
+  not special-cased.
 - The ceremonies are `github.com/go-webauthn/webauthn`'s; nothing is hand-rolled.
 - A passkey's `last_used_at` (and its counter, which only rises) is written in a
   goroutine, off the response path,

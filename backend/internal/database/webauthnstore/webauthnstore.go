@@ -36,8 +36,11 @@ func NewWithDB(q *dbgen.Queries, db *sql.DB) *Store { return &Store{q: q, db: db
 // first wrote and writes nothing.
 func (s *Store) CreateFirstFactor(ctx context.Context, c webauthn.Credential) error {
 	return database.InTx(ctx, s.db, s.q, func(q *dbgen.Queries) error {
-		// No row means a missing or deleted account: nothing to protect, and
-		// the insert below reports it through the foreign key as Create does.
+		// No row means no account, or a soft-deleted one (the lock query
+		// skips those): nothing to protect, so the insert below runs unguarded.
+		// A user that never existed fails it on the foreign key, as in Create.
+		// A soft-deleted user's row is still there and still satisfies the key,
+		// so the credential IS written, onto an account that cannot sign in.
 		if _, err := q.LockUserForFactorWrite(ctx, c.UserID); err == nil {
 			protected, err := accountHoldsAFactor(ctx, q, c.UserID)
 			if err != nil {
