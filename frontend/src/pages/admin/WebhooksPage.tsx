@@ -27,7 +27,16 @@ const EVENTS = [
   'ticket.linked',
   'ticket.priority_changed',
   'ticket.classified',
+  'ticket.unlinked',
+  'ticket.attachment_added',
 ] as const
+
+// The events a hook gets only if it lists them by name (notification.OptInWebhookEvents):
+// "All events" does not include them. Who follows a ticket is personal, and
+// the follow audit that staff may not see by default would be public the
+// moment a hook subscribed to everything.
+const OPT_IN_EVENTS = ['ticket.followed', 'ticket.unfollowed'] as const
+const isOptIn = (e: string) => (OPT_IN_EVENTS as readonly string[]).includes(e)
 
 // notify.Formats, in the same order. The values are what the API stores; the
 // labels are what an operator recognises.
@@ -70,7 +79,9 @@ function LastDelivery({ d }: { d: WebhookDelivery | null | undefined }) {
 // ── Form state ────────────────────────────────────────────────────────────────
 
 // "All events" is its own flag rather than a "*" entry in the set, so there is
-// no state in which "*" and a specific event are both selected.
+// no state in which "*" and an ordinary event are both selected. The opt-in
+// events are the exception: they are listed by name beside "*", because "*"
+// does not cover them. With "All events" ticked, events holds only those.
 interface FormState {
   url: string
   secret: string
@@ -103,7 +114,7 @@ function fromHook(h: WebhookConfig): FormState {
     secret: '',
     format: h.payload_format ?? 'raw',
     all,
-    events: all ? [] : h.events,
+    events: all ? h.events.filter(isOptIn) : h.events,
     categoryIds: filter.category_ids,
     priorities: filter.priorities,
     groupIds: filter.group_ids,
@@ -170,7 +181,8 @@ function nameOf(list: { id: string; name: string }[] | undefined, id: string, go
 }
 
 function eventsOf(f: FormState): string[] {
-  return f.all ? ['*'] : EVENTS.filter((e) => f.events.includes(e))
+  const named = OPT_IN_EVENTS.filter((e) => f.events.includes(e))
+  return f.all ? ['*', ...named] : [...EVENTS.filter((e) => f.events.includes(e)), ...named]
 }
 
 const canSubmit = (f: FormState) => f.url.trim() !== '' && eventsOf(f).length > 0
@@ -328,6 +340,21 @@ function WebhookFields({
                 type="checkbox"
                 checked={form.all || form.events.includes(e)}
                 disabled={form.all}
+                onChange={(ev) => toggle(e, ev.target.checked)}
+              />
+              <span className="font-mono text-xs">{e}</span>
+            </label>
+          ))}
+        </div>
+        <p className="pt-1 text-xs text-gray-500">
+          Sent only when ticked, even with All events: they say who follows a ticket, by id.
+        </p>
+        <div className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2 lg:grid-cols-3">
+          {OPT_IN_EVENTS.map((e) => (
+            <label key={e} className="flex min-h-[24px] items-center gap-2 text-sm text-gray-700">
+              <input
+                type="checkbox"
+                checked={form.events.includes(e)}
                 onChange={(ev) => toggle(e, ev.target.checked)}
               />
               <span className="font-mono text-xs">{e}</span>
@@ -696,9 +723,19 @@ export function WebhooksPage() {
                       <td className="px-4 py-3">
                         <div className="flex flex-wrap gap-1">
                           {h.events.length === 0 || h.events.includes('*') ? (
-                            <span className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-700">
-                              All events
-                            </span>
+                            <>
+                              <span className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-700">
+                                All events
+                              </span>
+                              {h.events.filter(isOptIn).map((e) => (
+                                <span
+                                  key={e}
+                                  className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-xs text-gray-700"
+                                >
+                                  {e}
+                                </span>
+                              ))}
+                            </>
                           ) : (
                             h.events.map((e) => (
                               <span
