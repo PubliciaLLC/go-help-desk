@@ -5,7 +5,10 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   getUser, updateUser, adminResetPassword, deleteUser,
   listGroups, addGroupMember, removeGroupMember,
+  listUserPasskeys, removeUserPasskey,
 } from '@/api/admin'
+import type { Passkey } from '@/api/passkeys'
+import { useAuthStore } from '@/store/auth'
 import { extractError, extractErrorCode } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
@@ -15,7 +18,7 @@ import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
 import { Spinner } from '@/components/ui/spinner'
-import { ArrowLeftIcon, ShieldCheckIcon, ShieldOffIcon } from 'lucide-react'
+import { ArrowLeftIcon, ShieldCheckIcon, ShieldOffIcon, TrashIcon } from 'lucide-react'
 import type { Role } from '@/api/types'
 
 const ROLES: Role[] = ['admin', 'staff', 'user']
@@ -31,6 +34,14 @@ function SectionCard({ title, children }: { title: string; children: React.React
       <div className="px-5 py-4 space-y-4">{children}</div>
     </div>
   )
+}
+
+// How a key is shown when its owner did not name it: its transports, never the
+// authenticator model. The same wording as the owner's own Account page.
+function keyLabel(p: Passkey): string {
+  if (p.name) return p.name
+  const t = p.transports?.length ? p.transports.join(', ') : 'unknown'
+  return `Unnamed key (${t})`
 }
 
 function FieldRow({ label, children }: { label: string; children: React.ReactNode }) {
@@ -77,9 +88,24 @@ export function UserDetailPage() {
   // ── Delete confirm ──────────────────────────────────────────────────────────
   const [confirmDelete, setConfirmDelete] = useState(false)
 
+  // ── Passkey removal ─────────────────────────────────────────────────────────
+  const [pendingKey, setPendingKey] = useState<Passkey | null>(null)
+  const [keyError, setKeyError] = useState('')
+  // The server refuses both removing your own key and resetting your own MFA
+  // here (409 own_account): this route would go around the factor guard the
+  // Account page holds. So the page does not offer them.
+  const isOwnAccount = useAuthStore((s) => s.user?.id) === id
+
   const { data: user, isLoading } = useQuery({
     queryKey: ['admin', 'users', id],
     queryFn: () => getUser(id),
+  })
+
+  const passkeyCount = user?.passkey_count ?? 0
+  const { data: passkeys = [] } = useQuery({
+    queryKey: ['admin', 'users', id, 'passkeys'],
+    queryFn: () => listUserPasskeys(id),
+    enabled: passkeyCount > 0 && !isOwnAccount && !user?.service_account,
   })
 
   const { data: allGroups = [] } = useQuery({
@@ -141,6 +167,17 @@ export function UserDetailPage() {
     mutationFn: () => updateUser(id, { reset_mfa: true }),
     onSuccess: () => { setActionError(''); invalidate() },
     onError: (err) => setActionError(extractError(err)),
+  })
+
+  // ── Remove one passkey ──────────────────────────────────────────────────────
+  const removeKeyMutation = useMutation({
+    mutationFn: (credId: string) => removeUserPasskey(id, credId),
+    onSuccess: () => {
+      setKeyError('')
+      qc.invalidateQueries({ queryKey: ['admin', 'users', id, 'passkeys'] })
+      invalidate()
+    },
+    onError: (err) => setKeyError(extractError(err)),
   })
 
   // ── Password reset ──────────────────────────────────────────────────────────
@@ -315,8 +352,47 @@ export function UserDetailPage() {
             </div>
 
             <div className="border-t pt-3 space-y-3">
+              {/* Passkeys: one at a time (#615) */}
+              {!isService && !isOwnAccount && passkeys.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-sm font-medium text-gray-700">Passkeys</p>
+                  <ul className="divide-y rounded-md border">
+                    {passkeys.map((p) => (
+                      <li key={p.id} className="flex items-center justify-between gap-2 px-4 py-2.5">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm text-gray-800" title={keyLabel(p)}>{keyLabel(p)}</p>
+                          <p className="text-xs text-gray-500">
+                            {p.backup_eligible ? 'Synced' : 'This device only'}
+                            {' · '}
+                            added {new Date(p.created_at).toLocaleDateString()}
+                            {' · '}
+                            {p.last_used_at ? `last used ${new Date(p.last_used_at).toLocaleDateString()}` : 'never used'}
+                          </p>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-red-600 hover:bg-red-50 hover:text-red-700"
+                          onClick={() => setPendingKey(p)}
+                          aria-label={`Remove ${keyLabel(p)}`}
+                        >
+                          <TrashIcon className="h-4 w-4" />
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                  {keyError && <p role="alert" className="text-sm text-red-600">{keyError}</p>}
+                </div>
+              )}
+
+              {isOwnAccount && hasSecondFactor && (
+                <p className="text-xs text-gray-500">
+                  Manage your own authenticator and passkeys on the Account page. Another administrator can reset yours.
+                </p>
+              )}
+
               {/* MFA reset */}
-              {hasSecondFactor && (
+              {hasSecondFactor && !isOwnAccount && (
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm font-medium text-gray-700">Reset MFA</p>
@@ -495,6 +571,21 @@ export function UserDetailPage() {
         confirmLabel="Delete user"
         isPending={deleteMutation.isPending}
         onConfirm={() => deleteMutation.mutate()}
+      />
+      <ConfirmDialog
+        open={pendingKey !== null}
+        onOpenChange={(open) => !open && setPendingKey(null)}
+        title="Remove this passkey?"
+        description={
+          pendingKey
+            ? `"${keyLabel(pendingKey)}" will stop working, and ${user?.display_name ?? 'this person'} will be signed out everywhere. Their other keys and authenticator are not touched.`
+            : undefined
+        }
+        confirmLabel="Remove"
+        onConfirm={() => {
+          if (pendingKey) removeKeyMutation.mutate(pendingKey.id)
+          setPendingKey(null)
+        }}
       />
     </Layout>
   )

@@ -873,6 +873,19 @@ type Querier interface {
 	// UnassignTicketsForGroup and the delete would lose its group silently, which
 	// is the gap this exists to close.
 	LockGroup(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
+	// Takes the user row so that two writers of a first factor are ordered (#617).
+	//
+	// A first TOTP confirm and a first passkey registration each ask "does this
+	// account hold any factor?" and then write. Without an order, both can pass the
+	// question before either writes, and a session that only knows the password
+	// ends up adding a factor beside the owner's first one. Both take this lock,
+	// then ask in a NEW statement: under READ COMMITTED a statement waiting on this
+	// row keeps the snapshot it started with, so the question cannot be folded into
+	// one statement with the lock. The lock order is users, then credentials, the
+	// same as ClearFactors.
+	//
+	// No row for a deleted account: there is nothing to write a factor onto.
+	LockUserForFactorWrite(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
 	// The same lookup by id (the ticket list's requester chip after a reload).
 	// Carries the same three exclusions as LookupRequesters, in the query, so an
 	// id that names a disabled, deleted or service account is no different from
@@ -940,6 +953,25 @@ type Querier interface {
 	RemoveGroupScope(ctx context.Context, arg RemoveGroupScopeParams) (int64, error)
 	RemoveTicketFollower(ctx context.Context, arg RemoveTicketFollowerParams) (int64, error)
 	RemoveTicketTag(ctx context.Context, arg RemoveTicketTagParams) error
+	// Removes ONE credential of a user, and ends the user's sessions with it, as one
+	// statement (#615, D1: always, not only when it was the last factor; the key is
+	// presumed lost or compromised).
+	//
+	// keep_session is the one session to leave alone: the owner's own, when they
+	// remove their own key (they just proved a factor there, and signing yourself
+	// out of the tab you used is a bug, not security). An administrator removing
+	// somebody else's key passes '', which no session id is, so every session ends.
+	//
+	// The credential is matched on its owner as well as its id, in the statement:
+	// an id is not an authorisation, and a credential that is not this user's is
+	// reported as nothing removed. Sessions end only when a credential went, so
+	// naming somebody else's key under this user's path cannot be used to sign the
+	// user out.
+	//
+	// One statement, like ClearFactors, so that a failure between the two cannot
+	// leave the key gone and its sessions alive, or the other way round. The
+	// sessions matter because one may carry MFAPassed from the key just removed.
+	RemoveUserPasskey(ctx context.Context, arg RemoveUserPasskeyParams) (RemoveUserPasskeyRow, error)
 	// Position n (from 1) becomes the field's number. Only rows whose number
 	// changes are written.
 	ReorderCustomFieldDefs(ctx context.Context, ids []uuid.UUID) error
@@ -1153,10 +1185,10 @@ type Querier interface {
 	// when it was last used.
 	//
 	// Written off the authentication path, so a sign-in never waits on it and
-	// never fails because of it. The counter is stored and NOT enforced — see the
-	// column comment in 000029 for why a "must increase" rule locks people out
-	// for nothing, and why a previously-non-zero counter going backwards is worth
-	// logging and worth refusing nothing over.
+	// never fails because of it. That also means two sign-ins can land out of
+	// order, so the counter only ever goes up: a late write of a lower value would
+	// put the stored counter back below one a cloned key has already used, and the
+	// clone check (#616b) compares against what is stored here.
 	TouchWebAuthnCredential(ctx context.Context, arg TouchWebAuthnCredentialParams) error
 	// Takes every ticket off a group that is about to be deleted, and says which.
 	// All of them, resolved and closed too: the foreign key (ON DELETE SET NULL)

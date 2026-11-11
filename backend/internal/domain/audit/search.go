@@ -21,7 +21,7 @@ var searchSpellings = []string{
 	"field_name", "field_type", "filter", "follow_up_of", "forced_reopen",
 	"host", "id", "internal", "item_id",
 	"key_linked", "keys_revoked", "node_deleted", "on_behalf", "option_value", "os_user", "owner_user_id",
-	"passkeys_removed", "payload_format", "position", "previous_sla_record_id", "priority",
+	"passkey_id", "passkeys_removed", "payload_format", "position", "previous_sla_record_id", "priority",
 	"priority_change_reason", "reply_id", "requester_name_mask", "required_on_new", "retired",
 	"scope_id", "scope_path", "scope_type", "scopes", "service_user_id", "sessions_revoked",
 	"signature_changed", "signed", "sla_outcome", "sla_policy_id", "sla_record_id", "sort_order", "source",
