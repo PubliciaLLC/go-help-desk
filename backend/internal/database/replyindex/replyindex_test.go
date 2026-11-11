@@ -334,15 +334,17 @@ func TestPrepare_BuildsWithItsOwnMaintenanceWorkMem(t *testing.T) {
 		"ticket_replies_body_tsv_idx=256MB",
 	}, seen, "each build ran in a session set to 256MB")
 
-	// Nothing leaked: every connection the pool can hand out has the default.
-	db.SQL.SetMaxOpenConns(8)
+	// Nothing leaked: every connection the pool kept has the default. database/sql
+	// keeps at most two idle connections, and takes idle ones first, so three held
+	// at once include them all. Not more: the pool behind it holds as many as the
+	// machine has cores, with a floor of four, and a fifth would wait for ever.
 	var conns []*sql.Conn
 	defer func() { // also when an assertion fails: closeDB waits for open connections
 		for _, c := range conns {
 			c.Close()
 		}
 	}()
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 3; i++ {
 		c, err := db.SQL.Conn(ctx)
 		require.NoError(t, err)
 		conns = append(conns, c)
