@@ -1,41 +1,39 @@
--- Reply-text search (advanced ticket search, PR R). The search queries match
--- to_tsvector('english', body) @@ to_tsquery(...) on ticket_replies, and this
--- is the index they use.
+-- Reply-text search (advanced ticket search, PR R). The search matches
+-- ticket_replies.body_tsv, a stored tsvector of the reply text, through a GIN
+-- index.
 --
--- An expression index, not a stored generated tsvector column like
--- tickets.search_vector. A stored column rewrites the whole table under an
--- ACCESS EXCLUSIVE lock and roughly doubles the disk the reply text takes; an
--- index gives the same @@ lookups with neither. The queries must spell the
--- expression exactly as it is spelled here, or the planner will not use the
--- index (a store test checks the plan).
+-- This migration only adds the column and the trigger that keeps it current.
+-- It does NOT fill the existing rows and does NOT build the index, on purpose:
 --
--- This runs at server start, before the server takes requests, so a plain
--- CREATE INDEX (SHARE lock: reads continue, writes wait) costs nothing extra
--- over a concurrent build, which would read the table twice. CREATE INDEX
--- CONCURRENTLY is not usable here anyway: golang-migrate sends this file as one
--- multi-statement execution, which Postgres runs as one transaction.
+--   * ADD COLUMN with no default and no NOT NULL is a catalogue change. It
+--     rewrites nothing, so it is instant however many replies there are.
+--   * Filling a million rows and indexing them takes minutes to hours, and the
+--     server migrates before it takes requests. The server fills the existing
+--     rows in small batches in the background after it has started
+--     (internal/database/replyindex), then builds the index with CREATE INDEX
+--     CONCURRENTLY, which golang-migrate cannot run: it sends a file as one
+--     execution, which Postgres runs as one transaction, and CONCURRENTLY is
+--     refused inside a transaction. Until the index is valid, reply search is
+--     off and the list says so.
 --
--- An operator with a large reply table can build the index while 1.2.x is
--- still serving:
+-- An expression index on to_tsvector('english', body) was the first design. At
+-- 1M replies a word in a quarter of them took 39 s: the match bitmap went lossy
+-- and Postgres parsed every reply on those pages again to recheck. A stored
+-- column is compared as it is.
 --
---   CREATE INDEX CONCURRENTLY IF NOT EXISTS ticket_replies_body_fts_idx
---       ON ticket_replies USING gin (to_tsvector('english', body));
---
--- and the CREATE INDEX IF NOT EXISTS below then finds it and does nothing.
--- docs/upgrade-notes-1.3.0.md says so.
---
--- A concurrent build that fails partway leaves an INVALID index under this
--- name. IF NOT EXISTS would skip it without a word and every reply search
--- would scan the table, so an invalid one is dropped first. to_regclass
--- resolves the name on the search path, as the CREATE INDEX does.
-DO $$
+-- The trigger fires on insert and on an update of body only, so the background
+-- fill (which sets body_tsv) does not fire it. A row written before this
+-- migration has body_tsv NULL until the fill reaches it; a NULL never matches.
+ALTER TABLE ticket_replies ADD COLUMN IF NOT EXISTS body_tsv tsvector;
+
+CREATE OR REPLACE FUNCTION ticket_replies_body_tsv() RETURNS trigger
+LANGUAGE plpgsql AS $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM pg_index
-               WHERE indexrelid = to_regclass('ticket_replies_body_fts_idx')
-                 AND NOT indisvalid) THEN
-        DROP INDEX ticket_replies_body_fts_idx;
-    END IF;
+    NEW.body_tsv := to_tsvector('english', NEW.body);
+    RETURN NEW;
 END $$;
 
-CREATE INDEX IF NOT EXISTS ticket_replies_body_fts_idx
-    ON ticket_replies USING gin (to_tsvector('english', body));
+DROP TRIGGER IF EXISTS ticket_replies_body_tsv_trg ON ticket_replies;
+CREATE TRIGGER ticket_replies_body_tsv_trg
+    BEFORE INSERT OR UPDATE OF body ON ticket_replies
+    FOR EACH ROW EXECUTE FUNCTION ticket_replies_body_tsv();

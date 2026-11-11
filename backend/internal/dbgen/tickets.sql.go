@@ -719,7 +719,7 @@ func (q *Queries) ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]At
 }
 
 const listReplies = `-- name: ListReplies :many
-SELECT r.id, r.ticket_id, r.author_id, r.body, r.internal, r.created_at, r.notify_customer, r.body_format, u.display_name AS author_display_name
+SELECT r.id, r.ticket_id, r.author_id, r.body, r.internal, r.created_at, r.notify_customer, r.body_format, r.body_tsv, u.display_name AS author_display_name
 FROM ticket_replies r
 LEFT JOIN users u ON u.id = r.author_id
 WHERE r.ticket_id = $1
@@ -735,6 +735,7 @@ type ListRepliesRow struct {
 	CreatedAt         time.Time      `json:"created_at"`
 	NotifyCustomer    bool           `json:"notify_customer"`
 	BodyFormat        string         `json:"body_format"`
+	BodyTsv           interface{}    `json:"body_tsv"`
 	AuthorDisplayName sql.NullString `json:"author_display_name"`
 }
 
@@ -766,6 +767,7 @@ func (q *Queries) ListReplies(ctx context.Context, ticketID uuid.UUID) ([]ListRe
 			&i.CreatedAt,
 			&i.NotifyCustomer,
 			&i.BodyFormat,
+			&i.BodyTsv,
 			&i.AuthorDisplayName,
 		); err != nil {
 			return nil, err
@@ -1276,10 +1278,10 @@ func (q *Queries) ListTicketsByStatus(ctx context.Context, arg ListTicketsByStat
 const listTicketsFiltered = `-- name: ListTicketsFiltered :many
 WITH reply_hits AS (
   SELECT DISTINCT r.ticket_id FROM ticket_replies r
-  WHERE $29::bool
-    AND $25::text <> ''
-    AND to_tsvector('english', r.body) @@ to_tsquery('english', $25::text)
-    AND ($30::bool OR NOT r.internal)
+  WHERE $30::bool
+    AND $26::text <> ''
+    AND to_tsvector('english', r.body) @@ to_tsquery('english', $26::text)
+    AND ($31::bool OR NOT r.internal)
 )
 SELECT t.id, t.tracking_number, t.subject, t.description, t.category_id, t.type_id, t.item_id, t.priority, t.status_id, t.assignee_user_id, t.assignee_group_id, t.reporter_user_id, t.guest_email, t.resolution_notes, t.resolved_at, t.closed_at, t.created_at, t.updated_at, t.guest_name, t.guest_phone, t.pending_since, t.sla_paused_seconds, t.reopen_count, t.last_reopened_at, t.paused_seconds_at_last_reopen, t.description_format, t.source_channel
 FROM tickets t

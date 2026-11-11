@@ -964,6 +964,16 @@ type Querier interface {
 	//
 	// Matched words are wrapped in U+0002 and U+0003, not HTML. No author is read.
 	ReplyMatchesForTickets(ctx context.Context, arg ReplyMatchesForTicketsParams) ([]ReplyMatchesForTicketsRow, error)
+	// Whether reply search may run: both indexes it needs exist and are valid.
+	// The server builds them in the background after the migration, and only once
+	// every existing reply has its body_tsv (internal/database/replyindex), so a
+	// valid index means the column is complete: a reply written since the
+	// migration is filled by the trigger, an older one by the background fill.
+	// Until then a search skips replies and says so.
+	//
+	// indisvalid is false for the index a failed CREATE INDEX CONCURRENTLY leaves
+	// behind, which still exists under its name and must not count.
+	ReplySearchReady(ctx context.Context) (bool, error)
 	RestoreTag(ctx context.Context, id uuid.UUID) (int64, error)
 	RestoreUser(ctx context.Context, id uuid.UUID) error
 	RetryNotification(ctx context.Context, arg RetryNotificationParams) error

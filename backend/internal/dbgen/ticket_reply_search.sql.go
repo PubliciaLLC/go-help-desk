@@ -90,3 +90,26 @@ func (q *Queries) ReplyMatchesForTickets(ctx context.Context, arg ReplyMatchesFo
 	}
 	return items, nil
 }
+
+const replySearchReady = `-- name: ReplySearchReady :one
+SELECT (
+  EXISTS (SELECT 1 FROM pg_catalog.pg_index WHERE indexrelid = to_regclass('ticket_replies_body_tsv_idx') AND indisvalid AND indisready)
+  AND EXISTS (SELECT 1 FROM pg_catalog.pg_index WHERE indexrelid = to_regclass('ticket_replies_created_at_idx') AND indisvalid AND indisready)
+)::bool AS ready
+`
+
+// Whether reply search may run: both indexes it needs exist and are valid.
+// The server builds them in the background after the migration, and only once
+// every existing reply has its body_tsv (internal/database/replyindex), so a
+// valid index means the column is complete: a reply written since the
+// migration is filled by the trigger, an older one by the background fill.
+// Until then a search skips replies and says so.
+//
+// indisvalid is false for the index a failed CREATE INDEX CONCURRENTLY leaves
+// behind, which still exists under its name and must not count.
+func (q *Queries) ReplySearchReady(ctx context.Context) (bool, error) {
+	row := q.db.QueryRowContext(ctx, replySearchReady)
+	var ready bool
+	err := row.Scan(&ready)
+	return ready, err
+}
