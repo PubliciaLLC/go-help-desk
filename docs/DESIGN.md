@@ -545,12 +545,44 @@ The ticket list includes a live search bar with a 300 ms debounce:
 - Reply bodies are not indexed — only ticket subject and description. Deferred: searching reply content, fuzzy/typo-tolerant matching, and per-user saved searches.
 - Uses Postgres's `english` text search configuration, which drops common English stop words (e.g. searching just "IT" matches nothing) — an accepted tradeoff of FTS, not a bug.
 
-**List filters.** `GET /api/v1/tickets` takes `q` (above) plus `limit` (default 100, maximum 200) and `offset` (see Other protections), and these filters, checked in this order:
+**List filters.** `GET /api/v1/tickets` is one query for every request: the parameters are parsed and checked by `ticket.ParseListFilter` and `Filter.AllowedFor(role, requesterSearch)` (MCP's `list_tickets` shares them), the handler works out what the caller may see and which queue they are on, and the store answers with one `ListFiltered` call. It takes `q` (above) plus `limit` (default 100, maximum 200) and `offset` (see Other protections), and the filters below. **Filters combine with AND, and a filter can only narrow what the caller can already see**: visibility is resolved from the caller's role and `ticket_scope_enforced`, never from a parameter. A filter that names something outside the caller's scope matches nothing, and an id that names nothing gives `200 []` with no existence check.
 
-- `reporter_id=<uuid>`: the tickets one account reported. **Admin only** (`403` otherwise); the ticket list's "Filtering by client" chip, linked from the user page, uses it.
-- `assignee_group_id=<uuid>`: the tickets assigned to one group. Staff and admin (`403` for a reporting user). With `ticket_scope_enforced` on, a staff member may only name a group they belong to (`403` otherwise): group ids are listed to every staff member, so without that the filter would hand over tickets the scope refuses everywhere else.
-- `scope=mine|unassigned|all`: `unassigned` (no assignee user or group) and `all` are **admin only** (`403`). `mine`, the default, is the tickets assigned to the caller or to any of their groups; with scope enforcement on, staff get everything their scope admits instead, so an unassigned ticket in a covered category is not invisible to the people who should pick it up. A reporting user always gets their own tickets.
-- `scope=visible`: staff and admin (a reporting user gets their own tickets, as with any scope). Every ticket the caller can see, in one query with ordinary `limit`/`offset` paging: every ticket for an admin or for staff with `ticket_scope_enforced` off, and the staff scope with it on. This is what a search with text in the box sends unless the "Only <queue>" chip is on. It reuses the existing `ListAll`/`SearchAll` and `ListVisibleToStaff`/`SearchVisibleToStaff` queries; no new index or migration.
+Multi-value filters (`status_id`, `priority`, `source_channel`) are repeated keys (`status_id=a&status_id=b`), at most 20 values each; values of one key are ORed. An empty value is the same as an absent one. An unknown parameter (`include_internal` included) is ignored.
+
+| Parameter | Value | Who |
+| --- | --- | --- |
+| `reporter_id` | account id: the tickets that account reported | staff and admin (`403` for a reporting user) |
+| `requester` | free text, 2 to 254 characters after trimming, matched anywhere, ignoring case, in the reporting account's name or email and the ticket's guest name and email (deleted accounts included) | staff and admin; an API key or OAuth client also needs `requester_search:read` (below) |
+| `created_after`, `created_before` | RFC 3339 instants; `after` is inclusive and `before` exclusive, and `after` must be earlier than `before` | everyone |
+| `updated_after`, `updated_before` | as above | staff and admin |
+| `priority` | `critical`, `high`, `medium` or `low` (repeatable) | everyone |
+| `category_id`, `type_id`, `item_id` | ids; a category also matches every type and item under it | everyone |
+| `assignee_user_id` | account id | staff and admin |
+| `assignee_group_id` | group id. With `ticket_scope_enforced` on, a staff member may only name a group they belong to (`403` otherwise): group ids are listed to every staff member, so without that the filter would hand over tickets the scope refuses everywhere else | staff and admin |
+| `status_id` | status id (repeatable) | everyone |
+| `include_closed` | `true` (the default) or `false`, which leaves out the Closed system status. Ignored when `status_id` is given | everyone |
+| `source_channel` | `web`, `api`, `mcp`, `guest` or `phone` (repeatable) | staff and admin |
+| `sla` | `breached` or `at_risk`, the same buckets the list's indicator shows. `400` while SLA tracking is off, so an empty list is never mistaken for "nothing is breached" | staff and admin |
+
+**A requester may filter or sort only on what they are sent.** A requester's tickets go through the allowed list (see **What a requester sees of a ticket**). Filtering or sorting on a field they are never sent would read it: narrowing `updated_after` step by step would show the minute staff last touched a ticket. So a filter outside the list above's "everyone" rows is `403 forbidden` ("<param> is not available to requesters"), and a test holds each rule to the allowed list.
+
+**`requester` and the scope.** A browser session may send it (staff and admin). An API key or OAuth client may only if it holds `requester_search:read` (see Credential Scopes); without it the answer is `403 insufficient_scope`, "this credential does not carry the requester_search:read scope", the same code the scope middleware uses. It is checked in the handler on the parameter, because the route is the same `GET /tickets` that `tickets:read` opens. `reporter_id` never needs it. Masking requester names in the audit views (`audit_mask_requester_names`) does not turn off name matching: the mask is display-only, and a staff member who can see a ticket can already read its requester's name.
+
+**Sort.** `sort` is `number`, `subject`, `status`, `priority`, `sla`, `created` or `updated`, and `order` is `asc` or `desc`. With no `sort`, a search with `q` is ranked by relevance and everything else is newest first. A `sort` replaces relevance. `sort=relevance` is `400`, and so is any unknown `sort` or `order`, even without a `sort`. With no `order`, `created` and `updated` are newest first and the rest `asc` (for `priority` and `sla`, most urgent first). Every sort ends with `created_at DESC, id`, so pages are stable. A requester may sort by `number`, `subject`, `status`, `priority` and `created`; `sort=updated` and `sort=sla` are `403`. `sort=sla` while SLA tracking is off is `400`, as for the filter.
+
+**Knowing whether SLA tracking is on.** `GET /api/v1/me` carries `sla_enabled` (boolean) for staff and administrators, so the ticket list can offer the SLA filter, column and sort only while they work. A requester's `/me` has no such key, because a requester is never shown anything about SLA, and the public `GET /site` does not carry it either: whether an instance tracks SLA is not something an unauthenticated visitor needs, and the page already loads `/me`. If the setting cannot be read the key is absent, which a client must treat as unknown rather than off.
+
+**Reply-search signals.** The response stays a bare array. When the request asked for reply search (`search_replies=true`), two response headers say what the server could not do: `X-Replies-Searched: false` (replies were not fully searched, because of the time cap or because the index is not ready, so the results match ticket text only) and `X-Reply-Index: building` (the reply index is not ready yet). Each is sent only when the server has something to say, and neither is sent for a request that did not ask for reply search. The app is same-origin and the API sets no CORS headers, so a browser page reads them directly; a future cross-origin policy must list both in `Access-Control-Expose-Headers`.
+
+**Queue (`scope`).** The handler turns `scope` into a queue and ANDs it with everything else:
+
+- `scope=mine`, the default, is the tickets assigned to the caller or to any of their groups. With scope enforcement on, staff get everything their scope admits instead, so an unassigned ticket in a covered category is not invisible to the people who should pick it up. A reporting user always gets their own tickets.
+- `scope=unassigned` (no assignee user or group) and `scope=all` are **admin only** (`403` otherwise).
+- `scope=visible`: every ticket the caller can see. This is what a search with text in the box sends unless the "Only <queue>" chip is on.
+- Any other value is `mine`.
+- `reporter_id`, `requester` and `assignee_group_id` name which tickets, so the queue is "any" and `scope` is not consulted (and its admin-only refusals do not apply). Before 1.3.0 the first of `reporter_id`, `assignee_group_id` and `scope` present won and the rest were ignored; now they all apply, so `reporter_id` together with `assignee_group_id` is both, where the group used to be dropped.
+
+A search on the `mine` queue is ranked by relevance like every other search. It used to merge one query per group in Go and stayed newest first. No ticket appears or disappears from `mine` because of this, only the order of a search's results changes.
 
 The ticket list page offers the scope as Mine / Unassigned / All buttons to administrators, an "Include closed" toggle (Closed tickets are hidden unless it is on), and a status filter, and pages 50 at a time.
 
@@ -1763,7 +1795,13 @@ guarantee. `dangerouslySetInnerHTML` and `rehype-raw` are banned by lint.
   brackets rescan the rest of the text, hard breaks and nested lists add up), and
   a reply has no length cap. So text over 50,000 characters is never formatted,
   a table is limited to 5,000 cells, and everything else is parsed in a Web Worker
-  with a one-second budget; past it the worker is terminated. In every such case
+  with a three-second budget (`BUDGET_MS`); past it the worker is terminated. The
+  slowest text the length limit lets through (50,000 characters of hard breaks)
+  takes about 0.6 s on a developer laptop, and the budget is wall-clock, so it is
+  set to leave a loaded machine room: at one second a slow runner overran it and
+  an ordinary post was called "too complex". The page never waits for the worker
+  (the post is readable as written meanwhile), so a longer budget costs only the
+  core a runaway parse keeps busy for the extra seconds. In every such case
   the post is shown as plain text with a note ("too long to format", "too
   complex to format", or "formatting unavailable" when the worker could not
   start), and its **Plain text** button stays reachable. A failure that may be a
@@ -1790,6 +1828,42 @@ guarantee. `dangerouslySetInnerHTML` and `rehype-raw` are banned by lint.
   Expanding is allowed to be slow, once, and only when asked for. Nothing is
   truncated or rewritten: the rest is one click away. Over 50,000 characters is
   never formatted, expanded or not.
+- **A page of long plain-text posts is laid out only where it is read.** Plain
+  text over 5,000 characters has `content-visibility: auto`, so the browser lays
+  it out when it scrolls near the screen and not before (220 replies of 50 KB took
+  3.3 s of layout at once; in Chromium the page now reaches its first frame in
+  1.4 to 3.5 s instead of 7 to 16 s, and the first formatted post in about 1.6 s
+  instead of 7 to 17 s. WebKit gains little: the same 4 to 9 s to a first frame
+  and 4 to 5 s instead of 5 to 10 s to the first formatted post; #650). Until a post is drawn its height is an
+  estimate (`contain-intrinsic-block-size`, with `auto` so the browser keeps the
+  real height once it has drawn it): the post's own rows at the box's own width,
+  with the width of a Latin letter measured in the post's font on a canvas (an
+  assumed half of the font size was 10 percent low in the wider sans-serif of the
+  Linux CI runner and 20 percent low in a monospace font), 10 percent added for
+  what wrapping loses at the end of a row, and a wide character (Chinese,
+  Japanese, Korean, fullwidth forms, emoji) counting as one font size wide, a
+  surrogate pair as one character (`lib/plainRows.ts`). That lands within about 7
+  percent of the real height of a post for English in sans-serif and monospace
+  fonts and for Chinese, and is exact for text written a line at a time. It is
+  not good for text that is mostly one width of letter: narrow Latin ("iiii
+  llll") comes out about twice too high, and wide Latin ("WWWW") and emoji about
+  0.6 to 0.75 of the real height. A width that is not a width (a hidden ancestor,
+  0) falls back to 80 characters a row, not one row per character. A browser that
+  has `content-visibility` but not the `lh` unit (Chrome 95 to 108) gets the same
+  estimate in `em`, at 1.5 times the font size a row. The estimate matters because
+  Safari does not keep the reader's place when content above them changes size:
+  with one row per stored line the page jumped 8,000 to 20,000 px and grew by 40
+  to 140 percent as it was read, and with one unit per UTF-16 character Chinese
+  text, which is twice as wide a character, jumped 2,820 to 11,060 px (5 to 13
+  screens). Measured now in WebKit, scrolling through 30 posts at 320 to 1440 px:
+  Chinese moves at most 40 px, English in the default font at most 780 px (0.8 of
+  a screen, at 768 px, when scrolling back up through posts not yet drawn), English
+  in a monospace font at most 1,020 px (1.2 screens, at 1440 px), and in Chromium
+  nothing moves. Short posts are laid out
+  as usual, nothing is rewritten, and Select All still holds every post
+  (`e2e/lazy-layout.spec.ts`, both engines, four widths). **One post is still one
+  element**, unlike the chunked rendering removed before 1.3.0, so copying within a
+  post gives the stored text exactly.
 - **A page of long posts is formatted only where it is read.** A post is formatted
   when it comes within about 1,500 px of the screen (measured in the scrolling
   area that holds it), and the page as a whole has a budget of 300,000 formatted
@@ -3294,10 +3368,14 @@ so they are not removed as dead weight:
   disables it and the signup limit with it. The MFA failed-attempt count is on
   the user row and does survive a restart.
 - **Ticket list paging.** `GET /tickets` takes `?limit=` (default 100, maximum
-  200) and `?offset=`. Offset-based, not page-based. The staff view merges the
-  caller's own tickets with each of their groups', so it reads each source to
-  the end of the requested page and slices after merging — pushing the window
-  into each query returns limit × (1 + groups) rows.
+  200) and `?offset=`. Offset-based, not page-based. The window is cut in SQL by
+  the one list query (`ListTicketsFiltered`), whatever the caller's role or queue,
+  so a page is exactly `limit` rows and no source is read past it. Before 1.3.0
+  the staff "mine" view merged the caller's own tickets with each of their groups'
+  in Go, reading every source to the end of the requested page and slicing after
+  the merge, because pushing the window into each of those queries returned
+  limit × (1 + groups) rows. SLA status is still attached only to the page that is
+  returned, never to rows the response throws away.
 - **Uploaded images are capped by what decoding them will cost**, checked from
   the header before any decode. A byte-size limit is not a memory limit:
   compressed formats expand, and a 169 KB PNG decodes to 142 MB. Two bounds

@@ -11,7 +11,7 @@ const banDom = 'Putting an HTML string into the DOM is banned (#443): create ele
 const rawModules = '/^(rehype-raw|hast-util-raw)(\\/|$)/'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  globalIgnores(['dist', 'dist-e2e-*']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [

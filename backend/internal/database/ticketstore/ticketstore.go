@@ -990,6 +990,18 @@ func (s *Store) ListFiltered(ctx context.Context, f ticket.Filter) ([]ticket.Tic
 // outstanding targets by. ListFiltered passes the wall clock; a test passes a
 // fixed instant to put tickets exactly on the 80% and 100% boundaries.
 func (s *Store) ListFilteredAt(ctx context.Context, f ticket.Filter, now time.Time) ([]ticket.Ticket, error) {
+	res, err := s.listFilteredAt(ctx, f, now)
+	return res.Tickets, err
+}
+
+// ListFilteredWithMeta is ListFiltered plus what the query could not do about
+// reply text. The reply search fills Replies; until it does the zero value says
+// nothing and the handler sends no header.
+func (s *Store) ListFilteredWithMeta(ctx context.Context, f ticket.Filter) (ticket.ListResult, error) {
+	return s.listFilteredAt(ctx, f, time.Now())
+}
+
+func (s *Store) listFilteredAt(ctx context.Context, f ticket.Filter, now time.Time) (ticket.ListResult, error) {
 	sortKey, sortDir := f.ResolvedSort()
 	p := dbgen.ListTicketsFilteredParams{
 		Now:           now,
@@ -1027,17 +1039,43 @@ func (s *Store) ListFilteredAt(ctx context.Context, f ticket.Filter, now time.Ti
 		ResultLimit:     pageInt32(f.Limit),
 		ResultOffset:    pageInt32(f.Offset),
 	}
-	// The caller's groups go in as an array, not a subquery, for the queue
-	// "mine" only: see the comment on mine_group_ids in the query for why the
-	// planner needs to be handed them. Never nil, like the other arrays.
+	// The caller's groups, and what those groups cover, go in as plain arrays and
+	// not as subqueries: see mine_group_ids and the scoped arms in the query for
+	// why the planner needs to be handed them. Never nil, like the other arrays.
+	// Read only for the cases that use them: the queue "mine", and staff under
+	// scope enforcement.
 	p.MineGroupIds = []uuid.UUID{}
-	if f.Queue == ticket.QueueMine {
+	p.ScopeGroupIds = []uuid.UUID{}
+	p.ScopeCategoryIds = []uuid.UUID{}
+	p.ScopeTypeCategoryIds = []uuid.UUID{}
+	p.ScopeTypeIds = []uuid.UUID{}
+	scoped := f.Visibility == ticket.VisibilityScoped
+	if f.Queue == ticket.QueueMine || scoped {
 		groups, err := s.q.ListGroupsForUser(ctx, f.ActorID)
 		if err != nil {
-			return nil, fmt.Errorf("listing the caller's groups: %w", err)
+			return ticket.ListResult{}, fmt.Errorf("listing the caller's groups: %w", err)
 		}
 		for _, g := range groups {
-			p.MineGroupIds = append(p.MineGroupIds, g.ID)
+			if f.Queue == ticket.QueueMine {
+				p.MineGroupIds = append(p.MineGroupIds, g.ID)
+			}
+			if scoped {
+				p.ScopeGroupIds = append(p.ScopeGroupIds, g.ID)
+			}
+		}
+	}
+	if scoped {
+		rows, err := s.q.ListStaffScopeRows(ctx, f.ActorID)
+		if err != nil {
+			return ticket.ListResult{}, fmt.Errorf("listing the caller's group scopes: %w", err)
+		}
+		for _, r := range rows {
+			if r.TypeID.Valid {
+				p.ScopeTypeCategoryIds = append(p.ScopeTypeCategoryIds, r.CategoryID)
+				p.ScopeTypeIds = append(p.ScopeTypeIds, r.TypeID.UUID)
+			} else {
+				p.ScopeCategoryIds = append(p.ScopeCategoryIds, r.CategoryID)
+			}
 		}
 	}
 	if r := strings.TrimSpace(f.Requester); r != "" {
@@ -1046,13 +1084,13 @@ func (s *Store) ListFilteredAt(ctx context.Context, f ticket.Filter, now time.Ti
 
 	rows, err := s.q.ListTicketsFiltered(ctx, p)
 	if err != nil {
-		return nil, fmt.Errorf("listing filtered tickets: %w", err)
+		return ticket.ListResult{}, fmt.Errorf("listing filtered tickets: %w", err)
 	}
 	out := make([]ticket.Ticket, len(rows))
 	for i, r := range rows {
 		out[i] = fromRow(ticketRow(r))
 	}
-	return out, nil
+	return ticket.ListResult{Tickets: out}, nil
 }
 
 // likeEscaper makes %, _ and the escape character itself match literally in an

@@ -74,6 +74,8 @@ jobs:
       - name: Install Playwright's browser
         run: npx playwright install --with-deps chromium webkit
 
+      # playwright.config.ts builds the frontend and serves that production
+      # build (vite preview), so this tests the bundle that ships.
       - name: E2E (mobile layout — #296)
         run: npm run test:e2e
 

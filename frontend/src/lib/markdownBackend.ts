@@ -5,8 +5,18 @@ import type { BackendResult } from './markdownRunner'
 // #443: the real backend: formatting in a Web Worker under a time budget. Tests
 // run markdownBackend.inthread.ts instead (jsdom has no Worker); see vite.config.ts.
 
-/** How long one post may take to format once the worker is running. */
-export const BUDGET_MS = 1000
+/**
+ * How long one post may take to format once the worker is running.
+ *
+ * Wall-clock, so it must leave room for a slow or loaded machine. The slowest
+ * text the length limit admits that is not refused up front (50,000 characters
+ * of hard breaks) takes about 0.6 s on a developer laptop; the previous 1 s
+ * had under 2x headroom and a CI runner overran it, which called an ordinary
+ * post "too complex" (#640 flake). The page does not wait for the worker (the
+ * post is readable as written meanwhile), so a longer budget costs only the
+ * core a runaway parse keeps busy for the extra seconds.
+ */
+export const BUDGET_MS = 3000
 /** How long a new worker may take to start before we give up on it. */
 const STARTUP_MS = 10_000
 

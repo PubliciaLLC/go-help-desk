@@ -460,6 +460,10 @@ func (f *fakeStore) ListFiltered(context.Context, ticket.Filter) ([]ticket.Ticke
 	return nil, nil
 }
 
+func (f *fakeStore) ListFilteredWithMeta(context.Context, ticket.Filter) (ticket.ListResult, error) {
+	return ticket.ListResult{}, nil
+}
+
 func (f *fakeStore) SearchVisibleToStaff(context.Context, uuid.UUID, string, int, int) ([]ticket.Ticket, error) {
 	return nil, nil
 }
