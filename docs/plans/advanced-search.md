@@ -218,6 +218,60 @@ same key are ORed. Different keys are ANDed.
   silently drops the group, and under this design both apply. Nothing in the
   app sends both.
 
+### 1.6 Sort (owner decision S9)
+
+Every visible column of the list can be sorted, in either direction, by
+clicking its header. The page keeps the sort in the URL. It is not a filter: it
+changes the order, never which tickets match. The contract is in
+`ticket.Filter` (`Sort`, `Order`, `ResolvedSort()`).
+
+| Parameter | Values | Default |
+| --- | --- | --- |
+| `sort` | `number`, `subject`, `status`, `priority`, `sla`, `created`, `updated` | absent (see "Default", below) |
+| `order` | `asc`, `desc` | the column's natural direction |
+
+**Default, and how it combines with `q`.**
+- No `sort` and no `q`: `created`, newest first (what every listing has always done).
+- No `sort` and a `q`: **relevance**, best match first. This is the only time
+  relevance applies.
+- A `sort` replaces relevance. The text still narrows the results but no
+  longer orders them.
+- `sort=relevance` is **not** accepted (400). Dropping `sort` is how the page
+  returns to relevance.
+- `order` without `sort` is ignored. A value other than `asc` or `desc` is 400
+  even then, so a typo is not hidden.
+
+**Natural direction** (used when `order` is absent; the page always sends one
+explicitly): `created` and `updated` newest first (`desc`). `number`,
+`subject`, `status`, `priority` and `sla` are `asc`, where for priority and SLA
+`asc` means most urgent first.
+
+**What each column orders by** (the store implements exactly this):
+
+| `sort` | Orders by |
+| --- | --- |
+| `number` | `tracking_number`, as text. The year and the zero-padded sequence make that creation order within a prefix. |
+| `subject` | `lower(subject)` |
+| `status` | the status's `sort_order` (the order administrators arranged them in), then its name |
+| `priority` | `critical`, `high`, `medium`, `low`; `asc` is critical first |
+| `sla` | urgency: breached, then at risk, then everything else (on track, no SLA, tracking off); `asc` is most urgent first. Same buckets as the `sla` filter (section 2.3). |
+| `created` | `created_at` |
+| `updated` | `updated_at` |
+
+**Tie-break.** Every sort ends with `created_at DESC, id`, so equal rows keep a
+stable order across pages. This replaces the fixed `ORDER BY` in section 2.1.
+
+**Requesters.** Ordering by a field a requester is never sent would show them
+its order, the same leak as filtering on it (section 1.2). A requester may sort
+by `number`, `subject`, `status`, `priority` and `created`. `sort=updated` and
+`sort=sla` are `403 forbidden`, "sort by updated is not available to
+requesters". `sla` while SLA tracking is off is `400`, "SLA tracking is off",
+as for the `sla` filter (section 3.2).
+
+**Unknown values fail closed.** `ParseListFilter` refuses an unknown `sort` or
+`order` with `400`. `Filter.AllowedFor` refuses them again, for every role,
+because MCP builds a `Filter` from a map and may not go through the parser.
+
 ---
 
 ## 2. SQL
@@ -284,6 +338,9 @@ ORDER BY
   t.id                      -- new tiebreak; the Go merge had one, the SQL did not
 LIMIT sqlc.arg(result_limit) OFFSET sqlc.arg(result_offset);
 ```
+
+The `ORDER BY` above is the default (a text search, no `sort`). Section 1.6
+defines the others; the store picks one of them from `Filter.ResolvedSort()`.
 
 ### 2.2 Keeping sqlc honest with optional filters
 
@@ -585,7 +642,9 @@ time. The rules:
 This replaces seven branches and the 1+N merge. Parsing and the role and scope
 check are one pure domain function, so REST and MCP share one definition and
 cannot drift apart. The function is `ticket.ParseListFilter` together with
-`Filter.AllowedFor(role, scopes, machine)`.
+`Filter.AllowedFor(role, requesterSearch bool)`. The caller works out
+`requesterSearch`: true for a browser session, and for an API key or OAuth
+client only if it holds `requester_search:read`.
 
 **Behaviour that stays the same:**
 - the same tickets for every existing parameter combination, except the
