@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -336,7 +337,9 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusUnauthorized, "invalid_client", "invalid client credentials")
 		return
 	}
-	if auth.HashToken(body.ClientSecret) != client.HashedSecret {
+	// Constant time, so how much of the digest matched is not visible in the
+	// response time. Both sides are fixed-length hex, so length leaks nothing.
+	if subtle.ConstantTimeCompare([]byte(auth.HashToken(body.ClientSecret)), []byte(client.HashedSecret)) != 1 {
 		Error(w, http.StatusUnauthorized, "invalid_client", "invalid client credentials")
 		return
 	}
@@ -601,6 +604,14 @@ func (s *Server) writeSession(w http.ResponseWriter, r *http.Request, sd auth.Se
 	if !sd.MFAPassed && sd.UserID != uuid.Nil && !sd.PendingUntil.IsZero() {
 		opts := *session.Options
 		opts.MaxAge = max(1, int(math.Ceil(time.Until(sd.PendingUntil).Seconds())))
+		session.Options = &opts
+	}
+
+	// A session with no user is the pre-login state. Anyone can create one
+	// (GET /auth/oidc/login), so it gets a short row rather than seven days.
+	if sd.UserID == uuid.Nil {
+		opts := *session.Options
+		opts.MaxAge = int(auth.PreLoginWindow.Seconds())
 		session.Options = &opts
 	}
 	return session.Save(r, w)

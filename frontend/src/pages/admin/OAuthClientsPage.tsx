@@ -79,9 +79,11 @@ export function OAuthClientsPage() {
     queryFn: listOAuthClients,
   })
 
+  // A client acts as a staff service user, so only the scopes a staff account can
+  // use are offered; the server refuses any other at creation.
   const { data: catalogue = [] } = useQuery({
-    queryKey: ['admin', 'scopes'],
-    queryFn: () => listScopes(),
+    queryKey: ['admin', 'scopes', 'staff'],
+    queryFn: () => listScopes('staff'),
   })
 
   const createMutation = useMutation({

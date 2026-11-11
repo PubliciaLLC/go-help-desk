@@ -330,6 +330,13 @@ func TestCredentialCreation_RefusesAuditWrite(t *testing.T) {
 
 			resp = h.createCredential(t, path,
 				map[string]any{"name": "audit-reader", "scopes": []string{"audit:read"}, "expires_at": inYears(1)})
+			if path == "/api/v1/admin/oauth-clients" {
+				// An OAuth client acts as a staff service user, and the audit
+				// view is administrators only: audit:read is beyond its role,
+				// refused at creation like any other over-role scope.
+				require.Equal(t, http.StatusBadRequest, resp.StatusCode, "audit:read is beyond a staff service user")
+				return
+			}
 			require.Equal(t, http.StatusCreated, resp.StatusCode, "audit:read alone must still be grantable")
 		})
 	}

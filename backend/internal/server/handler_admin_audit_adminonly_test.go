@@ -53,7 +53,7 @@ func TestAdminAudit_RefusesStaffOnEveryCredential(t *testing.T) {
 			return requestWithKey(t, h, seedStaffKey(t, h, "tickets:read", "audit:read"), adminAuditPath)
 		}},
 		{"OAuth client carrying audit:read", func() *http.Response {
-			c := h.newServiceClient(t, "Nagios", "tickets:read", "audit:read")
+			c := h.newOverScopedServiceClient(t, "Nagios", "tickets:read", "audit:read")
 			return h.doWithBearer(t, c.Token, adminAuditPath)
 		}},
 		{"OAuth client without audit:read", func() *http.Response {

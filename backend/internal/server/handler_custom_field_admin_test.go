@@ -786,7 +786,7 @@ func TestNewCustomFieldRoutes_Auth(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	def := h.mkField(t, "Auth", customfield.FieldTypeText, nil, 1)
-	client := h.newServiceClient(t, "svc", "categories:read", "categories:write")
+	client := h.newOverScopedServiceClient(t, "svc", "categories:read", "categories:write")
 	// An administrator's key with exactly the scope the existing routes ask for.
 	scoped := h.mintMine(t, h.session(t, asAdmin), "categories:write").Token
 	withKey := func(token, method, path string, body any) *http.Response {

@@ -20,8 +20,7 @@ import (
 // metadataFetchTimeout bounds the IdP metadata fetch. It runs while SAML is
 // being (re)configured, so an IdP that accepts the connection and then stalls
 // would otherwise hang the reload indefinitely, with the admin UI simply never
-// returning. The client is safehttp's, which carries this timeout and refuses
-// internal addresses.
+// returning.
 const metadataFetchTimeout = 15 * time.Second
 
 // SAMLHandoverMaxAge is how long the SAML library's own "token" cookie, and

@@ -130,12 +130,29 @@ type APIKeyAuthFunc func(ctx context.Context, hashed string) (auth.APIKey, user.
 // administrator does, which is not a revocation mechanism at all.
 type OAuthClientLookupFunc func(ctx context.Context, clientID string) (auth.OAuthClient, user.User, error)
 
-// APIKeyMarkUsedFunc is called asynchronously to update last_used_at.
+// APIKeyMarkUsedFunc is called inline, once the request is authenticated, to
+// update last_used_at; see APIKeyAuth.
 type APIKeyMarkUsedFunc func(ctx context.Context, id uuid.UUID, at time.Time) error
+
+// apiKeyUsedGranularity is how stale last_used_at may get before a request
+// writes it again. The column answers "is this key still in use", not "when
+// exactly"; writing it per request would turn every API call into an UPDATE on
+// a hot row. Judged from the value the lookup already returned, so it needs no
+// state here and holds across replicas.
+const apiKeyUsedGranularity = 5 * time.Minute
 
 // APIKeyAuth reads "Authorization: ApiKey <token>" and attaches the owning
 // user as the actor. A nil lookup function means API key auth is disabled.
-func APIKeyAuth(lookup APIKeyAuthFunc) func(http.Handler) http.Handler {
+//
+// markUsed, when set, records the use in last_used_at. It runs detached from the
+// request's cancellation (a client that hangs up must not drop it, as with the
+// passkey Touch) and a failure is logged without touching the request.
+//
+// It runs inline, at most once per apiKeyUsedGranularity per key, not in a
+// goroutine: the extra statement is rare enough not to matter, and a goroutine
+// shares the request's connection in the test harness's single transaction,
+// where a concurrent statement breaks the handler's own.
+func APIKeyAuth(lookup APIKeyAuthFunc, markUsed APIKeyMarkUsedFunc) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Skip if an actor is already set (session auth took precedence).
@@ -167,6 +184,12 @@ func APIKeyAuth(lookup APIKeyAuthFunc) func(http.Handler) http.Handler {
 			if !u.IsActive() {
 				next.ServeHTTP(w, r)
 				return
+			}
+			if now := time.Now(); markUsed != nil &&
+				(key.LastUsedAt == nil || now.Sub(*key.LastUsedAt) >= apiKeyUsedGranularity) {
+				if err := markUsed(context.WithoutCancel(r.Context()), key.ID, now); err != nil {
+					slog.Warn("recording API key use failed", "key", key.ID, "error", err)
+				}
 			}
 			next.ServeHTTP(w, setActor(r, &Actor{
 				UserID:    u.ID,

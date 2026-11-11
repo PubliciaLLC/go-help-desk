@@ -74,11 +74,12 @@ What to check: if your instance is on an IP or single-word host and you want pas
 
 ### API requests that now fail (#421)
 
-These affect scripts and integrations that call the API. Three can make a request that used to succeed now fail:
+These affect scripts and integrations that call the API. Four can make a request that used to succeed now fail:
 
 - **Unknown settings keys are refused.** `PATCH /api/v1/admin/settings` with a key that is not a real setting now answers `400 unknown_setting`, names the key, and writes nothing (not even the valid keys in the same request). Before, any key was stored, so a typo such as `mfa_enabld` answered 204 and changed nothing. Fix: use the exact setting names from `GET /api/v1/admin/settings` (the `_set` presence flags are still refused with `readonly_setting`).
 - **`POST /api/v1/tickets/{id}/resolve` with a body that is not valid JSON is `400`.** Before, it resolved the ticket and dropped the notes. An empty body still resolves with no notes.
 - **`GET /api/v1/auth/verify-email?token=` is `422 token_invalid` for an address that has since gained an account.** Before, it answered 200 and only the POST refused.
+- **`GET /api/v1/categories` (and its `/types` and `/items` children) is `403` for a half-signed-in session.** A session that still owes a second factor or a password change used to read the category list as if it were signed in; it now gets `403 mfa_required` or `403 password_change_required`, like every other route. Fully signed-in callers, API keys, OAuth tokens and anonymous guests (while guest submission is on) are unchanged.
 
 ### Webhook receivers (#448)
 
@@ -275,6 +276,7 @@ API keys can now be made by staff, issued by an administrator on a staff member'
 - **Audit:** every key issued or revoked, own or on someone's behalf, writes `api_key_issued` / `api_key_revoked` (entity type `api_key`) to the admin audit log; a revoke-on-reset writes `api_keys_revoked` on the account with the number of keys.
 - **Lists and settings API:** `GET /api/v1/admin/api-keys` entries gain `created_by` and `beyond_limit`. `GET /me` gains `can_create_api_keys` and `api_key_max_lifetime_years`.
 - **Existing keys:** an administrator's existing keys keep acting as administrator, unchanged.
+- **The key list's "last used" column now fills in.** `last_used_at` (shown in Account → API keys, Admin → API keys and the API) was never written, so it was always empty. A key now records its use, at most once per five minutes. Keys show a value after their next request; nothing is backfilled.
 
 ### Archive and Restore Buttons on Admin → Categories (#446)
 
@@ -328,6 +330,7 @@ What changes:
 - **Service users are listed on Admin → Users**, with `service_account: true` and `auth_type: "service"` in the API. They can be renamed (which renames the client too), set to staff or user (never admin), given groups, and disabled; the server refuses the rest on `PATCH /admin/users/{id}` with `409 service_account` (`email`, a `role` of `admin`, and `reset_mfa: true`; none of the request is applied). This is stricter than the first 1.3.0 betas, which accepted a change of address. **Disabling the user stops the client**; enabling it restores it. A service user cannot be deleted on its own: `DELETE /admin/users/{id}` answers `409 service_account` and says to delete the client instead. Deleting the client soft-deletes its user; tickets it wrote keep its name.
 - **They never sign in.** No password, no MFA, no passkey, no SSO, no admin role. The database enforces it, and the API answers `409 service_account` to an attempt.
 - **They are hidden from assignee pickers and round-robin, do not count as administrators, and are never mailed.** A ticket a client opens sends no requester email.
+- **`POST /admin/oauth-clients` now refuses scopes a staff account cannot use. This breaks scripts that create clients with admin-only scopes.** The service user is staff, so a request carrying `audit:read`, `settings:read`/`write`, `users:read`/`write`, `categories:*`, `credentials:*` or any other scope outside what a staff-owned key may hold answers `400 invalid_scope` and creates nothing (the same refusal a staff key gets). Such a scope never opened anything for a client, because the role check refused the request first. The OAuth clients page now offers only the staff scopes. Clients that already exist are not changed and keep working as before; only creating a new one is checked.
 - **`POST /admin/oauth-clients` returns `user_id`**; `GET /admin/oauth-clients` returns `user_id` and `groups` for each client.
 - **With ticket scope enforcement off, clients behave as before.** Turning it on now tells you, on save, which clients have a service user in no group (they will see no tickets), and **Security warnings** (`oauth_clients_without_groups`) keeps listing them until each has a group or is disabled. Add the groups before you turn enforcement on.
 - `GET /me` for a client keeps its shape, and a client still cannot reach the password, MFA and passkey routes.

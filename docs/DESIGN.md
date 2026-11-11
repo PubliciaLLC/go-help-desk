@@ -637,6 +637,7 @@ did.
 | **Role** | `staff` or `user`, set by an administrator on the Users page; the actor's role is the stored one. Never `admin` (CHECK, and a 409 `service_account` before it). |
 | **Signs in** | Never. Password login, SSO adoption by address, password reset, passkeys and MFA enrolment all refuse it, and no session for one loads. The login lookups (`GetUserByEmail` and the two subject lookups) do not return it; the session lookup skips it. |
 | **Seen** | Listed on **Admin → Users** with `service_account: true` and `auth_type: "service"` (the page shows a "Service" badge and a filter for it). It can be renamed, given groups, disabled and set to staff or user, and nothing else: `PATCH /admin/users/{id}` answers `409 service_account` to a body carrying `email`, a `role` of `admin`, or `reset_mfa: true`, and applies none of it (a `reset_mfa: false` asks for nothing and is accepted; a `role` of `staff` or `user` is accepted, Q2 on #434). The page never sent the refused ones; the server now refuses them too. Renaming it renames its OAuth client in the same statement, so the two names cannot drift. The password route (`POST /admin/users/{id}/password`), MFA reset and API keys issued on its behalf are refused as well. Disabling it stops its client on the next request, and enabling it again restores it. It **cannot be deleted on its own**: `DELETE /admin/users/{id}` answers `409 service_account` with "This is the service account for OAuth client <name>. Delete the client instead.", because a client left listed with a dead user is worse than a refusal. It is left out of assignee pickers (`GET /staff`), assignment (`IsAssignableUser`, so round-robin skips it) and the plain user list. |
+| **Scopes** | A client may be created only with scopes its service user's role can use. The user is made `staff`, so `POST /admin/oauth-clients` answers `400 invalid_scope` for anything beyond `auth.ScopesForRole("staff")` (for example `audit:read`, `settings:*`, `users:*`, `credentials:*`), exactly as a key owned by staff is refused (#450), and the picker on the OAuth clients page offers only the staff scopes. Checked at creation only: a client that already holds a wider scope, or whose user is later changed to `user`, keeps it, and the role check at request time still refuses what the role cannot reach. |
 | **Writes** | Under its scopes, a client creates tickets and replies **as its user**. The audit trail and authorship show the client's name. |
 | **Mail** | Never. A service user's address is made up (`oauth-<client id>@service-account.invalid`, which can never receive mail), and requester mail is not queued for a ticket it reported. Staff notifications go out as normal. |
 | **Scope** | Ticket scope enforcement (`ticket_scope_enforced`) applies to its user like any staff member's: it sees what its groups cover. Turning enforcement on warns, on that save, which clients have a user in no group; the Security warnings banner (`oauth_clients_without_groups`) keeps saying so until each has a group or is disabled. |
@@ -791,10 +792,15 @@ e.g. "Security key, added 3 March") and created/last-used timestamps.
   false-positive cost; it is logged and gates nothing (the shape of
   `KnownMalicious` in `circl.go`).
 - The ceremonies are `github.com/go-webauthn/webauthn`'s; nothing is hand-rolled.
-- `last_used_at` is written off the authentication path, in a goroutine with a
-  context that does not belong to the request (as webhook dispatch does): it
-  answers "which key is still in use", but a sign-in must not wait on it or fail
-  because of it.
+- A passkey's `last_used_at` is written in a goroutine, off the response path,
+  with a context that does not belong to the request (as webhook dispatch
+  does): it answers "which key is still in use", but a sign-in must not wait on
+  it or fail because of it.
+- An API key's `last_used_at` is written inline, in the request, not in a
+  goroutine, but also with a context that does not belong to the request, so a
+  client that hangs up does not drop it. A failure is logged and ignored. It is
+  written at most once per five minutes per key, judged from the value the key
+  lookup already returned.
 
 **Enrolment.** `POST /me/passkeys/register/start` mints a challenge and stages
 it **in the session**; `POST /me/passkeys/register/finish` verifies the
@@ -2615,7 +2621,7 @@ Serves both the frontend SPA and external integrations.
 - `GET /api/v1/setup/status` — whether first-run setup is needed; `POST /api/v1/setup` creates the first administrator (and the first category, see Ticket Classification). It answers `409 already_configured` once **any** user row exists, disabled and deleted accounts included, so setup never reopens.
 - `/api/v1/auth/*` — `POST /local/login`, `POST /local/logout`, `GET /providers`, `POST /oauth/token` (OAuth client credentials), the SAML and OIDC sign-in routes, and `GET /signup/status`, `POST /signup`, `GET` and `POST /verify-email` (see Authentication). `POST /local/mfa/verify` and `POST /local/passkey/*` need the session the password step produced and are refused to machine credentials.
 - `/api/v1/guest/*` — `POST /tickets` (submit) and `POST /resend` (re-request a link) are public, throttled, and answer `404` while guest submission is off. `GET /ticket`, `POST /follow-up`, `POST /replies` and `POST /attachments` are authenticated by the per-ticket link token alone (see Guest Submission); `POST /follow-up`, `GET /ticket`, `POST /replies` and `POST /attachments` answer `404` while guest submission is off (#424).
-- `GET /api/v1/categories` and its `/{id}/types` and `/{id}/types/{typeId}/items` children — public **only while guest submission is on**, because the guest form needs them; otherwise they require an authenticated caller (a session, API key or OAuth token). Active entries for a guest or a reporting user, all of them for staff and administrators.
+- `GET /api/v1/categories` and its `/{id}/types` and `/{id}/types/{typeId}/items` children — public **only while guest submission is on**, because the guest form needs them; otherwise they require a fully signed-in caller (a session that has passed MFA and owes no password change, an API key or an OAuth token; a half-signed-in session gets `403` like every other route). Active entries for a guest or a reporting user, all of them for staff and administrators.
 
 Everything else under `/api/v1` requires a session, API key or OAuth token, and the role and scope rules below.
 
@@ -2700,7 +2706,11 @@ only shape in which a session can be revoked. Logout, a password change, an MFA
 reset, a role change, disabling and deleting all take effect on the next
 request. A session whose owner is disabled or deleted stops loading whether or
 not anything deleted it, and the session id rotates on login and on any
-privilege change. Lifetime is 7 days. SAML's library cookie is not a
+privilege change. Lifetime is 7 days, except a session that belongs to nobody
+yet (the OIDC state, a passkey challenge), which lives 10 minutes: anyone can
+create one with `GET /auth/oidc/login`. The OIDC callback builds a fresh
+session rather than editing the one the browser held, so a previous sign-in's
+password-change or enrolment state cannot ride onto it. SAML's library cookie is not a
 session; it is spent at hand-over (see Authentication → SAML).
 
 **The generated JWT signing key is stored unencrypted in `instance_secrets`,
