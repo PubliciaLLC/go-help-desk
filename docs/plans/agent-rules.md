@@ -54,3 +54,11 @@ Your brief says what to build. This file says how.
 - Do NOT merge. Wait for CI with `gh pr checks <n> --watch`, and fix real failures in your code.
 - Final report: the PR URL, the head SHA, the test commands you ran and their results, the CI
   status, and anything you could not follow. Keep it short and factual, and don't overclaim.
+
+## Addendum, 2026-11-10 (pre-tag and search build)
+- The binding decisions are in `docs/plans/owner-decisions-2026-11-10.md` on this branch. Where they differ
+  from `pretag-fixes.md` or `advanced-search.md`, the decisions file wins.
+- The server package needs `-timeout 45m`. The machine is shared by several agents, so name every scratch file and
+  test instance after your branch.
+- A test that fails in a full run but passes alone may be load. Run it 3 times alone, say so in your report, and
+  don't change it unless it fails alone.
