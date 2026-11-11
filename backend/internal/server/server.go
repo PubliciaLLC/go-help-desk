@@ -160,6 +160,11 @@ type AuthStoreIface interface {
 	ListWithOwner(ctx context.Context, keyID *uuid.UUID) ([]auth.APIKeyWithOwner, error)
 	CreateOAuthClient(ctx context.Context, c auth.OAuthClient) error
 	DeleteOAuthClient(ctx context.Context, id uuid.UUID) error
+	// The *Audited writes put an audit entry in the same transaction as the
+	// change. The handlers use these; the plain ones above and below are for
+	// fixtures and for paths with nothing to audit.
+	CreateOAuthClientAudited(ctx context.Context, c auth.OAuthClient, entry audit.Entry) error
+	DeleteOAuthClientAudited(ctx context.Context, id uuid.UUID, entry func(before auth.OAuthClient) audit.Entry) error
 	ListOAuthClients(ctx context.Context) ([]auth.OAuthClient, error)
 	// OAuthClientNameForUser is the client a service user belongs to.
 	OAuthClientNameForUser(ctx context.Context, userID uuid.UUID) (string, error)
@@ -173,6 +178,10 @@ type AuthStoreIface interface {
 	GetWebhook(ctx context.Context, id uuid.UUID) (authstore.WebhookConfig, error)
 	UpdateWebhook(ctx context.Context, wh authstore.WebhookConfig) error
 	DeleteWebhook(ctx context.Context, id uuid.UUID) error
+	CreateWebhookAudited(ctx context.Context, wh authstore.WebhookConfig, entry audit.Entry) error
+	UpdateWebhookAudited(ctx context.Context, wh authstore.WebhookConfig, entry func(before authstore.WebhookConfig) *audit.Entry) error
+	DeleteWebhookAudited(ctx context.Context, id uuid.UUID, entry func(before authstore.WebhookConfig) audit.Entry) error
+	ReapproveWebhookAudited(ctx context.Context, id uuid.UUID, entry func(before authstore.WebhookConfig) audit.Entry) error
 	// ReapproveWebhook clears the hook's link to the API key that made it.
 	ReapproveWebhook(ctx context.Context, id uuid.UUID) error
 	ListEnabledWebhooks(ctx context.Context) ([]authstore.WebhookConfig, error)

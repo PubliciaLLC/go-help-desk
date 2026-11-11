@@ -488,7 +488,7 @@ The field-level before/after diff is a second, independent gate on top of the fe
 
 `GET /api/v1/admin/audit` (#129) answers the same question across every entity, not one ticket at a time. **Administrators only** (Erik, 2026-11-03: staff "can see the history on a ticket but not the whole audit log"). Staff and reporting users get `403` on every credential: a session, an API key, or an OAuth client, which acts as a staff-level service user. The route sits under the admin router, so the answer is the role's, not a scope's. What staff keep is the history of a ticket they can see, `GET /tickets/{id}/audit` and `/history`, with the rules above, unchanged. In the 1.3.0 betas this view was open to staff, narrowed to ticket entries in their ticket scope; that narrowing, and the SQL behind it, were removed with the access. A signed-in administrator needs no scope. An administrator's API key needs the **`audit:read`** scope, which an administrator grants on purpose ([#362](https://github.com/PubliciaLLC/go-help-desk/issues/362)). A key owned by staff cannot be given `audit:read` (`auth.ScopesForRole`), the same refusal any other administrator-only scope gets. `tickets:read` does not reach it, because for an admin's key the view covers every entity, MFA and password resets included.
 
-**The audit view is built not to display protected or sensitive data**: PII, and data under FERPA, HIPAA, SOX or PCI-DSS ([#362](https://github.com/PubliciaLLC/go-help-desk/issues/362)), with one configurable exception, requester names, where `audit_mask_requester_names` leaves them shown (Actor names, below). This governs what the view displays, not what its viewer can find out: an entry's ids still lead to the records they name, under those records' own access rules. The before/after diff in both this view and the per-ticket feed is an **allow-list** (`audit.Redact`). It shows ids, statuses, priorities, flags and counts (and, on a factor reset run from the command line, the operating-system user, host and `source: cli` it records), and **leaves out** everything else: the ticket subject, which is free text, any nested value, and any field a writer adds later until it is allow-listed on purpose. Left out rather than shown as a placeholder, because the subject is written into both sides of every ticket entry, and a placeholder on both sides read as an edit that never happened. A key whose name looks like a secret (the deny-list of stems such as `password`, `secret`, `token`, `hash`, or a name ending in `key` or `pass`) is the exception: it shows as `[redacted]`, so a rotated secret still shows as a change.
+**The audit view is built not to display protected or sensitive data**: PII, and data under FERPA, HIPAA, SOX or PCI-DSS ([#362](https://github.com/PubliciaLLC/go-help-desk/issues/362)), with one configurable exception, requester names, where `audit_mask_requester_names` leaves them shown (Actor names, below). This governs what the view displays, not what its viewer can find out: an entry's ids still lead to the records they name, under those records' own access rules. The before/after diff in both this view and the per-ticket feed is an **allow-list** (`audit.Redact`). It shows ids, statuses, priorities, flags and counts (and, on a factor reset run from the command line, the operating-system user, host and `source: cli` it records; and, for OAuth clients and webhooks, a client's name and a webhook's host, see API keys under Authentication), and **leaves out** everything else: the ticket subject, which is free text, any nested value, and any field a writer adds later until it is allow-listed on purpose. Left out rather than shown as a placeholder, because the subject is written into both sides of every ticket entry, and a placeholder on both sides read as an edit that never happened. A key whose name looks like a secret (the deny-list of stems such as `password`, `secret`, `token`, `hash`, or a name ending in `key` or `pass`) is the exception: it shows as `[redacted]`, so a rotated secret still shows as a change.
 
 **Names in the diff** (#422). A diff holds ids, and an id says nothing to a reader (and a deleted status leaves one that names nothing). Each entry in both views therefore carries an optional `names` object beside `before` and `after`: it maps an id, exactly as it appears in the diff, to what it names **now**: `{"name": "In Progress"}`. The stored entry and the `before`/`after` values are unchanged, so the trail stays exact, and the response only gains a key. An id with no entry in `names` no longer resolves (a deleted status, a deleted account); the UI then shows the id, and otherwise shows the name with the id as its tooltip. Only `status_id` (a status) and `assignee_user_id` (a user) are resolved, because they are the only id fields the allow-list lets through. Category, type, item and assignee-group ids are neither written to audit entries nor allow-listed; whoever allow-lists one adds it to the resolver (`auditNameFields`, `internal/server/audit_names.go`) in the same change. The names are built from the diffs **as they are about to be sent**, after `audit.Redact`, which is what keeps every existing rule in force: a viewer who is not shown the diff (staff with the change-history setting off, a reporting user) gets no `names`; only entries on the page are looked at, so a staff member's ticket scope is untouched and no name arrives through an entry outside it; a field that is not allow-listed is not resolved. A user who would be masked as an actor is masked here: `{"name": "Requester", "masked": true}`, by the same `audit_mask_requester_names` setting for the view (`admin_log` or `ticket_log`), the same current-role rule, and the same `masked` flag, so the setting cannot be bypassed by reading an assignee out of a diff. The lookup is one batch per page: one read of the (small) statuses table and one `id = ANY(...)` query for the users, never one per entry. A lookup that fails costs the names, not the page, and is logged.
 
@@ -3003,6 +3003,43 @@ one is a permission decision with one switch and no per-user exceptions.
   `context.WithoutCancel`, like `user.Service.ResetMFA`: an audit entry here does
   not gate anything, and hanging up after the key is written cannot suppress it
   (`TestAPIKeyAudit_IsWrittenEvenIfTheRequestWasCancelled`).
+- **Every OAuth client and webhook change is audited, in the same transaction
+  as the change.** Unlike the key entries above, these are not best effort:
+  `authstore`'s `*Audited` writes (`CreateOAuthClientAudited`,
+  `DeleteOAuthClientAudited`, `CreateWebhookAudited`, `UpdateWebhookAudited`,
+  `DeleteWebhookAudited`) write the entry on the change's own transaction, as
+  the custom-field store does, so a change that cannot be recorded does not
+  happen (`TestOAuthClientAudit_RolledBackWithTheChange`,
+  `TestWebhookAudit_RolledBackWithTheChange`). The difference from keys is
+  deliberate: a key's entry sits beside a credential its owner already holds,
+  while a client or a hook is created and edited by an administrator and is how
+  ticket data leaves or enters the system. Entity types `oauth_client` and
+  `webhook`; actions `oauth_client_created`, `oauth_client_deleted`,
+  `webhook_created`, `webhook_updated`, `webhook_deleted` and
+  `webhook_reapproved` (`POST /admin/webhooks/{id}/reapprove`, session only); the
+  actor is the signed-in administrator, or for a webhook changed with an API key,
+  the key's owner. An OAuth client has no update route, so it has no update action.
+  Renaming its service user (`PATCH /admin/users/{id}`) renames the client too,
+  and that rename is **not audited**: `handleUpdateUser` writes no audit entry,
+  so this is a gap in editing users and not something this entry type covers.
+  **No secret and no URL token is ever written.** A client's entry carries
+  `client_name`, `scopes` and `service_user_id`, never the secret or its hash. A
+  webhook's carries `url_host` (the host only: the path and query are where the
+  token lives), `events`, `enabled`, `payload_format`, `filter` (ids and
+  priorities, as one JSON string) and `signed` (whether a signing secret is set,
+  not the secret). An update records both sides and adds `url_changed` or
+  `signature_changed` when the URL or the secret was replaced, since a rotated
+  token on the same host would otherwise look like no change; a `PATCH` that
+  repeats what is stored writes no entry. `client_name` and `url_host` are shown
+  by the Audit Log (they are text an administrator wrote and cannot hold ticket
+  content); the Audit Log page offers both entity types in its filter and shows
+  a client's name and scopes, or a hook's host and events, as a line on every
+  row of those two entity types: it is what names the client or hook on create
+  and delete rows, which have no diff, and it sits above the changed keys on
+  update and re-approval rows. A re-approval writes the hook's state on both sides
+  with `key_linked` (whether an API key was still tied to it) going from true to
+  false; it is written even for a hook with no link, because the approval is
+  what is recorded, and it carries the same fields as an edit, so no secret.
 - `api_keys.created_by` (migration 000050) records who issued each new key. It
   equals `user_id` when the owner made it and differs when it was issued on their
   behalf; NULL means unknown (a key made before 1.3, or an issuer deleted since).

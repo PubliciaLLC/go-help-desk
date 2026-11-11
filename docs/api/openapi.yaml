@@ -7002,6 +7002,7 @@ paths:
         (the one DELETE uses), client_id, the secret and the service user's
         user_id. scopes is required
         and must be a non-empty list of valid resource:action values.
+        Audited in the same transaction (entity_type oauth_client, action oauth_client_created); the entry holds the name, scopes and service user id, never the secret.
       tags: ['Admin: Credentials']
       x-ghd-handler: handleCreateOAuthClient
       security:
@@ -7090,6 +7091,7 @@ paths:
         the client is looked up again on every request. The user row is kept, so
         tickets and replies it wrote keep their author's name. An unknown id
         answers 404 not_found.
+        Audited in the same transaction (entity_type oauth_client, action oauth_client_deleted).
       tags: ['Admin: Credentials']
       x-ghd-handler: handleDeleteOAuthClient
       security:
@@ -8139,6 +8141,7 @@ paths:
         carries sha256=<hex HMAC-SHA256 of the body> in the X-GHD-Signature header, and the
         same value in X-OHD-Signature for older consumers. An empty secret means deliveries
         are not signed. enabled defaults to true.
+        Audited in the same transaction (entity_type webhook, action webhook_created); the entry holds the URL host only, never the path, query or secret.
       tags: ['Admin: Webhooks']
       x-ghd-handler: handleCreateWebhook
       security:
@@ -8233,6 +8236,7 @@ paths:
         link, and any other edit leaves it. While the hook is paused (its key revoked, expired,
         or its owner disabled or deleted) an API key cannot edit it: 403 webhook_paused, until a
         signed-in administrator re-approves it (POST /admin/webhooks/{id}/reapprove).
+        Audited in the same transaction (entity_type webhook, action webhook_updated, with url_changed or signature_changed when the URL or secret was replaced); a request that changes nothing writes no entry.
       tags: ['Admin: Webhooks']
       x-ghd-handler: handleUpdateWebhook
       security:
@@ -8313,6 +8317,7 @@ paths:
         Deletes the subscription, its last_delivery and its delivery history. A delivery already in flight
         finishes, but its result is discarded because the record is gone. An unknown id
         answers 404 not_found.
+        Audited in the same transaction (entity_type webhook, action webhook_deleted).
       tags: ['Admin: Webhooks']
       x-ghd-handler: handleDeleteWebhook
       security:
@@ -8362,6 +8367,7 @@ paths:
         longer depends on any key. An API key is refused with 403 session_required
         (an OAuth client with 403 forbidden). Calling it on a hook that is not
         paused simply clears the link. An unknown id answers 404 not_found.
+        Audited in the same transaction (entity_type webhook, action webhook_reapproved); the entry holds the hook's state as for an edit, with key_linked going from true to false, and never the URL path, query or secret.
       tags: ['Admin: Webhooks']
       x-ghd-handler: handleReapproveWebhook
       security:
