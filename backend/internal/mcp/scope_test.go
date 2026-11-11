@@ -42,6 +42,10 @@ func readTools(s *Server) map[string]func(context.Context) (*mcpgo.CallToolResul
 			return scoped(mcpRead, s.handleListCategories)(ctx,
 				callToolRequest("list_categories", map[string]any{}))
 		},
+		"list_attachments": func(ctx context.Context) (*mcpgo.CallToolResult, error) {
+			return scoped(mcpRead, s.handleListAttachments)(ctx,
+				callToolRequest("list_attachments", map[string]any{"ticket_id": uuid.New().String()}))
+		},
 	}
 }
 

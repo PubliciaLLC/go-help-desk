@@ -110,6 +110,12 @@ func TestTools_RefuseWithoutAuthenticatedActor(t *testing.T) {
 			},
 		},
 		{
+			name: "list_attachments",
+			call: func(ctx context.Context) (*mcpgo.CallToolResult, error) {
+				return s.handleListAttachments(ctx, callToolRequest("list_attachments", map[string]any{"ticket_id": ticketID}))
+			},
+		},
+		{
 			name: "list_categories",
 			call: func(ctx context.Context) (*mcpgo.CallToolResult, error) {
 				return s.handleListCategories(ctx, callToolRequest("list_categories", map[string]any{}))

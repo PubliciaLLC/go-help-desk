@@ -29,6 +29,8 @@ func TestTicketViews_OnlyStaffAndAdminGetSLAAndCanReopen(t *testing.T) {
 			require.Len(t, views, 1)
 			require.Nil(t, views[0].SLA)
 			require.False(t, views[0].CanReopen)
+			// No store is consulted for it either: s.tickets is nil here.
+			require.False(t, views[0].HasQuarantinedAttachment)
 		})
 	}
 	t.Run("no actor", func(t *testing.T) {
@@ -36,5 +38,6 @@ func TestTicketViews_OnlyStaffAndAdminGetSLAAndCanReopen(t *testing.T) {
 		require.NoError(t, err)
 		require.Nil(t, views[0].SLA)
 		require.False(t, views[0].CanReopen)
+		require.False(t, views[0].HasQuarantinedAttachment)
 	})
 }

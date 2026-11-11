@@ -306,6 +306,13 @@ SELECT * FROM attachments WHERE ticket_id = $1 ORDER BY created_at ASC;
 -- name: AnyAttachmentExists :one
 SELECT EXISTS (SELECT 1 FROM attachments);
 
+-- name: ListQuarantinedTicketIDs :many
+-- Which of these tickets hold a file the scanner held back. One row per ticket
+-- however many files, because the ticket list shows a marker, not a count. Uses
+-- the attachments ticket_id index; the page is already cut, so $1 is one page.
+SELECT DISTINCT ticket_id FROM attachments
+WHERE ticket_id = ANY(sqlc.arg(ticket_ids)::uuid[]) AND virus_name IS NOT NULL;
+
 -- name: DeleteAttachment :exec
 DELETE FROM attachments WHERE id = $1;
 

@@ -342,6 +342,11 @@ A search in the ticket list used to cover only the selected queue, so staff sear
 - **`sla` and `sort=sla` answer `400` while SLA tracking is off**, "SLA tracking is off", so an empty list is not read as "nothing is breached".
 - **Migrations 000060 and 000061 add indexes only** (`tickets_updated_at_idx`, `tickets_guest_name_trgm_idx`, `tickets_guest_email_trgm_idx`, and `tickets_type_id_idx`, which keeps a staff member's ticket list fast when their group covers one type of a category). No data is changed. They are plain index builds inside the migration (writes to tickets wait while one runs): 000061 took about 6 s and the index is 2.3 MB at 1M tickets. Under *Rolling Back to 1.2.0*: the down migrations drop those four indexes and lose nothing.
 
+### Quarantined Attachments: a Marker in the Ticket List and `list_attachments` Over MCP (#628)
+
+- **Ticket list.** A ticket that holds a quarantined file shows a "Quarantined file" badge beside Priority. The ticket JSON gains `has_quarantined_attachment: true` for staff and administrators, only when true; requesters never receive it. No migration.
+- **MCP.** New read tool `list_attachments` (`ticket_id`, a UUID or tracking number; needs `tickets:read`) returns each file's metadata, `virus_name`, `mismatch` and `quarantined`. It returns no file content and makes no reputation lookup. MCP had no attachment tool before.
+
 ### Forgot Password by Email (#451)
 
 The sign-in page has a **Forgot password?** link when the server can send email. The person enters their address, is mailed a link, and chooses a new password.
