@@ -3319,6 +3319,12 @@ func (s *Service) ListFiltered(ctx context.Context, f Filter) ([]Ticket, error) 
 	return s.store.ListFiltered(ctx, f)
 }
 
+// ListFilteredWithMeta is ListFiltered for a caller that reports what the
+// reply search could not do (GET /tickets).
+func (s *Service) ListFilteredWithMeta(ctx context.Context, f Filter) (ListResult, error) {
+	return s.store.ListFilteredWithMeta(ctx, f)
+}
+
 // SearchVisibleToStaff is ListVisibleToStaff with a search term.
 func (s *Service) SearchVisibleToStaff(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error) {
 	return s.store.SearchVisibleToStaff(ctx, userID, q, limit, offset)
