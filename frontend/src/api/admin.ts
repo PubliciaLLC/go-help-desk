@@ -2,6 +2,7 @@ import axios from 'axios'
 import { api, extractErrorCode } from './client'
 import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, WebhookDeliveryRecord, WebhookFilter, WebhookPayloadFormat, Tag, CannedResponse, FieldDef, FieldPlacement, FieldUsage, Assignment, ScopeType, SLAPolicy, ScopeInfo, OAuthClient, AdminAuditListResponse } from './types'
 import type { Role } from './types'
+import type { Passkey } from './passkeys'
 
 // DELETE where a not_found 404 means the row is already gone (#418). That is the
 // outcome the caller asked for, so it resolves. Any other failure rejects,
@@ -102,6 +103,18 @@ export async function updateUser(id: string, patch: {
  */
 export async function adminResetPassword(id: string, newPassword: string, revokeAPIKeys = false): Promise<void> {
   await api.post(`/admin/users/${id}/password`, { new_password: newPassword, revoke_api_keys: revokeAPIKeys })
+}
+
+/** One user's passkeys, as the owner sees them on their Account page (#615). */
+export async function listUserPasskeys(id: string): Promise<Passkey[]> {
+  const res = await api.get<Passkey[] | null>(`/admin/users/${id}/passkeys`)
+  // An account with no passkeys comes back as JSON null, not [].
+  return res.data ?? []
+}
+
+/** Removes one passkey and ends that user's sessions. Refused for your own account (409). */
+export async function removeUserPasskey(id: string, credId: string): Promise<void> {
+  await api.delete(`/admin/users/${id}/passkeys/${credId}`)
 }
 
 export async function deleteUser(id: string): Promise<void> {
