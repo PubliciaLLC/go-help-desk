@@ -3592,7 +3592,9 @@ on the existing webhook feature instead of as plugins.
   one way, so the id alone does not say which link went); `ticket.replied` and
   `ticket.note_added` have `reply_id`; `ticket.attachment_added` has
   `attachment_id`; `ticket.followed` and `ticket.unfollowed` have `user_id`.
-  Every other event has no payload. No link type is sent on `ticket.linked`.
+  Every other event has no payload, except that a hook which lists
+  `ticket.unfollowed` also gets `user_id` on a `ticket.assigned` delivery whose
+  reassignment dropped a follow; a hook that does not list it never does. No link type is sent on `ticket.linked`.
   No address, subject, tracking number, priority, status name or reply text is
   sent, and none is stored with it. The keys are an allow list, so a key added
   to an event later stays off the wire until someone decides a receiver should
@@ -4038,7 +4040,11 @@ under: `new_status_id` for `ticket.status_changed`, `target_id` for
 for `ticket.replied` and `ticket.note_added`, `attachment_id` for
 `ticket.attachment_added`, `user_id` for `ticket.followed` and
 `ticket.unfollowed`, nothing for any other name (`rawKeysFor`,
-`notify/webhook_body.go`). Headers: `X-GHD-Delivery` and `X-GHD-Event` (the same
+`notify/webhook_body.go`) with one exception: a hook that opted into
+`ticket.unfollowed` also gets `user_id` on a `ticket.assigned` delivery whose
+reassignment dropped a follow, and a hook that did not opt in never does. What
+is stored for a hook (its history, its queued row) holds only the ids that hook
+may receive. Headers: `X-GHD-Delivery` and `X-GHD-Event` (the same
 name as `Type`), plus the signature. `*` does not include `ticket.followed` and
 `ticket.unfollowed`: a hook gets those only by listing them. The OpenAPI
 `WebhookEvent` enum lists `*` and the fifteen names. The raw body already changed during the 1.3 betas

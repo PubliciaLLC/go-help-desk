@@ -338,3 +338,89 @@ func TestStaffFanout_SuppressedChangeMailsNobody(t *testing.T) {
 	require.NoError(t, f.Dispatch(context.Background(), ev))
 	require.NotEmpty(t, next.got, "the same change without the flag does mail: the test is not vacuous")
 }
+
+// The history keeps only the opt-in kinds a delivery carried, not every kind.
+// A replay is the name that was sent: if the history kept ticket.priority_changed
+// too, a replay's chat "Also" line would name it, and a hook that narrowed to
+// that name alone could be replayed a ticket.assigned delivery as if it were
+// subscribed to it.
+func TestRedeliver_HistoryKeepsOnlyOptInKinds(t *testing.T) {
+	rc := newReceiver(t, 200)
+	bodies := bodiesOf(rc)
+	hook := slackHook(rc.srv.URL, "*")
+	rig := newQueueRig(t, rc.srv.Client(), hook)
+	ev := g4Event(notification.EventTicketAssigned, nil)
+	ev.Kinds = []notification.EventType{notification.EventTicketAssigned, notification.EventTicketPriorityChanged}
+
+	require.NoError(t, rig.front.Dispatch(context.Background(), ev))
+	rig.drain(t)
+	require.Contains(t, bodies()[0], "Also: priority changed", "the original names the other kind")
+	first := rig.hooks.last()
+	require.Equal(t, "ticket.assigned", first.EventType)
+
+	require.NoError(t, rig.disp.Redeliver(context.Background(), hook.ID, first.DeliveryID))
+	rig.drain(t)
+	require.Equal(t, 2, rc.count())
+	require.Equal(t, "ticket.assigned", rc.header(1, "X-GHD-Event"), "a replay is the name that was sent")
+	require.NotContains(t, bodies()[1], "Also", "the history kept no kind that is not opt-in")
+
+	// Narrowing to the other kind must not make the replay go out under it.
+	rig.setHook(hook.ID, func(h *authstore.WebhookConfig) { h.Events = []string{"ticket.priority_changed"} })
+	require.ErrorIs(t, rig.disp.Redeliver(context.Background(), hook.ID, first.DeliveryID), ErrWebhookNotSubscribed)
+}
+
+// What is stored for a hook is what that hook may receive. A reassignment that
+// dropped a follow carries user_id; a hook that did not opt into
+// ticket.unfollowed is never sent it, so neither its history nor its outbox row
+// may hold the person's id.
+func TestStoredCopies_HoldOnlyWhatTheHookMayReceive(t *testing.T) {
+	person := uuid.New()
+	newEv := func() notification.Event {
+		ev := g4Event(notification.EventTicketAssigned, map[string]any{
+			"user_id": person, "new_status_id": uuid.New(), "target_id": uuid.New()})
+		ev.Kinds = []notification.EventType{notification.EventTicketAssigned, notification.EventTicketUnfollowed}
+		return ev
+	}
+	stores := func(t *testing.T, events ...string) (history, row string) {
+		t.Helper()
+		hook := hookOn("http://x", events...)
+		got, ok := forHook(hook, newEv())
+		require.True(t, ok)
+		h, err := encodeEvent(historyEvent(got))
+		require.NoError(t, err)
+		r, err := encodeEvent(rowFor(newEv(), hook))
+		require.NoError(t, err)
+		return string(h), string(r)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		events   []string
+		wantUser bool
+	}{
+		{"star", []string{"*"}, false},
+		{"assigned alone", []string{"ticket.assigned"}, false},
+		{"the other opt-in name", []string{"*", "ticket.followed"}, false},
+		{"opted in", []string{"*", "ticket.unfollowed"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			history, row := stores(t, tc.events...)
+			for what, stored := range map[string]string{"history": history, "row": row} {
+				if tc.wantUser {
+					require.Contains(t, stored, person.String(), what)
+				} else {
+					require.NotContains(t, stored, person.String(), what+" must not hold the person's id")
+					require.NotContains(t, stored, "user_id", what)
+				}
+				// Ids of other names are not this name's either.
+				require.NotContains(t, stored, "new_status_id", what)
+				require.NotContains(t, stored, "target_id", what)
+			}
+		})
+	}
+
+	// A row is sent under whatever name the hook subscribes to at the attempt, so
+	// it keeps the ids of every kind the hook subscribes to.
+	_, row := stores(t, "ticket.unfollowed")
+	require.Contains(t, row, person.String())
+}
