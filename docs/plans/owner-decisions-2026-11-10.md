@@ -47,6 +47,7 @@ a recommendation he accepted in bulk ("Accept all") from `pretag-fixes.md` and `
   - ranking capped to the N most recent reply matches;
   - a statement timeout on the reply arm, falling back to subject and description with `replies_searched: false`;
   - measured at 1M and 5M replies.
+- **Reply-search time limit at 5M replies.** A word in 1% or more of 5M replies passed the 2 s limit on the measured machine and fell back to ticket text. Erik chose "Longer limit (e.g. 5 s)": the statement limit on the reply arm is 5 s, the 2,000-reply cap is unchanged.
 - **Index-build warning:** "Bold warning + pre-build".
 - **Requester-name mask:** "Keep the three values", and each now covers every admin view in its scope. An unresolved name shows as **"Deleted account"**.
 - **Markdown formatter budget:** "Raise to 3 s".

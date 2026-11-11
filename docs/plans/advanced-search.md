@@ -525,7 +525,7 @@ rewrite and a migration that stops the server, and neither is needed:
   matches elsewhere used up the cap. A store test searches as a requester and as
   scoped staff with a cap of one.
 - **Time limit.** When replies are searched, the whole statement runs under a
-  two-second limit (a context deadline on the statement). If it runs out, the
+  five-second limit (a context deadline on the statement; it was two seconds until the owner's decision of 2026-11-11, below). If it runs out, the
   statement is cancelled and answered again without the reply arm, so the caller
   still gets the tickets that match on their own text, and
   `ReplySearchMeta{Searched: false}` (header `X-Replies-Searched: false`). A
@@ -593,19 +593,21 @@ ticket; ms; the same search without replies in brackets):
 
 A requester who owns 1,200 tickets: 11 to 486 ms. One who owns 5: under 10 ms.
 The cap is what bounds the common word: without it, a word in 10% of replies
-took 17 s. One run in a loaded period passed the two-second limit and was
+took 17 s. One run in a loaded period passed the then two-second limit and was
 answered from ticket text with the notice, as designed. At 5.25M replies on a memory-starved host (staff, ticket-only time in
 brackets): a word in 0.003% of replies 1,396 ms (1,118); 0.1% 1,853 (1,203);
-1% **timed out at 2 s**, 4,949 ms in all (930); 10% timed out, 7,946 (1,716);
+1% **timed out at the then 2 s limit**, 4,949 ms in all (930); 10% timed out, 7,946 (1,716);
 35% timed out, 5,133 (2,912). With a 60 s limit the capped part alone took 27 s
 for the 1% and 10% words: the plan is the intended one (walk `created_at` newest
 first, 111k rows read for 2,000 matches), but it read about 89,000 pages that
 did not stay in memory. **So at 5M on this host the cap alone does not bound a
-common word, and the two-second limit is what answers the request**, from ticket
+common word, and the time limit is what answers the request**, from ticket
 text with `X-Replies-Searched: false`. The fallback recomputes the statement
 without the reply arm, so a timed-out request costs about the limit plus the
-base query. Open for the owner: a smaller cap, or a sized-memory
-recommendation, if this is too slow on the hardware that matters.
+base query. **Decided 2026-11-11: "Longer limit (e.g. 5 s)".** The limit is now
+five seconds and the cap is unchanged; a very common word at millions of replies
+can take up to about 5 s before it falls back to ticket text only. The 5 s limit
+was not re-measured.
 
 **Not measured:** a quiet or dedicated server, a cold cache, requesters at 5M
 (that dataset has no requester accounts), and `maintenance_work_mem` under equal
@@ -761,7 +763,7 @@ database time.
 | `requester` from a key or OAuth client without `requester_search:read` | `403 insufficient_scope`, `"this credential does not carry the requester_search:read scope"` |
 | `sla` while SLA tracking is off | `400 bad_request`, `"SLA tracking is off"` (open question 7) |
 | `search_replies=true` with no `q` | no effect; not an error |
-| `search_replies=true` while reply search is still being prepared, or the reply part ran past two seconds | `200`, from subject, description and number only, with `X-Replies-Searched: false` (and `X-Reply-Index: building` while the index is built) and no `reply_match` |
+| `search_replies=true` while reply search is still being prepared, or the reply part ran past the time limit (five seconds) | `200`, from subject, description and number only, with `X-Replies-Searched: false` (and `X-Reply-Index: building` while the index is built) and no `reply_match` |
 | An id that names nothing | `200 []`. No existence check: it would cost a query and would show whether ids exist. |
 | Unknown parameter (`include_internal` included) | ignored, as today |
 
