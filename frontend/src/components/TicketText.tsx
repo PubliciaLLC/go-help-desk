@@ -25,6 +25,26 @@ const plainClass = 'whitespace-pre-wrap wrap-anywhere'
 // nothing and every one would swap an estimate for its real height on scrolling.
 const LAZY_LAYOUT_CHARS = 5_000
 
+// How wide one Latin character is in the post's own font, in pixels, with room
+// for what wrapping loses at the end of each row (part of a word that moved to
+// the next one: 6 to 10 percent measured). Measured, not assumed: half the font size
+// (Safari's and Chrome's sans-serif on a Mac) was 10 percent low in the wider
+// sans-serif of a Linux CI runner, which showed as a 2,000 px jump in WebKit, and
+// 20 percent low in a monospace font. A sentence with a normal letter mix, so
+// the average is a reader's, not the width of one letter.
+const LATIN_SAMPLE = 'Thanks for getting back to us. We tried restarting the service twice, but the error is still there.'
+const WRAP_LOSS = 1.1
+function latinCharWidth(el: HTMLElement, fontSize: number): number {
+  const style = getComputedStyle(el)
+  const ctx = document.createElement('canvas').getContext('2d')
+  if (ctx) {
+    ctx.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`
+    const width = ctx.measureText(LATIN_SAMPLE).width / LATIN_SAMPLE.length
+    if (width > 0) return width * WRAP_LOSS
+  }
+  return 0.5 * fontSize
+}
+
 // The plain text of a post. A long one is laid out only when it scrolls near the
 // screen, and until then the browser needs a height for it. Too small a guess
 // and the page grows under the reader as posts are drawn, and Safari, which does
@@ -37,18 +57,20 @@ function PlainText({ text, className }: { text: string; className?: string }) {
   useEffect(() => {
     const el = ref.current
     if (!lazy || !el || typeof ResizeObserver === 'undefined') return
+    const fontSize = parseFloat(getComputedStyle(el).fontSize)
+    const charWidth = latinCharWidth(el, fontSize)
+    // A wide character is a font size wide, whatever the font's Latin letters are.
+    const wideUnits = fontSize / charWidth
     let width = -1
     const observer = new ResizeObserver(() => {
       // Also fires when the post is drawn and its height changes; the width is
       // all the estimate depends on.
       if (el.clientWidth === width) return
       width = el.clientWidth
-      // Half the font size per Latin character (a wide one counts as two, see
-      // plainRows): measured from 320 to 1440 px in both engines, that puts the
-      // estimate within about 5 percent of the drawn height for English and
-      // Chinese prose, and exact for text written a line at a time.
-      const perRow = width / (0.5 * parseFloat(getComputedStyle(el).fontSize))
-      el.style.setProperty('--text-rows', String(plainRows(text, perRow)))
+      // Within about 7 percent of the drawn height for English and Chinese prose
+      // in sans-serif and monospace fonts, and exact for text written a line at
+      // a time.
+      el.style.setProperty('--text-rows', String(plainRows(text, width / charWidth, wideUnits)))
     })
     observer.observe(el)
     return () => observer.disconnect()

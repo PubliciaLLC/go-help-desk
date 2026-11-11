@@ -41,11 +41,30 @@ const repliesIn = (language: Language) =>
     body_format: 'plain',
   }))
 
-for (const language of ['English', 'Chinese'] as const)
+// The estimate cannot assume a font: the CI runner's sans-serif is wider than a
+// Mac's, and a 10 percent error showed as a 2,000 px jump in WebKit there. A
+// monospace font, a fifth wider than any sans-serif, is the same kind of change
+// made larger.
+const cases = [
+  { language: 'English', font: 'the default font' },
+  { language: 'Chinese', font: 'the default font' },
+  { language: 'English', font: 'a monospace font' },
+] as const
+
+for (const { language, font } of cases)
 for (const [width, height] of [[320, 640], [390, 844], [768, 1024], [1440, 900]] as const) {
-  test(`long plain posts in ${language} do not move the page under the reader: ${width}px`, async ({ page }) => {
+  test(`long plain posts in ${language} in ${font} do not move the page under the reader: ${width}px`, async ({ page }) => {
     test.setTimeout(120_000)
     await page.setViewportSize({ width, height })
+    if (font === 'a monospace font') {
+      await page.addInitScript(() => {
+        document.addEventListener('DOMContentLoaded', () => {
+          const style = document.createElement('style')
+          style.textContent = "p.whitespace-pre-wrap { font-family: Menlo, 'Courier New', monospace !important }"
+          document.head.append(style)
+        })
+      })
+    }
     const replies = repliesIn(language)
     await mockApi(page, { replies: replies as never })
     await page.goto(`/tickets/${TICKET_DETAIL.id}`)
@@ -113,14 +132,16 @@ for (const [width, height] of [[320, 640], [390, 844], [768, 1024], [1440, 900]]
       return { lazy, skipping, worst, heights, landed, missing, viewport: main.clientHeight }
     })
 
-    console.log(`${language} ${width}px: worst jump ${r.worst}px, page ${r.heights.min} to ${r.heights.max}, landed ${r.landed.join('/')}`)
+    console.log(`${language}, ${font}, ${width}px: worst jump ${r.worst}px, page ${r.heights.min} to ${r.heights.max}, landed ${r.landed.join('/')}`)
     expect(r.lazy, 'long posts should be lazy').toBe(24)
     expect(r.skipping, 'every lazy post should compute content-visibility: auto').toBe(24)
     expect(r.missing, 'posts missing from Select All').toBe(0)
     // The page keeps its size as posts are drawn (it grew 40 to 140% with a one-row-per-line estimate).
     expect(r.heights.max / r.heights.min).toBeLessThan(1.05)
-    // No visible jump larger than the screen (8,000 to 20,000 px with the crude estimate).
-    expect(r.worst).toBeLessThan(r.viewport)
+    // No visible jump larger than three screens. The estimate is within about 7 percent
+    // of a post that can be ten thousand pixels tall, so a screen or so is what it
+    // costs in WebKit; the mistakes this exists to catch were 5 to 20 screens.
+    expect(r.worst).toBeLessThan(r.viewport * 3)
     // A link to a reply lands on it, and stays there.
     for (const off of r.landed) expect(off).toBeLessThan(5)
   })

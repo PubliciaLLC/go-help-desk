@@ -1802,24 +1802,29 @@ guarantee. `dangerouslySetInnerHTML` and `rehype-raw` are banned by lint.
   and 4 to 5 s instead of 5 to 10 s to the first formatted post; #650). Until a post is drawn its height is an
   estimate (`contain-intrinsic-block-size`, with `auto` so the browser keeps the
   real height once it has drawn it): the post's own rows at the box's own width,
-  half the font size per character, with a wide character (Chinese, Japanese,
-  Korean, fullwidth forms, emoji) counting as two and a surrogate pair as one
-  (`lib/plainRows.ts`). That lands within about 5 percent of the real page height
-  for English and for Chinese prose and is exact for text written a line at a
-  time. It is not good for text that is mostly one width of letter: narrow Latin
-  ("iiii llll") comes out about twice too high, and wide Latin ("WWWW") and emoji
-  about 0.6 to 0.75 of the real height. A width that is not a width (a hidden
-  ancestor, 0) falls back to 80 characters a row, not one row per character. A
-  browser that has `content-visibility` but not the `lh` unit (Chrome 95 to 108)
-  gets the same estimate in `em`, at 1.5 times the font size a row. The estimate
-  matters because Safari does not keep the reader's place when content above them
-  changes size: with one row per stored line the page jumped 8,000 to 20,000 px
-  and grew by 40 to 140 percent as it was read, and with one unit per UTF-16
-  character Chinese text, which takes two units of width a character, jumped
-  2,820 to 11,060 px (5 to 13 screens). Measured now in WebKit, scrolling through
-  80 posts at 320 to 1440 px: Chinese moves at most 60 px, English at most 480 px
-  (half a screen, at 1440 px, when scrolling back up through posts not yet drawn),
-  and in Chromium nothing moves. Short posts are laid out
+  with the width of a Latin letter measured in the post's font on a canvas (an
+  assumed half of the font size was 10 percent low in the wider sans-serif of the
+  Linux CI runner and 20 percent low in a monospace font), 10 percent added for
+  what wrapping loses at the end of a row, and a wide character (Chinese,
+  Japanese, Korean, fullwidth forms, emoji) counting as one font size wide, a
+  surrogate pair as one character (`lib/plainRows.ts`). That lands within about 7
+  percent of the real height of a post for English in sans-serif and monospace
+  fonts and for Chinese, and is exact for text written a line at a time. It is
+  not good for text that is mostly one width of letter: narrow Latin ("iiii
+  llll") comes out about twice too high, and wide Latin ("WWWW") and emoji about
+  0.6 to 0.75 of the real height. A width that is not a width (a hidden ancestor,
+  0) falls back to 80 characters a row, not one row per character. A browser that
+  has `content-visibility` but not the `lh` unit (Chrome 95 to 108) gets the same
+  estimate in `em`, at 1.5 times the font size a row. The estimate matters because
+  Safari does not keep the reader's place when content above them changes size:
+  with one row per stored line the page jumped 8,000 to 20,000 px and grew by 40
+  to 140 percent as it was read, and with one unit per UTF-16 character Chinese
+  text, which is twice as wide a character, jumped 2,820 to 11,060 px (5 to 13
+  screens). Measured now in WebKit, scrolling through 30 posts at 320 to 1440 px:
+  Chinese moves at most 40 px, English in the default font at most 780 px (0.8 of
+  a screen, at 768 px, when scrolling back up through posts not yet drawn), English
+  in a monospace font at most 1,020 px (1.2 screens, at 1440 px), and in Chromium
+  nothing moves. Short posts are laid out
   as usual, nothing is rewritten, and Select All still holds every post
   (`e2e/lazy-layout.spec.ts`, both engines, four widths). **One post is still one
   element**, unlike the chunked rendering removed before 1.3.0, so copying within a

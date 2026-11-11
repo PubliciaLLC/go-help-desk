@@ -20,18 +20,19 @@ function isWide(cp: number): boolean {
 
 /**
  * How many rows plain text takes when a row holds `perRow` Latin characters. A
- * stored line is at least one row, and a longer one wraps; a wide character
- * counts as two, and a character beyond the BMP (a surrogate pair) as one, not
- * two. An estimate: it ignores where a word would have broken, and the width of
- * individual letters (measured: English prose 1.0 of the drawn height, CJK about
- * the same, narrow Latin such as "iiii" twice too high, wide Latin such as
- * "WWWW" and emoji about 0.6 to 0.75 of it).
+ * stored line is at least one row, and a longer one wraps. A wide character
+ * counts as `wideUnits` Latin characters (two unless the caller measured it) and
+ * a character beyond the BMP, a surrogate pair, as one character, not two. An
+ * estimate: it ignores where a word would have broken and the width of
+ * individual letters, so text of narrow letters ("iiii") comes out about twice
+ * too high and wide ones ("WWWW", emoji) about 0.6 to 0.75 of the drawn height.
  *
  * A `perRow` that is not a usable width (0, NaN, under one character) is the
  * default width, never one row per character.
  */
-export function plainRows(text: string, perRow: number): number {
+export function plainRows(text: string, perRow: number, wideUnits = 2): number {
   const per = perRow >= 1 && Number.isFinite(perRow) ? Math.floor(perRow) : DEFAULT_PER_ROW
+  const wide = wideUnits > 0 && Number.isFinite(wideUnits) ? wideUnits : 2
   let rows = 0
   let units = 0
   const endRow = () => {
@@ -53,7 +54,7 @@ export function plainRows(text: string, perRow: number): number {
         i++
       }
     }
-    units += isWide(cp) ? 2 : 1
+    units += isWide(cp) ? wide : 1
   }
   endRow()
   return rows

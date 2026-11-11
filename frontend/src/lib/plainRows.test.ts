@@ -58,3 +58,17 @@ describe('plainRows with no usable width', () => {
   })
 })
 
+// A wide character is about a font size wide and a Latin one about 0.46 to 0.6 of
+// it, so how many Latin characters it is worth depends on the font.
+describe('plainRows with a measured width for wide characters', () => {
+  it('uses the weight it is given', () => {
+    expect(plainRows('\u6253'.repeat(14), 40)).toBe(1)
+    expect(plainRows('\u6253'.repeat(14), 40, 3)).toBe(2)
+    expect(plainRows('\u6253'.repeat(26), 40, 1.5)).toBe(1)
+  })
+  it.each([['NaN', NaN], ['zero', 0], ['negative', -1], ['Infinity', Infinity]])('%s weight counts a wide character as two', (_, weight) => {
+    expect(plainRows('\u6253'.repeat(21), 40, weight)).toBe(2)
+    expect(plainRows('\u6253'.repeat(20), 40, weight)).toBe(1)
+  })
+})
+
