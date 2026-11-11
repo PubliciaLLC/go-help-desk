@@ -90,7 +90,7 @@ test('a normal post is still formatted, and soon', async ({ page }) => {
   await expect(page.locator('[data-md-body] strong').first()).toHaveText('bold', { timeout: 3000 })
 })
 
-// The budget itself: BUDGET_MS (1 s) in lib/markdownBackend.ts. The inputs above
+// The budget itself: BUDGET_MS (3 s) in lib/markdownBackend.ts. The inputs above
 // are refused by the length and complexity limits or finish in time, so none of
 // them proves that a worker which does NOT answer is cut off. This forces that:
 // the worker script is served with a hook that spins forever on one marker text
@@ -141,6 +141,35 @@ test('a post that overruns the time budget is shown as written, its worker is te
   expect(workers.length, 'the next post should have started a new worker').toBeGreaterThan(1)
 })
 
+// The budget must leave room for a slow machine. A post at the length limit made
+// of 12,400 hard breaks takes about 0.6 s to format on a developer laptop, so a
+// 1 s budget had under 2x headroom: on a loaded CI runner the first post of the
+// page overran, was shown as "too complex to format" (untrue of it), and as it is
+// tall nothing else came near the screen to be formatted, so the page never held
+// a formatted post. The worker here is made 1.2 s slower, as a machine about three
+// times slower would be; the post must still be formatted.
+test('a post at the length limit on a slow machine is still formatted, not called too complex', async ({ page }) => {
+  test.setTimeout(30_000)
+  await page.route('**/markdown.worker*', async (route) => {
+    const response = await route.fetch()
+    const hook = `
+;{
+  const real = self.onmessage
+  self.onmessage = (e) => {
+    const start = performance.now()
+    while (performance.now() - start < 1200);
+    real(e)
+  }
+}
+`
+    await route.fulfill({ response, body: (await response.text()) + hook })
+  })
+  await mockApi(page, { replies: [{ ...REPLIES[0], body: lines(0), body_format: 'markdown' }] })
+  await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+  await expect(page.locator('[data-md-body]').first()).toBeVisible({ timeout: 8000 })
+  await expect(page.getByText(/too complex to format/i)).toHaveCount(0)
+})
+
 // Memory: every formatted post holds a tree and its elements. 220 replies of
 // 50 KB each took 3.76 GB of heap when all were formatted. Posts now format only
 // near the screen and the page has a budget, so the heap stays bounded however
@@ -164,7 +193,13 @@ test('220 hostile replies keep the heap bounded, on open and after jumping throu
   const replies = Array.from({ length: 220 }, (_, i) => ({ ...REPLIES[0], id: `r-${i}`, body: lines(i), body_format: 'markdown' }))
   await mockApi(page, { replies })
   await page.goto(`/tickets/${TICKET_DETAIL.id}`)
-  await expect(page.locator('[data-md-body]').first()).toBeVisible({ timeout: 15_000 })
+  // Cold-start wait, not one of the bounds below. Before the first post can be
+  // formatted the browser lays out all 220 posts as plain text: 11 MB, 2.7 million
+  // lines. Measured on an idle 10-core Mac that is 3.3 s of main-thread layout and
+  // 7 s to the first formatted post, so a CI runner two or three times slower
+  // overran the old 15 s (the #640 flake; one trace showed the worker not even
+  // requested until 46 s in, the page being busy). Nothing asserted below waits on it.
+  await expect(page.locator('[data-md-body]').first()).toBeVisible({ timeout: 45_000 })
   await page.waitForTimeout(3000)
 
   expect(await page.locator('[data-md-body]').count(), 'posts far below the screen were formatted').toBeLessThan(25)
