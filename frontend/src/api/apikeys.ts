@@ -1,4 +1,5 @@
 import { api } from './client'
+import { seg } from './seg'
 import type { MyAPIKey, ScopeInfo } from './types'
 
 // The caller's own API keys (#450). Its own module: these are /me routes for
@@ -25,5 +26,5 @@ export async function createMyAPIKey(input: {
 }
 
 export async function deleteMyAPIKey(id: string): Promise<void> {
-  await api.delete(`/me/api-keys/${encodeURIComponent(id)}`)
+  await api.delete(`/me/api-keys/${seg(id)}`)
 }
