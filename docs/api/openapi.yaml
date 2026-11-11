@@ -4971,6 +4971,24 @@ paths:
                         format: date-time
                       expired:
                         type: boolean
+                  saml_metadata_refresh:
+                    type: object
+                    required: [problem]
+                    description: |
+                      Present only when SAML is loaded and the hourly refresh of the
+                      IdP metadata cannot do its job or declined what it fetched.
+                      http_url: the metadata URL is not https, so it is never
+                      refreshed. entity_id_changed: the refreshed metadata names a
+                      different entity ID. certificate_changed: the refreshed
+                      signing certificates have none in common with the one in use
+                      (a rollover that publishes the old certificate beside the new
+                      is applied without a warning). For the last two nothing was
+                      applied and an administrator must save the SAML settings again
+                      to accept the new metadata. The admin UI shows a notice.
+                    properties:
+                      problem:
+                        type: string
+                        enum: [http_url, entity_id_changed, certificate_changed]
                   update:
                     type: object
                     required: [current, latest, url]

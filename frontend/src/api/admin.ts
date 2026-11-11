@@ -738,6 +738,15 @@ export interface SecurityWarnings {
   saml_idp_certificate?: { expires_at: string; expired: boolean }
 
   /**
+   * The hourly refresh of the SAML IdP metadata cannot run or declined what it
+   * fetched (#619). `http_url`: the metadata URL is not https, so it is never
+   * refreshed. `entity_id_changed` and `certificate_changed`: the new metadata
+   * was not applied, and an administrator must re-save the SAML settings to
+   * accept it. Absent otherwise.
+   */
+  saml_metadata_refresh?: { problem: 'http_url' | 'entity_id_changed' | 'certificate_changed' }
+
+  /**
    * A stable release newer than the one running, found by the opt-in update
    * check (#170). Absent when none was found or the check is off.
    */

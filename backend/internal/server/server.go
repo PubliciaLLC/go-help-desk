@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -306,6 +307,18 @@ type Server struct {
 	// samlMu guards samlHandler. The handler is nil when SAML is not configured.
 	samlMu      sync.RWMutex
 	samlHandler *samlsp.Middleware
+	// samlBuiltFrom is the stored configuration samlHandler was built from, and
+	// samlRefreshProblem why the hourly refresh declined to apply fresh metadata
+	// ("" when it did not). Both under samlMu. See RefreshSAML.
+	samlBuiltFrom      samlSettings
+	samlRefreshProblem string
+	samlMetadataClient *http.Client // nil outside tests
+	// samlReloadMu serialises everything that reads the stored SAML settings,
+	// builds from them and commits: a build can take 15 seconds on the network,
+	// and an older reload that commits after a newer one puts the old
+	// configuration back live. oidcReloadMu does the same for OIDC.
+	samlReloadMu sync.Mutex
+	oidcReloadMu sync.Mutex
 
 	// oidcMu guards oidcProvider because OIDC configuration can be
 	// reloaded at runtime from the admin settings UI.
@@ -855,6 +868,10 @@ func (s *Server) commitOIDCProvider(p *auth.OIDCProvider) {
 // InitOIDC initializes the OpenID Connect provider.
 // OIDC is optional; startup continues when it is not configured.
 func (s *Server) InitOIDC(ctx context.Context) error {
+	// One lock across read, build (discovery, up to 15 seconds) and commit, so an
+	// older reload cannot commit after a newer one.
+	s.oidcReloadMu.Lock()
+	defer s.oidcReloadMu.Unlock()
 	cfg := s.adminSvc.GetOIDCConfig(ctx)
 	_, provider, commit, err := s.buildOIDCProvider(ctx, cfg)
 	if !commit {
@@ -873,18 +890,6 @@ func (s *Server) InitOIDC(ctx context.Context) error {
 func (s *Server) InitSAML(ctx context.Context) {
 	if err := s.reloadSAML(ctx); err != nil {
 		slog.Warn("SAML middleware not loaded at startup", "error", err)
-	}
-}
-
-// RefreshSAML reloads SAML from the stored settings; main calls it from the
-// hourly ticker. A metadata URL is fetched only when the middleware is built, so
-// without this an IdP's rolled certificate or moved endpoint was not picked up
-// until a restart, and a save on another replica did not reach this one (#619).
-// A failed build keeps the running middleware (reloadSAML's fail-safe), so an
-// IdP that is down for an hour changes nothing.
-func (s *Server) RefreshSAML(ctx context.Context) {
-	if err := s.reloadSAML(ctx); err != nil {
-		slog.WarnContext(ctx, "SAML metadata refresh failed; keeping the running configuration", "error", err)
 	}
 }
 
@@ -914,6 +919,12 @@ func (s *Server) RefreshSAML(ctx context.Context) {
 // so reachable is false whenever cfg itself fails to build, regardless of
 // what a DIFFERENT, currently-live config says.
 func (s *Server) buildSAMLMiddleware(ctx context.Context, c samlSettings) (reachable bool, mw *samlsp.Middleware, commit bool, err error) {
+	return s.buildSAMLMiddlewareWith(ctx, c, false)
+}
+
+// buildSAMLMiddlewareWith is buildSAMLMiddleware with the metadata fetch
+// optionally limited to https (the unattended refresh).
+func (s *Server) buildSAMLMiddlewareWith(ctx context.Context, c samlSettings, httpsOnly bool) (reachable bool, mw *samlsp.Middleware, commit bool, err error) {
 	if !samlFieldsLookConfigured(c) {
 		return false, nil, true, nil
 	}
@@ -923,6 +934,8 @@ func (s *Server) buildSAMLMiddleware(ctx context.Context, c samlSettings) (reach
 		MetadataXML: []byte(c.MetadataXML),
 		CertPEM:     []byte(c.CertPEM),
 		KeyPEM:      []byte(c.KeyPEM),
+		HTTPSOnly:   httpsOnly,
+		HTTPClient:  s.samlMetadataClient,
 	})
 	if buildErr != nil {
 		return false, nil, false, buildErr
@@ -935,26 +948,137 @@ func (s *Server) buildSAMLMiddleware(ctx context.Context, c samlSettings) (reach
 	return true, mw, true, nil
 }
 
-// commitSAMLMiddleware installs mw as the live SAML handler. mw is nil when
-// SAML is not configured.
-func (s *Server) commitSAMLMiddleware(mw *samlsp.Middleware) {
+// commitSAMLMiddleware installs mw as the live SAML handler, built from c. mw is
+// nil when SAML is not configured. A commit is a configuration somebody chose
+// (a save, or a refresh that passed its tests), so any earlier "refresh
+// declined" warning no longer applies.
+func (s *Server) commitSAMLMiddleware(mw *samlsp.Middleware, c samlSettings) {
 	s.samlMu.Lock()
 	s.samlHandler = mw
+	s.samlBuiltFrom = c
+	s.samlRefreshProblem = ""
 	s.samlMu.Unlock()
 }
 
 // reloadSAML reads the SAML settings from the database, (re)initialises
 // the crewjam/saml middleware, and stores it for use by the request handlers.
-// Callers must hold no lock; this method acquires the write lock internally.
+// Serialised with every other reload, which holds the lock across read, build
+// and commit.
 func (s *Server) reloadSAML(ctx context.Context) error {
-	c := s.storedSAMLSettings(ctx)
+	s.samlReloadMu.Lock()
+	defer s.samlReloadMu.Unlock()
+	return s.reloadSAMLLocked(ctx, s.storedSAMLSettings(ctx))
+}
+
+// reloadSAMLLocked loads c, which the caller read while holding samlReloadMu.
+func (s *Server) reloadSAMLLocked(ctx context.Context, c samlSettings) error {
 	_, mw, commit, err := s.buildSAMLMiddleware(ctx, c)
 	if !commit {
 		return err
 	}
-	s.commitSAMLMiddleware(mw)
+	s.commitSAMLMiddleware(mw, c)
 	if mw != nil {
 		slog.Info("SAML middleware loaded", "metadata_url", c.MetadataURL, "metadata_xml", c.MetadataXML != "")
+	}
+	return nil
+}
+
+// Why RefreshSAML declined to apply fresh metadata. Reported by
+// GET /admin/security-warnings as saml_metadata_refresh.problem.
+const (
+	samlRefreshHTTPURL       = "http_url"
+	samlRefreshEntityChanged = "entity_id_changed"
+	samlRefreshCertChanged   = "certificate_changed"
+)
+
+// RefreshSAML is main's hourly tick for SAML (#619). It does two different
+// things, and the line between them is what makes it safe.
+//
+// 1. The stored settings differ from what the running middleware was built from
+// (an administrator saved on another replica, or nothing has loaded yet): load
+// them as a save does. That is the administrator's own choice, so it needs no
+// further test.
+//
+// 2. They are the same: re-read the IdP's metadata URL. Nobody is watching this
+// one, and it can change what the SP trusts to sign in anyone, so it is limited:
+//   - Only https is fetched, and no redirect may leave https. With an http URL
+//     the refresh does nothing; the security warnings say the URL must be https.
+//   - The EntityID must be the one in use.
+//   - A changed signing-certificate set is applied only if at least one
+//     certificate in use is still published (the normal rollover publishes old
+//     and new together). With none in common it is not applied, and the warnings
+//     tell an administrator to re-save the SAML settings to accept it.
+//
+// Anything refused keeps the running middleware. A fetch that fails (the IdP is
+// down) also keeps it and is not a warning: an outage is not a trust problem.
+// Pasted XML has nothing to refetch.
+func (s *Server) RefreshSAML(ctx context.Context) {
+	s.samlReloadMu.Lock()
+	defer s.samlReloadMu.Unlock()
+
+	c := s.storedSAMLSettings(ctx)
+	s.samlMu.RLock()
+	live, builtFrom := s.samlHandler, s.samlBuiltFrom
+	s.samlMu.RUnlock()
+
+	if live == nil || c != builtFrom {
+		if err := s.reloadSAMLLocked(ctx, c); err != nil {
+			slog.WarnContext(ctx, "SAML reload failed; keeping the running configuration", "error", err)
+		}
+		return
+	}
+	if c.MetadataURL == "" || c.MetadataXML != "" {
+		return
+	}
+	if u, err := url.Parse(c.MetadataURL); err != nil || u.Scheme != "https" {
+		// Not recorded here: the warnings read the stored URL, so it shows the
+		// moment the URL is saved and clears the moment it is fixed.
+		slog.InfoContext(ctx, "SAML metadata is not refreshed automatically: the metadata URL is not https")
+		return
+	}
+
+	_, mw, commit, err := s.buildSAMLMiddlewareWith(ctx, c, true)
+	if !commit || mw == nil {
+		slog.WarnContext(ctx, "SAML metadata refresh failed; keeping the running configuration", "error", err)
+		return
+	}
+	oldMD, newMD := live.ServiceProvider.IDPMetadata, mw.ServiceProvider.IDPMetadata
+	switch {
+	case oldMD == nil || newMD == nil || newMD.EntityID != oldMD.EntityID:
+		s.setSAMLRefreshProblem(samlRefreshEntityChanged)
+		slog.ErrorContext(ctx, "refreshed SAML metadata has a different EntityID; keeping the running configuration")
+	case !auth.SigningCertsOverlap(oldMD, newMD):
+		s.setSAMLRefreshProblem(samlRefreshCertChanged)
+		slog.ErrorContext(ctx, "refreshed SAML metadata has no signing certificate in common with the one in use; keeping the running configuration until an administrator re-saves the SAML settings")
+	default:
+		s.commitSAMLMiddleware(mw, c)
+	}
+}
+
+func (s *Server) setSAMLRefreshProblem(problem string) {
+	s.samlMu.Lock()
+	s.samlRefreshProblem = problem
+	s.samlMu.Unlock()
+}
+
+// samlMetadataRefreshWarning is the security warning for a refresh that was
+// declined, or for a metadata URL the refresh will never fetch. Nil when there
+// is nothing to say, or SAML is not loaded.
+func (s *Server) samlMetadataRefreshWarning(ctx context.Context) *samlRefreshStatus {
+	s.samlMu.RLock()
+	live, problem := s.samlHandler != nil, s.samlRefreshProblem
+	s.samlMu.RUnlock()
+	if !live {
+		return nil
+	}
+	if problem != "" {
+		return &samlRefreshStatus{Problem: problem}
+	}
+	c := s.storedSAMLSettings(ctx)
+	if c.MetadataURL != "" && c.MetadataXML == "" {
+		if u, err := url.Parse(c.MetadataURL); err != nil || u.Scheme != "https" {
+			return &samlRefreshStatus{Problem: samlRefreshHTTPURL}
+		}
 	}
 	return nil
 }

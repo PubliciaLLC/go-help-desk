@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -97,6 +98,14 @@ type SAMLConfig struct {
 	// CertPEM and KeyPEM are the PEM-encoded SP signing certificate and private key.
 	CertPEM []byte
 	KeyPEM  []byte
+	// HTTPSOnly refuses a metadata URL that is not https, and a redirect that
+	// leaves https, so nothing is fetched. For the periodic refresh, which runs
+	// unattended and may swap what the SP trusts; a save by an administrator
+	// does not set it.
+	HTTPSOnly bool
+	// HTTPClient fetches the metadata URL. Nil means a client with
+	// metadataFetchTimeout. Tests give one that trusts their TLS server.
+	HTTPClient *http.Client
 }
 
 // NewSAMLMiddleware constructs a crewjam/saml middleware for the given config.
@@ -147,7 +156,7 @@ func NewSAMLMiddleware(ctx context.Context, cfg SAMLConfig) (*samlsp.Middleware,
 			return nil, fmt.Errorf("parsing IdP metadata XML: %w", err)
 		}
 	} else {
-		idpMeta, err = fetchIdPMetadata(ctx, cfg.MetadataURL)
+		idpMeta, err = fetchIdPMetadata(ctx, cfg.MetadataURL, cfg.HTTPClient, cfg.HTTPSOnly)
 		if err != nil {
 			return nil, err
 		}
@@ -204,10 +213,13 @@ func NewSAMLMiddleware(ctx context.Context, cfg SAMLConfig) (*samlsp.Middleware,
 }
 
 // fetchIdPMetadata fetches and parses the IdP metadata at rawURL.
-func fetchIdPMetadata(ctx context.Context, rawURL string) (*saml.EntityDescriptor, error) {
+func fetchIdPMetadata(ctx context.Context, rawURL string, client *http.Client, httpsOnly bool) (*saml.EntityDescriptor, error) {
 	metadataURL, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("parsing IdP metadata URL: %w", err)
+	}
+	if httpsOnly && metadataURL.Scheme != "https" {
+		return nil, errors.New("the IdP metadata URL must be https")
 	}
 	// The caller's context is honoured rather than discarded, so a shutdown or
 	// a cancelled admin request stops the fetch instead of outliving it.
@@ -220,7 +232,25 @@ func fetchIdPMetadata(ctx context.Context, rawURL string) (*saml.EntityDescripto
 	// by the timeout and by not echoing the fetch error back to the caller —
 	// see handleSaveSAMLConfig. Webhook targets ARE guarded, because those are
 	// external by definition.
-	idpMeta, err := samlsp.FetchMetadata(fetchCtx, &http.Client{Timeout: metadataFetchTimeout}, *metadataURL)
+	c := &http.Client{Timeout: metadataFetchTimeout}
+	if client != nil {
+		copied := *client
+		c = &copied
+	}
+	if httpsOnly {
+		// The default policy follows a redirect to http, which would put the
+		// trust anchor back in the clear.
+		c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			if req.URL.Scheme != "https" {
+				return errors.New("the IdP metadata URL redirected away from https")
+			}
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+			return nil
+		}
+	}
+	idpMeta, err := samlsp.FetchMetadata(fetchCtx, c, *metadataURL)
 	if err != nil {
 		return nil, fmt.Errorf("fetching IdP metadata from %s: %w", rawURL, err)
 	}

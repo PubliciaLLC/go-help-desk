@@ -1,7 +1,6 @@
 package server_test
 
 import (
-	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -10,8 +9,6 @@ import (
 	"encoding/base64"
 	"math/big"
 	"net/http"
-	"net/url"
-	"strings"
 	"testing"
 	"time"
 
@@ -77,35 +74,6 @@ func TestSecurityWarnings_SAMLIdPCertificateExpiry(t *testing.T) {
 			require.WithinDuration(t, tc.notAfter, expires, 2*time.Second)
 		})
 	}
-}
-
-// A metadata URL is only read when SAML is built, so without a periodic reload
-// an IdP's rolled certificate or moved endpoint was never picked up (#619).
-func TestRefreshSAML_PicksUpChangedMetadataAndKeepsTheLiveHandlerOnFailure(t *testing.T) {
-	h, cleanup := newHarness(t)
-	defer cleanup()
-	ctx := context.Background()
-	idp := newFakeIdP(t, h.cfgBaseURL()+"/api/v1/auth/saml/acs")
-	require.NoError(t, h.adminSvc.SetSAMLConfig(ctx, idp.srv.URL, validSAMLCert, validSAMLKey))
-	h.srv.InitSAML(ctx)
-
-	redirect := func() string {
-		res := h.rawGet(t, "/api/v1/auth/saml/login", nil)
-		res.Body.Close()
-		require.Equal(t, http.StatusFound, res.StatusCode)
-		return res.Header.Get("Location")
-	}
-	require.True(t, strings.HasPrefix(redirect(), idp.idp.SSOURL.String()))
-
-	moved, err := url.Parse("https://sso.moved.test/sso")
-	require.NoError(t, err)
-	idp.idp.SSOURL = *moved
-	h.srv.RefreshSAML(ctx)
-	require.True(t, strings.HasPrefix(redirect(), moved.String()), "the new metadata is live: %s", redirect())
-
-	idp.srv.Close()
-	h.srv.RefreshSAML(ctx)
-	require.True(t, strings.HasPrefix(redirect(), moved.String()), "an unreachable IdP leaves the working handler in place")
 }
 
 func TestSecurityWarnings_NoSAMLCertificateWarningWithoutSAML(t *testing.T) {

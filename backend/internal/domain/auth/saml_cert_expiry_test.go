@@ -75,7 +75,7 @@ func TestIdPSigningCertExpiry(t *testing.T) {
 		})
 	}
 
-	t.Run("nil metadata", func(t *testing.T) {
+	t.Run("nil metadata (expiry)", func(t *testing.T) {
 		if _, ok := auth.IdPSigningCertExpiry(nil); ok {
 			t.Fatal("got a date from nothing")
 		}
@@ -91,4 +91,42 @@ func TestIdPSigningCertExpiry(t *testing.T) {
 			t.Fatalf("got %v (ok=%v), want %v", got, ok, later)
 		}
 	})
+}
+
+// A refresh may swap the IdP's trust anchor only when the published
+// certificates overlap: the normal rollover publishes old and new together.
+func TestSigningCertsOverlap(t *testing.T) {
+	a := certDescriptor(t, "", time.Now().Add(100*24*time.Hour))
+	b := certDescriptor(t, "", time.Now().Add(200*24*time.Hour))
+	c := certDescriptor(t, "", time.Now().Add(300*24*time.Hour))
+	enc := a
+	enc.Use = "encryption"
+	md := func(kds ...saml.KeyDescriptor) *saml.EntityDescriptor {
+		return &saml.EntityDescriptor{IDPSSODescriptors: []saml.IDPSSODescriptor{
+			{SSODescriptor: saml.SSODescriptor{RoleDescriptor: saml.RoleDescriptor{KeyDescriptors: kds}}},
+		}}
+	}
+	tests := []struct {
+		name     string
+		old, new *saml.EntityDescriptor
+		want     bool
+	}{
+		{"identical", md(a), md(a), true},
+		{"rollover: old published alongside new", md(a), md(a, b), true},
+		{"rollover: one of two old certs remains", md(a, b), md(b, c), true},
+		{"full replacement", md(a), md(b), false},
+		{"full replacement of a pair", md(a, b), md(c), false},
+		{"the old cert only as an encryption key does not count", md(a), md(enc, b), false},
+		{"old has no signing cert", md(), md(a), false},
+		{"new has no signing cert", md(a), md(), false},
+		{"nil old", nil, md(a), false},
+		{"nil new", md(a), nil, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := auth.SigningCertsOverlap(tc.old, tc.new); got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
 }

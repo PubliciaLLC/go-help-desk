@@ -8,7 +8,10 @@ import { InsecureConfigBanner } from './InsecureConfigBanner'
 // metadata pasted as XML never refreshes itself. The banner is the only warning
 // an administrator gets before that happens.
 
-function mockWarnings(samlIdpCertificate?: { expires_at: string; expired: boolean }) {
+function mockWarnings(
+  samlIdpCertificate?: { expires_at: string; expired: boolean },
+  samlMetadataRefresh?: { problem: string },
+) {
   vi.spyOn(api, 'get').mockImplementation(((url: string) => {
     if (url === '/admin/security-warnings') {
       return Promise.resolve({
@@ -16,6 +19,7 @@ function mockWarnings(samlIdpCertificate?: { expires_at: string; expired: boolea
           insecure_secrets: [],
           attachment_scanning: { policy: 'off', configured: false, reachable: false, effect: '' },
           saml_idp_certificate: samlIdpCertificate,
+          saml_metadata_refresh: samlMetadataRefresh,
         },
       })
     }
@@ -52,5 +56,37 @@ describe('the SAML IdP certificate warning', () => {
 
     await waitFor(() => expect(api.get).toHaveBeenCalledWith('/admin/security-warnings'))
     expect(screen.queryByRole('region', { name: 'Server notices' })).toBeNull()
+  })
+})
+
+// The hourly metadata refresh may not move the trust anchor unattended
+// (#619): it declines, and an administrator is told why.
+describe('the SAML metadata refresh warning', () => {
+  it('tells an administrator an http metadata URL is never refreshed', async () => {
+    mockWarnings(undefined, { problem: 'http_url' })
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+
+    const text = (await screen.findByRole('region', { name: 'Server notices' })).textContent ?? ''
+    expect(text).toContain('SAML metadata is not refreshed automatically')
+    expect(text).toContain('https')
+  })
+
+  it('says the IdP changed its signing certificate and an administrator must re-save', async () => {
+    mockWarnings(undefined, { problem: 'certificate_changed' })
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+
+    const text = (await screen.findByRole('region', { name: 'Server notices' })).textContent ?? ''
+    expect(text).toContain('signing certificate changed')
+    expect(text).toContain('re-save')
+    expect(text).toContain('was not applied')
+  })
+
+  it('says the IdP entity ID changed and was not applied', async () => {
+    mockWarnings(undefined, { problem: 'entity_id_changed' })
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+
+    const text = (await screen.findByRole('region', { name: 'Server notices' })).textContent ?? ''
+    expect(text).toContain('entity ID changed')
+    expect(text).toContain('re-save')
   })
 })

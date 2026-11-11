@@ -134,3 +134,7 @@ func (s *Server) RequesterForTest(ctx context.Context, a *authmw.Actor, t ticket
 	}
 	return nil
 }
+
+// SetSAMLMetadataClientForTest gives the SAML metadata fetch a client that
+// trusts the test's TLS server.
+func (s *Server) SetSAMLMetadataClientForTest(c *http.Client) { s.samlMetadataClient = c }

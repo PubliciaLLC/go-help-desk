@@ -1135,6 +1135,14 @@ type securityWarnings struct {
 	// the only warning before it happens.
 	SAMLIdPCertificate *samlIdPCertStatus `json:"saml_idp_certificate,omitempty"`
 
+	// SAMLMetadataRefresh is set when the hourly refresh of the IdP's metadata
+	// cannot do its job or declined to apply what it fetched (#619): the metadata
+	// URL is not https (problem http_url), the refreshed EntityID differs
+	// (entity_id_changed), or the signing certificate was replaced with none in
+	// common with the one in use (certificate_changed). The last two need an
+	// administrator to re-save the SAML settings. Absent otherwise.
+	SAMLMetadataRefresh *samlRefreshStatus `json:"saml_metadata_refresh,omitempty"`
+
 	// Update is set when the opt-in update check (#170) has found a release
 	// newer than the one running. Absent otherwise, including while the check
 	// is off. Read from the stored answer: this endpoint never causes a request.
@@ -1271,6 +1279,7 @@ func (s *Server) handleGetSecurityWarnings(w http.ResponseWriter, r *http.Reques
 	JSON(w, http.StatusOK, securityWarnings{
 		Update:                    update,
 		SAMLIdPCertificate:        s.samlIdPCertificateWarning(),
+		SAMLMetadataRefresh:       s.samlMetadataRefreshWarning(r.Context()),
 		ReopenTarget:              reopen,
 		InsecureSecrets:           s.cfg.InsecureSecrets(),
 		AttachmentScanning:        s.scanStatus(r.Context()),

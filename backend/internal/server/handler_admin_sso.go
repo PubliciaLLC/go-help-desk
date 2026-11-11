@@ -61,6 +61,11 @@ func (s *Server) handleSaveOIDCConfig(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
+	// Held from reading the stored config to the commit, as InitOIDC holds it,
+	// so a settings PATCH cannot commit older settings over this save.
+	s.oidcReloadMu.Lock()
+	defer s.oidcReloadMu.Unlock()
+
 	existing := s.adminSvc.GetOIDCConfig(ctx)
 
 	clientSecret := body.ClientSecret
@@ -176,6 +181,12 @@ func touchesOIDCProvider(body map[string]json.RawMessage) bool {
 // be downloaded and pasted.
 const samlCertWarnWindow = 30 * 24 * time.Hour
 
+// samlRefreshStatus is the security warning for the hourly metadata refresh
+// (see RefreshSAML). Problem is one of the samlRefresh* constants.
+type samlRefreshStatus struct {
+	Problem string `json:"problem"`
+}
+
 // samlIdPCertStatus is the security warning for a SAML IdP signing certificate
 // that is expired or about to be (#619).
 type samlIdPCertStatus struct {
@@ -279,6 +290,12 @@ func (s *Server) handleSaveSAMLConfig(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
+	// Held from reading the stored settings to the commit, as every SAML reload
+	// is, so the hourly refresh or a settings PATCH cannot commit older settings
+	// over this save.
+	s.samlReloadMu.Lock()
+	defer s.samlReloadMu.Unlock()
+
 	// Omitted fields retain the existing saved value; a field present in the
 	// body, even as "", is the caller's explicit answer.
 	c := s.storedSAMLSettings(ctx)
@@ -339,7 +356,7 @@ func (s *Server) handleSaveSAMLConfig(w http.ResponseWriter, r *http.Request) {
 	// IdP's metadata a second time: the guard's decision and the live effect
 	// must agree.
 	if commit {
-		s.commitSAMLMiddleware(mw)
+		s.commitSAMLMiddleware(mw, c)
 	}
 	if buildErr != nil {
 		// Non-fatal: the config is saved regardless (retried on next

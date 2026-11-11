@@ -94,21 +94,13 @@ func checkIdPSigningCerts(ed *saml.EntityDescriptor) error {
 // certWhitespace is the whitespace crewjam strips before decoding (`\s+`).
 var certWhitespace = regexp.MustCompile(`\s+`)
 
-// IdPSigningCertExpiry is when the IdP's signing certificate stops being good:
-// the latest NotAfter among the certificates the SP would verify with (the same
-// selection as checkIdPSigningCerts). The latest, not the earliest, because an
-// IdP rolling its certificate publishes the old and the new together and may
-// sign with either; only when the newest is going or gone has nothing safe been
-// published. An expired certificate fails every sign-in (#619).
-//
-// False when the metadata has no certificate that parses. Lenient by design:
-// this reads the live metadata to raise a warning, and a warning that cannot be
-// computed is silent, not an error.
-func IdPSigningCertExpiry(ed *saml.EntityDescriptor) (time.Time, bool) {
+// idpSigningCerts are the certificates the SP would verify an assertion with
+// (the same selection as checkIdPSigningCerts), skipping any that do not parse.
+func idpSigningCerts(ed *saml.EntityDescriptor) []*x509.Certificate {
 	if ed == nil {
-		return time.Time{}, false
+		return nil
 	}
-	var latest time.Time
+	var certs []*x509.Certificate
 	for _, d := range ed.IDPSSODescriptors {
 		for _, kd := range d.KeyDescriptors {
 			if kd.Use != "" && kd.Use != "signing" {
@@ -123,10 +115,48 @@ func IdPSigningCertExpiry(ed *saml.EntityDescriptor) (time.Time, bool) {
 				if err != nil {
 					continue
 				}
-				if cert.NotAfter.After(latest) {
-					latest = cert.NotAfter
-				}
+				certs = append(certs, cert)
 			}
+		}
+	}
+	return certs
+}
+
+// SigningCertsOverlap reports whether at least one signing certificate in old is
+// still published in updated, compared by the certificate itself. It is the test
+// for applying refreshed metadata without an administrator: an IdP rolling its
+// certificate publishes the old and the new together, so the set it trusts
+// changes while one certificate stays common. With nothing in common there is no
+// continuity from what the SP trusts now, and whoever served the response chose
+// the new trust anchor.
+func SigningCertsOverlap(old, updated *saml.EntityDescriptor) bool {
+	have := map[string]bool{}
+	for _, c := range idpSigningCerts(old) {
+		have[string(c.Raw)] = true
+	}
+	for _, c := range idpSigningCerts(updated) {
+		if have[string(c.Raw)] {
+			return true
+		}
+	}
+	return false
+}
+
+// IdPSigningCertExpiry is when the IdP's signing certificate stops being good:
+// the latest NotAfter among the certificates the SP would verify with (the same
+// selection as checkIdPSigningCerts). The latest, not the earliest, because an
+// IdP rolling its certificate publishes the old and the new together and may
+// sign with either; only when the newest is going or gone has nothing safe been
+// published. An expired certificate fails every sign-in (#619).
+//
+// False when the metadata has no certificate that parses. Lenient by design:
+// this reads the live metadata to raise a warning, and a warning that cannot be
+// computed is silent, not an error.
+func IdPSigningCertExpiry(ed *saml.EntityDescriptor) (time.Time, bool) {
+	var latest time.Time
+	for _, cert := range idpSigningCerts(ed) {
+		if cert.NotAfter.After(latest) {
+			latest = cert.NotAfter
 		}
 	}
 	return latest, !latest.IsZero()
