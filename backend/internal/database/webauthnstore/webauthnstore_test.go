@@ -59,7 +59,7 @@ func cred(userID uuid.UUID, id []byte) webauthn.Credential {
 }
 
 func TestWebAuthnStore(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 	q := dbgen.New(db.SQL)
 	store := webauthnstore.New(q)

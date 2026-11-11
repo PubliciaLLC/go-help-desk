@@ -27,7 +27,7 @@ import (
 // This runs against real Postgres on separate connections, because the defect
 // and the fix are both about row locking. Against a map it would prove nothing.
 func TestTicketStore_ConcurrentWritesDoNotLoseEachOther(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	// Registered before the row cleanup below so it runs AFTER it: t.Cleanup is
 	// LIFO, and `defer closeDB()` would run before either, leaving the deletes
 	// to talk to a closed pool. These rows are committed — the two connections

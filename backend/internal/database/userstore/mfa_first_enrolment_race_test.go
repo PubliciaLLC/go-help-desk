@@ -29,7 +29,7 @@ import (
 // transaction: the race is between concurrent statements, and a single
 // transaction serialises them by construction. The row is deleted afterwards.
 func TestConfirmFirstMFAEnrollment_OnlyOneConcurrentConfirmWins(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 
 	store := userstore.New(dbgen.New(db.SQL))
@@ -90,7 +90,7 @@ func TestConfirmFirstMFAEnrollment_OnlyOneConcurrentConfirmWins(t *testing.T) {
 // owner has proved it, replaces the secret. The conditional write must not
 // refuse that.
 func TestConfirmMFAEnrollment_RotationStillReplacesTheSecret(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 
 	store := userstore.New(dbgen.New(db.SQL))
@@ -119,7 +119,7 @@ func TestConfirmMFAEnrollment_RotationStillReplacesTheSecret(t *testing.T) {
 // The same rule without the race: a first-enrolment confirm arriving after
 // the account already has a TOTP is refused, and the existing secret stays.
 func TestConfirmFirstMFAEnrollment_RefusedOnceAnAccountHasATOTP(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 
 	store := userstore.New(dbgen.New(db.SQL))

@@ -38,7 +38,7 @@ import (
 // at least once within the timeout, rather than relying on one lucky
 // interleaving.
 func TestAddLink_RacesResolveAsDuplicateWithoutDeadlocking(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	t.Cleanup(closeDB)
 	ctx := context.Background()
 

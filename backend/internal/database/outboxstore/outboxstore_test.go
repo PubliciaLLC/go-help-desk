@@ -20,7 +20,7 @@ import (
 
 func newStore(t *testing.T) (*outboxstore.Store, *testutil.DB, func()) {
 	t.Helper()
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	clean := func() {
 		_, err := db.SQL.Exec(`DELETE FROM notification_outbox`)
 		require.NoError(t, err)

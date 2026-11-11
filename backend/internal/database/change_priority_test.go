@@ -29,8 +29,10 @@ import (
 // ChangePriority against real Postgres (#443b). The rows are committed, because
 // the properties under test (rollback, the row lock, the unique current record)
 // are about transactions, and a rolled-back harness transaction would hide
-// them. Every policy is narrowed to a category created here, so nothing else
-// sharing the test database can match it.
+// them. Committed rows in the shared test database are visible to every other
+// package running against it (users and tickets are counted by ./internal/server,
+// and the SLA backfill tests read whole tables), so each fixture gets a database
+// of its own, dropped when the test ends, rather than cleaning up after itself.
 
 type changePriorityFx struct {
 	ctx   context.Context
@@ -46,8 +48,8 @@ type changePriorityFx struct {
 
 func newChangePriorityFx(t *testing.T) *changePriorityFx {
 	t.Helper()
-	db, closeDB := testutil.NewDB(t)
-	t.Cleanup(closeDB) // LIFO: runs after the row cleanup below
+	db, closeDB := testutil.NewIsolatedDB(t)
+	t.Cleanup(closeDB)
 	ctx := context.Background()
 	q := db.Queries
 	f := &changePriorityFx{
@@ -80,14 +82,6 @@ func newChangePriorityFx(t *testing.T) *changePriorityFx {
 		CreatedAt: now.Add(-3 * time.Hour), UpdatedAt: now,
 	}
 	require.NoError(t, f.ts.Create(ctx, f.tk))
-
-	t.Cleanup(func() {
-		_, _ = db.SQL.Exec(`DELETE FROM tickets WHERE id = $1`, f.tk.ID) // cascades to sla_records
-		_, _ = db.SQL.Exec(`DELETE FROM audit_log WHERE entity_id = $1`, f.tk.ID)
-		_, _ = db.SQL.Exec(`DELETE FROM sla_policies WHERE category_id = $1`, cat.ID)
-		_, _ = db.SQL.Exec(`DELETE FROM users WHERE id = ANY($1)`, []uuid.UUID{reporter.ID, staff.ID})
-		_, _ = db.SQL.Exec(`DELETE FROM categories WHERE id = $1`, cat.ID)
-	})
 
 	for _, p := range []ticket.Priority{ticket.PriorityMedium, ticket.PriorityHigh, ticket.PriorityCritical} {
 		p := p

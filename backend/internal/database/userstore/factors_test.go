@@ -72,7 +72,7 @@ func sessionCount(t *testing.T, db *testutil.DB, userID uuid.UUID) int {
 // passkeys as well as TOTP because the admin "Reset MFA" button cleared only
 // the TOTP columns, leaving a passkey-only account as locked out as before.
 func TestClearFactors(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 	q := dbgen.New(db.SQL)
 	store := userstore.New(q)
