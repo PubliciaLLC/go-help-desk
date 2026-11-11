@@ -513,6 +513,15 @@ rewrite and a migration that stops the server, and neither is needed:
   sends as `X-Replies-Searched: false` and `X-Reply-Index: building`. The page
   shows "Reply search is still being prepared." MCP `list_tickets` adds a second
   text block.
+- **Very long replies (Fable review, 2026-11-11).** 1.2.0 had no limit on a
+  reply's length, and Postgres refuses a `tsvector` over 1,048,575 bytes (a
+  megabyte of distinct words, SQLSTATE 54000). One such reply stopped the fill
+  for good: `Prepare` failed, `Run` retried from the start and reply search never
+  came on. The column is now computed from `left(body, 50000)` (the 1.3.0 reply
+  cap) in the trigger, the fill and the snippet query, so words past the first
+  50,000 characters of a long reply are not found. A row that still cannot be
+  indexed gets an empty column and a log line naming it, and the fill carries on.
+  Retries double from 30 s to a ten-minute ceiling, and empty windows pause.
 - **The query must match `body_tsv`**, and the plan test checks that the match
   uses the GIN index for a rare word and the recency index for a common one.
 
@@ -542,8 +551,10 @@ rewrite and a migration that stops the server, and neither is needed:
   Three tests drive the real store and handler through the three cases.
 - **`maintenance_work_mem`.** The job builds each index in a session of its own
   with 256 MB (raised, never lowered, and reset before the connection goes back
-  to the pool), and the upgrade notes tell administrators of large tables to
-  raise it first. At 5M replies a 1 GB build took 47 minutes and a 64 MB attempt
+  to the pool; if the reset fails the pgx connection itself is closed, because
+  closing a `database/sql` connection on a pgxpool only releases it), and the
+  upgrade notes tell administrators of large tables to raise it first. The job
+  holds one pooled connection throughout and a second during each build. At 5M replies a 1 GB build took 47 minutes and a 64 MB attempt
   was 14% done after 16 (not under equal load).
 
 #### Upgrade cost on a large replies table (measured)
