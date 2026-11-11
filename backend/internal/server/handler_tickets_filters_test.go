@@ -192,6 +192,7 @@ func runListCases(t *testing.T, h *harness, fx listFixture, cases []listCase) {
 			if strings.Contains(q, "{admin}") {
 				q = strings.ReplaceAll(q, "{admin}", h.adminID.String())
 			}
+			q = strings.NewReplacer("{staff}", h.staffID.String(), "{cat}", h.catID.String()).Replace(q)
 			got := h.listAs(t, tc.as, fx.expand(q))
 			if tc.status != 0 {
 				require.Equal(t, tc.status, got.status, "body: %s", got.raw)
