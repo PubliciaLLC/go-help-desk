@@ -109,7 +109,9 @@ func offeredTo(role user.Role) []string {
 func TestScopesForRole_MatchTheRouter(t *testing.T) {
 	for _, role := range []user.Role{user.RoleAdmin, user.RoleStaff} {
 		t.Run(string(role), func(t *testing.T) {
-			derived := scopesTheRouterGives(t, role)
+			// Scopes that gate a parameter, not a route, are invisible to the
+			// router walk; parameterScopes names them (parameter_scopes_test.go).
+			derived := append(scopesTheRouterGives(t, role), parameterScopesFor(role)...)
 			offered := offeredTo(role)
 
 			for _, sc := range offered {

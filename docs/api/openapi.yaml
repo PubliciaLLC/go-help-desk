@@ -2451,7 +2451,7 @@ paths:
       description: |
         Staff and administrators only, in a signed-in session (second factor required).
         The scopes POST /me/api-keys accepts for this caller: the whole catalogue for an
-        administrator, tickets and groups:read for staff. A key acts at its
+        administrator; tickets, groups:read and requester_search:read for staff. A key acts at its
         owner's role, so a scope outside that role would only look like access it does not have.
       tags: ['Account']
       x-ghd-handler: handleListMyAPIKeyScopes
@@ -6184,7 +6184,7 @@ paths:
         this response, and cannot be shown again. It has the form GHD_ followed by 64
         hexadecimal characters. scopes is required: a non-empty list of
         resource:action values from GET /api/v1/admin/scopes, and none may exceed
-        the owner's role (for staff, tickets and groups:read; for
+        the owner's role (for staff, tickets, groups:read and requester_search:read; for
         an administrator, any): invalid_scope otherwise. expires_at is required unless
         the api_key_max_lifetime_years setting is Never (-1): 400 expires_at_required
         without it, and it must be a future RFC 3339 timestamp no later than that many
@@ -7306,7 +7306,7 @@ paths:
       description: >-
         Administrators only (second factor required).
         Returns every scope a credential can hold, as resource:action pairs. Write
-        implies read on the same resource, and the audit resource has only read.
+        implies read on the same resource, and the audit and requester_search resources have only read.
         There is no wildcard scope. The admin UI builds its picker from this list,
         so it cannot drift from what the server enforces. With ?role=staff or
         ?role=admin the list is only what a key owned by that role may carry
