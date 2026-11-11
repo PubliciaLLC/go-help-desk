@@ -467,99 +467,155 @@ The API default is `false`, so existing callers get exactly what they get
 today. The page sends `true` unless the viewer clears "Search replies" (open
 question 8).
 
-#### The index: an expression index, so no table rewrite
+#### The index: a stored column, filled online (decided 2026-11-11)
 
-```sql
--- 000061_reply_search.up.sql
-CREATE INDEX IF NOT EXISTS ticket_replies_body_fts_idx
-    ON ticket_replies USING gin (to_tsvector('english', body));
-```
+**Status: built in PR R, replacing the expression index this section first
+proposed.** Erik: "this needs to scale to hundreds of thousands, possibly
+millions of tickets", then chose "Stored column + caps".
 
-The earlier draft used a stored generated `tsvector` column, which is what
-`tickets.search_vector` is. **This draft does not.** Adding a stored generated
-column rewrites the whole `ticket_replies` table under an `ACCESS EXCLUSIVE`
-lock, and the column would roughly double the space that reply text takes on
-disk. An expression index gives the same `@@` lookups with no new column and
-no rewrite. The cost is that ranking or highlighting a matched reply parses
-its body again. Section 2.5 does that only for the rows on the page.
+The expression index (`USING gin (to_tsvector('english', body))`) was measured
+at 1M replies and fails the scale requirement: a word in a quarter of all
+replies took **39 s**, because the match bitmap goes lossy at the default
+`work_mem` and Postgres then parses every reply on those pages again to recheck.
+A stored `tsvector` is compared as it is. What was feared of it was the table
+rewrite and a migration that stops the server, and neither is needed:
 
-The query must use **exactly** `to_tsvector('english', body)`, or the
-planner will not use the index. A store test checks that the reply search
-plan uses `ticket_replies_body_fts_idx`.
+- **Migration 000061 adds `ticket_replies.body_tsv tsvector`, nullable, with no
+  default.** That is a catalogue change: no table rewrite, instant at any size.
+  It also adds a `BEFORE INSERT OR UPDATE OF body` trigger that sets the column.
+  It does not fill existing rows and does not build an index.
+- **A background job in the running server fills the existing rows**
+  (`internal/database/replyindex`): batches of 1,000 rows, one transaction each,
+  a quarter-second pause between them. It walks the table in physical (ctid)
+  order, not primary-key order: reply ids are random UUIDs, and key order read
+  one heap page per row (1.5 s for a batch against 20 ms at 5M replies). It
+  checks that nothing was left behind before it moves on. It resumes after a
+  restart, and one runner at a time holds a Postgres advisory lock, so replicas
+  share the work.
+- **Then it builds the indexes `CONCURRENTLY`, outside the migration**: a GIN
+  index on `body_tsv` (`ticket_replies_body_tsv_idx`) and a btree on
+  `created_at DESC` (`ticket_replies_created_at_idx`, which lets the capped match
+  walk replies newest first and stop). `CREATE INDEX CONCURRENTLY` cannot run in
+  a migration: golang-migrate sends a file as one execution, which Postgres runs
+  as one transaction (a test runs this through the real runner). Before it
+  builds, the job looks for an INVALID index left by a failed earlier build and
+  drops it, because `IF NOT EXISTS` would skip it without a word.
+- **Ready means both indexes valid.** The indexes are built last, so a valid
+  index means the column is complete. `ReplySearchReady` checks `indisvalid` and
+  `indisready`. Until then the store **skips** the reply arm (it never scans
+  every reply), answers from subject, description and number, and sets
+  `ListResult.Replies = preparing`. The page shows "Reply search is still being
+  prepared." MCP `list_tickets` adds a second text block.
+- **The query must match `body_tsv`**, and the plan test checks that the match
+  uses the GIN index for a rare word and the recency index for a common one.
 
-#### Upgrade cost on a large replies table
+#### Caps and the time limit
 
-- **What the build does.** It reads every reply and parses it into words.
-  Most of the time goes to parsing, so build time grows with the total reply
-  text, not with the number of rows. Replies are capped at 50,000 bytes each,
-  since #443.
-- **I have not measured it.** PR R measures the build on PostgreSQL 17 at
-  1 million replies of realistic length, with the default
-  `maintenance_work_mem` (64 MB) and with 512 MB. It records the build time and
-  the index size in the PR and in the upgrade notes. I expect minutes, not
-  seconds, at that size. That is a guess until it is measured.
-- **The lock.** A plain `CREATE INDEX` takes a `SHARE` lock. Reads continue,
-  and new replies wait until the build finishes.
-- **Can the build run concurrently or online? Not inside the migration, and
-  it would not help there.**
-  - golang-migrate runs a migration file as one execution. I believe
-    PostgreSQL treats several statements sent this way as one transaction,
-    and `CREATE INDEX CONCURRENTLY` refuses to run inside a transaction. PR R
-    verifies this.
-  - More importantly, the server runs migrations at startup, before it
-    serves requests (`cmd/server/main.go`). The help desk is not serving
-    while 000061 runs, whichever kind of build is used. A concurrent build
-    also reads the table twice, so it is slower.
-- **The online option is to build the index before upgrading.** An operator
-  with a large table can build the index while 1.2.x is still running and
-  serving:
+- **Cap.** The match looks at the **2,000 newest** matching replies. It is
+  applied **after** the viewer's visibility, with the same predicate as the main
+  query: applied before it, a requester's own matches would be crowded out by
+  everyone else's, and a ticket the viewer may see could be missed because newer
+  matches elsewhere used up the cap. A store test searches as a requester and as
+  scoped staff with a cap of one.
+- **Time limit.** When replies are searched, the whole statement runs under a
+  two-second limit (a context deadline on the statement). If it runs out, the
+  statement is cancelled and answered again without the reply arm, so the caller
+  still gets the tickets that match on their own text, and
+  `ListResult.Replies = timed_out`, which is `replies_searched: false`. A caller
+  whose own context ended gets the error, not a fallback.
+- **What this means for results.** Past the cap a very old reply that matches a
+  very common word is not found. That is the trade the owner chose.
+- **How REST says it.** The store returns `ListResult{Tickets, Replies}` and
+  `ListResult.RepliesSearched()` is the `replies_searched` flag. `GET /tickets`
+  returns a bare array, which cannot carry a flag, so PR C has to choose where it
+  goes (a response header is the smallest change that keeps the body as it is).
+  That is open for PR C and the owner; PR R does not touch the REST handler.
 
-  ```sql
-  CREATE INDEX CONCURRENTLY IF NOT EXISTS ticket_replies_body_fts_idx
-      ON ticket_replies USING gin (to_tsvector('english', body));
-  ```
+#### Upgrade cost on a large replies table (measured)
 
-  When 1.3.0 starts, 000061 finds the index and does nothing. There is one
-  trap. A concurrent build that fails leaves an **invalid** index with that
-  name, and `IF NOT EXISTS` would skip it without a word, so every reply
-  search would scan the table. 000061 therefore starts with a block that
-  drops the index if it exists and is invalid:
+PostgreSQL 17 in Docker on a shared Mac under heavy load from other work (load
+average 15 to 85 on 10 cores), so these are upper bounds. Generated English
+text, 1,235 characters on average, with three identifier-like words in each
+reply. Stock Postgres settings (`shared_buffers` 128 MB, `maintenance_work_mem`
+64 MB). One run each. The measurement scripts are not in the repository.
 
-  ```sql
-  DO $$
-  BEGIN
-    IF EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
-               WHERE c.relname = 'ticket_replies_body_fts_idx' AND NOT i.indisvalid) THEN
-      DROP INDEX ticket_replies_body_fts_idx;
-    END IF;
-  END $$;
-  ```
+| | 1,139,000 replies (200k tickets, 1.3 GB text) | 5,250,000 replies (1M tickets) |
+| --- | --- | --- |
+| Migration 000061 | about 15 ms | about 15 ms |
+| Fill, the shipped job (batches of 1,000, 250 ms pause) | 17 min 28 s, 1,087 replies/s | 700 replies/s over its first 2.2M replies (55 min). The rest was filled by 12 parallel statements, not by the job |
+| Check pass over the finished column | n/a | 59 s |
+| `created_at DESC` btree | under 30 s | 21 s |
+| GIN index on `body_tsv` (`CONCURRENTLY`) | about 5 min | 46 min 59 s with `maintenance_work_mem` 1 GB; a 64 MB attempt was 14% done after 16 min and was stopped (the load differed) |
+| Disk | column 1.9 GB, GIN 0.77 GB, btree 28 MB; table with indexes 1.6 GB to 4.9 GB | table with indexes 7.2 GB to 23 GB: GIN 3.3 GB, btree 115 MB, the rest the column and row versions the fill left for autovacuum |
 
-  The `down` migration drops the index. No data is lost.
-- **Ongoing cost.** Each new reply adds a GIN entry. GIN batches these in its
-  pending list (`fastupdate`), so the cost per write is small.
+**Inserts during the work** (two writers, one row at a time):
+
+| | median | 95th percentile |
+| --- | --- | --- |
+| 1.14M: before the fill / during the fill / during the index build | 2.6 / 2.5 / 2.1 ms | 27 / 65 / 23 ms |
+| 5.25M, host load 40 to 85: alone / during the fill | 16 / 37 ms | 88 / 151 ms |
+
+The index build does not block writes. The fill and the build compete for the
+disk and the processor.
+
+**What the first fill got wrong, and what changed.** The first version walked
+the primary key. Reply ids are random UUIDs, so each batch read one heap page
+per row. At 5M replies, on a table larger than memory, a batch of 1,000 took
+1.5 s to read; the same rows in page order took 20 ms. The job now reads
+windows of 100 blocks by ctid. It also logged a `count(*)` of the unfilled rows,
+a full table scan, and now logs the planner's estimate.
+
+**Search time** (1.14M replies, 50 results, warm, staff searching every
+ticket; ms; the same search without replies in brackets):
+
+| a word in | shipped (cap 2,000) | no cap |
+| --- | --- | --- |
+| 30% of replies | 314 (270) | not run |
+| 10% | 642 (234) | 17,005 |
+| 1% | 550 (269) | 549 |
+| 0.1% | 533 (237) | 372 |
+| 1 in 25,000 | 247 (237) | 406 |
+
+A requester who owns 1,200 tickets: 11 to 486 ms. One who owns 5: under 10 ms.
+The cap is what bounds the common word: without it, a word in 10% of replies
+took 17 s. One run in a loaded period passed the two-second limit and was
+answered from ticket text with the notice, as designed. At 5.25M replies on a memory-starved host (staff, ticket-only time in
+brackets): a word in 0.003% of replies 1,396 ms (1,118); 0.1% 1,853 (1,203);
+1% **timed out at 2 s**, 4,949 ms in all (930); 10% timed out, 7,946 (1,716);
+35% timed out, 5,133 (2,912). With a 60 s limit the capped part alone took 27 s
+for the 1% and 10% words: the plan is the intended one (walk `created_at` newest
+first, 111k rows read for 2,000 matches), but it read about 89,000 pages that
+did not stay in memory. **So at 5M on this host the cap alone does not bound a
+common word, and the two-second limit is what answers the request**, from ticket
+text with `replies_searched: false`. The fallback recomputes the statement
+without the reply arm, so a timed-out request costs about the limit plus the
+base query. Open for the owner: a smaller cap, or a sized-memory
+recommendation, if this is too slow on the hardware that matters.
+
+**Not measured:** a quiet or dedicated server, a cold cache, requesters at 5M
+(that dataset has no requester accounts), and `maintenance_work_mem` under equal
+load (the job does not set it; at 5M the 1 GB build finished and the 64 MB
+attempt was far behind, which suggests setting it for the build).
 
 #### Query shape
 
 There are two steps, and both use the same `include_internal` value.
 
 1. **Which tickets match.** This is the `reply_hits` CTE in section 2.1. It
-   collects the ids of tickets with a matching reply through the GIN index.
-   The main query adds `t.id IN (SELECT ticket_id FROM reply_hits)` as a
-   third alternative next to the tracking-number and ticket-text matches.
-   Visibility and every filter still apply to the ticket, so a reply hit
-   cannot bring in a ticket the viewer cannot see.
+   collects the ids of tickets with a matching reply, looking at the 2,000
+   newest matches the viewer may see (above). The main query adds
+   `t.id IN (SELECT ticket_id FROM reply_hits)` as a third alternative next to
+   the tracking-number and ticket-text matches. Visibility and every filter
+   still apply to the ticket, so a reply hit cannot bring in a ticket the viewer
+   cannot see.
    - **Ranking.** A ticket that matches on its own subject or description
      ranks by `ts_rank` as today. A ticket that matches only through a reply
      ranks after all of those, newest first, together with tracking-number-only
      hits. This keeps the current rule that a direct match on the ticket
      outranks anything else.
-   - **What PR R measures.** The `OR … IN (subquery)` form cannot join the
-     tickets indexes into one BitmapOr. If the measurement at 200k tickets and
-     1M replies shows a slow plan, PR R replaces the three alternatives with a
-     single `UNION` of candidate ids: tracking trigram, ticket text and
-     reply text. Each part can then use its own index. PR R ships the faster
-     shape and puts the numbers in the PR.
+   - **What PR R measured.** The `OR ... IN (subquery)` form was kept. At
+     200k tickets and 1M replies the `UNION` of candidate ids was no better for
+     the worst case; the cap is what bounds it. Numbers are in the PR.
 
 2. **The snippet**, read only for the tickets on the page (at most 200):
 
@@ -576,7 +632,7 @@ There are two steps, and both use the same `include_internal` value.
      SELECT r.ticket_id, r.id, r.internal, r.created_at, r.body
      FROM ticket_replies r
      WHERE r.ticket_id = tid.id
-       AND to_tsvector('english', r.body) @@ to_tsquery('english', sqlc.arg(search_query)::text)
+       AND r.body_tsv @@ to_tsquery('english', sqlc.arg(search_query)::text)
        AND (sqlc.arg(include_internal)::bool OR NOT r.internal)
      ORDER BY r.created_at DESC, r.id
      LIMIT 1
@@ -648,8 +704,9 @@ time. The rules:
 1. parse the parameters;
 2. check each filter against the role and, for `requester`, the scope;
 3. resolve visibility, queue and `include_internal`;
-4. call `ListFiltered` and, when replies were searched, `ReplyMatchesForTickets`
-   for the page;
+4. call `SearchFiltered` (the tickets and what became of the reply search) and,
+   when replies were searched (`ListResult.ReplyMatchesApply()`),
+   `ReplyMatchesForTickets` for the page;
 5. call `writeTickets`.
 
 This replaces seven branches and the 1+N merge. Parsing and the role and scope
@@ -689,6 +746,7 @@ database time.
 | `requester` from a key or OAuth client without `requester_search:read` | `403 insufficient_scope`, `"this credential does not carry the requester_search:read scope"` |
 | `sla` while SLA tracking is off | `400 bad_request`, `"SLA tracking is off"` (open question 7) |
 | `search_replies=true` with no `q` | no effect; not an error |
+| `search_replies=true` while reply search is still being prepared, or the reply part ran past two seconds | `200`, from subject, description and number only, with `replies_searched: false` and no `reply_match` (how the flag is carried is for PR C: the body is a bare array) |
 | An id that names nothing | `200 []`. No existence check: it would cost a query and would show whether ids exist. |
 | Unknown parameter (`include_internal` included) | ignored, as today |
 
@@ -742,20 +800,18 @@ database time.
 >   existing key has it, and `tickets:read` does not include it. Without it the
 >   answer is `403 insufficient_scope`. Filtering by `reporter_id` does not
 >   need it.
-> - **Migrations 000060 and 000061 add indexes only.** No data is changed.
->   000061 indexes the text of every reply, and **on an instance with many
->   replies the upgrade takes longer to start** (measured: _to be filled in by
->   PR R_). New replies wait while it runs. To avoid the wait, build the index
->   while the old version is still running:
->   `CREATE INDEX CONCURRENTLY IF NOT EXISTS ticket_replies_body_fts_idx ON
->   ticket_replies USING gin (to_tsvector('english', body));`. 1.3.0 then
->   skips the build. If that statement fails partway, 1.3.0 drops the broken
->   index and builds it again.
+> - **Migration 000060 adds indexes. Migration 000061 adds a column and a
+>   trigger.** No data is changed and neither takes time at any size. The
+>   running server then fills the new column for existing replies and builds two
+>   indexes without blocking writes, so **on an instance with many replies,
+>   reply search is not available for a while after the first start** (measured:
+>   see the PR). Until it is, a search is answered from subject, description and
+>   number, and says so. Nothing needs doing beforehand.
 >
 > Under *Rolling Back to 1.2.0*: the down migrations drop
 > `tickets_updated_at_idx`, `tickets_guest_name_trgm_idx`,
-> `tickets_guest_email_trgm_idx` and `ticket_replies_body_fts_idx`. No data is
-> lost.
+> `tickets_guest_email_trgm_idx`, and `ticket_replies.body_tsv` with its trigger
+> and indexes. No data is lost.
 
 ---
 
@@ -889,12 +945,26 @@ Every PR writes its failing tests first (CLAUDE.md).
   - Ranking: a ticket-text match comes before a reply-only match.
   - Snippets use the control-character markers and never contain `<`
     produced by the server.
-  - The plan uses `ticket_replies_body_fts_idx` (checked with `EXPLAIN`).
+  - The match can use `ticket_replies_body_tsv_idx` (a rare word) and
+    `ticket_replies_created_at_idx` (a common one), checked with `EXPLAIN`
+    with the alternatives switched off.
+  - Until the fill and the indexes are done the reply arm is skipped
+    (`preparing`); a search whose reply arm runs out of time answers without it
+    (`timed_out`) and shows no excerpts; a caller's own cancelled context is an
+    error, not a fallback.
+  - The cap is applied after visibility: with a cap of one, a requester and a
+    scoped staff member still find their own newest match.
+- **Reply fill and index build** (`replyindex`): fills in batches, is
+  idempotent, resumes after an interruption, runs one at a time, replaces an
+  invalid index, fills in physical order (the ids run backwards against the
+  insertion order in the test), looks again for rows left behind before the
+  indexes are built, and fills a row written while it runs.
 - **Migrations.**
-  - 000060 and 000061 run up, down and up again.
-  - 000061 skips a valid index that was built beforehand.
-  - 000061 replaces an invalid one. The test makes it invalid by marking
-    `indisvalid = false` in the test database.
+  - 000060 and 000061 run up, down and up again; 000061 adds the column and
+    the trigger, fills a new or edited reply, and loses nothing on down.
+  - A `CREATE INDEX CONCURRENTLY` cannot run in a multi-statement migration
+    file (through the real runner), which is why the indexes are built by the
+    server.
 
 **Go, handler (`httptest`)**, a new `internal/server/handler_tickets_filters_test.go`:
 - Every existing parameter combination returns what it returned before. These
@@ -959,7 +1029,7 @@ Every PR writes its failing tests first (CLAUDE.md).
 | **A. Filter contract** | `internal/domain/ticket/filter.go`, `filter_test.go` (parse, role check, `IncludeInternalFor`) | — |
 | **S. Scope** | `internal/domain/auth/scope.go` + tests, the router scope test in `internal/server`, the API-key and OAuth-client scope pickers (`frontend/src/pages/…ApiKeys…`, `…OAuthClients…` scope lists only), DESIGN.md Credential Scopes | — |
 | **B. Query, store, migration 000060** | `queries/tickets.sql` (`ListTicketsFiltered` only, without the reply CTE), `internal/dbgen/*` (generated), `ticketstore.go` + tests, `000060_ticket_filter_indexes.*`, plan measurements | A |
-| **R. Reply search, migration 000061** | the `reply_hits` CTE in `ListTicketsFiltered`, `ReplyMatchesForTickets`, `ticketstore.go` reply-match method + tests, `000061_reply_search.*`, `ticket/requester_view.go` (`reply_match` on the allowed list) + its key test, build-time measurement, the upgrade-notes entry (3.4) | A; merges after B (same query) |
+| **R. Reply search, migration 000061** | the `reply_hits` CTE in `ListTicketsFiltered`, `ReplyMatchesForTickets`, `ticketstore.go` reply-match method + tests, `000061_reply_search.*`, `ticket/requester_view.go` (`reply_match` on the allowed list) + its key test, `internal/database/replyindex` (the background fill and index build), measurement at 1M and 5M replies, the upgrade-notes entry (3.4) | A; merges after B (same query) |
 | **C. REST handler + docs** | `internal/server/handler_tickets.go` (`handleListTickets` only), `ticket_view.go` (`reply_match` field), `handler_tickets_filters_test.go`, `docs/api/openapi.yaml` (`/tickets`, `TicketView`, scopes), DESIGN.md (Ticket Search, List filters) | A, S; merges after B and R |
 | **C2. Remove old queries** (separate commit) | the 12 old queries in `tickets.sql`, the `ticketstore.go` and `ticket` service and `Store` methods with no callers | C |
 | **D. Lookup by id** (if open question 2 is approved) | `handleLookupUsers`, `queries/users.sql`, test, OpenAPI `/users/lookup` | — |
