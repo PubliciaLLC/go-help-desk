@@ -260,3 +260,18 @@ func TestTicketLookupErr_OtherFailuresStayGeneric(t *testing.T) {
 	require.Equal(t, "get ticket failed", resultText(t, res),
 		"an infrastructure failure must not be dressed up as a missing ticket or leak its detail")
 }
+
+// search_replies is the caller's choice; which replies may be searched is not.
+// IncludeInternal is not read from the arguments, so a caller cannot ask for
+// internal notes: the handler sets it from the role.
+func TestBuildListFilter_SearchRepliesIsAnArgumentIncludeInternalIsNot(t *testing.T) {
+	f, err := buildListFilter(map[string]any{"q": "printer", "search_replies": true, "include_internal": true},
+		ticket.VisibilityReporter, uuid.New())
+	require.NoError(t, err)
+	require.True(t, f.SearchReplies)
+	require.False(t, f.IncludeInternal)
+
+	f, err = buildListFilter(map[string]any{"q": "printer"}, ticket.VisibilityAll, uuid.New())
+	require.NoError(t, err)
+	require.False(t, f.SearchReplies, "replies are searched only when asked for")
+}

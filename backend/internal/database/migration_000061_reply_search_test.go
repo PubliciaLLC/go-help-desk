@@ -4,9 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+	"testing/fstest"
 
+	"github.com/golang-migrate/migrate/v4"
+	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/database"
 	"github.com/publiciallc/go-help-desk/backend/internal/testutil"
 )
 
@@ -133,4 +137,31 @@ func applyMigration(t *testing.T, ctx context.Context, db *sql.DB, path string) 
 	defer func() { _ = tx.Rollback() }()
 	execMigrationFile(t, ctx, tx, path, nil)
 	require.NoError(t, tx.Commit())
+}
+
+// Why 000061 builds the index with a plain CREATE INDEX and not CONCURRENTLY:
+// golang-migrate sends a migration file as one execution, and Postgres runs the
+// several statements of one execution as one transaction, which CREATE INDEX
+// CONCURRENTLY refuses to run in. (The server also migrates before it takes
+// requests, so a concurrent build would only be slower here: it reads the table
+// twice.) This runs the real runner on a throwaway migration set to pin the
+// claim the upgrade notes make.
+func TestMigrate_ConcurrentIndexCannotRunInAMultiStatementFile(t *testing.T) {
+	db, closeDB := testutil.NewIsolatedDB(t)
+	defer closeDB()
+
+	src, err := iofs.New(fstest.MapFS{
+		"1_t.up.sql": {Data: []byte("CREATE TABLE zz_concurrent (b text);")},
+		"2_t.up.sql": {Data: []byte("CREATE INDEX CONCURRENTLY zz_i ON zz_concurrent (b);\nSELECT 1;")},
+	}, ".")
+	require.NoError(t, err)
+	// A migrations table of its own: the database already carries the real one.
+	m, err := migrate.NewWithSourceInstance("iofs", src,
+		database.MigrateURL(db.Pool.Config().ConnString())+"&x-migrations-table=zz_migrations")
+	require.NoError(t, err)
+	defer m.Close()
+
+	err = m.Up()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cannot run inside a transaction block")
 }

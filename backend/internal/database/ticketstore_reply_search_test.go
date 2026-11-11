@@ -415,6 +415,66 @@ func TestReplySearch_RequesterResultsDoNotDependOnInternalNotes(t *testing.T) {
 	require.Equal(t, before, after, "a requester's search results changed when the internal notes were deleted")
 }
 
+// planRecorder passes every query through to the transaction and keeps the plan
+// Postgres chose for it, so a test can look at the plan of the real statement
+// the store runs and not at a copy of its text.
+type planRecorder struct {
+	dbgen.DBTX
+	tx    *sql.Tx
+	plans []string
+}
+
+func (p *planRecorder) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	rows, err := p.tx.QueryContext(ctx, "EXPLAIN "+query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var plan string
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			return nil, err
+		}
+		plan += line + "\n"
+	}
+	p.plans = append(p.plans, plan)
+	return p.tx.QueryContext(ctx, query, args...)
+}
+
+// The match query has to be able to use ticket_replies_body_fts_idx. The index
+// is an expression index, so the planner can use it only if the query spells the
+// expression exactly as the migration does; a query that drifted to another
+// spelling would still return the right rows, by scanning every reply.
+//
+// On a table this small the planner would never choose it, so the test takes
+// away the alternatives: sequential scans are off and ticket_replies_ticket_idx
+// is dropped (in a transaction that rolls back, in a database of this test's
+// own, because DROP INDEX locks the table). What is left is the GIN index, or a
+// plan that says Seq Scan.
+func TestReplySearch_MatchQueryUsesTheReplyIndex(t *testing.T) {
+	db, closeDB := testutil.NewIsolatedDB(t)
+	defer closeDB()
+	_, tx, rollback := testutil.TxQueriesTx(t, db)
+	defer rollback()
+	f := newReplySearchFixture(t, dbgen.New(tx))
+	ctx := context.Background()
+	for _, stmt := range []string{`DROP INDEX ticket_replies_ticket_idx`, `SET LOCAL enable_seqscan = off`, `ANALYZE ticket_replies`} {
+		_, err := tx.ExecContext(ctx, stmt)
+		require.NoError(t, err, stmt)
+	}
+
+	rec := &planRecorder{DBTX: tx, tx: tx}
+	ts := ticketstore.New(dbgen.New(rec))
+	_, err := ts.ListFiltered(ctx, ticket.Filter{
+		ActorID: f.staff.ID, Visibility: ticket.VisibilityAll, Limit: 50,
+		Query: wordPublic, SearchReplies: true, IncludeInternal: true,
+	})
+	require.NoError(t, err)
+	require.Len(t, rec.plans, 1)
+	require.Contains(t, rec.plans[0], "ticket_replies_body_fts_idx", "plan:\n%s", rec.plans[0])
+}
+
 func deleteInternalNotes(t *testing.T, tx *sql.Tx) {
 	t.Helper()
 	res, err := tx.ExecContext(context.Background(), `DELETE FROM ticket_replies WHERE internal`)

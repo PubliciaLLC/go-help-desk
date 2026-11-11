@@ -593,6 +593,7 @@ func (s *Server) registerTools() {
 		mcpgo.WithString("priority", mcpgo.Description("Only tickets at this priority: critical|high|medium|low")),
 		mcpgo.WithString("category_id", mcpgo.Description("Only tickets in this category UUID (see list_categories)")),
 		mcpgo.WithString("q", mcpgo.Description("Full-text search over subject, description and tracking number")),
+		mcpgo.WithBoolean("search_replies", mcpgo.Description("With q, also match the replies: a ticket matches when one reply holds every word. Staff and administrators search internal notes too; a requester searches public replies only. A ticket found this way carries a reply_match with an excerpt (default false)")),
 		mcpgo.WithNumber("limit", mcpgo.Description("Max results, 1-100 (default 20)")),
 		mcpgo.WithNumber("offset", mcpgo.Description("Pagination offset")),
 	), scoped(mcpRead, s.handleListTickets))
@@ -934,6 +935,10 @@ func buildListFilter(args map[string]any, vis ticket.Visibility, actorID uuid.UU
 		f.Priority = &p
 	}
 	f.Query, _ = args["q"].(string)
+	// Whether to search replies is the caller's choice. WHICH replies is not:
+	// IncludeInternal is set by the handler from the caller's role, and there is
+	// no argument for it.
+	f.SearchReplies, _ = args["search_replies"].(bool)
 
 	// Clamped, not rejected: a caller asking for 500 gets 100 rather than an
 	// error, and offset still walks the whole result set.
@@ -968,11 +973,40 @@ func (s *Server) handleListTickets(ctx context.Context, req mcpgo.CallToolReques
 		return storeErr(ctx, "list tickets", err)
 	}
 
+	// From the role and nothing else, for the match and for the snippet alike. A
+	// requester, or any role this does not recognise, never searches an internal
+	// note: searching one would let them test, a word at a time, what staff wrote
+	// about them.
+	f.IncludeInternal = ticket.IncludeInternalFor(caller.Role)
+
 	tickets, err := s.tickets.ListFiltered(ctx, f)
 	if err != nil {
 		return storeErr(ctx, "list tickets", err)
 	}
-	return ticketResult(caller.Role, tickets)
+	if !f.SearchReplies {
+		return ticketResult(caller.Role, tickets)
+	}
+
+	ids := make([]uuid.UUID, len(tickets))
+	for i, tk := range tickets {
+		ids[i] = tk.ID
+	}
+	matches, err := s.tickets.ReplyMatches(ctx, f, ids)
+	if err != nil {
+		return storeErr(ctx, "list tickets", err)
+	}
+	type listed struct {
+		ticket.Ticket
+		ReplyMatch *ticket.ReplyMatch `json:"reply_match,omitempty"`
+	}
+	out := make([]listed, len(tickets))
+	for i, tk := range tickets {
+		out[i].Ticket = tk
+		if m, ok := matches[tk.ID]; ok {
+			out[i].ReplyMatch = &m
+		}
+	}
+	return ticketResult(caller.Role, out)
 }
 
 func (s *Server) handleAssignTicket(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
