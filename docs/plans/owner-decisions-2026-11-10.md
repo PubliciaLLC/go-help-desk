@@ -49,6 +49,9 @@ a recommendation he accepted in bulk ("Accept all") from `pretag-fixes.md` and `
   - measured at 1M and 5M replies.
 - **Reply-search time limit at 5M replies.** A word in 1% or more of 5M replies passed the 2 s limit on the measured machine and fell back to ticket text. Erik chose "Longer limit (e.g. 5 s)": the statement limit on the reply arm is 5 s, the 2,000-reply cap is unchanged.
 - **Index-build warning:** "Bold warning + pre-build".
+  - **Pre-build:** "Add an optional pre-build command". The option reads: "Also ship a command/script admins of very large installs can run against the 1.2 database before upgrading, so search is ready the moment 1.3.0 starts." It is `helpdesk-server prepare-reply-search`, a separate PR (search: reply pre-build). It applies the column and trigger without recording the migration (1.2 refuses to start on a migration version it does not know, but tolerates the column and trigger), then fills and builds the indexes.
+  - **Pre-build memory:** "1 GB, overridable (Recommended)".
+  - **Pre-build with 1.2 stopped:** "Mention it as an alternative (Recommended)". The primary route pre-builds while 1.2 runs; one line in the notes says it can also be run with 1.2 stopped, at the cost of downtime.
 - **Requester-name mask:** "Keep the three values", and each now covers every admin view in its scope. An unresolved name shows as **"Deleted account"**.
 - **Markdown formatter budget:** "Raise to 3 s".
 - **`content-visibility: auto`** on long plain-text posts: "Ship it".
