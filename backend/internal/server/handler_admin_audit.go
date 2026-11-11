@@ -110,7 +110,9 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 				case err == nil:
 					a = auditActorName(u, maskRequesters)
 				case errors.Is(err, user.ErrNotFound):
-					// Account since deleted; actor_id stays, only the name is left blank.
+					// Account since deleted; actor_id stays. Its name is not sent, and
+					// the view says so, of any role (owner, 2026-11-11).
+					a = auditActor{name: deletedAccountName}
 				default:
 					slog.ErrorContext(ctx, "resolving admin audit actor name failed", "actor_id", *e.ActorID, "error", err)
 				}
@@ -210,6 +212,13 @@ var (
 	errBadTo      = errors.New("to must be an RFC3339 timestamp")
 	errBadText    = errors.New("filters must be valid UTF-8 without NUL bytes")
 )
+
+// deletedAccountName is what every place that names a person in audit output
+// shows for one it cannot resolve (owner, 2026-11-11): accurate, the same for
+// every role, and never the name. Where the mask is on, it is also what stands
+// in for a requester's name once the account is gone, so it tells nobody
+// which role the account had.
+const deletedAccountName = "Deleted account"
 
 // auditActor is what an audit view shows for one actor.
 type auditActor struct {

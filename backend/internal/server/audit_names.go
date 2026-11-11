@@ -147,6 +147,16 @@ func (s *Server) resolveAuditNames(ctx context.Context, maskRequesters bool, dif
 			a := auditActorName(u, maskRequesters)
 			res.users[u.ID.String()] = auditName{Name: a.name, Masked: a.masked}
 		}
+		// An id the lookup did not return is an account that is gone, of any
+		// role: say so, as the actor column does, rather than leave the bare id.
+		// Not when the lookup failed: then nothing is known, and no entry is made.
+		if err == nil {
+			for _, id := range ids {
+				if _, found := res.users[id.String()]; !found {
+					res.users[id.String()] = auditName{Name: deletedAccountName}
+				}
+			}
+		}
 	}
 	return res
 }

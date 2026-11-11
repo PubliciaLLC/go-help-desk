@@ -4206,6 +4206,7 @@ paths:
         colours are read from the statuses table when the request is served. A
         requester's name is masked (changed_by_name Requester, changed_by_masked
         true) under the audit_mask_requester_names setting, as in the audit feed.
+        An account that has been deleted, of any role, is Deleted account.
         The id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be

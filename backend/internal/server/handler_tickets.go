@@ -1272,22 +1272,31 @@ func (s *Server) maskStatusHistory(ctx context.Context, history []ticket.StatusH
 	}
 	// Fails closed: a name stays only for an account positively found and known
 	// to be staff or an administrator. The name on the row comes from a join, not
-	// from this lookup, so an account the lookup does not return (deleted since,
-	// or the lookup failed) still has its name in the row, and must be masked, not
-	// shown. A deleted staff member is masked too: the label is wrong for them,
-	// and the id stays, which is the price of not trusting a gap.
-	named := map[uuid.UUID]bool{}
+	// from this lookup, so an account the lookup does not return still has its
+	// name in the row, and must not be shown. One that is not returned is a
+	// deleted account, of any role, and is called that (owner, 2026-11-11); one
+	// whose role is a requester's is masked. When the lookup itself fails nothing
+	// is known, so every name is withheld as the requester mask.
+	roles := map[uuid.UUID]user.Role{}
 	users, err := s.users.GetByIDs(ctx, ids)
 	if err != nil {
 		slog.ErrorContext(ctx, "resolving status history roles failed", "error", err)
 	}
 	for _, u := range users {
-		if !auditActorName(u, true).masked {
-			named[u.ID] = true
-		}
+		roles[u.ID] = u.Role
 	}
 	for i := range out {
-		if out[i].ChangedByUserID != nil && !named[*out[i].ChangedByUserID] {
+		id := out[i].ChangedByUserID
+		if id == nil {
+			continue
+		}
+		role, found := roles[*id]
+		switch {
+		case err != nil:
+			out[i].ChangedByName, out[i].ChangedByMasked = "Requester", true
+		case !found:
+			out[i].ChangedByName = deletedAccountName
+		case role == user.RoleUser:
 			out[i].ChangedByName, out[i].ChangedByMasked = "Requester", true
 		}
 	}
@@ -1387,8 +1396,9 @@ func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
 					a = auditActorName(u, maskRequesters)
 				case errors.Is(err, user.ErrNotFound):
 					// Account since deleted; actor_id stays (it is a fact
-					// about what happened), only the name is left blank —
-					// there is nobody left to resolve it to.
+					// about what happened). The view says "Deleted account",
+					// of any role, and never the name (owner, 2026-11-11).
+					a = auditActor{name: deletedAccountName}
 				default:
 					slog.ErrorContext(r.Context(), "resolving audit actor name failed", "actor_id", *e.ActorID, "error", err)
 				}
