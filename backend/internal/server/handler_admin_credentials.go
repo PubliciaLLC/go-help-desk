@@ -427,6 +427,12 @@ func (s *Server) handleCreateOAuthClient(w http.ResponseWriter, r *http.Request)
 		Error(w, http.StatusBadRequest, "invalid_scope", err.Error())
 		return
 	}
+	// The client acts as its service user, which is made staff (see
+	// CreateOAuthClient); same ceiling as a key owned by staff (#450).
+	if err := auth.WithinRole(string(user.RoleStaff), body.Scopes); err != nil {
+		Error(w, http.StatusBadRequest, "invalid_scope", err.Error())
+		return
+	}
 	// Only a signed-in person reaches this route (routes.go): keys can't make
 	// credentials, so there is no machine credential to compare scopes with.
 	raw, hashed, err := auth.GenerateToken()
