@@ -35,6 +35,15 @@ func TestParseIdPMetadataXML(t *testing.T) {
 	}{
 		{name: "TestShib IdP metadata", input: []byte(fixture), wantEntityID: entityID},
 		{name: "UTF-8 byte order mark", input: append([]byte{0xEF, 0xBB, 0xBF}, fixture...), wantEntityID: entityID},
+		// Pasted text arrives as a UTF-8 string whatever the file it was read
+		// from said about itself (#619). A UTF-16 file keeps its declaration
+		// when its text is read in a browser, and encoding/xml refuses it.
+		{name: "declared UTF-16", input: []byte(strings.Replace(fixture, `encoding="UTF-8"`, `encoding="UTF-16"`, 1)), wantEntityID: entityID},
+		{name: "declared utf-16, single quotes", input: []byte(strings.Replace(fixture, `encoding="UTF-8"`, `encoding='utf-16'`, 1)), wantEntityID: entityID},
+		{name: "declared UTF-16 after a byte order mark", input: []byte("\xEF\xBB\xBF" + strings.Replace(fixture, `encoding="UTF-8"`, `encoding="UTF-16"`, 1)), wantEntityID: entityID},
+		{name: "declared UTF-16 after leading whitespace", input: []byte("\n  " + strings.Replace(fixture, `encoding="UTF-8"`, `encoding="UTF-16"`, 1)), wantEntityID: entityID},
+		{name: "declared ISO-8859-1", input: []byte(strings.Replace(fixture, `encoding="UTF-8"`, `encoding="ISO-8859-1"`, 1)), wantEntityID: entityID},
+		{name: "no declaration at all", input: []byte(body), wantEntityID: entityID},
 		{
 			name:         "wrapped in EntitiesDescriptor",
 			input:        []byte(`<EntitiesDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata">` + body + `</EntitiesDescriptor>`),
