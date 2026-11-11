@@ -3207,10 +3207,11 @@ one is a permission decision with one switch and no per-user exceptions.
   while a client or a hook is created and edited by an administrator and is how
   ticket data leaves or enters the system. Entity types `oauth_client` and
   `webhook`; actions `oauth_client_created`, `oauth_client_deleted`,
+  `oauth_client_secret_rotated` (#622),
   `webhook_created`, `webhook_updated`, `webhook_deleted` and
   `webhook_reapproved` (`POST /admin/webhooks/{id}/reapprove`, session only); the
   actor is the signed-in administrator, or for a webhook changed with an API key,
-  the key's owner. An OAuth client has no update route, so it has no update action.
+  the key's owner. An OAuth client has no update route, so it has no update action beyond the secret rotation.
   Renaming its service user (`PATCH /admin/users/{id}`) renames the client too,
   and that rename is **not audited**: `handleUpdateUser` writes no audit entry,
   so this is a gap in editing users and not something this entry type covers.
