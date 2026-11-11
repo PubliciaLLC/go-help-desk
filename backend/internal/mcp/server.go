@@ -609,7 +609,7 @@ func (s *Server) registerTools() {
 		mcpgo.WithString("priority", mcpgo.Description("Only tickets at this priority: critical|high|medium|low")),
 		mcpgo.WithString("category_id", mcpgo.Description("Only tickets in this category UUID (see list_categories)")),
 		mcpgo.WithString("q", mcpgo.Description("Full-text search over subject, description and tracking number")),
-		mcpgo.WithBoolean("search_replies", mcpgo.Description("With q, also match the replies: a ticket matches when one reply holds every word. Staff and administrators search internal notes too; a requester searches public replies only. A ticket found this way carries a reply_match with an excerpt (default false)")),
+		mcpgo.WithBoolean("search_replies", mcpgo.Description("With q, also match the replies: a ticket matches when one reply holds every word. Staff and administrators search internal notes too; a requester searches public replies only. A ticket found this way carries a reply_match with an excerpt. If the replies could not be searched (still being prepared after an upgrade, or too slow), a second text block says so (default false)")),
 		mcpgo.WithNumber("limit", mcpgo.Description("Max results, 1-100 (default 20)")),
 		mcpgo.WithNumber("offset", mcpgo.Description("Pagination offset")),
 	), scoped(mcpRead, s.handleListTickets))
@@ -996,21 +996,26 @@ func (s *Server) handleListTickets(ctx context.Context, req mcpgo.CallToolReques
 	// about them.
 	f.IncludeInternal = ticket.IncludeInternalFor(caller.Role)
 
-	tickets, err := s.tickets.ListFiltered(ctx, f)
+	res, err := s.tickets.SearchFiltered(ctx, f)
 	if err != nil {
 		return storeErr(ctx, "list tickets", err)
 	}
+	tickets := res.Tickets
 	if !f.SearchReplies {
 		return ticketResult(caller.Role, tickets)
 	}
 
-	ids := make([]uuid.UUID, len(tickets))
-	for i, tk := range tickets {
-		ids[i] = tk.ID
-	}
-	matches, err := s.tickets.ReplyMatches(ctx, f, ids)
-	if err != nil {
-		return storeErr(ctx, "list tickets", err)
+	// Excerpts only when the replies were searched: a page chosen without them
+	// must not look as if it had been.
+	var matches map[uuid.UUID]ticket.ReplyMatch
+	if res.ReplyMatchesApply() {
+		ids := make([]uuid.UUID, len(tickets))
+		for i, tk := range tickets {
+			ids[i] = tk.ID
+		}
+		if matches, err = s.tickets.ReplyMatches(ctx, f, ids); err != nil {
+			return storeErr(ctx, "list tickets", err)
+		}
 	}
 	type listed struct {
 		ticket.Ticket
@@ -1023,7 +1028,28 @@ func (s *Server) handleListTickets(ctx context.Context, req mcpgo.CallToolReques
 			out[i].ReplyMatch = &m
 		}
 	}
-	return ticketResult(caller.Role, out)
+	result, err := ticketResult(caller.Role, out)
+	if err != nil || result.IsError {
+		return result, err
+	}
+	// A second block, not a new shape for the first: the list stays the JSON
+	// array every client already reads.
+	if note := repliesNote(res.Replies); note != "" {
+		result.Content = append(result.Content, mcpgo.NewTextContent(note))
+	}
+	return result, nil
+}
+
+// repliesNote says, for a search that asked for replies and did not get them
+// searched, why the list may be shorter than the caller expects.
+func repliesNote(r ticket.RepliesStatus) string {
+	switch r {
+	case ticket.RepliesPreparing:
+		return "Replies were not searched: reply search is still being prepared after an upgrade. The tickets listed match on subject, description or number only. Try again later."
+	case ticket.RepliesTimedOut:
+		return "Replies were not searched: the search took too long. The tickets listed match on subject, description or number only. A more specific search may finish in time."
+	}
+	return ""
 }
 
 func (s *Server) handleAssignTicket(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {

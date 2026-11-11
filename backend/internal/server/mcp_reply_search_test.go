@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
+	"github.com/publiciallc/go-help-desk/backend/internal/testutil"
 )
 
 // Reply search over MCP (advanced search, section 2.5, rule 4: the invariant
@@ -91,6 +92,7 @@ func idsOf(l []mcpListed) map[uuid.UUID]bool {
 }
 
 func TestMCP_ReplySearch_RequesterNeverMatchesInternalNotes(t *testing.T) {
+	testutil.EnsureReplySearchReady(t)
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	f := newMCPReplyFixture(t, h)
@@ -130,6 +132,7 @@ func TestMCP_ReplySearch_RequesterNeverMatchesInternalNotes(t *testing.T) {
 // The invariant (design 2.5, rule 4): run the searches as a requester, delete
 // every internal note, run them again. The results must be identical.
 func TestMCP_ReplySearch_RequesterResultsDoNotDependOnInternalNotes(t *testing.T) {
+	testutil.EnsureReplySearchReady(t)
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	newMCPReplyFixture(t, h)
@@ -163,4 +166,57 @@ func TestMCP_ReplySearch_RequesterResultsDoNotDependOnInternalNotes(t *testing.T
 	require.Greater(t, n, int64(0))
 
 	require.Equal(t, before, search(), "a requester's results changed when the internal notes were deleted")
+}
+
+// toolTexts is every content block of a tool result, in order.
+func toolTexts(t *testing.T, payload string) []string {
+	t.Helper()
+	var out struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(payload), &out), "payload: %s", payload)
+	var texts []string
+	for _, c := range out.Result.Content {
+		texts = append(texts, c.Text)
+	}
+	return texts
+}
+
+// While the server is still filling and indexing the replies after an upgrade,
+// a search that asks for them is answered from subject, description and number
+// only, and the caller is told so. Without the second block an agent would
+// take the shorter list for the whole answer.
+func TestMCP_ReplySearch_SaysWhenRepliesWereNotSearched(t *testing.T) {
+	h, cleanup := newIsolatedHarness(t) // no reply indexes: not prepared yet
+	defer cleanup()
+	f := newMCPReplyFixture(t, h)
+
+	for _, tr := range mcpTransports {
+		t.Run(tr.name, func(t *testing.T) {
+			staff := tr.open(t, h, h.apiKey)
+
+			// A word only a reply holds: nothing to find yet, and a note saying why.
+			texts := toolTexts(t, staff.call(t, "list_tickets", map[string]any{"q": mcpWordInternal, "search_replies": true}))
+			require.Len(t, texts, 2, "the list and a note: %v", texts)
+			require.JSONEq(t, `[]`, texts[0])
+			require.Contains(t, texts[1], "not searched")
+			require.Contains(t, texts[1], "still being prepared")
+
+			// A subject match is still returned, with no excerpt.
+			texts = toolTexts(t, staff.call(t, "list_tickets", map[string]any{"q": "printer", "search_replies": true}))
+			require.Len(t, texts, 2)
+			var got []mcpListed
+			require.NoError(t, json.Unmarshal([]byte(texts[0]), &got))
+			require.Equal(t, map[uuid.UUID]bool{f.printer.ID: true}, idsOf(got))
+			require.Nil(t, got[0].ReplyMatch, "no excerpt for a page chosen without replies")
+
+			// Not asked for: the answer is the list alone.
+			texts = toolTexts(t, staff.call(t, "list_tickets", map[string]any{"q": "printer"}))
+			require.Len(t, texts, 1)
+		})
+	}
 }

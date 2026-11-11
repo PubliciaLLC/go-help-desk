@@ -972,8 +972,9 @@ type Querier interface {
 	// query, because a ticket that matches on its own subject must not show a
 	// snippet from an internal note, to a requester least of all.
 	//
-	// The expression must be spelled to_tsvector('english', r.body) exactly, or the
-	// planner will not use ticket_replies_body_fts_idx (migration 000061).
+	// It matches the stored r.body_tsv, as the match query does, so the two cannot
+	// disagree about what a reply holds. ts_headline below still parses the body of
+	// the one reply per ticket it shows.
 	//
 	// Matched words are wrapped in U+0002 and U+0003, not HTML. No author is read.
 	ReplyMatchesForTickets(ctx context.Context, arg ReplyMatchesForTicketsParams) ([]ReplyMatchesForTicketsRow, error)
