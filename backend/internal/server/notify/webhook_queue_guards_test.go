@@ -98,7 +98,8 @@ func TestRawBody_CarriesOnlyIdsAndFlags(t *testing.T) {
 	}{
 		{notification.EventTicketStatusChanged, "new_status_id", "target_id", false},
 		{notification.EventTicketLinked, "target_id", "new_status_id", false},
-		{notification.EventTicketReplied, "", "", true},
+		// The reply id rides on a reply (#630): an id, never the text.
+		{notification.EventTicketReplied, "reply_id", "target_id", false},
 		{notification.EventTicketPriorityChanged, "", "", true},
 		{notification.EventTicketClassified, "", "", true},
 	} {
@@ -127,9 +128,13 @@ func TestRawBody_CarriesOnlyIdsAndFlags(t *testing.T) {
 				require.Contains(t, string(body), `"Payload":null`, "no id rides on this name")
 			}
 			// Ids and the event name only: not the link type, not the internal flag (the
-			// event name already says note or reply), not the reply id.
-			for _, gone := range []string{"link_type", "internal", "reply_id", contentReplyID.String()} {
-				require.NotContains(t, string(body), gone)
+			// event name already says note or reply), and the reply id only on a reply.
+			gone := []string{"link_type", "internal"}
+			if tc.name != notification.EventTicketReplied {
+				gone = append(gone, "reply_id", contentReplyID.String())
+			}
+			for _, g := range gone {
+				require.NotContains(t, string(body), g)
 			}
 		})
 	}

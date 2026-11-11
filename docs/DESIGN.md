@@ -3737,16 +3737,39 @@ on the existing webhook feature instead of as plugins.
   `ticket.created`, `ticket.assigned`, `ticket.status_changed`,
   `ticket.replied` (a customer-visible reply only), `ticket.note_added` (a
   staff-only note), `ticket.resolved`, `ticket.closed`, `ticket.reopened` (every reopen: a requester's reply, a status change out of Resolved or Closed, and `POST /reopen`) and
-  `ticket.linked`, `ticket.priority_changed` (a priority change) and
-  `ticket.classified` (a category, type or item change). A hook matches a change
-  when any of the change's kinds is in its list, and fires once. The raw body
-  keeps its shape. See Ticket Events: One Change, One Event.
+  `ticket.linked`, `ticket.priority_changed` (a priority change),
+  `ticket.classified` (a category, type or item change), `ticket.unlinked` (a
+  link removed), `ticket.attachment_added` (a file uploaded), and the two
+  **opt-in** events `ticket.followed` and `ticket.unfollowed`. A hook matches a
+  change when any of the change's kinds is in its list, and fires once. The raw
+  body keeps its shape. See Ticket Events: One Change, One Event.
+  **Opt-in events** ([#630](https://github.com/PubliciaLLC/go-help-desk/issues/630),
+  D40). `ticket.followed` and `ticket.unfollowed` are sent **only to a hook that
+  lists them by name**. A hook on "All events" (`*`), and a legacy hook with an
+  empty list, does not get them; a hook can list `*` and the follow events
+  together to get everything. Following is personal, and the follow audit that
+  staff may not see by default would be public the moment a hook subscribed to
+  "everything". The payload carries the person's **id** (`user_id`), never their
+  name, and no email is sent. Removing a ticket's old assignee's follow when the
+  ticket is reassigned, or when that person is deleted, is an unfollow and is
+  announced as one, as one more kind of the reassignment's own event. A hook that opted into the unfollow is told the event's first name it subscribes to (usually `ticket.assigned`), and that raw body also carries `user_id`; a hook that did not opt in never sees the kind or the id.
   **What the raw format carries** ([#448](https://github.com/PubliciaLLC/go-help-desk/issues/448)).
   The raw body is **ids only**: the event name (`Type`), `TicketID`, `ActorID`
   (null for a system event, and for a routed create under `ticket.assigned`), `OccurredAt` and a `Payload` holding only the ids
   `new_status_id` (status changed) and `target_id` (linked), where the event
-  has them. Every other event has no payload. Whether an event is a reply or a
-  note is its name, so there is no `internal` flag, and no link type is sent.
+  has them. Whether an event is a reply or a note is its name, so there is no
+  `internal` flag. The ids a name carries: `ticket.status_changed` has
+  `new_status_id`; `ticket.linked` has `target_id`; `ticket.unlinked` has
+  `target_id` and `link_type` (the same two tickets can be linked in more than
+  one way, so the id alone does not say which link went); `ticket.replied` and
+  `ticket.note_added` have `reply_id`; `ticket.attachment_added` has
+  `attachment_id`; `ticket.followed` and `ticket.unfollowed` have `user_id`.
+  Every other event has no payload, except that a hook which lists
+  `ticket.unfollowed` also gets `user_id` on a delivery under whatever name it
+  is told (for example `ticket.assigned`) when the change dropped a follow; a
+  hook that does not list it never does. Opting in counts from when the hook
+  named the event: a change that happened before is never upgraded, so a retry
+  after the edit carries no `user_id`. No link type is sent on `ticket.linked`.
   No address, subject, tracking number, priority, status name or reply text is
   sent, and none is stored with it. The keys are an allow list, so a key added
   to an event later stays off the wire until someone decides a receiver should
@@ -3777,7 +3800,7 @@ on the existing webhook feature instead of as plugins.
   No payload and no error text is shown or returned. The event is kept beside
   each entry only so **Redeliver** can queue it again, as a new delivery with a
   new `X-GHD-Delivery`. What is kept is ids only: the ids of a raw body plus
-  the link type and the id of the reply the event announced. No address,
+  the link type of a `ticket.linked`. No address,
   subject, tracking number or text. For a raw hook the replay is identical to
   the original. For a Slack, Teams, Discord or JIRA hook the message is
   **rebuilt from the ticket as it is now**: its current subject, tracking
@@ -3790,7 +3813,9 @@ on the existing webhook feature instead of as plugins.
   `409 webhook_disabled` for a disabled hook,
   `409 webhook_paused` for a paused one (its API key is no longer active; it
   needs re-approving, and enabling does not help),
-  `409 webhook_not_subscribed` when the hook no longer lists that event, and
+  `409 webhook_not_subscribed` when the hook no longer lists that event (for
+  `ticket.followed` and `ticket.unfollowed`, when it no longer lists it **by
+  name**: `*` does not cover them), and
   `409 webhook_filter_excludes` when the hook's ticket filter, as it is now,
   does not admit the ticket, and `409 webhook_filter_unverifiable` when the
   hook has a filter and the ticket no longer exists, so the filter cannot be
@@ -4149,36 +4174,59 @@ raises into the transaction's collector; none dispatches after the commit.
 | `close` (REST close, auto-close scheduler as the system) | the status kinds into Closed (`status_changed`, `closed`) | no recipient |
 | `Reopen` (REST `POST /reopen`) | the status kinds (`status_changed`, `reopened`), plus `priority_changed` on the first reopen, if the priority moved | recipient = guest; guest-link flag |
 | `AddLink` (REST link) | `ticket.linked` on the source ticket | `target_id`, `link_type` |
+| `RemoveLink` (REST `DELETE` link; staff and admin) | `ticket.unlinked` on the source ticket, only when a link was removed. In a transaction that locks both tickets in `AddLink`'s order (the #210 deadlock). Writes **no audit entry**, as `AddLink` writes none. | `target_id`, `link_type`. No mail. The actor is the caller, or nobody for a credential with no person behind it. |
+| `CreateAttachment`, `CreateGuestAttachment` (REST and guest upload) | `ticket.attachment_added`, in the transaction that writes the row, so a refused or failed upload announces nothing | `attachment_id`. **No mail** (D39): a file usually comes with a reply, which already mails. An upload plus a reply is two deliveries. |
+| `Follow`, `Unfollow` (REST `PUT` and `DELETE /follow`) | `ticket.followed` or `ticket.unfollowed`, only when it changed something, in the transaction that writes the follower row and its audit entry. **Opt-in by name.** | `user_id` (the person's id, not their name). No mail. |
+| `UnassignForUser` (an administrator deletes a user) | `ticket.assigned` per open ticket the user held, the assignee cleared, with the deleting administrator as the actor; plus `ticket.unfollowed` when the user followed it (the follow goes with the assignment). **Staff mail is suppressed.** | `user_id` only when an unfollow rides along. `Changes` has `assignee_user_id`. |
+| `DeleteGroup` (an administrator deletes a group) | `ticket.assigned` per ticket the group held, open or not, the group cleared, with the deleting administrator as the actor. **Staff mail is suppressed.** | `Changes` has `assignee_group_id`. |
 | `RequestGuestLink` (guest "resend my link") | `guest.link_resent` through `OutboxDispatcher` | what the guest typed; no ticket id |
 | `registration.Service.Signup` | `registration.verify` through `OutboxDispatcher` | `pending_id` only |
 
-Writes that change a ticket and announce nothing: `RemoveLink`, attachments,
-follow and unfollow, and the bulk unassignments `UnassignForUser` and
-`DeleteGroup`. (The last two move tickets without telling the new holder.
-That is a gap, but a separate one.) The `staff.*` events are not produced by
-domain code at all: the worker makes them (Staff email).
+The bulk unassignments announce to webhooks and **mail no staff** (D41). The
+event carries a `SuppressStaffMail` flag (`notification.Event`, kept in the
+outbox row). `MailsStaff` is false for it, so no `email` row is queued, and the
+staff fan-out also refuses it if a row exists anyway. Without that, a group
+delete would mail each member and follower "assigned" once per ticket in a
+burst. A deleted user's group, and the tickets' followers, hear nothing. The
+`staff.*` events are not produced by domain code at all: the worker makes them
+(Staff email).
+
+Still announcing nothing: `DeleteAttachment`, which has no route and no
+production caller, so there is no removal to announce.
 
 #### Consumers
 
 | Consumer | Reads | Decides by |
 | --- | --- | --- |
 | Requester email (`EmailDispatcher`, `notify/email.go`) | the requester's `email` row, made by `ChangeSplitter` | `Type` → template: created, reopened, resolved, replied, status_changed, guest_link. Needs a `Recipient` or a guest link. Status, resolve and reopen mail go to guests only. |
-| Staff email (`ChangeSplitter`, then `StaffMailDispatcher` + `StillEntitled` at send) | the change's `email` row, then the `staff.*` rows | `Kinds` → candidates (assigned, requester replied, reopened). Then switches, overrides, actor skip, one mail per person. At send: account still mailable, still holds, still in group, or still follows and can see the ticket. |
+| Staff email (`ChangeSplitter`, then `StaffMailDispatcher` + `StillEntitled` at send) | the change's `email` row, then the `staff.*` rows | `Kinds` → candidates (assigned, requester replied, reopened); none at all for a change flagged `SuppressStaffMail`. Then switches, overrides, actor skip, one mail per person. At send: account still mailable, still holds, still in group, or still follows and can see the ticket. |
 | Guest link (`GuestLinkDispatcher`) | `email` row with the guest-link flag | issues and rotates the token at send time |
 | Verification (`VerificationDispatcher`) | `verification` row | `Type`: `registration.verify` is sent by `pending_id` (the address and token are read from the pending row); `password.reset_requested` carries the typed address as its recipient and no `pending_id`, and is handed to the password-reset send step, which looks the account up and makes the token at send time (#451) |
-| Webhooks (`WebhookDispatcher`) | `webhook` row | `subscribedKinds(hook, event)`: any kind of the change in the hook's list, or `*`, or an empty list. Then the ticket filter on `Ticket`. Again at every retry and at Redeliver. |
+| Webhooks (`WebhookDispatcher`) | `webhook` row | `subscribedKinds(hook, event)`: any kind of the change in the hook's list, or `*`, or an empty list, except that `ticket.followed` and `ticket.unfollowed` match only a hook that lists them by name. Then the ticket filter on `Ticket`. Again at every retry and at Redeliver. |
 | Chat and ITSM formats (`notify/format*.go`) | the per-hook row | headline chosen by `Type`; "Also" line, reply text and status name chosen by the kinds the hook subscribes to |
 | Plugin registry | nothing | never called |
 
 #### What subscribers are promised
 
 The **raw body** is ids only: `Type`, `TicketID`, `ActorID`, `OccurredAt`, and
-a `Payload` holding only the id that belongs to the name the body is sent
+a `Payload` holding only the ids that belong to the name the body is sent
 under: `new_status_id` for `ticket.status_changed`, `target_id` for
-`ticket.linked`, nothing for any other name (`rawKeysFor`,
-`notify/webhook_body.go`). Headers: `X-GHD-Delivery` and `X-GHD-Event` (the same
-name as `Type`), plus the signature. The OpenAPI `WebhookEvent` enum lists `*`
-and the eleven names. The raw body already changed during the 1.3 betas
+`ticket.linked`, `target_id` and `link_type` for `ticket.unlinked`, `reply_id`
+for `ticket.replied` and `ticket.note_added`, `attachment_id` for
+`ticket.attachment_added`, `user_id` for `ticket.followed` and
+`ticket.unfollowed`, nothing for any other name (`rawKeysFor`,
+`notify/webhook_body.go`) with one exception: a hook that opted into
+`ticket.unfollowed` also gets `user_id` on a delivery under whatever name it is
+told (for example `ticket.assigned`) when the change dropped a follow, and a
+hook that did not opt in never does. Opting in counts from when the hook named
+the event: a change that happened before is never upgraded, so a retry after
+the edit carries no `user_id`. The history copy (every format) and a raw hook's
+queued row never hold that `user_id` for a hook that did not list the event. A
+Slack, Teams, Discord or JIRA hook's queued row holds the whole payload until it
+is sent or finally fails and is scrubbed. Headers: `X-GHD-Delivery` and `X-GHD-Event` (the same
+name as `Type`), plus the signature. `*` does not include `ticket.followed` and
+`ticket.unfollowed`: a hook gets those only by listing them. The OpenAPI
+`WebhookEvent` enum lists `*` and the fifteen names. The raw body already changed during the 1.3 betas
 (#448), and `docs/upgrade-notes-1.3.0.md` describes both changes to
 1.2.x users.
 
@@ -4201,6 +4249,11 @@ and the eleven names. The raw body already changed during the 1.3 betas
 | Resolve button on an already-Resolved ticket, new notes | `resolved` only | 1 |
 | `PATCH` priority only | `priority_changed` | 1 |
 | `PATCH` category only | `classified` | 1 |
+| Remove a link | `unlinked` | 1 |
+| Upload an attachment | `attachment_added` | 1 (and a reply sent with it is a second delivery) |
+| Follow or unfollow | `followed` or `unfollowed` | 0: only a hook that lists it by name |
+| Reassign a ticket away from a follower | `assigned` + `unfollowed` | 1 (a `*` hook is told `assigned`; the unfollow is for hooks that list it) |
+| Delete a user, or a group (per ticket held) | `assigned` (cleared) | 1 per ticket, **no staff mail** |
 
 The same status change has the same names whichever button made it. A hook
 subscribed to `ticket.resolved` sees a resolve done with `PATCH`, and a hook
@@ -4235,9 +4288,12 @@ older fields and has three more, none of which is sent in a raw body:
 order (`notification.KindOrder`) is the order of importance:
 `ticket.created`, `ticket.reopened`, `ticket.resolved`, `ticket.closed`,
 `ticket.status_changed`, `ticket.assigned`, `ticket.priority_changed`,
-`ticket.classified`, `ticket.replied`, `ticket.note_added`, `ticket.linked`.
-Two kinds are new: `ticket.priority_changed` and `ticket.classified`
-(category, type or item). Both can be subscribed to.
+`ticket.classified`, `ticket.replied`, `ticket.note_added`, `ticket.linked`,
+`ticket.unlinked`, `ticket.attachment_added`, `ticket.followed`,
+`ticket.unfollowed`. Two kinds are new: `ticket.priority_changed` and
+`ticket.classified` (category, type or item). Both can be subscribed to. Four
+more came with #630: `ticket.unlinked`, `ticket.attachment_added`,
+`ticket.followed` and `ticket.unfollowed`, the last two opt-in by name.
 
 **Status kinds are the same for every door** (`statusKinds`,
 `internal/domain/ticket/events.go`). Every status move carries
@@ -4442,7 +4498,10 @@ through the API by `TicketID`. The tracking number stays out, as #448 ruled on
 headline comes from the hook's `Type`, as before. The headline for
 `ticket.priority_changed` is "Priority changed" and for `ticket.classified`
 "Reclassified" (`headline`, `notify/format.go`); neither carries a value or a
-name. Jira has no headline and keeps the event name in its `event` key. Under
+name. `ticket.unlinked` is "Unlinked from <ticket id> (<link type>)",
+`ticket.attachment_added` is "Attachment added" (no file name), and
+`ticket.followed` and `ticket.unfollowed` are "Ticket followed" and "Ticket
+unfollowed": the person is an id, and a chat message does not look one up. Jira has no headline and keeps the event name in its `event` key. Under
 the headline:
 
 - **The "Also" line (ruling 10).** One line names the change's other kinds, such
@@ -4556,6 +4615,12 @@ from `Ticket`, after the commit.
     requester's reopening reply, and `ticket.resolved` and `ticket.closed` on a
     `PATCH`.
   - `*` hooks start receiving `ticket.priority_changed` and `ticket.classified`.
+  - `*` hooks also start receiving `ticket.unlinked` and `ticket.attachment_added`
+    (#630). They do **not** receive `ticket.followed` or `ticket.unfollowed`.
+  - A deleted user's tickets, and a deleted group's, are announced to `*` hooks as
+    `ticket.assigned` (cleared), one per ticket, with no staff mail (#630).
+  - The raw body of `ticket.replied` and `ticket.note_added` now carries
+    `reply_id` in `Payload`.
   - A status change to the status the ticket already has no longer announces
     `ticket.status_changed` (1.2.x did).
 - **Redeliver.** It sends the name that was sent, because the kept copy holds no
@@ -4590,11 +4655,7 @@ webhooks.
 
 - Ordering between events. Two changes to one ticket can still arrive out of
   order after a retry, as before.
-- Events for writes that announce nothing: `RemoveLink`, attachments, follow and
-  unfollow, and the bulk `UnassignForUser` and `DeleteGroup`.
 - A plugin API.
-- `reply_id` on the raw wire. A receiver still cannot tell which reply a
-  `ticket.replied` delivery means without listing replies.
 - A message broker.
 
 #### 9. Tests
