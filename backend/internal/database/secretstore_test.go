@@ -37,7 +37,7 @@ func TestSecretStore_InsertIfAbsentAndGet(t *testing.T) {
 }
 
 func TestSecretStore_InsertIfAbsentRaceCondition(t *testing.T) {
-	db, cleanup := testutil.NewDB(t)
+	db, cleanup := testutil.NewIsolatedDB(t)
 	defer cleanup()
 	store := database.NewSecretStore(db.Queries)
 	ctx := context.Background()

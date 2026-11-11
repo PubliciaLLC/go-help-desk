@@ -27,7 +27,8 @@ import (
 //
 // Run against a real connection pool rather than the usual rolled-back
 // transaction: the race is between concurrent statements, and a single
-// transaction serialises them by construction. The row is deleted afterwards.
+// transaction serialises them by construction. It runs on a database of its
+// own, so the committed row needs no cleanup.
 func TestConfirmFirstMFAEnrollment_OnlyOneConcurrentConfirmWins(t *testing.T) {
 	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
@@ -35,7 +36,6 @@ func TestConfirmFirstMFAEnrollment_OnlyOneConcurrentConfirmWins(t *testing.T) {
 	store := userstore.New(dbgen.New(db.SQL))
 	svc := user.NewService(store)
 	id := seedUserForClaim(t, store)
-	defer deleteUser(t, db, id)
 
 	const confirms = 20
 	secrets := make([]string, confirms)
@@ -96,7 +96,6 @@ func TestConfirmMFAEnrollment_RotationStillReplacesTheSecret(t *testing.T) {
 	store := userstore.New(dbgen.New(db.SQL))
 	svc := user.NewService(store)
 	id := seedUserForClaim(t, store)
-	defer deleteUser(t, db, id)
 
 	// allowReplace=true is what the handler passes for a session that proved
 	// the current factor.
@@ -125,7 +124,6 @@ func TestConfirmFirstMFAEnrollment_RefusedOnceAnAccountHasATOTP(t *testing.T) {
 	store := userstore.New(dbgen.New(db.SQL))
 	svc := user.NewService(store)
 	id := seedUserForClaim(t, store)
-	defer deleteUser(t, db, id)
 
 	newCode := func() (string, string) {
 		key, err := totp.Generate(totp.GenerateOpts{Issuer: "test", AccountName: "late@test.local"})

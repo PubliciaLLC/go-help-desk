@@ -16,17 +16,13 @@ import (
 
 // Run against a real connection pool rather than the usual rolled-back
 // transaction: claiming is about concurrent statements, and one transaction
-// serialises them by construction. Each test deletes the rows it made.
+// serialises them by construction. Each test gets a database of its own, so
+// nothing is left behind and nothing else can claim its rows.
 
 func newStore(t *testing.T) (*outboxstore.Store, *testutil.DB, func()) {
 	t.Helper()
 	db, closeDB := testutil.NewIsolatedDB(t)
-	clean := func() {
-		_, err := db.SQL.Exec(`DELETE FROM notification_outbox`)
-		require.NoError(t, err)
-	}
-	clean()
-	return outboxstore.New(dbgen.New(db.SQL)), db, func() { clean(); closeDB() }
+	return outboxstore.New(dbgen.New(db.SQL)), db, closeDB
 }
 
 func enqueue(t *testing.T, s *outboxstore.Store, n int) map[uuid.UUID]bool {

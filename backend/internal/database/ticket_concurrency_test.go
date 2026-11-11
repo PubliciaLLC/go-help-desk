@@ -28,11 +28,6 @@ import (
 // and the fix are both about row locking. Against a map it would prove nothing.
 func TestTicketStore_ConcurrentWritesDoNotLoseEachOther(t *testing.T) {
 	db, closeDB := testutil.NewIsolatedDB(t)
-	// Registered before the row cleanup below so it runs AFTER it: t.Cleanup is
-	// LIFO, and `defer closeDB()` would run before either, leaving the deletes
-	// to talk to a closed pool. These rows are committed — the two connections
-	// need to see each other — so a leak here fails the tests that assert an
-	// empty table.
 	t.Cleanup(closeDB)
 	ctx := context.Background()
 
@@ -57,13 +52,6 @@ func TestTicketStore_ConcurrentWritesDoNotLoseEachOther(t *testing.T) {
 		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}
 	require.NoError(t, us.Create(ctx, agent))
-
-	t.Cleanup(func() {
-		_, _ = db.SQL.Exec(`DELETE FROM tickets WHERE reporter_user_id = $1`, reporter.ID)
-		_, _ = db.SQL.Exec(`DELETE FROM users WHERE id = ANY($1)`,
-			[]uuid.UUID{reporter.ID, agent.ID})
-		_, _ = db.SQL.Exec(`DELETE FROM categories WHERE id = $1`, cat.ID)
-	})
 
 	newSt, err := ts.GetStatusByName(ctx, ticket.StatusNameNew)
 	require.NoError(t, err)
