@@ -1456,9 +1456,12 @@ func TestSLAStore_StampBreaches(t *testing.T) {
 	require.NoError(t, ss.CreatePolicy(ctx, p))
 	require.NoError(t, ss.CreateRecord(ctx, sla.Record{TicketID: tk.ID, PolicyID: p.ID}))
 
+	rec0, err := ss.GetRecord(ctx, tk.ID)
+	require.NoError(t, err)
+
 	// First stamp: response only.
 	t1 := now.Add(10 * time.Minute)
-	require.NoError(t, ss.StampBreaches(ctx, tk.ID, &t1, nil))
+	require.NoError(t, ss.StampBreaches(ctx, rec0.ID, &t1, nil))
 
 	rec, err := ss.GetRecord(ctx, tk.ID)
 	require.NoError(t, err)
@@ -1469,7 +1472,7 @@ func TestSLAStore_StampBreaches(t *testing.T) {
 	// A later stamp for both columns: the already-set response column must
 	// not move, and the still-NULL resolution column must be filled in.
 	t2 := now.Add(20 * time.Minute)
-	require.NoError(t, ss.StampBreaches(ctx, tk.ID, &t2, &t2))
+	require.NoError(t, ss.StampBreaches(ctx, rec0.ID, &t2, &t2))
 
 	rec, err = ss.GetRecord(ctx, tk.ID)
 	require.NoError(t, err)
@@ -1484,7 +1487,7 @@ func TestSLAStore_StampBreaches(t *testing.T) {
 	require.NoError(t, ss.UpdateRecord(ctx, rec))
 
 	t3 := now.Add(30 * time.Minute)
-	require.NoError(t, ss.StampBreaches(ctx, tk.ID, &t3, &t3))
+	require.NoError(t, ss.StampBreaches(ctx, rec0.ID, &t3, &t3))
 
 	rec, err = ss.GetRecord(ctx, tk.ID)
 	require.NoError(t, err)
@@ -1493,8 +1496,9 @@ func TestSLAStore_StampBreaches(t *testing.T) {
 	require.True(t, t1.Equal(*rec.ResponseBreachedAt))
 	require.True(t, t2.Equal(*rec.ResolutionBreachedAt))
 
-	// Stamping a ticket id with no sla_records row is a silent no-op.
-	require.NoError(t, ss.StampBreaches(ctx, uuid.New(), &t1, nil))
+	// Stamping a record id that is not a current sla_records row is refused,
+	// so the caller knows its decision was not applied (#623).
+	require.ErrorIs(t, ss.StampBreaches(ctx, uuid.New(), &t1, nil), sla.ErrRecordSuperseded)
 }
 
 // ── Admin store ──────────────────────────────────────────────────────────────

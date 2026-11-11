@@ -4937,20 +4937,21 @@ response or a resolution onto an existing record is not gated.
 
 **Event.** A priority change that moves the priority raises `ticket.priority_changed` (written in the same transaction; no event when the priority is unchanged). It sends no email. See [Ticket Events: One Change, One Event](#ticket-events-one-change-one-event).
 
-**Known limit.** Recording a first response or a resolution
+**Recording against a re-match.** Recording a first response or a resolution
 (`RecordFirstResponse`, `RecordResolved`) runs after the reply's own commit and
-outside the ticket's row lock. If a re-match commits between that code's read of
-the record and its write, the write finds no current row to land on (the old one
-is superseded, and the new one is invisible to a statement that started earlier),
-so that one response is not recorded on the new record. For a reopen's restart
-that is correct, because the response or resolution came before the new clock
-(it is the superseded record that misses it). For a staff re-match the new
-record keeps waiting for a response it should have had. The breach sweep has
-the same window, but it heals itself: the new record is evaluated on the next
-pass. The window is
-milliseconds. Closing it would need the write to report rows affected and the
-recording code to retry once, which changes the store signatures; it is left
-until there is a real report.
+outside the ticket's row lock, so a re-match can commit between its read of the
+record and its write. Every SLA write is therefore tied to the record it was
+computed from: it is addressed by that record's id, not the ticket's, and if the
+record has been superseded in the meantime the write changes nothing and reports
+it. The recording code then reads the current record again, recomputes from its
+clock and policy, and retries, up to 3 attempts in all; if every attempt is
+beaten by a re-match it returns an error, which the server logs. A response or
+resolution from before the record's clock started is dropped: after a reopen's
+restart, one that came before the reopen never counts on the new clock. For a
+staff re-match, which keeps the clock, the response lands on the new record.
+The breach sweep is bound the same way: it stamps a breach only on the record it
+evaluated, and skips one that was superseded, leaving the next pass to evaluate
+the record that replaced it.
 
 #### Re-matching when the category changes
 

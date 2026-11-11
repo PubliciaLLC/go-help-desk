@@ -438,6 +438,33 @@ func TestListFiltered_ScopedVisibilityMatchesStaffQuery(t *testing.T) {
 	require.Equal(t, []string{"A typeA", "B none", "Delta", "alpha", "assigned to scoped", "charlie", "reported by scoped", "scoped's group"}, f.set(fl))
 }
 
+// "Mine" is the caller's own assignments plus those of every group they are in,
+// and nothing else: not a group they are not in, and not a group they left.
+func TestListFiltered_QueueMine(t *testing.T) {
+	f := newSearchFixture(t)
+	gs := groupstore.New(dbgen.New(f.tx))
+	other := group.Group{ID: uuid.New(), Name: "SrchOtherGroup"}
+	second := group.Group{ID: uuid.New(), Name: "SrchSecondGroup"}
+	require.NoError(t, gs.Create(f.ctx, other))
+	require.NoError(t, gs.Create(f.ctx, second))
+	require.NoError(t, gs.AddMember(f.ctx, second.ID, f.staff.ID))
+
+	f.mk(spec{subject: "second group", group: &second})
+	f.mk(spec{subject: "someone else's group", group: &other})
+	f.mk(spec{subject: "someone else's person", assignee: &f.scoped})
+
+	mine := func(u user.User) []string {
+		fl := ticket.Filter{ActorID: u.ID, Visibility: ticket.VisibilityAll, Queue: ticket.QueueMine, Limit: 200}
+		return f.set(fl)
+	}
+	require.Equal(t, []string{"Bravo", "alpha", "second group"}, mine(f.staff), "own, first group and second group")
+	require.Equal(t, []string{"someone else's person"}, mine(f.scoped), "a user in no group sees only their own")
+	require.Empty(t, mine(f.dana), "nothing assigned, no groups")
+
+	require.NoError(t, gs.RemoveMember(f.ctx, second.ID, f.staff.ID))
+	require.Equal(t, []string{"Bravo", "alpha"}, mine(f.staff), "a group they left no longer counts")
+}
+
 func TestListFiltered_PagesAreFullAndStable(t *testing.T) {
 	f := newSearchFixture(t)
 	// Eleven tickets with the very same created_at, priority and status: only
@@ -623,6 +650,22 @@ func TestListFiltered_SLAAgreesWithStatusFor(t *testing.T) {
 			args: func(tk ticket.Ticket) []any { return []any{tk.CreatedAt.Add(80 * time.Minute)} }},
 		{name: "response met, frozen exactly 100%", age: resp(500), record: `first_response_at = $2::timestamptz, response_elapsed_at_met_seconds = 6000, resolved_at = $2::timestamptz, resolution_elapsed_at_met_seconds = 100`,
 			args: func(tk ticket.Ticket) []any { return []any{tk.CreatedAt.Add(100 * time.Minute)} }},
+		// Met, then paused afterwards: the ticket's pause total keeps growing for
+		// the rest of its life, and recomputing a met target against it would
+		// subtract pause time that had not happened yet when it was met. Only the
+		// frozen reading is right, so an implementation that ignores it reads
+		// green here (9000 s - 6000 s paused = 50%) where StatusFor reads red.
+		{name: "met late (frozen 150%), paused afterwards", age: resp(500),
+			mutate: func(tk *ticket.Ticket) {
+				tk.SLAPausedSeconds = 6000
+				tk.PendingSince = ref(now.Add(-time.Hour))
+			},
+			record: `first_response_at = $2::timestamptz, response_elapsed_at_met_seconds = 9000, resolved_at = $2::timestamptz, resolution_elapsed_at_met_seconds = 9000`,
+			args:   func(tk ticket.Ticket) []any { return []any{tk.CreatedAt.Add(150 * time.Minute)} }},
+		{name: "met in the amber band (frozen 85%), paused afterwards", age: resp(500),
+			mutate: func(tk *ticket.Ticket) { tk.SLAPausedSeconds = 3000 },
+			record: `first_response_at = $2::timestamptz, response_elapsed_at_met_seconds = 5100, resolved_at = $2::timestamptz, resolution_elapsed_at_met_seconds = 5100`,
+			args:   func(tk ticket.Ticket) []any { return []any{tk.CreatedAt.Add(85 * time.Minute)} }},
 		// No frozen number (a record migration 000028 could only estimate):
 		// StatusFor recomputes at the met instant, and so does the SQL.
 		{name: "met with no frozen reading, 90% at the met instant", age: resp(500), record: `first_response_at = $2::timestamptz, resolved_at = $2::timestamptz`,

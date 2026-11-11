@@ -322,7 +322,8 @@ ORDER BY t.created_at
 // Tickets the breach sweep must evaluate: open, under a policy, with at least
 // one target that is neither met nor already stamped, using the same
 // pause-aware elapsed time as sla.Record.Elapsed (see sla.ElapsedFrom's doc
-// comment; the two must change together). The clock starts at the record's
+// comment; the two must change together, and so must ListTicketsFiltered in
+// tickets.sql, the third copy). The clock starts at the record's
 // started_at (the ticket's creation when NULL) and counts the ticket's pause
 // total from the record's paused_seconds_at_start. Superseded records are
 // history and are never evaluated. LEAST(COALESCE(pending_since, now), now) is
@@ -495,7 +496,7 @@ func (q *Queries) ListSLARecordsForTicket(ctx context.Context, ticketID uuid.UUI
 	return items, nil
 }
 
-const setSLAFirstResponse = `-- name: SetSLAFirstResponse :exec
+const setSLAFirstResponse = `-- name: SetSLAFirstResponse :execrows
 UPDATE sla_records
 SET first_response_at = COALESCE(first_response_at, $2::timestamptz),
     response_elapsed_at_met_seconds = COALESCE(response_elapsed_at_met_seconds, $3::bigint),
@@ -505,16 +506,27 @@ SET first_response_at = COALESCE(first_response_at, $2::timestamptz),
             THEN COALESCE(response_breached_at, $2::timestamptz)
         ELSE response_breached_at
     END
-WHERE ticket_id = $1 AND superseded_at IS NULL
+WHERE id = $1 AND superseded_at IS NULL
 `
 
 type SetSLAFirstResponseParams struct {
-	TicketID              uuid.UUID `json:"ticket_id"`
+	ID                    uuid.UUID `json:"id"`
 	At                    time.Time `json:"at"`
 	ElapsedSeconds        int64     `json:"elapsed_seconds"`
 	ResponseTargetSeconds int64     `json:"response_target_seconds"`
 }
 
+// Addressed by the RECORD's id, not the ticket's (#623). The caller read that
+// record, computed its elapsed time from its clock and its targets from its
+// policy, and the reading means nothing on any other record. A re-match
+// (priority change, reopen restart) that committed in between has superseded
+// it, so zero rows are affected, and the caller reads the current record and
+// starts over. Keyed on the ticket, the write used to land on the NEW record
+// with the OLD record's reading (or, when the re-match was still holding the
+// old record's lock, to wait and then update nothing at all). A write that
+// finds its record current but already filled still affects one row: it
+// changes nothing, and is not mistaken for a lost race.
+//
 // Marks the first response, freezes elapsed-toward-target as of that same
 // moment, AND stamps a response breach if it is already late — all in ONE
 // statement. COALESCE-guarded like StampSLABreaches below: it only ever
@@ -546,17 +558,20 @@ type SetSLAFirstResponseParams struct {
 // the breach decision is made from." A losing call (first_response_at
 // already NOT NULL) touches nothing at all, including response_breached_at,
 // so it can never stamp a breach the winning call did not itself decide.
-func (q *Queries) SetSLAFirstResponse(ctx context.Context, arg SetSLAFirstResponseParams) error {
-	_, err := q.db.ExecContext(ctx, setSLAFirstResponse,
-		arg.TicketID,
+func (q *Queries) SetSLAFirstResponse(ctx context.Context, arg SetSLAFirstResponseParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setSLAFirstResponse,
+		arg.ID,
 		arg.At,
 		arg.ElapsedSeconds,
 		arg.ResponseTargetSeconds,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const setSLAResolved = `-- name: SetSLAResolved :exec
+const setSLAResolved = `-- name: SetSLAResolved :execrows
 UPDATE sla_records
 SET resolved_at = COALESCE(resolved_at, $2::timestamptz),
     resolution_elapsed_at_met_seconds = COALESCE(resolution_elapsed_at_met_seconds, $3::bigint),
@@ -566,30 +581,34 @@ SET resolved_at = COALESCE(resolved_at, $2::timestamptz),
             THEN COALESCE(resolution_breached_at, $2::timestamptz)
         ELSE resolution_breached_at
     END
-WHERE ticket_id = $1 AND superseded_at IS NULL
+WHERE id = $1 AND superseded_at IS NULL
 `
 
 type SetSLAResolvedParams struct {
-	TicketID                uuid.UUID `json:"ticket_id"`
+	ID                      uuid.UUID `json:"id"`
 	At                      time.Time `json:"at"`
 	ElapsedSeconds          int64     `json:"elapsed_seconds"`
 	ResolutionTargetSeconds int64     `json:"resolution_target_seconds"`
 }
 
 // The resolution-side twin of SetSLAFirstResponse: see its comment for why
-// the fact write and the breach stamp are one statement (#228), and why
-// every right-hand-side column reference here reads the PRE-UPDATE row.
-func (q *Queries) SetSLAResolved(ctx context.Context, arg SetSLAResolvedParams) error {
-	_, err := q.db.ExecContext(ctx, setSLAResolved,
-		arg.TicketID,
+// the fact write and the breach stamp are one statement (#228), why
+// every right-hand-side column reference here reads the PRE-UPDATE row, and
+// why it is addressed by record id (#623).
+func (q *Queries) SetSLAResolved(ctx context.Context, arg SetSLAResolvedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setSLAResolved,
+		arg.ID,
 		arg.At,
 		arg.ElapsedSeconds,
 		arg.ResolutionTargetSeconds,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const setSLAResolvedAndFirstResponse = `-- name: SetSLAResolvedAndFirstResponse :exec
+const setSLAResolvedAndFirstResponse = `-- name: SetSLAResolvedAndFirstResponse :execrows
 UPDATE sla_records
 SET resolved_at = COALESCE(resolved_at, $2::timestamptz),
     resolution_elapsed_at_met_seconds = COALESCE(resolution_elapsed_at_met_seconds, $3::bigint),
@@ -607,11 +626,11 @@ SET resolved_at = COALESCE(resolved_at, $2::timestamptz),
             THEN COALESCE(response_breached_at, $2::timestamptz)
         ELSE response_breached_at
     END
-WHERE ticket_id = $1 AND superseded_at IS NULL
+WHERE id = $1 AND superseded_at IS NULL
 `
 
 type SetSLAResolvedAndFirstResponseParams struct {
-	TicketID                uuid.UUID `json:"ticket_id"`
+	ID                      uuid.UUID `json:"id"`
 	At                      time.Time `json:"at"`
 	ElapsedSeconds          int64     `json:"elapsed_seconds"`
 	ResolutionTargetSeconds int64     `json:"resolution_target_seconds"`
@@ -631,6 +650,8 @@ type SetSLAResolvedAndFirstResponseParams struct {
 // impossible: both writes commit together, in the same row version, or
 // neither does.
 //
+// Addressed by record id, like SetSLAFirstResponse (#623).
+//
 // Same COALESCE-guarded, first-writer-wins shape as SetSLAFirstResponse /
 // SetSLAResolved, applied to both column pairs independently: each pair's
 // CASE reads only ITS OWN pre-image column (resolution_breached_at's
@@ -642,37 +663,48 @@ type SetSLAResolvedAndFirstResponseParams struct {
 // RecordResolved's existing "SetFirstResponse's own COALESCE guard already
 // makes this the correct no-op" reasoning, now inside one statement instead
 // of two.
-func (q *Queries) SetSLAResolvedAndFirstResponse(ctx context.Context, arg SetSLAResolvedAndFirstResponseParams) error {
-	_, err := q.db.ExecContext(ctx, setSLAResolvedAndFirstResponse,
-		arg.TicketID,
+func (q *Queries) SetSLAResolvedAndFirstResponse(ctx context.Context, arg SetSLAResolvedAndFirstResponseParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setSLAResolvedAndFirstResponse,
+		arg.ID,
 		arg.At,
 		arg.ElapsedSeconds,
 		arg.ResolutionTargetSeconds,
 		arg.ResponseTargetSeconds,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const stampSLABreaches = `-- name: StampSLABreaches :exec
+const stampSLABreaches = `-- name: StampSLABreaches :execrows
 UPDATE sla_records
 SET response_breached_at   = COALESCE(response_breached_at,   $2::timestamptz),
     resolution_breached_at = COALESCE(resolution_breached_at, $3::timestamptz)
-WHERE ticket_id = $1 AND superseded_at IS NULL
+WHERE id = $1 AND superseded_at IS NULL
 `
 
 type StampSLABreachesParams struct {
-	TicketID             uuid.UUID    `json:"ticket_id"`
+	ID                   uuid.UUID    `json:"id"`
 	ResponseBreachedAt   sql.NullTime `json:"response_breached_at"`
 	ResolutionBreachedAt sql.NullTime `json:"resolution_breached_at"`
 }
 
+// Addressed by the id of the record the caller evaluated, like SetSLAFirstResponse
+// (#623): the breach was decided from that record's clock and policy, and means
+// nothing on a record that replaced it. Zero rows is a superseded record, and the
+// caller skips; the next sweep evaluates the new one.
+//
 // Sets only the breach columns, and only where still NULL. Two evaluators
 // racing on the same row cannot overwrite each other's stamp or, worse, the
 // request path's first_response_at / resolved_at. A stamp, once set, is a
 // fact about what happened (DESIGN.md) and is never cleared here.
-func (q *Queries) StampSLABreaches(ctx context.Context, arg StampSLABreachesParams) error {
-	_, err := q.db.ExecContext(ctx, stampSLABreaches, arg.TicketID, arg.ResponseBreachedAt, arg.ResolutionBreachedAt)
-	return err
+func (q *Queries) StampSLABreaches(ctx context.Context, arg StampSLABreachesParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, stampSLABreaches, arg.ID, arg.ResponseBreachedAt, arg.ResolutionBreachedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const supersedeSLARecord = `-- name: SupersedeSLARecord :execrows
@@ -739,6 +771,10 @@ type UpdateSLARecordParams struct {
 	ResolutionBreachedAt sql.NullTime `json:"resolution_breached_at"`
 }
 
+// Deprecated: every SLA write is keyed by record id since #623, and this one is
+// keyed by ticket. It is a full-row read-modify-write with no production caller;
+// a write computed from a record read earlier must be addressed to that record
+// (see SetSLAFirstResponse, StampSLABreaches). Kept, not removed.
 func (q *Queries) UpdateSLARecord(ctx context.Context, arg UpdateSLARecordParams) error {
 	_, err := q.db.ExecContext(ctx, updateSLARecord,
 		arg.TicketID,

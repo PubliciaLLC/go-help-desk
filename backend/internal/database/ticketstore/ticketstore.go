@@ -1027,6 +1027,19 @@ func (s *Store) ListFilteredAt(ctx context.Context, f ticket.Filter, now time.Ti
 		ResultLimit:     pageInt32(f.Limit),
 		ResultOffset:    pageInt32(f.Offset),
 	}
+	// The caller's groups go in as an array, not a subquery, for the queue
+	// "mine" only: see the comment on mine_group_ids in the query for why the
+	// planner needs to be handed them. Never nil, like the other arrays.
+	p.MineGroupIds = []uuid.UUID{}
+	if f.Queue == ticket.QueueMine {
+		groups, err := s.q.ListGroupsForUser(ctx, f.ActorID)
+		if err != nil {
+			return nil, fmt.Errorf("listing the caller's groups: %w", err)
+		}
+		for _, g := range groups {
+			p.MineGroupIds = append(p.MineGroupIds, g.ID)
+		}
+	}
 	if r := strings.TrimSpace(f.Requester); r != "" {
 		p.RequesterPattern = sql.NullString{String: "%" + likeEscaper.Replace(r) + "%", Valid: true}
 	}

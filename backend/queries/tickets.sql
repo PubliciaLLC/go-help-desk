@@ -493,13 +493,16 @@ WHERE
     sqlc.arg(queue)::text = 'any'
     OR (sqlc.arg(queue)::text = 'unassigned'
         AND t.assignee_user_id IS NULL AND t.assignee_group_id IS NULL)
-    -- The groups are an ARRAY(subquery), not IN (subquery): that is a one-time
-    -- InitPlan whose result is a plain array, so both assignee indexes can
-    -- serve the OR. IN (subquery) is a per-row hashed subplan, which cannot
-    -- feed a BitmapOr, and "mine" read the whole table (160 ms at 200k).
+    -- mine_group_ids is the caller's groups, read by the store just before this
+    -- runs and passed as a plain array. That is deliberate: the planner cannot
+    -- know how many groups a subquery will return, assumes a lot, and then walks
+    -- the whole created_at index looking for rows a user with few or no
+    -- assignments does not have (83-95 ms at 200k tickets for an administrator).
+    -- Given the array itself it sees an empty or two-element list, and drives the
+    -- queue from the two assignee indexes instead (0.8 ms).
     OR (sqlc.arg(queue)::text = 'mine' AND (
         t.assignee_user_id = sqlc.arg(actor_id)::uuid
-        OR t.assignee_group_id = ANY(ARRAY(SELECT gm.group_id FROM group_members gm WHERE gm.user_id = sqlc.arg(actor_id)::uuid))))
+        OR t.assignee_group_id = ANY(sqlc.arg(mine_group_ids)::uuid[])))
   )
   AND (cardinality(sqlc.arg(status_ids)::uuid[]) = 0 OR t.status_id = ANY(sqlc.arg(status_ids)::uuid[]))
   -- IS DISTINCT FROM, not <>: if the Closed status were ever missing the
