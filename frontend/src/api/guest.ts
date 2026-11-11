@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { TextFormat } from './types'
+import type { GuestField, TextFormat } from './types'
 
 // A separate axios instance, not the shared `api`.
 //
@@ -86,6 +86,18 @@ export interface GuestTicketInput {
   guest_email: string
   guest_name: string
   guest_phone?: string
+  // Field id to value, for the fields listGuestFields returned for this category
+  // and no others: the server refuses a key it did not offer (#627).
+  custom_fields?: Record<string, string>
+}
+
+// The custom fields the public form offers under a category, which an
+// administrator chose (#627). Empty when none are. 404 when guest submission is
+// off, 429 when asked too often, 400 for a category that is not open to guests;
+// the form treats any failure as "no fields" and lets the server decide on submit.
+export async function listGuestFields(categoryId: string): Promise<GuestField[]> {
+  const res = await guestApi.get<GuestField[]>('/fields', { params: { category_id: categoryId } })
+  return res.data
 }
 
 // Returns the tracking number, which is all the server gives. The link arrives

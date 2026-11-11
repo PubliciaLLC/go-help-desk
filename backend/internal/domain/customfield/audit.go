@@ -171,21 +171,37 @@ func attachmentKeys(info AssignmentInfo, a Assignment) map[string]any {
 	}
 }
 
+// withGuests adds visible_to_guests to an attachment's keys where it is true,
+// so every entry for a field not offered to guests, and every one recorded
+// before the flag existed, reads exactly as it did. A change to it is recorded
+// on both sides (entriesForAttachmentChange), because publishing a field to
+// anonymous visitors is the one change here someone will later want to find.
+func withGuests(keys map[string]any, a Assignment) map[string]any {
+	if a.VisibleToGuests {
+		keys["visible_to_guests"] = true
+	}
+	return keys
+}
+
 func entryAttached(actor *uuid.UUID, info AssignmentInfo, a Assignment) audit.Entry {
-	return newEntry(actor, a.FieldDefID, "custom_field_attached", nil, attachmentKeys(info, a))
+	return newEntry(actor, a.FieldDefID, "custom_field_attached", nil, withGuests(attachmentKeys(info, a), a))
 }
 
 func entriesForAttachmentChange(actor *uuid.UUID, info AssignmentInfo, before, after Assignment) []audit.Entry {
-	if before.VisibleOnNew == after.VisibleOnNew && before.RequiredOnNew == after.RequiredOnNew && before.SortOrder == after.SortOrder {
+	if before.VisibleOnNew == after.VisibleOnNew && before.RequiredOnNew == after.RequiredOnNew &&
+		before.SortOrder == after.SortOrder && before.VisibleToGuests == after.VisibleToGuests {
 		return nil
 	}
-	b, a := attachmentKeys(info, before), attachmentKeys(info, after)
+	b, a := withGuests(attachmentKeys(info, before), before), withGuests(attachmentKeys(info, after), after)
+	if before.VisibleToGuests != after.VisibleToGuests {
+		b["visible_to_guests"], a["visible_to_guests"] = before.VisibleToGuests, after.VisibleToGuests
+	}
 	b["sort_order"], a["sort_order"] = before.SortOrder, after.SortOrder
 	return []audit.Entry{newEntry(actor, after.FieldDefID, "custom_field_attachment_changed", b, a)}
 }
 
 func entryDetached(actor *uuid.UUID, info AssignmentInfo, a Assignment) audit.Entry {
-	return newEntry(actor, a.FieldDefID, "custom_field_detached", attachmentKeys(info, a), nil)
+	return newEntry(actor, a.FieldDefID, "custom_field_detached", withGuests(attachmentKeys(info, a), a), nil)
 }
 
 // movedOptions is the options of the new order that were moved, among those

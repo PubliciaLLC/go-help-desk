@@ -31,7 +31,7 @@ type mcpSession struct {
 
 func newMCPSession(t *testing.T, h *harness, token string) *mcpSession {
 	t.Helper()
-	return newMCPSessionWith(t, h, token, mcp.New(h.ticketSvc, nil, h.srv, h.categorySvc, h.srv, h.srv))
+	return newMCPSessionWith(t, h, token, mcp.New(h.ticketSvc, nil, h.srv, h.categorySvc, h.srv, h.srv).WithCustomFields(h.customFieldSvc))
 }
 
 // newMCPSessionWith is newMCPSession for an MCP server the test built itself.

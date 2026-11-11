@@ -379,6 +379,15 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Required custom fields, for every caller (#626). Here, after the item has
+	// been cleared for a requester and before filing on behalf takes a unit from
+	// the staff member's hourly budget (which a refusal would waste), and before
+	// Create, so a refusal spends no tracking number.
+	if err := s.customFields.CheckRequired(r.Context(), body.CategoryID, body.TypeID, body.ItemID, body.CustomFields); err != nil {
+		handleError(w, err)
+		return
+	}
+
 	in := ticket.CreateInput{
 		Subject:           body.Subject,
 		Description:       body.Description,

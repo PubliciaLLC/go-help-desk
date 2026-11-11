@@ -187,14 +187,6 @@ func TestCustomFieldAudit_EveryAction(t *testing.T) {
 	require.EqualValues(t, 5, a["sort_order"])
 	require.Equal(t, c.Name+" › Type", a["scope_path"])
 
-	// An item-level path names all three levels.
-	itemPath := base + "/types/" + tp.ID.String() + "/items/" + it.ID.String() + "/fields"
-	code, out = h.cfKey(t, http.MethodPost, itemPath, map[string]any{"field_def_id": def.ID})
-	require.Equal(t, http.StatusCreated, code, string(out))
-	e = only(t, hs.since(), "custom_field_attached")
-	_, a = shown(e)
-	require.Equal(t, c.Name+" › Type › Item", a["scope_path"])
-
 	code, out = h.cfKey(t, http.MethodDelete, typePath+"/"+asg.ID.String(), nil)
 	require.Equal(t, http.StatusNoContent, code, string(out))
 	e = only(t, hs.since(), "custom_field_detached")
@@ -203,6 +195,15 @@ func TestCustomFieldAudit_EveryAction(t *testing.T) {
 	require.Equal(t, c.Name+" › Type", b["scope_path"])
 	require.NotContains(t, b, "node_deleted", "removed through its route, not by a node delete")
 	require.Nil(t, a)
+
+	// An item-level path names all three levels. After the type's attachment is
+	// gone: a field is attached at one level of a path (#626).
+	itemPath := base + "/types/" + tp.ID.String() + "/items/" + it.ID.String() + "/fields"
+	code, out = h.cfKey(t, http.MethodPost, itemPath, map[string]any{"field_def_id": def.ID})
+	require.Equal(t, http.StatusCreated, code, string(out))
+	e = only(t, hs.since(), "custom_field_attached")
+	_, a = shown(e)
+	require.Equal(t, c.Name+" › Type › Item", a["scope_path"])
 
 	// An attachment change that changes nothing writes nothing.
 	code, out = h.cfKey(t, http.MethodPost, base+"/fields", map[string]any{"field_def_id": text.ID, "visible_on_new": true})
@@ -277,7 +278,6 @@ func TestCustomFieldAudit_AttachFromCategoriesRouteIsAudited(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	c, tp, it := mkCTI(t, h)
-	def := h.mkField(t, "F", customfield.FieldTypeText, nil, 1)
 	base := adminAPI + "/categories/" + c.ID.String()
 
 	for scope, tc := range map[string]struct{ path, wantPath string }{
@@ -286,6 +286,8 @@ func TestCustomFieldAudit_AttachFromCategoriesRouteIsAudited(t *testing.T) {
 		"item":     {base + "/types/" + tp.ID.String() + "/items/" + it.ID.String() + "/fields", c.Name + " › Type › Item"},
 	} {
 		t.Run(scope, func(t *testing.T) {
+			// One field for each level: a field is attached at one level of a path (#626).
+			def := h.mkField(t, "F "+scope, customfield.FieldTypeText, nil, 1)
 			before := len(h.fieldHistory(t, def.ID))
 			code, out := h.cfKey(t, http.MethodPost, tc.path, map[string]any{"field_def_id": def.ID, "visible_on_new": true})
 			require.Equal(t, http.StatusCreated, code, string(out))
@@ -376,10 +378,11 @@ func TestDeleteCTINode_RefusedDeleteWritesNoAuditEntry(t *testing.T) {
 	defer cleanup()
 	c, tp, _ := mkCTI(t, h)
 	def := h.mkField(t, "F", customfield.FieldTypeText, nil, 1)
+	onType := h.mkField(t, "On the type", customfield.FieldTypeText, nil, 2) // one field per level (#626)
 	h.attach(t, def, customfield.CategoryScope, c.ID, 1)
-	h.attach(t, def, customfield.TypeScope, tp.ID, 1)
+	h.attach(t, onType, customfield.TypeScope, tp.ID, 1)
 	ticketAt(t, h, c, &tp, nil) // makes the category and the type undeletable
-	before := len(h.fieldHistory(t, def.ID))
+	before := len(h.fieldHistory(t, def.ID)) + len(h.fieldHistory(t, onType.ID))
 
 	for _, path := range []string{
 		adminAPI + "/categories/" + c.ID.String(),
@@ -388,7 +391,7 @@ func TestDeleteCTINode_RefusedDeleteWritesNoAuditEntry(t *testing.T) {
 		code, out := h.cfKey(t, http.MethodDelete, path, nil)
 		require.Equal(t, http.StatusConflict, code, string(out))
 	}
-	require.Len(t, h.fieldHistory(t, def.ID), before, "no entry for a delete that did not happen")
+	require.Equal(t, before, len(h.fieldHistory(t, def.ID))+len(h.fieldHistory(t, onType.ID)), "no entry for a delete that did not happen")
 	require.Equal(t, 1, assignmentCount(t, h, customfield.CategoryScope, c.ID))
 	require.Equal(t, 1, assignmentCount(t, h, customfield.TypeScope, tp.ID))
 }

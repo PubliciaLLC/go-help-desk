@@ -173,6 +173,9 @@ func (s *Server) handleCreateAssignment(w http.ResponseWriter, r *http.Request) 
 		SortOrder     int       `json:"sort_order"`
 		VisibleOnNew  *bool     `json:"visible_on_new"`
 		RequiredOnNew bool      `json:"required_on_new"`
+		// Offers the field on the public guest form. Off unless sent, and
+		// refused on anything but a category (#627).
+		VisibleToGuests bool `json:"visible_to_guests"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -186,7 +189,10 @@ func (s *Server) handleCreateAssignment(w http.ResponseWriter, r *http.Request) 
 	if body.VisibleOnNew != nil {
 		visibleOnNew = *body.VisibleOnNew
 	}
-	a, err := s.customFields.CreateAssignment(r.Context(), body.FieldDefID, scopeType, scopeID, body.SortOrder, visibleOnNew, body.RequiredOnNew, actorIDOf(r))
+	a, err := s.customFields.Attach(r.Context(), customfield.Assignment{
+		FieldDefID: body.FieldDefID, ScopeType: scopeType, ScopeID: scopeID, SortOrder: body.SortOrder,
+		VisibleOnNew: visibleOnNew, RequiredOnNew: body.RequiredOnNew, VisibleToGuests: body.VisibleToGuests,
+	}, actorIDOf(r))
 	if err != nil {
 		handleError(w, err)
 		return
@@ -200,9 +206,10 @@ func (s *Server) handleUpdateAssignment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var body struct {
-		SortOrder     *int  `json:"sort_order"`
-		VisibleOnNew  *bool `json:"visible_on_new"`
-		RequiredOnNew *bool `json:"required_on_new"`
+		SortOrder       *int  `json:"sort_order"`
+		VisibleOnNew    *bool `json:"visible_on_new"`
+		RequiredOnNew   *bool `json:"required_on_new"`
+		VisibleToGuests *bool `json:"visible_to_guests"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -216,6 +223,9 @@ func (s *Server) handleUpdateAssignment(w http.ResponseWriter, r *http.Request) 
 	}
 	if body.RequiredOnNew != nil {
 		existing.RequiredOnNew = *body.RequiredOnNew
+	}
+	if body.VisibleToGuests != nil {
+		existing.VisibleToGuests = *body.VisibleToGuests
 	}
 	if err := s.customFields.UpdateAssignment(r.Context(), existing, actorIDOf(r)); err != nil {
 		handleError(w, err)

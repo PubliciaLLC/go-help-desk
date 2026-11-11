@@ -653,7 +653,9 @@ export interface FieldDef {
   field_type: FieldType
   // The options in use. Always a plain list of strings, whatever retired.
   options?: string[]
-  // Admin calls only: options that tickets may still hold but nobody can pick.
+  // Options that tickets may still hold but nobody can pick. Absent when there
+  // are none. The admin calls always returned it; the ticket routes do since
+  // 1.3.0 (#626).
   retired_options?: string[]
   // How many places the field is attached to. GET /admin/custom-fields only:
   // a POST or PATCH response does not carry it.
@@ -679,6 +681,9 @@ export interface FieldPlacement {
   sort_order: number
   visible_on_new: boolean
   required_on_new: boolean
+  // Offered on the public guest form (#627). Meaningful on a category's own
+  // attachment only.
+  visible_to_guests?: boolean
   category: PlacementNode
   type: PlacementNode | null
   item: PlacementNode | null
@@ -699,6 +704,19 @@ export interface Assignment {
   sort_order: number
   visible_on_new: boolean
   required_on_new: boolean
+  // Offered on the public guest form (#627). Off unless an administrator turns
+  // it on, and only a category's own attachment can be.
+  visible_to_guests?: boolean
+}
+
+// A custom field as the public guest form is told about it, from
+// GET /guest/fields: what the form needs to draw and check it, and no more.
+export interface GuestField {
+  id: string
+  name: string
+  field_type: FieldType
+  options?: string[]
+  required: boolean
 }
 
 export interface TicketFieldValue {
@@ -707,6 +725,9 @@ export interface TicketFieldValue {
   field_name: string
   field_type: FieldType
   options?: string[]
+  // Held values no longer offered, so a retired value reads as retired and not
+  // as unknown (#626).
+  retired_options?: string[]
   value: string
   updated_at: string
 }

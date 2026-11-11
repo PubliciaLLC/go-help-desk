@@ -26,7 +26,7 @@ var searchSpellings = []string{
 	"scope_id", "scope_path", "scope_type", "scopes", "service_user_id", "sessions_revoked",
 	"signature_changed", "signed", "sla_outcome", "sla_policy_id", "sla_record_id", "sort_order", "source",
 	"status_id", "template_body", "template_html", "template_name", "template_subject", "totp_cleared",
-	"type_id", "url_changed", "url_host", "visible_on_new",
+	"type_id", "url_changed", "url_host", "visible_on_new", "visible_to_guests",
 }
 
 // SearchableKeys is every Before/After key a free-text search may look inside,

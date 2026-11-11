@@ -84,8 +84,8 @@ GROUP BY value;
 -- ── Assignments ───────────────────────────────────────────────────────────────
 
 -- name: CreateCustomFieldAssignment :one
-INSERT INTO custom_field_assignments (id, field_def_id, scope_type, scope_id, sort_order, visible_on_new, required_on_new)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO custom_field_assignments (id, field_def_id, scope_type, scope_id, sort_order, visible_on_new, required_on_new, visible_to_guests)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING *;
 
 -- name: ListAssignmentsForScope :many
@@ -97,9 +97,11 @@ SELECT
     a.sort_order,
     a.visible_on_new,
     a.required_on_new,
+    a.visible_to_guests,
     d.name       AS field_name,
     d.field_type AS field_type,
     d.options    AS field_options,
+    d.retired_options AS field_retired_options,
     d.sort_order AS field_sort_order,
     d.active     AS field_active
 FROM custom_field_assignments a
@@ -121,6 +123,7 @@ SELECT
     a.sort_order,
     a.visible_on_new,
     a.required_on_new,
+    a.visible_to_guests,
     c.id     AS category_id,
     c.name   AS category_name,
     c.active AS category_active,
@@ -138,6 +141,16 @@ WHERE a.field_def_id = $1
 ORDER BY c.sort_order, c.name, c.id,
          t.sort_order NULLS FIRST, t.name NULLS FIRST, t.id NULLS FIRST,
          i.sort_order NULLS FIRST, i.name NULLS FIRST, i.id NULLS FIRST;
+
+-- name: GetScopeChain :one
+-- The category, type and item a node sits under, NULL below the node's own level
+-- and everywhere for a node that does not exist. Read with ListAssignmentsForFieldDef
+-- to find an attachment of the same field above or below a new one.
+SELECT c.id AS category_id, t.id AS type_id, i.id AS item_id
+FROM (SELECT sqlc.arg(scope_type)::text AS st, sqlc.arg(scope_id)::uuid AS sid) s
+LEFT JOIN items i ON s.st = 'item' AND i.id = s.sid
+LEFT JOIN types t ON t.id = CASE s.st WHEN 'type' THEN s.sid WHEN 'item' THEN i.type_id END
+LEFT JOIN categories c ON c.id = CASE s.st WHEN 'category' THEN s.sid ELSE t.category_id END;
 
 -- name: GetAssignmentScopePath :one
 -- The path of a node as the audit log records it: "Hardware", "Hardware › Laptop",
@@ -162,7 +175,7 @@ SELECT * FROM custom_field_assignments WHERE id = $1 FOR UPDATE;
 
 -- name: UpdateCustomFieldAssignment :exec
 UPDATE custom_field_assignments
-SET sort_order = $2, visible_on_new = $3, required_on_new = $4
+SET sort_order = $2, visible_on_new = $3, required_on_new = $4, visible_to_guests = $5
 WHERE id = $1;
 
 -- name: DeleteCustomFieldAssignment :execrows
@@ -187,6 +200,7 @@ SELECT
     d.name       AS field_name,
     d.field_type AS field_type,
     d.options    AS field_options,
+    d.retired_options AS field_retired_options,
     v.value,
     v.updated_at
 FROM ticket_custom_field_values v

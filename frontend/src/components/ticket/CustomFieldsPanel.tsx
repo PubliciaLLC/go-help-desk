@@ -194,9 +194,10 @@ export function CustomFieldsPanel({
                 that is not one of them was retired since: keep it as the current
                 choice, but never offer it to pick. "(retired)" marks any held
                 value missing from `options`, which also covers one stored before
-                1.3 that was never an option: the ticket routes do not carry
-                `retired_options`, so the card cannot tell the two apart. That is
-                intended. */}
+                1.3 that was never an option. The ticket routes now carry
+                `retired_options` (#626), so the two could be told apart; the card
+                still does not, on purpose: either way the value is no longer
+                offered, and the label says so. */}
             {r.value && !(r.options ?? []).includes(r.value) && (
               <option value={r.value} disabled>{r.value} (retired)</option>
             )}

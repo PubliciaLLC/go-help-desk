@@ -480,7 +480,8 @@ func run() error {
 	// the REST API rather than a second copy of it.
 	// The last srv is the routing rule, the same one REST uses (Server.Routing).
 	mcpSrv := mcp.New(ticketSvc, adminSvc.TicketPrefix, srv, categorySvc, srv, srv).
-		WithReopenWindowDays(adminSvc.ReopenWindowDays)
+		WithReopenWindowDays(adminSvc.ReopenWindowDays).
+		WithCustomFields(customFieldSvc)
 
 	mux := http.NewServeMux()
 	// Wrapped, never bare: Handler() authenticates nothing on its own, and this

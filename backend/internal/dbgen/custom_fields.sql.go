@@ -75,19 +75,20 @@ func (q *Queries) CountCustomFieldValuesByValue(ctx context.Context, fieldDefID 
 
 const createCustomFieldAssignment = `-- name: CreateCustomFieldAssignment :one
 
-INSERT INTO custom_field_assignments (id, field_def_id, scope_type, scope_id, sort_order, visible_on_new, required_on_new)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, field_def_id, scope_type, scope_id, sort_order, visible_on_new, required_on_new
+INSERT INTO custom_field_assignments (id, field_def_id, scope_type, scope_id, sort_order, visible_on_new, required_on_new, visible_to_guests)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, field_def_id, scope_type, scope_id, sort_order, visible_on_new, required_on_new, visible_to_guests
 `
 
 type CreateCustomFieldAssignmentParams struct {
-	ID            uuid.UUID `json:"id"`
-	FieldDefID    uuid.UUID `json:"field_def_id"`
-	ScopeType     string    `json:"scope_type"`
-	ScopeID       uuid.UUID `json:"scope_id"`
-	SortOrder     int32     `json:"sort_order"`
-	VisibleOnNew  bool      `json:"visible_on_new"`
-	RequiredOnNew bool      `json:"required_on_new"`
+	ID              uuid.UUID `json:"id"`
+	FieldDefID      uuid.UUID `json:"field_def_id"`
+	ScopeType       string    `json:"scope_type"`
+	ScopeID         uuid.UUID `json:"scope_id"`
+	SortOrder       int32     `json:"sort_order"`
+	VisibleOnNew    bool      `json:"visible_on_new"`
+	RequiredOnNew   bool      `json:"required_on_new"`
+	VisibleToGuests bool      `json:"visible_to_guests"`
 }
 
 // ── Assignments ───────────────────────────────────────────────────────────────
@@ -100,6 +101,7 @@ func (q *Queries) CreateCustomFieldAssignment(ctx context.Context, arg CreateCus
 		arg.SortOrder,
 		arg.VisibleOnNew,
 		arg.RequiredOnNew,
+		arg.VisibleToGuests,
 	)
 	var i CustomFieldAssignment
 	err := row.Scan(
@@ -110,6 +112,7 @@ func (q *Queries) CreateCustomFieldAssignment(ctx context.Context, arg CreateCus
 		&i.SortOrder,
 		&i.VisibleOnNew,
 		&i.RequiredOnNew,
+		&i.VisibleToGuests,
 	)
 	return i, err
 }
@@ -230,7 +233,7 @@ func (q *Queries) GetAssignmentScopePath(ctx context.Context, arg GetAssignmentS
 }
 
 const getCustomFieldAssignment = `-- name: GetCustomFieldAssignment :one
-SELECT id, field_def_id, scope_type, scope_id, sort_order, visible_on_new, required_on_new FROM custom_field_assignments WHERE id = $1
+SELECT id, field_def_id, scope_type, scope_id, sort_order, visible_on_new, required_on_new, visible_to_guests FROM custom_field_assignments WHERE id = $1
 `
 
 func (q *Queries) GetCustomFieldAssignment(ctx context.Context, id uuid.UUID) (CustomFieldAssignment, error) {
@@ -244,12 +247,13 @@ func (q *Queries) GetCustomFieldAssignment(ctx context.Context, id uuid.UUID) (C
 		&i.SortOrder,
 		&i.VisibleOnNew,
 		&i.RequiredOnNew,
+		&i.VisibleToGuests,
 	)
 	return i, err
 }
 
 const getCustomFieldAssignmentForUpdate = `-- name: GetCustomFieldAssignmentForUpdate :one
-SELECT id, field_def_id, scope_type, scope_id, sort_order, visible_on_new, required_on_new FROM custom_field_assignments WHERE id = $1 FOR UPDATE
+SELECT id, field_def_id, scope_type, scope_id, sort_order, visible_on_new, required_on_new, visible_to_guests FROM custom_field_assignments WHERE id = $1 FOR UPDATE
 `
 
 // Locked, so the audit entry's "before" is the row this transaction then writes.
@@ -264,6 +268,7 @@ func (q *Queries) GetCustomFieldAssignmentForUpdate(ctx context.Context, id uuid
 		&i.SortOrder,
 		&i.VisibleOnNew,
 		&i.RequiredOnNew,
+		&i.VisibleToGuests,
 	)
 	return i, err
 }
@@ -288,6 +293,35 @@ func (q *Queries) GetCustomFieldDef(ctx context.Context, id uuid.UUID) (CustomFi
 	return i, err
 }
 
+const getScopeChain = `-- name: GetScopeChain :one
+SELECT c.id AS category_id, t.id AS type_id, i.id AS item_id
+FROM (SELECT $1::text AS st, $2::uuid AS sid) s
+LEFT JOIN items i ON s.st = 'item' AND i.id = s.sid
+LEFT JOIN types t ON t.id = CASE s.st WHEN 'type' THEN s.sid WHEN 'item' THEN i.type_id END
+LEFT JOIN categories c ON c.id = CASE s.st WHEN 'category' THEN s.sid ELSE t.category_id END
+`
+
+type GetScopeChainParams struct {
+	ScopeType string    `json:"scope_type"`
+	ScopeID   uuid.UUID `json:"scope_id"`
+}
+
+type GetScopeChainRow struct {
+	CategoryID uuid.NullUUID `json:"category_id"`
+	TypeID     uuid.NullUUID `json:"type_id"`
+	ItemID     uuid.NullUUID `json:"item_id"`
+}
+
+// The category, type and item a node sits under, NULL below the node's own level
+// and everywhere for a node that does not exist. Read with ListAssignmentsForFieldDef
+// to find an attachment of the same field above or below a new one.
+func (q *Queries) GetScopeChain(ctx context.Context, arg GetScopeChainParams) (GetScopeChainRow, error) {
+	row := q.db.QueryRowContext(ctx, getScopeChain, arg.ScopeType, arg.ScopeID)
+	var i GetScopeChainRow
+	err := row.Scan(&i.CategoryID, &i.TypeID, &i.ItemID)
+	return i, err
+}
+
 const listAssignmentsForFieldDef = `-- name: ListAssignmentsForFieldDef :many
 SELECT
     a.id,
@@ -297,6 +331,7 @@ SELECT
     a.sort_order,
     a.visible_on_new,
     a.required_on_new,
+    a.visible_to_guests,
     c.id     AS category_id,
     c.name   AS category_name,
     c.active AS category_active,
@@ -317,22 +352,23 @@ ORDER BY c.sort_order, c.name, c.id,
 `
 
 type ListAssignmentsForFieldDefRow struct {
-	ID             uuid.UUID      `json:"id"`
-	FieldDefID     uuid.UUID      `json:"field_def_id"`
-	ScopeType      string         `json:"scope_type"`
-	ScopeID        uuid.UUID      `json:"scope_id"`
-	SortOrder      int32          `json:"sort_order"`
-	VisibleOnNew   bool           `json:"visible_on_new"`
-	RequiredOnNew  bool           `json:"required_on_new"`
-	CategoryID     uuid.UUID      `json:"category_id"`
-	CategoryName   string         `json:"category_name"`
-	CategoryActive bool           `json:"category_active"`
-	TypeID         uuid.NullUUID  `json:"type_id"`
-	TypeName       sql.NullString `json:"type_name"`
-	TypeActive     sql.NullBool   `json:"type_active"`
-	ItemID         uuid.NullUUID  `json:"item_id"`
-	ItemName       sql.NullString `json:"item_name"`
-	ItemActive     sql.NullBool   `json:"item_active"`
+	ID              uuid.UUID      `json:"id"`
+	FieldDefID      uuid.UUID      `json:"field_def_id"`
+	ScopeType       string         `json:"scope_type"`
+	ScopeID         uuid.UUID      `json:"scope_id"`
+	SortOrder       int32          `json:"sort_order"`
+	VisibleOnNew    bool           `json:"visible_on_new"`
+	RequiredOnNew   bool           `json:"required_on_new"`
+	VisibleToGuests bool           `json:"visible_to_guests"`
+	CategoryID      uuid.UUID      `json:"category_id"`
+	CategoryName    string         `json:"category_name"`
+	CategoryActive  bool           `json:"category_active"`
+	TypeID          uuid.NullUUID  `json:"type_id"`
+	TypeName        sql.NullString `json:"type_name"`
+	TypeActive      sql.NullBool   `json:"type_active"`
+	ItemID          uuid.NullUUID  `json:"item_id"`
+	ItemName        sql.NullString `json:"item_name"`
+	ItemActive      sql.NullBool   `json:"item_active"`
 }
 
 // Where a field is attached, in tree order: category by number and name, and
@@ -357,6 +393,7 @@ func (q *Queries) ListAssignmentsForFieldDef(ctx context.Context, fieldDefID uui
 			&i.SortOrder,
 			&i.VisibleOnNew,
 			&i.RequiredOnNew,
+			&i.VisibleToGuests,
 			&i.CategoryID,
 			&i.CategoryName,
 			&i.CategoryActive,
@@ -389,9 +426,11 @@ SELECT
     a.sort_order,
     a.visible_on_new,
     a.required_on_new,
+    a.visible_to_guests,
     d.name       AS field_name,
     d.field_type AS field_type,
     d.options    AS field_options,
+    d.retired_options AS field_retired_options,
     d.sort_order AS field_sort_order,
     d.active     AS field_active
 FROM custom_field_assignments a
@@ -406,18 +445,20 @@ type ListAssignmentsForScopeParams struct {
 }
 
 type ListAssignmentsForScopeRow struct {
-	ID             uuid.UUID             `json:"id"`
-	FieldDefID     uuid.UUID             `json:"field_def_id"`
-	ScopeType      string                `json:"scope_type"`
-	ScopeID        uuid.UUID             `json:"scope_id"`
-	SortOrder      int32                 `json:"sort_order"`
-	VisibleOnNew   bool                  `json:"visible_on_new"`
-	RequiredOnNew  bool                  `json:"required_on_new"`
-	FieldName      string                `json:"field_name"`
-	FieldType      string                `json:"field_type"`
-	FieldOptions   pqtype.NullRawMessage `json:"field_options"`
-	FieldSortOrder int32                 `json:"field_sort_order"`
-	FieldActive    bool                  `json:"field_active"`
+	ID                  uuid.UUID             `json:"id"`
+	FieldDefID          uuid.UUID             `json:"field_def_id"`
+	ScopeType           string                `json:"scope_type"`
+	ScopeID             uuid.UUID             `json:"scope_id"`
+	SortOrder           int32                 `json:"sort_order"`
+	VisibleOnNew        bool                  `json:"visible_on_new"`
+	RequiredOnNew       bool                  `json:"required_on_new"`
+	VisibleToGuests     bool                  `json:"visible_to_guests"`
+	FieldName           string                `json:"field_name"`
+	FieldType           string                `json:"field_type"`
+	FieldOptions        pqtype.NullRawMessage `json:"field_options"`
+	FieldRetiredOptions pqtype.NullRawMessage `json:"field_retired_options"`
+	FieldSortOrder      int32                 `json:"field_sort_order"`
+	FieldActive         bool                  `json:"field_active"`
 }
 
 func (q *Queries) ListAssignmentsForScope(ctx context.Context, arg ListAssignmentsForScopeParams) ([]ListAssignmentsForScopeRow, error) {
@@ -437,9 +478,11 @@ func (q *Queries) ListAssignmentsForScope(ctx context.Context, arg ListAssignmen
 			&i.SortOrder,
 			&i.VisibleOnNew,
 			&i.RequiredOnNew,
+			&i.VisibleToGuests,
 			&i.FieldName,
 			&i.FieldType,
 			&i.FieldOptions,
+			&i.FieldRetiredOptions,
 			&i.FieldSortOrder,
 			&i.FieldActive,
 		); err != nil {
@@ -527,6 +570,7 @@ SELECT
     d.name       AS field_name,
     d.field_type AS field_type,
     d.options    AS field_options,
+    d.retired_options AS field_retired_options,
     v.value,
     v.updated_at
 FROM ticket_custom_field_values v
@@ -536,13 +580,14 @@ ORDER BY d.sort_order, d.name
 `
 
 type ListCustomFieldValuesForTicketRow struct {
-	TicketID     uuid.UUID             `json:"ticket_id"`
-	FieldDefID   uuid.UUID             `json:"field_def_id"`
-	FieldName    string                `json:"field_name"`
-	FieldType    string                `json:"field_type"`
-	FieldOptions pqtype.NullRawMessage `json:"field_options"`
-	Value        string                `json:"value"`
-	UpdatedAt    time.Time             `json:"updated_at"`
+	TicketID            uuid.UUID             `json:"ticket_id"`
+	FieldDefID          uuid.UUID             `json:"field_def_id"`
+	FieldName           string                `json:"field_name"`
+	FieldType           string                `json:"field_type"`
+	FieldOptions        pqtype.NullRawMessage `json:"field_options"`
+	FieldRetiredOptions pqtype.NullRawMessage `json:"field_retired_options"`
+	Value               string                `json:"value"`
+	UpdatedAt           time.Time             `json:"updated_at"`
 }
 
 func (q *Queries) ListCustomFieldValuesForTicket(ctx context.Context, ticketID uuid.UUID) ([]ListCustomFieldValuesForTicketRow, error) {
@@ -560,6 +605,7 @@ func (q *Queries) ListCustomFieldValuesForTicket(ctx context.Context, ticketID u
 			&i.FieldName,
 			&i.FieldType,
 			&i.FieldOptions,
+			&i.FieldRetiredOptions,
 			&i.Value,
 			&i.UpdatedAt,
 		); err != nil {
@@ -698,15 +744,16 @@ func (q *Queries) ReorderCustomFieldDefs(ctx context.Context, ids []uuid.UUID) e
 
 const updateCustomFieldAssignment = `-- name: UpdateCustomFieldAssignment :exec
 UPDATE custom_field_assignments
-SET sort_order = $2, visible_on_new = $3, required_on_new = $4
+SET sort_order = $2, visible_on_new = $3, required_on_new = $4, visible_to_guests = $5
 WHERE id = $1
 `
 
 type UpdateCustomFieldAssignmentParams struct {
-	ID            uuid.UUID `json:"id"`
-	SortOrder     int32     `json:"sort_order"`
-	VisibleOnNew  bool      `json:"visible_on_new"`
-	RequiredOnNew bool      `json:"required_on_new"`
+	ID              uuid.UUID `json:"id"`
+	SortOrder       int32     `json:"sort_order"`
+	VisibleOnNew    bool      `json:"visible_on_new"`
+	RequiredOnNew   bool      `json:"required_on_new"`
+	VisibleToGuests bool      `json:"visible_to_guests"`
 }
 
 func (q *Queries) UpdateCustomFieldAssignment(ctx context.Context, arg UpdateCustomFieldAssignmentParams) error {
@@ -715,6 +762,7 @@ func (q *Queries) UpdateCustomFieldAssignment(ctx context.Context, arg UpdateCus
 		arg.SortOrder,
 		arg.VisibleOnNew,
 		arg.RequiredOnNew,
+		arg.VisibleToGuests,
 	)
 	return err
 }

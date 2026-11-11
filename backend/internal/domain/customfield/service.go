@@ -24,8 +24,13 @@ func (s *Service) CreateFieldDef(ctx context.Context, name string, fieldType Fie
 	if err := validateFieldType(fieldType); err != nil {
 		return FieldDef{}, err
 	}
-	if fieldType == FieldTypeSelect && len(options) == 0 {
-		return FieldDef{}, Invalid("select fields require at least one option")
+	if fieldType == FieldTypeSelect {
+		if len(options) == 0 {
+			return FieldDef{}, Invalid("select fields require at least one option")
+		}
+		if err := checkOptionLists(options, nil); err != nil {
+			return FieldDef{}, err
+		}
 	}
 	def := FieldDef{
 		ID:        uuid.New(),
@@ -139,6 +144,14 @@ func checkChange(cur, next FieldDef, held Held) error {
 				return Invalid(fmt.Sprintf("option %q can be retired only from the options in use", o))
 			}
 		}
+		// Only when this change touches the lists (or makes the field a select),
+		// so a field that 1.2.0 or an earlier API call left with a blank or
+		// repeated option can still be renamed or reordered.
+		if !slices.Equal(cur.Options, next.Options) || !slices.Equal(cur.RetiredOptions, next.RetiredOptions) || cur.FieldType != next.FieldType {
+			if err := checkOptionLists(next.Options, next.RetiredOptions); err != nil {
+				return err
+			}
+		}
 		// A value in neither list now that was in one before is a delete.
 		if cur.FieldType == FieldTypeSelect {
 			var removed []string
@@ -166,6 +179,24 @@ func checkChange(cur, next FieldDef, held Held) error {
 		if used {
 			return Conflict("the type can't change once a ticket has a value for this field")
 		}
+	}
+	return nil
+}
+
+// checkOptionLists refuses a blank option and an option that appears twice
+// across both lists, compared exactly (so "a" and "A" are two options, as the
+// ticket value check treats them). The page has always refused both; the API
+// did not (#626).
+func checkOptionLists(options, retired []string) error {
+	seen := make(map[string]bool, len(options)+len(retired))
+	for _, o := range append(slices.Clone(options), retired...) {
+		if strings.TrimSpace(o) == "" {
+			return Invalid("an option cannot be blank")
+		}
+		if seen[o] {
+			return Invalid(fmt.Sprintf("option %q is listed twice", o))
+		}
+		seen[o] = true
 	}
 	return nil
 }
@@ -246,17 +277,36 @@ func (s *Service) ListPlacements(ctx context.Context, id uuid.UUID) ([]Placement
 	return s.store.ListPlacements(ctx, id)
 }
 
+// CreateAssignment attaches a field to a node without offering it to guests.
+// Attach takes the whole attachment.
 func (s *Service) CreateAssignment(ctx context.Context, fieldDefID uuid.UUID, scopeType ScopeType, scopeID uuid.UUID, sortOrder int, visibleOnNew, requiredOnNew bool, actor *uuid.UUID) (Assignment, error) {
-	a := Assignment{
-		ID:            uuid.New(),
+	return s.Attach(ctx, Assignment{
 		FieldDefID:    fieldDefID,
 		ScopeType:     scopeType,
 		ScopeID:       scopeID,
 		SortOrder:     sortOrder,
 		VisibleOnNew:  visibleOnNew,
 		RequiredOnNew: requiredOnNew,
+	}, actor)
+}
+
+// Attach attaches a field to a node. The id is assigned here.
+func (s *Service) Attach(ctx context.Context, a Assignment, actor *uuid.UUID) (Assignment, error) {
+	if err := checkGuestScope(a); err != nil {
+		return Assignment{}, err
 	}
+	a.ID = uuid.New()
 	return s.store.CreateAssignment(ctx, a, func(info AssignmentInfo) audit.Entry { return entryAttached(actor, info, a) })
+}
+
+// checkGuestScope: a guest chooses a category and nothing below it, so only a
+// category's attachment can be offered to one. A flag on a type or an item would
+// promise a field no guest can ever be given.
+func checkGuestScope(a Assignment) error {
+	if a.VisibleToGuests && a.ScopeType != CategoryScope {
+		return Invalid("only a field attached to a category can be offered to guests")
+	}
+	return nil
 }
 
 func (s *Service) ListAssignments(ctx context.Context, scopeType ScopeType, scopeID uuid.UUID) ([]Assignment, error) {
@@ -268,6 +318,9 @@ func (s *Service) GetAssignment(ctx context.Context, id uuid.UUID) (Assignment, 
 }
 
 func (s *Service) UpdateAssignment(ctx context.Context, a Assignment, actor *uuid.UUID) error {
+	if err := checkGuestScope(a); err != nil {
+		return err
+	}
 	return s.store.UpdateAssignment(ctx, a, func(before Assignment, info AssignmentInfo) []audit.Entry {
 		return entriesForAttachmentChange(actor, info, before, a)
 	})
@@ -430,6 +483,24 @@ func sortedIDs[V any](m map[uuid.UUID]V) []uuid.UUID {
 // caller to log: it means the entries could not be saved (the lookup or the
 // write failed), and each non-empty one is then in the warnings as not_saved.
 func (s *Service) SetCreationValues(ctx context.Context, ticketID, categoryID uuid.UUID, typeID, itemID *uuid.UUID, raw map[string]string) ([]Warning, error) {
+	return s.setCreationValues(ctx, ticketID, raw, func() ([]Assignment, error) {
+		return s.ResolveFieldsForCTI(ctx, categoryID, typeID, itemID)
+	})
+}
+
+// SetGuestCreationValues is SetCreationValues for a ticket a guest filed: the
+// fields it may hold are the ones offered to guests, not everything its category
+// has, so a value for any other field is dropped and reported as not_on_ticket
+// even if the request check let it through.
+func (s *Service) SetGuestCreationValues(ctx context.Context, ticketID, categoryID uuid.UUID, raw map[string]string) ([]Warning, error) {
+	return s.setCreationValues(ctx, ticketID, raw, func() ([]Assignment, error) {
+		return s.GuestFields(ctx, categoryID)
+	})
+}
+
+// setCreationValues is the body of both. fields says which fields the ticket
+// may hold, and is not asked when nothing was sent.
+func (s *Service) setCreationValues(ctx context.Context, ticketID uuid.UUID, raw map[string]string, fields func() ([]Assignment, error)) ([]Warning, error) {
 	var keys []string // the non-empty entries, sorted
 	for key, value := range raw {
 		if value != "" {
@@ -454,7 +525,7 @@ func (s *Service) SetCreationValues(ctx context.Context, ticketID, categoryID uu
 		return out
 	}
 
-	resolved, err := s.ResolveFieldsForCTI(ctx, categoryID, typeID, itemID)
+	resolved, err := fields()
 	if err != nil {
 		return allNotSaved(), fmt.Errorf("resolving the ticket's fields: %w", err)
 	}
@@ -539,4 +610,134 @@ func validateFieldType(ft FieldType) error {
 	default:
 		return Invalid(fmt.Sprintf("invalid field type %q", ft))
 	}
+}
+
+// valuesByID reads the request's map by field id. Keys that are not ids are not
+// in it (SetCreationValues reports them); two keys that spell one id are in dup.
+func valuesByID(raw map[string]string) (values map[uuid.UUID]string, dup map[uuid.UUID]bool) {
+	values, dup = make(map[uuid.UUID]string, len(raw)), map[uuid.UUID]bool{}
+	for key, v := range raw {
+		id, err := uuid.Parse(key)
+		if err != nil {
+			continue
+		}
+		if _, seen := values[id]; seen {
+			dup[id] = true
+		}
+		values[id] = v
+	}
+	return values, dup
+}
+
+// checkRequired is the rule for the fields a door offers: each one the form
+// would hold a person to (shown, required, active, at its most specific
+// attachment, which is what offered holds) needs a value, and the value has to
+// be one the field accepts, because a value refused after the ticket exists
+// would leave it without the field this was checking for. Spaces are no value.
+//
+// FieldDef is always set by the store; an assignment without one is skipped
+// rather than guessed at.
+func checkRequired(offered []Assignment, raw map[string]string) error {
+	values, dup := valuesByID(raw)
+	var missing []string
+	for _, a := range offered {
+		def := a.FieldDef
+		if def == nil || !def.Active || !a.VisibleOnNew || !a.RequiredOnNew {
+			continue
+		}
+		if dup[a.FieldDefID] {
+			return Invalid(fmt.Sprintf("field %q is listed twice", def.Name))
+		}
+		v := values[a.FieldDefID]
+		if strings.TrimSpace(v) == "" {
+			missing = append(missing, fmt.Sprintf("%q", def.Name))
+			continue
+		}
+		if _, reason := checkValue(*def, v); reason != "" {
+			return refusal(*def, v, reason)
+		}
+	}
+	switch len(missing) {
+	case 0:
+		return nil
+	case 1:
+		return Invalid(fmt.Sprintf("custom field %s is required", missing[0]))
+	}
+	return Invalid("custom fields are required: " + strings.Join(missing, ", "))
+}
+
+// CheckRequired refuses, as a 400, a ticket about to be created without a value
+// for a field its classification requires. It is the server's rule, not the
+// form's: before 1.3.0 only the new-ticket form held anyone to it. Called before
+// the ticket is created so that no tracking number is spent on a refusal.
+//
+// The check and the create are not one transaction: an administrator who makes a
+// field required between them lets one ticket through without it. Accepted; the
+// ticket is not wrong, only the form was a moment out of date.
+func (s *Service) CheckRequired(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID, raw map[string]string) error {
+	fields, err := s.ResolveFieldsForCTI(ctx, categoryID, typeID, itemID)
+	if err != nil {
+		return fmt.Errorf("resolving the ticket's fields: %w", err)
+	}
+	return checkRequired(fields, raw)
+}
+
+// GuestFields is the fields an anonymous visitor filing under the category is
+// offered: the category's own attachments that an administrator switched on for
+// guests, that are shown on the new-ticket form, and whose field is active. A
+// guest picks a category and nothing below it, so nothing attached to a type or
+// an item can be here. Everything else a guest asks about is judged against this
+// list, which is why it is built from an explicit opt-in and never from "not
+// marked internal": a field added later is not offered until someone says so.
+func (s *Service) GuestFields(ctx context.Context, categoryID uuid.UUID) ([]Assignment, error) {
+	all, err := s.store.ListAssignments(ctx, CategoryScope, categoryID)
+	if err != nil {
+		return nil, fmt.Errorf("listing the category's fields: %w", err)
+	}
+	var out []Assignment
+	for _, a := range all {
+		if a.VisibleToGuests && a.VisibleOnNew && a.FieldDef != nil && a.FieldDef.Active {
+			out = append(out, a)
+		}
+	}
+	return out, nil
+}
+
+// CheckGuestValues is what the guest endpoint asks before it files anything. It
+// is strict where CheckRequired is not: a guest is told no rather than warned,
+// because the form is ours and an anonymous caller has nothing to gain from a
+// partial save. Every key must be a field offered to guests (naming any other,
+// an empty value included, is refused, and the message does not say whether such
+// a field exists); every value must be one the field accepts; every required
+// offered field needs one. Required is judged only over the offered fields, so
+// a field the staff form requires but guests are not offered does not stop a
+// guest filing.
+func (s *Service) CheckGuestValues(ctx context.Context, categoryID uuid.UUID, raw map[string]string) error {
+	offered, err := s.GuestFields(ctx, categoryID)
+	if err != nil {
+		return err
+	}
+	defs := make(map[uuid.UUID]*FieldDef, len(offered))
+	for _, a := range offered {
+		defs[a.FieldDefID] = a.FieldDef
+	}
+	seen := make(map[uuid.UUID]bool, len(raw))
+	for key, v := range raw {
+		id, err := uuid.Parse(key)
+		def, ok := defs[id]
+		if err != nil || !ok {
+			return Invalid("custom_fields names a field that is not offered to guests")
+		}
+		if seen[id] {
+			return Invalid(fmt.Sprintf("field %q is listed twice", def.Name))
+		}
+		seen[id] = true
+		if v == "" {
+			continue
+		}
+		if _, reason := checkValue(*def, v); reason != "" {
+			return refusal(*def, v, reason)
+		}
+	}
+	return checkRequired(offered, raw)
 }

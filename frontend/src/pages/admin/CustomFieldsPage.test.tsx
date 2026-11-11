@@ -880,6 +880,35 @@ describe('Where it appears', () => {
     )
   })
 
+  // #627: a category's own place can be offered to guests; a type's or an item's
+  // cannot, because a guest picks a category and nothing below it.
+  it('toggling Offer to guests patches the category route', async () => {
+    const { server, row } = await openDept()
+    const line = within(row).getByText('Hardware').closest('li') as HTMLElement
+    const box = within(line).getByRole('checkbox', { name: /Offer to guests/ }) as HTMLInputElement
+    expect(box.checked).toBe(false)
+    await userEvent.click(box)
+    await waitFor(() => expect(server.patch).toHaveBeenCalledWith('/admin/categories/c-1/fields/a-1', { visible_to_guests: true }))
+  })
+
+  it('offers no Offer to guests box on a type or an item', async () => {
+    const { row } = await openDept()
+    const line = within(row).getByText('Network › VPN').closest('li') as HTMLElement
+    expect(within(line).queryByRole('checkbox', { name: /Offer to guests/ })).toBeNull()
+  })
+
+  it('shows Offer to guests checked, and still enabled, for a place already offered but no longer shown', async () => {
+    fakeServer({
+      placements: { ...PLACEMENTS, 'f-asset': [placement('a-9', 'f-asset', { scope_type: 'category', scope_id: 'c-1', category: HARDWARE, visible_on_new: false, visible_to_guests: true })] },
+    })
+    renderWithQuery(<CustomFieldsPage />)
+    await userEvent.click(await rowButton('Asset Tag'))
+    const line = (await screen.findByText('Hardware')).closest('li') as HTMLElement
+    const box = within(line).getByRole('checkbox', { name: /Offer to guests/ }) as HTMLInputElement
+    expect(box.checked).toBe(true)
+    expect(box.disabled).toBe(false)
+  })
+
   it('disables Required while Show on new-ticket form is off', async () => {
     fakeServer({
       placements: { ...PLACEMENTS, 'f-asset': [placement('a-9', 'f-asset', { scope_type: 'category', scope_id: 'c-1', category: HARDWARE, visible_on_new: false })] },

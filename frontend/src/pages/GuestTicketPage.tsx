@@ -1,11 +1,13 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { listPublicCategories } from '@/api/tickets'
-import { createGuestTicket } from '@/api/guest'
+import { createGuestTicket, listGuestFields } from '@/api/guest'
+import type { GuestField } from '@/api/types'
 import { extractError } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
 import { TextLimit } from '@/components/TextLimit'
 import { isOverLimit } from '@/lib/textLimit'
 import { MarkdownEditor } from '@/components/editor/MarkdownEditor'
@@ -16,10 +18,40 @@ interface SuccessInfo {
   trackingNumber: string
 }
 
+function GuestFieldInput({
+  field,
+  value,
+  onChange,
+}: {
+  field: GuestField
+  value: string
+  onChange: (v: string) => void
+}) {
+  const id = `cf-${field.id}`
+  switch (field.field_type) {
+    case 'textarea':
+      return <Textarea id={id} value={value} onChange={(e) => onChange(e.target.value)} rows={3} />
+    case 'number':
+      return <Input id={id} type="number" value={value} onChange={(e) => onChange(e.target.value)} />
+    case 'select':
+      return (
+        <Select id={id} value={value} onChange={(e) => onChange(e.target.value)}>
+          <option value="">Select…</option>
+          {(field.options ?? []).map((opt) => (
+            <option key={opt} value={opt}>{opt}</option>
+          ))}
+        </Select>
+      )
+    default:
+      return <Input id={id} value={value} onChange={(e) => onChange(e.target.value)} />
+  }
+}
+
 export function GuestTicketPage() {
   const [subject, setSubject] = useState('')
   const [description, setDescription] = useState('')
   const [categoryId, setCategoryId] = useState('')
+  const [fieldValues, setFieldValues] = useState<Record<string, string>>({})
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
@@ -32,19 +64,26 @@ export function GuestTicketPage() {
     queryFn: listPublicCategories,
   })
 
-  // Custom fields are deliberately not on this form.
-  //
-  // The guest endpoint takes no custom_fields — see handler_guest.go, where
-  // it is a recorded decision, not an omission — so everything this page
-  // collected under that heading was thrown away on submit. Worse, a field
-  // marked required blocked the submit button over a value that was never
-  // going to be sent: a visitor could be stopped from filing a ticket at all
-  // by a field the server does not have.
-  //
-  // Removed rather than wired up, because wiring it up is the bigger change
-  // and the wrong one to make quietly: the endpoint is unauthenticated, and
-  // what an anonymous visitor may write into an operator's own fields is a
-  // decision for the operator, not a side effect of a bug fix.
+  // The custom fields an administrator chose to offer visitors under this
+  // category (#627), and only those: the server tells this form which they are
+  // and refuses any other key. This form asked for every field once and threw
+  // the answers away on submit, which could also stop a visitor filing over a
+  // field the server never took; it was removed, and is back only because the
+  // server now decides what a guest may fill. A failed lookup shows no fields
+  // and does not block the form: the server judges what is sent, and says so.
+  const { data: guestFields = [] } = useQuery({
+    queryKey: ['guest-fields', categoryId],
+    queryFn: () => listGuestFields(categoryId),
+    enabled: !!categoryId,
+    retry: false,
+  })
+
+  function chooseCategory(id: string) {
+    setCategoryId(id)
+    // Another category may not offer these fields, and the server refuses a
+    // field it did not offer, so nothing typed for one is carried to the next.
+    setFieldValues({})
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -54,6 +93,13 @@ export function GuestTicketPage() {
     if (!name.trim()) { setError('Name is required'); return }
     if (!email.trim()) { setError('Email is required'); return }
     if (isOverLimit(description)) { setError('The description is too long. Shorten it to send.'); return }
+
+    const customFields: Record<string, string> = {}
+    for (const f of guestFields) {
+      const v = fieldValues[f.id] ?? ''
+      if (v.trim()) customFields[f.id] = v
+      else if (f.required) { setError(`${f.name} is required`); return }
+    }
 
     setLoading(true)
     try {
@@ -67,6 +113,7 @@ export function GuestTicketPage() {
         guest_name: name.trim(),
         guest_email: email.trim(),
         guest_phone: phone.trim() || undefined,
+        custom_fields: Object.keys(customFields).length > 0 ? customFields : undefined,
       })
       setSuccess({ trackingNumber })
     } catch (err) {
@@ -104,7 +151,7 @@ export function GuestTicketPage() {
                   setSuccess(null)
                   setSubject('')
                   setDescription('')
-                  setCategoryId('')
+                  chooseCategory('')
                   setName('')
                   setEmail('')
                   setPhone('')
@@ -198,7 +245,7 @@ export function GuestTicketPage() {
                 <Select
                   id="category"
                   value={categoryId}
-                  onChange={(e) => setCategoryId(e.target.value)}
+                  onChange={(e) => chooseCategory(e.target.value)}
                 >
                   <option value="">Select…</option>
                   {categories.map((c) => (
@@ -207,6 +254,19 @@ export function GuestTicketPage() {
                 </Select>
               </div>
 
+              {guestFields.map((f) => (
+                <div key={f.id} className="space-y-1">
+                  <Label htmlFor={`cf-${f.id}`}>
+                    {f.name}
+                    {f.required && <span className="ml-0.5 text-red-500"> *</span>}
+                  </Label>
+                  <GuestFieldInput
+                    field={f}
+                    value={fieldValues[f.id] ?? ''}
+                    onChange={(v) => setFieldValues((prev) => ({ ...prev, [f.id]: v }))}
+                  />
+                </div>
+              ))}
 
               {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
 

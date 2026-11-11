@@ -33,8 +33,8 @@ type FieldDef struct {
 	FieldType FieldType `json:"field_type"`
 	Options   []string  `json:"options,omitempty"` // populated only for select fields
 	// RetiredOptions are options no longer offered that tickets may still hold.
-	// A value is in Options or here, never both. The admin routes return it; the
-	// ticket routes build their FieldDef without it, so they never do.
+	// A value is in Options or here, never both. Every route that returns a
+	// definition or a value's field returns it (the ticket routes since 1.3.0).
 	RetiredOptions []string  `json:"retired_options,omitempty"`
 	SortOrder      int       `json:"sort_order"`
 	Active         bool      `json:"active"`
@@ -55,6 +55,8 @@ type Assignment struct {
 	SortOrder     int       `json:"sort_order"`
 	VisibleOnNew  bool      `json:"visible_on_new"`
 	RequiredOnNew bool      `json:"required_on_new"`
+	// VisibleToGuests offers the field on the guest form. See GuestFields.
+	VisibleToGuests bool `json:"visible_to_guests"`
 }
 
 // PlaceNode is one level of a Placement's path.
@@ -117,8 +119,11 @@ type TicketFieldValue struct {
 	FieldName  string    `json:"field_name"`
 	FieldType  FieldType `json:"field_type"`
 	Options    []string  `json:"options,omitempty"`
-	Value      string    `json:"value"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	// RetiredOptions lets a client show a held value that is no longer offered
+	// as retired rather than as unknown.
+	RetiredOptions []string  `json:"retired_options,omitempty"`
+	Value          string    `json:"value"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 var (

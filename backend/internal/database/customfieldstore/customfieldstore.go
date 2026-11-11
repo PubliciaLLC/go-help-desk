@@ -241,14 +241,18 @@ func (s *Store) CountValuesByValue(ctx context.Context, fieldDefID uuid.UUID) (m
 func (s *Store) CreateAssignment(ctx context.Context, a customfield.Assignment, entry func(customfield.AssignmentInfo) audit.Entry) (customfield.Assignment, error) {
 	var out customfield.Assignment
 	err := s.inTx(ctx, "field attachment", func(q *dbgen.Queries) error {
+		if err := refuseOverlap(ctx, q, a); err != nil {
+			return err
+		}
 		row, err := q.CreateCustomFieldAssignment(ctx, dbgen.CreateCustomFieldAssignmentParams{
-			ID:            a.ID,
-			FieldDefID:    a.FieldDefID,
-			ScopeType:     string(a.ScopeType),
-			ScopeID:       a.ScopeID,
-			SortOrder:     int32(a.SortOrder),
-			VisibleOnNew:  a.VisibleOnNew,
-			RequiredOnNew: a.RequiredOnNew,
+			ID:              a.ID,
+			FieldDefID:      a.FieldDefID,
+			ScopeType:       string(a.ScopeType),
+			ScopeID:         a.ScopeID,
+			SortOrder:       int32(a.SortOrder),
+			VisibleOnNew:    a.VisibleOnNew,
+			RequiredOnNew:   a.RequiredOnNew,
+			VisibleToGuests: a.VisibleToGuests,
 		})
 		if err != nil {
 			return mapWriteError("creating assignment", err, alreadyAssigned, "field_def_id does not name a field")
@@ -269,6 +273,66 @@ func (s *Store) CreateAssignment(ctx context.Context, a customfield.Assignment, 
 	return out, nil
 }
 
+// refuseOverlap answers Conflict if the field is already attached at the same
+// place, or above or below it on one path of the tree (its category, one of that
+// category's types, one of that type's items). Several levels would be shown
+// once, at the most specific, and a person editing the ones that lose would
+// change nothing they can see; the Custom Fields page has never offered it.
+//
+// The definition's row is locked FOR UPDATE first, so two attachments of one
+// field made at the same moment (one at a category, one at its type) are
+// checked one after the other and the second sees the first. Attachments that
+// overlap already are not touched: nothing here reads them except to find the
+// one a new attachment collides with.
+//
+// A same-place attach is refused here too, with the same words the unique
+// constraint uses, so the common mistake never reaches the database as an error
+// that would abort an enclosing transaction.
+func refuseOverlap(ctx context.Context, q *dbgen.Queries, a customfield.Assignment) error {
+	if _, err := q.LockCustomFieldDefForUpdate(ctx, a.FieldDefID); errors.Is(err, sql.ErrNoRows) {
+		return customfield.InvalidReference("field_def_id does not name a field")
+	} else if err != nil {
+		return fmt.Errorf("locking field def %s: %w", a.FieldDefID, err)
+	}
+	chain, err := q.GetScopeChain(ctx, dbgen.GetScopeChainParams{ScopeType: string(a.ScopeType), ScopeID: a.ScopeID})
+	if err != nil {
+		return fmt.Errorf("reading where %s %s sits: %w", a.ScopeType, a.ScopeID, err)
+	}
+	here := [3]uuid.NullUUID{chain.CategoryID, chain.TypeID, chain.ItemID}
+	placed, err := q.ListAssignmentsForFieldDef(ctx, a.FieldDefID)
+	if err != nil {
+		return fmt.Errorf("listing where field %s is attached: %w", a.FieldDefID, err)
+	}
+	for _, p := range placed {
+		there := [3]uuid.NullUUID{{UUID: p.CategoryID, Valid: true}, p.TypeID, p.ItemID}
+		if p.ScopeType == string(a.ScopeType) && p.ScopeID == a.ScopeID {
+			return customfield.Conflict(alreadyAssigned)
+		}
+		// The shallower of the two decides: the deeper one is under it, or not.
+		level := min(depth(p.ScopeType), depth(string(a.ScopeType)))
+		if here[level].Valid && here[level] == there[level] {
+			path, err := q.GetAssignmentScopePath(ctx, dbgen.GetAssignmentScopePathParams{ScopeType: p.ScopeType, ScopeID: p.ScopeID})
+			if err != nil {
+				return fmt.Errorf("reading the path of %s %s: %w", p.ScopeType, p.ScopeID, err)
+			}
+			return customfield.Conflict(fmt.Sprintf(
+				"this field is already attached at %s; a field is attached at one level of a category, its types and their items", path))
+		}
+	}
+	return nil
+}
+
+// depth is a scope type's level in the tree: 0 category, 1 type, 2 item.
+func depth(scopeType string) int {
+	switch scopeType {
+	case string(customfield.TypeScope):
+		return 1
+	case string(customfield.ItemScope):
+		return 2
+	}
+	return 0
+}
+
 func (s *Store) ListAssignments(ctx context.Context, scopeType customfield.ScopeType, scopeID uuid.UUID) ([]customfield.Assignment, error) {
 	rows, err := s.q.ListAssignmentsForScope(ctx, dbgen.ListAssignmentsForScopeParams{
 		ScopeType: string(scopeType),
@@ -281,22 +345,24 @@ func (s *Store) ListAssignments(ctx context.Context, scopeType customfield.Scope
 	for i, r := range rows {
 		opts := optionsFromNullRaw(r.FieldOptions)
 		fd := &customfield.FieldDef{
-			ID:        r.FieldDefID,
-			Name:      r.FieldName,
-			FieldType: customfield.FieldType(r.FieldType),
-			Options:   opts,
-			SortOrder: int(r.FieldSortOrder),
-			Active:    r.FieldActive,
+			ID:             r.FieldDefID,
+			Name:           r.FieldName,
+			FieldType:      customfield.FieldType(r.FieldType),
+			Options:        opts,
+			RetiredOptions: optionsFromNullRaw(r.FieldRetiredOptions),
+			SortOrder:      int(r.FieldSortOrder),
+			Active:         r.FieldActive,
 		}
 		out[i] = customfield.Assignment{
-			ID:            r.ID,
-			FieldDefID:    r.FieldDefID,
-			FieldDef:      fd,
-			ScopeType:     customfield.ScopeType(r.ScopeType),
-			ScopeID:       r.ScopeID,
-			SortOrder:     int(r.SortOrder),
-			VisibleOnNew:  r.VisibleOnNew,
-			RequiredOnNew: r.RequiredOnNew,
+			ID:              r.ID,
+			FieldDefID:      r.FieldDefID,
+			FieldDef:        fd,
+			ScopeType:       customfield.ScopeType(r.ScopeType),
+			ScopeID:         r.ScopeID,
+			SortOrder:       int(r.SortOrder),
+			VisibleOnNew:    r.VisibleOnNew,
+			RequiredOnNew:   r.RequiredOnNew,
+			VisibleToGuests: r.VisibleToGuests,
 		}
 	}
 	return out, nil
@@ -312,7 +378,7 @@ func (s *Store) ListPlacements(ctx context.Context, fieldDefID uuid.UUID) ([]cus
 		p := customfield.Placement{
 			Assignment: customfield.Assignment{
 				ID: r.ID, FieldDefID: r.FieldDefID, ScopeType: customfield.ScopeType(r.ScopeType), ScopeID: r.ScopeID,
-				SortOrder: int(r.SortOrder), VisibleOnNew: r.VisibleOnNew, RequiredOnNew: r.RequiredOnNew,
+				SortOrder: int(r.SortOrder), VisibleOnNew: r.VisibleOnNew, RequiredOnNew: r.RequiredOnNew, VisibleToGuests: r.VisibleToGuests,
 			},
 			Category: customfield.PlaceNode{ID: r.CategoryID, Name: r.CategoryName, Active: r.CategoryActive},
 		}
@@ -342,10 +408,11 @@ func (s *Store) UpdateAssignment(ctx context.Context, a customfield.Assignment, 
 			return err
 		}
 		if err := q.UpdateCustomFieldAssignment(ctx, dbgen.UpdateCustomFieldAssignmentParams{
-			ID:            a.ID,
-			SortOrder:     int32(a.SortOrder),
-			VisibleOnNew:  a.VisibleOnNew,
-			RequiredOnNew: a.RequiredOnNew,
+			ID:              a.ID,
+			SortOrder:       int32(a.SortOrder),
+			VisibleOnNew:    a.VisibleOnNew,
+			RequiredOnNew:   a.RequiredOnNew,
+			VisibleToGuests: a.VisibleToGuests,
 		}); err != nil {
 			return fmt.Errorf("updating assignment %s: %w", a.ID, err)
 		}
@@ -432,13 +499,14 @@ func (s *Store) ListValuesForTicket(ctx context.Context, ticketID uuid.UUID) ([]
 	out := make([]customfield.TicketFieldValue, len(rows))
 	for i, r := range rows {
 		out[i] = customfield.TicketFieldValue{
-			TicketID:   r.TicketID,
-			FieldDefID: r.FieldDefID,
-			FieldName:  r.FieldName,
-			FieldType:  customfield.FieldType(r.FieldType),
-			Options:    optionsFromNullRaw(r.FieldOptions),
-			Value:      r.Value,
-			UpdatedAt:  r.UpdatedAt,
+			TicketID:       r.TicketID,
+			FieldDefID:     r.FieldDefID,
+			FieldName:      r.FieldName,
+			FieldType:      customfield.FieldType(r.FieldType),
+			Options:        optionsFromNullRaw(r.FieldOptions),
+			RetiredOptions: optionsFromNullRaw(r.FieldRetiredOptions),
+			Value:          r.Value,
+			UpdatedAt:      r.UpdatedAt,
 		}
 	}
 	return out, nil
@@ -546,6 +614,8 @@ func assignmentFromRow(r dbgen.CustomFieldAssignment) customfield.Assignment {
 		SortOrder:     int(r.SortOrder),
 		VisibleOnNew:  r.VisibleOnNew,
 		RequiredOnNew: r.RequiredOnNew,
+
+		VisibleToGuests: r.VisibleToGuests,
 	}
 }
 

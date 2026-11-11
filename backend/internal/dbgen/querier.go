@@ -477,6 +477,10 @@ type Querier interface {
 	// as "the ticket's SLA". Every statement below that addresses a ticket's
 	// record carries the same filter.
 	GetSLARecord(ctx context.Context, ticketID uuid.UUID) (SlaRecord, error)
+	// The category, type and item a node sits under, NULL below the node's own level
+	// and everywhere for a node that does not exist. Read with ListAssignmentsForFieldDef
+	// to find an attachment of the same field above or below a new one.
+	GetScopeChain(ctx context.Context, arg GetScopeChainParams) (GetScopeChainRow, error)
 	// Only for go-help-desk unlock (#497), which must say WHY it refuses a service
 	// account rather than report "no such account" (GetUserByEmail below hides
 	// them on purpose). Returns the display name, which is the OAuth client's.

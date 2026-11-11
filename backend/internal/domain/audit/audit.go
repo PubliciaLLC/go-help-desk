@@ -292,6 +292,8 @@ var shownKeys = map[string]bool{
 	"fieldtype": true, "sortorder": true, "active": true, "position": true, "retired": true,
 	"assignmentid": true, "scopetype": true, "scopeid": true,
 	"visibleonnew": true, "requiredonnew": true, "nodedeleted": true,
+	// Whether the attachment is offered on the public guest form (#627): a flag.
+	"visibletoguests": true,
 	// Then free text: the field's name, an option's text and the path of the
 	// category, type or item a field is attached to ("Hardware › Laptop"). An
 	// administrator wrote all three and none of them can hold ticket content;

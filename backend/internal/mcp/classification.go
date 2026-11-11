@@ -10,7 +10,7 @@ var (
 		"get_ticket", "list_tickets", "create_ticket",
 		"assign_ticket", "update_ticket_status", "create_follow_up",
 	}
-	nonTicketTools = []string{"add_reply", "list_categories", "list_statuses"}
+	nonTicketTools = []string{"add_reply", "list_categories", "list_statuses", "list_ticket_fields"}
 )
 
 // TicketTools returns the tools whose answers can contain a ticket.

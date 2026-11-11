@@ -198,7 +198,7 @@ func TestFieldOrder_MostSpecificAttachmentSetsTheLevel(t *testing.T) {
 	itemOnly := h.mkField(t, "Item only", customfield.FieldTypeText, nil, 0)
 	h.attach(t, moved, customfield.CategoryScope, h.catID, 1)
 	h.attach(t, stays, customfield.CategoryScope, h.catID, 2)
-	h.attach(t, moved, customfield.ItemScope, f.itemID, 1)
+	h.seedAttach(t, moved, customfield.ItemScope, f.itemID, 1) // the overlap, as a 1.3.0-beta database holds it
 	h.attach(t, itemOnly, customfield.ItemScope, f.itemID, 2)
 
 	require.Equal(t, []string{"Stays", "Item only", "Moved"}, names(h.resolved(t, &f.typeID, &f.itemID)))
@@ -298,13 +298,15 @@ func TestPlacements_PathsIdsAndTreeOrder(t *testing.T) {
 
 	def := h.mkField(t, "Where", customfield.FieldTypeText, nil, 1)
 	other := h.mkField(t, "Elsewhere", customfield.FieldTypeText, nil, 2)
-	// Attached deepest first, so tree order is not creation order.
-	h.attach(t, def, customfield.ItemScope, i2.ID, 1)
-	h.attach(t, def, customfield.CategoryScope, late.ID, 1)
-	h.attach(t, def, customfield.TypeScope, t2.ID, 1)
-	h.attach(t, def, customfield.ItemScope, i1.ID, 1)
-	h.attach(t, def, customfield.CategoryScope, early.ID, 1)
-	h.attach(t, def, customfield.TypeScope, t1.ID, 1)
+	// Attached deepest first, so tree order is not creation order. Seeded under the
+	// API, which no longer lets one field sit at several levels of a path (#626):
+	// these are the overlaps a 1.3.0-beta database holds, and the page lists them.
+	h.seedAttach(t, def, customfield.ItemScope, i2.ID, 1)
+	h.seedAttach(t, def, customfield.CategoryScope, late.ID, 1)
+	h.seedAttach(t, def, customfield.TypeScope, t2.ID, 1)
+	h.seedAttach(t, def, customfield.ItemScope, i1.ID, 1)
+	h.seedAttach(t, def, customfield.CategoryScope, early.ID, 1)
+	h.seedAttach(t, def, customfield.TypeScope, t1.ID, 1)
 	h.attach(t, other, customfield.CategoryScope, early.ID, 1) // another field's
 
 	code, body := h.cf(t, http.MethodGet, cfAdmin+"/"+def.ID.String()+"/assignments", nil)
@@ -426,8 +428,8 @@ func TestListFieldDefs_PlaceCount(t *testing.T) {
 	three := h.mkField(t, "Three", customfield.FieldTypeText, nil, 3)
 	h.attach(t, one, customfield.CategoryScope, c.ID, 1)
 	h.attach(t, three, customfield.CategoryScope, c.ID, 1)
-	h.attach(t, three, customfield.TypeScope, tp.ID, 1) // overlapping places are still places
-	h.attach(t, three, customfield.ItemScope, it.ID, 1)
+	h.seedAttach(t, three, customfield.TypeScope, tp.ID, 1) // overlapping places are still places (seeded: the API refuses a new one, #626)
+	h.seedAttach(t, three, customfield.ItemScope, it.ID, 1)
 
 	got := placeCounts(t, h)
 	require.Equal(t, 0, got[none.ID], "0 is present, not left out")
@@ -736,21 +738,25 @@ func TestRetiredOptions_OverREST(t *testing.T) {
 			}
 		}
 	})
-	t.Run("the ticket routes offer options in use and never name retired ones", func(t *testing.T) {
+	// #626(d): the ticket routes used to leave retired_options out; they return it
+	// now, so a client can show a held value as retired. options is still only the
+	// options in use.
+	t.Run("the ticket routes offer options in use and name the retired ones", func(t *testing.T) {
 		res := h.do(t, http.MethodGet, "/api/v1/tickets/fields?category_id="+h.catID.String(), nil)
 		raw := readAll(t, res)
-		require.NotContains(t, string(raw), "retired_options")
+		require.Contains(t, string(raw), `"retired_options":["HP"]`)
 		var fields []resolvedFieldOptions
 		require.NoError(t, json.Unmarshal(raw, &fields))
 		require.Equal(t, []string{"Dell"}, fields[0].FieldDef.Options)
 
 		res = h.do(t, http.MethodGet, "/api/v1/tickets/"+tk.ID.String()+"/custom-fields", nil)
 		raw = readAll(t, res)
-		require.NotContains(t, string(raw), "retired_options")
+		require.Contains(t, string(raw), `"retired_options":["HP"]`)
 		var vals []customfield.TicketFieldValue
 		require.NoError(t, json.Unmarshal(raw, &vals))
 		require.Len(t, vals, 1, "a held retired value still comes back")
 		require.Equal(t, "HP", vals[0].Value)
+		require.Equal(t, []string{"HP"}, vals[0].RetiredOptions)
 	})
 	t.Run("a PUT with a retired value is refused", func(t *testing.T) {
 		other := h.newTicket(t, nil, nil)

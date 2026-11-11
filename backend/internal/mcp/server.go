@@ -37,6 +37,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
@@ -244,6 +245,30 @@ type Server struct {
 	// reopenWindowDays is the configured reopen window, read per call like the
 	// REST reply handler does. A function for the same reason as prefix.
 	reopenWindowDays func(context.Context) int
+
+	// customFields serves create_ticket's custom_fields, get_ticket's values and
+	// list_ticket_fields. Set with WithCustomFields; nil (unit tests only) makes
+	// create_ticket refuse custom_fields rather than skip the required check
+	// quietly.
+	customFields CustomFields
+}
+
+// CustomFields is the slice of the custom field service MCP needs: the same
+// rules REST applies when a ticket is created, from the same code.
+type CustomFields interface {
+	ResolveFieldsForCTI(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID) ([]customfield.Assignment, error)
+	CheckRequired(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID, raw map[string]string) error
+	SetCreationValues(ctx context.Context, ticketID, categoryID uuid.UUID, typeID, itemID *uuid.UUID, raw map[string]string) ([]customfield.Warning, error)
+	ListValuesForTicket(ctx context.Context, ticketID uuid.UUID) ([]customfield.TicketFieldValue, error)
+}
+
+// WithCustomFields supplies the custom field service. A method rather than a
+// constructor argument for the reason WithReopenWindowDays is one: most callers
+// of New are tests that never reach it, and New's signature has already changed
+// for other work.
+func (s *Server) WithCustomFields(f CustomFields) *Server {
+	s.customFields = f
+	return s
 }
 
 // defaultReopenWindowDays is what the setting reads as when nothing is stored
@@ -589,6 +614,7 @@ func (s *Server) registerTools() {
 		mcpgo.WithString("reporter_email", mcpgo.Description("Email address of the person the ticket is for. Files for their account if one exists, otherwise as a guest ticket (guest submission must be on, and the guest is emailed a link). guest_name is always required with reporter_email, whether or not the address has an account. Each attempt that passes validation uses one of 40 an hour per staff member. Not with reporter_user_id.")),
 		mcpgo.WithString("guest_name", mcpgo.Description("With reporter_email: the name. Required, whether or not the address has an account (ignored for an account).")),
 		mcpgo.WithString("guest_phone", mcpgo.Description("With reporter_email and no account behind it: the guest's phone (optional).")),
+		mcpgo.WithObject("custom_fields", mcpgo.Description("Custom field values: an object of field id to a string value, the ids and the options from list_ticket_fields. A field the category requires must have a value, or the ticket is refused and nothing is created. For any other field, a value that is not accepted is dropped and listed under warnings in the result.")),
 	), scoped(mcpWrite, s.handleCreateTicket))
 
 	s.mcp.AddTool(mcpgo.NewTool(
@@ -650,6 +676,14 @@ func (s *Server) registerTools() {
 	), scoped(mcpRead, s.handleListCategories))
 
 	s.mcp.AddTool(mcpgo.NewTool(
+		"list_ticket_fields",
+		mcpgo.WithDescription("List the custom fields the new-ticket form shows for a category, and a type and item under it: the fields create_ticket's custom_fields takes. Each has an id, a name, a type (text, textarea, number or select), its options for a select, and whether it is required."),
+		mcpgo.WithString("category_id", mcpgo.Required(), mcpgo.Description("Category UUID (see list_categories)")),
+		mcpgo.WithString("type_id", mcpgo.Description("Type UUID, to include the fields attached to the type")),
+		mcpgo.WithString("item_id", mcpgo.Description("Item UUID, to include the fields attached to the item")),
+	), scoped(mcpRead, s.handleListTicketFields))
+
+	s.mcp.AddTool(mcpgo.NewTool(
 		"list_statuses",
 		mcpgo.WithDescription("List the ticket statuses this instance defines"),
 	), scoped(mcpRead, s.handleListStatuses))
@@ -661,6 +695,10 @@ type ticketWithReplies struct {
 	ticket.Ticket
 	Replies []ticket.Reply      `json:"replies,omitempty"`
 	Links   []ticket.TicketLink `json:"links,omitempty"`
+	// CustomFields is the ticket's field values, for staff and administrators
+	// only. A requester's answer is cut to the allowed list (ticketResult), which
+	// does not carry it, so the lookup is not made for one either.
+	CustomFields []customfield.TicketFieldValue `json:"custom_fields,omitempty"`
 }
 
 func (s *Server) handleGetTicket(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -710,6 +748,13 @@ func (s *Server) handleGetTicket(ctx context.Context, req mcpgo.CallToolRequest)
 			return storeErr(ctx, "get ticket", err)
 		}
 		out.Links = links
+	}
+	if s.customFields != nil && requireStaff(caller) {
+		values, err := s.customFields.ListValuesForTicket(ctx, t.ID)
+		if err != nil {
+			return storeErr(ctx, "get ticket", err)
+		}
+		out.CustomFields = values
 	}
 	return ticketResult(caller.Role, out)
 }
@@ -778,6 +823,25 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 		in.ItemID = &id
 	}
 
+	// The same rule REST applies, from the same code (#626): a field the
+	// category requires needs a value, and nothing is created otherwise. Here,
+	// before reporter_email is resolved, because that spends a unit of the
+	// staff member's hourly budget which a refusal would waste.
+	customFields, err := customFieldArgs(args)
+	if err != nil {
+		return errResult(err.Error())
+	}
+	if s.customFields != nil {
+		if err := s.customFields.CheckRequired(ctx, in.CategoryID, in.TypeID, in.ItemID, customFields); err != nil {
+			if errors.Is(err, customfield.ErrValidation) {
+				return errResult(err.Error())
+			}
+			return storeErr(ctx, "check custom fields", err)
+		}
+	} else if len(customFields) > 0 {
+		return errResult("custom fields are not available on this server")
+	}
+
 	var reporterID *uuid.UUID
 	if reporterIDStr, ok := args["reporter_user_id"].(string); ok && reporterIDStr != "" {
 		rid, err := uuid.Parse(reporterIDStr)
@@ -834,7 +898,114 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 		// Server.ResolveOnBehalf.
 		return storeErr(ctx, "create ticket", err)
 	}
-	return ticketResult(actor.Role, t)
+
+	// Best-effort once the ticket exists, as on REST: what was dropped comes
+	// back as warnings, and a failure to save is logged and reported the same way.
+	var warnings []customfield.Warning
+	if s.customFields != nil {
+		var err error
+		warnings, err = s.customFields.SetCreationValues(ctx, t.ID, t.CategoryID, t.TypeID, t.ItemID, customFields)
+		if err != nil {
+			slog.ErrorContext(ctx, "saving custom field values on a new ticket failed; the ticket was created without them",
+				"ticket_id", t.ID, "error", err)
+		}
+	}
+	return ticketResult(actor.Role, createdTicket{Ticket: t, Warnings: warnings})
+}
+
+// createdTicket is create_ticket's answer: the ticket, plus the custom field
+// values that were not written. The ticket's own keys are exactly what they were.
+type createdTicket struct {
+	ticket.Ticket
+	Warnings []customfield.Warning `json:"warnings,omitempty"`
+}
+
+// customFieldArgs reads create_ticket's custom_fields: an object of field id to
+// string. Anything else is refused rather than coerced, because a number sent
+// for a text field and quietly stored as "12" or "1.2e1" is a value nobody typed.
+func customFieldArgs(args map[string]any) (map[string]string, error) {
+	raw, present := args["custom_fields"]
+	if !present {
+		return nil, nil
+	}
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		return nil, errors.New("custom_fields must be an object of field id to string value")
+	}
+	out := make(map[string]string, len(obj))
+	for k, v := range obj {
+		s, ok := v.(string)
+		if !ok {
+			return nil, errors.New("custom_fields values must be strings")
+		}
+		out[k] = s
+	}
+	return out, nil
+}
+
+// ticketField is one entry of list_ticket_fields. Narrower than the REST
+// assignment on purpose: the id and name to send and read, what the field takes,
+// whether it is required, and the level it is attached at.
+type ticketField struct {
+	ID        uuid.UUID             `json:"id"`
+	Name      string                `json:"name"`
+	FieldType customfield.FieldType `json:"field_type"`
+	Options   []string              `json:"options,omitempty"`
+	Required  bool                  `json:"required"`
+	Level     customfield.ScopeType `json:"level"`
+}
+
+// handleListTicketFields answers with what the new-ticket form would show: the
+// fields shown on the form and active, at the most specific attachment, in the
+// form's order. A field hidden from the form, or deactivated, is not offered for
+// writing here either.
+func (s *Server) handleListTicketFields(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	if actorFrom(ctx) == nil {
+		return errResult(noActorMessage)
+	}
+	if s.customFields == nil {
+		return errResult("custom fields are not available on this server")
+	}
+	args := req.GetArguments()
+	catIDStr, _ := args["category_id"].(string)
+	catID, err := uuid.Parse(catIDStr)
+	if err != nil {
+		return errResult("invalid category_id")
+	}
+	optionalID := func(name string) (*uuid.UUID, error) {
+		v, ok := args[name].(string)
+		if !ok || v == "" {
+			return nil, nil
+		}
+		id, err := uuid.Parse(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid %s", name)
+		}
+		return &id, nil
+	}
+	typeID, err := optionalID("type_id")
+	if err != nil {
+		return errResult(err.Error())
+	}
+	itemID, err := optionalID("item_id")
+	if err != nil {
+		return errResult(err.Error())
+	}
+	fields, err := s.customFields.ResolveFieldsForCTI(ctx, catID, typeID, itemID)
+	if err != nil {
+		return storeErr(ctx, "list ticket fields", err)
+	}
+	out := make([]ticketField, 0, len(fields))
+	for _, a := range fields {
+		if !a.VisibleOnNew || a.FieldDef == nil || !a.FieldDef.Active {
+			continue
+		}
+		out = append(out, ticketField{
+			ID: a.FieldDefID, Name: a.FieldDef.Name, FieldType: a.FieldDef.FieldType,
+			Options: a.FieldDef.Options, Required: a.RequiredOnNew, Level: a.ScopeType,
+		})
+	}
+	return jsonResult(out)
 }
 
 // mcpTextFormat reads the optional "format" argument. Absent means markdown

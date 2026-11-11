@@ -1,0 +1,13 @@
+-- Which attachments an anonymous visitor is offered (#627).
+--
+-- Guests were shown no custom fields. They can now be offered some, but only
+-- the ones an administrator chooses: reusing visible_on_new would have
+-- published every field that staff see on the new-ticket form, names and
+-- options included, to anyone on the internet the moment this migration ran.
+-- So this is its own opt-in, per attachment, and off for every row that exists.
+--
+-- A guest picks a category and nothing below it, so the flag means something
+-- only on a category's attachment; the service refuses it elsewhere.
+--
+-- A constant default, so Postgres adds the column without rewriting the table.
+ALTER TABLE custom_field_assignments ADD COLUMN visible_to_guests BOOLEAN NOT NULL DEFAULT FALSE;

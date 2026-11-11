@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -74,8 +75,9 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 	// had consumed a tracking number — an unauthenticated 500 that burns a
 	// number from the sequence on every call.
 	//
-	// No custom_fields either, for now: the fields a guest may fill are
-	// category-level and visible_on_new, and nothing here enforces that yet.
+	// custom_fields takes only the fields an administrator offered to guests on
+	// this category (customfield.Service.GuestFields), and anything else is a
+	// 400: see CheckGuestValues.
 	var body struct {
 		Subject     string          `json:"subject"`
 		Description string          `json:"description"`
@@ -85,7 +87,8 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 		GuestName   string          `json:"guest_name"`
 		GuestPhone  string          `json:"guest_phone"`
 		// Refused when present: the visitor does not choose a channel (#130).
-		SourceChannel json.RawMessage `json:"source_channel"`
+		SourceChannel json.RawMessage   `json:"source_channel"`
+		CustomFields  map[string]string `json:"custom_fields"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -135,6 +138,12 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 		Error(w, http.StatusBadRequest, "bad_request", "category_id is not a category open to guests")
 		return
 	}
+	// Refused before anything is written, so a bad value spends no tracking
+	// number (#627).
+	if err := s.customFields.CheckGuestValues(ctx, body.CategoryID, body.CustomFields); err != nil {
+		handleError(w, err)
+		return
+	}
 	// Priority is not taken from the request. A guest setting their own ticket
 	// to critical is a queue anyone on the internet can jump.
 	in := ticket.CreateInput{
@@ -160,6 +169,15 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Best-effort once the ticket exists, as for every other door. The write is
+	// held to the offered fields again (SetGuestCreationValues), so a field
+	// withdrawn since the check above is dropped rather than stored. What was
+	// dropped is not reported: the guest is told only the tracking number.
+	if _, err := s.customFields.SetGuestCreationValues(ctx, t.ID, t.CategoryID, body.CustomFields); err != nil {
+		slog.ErrorContext(ctx, "saving custom field values on a guest ticket failed; the ticket was created without them",
+			"ticket_id", t.ID, "error", err)
+	}
+
 	// The tracking number and nothing else. Not the ticket id, not the token:
 	// the token goes by email, so possession of the mailbox is the credential.
 	// Answering with it here would hand access to whoever sent the request,
@@ -167,6 +185,70 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 	JSON(w, http.StatusCreated, guestJSON(map[string]string{
 		"tracking_number": string(t.TrackingNumber),
 	}))
+}
+
+// guestField is one custom field as the public form is told about it, and the
+// whole of what an anonymous visitor learns of the operator's fields. It is a
+// struct of its own, never a customfield type, so that a key added to those
+// later (where a field is attached, whether it is active, the options retired)
+// reaches a guest only by being added here on purpose.
+type guestField struct {
+	ID        uuid.UUID             `json:"id"`
+	Name      string                `json:"name"`
+	FieldType customfield.FieldType `json:"field_type"`
+	Options   []string              `json:"options,omitempty"`
+	Required  bool                  `json:"required"`
+}
+
+// GET /api/v1/guest/fields?category_id=
+//
+// The fields the public form offers under a category: the ones an administrator
+// switched on for guests, and nothing else (customfield.Service.GuestFields).
+// 404 when guest submission is off, like every guest route; throttled on the
+// source address, because it is an unauthenticated read of the operator's data.
+// A category that is not open to guests is a 400, the same answer and the same
+// test as POST /guest/tickets gives, so the two cannot disagree about it.
+func (s *Server) handleGuestFields(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if !s.adminSvc.GuestSubmissionEnabled(ctx) {
+		Error(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
+	if !s.loginLimiter.Allow("guest-fields:" + authmw.ClientAddr(r)) {
+		tooManyAttempts(w, s.loginLimiter.Remaining())
+		return
+	}
+	categoryID, err := uuid.Parse(r.URL.Query().Get("category_id"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "category_id is required")
+		return
+	}
+	cats, err := s.categories.ListCategories(ctx, true)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	open := false
+	for _, c := range cats {
+		open = open || c.ID == categoryID
+	}
+	if !open {
+		Error(w, http.StatusBadRequest, "bad_request", "category_id is not a category open to guests")
+		return
+	}
+	offered, err := s.customFields.GuestFields(ctx, categoryID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	out := make([]guestField, 0, len(offered))
+	for _, a := range offered {
+		out = append(out, guestField{
+			ID: a.FieldDefID, Name: a.FieldDef.Name, FieldType: a.FieldDef.FieldType,
+			Options: a.FieldDef.Options, Required: a.RequiredOnNew,
+		})
+	}
+	JSON(w, http.StatusOK, out)
 }
 
 // GET /api/v1/guest/ticket

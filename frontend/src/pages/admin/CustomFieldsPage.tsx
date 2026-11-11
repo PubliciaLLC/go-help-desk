@@ -426,7 +426,7 @@ function FieldDetails({
 
 interface Scope { categoryId: string; typeId?: string; itemId?: string }
 interface PlaceInput { field_def_id: string; visible_on_new: boolean; required_on_new: boolean }
-interface PlacePatch { visible_on_new?: boolean; required_on_new?: boolean }
+interface PlacePatch { visible_on_new?: boolean; required_on_new?: boolean; visible_to_guests?: boolean }
 
 const scopeOf = (p: FieldPlacement): Scope => ({ categoryId: p.category.id, typeId: p.type?.id, itemId: p.item?.id })
 
@@ -462,8 +462,8 @@ function describePlaces(places: FieldPlacement[]): string {
 }
 
 // Which place the settings of an overlapping pair come from: the more specific
-// one wins. The API allows an overlap; this page does not create one, but lists
-// any that exist.
+// one wins. Neither the API nor this page makes an overlap any more (#626), but a
+// database written by 1.3.0-beta can hold one, so the page lists any that exist.
 function overlapsBelow(p: FieldPlacement, all: FieldPlacement[]): FieldPlacement[] {
   return all.filter((q) => {
     if (q.id === p.id) return false
@@ -547,6 +547,21 @@ function PlacesSection({ def, autoFocusAdd }: { def: FieldDef; autoFocusAdd: boo
                       />
                       Required
                     </label>
+                    {/* Only a category's own place: a guest picks a category and nothing below it. */}
+                    {p.scope_type === 'category' && (
+                      <label className={`${CHECK_LABEL} max-sm:order-4 max-sm:basis-full pointer-coarse:justify-start`}>
+                        <input
+                          type="checkbox"
+                          aria-label={`Offer to guests at ${path}`}
+                          checked={p.visible_to_guests ?? false}
+                          // Offered only while shown on the form; one already on stays
+                          // enabled so it can be turned off.
+                          disabled={!p.visible_on_new && !p.visible_to_guests}
+                          onChange={(e) => toggleMutation.mutate({ p, patch: { visible_to_guests: e.target.checked } })}
+                        />
+                        Offer to guests
+                      </label>
+                    )}
                     <button
                       type="button"
                       aria-label={`Remove ${path}`}

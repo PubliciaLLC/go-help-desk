@@ -8,12 +8,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 )
 
 // Bug 4 (#603): a field attached at more than one level is shown once, with
-// the most specific attachment's settings, and the API never refuses the
-// overlap that makes it happen.
+// the most specific attachment's settings. Until #626 the API accepted the
+// overlap that makes it happen; it now refuses it, and an overlap a database
+// already holds is seeded below.
 
 // overlapFixture is one field attached at the category, the type and the item
 // of a ticket's path, each with different settings, through the admin API.
@@ -65,17 +67,18 @@ func (f overlapFixture) resolve(t *testing.T, h *harness) []customfield.Assignme
 	return out
 }
 
-// The same field on the category, the type and the item is accepted at every
-// level. Show-once is a rule about what a ticket sees, not about what an
-// administrator may attach.
-func TestAttachOverlapping_IsNotRefused(t *testing.T) {
-	h, cleanup := newHarness(t)
-	defer cleanup()
-	f := newOverlapFixture(t, h)
-
-	f.attach(t, h, f.catPath, true, false)
-	f.attach(t, h, f.typePath, true, false)
-	f.attach(t, h, f.itemPath, true, false)
+// seed attaches the field at a level straight into the database. The API now
+// refuses a second level (#626, TestAttachOverlapping_IsRefused), but a database
+// written by 1.3.0-beta can hold one, and the resolver has to keep answering
+// for it.
+func (f overlapFixture) seed(t *testing.T, h *harness, scope customfield.ScopeType, id uuid.UUID, visible, required bool) customfield.Assignment {
+	t.Helper()
+	row, err := h.q.CreateCustomFieldAssignment(context.Background(), dbgen.CreateCustomFieldAssignmentParams{
+		ID: uuid.New(), FieldDefID: f.fieldID, ScopeType: string(scope), ScopeID: id, SortOrder: 1,
+		VisibleOnNew: visible, RequiredOnNew: required,
+	})
+	require.NoError(t, err)
+	return customfield.Assignment{ID: row.ID, FieldDefID: row.FieldDefID, ScopeType: scope, ScopeID: id}
 }
 
 func TestResolveFields_HTTP_OverlappedFieldComesBackOnceAtItsMostSpecificLevel(t *testing.T) {
@@ -83,8 +86,8 @@ func TestResolveFields_HTTP_OverlappedFieldComesBackOnceAtItsMostSpecificLevel(t
 	defer cleanup()
 	f := newOverlapFixture(t, h)
 
-	f.attach(t, h, f.catPath, true, false)
-	typeA := f.attach(t, h, f.typePath, true, true)
+	f.seed(t, h, customfield.CategoryScope, f.catID, true, false)
+	typeA := f.seed(t, h, customfield.TypeScope, f.typeID, true, true)
 
 	got := f.resolve(t, h)
 	require.Len(t, got, 1, "category and type: one entry")
@@ -92,7 +95,7 @@ func TestResolveFields_HTTP_OverlappedFieldComesBackOnceAtItsMostSpecificLevel(t
 	require.Equal(t, customfield.TypeScope, got[0].ScopeType)
 	require.True(t, got[0].RequiredOnNew, "the type's settings apply")
 
-	itemA := f.attach(t, h, f.itemPath, false, false)
+	itemA := f.seed(t, h, customfield.ItemScope, f.itemID, false, false)
 	got = f.resolve(t, h)
 	require.Len(t, got, 1, "category, type and item: still one entry")
 	require.Equal(t, itemA.ID, got[0].ID)
