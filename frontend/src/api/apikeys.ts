@@ -25,5 +25,5 @@ export async function createMyAPIKey(input: {
 }
 
 export async function deleteMyAPIKey(id: string): Promise<void> {
-  await api.delete(`/me/api-keys/${id}`)
+  await api.delete(`/me/api-keys/${encodeURIComponent(id)}`)
 }

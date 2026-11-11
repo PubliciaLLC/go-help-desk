@@ -70,7 +70,7 @@ export async function listUsersPage(
 }
 
 export async function getUser(id: string): Promise<AdminUser> {
-  const res = await api.get<AdminUser>(`/admin/users/${id}`)
+  const res = await api.get<AdminUser>(`/admin/users/${encodeURIComponent(id)}`)
   return res.data
 }
 
@@ -91,7 +91,7 @@ export async function updateUser(id: string, patch: {
   disabled?: boolean
   reset_mfa?: boolean
 }): Promise<AdminUser> {
-  const res = await api.patch<AdminUser>(`/admin/users/${id}`, patch)
+  const res = await api.patch<AdminUser>(`/admin/users/${encodeURIComponent(id)}`, patch)
   return res.data
 }
 
@@ -101,11 +101,11 @@ export async function updateUser(id: string, patch: {
  * on the wire.
  */
 export async function adminResetPassword(id: string, newPassword: string, revokeAPIKeys = false): Promise<void> {
-  await api.post(`/admin/users/${id}/password`, { new_password: newPassword, revoke_api_keys: revokeAPIKeys })
+  await api.post(`/admin/users/${encodeURIComponent(id)}/password`, { new_password: newPassword, revoke_api_keys: revokeAPIKeys })
 }
 
 export async function deleteUser(id: string): Promise<void> {
-  await api.delete(`/admin/users/${id}`)
+  await api.delete(`/admin/users/${encodeURIComponent(id)}`)
 }
 
 // ── Groups ───────────────────────────────────────────────────────────────────
@@ -121,25 +121,25 @@ export async function createGroup(input: { name: string; description?: string })
 }
 
 export async function updateGroup(id: string, patch: Partial<Pick<Group, 'name' | 'description'>>): Promise<Group> {
-  const res = await api.patch<Group>(`/admin/groups/${id}`, patch)
+  const res = await api.patch<Group>(`/admin/groups/${encodeURIComponent(id)}`, patch)
   return res.data
 }
 
 export async function deleteGroup(id: string): Promise<void> {
-  await deleteIfPresent(`/admin/groups/${id}`)
+  await deleteIfPresent(`/admin/groups/${encodeURIComponent(id)}`)
 }
 
 export async function listGroupMembers(groupId: string): Promise<User[]> {
-  const res = await api.get<User[]>(`/admin/groups/${groupId}/members`)
+  const res = await api.get<User[]>(`/admin/groups/${encodeURIComponent(groupId)}/members`)
   return res.data
 }
 
 export async function addGroupMember(groupId: string, userId: string): Promise<void> {
-  await api.post(`/admin/groups/${groupId}/members`, { user_id: userId })
+  await api.post(`/admin/groups/${encodeURIComponent(groupId)}/members`, { user_id: userId })
 }
 
 export async function removeGroupMember(groupId: string, userId: string): Promise<void> {
-  await api.delete(`/admin/groups/${groupId}/members/${userId}`)
+  await api.delete(`/admin/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`)
 }
 
 export interface GroupScope {
@@ -149,16 +149,16 @@ export interface GroupScope {
 }
 
 export async function listGroupScopes(groupId: string): Promise<GroupScope[]> {
-  const res = await api.get<GroupScope[]>(`/admin/groups/${groupId}/scopes`)
+  const res = await api.get<GroupScope[]>(`/admin/groups/${encodeURIComponent(groupId)}/scopes`)
   return res.data
 }
 
 export async function addGroupScope(groupId: string, input: { category_id: string; type_id?: string }): Promise<void> {
-  await api.post(`/admin/groups/${groupId}/scopes`, input)
+  await api.post(`/admin/groups/${encodeURIComponent(groupId)}/scopes`, input)
 }
 
 export async function removeGroupScope(groupId: string, input: { category_id: string; type_id?: string }): Promise<void> {
-  await deleteIfPresent(`/admin/groups/${groupId}/scopes`, { data: input })
+  await deleteIfPresent(`/admin/groups/${encodeURIComponent(groupId)}/scopes`, { data: input })
 }
 
 // ── Categories ───────────────────────────────────────────────────────────────
@@ -174,35 +174,35 @@ export async function createCategory(input: { name: string; sort_order?: number 
 }
 
 export async function updateCategory(id: string, patch: { name?: string; sort_order?: number; active?: boolean }): Promise<Category> {
-  const res = await api.patch<Category>(`/admin/categories/${id}`, patch)
+  const res = await api.patch<Category>(`/admin/categories/${encodeURIComponent(id)}`, patch)
   return res.data
 }
 
 export async function deleteCategory(id: string): Promise<void> {
-  await deleteIfPresent(`/admin/categories/${id}`)
+  await deleteIfPresent(`/admin/categories/${encodeURIComponent(id)}`)
 }
 
 export async function listTypes(categoryId: string): Promise<TicketType[]> {
-  const res = await api.get<TicketType[]>(`/admin/categories/${categoryId}/types`)
+  const res = await api.get<TicketType[]>(`/admin/categories/${encodeURIComponent(categoryId)}/types`)
   return res.data
 }
 
 export async function createType(categoryId: string, input: { name: string; sort_order?: number }): Promise<TicketType> {
-  const res = await api.post<TicketType>(`/admin/categories/${categoryId}/types`, input)
+  const res = await api.post<TicketType>(`/admin/categories/${encodeURIComponent(categoryId)}/types`, input)
   return res.data
 }
 
 export async function updateType(categoryId: string, typeId: string, patch: { name?: string; sort_order?: number; active?: boolean }): Promise<TicketType> {
-  const res = await api.patch<TicketType>(`/admin/categories/${categoryId}/types/${typeId}`, patch)
+  const res = await api.patch<TicketType>(`/admin/categories/${encodeURIComponent(categoryId)}/types/${encodeURIComponent(typeId)}`, patch)
   return res.data
 }
 
 export async function deleteType(categoryId: string, typeId: string): Promise<void> {
-  await deleteIfPresent(`/admin/categories/${categoryId}/types/${typeId}`)
+  await deleteIfPresent(`/admin/categories/${encodeURIComponent(categoryId)}/types/${encodeURIComponent(typeId)}`)
 }
 
 export async function listItems(categoryId: string, typeId: string): Promise<TicketItem[]> {
-  const res = await api.get<TicketItem[]>(`/admin/categories/${categoryId}/types/${typeId}/items`)
+  const res = await api.get<TicketItem[]>(`/admin/categories/${encodeURIComponent(categoryId)}/types/${encodeURIComponent(typeId)}/items`)
   return res.data
 }
 
@@ -212,19 +212,19 @@ export async function createItem(
   input: { name: string; sort_order?: number }
 ): Promise<TicketItem> {
   const res = await api.post<TicketItem>(
-    `/admin/categories/${categoryId}/types/${typeId}/items`,
+    `/admin/categories/${encodeURIComponent(categoryId)}/types/${encodeURIComponent(typeId)}/items`,
     input
   )
   return res.data
 }
 
 export async function updateItem(categoryId: string, typeId: string, itemId: string, patch: { name?: string; sort_order?: number; active?: boolean }): Promise<TicketItem> {
-  const res = await api.patch<TicketItem>(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}`, patch)
+  const res = await api.patch<TicketItem>(`/admin/categories/${encodeURIComponent(categoryId)}/types/${encodeURIComponent(typeId)}/items/${encodeURIComponent(itemId)}`, patch)
   return res.data
 }
 
 export async function deleteItem(categoryId: string, typeId: string, itemId: string): Promise<void> {
-  await deleteIfPresent(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}`)
+  await deleteIfPresent(`/admin/categories/${encodeURIComponent(categoryId)}/types/${encodeURIComponent(typeId)}/items/${encodeURIComponent(itemId)}`)
 }
 
 // ── Statuses ─────────────────────────────────────────────────────────────────
@@ -240,12 +240,12 @@ export async function createStatus(input: { name: string; sort_order?: number; c
 }
 
 export async function updateStatus(id: string, patch: { name?: string; sort_order?: number; color?: string; active?: boolean }): Promise<Status> {
-  const res = await api.patch<Status>(`/admin/statuses/${id}`, patch)
+  const res = await api.patch<Status>(`/admin/statuses/${encodeURIComponent(id)}`, patch)
   return res.data
 }
 
 export async function deleteStatus(id: string): Promise<void> {
-  await api.delete(`/admin/statuses/${id}`)
+  await api.delete(`/admin/statuses/${encodeURIComponent(id)}`)
 }
 
 // ── SAML ─────────────────────────────────────────────────────────────────────
@@ -370,7 +370,7 @@ export async function createOAuthClient(input: {
 }
 
 export async function deleteOAuthClient(id: string): Promise<void> {
-  await deleteIfPresent(`/admin/oauth-clients/${id}`)
+  await deleteIfPresent(`/admin/oauth-clients/${encodeURIComponent(id)}`)
 }
 
 export async function listAPIKeys(): Promise<APIKey[]> {
@@ -390,7 +390,7 @@ export async function createAPIKey(input: {
 }
 
 export async function deleteAPIKey(id: string): Promise<void> {
-  await deleteIfPresent(`/admin/api-keys/${id}`)
+  await deleteIfPresent(`/admin/api-keys/${encodeURIComponent(id)}`)
 }
 
 // ── Tags (admin) ──────────────────────────────────────────────────────────────
@@ -406,11 +406,11 @@ export async function createTag(name: string): Promise<Tag> {
 }
 
 export async function deleteTag(id: string): Promise<void> {
-  await api.delete(`/admin/tags/${id}`)
+  await api.delete(`/admin/tags/${encodeURIComponent(id)}`)
 }
 
 export async function restoreTag(id: string): Promise<void> {
-  await api.post(`/admin/tags/${id}/restore`)
+  await api.post(`/admin/tags/${encodeURIComponent(id)}/restore`)
 }
 
 // ── Canned responses (admin) ──────────────────────────────────────────────────
@@ -438,12 +438,12 @@ export async function updateCannedResponse(id: string, patch: {
   type_id?: string | null
   sort_order?: number
 }): Promise<CannedResponse> {
-  const res = await api.patch<CannedResponse>(`/admin/canned-responses/${id}`, patch)
+  const res = await api.patch<CannedResponse>(`/admin/canned-responses/${encodeURIComponent(id)}`, patch)
   return res.data
 }
 
 export async function deleteCannedResponse(id: string): Promise<void> {
-  await api.delete(`/admin/canned-responses/${id}`)
+  await api.delete(`/admin/canned-responses/${encodeURIComponent(id)}`)
 }
 
 // ── Webhooks ─────────────────────────────────────────────────────────────────
@@ -472,27 +472,27 @@ export async function updateWebhook(
     secret?: string
   }
 ): Promise<WebhookConfig> {
-  const res = await api.patch<WebhookConfig>(`/admin/webhooks/${id}`, patch)
+  const res = await api.patch<WebhookConfig>(`/admin/webhooks/${encodeURIComponent(id)}`, patch)
   return res.data
 }
 
 /** Clears a paused hook's link to the API key that made it, so it fires again. */
 export async function reapproveWebhook(id: string): Promise<void> {
-  await api.post(`/admin/webhooks/${id}/reapprove`)
+  await api.post(`/admin/webhooks/${encodeURIComponent(id)}/reapprove`)
 }
 
 export async function deleteWebhook(id: string): Promise<void> {
-  await api.delete(`/admin/webhooks/${id}`)
+  await api.delete(`/admin/webhooks/${encodeURIComponent(id)}`)
 }
 
 export async function listWebhookDeliveries(id: string): Promise<WebhookDeliveryRecord[]> {
-  const res = await api.get<WebhookDeliveryRecord[]>(`/admin/webhooks/${id}/deliveries`)
+  const res = await api.get<WebhookDeliveryRecord[]>(`/admin/webhooks/${encodeURIComponent(id)}/deliveries`)
   return res.data
 }
 
 // Queues the delivery's event again as a new delivery; the server answers 202.
 export async function redeliverWebhook(id: string, deliveryId: string): Promise<void> {
-  await api.post(`/admin/webhooks/${id}/deliveries/${deliveryId}/redeliver`)
+  await api.post(`/admin/webhooks/${encodeURIComponent(id)}/deliveries/${encodeURIComponent(deliveryId)}/redeliver`)
 }
 
 // ── Custom field definitions ──────────────────────────────────────────────────
@@ -516,19 +516,19 @@ export async function updateFieldDef(
   id: string,
   patch: Partial<Pick<FieldDef, 'name' | 'field_type' | 'options' | 'retired_options' | 'sort_order' | 'active'>>
 ): Promise<FieldDef> {
-  const res = await api.patch<FieldDef>(`/admin/custom-fields/${id}`, patch)
+  const res = await api.patch<FieldDef>(`/admin/custom-fields/${encodeURIComponent(id)}`, patch)
   return res.data
 }
 
 // Every place the field is attached, in tree order.
 export async function listFieldPlacements(id: string): Promise<FieldPlacement[]> {
-  const res = await api.get<FieldPlacement[]>(`/admin/custom-fields/${id}/assignments`)
+  const res = await api.get<FieldPlacement[]>(`/admin/custom-fields/${encodeURIComponent(id)}/assignments`)
   return res.data
 }
 
 // How many tickets hold a value for the field, and for each of its options.
 export async function getFieldUsage(id: string): Promise<FieldUsage> {
-  const res = await api.get<FieldUsage>(`/admin/custom-fields/${id}/usage`)
+  const res = await api.get<FieldUsage>(`/admin/custom-fields/${encodeURIComponent(id)}/usage`)
   return res.data
 }
 
@@ -542,27 +542,27 @@ export async function reorderFieldDefs(ids: string[]): Promise<FieldDef[]> {
 
 export async function listAssignments(scopeType: ScopeType, scopeId: string): Promise<Assignment[]> {
   const path = scopeType === 'category'
-    ? `/admin/categories/${scopeId}/fields`
+    ? `/admin/categories/${encodeURIComponent(scopeId)}/fields`
     : scopeType === 'type'
-    ? `/admin/categories/_/types/${scopeId}/fields`
-    : `/admin/categories/_/types/_/items/${scopeId}/fields`
+    ? `/admin/categories/_/types/${encodeURIComponent(scopeId)}/fields`
+    : `/admin/categories/_/types/_/items/${encodeURIComponent(scopeId)}/fields`
   const res = await api.get<Assignment[]>(path)
   return res.data
 }
 
 // Scoped assignment helpers that use the full CTI path (preferred over listAssignments for types/items)
 export async function listCategoryAssignments(categoryId: string): Promise<Assignment[]> {
-  const res = await api.get<Assignment[]>(`/admin/categories/${categoryId}/fields`)
+  const res = await api.get<Assignment[]>(`/admin/categories/${encodeURIComponent(categoryId)}/fields`)
   return res.data
 }
 
 export async function listTypeAssignments(categoryId: string, typeId: string): Promise<Assignment[]> {
-  const res = await api.get<Assignment[]>(`/admin/categories/${categoryId}/types/${typeId}/fields`)
+  const res = await api.get<Assignment[]>(`/admin/categories/${encodeURIComponent(categoryId)}/types/${encodeURIComponent(typeId)}/fields`)
   return res.data
 }
 
 export async function listItemAssignments(categoryId: string, typeId: string, itemId: string): Promise<Assignment[]> {
-  const res = await api.get<Assignment[]>(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}/fields`)
+  const res = await api.get<Assignment[]>(`/admin/categories/${encodeURIComponent(categoryId)}/types/${encodeURIComponent(typeId)}/items/${encodeURIComponent(itemId)}/fields`)
   return res.data
 }
 
@@ -570,7 +570,7 @@ export async function createCategoryAssignment(
   categoryId: string,
   input: { field_def_id: string; sort_order?: number; visible_on_new?: boolean; required_on_new?: boolean }
 ): Promise<Assignment> {
-  const res = await api.post<Assignment>(`/admin/categories/${categoryId}/fields`, input)
+  const res = await api.post<Assignment>(`/admin/categories/${encodeURIComponent(categoryId)}/fields`, input)
   return res.data
 }
 
@@ -579,7 +579,7 @@ export async function createTypeAssignment(
   typeId: string,
   input: { field_def_id: string; sort_order?: number; visible_on_new?: boolean; required_on_new?: boolean }
 ): Promise<Assignment> {
-  const res = await api.post<Assignment>(`/admin/categories/${categoryId}/types/${typeId}/fields`, input)
+  const res = await api.post<Assignment>(`/admin/categories/${encodeURIComponent(categoryId)}/types/${encodeURIComponent(typeId)}/fields`, input)
   return res.data
 }
 
@@ -589,7 +589,7 @@ export async function createItemAssignment(
   itemId: string,
   input: { field_def_id: string; sort_order?: number; visible_on_new?: boolean; required_on_new?: boolean }
 ): Promise<Assignment> {
-  const res = await api.post<Assignment>(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}/fields`, input)
+  const res = await api.post<Assignment>(`/admin/categories/${encodeURIComponent(categoryId)}/types/${encodeURIComponent(typeId)}/items/${encodeURIComponent(itemId)}/fields`, input)
   return res.data
 }
 
@@ -598,7 +598,7 @@ export async function updateCategoryAssignment(
   assignmentId: string,
   patch: { sort_order?: number; visible_on_new?: boolean; required_on_new?: boolean }
 ): Promise<Assignment> {
-  const res = await api.patch<Assignment>(`/admin/categories/${categoryId}/fields/${assignmentId}`, patch)
+  const res = await api.patch<Assignment>(`/admin/categories/${encodeURIComponent(categoryId)}/fields/${encodeURIComponent(assignmentId)}`, patch)
   return res.data
 }
 
@@ -608,7 +608,7 @@ export async function updateTypeAssignment(
   assignmentId: string,
   patch: { sort_order?: number; visible_on_new?: boolean; required_on_new?: boolean }
 ): Promise<Assignment> {
-  const res = await api.patch<Assignment>(`/admin/categories/${categoryId}/types/${typeId}/fields/${assignmentId}`, patch)
+  const res = await api.patch<Assignment>(`/admin/categories/${encodeURIComponent(categoryId)}/types/${encodeURIComponent(typeId)}/fields/${encodeURIComponent(assignmentId)}`, patch)
   return res.data
 }
 
@@ -619,31 +619,31 @@ export async function updateItemAssignment(
   assignmentId: string,
   patch: { sort_order?: number; visible_on_new?: boolean; required_on_new?: boolean }
 ): Promise<Assignment> {
-  const res = await api.patch<Assignment>(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}/fields/${assignmentId}`, patch)
+  const res = await api.patch<Assignment>(`/admin/categories/${encodeURIComponent(categoryId)}/types/${encodeURIComponent(typeId)}/items/${encodeURIComponent(itemId)}/fields/${encodeURIComponent(assignmentId)}`, patch)
   return res.data
 }
 
 export async function deleteCategoryAssignment(categoryId: string, assignmentId: string): Promise<void> {
-  await deleteIfPresent(`/admin/categories/${categoryId}/fields/${assignmentId}`)
+  await deleteIfPresent(`/admin/categories/${encodeURIComponent(categoryId)}/fields/${encodeURIComponent(assignmentId)}`)
 }
 
 export async function deleteTypeAssignment(categoryId: string, typeId: string, assignmentId: string): Promise<void> {
-  await deleteIfPresent(`/admin/categories/${categoryId}/types/${typeId}/fields/${assignmentId}`)
+  await deleteIfPresent(`/admin/categories/${encodeURIComponent(categoryId)}/types/${encodeURIComponent(typeId)}/fields/${encodeURIComponent(assignmentId)}`)
 }
 
 export async function deleteItemAssignment(categoryId: string, typeId: string, itemId: string, assignmentId: string): Promise<void> {
-  await deleteIfPresent(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}/fields/${assignmentId}`)
+  await deleteIfPresent(`/admin/categories/${encodeURIComponent(categoryId)}/types/${encodeURIComponent(typeId)}/items/${encodeURIComponent(itemId)}/fields/${encodeURIComponent(assignmentId)}`)
 }
 
 // ── CTI group scope (read from CTI perspective) ───────────────────────────────
 
 export async function listGroupsForCategory(categoryId: string): Promise<Group[]> {
-  const res = await api.get<Group[]>(`/admin/categories/${categoryId}/groups`)
+  const res = await api.get<Group[]>(`/admin/categories/${encodeURIComponent(categoryId)}/groups`)
   return res.data
 }
 
 export async function listGroupsForType(categoryId: string, typeId: string): Promise<Group[]> {
-  const res = await api.get<Group[]>(`/admin/categories/${categoryId}/types/${typeId}/groups`)
+  const res = await api.get<Group[]>(`/admin/categories/${encodeURIComponent(categoryId)}/types/${encodeURIComponent(typeId)}/groups`)
   return res.data
 }
 
@@ -677,12 +677,12 @@ export async function updateSLAPolicy(
     resolution_target_min?: number
   }
 ): Promise<SLAPolicy> {
-  const res = await api.patch<SLAPolicy>(`/admin/sla/policies/${id}`, patch)
+  const res = await api.patch<SLAPolicy>(`/admin/sla/policies/${encodeURIComponent(id)}`, patch)
   return res.data
 }
 
 export async function deleteSLAPolicy(id: string): Promise<void> {
-  await api.delete(`/admin/sla/policies/${id}`)
+  await api.delete(`/admin/sla/policies/${encodeURIComponent(id)}`)
 }
 
 // ── Security warnings ────────────────────────────────────────────────────────

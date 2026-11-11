@@ -107,6 +107,21 @@ function list(v: unknown): string[] | undefined {
   return out.length > 0 ? out : undefined
 }
 
+// An id the filters send: category, type, item, status, assignee, group and
+// reporter are all UUIDs. The address is typed by anyone and some of these end
+// up in request paths, so a value that is not shaped like one never gets that far.
+const ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function id(v: unknown): string | undefined {
+  const t = text(v)
+  return t !== undefined && ID_SHAPE.test(t) ? t : undefined
+}
+
+function ids(v: unknown): string[] | undefined {
+  const out = list(v)?.filter(s => ID_SHAPE.test(s))
+  return out && out.length > 0 ? out : undefined
+}
+
 function oneOf<T extends string>(v: unknown, allowed: readonly T[]): T | undefined {
   return typeof v === 'string' && (allowed as readonly string[]).includes(v) ? (v as T) : undefined
 }
@@ -142,14 +157,14 @@ export function parseTicketSearch(raw: Record<string, unknown>): TicketSearch {
     q: text(raw.q),
     replies: isOff(raw.replies) ? false : undefined,
     scope: oneOf(raw.scope, ['mine', 'unassigned', 'all'] as const),
-    status: list(raw.status),
+    status: ids(raw.status),
     priority: listOf(raw.priority, PRIORITIES),
-    category: text(raw.category),
-    type: text(raw.type),
-    item: text(raw.item),
-    assignee: text(raw.assignee),
-    group: text(raw.group),
-    reporter: text(raw.reporter),
+    category: id(raw.category),
+    type: id(raw.type),
+    item: id(raw.item),
+    assignee: id(raw.assignee),
+    group: id(raw.group),
+    reporter: id(raw.reporter),
     requester: text(raw.requester),
     created_from: day(raw.created_from),
     created_to: day(raw.created_to),

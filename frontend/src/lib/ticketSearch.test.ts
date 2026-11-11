@@ -37,6 +37,22 @@ describe('parseTicketSearch: URL to state', () => {
     })
   })
 
+  // These go into request paths and query strings; only an id may.
+  it.each(['category', 'type', 'item', 'assignee', 'group', 'reporter'] as const)(
+    '%s keeps an id and drops anything else',
+    field => {
+      expect(parseTicketSearch({ [field]: ID_A })).toEqual({ [field]: ID_A })
+      for (const bad of ['../admin/users', 'c1', '', '123', ID_A + '/x', '..%2Fadmin', ` ${ID_A}x`]) {
+        expect(parseTicketSearch({ [field]: bad })).toEqual({})
+      }
+    },
+  )
+
+  it('status drops what is not an id and keeps the rest', () => {
+    expect(parseTicketSearch({ status: ['../admin/users', ID_A, 'open'] })).toEqual({ status: [ID_A] })
+    expect(parseTicketSearch({ status: '../admin/users' })).toEqual({})
+  })
+
   it('drops values the server would answer 400 for', () => {
     expect(
       parseTicketSearch({

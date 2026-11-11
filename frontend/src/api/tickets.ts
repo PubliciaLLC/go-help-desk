@@ -104,7 +104,7 @@ export async function createTicket(input: CreateTicketInput): Promise<Ticket> {
 }
 
 export async function getTicket(id: string): Promise<Ticket> {
-  const res = await api.get<Ticket>(`/tickets/${id}`)
+  const res = await api.get<Ticket>(`/tickets/${encodeURIComponent(id)}`)
   return res.data
 }
 
@@ -126,12 +126,12 @@ export async function updateTicket(
     priority?: Priority
   }
 ): Promise<Ticket> {
-  const res = await api.patch<Ticket>(`/tickets/${id}`, patch)
+  const res = await api.patch<Ticket>(`/tickets/${encodeURIComponent(id)}`, patch)
   return res.data
 }
 
 export async function resolveTicket(id: string, notes?: string): Promise<Ticket> {
-  const res = await api.post<Ticket>(`/tickets/${id}/resolve`, { notes })
+  const res = await api.post<Ticket>(`/tickets/${encodeURIComponent(id)}/resolve`, { notes })
   return res.data
 }
 
@@ -139,7 +139,7 @@ export async function resolveTicket(id: string, notes?: string): Promise<Ticket>
 // closed_reopen_policy lets the caller's role; the ticket response's
 // can_reopen says whether to offer it.
 export async function reopenTicket(id: string): Promise<Ticket> {
-  const res = await api.post<Ticket>(`/tickets/${id}/reopen`, {})
+  const res = await api.post<Ticket>(`/tickets/${encodeURIComponent(id)}/reopen`, {})
   return res.data
 }
 
@@ -147,41 +147,41 @@ export async function reopenTicket(id: string): Promise<Ticket> {
 // that starts open. Available whether or not the instance lets anyone reopen a
 // closed ticket (closed_reopen_policy, off by default).
 export async function createFollowUp(id: string): Promise<Ticket> {
-  const res = await api.post<Ticket>(`/tickets/${id}/follow-up`, {})
+  const res = await api.post<Ticket>(`/tickets/${encodeURIComponent(id)}/follow-up`, {})
   return res.data
 }
 
 export async function closeTicket(id: string): Promise<Ticket> {
-  const res = await api.post<Ticket>(`/tickets/${id}/close`, {})
+  const res = await api.post<Ticket>(`/tickets/${encodeURIComponent(id)}/close`, {})
   return res.data
 }
 
 export async function listReplies(ticketId: string): Promise<Reply[]> {
-  const res = await api.get<Reply[]>(`/tickets/${ticketId}/replies`)
+  const res = await api.get<Reply[]>(`/tickets/${encodeURIComponent(ticketId)}/replies`)
   return res.data
 }
 
 export async function listStatusHistory(ticketId: string): Promise<StatusHistoryEntry[]> {
-  const res = await api.get<StatusHistoryEntry[]>(`/tickets/${ticketId}/history`)
+  const res = await api.get<StatusHistoryEntry[]>(`/tickets/${encodeURIComponent(ticketId)}/history`)
   return res.data
 }
 
 export async function listTicketFollowers(ticketId: string): Promise<TicketFollower[]> {
-  const res = await api.get<TicketFollower[]>(`/tickets/${ticketId}/followers`)
+  const res = await api.get<TicketFollower[]>(`/tickets/${encodeURIComponent(ticketId)}/followers`)
   return res.data ?? []
 }
 
 // Both are idempotent and answer 204 (#441).
 export async function followTicket(ticketId: string): Promise<void> {
-  await api.put(`/tickets/${ticketId}/follow`)
+  await api.put(`/tickets/${encodeURIComponent(ticketId)}/follow`)
 }
 
 export async function unfollowTicket(ticketId: string): Promise<void> {
-  await api.delete(`/tickets/${ticketId}/follow`)
+  await api.delete(`/tickets/${encodeURIComponent(ticketId)}/follow`)
 }
 
 export async function listTicketAudit(ticketId: string): Promise<TicketAuditEntry[]> {
-  const res = await api.get<TicketAuditEntry[]>(`/tickets/${ticketId}/audit`)
+  const res = await api.get<TicketAuditEntry[]>(`/tickets/${encodeURIComponent(ticketId)}/audit`)
   return res.data
 }
 
@@ -191,7 +191,7 @@ export async function addReply(
   internal = false,
   notifyCustomer = true
 ): Promise<Reply> {
-  const res = await api.post<Reply>(`/tickets/${ticketId}/replies`, {
+  const res = await api.post<Reply>(`/tickets/${encodeURIComponent(ticketId)}/replies`, {
     body,
     internal,
     notify_customer: notifyCustomer,
@@ -202,7 +202,7 @@ export async function addReply(
 }
 
 export async function listLinks(ticketId: string): Promise<TicketLink[]> {
-  const res = await api.get<TicketLink[]>(`/tickets/${ticketId}/links`)
+  const res = await api.get<TicketLink[]>(`/tickets/${encodeURIComponent(ticketId)}/links`)
   return res.data
 }
 
@@ -211,7 +211,7 @@ export async function addLink(
   targetId: string,
   linkType: LinkType
 ): Promise<void> {
-  await api.post(`/tickets/${ticketId}/links`, { target_id: targetId, link_type: linkType })
+  await api.post(`/tickets/${encodeURIComponent(ticketId)}/links`, { target_id: targetId, link_type: linkType })
 }
 
 export async function removeLink(
@@ -219,7 +219,7 @@ export async function removeLink(
   targetId: string,
   linkType: LinkType
 ): Promise<void> {
-  await api.delete(`/tickets/${ticketId}/links/${targetId}/${linkType}`)
+  await api.delete(`/tickets/${encodeURIComponent(ticketId)}/links/${encodeURIComponent(targetId)}/${encodeURIComponent(linkType)}`)
 }
 
 export function duplicateResolutionNotes(targetTrackingNumber: string): string {
@@ -231,7 +231,7 @@ export async function addDuplicateLinkAndResolve(
   targetId: string,
   resolutionNotes: string
 ): Promise<Ticket> {
-  const res = await api.post<Ticket>(`/tickets/${ticketId}/links`, {
+  const res = await api.post<Ticket>(`/tickets/${encodeURIComponent(ticketId)}/links`, {
     target_id: targetId,
     link_type: 'duplicate_of',
     resolve_as_duplicate: true,
@@ -248,17 +248,17 @@ export async function searchTags(q: string): Promise<Tag[]> {
 }
 
 export async function listTicketTags(ticketId: string): Promise<Tag[]> {
-  const res = await api.get<Tag[]>(`/tickets/${ticketId}/tags`)
+  const res = await api.get<Tag[]>(`/tickets/${encodeURIComponent(ticketId)}/tags`)
   return res.data
 }
 
 export async function addTicketTag(ticketId: string, name: string): Promise<Tag> {
-  const res = await api.post<Tag>(`/tickets/${ticketId}/tags`, { name })
+  const res = await api.post<Tag>(`/tickets/${encodeURIComponent(ticketId)}/tags`, { name })
   return res.data
 }
 
 export async function removeTicketTag(ticketId: string, tagId: string): Promise<void> {
-  await api.delete(`/tickets/${ticketId}/tags/${tagId}`)
+  await api.delete(`/tickets/${encodeURIComponent(ticketId)}/tags/${encodeURIComponent(tagId)}`)
 }
 
 // ── Public categories/types (no admin auth, active only) ──────────────────────
@@ -269,26 +269,26 @@ export async function listPublicCategories(): Promise<Category[]> {
 }
 
 export async function listPublicTypes(categoryId: string): Promise<TicketType[]> {
-  const res = await api.get<TicketType[]>(`/categories/${categoryId}/types`)
+  const res = await api.get<TicketType[]>(`/categories/${encodeURIComponent(categoryId)}/types`)
   return res.data
 }
 
 export async function listPublicItems(categoryId: string, typeId: string): Promise<TicketItem[]> {
-  const res = await api.get<TicketItem[]>(`/categories/${categoryId}/types/${typeId}/items`)
+  const res = await api.get<TicketItem[]>(`/categories/${encodeURIComponent(categoryId)}/types/${encodeURIComponent(typeId)}/items`)
   return res.data
 }
 
 // ── Attachments ───────────────────────────────────────────────────────────────
 
 export async function listAttachments(ticketId: string): Promise<Attachment[]> {
-  const res = await api.get<Attachment[]>(`/tickets/${ticketId}/attachments`)
+  const res = await api.get<Attachment[]>(`/tickets/${encodeURIComponent(ticketId)}/attachments`)
   return res.data
 }
 
 export async function uploadAttachment(ticketId: string, file: File): Promise<Attachment> {
   const form = new FormData()
   form.append('file', file)
-  const res = await api.post<Attachment>(`/tickets/${ticketId}/attachments`, form, {
+  const res = await api.post<Attachment>(`/tickets/${encodeURIComponent(ticketId)}/attachments`, form, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
   return res.data
@@ -312,7 +312,7 @@ export async function recheckAttachmentReputation(
   attachmentId: string,
   provider?: string
 ): Promise<Attachment> {
-  const path = `/tickets/${ticketId}/attachments/${attachmentId}/reputation`
+  const path = `/tickets/${encodeURIComponent(ticketId)}/attachments/${encodeURIComponent(attachmentId)}/reputation`
   const res = await api.post<Attachment>(
     provider ? `${path}?provider=${encodeURIComponent(provider)}` : path,
     {}
@@ -321,7 +321,7 @@ export async function recheckAttachmentReputation(
 }
 
 export function attachmentDownloadUrl(ticketId: string, attachmentId: string): string {
-  return `/api/v1/tickets/${ticketId}/attachments/${attachmentId}`
+  return `/api/v1/tickets/${encodeURIComponent(ticketId)}/attachments/${encodeURIComponent(attachmentId)}`
 }
 
 // ── Custom fields ─────────────────────────────────────────────────────────────
@@ -336,7 +336,7 @@ export async function resolveFieldsForCTI(params: {
 }
 
 export async function listTicketCustomFields(ticketId: string): Promise<TicketFieldValue[]> {
-  const res = await api.get<TicketFieldValue[]>(`/tickets/${ticketId}/custom-fields`)
+  const res = await api.get<TicketFieldValue[]>(`/tickets/${encodeURIComponent(ticketId)}/custom-fields`)
   return res.data
 }
 
@@ -344,12 +344,12 @@ export async function putTicketCustomFields(
   ticketId: string,
   values: Record<string, string>
 ): Promise<void> {
-  await api.put(`/tickets/${ticketId}/custom-fields`, values)
+  await api.put(`/tickets/${encodeURIComponent(ticketId)}/custom-fields`, values)
 }
 
 // ── Canned responses ──────────────────────────────────────────────────────────
 
 export async function listTicketCannedResponses(ticketId: string): Promise<CannedResponse[]> {
-  const res = await api.get<CannedResponse[]>(`/tickets/${ticketId}/canned-responses`)
+  const res = await api.get<CannedResponse[]>(`/tickets/${encodeURIComponent(ticketId)}/canned-responses`)
   return res.data
 }

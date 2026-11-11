@@ -152,7 +152,7 @@ export async function addPasskey(name: string): Promise<void> {
 }
 
 export async function removePasskey(id: string): Promise<void> {
-  await api.delete(`/me/passkeys/${id}`)
+  await api.delete(`/me/passkeys/${encodeURIComponent(id)}`)
 }
 
 // ── Signing in with one ───────────────────────────────────────────────────────

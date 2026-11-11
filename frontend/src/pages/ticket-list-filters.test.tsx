@@ -50,19 +50,19 @@ vi.mock('@tanstack/react-router', async () => {
 import { TicketListPage } from './TicketListPage'
 
 const STATUSES = [
-  { id: 'st-new', name: 'New', kind: 'system', sort_order: 1, color: '#3b82f6', active: true, ticket_count: 1 },
-  { id: 'st-closed', name: 'Closed', kind: 'system', sort_order: 2, color: '#6b7280', active: true, ticket_count: 0 },
+  { id: '00000000-0000-4000-8000-0000000000a1', name: 'New', kind: 'system', sort_order: 1, color: '#3b82f6', active: true, ticket_count: 1 },
+  { id: '00000000-0000-4000-8000-0000000000a2', name: 'Closed', kind: 'system', sort_order: 2, color: '#6b7280', active: true, ticket_count: 0 },
 ]
-const DANA = { id: 'u-dana', display_name: 'Dana Whitfield', email: 'dana@example.com' }
+const DANA = { id: '00000000-0000-4000-8000-0000000000b1', display_name: 'Dana Whitfield', email: 'dana@example.com' }
 
 function ticket(over: Partial<Ticket> & { id: string; subject: string }): Ticket {
   return {
     tracking_number: `TKT-${over.id}`,
     description: '',
     description_format: 'plain',
-    category_id: 'cat-1',
+    category_id: '00000000-0000-4000-8000-0000000000c1',
     priority: 'medium',
-    status_id: 'st-new',
+    status_id: '00000000-0000-4000-8000-0000000000a1',
     created_at: '2026-10-20T10:00:00Z',
     updated_at: '2026-10-21T10:00:00Z',
     ...over,
@@ -130,10 +130,10 @@ beforeEach(() => {
   get = vi.spyOn(api, 'get').mockImplementation(((url: string, cfg?: { params?: Record<string, unknown> }) => {
     if (url === '/tickets') return Promise.resolve({ data: tickets, headers })
     if (url === '/statuses') return Promise.resolve({ data: STATUSES })
-    if (url === '/categories') return Promise.resolve({ data: [{ id: 'cat-1', name: 'Hardware' }, { id: 'cat-2', name: 'Software' }] })
-    if (url === '/categories/cat-1/types') return Promise.resolve({ data: [{ id: 'ty-1', name: 'Printers' }] })
-    if (url === '/staff') return Promise.resolve({ data: [{ id: 'u-sam', display_name: 'Sam Staff', assignable: true }] })
-    if (url === '/groups') return Promise.resolve({ data: [{ id: 'g-1', name: 'Network' }] })
+    if (url === '/categories') return Promise.resolve({ data: [{ id: '00000000-0000-4000-8000-0000000000c1', name: 'Hardware' }, { id: '00000000-0000-4000-8000-0000000000c2', name: 'Software' }] })
+    if (url === '/categories/00000000-0000-4000-8000-0000000000c1/types') return Promise.resolve({ data: [{ id: '00000000-0000-4000-8000-0000000000d1', name: 'Printers' }] })
+    if (url === '/staff') return Promise.resolve({ data: [{ id: '00000000-0000-4000-8000-0000000000b2', display_name: 'Sam Staff', assignable: true }] })
+    if (url === '/groups') return Promise.resolve({ data: [{ id: '00000000-0000-4000-8000-0000000000e1', name: 'Network' }] })
     if (url === '/users/lookup') {
       // ?id= answers one object; ?q= answers a list.
       if (cfg?.params?.id) return Promise.resolve({ data: DANA })
@@ -150,11 +150,11 @@ afterEach(() => {
 describe('the address is the search', () => {
   it('reads the old status= and reporter= links, and names the account by id', async () => {
     setRole('admin')
-    go({ status: 'st-new', reporter: DANA.id })
+    go({ status: '00000000-0000-4000-8000-0000000000a1', reporter: DANA.id })
     renderWithQuery(<TicketListPage />)
 
     await waitFor(() => expect(ticketCalls().length).toBeGreaterThan(0))
-    expect(lastCall()).toMatchObject({ status_id: ['st-new'], reporter_id: DANA.id })
+    expect(lastCall()).toMatchObject({ status_id: ['00000000-0000-4000-8000-0000000000a1'], reporter_id: DANA.id })
     // The account names a set of tickets of its own, so no queue is sent.
     expect(lastCall().scope).toBeUndefined()
 
@@ -177,11 +177,11 @@ describe('the address is the search', () => {
 
   it('clearing a chip, and Clear all, write the address', async () => {
     setRole('staff')
-    go({ priority: ['high'], status: ['st-new'] })
+    go({ priority: ['high'], status: ['00000000-0000-4000-8000-0000000000a1'] })
     renderWithQuery(<TicketListPage />)
 
     fireEvent.click(await screen.findByRole('button', { name: 'Remove Priority filter' }))
-    expect(router.search).toEqual({ status: ['st-new'] })
+    expect(router.search).toEqual({ status: ['00000000-0000-4000-8000-0000000000a1'] })
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear all' }))
     expect(router.search).toEqual({})
@@ -228,14 +228,14 @@ describe('the Filters panel', () => {
 
   it('a type needs a category, and picking another category drops it', async () => {
     setRole('staff')
-    go({ category: 'cat-1', type: 'ty-1' })
+    go({ category: '00000000-0000-4000-8000-0000000000c1', type: '00000000-0000-4000-8000-0000000000d1' })
     renderWithQuery(<TicketListPage />)
     fireEvent.click(await screen.findByRole('button', { name: /^Filters/ }))
     const panel = screen.getByRole('region', { name: 'Filters' })
 
     await within(panel).findByRole('option', { name: 'Printers' })
-    fireEvent.change(within(panel).getByLabelText('Category'), { target: { value: 'cat-2' } })
-    expect(router.search).toEqual({ category: 'cat-2' })
+    fireEvent.change(within(panel).getByLabelText('Category'), { target: { value: '00000000-0000-4000-8000-0000000000c2' } })
+    expect(router.search).toEqual({ category: '00000000-0000-4000-8000-0000000000c2' })
   })
 
   it('offers the SLA filter only once the page has seen SLA tracking working', async () => {
@@ -271,7 +271,7 @@ describe('the Filters panel', () => {
 
   it('a requester\'s link with staff-only filters sends none of them', async () => {
     setRole('user')
-    go({ priority: ['high'], assignee: 'u-sam', requester: 'whit', channel: ['web'], sla: 'breached', updated_from: '2026-10-01', sort: 'updated' })
+    go({ priority: ['high'], assignee: '00000000-0000-4000-8000-0000000000b2', requester: 'whit', channel: ['web'], sla: 'breached', updated_from: '2026-10-01', sort: 'updated' })
     renderWithQuery(<TicketListPage />)
     await waitFor(() => expect(ticketCalls().length).toBeGreaterThan(0))
 
@@ -534,9 +534,9 @@ describe('on a phone', () => {
     expect(router.search).toEqual({})
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Show results' }))
-    expect(router.search).toEqual({ priority: ['high'], status: ['st-new'] })
+    expect(router.search).toEqual({ priority: ['high'], status: ['00000000-0000-4000-8000-0000000000a1'] })
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
-    await waitFor(() => expect(lastCall()).toMatchObject({ priority: ['high'], status_id: ['st-new'] }))
+    await waitFor(() => expect(lastCall()).toMatchObject({ priority: ['high'], status_id: ['00000000-0000-4000-8000-0000000000a1'] }))
   })
 
   it('closing it throws the draft away', async () => {
@@ -572,8 +572,8 @@ describe('on a phone', () => {
     expect(within(dialog).queryByRole('button', { name: 'unassigned' })).toBeNull()
     expect(within(dialog).queryByLabelText('Assignee')).toBeNull()
     fireEvent.click(within(dialog).getByRole('button', { name: /^More filters/ }))
-    fireEvent.change(await within(dialog).findByLabelText('Assignee'), { target: { value: 'u-sam' } })
+    fireEvent.change(await within(dialog).findByLabelText('Assignee'), { target: { value: '00000000-0000-4000-8000-0000000000b2' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Show results' }))
-    expect(router.search).toEqual({ assignee: 'u-sam' })
+    expect(router.search).toEqual({ assignee: '00000000-0000-4000-8000-0000000000b2' })
   })
 })
