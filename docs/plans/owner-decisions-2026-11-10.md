@@ -52,3 +52,4 @@ a recommendation he accepted in bulk ("Accept all") from `pretag-fixes.md` and `
 - **Markdown formatter budget:** "Raise to 3 s".
 - **`content-visibility: auto`** on long plain-text posts: "Ship it".
 - **E2E against the production build** instead of the Vite dev server: "Use production build".
+- **Audit Log change-detail search:** "Require a date range". It runs only with a date range of at most 90 days (the 90 is A's default, a named constant). Without a range, `q` still matches type, action and actor, and the page says to pick dates. The 100,000-entry window is dropped.
