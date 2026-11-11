@@ -9,6 +9,7 @@ import (
 	"context"
 
 	uuid "github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 const countTicketsByCategory = `-- name: CountTicketsByCategory :one
@@ -270,6 +271,40 @@ func (q *Queries) GetCategory(ctx context.Context, id uuid.UUID) (Category, erro
 	return i, err
 }
 
+const getCategoryNamesByIDs = `-- name: GetCategoryNamesByIDs :many
+SELECT id, name FROM categories WHERE id = ANY($1::uuid[])
+`
+
+type GetCategoryNamesByIDsRow struct {
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
+}
+
+// The audit view's name lookup (1.3.0): one statement for every id on a page,
+// never one per id. An id with no row is simply absent from the result.
+func (q *Queries) GetCategoryNamesByIDs(ctx context.Context, ids []uuid.UUID) ([]GetCategoryNamesByIDsRow, error) {
+	rows, err := q.db.QueryContext(ctx, getCategoryNamesByIDs, pq.Array(ids))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetCategoryNamesByIDsRow
+	for rows.Next() {
+		var i GetCategoryNamesByIDsRow
+		if err := rows.Scan(&i.ID, &i.Name); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getItem = `-- name: GetItem :one
 SELECT id, type_id, name, sort_order, active FROM items WHERE id = $1
 `
@@ -287,6 +322,38 @@ func (q *Queries) GetItem(ctx context.Context, id uuid.UUID) (Item, error) {
 	return i, err
 }
 
+const getItemNamesByIDs = `-- name: GetItemNamesByIDs :many
+SELECT id, name FROM items WHERE id = ANY($1::uuid[])
+`
+
+type GetItemNamesByIDsRow struct {
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
+}
+
+func (q *Queries) GetItemNamesByIDs(ctx context.Context, ids []uuid.UUID) ([]GetItemNamesByIDsRow, error) {
+	rows, err := q.db.QueryContext(ctx, getItemNamesByIDs, pq.Array(ids))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetItemNamesByIDsRow
+	for rows.Next() {
+		var i GetItemNamesByIDsRow
+		if err := rows.Scan(&i.ID, &i.Name); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getType = `-- name: GetType :one
 SELECT id, category_id, name, sort_order, active FROM types WHERE id = $1
 `
@@ -302,6 +369,38 @@ func (q *Queries) GetType(ctx context.Context, id uuid.UUID) (Type, error) {
 		&i.Active,
 	)
 	return i, err
+}
+
+const getTypeNamesByIDs = `-- name: GetTypeNamesByIDs :many
+SELECT id, name FROM types WHERE id = ANY($1::uuid[])
+`
+
+type GetTypeNamesByIDsRow struct {
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
+}
+
+func (q *Queries) GetTypeNamesByIDs(ctx context.Context, ids []uuid.UUID) ([]GetTypeNamesByIDsRow, error) {
+	rows, err := q.db.QueryContext(ctx, getTypeNamesByIDs, pq.Array(ids))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetTypeNamesByIDsRow
+	for rows.Next() {
+		var i GetTypeNamesByIDsRow
+		if err := rows.Scan(&i.ID, &i.Name); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listCategories = `-- name: ListCategories :many

@@ -28,4 +28,10 @@ type Store interface {
 	UpdateItem(ctx context.Context, i Item) error
 	DeleteItem(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
 	ListItems(ctx context.Context, typeID uuid.UUID, activeOnly bool) ([]Item, error)
+
+	// Names resolve many ids at once, one statement each, for a page that names
+	// many (the audit view). An id that no longer exists is absent from the map.
+	CategoryNames(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]string, error)
+	TypeNames(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]string, error)
+	ItemNames(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]string, error)
 }

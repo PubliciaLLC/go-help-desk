@@ -381,6 +381,16 @@ Since #506, auto-assignment happens in the create's own transaction, so `ticket.
 
 This adds a column to `webhook_configs` through a migration that runs at start-up.
 
+### The Audit Log: Search, Requester Masking and Retention (#629)
+
+- **Search (`q`) now looks further.** On `GET /admin/audit`, `q` still matches the entity type and the action, and now also the display name and email of the actor, and the text of the change details **at the keys the view shows** (never a hidden value such as a ticket subject). `%` and `_` are now matched as text, where they used to act as wildcards. `q` longer than 200 characters answers `400 bad_request`; it used to be accepted. No parameter was added.
+- **A requester is not found by name while the admin log masks requester names** (`audit_mask_requester_names`, `admin_log` or `everywhere`, the default), so the search cannot be used to find out who a masked requester is.
+- **The mask now covers the ticket's status timeline.** `GET /tickets/{id}/history` sent a requester's display name in `changed_by_name` whatever the setting. Where `audit_mask_requester_names` masks the ticket log (`ticket_log` or `everywhere`) it now sends `"Requester"` with `changed_by_masked: true`; `changed_by_user_id` is unchanged. An integration that reads the name from `/history` sees the label instead.
+- **A change to `audit_mask_requester_names` is an audit entry** (entity `setting`, action `audit_mask_changed`, the value before and after). A save that leaves the value as it was writes none.
+- **The mask is not protection against the database.** Anyone with direct access to the database can still read requester names.
+- **The retention purge runs in batches of 5,000** instead of one `DELETE`.
+- **Large logs.** Searching the change details covers the newest 100,000 entries that pass the other filters; older entries are still found by entity, action and actor, and a date range, entity, action or actor filter moves the window back. A text that matches nothing reads the whole table, as it always did: on 2,000,000 entries the page took 1 to 3 seconds and the count 2 to 7.
+
 ### New Environment Variables (Compose-Forwarded)
 
 The following variables are now honoured when set in `docker/.env`. They are automatically forwarded to the app container and have sensible defaults in Docker Compose:

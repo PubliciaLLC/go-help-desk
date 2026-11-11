@@ -149,3 +149,14 @@ SELECT COUNT(*) FROM tickets WHERE type_id = $1;
 
 -- name: CountTicketsByItem :one
 SELECT COUNT(*) FROM tickets WHERE item_id = $1;
+
+-- name: GetCategoryNamesByIDs :many
+-- The audit view's name lookup (1.3.0): one statement for every id on a page,
+-- never one per id. An id with no row is simply absent from the result.
+SELECT id, name FROM categories WHERE id = ANY(sqlc.arg(ids)::uuid[]);
+
+-- name: GetTypeNamesByIDs :many
+SELECT id, name FROM types WHERE id = ANY(sqlc.arg(ids)::uuid[]);
+
+-- name: GetItemNamesByIDs :many
+SELECT id, name FROM items WHERE id = ANY(sqlc.arg(ids)::uuid[]);

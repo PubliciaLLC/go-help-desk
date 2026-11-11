@@ -58,6 +58,16 @@ type ActionFilter struct {
 // so. 10,000 is 200 pages of 50, more than anyone pages through.
 const TotalCap = 10000
 
+// DiffSearchWindow is how many entries a search of the change details covers:
+// the newest this many that pass the other filters (#629). The search reads
+// every row it covers, at roughly 6 microseconds each, so it is bounded where
+// the entity, action and actor match (which have indexes and are cheap) is not.
+// At 100,000 that is well under a second; unbounded on 2,000,000 entries it was
+// 20 seconds for the count and 40 for the page. An older entry is still found by
+// its entity, action and actor, and narrowing the search by date, entity or
+// actor moves the window back to reach it.
+const DiffSearchWindow = 100000
+
 // Page is one page of a Search and what a pager needs to move on from it.
 type Page struct {
 	Entries []Entry
@@ -77,20 +87,29 @@ type Page struct {
 
 // Filter narrows a Search call. The zero value matches everything.
 //
-// Q is deliberately metadata-only: it matches against the entity type and
-// action, never against the Before/After payload. Matching payload content
-// would let a search for a redacted field's value still surface a hit
-// confirming the value existed — see Redact. It does not match the actor's
-// name either: a Store has no join to the users table to offer, and name
-// resolution already happens one layer up, in the HTTP handler — the same
-// place ListByEntity's callers resolve names today.
+// Q is a case-insensitive substring, matched literally ("%" and "_" are text),
+// against four things (#629):
+//   - the entity type and the action;
+//   - the actor's display name and email (D34), for an account that still
+//     exists. MaskRequesterActors leaves requesters out of this part;
+//   - the scalar values of Before and After at SearchableKeys, and nowhere else
+//     (D33). Matching a value Redact hides would let a search for it confirm
+//     that it exists without ever showing it, so the keys searched are the keys
+//     shown, and the store's tests prove a hidden value is never a hit.
 type Filter struct {
 	EntityType string     // exact match, e.g. "ticket"
 	Action     string     // exact match, e.g. "resolved"
 	ActorID    *uuid.UUID // exact match; nil means "any actor, including system"
 	From       *time.Time // inclusive
 	To         *time.Time // inclusive
-	Q          string     // case-insensitive substring against entity_type and action
+	Q          string     // see above
+
+	// MaskRequesterActors leaves an actor whose role is requester out of Q's
+	// name and email match. Set it where the view masks requester names
+	// (audit_mask_requester_names): otherwise the search is a way round the
+	// mask, because "does a hit appear when I type this name?" identifies the
+	// requester without the name ever being rendered.
+	MaskRequesterActors bool
 
 	// ExcludeActions leaves out every entry whose action is listed, in the
 	// page and in the count alike. It is how a view withholds a kind of entry
@@ -252,6 +271,10 @@ var shownKeys = map[string]bool{
 	// command ran on.
 	// Shown for EVERY entity type, so no other writer may reuse these key names.
 	"clientname": true, "urlhost": true,
+	// A change to the requester-name mask (audit_mask_requester_names, D35): its
+	// value before and after, one of admin_log, ticket_log or everywhere. A
+	// fixed vocabulary, and the whole point of the entry.
+	"requesternamemask": true,
 }
 
 // Redact returns copies of before/after showing only allow-listed keys

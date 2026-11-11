@@ -54,6 +54,12 @@ type Querier interface {
 	// not exist matches nothing here: CategoryExists and CTIIsCoherent refuse
 	// those.
 	ArchivedCTINode(ctx context.Context, arg ArchivedCTINodeParams) (string, error)
+	// Where a search of the change details stops (#629): the created_at of the
+	// window_size'th newest entry that passes the filters other than q. No row
+	// means fewer than that many, so nothing is left out. Scoped by the same
+	// filters as the search, so narrowing a search (an entity, an actor, a date
+	// range) moves the window to reach older entries.
+	AuditDiffSearchFloor(ctx context.Context, arg AuditDiffSearchFloorParams) (time.Time, error)
 	// Whether a category/type/item triple exists and hangs together: the type
 	// belongs to the category, and the item belongs to the type.
 	//
@@ -260,9 +266,11 @@ type Querier interface {
 	// revoke them too (#450). Returns how many, which the audit entry records.
 	DeleteAllAPIKeysForUser(ctx context.Context, userID uuid.UUID) (int64, error)
 	DeleteAttachment(ctx context.Context, id uuid.UUID) error
-	// The retention sweep's hard delete. No archive table — see audit.Store's
-	// own comment on DeleteOlderThan for why.
-	DeleteAuditLogBefore(ctx context.Context, createdAt time.Time) (int64, error)
+	// The retention sweep's hard delete, one batch (#629). No archive table — see
+	// audit.Store's own comment on DeleteOlderThan for why. Oldest first, so the
+	// created_at index serves it; SKIP LOCKED so a row someone else holds is left
+	// for the next sweep and not waited on.
+	DeleteAuditLogBatch(ctx context.Context, arg DeleteAuditLogBatchParams) (int64, error)
 	DeleteCannedResponse(ctx context.Context, id uuid.UUID) (int64, error)
 	// Takes the custom-field assignments of the category, of its types and of
 	// their items with it (#419). custom_field_assignments.scope_id has no foreign
@@ -432,6 +440,9 @@ type Querier interface {
 	GetAttachmentReputation(ctx context.Context, arg GetAttachmentReputationParams) (AttachmentReputation, error)
 	GetCannedResponse(ctx context.Context, id uuid.UUID) (CannedResponse, error)
 	GetCategory(ctx context.Context, id uuid.UUID) (Category, error)
+	// The audit view's name lookup (1.3.0): one statement for every id on a page,
+	// never one per id. An id with no row is simply absent from the result.
+	GetCategoryNamesByIDs(ctx context.Context, ids []uuid.UUID) ([]GetCategoryNamesByIDsRow, error)
 	// The ticket's current record, locked for the duration of a re-match.
 	GetCurrentSLARecordForUpdate(ctx context.Context, ticketID uuid.UUID) (SlaRecord, error)
 	GetCustomFieldAssignment(ctx context.Context, id uuid.UUID) (CustomFieldAssignment, error)
@@ -442,6 +453,7 @@ type Querier interface {
 	GetGroup(ctx context.Context, id uuid.UUID) (Group, error)
 	GetInstanceSecret(ctx context.Context, name string) ([]byte, error)
 	GetItem(ctx context.Context, id uuid.UUID) (Item, error)
+	GetItemNamesByIDs(ctx context.Context, ids []uuid.UUID) ([]GetItemNamesByIDsRow, error)
 	// The record a ticket most recently stopped having. Read, in the same
 	// transaction that holds the ticket's row lock, when a ticket with no current
 	// record gets one back, so the new clock resumes where the last one ran.
@@ -557,6 +569,7 @@ type Querier interface {
 	// a read-only link beside the existing ones rather than rotating them.
 	GetTicketIDByTrackingAndGuestEmail(ctx context.Context, arg GetTicketIDByTrackingAndGuestEmailParams) (uuid.UUID, error)
 	GetType(ctx context.Context, id uuid.UUID) (Type, error)
+	GetTypeNamesByIDs(ctx context.Context, ids []uuid.UUID) ([]GetTypeNamesByIDsRow, error)
 	// This is the lookup behind password login, OIDC adoption by address and
 	// password reset, so it is where a service account (an OAuth client's
 	// identity, #420) is kept from ever signing in: it simply is not found. A miss
@@ -924,6 +937,19 @@ type Querier interface {
 	// total order, two pages of one listing can disagree about which tied row
 	// comes first and the same entry appears twice, or not at all.
 	SearchAuditLog(ctx context.Context, arg SearchAuditLogParams) ([]AuditLog, error)
+	// SearchAuditLog for a search with text (q). The WHERE is the same, kept in step
+	// by hand; only the ORDER BY differs. With q the planner cannot tell how few rows
+	// match, expects plenty, and walks created_at backwards fetching every row from the
+	// heap to find the first page: on 2,000,000 entries a text matching nothing took
+	// 8 to 40 seconds (once past a 120 second limit) that way, against about 2 for a
+	// parallel scan and a top-N sort. Adding an interval to created_at takes that
+	// ordering away from the index, so a search reads the table once and predictably.
+	// The listing with no q keeps the index, where stopping after a page is the point.
+	// id breaks the tie, because created_at alone does not order entries written
+	// in the same microsecond — which happens inside a single request. Without a
+	// total order, two pages of one listing can disagree about which tied row
+	// comes first and the same entry appears twice, or not at all.
+	SearchAuditLogText(ctx context.Context, arg SearchAuditLogTextParams) ([]AuditLog, error)
 	SearchTicketsByAssigneeGroup(ctx context.Context, arg SearchTicketsByAssigneeGroupParams) ([]SearchTicketsByAssigneeGroupRow, error)
 	SearchTicketsByAssigneeUser(ctx context.Context, arg SearchTicketsByAssigneeUserParams) ([]SearchTicketsByAssigneeUserRow, error)
 	SearchTicketsByReporter(ctx context.Context, arg SearchTicketsByReporterParams) ([]SearchTicketsByReporterRow, error)

@@ -112,6 +112,9 @@ export interface StatusHistoryEntry {
   to_status_color: string
   changed_by_user_id: string | null
   changed_by_name: string
+  // True when changed_by_name is the "Requester" mask (audit_mask_requester_names),
+  // not an account's own name.
+  changed_by_masked?: boolean
   created_at: string
 }
 

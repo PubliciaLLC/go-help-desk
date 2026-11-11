@@ -1235,7 +1235,65 @@ func (s *Server) handleListStatusHistory(w http.ResponseWriter, r *http.Request)
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, history)
+	JSON(w, http.StatusOK, s.maskStatusHistory(r.Context(), history))
+}
+
+// statusHistoryEntryView is a status timeline row as sent: the entry, with
+// changed_by_masked when its name was withheld, so the label "Requester" is not
+// mistaken for an account called that (the same flag as actor_masked).
+type statusHistoryEntryView struct {
+	ticket.StatusHistoryEntry
+	ChangedByMasked bool `json:"changed_by_masked,omitempty"`
+}
+
+// maskStatusHistory applies the requester-name mask to the status timeline, by
+// the rule the Activity feed beside it uses (auditActorName, the ticket log
+// view): who changed a status is audit output, so it must not name a requester
+// where the feed would not. changed_by_user_id stays, as actor_id does. One
+// lookup for all the people on the timeline.
+func (s *Server) maskStatusHistory(ctx context.Context, history []ticket.StatusHistoryEntry) []statusHistoryEntryView {
+	out := make([]statusHistoryEntryView, len(history))
+	for i, h := range history {
+		out[i] = statusHistoryEntryView{StatusHistoryEntry: h}
+	}
+	if !s.masksRequestersIn(ctx, admin.MaskRequesterNamesTicketLog) {
+		return out
+	}
+	seen := map[uuid.UUID]bool{}
+	var ids []uuid.UUID
+	for _, h := range history {
+		if h.ChangedByUserID != nil && !seen[*h.ChangedByUserID] {
+			seen[*h.ChangedByUserID] = true
+			ids = append(ids, *h.ChangedByUserID)
+		}
+	}
+	if len(ids) == 0 {
+		return out
+	}
+	users, err := s.users.GetByIDs(ctx, ids)
+	if err != nil {
+		// Withholding is the safe answer when the roles cannot be read: every
+		// name goes, and the ids are still there.
+		slog.ErrorContext(ctx, "resolving status history roles failed", "error", err)
+		for i := range out {
+			if out[i].ChangedByUserID != nil {
+				out[i].ChangedByName, out[i].ChangedByMasked = "Requester", true
+			}
+		}
+		return out
+	}
+	requesters := map[uuid.UUID]bool{}
+	for _, u := range users {
+		if auditActorName(u, true).masked {
+			requesters[u.ID] = true
+		}
+	}
+	for i := range out {
+		if out[i].ChangedByUserID != nil && requesters[*out[i].ChangedByUserID] {
+			out[i].ChangedByName, out[i].ChangedByMasked = "Requester", true
+		}
+	}
+	return out
 }
 
 // ticketAuditEntryView is what handleListTicketAudit returns: enough to

@@ -159,7 +159,7 @@ export function AdminAuditPage() {
               id="audit-q"
               value={filters.q}
               onChange={(e) => updateFilter('q', e.target.value)}
-              placeholder="entity or action"
+              placeholder="entity, action, person or change"
             />
           </div>
           <div className="flex items-center gap-2 col-span-full">

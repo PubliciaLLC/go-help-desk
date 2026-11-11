@@ -785,10 +785,14 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	warning = joinWarnings(warning, scopeWarning)
 
+	maskBefore := s.adminSvc.AuditMaskRequesterNames(r.Context())
 	for k, v := range body {
 		if err := s.adminSvc.SetRaw(r.Context(), k, []byte(v)); err != nil {
 			handleError(w, err)
 			return
+		}
+		if k == admin.KeyAuditMaskRequesterNames {
+			s.auditMaskChange(r, maskBefore)
 		}
 	}
 

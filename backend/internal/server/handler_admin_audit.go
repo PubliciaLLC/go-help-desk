@@ -14,6 +14,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
 
 // adminAuditEntryView is one row of the admin-wide audit view. Shaped like
@@ -78,6 +79,12 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The same decision masks the names in the page and keeps q from finding a
+	// requester by name: a search that answered "yes" for a requester's name
+	// would identify them as well as showing it would.
+	maskRequesters := s.masksRequestersIn(ctx, admin.MaskRequesterNamesAdminLog)
+	f.MaskRequesterActors = maskRequesters
+
 	page, err := s.auditStore.Search(ctx, f, limit, offset)
 	if err != nil {
 		handleError(w, err)
@@ -85,7 +92,6 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	entries := page.Entries
 
-	maskRequesters := s.masksRequestersIn(ctx, admin.MaskRequesterNamesAdminLog)
 	views := make([]adminAuditEntryView, len(entries))
 	names := make(map[uuid.UUID]auditActor)
 	diffs := make([]map[string]any, 0, 2*len(entries))
@@ -148,6 +154,12 @@ func parseAdminAuditQuery(r *http.Request) (f audit.Filter, limit, offset int, e
 		}
 	}
 
+	// q is sent to the database once for every searchable key, so its length is
+	// bounded. Nobody types a longer search; a longer one is a mistake or a probe.
+	if utf8.RuneCountInString(f.Q) > maxAuditQueryRunes {
+		return audit.Filter{}, 0, 0, errQTooLong
+	}
+
 	// exclude_action (repeatable) leaves those actions out, in the query, so
 	// the page, the offset and the total describe one sequence. It only ever
 	// narrows what the caller may see, so it needs no gate of its own.
@@ -188,7 +200,11 @@ func parseAdminAuditQuery(r *http.Request) (f audit.Filter, limit, offset int, e
 	return f, limit, offset, nil
 }
 
+// maxAuditQueryRunes bounds q (#629).
+const maxAuditQueryRunes = 200
+
 var (
+	errQTooLong   = errors.New("q must be at most 200 characters")
 	errBadActorID = errors.New("actor_id must be a UUID")
 	errBadFrom    = errors.New("from must be an RFC3339 timestamp")
 	errBadTo      = errors.New("to must be an RFC3339 timestamp")
@@ -218,6 +234,44 @@ func auditActorName(u user.User, maskRequesters bool) auditActor {
 		return auditActor{name: "Requester", masked: true}
 	}
 	return auditActor{name: u.DisplayName}
+}
+
+// auditMaskChange records a change to the requester-name mask (D35), when the
+// value in force is no longer the one it was before the save. Loosening the
+// mask is the one settings change that shows requester names, so it must leave
+// a trace of who did it and when; a save that leaves the value as it was
+// records nothing.
+//
+// Best effort and detached from the request, like the API key entries
+// (writeAudit): a mask that read back as a failure would block the change it
+// describes, and an administrator who hangs up right after saving must not be
+// able to suppress the entry. Like those entries it is not transactional with
+// the write, so a crash between the two loses the entry; the setting is
+// admin-only, so the person who could change it unrecorded already holds the
+// capability, as for a factor reset.
+func (s *Server) auditMaskChange(r *http.Request, before string) {
+	after := s.adminSvc.AuditMaskRequesterNames(r.Context())
+	if after == before || s.auditStore == nil {
+		return
+	}
+	actor := authmw.GetActor(r).UserID
+	s.writeAudit(r.Context(), audit.Entry{
+		ID: uuid.New(), ActorID: &actor, EntityType: auditEntitySetting,
+		EntityID: settingEntityID(admin.KeyAuditMaskRequesterNames), Action: auditActionMaskChanged,
+		Before: map[string]any{"requester_name_mask": before}, After: map[string]any{"requester_name_mask": after},
+		CreatedAt: time.Now(),
+	})
+}
+
+const (
+	auditEntitySetting     = "setting"
+	auditActionMaskChanged = "audit_mask_changed"
+)
+
+// settingEntityID is the audit entity id for a setting, which has a name and no
+// row id; the audit log keys on a UUID. Derived the way emailTemplateEntityID is.
+func settingEntityID(key string) uuid.UUID {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("setting:"+key))
 }
 
 // masksRequestersIn reports whether the given audit view masks requester
