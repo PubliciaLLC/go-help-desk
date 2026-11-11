@@ -14,19 +14,21 @@ import (
 )
 
 // The change details are searched only inside a date range of at most
-// audit.DetailsSearchMaxDays (#629, owner 2026-11-11). A longer range is treated
-// as no range, not refused: the entity, action and actor are still searched, the
-// date filter still applies, and the response says why the details were not, so
-// a person editing the dates keeps getting a page and an explanation, not a 400.
+// audit.DetailsSearchMaxDays (#629, owner 2026-11-11). With text and no range
+// they are left out and the response says so. With text and a range over the
+// limit the request is refused with a 400 (Erik, 2026-11-11): a range that long
+// cannot be searched, and silently searching less than was asked for is worse
+// than saying so.
 func TestAdminAudit_ChangeDetailsAreSearchedOnlyInsideADateRange(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
-	now := time.Now().UTC()
 	entityID := uuid.New()
 	require.NoError(t, h.auditStore.Create(context.Background(), audit.Entry{
 		ID: uuid.New(), ActorID: &h.adminID, EntityType: "setting", EntityID: entityID, Action: "details_range_probe",
-		After: map[string]any{"scope_path": "zz-details-needle"}, CreatedAt: now,
+		After: map[string]any{"scope_path": "zz-details-needle"},
 	}))
+	// The store stamps the entry itself; every range ends a minute after it.
+	end := time.Now().UTC().Truncate(time.Second).Add(time.Minute)
 
 	type result struct {
 		Entries []struct {
@@ -34,12 +36,21 @@ func TestAdminAudit_ChangeDetailsAreSearchedOnlyInsideADateRange(t *testing.T) {
 		} `json:"entries"`
 		DetailsSearched      bool   `json:"details_searched"`
 		DetailsSkippedReason string `json:"details_skipped_reason"`
+		Error                struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
 	}
-	search := func(q string, days int) (res result, status int) {
-		v := url.Values{"q": {q}, "limit": {"200"}}
-		if days > 0 {
-			v.Set("from", now.AddDate(0, 0, -days).Format(time.RFC3339))
-			v.Set("to", now.Add(time.Minute).Format(time.RFC3339))
+	day := 24 * time.Hour
+	// A span of 0 sends no range at all; q "" sends no text.
+	search := func(q string, span time.Duration) (res result, status int) {
+		v := url.Values{"limit": {"200"}}
+		if q != "" {
+			v.Set("q", q)
+		}
+		if span > 0 {
+			v.Set("from", end.Add(-span).Format(time.RFC3339))
+			v.Set("to", end.Format(time.RFC3339))
 		}
 		r := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/audit?"+v.Encode(), nil)
 		decodeJSON(t, r, &res)
@@ -54,12 +65,28 @@ func TestAdminAudit_ChangeDetailsAreSearchedOnlyInsideADateRange(t *testing.T) {
 		}
 		return false
 	}
+	maxSpan := time.Duration(audit.DetailsSearchMaxDays) * day
 
-	r, status := search("zz-details-needle", 30)
+	r, status := search("zz-details-needle", 30*day)
 	require.Equal(t, http.StatusOK, status)
 	require.True(t, hit(r), "inside a range, the details are searched")
 	require.True(t, r.DetailsSearched)
 	require.Empty(t, r.DetailsSkippedReason)
+
+	r, status = search("zz-details-needle", maxSpan)
+	require.Equal(t, http.StatusOK, status, "exactly the limit is allowed")
+	require.True(t, hit(r))
+	require.True(t, r.DetailsSearched)
+
+	r, status = search("zz-details-needle", maxSpan+time.Second)
+	require.Equal(t, http.StatusBadRequest, status, "a second over the limit is refused")
+	require.Equal(t, "date_range_too_long", r.Error.Code)
+	require.Contains(t, r.Error.Message, "90 days", "and the message names the limit")
+	require.Empty(t, r.Entries)
+
+	r, status = search("details_range_probe", 400*day)
+	require.Equal(t, http.StatusBadRequest, status, "the refusal does not depend on what the text would match")
+	require.Equal(t, "date_range_too_long", r.Error.Code)
 
 	r, status = search("zz-details-needle", 0)
 	require.Equal(t, http.StatusOK, status)
@@ -67,22 +94,20 @@ func TestAdminAudit_ChangeDetailsAreSearchedOnlyInsideADateRange(t *testing.T) {
 	require.False(t, r.DetailsSearched)
 	require.Equal(t, audit.DetailsSkippedNoRange, r.DetailsSkippedReason)
 
-	r, status = search("zz-details-needle", audit.DetailsSearchMaxDays+1)
-	require.Equal(t, http.StatusOK, status, "a range that is too long is not an error")
-	require.False(t, hit(r))
-	require.False(t, r.DetailsSearched)
-	require.Equal(t, audit.DetailsSkippedRangeTooLong, r.DetailsSkippedReason)
-
 	// What is cheap to search is still searched, with no range at all.
 	r, _ = search("details_range_probe", 0)
 	require.True(t, hit(r), "by action")
 	require.Equal(t, audit.DetailsSkippedNoRange, r.DetailsSkippedReason, "and the response still says the details were left out")
 
-	// Without text there is nothing to look for, so nothing was skipped.
-	rr := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/audit", nil)
-	var none result
-	decodeJSON(t, rr, &none)
-	rr.Body.Close()
-	require.False(t, none.DetailsSearched)
-	require.Empty(t, none.DetailsSkippedReason)
+	// Without text there is nothing to search and no reason to limit the range.
+	r, status = search("", 400*day)
+	require.Equal(t, http.StatusOK, status, "a long range with no text is a plain date filter")
+	require.True(t, hit(r))
+	require.False(t, r.DetailsSearched)
+	require.Empty(t, r.DetailsSkippedReason)
+
+	r, status = search("", 0)
+	require.Equal(t, http.StatusOK, status)
+	require.False(t, r.DetailsSearched)
+	require.Empty(t, r.DetailsSkippedReason)
 }

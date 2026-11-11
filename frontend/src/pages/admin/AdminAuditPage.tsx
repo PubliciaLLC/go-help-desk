@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { listAdminAudit, listAssignableStaff, type AdminAuditFilters } from '@/api/admin'
+import { extractError, extractErrorCode } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -72,7 +73,7 @@ export function AdminAuditPage() {
     offset,
   }
 
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, error } = useQuery({
     queryKey: ['adminAudit', apiFilters],
     queryFn: () => listAdminAudit(apiFilters),
   })
@@ -86,6 +87,11 @@ export function AdminAuditPage() {
     setFilters((f) => ({ ...f, [key]: value }))
     setOffset(0)
   }
+
+  // A text search over a range longer than the limit is a 400 with its own code.
+  // It is the person's input to fix, so it is shown by the fields that caused it
+  // and not as a failure to load.
+  const rangeRefusal = isError && extractErrorCode(error) === 'date_range_too_long' ? extractError(error) : ''
 
   const entries = data?.entries ?? []
   const total = data?.total ?? 0
@@ -167,6 +173,9 @@ export function AdminAuditPage() {
               placeholder="entity, action, person or change"
             />
           </div>
+          {rangeRefusal && (
+            <p role="alert" className="col-span-full text-sm text-red-600">{rangeRefusal}</p>
+          )}
           <div className="flex items-center gap-2 col-span-full">
             <input
               id="audit-hide-replies"
@@ -181,15 +190,13 @@ export function AdminAuditPage() {
         {filters.q.trim() && data?.details_skipped_reason && (
           // The date pickers it points at are the From and To above.
           <p className="-mt-3 text-sm text-gray-500">
-            {data.details_skipped_reason === 'range_too_long'
-              ? `That date range is longer than ${DETAILS_SEARCH_MAX_DAYS} days. Shorten it to up to ${DETAILS_SEARCH_MAX_DAYS} days to also search inside change details`
-              : `Pick a date range of up to ${DETAILS_SEARCH_MAX_DAYS} days to also search inside change details`}
+            Pick a date range of up to {DETAILS_SEARCH_MAX_DAYS} days to also search inside change details
           </p>
         )}
 
         {isLoading ? (
           <div className="flex justify-center py-12"><Spinner /></div>
-        ) : isError && !data ? (
+        ) : rangeRefusal && !data ? null : isError && !data ? (
           // Nothing to show. That includes a changed filter or page: each is its own
           // query key with no placeholderData, so it never inherits the last results.
           // A failed refresh with results already loaded is the notice below.

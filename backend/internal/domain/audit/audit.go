@@ -66,12 +66,11 @@ const TotalCap = 10000
 // were not searched.
 const DetailsSearchMaxDays = 90
 
-// Why a search with text did not look in the change details. They are the
-// values of details_skipped_reason in the admin audit response.
-const (
-	DetailsSkippedNoRange      = "no_date_range"
-	DetailsSkippedRangeTooLong = "range_too_long"
-)
+// DetailsSkippedNoRange is the value of details_skipped_reason in the admin
+// audit response when a search with text had no date range, so the change
+// details were not searched. A range over DetailsSearchMaxDays is not a reason
+// but a refusal (DateRangeTooLong).
+const DetailsSkippedNoRange = "no_date_range"
 
 // Page is one page of a Search and what a pager needs to move on from it.
 type Page struct {
@@ -133,17 +132,23 @@ func (f Filter) SearchesDetails() bool {
 		f.To.Sub(*f.From) <= time.Duration(DetailsSearchMaxDays)*24*time.Hour
 }
 
+// DateRangeTooLong reports whether a search with text carries a date range
+// longer than DetailsSearchMaxDays, which the admin view refuses (Erik,
+// 2026-11-11). Without text there is nothing to search in the details, so a
+// range of any length is only a date filter.
+func (f Filter) DateRangeTooLong() bool {
+	return f.Q != "" && f.From != nil && f.To != nil &&
+		f.To.Sub(*f.From) > time.Duration(DetailsSearchMaxDays)*24*time.Hour
+}
+
 // DetailsSkippedReason says why a search with text did not look in the change
-// details, or is empty when it did, or had no text to look for.
+// details because it had no date range, or is empty when it did, or had no text
+// to look for. A range that was too long is refused before the search.
 func (f Filter) DetailsSkippedReason() string {
-	switch {
-	case f.Q == "" || f.SearchesDetails():
-		return ""
-	case f.From == nil || f.To == nil:
+	if f.Q != "" && (f.From == nil || f.To == nil) {
 		return DetailsSkippedNoRange
-	default:
-		return DetailsSkippedRangeTooLong
 	}
+	return ""
 }
 
 // sensitiveFragments marks a Before/After key as one whose value must never

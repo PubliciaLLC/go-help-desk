@@ -3083,7 +3083,7 @@ paths:
         - name: q
           in: query
           required: false
-          description: Case-insensitive substring, matched literally (% and _ are text), at most 200 characters. Matches entity_type, action, the display name and email of the actor (an account that still exists; a requester is left out while the admin log masks requester names), and, only when the request has both from and to at most 90 days apart, the text values of the change details at the keys the view shows, and no others (see details_searched in the response). Trimmed. Must be valid UTF-8 without NUL bytes.
+          description: Case-insensitive substring, matched literally (% and _ are text), at most 200 characters. Matches entity_type, action, the display name and email of the actor (an account that still exists; a requester is left out while the admin log masks requester names), and, only when the request has both from and to at most 90 days apart, the text values of the change details at the keys the view shows, and no others (see details_searched in the response). With q, a from and to more than 90 days apart is refused with 400 date_range_too_long; without q any range is allowed. Trimmed. Must be valid UTF-8 without NUL bytes.
           schema:
             type: string
             maxLength: 200
@@ -3119,6 +3119,8 @@ paths:
             `bad_request`. The message names the problem: actor_id must be a UUID,
             from or to must be an RFC 3339 timestamp, or entity_type, action or q
             is not valid UTF-8 or contains a NUL byte.
+            `date_range_too_long` when q is sent with a from and to more than 90
+            days apart; the message names the limit. Without q any range is allowed.
           content:
             application/json:
               schema:
@@ -11252,8 +11254,8 @@ components:
           description: True when q was also looked for in the change details, which is done only when the request has both from and to, at most 90 days apart. False without q. Always sent.
         details_skipped_reason:
           type: string
-          enum: [no_date_range, range_too_long]
-          description: Present when q was sent and the change details were not searched. no_date_range means from or to is missing; range_too_long means they are more than 90 days apart. q was still matched on entity type, action and actor, and the request is not an error.
+          enum: [no_date_range]
+          description: Present when q was sent without a date range (from or to is missing), so the change details were not searched. q was still matched on entity type, action and actor. A range over 90 days with q is not a reason but a 400 date_range_too_long.
         has_more:
           type: boolean
           description: True when another page exists. Read from the page itself, so it keeps working past the cap.

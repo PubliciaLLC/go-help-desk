@@ -163,10 +163,11 @@ export interface AdminAuditListResponse {
    */
   details_searched: boolean
   /**
-   * Why a search with `q` did not look in the change details: no date range, or
-   * one longer than 90 days. Absent when it did, and when there was no `q`.
+   * Why a search with `q` did not look in the change details: it had no date
+   * range. Absent when it did, and when there was no `q`. (A range over 90 days
+   * with `q` is not a reason but a 400, `date_range_too_long`.)
    */
-  details_skipped_reason?: 'no_date_range' | 'range_too_long'
+  details_skipped_reason?: 'no_date_range'
   /** Whether another page exists. The pager runs on this; `total` is for display. */
   has_more: boolean
 }

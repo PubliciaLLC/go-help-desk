@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -54,9 +55,9 @@ type adminAuditListResponse struct {
 	// and the actor alone; DetailsSkippedReason then says why. Both always sent,
 	// for the reason TotalCapped is.
 	DetailsSearched bool `json:"details_searched"`
-	// DetailsSkippedReason is audit.DetailsSkippedNoRange or
-	// audit.DetailsSkippedRangeTooLong when q was sent and the details were not
-	// searched, and absent otherwise.
+	// DetailsSkippedReason is audit.DetailsSkippedNoRange when q was sent without
+	// a date range, and absent otherwise. A range over audit.DetailsSearchMaxDays
+	// with q is a 400 (date_range_too_long), not a reason.
 	DetailsSkippedReason string `json:"details_skipped_reason,omitempty"`
 	// HasMore reports whether another page exists. It is read off the page
 	// itself (one row past it), not derived from Total, which stops at the cap
@@ -83,6 +84,10 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	f, limit, offset, err := parseAdminAuditQuery(r)
+	if errors.Is(err, errDateRangeTooLong) {
+		Error(w, http.StatusBadRequest, "date_range_too_long", err.Error())
+		return
+	}
 	if err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
@@ -209,6 +214,13 @@ func parseAdminAuditQuery(r *http.Request) (f audit.Filter, limit, offset int, e
 		f.To = &t
 	}
 
+	// A text search over more than the limit is refused, not narrowed: the details
+	// cannot be searched in a range that long, and a page that quietly searched
+	// less than was asked for would read as "nothing found".
+	if f.DateRangeTooLong() {
+		return audit.Filter{}, 0, 0, errDateRangeTooLong
+	}
+
 	return f, limit, offset, nil
 }
 
@@ -221,6 +233,8 @@ var (
 	errBadFrom    = errors.New("from must be an RFC3339 timestamp")
 	errBadTo      = errors.New("to must be an RFC3339 timestamp")
 	errBadText    = errors.New("filters must be valid UTF-8 without NUL bytes")
+
+	errDateRangeTooLong = fmt.Errorf("the date range of a search with text can be at most %d days: shorten from and to, or search without text", audit.DetailsSearchMaxDays)
 )
 
 // deletedAccountName is what every place that names a person in audit output
