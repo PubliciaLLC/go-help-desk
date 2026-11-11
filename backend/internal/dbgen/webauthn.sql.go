@@ -162,6 +162,51 @@ func (q *Queries) ListWebAuthnCredentialsByUser(ctx context.Context, userID uuid
 	return items, nil
 }
 
+const removeUserPasskey = `-- name: RemoveUserPasskey :one
+WITH gone AS (
+    DELETE FROM webauthn_credentials
+    WHERE webauthn_credentials.id = $1 AND webauthn_credentials.user_id = $2
+    RETURNING webauthn_credentials.id
+), ended AS (
+    DELETE FROM sessions
+    WHERE sessions.user_id = $2 AND EXISTS (SELECT 1 FROM gone)
+    RETURNING sessions.id
+)
+SELECT
+    (SELECT count(*) FROM gone)::int  AS passkeys_removed,
+    (SELECT count(*) FROM ended)::int AS sessions_ended
+`
+
+type RemoveUserPasskeyParams struct {
+	ID     uuid.UUID `json:"id"`
+	UserID uuid.UUID `json:"user_id"`
+}
+
+type RemoveUserPasskeyRow struct {
+	PasskeysRemoved int32 `json:"passkeys_removed"`
+	SessionsEnded   int32 `json:"sessions_ended"`
+}
+
+// An administrator removes ONE credential of another user, and every session
+// that user has goes with it, as one statement (#615, D1: always, not only when
+// it was the last factor; the key is presumed lost or compromised).
+//
+// The credential is matched on its owner as well as its id, in the statement:
+// an id is not an authorisation, and a credential that is not this user's is
+// reported as nothing removed. Sessions end only when a credential went, so
+// naming somebody else's key under this user's path cannot be used to sign the
+// user out.
+//
+// One statement, like ClearFactors, so that a failure between the two cannot
+// leave the key gone and its sessions alive, or the other way round. The
+// sessions matter because one may carry MFAPassed from the key just removed.
+func (q *Queries) RemoveUserPasskey(ctx context.Context, arg RemoveUserPasskeyParams) (RemoveUserPasskeyRow, error) {
+	row := q.db.QueryRowContext(ctx, removeUserPasskey, arg.ID, arg.UserID)
+	var i RemoveUserPasskeyRow
+	err := row.Scan(&i.PasskeysRemoved, &i.SessionsEnded)
+	return i, err
+}
+
 const touchWebAuthnCredential = `-- name: TouchWebAuthnCredential :exec
 UPDATE webauthn_credentials
 SET sign_count = GREATEST(sign_count, $2), last_used_at = now()

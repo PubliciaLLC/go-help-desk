@@ -15,6 +15,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/dbretry"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/webauthn"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -194,6 +195,19 @@ func (s *Store) ClearFactors(ctx context.Context, id uuid.UUID) (int, error) {
 		return 0, fmt.Errorf("%w: user %s", ErrNotFound, id)
 	}
 	return int(row.PasskeysRemoved), nil
+}
+
+// RemovePasskey removes one of the user's credentials and ends every session
+// the user has, in one statement. See the RemoveUserPasskey query.
+func (s *Store) RemovePasskey(ctx context.Context, userID, passkeyID uuid.UUID) error {
+	row, err := s.q.RemoveUserPasskey(ctx, dbgen.RemoveUserPasskeyParams{ID: passkeyID, UserID: userID})
+	if err != nil {
+		return fmt.Errorf("removing passkey %s of user %s: %w", passkeyID, userID, err)
+	}
+	if row.PasskeysRemoved == 0 {
+		return webauthn.ErrNotFound
+	}
+	return nil
 }
 
 // ClaimMFAAttempt takes one attempt off the account's TOTP budget before the

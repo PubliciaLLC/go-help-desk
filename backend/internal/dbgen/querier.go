@@ -913,6 +913,20 @@ type Querier interface {
 	RemoveGroupScope(ctx context.Context, arg RemoveGroupScopeParams) (int64, error)
 	RemoveTicketFollower(ctx context.Context, arg RemoveTicketFollowerParams) (int64, error)
 	RemoveTicketTag(ctx context.Context, arg RemoveTicketTagParams) error
+	// An administrator removes ONE credential of another user, and every session
+	// that user has goes with it, as one statement (#615, D1: always, not only when
+	// it was the last factor; the key is presumed lost or compromised).
+	//
+	// The credential is matched on its owner as well as its id, in the statement:
+	// an id is not an authorisation, and a credential that is not this user's is
+	// reported as nothing removed. Sessions end only when a credential went, so
+	// naming somebody else's key under this user's path cannot be used to sign the
+	// user out.
+	//
+	// One statement, like ClearFactors, so that a failure between the two cannot
+	// leave the key gone and its sessions alive, or the other way round. The
+	// sessions matter because one may carry MFAPassed from the key just removed.
+	RemoveUserPasskey(ctx context.Context, arg RemoveUserPasskeyParams) (RemoveUserPasskeyRow, error)
 	// Position n (from 1) becomes the field's number. Only rows whose number
 	// changes are written.
 	ReorderCustomFieldDefs(ctx context.Context, ids []uuid.UUID) error

@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/pquerna/otp/totp"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/webauthn"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -475,6 +476,16 @@ func (f *fakeUserStore) ClearFactors(_ context.Context, id uuid.UUID) (int, erro
 	n := f.passkeys[id]
 	delete(f.passkeys, id)
 	return n, nil
+}
+
+// RemovePasskey mirrors the statement's count: one credential goes if the user
+// holds any. The fake has no table to tell whose id it is, and no sessions.
+func (f *fakeUserStore) RemovePasskey(_ context.Context, userID, _ uuid.UUID) error {
+	if f.passkeys[userID] == 0 {
+		return webauthn.ErrNotFound
+	}
+	f.passkeys[userID]--
+	return nil
 }
 
 func (f *fakeUserStore) ClearMFA(_ context.Context, id uuid.UUID) error {

@@ -297,6 +297,17 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Not your own second factor (D3). The same bypass as removing your own
+	// passkey through the admin route: adminRouter checks only MFAPassed, which
+	// a session that owed no factor has without proving one, so this would clear
+	// the account's factors around requireFactorOrFirstEnrolment. Refused whole
+	// and before any write, like the other refusals here. reset_mfa:false asks
+	// for nothing and is not refused.
+	if actor := authmw.GetActor(r); body.ResetMFA && actor != nil && actor.UserID == id {
+		Error(w, http.StatusConflict, "own_account", ownSecondFactorMessage)
+		return
+	}
+
 	// A deleted account is not there to change. Asked before the first write
 	// for the same reason as the validation above: the steps below would
 	// otherwise reach the deleted row one at a time, applying some and then

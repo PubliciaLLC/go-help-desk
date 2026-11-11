@@ -1217,6 +1217,37 @@ func (s *Service) ResetMFA(ctx context.Context, id uuid.UUID, actorID *uuid.UUID
 	return nil
 }
 
+// AdminRemovePasskey removes one of another user's passkeys, ends all of that
+// user's sessions, and records who did it (#615). It returns
+// webauthn.ErrNotFound for a credential that is not the user's.
+//
+// Not transactional with its audit entry, on purpose and for the reasons
+// ResetMFA gives: whoever can remove a key already holds the capability, so
+// the entry is visibility and not a control. Detached from the caller for the
+// same reason as ResetMFA too, so hanging up after the removal commits cannot
+// suppress the entry or turn a done removal into a reported failure. The key's
+// label is never written, only its id.
+//
+// The caller refuses an administrator's own account before getting here. That
+// is the route's rule (D2), not this method's.
+func (s *Service) AdminRemovePasskey(ctx context.Context, userID, passkeyID uuid.UUID, actorID *uuid.UUID) error {
+	ctx = context.WithoutCancel(ctx)
+	if err := s.store.RemovePasskey(ctx, userID, passkeyID); err != nil {
+		return err
+	}
+	s.writeAuditEntry(ctx, audit.Entry{
+		ActorID:    actorID,
+		EntityType: "user",
+		EntityID:   userID,
+		Action:     "passkey_removed_by_admin",
+		After: map[string]any{
+			"passkey_id":       passkeyID.String(),
+			"sessions_revoked": true,
+		},
+	})
+	return nil
+}
+
 // RecordPasskeyCloneSuspected writes the audit entry for a passkey sign-in
 // that was refused because the key's signature counter did not advance (#616b).
 //
