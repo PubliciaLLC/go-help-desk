@@ -211,7 +211,7 @@ func TestMeAPIKeys_ScopeListIsTheCallersRole(t *testing.T) {
 		}
 		return out
 	}
-	require.ElementsMatch(t, []string{"tickets:read", "tickets:write", "groups:read"}, scopesOf(h.session(t, asStaff)))
+	require.ElementsMatch(t, []string{"tickets:read", "tickets:write", "groups:read", "requester_search:read"}, scopesOf(h.session(t, asStaff)))
 	require.Contains(t, scopesOf(h.session(t, asAdmin)), "settings:write")
 }
 

@@ -1,11 +1,15 @@
 package server
 
 import (
+	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 )
 
@@ -56,6 +60,11 @@ func (s *Server) handleSaveOIDCConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+
+	// Held from reading the stored config to the commit, as InitOIDC holds it,
+	// so a settings PATCH cannot commit older settings over this save.
+	s.oidcReloadMu.Lock()
+	defer s.oidcReloadMu.Unlock()
 
 	existing := s.adminSvc.GetOIDCConfig(ctx)
 
@@ -144,6 +153,106 @@ func (s *Server) handleSaveOIDCConfig(w http.ResponseWriter, r *http.Request) {
 
 // ── SAML ──────────────────────────────────────────────────────────────────────
 
+// touchesSAML reports whether a settings body carries a key the SAML middleware
+// is built from. saml_enabled is not one: it is read live (see
+// buildSAMLMiddleware).
+func touchesSAML(body map[string]json.RawMessage) bool {
+	for _, k := range []string{admin.KeySAMLMetadataURL, admin.KeySAMLMetadataXML, admin.KeySAMLCertPEM, admin.KeySAMLKeyPEM} {
+		if _, ok := body[k]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// touchesOIDCProvider is the same for the OIDC provider, which also depends on
+// the redirect URL.
+func touchesOIDCProvider(body map[string]json.RawMessage) bool {
+	for _, k := range []string{admin.KeyOIDCEnabled, admin.KeyOIDCIssuerURL, admin.KeyOIDCClientID, admin.KeyOIDCClientSecret, admin.KeyOIDCRedirectURL} {
+		if _, ok := body[k]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// samlCertWarnWindow is how long before expiry the IdP certificate warning
+// starts. Long enough for an IdP admin to be found and for a new certificate to
+// be downloaded and pasted.
+const samlCertWarnWindow = 30 * 24 * time.Hour
+
+// samlRefreshStatus is the security warning for the hourly metadata refresh
+// (see RefreshSAML). Problem is one of the samlRefresh* constants.
+type samlRefreshStatus struct {
+	Problem string `json:"problem"`
+	// NewCertificates are the signing certificates the refreshed metadata added,
+	// for problem new_certificate: what an administrator compares with the
+	// identity provider's own before re-saving to trust them.
+	NewCertificates []samlNewCert `json:"new_certificates,omitempty"`
+}
+
+type samlNewCert struct {
+	// SHA256 is the DER certificate's fingerprint, as colon-separated hex pairs.
+	SHA256    string    `json:"sha256"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// samlIdPCertStatus is the security warning for a SAML IdP signing certificate
+// that is expired or about to be (#619).
+type samlIdPCertStatus struct {
+	// ExpiresAt is the latest NotAfter among the IdP's signing certificates.
+	ExpiresAt time.Time `json:"expires_at"`
+	Expired   bool      `json:"expired"`
+}
+
+// samlIdPCertificateWarning reads the LIVE middleware's IdP metadata, not the
+// stored settings, so it describes what is verifying sign-ins now (a URL's
+// metadata is refreshed hourly, pasted XML is what was pasted). Nil when SAML is
+// not loaded or the certificate is more than samlCertWarnWindow from expiry.
+func (s *Server) samlIdPCertificateWarning() *samlIdPCertStatus {
+	mw := s.samlHTTP()
+	if mw == nil {
+		return nil
+	}
+	expires, ok := auth.IdPSigningCertExpiry(mw.ServiceProvider.IDPMetadata)
+	if !ok {
+		return nil
+	}
+	now := time.Now()
+	if expires.After(now.Add(samlCertWarnWindow)) {
+		return nil
+	}
+	return &samlIdPCertStatus{ExpiresAt: expires.UTC(), Expired: !expires.After(now)}
+}
+
+// reloadSSOAfterSettings loads whatever a PATCH /admin/settings body changed
+// into the running SAML middleware and OIDC provider, which only startup and the
+// two dedicated PUT endpoints did before (#619). It returns the warning text for
+// a load that failed, or "".
+//
+// A failed load keeps the running one (the same fail-safe as the PUT endpoints
+// and startup) and the settings stay saved. The warning says that and nothing
+// more: the error text can describe whatever the administrator's URL pointed at
+// (a closed port reads differently from an open one), so it goes to the log, not
+// the response.
+func (s *Server) reloadSSOAfterSettings(ctx context.Context, body map[string]json.RawMessage) string {
+	var warning string
+	if touchesSAML(body) {
+		if err := s.reloadSAML(ctx); err != nil {
+			slog.Error("SAML reload after a settings change failed", "error", err)
+			warning = "SAML config saved, but the identity provider metadata could not be loaded. Check the metadata URL and the server log."
+		}
+	}
+	if touchesOIDCProvider(body) {
+		if err := s.InitOIDC(ctx); err != nil {
+			slog.Error("OIDC reload after a settings change failed", "error", err)
+			warning = joinWarnings(warning,
+				"OIDC config saved, but the identity provider could not be reached. Check the issuer URL and the server log.")
+		}
+	}
+	return warning
+}
+
 // GET /api/v1/admin/saml
 //
 // `configured` is "the saved settings are complete", `live` is "the SAML
@@ -190,6 +299,12 @@ func (s *Server) handleSaveSAMLConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+
+	// Held from reading the stored settings to the commit, as every SAML reload
+	// is, so the hourly refresh or a settings PATCH cannot commit older settings
+	// over this save.
+	s.samlReloadMu.Lock()
+	defer s.samlReloadMu.Unlock()
 
 	// Omitted fields retain the existing saved value; a field present in the
 	// body, even as "", is the caller's explicit answer.
@@ -251,7 +366,7 @@ func (s *Server) handleSaveSAMLConfig(w http.ResponseWriter, r *http.Request) {
 	// IdP's metadata a second time: the guard's decision and the live effect
 	// must agree.
 	if commit {
-		s.commitSAMLMiddleware(mw)
+		s.commitSAMLMiddleware(mw, c)
 	}
 	if buildErr != nil {
 		// Non-fatal: the config is saved regardless (retried on next

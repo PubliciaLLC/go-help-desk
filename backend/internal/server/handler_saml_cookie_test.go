@@ -34,15 +34,23 @@ import (
 // copy is refused. These tests drive the real handler with a cookie signed by
 // the same key the live middleware verifies with.
 
-// samlIdP serves just enough IdP metadata for samlsp.New to build a
-// middleware. No assertion ever travels through it.
+// samlIdP serves just enough IdP metadata for the middleware to build: a
+// sign-in endpoint and a signing certificate (the build refuses metadata
+// without one, as nothing could be verified against it). No assertion ever
+// travels through it, so the certificate is the harness's own and is never used.
 func samlIdP(t *testing.T) *httptest.Server {
 	t.Helper()
+	block, _ := pem.Decode([]byte(validSAMLCert))
+	require.NotNil(t, block)
+	var signing saml.KeyDescriptor
+	signing.Use = "signing"
+	signing.KeyInfo.X509Data.X509Certificates = []saml.X509Certificate{{Data: base64.StdEncoding.EncodeToString(block.Bytes)}}
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		md := saml.EntityDescriptor{
 			EntityID: srv.URL + "/idp",
 			IDPSSODescriptors: []saml.IDPSSODescriptor{{
+				SSODescriptor: saml.SSODescriptor{RoleDescriptor: saml.RoleDescriptor{KeyDescriptors: []saml.KeyDescriptor{signing}}},
 				SingleSignOnServices: []saml.Endpoint{{
 					Binding:  saml.HTTPRedirectBinding,
 					Location: srv.URL + "/sso",
