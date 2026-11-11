@@ -3008,8 +3008,10 @@ one is a permission decision with one switch and no per-user exceptions.
   `webhook_created`, `webhook_updated`, `webhook_deleted` and
   `webhook_reapproved` (`POST /admin/webhooks/{id}/reapprove`, session only); the
   actor is the signed-in administrator, or for a webhook changed with an API key,
-  the key's owner. An OAuth client has no update route (renaming its service user renames
-  it, and is audited as that user's change), so it has no update action.
+  the key's owner. An OAuth client has no update route, so it has no update action.
+  Renaming its service user (`PATCH /admin/users/{id}`) renames the client too,
+  and that rename is **not audited**: `handleUpdateUser` writes no audit entry,
+  so this is a gap in editing users and not something this entry type covers.
   **No secret and no URL token is ever written.** A client's entry carries
   `client_name`, `scopes` and `service_user_id`, never the secret or its hash. A
   webhook's carries `url_host` (the host only: the path and query are where the
@@ -3021,8 +3023,10 @@ one is a permission decision with one switch and no per-user exceptions.
   repeats what is stored writes no entry. `client_name` and `url_host` are shown
   by the Audit Log (they are text an administrator wrote and cannot hold ticket
   content); the Audit Log page offers both entity types in its filter and shows
-  a client's name and scopes, or a hook's host and events, on create and delete
-  rows, which have no diff. A re-approval writes the hook's state on both sides
+  a client's name and scopes, or a hook's host and events, as a line on every
+  row of those two entity types: it is what names the client or hook on create
+  and delete rows, which have no diff, and it sits above the changed keys on
+  update and re-approval rows. A re-approval writes the hook's state on both sides
   with `key_linked` (whether an API key was still tied to it) going from true to
   false; it is written even for a hook with no link, because the approval is
   what is recorded, and it carries the same fields as an edit, so no secret.
