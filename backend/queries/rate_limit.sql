@@ -51,8 +51,16 @@ DELETE FROM rate_limit_counters WHERE key = sqlc.arg(key)::text;
 -- loop, so that clearing a backlog (a burst of attempts on made-up email
 -- addresses) is many short statements and not one that holds locks and writes a
 -- huge amount of WAL at once. The window_end index serves it.
+--
+-- The outer WHERE repeats the expiry test on purpose. The subquery picks keys
+-- from a snapshot, and a request can reopen one (TakeRateLimit replaces its
+-- window) before this statement reaches the row; matching on the key alone then
+-- deleted the live window and the key's budget started again from nothing. With
+-- the test here the row is re-read after the lock wait, and a reopened one no
+-- longer matches.
 DELETE FROM rate_limit_counters
-WHERE key IN (
+WHERE window_end <= sqlc.arg(now)::timestamptz
+  AND key IN (
     SELECT key FROM rate_limit_counters
     WHERE window_end <= sqlc.arg(now)::timestamptz
     ORDER BY window_end

@@ -337,6 +337,35 @@ func TestAllowOnce(t *testing.T) {
 		require.False(t, ok, "the retry was never charged, so it is counted and refused")
 	})
 
+	// The count came back allowed but the marker could not be written. Saying
+	// "allowed" would let the retry (which finds no marker) count a second time,
+	// and an error is what makes the worker retry at all; either way it is
+	// never an allow the caller can act on.
+	t.Run("a marker that cannot be written is an error and not an allow", func(t *testing.T) {
+		store := &failNthTake{Store: newStore(t), failOn: 2} // 1st: the count, 2nd: the marker
+		rl := ratelimit.New(store, "x", 5, time.Hour)
+
+		ok, err := rl.AllowOnce(ctx, "k", "row-1")
+		require.Error(t, err)
+		require.False(t, ok)
+
+		// The retry finds no marker, counts again (charging the row twice, the
+		// safe direction) and is then allowed with its marker written.
+		ok, err = rl.AllowOnce(ctx, "k", "row-1")
+		require.NoError(t, err)
+		require.True(t, ok)
+		ok, err = rl.AllowOnce(ctx, "k", "row-1")
+		require.NoError(t, err)
+		require.True(t, ok, "now marked, so no further charge")
+	})
+
+	t.Run("a marker that cannot be read is an error and not an allow", func(t *testing.T) {
+		rl := ratelimit.New(failingStore{errors.New("db down")}, "x", 5, time.Hour)
+		ok, err := rl.AllowOnce(ctx, "k", "row-1")
+		require.Error(t, err)
+		require.False(t, ok)
+	})
+
 	t.Run("a limit of zero allows everything", func(t *testing.T) {
 		rl, _ := newLimiter(t, 0, time.Hour)
 		ok, err := rl.AllowOnce(ctx, "k", "row-1")
@@ -344,6 +373,48 @@ func TestAllowOnce(t *testing.T) {
 		require.True(t, ok)
 	})
 }
+
+// failNthTake fails the failOn-th call to Take (counting from 1) and no other.
+type failNthTake struct {
+	ratelimit.Store
+	failOn, calls int
+}
+
+func (f *failNthTake) Take(ctx context.Context, key string, w time.Duration, now time.Time) (ratelimit.Count, error) {
+	f.calls++
+	if f.calls == f.failOn {
+		return ratelimit.Count{}, errors.New("db blip")
+	}
+	return f.Store.Take(ctx, key, w, now)
+}
+
+// A window that has ended must never give a negative Retry-After, whatever the
+// store reports (a replica's clock ahead of the one that opened the window, or a
+// refused attempt landing just after the end).
+func TestLimiter_RetryAfterIsNeverNegative(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	rl := ratelimit.New(fixedStore{ratelimit.Count{
+		N: 5, WindowStart: now.Add(-2 * time.Hour), WindowEnd: now.Add(-time.Hour),
+	}}, "x", 1, time.Hour)
+	rl.SetClock(func() time.Time { return now })
+
+	tk, err := rl.Take(context.Background(), "k")
+	require.NoError(t, err)
+	require.False(t, tk.Allowed, "the store says the count is over the limit")
+	require.Zero(t, tk.RetryAfter, "a window that ended an hour ago has no wait left")
+}
+
+// fixedStore answers every Take with the same Count.
+type fixedStore struct{ c ratelimit.Count }
+
+func (f fixedStore) Take(context.Context, string, time.Duration, time.Time) (ratelimit.Count, error) {
+	return f.c, nil
+}
+func (fixedStore) Refund(context.Context, string, time.Time) error { return nil }
+func (fixedStore) Spent(context.Context, string, time.Time) (int, error) {
+	return 0, nil
+}
+func (fixedStore) Reset(context.Context, string) error { return nil }
 
 // failOnce fails the next fail calls to Take.
 type failOnce struct {

@@ -25,6 +25,38 @@ func resendEvent(trackingNumber, email string) notification.Event {
 	}
 }
 
+// A count that cannot be taken is an error the outbox retries, never a "go
+// ahead" and never a silent drop: nothing is mailed and no link is rotated.
+// Both the first attempt and a retry of a row never charged hit it.
+func TestSendSteps_DoNotGoAheadWhenTheCountErrors(t *testing.T) {
+	for name, ctx := range map[string]context.Context{
+		"outside the worker": context.Background(),
+		"a retry":            notify.WithDeliveryForTest(context.Background(), uuid.New(), 2),
+	} {
+		t.Run("forgot-password mail, "+name, func(t *testing.T) {
+			h, cleanup := harnessWithEmail(t)
+			defer cleanup()
+			breakRateCounters(t, h)
+			err := h.srv.SendPasswordReset(ctx, notification.Event{
+				Type: notification.EventPasswordResetRequested, Recipient: "user@test.local"})
+			require.Error(t, err, "the error reaches the worker, which retries it")
+			require.Empty(t, h.resetMail.sent, "and nothing was mailed")
+		})
+
+		t.Run("guest resend, "+name, func(t *testing.T) {
+			h, cleanup := newHarness(t)
+			defer cleanup()
+			tk, _ := seedGuestTicket(t, h)
+			ev := resendEvent(string(tk.TrackingNumber), "guest@test.local")
+			breakRateCounters(t, h)
+			out, ok, err := h.srv.PrepareGuestLink(ctx, ev)
+			require.Error(t, err, "the error reaches the worker, which retries it")
+			require.False(t, ok)
+			require.Empty(t, out.GuestToken, "and no link was made")
+		})
+	}
+}
+
 // A retry of a row that was never charged must be counted, and refused when the
 // ticket's budget is spent: nothing is sent and the guest's token is not
 // rotated.

@@ -12,7 +12,8 @@ import (
 
 const deleteExpiredRateLimits = `-- name: DeleteExpiredRateLimits :execrows
 DELETE FROM rate_limit_counters
-WHERE key IN (
+WHERE window_end <= $1::timestamptz
+  AND key IN (
     SELECT key FROM rate_limit_counters
     WHERE window_end <= $1::timestamptz
     ORDER BY window_end
@@ -29,6 +30,13 @@ type DeleteExpiredRateLimitsParams struct {
 // loop, so that clearing a backlog (a burst of attempts on made-up email
 // addresses) is many short statements and not one that holds locks and writes a
 // huge amount of WAL at once. The window_end index serves it.
+//
+// The outer WHERE repeats the expiry test on purpose. The subquery picks keys
+// from a snapshot, and a request can reopen one (TakeRateLimit replaces its
+// window) before this statement reaches the row; matching on the key alone then
+// deleted the live window and the key's budget started again from nothing. With
+// the test here the row is re-read after the lock wait, and a reopened one no
+// longer matches.
 func (q *Queries) DeleteExpiredRateLimits(ctx context.Context, arg DeleteExpiredRateLimitsParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, deleteExpiredRateLimits, arg.Now, arg.Batch)
 	if err != nil {

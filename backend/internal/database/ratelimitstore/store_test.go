@@ -2,6 +2,7 @@ package ratelimitstore_test
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -116,6 +117,69 @@ func TestSweepDeletesExpiredRowsAndOnlyThose(t *testing.T) {
 	spent, err := s.Spent(ctx, "live", now)
 	require.NoError(t, err)
 	require.Equal(t, 1, spent, "a live budget is not swept")
+}
+
+// The sweep picks expired keys and then deletes them. A request that reopens
+// one of those keys between the two must keep its new, live window: deleting by
+// key alone removed it, and the key's budget started again from nothing.
+//
+// 20,000 expired keys, the sweep running against eight goroutines that each
+// reopen a share of them. Every key a goroutine reopened is live afterwards, so
+// the live rows must be exactly the keys that were reopened.
+func TestSweepDoesNotDeleteAWindowReopenedDuringIt(t *testing.T) {
+	db, closeDB := testutil.NewIsolatedDB(t)
+	defer closeDB()
+	ctx := context.Background()
+	s := ratelimitstore.New(db.Queries)
+	now := time.Now()
+
+	const keys, workers = 20000, 8
+	_, err := db.SQL.ExecContext(ctx, `
+		INSERT INTO rate_limit_counters (key, window_start, window_end, count)
+		SELECT 'old-' || g, $1::timestamptz - interval '2 hours', $1::timestamptz - interval '1 hour', 1
+		FROM generate_series(1, $2) g`, now, keys)
+	require.NoError(t, err)
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	reopened := make([]int, workers)
+	for w := range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for i := w; i < keys; i += workers {
+				c, err := s.Take(ctx, "old-"+strconv.Itoa(i+1), time.Hour, now)
+				if err != nil {
+					t.Errorf("take: %v", err)
+					return
+				}
+				if c.N != 1 {
+					t.Errorf("key old-%d was not reopened: count %d", i+1, c.N)
+				}
+				reopened[w]++
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		if _, err := s.DeleteExpired(ctx, now); err != nil {
+			t.Errorf("sweep: %v", err)
+		}
+	}()
+	close(start)
+	wg.Wait()
+
+	total := 0
+	for _, n := range reopened {
+		total += n
+	}
+	var live int
+	require.NoError(t, db.SQL.QueryRowContext(ctx,
+		`SELECT count(*) FROM rate_limit_counters WHERE window_end > $1`, now).Scan(&live))
+	require.Equal(t, total, live, "a live window was deleted by the sweep that raced it")
 }
 
 func countRows(t *testing.T, db *testutil.DB) int {

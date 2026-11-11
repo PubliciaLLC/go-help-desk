@@ -171,24 +171,34 @@ func TestGuestUploadLimits_EachTicketHasItsOwnWindow(t *testing.T) {
 	require.InDelta(t, 29*60, secs, 5, "B waits out B's own window")
 }
 
+// breakRateCounters makes every statement on the counter table fail, inside the
+// harness transaction, so it rolls back with the test.
+func breakRateCounters(t *testing.T, h *harness) {
+	t.Helper()
+	_, err := h.tx.Exec(`ALTER TABLE rate_limit_counters RENAME TO rate_limit_counters_gone`)
+	require.NoError(t, err)
+}
+
 // A counter that cannot be written refuses; it does not wave the request
 // through. The limits guard mail to strangers and guesses at passwords, so
 // "could not check" must not be "go ahead". The table is renamed inside the
 // harness transaction, which makes every statement on it fail and rolls back
 // with the test.
 func TestRateLimits_FailClosedWhenTheCounterCannotBeUsed(t *testing.T) {
-	breakCounters := func(t *testing.T, h *harness) {
-		t.Helper()
-		_, err := h.tx.Exec(`ALTER TABLE rate_limit_counters RENAME TO rate_limit_counters_gone`)
-		require.NoError(t, err)
-	}
+	breakCounters := breakRateCounters
 
 	t.Run("reporter_email is refused", func(t *testing.T) {
 		h, cleanup := newLimitHarness(t)
 		defer cleanup()
 		breakCounters(t, h)
 		res := typedNew(t, h, "staff", 1)
-		require.Equal(t, http.StatusInternalServerError, res.StatusCode, readBody(t, res))
+		body := readBody(t, res)
+		// A server fault, not the 429 a refused unit answers: the zero value of
+		// a failed count is "not allowed", so ignoring the error would also
+		// refuse, with the wrong status and a Retry-After that promises a wait.
+		require.Equal(t, http.StatusInternalServerError, res.StatusCode, body)
+		require.Equal(t, "internal_error", errCode(t, []byte(body)))
+		require.Empty(t, res.Header.Get("Retry-After"))
 	})
 
 	t.Run("guest submission is refused", func(t *testing.T) {
