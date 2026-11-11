@@ -1253,6 +1253,81 @@ func (s *Service) ResetMFA(ctx context.Context, id uuid.UUID, actorID *uuid.UUID
 	return nil
 }
 
+// AdminRemovePasskey removes one of another user's passkeys, ends all of that
+// user's sessions, and records who did it (#615). It returns
+// webauthn.ErrNotFound for a credential that is not the user's.
+//
+// Not transactional with its audit entry, on purpose and for the reasons
+// ResetMFA gives: whoever can remove a key already holds the capability, so
+// the entry is visibility and not a control. Detached from the caller for the
+// same reason as ResetMFA too, so hanging up after the removal commits cannot
+// suppress the entry or turn a done removal into a reported failure. The key's
+// label is never written, only its id.
+//
+// The caller refuses an administrator's own account before getting here. That
+// is the route's rule (D2), not this method's.
+func (s *Service) AdminRemovePasskey(ctx context.Context, userID, passkeyID uuid.UUID, actorID *uuid.UUID) error {
+	ctx = context.WithoutCancel(ctx)
+	if err := s.store.RemovePasskey(ctx, userID, passkeyID, ""); err != nil {
+		return err
+	}
+	s.writeAuditEntry(ctx, audit.Entry{
+		ActorID:    actorID,
+		EntityType: "user",
+		EntityID:   userID,
+		Action:     "passkey_removed_by_admin",
+		After: map[string]any{
+			"passkey_id":       passkeyID.String(),
+			"sessions_revoked": true,
+		},
+	})
+	return nil
+}
+
+// RemoveOwnPasskey removes one of the caller's own passkeys, ends their OTHER
+// sessions (keepSessionID is the one they removed it from, which stays), and
+// records it with the user as the actor (#615). It returns
+// webauthn.ErrNotFound for a credential that is not theirs.
+//
+// The sessions end in the same statement as the delete: the key may be the one
+// somebody else is signed in with, and a failure between the two must not leave
+// it gone and their session alive. The audit entry is best effort and detached,
+// as AdminRemovePasskey's is. The label is never written, only the id.
+func (s *Service) RemoveOwnPasskey(ctx context.Context, userID, passkeyID uuid.UUID, keepSessionID string) error {
+	ctx = context.WithoutCancel(ctx)
+	if err := s.store.RemovePasskey(ctx, userID, passkeyID, keepSessionID); err != nil {
+		return err
+	}
+	s.writeAuditEntry(ctx, audit.Entry{
+		ActorID:    &userID,
+		EntityType: "user",
+		EntityID:   userID,
+		Action:     "passkey_removed",
+		After: map[string]any{
+			"passkey_id":       passkeyID.String(),
+			"sessions_revoked": true,
+		},
+	})
+	return nil
+}
+
+// RecordPasskeyCloneSuspected writes the audit entry for a passkey sign-in
+// that was refused because the key's signature counter did not advance (#616b).
+//
+// No actor: nobody has proved who is at the other end. The account is named
+// as the entity, and the key by its id, never its label. Best effort and
+// detached, for the reasons writeAuditEntry and ResetMFA give: the refusal has
+// already happened, and the person at the other end must not be able to
+// suppress the entry by hanging up.
+func (s *Service) RecordPasskeyCloneSuspected(ctx context.Context, userID, passkeyID uuid.UUID) {
+	s.writeAuditEntry(context.WithoutCancel(ctx), audit.Entry{
+		EntityType: "user",
+		EntityID:   userID,
+		Action:     "passkey_clone_suspected",
+		After:      map[string]any{"passkey_id": passkeyID.String()},
+	})
+}
+
 // refuseServiceAccount answers ErrServiceAccount when id is a service account,
 // before an administrator's reset does any work for it. The database would
 // refuse the password write anyway (users_service_account_inert); this is so
