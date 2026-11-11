@@ -109,6 +109,16 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
   const emailOff = !!email && !email.enabled && (email.signup_without_email || email.guest_submission_without_email)
   const emailFailing = !!email && email.failing
 
+  // #619: the IdP signing certificate. Expired is a failure (every SAML sign-in
+  // is refused); about to expire is a configuration notice. The signature
+  // carries the date, so a replaced certificate that is about to expire too
+  // shows again after a Hide.
+  const samlCert = data?.saml_idp_certificate
+  // The hourly refresh declined to move the trust anchor on its own. The two
+  // "changed" cases are red: sign-in still works on the old configuration, but
+  // somebody served different metadata for the same URL.
+  const samlRefresh = data?.saml_metadata_refresh
+
   const notices: Notice[] = []
   if (update) {
     const title = `Version ${update.latest} is available (you run ${update.current})`
@@ -280,6 +290,67 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
       signature: `${t.name}|${t.updated_at}`,
       title,
       body: <BrokenTemplateNotice template={t} title={title} onReverted={() => void refetch()} />,
+    })
+  }
+  if (samlCert) {
+    const on = new Date(samlCert.expires_at).toLocaleDateString()
+    const title = samlCert.expired
+      ? 'The SAML sign-in certificate has expired'
+      : `The SAML sign-in certificate expires on ${on}`
+    notices.push({
+      id: 'saml-idp-certificate',
+      severity: samlCert.expired ? 'failure' : 'config',
+      signature: samlCert.expires_at,
+      title,
+      body: (
+        <>
+          <p className="font-semibold">{title}</p>
+          <p className="mt-1">
+            {samlCert.expired
+              ? `Your identity provider's signing certificate expired on ${on}, so SAML sign-in is failing. `
+              : 'When it expires, SAML sign-in will stop working. '}
+            If your identity provider offers a metadata URL, switch to it under Settings → SAML: it is re-read every
+            hour, so a new certificate arrives by itself. If you pasted the metadata, download the current metadata
+            from your identity provider and paste it again.
+          </p>
+        </>
+      ),
+    })
+  }
+  if (samlRefresh) {
+    const title =
+      samlRefresh.problem === 'http_url'
+        ? 'SAML metadata is not refreshed automatically'
+        : samlRefresh.problem === 'entity_id_changed'
+          ? 'The SAML identity provider entity ID changed'
+          : samlRefresh.problem === 'metadata_invalid'
+            ? 'The SAML metadata could not be used'
+            : 'The identity provider published a new signing certificate'
+    notices.push({
+      id: `saml-metadata-refresh:${samlRefresh.problem}`,
+      severity: samlRefresh.problem === 'http_url' ? 'config' : 'failure',
+      signature: samlRefresh.problem,
+      title,
+      body: (
+        <>
+          <p className="font-semibold">{title}</p>
+          <p className="mt-1">
+            {samlRefresh.problem === 'http_url' &&
+              'The metadata URL is not https, and an unattended refresh of what the server trusts to sign people in must not travel in the clear, so it is never fetched again after you save it. Switch to an https URL, or paste the metadata.'}
+            {samlRefresh.problem === 'entity_id_changed' &&
+              'The metadata at your metadata URL now names a different identity provider (entity ID) than the one in use. It was not applied and SAML sign-in continues on the saved configuration. If you expected this, re-save the SAML settings under Settings → SAML to accept it.'}
+            {samlRefresh.problem === 'metadata_invalid' &&
+              'The metadata at your metadata URL has a signing certificate that cannot be read, or none, so signing in with it would fail. It was not applied and SAML sign-in continues on the saved configuration. Ask your identity provider to fix its metadata.'}
+            {samlRefresh.problem === 'new_certificate' &&
+              'The identity provider published a new signing certificate. Re-save the SAML settings to trust it. Until then nothing from the refresh is applied and SAML sign-in continues on the saved configuration. Compare the fingerprint and expiry below with what your identity provider shows; if they do not match, treat the metadata URL as compromised.'}
+          </p>
+          {samlRefresh.new_certificates?.map((c) => (
+            <p key={c.sha256} className="mt-1 [overflow-wrap:anywhere]">
+              SHA-256 <code className={CODE}>{c.sha256}</code>, expires {new Date(c.expires_at).toLocaleDateString()}
+            </p>
+          ))}
+        </>
+      ),
     })
   }
   if (blindClients.length > 0) {

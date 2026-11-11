@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/google/uuid"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -139,3 +140,14 @@ func (s *Server) RequesterForTest(ctx context.Context, a *authmw.Actor, t ticket
 	}
 	return nil
 }
+
+// SetSAMLMetadataClientForTest gives the SAML metadata fetch a client that
+// trusts the test's TLS server.
+func (s *Server) SetSAMLMetadataClientForTest(c *http.Client) { s.samlMetadataClient = c }
+
+// SetAdminServiceForTest swaps the settings service, so a test can make the
+// settings reads fail as a database hiccup would.
+func (s *Server) SetAdminServiceForTest(a *admin.Service) { s.adminSvc = a }
+
+// ReloadSAMLForTest runs the reload startup and the settings PATCH use.
+func (s *Server) ReloadSAMLForTest(ctx context.Context) error { return s.reloadSAML(ctx) }

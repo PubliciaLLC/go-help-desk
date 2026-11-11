@@ -371,21 +371,74 @@ ORDER BY
 LIMIT $2 OFFSET $3;
 
 -- name: ListTicketsFiltered :many
--- The MCP list surface: one query carrying every optional filter plus the
--- visibility rule, rather than the caller choosing among the eight
--- single-purpose list/search queries above and then filtering in Go.
+-- The one list query: every optional filter, the visibility rule and the sort,
+-- in one statement, so a caller never chooses among single-purpose queries and
+-- then filters in Go. Filtering and paginating in the same statement is what
+-- keeps pages full: a page fetched and then filtered returns short pages and
+-- skips rows.
 --
 -- Visibility is three cases, not a patchable special case:
 --   unrestricted   — an admin, or staff while scope enforcement is off
 --   reporter_only  — a reporting user, who sees only tickets they reported
 --   otherwise      — the DESIGN.md staff scope (same predicate as
 --                    ListTicketsVisibleToStaff)
+-- Every other criterion is a further AND, so a filter can only narrow what the
+-- caller may already see. Nothing below widens it.
 --
--- Every other filter is NULL-means-absent, so one prepared statement serves
--- all combinations. Filtering and paginating in the same statement is what
--- keeps pages full: a page fetched and then filtered returns short pages and
--- skips rows.
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format, source_channel FROM tickets t
+-- Single values are NULL-means-absent and arrays are cardinality(...) = 0, so
+-- one prepared statement serves every combination. The store always passes a
+-- non-nil array.
+--
+-- The SLA bucket joins the CURRENT record only and is computed only when the
+-- filter or the sort asks for it (the first condition in the lateral is a
+-- parameter-only test, so the planner evaluates it once, not per ticket). It is
+-- a lateral join and not a correlated subquery because the planner can hash
+-- join it: as a subquery, sorting by SLA took 1 s at 200k instead of 0.25 s. It
+-- reproduces sla.StatusFor, the live read the list indicator shows, NOT the
+-- breach stamps: StatusFor never reads them, and a target met on time keeps
+-- its frozen reading. Per target, with elapsed as sla.ElapsedFrom has it
+-- (the clock stops at pending_since or at the instant the target was met):
+--   a met target with a frozen reading  -> that reading
+--   anything else                       -> LEAST(COALESCE(pending_since, at), at)
+--                                          - start - pause, with at = the met
+--                                          instant, or now while outstanding
+-- 0 = a target at or past 100% (red), 1 = otherwise one at or past 80%
+-- (amber, exactly target_min * 48 seconds), 2 = everything else. This is the
+-- third copy of the formula, after sla.ElapsedFrom and ListSLABreachCandidates;
+-- TestListFiltered_SLAAgreesWithStatusFor holds it to the first.
+SELECT t.id, t.tracking_number, t.subject, t.description, t.category_id, t.type_id, t.item_id, t.priority, t.status_id, t.assignee_user_id, t.assignee_group_id, t.reporter_user_id, t.guest_email, t.resolution_notes, t.resolved_at, t.closed_at, t.created_at, t.updated_at, t.guest_name, t.guest_phone, t.pending_since, t.sla_paused_seconds, t.reopen_count, t.last_reopened_at, t.paused_seconds_at_last_reopen, t.description_format, t.source_channel
+FROM tickets t
+LEFT JOIN LATERAL (
+  SELECT CASE
+           WHEN e.response   >= make_interval(mins => p.response_target_min)
+             OR e.resolution >= make_interval(mins => p.resolution_target_min) THEN 0
+           WHEN e.response   >= make_interval(secs => (p.response_target_min::bigint   * 48)::double precision)
+             OR e.resolution >= make_interval(secs => (p.resolution_target_min::bigint * 48)::double precision) THEN 1
+           ELSE 2
+         END AS bucket
+  FROM sla_records r
+  JOIN sla_policies p ON p.id = r.policy_id
+  CROSS JOIN LATERAL (
+    SELECT
+      CASE WHEN r.first_response_at IS NOT NULL AND r.response_elapsed_at_met_seconds IS NOT NULL
+           THEN make_interval(secs => r.response_elapsed_at_met_seconds::double precision)
+           ELSE LEAST(COALESCE(t.pending_since, COALESCE(r.first_response_at, sqlc.arg(now)::timestamptz)),
+                      COALESCE(r.first_response_at, sqlc.arg(now)::timestamptz))
+                - (COALESCE(r.started_at, t.created_at)
+                   + make_interval(secs => (t.sla_paused_seconds - r.paused_seconds_at_start)::double precision))
+      END AS response,
+      CASE WHEN r.resolved_at IS NOT NULL AND r.resolution_elapsed_at_met_seconds IS NOT NULL
+           THEN make_interval(secs => r.resolution_elapsed_at_met_seconds::double precision)
+           ELSE LEAST(COALESCE(t.pending_since, COALESCE(r.resolved_at, sqlc.arg(now)::timestamptz)),
+                      COALESCE(r.resolved_at, sqlc.arg(now)::timestamptz))
+                - (COALESCE(r.started_at, t.created_at)
+                   + make_interval(secs => (t.sla_paused_seconds - r.paused_seconds_at_start)::double precision))
+      END AS resolution
+  ) e
+  WHERE (sqlc.arg(sla)::text <> '' OR sqlc.arg(sort_key)::text = 'sla')
+    AND r.ticket_id = t.id
+    AND r.superseded_at IS NULL
+) sb ON TRUE
 WHERE
   (
     sqlc.arg(unrestricted)::bool
@@ -400,20 +453,71 @@ WHERE
         t.reporter_user_id = sqlc.arg(actor_id)::uuid
         OR t.assignee_user_id = sqlc.arg(actor_id)::uuid
         OR t.assignee_group_id IN (SELECT gm.group_id FROM group_members gm WHERE gm.user_id = sqlc.arg(actor_id)::uuid)
-        OR EXISTS (
-          SELECT 1 FROM group_scopes gs
-          JOIN group_members gm ON gm.group_id = gs.group_id
-          WHERE gm.user_id = sqlc.arg(actor_id)::uuid
-            AND gs.category_id = t.category_id
-            AND (gs.type_id IS NULL OR gs.type_id = t.type_id)
-        )
+        -- The category/type scope, as two uncorrelated sets rather than the
+        -- correlated EXISTS ListTicketsVisibleToStaff uses: a hashed set is probed
+        -- once per ticket, where EXISTS re-ran its join for every ticket the other
+        -- filters let through (a scoped staff member's text search took 140 ms at
+        -- 200k tickets, against 14 ms). Same answer:
+        -- TestListFiltered_ScopedVisibilityMatchesStaffQuery holds them together.
+        -- A ticket with no type never matches the row comparison, as it never
+        -- matched gs.type_id = t.type_id.
+        OR t.category_id IN (SELECT gs.category_id FROM group_scopes gs
+                             JOIN group_members gm ON gm.group_id = gs.group_id
+                             WHERE gm.user_id = sqlc.arg(actor_id)::uuid AND gs.type_id IS NULL)
+        OR (t.category_id, t.type_id) IN (SELECT gs.category_id, gs.type_id FROM group_scopes gs
+                                          JOIN group_members gm ON gm.group_id = gs.group_id
+                                          WHERE gm.user_id = sqlc.arg(actor_id)::uuid AND gs.type_id IS NOT NULL)
       )
     )
   )
-  AND (sqlc.narg(status_id)::uuid IS NULL OR t.status_id = sqlc.narg(status_id)::uuid)
-  AND (sqlc.narg(priority)::text IS NULL OR t.priority = sqlc.narg(priority)::text)
+  -- queue: 'any' | 'mine' | 'unassigned'. Set by the handler, never the caller.
+  AND (
+    sqlc.arg(queue)::text = 'any'
+    OR (sqlc.arg(queue)::text = 'unassigned'
+        AND t.assignee_user_id IS NULL AND t.assignee_group_id IS NULL)
+    -- mine_group_ids is the caller's groups, read by the store just before this
+    -- runs and passed as a plain array. That is deliberate: the planner cannot
+    -- know how many groups a subquery will return, assumes a lot, and then walks
+    -- the whole created_at index looking for rows a user with few or no
+    -- assignments does not have (83-95 ms at 200k tickets for an administrator).
+    -- Given the array itself it sees an empty or two-element list, and drives the
+    -- queue from the two assignee indexes instead (0.8 ms).
+    OR (sqlc.arg(queue)::text = 'mine' AND (
+        t.assignee_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_group_id = ANY(sqlc.arg(mine_group_ids)::uuid[])))
+  )
+  AND (cardinality(sqlc.arg(status_ids)::uuid[]) = 0 OR t.status_id = ANY(sqlc.arg(status_ids)::uuid[]))
+  -- IS DISTINCT FROM, not <>: if the Closed status were ever missing the
+  -- subquery is NULL, and <> would then exclude every ticket.
+  AND (NOT sqlc.arg(exclude_closed)::bool
+       OR t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Closed' AND s.kind = 'system'))
+  AND (cardinality(sqlc.arg(priorities)::text[]) = 0 OR t.priority = ANY(sqlc.arg(priorities)::text[]))
   AND (sqlc.narg(category_id)::uuid IS NULL OR t.category_id = sqlc.narg(category_id)::uuid)
+  AND (sqlc.narg(type_id)::uuid IS NULL OR t.type_id = sqlc.narg(type_id)::uuid)
+  AND (sqlc.narg(item_id)::uuid IS NULL OR t.item_id = sqlc.narg(item_id)::uuid)
   AND (sqlc.narg(assignee_user_id)::uuid IS NULL OR t.assignee_user_id = sqlc.narg(assignee_user_id)::uuid)
+  AND (sqlc.narg(assignee_group_id)::uuid IS NULL OR t.assignee_group_id = sqlc.narg(assignee_group_id)::uuid)
+  AND (sqlc.narg(reporter_id)::uuid IS NULL OR t.reporter_user_id = sqlc.narg(reporter_id)::uuid)
+  -- requester_pattern is '%' || LIKE-escaped text || '%', built in the store.
+  -- It matches the ticket's guest fields and the reporting account's name and
+  -- email. Deleted and disabled accounts are included on purpose: their tickets
+  -- still exist and the ticket page still names them.
+  AND (sqlc.narg(requester_pattern)::text IS NULL
+       OR t.guest_name ILIKE sqlc.narg(requester_pattern)::text
+       OR t.guest_email ILIKE sqlc.narg(requester_pattern)::text
+       -- ARRAY(subquery), not IN (subquery), so all three arms can be indexes
+       -- feeding one BitmapOr (see the queue arm above for the same reason).
+       OR t.reporter_user_id = ANY(ARRAY(SELECT u.id FROM users u
+                                         WHERE u.display_name ILIKE sqlc.narg(requester_pattern)::text
+                                            OR u.email ILIKE sqlc.narg(requester_pattern)::text)))
+  AND (sqlc.narg(created_after)::timestamptz IS NULL OR t.created_at >= sqlc.narg(created_after)::timestamptz)
+  AND (sqlc.narg(created_before)::timestamptz IS NULL OR t.created_at < sqlc.narg(created_before)::timestamptz)
+  AND (sqlc.narg(updated_after)::timestamptz IS NULL OR t.updated_at >= sqlc.narg(updated_after)::timestamptz)
+  AND (sqlc.narg(updated_before)::timestamptz IS NULL OR t.updated_at < sqlc.narg(updated_before)::timestamptz)
+  AND (cardinality(sqlc.arg(source_channels)::text[]) = 0 OR t.source_channel = ANY(sqlc.arg(source_channels)::text[]))
+  AND (sqlc.arg(sla)::text = ''
+       OR (sqlc.arg(sla)::text = 'breached' AND sb.bucket = 0)
+       OR (sqlc.arg(sla)::text = 'at_risk' AND sb.bucket = 1))
   -- `searching` says whether the caller asked for a search at all, which is
   -- NOT the same as search_query being empty. A term like "???" contains no
   -- indexable tokens, so buildSearchTSQuery yields "" — and keying off that
@@ -428,7 +532,34 @@ WHERE
       AND t.search_vector @@ to_tsquery('english', sqlc.arg(search_query)::text)
     )
   )
+-- sort_key and sort_dir come from Filter.ResolvedSort, already validated. Each
+-- CASE is NULL for every row unless it is the chosen column, so exactly one of
+-- them orders the result; with the parameters known the planner folds the rest
+-- away. Integer ranks take their direction from a sign instead of a second term.
+-- Every sort ends with created_at DESC, id, so equal rows keep a stable order
+-- across pages.
 ORDER BY
-  CASE WHEN sqlc.arg(search_query)::text <> '' THEN ts_rank(t.search_vector, to_tsquery('english', sqlc.arg(search_query)::text)) ELSE 0 END DESC,
-  t.created_at DESC
+  CASE WHEN sqlc.arg(sort_key)::text = 'relevance' AND sqlc.arg(search_query)::text <> ''
+       THEN ts_rank(t.search_vector, to_tsquery('english', sqlc.arg(search_query)::text)) END DESC,
+  CASE WHEN sqlc.arg(sort_key)::text = 'number' AND sqlc.arg(sort_dir)::text = 'asc' THEN t.tracking_number END ASC,
+  CASE WHEN sqlc.arg(sort_key)::text = 'number' AND sqlc.arg(sort_dir)::text = 'desc' THEN t.tracking_number END DESC,
+  CASE WHEN sqlc.arg(sort_key)::text = 'subject' AND sqlc.arg(sort_dir)::text = 'asc' THEN lower(t.subject) END ASC,
+  CASE WHEN sqlc.arg(sort_key)::text = 'subject' AND sqlc.arg(sort_dir)::text = 'desc' THEN lower(t.subject) END DESC,
+  -- Status order is each status's place in (sort_order, name), looked up in an
+  -- array built once per query. A join or a subquery per ticket cost 85 to
+  -- 684 ms at 200k when sorting by status, and a join cost every other list too.
+  CASE WHEN sqlc.arg(sort_key)::text = 'status'
+       THEN array_position((SELECT array_agg(s.id ORDER BY s.sort_order, s.name) FROM statuses s), t.status_id)
+            * CASE WHEN sqlc.arg(sort_dir)::text = 'asc' THEN 1 ELSE -1 END END ASC,
+  CASE WHEN sqlc.arg(sort_key)::text = 'priority'
+       THEN (CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END)
+            * CASE WHEN sqlc.arg(sort_dir)::text = 'asc' THEN 1 ELSE -1 END END ASC,
+  CASE WHEN sqlc.arg(sort_key)::text = 'sla'
+       THEN COALESCE(sb.bucket, 2) * CASE WHEN sqlc.arg(sort_dir)::text = 'asc' THEN 1 ELSE -1 END END ASC,
+  CASE WHEN sqlc.arg(sort_key)::text = 'created' AND sqlc.arg(sort_dir)::text = 'asc' THEN t.created_at END ASC,
+  CASE WHEN sqlc.arg(sort_key)::text = 'created' AND sqlc.arg(sort_dir)::text = 'desc' THEN t.created_at END DESC,
+  CASE WHEN sqlc.arg(sort_key)::text = 'updated' AND sqlc.arg(sort_dir)::text = 'asc' THEN t.updated_at END ASC,
+  CASE WHEN sqlc.arg(sort_key)::text = 'updated' AND sqlc.arg(sort_dir)::text = 'desc' THEN t.updated_at END DESC,
+  t.created_at DESC,
+  t.id
 LIMIT sqlc.arg(result_limit) OFFSET sqlc.arg(result_offset);

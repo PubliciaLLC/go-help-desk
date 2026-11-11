@@ -85,6 +85,11 @@ type Record struct {
 // must change together: SQL elapsed must stay greater than or equal to Go
 // elapsed (for example, if business hours are added later), so the query
 // remains a superset of what EvaluateBreaches would stamp.
+//
+// It is mirrored a second time by ListTicketsFiltered (the ticket list's SLA
+// filter and sort), which must change with it too. That copy has to be equal to
+// this one, not a superset: it decides which tickets the indicator shows red or
+// amber. TestListFiltered_SLAAgreesWithStatusFor holds it there.
 func Elapsed(t ticket.Ticket, at time.Time) time.Duration {
 	return ElapsedFrom(t.CreatedAt, 0, t, at)
 }
@@ -100,7 +105,8 @@ func Elapsed(t ticket.Ticket, at time.Time) time.Duration {
 // interval (taken from its own start) cancels the base and the reading stays
 // at zero.
 //
-// Like Elapsed, this is mirrored in SQL by ListSLABreachCandidates.
+// Like Elapsed, this is mirrored in SQL by ListSLABreachCandidates and by
+// ListTicketsFiltered; all three change together.
 func ElapsedFrom(start time.Time, pausedBase int64, t ticket.Ticket, at time.Time) time.Duration {
 	e := at.Sub(start) - time.Duration(t.SLAPausedSeconds-pausedBase)*time.Second
 	if t.PendingSince != nil && at.After(*t.PendingSince) {
