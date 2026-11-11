@@ -107,6 +107,9 @@ type Store interface {
 	// service account) whose email or display name contains q, in one read,
 	// ordered by display name then id.
 	LookupRequesters(ctx context.Context, q string) ([]User, error)
+	// LookupRequesterByID is the same lookup for one id: ErrNotFound for an
+	// account that does not exist and for one LookupRequesters leaves out.
+	LookupRequesterByID(ctx context.Context, id uuid.UUID) (User, error)
 	// ListActiveAdmins returns every administrator who is neither disabled nor
 	// soft-deleted, in full — not a count, unlike CountOtherActiveAdmins. The
 	// SSO-settings guard (#300) has to know WHICH administrators would still

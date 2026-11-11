@@ -1769,6 +1769,16 @@ service accounts are not found. The search minimum is counted in characters, not
 bytes or UTF-16 units. A reporting user gets `403`. The lookup is the picker's:
 a disabled account sent by id is still accepted, as MCP accepts one.
 
+`GET /users/lookup?id=<uuid>` is the same lookup for one account, so the ticket
+list's requester chip can turn the id in its address back into a name after a
+reload. Same route, so the same rules: a signed-in staff or administrator
+session only, and the same accounts left out, by the same query conditions. It
+answers the account as one object (`id`, `display_name`, `email`), `400` for an
+id that is not a UUID or for `id` together with `q`, and one fixed `404` for an
+unknown id and for a disabled, deleted or service account alike, so it does not
+say which ids are real. Masking changes nothing here: the setting is for the
+audit views, and this returns what `?q=` returns.
+
 **There is no user lookup for machine credentials (#290, Erik 2026-10-14).** A
 key that files for someone sends `reporter_email` and the server resolves it:
 an account if one exists, otherwise a guest ticket. That leaves no endpoint
