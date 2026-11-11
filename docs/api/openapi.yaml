@@ -3335,7 +3335,7 @@ paths:
             found in different replies do not combine). Staff and administrators search public replies and
             internal notes; a requester, and any role not recognised, searches public replies only, whatever
             the request says. Ranking looks at the 2,000 newest matching replies the caller may see, and the
-            whole search runs under a two-second limit. When replies could not be searched (the reply index
+            whole search runs under a five-second limit. When replies could not be searched (the reply index
             is still being built after an upgrade, or the limit passed) the answer is the tickets that match
             on their own text, and the X-Replies-Searched and X-Reply-Index headers say so.
           schema:

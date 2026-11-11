@@ -33,7 +33,15 @@ const (
 	DefaultReplyCap = 2000
 	// DefaultReplyTimeout is how long a search that includes replies may run
 	// before the reply arm is dropped and the page is answered without it.
-	DefaultReplyTimeout = 2 * time.Second
+	//
+	// Five seconds is the owner's decision of 2026-11-11 ("Longer limit (e.g.
+	// 5 s)"). It was two. At 5,000,000 replies a word in 1% of them or more took
+	// longer than two seconds on the machine measured, so those searches were
+	// answered from ticket text; five lets more of them finish. A request that
+	// still runs out costs the limit plus the ticket-only search, because the
+	// statement is answered again without the reply arm. The cap above is
+	// unchanged.
+	DefaultReplyTimeout = 5 * time.Second
 )
 
 // New returns a Store backed by the given Queries.
@@ -1027,7 +1035,7 @@ func (s *Store) ListFilteredAt(ctx context.Context, f ticket.Filter, now time.Ti
 //     is SKIPPED, not run as a scan: without the index a scan parses every
 //     reply, which at the sizes this is built for is minutes, and a half-filled
 //     column would give answers that are silently incomplete.
-//   - The reply arm ran out of its time limit (two seconds for the whole
+//   - The reply arm ran out of its time limit (five seconds for the whole
 //     statement): Searched is false. The statement is cancelled and answered
 //     again without the reply arm, so the caller still gets the tickets that
 //     match on their own text.
