@@ -484,7 +484,7 @@ func (f *fakeUserStore) ClearFactors(_ context.Context, id uuid.UUID) (int, erro
 
 // RemovePasskey mirrors the statement's count: one credential goes if the user
 // holds any. The fake has no table to tell whose id it is, and no sessions.
-func (f *fakeUserStore) RemovePasskey(_ context.Context, userID, _ uuid.UUID) error {
+func (f *fakeUserStore) RemovePasskey(_ context.Context, userID, _ uuid.UUID, _ string) error {
 	if f.passkeys[userID] == 0 {
 		return webauthn.ErrNotFound
 	}

@@ -2832,7 +2832,9 @@ paths:
       description: |
         Removes one of the caller's passkeys. An id that belongs to another account answers the same 404 as an
         id that does not exist. A session that has only passed the password cannot remove a factor from an
-        account that already has one: the answer is 403 mfa_required. Session only.
+        account that already has one: the answer is 403 mfa_required. Every other session of the account ends,
+        in the same statement as the removal, and the session that made the request stays signed in. A
+        passkey_removed audit entry is written with the caller as the actor (best effort). Session only.
       tags: ['Account']
       x-ghd-handler: handleDeletePasskey
       security:

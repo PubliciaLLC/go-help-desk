@@ -197,10 +197,10 @@ func (s *Store) ClearFactors(ctx context.Context, id uuid.UUID) (int, error) {
 	return int(row.PasskeysRemoved), nil
 }
 
-// RemovePasskey removes one of the user's credentials and ends every session
-// the user has, in one statement. See the RemoveUserPasskey query.
-func (s *Store) RemovePasskey(ctx context.Context, userID, passkeyID uuid.UUID) error {
-	row, err := s.q.RemoveUserPasskey(ctx, dbgen.RemoveUserPasskeyParams{ID: passkeyID, UserID: userID})
+// RemovePasskey removes one of the user's credentials and ends their sessions
+// (all but keepSessionID), in one statement. See the RemoveUserPasskey query.
+func (s *Store) RemovePasskey(ctx context.Context, userID, passkeyID uuid.UUID, keepSessionID string) error {
+	row, err := s.q.RemoveUserPasskey(ctx, dbgen.RemoveUserPasskeyParams{ID: passkeyID, UserID: userID, KeepSession: keepSessionID})
 	if err != nil {
 		return fmt.Errorf("removing passkey %s of user %s: %w", passkeyID, userID, err)
 	}

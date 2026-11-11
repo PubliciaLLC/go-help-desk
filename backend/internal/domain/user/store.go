@@ -122,9 +122,9 @@ type Store interface {
 	// nothing, and ErrNotFound for an id that matches no user.
 	ClearFactors(ctx context.Context, id uuid.UUID) (passkeysRemoved int, err error)
 	AdminSetPassword(ctx context.Context, id uuid.UUID, hash string) error
-	// RemovePasskey removes one credential of this user AND ends every session
-	// the user has, in one statement. The credential is matched on its owner in
-	// the statement; one that is not this user's is webauthn.ErrNotFound, and
-	// no session ends.
-	RemovePasskey(ctx context.Context, userID, passkeyID uuid.UUID) error
+	// RemovePasskey removes one credential of this user AND ends the user's
+	// sessions, in one statement; keepSessionID is the one session left alone
+	// ("" keeps none). The credential is matched on its owner in the statement;
+	// one that is not this user's is webauthn.ErrNotFound, and no session ends.
+	RemovePasskey(ctx context.Context, userID, passkeyID uuid.UUID, keepSessionID string) error
 }

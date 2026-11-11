@@ -1239,7 +1239,7 @@ func (s *Service) ResetMFA(ctx context.Context, id uuid.UUID, actorID *uuid.UUID
 // is the route's rule (D2), not this method's.
 func (s *Service) AdminRemovePasskey(ctx context.Context, userID, passkeyID uuid.UUID, actorID *uuid.UUID) error {
 	ctx = context.WithoutCancel(ctx)
-	if err := s.store.RemovePasskey(ctx, userID, passkeyID); err != nil {
+	if err := s.store.RemovePasskey(ctx, userID, passkeyID, ""); err != nil {
 		return err
 	}
 	s.writeAuditEntry(ctx, audit.Entry{
@@ -1247,6 +1247,33 @@ func (s *Service) AdminRemovePasskey(ctx context.Context, userID, passkeyID uuid
 		EntityType: "user",
 		EntityID:   userID,
 		Action:     "passkey_removed_by_admin",
+		After: map[string]any{
+			"passkey_id":       passkeyID.String(),
+			"sessions_revoked": true,
+		},
+	})
+	return nil
+}
+
+// RemoveOwnPasskey removes one of the caller's own passkeys, ends their OTHER
+// sessions (keepSessionID is the one they removed it from, which stays), and
+// records it with the user as the actor (#615). It returns
+// webauthn.ErrNotFound for a credential that is not theirs.
+//
+// The sessions end in the same statement as the delete: the key may be the one
+// somebody else is signed in with, and a failure between the two must not leave
+// it gone and their session alive. The audit entry is best effort and detached,
+// as AdminRemovePasskey's is. The label is never written, only the id.
+func (s *Service) RemoveOwnPasskey(ctx context.Context, userID, passkeyID uuid.UUID, keepSessionID string) error {
+	ctx = context.WithoutCancel(ctx)
+	if err := s.store.RemovePasskey(ctx, userID, passkeyID, keepSessionID); err != nil {
+		return err
+	}
+	s.writeAuditEntry(ctx, audit.Entry{
+		ActorID:    &userID,
+		EntityType: "user",
+		EntityID:   userID,
+		Action:     "passkey_removed",
 		After: map[string]any{
 			"passkey_id":       passkeyID.String(),
 			"sessions_revoked": true,

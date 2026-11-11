@@ -392,7 +392,14 @@ func (s *Server) handleDeletePasskey(w http.ResponseWriter, r *http.Request) {
 	// Scoped to the owner in the statement, not by a check here: an id is not
 	// an authorisation, and "not yours" and "does not exist" deliberately
 	// answer the same way.
-	if err := s.passkeyStore.Delete(r.Context(), id, a.UserID); err != nil {
+	//
+	// The user's OTHER sessions end in that same statement, and this one stays:
+	// the key may be the one somebody else is signed in with, which is the
+	// reason to remove it, and signing yourself out of the tab you used is a
+	// bug, not security (as for a password change). Audited with the user as
+	// the actor (#615).
+	session, _ := s.sessions.Get(r, auth.SessionName)
+	if err := s.users.RemoveOwnPasskey(r.Context(), a.UserID, id, session.ID); err != nil {
 		if errors.Is(err, webauthn.ErrNotFound) {
 			Error(w, http.StatusNotFound, "not_found", "no such passkey on this account")
 			return

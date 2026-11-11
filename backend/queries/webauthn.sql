@@ -55,9 +55,14 @@ WHERE id = $1 AND user_id = $2
 RETURNING id;
 
 -- name: RemoveUserPasskey :one
--- An administrator removes ONE credential of another user, and every session
--- that user has goes with it, as one statement (#615, D1: always, not only when
--- it was the last factor; the key is presumed lost or compromised).
+-- Removes ONE credential of a user, and ends the user's sessions with it, as one
+-- statement (#615, D1: always, not only when it was the last factor; the key is
+-- presumed lost or compromised).
+--
+-- keep_session is the one session to leave alone: the owner's own, when they
+-- remove their own key (they just proved a factor there, and signing yourself
+-- out of the tab you used is a bug, not security). An administrator removing
+-- somebody else's key passes '', which no session id is, so every session ends.
 --
 -- The credential is matched on its owner as well as its id, in the statement:
 -- an id is not an authorisation, and a credential that is not this user's is
@@ -74,7 +79,9 @@ WITH gone AS (
     RETURNING webauthn_credentials.id
 ), ended AS (
     DELETE FROM sessions
-    WHERE sessions.user_id = $2 AND EXISTS (SELECT 1 FROM gone)
+    WHERE sessions.user_id = $2
+      AND sessions.id <> sqlc.arg(keep_session)::text
+      AND EXISTS (SELECT 1 FROM gone)
     RETURNING sessions.id
 )
 SELECT

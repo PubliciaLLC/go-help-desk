@@ -169,7 +169,9 @@ WITH gone AS (
     RETURNING webauthn_credentials.id
 ), ended AS (
     DELETE FROM sessions
-    WHERE sessions.user_id = $2 AND EXISTS (SELECT 1 FROM gone)
+    WHERE sessions.user_id = $2
+      AND sessions.id <> $3::text
+      AND EXISTS (SELECT 1 FROM gone)
     RETURNING sessions.id
 )
 SELECT
@@ -178,8 +180,9 @@ SELECT
 `
 
 type RemoveUserPasskeyParams struct {
-	ID     uuid.UUID `json:"id"`
-	UserID uuid.UUID `json:"user_id"`
+	ID          uuid.UUID `json:"id"`
+	UserID      uuid.UUID `json:"user_id"`
+	KeepSession string    `json:"keep_session"`
 }
 
 type RemoveUserPasskeyRow struct {
@@ -187,9 +190,14 @@ type RemoveUserPasskeyRow struct {
 	SessionsEnded   int32 `json:"sessions_ended"`
 }
 
-// An administrator removes ONE credential of another user, and every session
-// that user has goes with it, as one statement (#615, D1: always, not only when
-// it was the last factor; the key is presumed lost or compromised).
+// Removes ONE credential of a user, and ends the user's sessions with it, as one
+// statement (#615, D1: always, not only when it was the last factor; the key is
+// presumed lost or compromised).
+//
+// keep_session is the one session to leave alone: the owner's own, when they
+// remove their own key (they just proved a factor there, and signing yourself
+// out of the tab you used is a bug, not security). An administrator removing
+// somebody else's key passes ”, which no session id is, so every session ends.
 //
 // The credential is matched on its owner as well as its id, in the statement:
 // an id is not an authorisation, and a credential that is not this user's is
@@ -201,7 +209,7 @@ type RemoveUserPasskeyRow struct {
 // leave the key gone and its sessions alive, or the other way round. The
 // sessions matter because one may carry MFAPassed from the key just removed.
 func (q *Queries) RemoveUserPasskey(ctx context.Context, arg RemoveUserPasskeyParams) (RemoveUserPasskeyRow, error) {
-	row := q.db.QueryRowContext(ctx, removeUserPasskey, arg.ID, arg.UserID)
+	row := q.db.QueryRowContext(ctx, removeUserPasskey, arg.ID, arg.UserID, arg.KeepSession)
 	var i RemoveUserPasskeyRow
 	err := row.Scan(&i.PasskeysRemoved, &i.SessionsEnded)
 	return i, err

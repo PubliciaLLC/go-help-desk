@@ -946,7 +946,18 @@ a TOTP enrolment or at least one registered passkey** (refusing the phishing-res
 
 **Losing a key.** The owner removes it from their own account page
 (`DELETE /me/passkeys/{id}`, behind the same factor guard) and registers a new
-one; that is the ordinary case. **An administrator can remove ONE credential
+one; that is the ordinary case. **Removing your own key ends your OTHER
+sessions and keeps this one**
+([#615](https://github.com/PubliciaLLC/go-help-desk/issues/615)), as a password
+change and a new factor do: the key may be the one somebody else is signed in
+with. The delete and the sessions ending are one statement (the same
+`RemoveUserPasskey` the administrator's removal uses, which is told which session
+to spare), so a failure between them cannot leave the key gone and the other
+sessions alive, and a credential that is not yours is a `404` that ends nothing.
+It writes a `passkey_removed` audit entry on the account with **the user as the
+actor** (the factor guard has already required that they proved a factor), naming
+the key by id and not its label; best effort and detached from the request, like
+the administrator's. **An administrator can remove ONE credential
 for somebody else** ([#615](https://github.com/PubliciaLLC/go-help-desk/issues/615)):
 the user page lists the person's passkeys (`GET /admin/users/{id}/passkeys`, the
 same JSON as `/me/passkeys`) with a Remove on each
