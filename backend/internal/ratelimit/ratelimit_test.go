@@ -294,3 +294,67 @@ func (f failingStore) Spent(context.Context, string, time.Time) (int, error) {
 	return 0, f.err
 }
 func (f failingStore) Reset(context.Context, string) error { return f.err }
+
+// AllowOnce charges a queued row once, however many times the worker retries
+// it, and a retry skips the charge only because an earlier attempt really made
+// it.
+func TestAllowOnce(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("a retry of a charged row is not charged again and still goes ahead", func(t *testing.T) {
+		rl, _ := newLimiter(t, 1, time.Hour)
+		for i := range 3 {
+			ok, err := rl.AllowOnce(ctx, "k", "row-1")
+			require.NoError(t, err)
+			require.True(t, ok, "attempt %d of the same row", i+1)
+		}
+		ok, err := rl.AllowOnce(ctx, "k", "row-2")
+		require.NoError(t, err)
+		require.False(t, ok, "the one unit was spent once, on row-1, and not three times")
+	})
+
+	t.Run("a row that was refused is refused again", func(t *testing.T) {
+		rl, _ := newLimiter(t, 1, time.Hour)
+		require.True(t, allow(t, rl, "k"))
+		for range 2 {
+			ok, err := rl.AllowOnce(ctx, "k", "row-1")
+			require.NoError(t, err)
+			require.False(t, ok)
+		}
+	})
+
+	t.Run("a first attempt whose count failed leaves nothing marked, so the retry is counted", func(t *testing.T) {
+		store := &failOnce{Store: newStore(t)}
+		rl := ratelimit.New(store, "x", 1, time.Hour)
+		require.True(t, allow(t, rl, "k")) // the budget is spent
+
+		store.fail = 1
+		_, err := rl.AllowOnce(ctx, "k", "row-1")
+		require.Error(t, err, "the first attempt's count failed")
+
+		ok, err := rl.AllowOnce(ctx, "k", "row-1")
+		require.NoError(t, err)
+		require.False(t, ok, "the retry was never charged, so it is counted and refused")
+	})
+
+	t.Run("a limit of zero allows everything", func(t *testing.T) {
+		rl, _ := newLimiter(t, 0, time.Hour)
+		ok, err := rl.AllowOnce(ctx, "k", "row-1")
+		require.NoError(t, err)
+		require.True(t, ok)
+	})
+}
+
+// failOnce fails the next fail calls to Take.
+type failOnce struct {
+	ratelimit.Store
+	fail int
+}
+
+func (f *failOnce) Take(ctx context.Context, key string, w time.Duration, now time.Time) (ratelimit.Count, error) {
+	if f.fail > 0 {
+		f.fail--
+		return ratelimit.Count{}, errors.New("db blip")
+	}
+	return f.Store.Take(ctx, key, w, now)
+}

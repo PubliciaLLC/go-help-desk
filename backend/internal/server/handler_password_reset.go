@@ -11,6 +11,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/passwordreset"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
+	"github.com/publiciallc/go-help-desk/backend/internal/ratelimit"
 	"github.com/publiciallc/go-help-desk/backend/internal/server/notify"
 )
 
@@ -78,16 +79,28 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// allowOncePerRow charges a send-time budget once per queued row. In the worker
+// that is once however many times the row is retried, and a retry skips the
+// charge only when an earlier attempt of the row really made it (see
+// Limiter.AllowOnce); the attempt number alone cannot say so. Outside the worker
+// there is no row and the call is counted.
+func allowOncePerRow(ctx context.Context, l *ratelimit.Limiter, key string) (bool, error) {
+	if row := notify.RowID(ctx); row != uuid.Nil {
+		return l.AllowOnce(ctx, key, row.String())
+	}
+	return l.Allow(ctx, key)
+}
+
 // SendPasswordReset is the send-time step for a password reset (#451), run by
 // the verification channel when the worker takes a request off the queue. It
 // decides whether the address is to be mailed and mails the link; see
 // passwordreset.Service.Send.
 //
-// The per-account budget is charged here, once per request on its first
-// attempt, not once per attempt: charging the retry of a send that failed would
-// refuse it, and the request would be dropped with no mail sent (the same defect
-// #164 round 1 found for guest links). Outside the worker the attempt is 0,
-// which is a first attempt too.
+// The per-account budget is charged here, once per request, not once per
+// attempt: charging the retry of a send that failed would refuse it, and the
+// request would be dropped with no mail sent (the same defect #164 round 1
+// found for guest links). A retry skips the charge only if an earlier attempt
+// of the row made it (allowOncePerRow).
 func (s *Server) SendPasswordReset(ctx context.Context, ev notification.Event) error {
 	if s.passwordReset == nil {
 		return errors.New("password reset is not set up")
@@ -97,10 +110,7 @@ func (s *Server) SendPasswordReset(ctx context.Context, ev notification.Event) e
 	// drop the request.
 	var limitErr error
 	err := s.passwordReset.Send(ctx, ev, func(id uuid.UUID) bool {
-		if notify.Attempt(ctx) > 1 {
-			return true
-		}
-		ok, err := s.passwordResetLimiter.Allow(ctx, id.String())
+		ok, err := allowOncePerRow(ctx, s.passwordResetLimiter, id.String())
 		if err != nil {
 			limitErr = err
 			return false

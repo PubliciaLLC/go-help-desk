@@ -142,6 +142,51 @@ func (l *Limiter) TakeWithLimit(ctx context.Context, key string, limit int) (Tak
 	}, nil
 }
 
+// onceMarkerWindow is how long the record that a row was charged is kept. It
+// has to outlast the worker's retries of one row (30 seconds doubling to an
+// hour, 8 attempts in all, under three hours) and is swept like any expired
+// window.
+const onceMarkerWindow = 24 * time.Hour
+
+// AllowOnce is Allow for a send-time budget charged once per queued row, where
+// the worker may run the same row several times. onceID identifies the row.
+//
+// A retry skips the charge only if an earlier attempt of THAT row really made
+// it, which is recorded (as a marker key of its own) after the count came back
+// allowed. The attempt number cannot say this: the first attempt may have
+// failed before it reached the budget, or its count may have failed to write,
+// and a retry that skipped on "attempt > 1" went through uncounted. Without a
+// marker the retry is counted like any first attempt, and refused if the
+// budget is spent.
+//
+// A row that was charged and allowed is allowed on every retry, whatever has
+// been counted since: the budget was spent on it, and refusing it now would
+// drop a request half-delivered. If the marker cannot be written the call is an
+// error and the retry counts again, which can charge a row twice and never
+// lets one through uncounted.
+func (l *Limiter) AllowOnce(ctx context.Context, key, onceID string) (bool, error) {
+	if l.limit <= 0 {
+		return true, nil
+	}
+	marker := l.storeKey("once:" + onceID + ":" + key)
+	now := l.clock()
+	charged, err := l.store.Spent(ctx, marker, now)
+	if err != nil {
+		return false, fmt.Errorf("reading a charge marker: %w", err)
+	}
+	if charged > 0 {
+		return true, nil
+	}
+	t, err := l.Take(ctx, key)
+	if err != nil || !t.Allowed {
+		return false, err
+	}
+	if _, err := l.store.Take(ctx, marker, onceMarkerWindow, now); err != nil {
+		return false, fmt.Errorf("recording a charge: %w", err)
+	}
+	return true, nil
+}
+
 // Refund gives back one attempt Take counted against key, for a caller that
 // spends before the work and then finds the work did not happen. window is what
 // Take returned: if the window has since ended, the attempt was counted in one

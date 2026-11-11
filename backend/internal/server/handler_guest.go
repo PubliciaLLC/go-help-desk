@@ -20,7 +20,6 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 	"github.com/publiciallc/go-help-desk/backend/internal/ratelimit"
-	"github.com/publiciallc/go-help-desk/backend/internal/server/notify"
 )
 
 // The guest surface. Five routes, each doing one thing, mounted outside the
@@ -565,20 +564,19 @@ func (s *Server) PrepareGuestLink(ctx context.Context, ev notification.Event) (n
 		//
 		// Checked after the match, so a miss consumes nothing and the budget
 		// cannot be probed to learn which tickets exist. Charged once per
-		// request, on its first attempt: charging every attempt refused the
-		// retry of a send that had failed, and the request was dropped with
-		// the guest's old link already rotated away (#164 round 1). Outside
-		// the worker the attempt is 0, which is a first attempt too.
-		if notify.Attempt(ctx) <= 1 {
-			ok, err := s.guestResendLimiter.Allow(ctx, id.String())
-			if err != nil {
-				// Not "no": the outbox retries an error, and a request dropped
-				// here would have no mail and an old link already rotated away.
-				return ev, false, err
-			}
-			if !ok {
-				return ev, false, nil
-			}
+		// request: charging every attempt refused the retry of a send that had
+		// failed, and the request was dropped with the guest's old link
+		// already rotated away (#164 round 1). A retry skips the charge only if
+		// an earlier attempt of the row made it; one that never was charged is
+		// counted here, and refused with no link made if the budget is spent.
+		ok, err := allowOncePerRow(ctx, s.guestResendLimiter, id.String())
+		if err != nil {
+			// Not "no": the outbox retries an error, and a request dropped
+			// here would have no mail and an old link already rotated away.
+			return ev, false, err
+		}
+		if !ok {
+			return ev, false, nil
 		}
 		ev.TicketID = id
 	}
