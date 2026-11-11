@@ -426,6 +426,24 @@ Creating and deleting an OAuth client, and creating, editing and deleting a webh
 - **Not covered:** entries are not written for changes made before the upgrade.
 - **No migration, no setting.** Rolling back to 1.2.0 loses nothing: the entries stay in the `audit_log` table, which 1.2.0 has no page for, and show again after you upgrade.
 
+### Search Can Include Replies (Migration 000061)
+
+- **Search can include replies.** With "Search replies" on (the default on the ticket list), a search also matches the conversation: a ticket matches when **one** reply holds every word of the search. Words found in different replies do not combine, and neither do words in a reply and in the subject. Words match as prefixes, as they do in the subject and description. A result found this way shows a short excerpt and says whether it came from a public reply or an internal note. The excerpt names no author.
+- **Requesters' searches never match internal notes.** Staff and administrators search public replies and internal notes. A requester, and any role the help desk does not recognise, searches public replies only, and never sees an excerpt of an internal note, even on a ticket that matched by its subject. Which replies are searched comes from the person's role on the server. No request parameter or MCP argument can change it: an `include_internal` parameter is ignored.
+- **API.** `search_replies=true` on `GET /api/v1/tickets`, and `search_replies` on MCP `list_tickets`, with `q`. It is **off unless asked for**, so every existing request returns the tickets it returned before. A ticket that matched through a reply carries a `reply_match` object (`reply_id`, `internal`, `created_at`, `snippet`). The key is absent for any other ticket. `snippet` is the reply's own text with each matched word wrapped in the control characters U+0002 and U+0003, not HTML. A requester receives `reply_match` too; for them `internal` is always `false`.
+- **Migration 000061 builds an index over the text of every reply.** It changes no data and no column, and it rewrites no table. **On an instance with many replies the first start of 1.3.0 takes longer.** The server migrates before it takes requests, so nothing is served while the index builds, and new replies would wait for it anyway.
+  - **Measured:** on PostgreSQL 17, 1,000,000 replies (about 1.2 GB of text, 1,210 characters on average) on 200,000 tickets, the build took **75 seconds** with the default `maintenance_work_mem` (64 MB) and 81 seconds with 512 MB. More memory did not help: the time goes on reading the text, not on sorting. The index was 29 MB. Time grows with the total amount of reply text, not the number of replies. As a rule of thumb, allow about a minute for each gigabyte of reply text on similar hardware, and more on a slow disk or a busy host. Replies made of unusual words (addresses, identifiers, hostnames) build slower and make a larger index than this test text did. It is one run on one machine.
+  - **To avoid the wait, build the index while the old version is still running** (1.2.x keeps serving; it reads and writes replies throughout):
+
+    ```sql
+    CREATE INDEX CONCURRENTLY IF NOT EXISTS ticket_replies_body_fts_idx
+        ON ticket_replies USING gin (to_tsvector('english', body));
+    ```
+
+    Run it as the database user the help desk uses, from a plain `psql` session, not inside a transaction. A concurrent build reads the table twice, but in the same test it took about as long as the migration's (78 to 90 seconds against 75 to 81). 1.3.0 then finds the index and skips the build. If that statement fails partway it leaves an **invalid** index under the same name. 1.3.0 drops an invalid index and builds it again, so the upgrade still works, with the wait you were avoiding.
+  - The migration cannot do the concurrent build itself: the migration runner sends a file as one transaction, and `CREATE INDEX CONCURRENTLY` cannot run in one.
+- Rolling back to 1.2.0 drops the index and loses no data: see *Rolling Back to 1.2.0*.
+
 ## Changed behaviour
 
 ### Custom Fields: Order, Deactivation and Where a Field Appears (#603)
@@ -685,6 +703,7 @@ Each `down` migration undoes its `up`. These are dropped or deleted, and cannot 
 - **Retired custom-field options** (000059): the down migration is `DROP COLUMN` on `custom_field_defs.retired_options`, so the retired options are lost. `options` never held them, so each ends up in neither list. The tickets that hold one keep their value and keep showing it. After you upgrade again the option is still in neither list: setting a ticket to it is refused (`400 bad_request`, "not a valid option"), the same as for a value left behind by removing an option under 1.2.0. Add its text back to the field's options if you want it offered again. The audit entry for the retirement stays in the `audit_log` table (1.2.0 has no audit page).
 - **Used SAML hand-over cookies** (000035): the table `spent_saml_handovers` is dropped. It holds only short-lived replay-protection rows, and 1.2.0 does not make those cookies single-use.
 - **Audit log search indexes** (000030): three indexes on `audit_log` (by time, actor and action) are dropped. Nothing is lost, and 1.2.0 has no query that uses them; upgrading again recreates them.
+- **Reply search index** (000061): the index `ticket_replies_body_fts_idx` on the text of every reply is dropped. Nothing is lost, and 1.2.0 has no query that uses it; upgrading again rebuilds it (see *Search Can Include Replies (Migration 000061)* for the time that takes on a large table).
 - **Custom field default** (000040): `custom_field_assignments.visible_on_new` goes back to a column default of `true`. Existing rows are untouched.
 - **The generated JWT signing key** (`instance_secrets`, 000036). 1.2.0 needs its own `JWT_SECRET` in `docker/.env`: set a random secret of at least 32 bytes (for example `openssl rand -base64 48`). 1.2.0 only warns about a weak or example secret and signs with whatever you give it, and 1.3.0 discarded published example values as well as short and unset ones, so a value that 1.3.0 ignored is not safe to reuse. Every OAuth client fetches a new token either way.
 - Pending signups that 1.3.0 created without a name or password (000032, 000033).

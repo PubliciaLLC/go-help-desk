@@ -774,20 +774,19 @@ type Querier interface {
 	ListTicketsByAssigneeUser(ctx context.Context, arg ListTicketsByAssigneeUserParams) ([]ListTicketsByAssigneeUserRow, error)
 	ListTicketsByReporter(ctx context.Context, arg ListTicketsByReporterParams) ([]ListTicketsByReporterRow, error)
 	ListTicketsByStatus(ctx context.Context, arg ListTicketsByStatusParams) ([]ListTicketsByStatusRow, error)
-	// The MCP list surface: one query carrying every optional filter plus the
-	// visibility rule, rather than the caller choosing among the eight
-	// single-purpose list/search queries above and then filtering in Go.
+	// The one list query: every optional filter, the visibility rule and the sort,
+	// in one statement, so a caller never chooses among single-purpose queries and
+	// then filters in Go. Filtering and paginating in the same statement is what
+	// keeps pages full: a page fetched and then filtered returns short pages and
+	// skips rows.
 	//
 	// Visibility is three cases, not a patchable special case:
 	//   unrestricted   — an admin, or staff while scope enforcement is off
 	//   reporter_only  — a reporting user, who sees only tickets they reported
 	//   otherwise      — the DESIGN.md staff scope (same predicate as
 	//                    ListTicketsVisibleToStaff)
-	//
-	// Every other filter is NULL-means-absent, so one prepared statement serves
-	// all combinations. Filtering and paginating in the same statement is what
-	// keeps pages full: a page fetched and then filtered returns short pages and
-	// skips rows.
+	// Every other criterion is a further AND, so a filter can only narrow what the
+	// caller may already see. Nothing below widens it.
 	//
 	// reply_hits is reply-text search (advanced search, section 2.5). It is empty
 	// unless search_replies is set and the search has words. A ticket matches when
@@ -800,6 +799,33 @@ type Querier interface {
 	// ticket_replies_body_fts_idx (migration 000061). The visibility rule and every
 	// filter below still apply to the ticket, so a reply hit cannot bring in a
 	// ticket the viewer cannot see.
+	// Single values are NULL-means-absent and arrays are cardinality(...) = 0, so
+	// one prepared statement serves every combination. The store always passes a
+	// non-nil array.
+	//
+	// The SLA bucket joins the CURRENT record only and is computed only when the
+	// filter or the sort asks for it (the first condition in the lateral is a
+	// parameter-only test, so the planner evaluates it once, not per ticket). It is
+	// a lateral join and not a correlated subquery because the planner can hash
+	// join it: as a subquery, sorting by SLA took 1 s at 200k instead of 0.25 s. It
+	// reproduces sla.StatusFor, the live read the list indicator shows, NOT the
+	// breach stamps: StatusFor never reads them, and a target met on time keeps
+	// its frozen reading. Per target, with elapsed as sla.ElapsedFrom has it
+	// (the clock stops at pending_since or at the instant the target was met):
+	//   a met target with a frozen reading  -> that reading
+	//   anything else                       -> LEAST(COALESCE(pending_since, at), at)
+	//                                          - start - pause, with at = the met
+	//                                          instant, or now while outstanding
+	// 0 = a target at or past 100% (red), 1 = otherwise one at or past 80%
+	// (amber, exactly target_min * 48 seconds), 2 = everything else. This is the
+	// third copy of the formula, after sla.ElapsedFrom and ListSLABreachCandidates;
+	// TestListFiltered_SLAAgreesWithStatusFor holds it to the first.
+	// sort_key and sort_dir come from Filter.ResolvedSort, already validated. Each
+	// CASE is NULL for every row unless it is the chosen column, so exactly one of
+	// them orders the result; with the parameters known the planner folds the rest
+	// away. Integer ranks take their direction from a sign instead of a second term.
+	// Every sort ends with created_at DESC, id, so equal rows keep a stable order
+	// across pages.
 	ListTicketsFiltered(ctx context.Context, arg ListTicketsFilteredParams) ([]ListTicketsFilteredRow, error)
 	// Every ticket a staff member may see under DESIGN.md's scope model: reported
 	// by them, assigned to them, assigned to one of their groups, or falling in a
