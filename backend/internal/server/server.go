@@ -167,6 +167,7 @@ type AuthStoreIface interface {
 	// fixtures and for paths with nothing to audit.
 	CreateOAuthClientAudited(ctx context.Context, c auth.OAuthClient, entry audit.Entry) error
 	DeleteOAuthClientAudited(ctx context.Context, id uuid.UUID, entry func(before auth.OAuthClient) audit.Entry) error
+	RotateOAuthClientSecretAudited(ctx context.Context, id uuid.UUID, newHash string, entry func(before auth.OAuthClient) audit.Entry) error
 	ListOAuthClients(ctx context.Context) ([]auth.OAuthClient, error)
 	// OAuthClientNameForUser is the client a service user belongs to.
 	OAuthClientNameForUser(ctx context.Context, userID uuid.UUID) (string, error)

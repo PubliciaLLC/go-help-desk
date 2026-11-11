@@ -647,6 +647,7 @@ did.
 | **Signs in** | Never. Password login, SSO adoption by address, password reset, passkeys and MFA enrolment all refuse it, and no session for one loads. The login lookups (`GetUserByEmail` and the two subject lookups) do not return it; the session lookup skips it. |
 | **Seen** | Listed on **Admin → Users** with `service_account: true` and `auth_type: "service"` (the page shows a "Service" badge and a filter for it). It can be renamed, given groups, disabled and set to staff or user, and nothing else: `PATCH /admin/users/{id}` answers `409 service_account` to a body carrying `email`, a `role` of `admin`, or `reset_mfa: true`, and applies none of it (a `reset_mfa: false` asks for nothing and is accepted; a `role` of `staff` or `user` is accepted, Q2 on #434). The page never sent the refused ones; the server now refuses them too. Renaming it renames its OAuth client in the same statement, so the two names cannot drift. The password route (`POST /admin/users/{id}/password`), MFA reset and API keys issued on its behalf are refused as well. Disabling it stops its client on the next request, and enabling it again restores it. It **cannot be deleted on its own**: `DELETE /admin/users/{id}` answers `409 service_account` with "This is the service account for OAuth client <name>. Delete the client instead.", because a client left listed with a dead user is worse than a refusal. It is left out of assignee pickers (`GET /staff`), assignment (`IsAssignableUser`, so round-robin skips it) and the plain user list. |
 | **Scopes** | A client may be created only with scopes its service user's role can use. The user is made `staff`, so `POST /admin/oauth-clients` answers `400 invalid_scope` for anything beyond `auth.ScopesForRole("staff")` (for example `audit:read`, `settings:*`, `users:*`, `credentials:*`), exactly as a key owned by staff is refused (#450), and the picker on the OAuth clients page offers only the staff scopes. That list includes `requester_search:read`, which is never implied and has to be ticked on purpose. Checked at creation only: a client that already holds a wider scope, or whose user is later changed to `user`, keeps it, and the role check at request time still refuses what the role cannot reach. |
+| **Rotating the secret** | `POST /admin/oauth-clients/{id}/rotate-secret` (#622, a signed-in administrator; refused to keys and clients) replaces the secret at once. There is no grace period with two valid secrets: the usual reason to rotate is a leak. The answer carries `{id, client_id, client_secret}`; the secret is shown once, and the `client_id` and service user do not change. Every access token issued under the old secret is refused: tokens carry an `sv` claim, the first 16 hex characters of the stored hash, and `BearerAuth` compares it with the client's current hash. A token with no `sv` (issued before the claim existed) is still accepted until it expires, at most an hour. Audited in the same transaction as `oauth_client_secret_rotated`, with the name, scopes and service user id and `credential_replaced: true`; no secret and no hash is written. |
 | **Writes** | Under its scopes, a client creates tickets and replies **as its user**. The audit trail and authorship show the client's name. |
 | **Mail** | Never. A service user's address is made up (`oauth-<client id>@service-account.invalid`, which can never receive mail), and requester mail is not queued for a ticket it reported. Staff notifications go out as normal. |
 | **Scope** | Ticket scope enforcement (`ticket_scope_enforced`) applies to its user like any staff member's: it sees what its groups cover. Turning enforcement on warns, on that save, which clients have a user in no group; the Security warnings banner (`oauth_clients_without_groups`) keeps saying so until each has a group or is disabled. |
@@ -3123,8 +3124,10 @@ one is a permission decision with one switch and no per-user exceptions.
   Erik, 2026-10-16): `POST /admin/oauth-clients` carries
   `DenyMachineCredentials` (an API key `403 session_required`, an OAuth client `403
   forbidden`). A client made by a leaked key would outlive it. A key can still
-  list and delete clients. There is no route that rotates a client's secret, so
-  creation is the only path that mints one.
+  list and delete clients. `POST /admin/oauth-clients/{id}/rotate-secret` (#622)
+  mints a new secret for an existing client, so it carries the same
+  `DenyMachineCredentials`: creating and rotating are the only paths that make
+  one.
 - **A webhook dies with the key that made it** (Erik, 2026-10-16). A key may
   still create and edit webhooks. The hook records the API key that created it
   or last changed its URL (`webhook_configs.api_key_id`, no foreign key, so
@@ -3204,10 +3207,11 @@ one is a permission decision with one switch and no per-user exceptions.
   while a client or a hook is created and edited by an administrator and is how
   ticket data leaves or enters the system. Entity types `oauth_client` and
   `webhook`; actions `oauth_client_created`, `oauth_client_deleted`,
+  `oauth_client_secret_rotated` (#622),
   `webhook_created`, `webhook_updated`, `webhook_deleted` and
   `webhook_reapproved` (`POST /admin/webhooks/{id}/reapprove`, session only); the
   actor is the signed-in administrator, or for a webhook changed with an API key,
-  the key's owner. An OAuth client has no update route, so it has no update action.
+  the key's owner. An OAuth client has no update route, so it has no update action beyond the secret rotation.
   Renaming its service user (`PATCH /admin/users/{id}`) renames the client too,
   and that rename is **not audited**: `handleUpdateUser` writes no audit entry,
   so this is a gap in editing users and not something this entry type covers.
@@ -3800,8 +3804,15 @@ on the existing webhook feature instead of as plugins.
   in between is judged by its old values. Consequences worth knowing:
   auto-assignment happens inside the create's transaction, so a creation
   carries its group and a group condition matches a new ticket (the filter reads
-  the event's `Ticket` state; see Ticket Events: One Change, One Event). Category covers the category's types and items. There are
-  no type or item conditions yet. A filter naming a deleted group or category
+  the event's `Ticket` state; see Ticket Events: One Change, One Event). Category covers the category's types and items. Type
+  and item conditions (`type_ids`, `item_ids`, #631) combine with the categories by AND like the other
+  lists, and a ticket with no type or item never matches one. A filter that
+  could never match is refused with `400 contradictory_filter`: a type outside
+  the ticked categories, or an item outside the ticked types (or, with no types
+  ticked, outside the ticked categories). Unknown ids are `unknown_filter_type`
+  and `unknown_filter_item`, and each list holds at most 200. The two keys are
+  left out of the JSON while empty. The admin list shows how many types and
+  items a hook names, not their names. A filter naming a deleted group or category
   matches no ticket (inverted: every ticket). If a classification is not known
   (an event or a queued row made before this existed), the hook is sent to and
   a warning is logged: an extra message beats a missed one. A filtered-out

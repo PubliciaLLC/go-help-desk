@@ -26,7 +26,7 @@ func badFilterCases() []struct {
 	}{
 		{"not an object", "critical", "invalid_filter"},
 		{"unknown key (would otherwise be silently ignored and widen the hook)",
-			map[string]any{"type_ids": []string{uuid.New().String()}}, "invalid_filter"},
+			map[string]any{"tag_ids": []string{uuid.New().String()}}, "invalid_filter"},
 		{"malformed uuid", map[string]any{"category_ids": []string{"nope"}}, "invalid_filter"},
 		{"list is not an array", map[string]any{"priorities": "critical"}, "invalid_filter"},
 		{"invert is not a boolean", map[string]any{"invert": "yes"}, "invalid_filter"},
@@ -355,7 +355,7 @@ func TestWebhookUpdate_RefusesAFilterNamingADeletedCategoryOrGroup(t *testing.T)
 }
 
 // Within a filter the first failure wins, in the documented order: shape,
-// priority, category, group. Each case breaks two checks and expects the
+// priority, category, group, then type and item. Each case breaks two checks and expects the
 // earlier one.
 func TestWebhookFilter_RefusalOrder(t *testing.T) {
 	h, cleanup := newHarness(t)
@@ -367,9 +367,11 @@ func TestWebhookFilter_RefusalOrder(t *testing.T) {
 		filter map[string]any
 		code   string
 	}{
-		{"shape before priority", map[string]any{"priorities": []string{"urgent"}, "type_ids": unknown}, "invalid_filter"},
+		{"shape before priority", map[string]any{"priorities": []string{"urgent"}, "tag_ids": unknown}, "invalid_filter"},
 		{"priority before category", map[string]any{"priorities": []string{"urgent"}, "category_ids": unknown}, "invalid_filter_priority"},
 		{"category before group", map[string]any{"category_ids": unknown, "group_ids": unknown}, "unknown_filter_category"},
+		{"group before type", map[string]any{"group_ids": unknown, "type_ids": unknown}, "unknown_filter_group"},
+		{"type before item", map[string]any{"type_ids": unknown, "item_ids": unknown}, "unknown_filter_type"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			res := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/webhooks", map[string]any{

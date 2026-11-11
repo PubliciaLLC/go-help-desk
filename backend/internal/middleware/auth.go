@@ -329,8 +329,16 @@ func BearerAuth(jwtSecret string, lookup OAuthClientLookupFunc) func(http.Handle
 				next.ServeHTTP(w, r)
 				return
 			}
-			_, u, err := lookup(r.Context(), claims.ClientID)
+			c, u, err := lookup(r.Context(), claims.ClientID)
 			if err != nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+			// Rotating the secret (#622) revokes what it issued: a token naming
+			// a different secret version than the client has now is refused.
+			// One that names none predates the claim and is accepted until it
+			// expires (owner decision D16).
+			if claims.SecretVersion != "" && claims.SecretVersion != auth.SecretVersion(c) {
 				next.ServeHTTP(w, r)
 				return
 			}
