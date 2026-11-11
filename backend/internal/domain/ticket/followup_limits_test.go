@@ -196,7 +196,7 @@ func TestFollowUpOf(t *testing.T) {
 	t.Run("none yet", func(t *testing.T) {
 		h := newHarness(t)
 		orig := closedWithEverything(t, h)
-		got, err := h.svc.FollowUpOf(ctx, orig.ID)
+		got, err := h.svc.FollowUpOf(ctx, orig.ID, seeAll)
 		require.NoError(t, err)
 		require.Nil(t, got)
 	})
@@ -204,7 +204,7 @@ func TestFollowUpOf(t *testing.T) {
 		h := newHarness(t)
 		orig := closedWithEverything(t, h)
 		require.NoError(t, h.svc.AddLink(ctx, orig.ID, h.seedOpen().ID, ticket.LinkParentChild, staff))
-		got, err := h.svc.FollowUpOf(ctx, orig.ID)
+		got, err := h.svc.FollowUpOf(ctx, orig.ID, seeAll)
 		require.NoError(t, err)
 		require.Nil(t, got)
 	})
@@ -213,7 +213,7 @@ func TestFollowUpOf(t *testing.T) {
 		orig := closedWithEverything(t, h)
 		made, err := h.svc.CreateRequesterFollowUp(ctx, orig.ID, "GHD", ticket.ChannelWeb, reporterActor(orig), openAlways)
 		require.NoError(t, err)
-		got, err := h.svc.FollowUpOf(ctx, orig.ID)
+		got, err := h.svc.FollowUpOf(ctx, orig.ID, seeAll)
 		require.NoError(t, err)
 		require.Equal(t, &ticket.FollowUpRef{ID: made.ID, TrackingNumber: made.TrackingNumber}, got)
 	})
@@ -228,10 +228,43 @@ func TestFollowUpOf(t *testing.T) {
 		f := h.store.tickets[first.ID]
 		f.CreatedAt = time.Now().Add(-time.Hour)
 		h.store.tickets[first.ID] = f
-		got, err := h.svc.FollowUpOf(ctx, orig.ID)
+		got, err := h.svc.FollowUpOf(ctx, orig.ID, seeAll)
 		require.NoError(t, err)
 		require.Equal(t, second.ID, got.ID)
 	})
+}
+
+func seeAll(ticket.Ticket) (bool, error) { return true, nil }
+
+// The caller says which tickets the viewer may open. A follow-up link can point
+// at somebody else's ticket (migration 000064 marked every parent_child link),
+// and what the page is told must not name a ticket the viewer cannot see. The
+// newest one they CAN see is the answer; none visible is the same as none.
+func TestFollowUpOf_OnlyNamesATicketTheViewerMayOpen(t *testing.T) {
+	ctx := context.Background()
+	staff := ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff}
+	h := newHarness(t)
+	orig := closedWithEverything(t, h)
+	mine, err := h.svc.CreateFollowUp(ctx, orig.ID, "GHD", ticket.ChannelWeb, staff)
+	require.NoError(t, err)
+	foreign := h.seedOpen()
+	require.NoError(t, h.store.CreateLink(ctx, ticket.TicketLink{
+		SourceTicketID: orig.ID, TargetTicketID: foreign.ID, LinkType: ticket.LinkParentChild, FollowUp: true}))
+	f := h.store.tickets[foreign.ID]
+	f.CreatedAt = time.Now().Add(time.Hour) // newer than the real one
+	h.store.tickets[foreign.ID] = f
+
+	onlyMine := func(t ticket.Ticket) (bool, error) { return t.ID == mine.ID, nil }
+	got, err := h.svc.FollowUpOf(ctx, orig.ID, onlyMine)
+	require.NoError(t, err)
+	require.Equal(t, mine.ID, got.ID, "the foreign link is skipped even though it is newer")
+
+	got, err = h.svc.FollowUpOf(ctx, orig.ID, func(ticket.Ticket) (bool, error) { return false, nil })
+	require.NoError(t, err)
+	require.Nil(t, got, "nothing visible reads as no follow-up")
+
+	_, err = h.svc.FollowUpOf(ctx, orig.ID, func(ticket.Ticket) (bool, error) { return false, errStoreDown })
+	require.ErrorIs(t, err, errStoreDown)
 }
 
 // Item 5: an expired token is deleted, a live one is not.

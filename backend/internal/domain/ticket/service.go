@@ -454,10 +454,17 @@ func (s *Service) refuseSecondFollowUp(ctx context.Context, st Store, closedID u
 }
 
 // FollowUpOf is the follow-up of a closed ticket: the newest ticket the
-// follow-up action opened from it, or nil when there is none. It is what the
-// ticket page and the guest page ask so they stop offering a follow-up that
-// would be refused. A parent_child link made by hand is not a follow-up.
-func (s *Service) FollowUpOf(ctx context.Context, closedID uuid.UUID) (*FollowUpRef, error) {
+// follow-up action opened from it that the viewer may open, or nil when there
+// is none. It is what the ticket page and the guest page ask so they stop
+// offering a follow-up that would be refused. A parent_child link made by hand
+// is not a follow-up.
+//
+// canSee is the caller's view rule for the target, because only the caller
+// knows who is asking. A link marked follow_up can still point at somebody
+// else's ticket (the migration marked every parent_child link that existed),
+// and the answer names the ticket by id and tracking number, so a target the
+// viewer cannot open is skipped, and none left reads as no follow-up.
+func (s *Service) FollowUpOf(ctx context.Context, closedID uuid.UUID, canSee func(Ticket) (bool, error)) (*FollowUpRef, error) {
 	links, err := s.store.ListLinks(ctx, closedID)
 	if err != nil {
 		return nil, err
@@ -470,6 +477,11 @@ func (s *Service) FollowUpOf(ctx context.Context, closedID uuid.UUID) (*FollowUp
 		t, err := s.store.GetByID(ctx, l.TargetTicketID)
 		if err != nil {
 			return nil, err
+		}
+		if ok, err := canSee(t); err != nil {
+			return nil, err
+		} else if !ok {
+			continue
 		}
 		if newest == nil || t.CreatedAt.After(newest.CreatedAt) {
 			newest = &t

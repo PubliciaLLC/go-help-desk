@@ -203,7 +203,8 @@ func (s *Server) handleGuestGetTicket(w http.ResponseWriter, r *http.Request) {
 	// the route would refuse. Not which ticket: its link goes by mail.
 	var followUp *ticket.FollowUpRef
 	if s.tickets.IsClosed(t) {
-		if followUp, err = s.tickets.FollowUpOf(ctx, t.ID); err != nil {
+		if followUp, err = s.tickets.FollowUpOf(ctx, t.ID,
+			func(target ticket.Ticket) (bool, error) { return sameGuest(t, target), nil }); err != nil {
 			handleError(w, err)
 			return
 		}
@@ -223,6 +224,14 @@ func (s *Server) handleGuestGetTicket(w http.ResponseWriter, r *http.Request) {
 		"replies":            guestReplyView(ticket.VisibleReplies(replies, user.RoleUser)),
 		"has_follow_up":      followUp != nil,
 	}))
+}
+
+// sameGuest is whether target is a ticket of the same guest as t: no account,
+// and the same address. A guest holds no session, so this is the whole of
+// "could they open it" for a ticket other than the one their link names.
+func sameGuest(t, target ticket.Ticket) bool {
+	return target.ReporterUserID == nil && t.GuestEmail != nil && target.GuestEmail != nil &&
+		strings.EqualFold(*t.GuestEmail, *target.GuestEmail)
 }
 
 // guestJSON runs a guest's ticket response through the guest allowed list, the

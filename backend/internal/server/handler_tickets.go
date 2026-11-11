@@ -636,7 +636,8 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 	views[0].Requester = s.requesterFor(r.Context(), authmw.GetActor(r), t)
 	// A closed ticket says whether it already has a follow-up (#625).
 	if s.tickets.IsClosed(t) {
-		if views[0].FollowUp, err = s.tickets.FollowUpOf(r.Context(), t.ID); err != nil {
+		if views[0].FollowUp, err = s.tickets.FollowUpOf(r.Context(), t.ID,
+			func(target ticket.Ticket) (bool, error) { return s.canViewTicket(r, target) }); err != nil {
 			handleError(w, err)
 			return
 		}

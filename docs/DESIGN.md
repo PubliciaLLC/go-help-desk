@@ -337,8 +337,10 @@ Three doors, one creation path:
   types are reused; no new relation or table. The link row carries a
   `follow_up` flag (migration 000064): only the link the follow-up action wrote
   has it, and only such a link counts as a requester's one follow-up. A
-  `parent_child` link made by hand does not. Every `parent_child` link that
-  existed at the upgrade was marked, so what counted before still counts. A
+  `parent_child` link made by hand does not. Each `parent_child` link that
+  existed at the upgrade between two tickets of one requester (the same account
+  or the same guest address, which every real follow-up is) was marked, so
+  those still count; a link between different people's tickets was not. A
   requester seeing the link on either ticket sees only their own tickets.
 - **The original is not written:** still Closed, same replies and history, and a
   guest's links untouched.
@@ -383,7 +385,9 @@ Closed ticket carries `follow_up: {id, tracking_number}` when it already has one
 (the newest the follow-up action made from it; absent otherwise, and on a list),
 for every role, and the requester allowed list keeps it. The ticket page then
 shows the link and hides the follow-up button for a requester; staff keep the
-button, since they are not limited. The guest ticket response carries
+button, since they are not limited. Only a follow-up the viewer may open is
+named (the same view rule as the ticket itself; for a guest, a ticket of the
+same address): a flagged link to anyone else's ticket reads as no follow-up. The guest ticket response carries
 `has_follow_up`, a boolean and nothing else: the page says a follow-up exists
 and to look for the mail, and shows no link, because the guest's link to the new
 ticket goes by mail. A guest is told this once they hold a good link to a closed

@@ -27,15 +27,19 @@ const (
 	migration064Down = "migrations/000064_ticket_links_follow_up.down.sql"
 )
 
-// Migration 000064 adds ticket_links.follow_up (#625). It runs here against a
-// TEMP stand-in for ticket_links, verbatim:
+// Migration 000064 adds ticket_links.follow_up (#625). It runs here against
+// TEMP stand-ins for tickets and ticket_links, verbatim:
 //
-//   - every parent_child row that exists is backfilled TRUE, so what counted as
-//     a requester's follow-up before still counts;
+//   - a parent_child row whose child has the same reporting account, or the same
+//     guest address (any case), as its parent is backfilled TRUE, so every real
+//     follow-up keeps counting as a requester's one;
+//   - a parent_child row between two different people's tickets reads FALSE: it
+//     is not a follow-up, and flagged it would name someone else's ticket on the
+//     closed ticket's page;
 //   - every other link type reads FALSE;
 //   - a row inserted afterwards without the column is FALSE (a link made by hand);
 //   - the down migration removes the column again.
-func TestMigration064_BackfillsEveryExistingParentChildLink(t *testing.T) {
+func TestMigration064_BackfillsOnlyLinksBetweenOneRequestersTickets(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
 	ctx := context.Background()
@@ -44,8 +48,21 @@ func TestMigration064_BackfillsEveryExistingParentChildLink(t *testing.T) {
 	defer func() { _ = tx.Rollback() }()
 
 	for _, stmt := range []string{
-		`CREATE TEMP TABLE ticket_links (id int, link_type text) ON COMMIT DROP`,
-		`INSERT INTO ticket_links VALUES (1, 'parent_child'), (2, 'related_to'), (3, 'duplicate_of'), (4, 'caused_by'), (5, 'parent_child')`,
+		`CREATE TEMP TABLE tickets (id int, reporter_user_id int, guest_email text) ON COMMIT DROP`,
+		`INSERT INTO tickets VALUES
+			(1, 7, NULL), (2, 7, NULL), (3, 8, NULL),
+			(4, NULL, 'Ada@Example.test'), (5, NULL, 'ada@example.test'), (6, NULL, 'bob@example.test'),
+			(7, NULL, NULL), (8, NULL, NULL)`,
+		`CREATE TEMP TABLE ticket_links (id int, source_ticket_id int, target_ticket_id int, link_type text) ON COMMIT DROP`,
+		`INSERT INTO ticket_links VALUES
+			(1, 1, 2, 'parent_child'),
+			(2, 1, 3, 'parent_child'),
+			(3, 4, 5, 'parent_child'),
+			(4, 4, 6, 'parent_child'),
+			(5, 1, 4, 'parent_child'),
+			(6, 7, 8, 'parent_child'),
+			(7, 1, 2, 'related_to'),
+			(8, 1, 3, 'duplicate_of')`,
 	} {
 		_, err := tx.ExecContext(ctx, stmt)
 		require.NoError(t, err)
@@ -64,12 +81,20 @@ func TestMigration064_BackfillsEveryExistingParentChildLink(t *testing.T) {
 	}
 	require.NoError(t, rows.Err())
 	require.NoError(t, rows.Close())
-	require.Equal(t, map[int]bool{1: true, 2: false, 3: false, 4: false, 5: true}, flagged)
+	require.Equal(t, map[int]bool{
+		1: true,  // same reporting account
+		2: false, // two accounts
+		3: true,  // the same guest address, in another case
+		4: false, // two guests
+		5: false, // an account and a guest
+		6: false, // no requester on either: nothing says they are one person's
+		7: false, 8: false,
+	}, flagged)
 
-	_, err = tx.ExecContext(ctx, `INSERT INTO ticket_links (id, link_type) VALUES (6, 'parent_child')`)
+	_, err = tx.ExecContext(ctx, `INSERT INTO ticket_links (id, source_ticket_id, target_ticket_id, link_type) VALUES (9, 1, 2, 'parent_child')`)
 	require.NoError(t, err)
 	var f bool
-	require.NoError(t, tx.QueryRowContext(ctx, `SELECT follow_up FROM ticket_links WHERE id = 6`).Scan(&f))
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT follow_up FROM ticket_links WHERE id = 9`).Scan(&f))
 	require.False(t, f, "a link made after the migration, by hand, is not a follow-up")
 
 	execMigrationFile(t, ctx, tx, migration064Down, nil)
