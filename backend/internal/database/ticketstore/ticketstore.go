@@ -975,17 +975,45 @@ func TicketNotFoundError(id string) error {
 }
 
 // ListFiltered applies a ticket.Filter in a single statement. The visibility
-// mode arrives already resolved: this translates it, it does not decide it.
+// mode and the queue arrive already resolved: this translates them, it does not
+// decide them. Every other criterion is ANDed with them, so a filter can only
+// narrow what the caller may see.
 func (s *Store) ListFiltered(ctx context.Context, f ticket.Filter) ([]ticket.Ticket, error) {
+	return s.ListFilteredAt(ctx, f, time.Now())
+}
+
+// ListFilteredAt is ListFiltered with the instant the SLA filter and sort judge
+// outstanding targets by. ListFiltered passes the wall clock; a test passes a
+// fixed instant to put tickets exactly on the 80% and 100% boundaries.
+func (s *Store) ListFilteredAt(ctx context.Context, f ticket.Filter, now time.Time) ([]ticket.Ticket, error) {
+	sortKey, sortDir := f.ResolvedSort()
 	p := dbgen.ListTicketsFilteredParams{
-		Unrestricted: f.Visibility == ticket.VisibilityAll,
-		ReporterOnly: f.Visibility == ticket.VisibilityReporter,
-		ActorID:      f.ActorID,
-		StatusID:     database.NullUUID(f.StatusID),
-		CategoryID:   database.NullUUID(f.CategoryID),
+		Now:           now,
+		Sla:           string(f.SLA),
+		SortKey:       string(sortKey),
+		SortDir:       string(sortDir),
+		Unrestricted:  f.Visibility == ticket.VisibilityAll,
+		ReporterOnly:  f.Visibility == ticket.VisibilityReporter,
+		ActorID:       f.ActorID,
+		Queue:         queueName(f.Queue),
+		ExcludeClosed: f.ExcludeClosed,
+		// Arrays are never nil: the SQL guard is cardinality(), and an absent
+		// filter is an empty array, not a NULL one.
+		StatusIds:      f.AllStatusIDs(),
+		Priorities:     priorityNames(f.AllPriorities()),
+		SourceChannels: channelNames(f.SourceChannels),
+		CategoryID:     database.NullUUID(f.CategoryID),
+		TypeID:         database.NullUUID(f.TypeID),
+		ItemID:         database.NullUUID(f.ItemID),
 		// A NULL assignee filter means "any assignee", which is why this is a
 		// pointer rather than uuid.Nil — the latter is a real, if absent, value.
-		AssigneeUserID: database.NullUUID(f.AssigneeUserID),
+		AssigneeUserID:  database.NullUUID(f.AssigneeUserID),
+		AssigneeGroupID: database.NullUUID(f.AssigneeGroupID),
+		ReporterID:      database.NullUUID(f.ReporterID),
+		CreatedAfter:    database.NullTime(f.CreatedAfter),
+		CreatedBefore:   database.NullTime(f.CreatedBefore),
+		UpdatedAfter:    database.NullTime(f.UpdatedAfter),
+		UpdatedBefore:   database.NullTime(f.UpdatedBefore),
 		// Searching is whether a term was ASKED for, which is not the same as
 		// the tsquery being non-empty: "???" tokenises to nothing but is still
 		// a search, and must not quietly match every ticket.
@@ -995,8 +1023,8 @@ func (s *Store) ListFiltered(ctx context.Context, f ticket.Filter) ([]ticket.Tic
 		ResultLimit:     pageInt32(f.Limit),
 		ResultOffset:    pageInt32(f.Offset),
 	}
-	if f.Priority != nil {
-		p.Priority = sql.NullString{String: string(*f.Priority), Valid: true}
+	if r := strings.TrimSpace(f.Requester); r != "" {
+		p.RequesterPattern = sql.NullString{String: "%" + likeEscaper.Replace(r) + "%", Valid: true}
 	}
 
 	rows, err := s.q.ListTicketsFiltered(ctx, p)
@@ -1008,6 +1036,37 @@ func (s *Store) ListFiltered(ctx context.Context, f ticket.Filter) ([]ticket.Tic
 		out[i] = fromRow(ticketRow(r))
 	}
 	return out, nil
+}
+
+// likeEscaper makes %, _ and the escape character itself match literally in an
+// ILIKE pattern, so searching for "50%" finds "50%" rather than everyone. The
+// same replacer the user lookup uses.
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+func queueName(q ticket.Queue) string {
+	switch q {
+	case ticket.QueueMine:
+		return "mine"
+	case ticket.QueueUnassigned:
+		return "unassigned"
+	}
+	return "any"
+}
+
+func priorityNames(ps []ticket.Priority) []string {
+	out := make([]string, len(ps))
+	for i, p := range ps {
+		out[i] = string(p)
+	}
+	return out
+}
+
+func channelNames(cs []ticket.SourceChannel) []string {
+	out := make([]string, len(cs))
+	for i, c := range cs {
+		out[i] = string(c)
+	}
+	return out
 }
 
 // ── Guest access tokens ──────────────────────────────────────────────────────
