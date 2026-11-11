@@ -17,24 +17,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
 
-// GET /api/v1/tickets
-// Returns tickets relevant to the current user:
-//   - admin/staff: tickets assigned to them + tickets assigned to any of their groups
-//   - user: tickets they reported
-//
-// Optional query params:
-//   - assignee_group_id=<uuid> — tickets for a specific group (staff/admin only).
-//   - scope=mine|unassigned|all — admin-only scopes. "unassigned" returns tickets
-//     with no assignee user or group. "all" returns every ticket. Defaults to "mine".
-//   - scope=visible — staff/admin: every ticket the caller can see (all of them,
-//     or the staff scope when enforcement is on). A reporting user is unaffected.
-//
 // pageParams reads limit and offset from the query string.
 //
 // Every ticket list passed a hard-coded (100, 0). Past 100 tickets the older
@@ -69,264 +58,167 @@ func pageParams(r *http.Request) (limit, offset int) {
 	return limit, offset
 }
 
+// GET /api/v1/tickets
+//
+// Every list request is one query. The parameters are parsed and checked by the
+// domain (ticket.ParseListFilter and Filter.AllowedFor, which MCP's list_tickets
+// shares), this handler resolves what the caller may see and which queue they
+// are on, and the store answers with ListFiltered. Filters are ANDed with each
+// other and with visibility, so a filter can only narrow what the caller can
+// already see. See docs/DESIGN.md, Ticket Search and List filters.
+//
+// The parameters the handler itself reads:
+//   - scope=mine|unassigned|all|visible. The queue. "mine" (the default) is
+//     tickets assigned to the caller or to one of their groups, "unassigned" is
+//     tickets with neither, "all" and "visible" are every ticket the caller can
+//     see. Unassigned and all are administrators only. A staff member with
+//     scope enforcement on always gets what the scope admits, which is why
+//     "mine" does not narrow them; a requester always gets their own tickets.
+//   - limit and offset (pageParams).
+//
+// reporter_id, requester and assignee_group_id ignore scope: naming who or what
+// you are looking for already says which tickets, so the queue is "any". That
+// is what these parameters did when the first one present won; now they combine
+// with each other and with every other filter.
 func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
 	ctx := r.Context()
-	q := strings.TrimSpace(r.URL.Query().Get("q"))
-	scope := strings.TrimSpace(r.URL.Query().Get("scope"))
-	limit, offset := pageParams(r)
 
-	// Admin-only: filter all tickets by reporter user ID.
-	if ridStr := r.URL.Query().Get("reporter_id"); ridStr != "" {
-		if a.Role != user.RoleAdmin {
-			Error(w, http.StatusForbidden, "forbidden", "only admins can filter by reporter")
-			return
-		}
-		rid, err := uuid.Parse(ridStr)
-		if err != nil {
-			Error(w, http.StatusBadRequest, "bad_request", "invalid reporter_id")
-			return
-		}
-		var tickets []ticket.Ticket
-		if q != "" {
-			tickets, err = s.tickets.SearchByReporter(ctx, rid, q, limit, offset)
-		} else {
-			tickets, err = s.tickets.ListByReporter(ctx, rid, limit, offset)
-		}
+	f, err := ticket.ParseListFilter(r.URL.Query())
+	if err != nil {
+		writeFilterError(w, err)
+		return
+	}
+
+	// This refusal kept its own wording when the checks moved into the domain.
+	if a.Role == user.RoleUser && f.AssigneeGroupID != nil {
+		Error(w, http.StatusForbidden, "forbidden", "users cannot list group tickets")
+		return
+	}
+	if err := f.AllowedFor(a.Role, canSearchRequesters(a)); err != nil {
+		writeFilterError(w, err)
+		return
+	}
+
+	// Checked after the role, so a requester asking for sla is told it is not
+	// theirs to use, and not that the feature is off. Read only when the request
+	// needs it: a listing that does not touch SLA costs no extra query.
+	if f.SLA != "" || f.Sort == ticket.SortSLA {
+		on, err := s.adminSvc.SLAEnabled(ctx)
 		if err != nil {
 			handleError(w, err)
 			return
 		}
-		s.writeTickets(w, r, tickets)
+		if !on {
+			// An empty list would read as "nothing is breached".
+			Error(w, http.StatusBadRequest, "bad_request", "SLA tracking is off")
+			return
+		}
+	}
+
+	vis, err := s.TicketVisibility(ctx, a)
+	if err != nil {
+		handleError(w, err)
 		return
 	}
 
-	// Specific group filter (staff/admin only).
-	if gidStr := r.URL.Query().Get("assignee_group_id"); gidStr != "" {
-		if a.Role == user.RoleUser {
-			Error(w, http.StatusForbidden, "forbidden", "users cannot list group tickets")
-			return
-		}
-		gid, err := uuid.Parse(gidStr)
-		if err != nil {
-			Error(w, http.StatusBadRequest, "bad_request", "invalid assignee_group_id")
-			return
-		}
-		// Refusing only RoleUser was not enough. With scope enforced, the
-		// default listing and GET /tickets/{id} both refuse a ticket outside
-		// the caller's groups — and this branch handed the same tickets over to
-		// anyone who named the group. Group ids are listed to every staff
-		// member by GET /groups, so it was a filter, not a boundary. An OAuth
-		// client acts as staff through its service user, and that user is in
-		// whatever groups an administrator gave it (none, until they do),
-		// which used to make a group-less client every ticket assigned to any
-		// group.
-		if a.Role == user.RoleStaff && s.adminSvc.TicketScopeEnforced(ctx) {
-			scope, err := s.staffScopeFor(ctx, a)
-			if err != nil {
-				handleError(w, err)
-				return
-			}
-			if !slices.Contains(scope.GroupIDs, gid) {
-				Error(w, http.StatusForbidden, "forbidden",
-					"you are not a member of that group")
-				return
-			}
-		}
-		var tickets []ticket.Ticket
-		if q != "" {
-			tickets, err = s.tickets.SearchByAssigneeGroup(ctx, gid, q, limit, offset)
-		} else {
-			tickets, err = s.tickets.ListByAssigneeGroup(ctx, gid, limit, offset)
-		}
-		if err != nil {
-			handleError(w, err)
-			return
-		}
-		s.writeTickets(w, r, tickets)
-		return
-	}
-
-	// scope=visible: every ticket the caller can see, in one query, whatever
-	// queue they are looking at (#444). The search box sends it; the "Only
-	// <queue>" chip sends the queue's own scope instead.
-	//
-	// Visibility is not redefined here. Admins, and staff while scope
-	// enforcement is off, see everything (the same rule GET /tickets/{id}
-	// applies). Staff with enforcement on use the DESIGN.md staff scope query
-	// that already backs their default list. A reporting user falls through to
-	// the branch below and still gets only their own tickets.
-	if scope == "visible" && a.Role != user.RoleUser {
-		var (
-			tickets []ticket.Ticket
-			err     error
-		)
-		switch {
-		case a.Role == user.RoleStaff && s.adminSvc.TicketScopeEnforced(ctx):
-			if q != "" {
-				tickets, err = s.tickets.SearchVisibleToStaff(ctx, a.UserID, q, limit, offset)
-			} else {
-				tickets, err = s.tickets.ListVisibleToStaff(ctx, a.UserID, limit, offset)
-			}
-		case q != "":
-			tickets, err = s.tickets.SearchAll(ctx, q, limit, offset)
-		default:
-			tickets, err = s.tickets.ListAll(ctx, limit, offset)
-		}
-		if err != nil {
-			handleError(w, err)
-			return
-		}
-		s.writeTickets(w, r, tickets)
-		return
-	}
-
-	// Admin-only scopes: unassigned queue or everything.
-	if scope == "unassigned" || scope == "all" {
-		if a.Role != user.RoleAdmin {
+	// A group filter names which tickets, so scope does not apply to it, and
+	// neither do the refusals scope carries. Without enforcement any staff
+	// member may name any group, as they always could.
+	namesWho := f.ReporterID != nil || f.Requester != "" || f.AssigneeGroupID != nil
+	queue := ticket.QueueAny
+	if !namesWho {
+		scope := strings.TrimSpace(r.URL.Query().Get("scope"))
+		if (scope == "unassigned" || scope == "all") && a.Role != user.RoleAdmin {
 			Error(w, http.StatusForbidden, "forbidden", "only admins can use this scope")
 			return
 		}
-		var (
-			tickets []ticket.Ticket
-			err     error
-		)
-		switch scope {
-		case "unassigned":
-			if q != "" {
-				tickets, err = s.tickets.SearchUnassigned(ctx, q, limit, offset)
-			} else {
-				tickets, err = s.tickets.ListUnassigned(ctx, limit, offset)
-			}
-		case "all":
-			if q != "" {
-				tickets, err = s.tickets.SearchAll(ctx, q, limit, offset)
-			} else {
-				tickets, err = s.tickets.ListAll(ctx, limit, offset)
-			}
-		}
+		queue = queueFor(scope, vis)
+	}
+
+	// Refusing only RoleUser was not enough. With scope enforced, the default
+	// listing and GET /tickets/{id} both refuse a ticket outside the caller's
+	// groups, and naming the group handed the same tickets over: group ids are
+	// listed to every staff member by GET /groups, so it was a filter, not a
+	// boundary. An OAuth client acts as staff through its service user, and that
+	// user is in whatever groups an administrator gave it (none, until they do),
+	// which used to make a group-less client every ticket assigned to any group.
+	if f.AssigneeGroupID != nil && a.Role == user.RoleStaff && s.adminSvc.TicketScopeEnforced(ctx) {
+		scope, err := s.staffScopeFor(ctx, a)
 		if err != nil {
 			handleError(w, err)
 			return
 		}
-		s.writeTickets(w, r, tickets)
-		return
-	}
-
-	// Users only see their own reported tickets.
-	if a.Role == user.RoleUser {
-		var (
-			tickets []ticket.Ticket
-			err     error
-		)
-		if q != "" {
-			tickets, err = s.tickets.SearchByReporter(ctx, a.UserID, q, limit, offset)
-		} else {
-			tickets, err = s.tickets.ListByReporter(ctx, a.UserID, limit, offset)
-		}
-		if err != nil {
-			handleError(w, err)
+		if !slices.Contains(scope.GroupIDs, *f.AssigneeGroupID) {
+			Error(w, http.StatusForbidden, "forbidden", "you are not a member of that group")
 			return
 		}
-		s.writeTickets(w, r, tickets)
-		return
 	}
 
-	// With scope enforcement on, a staff member's default list is everything
-	// the scope model admits — including unassigned tickets in a category
-	// their groups cover. Without that the queue is invisible: nothing is
-	// assigned yet, so nobody can pick it up.
-	//
-	// Admins keep the existing path; they see everything either way.
-	if a.Role == user.RoleStaff && s.adminSvc.TicketScopeEnforced(ctx) {
-		var (
-			tickets []ticket.Ticket
-			err     error
-		)
-		if q != "" {
-			tickets, err = s.tickets.SearchVisibleToStaff(ctx, a.UserID, q, limit, offset)
-		} else {
-			tickets, err = s.tickets.ListVisibleToStaff(ctx, a.UserID, limit, offset)
-		}
-		if err != nil {
-			handleError(w, err)
-			return
-		}
-		s.writeTickets(w, r, tickets)
-		return
-	}
+	f.ActorID = a.UserID
+	f.Visibility = vis
+	f.Queue = queue
+	f.IncludeInternal = ticket.IncludeInternalFor(a.Role)
+	f.Limit, f.Offset = pageParams(r)
 
-	// Staff/admin (scope=mine): tickets assigned to them + tickets assigned to
-	// their groups.
-	//
-	// This branch merges 1+N queries, so the page window cannot be pushed down
-	// into each of them — applying limit and offset per query and concatenating
-	// returned limit×(1+groups) rows and skipped offset rows in every sublist
-	// independently. Each source is therefore read up to the end of the
-	// requested page, merged, and sliced once.
-	//
-	// The cost is bounded by the offset ceiling, and the indexes added in
-	// migration 21 cover the ordering.
-	window := offset + limit
-	all := make([]ticket.Ticket, 0, window)
-
-	var err error
-	var mine []ticket.Ticket
-	if q != "" {
-		mine, err = s.tickets.SearchByAssigneeUser(ctx, a.UserID, q, window, 0)
-	} else {
-		mine, err = s.tickets.ListByAssigneeUser(ctx, a.UserID, window, 0)
-	}
+	tickets, err := s.tickets.ListFiltered(ctx, f)
 	if err != nil {
 		handleError(w, err)
 		return
 	}
-	all = append(all, mine...)
+	s.writeTickets(w, r, tickets)
+}
 
-	groups, err := s.groups.ListGroupsForUser(ctx, a.UserID)
-	if err != nil {
+// queueFor is the queue a scope names for a caller of this role.
+//
+// A requester has no queues: their tickets are the ones they reported, which
+// visibility already says. Staff with scope enforcement on get the whole of
+// what the scope admits whatever they ask for, because an unassigned ticket in
+// a category their groups cover is theirs to pick up and no queue of "mine"
+// would show it. Everyone else: "mine" is the default, and a value this does
+// not know is "mine" too, as it always was.
+func queueFor(scope string, vis ticket.Visibility) ticket.Queue {
+	if vis == ticket.VisibilityReporter || vis == ticket.VisibilityScoped {
+		return ticket.QueueAny
+	}
+	switch scope {
+	case "unassigned":
+		return ticket.QueueUnassigned
+	case "all", "visible":
+		return ticket.QueueAny
+	}
+	return ticket.QueueMine
+}
+
+// canSearchRequesters says whether the caller may send the free-text
+// `requester` filter: always for a person at their browser, and for an API key
+// or OAuth client only if it holds requester_search:read.
+//
+// Free text over every ticket a credential can see maps names and addresses to
+// tickets in bulk, and directory search was taken from machine credentials
+// (#290), so an owner gives it back on purpose. It is checked here, on the
+// parameter, because the route is the same GET /tickets that tickets:read
+// opens: no router middleware can express it.
+func canSearchRequesters(a *authmw.Actor) bool {
+	return !a.Machine || auth.Allows(a.Scopes, auth.Scope{Resource: auth.ResourceRequesterSearch, Action: auth.ActionRead})
+}
+
+// writeFilterError answers a refused listing request with the status the
+// domain says it deserves.
+func writeFilterError(w http.ResponseWriter, err error) {
+	var fe *ticket.FilterError
+	if !errors.As(err, &fe) {
 		handleError(w, err)
 		return
 	}
-	seen := make(map[uuid.UUID]bool, len(mine))
-	for _, t := range mine {
-		seen[t.ID] = true
+	switch fe.Kind {
+	case ticket.FilterForbidden:
+		Error(w, http.StatusForbidden, "forbidden", fe.Msg)
+	case ticket.FilterMissingScope:
+		Error(w, http.StatusForbidden, "insufficient_scope", fe.Msg)
+	default:
+		Error(w, http.StatusBadRequest, "bad_request", fe.Msg)
 	}
-	for _, g := range groups {
-		var gTickets []ticket.Ticket
-		if q != "" {
-			gTickets, err = s.tickets.SearchByAssigneeGroup(ctx, g.ID, q, window, 0)
-		} else {
-			gTickets, err = s.tickets.ListByAssigneeGroup(ctx, g.ID, window, 0)
-		}
-		if err != nil {
-			handleError(w, err)
-			return
-		}
-		for _, t := range gTickets {
-			if !seen[t.ID] {
-				seen[t.ID] = true
-				all = append(all, t)
-			}
-		}
-	}
-
-	// Sorted here because the merge destroyed the per-query ordering, with the
-	// id as a tiebreaker: created_at alone is not unique, and without a
-	// tiebreaker two tickets sharing a timestamp can swap places between pages
-	// — showing one twice and hiding the other.
-	slices.SortFunc(all, func(x, y ticket.Ticket) int {
-		if c := y.CreatedAt.Compare(x.CreatedAt); c != 0 {
-			return c // newest first
-		}
-		return strings.Compare(x.ID.String(), y.ID.String())
-	})
-
-	if offset >= len(all) {
-		s.writeTickets(w, r, nil)
-		return
-	}
-	s.writeTickets(w, r, all[offset:min(offset+limit, len(all))])
 }
 
 // POST /api/v1/tickets
