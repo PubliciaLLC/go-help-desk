@@ -69,12 +69,27 @@ VALUES ($1, $2, $3, $4, $5, $6);
 SELECT * FROM sla_records WHERE ticket_id = $1 AND superseded_at IS NULL;
 
 -- name: UpdateSLARecord :exec
+-- Deprecated: every SLA write is keyed by record id since #623, and this one is
+-- keyed by ticket. It is a full-row read-modify-write with no production caller;
+-- a write computed from a record read earlier must be addressed to that record
+-- (see SetSLAFirstResponse, StampSLABreaches). Kept, not removed.
 UPDATE sla_records
 SET first_response_at = $2, resolved_at = $3,
     response_breached_at = $4, resolution_breached_at = $5
 WHERE ticket_id = $1 AND superseded_at IS NULL;
 
--- name: SetSLAFirstResponse :exec
+-- name: SetSLAFirstResponse :execrows
+-- Addressed by the RECORD's id, not the ticket's (#623). The caller read that
+-- record, computed its elapsed time from its clock and its targets from its
+-- policy, and the reading means nothing on any other record. A re-match
+-- (priority change, reopen restart) that committed in between has superseded
+-- it, so zero rows are affected, and the caller reads the current record and
+-- starts over. Keyed on the ticket, the write used to land on the NEW record
+-- with the OLD record's reading (or, when the re-match was still holding the
+-- old record's lock, to wait and then update nothing at all). A write that
+-- finds its record current but already filled still affects one row: it
+-- changes nothing, and is not mistaken for a lost race.
+--
 -- Marks the first response, freezes elapsed-toward-target as of that same
 -- moment, AND stamps a response breach if it is already late — all in ONE
 -- statement. COALESCE-guarded like StampSLABreaches below: it only ever
@@ -115,12 +130,13 @@ SET first_response_at = COALESCE(first_response_at, sqlc.arg(at)::timestamptz),
             THEN COALESCE(response_breached_at, sqlc.arg(at)::timestamptz)
         ELSE response_breached_at
     END
-WHERE ticket_id = $1 AND superseded_at IS NULL;
+WHERE id = $1 AND superseded_at IS NULL;
 
--- name: SetSLAResolved :exec
+-- name: SetSLAResolved :execrows
 -- The resolution-side twin of SetSLAFirstResponse: see its comment for why
--- the fact write and the breach stamp are one statement (#228), and why
--- every right-hand-side column reference here reads the PRE-UPDATE row.
+-- the fact write and the breach stamp are one statement (#228), why
+-- every right-hand-side column reference here reads the PRE-UPDATE row, and
+-- why it is addressed by record id (#623).
 UPDATE sla_records
 SET resolved_at = COALESCE(resolved_at, sqlc.arg(at)::timestamptz),
     resolution_elapsed_at_met_seconds = COALESCE(resolution_elapsed_at_met_seconds, sqlc.arg(elapsed_seconds)::bigint),
@@ -130,9 +146,9 @@ SET resolved_at = COALESCE(resolved_at, sqlc.arg(at)::timestamptz),
             THEN COALESCE(resolution_breached_at, sqlc.arg(at)::timestamptz)
         ELSE resolution_breached_at
     END
-WHERE ticket_id = $1 AND superseded_at IS NULL;
+WHERE id = $1 AND superseded_at IS NULL;
 
--- name: SetSLAResolvedAndFirstResponse :exec
+-- name: SetSLAResolvedAndFirstResponse :execrows
 -- #233: RecordResolved's own fold of TWO facts into one statement, the same
 -- way #228 folded each fact with its own breach decision. Before this,
 -- RecordResolved issued SetSLAResolved then SetSLAFirstResponse as two
@@ -145,6 +161,8 @@ WHERE ticket_id = $1 AND superseded_at IS NULL;
 -- response_breached_at. One statement makes that intermediate state
 -- impossible: both writes commit together, in the same row version, or
 -- neither does.
+--
+-- Addressed by record id, like SetSLAFirstResponse (#623).
 --
 -- Same COALESCE-guarded, first-writer-wins shape as SetSLAFirstResponse /
 -- SetSLAResolved, applied to both column pairs independently: each pair's
@@ -174,7 +192,7 @@ SET resolved_at = COALESCE(resolved_at, sqlc.arg(at)::timestamptz),
             THEN COALESCE(response_breached_at, sqlc.arg(at)::timestamptz)
         ELSE response_breached_at
     END
-WHERE ticket_id = $1 AND superseded_at IS NULL;
+WHERE id = $1 AND superseded_at IS NULL;
 
 -- name: ListSLABreachCandidates :many
 -- Tickets the breach sweep must evaluate: open, under a policy, with at least
@@ -222,7 +240,12 @@ ORDER BY t.created_at;
 SELECT * FROM sla_records
 WHERE ticket_id = ANY(sqlc.arg('ticket_ids')::uuid[]) AND superseded_at IS NULL;
 
--- name: StampSLABreaches :exec
+-- name: StampSLABreaches :execrows
+-- Addressed by the id of the record the caller evaluated, like SetSLAFirstResponse
+-- (#623): the breach was decided from that record's clock and policy, and means
+-- nothing on a record that replaced it. Zero rows is a superseded record, and the
+-- caller skips; the next sweep evaluates the new one.
+--
 -- Sets only the breach columns, and only where still NULL. Two evaluators
 -- racing on the same row cannot overwrite each other's stamp or, worse, the
 -- request path's first_response_at / resolved_at. A stamp, once set, is a
@@ -230,7 +253,7 @@ WHERE ticket_id = ANY(sqlc.arg('ticket_ids')::uuid[]) AND superseded_at IS NULL;
 UPDATE sla_records
 SET response_breached_at   = COALESCE(response_breached_at,   sqlc.narg(response_breached_at)::timestamptz),
     resolution_breached_at = COALESCE(resolution_breached_at, sqlc.narg(resolution_breached_at)::timestamptz)
-WHERE ticket_id = $1 AND superseded_at IS NULL;
+WHERE id = $1 AND superseded_at IS NULL;
 
 -- name: CountSLARecordsByCategory :one
 -- Deleting a category cascades to its SLA policies, and sla_records.policy_id

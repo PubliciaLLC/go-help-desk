@@ -2,9 +2,12 @@ package server
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/google/uuid"
+
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 )
 
 // auditName is what a diff id resolves to when an audit view is rendered
@@ -20,6 +23,9 @@ type auditNameKind int
 const (
 	auditNameStatus auditNameKind = iota
 	auditNameUser
+	auditNameCategory
+	auditNameType
+	auditNameItem
 )
 
 // auditNameFields are the diff keys whose ids are resolved, and what each
@@ -28,12 +34,16 @@ const (
 // says more than its id does. assignee_group_id is allow-listed but has no
 // lookup on purpose: only a group delete writes it, and the group is gone by
 // the time anyone reads the entry, so a lookup could never find a name and the
-// raw id is all there is to show. category_id and the like are neither written
-// to audit entries nor allow-listed today; they join here in the change that
-// allow-lists them.
+// raw id is all there is to show. category_id, type_id and item_id are written
+// by a reclassification (`classified`) and are allow-listed with it; a category,
+// type or item that has since been deleted has no name left, and keeps its id.
+// Their names are admin-written catalogue labels, never ticket content.
 var auditNameFields = map[string]auditNameKind{
 	"status_id":        auditNameStatus,
 	"assignee_user_id": auditNameUser,
+	"category_id":      auditNameCategory,
+	"type_id":          auditNameType,
+	"item_id":          auditNameItem,
 }
 
 // auditNames holds the resolved names for one page of audit entries.
@@ -47,15 +57,18 @@ var auditNameFields = map[string]auditNameKind{
 //
 // The lookups are batched for the whole page: one read of the statuses table
 // if any status id is present, one query for all the user ids. Never one per
-// entry.
+// entry. A category, type or item is read by id, once per distinct id on the
+// page: only a reclassification writes them, so a page holds few.
 type auditNames struct {
-	statuses map[string]string // id -> name
-	users    map[string]auditName
+	statuses  map[string]string // id -> name
+	users     map[string]auditName
+	catalogue map[string]string // category, type and item id -> name
 }
 
 func (s *Server) resolveAuditNames(ctx context.Context, maskRequesters bool, diffs ...map[string]any) auditNames {
 	statusIDs := map[string]bool{}
 	userIDs := map[uuid.UUID]bool{}
+	catalogue := map[uuid.UUID]auditNameKind{}
 	for _, d := range diffs {
 		for key, kind := range auditNameFields {
 			id, ok := diffID(d[key])
@@ -67,11 +80,39 @@ func (s *Server) resolveAuditNames(ctx context.Context, maskRequesters bool, dif
 				statusIDs[id.String()] = true
 			case auditNameUser:
 				userIDs[id] = true
+			default:
+				catalogue[id] = kind
 			}
 		}
 	}
 
-	res := auditNames{statuses: map[string]string{}, users: map[string]auditName{}}
+	res := auditNames{statuses: map[string]string{}, users: map[string]auditName{}, catalogue: map[string]string{}}
+	for id, kind := range catalogue {
+		var name string
+		var err error
+		switch kind {
+		case auditNameCategory:
+			var c category.Category
+			c, err = s.categories.GetCategory(ctx, id)
+			name = c.Name
+		case auditNameType:
+			var t category.Type
+			t, err = s.categories.GetType(ctx, id)
+			name = t.Name
+		case auditNameItem:
+			var it category.Item
+			it, err = s.categories.GetItem(ctx, id)
+			name = it.Name
+		}
+		switch {
+		case err == nil:
+			res.catalogue[id.String()] = name
+		case errors.Is(err, category.ErrNotFound):
+			// Deleted: the id is all there is to show.
+		default:
+			slog.ErrorContext(ctx, "resolving audit catalogue name failed", "error", err)
+		}
+	}
 	// A failed lookup costs the names, not the page: the ids are still there to
 	// show, as for an actor whose lookup fails.
 	if len(statusIDs) > 0 {
@@ -122,6 +163,10 @@ func (n auditNames) forEntry(before, after map[string]any) map[string]auditName 
 				name = auditName{Name: st}
 			case auditNameUser:
 				name, found = n.users[id.String()]
+			default:
+				var label string
+				label, found = n.catalogue[id.String()]
+				name = auditName{Name: label}
 			}
 			if !found {
 				continue
