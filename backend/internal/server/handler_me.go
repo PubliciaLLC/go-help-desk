@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -59,6 +60,12 @@ type meUser struct {
 	// APIKeyMaxLifetimeYears is the longest a new key may live: 1 to 5, or -1
 	// for no limit (#450). The create forms cap the expiry with it.
 	APIKeyMaxLifetimeYears int `json:"api_key_max_lifetime_years"`
+	// SLAEnabled is whether SLA tracking is on, for staff and administrators
+	// only: the ticket list offers the SLA filter and sort only while it is.
+	// Absent for a requester, who is never shown anything about SLA, and when
+	// the setting could not be read (a client must treat absent as unknown, not
+	// as off). Not on the public /site, which anyone can read.
+	SLAEnabled *bool `json:"sla_enabled,omitempty"`
 }
 
 // switchState is one email switch as it applies to this person: whether they
@@ -82,6 +89,11 @@ func (s *Server) meView(ctx context.Context, u user.User) meUser {
 	v.CanCreateAPIKeys = u.Role == user.RoleAdmin || (u.Role == user.RoleStaff && s.adminSvc.StaffCanCreateAPIKeys(ctx))
 	if u.Role == user.RoleUser {
 		return v
+	}
+	if on, err := s.adminSvc.SLAEnabled(ctx); err != nil {
+		slog.WarnContext(ctx, "reading SLA enabled setting failed; omitting sla_enabled from /me", "error", err)
+	} else {
+		v.SLAEnabled = &on
 	}
 	ov := s.adminSvc.StaffEmailOverrides(ctx)
 	prefs := notification.StaffPrefs{Assigned: u.EmailNotifyAssigned, Activity: u.EmailNotifyActivity, Group: u.EmailNotifyGroup}

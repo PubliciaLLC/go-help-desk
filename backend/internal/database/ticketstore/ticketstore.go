@@ -1006,72 +1006,73 @@ func TicketNotFoundError(id string) error {
 // decide them. Every other criterion is ANDed with them, so a filter can only
 // narrow what the caller may see.
 func (s *Store) ListFiltered(ctx context.Context, f ticket.Filter) ([]ticket.Ticket, error) {
-	res, err := s.SearchFilteredAt(ctx, f, time.Now())
-	return res.Tickets, err
+	return s.ListFilteredAt(ctx, f, time.Now())
 }
 
 // ListFilteredAt is ListFiltered with the instant the SLA filter and sort judge
 // outstanding targets by. ListFiltered passes the wall clock; a test passes a
 // fixed instant to put tickets exactly on the 80% and 100% boundaries.
 func (s *Store) ListFilteredAt(ctx context.Context, f ticket.Filter, now time.Time) ([]ticket.Ticket, error) {
-	res, err := s.SearchFilteredAt(ctx, f, now)
+	res, err := s.searchFilteredAt(ctx, f, now)
 	return res.Tickets, err
 }
 
-// SearchFiltered is ListFiltered that also says what became of the reply search.
-func (s *Store) SearchFiltered(ctx context.Context, f ticket.Filter) (ticket.ListResult, error) {
-	return s.SearchFilteredAt(ctx, f, time.Now())
+// ListFilteredWithMeta is ListFiltered plus what became of a request to search
+// replies, in ticket.ReplySearchMeta (GET /tickets turns it into headers):
+//
+//   - Replies were not asked for, or the search has no words: the zero value.
+//   - They were searched: Searched is true.
+//   - They could not be, because the server is still filling and indexing them
+//     after an upgrade: Searched is false and IndexBuilding is true. The reply arm
+//     is SKIPPED, not run as a scan: without the index a scan parses every
+//     reply, which at the sizes this is built for is minutes, and a half-filled
+//     column would give answers that are silently incomplete.
+//   - The reply arm ran out of its time limit (two seconds for the whole
+//     statement): Searched is false. The statement is cancelled and answered
+//     again without the reply arm, so the caller still gets the tickets that
+//     match on their own text.
+//
+// A page chosen without the reply arm must show no reply excerpts
+// (ReplySearchMeta.ExcerptsApply).
+func (s *Store) ListFilteredWithMeta(ctx context.Context, f ticket.Filter) (ticket.ListResult, error) {
+	return s.searchFilteredAt(ctx, f, time.Now())
 }
 
-// SearchFilteredAt decides whether the reply arm may run, runs the list, and
-// drops the arm if it is too slow.
-//
-//   - Replies are searched only once the background fill and both indexes are
-//     done (replyindex.Ready). Before that the search SKIPS replies rather than
-//     scanning them: without the index a scan parses every reply, which at the
-//     sizes this is built for is minutes, and a half-filled column would give
-//     answers that are silently incomplete. The page says it is still being
-//     prepared.
-//   - With replies, the whole statement runs under a time limit (two seconds).
-//     When it runs out the statement is cancelled and answered again without
-//     the reply arm, so the caller still gets the tickets that match on their
-//     own text, and RepliesTimedOut says what is missing.
-func (s *Store) SearchFilteredAt(ctx context.Context, f ticket.Filter, now time.Time) (ticket.ListResult, error) {
-	var res ticket.ListResult
-	var err error
+func (s *Store) searchFilteredAt(ctx context.Context, f ticket.Filter, now time.Time) (ticket.ListResult, error) {
 	if !f.SearchReplies || buildSearchTSQuery(f.Query) == "" {
 		f.SearchReplies = false
-		res.Tickets, err = s.list(ctx, f, now)
-		return res, err
+		return s.listFilteredAt(ctx, f, now)
 	}
 
 	ready, err := s.q.ReplySearchReady(ctx)
 	if err != nil {
-		return res, fmt.Errorf("checking reply search: %w", err)
+		return ticket.ListResult{}, fmt.Errorf("checking reply search: %w", err)
 	}
 	if !ready {
 		f.SearchReplies = false
-		res.Replies = ticket.RepliesPreparing
-		res.Tickets, err = s.list(ctx, f, now)
+		res, err := s.listFilteredAt(ctx, f, now)
+		res.Replies = ticket.ReplySearchMeta{Searched: ptr(false), IndexBuilding: true}
 		return res, err
 	}
 
 	limited, cancel := context.WithTimeout(ctx, s.replyTimeout)
 	defer cancel()
-	res.Tickets, err = s.list(limited, f, now)
+	res, err := s.listFilteredAt(limited, f, now)
 	switch {
 	case err == nil:
-		res.Replies = ticket.RepliesSearched
+		res.Replies = ticket.ReplySearchMeta{Searched: ptr(true)}
 		return res, nil
 	case ctx.Err() == nil && isTimeout(err):
 		// Our limit, not the caller's: answer without the reply arm.
 		f.SearchReplies = false
-		res.Replies = ticket.RepliesTimedOut
-		res.Tickets, err = s.list(ctx, f, now)
+		res, err = s.listFilteredAt(ctx, f, now)
+		res.Replies = ticket.ReplySearchMeta{Searched: ptr(false)}
 		return res, err
 	}
-	return res, err
+	return ticket.ListResult{}, err
 }
+
+func ptr[T any](v T) *T { return &v }
 
 // isTimeout says whether err is a statement cancelled by a context deadline,
 // however the driver words it.
@@ -1083,8 +1084,8 @@ func isTimeout(err error) bool {
 	return errors.As(err, &pg) && pg.Code == "57014" // query_canceled
 }
 
-// list runs ListTicketsFiltered for f exactly as it stands.
-func (s *Store) list(ctx context.Context, f ticket.Filter, now time.Time) ([]ticket.Ticket, error) {
+// listFilteredAt runs ListTicketsFiltered for f exactly as it stands.
+func (s *Store) listFilteredAt(ctx context.Context, f ticket.Filter, now time.Time) (ticket.ListResult, error) {
 	sortKey, sortDir := f.ResolvedSort()
 	p := dbgen.ListTicketsFilteredParams{
 		Now:           now,
@@ -1127,17 +1128,43 @@ func (s *Store) list(ctx context.Context, f ticket.Filter, now time.Time) ([]tic
 		ResultLimit:     pageInt32(f.Limit),
 		ResultOffset:    pageInt32(f.Offset),
 	}
-	// The caller's groups go in as an array, not a subquery, for the queue
-	// "mine" only: see the comment on mine_group_ids in the query for why the
-	// planner needs to be handed them. Never nil, like the other arrays.
+	// The caller's groups, and what those groups cover, go in as plain arrays and
+	// not as subqueries: see mine_group_ids and the scoped arms in the query for
+	// why the planner needs to be handed them. Never nil, like the other arrays.
+	// Read only for the cases that use them: the queue "mine", and staff under
+	// scope enforcement.
 	p.MineGroupIds = []uuid.UUID{}
-	if f.Queue == ticket.QueueMine {
+	p.ScopeGroupIds = []uuid.UUID{}
+	p.ScopeCategoryIds = []uuid.UUID{}
+	p.ScopeTypeCategoryIds = []uuid.UUID{}
+	p.ScopeTypeIds = []uuid.UUID{}
+	scoped := f.Visibility == ticket.VisibilityScoped
+	if f.Queue == ticket.QueueMine || scoped {
 		groups, err := s.q.ListGroupsForUser(ctx, f.ActorID)
 		if err != nil {
-			return nil, fmt.Errorf("listing the caller's groups: %w", err)
+			return ticket.ListResult{}, fmt.Errorf("listing the caller's groups: %w", err)
 		}
 		for _, g := range groups {
-			p.MineGroupIds = append(p.MineGroupIds, g.ID)
+			if f.Queue == ticket.QueueMine {
+				p.MineGroupIds = append(p.MineGroupIds, g.ID)
+			}
+			if scoped {
+				p.ScopeGroupIds = append(p.ScopeGroupIds, g.ID)
+			}
+		}
+	}
+	if scoped {
+		rows, err := s.q.ListStaffScopeRows(ctx, f.ActorID)
+		if err != nil {
+			return ticket.ListResult{}, fmt.Errorf("listing the caller's group scopes: %w", err)
+		}
+		for _, r := range rows {
+			if r.TypeID.Valid {
+				p.ScopeTypeCategoryIds = append(p.ScopeTypeCategoryIds, r.CategoryID)
+				p.ScopeTypeIds = append(p.ScopeTypeIds, r.TypeID.UUID)
+			} else {
+				p.ScopeCategoryIds = append(p.ScopeCategoryIds, r.CategoryID)
+			}
 		}
 	}
 	if r := strings.TrimSpace(f.Requester); r != "" {
@@ -1146,13 +1173,13 @@ func (s *Store) list(ctx context.Context, f ticket.Filter, now time.Time) ([]tic
 
 	rows, err := s.q.ListTicketsFiltered(ctx, p)
 	if err != nil {
-		return nil, fmt.Errorf("listing filtered tickets: %w", err)
+		return ticket.ListResult{}, fmt.Errorf("listing filtered tickets: %w", err)
 	}
 	out := make([]ticket.Ticket, len(rows))
 	for i, r := range rows {
 		out[i] = fromRow(ticketRow(r))
 	}
-	return out, nil
+	return ticket.ListResult{Tickets: out}, nil
 }
 
 // ReplyMatches reads, for the tickets of one page, the newest reply each matched

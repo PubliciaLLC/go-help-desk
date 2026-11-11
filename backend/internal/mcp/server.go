@@ -996,7 +996,7 @@ func (s *Server) handleListTickets(ctx context.Context, req mcpgo.CallToolReques
 	// about them.
 	f.IncludeInternal = ticket.IncludeInternalFor(caller.Role)
 
-	res, err := s.tickets.SearchFiltered(ctx, f)
+	res, err := s.tickets.ListFilteredWithMeta(ctx, f)
 	if err != nil {
 		return storeErr(ctx, "list tickets", err)
 	}
@@ -1008,7 +1008,7 @@ func (s *Server) handleListTickets(ctx context.Context, req mcpgo.CallToolReques
 	// Excerpts only when the replies were searched: a page chosen without them
 	// must not look as if it had been.
 	var matches map[uuid.UUID]ticket.ReplyMatch
-	if res.ReplyMatchesApply() {
+	if res.Replies.ExcerptsApply() {
 		ids := make([]uuid.UUID, len(tickets))
 		for i, tk := range tickets {
 			ids[i] = tk.ID
@@ -1042,14 +1042,15 @@ func (s *Server) handleListTickets(ctx context.Context, req mcpgo.CallToolReques
 
 // repliesNote says, for a search that asked for replies and did not get them
 // searched, why the list may be shorter than the caller expects.
-func repliesNote(r ticket.RepliesStatus) string {
-	switch r {
-	case ticket.RepliesPreparing:
+func repliesNote(m ticket.ReplySearchMeta) string {
+	switch {
+	case m.Searched == nil || *m.Searched:
+		return ""
+	case m.IndexBuilding:
 		return "Replies were not searched: reply search is still being prepared after an upgrade. The tickets listed match on subject, description or number only. Try again later."
-	case ticket.RepliesTimedOut:
+	default:
 		return "Replies were not searched: the search took too long. The tickets listed match on subject, description or number only. A more specific search may finish in time."
 	}
-	return ""
 }
 
 func (s *Server) handleAssignTicket(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {

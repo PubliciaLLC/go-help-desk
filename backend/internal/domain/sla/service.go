@@ -289,7 +289,7 @@ func (s *Service) SweepBreaches(ctx context.Context, tickets TicketGetter, now t
 // a handful of rows, read once and indexed by id rather than one GetPolicy
 // per record. Called after a ticket list has already been paged and sliced,
 // never before, so it never computes a status that gets thrown away (see
-// #183 and the "Ticket list paging" note in CLAUDE.md).
+// #183 and the "Ticket list paging" note in DESIGN.md).
 func (s *Service) StatusesFor(ctx context.Context, tickets []ticket.Ticket, now time.Time) (map[uuid.UUID]Status, error) {
 	if len(tickets) == 0 {
 		return map[uuid.UUID]Status{}, nil

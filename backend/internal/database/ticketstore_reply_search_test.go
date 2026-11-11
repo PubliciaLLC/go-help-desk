@@ -11,11 +11,13 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/database/categorystore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/groupstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/replyindex"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	"github.com/publiciallc/go-help-desk/backend/internal/testutil"
@@ -491,12 +493,12 @@ func TestReplySearch_MatchQueryCanUseItsIndexes(t *testing.T) {
 			// A long limit: with the alternatives switched off the plan can be slow,
 			// and a statement cancelled by the limit would end this transaction.
 			ts := ticketstore.New(dbgen.New(rec)).WithReplyLimits(ticketstore.DefaultReplyCap, time.Minute)
-			res, err := ts.SearchFiltered(ctx, ticket.Filter{
+			res, err := ts.ListFilteredWithMeta(ctx, ticket.Filter{
 				ActorID: f.staff.ID, Visibility: ticket.VisibilityAll, Limit: 50,
 				Query: wordPublic, SearchReplies: true, IncludeInternal: true,
 			})
 			require.NoError(t, err)
-			require.Equal(t, ticket.RepliesSearched, res.Replies)
+			requireSearched(t, res.Replies)
 			// The first statement recorded is the readiness check; the list is the last.
 			plan := rec.plans[len(rec.plans)-1]
 			require.Contains(t, plan, tc.index, "plan:\n%s", plan)
@@ -519,11 +521,10 @@ func TestReplySearch_SkippedWhilePreparing(t *testing.T) {
 	ts := ticketstore.New(dbgen.New(tx))
 	fl := ticket.Filter{ActorID: f.staff.ID, Visibility: ticket.VisibilityAll, Limit: 50, Query: wordSubject, SearchReplies: true, IncludeInternal: true}
 
-	res, err := ts.SearchFiltered(ctx, fl)
+	res, err := ts.ListFilteredWithMeta(ctx, fl)
 	require.NoError(t, err)
-	require.Equal(t, ticket.RepliesPreparing, res.Replies)
-	require.False(t, res.RepliesSearched())
-	require.False(t, res.ReplyMatchesApply())
+	requirePreparing(t, res.Replies)
+	require.False(t, res.Replies.ExcerptsApply())
 	var ids []uuid.UUID
 	for _, tk := range res.Tickets {
 		ids = append(ids, tk.ID)
@@ -532,9 +533,9 @@ func TestReplySearch_SkippedWhilePreparing(t *testing.T) {
 
 	// A word that only a reply holds finds nothing yet, not an error.
 	fl.Query = wordPublic
-	res, err = ts.SearchFiltered(ctx, fl)
+	res, err = ts.ListFilteredWithMeta(ctx, fl)
 	require.NoError(t, err)
-	require.Equal(t, ticket.RepliesPreparing, res.Replies)
+	requirePreparing(t, res.Replies)
 	require.Empty(t, res.Tickets)
 	rollback()
 
@@ -548,10 +549,10 @@ func TestReplySearch_SkippedWhilePreparing(t *testing.T) {
 	f = newReplySearchFixture(t, dbgen.New(tx))
 	ts = ticketstore.New(dbgen.New(tx))
 	fl.ActorID = f.staff.ID
-	res, err = ts.SearchFiltered(ctx, fl)
+	res, err = ts.ListFilteredWithMeta(ctx, fl)
 	require.NoError(t, err)
-	require.Equal(t, ticket.RepliesSearched, res.Replies)
-	require.True(t, res.RepliesSearched())
+	requireSearched(t, res.Replies)
+	require.True(t, res.Replies.ExcerptsApply())
 	require.NotEmpty(t, res.Tickets, "the same search finds the reply-only ticket once ready")
 }
 
@@ -568,11 +569,10 @@ func TestReplySearch_TimeLimitDropsTheReplyArm(t *testing.T) {
 
 	fl := ticket.Filter{ActorID: f.staff.ID, Visibility: ticket.VisibilityAll, Limit: 50, Query: wordSubject, SearchReplies: true, IncludeInternal: true}
 	// A limit that has passed before the statement starts.
-	res, err := ticketstore.New(q).WithReplyLimits(ticketstore.DefaultReplyCap, time.Nanosecond).SearchFiltered(ctx, fl)
+	res, err := ticketstore.New(q).WithReplyLimits(ticketstore.DefaultReplyCap, time.Nanosecond).ListFilteredWithMeta(ctx, fl)
 	require.NoError(t, err)
-	require.Equal(t, ticket.RepliesTimedOut, res.Replies)
-	require.False(t, res.RepliesSearched())
-	require.False(t, res.ReplyMatchesApply(), "no excerpts for a page chosen without replies")
+	requireTimedOut(t, res.Replies)
+	require.False(t, res.Replies.ExcerptsApply(), "no excerpts for a page chosen without replies")
 	var ids []uuid.UUID
 	for _, tk := range res.Tickets {
 		ids = append(ids, tk.ID)
@@ -582,15 +582,14 @@ func TestReplySearch_TimeLimitDropsTheReplyArm(t *testing.T) {
 	// The caller's own cancelled context is the caller's, not a time limit.
 	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
-	_, err = ticketstore.New(q).SearchFiltered(cancelled, fl)
+	_, err = ticketstore.New(q).ListFilteredWithMeta(cancelled, fl)
 	require.Error(t, err)
 
 	// Not asked for: nothing to flag.
 	fl.SearchReplies = false
-	res, err = ticketstore.New(q).WithReplyLimits(ticketstore.DefaultReplyCap, time.Nanosecond).SearchFiltered(ctx, fl)
+	res, err = ticketstore.New(q).WithReplyLimits(ticketstore.DefaultReplyCap, time.Nanosecond).ListFilteredWithMeta(ctx, fl)
 	require.NoError(t, err)
-	require.Equal(t, ticket.RepliesNotRequested, res.Replies)
-	require.True(t, res.RepliesSearched())
+	require.Equal(t, ticket.ReplySearchMeta{}, res.Replies, "replies not asked for: nothing to say")
 }
 
 // The cap on reply matches is applied AFTER the viewer's visibility. If it were
@@ -612,9 +611,9 @@ func TestReplySearch_CapIsAppliedToWhatTheViewerMaySee(t *testing.T) {
 	run := func(role user.Role, vis ticket.Visibility, actor uuid.UUID) map[uuid.UUID]bool {
 		fl := ticket.Filter{ActorID: actor, Visibility: vis, Limit: 50, Query: wordPublic, SearchReplies: true,
 			IncludeInternal: ticket.IncludeInternalFor(role)}
-		res, err := ts.SearchFiltered(context.Background(), fl)
+		res, err := ts.ListFilteredWithMeta(context.Background(), fl)
 		require.NoError(t, err)
-		require.Equal(t, ticket.RepliesSearched, res.Replies)
+		requireSearched(t, res.Replies)
 		got := map[uuid.UUID]bool{}
 		for _, tk := range res.Tickets {
 			got[tk.ID] = true
@@ -640,4 +639,107 @@ func deleteInternalNotes(t *testing.T, tx *sql.Tx) {
 	n, err := res.RowsAffected()
 	require.NoError(t, err)
 	require.Greater(t, n, int64(0))
+}
+
+// What the store says about a reply search, in ticket.ReplySearchMeta (the REST
+// handler turns it into X-Replies-Searched and X-Reply-Index).
+func requireSearched(t *testing.T, m ticket.ReplySearchMeta) {
+	t.Helper()
+	require.NotNil(t, m.Searched)
+	require.True(t, *m.Searched)
+	require.False(t, m.IndexBuilding)
+}
+
+func requirePreparing(t *testing.T, m ticket.ReplySearchMeta) {
+	t.Helper()
+	require.NotNil(t, m.Searched)
+	require.False(t, *m.Searched, "not searched")
+	require.True(t, m.IndexBuilding, "because the index is still being built")
+}
+
+func requireTimedOut(t *testing.T, m ticket.ReplySearchMeta) {
+	t.Helper()
+	require.NotNil(t, m.Searched)
+	require.False(t, *m.Searched, "not searched")
+	require.False(t, m.IndexBuilding, "the index is ready; the search was too slow")
+}
+
+// The reply arm repeats the scoped-staff rule of the main query (as the same
+// arrays: groups, whole categories, one type of a category). If the two drifted,
+// a staff member's search would find replies of tickets they may not see, or miss
+// ones they may. The main query still filters by the rule, so the first can only
+// show up as a wasted cap; the second is a missed ticket, and this is what holds
+// it: every kind of scope, and what lies outside each.
+func TestReplySearch_ScopedStaffFindsExactlyWhatTheirScopeAdmits(t *testing.T) {
+	testutil.EnsureReplySearchReady(t)
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+	f := newReplySearchFixture(t, q)
+	ctx := context.Background()
+	cs := categorystore.New(q)
+	gs := groupstore.New(q)
+
+	member := user.User{ID: uuid.New(), Email: "rs-scoped@example.com", DisplayName: "scoped", Role: user.RoleStaff,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	require.NoError(t, userstore.New(q).Create(ctx, member))
+	catX := category.Category{ID: uuid.New(), Name: "RSX", SortOrder: 2, Active: true}
+	catY := category.Category{ID: uuid.New(), Name: "RSY", SortOrder: 3, Active: true}
+	typeY1 := category.Type{ID: uuid.New(), CategoryID: catY.ID, Name: "Y1", SortOrder: 1, Active: true}
+	typeY2 := category.Type{ID: uuid.New(), CategoryID: catY.ID, Name: "Y2", SortOrder: 2, Active: true}
+	require.NoError(t, cs.CreateCategory(ctx, catX))
+	require.NoError(t, cs.CreateCategory(ctx, catY))
+	require.NoError(t, cs.CreateType(ctx, typeY1))
+	require.NoError(t, cs.CreateType(ctx, typeY2))
+	g := group.Group{ID: uuid.New(), Name: "RSGroup"}
+	require.NoError(t, gs.Create(ctx, g))
+	require.NoError(t, gs.AddMember(ctx, g.ID, member.ID))
+	require.NoError(t, gs.AddScope(ctx, group.GroupScope{GroupID: g.ID, CategoryID: catX.ID}))                     // all of X
+	require.NoError(t, gs.AddScope(ctx, group.GroupScope{GroupID: g.ID, CategoryID: catY.ID, TypeID: &typeY1.ID})) // one type of Y
+
+	const word = "gallimaufry"
+	n := 0
+	mk := func(subject string, mutate func(*ticket.Ticket)) uuid.UUID {
+		n++
+		at := time.Now().UTC().Add(time.Duration(n) * time.Second)
+		seq, err := f.ts.NextSeq(ctx)
+		require.NoError(t, err)
+		reporter := f.other.ID
+		tk := ticket.Ticket{
+			ID: uuid.New(), TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2026, seq),
+			Subject: subject, Description: "nothing relevant", DescriptionFormat: ticket.TextFormatPlain,
+			SourceChannel: ticket.ChannelWeb, CategoryID: f.cat.ID, Priority: ticket.PriorityMedium, StatusID: f.status.ID,
+			ReporterUserID: &reporter, CreatedAt: at, UpdatedAt: at,
+		}
+		mutate(&tk)
+		require.NoError(t, f.ts.Create(ctx, tk))
+		f.newReply(t, tk, "about the "+word, false, at)
+		return tk.ID
+	}
+	in := map[uuid.UUID]bool{
+		mk("whole category", func(tk *ticket.Ticket) { tk.CategoryID = catX.ID }):                          true,
+		mk("the covered type", func(tk *ticket.Ticket) { tk.CategoryID, tk.TypeID = catY.ID, &typeY1.ID }): true,
+		mk("assigned to the group", func(tk *ticket.Ticket) { tk.AssigneeGroupID = &g.ID }):                true,
+		mk("assigned to them", func(tk *ticket.Ticket) { tk.AssigneeUserID = &member.ID }):                 true,
+		mk("reported by them", func(tk *ticket.Ticket) { tk.ReporterUserID = &member.ID }):                 true,
+		mk("the other type", func(tk *ticket.Ticket) { tk.CategoryID, tk.TypeID = catY.ID, &typeY2.ID }):   false,
+		mk("typeless in the typed category", func(tk *ticket.Ticket) { tk.CategoryID = catY.ID }):          false,
+		mk("nobody's", func(tk *ticket.Ticket) {}):                                                         false,
+	}
+
+	res, err := f.ts.ListFilteredWithMeta(ctx, ticket.Filter{
+		ActorID: member.ID, Visibility: ticket.VisibilityScoped, Limit: 50,
+		Query: word, SearchReplies: true, IncludeInternal: true,
+	})
+	require.NoError(t, err)
+	requireSearched(t, res.Replies)
+	got := map[uuid.UUID]bool{}
+	for _, tk := range res.Tickets {
+		got[tk.ID] = true
+	}
+	for id, want := range in {
+		require.Equal(t, want, got[id], "ticket %s", id)
+	}
+	require.Len(t, got, 5)
 }

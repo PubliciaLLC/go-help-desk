@@ -460,7 +460,7 @@ func (f *fakeStore) ListFiltered(context.Context, ticket.Filter) ([]ticket.Ticke
 	return nil, nil
 }
 
-func (f *fakeStore) SearchFiltered(context.Context, ticket.Filter) (ticket.ListResult, error) {
+func (f *fakeStore) ListFilteredWithMeta(context.Context, ticket.Filter) (ticket.ListResult, error) {
 	return ticket.ListResult{}, nil
 }
 

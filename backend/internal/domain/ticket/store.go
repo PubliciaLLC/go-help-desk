@@ -123,11 +123,9 @@ type Store interface {
 	ListVisibleToStaff(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Ticket, error)
 	SearchVisibleToStaff(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error)
 	ListFiltered(ctx context.Context, f Filter) ([]Ticket, error)
-	// SearchFiltered is ListFiltered that also says what became of the reply
-	// search: skipped while the server is still preparing it, or dropped because
-	// it ran past its time limit. Either way the tickets are those matching on
-	// their own text, and a reply excerpt must not be shown for them.
-	SearchFiltered(ctx context.Context, f Filter) (ListResult, error)
+	// ListFilteredWithMeta is ListFiltered plus what the query could not do
+	// about reply text. ListFiltered is the same call without it.
+	ListFilteredWithMeta(ctx context.Context, f Filter) (ListResult, error)
 	// ReplyMatches reads, for the tickets of one page of a ListFiltered result,
 	// the reply each matched through: at most one per ticket, absent for a ticket
 	// that did not match through a reply. It takes the same Filter, so

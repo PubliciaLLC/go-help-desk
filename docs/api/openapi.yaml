@@ -3155,18 +3155,26 @@ paths:
           group sees nothing then. It can list a group's tickets with
           assignee_group_id only for a group its user belongs to while
           enforcement is on, and for any group while it is off.
-        Four parameters can change the listing. reporter_id (admin only) is
-        checked first, then assignee_group_id, then scope=visible (staff and
-        admin: every ticket the caller can see; ignored for a reporting user),
-        then scope=unassigned or scope=all (admin only). The first one present wins. Any other scope
-        value is ignored and the default listing is used.
+        Every request is one query. Filters combine with AND, and each one can only
+        narrow what the caller may already see: a filter that names a group,
+        category, account or requester outside the caller's scope matches nothing,
+        and an id that names nothing gives an empty list. Repeatable parameters
+        (status_id, priority, source_channel) are sent as repeated keys, at most 20
+        values each; values of one key are ORed.
+        scope picks the queue and is ANDed with the filters: mine (the default),
+        unassigned and all (admin only), visible (every ticket the caller can see).
+        Any other value is mine. When reporter_id, requester or assignee_group_id
+        is present the queue is "any" and scope is not consulted, so those
+        parameters combine with each other and with every other filter (reporter_id
+        and assignee_group_id together used to drop the group).
         q searches by tracking number prefix, subject and description (full-text
-        search). Results are newest first. With q they are ordered by relevance
-        first and then newest first, except for the default listing of an
-        administrator, or of staff while scope enforcement is off, which merges
-        several sources and stays newest first. The
-        response is a bare array with no
-        total and no next link, so page with limit and offset.
+        search). With q the results are ordered by relevance first and then newest
+        first, on every queue; before 1.3.0 the default listing of an administrator,
+        or of staff while scope enforcement is off, was newest first. sort replaces
+        relevance. Without q and without sort the order is newest first.
+        A requester may filter and sort only by what they are sent; any other filter
+        or sort is 403 forbidden. The response is a bare array with no total and no
+        next link, so page with limit and offset.
       tags: ['Tickets']
       x-ghd-handler: handleListTickets
       security:
@@ -3191,20 +3199,186 @@ paths:
         - name: reporter_id
           in: query
           required: false
-          description: Only tickets this account reported. Admin only.
+          description: Only tickets this account reported. Staff and administrators (403 for a reporting user); staff see only what their scope admits. Needs only tickets:read.
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - name: requester
+          in: query
+          required: false
+          description: >-
+            Free text, 2 to 254 characters after trimming, matched anywhere and ignoring case in the
+            reporting account's name or email and in the ticket's guest name and email (deleted accounts
+            included). Staff and administrators in a session; an API key or OAuth client also needs the
+            requester_search:read scope, otherwise 403 insufficient_scope. A reporting user gets 403 forbidden.
+          schema:
+            type: string
+            minLength: 2
+            maxLength: 254
+        - name: created_after
+          in: query
+          required: false
+          description: Only tickets created at or after this instant (RFC 3339). Must be before created_before.
+          schema:
+            type: string
+            format: date-time
+        - name: created_before
+          in: query
+          required: false
+          description: Only tickets created before this instant (RFC 3339, exclusive).
+          schema:
+            type: string
+            format: date-time
+        - name: updated_after
+          in: query
+          required: false
+          description: Only tickets updated at or after this instant (RFC 3339). Staff and administrators; 403 for a reporting user, who is never sent updated_at.
+          schema:
+            type: string
+            format: date-time
+        - name: updated_before
+          in: query
+          required: false
+          description: Only tickets updated before this instant (RFC 3339, exclusive). Staff and administrators.
+          schema:
+            type: string
+            format: date-time
+        - name: priority
+          in: query
+          required: false
+          style: form
+          explode: true
+          description: Only tickets with one of these priorities. Repeat the key for several.
+          schema:
+            type: array
+            maxItems: 20
+            items:
+              {type: string, enum: [critical, high, medium, low]}
+        - name: category_id
+          in: query
+          required: false
+          description: Only tickets in this category, including every type and item under it.
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - name: type_id
+          in: query
+          required: false
+          description: Only tickets of this type.
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - name: item_id
+          in: query
+          required: false
+          description: Only tickets of this item.
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - name: assignee_user_id
+          in: query
+          required: false
+          description: Only tickets assigned to this account. Staff and administrators; 403 for a reporting user.
           schema:
             $ref: '#/components/schemas/Uuid'
         - name: assignee_group_id
           in: query
           required: false
-          description: Only tickets assigned to this group. Staff must belong to the group when ticket scope enforcement is on.
+          description: Only tickets assigned to this group. Staff and administrators (403 for a reporting user). Staff must belong to the group when ticket scope enforcement is on.
           schema:
             $ref: '#/components/schemas/Uuid'
+        - name: status_id
+          in: query
+          required: false
+          style: form
+          explode: true
+          description: Only tickets in one of these statuses. Repeat the key for several.
+          schema:
+            type: array
+            maxItems: 20
+            items:
+              $ref: '#/components/schemas/Uuid'
+        - name: include_closed
+          in: query
+          required: false
+          description: "true (the default) or false, which leaves out the Closed system status. Ignored when status_id is given."
+          schema:
+            type: boolean
+            default: true
+        - name: source_channel
+          in: query
+          required: false
+          style: form
+          explode: true
+          description: Only tickets that arrived by one of these channels. Staff and administrators; 403 for a reporting user.
+          schema:
+            type: array
+            maxItems: 20
+            items:
+              {type: string, enum: [web, api, mcp, guest, phone]}
+        - name: sla
+          in: query
+          required: false
+          description: >-
+            Only tickets whose SLA indicator shows this state. Staff and administrators; 403 for a reporting
+            user. 400 while SLA tracking is off.
+          schema:
+            type: string
+            enum: [breached, at_risk]
+        - name: search_replies
+          in: query
+          required: false
+          description: >-
+            true or false (the default is false for the API). Accepted with q to also search reply text;
+            any other value is 400. A ticket then also matches when ONE reply holds every word (words
+            found in different replies do not combine). Staff and administrators search public replies and
+            internal notes; a requester, and any role not recognised, searches public replies only, whatever
+            the request says. Ranking looks at the 2,000 newest matching replies the caller may see, and the
+            whole search runs under a two-second limit. When replies could not be searched (the reply index
+            is still being built after an upgrade, or the limit passed) the answer is the tickets that match
+            on their own text, and the X-Replies-Searched and X-Reply-Index headers say so.
+          schema:
+            type: boolean
+            default: false
+        - name: sort
+          in: query
+          required: false
+          description: >-
+            The column to order by. Without it a search with q is ranked by relevance and everything else is
+            newest first; relevance is not accepted here. For priority and sla, asc is most urgent first.
+            A requester may use number, subject, status, priority and created; updated and sla are 403
+            forbidden for them. sla is 400 while SLA tracking is off. Every sort ends with created_at
+            descending and the id, so pages are stable.
+          schema:
+            type: string
+            enum: [number, subject, status, priority, sla, created, updated]
+        - name: order
+          in: query
+          required: false
+          description: >-
+            asc or desc. Without it each column's natural direction applies: created and updated newest
+            first, the rest asc. Ignored without sort, but an unknown value is still 400.
+          schema:
+            type: string
+            enum: [asc, desc]
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Offset'
       responses:
         '200':
           description: The caller's tickets, in the order described above, as a bare array (never null).
+          headers:
+            X-Replies-Searched:
+              description: >-
+                Sent only when search_replies=true was asked for and the server knows the answer. "false"
+                means replies were not fully searched (the time cap was hit, or the reply index is not ready), so
+                the results match ticket text only. The page shows a notice. Absent otherwise.
+              schema:
+                type: string
+                enum: ['true', 'false']
+            X-Reply-Index:
+              description: >-
+                Sent only when search_replies=true was asked for. "building" means the reply index is not ready
+                yet. Absent otherwise. The API sets no CORS headers (the app is same-origin), so a browser page
+                reads both headers without Access-Control-Expose-Headers.
+              schema:
+                type: string
+                enum: [building]
           content:
             application/json:
               schema:
@@ -3213,8 +3387,11 @@ paths:
                   $ref: '#/components/schemas/TicketView'
         '400':
           description: |
-            `bad_request`: invalid reporter_id or invalid assignee_group_id (not a
-            UUID).
+            `bad_request`: `invalid <param>` for a value that is not a UUID, an unknown
+            enum value, an unparseable instant or a bad boolean; `created_after must be
+            before created_before` (and the same for updated); `too many <param> values
+            (max 20)`; `requester must be 2 to 254 characters`; `invalid sort` or `invalid
+            order`; `SLA tracking is off` for sla or sort=sla while tracking is off.
           content:
             application/json:
               schema:
@@ -3225,9 +3402,12 @@ paths:
           description: |
             Refused by the middleware (text/plain): the role or MFA or scope check
             failed. Or refused by the handler (application/json, `forbidden`):
-            only admins can filter by reporter; users cannot list group tickets;
+            users cannot list group tickets; `<param> is not available to requesters`
+            for a staff-only filter; `sort by <column> is not available to requesters`;
             you are not a member of that group (staff, scope enforcement on);
-            only admins can use this scope (scope=unassigned or scope=all).
+            only admins can use this scope (scope=unassigned or scope=all). Or
+            `insufficient_scope` (application/json): `requester` from an API key or OAuth
+            client that does not carry the requester_search:read scope.
           content:
             text/plain:
               schema:
@@ -10955,6 +11135,13 @@ components:
             administrator, for staff only while staff_can_create_api_keys is on,
             never for a requester. Present only on GET /me and PATCH
             /me/email-preferences.
+        sla_enabled:
+          type: boolean
+          description: >-
+            Whether SLA tracking is on. Present only on GET /me and PATCH /me/email-preferences, only for
+            staff and administrators, and only when the setting could be read: absent means unknown, not off.
+            A requester never gets it, and it is not on the public GET /site. The ticket list offers the sla
+            filter and sort only while it is true; both answer 400 while it is false.
         email_notifications:
           type: object
           description: |

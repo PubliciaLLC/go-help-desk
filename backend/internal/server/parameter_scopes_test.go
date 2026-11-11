@@ -191,12 +191,18 @@ func goFiles(t *testing.T, roots []string, authDir string) []string {
 // through another such name. That covers
 //   - consts and vars, exported or not, so a chain through an unexported
 //     intermediate is followed;
-//   - top-level functions (no receiver) whose whole body is one return
-//     statement that mentions it, so auth.RequesterSearchScope() counts.
+//   - functions and methods, of any length, so auth.RequesterSearchScope(), a
+//     helper that builds the scope in a few statements, and a method on a
+//     credentials type all count.
 //
-// A function with more in it (ScopesForRole, All, WithinRole) is not followed.
-// They mention the scope because they are the catalogue and the role table,
-// and every caller of those would otherwise look like a handler check.
+// What separates a helper from the catalogue is not its length but what else it
+// names: a declaration is followed only if it names no other Resource*
+// constant. ScopesForRole and WithinRole name ResourceTickets and the rest,
+// and `resources` and `writable` do too, so they are not followed, and neither
+// is anything that reaches the scope only through them (All, ParseScope). Every
+// caller of those would otherwise look like a handler check. The failure mode
+// of this rule is a false "production uses it", which fails loudly naming the
+// test that is required; it never hides a missing check.
 //
 // Names declared in other packages cannot be followed this way, and unexported
 // names cannot be reached from outside auth, so they only matter as links.
@@ -239,25 +245,40 @@ func authAliases(t *testing.T, authDir string, p parameterScope) map[string]bool
 					decls = append(decls, dc)
 				}
 			case *ast.FuncDecl:
-				if d.Recv != nil || d.Body == nil || len(d.Body.List) != 1 {
-					continue
-				}
-				if ret, ok := d.Body.List[0].(*ast.ReturnStmt); ok {
-					dc := decl{names: []string{d.Name.Name}}
-					for _, r := range ret.Results {
-						dc.parts = append(dc.parts, r)
-					}
-					decls = append(decls, dc)
+				// A method's name is what a selector says (auth.X.Method()),
+				// so it is followed the same way.
+				if d.Body != nil {
+					decls = append(decls, decl{names: []string{d.Name.Name}, parts: []ast.Node{d.Body}})
 				}
 			}
 		}
+	}
+	// The other resources' constants: naming one marks a declaration as the
+	// catalogue or the role table, not as a way to ask for this scope.
+	others := map[string]bool{}
+	for _, dc := range decls {
+		for _, n := range dc.names {
+			if strings.HasPrefix(n, "Resource") && n != p.resourceConst {
+				others[n] = true
+			}
+		}
+	}
+	namesOther := func(n ast.Node) bool {
+		found := false
+		ast.Inspect(n, func(n ast.Node) bool {
+			if id, ok := n.(*ast.Ident); ok {
+				found = found || others[id.Name]
+			}
+			return !found
+		})
+		return found
 	}
 	// Repeat until nothing new is found, so a chain of any length is followed.
 	for changed := true; changed; {
 		changed = false
 		for _, dc := range decls {
 			for _, part := range dc.parts {
-				if !mentions(part, p, names) {
+				if !mentions(part, p, names) || namesOther(part) {
 					continue
 				}
 				for _, n := range dc.names {
@@ -374,23 +395,38 @@ func TestCheckParameterScope_States(t *testing.T) {
 		authUnexported   = authDecl + "\nvar xSearchScope = ResourceXSearch\n"
 		handlerViaConst  = "package y\n\nfunc h() { _ = auth.ResourceXSearch }\n"
 		// An unexported link in the chain, and a getter function.
-		authViaPrivate    = authDecl + "\nvar xSearchScope = ResourceXSearch\n\nvar XSearchViaPrivate = xSearchScope\n"
-		authGetter        = authDecl + "\nfunc XSearchScope() string { return ResourceXSearch + \":read\" }\n"
-		authGetterViaFn   = authDecl + "\nfunc xSearch() string { return ResourceXSearch }\n\nfunc XSearchScope() string { return xSearch() + \":read\" }\n"
-		authCatalogue     = authDecl + "\nfunc ScopesFor(role string) []string {\n\tswitch role {\n\tcase \"staff\":\n\t\treturn []string{ResourceXSearch}\n\t}\n\treturn nil\n}\n"
-		handlerViaPriv    = "package y\n\nfunc h() { _ = auth.XSearchViaPrivate }\n"
-		handlerViaGetter  = "package y\n\nfunc h() { _ = auth.XSearchScope() }\n"
-		handlerViaCatlg   = "package y\n\nfunc h() { _ = auth.ScopesFor(\"staff\") }\n"
-		handlerMessage    = "package y\n\nvar errMsg = \"this credential does not carry the x_search:read scope\"\n"
-		handlerViaAlias   = "package y\n\nfunc h() { _ = auth.XSearchScope }\n"
-		handlerViaAlias2  = "package y\n\nfunc h() { _ = auth.XSearchAgain }\n"
-		handlerViaKey     = "package y\n\nfunc h() { _ = auth.XSearchKey }\n"
-		handlerViaLiteral = "package y\n\nfunc h() { _ = \"x_search:read\" }\n"
-		handlerUnrelated  = "package y\n\nfunc h() { _ = auth.ResourceTickets }\n"
-		commentOnly       = "package y\n\n// x_search:read and ResourceXSearch are mentioned here only.\nfunc h() {}\n"
-		goodTest          = "package server\n\nimport \"testing\"\n\nfunc TestHandlerNeedsScope(t *testing.T) { _ = \"x_search:read\" }\n"
-		emptyTest         = "package server\n\nimport \"testing\"\n\nfunc TestHandlerNeedsScope(t *testing.T) {}\n"
-		renamedTest       = "package server\n\nimport \"testing\"\n\nfunc TestSomethingElse(t *testing.T) { _ = \"x_search:read\" }\n"
+		authViaPrivate  = authDecl + "\nvar xSearchScope = ResourceXSearch\n\nvar XSearchViaPrivate = xSearchScope\n"
+		authGetter      = authDecl + "\nfunc XSearchScope() string { return ResourceXSearch + \":read\" }\n"
+		authGetterViaFn = authDecl + "\nfunc xSearch() string { return ResourceXSearch }\n\nfunc XSearchScope() string { return xSearch() + \":read\" }\n"
+		// The role table names the other resources too, which is what tells it
+		// from a helper for this scope (see authAliases).
+		authOther     = authDecl + "\nconst ResourceOther = \"other\"\n"
+		authCatalogue = authOther + "\nfunc ScopesFor(role string) []string {\n\tswitch role {\n\tcase \"staff\":\n\t\treturn []string{ResourceXSearch, ResourceOther}\n\t}\n\treturn nil\n}\n"
+		// A one-statement function is not a helper if it names another resource.
+		authOneReturnCatalogue = authOther + "\nfunc Everything() []string { return []string{ResourceXSearch, ResourceOther} }\n"
+		// The list of every resource, and a function that only reaches the
+		// scope through it.
+		authViaList = authOther + "\nvar resources = []string{ResourceXSearch, ResourceOther}\n\nfunc All() []string {\n\tout := []string{}\n\tout = append(out, resources...)\n\treturn out\n}\n"
+		// Helpers of the shapes Fable's review of #640 found missed: a
+		// multi-statement function, and a method.
+		authMultiStatement   = authDecl + "\ntype Scope struct{ Resource, Action string }\n\nfunc XSearchScope() Scope {\n\ts := Scope{ResourceXSearch, \"read\"}\n\treturn s\n}\n"
+		authMethod           = authDecl + "\ntype Granted []string\n\nfunc (g Granted) XSearch() bool {\n\tneed := ResourceXSearch + \":read\"\n\tfor _, s := range g {\n\t\tif s == need {\n\t\t\treturn true\n\t\t}\n\t}\n\treturn false\n}\n"
+		handlerViaMethod     = "package y\n\nfunc h() { _ = auth.Granted(nil).XSearch() }\n"
+		handlerViaEverything = "package y\n\nfunc h() { _ = auth.Everything() }\n"
+		handlerViaAll        = "package y\n\nfunc h() { _ = auth.All() }\n"
+		handlerViaPriv       = "package y\n\nfunc h() { _ = auth.XSearchViaPrivate }\n"
+		handlerViaGetter     = "package y\n\nfunc h() { _ = auth.XSearchScope() }\n"
+		handlerViaCatlg      = "package y\n\nfunc h() { _ = auth.ScopesFor(\"staff\") }\n"
+		handlerMessage       = "package y\n\nvar errMsg = \"this credential does not carry the x_search:read scope\"\n"
+		handlerViaAlias      = "package y\n\nfunc h() { _ = auth.XSearchScope }\n"
+		handlerViaAlias2     = "package y\n\nfunc h() { _ = auth.XSearchAgain }\n"
+		handlerViaKey        = "package y\n\nfunc h() { _ = auth.XSearchKey }\n"
+		handlerViaLiteral    = "package y\n\nfunc h() { _ = \"x_search:read\" }\n"
+		handlerUnrelated     = "package y\n\nfunc h() { _ = auth.ResourceTickets }\n"
+		commentOnly          = "package y\n\n// x_search:read and ResourceXSearch are mentioned here only.\nfunc h() {}\n"
+		goodTest             = "package server\n\nimport \"testing\"\n\nfunc TestHandlerNeedsScope(t *testing.T) { _ = \"x_search:read\" }\n"
+		emptyTest            = "package server\n\nimport \"testing\"\n\nfunc TestHandlerNeedsScope(t *testing.T) {}\n"
+		renamedTest          = "package server\n\nimport \"testing\"\n\nfunc TestSomethingElse(t *testing.T) { _ = \"x_search:read\" }\n"
 	)
 	// The tree mirrors the real one: auth, the server tests, and any other
 	// package ("newpkg"), none of them on a list the guard was told about.
@@ -424,6 +460,12 @@ func TestCheckParameterScope_States(t *testing.T) {
 		{"a chain through an unexported intermediate", files{"auth/a.go": authViaPrivate, "newpkg/a.go": handlerViaPriv}, guardFails},
 		{"an exported function that returns the scope", files{"auth/a.go": authGetter, "newpkg/a.go": handlerViaGetter}, guardFails},
 		{"a getter through an unexported function", files{"auth/a.go": authGetterViaFn, "newpkg/a.go": handlerViaGetter}, guardFails},
+		// Fable's review of #640: what separates a helper from the catalogue is
+		// what else it names, not how many statements it has.
+		{"a helper of several statements", files{"auth/a.go": authMultiStatement, "newpkg/a.go": handlerViaGetter}, guardFails},
+		{"a method", files{"auth/a.go": authMethod, "newpkg/a.go": handlerViaMethod}, guardFails},
+		{"a one-statement function that names another resource is the catalogue", files{"auth/a.go": authOneReturnCatalogue, "newpkg/a.go": handlerViaEverything}, guardPending},
+		{"a function that reaches the scope only through the list of every resource", files{"auth/a.go": authViaList, "newpkg/a.go": handlerViaAll}, guardPending},
 		{"an alias of an alias", files{"auth/a.go": authAliasOfAlias, "newpkg/a.go": handlerViaAlias2}, guardFails},
 		{"an alias declared as a literal", files{"auth/a.go": authLiteralAlias, "newpkg/a.go": handlerViaKey}, guardFails},
 

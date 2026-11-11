@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	migration061Up   = "migrations/000061_reply_search.up.sql"
-	migration061Down = "migrations/000061_reply_search.down.sql"
+	migration062Up   = "migrations/000062_reply_search.up.sql"
+	migration062Down = "migrations/000062_reply_search.down.sql"
 )
 
 // applyMigration runs a migration file in a transaction and commits it, so the
@@ -59,7 +59,7 @@ func replyTSV(t *testing.T, ctx context.Context, db *sql.DB, id string) *string 
 	return v
 }
 
-// Migration 000061 adds ticket_replies.body_tsv and the trigger that keeps it
+// Migration 000062 adds ticket_replies.body_tsv and the trigger that keeps it
 // current (reply search). It runs in an isolated database because the down and
 // up files lock ticket_replies, which other packages' tests write to.
 //
@@ -71,7 +71,7 @@ func replyTSV(t *testing.T, ctx context.Context, db *sql.DB, id string) *string 
 //   - the server's own fill (which sets body_tsv) does not fire the trigger;
 //   - down drops the column, trigger, function and both indexes, and loses no
 //     reply text.
-func TestMigration061_ReplySearchColumn(t *testing.T) {
+func TestMigration062_ReplySearchColumn(t *testing.T) {
 	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 	ctx := context.Background()
@@ -93,14 +93,14 @@ func TestMigration061_ReplySearchColumn(t *testing.T) {
 
 	t.Run("up does not rewrite the table and leaves old rows NULL", func(t *testing.T) {
 		tk := repliesFixture(t, ctx, db.SQL)
-		applyMigration(t, ctx, db.SQL, migration061Down)
+		applyMigration(t, ctx, db.SQL, migration062Down)
 		require.False(t, hasColumn(), "down drops the column")
 		require.False(t, hasTrigger(), "and the trigger")
 		old := addReply(t, ctx, db.SQL, tk, "written under 000060")
 
 		var before, after uint32
 		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT relfilenode::int8 FROM pg_class WHERE oid = 'ticket_replies'::regclass`).Scan(&before))
-		applyMigration(t, ctx, db.SQL, migration061Up)
+		applyMigration(t, ctx, db.SQL, migration062Up)
 		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT relfilenode::int8 FROM pg_class WHERE oid = 'ticket_replies'::regclass`).Scan(&after))
 		require.Equal(t, before, after, "a rewrite gives the table a new file; adding a nullable column must not")
 
@@ -145,14 +145,14 @@ func TestMigration061_ReplySearchColumn(t *testing.T) {
 			_, err := db.SQL.ExecContext(ctx, stmt)
 			require.NoError(t, err)
 		}
-		applyMigration(t, ctx, db.SQL, migration061Down)
+		applyMigration(t, ctx, db.SQL, migration062Down)
 		var n int
 		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM pg_indexes WHERE indexname IN ('ticket_replies_body_tsv_idx', 'ticket_replies_created_at_idx')`).Scan(&n))
 		require.Zero(t, n)
 		var body string
 		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT body FROM ticket_replies WHERE id = $1`, id).Scan(&body))
 		require.Equal(t, "keep this text", body)
-		applyMigration(t, ctx, db.SQL, migration061Up)
+		applyMigration(t, ctx, db.SQL, migration062Up)
 	})
 }
 

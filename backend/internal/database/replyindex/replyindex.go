@@ -1,7 +1,7 @@
 // Package replyindex gets reply search ready on a database that already holds
 // replies, while the server is running.
 //
-// Migration 000061 adds ticket_replies.body_tsv and a trigger that fills it for
+// Migration 000062 adds ticket_replies.body_tsv and a trigger that fills it for
 // every new or edited reply, and nothing else, so it is instant at any size.
 // This package does the rest, in the background:
 //

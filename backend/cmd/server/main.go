@@ -529,7 +529,7 @@ func run() error {
 	// The opt-in weekly release check (#170). Does nothing, and makes no
 	// request, unless an administrator turned update_check_enabled on.
 	go updatecheck.New(adminSvc, slog.Default()).Run(sweepCtx)
-	// Fills the search column of the replies that existed before migration 000061
+	// Fills the search column of the replies that existed before migration 000062
 	// and builds its indexes, in the background, so an upgrade of a large
 	// database does not hold up the first request. Returns once reply search is
 	// ready, which on a database that is already prepared is at once. Until then
