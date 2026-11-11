@@ -33,6 +33,11 @@ export interface User {
   /** The longest a new API key may live, in years (1 to 5), or -1 for no limit
    *  (#450). Only on /me; absent reads as the default of 2. */
   api_key_max_lifetime_years?: number
+  /** Whether SLA tracking is on. Only on /me, only for staff and
+   *  administrators. Absent means unknown (a requester, or the server could not
+   *  read the setting), never off: the ticket list shows its SLA filter,
+   *  column and sort only when this is true. */
+  sla_enabled?: boolean
 }
 
 export interface EmailSwitchState {

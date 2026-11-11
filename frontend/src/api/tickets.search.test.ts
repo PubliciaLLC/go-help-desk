@@ -51,19 +51,28 @@ describe('searchTickets', () => {
     await expect(searchTickets({ limit: 50, offset: 0 })).resolves.toMatchObject({ tickets: [] })
   })
 
+  // No header is unknown. It is neither "searched" nor "not searched", and the
+  // index is neither building nor ready.
   it('a plain answer has nothing to say about the reply search', async () => {
     wire()
-    await expect(searchTickets({ limit: 50, offset: 0 })).resolves.toEqual({
-      tickets: [],
-      repliesSearched: true,
-      replyIndexReady: true,
-    })
+    const r = await searchTickets({ limit: 50, offset: 0 })
+    expect(r.tickets).toEqual([])
+    expect(r.repliesSearched).toBeUndefined()
+    expect(r.replyIndex).toBeUndefined()
   })
 
-  // The wire shape of these two is the one thing this PR could not read from
-  // the backend (the REST handler is being built in parallel). They are read in
-  // one place, here, so reconciling them is a change to this function and its
-  // test only.
+  it.each([
+    ['true', true],
+    ['false', false],
+    ['maybe', undefined],
+  ])('reads X-Replies-Searched: %s', async (value, want) => {
+    wire({ headers: { 'x-replies-searched': value } })
+    const r = await searchTickets({ limit: 50, offset: 0 })
+    expect(r.repliesSearched).toBe(want)
+  })
+
+  // The two headers are the REST handler's contract (search: REST). Both come
+  // back only when the request asked for reply search.
   it('reads "replies were not fully searched" from X-Replies-Searched', async () => {
     wire({ headers: { 'x-replies-searched': 'false' } })
     await expect(searchTickets({ limit: 50, offset: 0 })).resolves.toMatchObject({ repliesSearched: false })
@@ -71,7 +80,7 @@ describe('searchTickets', () => {
 
   it('reads "the reply index is not ready" from X-Reply-Index', async () => {
     wire({ headers: { 'x-reply-index': 'building' } })
-    await expect(searchTickets({ limit: 50, offset: 0 })).resolves.toMatchObject({ replyIndexReady: false })
+    await expect(searchTickets({ limit: 50, offset: 0 })).resolves.toMatchObject({ replyIndex: 'building' })
   })
 })
 

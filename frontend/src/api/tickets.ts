@@ -72,11 +72,14 @@ export async function listTickets(params?: {
 
 export interface TicketSearchResult {
   tickets: Ticket[]
-  // False when the reply arm gave up (a timeout) and the answer covers the
-  // subject and description only.
-  repliesSearched: boolean
-  // False while the reply index is still being built after an upgrade.
-  replyIndexReady: boolean
+  // The server's verdict on whether the replies were fully searched, or
+  // undefined when it gave none. Undefined is unknown, not false: the header
+  // comes only with a reply search, and only when the server has something to
+  // say, so a missing one must not be read as either answer.
+  repliesSearched?: boolean
+  // 'building' while the reply index is still being built after an upgrade;
+  // undefined when the server did not say, which is not the same as ready.
+  replyIndex?: 'building'
 }
 
 // The ticket list page's request. Separate from listTickets, which the linked
@@ -84,16 +87,16 @@ export interface TicketSearchResult {
 // default: here a repeated filter is a repeated key (status_id=a&status_id=b),
 // which is what the API reads.
 //
-// The body stays a bare array, as it always has. The two facts about how much
-// of the replies were searched travel in headers so that no existing caller
-// changes. NOTE: the header names are this page's reading of a contract the
-// REST handler (PR C) owns; they are read here and nowhere else.
+// The body stays a bare array. What the server could not do for the replies
+// travels in two response headers (X-Replies-Searched, X-Reply-Index), read
+// here and nowhere else.
 export async function searchTickets(params: TicketListParams): Promise<TicketSearchResult> {
   const res = await api.get<Ticket[] | null>('/tickets', { params, paramsSerializer: { indexes: null } })
+  const searched = res.headers?.['x-replies-searched']
   return {
     tickets: res.data ?? [],
-    repliesSearched: res.headers?.['x-replies-searched'] !== 'false',
-    replyIndexReady: res.headers?.['x-reply-index'] !== 'building',
+    repliesSearched: searched === 'true' ? true : searched === 'false' ? false : undefined,
+    replyIndex: res.headers?.['x-reply-index'] === 'building' ? 'building' : undefined,
   }
 }
 

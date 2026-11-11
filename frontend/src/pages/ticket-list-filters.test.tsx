@@ -87,9 +87,12 @@ function ticketCalls(): Record<string, unknown>[] {
 }
 const lastCall = () => ticketCalls().at(-1)!
 
-function setRole(role: 'staff' | 'user' | 'admin') {
+// `sla_enabled` is what GET /me says: absent for a requester and when the
+// server could not read the setting, so a test that says nothing gets absent.
+function setRole(role: 'staff' | 'user' | 'admin', sla_enabled?: boolean) {
   useAuthStore.setState({
     user: {
+      ...(sla_enabled === undefined ? {} : { sla_enabled }),
       id: 'u-1',
       email: 'x@example.com',
       display_name: 'Pat',
@@ -238,21 +241,35 @@ describe('the Filters panel', () => {
     expect(router.search).toEqual({ category: '00000000-0000-4000-8000-0000000000c2' })
   })
 
-  it('offers the SLA filter only once the page has seen SLA tracking working', async () => {
-    setRole('staff')
+  it('offers the SLA filter when /me says SLA tracking is on', async () => {
+    setRole('staff', true)
     renderWithQuery(<TicketListPage />)
     fireEvent.click(await screen.findByRole('button', { name: /^Filters/ }))
-    const panel = screen.getByRole('region', { name: 'Filters' })
-    expect(within(panel).queryByLabelText('SLA')).toBeNull()
+    expect(within(screen.getByRole('region', { name: 'Filters' })).getByLabelText('SLA')).toBeTruthy()
   })
 
-  it('and offers it when a ticket carries a live SLA', async () => {
-    setRole('staff')
+  // A ticket with a live SLA is not evidence either way: only /me is asked.
+  it.each([
+    ['off', false],
+    ['absent (unknown)', undefined],
+  ])('hides the SLA filter when sla_enabled is %s, even if a ticket carries an SLA', async (_name, enabled) => {
+    setRole('staff', enabled)
     tickets = [ticket({ id: 'tk-1', subject: 'Tracked', sla })]
     renderWithQuery(<TicketListPage />)
     await screen.findAllByText('Tracked')
     fireEvent.click(screen.getByRole('button', { name: /^Filters/ }))
-    expect(within(screen.getByRole('region', { name: 'Filters' })).getByLabelText('SLA')).toBeTruthy()
+    expect(within(screen.getByRole('region', { name: 'Filters' })).queryByLabelText('SLA')).toBeNull()
+  })
+
+  it.each([
+    ['off', false],
+    ['absent (unknown)', undefined],
+  ])('hides the SLA column and its sort when sla_enabled is %s', async (_name, enabled) => {
+    setRole('staff', enabled)
+    tickets = [ticket({ id: 'tk-1', subject: 'Tracked', sla })]
+    renderWithQuery(<TicketListPage />)
+    await screen.findAllByText('Tracked')
+    expect(screen.queryByRole('button', { name: /^SLA/ })).toBeNull()
   })
 
   it('a requester is offered only what the server will let them use', async () => {
@@ -368,7 +385,7 @@ describe('sort', () => {
   })
 
   it('every visible column sorts: ticket, subject, status, priority, SLA, created, updated', async () => {
-    setRole('staff')
+    setRole('staff', true)
     tickets = [ticket({ id: 'tk-1', subject: 'Tracked', sla })]
     renderWithQuery(<TicketListPage />)
     await screen.findAllByText('Tracked')
@@ -500,7 +517,15 @@ describe('what the server could not search', () => {
     await screen.findByText(/Reply search is still being prepared/)
   })
 
-  it('says neither when everything was searched', async () => {
+  it('says neither when the server says everything was searched', async () => {
+    headers = { 'x-replies-searched': 'true' }
+    renderWithQuery(<TicketListPage />)
+    await screen.findAllByText('Printer jam')
+    expect(screen.queryByText(/fully searched/)).toBeNull()
+    expect(screen.queryByText(/still being prepared/)).toBeNull()
+  })
+
+  it('says neither when the server said nothing: no header is unknown, not a failure', async () => {
     renderWithQuery(<TicketListPage />)
     await screen.findAllByText('Printer jam')
     expect(screen.queryByText(/fully searched/)).toBeNull()

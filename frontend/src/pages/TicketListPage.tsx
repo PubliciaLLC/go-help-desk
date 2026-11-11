@@ -224,18 +224,13 @@ export function TicketListPage() {
   // next/previous.
   const mayHaveMore = tickets.length === PAGE_SIZE
 
-  // Shown only when at least one row actually has a status to show — an
-  // instance with SLA tracking off, or a reporter whose tickets carry no
-  // policy, sees the same table it saw before this column existed.
-  const showSLAColumn = useMemo(() => tickets.some(t => t.sla != null), [tickets])
-  // Whether SLA tracking is on, as far as this page can tell: nothing public
-  // says so, and the SLA filter is refused with 400 while it is off. A live SLA
-  // on any ticket seen is proof it is on. Kept once seen, so narrowing to a
-  // list with none does not take the filter away. A search that already has
-  // one in the address keeps the field so it can be cleared.
-  const [slaSeen, setSlaSeen] = useState(false)
-  if (!slaSeen && showSLAColumn) setSlaSeen(true)
-  const slaOn = slaSeen || Boolean(search.sla)
+  // Whether SLA tracking is on is what GET /me says, for staff and
+  // administrators. Absent is unknown, and unknown hides it: the SLA filter is
+  // refused with 400 while tracking is off, so nothing here guesses it from the
+  // rows. The column also waits for a row with a status to show, so an instance
+  // whose tickets carry no policy sees the table it always saw.
+  const slaOn = user?.sla_enabled === true
+  const showSLAColumn = useMemo(() => slaOn && tickets.some(t => t.sla != null), [slaOn, tickets])
 
   // Names for the chips. The panel loads the same lists for its selects.
   const lookups = useFilterLookups(search, { staff: isStaffOrAdmin, wantPeople: false })
@@ -287,9 +282,9 @@ export function TicketListPage() {
   }
   const sortableKeys = SORT_KEYS.filter(k => canSort(k, isStaffOrAdmin) && (k !== 'sla' || showSLAColumn))
 
-  // Said under the table when the server could not search every reply. It sets
-  // `replies_searched: false` when the reply arm gave up (a timeout), and
-  // reports the reply index as still being built after an upgrade.
+  // Said under the table when the server could not search every reply: it sends
+  // X-Replies-Searched: false when the reply arm gave up (the time cap), and
+  // X-Reply-Index: building while the index is still being built.
   const askedForReplies = Boolean(params.search_replies)
 
   function statusFor(id: string) {
@@ -590,13 +585,13 @@ export function TicketListPage() {
         {/* What the server could not do for the replies. Both are about this
             search only: the results are still right for the subject and the
             description. */}
-        {result && askedForReplies && !result.replyIndexReady && (
+        {result && askedForReplies && result.replyIndex === 'building' && (
           <p role="status" className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
             Reply search is still being prepared, so these results cover ticket subjects and descriptions only. Try
             again later to include replies.
           </p>
         )}
-        {result && askedForReplies && result.replyIndexReady && !result.repliesSearched && (
+        {result && askedForReplies && result.replyIndex !== 'building' && result.repliesSearched === false && (
           <p role="status" className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
             Replies weren&apos;t fully searched, so tickets that matched only through a reply may be missing. Try a
             narrower search, or search again.
