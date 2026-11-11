@@ -539,8 +539,17 @@ New accounts, sign-ins that create or link an account, and password resets refus
 
 - **Existing accounts** keep signing in, by their identity provider subject and by password. An administrator can still rename them or change their role. They cannot be reset by typing the address, and a sign-in that carries a non-ASCII address keeps the stored one. A guest whose ticket holds a non-ASCII address can no longer ask for a new link by typing it; follow-ups on that ticket still work.
 - **Allowed domains:** entries must be ASCII. Saving an entry with a non-ASCII character is refused with `400`; use the `xn--` form for an internationalised domain. If you already have such an entry, replace it.
-- **Known limitation:** an existing user whose stored address has a non-ASCII domain may be refused at sign-in by an allowed-domains list.
+- **Existing users with a non-ASCII domain:** an allowed-domains list is compared with the `xn--` form of such a domain, so putting `xn--bcher-kva.de` in the list admits `a@bücher.de`. This only widens matching. It matters for OIDC (checked on every sign-in). To find the accounts: `SELECT email FROM users WHERE oidc_subject <> '' AND split_part(email,'@',2) ~ '[^\x01-\x7f]';`. The save-time `400` names the `xn--` form for an entry you typed in Unicode (#620).
 - **What to check:** `SELECT count(*) FROM users WHERE email ~ '[^\x01-\x7f]'`. Zero means nothing changes for you.
+
+### SAML and sign-in settings (#618, #619)
+
+- **A SAML assertion can be used once.** The library accepted the same signed response again for about 90 seconds; it is now refused (`403`) on its second use, on every replica. An identity provider that reuses assertion IDs breaks the SAML specification and will be refused from its second sign-in. If the database cannot record the assertion, sign-in fails rather than going ahead.
+- **The IdP metadata URL is read every hour,** not only at start and on save, so a certificate your IdP rolls over arrives by itself. Pasted XML cannot refresh: use the URL if your IdP offers one.
+- **New banner and API field:** `GET /api/v1/admin/security-warnings` gains `saml_idp_certificate: {expires_at, expired}`, present when the IdP's signing certificate expires within 30 days or has expired.
+- **Pasted metadata with `encoding="UTF-16"`** (or any declared encoding) is accepted.
+- **`PATCH /admin/settings` now loads SAML and OIDC changes** into the running server, as `PUT /admin/saml` and `PUT /admin/oidc` do; before, they took effect at the next restart. When the new configuration cannot be loaded, the response is `200` with a `warning` and the running configuration is kept.
+- **Not checked here:** sign-in against a real Microsoft Entra ID tenant (#619 part 4) needs a person with a tenant. It is not verified.
 
 ### Admin API: additive and corrected answers (#419, response half)
 

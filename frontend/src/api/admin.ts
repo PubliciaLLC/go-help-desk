@@ -731,6 +731,13 @@ export interface SecurityWarnings {
   email?: EmailWarning
 
   /**
+   * The live SAML IdP signing certificate is expired or expires within 30 days
+   * (#619). Absent when it is fine or SAML is not loaded. An expired one fails
+   * every SAML sign-in.
+   */
+  saml_idp_certificate?: { expires_at: string; expired: boolean }
+
+  /**
    * A stable release newer than the one running, found by the opt-in update
    * check (#170). Absent when none was found or the check is off.
    */

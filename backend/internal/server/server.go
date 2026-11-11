@@ -876,6 +876,18 @@ func (s *Server) InitSAML(ctx context.Context) {
 	}
 }
 
+// RefreshSAML reloads SAML from the stored settings; main calls it from the
+// hourly ticker. A metadata URL is fetched only when the middleware is built, so
+// without this an IdP's rolled certificate or moved endpoint was not picked up
+// until a restart, and a save on another replica did not reach this one (#619).
+// A failed build keeps the running middleware (reloadSAML's fail-safe), so an
+// IdP that is down for an hour changes nothing.
+func (s *Server) RefreshSAML(ctx context.Context) {
+	if err := s.reloadSAML(ctx); err != nil {
+		slog.WarnContext(ctx, "SAML metadata refresh failed; keeping the running configuration", "error", err)
+	}
+}
+
 // buildSAMLMiddleware is buildOIDCProvider's SAML counterpart: constructs a
 // middleware from CANDIDATE settings without touching the live s.samlHandler.
 // An incomplete config (no metadata, no cert or no key) has never had a
@@ -915,6 +927,11 @@ func (s *Server) buildSAMLMiddleware(ctx context.Context, c samlSettings) (reach
 	if buildErr != nil {
 		return false, nil, false, buildErr
 	}
+	// Single-use assertions (#618). s.sessions is read at call time, not
+	// captured, so the handler follows whatever store the server holds.
+	mw.AssertionHandler = samlAssertionSpender{spend: func(ctx context.Context, key string) (bool, error) {
+		return s.sessions.SpendSAMLHandover(ctx, key)
+	}}
 	return true, mw, true, nil
 }
 

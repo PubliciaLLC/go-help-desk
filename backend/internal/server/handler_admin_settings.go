@@ -736,7 +736,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 				for i := 0; i < len(d); i++ {
 					if d[i] >= 0x80 {
 						Error(w, http.StatusBadRequest, "invalid_allowed_email_domains",
-							fmt.Sprintf("%q must be ASCII: use the xn-- form for an internationalised domain", d))
+							allowedDomainRefusal(d))
 						return
 					}
 				}
@@ -792,11 +792,30 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Load what was just saved, as PUT /admin/saml and PUT /admin/oidc do. The
+	// stranding guard above reads the stored fields; this makes the running
+	// provider agree with them (#619). Detached: once the settings are written
+	// a client that hangs up must not leave the provider on the old ones.
+	warning = joinWarnings(warning, s.reloadSSOAfterSettings(context.WithoutCancel(r.Context()), body))
+
 	if warning != "" {
 		JSON(w, http.StatusOK, map[string]any{"warning": warning})
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// allowedDomainRefusal is the 400 message for a non-ASCII allowed-domain entry.
+// It names the xn-- form when there is one, so the administrator is told what
+// to type rather than left to work it out; the entry is still refused, not
+// rewritten (#620).
+func allowedDomainRefusal(d string) string {
+	msg := fmt.Sprintf("%q must be ASCII: use the xn-- form for an internationalised domain", d)
+	trimmed := strings.TrimSpace(d)
+	if ascii := user.ASCIIDomain(trimmed); ascii != trimmed {
+		msg += fmt.Sprintf(" (for this one, %s)", ascii)
+	}
+	return msg
 }
 
 // scopeEnforcementWarning names the OAuth clients that will see no tickets once
@@ -918,10 +937,10 @@ func isJSONNull(raw json.RawMessage) bool {
 // currently stored — a key the caller left out keeps its stored value, same
 // as the dedicated endpoints' own "omitted preserves" contract — then reads
 // reachability with samlFieldsLookConfigured/oidcFieldsLookConfigured rather
-// than by actually building the middleware/provider: this endpoint does not
-// live-reload either one today (a pre-existing gap this fix does not widen
-// its scope to close), so there is no real construction attempt to observe
-// here the way the two dedicated endpoints now have. The field-only read is
+// than by actually building the middleware/provider: this endpoint reloads
+// only after the settings are written (reloadSSOAfterSettings), so there is no
+// real construction attempt to observe here the way the two dedicated
+// endpoints have. The field-only read is
 // still a genuine improvement over the no-check-at-all this PATCH had before
 // — it is what stopped this route being a complete, unconditional bypass of
 // the dedicated endpoints' own refusal.
@@ -955,19 +974,13 @@ func isJSONNull(raw json.RawMessage) bool {
 // refusal"); unmarshalSetting below is that same rule, extended to also
 // catch null, for every SSO key this function reads.
 func (s *Server) ssoSettingsWarning(ctx context.Context, body map[string]json.RawMessage) (string, error) {
-	touchesSAML := false
 	touchesOIDC := false
-	for _, k := range []string{admin.KeySAMLMetadataURL, admin.KeySAMLMetadataXML, admin.KeySAMLCertPEM, admin.KeySAMLKeyPEM} {
-		if _, ok := body[k]; ok {
-			touchesSAML = true
-		}
-	}
 	for _, k := range []string{admin.KeyOIDCEnabled, admin.KeyOIDCIssuerURL, admin.KeyOIDCClientID, admin.KeyOIDCClientSecret} {
 		if _, ok := body[k]; ok {
 			touchesOIDC = true
 		}
 	}
-	if !touchesSAML && !touchesOIDC {
+	if !touchesSAML(body) && !touchesOIDC {
 		return "", nil
 	}
 
@@ -1115,6 +1128,13 @@ type securityWarnings struct {
 	// (#455, #456). Additive.
 	Email emailStatus `json:"email"`
 
+	// SAMLIdPCertificate is set when the live SAML IdP metadata has a signing
+	// certificate that is expired or expires within 30 days (#619). Absent
+	// otherwise, including while SAML is not loaded. Pasted metadata never
+	// refreshes itself and an expired certificate fails every sign-in, so this is
+	// the only warning before it happens.
+	SAMLIdPCertificate *samlIdPCertStatus `json:"saml_idp_certificate,omitempty"`
+
 	// Update is set when the opt-in update check (#170) has found a release
 	// newer than the one running. Absent otherwise, including while the check
 	// is off. Read from the stored answer: this endpoint never causes a request.
@@ -1250,6 +1270,7 @@ func (s *Server) handleGetSecurityWarnings(w http.ResponseWriter, r *http.Reques
 	}
 	JSON(w, http.StatusOK, securityWarnings{
 		Update:                    update,
+		SAMLIdPCertificate:        s.samlIdPCertificateWarning(),
 		ReopenTarget:              reopen,
 		InsecureSecrets:           s.cfg.InsecureSecrets(),
 		AttachmentScanning:        s.scanStatus(r.Context()),

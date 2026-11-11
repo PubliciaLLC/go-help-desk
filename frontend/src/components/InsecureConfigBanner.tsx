@@ -109,6 +109,12 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
   const emailOff = !!email && !email.enabled && (email.signup_without_email || email.guest_submission_without_email)
   const emailFailing = !!email && email.failing
 
+  // #619: the IdP signing certificate. Expired is a failure (every SAML sign-in
+  // is refused); about to expire is a configuration notice. The signature
+  // carries the date, so a replaced certificate that is about to expire too
+  // shows again after a Hide.
+  const samlCert = data?.saml_idp_certificate
+
   const notices: Notice[] = []
   if (update) {
     const title = `Version ${update.latest} is available (you run ${update.current})`
@@ -280,6 +286,31 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
       signature: `${t.name}|${t.updated_at}`,
       title,
       body: <BrokenTemplateNotice template={t} title={title} onReverted={() => void refetch()} />,
+    })
+  }
+  if (samlCert) {
+    const on = new Date(samlCert.expires_at).toLocaleDateString()
+    const title = samlCert.expired
+      ? 'The SAML sign-in certificate has expired'
+      : `The SAML sign-in certificate expires on ${on}`
+    notices.push({
+      id: 'saml-idp-certificate',
+      severity: samlCert.expired ? 'failure' : 'config',
+      signature: samlCert.expires_at,
+      title,
+      body: (
+        <>
+          <p className="font-semibold">{title}</p>
+          <p className="mt-1">
+            {samlCert.expired
+              ? `Your identity provider's signing certificate expired on ${on}, so SAML sign-in is failing. `
+              : 'When it expires, SAML sign-in will stop working. '}
+            If your identity provider offers a metadata URL, switch to it under Settings → SAML: it is re-read every
+            hour, so a new certificate arrives by itself. If you pasted the metadata, download the current metadata
+            from your identity provider and paste it again.
+          </p>
+        </>
+      ),
     })
   }
   if (blindClients.length > 0) {

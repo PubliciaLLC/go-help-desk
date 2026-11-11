@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"time"
 
 	"github.com/crewjam/saml"
 	"github.com/crewjam/saml/samlsp"
@@ -24,6 +25,11 @@ var (
 	ErrIdPMetadataInvalid  = errors.New("not usable SAML IdP metadata")
 )
 
+// declaredEncodingRE matches the encoding in the XML declaration at the very
+// start of a document (after an optional byte order mark and whitespace), and
+// nothing later in it.
+var declaredEncodingRE = regexp.MustCompile(`^(\x{FEFF}?\s*<\?xml\s[^>]*?\bencoding\s*=\s*)(?:"[^"]*"|'[^']*')`)
+
 // ParseIdPMetadataXML parses pasted IdP metadata with the parser the URL fetch
 // uses (samlsp.ParseMetadata: an xml-roundtrip-validator pass, then
 // encoding/xml), so anything that loads from a URL loads pasted, and the
@@ -37,7 +43,10 @@ func ParseIdPMetadataXML(data []byte) (*saml.EntityDescriptor, error) {
 	if len(data) > MaxIdPMetadataXMLBytes {
 		return nil, ErrIdPMetadataTooLarge
 	}
-	ed, err := samlsp.ParseMetadata(data)
+	// The text is already UTF-8 here (a JSON string), whatever the file it was
+	// read from declared; a UTF-16 file keeps that declaration and encoding/xml
+	// has no decoder for it (#619). The stored XML is not changed.
+	ed, err := samlsp.ParseMetadata(declaredEncodingRE.ReplaceAll(data, []byte(`${1}"UTF-8"`)))
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrIdPMetadataInvalid, err)
 	}
@@ -84,3 +93,41 @@ func checkIdPSigningCerts(ed *saml.EntityDescriptor) error {
 
 // certWhitespace is the whitespace crewjam strips before decoding (`\s+`).
 var certWhitespace = regexp.MustCompile(`\s+`)
+
+// IdPSigningCertExpiry is when the IdP's signing certificate stops being good:
+// the latest NotAfter among the certificates the SP would verify with (the same
+// selection as checkIdPSigningCerts). The latest, not the earliest, because an
+// IdP rolling its certificate publishes the old and the new together and may
+// sign with either; only when the newest is going or gone has nothing safe been
+// published. An expired certificate fails every sign-in (#619).
+//
+// False when the metadata has no certificate that parses. Lenient by design:
+// this reads the live metadata to raise a warning, and a warning that cannot be
+// computed is silent, not an error.
+func IdPSigningCertExpiry(ed *saml.EntityDescriptor) (time.Time, bool) {
+	if ed == nil {
+		return time.Time{}, false
+	}
+	var latest time.Time
+	for _, d := range ed.IDPSSODescriptors {
+		for _, kd := range d.KeyDescriptors {
+			if kd.Use != "" && kd.Use != "signing" {
+				continue
+			}
+			for _, c := range kd.KeyInfo.X509Data.X509Certificates {
+				der, err := base64.StdEncoding.DecodeString(certWhitespace.ReplaceAllString(c.Data, ""))
+				if err != nil {
+					continue
+				}
+				cert, err := x509.ParseCertificate(der)
+				if err != nil {
+					continue
+				}
+				if cert.NotAfter.After(latest) {
+					latest = cert.NotAfter
+				}
+			}
+		}
+	}
+	return latest, !latest.IsZero()
+}

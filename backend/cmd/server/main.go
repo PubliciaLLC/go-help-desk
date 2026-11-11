@@ -535,6 +535,9 @@ func run() error {
 			case <-sweepCtx.Done():
 				return
 			case <-t.C:
+				// First, so a failing session sweep below (which continues)
+				// cannot starve it. Bounded by the metadata fetch timeout.
+				srv.RefreshSAML(sweepCtx)
 				n, err := sessionStore.DeleteExpired(sweepCtx)
 				if err != nil {
 					slog.WarnContext(sweepCtx, "sweeping expired sessions failed", "error", err)
