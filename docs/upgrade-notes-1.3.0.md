@@ -92,6 +92,8 @@ A hook with payload format **Raw JSON** is sent only the event name (`Type`), `T
 
 Slack, Teams, Discord and Jira Automation hooks are not affected: their messages still carry the subject, tracking number, status and public reply text, and never an address or a note's text.
 
+Later in 1.3.0 the payload gained ids, and new events gained their own (all additive; see "Writes That Used to Announce Nothing (#630)" under Changed behaviour): `reply_id` on `ticket.replied` and `ticket.note_added`, `target_id` and `link_type` on `ticket.unlinked`, `attachment_id` on `ticket.attachment_added`, and `user_id` on `ticket.followed` and `ticket.unfollowed`. The `link_type` removed above is still not sent on `ticket.linked`.
+
 #### Internal notes are their own event
 
 `ticket.replied` is now sent for customer-visible replies only. Internal notes are sent as the new `ticket.note_added`. A hook subscribed to `ticket.replied` stops receiving notes; add `ticket.note_added` (or choose all events) to keep them.
@@ -542,6 +544,32 @@ A delivery that fails with a connection error, DNS or TLS failure, timeout, 5xx 
 
 Every delivery now carries two headers: `X-GHD-Delivery`, a UUID that stays the same across the retries of one delivery (use it to drop a repeat), and `X-GHD-Event`, the event name. The signature headers are unchanged.
 
+### Writes That Used to Announce Nothing (#630)
+
+Five writes changed a ticket and told nobody: removing a link, uploading an attachment, following, unfollowing, and the bulk unassignments when a user or a group is deleted. Each now raises its event in the same database transaction as the change, as every other ticket event does. No migration.
+
+**If you have a webhook on "All events" (`*`), or one with an empty event list, read this.** It starts receiving two new events:
+
+- **`ticket.unlinked`**: a link was removed. Sent for the ticket the link was on (the source), like `ticket.linked`. `Payload` has `target_id` and `link_type`. No email.
+- **`ticket.attachment_added`**: a file was uploaded to a ticket, by staff, the requester or a guest. `Payload` has `attachment_id`; read the ticket through the API for the file's name and size. **No email is sent for an upload**: a file usually comes with a reply, which already mails. An upload and a reply sent with it are two deliveries.
+- **Deleting a user or a group now sends `ticket.assigned`**, one delivery per ticket that moved (every ticket the group held, open or not; the user's open tickets), with the deleting administrator as the actor. 1.2.x and the earlier 1.3 betas sent nothing. **No staff email goes out for these**: nobody is told "assigned to you" about a ticket nobody assigned to them. The follow that goes with a deleted user's assignment is announced as `ticket.unfollowed`, below.
+
+If a receiver switches on the event name and treats an unknown name as an error, it will now see these. To keep a hook as it was, list the events it wants by name in Admin → Webhooks instead of "All events".
+
+**Opt-in only: `ticket.followed` and `ticket.unfollowed`.** A hook receives these **only if it lists them by name**. "All events" does not include them, and neither does an empty list: who follows a ticket is personal, and the audit of follows is hidden from staff by default. In Admin → Webhooks they are in their own group under the event list and can be ticked together with All events. `Payload` has `user_id`, the person's id and never their name; look them up through the users API. No email is sent. A follow that was removed because the ticket was reassigned, or its follower deleted, is announced too, as an unfollow riding on the reassignment's own delivery: a hook that lists `ticket.assigned` and not `ticket.unfollowed` is told only `ticket.assigned`, with the body it always had. A hook that lists both (or `*` and `ticket.unfollowed`) is still told `ticket.assigned`, since that is the first name it subscribes to, and that body also carries `Payload.user_id`, the person who unfollowed.
+
+**`reply_id` on replies and notes.** The raw body of `ticket.replied` and `ticket.note_added` now has `Payload.reply_id`, so a receiver can tell which reply a delivery means. It is an id; the text is still not sent. Hooks that read only the keys they know are unaffected.
+
+**Other behaviour.**
+
+- Removing a link that does not exist still answers 204 and announces nothing.
+- Removing a link writes no audit entry, the same as adding one.
+- History and Redeliver list and replay the new names. A hook that no longer lists `ticket.followed` or `ticket.unfollowed` by name is refused a replay (`409 webhook_not_subscribed`), even if it is on "All events".
+- Chat and Jira messages are headed "Unlinked from ...", "Attachment added", "Ticket followed" and "Ticket unfollowed". They name no file and no person.
+- The new names are in the `WebhookEvent` enum in `docs/api/openapi.yaml`.
+
+**Rolling back.** There is no migration and nothing is stored that needs undoing. A hook that lists one of the new names keeps it in its list; an older version never sends those events.
+
 ### Admin API: data left behind, half-applied edits and path checks (#419)
 
 Scripts and API keys that call the admin API can see these changes. Nothing needs doing in the admin UI.
@@ -653,7 +681,7 @@ In 1.2.x, deleting a user left their open tickets pointing at them. Such a ticke
 
 - **Which tickets:** open ones (neither Resolved nor Closed) whose assignee is a deleted user. Resolved and Closed tickets are history and keep the person who handled them. A **disabled** user is still in the user list, so their tickets are left alone.
 - **What you see afterwards:** those tickets are in the unassigned queue, and each has an `unassigned` entry on its Activity feed and in the admin audit view, naming the deleted user it had. The entry has **no actor**, because no person ran the migration. Their `updated_at` is set to the time of the upgrade.
-- **Nothing else changes.** No mail is sent, no webhook or event is raised, and no SLA clock moves. A group assignment needs nothing: deleting a group has always cleared it.
+- **Nothing else changes.** No mail is sent, no webhook or event is raised, and no SLA clock moves. A group assignment needs nothing: deleting a group has always cleared it. (This is about the migration. A delete done after the upgrade is announced to webhooks, one `ticket.assigned` per ticket, with no staff mail: see "Writes That Used to Announce Nothing (#630)".)
 - **Rolling back:** the `down` migration does nothing. The tickets stay unassigned; the audit entries record who they had.
 
 ### The Audit Log Page Is for Administrators Only

@@ -146,7 +146,9 @@ type Store interface {
 
 	// Links
 	CreateLink(ctx context.Context, link TicketLink) error
-	DeleteLink(ctx context.Context, source, target uuid.UUID, lt LinkType) error
+	// DeleteLink reports whether there was a link to delete, so removing one
+	// that is not there is not announced as an unlink.
+	DeleteLink(ctx context.Context, source, target uuid.UUID, lt LinkType) (bool, error)
 	ListLinks(ctx context.Context, ticketID uuid.UUID) ([]TicketLink, error)
 
 	// Followers (#441). On Store because following is audited, and the audit

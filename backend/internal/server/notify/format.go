@@ -81,8 +81,8 @@ type summary struct {
 	// renderer still goes through the one function that decides what a
 	// Payload key is allowed to become a rendered field.
 	Priority       string // ticket.created only
-	LinkedTicketID string // ticket.linked only
-	LinkType       string // ticket.linked only
+	LinkedTicketID string // ticket.linked and ticket.unlinked only
+	LinkType       string // ticket.linked and ticket.unlinked only
 
 	OccurredAt time.Time
 }
@@ -122,7 +122,7 @@ func summarize(ev notification.Event, baseURL string) summary {
 		if p, ok := ev.Payload["Priority"].(string); ok {
 			priority = p
 		}
-	case notification.EventTicketLinked:
+	case notification.EventTicketLinked, notification.EventTicketUnlinked:
 		// target_id is a uuid.UUID and link_type is a ticket.LinkType (a
 		// defined string type); this package does not import
 		// internal/domain/ticket, so %v is used rather than a type
@@ -169,6 +169,11 @@ var kindPhrases = map[notification.EventType]string{
 	notification.EventTicketReplied:         "replied",
 	notification.EventTicketNoteAdded:       "note added",
 	notification.EventTicketLinked:          "linked",
+
+	notification.EventTicketUnlinked:        "unlinked",
+	notification.EventTicketAttachmentAdded: "attachment added",
+	notification.EventTicketFollowed:        "followed",
+	notification.EventTicketUnfollowed:      "unfollowed",
 }
 
 // alsoLine is the one line under the headline that names the change's other
@@ -259,6 +264,15 @@ func headline(t notification.EventType, statusName string, internal bool, linked
 		return "Reopened"
 	case notification.EventTicketLinked:
 		return fmt.Sprintf("Linked to %s (%s)", linkedTicketID, linkType)
+	case notification.EventTicketUnlinked:
+		return fmt.Sprintf("Unlinked from %s (%s)", linkedTicketID, linkType)
+	case notification.EventTicketAttachmentAdded:
+		return "Attachment added"
+	// The person is an id on the event, and a chat message does not look one up.
+	case notification.EventTicketFollowed:
+		return "Ticket followed"
+	case notification.EventTicketUnfollowed:
+		return "Ticket unfollowed"
 	default:
 		return string(t)
 	}

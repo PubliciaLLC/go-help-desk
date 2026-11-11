@@ -18,6 +18,25 @@ var WebhookEvents = []EventType{
 	EventTicketLinked,
 	EventTicketPriorityChanged,
 	EventTicketClassified,
+	EventTicketUnlinked,
+	EventTicketAttachmentAdded,
+	EventTicketFollowed,
+	EventTicketUnfollowed,
+}
+
+// OptInWebhookEvents are the WebhookEvents a hook receives only if it lists
+// them by name. "*", and a legacy empty list, mean every event except these
+// (#630, D40): who follows a ticket is personal, and the follow audit that
+// staff may not see by default would be public the moment a hook subscribed to
+// "everything".
+var OptInWebhookEvents = []EventType{
+	EventTicketFollowed,
+	EventTicketUnfollowed,
+}
+
+// IsOptInWebhookEvent reports whether e is sent only to a hook that names it.
+func IsOptInWebhookEvent(e EventType) bool {
+	return slices.Contains(OptInWebhookEvents, e)
 }
 
 // IsWebhookEvent reports whether e is "*" or one of WebhookEvents.
@@ -32,6 +51,9 @@ func IsWebhookEvent(e string) bool {
 // when it picks the row up (#506), so the row has to be queued for any change
 // that could mean someone.
 func (e Event) MailsStaff() bool {
+	if e.SuppressStaffMail {
+		return false
+	}
 	for _, k := range e.AllKinds() {
 		switch {
 		case k == EventTicketAssigned, k == EventTicketReopened:

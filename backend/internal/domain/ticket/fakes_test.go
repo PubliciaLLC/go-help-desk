@@ -32,6 +32,7 @@ var errNotFound = errors.New("not found")
 
 type fakeStore struct {
 	forUpdateReads    int
+	lockOrder         []uuid.UUID // ids passed to GetByIDForUpdate, in order
 	attachmentCreates int
 
 	guestTokens       map[string]guestTokenRow
@@ -79,6 +80,8 @@ type fakeStore struct {
 	errNextSeq       error
 	errCreateHistory error
 	errCreateLink    error
+
+	errCreateAttachment error
 }
 
 func newFakeStore() *fakeStore {
@@ -204,6 +207,7 @@ func (f *fakeStore) Create(_ context.Context, t ticket.Ticket) error {
 // agrees with itself.
 func (f *fakeStore) GetByIDForUpdate(ctx context.Context, id uuid.UUID) (ticket.Ticket, error) {
 	f.forUpdateReads++
+	f.lockOrder = append(f.lockOrder, id)
 	return f.GetByID(ctx, id)
 }
 
@@ -303,8 +307,14 @@ func (f *fakeStore) CreateLink(_ context.Context, link ticket.TicketLink) error 
 	return nil
 }
 
-func (f *fakeStore) DeleteLink(_ context.Context, source, target uuid.UUID, lt ticket.LinkType) error {
-	return nil
+func (f *fakeStore) DeleteLink(_ context.Context, source, target uuid.UUID, lt ticket.LinkType) (bool, error) {
+	for i, l := range f.links[source] {
+		if l.TargetTicketID == target && l.LinkType == lt {
+			f.links[source] = append(f.links[source][:i:i], f.links[source][i+1:]...)
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (f *fakeStore) ListLinks(_ context.Context, ticketID uuid.UUID) ([]ticket.TicketLink, error) {
@@ -458,6 +468,9 @@ func (f *fakeStore) SearchVisibleToStaff(context.Context, uuid.UUID, string, int
 	return nil, nil
 }
 func (f *fakeStore) CreateAttachment(context.Context, ticket.Attachment) error {
+	if f.errCreateAttachment != nil {
+		return f.errCreateAttachment
+	}
 	f.attachmentCreates++
 	return nil
 }

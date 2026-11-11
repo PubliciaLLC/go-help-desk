@@ -1106,7 +1106,8 @@ func (s *Server) handleRemoveLink(w http.ResponseWriter, r *http.Request) {
 	// reporter only for two tickets they own; removal had no role check at
 	// all, so staff classification on a reporter's own ticket was theirs to
 	// undo.
-	if a := authmw.GetActor(r); a == nil || (a.Role != user.RoleAdmin && a.Role != user.RoleStaff) {
+	a := authmw.GetActor(r)
+	if a == nil || (a.Role != user.RoleAdmin && a.Role != user.RoleStaff) {
 		Error(w, http.StatusForbidden, "forbidden", "only staff can remove a ticket link")
 		return
 	}
@@ -1119,7 +1120,13 @@ func (s *Server) handleRemoveLink(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid link type")
 		return
 	}
-	if err := s.tickets.RemoveLink(r.Context(), sourceID, targetID, lt); err != nil {
+	// Unlike adding a link, removing one has never required a credential with a
+	// person behind it, so that stays: such a caller is announced with no actor.
+	actor := ticket.Actor{Role: a.Role}
+	if a.UserID != uuid.Nil {
+		actor.UserID = &a.UserID
+	}
+	if err := s.tickets.RemoveLink(r.Context(), sourceID, targetID, lt, actor); err != nil {
 		handleError(w, err)
 		return
 	}
