@@ -71,6 +71,23 @@ describe('display mode', () => {
   })
 })
 
+// Classification only happens to open tickets: on a Resolved or Closed ticket
+// the server answers 409 ticket_closed, so the panel is read-only and says why.
+describe('on a Resolved or Closed ticket', () => {
+  it('is read-only: no Edit control, the reason shown, the classification still visible', async () => {
+    renderPanel({ locked: true })
+    expect(await screen.findByText('Network')).toBeDefined()
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+    expect(screen.getByText(/classification is locked on a resolved or closed ticket/i)).toBeDefined()
+  })
+
+  it('shows no reason on an open ticket', async () => {
+    renderPanel()
+    await screen.findByText('Network')
+    expect(screen.queryByText(/classification is locked on a resolved or closed ticket/i)).toBeNull()
+  })
+})
+
 describe('edit mode', () => {
   // Erik's decision (#421): staff still SEE archived rows, greyed out, but
   // nobody may newly pick one. This test was "offers only active options" and

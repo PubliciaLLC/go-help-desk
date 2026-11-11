@@ -76,6 +76,7 @@ What to check: if your instance is on an IP or single-word host and you want pas
 
 These affect scripts and integrations that call the API. Four can make a request that used to succeed now fail:
 
+- **Reclassifying a Resolved or Closed ticket is `409 ticket_closed`.** See *Reclassifying a Ticket Re-matches Its SLA Policy and Is Audited*. Before, `PATCH /tickets/{id}` with `category_id`, `type_id` or `item_id` succeeded on a Closed ticket. Fix: reopen it first, or open a follow-up.
 - **Unknown settings keys are refused.** `PATCH /api/v1/admin/settings` with a key that is not a real setting now answers `400 unknown_setting`, names the key, and writes nothing (not even the valid keys in the same request). Before, any key was stored, so a typo such as `mfa_enabld` answered 204 and changed nothing. Fix: use the exact setting names from `GET /api/v1/admin/settings` (the `_set` presence flags are still refused with `readonly_setting`).
 - **`POST /api/v1/tickets/{id}/resolve` with a body that is not valid JSON is `400`.** Before, it resolved the ticket and dropped the notes. An empty body still resolves with no notes.
 - **`GET /api/v1/auth/verify-email?token=` is `422 token_invalid` for an address that has since gained an account.** Before, it answered 200 and only the POST refused.
@@ -279,7 +280,7 @@ API keys can now be made by staff, issued by an administrator on a staff member'
 - **Where:** Account → API keys (list, create with an expiry, revoke), and `GET/POST /api/v1/me/api-keys`, `GET /api/v1/me/api-keys/scopes`, `DELETE /api/v1/me/api-keys/{id}`. Session only: an API key or OAuth client gets 403 `session_required`, so a key cannot create more keys.
 - **Issuing on behalf:** `POST /api/v1/admin/api-keys` takes an optional `user_id`, from a signed-in administrator only. They can issue for a staff member or for themselves. Not for another administrator (400 `cannot_issue_for_administrator`), a requester, or a service account (400 `service_account_cannot_own_key`). Responses now include `user_id` and `created_by`.
 - **Changing someone's role keeps their keys.** A key acts within its owner's current role. Promoting a staff member who holds an administrator-issued key leaves an administrator holding it; revoke it if that is not wanted.
-- **A key's scopes never exceed its owner's role.** Staff keys can carry `tickets:read|write` and `groups:read` (`audit:read` is administrators only, and `users:read` is no longer offered: its one staff route, the requester lookup, is session-only); an administrator's any scope. Anything else is 400 `invalid_scope`, on both routes. `GET /api/v1/admin/scopes?role=staff` lists what a staff key may carry.
+- **A key's scopes never exceed its owner's role.** Staff keys can carry `tickets:read|write`, `groups:read` and `requester_search:read` (`audit:read` is administrators only, and `users:read` is no longer offered: its one staff route, the requester lookup, is session-only); an administrator's any scope. Anything else is 400 `invalid_scope`, on both routes. `GET /api/v1/admin/scopes?role=staff` lists what a staff key may carry.
 - **Marked for rotation:** both key lists carry `beyond_limit`. A key with no expiry, or one beyond the current limit (for example after the limit is lowered), is shown as "No expiry (longer than the current limit)" so it can be rotated.
 - **Password reset can revoke keys:** `POST /api/v1/admin/users/{id}/password` takes `revoke_api_keys` (default false); the admin form has "Also revoke this person's API keys", unticked. It deletes every key the account owns and audits the count; if the keys cannot be revoked after the password was reset, the answer is 500 `keys_not_revoked` ("The password was reset, but the API keys were NOT revoked."). A person's own password change, a password reset by email ("Forgot password", #451), `server unlock` and `server reset-factors` never touch keys.
 - **Audit:** every key issued or revoked, own or on someone's behalf, writes `api_key_issued` / `api_key_revoked` (entity type `api_key`) to the admin audit log; a revoke-on-reset writes `api_keys_revoked` on the account with the number of keys.
@@ -646,6 +647,27 @@ Replies and internal notes now appear in a ticket's Activity panel as "Erik Test
 ### An SLA Target Reached Exactly Now Counts as Breached
 
 A response or resolution that lands at exactly its target (elapsed time equal to the policy's minutes, to the second) is now recorded as breached, and the background sweep stamps a ticket whose clock reaches the target without waiting for it to pass. Before, the indicator turned red at exactly the target but nothing was recorded until one second later, so a target met at exactly its length showed red and never counted as breached. The record now agrees with the indicator and with DESIGN.md ("at or past 100%"). Breaches already recorded are unchanged, and nothing is recomputed for tickets already responded to or resolved.
+
+### Guest Tickets and MCP Tickets Are Now Routed Like Any Other
+
+Auto-assignment (**Admin → Routing**, and a group's own category and type scope) now runs for every way a ticket can be created. Before, it ran for `POST /tickets` and for the REST follow-ups only; a ticket from the public guest form (`POST /guest/tickets`) and a ticket made with the MCP tools `create_ticket` or `create_follow_up` was left unassigned however the rules were set.
+
+- **What you will see:** if you route tickets, new guest and MCP tickets now arrive assigned to the group or staff member the rules pick, with the same `assigned` entry (no actor) and the same `ticket.created` plus `ticket.assigned` event as a REST ticket. Staff may be mailed about a ticket they would not have been mailed about before.
+- **Nothing changes if no routing is set.** With no group rule and no auto-assign group or users, these tickets stay unassigned as before.
+- **Existing tickets are not touched.** Only tickets created after the upgrade are routed.
+- **A follow-up** is routed on its original's category and type; a guest's own follow-up on the category alone, as before.
+
+### Reclassifying a Ticket Re-matches Its SLA Policy and Is Audited
+
+Changing a ticket's category (`PATCH /tickets/{id}` with `category_id`, or the category picker on the ticket page) now does two things it did not do before, and is refused on a Resolved or Closed ticket (below).
+
+- **The SLA policy is matched again.** A policy is matched on priority and category, so a new category can mean a different policy. Before, the ticket kept the policy of the category it was filed under, and its targets stayed measured against that. Now the new category's policy takes over, in the same change. **The clock is not restarted**: the time already elapsed still counts, and a target already met stays met, exactly as when staff change a priority. Only a reopen restarts a clock. If no policy matches the new category, the ticket shows no SLA from then on; if the old record had none and the new category has one, the ticket gets one whose clock runs from its creation, so it can already be breached.
+- **It is audited.** A `classified` entry now appears on the ticket's Activity feed and in the admin audit view, with who changed it, the old and new category, type and item (as ids), and what happened to the SLA. It is written in the same transaction as the change. Before, a reclassification left no entry. Changes made before the upgrade are not backfilled.
+
+- **Resolved and Closed tickets can no longer be reclassified.** Changing the category, type or item of a Resolved or Closed ticket now answers `409 ticket_closed` for every role, and nothing is written. In 1.2.x staff could reclassify a Closed ticket. A script that does that must reopen the ticket first (or open a follow-up). A `PATCH` that sends no category, type or item is unaffected, and a request that moves a Resolved ticket to an open status and reclassifies it in one go still works. The ticket page shows the classification read-only on these tickets.
+- **A change of type or item alone** is audited but never changes the SLA, since a policy is matched on category.
+- **If SLA tracking is off**, nothing is re-matched (the entry says `sla_off`).
+- **No migration, no setting.** Nothing is recomputed for tickets reclassified before the upgrade.
 
 ### The Server Logs Which Migrations Ran (#525)
 

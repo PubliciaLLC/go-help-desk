@@ -397,6 +397,17 @@ WHERE deleted_at IS NULL
 ORDER BY display_name, id
 LIMIT 10;
 
+-- name: LookupRequesterByID :one
+-- The same lookup by id (the ticket list's requester chip after a reload).
+-- Carries the same three exclusions as LookupRequesters, in the query, so an
+-- id that names a disabled, deleted or service account is no different from
+-- one that names nobody.
+SELECT * FROM users
+WHERE id = $1
+  AND deleted_at IS NULL
+  AND disabled = FALSE
+  AND NOT service_account;
+
 -- name: RestoreUser :exec
 UPDATE users SET deleted_at = NULL, updated_at = now() WHERE id = $1;
 

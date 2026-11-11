@@ -71,7 +71,7 @@ describe('Categories page, field assignment errors', () => {
     renderWithQuery(<CategoriesPage />)
 
     await userEvent.click(await screen.findByRole('button', { name: 'Expand' }))
-    await userEvent.click(await screen.findByLabelText('visible'))
+    await userEvent.click(await screen.findByLabelText('Show on new-ticket form for Region'))
 
     expect((await screen.findByRole('alert')).textContent).toBe('a required field cannot be hidden')
   })

@@ -188,6 +188,9 @@ var shownKeys = map[string]bool{
 	"id": true, "statusid": true, "priority": true,
 	"assigneeuserid": true, "assigneegroupid": true, "followupof": true,
 	"forcedreopen": true, "closedreopenpolicy": true,
+	// A reclassification (1.3.0 audit D3): the ticket's category, type and item,
+	// as ids.
+	"categoryid": true, "typeid": true, "itemid": true,
 	"passkeysremoved": true, "totpcleared": true, "sessionsrevoked": true,
 	// A passkey removed by an administrator, or refused as a suspected clone
 	// (#615, #616b): its id. Its label is free text the owner typed and is not

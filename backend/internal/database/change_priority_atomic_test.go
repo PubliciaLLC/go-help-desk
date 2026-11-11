@@ -30,7 +30,7 @@ func TestChangePriority_EachFailingStepRollsEverythingBack(t *testing.T) {
 		t.Run(step, func(t *testing.T) {
 			f := newChangePriorityFx(t)
 			require.NoError(t, f.ss.CreateRecord(f.ctx, sla.Record{TicketID: f.tk.ID, PolicyID: f.pol[ticket.PriorityMedium].ID}))
-			require.NoError(t, f.ss.SetFirstResponse(f.ctx, f.tk.ID, time.Now().UTC().Truncate(time.Millisecond), 600, 1800))
+			require.NoError(t, f.ss.SetFirstResponse(f.ctx, recordIDOf(t, f.ctx, f.ss, f.tk.ID), time.Now().UTC().Truncate(time.Millisecond), 600, 1800))
 			rowsBefore := f.records(t)
 			ticketBefore, err := f.ts.GetByID(f.ctx, f.tk.ID)
 			require.NoError(t, err)

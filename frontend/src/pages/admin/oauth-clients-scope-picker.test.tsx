@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { waitFor } from '@testing-library/react'
+import { screen, waitFor } from '@testing-library/react'
 import { renderWithQuery } from '@/test/render'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
@@ -32,5 +32,23 @@ describe('OAuthClientsPage scope picker', () => {
     await waitFor(() =>
       expect(get).toHaveBeenCalledWith('/admin/scopes', { params: { role: 'staff' } }),
     )
+  })
+
+  // The staff list the server returns includes the free-text search scope
+  // (#635 made the client's service user staff), so the picker offers it, with
+  // help text saying what it does.
+  it('offers requester_search:read with its help text', async () => {
+    vi.spyOn(api, 'get').mockImplementation(((url: string) =>
+      Promise.resolve({
+        data: url === '/admin/scopes'
+          ? [
+              { scope: 'tickets:read', resource: 'tickets', action: 'read' },
+              { scope: 'requester_search:read', resource: 'requester_search', action: 'read' },
+            ]
+          : [],
+      })) as never)
+    renderWithQuery(<OAuthClientsPage />)
+    expect(await screen.findByRole('checkbox', { name: 'requester_search:read' })).toBeDefined()
+    expect(screen.getByText('Search tickets by requester name or email (free text)')).toBeDefined()
   })
 })

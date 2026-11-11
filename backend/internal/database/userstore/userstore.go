@@ -338,6 +338,16 @@ func (s *Store) LookupRequesters(ctx context.Context, q string) ([]user.User, er
 	return out, nil
 }
 
+// LookupRequesterByID is LookupRequesters for one id: user.ErrNotFound for an
+// account that does not exist and for one the search would not have found.
+func (s *Store) LookupRequesterByID(ctx context.Context, id uuid.UUID) (user.User, error) {
+	row, err := s.q.LookupRequesterByID(ctx, id)
+	if err != nil {
+		return user.User{}, wrapNotFound(err, "requester", id.String())
+	}
+	return fromRow(row), nil
+}
+
 func (s *Store) Count(ctx context.Context) (int64, error) {
 	return s.q.CountUsers(ctx)
 }

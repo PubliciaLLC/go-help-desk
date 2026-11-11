@@ -230,6 +230,10 @@ func (f *fakeUserStore) LookupRequesters(_ context.Context, _ string) ([]user.Us
 	return nil, nil
 }
 
+func (f *fakeUserStore) LookupRequesterByID(_ context.Context, _ uuid.UUID) (user.User, error) {
+	return user.User{}, user.ErrNotFound
+}
+
 func (f *fakeUserStore) ListActiveAdmins(_ context.Context) ([]user.User, error) {
 	out := make([]user.User, 0, len(f.byID))
 	for _, u := range f.byID {
