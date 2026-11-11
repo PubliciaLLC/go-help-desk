@@ -3805,7 +3805,8 @@ paths:
         either.
 
         Following a ticket already followed answers 204 and changes nothing. A
-        first follow is audited as followed. The caller must be able to see the
+        first follow is audited as followed and raises ticket.followed (user_id is the
+        caller's id), which only a webhook that lists it by name receives. No email. The caller must be able to see the
         ticket. Whether they still can is checked again each time an email is
         sent; one they can no longer see is skipped and the follow is kept.
         The id is a UUID or a tracking number.
@@ -3838,7 +3839,7 @@ paths:
         Staff and administrators only, in a signed-in session (second factor required).
         As for following, an API key or OAuth client is refused. Answers 204 whether or
         not the caller was following. Stopping is audited as unfollowed when it changed
-        something. The id is a UUID or a tracking number.
+        something, and then raises ticket.unfollowed (opt-in by name, like ticket.followed). The id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -4398,7 +4399,10 @@ paths:
         Staff and administrators only. A reporting user gets 403 forbidden on a
         ticket they can see. The target must also be visible to the caller,
         otherwise the answer is 404 not_found with the target's id in the message.
-        A link that does not exist still answers 204.
+        A link that does not exist still answers 204 and announces nothing. A link
+        that is removed raises ticket.unlinked on this ticket, in the same transaction,
+        with target_id and link_type; no email is sent and no audit entry is written
+        (adding a link writes none either).
         linkType must be one of related_to, parent_child, caused_by or
         duplicate_of. Both ids must be UUIDs.
         A ticket the caller may not see answers 404 not_found, the same answer as a
@@ -5497,7 +5501,8 @@ paths:
         Authenticated by the guest token alone. The token names the ticket, so no
         ticket id appears in the path. The request is the same multipart upload as
         uploadAttachment, with the same checks, scanning, quarantine and wrapping,
-        and the instance-wide 25 MB cap. Three things are specific to guests.
+        and the instance-wide 25 MB cap. A stored file raises ticket.attachment_added
+        with no actor and no email. Three things are specific to guests.
         Attaching is off unless an administrator has turned on
         guest_attachments_enabled (#445): then the route answers the generic
         404, byte-identical to a bad link. A guest's per-file limit is
@@ -5686,6 +5691,8 @@ paths:
         reopen_window_closed. Staff and admin are not limited by the ticket's state.
         The response is the stored attachment. Its reputation block is null, since
         only listAttachments and the re-check fill it in.
+        A stored file raises ticket.attachment_added (attachment_id) in the transaction
+        that writes it. No email is sent for an upload.
         The ticket checks run before the body is read, so a 409 is answered before
         any 400, 413 or 415 about the file.
         The path id is a UUID or a tracking number.
@@ -6646,7 +6653,9 @@ paths:
         assigned to the group, open or not, is taken off it (their assigned user, if
         any, is kept) and gets an "unassigned" audit entry naming the administrator.
         The unassignments, their audit entries and the delete are one transaction:
-        if any part fails, none is applied. An unknown id answers 404 not_found.
+        if any part fails, none is applied. Each ticket is announced to webhooks as
+        ticket.assigned (cleared), with this administrator as the actor, in the same
+        transaction. No staff email is sent. An unknown id answers 404 not_found.
       tags: ['Admin: Groups']
       x-ghd-handler: handleDeleteGroup
       security:
@@ -7690,7 +7699,9 @@ paths:
       description: >-
         Administrators only, in a signed-in session (second factor required). Keys can't write users: an API key is refused with 403 session_required (an OAuth client, which is a staff identity, with 403 forbidden), whatever the body. A key may read.
         Soft-deletes the account. It is hidden from lists, its sign-in is refused, its
-        sessions end, and its open tickets return to the unassigned queue. A failure to
+        sessions end, and its open tickets return to the unassigned queue, each
+        announced to webhooks as ticket.assigned (cleared) with no staff email, and as
+        ticket.unfollowed too when the user followed it. A failure to
         return the tickets is logged and does not change the answer. The row is kept,
         so the email address stays taken. The last active administrator cannot be
         deleted, and that answers 400.
@@ -8171,8 +8182,13 @@ paths:
         X-GHD-Delivery, a UUID that is the same on every retry of one delivery, so it can
         drop a repeat, and X-GHD-Event, the event name (for example ticket.replied). The
         raw body is ids only: Type (the event name), TicketID, ActorID, OccurredAt and,
-        where the event has them, a Payload of new_status_id and target_id, and nothing
-        else The secret is write-only. When it is set, each delivery
+        where the event has them, a Payload of ids, and nothing else. The ids belong to the
+        name: new_status_id for ticket.status_changed, target_id for ticket.linked,
+        target_id and link_type for ticket.unlinked, reply_id for ticket.replied and
+        ticket.note_added, attachment_id for ticket.attachment_added, and user_id for
+        ticket.followed and ticket.unfollowed. Every other name has no Payload.
+        A hook on "*" (or with no events) does not receive ticket.followed or
+        ticket.unfollowed; list them by name to receive them. The secret is write-only. When it is set, each delivery
         carries sha256=<hex HMAC-SHA256 of the body> in the X-GHD-Signature header, and the
         same value in X-OHD-Signature for older consumers. An empty secret means deliveries
         are not signed. enabled defaults to true.
@@ -11718,11 +11734,17 @@ components:
           format: date-time
     WebhookEvent:
       description: >-
-        An event name a webhook can subscribe to. The wildcard "*" subscribes to all
-        eleven. guest.link_resent is never sent to a webhook.
+        An event name a webhook can subscribe to. The wildcard "*" subscribes to every
+        name except ticket.followed and ticket.unfollowed, which a hook receives only if
+        it lists them by name (alone or beside "*"): who follows a ticket is personal.
+        guest.link_resent is never sent to a webhook.
         ticket.replied is a customer-visible reply only; a staff-only note is ticket.note_added.
+        ticket.unlinked is a link removed, ticket.attachment_added a file uploaded, and
+        ticket.followed and ticket.unfollowed a person starting or stopping following a
+        ticket (the person's id is in the payload, never their name). None of the four
+        sends email. The raw Payload ids each name carries are listed on createWebhook.
       type: string
-      enum: ['*', ticket.created, ticket.assigned, ticket.status_changed, ticket.replied, ticket.note_added, ticket.resolved, ticket.closed, ticket.reopened, ticket.linked, ticket.priority_changed, ticket.classified]
+      enum: ['*', ticket.created, ticket.assigned, ticket.status_changed, ticket.replied, ticket.note_added, ticket.resolved, ticket.closed, ticket.reopened, ticket.linked, ticket.priority_changed, ticket.classified, ticket.unlinked, ticket.attachment_added, ticket.followed, ticket.unfollowed]
     WebhookPayloadFormat:
       description: >-
         The body shape a delivery uses.

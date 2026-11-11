@@ -279,7 +279,7 @@ func (q *Queries) DeleteAttachment(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
-const deleteTicketLink = `-- name: DeleteTicketLink :exec
+const deleteTicketLink = `-- name: DeleteTicketLink :execrows
 DELETE FROM ticket_links
 WHERE source_ticket_id = $1 AND target_ticket_id = $2 AND link_type = $3
 `
@@ -290,9 +290,12 @@ type DeleteTicketLinkParams struct {
 	LinkType       string    `json:"link_type"`
 }
 
-func (q *Queries) DeleteTicketLink(ctx context.Context, arg DeleteTicketLinkParams) error {
-	_, err := q.db.ExecContext(ctx, deleteTicketLink, arg.SourceTicketID, arg.TargetTicketID, arg.LinkType)
-	return err
+func (q *Queries) DeleteTicketLink(ctx context.Context, arg DeleteTicketLinkParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteTicketLink, arg.SourceTicketID, arg.TargetTicketID, arg.LinkType)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const getAttachmentByID = `-- name: GetAttachmentByID :one

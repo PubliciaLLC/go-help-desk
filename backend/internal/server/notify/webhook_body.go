@@ -17,7 +17,12 @@ import (
 // the API using TicketID.
 //
 //	new_status_id  ticket.status_changed
-//	target_id      ticket.linked
+//	target_id      ticket.linked, ticket.unlinked
+//	link_type      ticket.unlinked (an enum; the same two ends can be linked in
+//	               more than one way, so the id alone does not say which went)
+//	reply_id       ticket.replied, ticket.note_added
+//	attachment_id  ticket.attachment_added
+//	user_id        ticket.followed, ticket.unfollowed (an id, never a name)
 //
 // Whether an event is a reply or a note is the event name, so no flag is sent.
 //
@@ -27,7 +32,7 @@ import (
 // belongs to (rawKeysFor): a hook told ticket.resolved gets no
 // new_status_id, a hook told ticket.priority_changed or ticket.classified gets
 // no Payload at all, and the receiver reads the ticket through the API.
-var rawPayloadKeys = []string{"new_status_id", "target_id"}
+var rawPayloadKeys = []string{"new_status_id", "target_id", "link_type", "reply_id", "attachment_id", "user_id"}
 
 // rawKeysFor is the allow-listed Payload keys that belong to an event name.
 func rawKeysFor(t notification.EventType) []string {
@@ -36,14 +41,24 @@ func rawKeysFor(t notification.EventType) []string {
 		return []string{"new_status_id"}
 	case notification.EventTicketLinked:
 		return []string{"target_id"}
+	case notification.EventTicketUnlinked:
+		return []string{"target_id", "link_type"}
+	case notification.EventTicketReplied, notification.EventTicketNoteAdded:
+		return []string{"reply_id"}
+	case notification.EventTicketAttachmentAdded:
+		return []string{"attachment_id"}
+	case notification.EventTicketFollowed, notification.EventTicketUnfollowed:
+		return []string{"user_id"}
 	}
 	return nil
 }
 
-// historyPayloadKeys are what the copy kept for Redeliver adds: the link type
-// (an enum, for the headline) and the id of the reply the event announced, so a
-// redelivery can look the reply up again. Neither is sent in a raw body.
-var historyPayloadKeys = append(append([]string(nil), rawPayloadKeys...), "link_type", "reply_id")
+// historyPayloadKeys are what the copy kept for Redeliver holds: every key any
+// raw body carries. A replay needs them (the reply to look up again, the
+// attachment, the person), and the history view shows only the event name. The
+// link type is in the list for ticket.unlinked, and a ticket.linked replay
+// needs it for the chat headline although its raw body does not send it.
+var historyPayloadKeys = rawPayloadKeys
 
 // keepOnly returns ev reduced to the event name, ids and times, and of Payload
 // only the given keys. No address, subject, tracking number, status name or

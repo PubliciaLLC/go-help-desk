@@ -28,6 +28,10 @@ var KindOrder = []EventType{
 	EventTicketReplied,
 	EventTicketNoteAdded,
 	EventTicketLinked,
+	EventTicketUnlinked,
+	EventTicketAttachmentAdded,
+	EventTicketFollowed,
+	EventTicketUnfollowed,
 }
 
 // Change is one field moving from one value to another. Ids and enums only,
@@ -136,6 +140,7 @@ func (c *Changes) Raise(ev Event) {
 	}
 	dst.GuestLink = dst.GuestLink || ev.GuestLink
 	dst.FromRequester = dst.FromRequester || ev.FromRequester
+	dst.SuppressStaffMail = dst.SuppressStaffMail || ev.SuppressStaffMail
 	dst.RoutedAssignment = dst.RoutedAssignment || ev.RoutedAssignment
 }
 

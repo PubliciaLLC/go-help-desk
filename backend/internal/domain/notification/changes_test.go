@@ -76,7 +76,8 @@ func TestChanges_KindsAreInTheFixedOrder(t *testing.T) {
 		{"every kind",
 			[][]EventType{{EventTicketLinked, EventTicketNoteAdded, EventTicketReplied, EventTicketClassified,
 				EventTicketPriorityChanged, EventTicketAssigned, EventTicketStatusChanged, EventTicketClosed,
-				EventTicketResolved, EventTicketReopened, EventTicketCreated}},
+				EventTicketResolved, EventTicketReopened, EventTicketCreated,
+				EventTicketUnfollowed, EventTicketFollowed, EventTicketAttachmentAdded, EventTicketUnlinked}},
 			KindOrder},
 	}
 	for _, tc := range tests {
