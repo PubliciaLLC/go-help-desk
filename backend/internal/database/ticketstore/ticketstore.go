@@ -986,6 +986,18 @@ func (s *Store) ListFiltered(ctx context.Context, f ticket.Filter) ([]ticket.Tic
 // outstanding targets by. ListFiltered passes the wall clock; a test passes a
 // fixed instant to put tickets exactly on the 80% and 100% boundaries.
 func (s *Store) ListFilteredAt(ctx context.Context, f ticket.Filter, now time.Time) ([]ticket.Ticket, error) {
+	res, err := s.listFilteredAt(ctx, f, now)
+	return res.Tickets, err
+}
+
+// ListFilteredWithMeta is ListFiltered plus what the query could not do about
+// reply text. The reply search fills Replies; until it does the zero value says
+// nothing and the handler sends no header.
+func (s *Store) ListFilteredWithMeta(ctx context.Context, f ticket.Filter) (ticket.ListResult, error) {
+	return s.listFilteredAt(ctx, f, time.Now())
+}
+
+func (s *Store) listFilteredAt(ctx context.Context, f ticket.Filter, now time.Time) (ticket.ListResult, error) {
 	sortKey, sortDir := f.ResolvedSort()
 	p := dbgen.ListTicketsFilteredParams{
 		Now:           now,
@@ -1030,7 +1042,7 @@ func (s *Store) ListFilteredAt(ctx context.Context, f ticket.Filter, now time.Ti
 	if f.Queue == ticket.QueueMine {
 		groups, err := s.q.ListGroupsForUser(ctx, f.ActorID)
 		if err != nil {
-			return nil, fmt.Errorf("listing the caller's groups: %w", err)
+			return ticket.ListResult{}, fmt.Errorf("listing the caller's groups: %w", err)
 		}
 		for _, g := range groups {
 			p.MineGroupIds = append(p.MineGroupIds, g.ID)
@@ -1042,13 +1054,13 @@ func (s *Store) ListFilteredAt(ctx context.Context, f ticket.Filter, now time.Ti
 
 	rows, err := s.q.ListTicketsFiltered(ctx, p)
 	if err != nil {
-		return nil, fmt.Errorf("listing filtered tickets: %w", err)
+		return ticket.ListResult{}, fmt.Errorf("listing filtered tickets: %w", err)
 	}
 	out := make([]ticket.Ticket, len(rows))
 	for i, r := range rows {
 		out[i] = fromRow(ticketRow(r))
 	}
-	return out, nil
+	return ticket.ListResult{Tickets: out}, nil
 }
 
 // likeEscaper makes %, _ and the escape character itself match literally in an

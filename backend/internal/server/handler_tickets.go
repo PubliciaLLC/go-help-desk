@@ -161,12 +161,36 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 	f.IncludeInternal = ticket.IncludeInternalFor(a.Role)
 	f.Limit, f.Offset = pageParams(r)
 
-	tickets, err := s.tickets.ListFiltered(ctx, f)
+	res, err := s.tickets.ListFilteredWithMeta(ctx, f)
 	if err != nil {
 		handleError(w, err)
 		return
 	}
-	s.writeTickets(w, r, tickets)
+	writeReplySearchHeaders(w, f, res.Replies)
+	s.writeTickets(w, r, res.Tickets)
+}
+
+// writeReplySearchHeaders tells the caller what a reply search could not do.
+// The body is a bare array and stays one, so these are headers, and they are
+// sent only when the request asked for reply search and the store had
+// something to say:
+//
+//	X-Replies-Searched: false   replies were not fully searched (the time cap,
+//	                            or the index is not ready); the result is the
+//	                            ticket text only
+//	X-Reply-Index: building     the reply index is not ready yet
+//
+// The app is same-origin, so a browser reads them without any CORS header.
+func writeReplySearchHeaders(w http.ResponseWriter, f ticket.Filter, m ticket.ReplySearchMeta) {
+	if !f.SearchReplies {
+		return
+	}
+	if m.Searched != nil {
+		w.Header().Set("X-Replies-Searched", strconv.FormatBool(*m.Searched))
+	}
+	if m.IndexBuilding {
+		w.Header().Set("X-Reply-Index", "building")
+	}
 }
 
 // queueFor is the queue a scope names for a caller of this role.

@@ -3339,6 +3339,23 @@ paths:
       responses:
         '200':
           description: The caller's tickets, in the order described above, as a bare array (never null).
+          headers:
+            X-Replies-Searched:
+              description: >-
+                Sent only when search_replies=true was asked for and the server knows the answer. "false"
+                means replies were not fully searched (the time cap was hit, or the reply index is not ready), so
+                the results match ticket text only. The page shows a notice. Absent otherwise.
+              schema:
+                type: string
+                enum: ['true', 'false']
+            X-Reply-Index:
+              description: >-
+                Sent only when search_replies=true was asked for. "building" means the reply index is not ready
+                yet. Absent otherwise. The API sets no CORS headers (the app is same-origin), so a browser page
+                reads both headers without Access-Control-Expose-Headers.
+              schema:
+                type: string
+                enum: [building]
           content:
             application/json:
               schema:
@@ -10879,6 +10896,13 @@ components:
             administrator, for staff only while staff_can_create_api_keys is on,
             never for a requester. Present only on GET /me and PATCH
             /me/email-preferences.
+        sla_enabled:
+          type: boolean
+          description: >-
+            Whether SLA tracking is on. Present only on GET /me and PATCH /me/email-preferences, only for
+            staff and administrators, and only when the setting could be read: absent means unknown, not off.
+            A requester never gets it, and it is not on the public GET /site. The ticket list offers the sla
+            filter and sort only while it is true; both answer 400 while it is false.
         email_notifications:
           type: object
           description: |
