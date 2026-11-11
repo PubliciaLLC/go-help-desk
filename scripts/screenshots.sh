@@ -60,6 +60,13 @@
 #                             405). A stand-in on this machine cannot do it: the server refuses to
 #                             deliver to loopback and private addresses.
 #   SHOTS_KEEP                1 leaves the database in place (same as --keep)
+#   SHOTS_HW_FIELD            1 attaches a text field ("Serial number") to the Hardware category in
+#                             the main seed, so shot 06 shows the Fields section with a field in it
+#                             ("Order is set on Custom Fields." and the field name as a link). Unset,
+#                             Hardware has no field and 06 shows only "Assign field". Use it for
+#                             06 only, in a run of its own (--only 06): the extra field adds a row
+#                             to shot 41's list, and shots of Hardware tickets (04, 05) may change.
+#                             Do not publish a full run made with it [unset]
 #   SHOTS_ALLOW_FALLBACK_FONT 1 lets --publish run when Inter could not be
 #                             fetched and Liberation Sans is used instead. For
 #                             previews only; the images will not match the set.
