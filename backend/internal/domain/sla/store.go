@@ -31,6 +31,13 @@ var ErrPolicyInUse = errors.New("SLA policy is in use and cannot be deleted")
 // Postgres text under a 400 (#276).
 var ErrUnknownCategory = errors.New("SLA policy category does not exist")
 
+// ErrRecordSuperseded reports that a write addressed an SLA record that is no
+// longer the ticket's current one: a re-match (priority change, reopen restart)
+// replaced it after the caller read it. The caller's reading was computed from
+// that record's clock and policy, so it must not be applied to the record that
+// replaced it; it reads the current record again and starts over (#623).
+var ErrRecordSuperseded = errors.New("SLA record is no longer current")
+
 // ErrNotFound is returned when an SLA policy is not found.
 var ErrNotFound = errors.New("not found")
 
@@ -59,7 +66,15 @@ type Store interface {
 	// against a concurrent breach stamp.
 	UpdateRecord(ctx context.Context, r Record) error
 
-	// SetFirstResponse marks ticketID's first response, freezes its
+	// The three Set* writes below are addressed by RECORD id (the id the caller
+	// read from GetRecord), not by ticket (#623). The reading each carries --
+	// elapsed time from the record's clock, targets from its policy -- is only
+	// true of that record. If a re-match has superseded it since, the write
+	// changes nothing and returns ErrRecordSuperseded, and the caller reads the
+	// current record and computes again. A record that is still current but
+	// already holds the fact is not an error: the write is a no-op.
+
+	// SetFirstResponse marks recordID's first response, freezes its
 	// elapsed-toward-target reading as of that same moment, AND stamps a
 	// response breach if it is already late — all in one statement that only
 	// ever writes first_response_at / response_elapsed_at_met_seconds /
@@ -69,9 +84,8 @@ type Store interface {
 	// atomically with the fact, never from a separately-read, possibly-stale
 	// record — a losing call (one that finds first_response_at already set)
 	// touches nothing, including the breach column, so it can never stamp a
-	// breach the winning call did not itself decide. Called for a ticket with
-	// no record is a silent no-op.
-	SetFirstResponse(ctx context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds, responseTargetSeconds int64) error
+	// breach the winning call did not itself decide.
+	SetFirstResponse(ctx context.Context, recordID uuid.UUID, at time.Time, elapsedSeconds, responseTargetSeconds int64) error
 
 	// SetResolved is SetFirstResponse's resolution-side twin.
 	//
@@ -81,7 +95,7 @@ type Store interface {
 	// still exercised directly (and independently regression-tested) at the
 	// store level; nothing stops a future caller that only ever needs the
 	// resolution fact alone from using it.
-	SetResolved(ctx context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds, resolutionTargetSeconds int64) error
+	SetResolved(ctx context.Context, recordID uuid.UUID, at time.Time, elapsedSeconds, resolutionTargetSeconds int64) error
 
 	// SetResolvedAndFirstResponse is what Service.RecordResolved actually
 	// calls: SetResolved and SetFirstResponse's own writes (the #219 "a
@@ -100,7 +114,7 @@ type Store interface {
 	// first_response_at is left with that fact — and whatever breach
 	// decision was already made for it — completely untouched; only the
 	// resolution pair is written.
-	SetResolvedAndFirstResponse(ctx context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds, resolutionTargetSeconds, responseTargetSeconds int64) error
+	SetResolvedAndFirstResponse(ctx context.Context, recordID uuid.UUID, at time.Time, elapsedSeconds, resolutionTargetSeconds, responseTargetSeconds int64) error
 
 	// ListRecordsByTicketIDs returns the SLA records for whichever of the
 	// given ticket ids have one. A ticket with no record is simply absent

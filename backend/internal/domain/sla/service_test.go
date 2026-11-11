@@ -88,12 +88,28 @@ func (f *fakeSLAStore) GetRecord(_ context.Context, ticketID uuid.UUID) (sla.Rec
 		// same "not under an SLA" signal this fake's tests rely on.
 		return sla.Record{}, fmt.Errorf("%w: %s", sla.ErrNoRecord, ticketID)
 	}
+	if r.ID == uuid.Nil {
+		r.ID = r.TicketID // see find
+	}
 	return r, nil
 }
 func (f *fakeSLAStore) UpdateRecord(_ context.Context, r sla.Record) error {
 	f.updateRecordCalls++
 	f.records[r.TicketID] = r
 	return nil
+}
+
+// find is what the record-addressed writes look a record up by. A record put
+// in the map without an id (nearly every test builds them by hand) is addressed
+// by its ticket's id, which is what GetRecord reports for it. Nothing found is
+// a record that is no longer current, as in the real store.
+func (f *fakeSLAStore) find(recordID uuid.UUID) (sla.Record, error) {
+	for _, r := range f.records {
+		if r.ID == recordID || (r.ID == uuid.Nil && r.TicketID == recordID) {
+			return r, nil
+		}
+	}
+	return sla.Record{}, sla.ErrRecordSuperseded
 }
 
 // SetFirstResponse and SetResolved apply the same semantics the real,
@@ -106,11 +122,11 @@ func (f *fakeSLAStore) UpdateRecord(_ context.Context, r sla.Record) error {
 // the fact — never from a separately-read record — so a call that loses the
 // COALESCE race (finds the fact already set) touches nothing at all,
 // including the breach column. See TestRecordResolved_ConcurrentCallsLeaveNoStrayBreachStamp.
-func (f *fakeSLAStore) SetFirstResponse(_ context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds, responseTargetSeconds int64) error {
+func (f *fakeSLAStore) SetFirstResponse(_ context.Context, recordID uuid.UUID, at time.Time, elapsedSeconds, responseTargetSeconds int64) error {
 	f.setFirstResponseCalls++
-	r, ok := f.records[ticketID]
-	if !ok {
-		return nil // no record for this ticket: a silent no-op, like the real query.
+	r, err := f.find(recordID)
+	if err != nil {
+		return err
 	}
 	if r.FirstResponseAt == nil {
 		r.FirstResponseAt = &at
@@ -119,15 +135,15 @@ func (f *fakeSLAStore) SetFirstResponse(_ context.Context, ticketID uuid.UUID, a
 			r.ResponseBreachedAt = &at
 		}
 	}
-	f.records[ticketID] = r
+	f.records[r.TicketID] = r
 	return nil
 }
 
-func (f *fakeSLAStore) SetResolved(_ context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds, resolutionTargetSeconds int64) error {
+func (f *fakeSLAStore) SetResolved(_ context.Context, recordID uuid.UUID, at time.Time, elapsedSeconds, resolutionTargetSeconds int64) error {
 	f.setResolvedCalls++
-	r, ok := f.records[ticketID]
-	if !ok {
-		return nil
+	r, err := f.find(recordID)
+	if err != nil {
+		return err
 	}
 	if r.ResolvedAt == nil {
 		r.ResolvedAt = &at
@@ -136,7 +152,7 @@ func (f *fakeSLAStore) SetResolved(_ context.Context, ticketID uuid.UUID, at tim
 			r.ResolutionBreachedAt = &at
 		}
 	}
-	f.records[ticketID] = r
+	f.records[r.TicketID] = r
 	return nil
 }
 
@@ -146,11 +162,11 @@ func (f *fakeSLAStore) SetResolved(_ context.Context, ticketID uuid.UUID, at tim
 // arguments — never a separately-read record — in what is, in the real
 // store, a single statement. This fake makes both writes in a single Go call
 // with no possibility of a partial update, mirroring that.
-func (f *fakeSLAStore) SetResolvedAndFirstResponse(_ context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds, resolutionTargetSeconds, responseTargetSeconds int64) error {
+func (f *fakeSLAStore) SetResolvedAndFirstResponse(_ context.Context, recordID uuid.UUID, at time.Time, elapsedSeconds, resolutionTargetSeconds, responseTargetSeconds int64) error {
 	f.setResolvedAndFirstResponseCalls++
-	r, ok := f.records[ticketID]
-	if !ok {
-		return nil
+	r, err := f.find(recordID)
+	if err != nil {
+		return err
 	}
 	if r.ResolvedAt == nil {
 		r.ResolvedAt = &at
@@ -166,7 +182,7 @@ func (f *fakeSLAStore) SetResolvedAndFirstResponse(_ context.Context, ticketID u
 			r.ResponseBreachedAt = &at
 		}
 	}
-	f.records[ticketID] = r
+	f.records[r.TicketID] = r
 	return nil
 }
 func (f *fakeSLAStore) ListBreachCandidates(_ context.Context, _ time.Time) ([]uuid.UUID, error) {

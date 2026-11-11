@@ -941,6 +941,17 @@ type Querier interface {
 	// row, so exactly one confirm matches. Zero rows means somebody else enrolled
 	// first. Rotation of an existing secret uses SetUserMFA.
 	SetFirstUserMFA(ctx context.Context, arg SetFirstUserMFAParams) (int64, error)
+	// Addressed by the RECORD's id, not the ticket's (#623). The caller read that
+	// record, computed its elapsed time from its clock and its targets from its
+	// policy, and the reading means nothing on any other record. A re-match
+	// (priority change, reopen restart) that committed in between has superseded
+	// it, so zero rows are affected, and the caller reads the current record and
+	// starts over. Keyed on the ticket, the write used to land on the NEW record
+	// with the OLD record's reading (or, when the re-match was still holding the
+	// old record's lock, to wait and then update nothing at all). A write that
+	// finds its record current but already filled still affects one row: it
+	// changes nothing, and is not mistaken for a lost race.
+	//
 	// Marks the first response, freezes elapsed-toward-target as of that same
 	// moment, AND stamps a response breach if it is already late — all in ONE
 	// statement. COALESCE-guarded like StampSLABreaches below: it only ever
@@ -972,11 +983,12 @@ type Querier interface {
 	// the breach decision is made from." A losing call (first_response_at
 	// already NOT NULL) touches nothing at all, including response_breached_at,
 	// so it can never stamp a breach the winning call did not itself decide.
-	SetSLAFirstResponse(ctx context.Context, arg SetSLAFirstResponseParams) error
+	SetSLAFirstResponse(ctx context.Context, arg SetSLAFirstResponseParams) (int64, error)
 	// The resolution-side twin of SetSLAFirstResponse: see its comment for why
-	// the fact write and the breach stamp are one statement (#228), and why
-	// every right-hand-side column reference here reads the PRE-UPDATE row.
-	SetSLAResolved(ctx context.Context, arg SetSLAResolvedParams) error
+	// the fact write and the breach stamp are one statement (#228), why
+	// every right-hand-side column reference here reads the PRE-UPDATE row, and
+	// why it is addressed by record id (#623).
+	SetSLAResolved(ctx context.Context, arg SetSLAResolvedParams) (int64, error)
 	// #233: RecordResolved's own fold of TWO facts into one statement, the same
 	// way #228 folded each fact with its own breach decision. Before this,
 	// RecordResolved issued SetSLAResolved then SetSLAFirstResponse as two
@@ -990,6 +1002,8 @@ type Querier interface {
 	// impossible: both writes commit together, in the same row version, or
 	// neither does.
 	//
+	// Addressed by record id, like SetSLAFirstResponse (#623).
+	//
 	// Same COALESCE-guarded, first-writer-wins shape as SetSLAFirstResponse /
 	// SetSLAResolved, applied to both column pairs independently: each pair's
 	// CASE reads only ITS OWN pre-image column (resolution_breached_at's
@@ -1001,7 +1015,7 @@ type Querier interface {
 	// RecordResolved's existing "SetFirstResponse's own COALESCE guard already
 	// makes this the correct no-op" reasoning, now inside one statement instead
 	// of two.
-	SetSLAResolvedAndFirstResponse(ctx context.Context, arg SetSLAResolvedAndFirstResponseParams) error
+	SetSLAResolvedAndFirstResponse(ctx context.Context, arg SetSLAResolvedAndFirstResponseParams) (int64, error)
 	SetSetting(ctx context.Context, arg SetSettingParams) error
 	// The person's staff-email switches (#441), each changed only when given.
 	// Narrow for the reason UpdateUserProfile is: UpdateUser writes a whole row

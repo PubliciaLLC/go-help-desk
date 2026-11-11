@@ -158,11 +158,13 @@ func TestSLARecordSuperseded_IsInvisibleToEveryCurrentQuery(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, containsUUID(got, tk.ID), "a superseded record is never a sweep candidate")
 
-	// Every write is a silent no-op against the superseded row.
+	// Every write leaves the superseded row alone. The ones addressed by record
+	// id say so (#623: the caller's reading is stale); the ones addressed by
+	// ticket find no current row and change nothing.
 	late := f.now.Add(time.Minute)
-	require.NoError(t, f.ss.SetFirstResponse(f.ctx, tk.ID, late, 60, 1800))
-	require.NoError(t, f.ss.SetResolved(f.ctx, tk.ID, late, 60, 7200))
-	require.NoError(t, f.ss.SetResolvedAndFirstResponse(f.ctx, tk.ID, late, 60, 7200, 1800))
+	require.ErrorIs(t, f.ss.SetFirstResponse(f.ctx, oldID, late, 60, 1800), sla.ErrRecordSuperseded)
+	require.ErrorIs(t, f.ss.SetResolved(f.ctx, oldID, late, 60, 7200), sla.ErrRecordSuperseded)
+	require.ErrorIs(t, f.ss.SetResolvedAndFirstResponse(f.ctx, oldID, late, 60, 7200, 1800), sla.ErrRecordSuperseded)
 	require.NoError(t, f.ss.StampBreaches(f.ctx, tk.ID, &late, &late))
 	require.NoError(t, f.ss.UpdateRecord(f.ctx, sla.Record{TicketID: tk.ID, PolicyID: old.ID, FirstResponseAt: &late}))
 	require.Equal(t, before, f.all(t, tk.ID)[oldID], "the superseded row is byte-identical after every write")
@@ -170,7 +172,7 @@ func TestSLARecordSuperseded_IsInvisibleToEveryCurrentQuery(t *testing.T) {
 	// The new current row takes the same statements.
 	started := f.now
 	newID := f.insert(t, tk.ID, next.ID, &started, 0)
-	require.NoError(t, f.ss.SetFirstResponse(f.ctx, tk.ID, late, 60, 1800))
+	require.NoError(t, f.ss.SetFirstResponse(f.ctx, newID, late, 60, 1800))
 	rows := f.all(t, tk.ID)
 	require.NotNil(t, rows[newID].FirstResponseAt, "SetFirstResponse lands on the current row")
 	require.Equal(t, before, rows[oldID], "and still leaves the superseded row alone")

@@ -63,6 +63,15 @@ func seedTicketAndRecord(t *testing.T, ctx context.Context, ts *ticketstore.Stor
 	return tk.ID
 }
 
+// recordIDOf is the id of the ticket's current record. The Set* writes are
+// addressed by record, not by ticket (#623).
+func recordIDOf(t *testing.T, ctx context.Context, sls *slastore.Store, ticketID uuid.UUID) uuid.UUID {
+	t.Helper()
+	rec, err := sls.GetRecord(ctx, ticketID)
+	require.NoError(t, err)
+	return rec.ID
+}
+
 // TestSetResolved_ConcurrentCallsLeaveNoStrayBreachStamp pins #228 against the
 // REAL SQL (not a Go reimplementation of its semantics): two near-simultaneous
 // SetResolved calls for the same ticket — modelled as two sequential calls,
@@ -97,12 +106,12 @@ func TestSetResolved_ConcurrentCallsLeaveNoStrayBreachStamp(t *testing.T) {
 
 	onTimeAt := time.Now().UTC().Truncate(time.Millisecond)
 	// The "on time" call: comfortably under the one-hour target.
-	require.NoError(t, sls.SetResolved(ctx, ticketID, onTimeAt, 1800, resolutionTargetMin*60))
+	require.NoError(t, sls.SetResolved(ctx, recordIDOf(t, ctx, sls, ticketID), onTimeAt, 1800, resolutionTargetMin*60))
 
 	// The "losing" near-simultaneous call: a later instant with an elapsed
 	// reading that WOULD have breached, had its write been the one to land.
 	lateAt := onTimeAt.Add(time.Hour)
-	require.NoError(t, sls.SetResolved(ctx, ticketID, lateAt, 5000, resolutionTargetMin*60))
+	require.NoError(t, sls.SetResolved(ctx, recordIDOf(t, ctx, sls, ticketID), lateAt, 5000, resolutionTargetMin*60))
 
 	rec, err := sls.GetRecord(ctx, ticketID)
 	require.NoError(t, err)
@@ -140,7 +149,7 @@ func TestSetResolvedAndFirstResponse_FoldsBothFactsIntoOneStatement(t *testing.T
 	resolvedAt := time.Now().UTC().Truncate(time.Millisecond)
 	elapsed := int64(20 * 60) // 20 minutes: under both targets
 
-	require.NoError(t, sls.SetResolvedAndFirstResponse(ctx, ticketID, resolvedAt, elapsed,
+	require.NoError(t, sls.SetResolvedAndFirstResponse(ctx, recordIDOf(t, ctx, sls, ticketID), resolvedAt, elapsed,
 		resolutionTargetMin*60, responseTargetMin*60))
 
 	rec, err := sls.GetRecord(ctx, ticketID)
@@ -181,7 +190,7 @@ func TestSetResolvedAndFirstResponse_StampsBothBreachesWhenLate(t *testing.T) {
 	resolvedAt := time.Now().UTC().Truncate(time.Millisecond)
 	elapsed := int64(90 * 60) // 90 minutes: past both targets
 
-	require.NoError(t, sls.SetResolvedAndFirstResponse(ctx, ticketID, resolvedAt, elapsed,
+	require.NoError(t, sls.SetResolvedAndFirstResponse(ctx, recordIDOf(t, ctx, sls, ticketID), resolvedAt, elapsed,
 		resolutionTargetMin*60, responseTargetMin*60))
 
 	rec, err := sls.GetRecord(ctx, ticketID)
@@ -215,12 +224,12 @@ func TestSetResolvedAndFirstResponse_LeavesAnEarlierGenuineResponseUntouched(t *
 
 	// A genuine earlier reply, on time.
 	firstResponseAt := time.Now().UTC().Truncate(time.Millisecond)
-	require.NoError(t, sls.SetFirstResponse(ctx, ticketID, firstResponseAt, int64(10*60), responseTargetMin*60))
+	require.NoError(t, sls.SetFirstResponse(ctx, recordIDOf(t, ctx, sls, ticketID), firstResponseAt, int64(10*60), responseTargetMin*60))
 
 	// The resolution comes later, past the resolution target.
 	resolvedAt := firstResponseAt.Add(90 * time.Minute)
 	elapsed := int64(90 * 60)
-	require.NoError(t, sls.SetResolvedAndFirstResponse(ctx, ticketID, resolvedAt, elapsed,
+	require.NoError(t, sls.SetResolvedAndFirstResponse(ctx, recordIDOf(t, ctx, sls, ticketID), resolvedAt, elapsed,
 		resolutionTargetMin*60, responseTargetMin*60))
 
 	rec, err := sls.GetRecord(ctx, ticketID)
@@ -256,7 +265,7 @@ func TestSetFirstResponse_StampsBreachAtomicallyWithTheFact(t *testing.T) {
 	late := time.Now().UTC().Truncate(time.Millisecond)
 	lateElapsed := int64(90 * 60) // 90 minutes: past the 30-minute target
 
-	require.NoError(t, sls.SetFirstResponse(ctx, ticketID, late, lateElapsed, responseTargetMin*60))
+	require.NoError(t, sls.SetFirstResponse(ctx, recordIDOf(t, ctx, sls, ticketID), late, lateElapsed, responseTargetMin*60))
 
 	rec, err := sls.GetRecord(ctx, ticketID)
 	require.NoError(t, err)
@@ -288,7 +297,7 @@ func TestSetFirstResponse_OnTimeDoesNotStampABreach(t *testing.T) {
 	onTime := time.Now().UTC().Truncate(time.Millisecond)
 	onTimeElapsed := int64(10 * 60) // 10 minutes: under the 30-minute target
 
-	require.NoError(t, sls.SetFirstResponse(ctx, ticketID, onTime, onTimeElapsed, responseTargetMin*60))
+	require.NoError(t, sls.SetFirstResponse(ctx, recordIDOf(t, ctx, sls, ticketID), onTime, onTimeElapsed, responseTargetMin*60))
 
 	rec, err := sls.GetRecord(ctx, ticketID)
 	require.NoError(t, err)
@@ -355,7 +364,7 @@ func TestRecordTimeStatements_ElapsedExactlyAtTargetStampsABreach(t *testing.T) 
 			id := seedTicketAndRecord(t, ctx, ts, cs, us, sls, targetMin, targetMin)
 
 			at := time.Now().UTC().Truncate(time.Millisecond)
-			require.NoError(t, tc.write(ctx, sls, id, at))
+			require.NoError(t, tc.write(ctx, sls, recordIDOf(t, ctx, sls, id), at))
 			rec, err := sls.GetRecord(ctx, id)
 			require.NoError(t, err)
 			tc.check(t, rec, at)

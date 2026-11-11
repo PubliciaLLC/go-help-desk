@@ -30,6 +30,14 @@ type rematchStoreFx struct {
 	cat category.Category
 }
 
+// recordID is the id of the ticket's current record: the SLA store's record
+// writes are addressed by it, not by ticket (#623). A ticket with no record is
+// a broken test, which the zero id makes fail at the write.
+func (f *rematchStoreFx) recordID() uuid.UUID {
+	rec, _ := f.ss.GetRecord(f.ctx, f.tk.ID)
+	return rec.ID
+}
+
 func newRematchStoreFx(t *testing.T) *rematchStoreFx {
 	t.Helper()
 	db, closeDB := testutil.NewDB(t)
@@ -96,11 +104,11 @@ func TestCurrentSLARecordForUpdate(t *testing.T) {
 		want ticket.SLAFacts
 	}{
 		"first_response_at": {
-			set:  func(f *rematchStoreFx) error { return f.ss.SetFirstResponse(f.ctx, f.tk.ID, at, 60, 1800) },
+			set:  func(f *rematchStoreFx) error { return f.ss.SetFirstResponse(f.ctx, f.recordID(), at, 60, 1800) },
 			want: ticket.SLAFacts{FirstResponseAt: &at, ResponseElapsedAtMetSeconds: ptr(int64(60))},
 		},
 		"resolved_at": {
-			set:  func(f *rematchStoreFx) error { return f.ss.SetResolved(f.ctx, f.tk.ID, at, 90, 7200) },
+			set:  func(f *rematchStoreFx) error { return f.ss.SetResolved(f.ctx, f.recordID(), at, 90, 7200) },
 			want: ticket.SLAFacts{ResolvedAt: &at, ResolutionElapsedAtMetSeconds: ptr(int64(90))},
 		},
 		"response_breached_at": {
@@ -163,7 +171,7 @@ func TestSLARematchStore_SupersedeAndStartRoundTrip(t *testing.T) {
 	old := f.policy(t, "old", nil)
 	next := f.policy(t, "next", nil)
 	require.NoError(t, f.ss.CreateRecord(f.ctx, sla.Record{TicketID: f.tk.ID, PolicyID: old.ID}))
-	require.NoError(t, f.ss.SetFirstResponse(f.ctx, f.tk.ID, time.Now().UTC().Truncate(time.Millisecond), 60, 1800))
+	require.NoError(t, f.ss.SetFirstResponse(f.ctx, f.recordID(), time.Now().UTC().Truncate(time.Millisecond), 60, 1800))
 	before, err := f.ss.GetRecord(f.ctx, f.tk.ID)
 	require.NoError(t, err)
 

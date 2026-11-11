@@ -22,7 +22,7 @@ import (
 func (f *changePriorityFx) resolvedWithMetSLA(t *testing.T, svc *ticket.Service) {
 	t.Helper()
 	require.NoError(t, f.ss.CreateRecord(f.ctx, sla.Record{TicketID: f.tk.ID, PolicyID: f.pol[ticket.PriorityMedium].ID}))
-	require.NoError(t, f.ss.SetFirstResponse(f.ctx, f.tk.ID, time.Now().UTC().Truncate(time.Millisecond), 600, 1800))
+	require.NoError(t, f.ss.SetFirstResponse(f.ctx, recordIDOf(t, f.ctx, f.ss, f.tk.ID), time.Now().UTC().Truncate(time.Millisecond), 600, 1800))
 	_, err := svc.Resolve(f.ctx, f.tk.ID, "done", f.staff)
 	require.NoError(t, err)
 }
@@ -164,7 +164,7 @@ func TestReopen_TheDanceAloneNeverProducesABadge(t *testing.T) {
 	f := newChangePriorityFx(t)
 	svc := f.service(t, nil)
 	require.NoError(t, f.ss.CreateRecord(f.ctx, sla.Record{TicketID: f.tk.ID, PolicyID: f.pol[ticket.PriorityMedium].ID}))
-	require.NoError(t, f.ss.SetFirstResponse(f.ctx, f.tk.ID, time.Now().UTC().Truncate(time.Millisecond), 600, 1800))
+	require.NoError(t, f.ss.SetFirstResponse(f.ctx, recordIDOf(t, f.ctx, f.ss, f.tk.ID), time.Now().UTC().Truncate(time.Millisecond), 600, 1800))
 
 	for _, p := range []ticket.Priority{ticket.PriorityLow, ticket.PriorityHigh, ticket.PriorityLow, ticket.PriorityMedium} {
 		_, err := svc.ChangePriority(f.ctx, f.tk.ID, p, f.staff)

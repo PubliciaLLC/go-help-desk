@@ -140,7 +140,7 @@ func TestChangePriority_RematchCarriesTheClockAndFactsAgainstRealRows(t *testing
 	svc := f.service(t, nil)
 
 	require.NoError(t, f.ss.CreateRecord(f.ctx, sla.Record{TicketID: f.tk.ID, PolicyID: f.pol[ticket.PriorityMedium].ID}))
-	require.NoError(t, f.ss.SetFirstResponse(f.ctx, f.tk.ID, time.Now().UTC().Truncate(time.Millisecond), 600, 1800))
+	require.NoError(t, f.ss.SetFirstResponse(f.ctx, recordIDOf(t, f.ctx, f.ss, f.tk.ID), time.Now().UTC().Truncate(time.Millisecond), 600, 1800))
 	require.NoError(t, f.ss.StampBreaches(f.ctx, f.tk.ID, nil, ptrTime(time.Now().UTC().Truncate(time.Millisecond))))
 	oldRow := f.records(t)[0]
 
@@ -225,7 +225,7 @@ func TestChangePriority_AuditFailureRollsBackAgainstRealRows(t *testing.T) {
 	svc := f.service(t, failingAuditAtomic{db: f.db.SQL, failAction: "priority_changed"})
 
 	require.NoError(t, f.ss.CreateRecord(f.ctx, sla.Record{TicketID: f.tk.ID, PolicyID: f.pol[ticket.PriorityMedium].ID}))
-	require.NoError(t, f.ss.SetFirstResponse(f.ctx, f.tk.ID, time.Now().UTC().Truncate(time.Millisecond), 600, 1800))
+	require.NoError(t, f.ss.SetFirstResponse(f.ctx, recordIDOf(t, f.ctx, f.ss, f.tk.ID), time.Now().UTC().Truncate(time.Millisecond), 600, 1800))
 	rowsBefore := f.records(t)
 
 	_, err := svc.ChangePriority(f.ctx, f.tk.ID, ticket.PriorityHigh, f.staff)

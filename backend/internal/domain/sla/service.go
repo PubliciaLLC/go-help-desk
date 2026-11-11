@@ -50,32 +50,22 @@ func (s *Service) AttachPolicy(ctx context.Context, t ticket.Ticket) error {
 // one statement removes the race a separately-read record here would
 // otherwise decide from.
 //
+// #623: the write is addressed to the record that was read, and retried on the
+// record that replaced it if a re-match got in between; a response from before
+// a reopen restarted the clocks is not recorded on the new one. See
+// recordOnCurrentRecord. The same holds for RecordResolved.
+//
 // #217: this is also where a LATE response gets its breach stamp the moment
 // it actually happens, using the frozen elapsed value just computed — not
 // only from the periodic sweep evaluating an outstanding record, which misses
 // a response that lands late entirely between sweep ticks (or during an
 // SLA-toggle-off stretch, since #216 stops gating this method on the toggle).
 func (s *Service) RecordFirstResponse(ctx context.Context, t ticket.Ticket, at time.Time) error {
-	record, err := s.store.GetRecord(ctx, t.ID)
-	if errors.Is(err, ErrNoRecord) {
-		return nil // this ticket is not under an SLA
-	}
-	if err != nil {
-		return fmt.Errorf("recording SLA first response: %w", err)
-	}
-	if record.FirstResponseAt != nil {
-		return nil // fast path; the store write below would no-op anyway
-	}
-	policy, err := s.store.GetPolicy(ctx, record.PolicyID)
-	if err != nil {
-		return fmt.Errorf("getting SLA policy for ticket %s: %w", t.ID, err)
-	}
-
-	elapsed := int64(record.Elapsed(t, at) / time.Second)
-	if err := s.store.SetFirstResponse(ctx, t.ID, at, elapsed, int64(policy.ResponseTargetMin)*60); err != nil {
-		return fmt.Errorf("recording SLA first response: %w", err)
-	}
-	return nil
+	return s.recordOnCurrentRecord(ctx, t, at, "recording SLA first response",
+		func(r Record) bool { return r.FirstResponseAt != nil },
+		func(r Record, p Policy, elapsed int64) error {
+			return s.store.SetFirstResponse(ctx, r.ID, at, elapsed, int64(p.ResponseTargetMin)*60)
+		})
 }
 
 // RecordResolved stamps when a ticket was resolved, so resolution breaches are
@@ -110,27 +100,73 @@ func (s *Service) RecordFirstResponse(ctx context.Context, t ticket.Ticket, at t
 // writes — both facts and both of their own breach decisions — into a
 // single statement. See its store.go doc comment.
 func (s *Service) RecordResolved(ctx context.Context, t ticket.Ticket, at time.Time) error {
-	record, err := s.store.GetRecord(ctx, t.ID)
-	if errors.Is(err, ErrNoRecord) {
-		return nil // this ticket is not under an SLA
-	}
-	if err != nil {
-		return fmt.Errorf("recording SLA resolution: %w", err)
-	}
-	if record.ResolvedAt != nil {
-		return nil // fast path; the store write below would no-op anyway
-	}
-	policy, err := s.store.GetPolicy(ctx, record.PolicyID)
-	if err != nil {
-		return fmt.Errorf("getting SLA policy for ticket %s: %w", t.ID, err)
-	}
+	return s.recordOnCurrentRecord(ctx, t, at, "recording SLA resolution",
+		func(r Record) bool { return r.ResolvedAt != nil },
+		func(r Record, p Policy, elapsed int64) error {
+			return s.store.SetResolvedAndFirstResponse(ctx, r.ID, at, elapsed,
+				int64(p.ResolutionTargetMin)*60, int64(p.ResponseTargetMin)*60)
+		})
+}
 
-	elapsed := int64(record.Elapsed(t, at) / time.Second)
-	if err := s.store.SetResolvedAndFirstResponse(ctx, t.ID, at, elapsed,
-		int64(policy.ResolutionTargetMin)*60, int64(policy.ResponseTargetMin)*60); err != nil {
-		return fmt.Errorf("recording SLA resolution: %w", err)
+// recordAttempts is how many times a record-addressed write is tried when a
+// re-match keeps replacing the record between its read and its write. One
+// re-match is the ordinary case and two in a row is rare; a third failure
+// means something else is wrong, and an error for the boundary to log is more
+// use than a fourth read.
+const recordAttempts = 3
+
+// recordOnCurrentRecord is the shared body of RecordFirstResponse and
+// RecordResolved (#623): read the ticket's current record, compute from it,
+// and write to THAT record by id.
+//
+// A re-match (priority change, reopen restart) can supersede the record
+// between the read and the write. The reading is true of the record it was
+// computed from and of no other, so a write that finds its record superseded
+// (ErrRecordSuperseded) changes nothing, and this reads the current record
+// again and recomputes. Keyed on the ticket instead, the write landed on the
+// new record with the old record's elapsed time and policy target, or waited
+// on the old record's lock and then updated nothing.
+//
+// A reading from before the record's clock started is dropped, not recorded
+// (D17): an instant before StartedAt is a response or resolution from before a
+// reopen restarted the clocks, and a restart starts over by design. It cannot
+// be written to the record it belongs to either, which is history and is
+// never written again. Equal to StartedAt counts: the clock had started.
+//
+// done reports that the record already holds the fact, which makes the call a
+// no-op without a policy read. write is handed the record, its policy and the
+// elapsed seconds as of at.
+func (s *Service) recordOnCurrentRecord(ctx context.Context, t ticket.Ticket, at time.Time, what string,
+	done func(Record) bool, write func(Record, Policy, int64) error) error {
+	for attempt := 0; attempt < recordAttempts; attempt++ {
+		record, err := s.store.GetRecord(ctx, t.ID)
+		if errors.Is(err, ErrNoRecord) {
+			return nil // this ticket is not under an SLA
+		}
+		if err != nil {
+			return fmt.Errorf("%s: %w", what, err)
+		}
+		if done(record) {
+			return nil // fast path; the store write below would no-op anyway
+		}
+		if record.StartedAt != nil && at.Before(*record.StartedAt) {
+			return nil
+		}
+		policy, err := s.store.GetPolicy(ctx, record.PolicyID)
+		if err != nil {
+			return fmt.Errorf("getting SLA policy for ticket %s: %w", t.ID, err)
+		}
+
+		err = write(record, policy, int64(record.Elapsed(t, at)/time.Second))
+		if errors.Is(err, ErrRecordSuperseded) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("%s: %w", what, err)
+		}
+		return nil
 	}
-	return nil
+	return fmt.Errorf("%s for ticket %s: re-matched on each of %d attempts: %w", what, t.ID, recordAttempts, ErrRecordSuperseded)
 }
 
 // EvaluateBreaches checks whether a ticket has breached its SLA targets and
