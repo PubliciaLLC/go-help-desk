@@ -4959,6 +4959,57 @@ paths:
                       reason:
                         type: string
                         description: Why not, as the passkey library words it. Empty when available.
+                  saml_idp_certificate:
+                    type: object
+                    required: [expires_at, expired]
+                    description: |
+                      Present only when SAML is loaded and the IdP's signing
+                      certificate in the live metadata is expired or expires within
+                      30 days. With several signing certificates (an IdP rolling its
+                      certificate) the latest expiry decides. An expired certificate
+                      fails every SAML sign-in, and pasted metadata never refreshes
+                      itself, so this is the warning before it happens. The admin UI
+                      shows a notice.
+                    properties:
+                      expires_at:
+                        type: string
+                        format: date-time
+                      expired:
+                        type: boolean
+                  saml_metadata_refresh:
+                    type: object
+                    required: [problem]
+                    description: |
+                      Present only when SAML is loaded and the hourly refresh of the
+                      IdP metadata cannot do its job or declined what it fetched.
+                      http_url: the metadata URL is not https, so it is never
+                      refreshed. entity_id_changed: the refreshed metadata names a
+                      different entity ID. metadata_invalid: the refreshed metadata has
+                      a signing certificate that cannot be read, or none, so it was
+                      not applied. new_certificate: the refreshed metadata
+                      adds a signing certificate that is not trusted yet; a refresh
+                      applies only metadata whose certificates are removed or
+                      unchanged, so a certificate rollover needs the administrator to
+                      save the SAML settings again once the identity provider has
+                      published the new certificate. For the last two nothing was
+                      applied. The admin UI shows a notice.
+                    properties:
+                      problem:
+                        type: string
+                        enum: [http_url, entity_id_changed, new_certificate, metadata_invalid]
+                      new_certificates:
+                        type: array
+                        description: The added certificates, for new_certificate.
+                        items:
+                          type: object
+                          required: [sha256, expires_at]
+                          properties:
+                            sha256:
+                              type: string
+                              description: SHA-256 fingerprint of the certificate, as colon-separated upper-case hex pairs.
+                            expires_at:
+                              type: string
+                              format: date-time
                   update:
                     type: object
                     required: [current, latest, url]
@@ -5307,7 +5358,16 @@ paths:
           null or any other type is refused (bad_request) and nothing is written.
         - saml_metadata_url and saml_metadata_xml cannot both be non-empty after
           the write, and saml_metadata_xml must be SAML IdP metadata of at most
-          262144 bytes; either refusal is 400 bad_request.
+          262144 bytes; either refusal is 400 bad_request. Declared encodings
+          (UTF-16 included) in the XML declaration are accepted: the text is
+          already UTF-8, and the XML is stored as sent.
+        - A body that names saml_metadata_url, saml_metadata_xml, saml_cert_pem or
+          saml_key_pem loads the saved SAML configuration into the running server,
+          and one that names oidc_enabled, oidc_issuer_url, oidc_client_id,
+          oidc_client_secret or oidc_redirect_url loads the saved OIDC provider,
+          as PUT /admin/saml and PUT /admin/oidc do. If the new configuration cannot
+          be loaded the settings stay saved, the running configuration is kept, and
+          the answer is 200 with a warning that does not carry the error text.
         - If the write leaves some administrators unable to sign in by any method,
           it is applied and the answer is 200 with a warning that names them. If it
           would leave no administrator able to sign in, it is refused with 400.
@@ -11558,7 +11618,7 @@ components:
           type: array
           items:
             type: string
-          description: Email domains allowed for SAML accounts created on first sign-in. Empty means no restriction. Each entry must be ASCII (400 invalid_allowed_email_domains otherwise); use the xn-- form for an internationalised domain. Session only.
+          description: Email domains allowed for SAML accounts created on first sign-in. Empty means no restriction. Each entry must be ASCII (400 invalid_allowed_email_domains otherwise); use the xn-- form for an internationalised domain (the message names it). Session only.
         self_signup_enabled:
           type: boolean
           description: Whether people may sign themselves up. Session only.
