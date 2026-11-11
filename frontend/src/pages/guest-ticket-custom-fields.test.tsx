@@ -135,14 +135,59 @@ describe('GuestTicketPage custom fields', () => {
     expect(createGuestTicket.mock.calls[0][0].custom_fields).toBeUndefined()
   })
 
-  it('still lets the visitor file when the field list cannot be loaded', async () => {
-    listGuestFields.mockReset().mockRejectedValue(new Error('offline'))
-    const user = await fillBasics()
-    await user.selectOptions(screen.getByLabelText(/category/i), 'cat-1')
-    await user.click(submit())
+  // The lookup is throttled (429) and can fail like any request. A form that went
+  // on without the list would ask for nothing and then be refused for a required
+  // field it never showed, with nothing to fill in. So it says so, offers a retry,
+  // and does not submit until the fields are known.
+  describe('when the field list cannot be loaded', () => {
+    function rateLimited() {
+      const err = Object.assign(new Error('Request failed with status code 429'), { isAxiosError: true, response: { status: 429 } })
+      return err
+    }
 
-    // The server decides: if a field is required it answers 400 and the form
-    // shows what it said.
-    await waitFor(() => expect(createGuestTicket).toHaveBeenCalledTimes(1))
+    it('says to try again in a moment, and blocks submit', async () => {
+      listGuestFields.mockReset().mockRejectedValue(rateLimited())
+      const user = await fillBasics()
+      await user.selectOptions(screen.getByLabelText(/category/i), 'cat-1')
+
+      expect((await screen.findByRole('alert')).textContent).toMatch(/try again in a moment/i)
+      expect(submit()).toHaveProperty('disabled', true)
+      expect(screen.getByRole('button', { name: /try again/i })).toBeTruthy()
+      expect(createGuestTicket).not.toHaveBeenCalled()
+    })
+
+    it('does the same for any other failure', async () => {
+      listGuestFields.mockReset().mockRejectedValue(new Error('offline'))
+      const user = await fillBasics()
+      await user.selectOptions(screen.getByLabelText(/category/i), 'cat-1')
+
+      expect((await screen.findByRole('alert')).textContent).toMatch(/try again/i)
+      expect(submit()).toHaveProperty('disabled', true)
+    })
+
+    it('Try again asks again, and the fields appear and submit works', async () => {
+      listGuestFields.mockReset()
+        .mockRejectedValueOnce(rateLimited())
+        .mockResolvedValue([SERIAL])
+      const user = await fillBasics()
+      await user.selectOptions(screen.getByLabelText(/category/i), 'cat-1')
+      await user.click(await screen.findByRole('button', { name: /try again/i }))
+
+      await user.type(await screen.findByLabelText(/serial number/i), 'SN-42')
+      await waitFor(() => expect(submit()).toHaveProperty('disabled', false))
+      await user.click(submit())
+      await waitFor(() => expect(createGuestTicket).toHaveBeenCalledTimes(1))
+      expect(createGuestTicket.mock.calls[0][0].custom_fields).toEqual({ 'f-serial': 'SN-42' })
+      expect(listGuestFields).toHaveBeenCalledTimes(2)
+    })
+
+    it('blocks submit while the fields are still loading', async () => {
+      listGuestFields.mockReset().mockReturnValue(new Promise(() => {}))
+      const user = await fillBasics()
+      await user.selectOptions(screen.getByLabelText(/category/i), 'cat-1')
+
+      await waitFor(() => expect(listGuestFields).toHaveBeenCalled())
+      expect(submit()).toHaveProperty('disabled', true)
+    })
   })
 })

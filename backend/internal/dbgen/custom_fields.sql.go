@@ -188,7 +188,9 @@ func (q *Queries) DeleteCustomFieldValue(ctx context.Context, arg DeleteCustomFi
 
 const firstHeldCustomFieldValue = `-- name: FirstHeldCustomFieldValue :one
 SELECT value FROM ticket_custom_field_values
-WHERE field_def_id = $1 AND value = ANY($2::text[])
+WHERE field_def_id = $1
+  AND left(value, 255) = ANY(SELECT left(c, 255) FROM unnest($2::text[]) AS c)
+  AND value = ANY($2::text[])
 LIMIT 1
 `
 
@@ -198,6 +200,9 @@ type FirstHeldCustomFieldValueParams struct {
 }
 
 // One value from the list that some ticket holds; no row when none does.
+// The prefix test is what idx_cfv_field_def holds (migration 000065: it indexes the
+// first 255 characters of the value, not the whole of a long one); the exact
+// test after it is the answer.
 func (q *Queries) FirstHeldCustomFieldValue(ctx context.Context, arg FirstHeldCustomFieldValueParams) (string, error) {
 	row := q.db.QueryRowContext(ctx, firstHeldCustomFieldValue, arg.FieldDefID, pq.Array(arg.Candidates))
 	var value string

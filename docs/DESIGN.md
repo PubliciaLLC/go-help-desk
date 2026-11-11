@@ -4855,7 +4855,8 @@ Defined globally under **Admin → Custom Fields**. Each definition has:
   create, and on any `PATCH` that changes `options` or `retired_options` or makes
   the field a select, for a blank option (after trimming), an option that is in
   both lists, and one listed twice, compared exactly (`a` and `A` are two
-  options). All are `400 bad_request`. A `PATCH` that leaves both lists as they
+  options), and an option over 255 characters, which no ticket could be set to
+  (see *Values*, length limits). All are `400 bad_request`. A `PATCH` that leaves both lists as they
   are is not checked, so a field that was saved with a bad option before can
   still be renamed or reordered. On any other type the server stores `options`
   as sent and nothing reads it.
@@ -4993,6 +4994,19 @@ without it; that is accepted, since the ticket was valid against the form as the
 requester last saw it. Before 1.3.0 only the form held anyone to this; it is
 listed under breaking changes in the upgrade notes (#626, owner decision D25).
 
+**Follow-ups are exempt.** `POST /tickets/{id}/follow-up` (staff and requester),
+`POST /guest/follow-up` and MCP `create_follow_up` file a ticket in the original's
+category, type and item and copy no values; their routes take no `custom_fields`,
+so they could never satisfy a required field. They are filed without one.
+
+**A failed write of the values.** Once the ticket exists its values are written
+in one transaction. Values are bounded (see *Values*), so a failure is a database
+fault. When the classification has a required field, the request then fails with
+`500` (the REST and MCP answers name the ticket that was filed, so it can be
+checked) rather than answering `201` for a ticket that lost the required value.
+When it has none, the values stay best-effort: `201`, with `not_saved` in
+`warnings`.
+
 ### Guests
 
 A guest is shown, and may write, only the custom fields an administrator
@@ -5020,13 +5034,22 @@ form, some of them internal, to anyone on the internet.
   field is `400` whatever it is (a staff-only field, one on a type, a
   deactivated one, an unknown id, text that is not an id), the same for an empty
   value, and the message never says whether such a field exists; a value the
-  field does not accept is `400`; a required offered field without a value is
+  field does not accept (including one over its length limit) is `400`, and a
+  retired option reads exactly like one that never existed, because the form is
+  never shown retired options; a required offered field without a value is
   `400`. A guest is never warned and never partly saved, because the form is
-  ours. Required is judged over the offered fields only, so a field the staff
+  ours. If the write of the values fails after the ticket exists, the request
+  fails with `500` and no tracking number: a guest is never told "filed" for a
+  ticket that lost what they sent. Required is judged over the offered fields only, so a field the staff
   form requires but guests are not offered does not stop a guest filing. After
   the ticket exists the write is held to the offered set again
   (`SetGuestCreationValues`), so a field withdrawn between the check and the
   write is dropped, not stored.
+- **The form.** The public form asks `GET /guest/fields` when a category is
+  chosen, and does not submit until it has the answer. If the lookup is
+  throttled (`429`) or fails, it says "try again in a moment", offers **Try
+  again** and keeps submit disabled: a form that went on would show no fields and
+  then be refused for a required one it never offered.
 - **Nothing flows back.** The response is the tracking number, and the guest's
   view of their ticket carries no custom fields.
 - **Audit.** A change to the switch is recorded on both sides of the entry
@@ -5077,7 +5100,9 @@ which are checked first (see *Required fields*). MCP `create_ticket` returns the
 same `warnings`. A value that is not written is reported in the 201
 response's `warnings` array, one entry per dropped field with a reason:
 `invalid_field_id`, `duplicate_field_id`, `not_on_ticket`, `inactive`,
-`retired_option`, `not_an_option`, `not_a_number` or `not_saved`. The entry's
+`retired_option`, `not_an_option`, `not_a_number`, `too_long` or `not_saved`
+(`too_long` only as a backstop: a value over its limit is refused with `400`
+before the ticket is created). The entry's
 `field_id` is the key exactly as sent, and entries are sorted by it. Two keys
 that spell the same field id (upper and lower case, say) get
 `duplicate_field_id` and neither is written, because which value to keep would
@@ -5093,6 +5118,26 @@ in which two keys spell the same field id (`field_def_id is listed twice`)
 rather than pick one. Values stored before 1.3.0 are left as they are and shown as
 they are; since the ticket page sends only the fields that changed, such a value
 blocks only a save that changes that field.
+
+**Length limits** (owner, 2026-11-11). A value is at most **255 characters** for
+a `text` field, **10,000** for a `textarea` field, and 255 for `number` (counted
+after trimming) and `select` (which is one of the options, themselves at most 255
+characters: the options list refuses a longer one). Characters are Unicode code
+points, not bytes, so 10,000 four-byte characters (40 KB) is allowed and
+10,001 is not. They are the constants `customfield.MaxTextChars` and
+`MaxLongTextChars`, applied in `checkValue`, the one check every write goes
+through. Every door refuses an over-long value with `400 bad_request` before
+anything is created: `PUT /tickets/{id}/custom-fields` (all or none),
+`POST /tickets` for every caller (for any field, required or not), `POST
+/guest/tickets` and MCP `create_ticket`. The message names the field and the
+limit and never repeats the value. A value stored before the limits and over
+one is left as it is and shown as it is. An edit that does not send it, which
+is every save the ticket page makes for another field, is unaffected; sending it
+again is refused like any over-long value. The index under the values holds the
+first 255 characters of each (migration 000065), because Postgres refuses an
+index row over about 2,704 bytes and a long value could not otherwise be
+stored; the only lookups by value are of a select field's values, which never
+exceed 255 characters.
 
 Guests are offered the fields an administrator chose for them, through their own endpoints, and see no custom fields on a ticket after (see *Guests*). The public form offers exactly the fields `GET /guest/fields` returns for the category, and holds the visitor to the required ones; the server judges what is sent. The authenticated field endpoints do not filter by role: the fields a ticket has are resolved from its own category, type and item, and `PUT /tickets/{id}/custom-fields` accepts any of them from any role that may write to the ticket. What a reporting user is offered follows from what they can pick (category and type, never an item), so in practice they see category and type fields, while staff and admin, who can pick all three, see all levels.
 

@@ -176,6 +176,14 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 	if _, err := s.customFields.SetGuestCreationValues(ctx, t.ID, t.CategoryID, body.CustomFields); err != nil {
 		slog.ErrorContext(ctx, "saving custom field values on a guest ticket failed; the ticket was created without them",
 			"ticket_id", t.ID, "error", err)
+		// A guest is never told "filed" for a ticket that lost what they sent,
+		// and a guest has no warnings to be told it in. Values are bounded, so
+		// this is a database fault, and the visitor is asked to try again. The
+		// tracking number is not given: nothing is promised about this ticket.
+		if len(body.CustomFields) > 0 {
+			Error(w, http.StatusInternalServerError, "internal_error", "your request could not be completed; please try again")
+			return
+		}
 	}
 
 	// The tracking number and nothing else. Not the ticket id, not the token:

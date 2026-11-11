@@ -69,14 +69,21 @@ export function GuestTicketPage() {
   // and refuses any other key. This form asked for every field once and threw
   // the answers away on submit, which could also stop a visitor filing over a
   // field the server never took; it was removed, and is back only because the
-  // server now decides what a guest may fill. A failed lookup shows no fields
-  // and does not block the form: the server judges what is sent, and says so.
-  const { data: guestFields = [] } = useQuery({
+  // server now decides what a guest may fill.
+  //
+  // The form does not go on without the list. The lookup is throttled (429) and
+  // can fail like any request, and a form that carried on would show no fields
+  // and then be refused for a required one it never offered, with nothing to
+  // fill in. So a failure says so and offers a retry, and submit waits until the
+  // fields are known.
+  const fieldsQuery = useQuery({
     queryKey: ['guest-fields', categoryId],
     queryFn: () => listGuestFields(categoryId),
     enabled: !!categoryId,
     retry: false,
   })
+  const guestFields = fieldsQuery.data ?? []
+  const fieldsPending = !!categoryId && !fieldsQuery.isSuccess
 
   function chooseCategory(id: string) {
     setCategoryId(id)
@@ -93,6 +100,7 @@ export function GuestTicketPage() {
     if (!name.trim()) { setError('Name is required'); return }
     if (!email.trim()) { setError('Email is required'); return }
     if (isOverLimit(description)) { setError('The description is too long. Shorten it to send.'); return }
+    if (fieldsPending) return // the button is disabled; this covers Enter in a field
 
     const customFields: Record<string, string> = {}
     for (const f of guestFields) {
@@ -268,9 +276,18 @@ export function GuestTicketPage() {
                 </div>
               ))}
 
+              {fieldsQuery.isError && (
+                <div role="alert" className="space-y-2 text-sm text-red-600">
+                  <p>The extra questions for this category could not be loaded. Try again in a moment.</p>
+                  <Button type="button" variant="outline" size="sm" onClick={() => fieldsQuery.refetch()}>
+                    Try again
+                  </Button>
+                </div>
+              )}
+
               {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
 
-              <Button type="submit" className="w-full" disabled={loading || isOverLimit(description)}>
+              <Button type="submit" className="w-full" disabled={loading || fieldsPending || isOverLimit(description)}>
                 {loading ? 'Submitting…' : 'Submit request'}
               </Button>
             </form>

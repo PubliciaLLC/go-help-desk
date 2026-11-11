@@ -69,8 +69,13 @@ SELECT EXISTS (SELECT 1 FROM ticket_custom_field_values WHERE field_def_id = $1)
 
 -- name: FirstHeldCustomFieldValue :one
 -- One value from the list that some ticket holds; no row when none does.
+-- The prefix test is what idx_cfv_field_def holds (migration 000065: it indexes the
+-- first 255 characters of the value, not the whole of a long one); the exact
+-- test after it is the answer.
 SELECT value FROM ticket_custom_field_values
-WHERE field_def_id = $1 AND value = ANY(sqlc.arg(candidates)::text[])
+WHERE field_def_id = $1
+  AND left(value, 255) = ANY(SELECT left(c, 255) FROM unnest(sqlc.arg(candidates)::text[]) AS c)
+  AND value = ANY(sqlc.arg(candidates)::text[])
 LIMIT 1;
 
 -- name: CountCustomFieldValues :one

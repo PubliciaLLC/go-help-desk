@@ -418,6 +418,9 @@ type Querier interface {
 	// stored nor matched.
 	FindSLAPolicy(ctx context.Context, arg FindSLAPolicyParams) (SlaPolicy, error)
 	// One value from the list that some ticket holds; no row when none does.
+	// The prefix test is what idx_cfv_field_def holds (migration 000065: it indexes the
+	// first 255 characters of the value, not the whole of a long one); the exact
+	// test after it is the answer.
 	FirstHeldCustomFieldValue(ctx context.Context, arg FirstHeldCustomFieldValueParams) (string, error)
 	GetAPIKeyByHash(ctx context.Context, hashedToken string) (ApiKey, error)
 	// The path of a node as the audit log records it: "Hardware", "Hardware › Laptop",

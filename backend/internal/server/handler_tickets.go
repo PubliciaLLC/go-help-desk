@@ -383,7 +383,8 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	// been cleared for a requester and before filing on behalf takes a unit from
 	// the staff member's hourly budget (which a refusal would waste), and before
 	// Create, so a refusal spends no tracking number.
-	if err := s.customFields.CheckRequired(r.Context(), body.CategoryID, body.TypeID, body.ItemID, body.CustomFields); err != nil {
+	hasRequired, err := s.customFields.CheckCreation(r.Context(), body.CategoryID, body.TypeID, body.ItemID, body.CustomFields)
+	if err != nil {
 		handleError(w, err)
 		return
 	}
@@ -449,6 +450,14 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.ErrorContext(r.Context(), "saving custom field values on a new ticket failed; the ticket was created without them",
 			"ticket_id", t.ID, "error", err)
+		// The values are best-effort, except that a ticket which was to hold a
+		// required one must not be answered as filed without it: that is what the
+		// required rule is for. Values are bounded, so this is a database fault.
+		if hasRequired {
+			Error(w, http.StatusInternalServerError, "internal_error",
+				"the ticket "+string(t.TrackingNumber)+" was filed but its custom field values could not be saved; check it before filing again")
+			return
+		}
 	}
 
 	// Read back, so the response carries whoever the routing assigned, as

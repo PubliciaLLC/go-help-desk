@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
@@ -192,6 +193,10 @@ func checkOptionLists(options, retired []string) error {
 	for _, o := range append(slices.Clone(options), retired...) {
 		if strings.TrimSpace(o) == "" {
 			return Invalid("an option cannot be blank")
+		}
+		// An option longer than a select value may be could never be chosen.
+		if utf8.RuneCountInString(o) > MaxTextChars {
+			return Invalid(fmt.Sprintf("an option is at most %d characters", MaxTextChars))
 		}
 		if seen[o] {
 			return Invalid(fmt.Sprintf("option %q is listed twice", o))
@@ -390,13 +395,25 @@ func (s *Service) ResolveFieldsForCTI(ctx context.Context, categoryID uuid.UUID,
 //     refused too, though a ticket that already holds it keeps showing it.
 //   - A number field takes a number (IsNumber), stored trimmed; text that is
 //     only spaces is a clear.
+//   - A value is at most MaxChars(type) characters, checked before the type's
+//     own rule so that a refusal never has a long value to echo. This is the one
+//     place every door's check ends up (the rest of this package, the PUT route,
+//     creation, the guest form, MCP), so none of them can store what the index
+//     under the values would refuse (a write that failed for length lost the
+//     whole request's values, a required one included). A value already stored
+//     over the limit is left alone and is refused only if someone writes it again.
 func checkValue(def FieldDef, value string) (stored string, reason Reason) {
 	if !def.Active {
 		return "", ReasonInactive
 	}
+	if def.FieldType == FieldTypeNumber {
+		value = strings.TrimSpace(value)
+	}
+	if tooLong(def, value) {
+		return "", ReasonTooLong
+	}
 	switch def.FieldType {
 	case FieldTypeNumber:
-		value = strings.TrimSpace(value)
 		if value != "" && !IsNumber(value) {
 			return "", ReasonNotANumber
 		}
@@ -411,11 +428,37 @@ func checkValue(def FieldDef, value string) (stored string, reason Reason) {
 	return value, ""
 }
 
+// tooLong is whether value is over the field's limit, in characters. A number is
+// counted trimmed, as it is stored.
+func tooLong(def FieldDef, value string) bool {
+	if def.FieldType == FieldTypeNumber {
+		value = strings.TrimSpace(value)
+	}
+	// A byte count at or under the limit is under it in characters too, which
+	// spares counting the runes of every ordinary value.
+	max := MaxChars(def.FieldType)
+	return len(value) > max && utf8.RuneCountInString(value) > max
+}
+
+// refusalFor is refusal in the words for the caller. A guest is told a retired
+// option is "not a valid option", the same as for one that never existed: the
+// guest form is never shown retired options (GET /guest/fields leaves them out),
+// so a different message would let a visitor confirm a guess about one.
+func refusalFor(def FieldDef, value string, reason Reason, guest bool) error {
+	if guest && reason == ReasonRetiredOption {
+		reason = ReasonNotAnOption
+	}
+	return refusal(def, value, reason)
+}
+
 // refusal is checkValue's reason as the 400 a caller sees.
 func refusal(def FieldDef, value string, reason Reason) error {
 	switch reason {
 	case ReasonInactive:
 		return Invalid(fmt.Sprintf("field %q is deactivated", def.Name))
+	case ReasonTooLong:
+		// Not echoed: it can be ten thousand characters.
+		return Invalid(fmt.Sprintf("value for field %q is too long: at most %d characters", def.Name, MaxChars(def.FieldType)))
 	case ReasonRetiredOption:
 		return Invalid(fmt.Sprintf("value %q is a retired option for field %q", value, def.Name))
 	case ReasonNotANumber:
@@ -637,12 +680,23 @@ func valuesByID(raw map[string]string) (values map[uuid.UUID]string, dup map[uui
 //
 // FieldDef is always set by the store; an assignment without one is skipped
 // rather than guessed at.
-func checkRequired(offered []Assignment, raw map[string]string) error {
+//
+// It also refuses, for every offered active field, a value over the field's
+// length limit, required or not: creation otherwise drops such a value with a
+// warning after the ticket exists, and the guest and REST doors are meant to say
+// 400 before anything is written. guest says whose words the refusal uses.
+func checkRequired(offered []Assignment, raw map[string]string, guest bool) error {
 	values, dup := valuesByID(raw)
 	var missing []string
 	for _, a := range offered {
 		def := a.FieldDef
-		if def == nil || !def.Active || !a.VisibleOnNew || !a.RequiredOnNew {
+		if def == nil || !def.Active {
+			continue
+		}
+		if v, ok := values[a.FieldDefID]; ok && tooLong(*def, v) {
+			return refusalFor(*def, v, ReasonTooLong, guest)
+		}
+		if !a.VisibleOnNew || !a.RequiredOnNew {
 			continue
 		}
 		if dup[a.FieldDefID] {
@@ -654,7 +708,7 @@ func checkRequired(offered []Assignment, raw map[string]string) error {
 			continue
 		}
 		if _, reason := checkValue(*def, v); reason != "" {
-			return refusal(*def, v, reason)
+			return refusalFor(*def, v, reason, guest)
 		}
 	}
 	switch len(missing) {
@@ -675,11 +729,28 @@ func checkRequired(offered []Assignment, raw map[string]string) error {
 // field required between them lets one ticket through without it. Accepted; the
 // ticket is not wrong, only the form was a moment out of date.
 func (s *Service) CheckRequired(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID, raw map[string]string) error {
+	_, err := s.CheckCreation(ctx, categoryID, typeID, itemID, raw)
+	return err
+}
+
+// CheckCreation is CheckRequired that also says whether the classification has a
+// required field. The creation doors need that if the write of the values fails
+// afterwards: a ticket that was to hold a required value and does not is what
+// the rule exists to prevent, so for such a ticket the failure fails the request,
+// while for any other the values stay best-effort as they always were. It is
+// answered here, from the lookup the check already made, and not asked after the
+// failure, when the database may be the thing that failed.
+func (s *Service) CheckCreation(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID, raw map[string]string) (hasRequired bool, err error) {
 	fields, err := s.ResolveFieldsForCTI(ctx, categoryID, typeID, itemID)
 	if err != nil {
-		return fmt.Errorf("resolving the ticket's fields: %w", err)
+		return false, fmt.Errorf("resolving the ticket's fields: %w", err)
 	}
-	return checkRequired(fields, raw)
+	for _, a := range fields {
+		if a.FieldDef != nil && a.FieldDef.Active && a.VisibleOnNew && a.RequiredOnNew {
+			hasRequired = true
+		}
+	}
+	return hasRequired, checkRequired(fields, raw, false)
 }
 
 // GuestFields is the fields an anonymous visitor filing under the category is
@@ -736,8 +807,8 @@ func (s *Service) CheckGuestValues(ctx context.Context, categoryID uuid.UUID, ra
 			continue
 		}
 		if _, reason := checkValue(*def, v); reason != "" {
-			return refusal(*def, v, reason)
+			return refusalFor(*def, v, reason, true)
 		}
 	}
-	return checkRequired(offered, raw)
+	return checkRequired(offered, raw, true)
 }

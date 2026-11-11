@@ -17,6 +17,25 @@ const (
 	FieldTypeSelect   FieldType = "select"
 )
 
+// The longest value a field takes, in characters (runes: a limit in bytes would
+// treat a person writing in Chinese or with emoji as someone writing four times
+// as much). Owner, 2026-11-11: single-line fields 255, long text 10,000.
+const (
+	MaxTextChars     = 255
+	MaxLongTextChars = 10_000
+)
+
+// MaxChars is the longest value a field of the type takes: the long limit for
+// textarea and the single-line limit for everything else. A number is a few
+// dozen characters in any real use and a select value is one of the options,
+// so neither needed a limit of its own.
+func MaxChars(ft FieldType) int {
+	if ft == FieldTypeTextarea {
+		return MaxLongTextChars
+	}
+	return MaxTextChars
+}
+
 // ScopeType indicates which CTI level a field assignment is attached to.
 type ScopeType string
 
@@ -101,6 +120,7 @@ const (
 	ReasonRetiredOption    Reason = "retired_option"
 	ReasonNotAnOption      Reason = "not_an_option"
 	ReasonNotANumber       Reason = "not_a_number"
+	ReasonTooLong          Reason = "too_long"  // over the longest value the field's type takes (MaxChars)
 	ReasonNotSaved         Reason = "not_saved" // anything else
 )
 

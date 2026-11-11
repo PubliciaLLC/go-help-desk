@@ -258,7 +258,7 @@ type Server struct {
 // rules REST applies when a ticket is created, from the same code.
 type CustomFields interface {
 	ResolveFieldsForCTI(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID) ([]customfield.Assignment, error)
-	CheckRequired(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID, raw map[string]string) error
+	CheckCreation(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID, raw map[string]string) (hasRequired bool, err error)
 	SetCreationValues(ctx context.Context, ticketID, categoryID uuid.UUID, typeID, itemID *uuid.UUID, raw map[string]string) ([]customfield.Warning, error)
 	ListValuesForTicket(ctx context.Context, ticketID uuid.UUID) ([]customfield.TicketFieldValue, error)
 }
@@ -899,8 +899,11 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 	if err != nil {
 		return errResult(err.Error())
 	}
+	hasRequired := false
 	if s.customFields != nil {
-		if err := s.customFields.CheckRequired(ctx, in.CategoryID, in.TypeID, in.ItemID, customFields); err != nil {
+		var err error
+		hasRequired, err = s.customFields.CheckCreation(ctx, in.CategoryID, in.TypeID, in.ItemID, customFields)
+		if err != nil {
 			if errors.Is(err, customfield.ErrValidation) {
 				return errResult(err.Error())
 			}
@@ -976,6 +979,11 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 		if err != nil {
 			slog.ErrorContext(ctx, "saving custom field values on a new ticket failed; the ticket was created without them",
 				"ticket_id", t.ID, "error", err)
+			// As on REST: a ticket that was to hold a required value is not
+			// answered as filed without it.
+			if hasRequired {
+				return errResult("the ticket " + string(t.TrackingNumber) + " was filed but its custom field values could not be saved; check it before filing again")
+			}
 		}
 	}
 	return ticketResult(actor.Role, createdTicket{Ticket: t, Warnings: warnings})

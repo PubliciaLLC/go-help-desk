@@ -2295,8 +2295,12 @@ paths:
         custom_fields takes only the fields GET /guest/fields lists for the category. Anything else (a field
         offered only to staff, one on a type, a deactivated one, an id that names nothing, a key that is not an
         id, an empty value for one of those) is 400 bad_request, as is a value the field does not accept and a
-        missing value for an offered field that is required. A guest is never warned and never partly saved:
-        nothing is created, and no tracking number is used. A field that the staff form requires but guests
+        missing value for an offered field that is required. A value over the field's limit (255
+        characters, or 10,000 for a textarea field; characters, not bytes) is 400, and a retired
+        option is refused with exactly the words used for one that never existed. A guest is never
+        warned and never partly saved: nothing is created, and no tracking number is used. If the
+        values cannot be saved after the ticket was created, the answer is 500 internal_error with
+        no tracking number. A field that the staff form requires but guests
         are not offered does not stop a guest filing.
         The response carries only the tracking number. The access link is emailed to guest_email, so a guest
         proves ownership of the address by using the link. The per-client-address budget is shared with
@@ -3539,6 +3543,14 @@ paths:
         spaces is no value. The message names each missing field. A reporting user's
         item_id is dropped before the check. One window remains: a field made required
         between the check and the create lets that one ticket through without it.
+        Follow-ups (POST /tickets/{id}/follow-up) are exempt from the required rule: they copy no
+        values and take no custom_fields.
+        A value over the longest its field's type takes (255 characters for text, number and select;
+        10,000 for textarea; characters, not bytes) is refused with 400 before the ticket is created,
+        for any field and any caller, naming the field and the limit and not repeating the value.
+        If the values cannot be saved after the ticket was created (a database fault) and the
+        classification has a required field, the answer is 500 internal_error naming the ticket
+        that was filed; with no required field the answer stays 201 with `not_saved` warnings.
         An OAuth client creates the ticket as its service user, which becomes
         the reporter, and needs the tickets:write scope. Nobody is mailed for a
         service user.
@@ -4331,6 +4343,11 @@ paths:
         underscores; it is stored as written, trimmed (1.50 stays 1.50). A value
         stored before 1.3.0 is left as it is, and blocks only a save that changes
         that field.
+        A value is also refused (400) when it is over the longest the field's type takes, in
+        characters and not bytes: 255 for a text, number (after trimming) or select
+        field, and 10,000 for a textarea field. The message names the field and the limit and does
+        not repeat the value. A value already stored over a limit is left as it is, and sending it
+        again is refused.
         A reporting user cannot change a Closed ticket (409 ticket_closed). Staff
         and administrators can.
         A ticket the caller may not see answers 404 not_found, the same answer as a
@@ -12634,7 +12651,7 @@ components:
           description: The key exactly as sent. A string because for invalid_field_id it is not a UUID.
         reason:
           type: string
-          enum: [invalid_field_id, duplicate_field_id, not_on_ticket, inactive, retired_option, not_an_option, not_a_number, not_saved]
+          enum: [invalid_field_id, duplicate_field_id, not_on_ticket, inactive, retired_option, not_an_option, not_a_number, too_long, not_saved]
     CustomFieldPlaceNode:
       type: object
       required: [id, name, active]
