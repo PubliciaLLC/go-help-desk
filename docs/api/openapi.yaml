@@ -3561,6 +3561,11 @@ paths:
         - A reporting user cannot change the status (403 forbidden), cannot
           assign (403 forbidden), cannot reclassify (403, "only staff can
           reclassify tickets"), and cannot change the priority (403 forbidden).
+        - category_id, type_id and item_id (a reclassification) are refused on a
+          Resolved or Closed ticket with 409 ticket_closed, for staff and
+          administrators alike, and nothing in the request is saved. A request
+          that moves a Resolved ticket to an open status and reclassifies it is
+          allowed. A request with no classification field is unaffected.
         - priority is one of critical, high, medium and low. Anything else
           answers 400 bad_request before any change in the request is saved. A
           Resolved or Closed ticket's priority cannot be changed: 409
@@ -11128,7 +11133,7 @@ components:
           $ref: '#/components/schemas/Uuid'
         action:
           type: string
-          description: The action name, for example created, assigned, unassigned, priority_changed, reopened, sla_restarted (written by a reopen that restarts the SLA clocks), reply_added (a public reply), note_added (an internal note) or closed. A reply_added or note_added entry carries only the reply's id and an internal flag in its after, never the text. There is no enum, so new actions are added without a version change.
+          description: The action name, for example created, assigned, unassigned, priority_changed, classified (a change of category, type or item, with the SLA outcome when the category changed), reopened, sla_restarted (written by a reopen that restarts the SLA clocks), reply_added (a public reply), note_added (an internal note) or closed. A reply_added or note_added entry carries only the reply's id and an internal flag in its after, never the text. There is no enum, so new actions are added without a version change.
         actor_id:
           description: The actor's account, or null when there is none (or when a reporting user is shown an assignment).
           anyOf:

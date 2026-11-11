@@ -1174,7 +1174,7 @@ func (s *Service) Update(ctx context.Context, ticketID uuid.UUID, p Patch, actor
 			}
 		}
 		if p.CTI != nil {
-			if _, err = s.classifyInTx(ctx, st, ch, ticketID, *p.CTI, actor); err != nil {
+			if _, err = s.classifyInTx(ctx, st, au, ch, ticketID, *p.CTI, actor); err != nil {
 				return err
 			}
 		}
@@ -1363,7 +1363,8 @@ func (s *Service) changePriorityLocked(ctx context.Context, st Store, au audit.S
 }
 
 // isFinished reports whether a status is Resolved or Closed: the two states in
-// which a ticket's priority is frozen (#443).
+// which a ticket's priority is frozen (#443) and its classification cannot
+// change.
 func (s *Service) isFinished(statusID uuid.UUID) bool {
 	return statusID == s.sys.closedID || statusID == s.sys.resolvedID
 }
@@ -1378,6 +1379,17 @@ func (s *Service) isFinished(statusID uuid.UUID) bool {
 // out. ChangePriority still checks on the locked row, so this is the early
 // answer, not the guarantee.
 func (s *Service) ValidatePriorityChange(ctx context.Context, ticketID uuid.UUID, statusAfter *uuid.UUID) error {
+	return s.validateOpenAfter(ctx, ticketID, statusAfter)
+}
+
+// ValidateReclassify is the same early check for a classification change, which
+// is refused on a Resolved or Closed ticket just as a priority change is. The
+// locked-row check in classifyInTx is the guarantee.
+func (s *Service) ValidateReclassify(ctx context.Context, ticketID uuid.UUID, statusAfter *uuid.UUID) error {
+	return s.validateOpenAfter(ctx, ticketID, statusAfter)
+}
+
+func (s *Service) validateOpenAfter(ctx context.Context, ticketID uuid.UUID, statusAfter *uuid.UUID) error {
 	if statusAfter != nil {
 		if s.isFinished(*statusAfter) {
 			return ErrClosed
@@ -1476,53 +1488,9 @@ func (s *Service) changePriorityInTx(ctx context.Context, st Store, au audit.Sto
 		}
 	}
 
-	cur, err := st.CurrentSLARecordForUpdate(ctx, t.ID)
+	cur, outcome, start, err := s.rematchSLA(ctx, st, t, reopen, now)
 	if err != nil {
-		return Ticket{}, fmt.Errorf("reading SLA record: %w", err)
-	}
-	matched, err := st.MatchSLAPolicy(ctx, p, t.CategoryID)
-	if err != nil {
-		return Ticket{}, fmt.Errorf("matching SLA policy: %w", err)
-	}
-	enabled := s.slaEnabled != nil && s.slaEnabled(ctx)
-	plan := planSLARematch
-	if reopen {
-		plan = planSLARestart
-	}
-	outcome, start := plan(enabled, cur, matched, t, now)
-	// A staff change that gives a record to a ticket that has none: the clock
-	// resumes from the later of the ticket's last reopen and the newest
-	// superseded record's start, with the pause base that goes with it and none
-	// of the old record's facts. A restart is not lost to a trip through a
-	// priority with no policy, whether the restart was a record or only a
-	// reopen that landed on such a priority, and the time spent there still
-	// counts. A ticket that never had a record and was never reopened keeps the
-	// plan's NULL start, the ticket's creation.
-	if outcome == SLAAttached && !reopen {
-		prior, err := st.LatestSupersededSLARecord(ctx, t.ID)
-		if err != nil {
-			return Ticket{}, fmt.Errorf("reading superseded SLA record: %w", err)
-		}
-		if prior != nil {
-			start.StartedAt, start.PausedSecondsAtStart = prior.StartedAt, prior.PausedSecondsAtStart
-		}
-		// A NULL start is the ticket's creation, earlier than any reopen.
-		if t.LastReopenedAt != nil && (start.StartedAt == nil || t.LastReopenedAt.After(*start.StartedAt)) {
-			start.StartedAt, start.PausedSecondsAtStart = t.LastReopenedAt, t.PausedSecondsAtLastReopen
-		}
-	}
-
-	// The old record first: a ticket has one current record at most.
-	switch outcome {
-	case SLARematched, SLARestarted, SLARemoved:
-		if err := st.SupersedeSLARecord(ctx, cur.ID, now); err != nil {
-			return Ticket{}, fmt.Errorf("superseding SLA record: %w", err)
-		}
-	}
-	if start != nil {
-		if err := st.StartSLARecord(ctx, *start); err != nil {
-			return Ticket{}, fmt.Errorf("starting SLA record: %w", err)
-		}
+		return Ticket{}, err
 	}
 
 	if changed {
@@ -1568,6 +1536,69 @@ func (s *Service) changePriorityInTx(ctx context.Context, st Store, au audit.Sto
 		}
 	}
 	return t, nil
+}
+
+// rematchSLA matches the ticket's SLA policy again, on its priority and category
+// as t now has them, and writes what that decides: the old record superseded
+// and the new one started. It is the SLA half of a priority change, of a reopen
+// (restart: both clocks start over) and of a reclassification, all inside the
+// caller's transaction and under the ticket's row lock. It returns the record it
+// found current (nil if none), the outcome, and the record it started (nil if
+// none) so the caller can say what happened in its audit entry.
+//
+// reopen picks the restart plan; otherwise the clock is kept (planSLARematch).
+// With SLA tracking off nothing is read into a decision and nothing is written.
+func (s *Service) rematchSLA(ctx context.Context, st Store, t Ticket, reopen bool, now time.Time) (*SLARecordState, SLAOutcome, *SLARecordStart, error) {
+	cur, err := st.CurrentSLARecordForUpdate(ctx, t.ID)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("reading SLA record: %w", err)
+	}
+	matched, err := st.MatchSLAPolicy(ctx, t.Priority, t.CategoryID)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("matching SLA policy: %w", err)
+	}
+	enabled := s.slaEnabled != nil && s.slaEnabled(ctx)
+	plan := planSLARematch
+	if reopen {
+		plan = planSLARestart
+	}
+	outcome, start := plan(enabled, cur, matched, t, now)
+	// A staff change that gives a record to a ticket that has none: the clock
+	// resumes from the later of the ticket's last reopen and the newest
+	// superseded record's start, with the pause base that goes with it and none
+	// of the old record's facts. A restart is not lost to a trip through a
+	// priority with no policy, whether the restart was a record or only a
+	// reopen that landed on such a priority, and the time spent there still
+	// counts. A ticket that never had a record and was never reopened keeps the
+	// plan's NULL start, the ticket's creation.
+	if outcome == SLAAttached && !reopen {
+		prior, err := st.LatestSupersededSLARecord(ctx, t.ID)
+		if err != nil {
+			return nil, "", nil, fmt.Errorf("reading superseded SLA record: %w", err)
+		}
+		if prior != nil {
+			start.StartedAt, start.PausedSecondsAtStart = prior.StartedAt, prior.PausedSecondsAtStart
+		}
+		// A NULL start is the ticket's creation, earlier than any reopen.
+		if t.LastReopenedAt != nil && (start.StartedAt == nil || t.LastReopenedAt.After(*start.StartedAt)) {
+			start.StartedAt, start.PausedSecondsAtStart = t.LastReopenedAt, t.PausedSecondsAtLastReopen
+		}
+	}
+
+	// The old record first: a ticket has one current record at most.
+	switch outcome {
+	case SLARematched, SLARestarted, SLARemoved:
+		if err := st.SupersedeSLARecord(ctx, cur.ID, now); err != nil {
+			return nil, "", nil, fmt.Errorf("superseding SLA record: %w", err)
+		}
+	}
+	if start != nil {
+		if err := st.StartSLARecord(ctx, *start); err != nil {
+			return nil, "", nil, fmt.Errorf("starting SLA record: %w", err)
+		}
+	}
+
+	return cur, outcome, start, nil
 }
 
 // AddReply appends a reply to a ticket. If the actor is a user replying to a
@@ -2640,9 +2671,9 @@ func (s *Service) UpdateCTI(ctx context.Context, id, categoryID uuid.UUID, typeI
 		return Ticket{}, err
 	}
 	var out Ticket
-	if err := s.atomic.InTx(ctx, func(st Store, _ audit.Store, ch *notification.Changes) error {
+	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store, ch *notification.Changes) error {
 		var err error
-		out, err = s.classifyInTx(ctx, st, ch, id, c, actor)
+		out, err = s.classifyInTx(ctx, st, au, ch, id, c, actor)
 		return err
 	}); err != nil {
 		return Ticket{}, err
@@ -2651,30 +2682,85 @@ func (s *Service) UpdateCTI(ctx context.Context, id, categoryID uuid.UUID, typeI
 }
 
 // classifyInTx is UpdateCTI's write for a caller that already has a
-// transaction. No audit entry: reclassifying never wrote one, and adding one is
-// a separate decision (#506 → Out of scope).
-func (s *Service) classifyInTx(ctx context.Context, st Store, ch *notification.Changes,
+// transaction. A change is audited (`classified`) and re-matches the ticket's SLA
+// policy, in the same transaction, so a reclassification and what it did to the
+// SLA are in the trail together or not at all (1.3.0 audit D3, #468's gap).
+//
+// Classification only happens to an open ticket: a Resolved or Closed one
+// refuses it (ErrClosed, the 409 every other write to a finished ticket gets),
+// for every role, checked on the locked row. A request that reopens the ticket
+// and reclassifies it in one transaction passes, since its status step ran
+// first. This is also why no finished ticket's SLA is ever re-matched.
+//
+// The category is the only level a policy is matched on, so only a change of
+// category can change the match. The re-match is the one a staff priority change
+// makes (rematchSLA, planSLARematch): the clock keeps its start and a target
+// already met stays met.
+//
+// A reclassification that changed nothing on an open ticket writes nothing and
+// announces nothing.
+func (s *Service) classifyInTx(ctx context.Context, st Store, au audit.Store, ch *notification.Changes,
 	id uuid.UUID, c Classification, actor Actor) (Ticket, error) {
 	t, err := st.GetByIDForUpdate(ctx, id)
 	if err != nil {
 		return Ticket{}, err
 	}
+	if s.isFinished(t.StatusID) {
+		return Ticket{}, ErrClosed
+	}
+	now := time.Now()
 	if err := st.UpdateCTI(ctx, id, c.CategoryID, c.TypeID, c.ItemID); err != nil {
 		return Ticket{}, fmt.Errorf("updating ticket CTI: %w", err)
 	}
 	was := t
 	t.CategoryID, t.TypeID, t.ItemID = c.CategoryID, c.TypeID, c.ItemID
-	ev := raiseOn(t, actor, time.Now())
+	ev := raiseOn(t, actor, now)
 	ev.Kinds = []notification.EventType{notification.EventTicketClassified}
 	ev.Changes = append(append(
 		[]notification.Change(nil),
 		optIDChange("category_id", &was.CategoryID, &t.CategoryID)...),
 		append(optIDChange("type_id", was.TypeID, t.TypeID), optIDChange("item_id", was.ItemID, t.ItemID)...)...)
-	// A reclassification that changed nothing is not a change to announce.
-	if len(ev.Changes) > 0 {
-		ch.Raise(ev)
+	if len(ev.Changes) == 0 {
+		return t, nil
 	}
+
+	before, after := classificationMap(was), classificationMap(t)
+	if was.CategoryID != t.CategoryID {
+		cur, outcome, start, err := s.rematchSLA(ctx, st, t, false, now)
+		if err != nil {
+			return Ticket{}, err
+		}
+		if cur != nil {
+			before["sla_policy_id"] = cur.PolicyID
+			before["sla_record_id"] = cur.ID
+		}
+		after["sla_outcome"] = outcome
+		if start != nil {
+			after["sla_policy_id"] = start.PolicyID
+			after["sla_record_id"] = start.ID
+		}
+	}
+	if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "classified", before, after)); err != nil {
+		return Ticket{}, fmt.Errorf("auditing reclassification: %w", err)
+	}
+	ch.Raise(ev)
 	return t, nil
+}
+
+// classificationMap is ticketMap with the classification: the ids only, never a
+// name, so nothing in it can carry ticket content.
+func classificationMap(t Ticket) map[string]any {
+	m := ticketMap(t)
+	m["category_id"] = t.CategoryID
+	m["type_id"], m["item_id"] = idOrNil(t.TypeID), idOrNil(t.ItemID)
+	return m
+}
+
+func idOrNil(id *uuid.UUID) any {
+	if id == nil {
+		return nil
+	}
+	return *id
 }
 
 // ValidateCTI runs every check UpdateCTI makes, without writing. A caller that
