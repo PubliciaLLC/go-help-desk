@@ -192,7 +192,11 @@ var shownKeys = map[string]bool{
 	// as ids.
 	"categoryid": true, "typeid": true, "itemid": true,
 	"passkeysremoved": true, "totpcleared": true, "sessionsrevoked": true,
-	"osuser": true, "host": true, "source": true,
+	// A passkey removed by an administrator, or refused as a suspected clone
+	// (#615, #616b): its id. Its label is free text the owner typed and is not
+	// written.
+	"passkeyid": true,
+	"osuser":    true, "host": true, "source": true,
 	// The priority change and SLA re-match (#443b): why the priority changed
 	// and what happened to the SLA (fixed enums), and the policy and record
 	// ids before and after.
