@@ -27,6 +27,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/groupstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/outboxstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/passwordresetstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/ratelimitstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/registrationstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/sessionstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/slastore"
@@ -381,6 +382,8 @@ func newHarnessOn(t *testing.T, openDB func(*testing.T) (*testutil.DB, func()), 
 		WithQueue(notify.WebhookQueue{Outbox: outboxstore.New(q), Hooks: authSt, History: authSt, Source: server.NewWebhookEventSource(ticketSvc)})
 	srvOpts = append(srvOpts, server.WithWebhookRedeliverer(webhookDisp))
 	srvOpts = append(srvOpts, server.WithEmailHealth(outboxstore.New(q)))
+	// Over the harness transaction, so counts roll back with the test.
+	srvOpts = append(srvOpts, server.WithRateLimitStore(ratelimitstore.New(q)))
 	// The template editor (#158) over the harness transaction, so a test's
 	// saves roll back with it. The dispatcher is the real one: SMTP is off
 	// unless a test sets it, and preview needs none.

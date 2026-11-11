@@ -28,6 +28,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/groupstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/outboxstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/passwordresetstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/ratelimitstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/registrationstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/reputationstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/sessionstore"
@@ -234,6 +235,7 @@ func run() error {
 	regStore := registrationstore.New(q)
 	crStore := cannedresponsestore.New(q)
 	repStore := reputationstore.New(q)
+	rateLimitStore := ratelimitstore.New(q)
 
 	// ── Domain services ───────────────────────────────────────────────────────
 	tagStore := tagstore.New(q)
@@ -463,6 +465,7 @@ func run() error {
 		// that must not be per request.
 		server.WithReputationLookup(repStore),
 		server.WithAuditStore(auStore),
+		server.WithRateLimitStore(rateLimitStore),
 		server.WithPasskeysUnavailable(passkeyReason),
 		server.WithEmailHealth(outboxStore),
 		server.WithEmailTemplates(emailTemplates, emailDisp),
@@ -621,6 +624,27 @@ func run() error {
 				}
 				if n > 0 {
 					slog.InfoContext(sweepCtx, "auto-closed resolved tickets", "count", n, "reopen_window_days", days)
+				}
+			}
+		}
+	}()
+
+	// Rate-limit counters whose window has ended (#621). A key used again is
+	// replaced in place, so this only removes the ones nobody came back to, which
+	// for an address typed into the sign-in form is most of them. Every five
+	// minutes and not hourly: the longest window is an hour, and the rows that
+	// matter for size are the one-minute sign-in ones.
+	go func() {
+		t := time.NewTicker(5 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-sweepCtx.Done():
+				return
+			case <-t.C:
+				n, err := rateLimitStore.DeleteExpired(sweepCtx, time.Now())
+				if err != nil {
+					slog.WarnContext(sweepCtx, "sweeping expired rate limit counters failed", "removed", n, "error", err)
 				}
 			}
 		}

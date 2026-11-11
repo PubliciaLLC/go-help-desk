@@ -62,8 +62,7 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 	// Counted per source address, as signup is: there is no account to key on,
 	// because whether there is one must not be learned. The per-account limit is
 	// on the send, where it costs the requester no information.
-	if !s.loginLimiter.Allow(forgotPasswordKey(r)) {
-		tooManyAttempts(w, s.loginLimiter.Remaining())
+	if !allowOrRefuse(r.Context(), w, s.loginLimiter, forgotPasswordKey(r)) {
 		return
 	}
 	var body struct {
@@ -93,9 +92,25 @@ func (s *Server) SendPasswordReset(ctx context.Context, ev notification.Event) e
 	if s.passwordReset == nil {
 		return errors.New("password reset is not set up")
 	}
-	return s.passwordReset.Send(ctx, ev, func(id uuid.UUID) bool {
-		return notify.Attempt(ctx) > 1 || s.passwordResetLimiter.Allow(id.String())
+	// The callback can only say yes or no, so a count that could not be taken is
+	// kept aside and returned: the outbox retries an error, where a "no" would
+	// drop the request.
+	var limitErr error
+	err := s.passwordReset.Send(ctx, ev, func(id uuid.UUID) bool {
+		if notify.Attempt(ctx) > 1 {
+			return true
+		}
+		ok, err := s.passwordResetLimiter.Allow(ctx, id.String())
+		if err != nil {
+			limitErr = err
+			return false
+		}
+		return ok
 	})
+	if limitErr != nil {
+		return limitErr
+	}
+	return err
 }
 
 // POST /api/v1/auth/reset-password — choose a new password with a mailed link.
@@ -114,8 +129,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	// Counted per source address like the request. A link is 256 random bits, so
 	// this is not what protects it; it bounds the bcrypt work an anonymous caller
 	// can make the server spend.
-	if !s.loginLimiter.Allow("reset-password:" + authmw.ClientAddr(r)) {
-		tooManyAttempts(w, s.loginLimiter.Remaining())
+	if !allowOrRefuse(r.Context(), w, s.loginLimiter, "reset-password:"+authmw.ClientAddr(r)) {
 		return
 	}
 	var body struct {

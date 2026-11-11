@@ -4,93 +4,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
-
-func TestRateLimiter(t *testing.T) {
-	t.Run("allows up to the limit then refuses", func(t *testing.T) {
-		rl := authmw.NewRateLimiter(3, time.Minute)
-		for i := 1; i <= 3; i++ {
-			require.True(t, rl.Allow("k"), "attempt %d", i)
-		}
-		require.False(t, rl.Allow("k"), "the attempt past the limit must be refused")
-	})
-
-	t.Run("counts per key", func(t *testing.T) {
-		rl := authmw.NewRateLimiter(1, time.Minute)
-		require.True(t, rl.Allow("a"))
-		require.False(t, rl.Allow("a"))
-		require.True(t, rl.Allow("b"), "one key's spending must not charge another")
-	})
-
-	// NIST SP 800-63B has the verifier disregard prior failures once the user
-	// authenticates successfully; without it, two fumbled codes followed by a
-	// correct one still leave the user throttled for the rest of the window.
-	t.Run("success clears the budget", func(t *testing.T) {
-		rl := authmw.NewRateLimiter(2, time.Minute)
-		require.True(t, rl.Allow("k"))
-		rl.Reset("k")
-		require.True(t, rl.Allow("k"))
-		require.True(t, rl.Allow("k"), "the budget must be the full one again")
-	})
-
-	// For a caller that spends before the work and finds the work refused: the
-	// attempt did not happen, so it should not have been counted.
-	t.Run("a refund gives one attempt back", func(t *testing.T) {
-		rl := authmw.NewRateLimiter(2, time.Minute)
-		require.True(t, rl.Allow("k"))
-		_, w := rl.Take("k")
-		rl.Refund("k", w)
-		require.True(t, rl.Allow("k"), "the refunded attempt is available again")
-		require.False(t, rl.Allow("k"))
-	})
-
-	// A refund belongs to the window it was spent in. If another caller's
-	// Allow rolled the window over while the work was in flight, the slot was
-	// never taken from the new window, and giving one back would let a key
-	// exceed its limit there.
-	t.Run("a refund is ignored once the window it was spent in has ended", func(t *testing.T) {
-		rl := authmw.NewRateLimiter(1, 30*time.Millisecond)
-		ok, w := rl.Take("k")
-		require.True(t, ok)
-		time.Sleep(60 * time.Millisecond)
-		ok2, _ := rl.Take("k") // rolls the window over and spends its one slot
-		require.True(t, ok2)
-		rl.Refund("k", w)
-		require.False(t, rl.Allow("k"), "the new window's slot was not refunded")
-	})
-
-	t.Run("a refund never goes below zero or touches another key", func(t *testing.T) {
-		rl := authmw.NewRateLimiter(1, time.Minute)
-		_, w := rl.Take("k")
-		rl.Refund("k", w) // takes the one spent slot back
-		rl.Refund("k", w) // nothing left to give back
-		require.True(t, rl.Allow("k"))
-		require.False(t, rl.Allow("k"), "a refund with nothing spent must not add budget")
-		rl.Refund("other", w)
-		require.False(t, rl.Allow("k"))
-	})
-
-	t.Run("the window resets", func(t *testing.T) {
-		rl := authmw.NewRateLimiter(1, 30*time.Millisecond)
-		require.True(t, rl.Allow("k"))
-		require.False(t, rl.Allow("k"))
-		require.Eventually(t, func() bool { return rl.Allow("k") },
-			time.Second, 10*time.Millisecond, "the window must expire and allow again")
-	})
-
-	t.Run("a limit of zero disables it", func(t *testing.T) {
-		rl := authmw.NewRateLimiter(0, time.Minute)
-		for i := 0; i < 50; i++ {
-			require.True(t, rl.Allow("k"))
-		}
-		rl.Reset("k") // must not panic
-	})
-}
 
 // ClientAddr is used only where no account key exists. It must never read a
 // forwarding header: that is attacker controlled, and honouring it would let

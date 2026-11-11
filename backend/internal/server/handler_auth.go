@@ -69,9 +69,7 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 	// nothing here can be used to keep somebody out of their own account.
 	loginKey := "login:" + loginRateKey(body.Email)
 
-	if s.loginLimiter.Exceeded(loginKey) {
-		s.loginLimiter.Tarpit(r.Context(), loginKey, s.loginThrottleDelay)
-	}
+	s.tarpitIfExceeded(r.Context(), loginKey)
 
 	u, err := s.users.VerifyPasswordForSignIn(r.Context(), body.Email, body.Password)
 	if errors.Is(err, user.ErrPasswordResetRequired) {
@@ -102,7 +100,7 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		// nothing more is queued, and neither is anything when the queue insert
 		// fails; the message then says so rather than claiming a mail was sent.
 		resetByEmail := s.passwordResetAvailable()
-		queued := resetByEmail && s.loginLimiter.Allow(forgotPasswordKey(r)) &&
+		queued := resetByEmail && allowQuietly(r.Context(), s.loginLimiter, forgotPasswordKey(r)) &&
 			s.requestPasswordReset(r.Context(), u.Email)
 		Error(w, http.StatusForbidden, "password_reset_required", passwordResetRequiredMessage(resetByEmail, queued))
 		return
@@ -110,8 +108,7 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Only failures are counted, and the refusal happens here rather than
 		// before the check, so a legitimate user is never held out.
-		if !s.loginLimiter.Allow(loginKey) {
-			tooManyAttempts(w, s.loginLimiter.Remaining())
+		if !allowOrRefuse(r.Context(), w, s.loginLimiter, loginKey) {
 			return
 		}
 		Error(w, http.StatusUnauthorized, "invalid_credentials", "invalid email or password")
@@ -141,7 +138,7 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 	// a factor, use it, and it is not TOTP".
 	mfaEnabled := s.adminSvc.MFAEnabled(r.Context())
 	// The password was right, so prior failures for this address stop counting.
-	s.loginLimiter.Reset(loginKey)
+	s.resetLoginLimit(r.Context(), loginKey)
 
 	passkeys, err := s.passkeyStore.CountForUser(r.Context(), u.ID)
 	if err != nil {

@@ -469,8 +469,7 @@ func (s *Server) handleTestEmailTemplate(w http.ResponseWriter, r *http.Request)
 
 	// Spent before the send, and not given back on failure: a relay that
 	// errors is still a relay being hit.
-	if ok, _ := s.templateTestLimiter.Take(actor.UserID.String()); !ok {
-		tooManyAttempts(w, s.templateTestLimiter.Remaining())
+	if !allowOrRefuse(r.Context(), w, s.templateTestLimiter, actor.UserID.String()) {
 		return
 	}
 	if err := s.templateMailer.SendTest(r.Context(), me.Email, p); err != nil {

@@ -282,6 +282,11 @@ type Querier interface {
 	DeleteCustomFieldAssignment(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteCustomFieldValue(ctx context.Context, arg DeleteCustomFieldValueParams) error
 	DeleteEmailTemplateOverride(ctx context.Context, name string) error
+	// Removes up to batch rows whose window has ended. A bounded batch, called in a
+	// loop, so that clearing a backlog (a burst of attempts on made-up email
+	// addresses) is many short statements and not one that holds locks and writes a
+	// huge amount of WAL at once. The window_end index serves it.
+	DeleteExpiredRateLimits(ctx context.Context, arg DeleteExpiredRateLimitsParams) (int64, error)
 	DeleteExpiredSessions(ctx context.Context) (int64, error)
 	DeleteFailedNotificationsBefore(ctx context.Context, failedAt sql.NullTime) (int64, error)
 	DeleteGroup(ctx context.Context, id uuid.UUID) (int64, error)
@@ -472,6 +477,9 @@ type Querier interface {
 	GetPendingRegistrationByID(ctx context.Context, id uuid.UUID) (PendingRegistration, error)
 	GetPendingRegistrationByToken(ctx context.Context, token uuid.UUID) (PendingRegistration, error)
 	GetPlugin(ctx context.Context, id string) (Plugin, error)
+	// The count in a key's live window, without counting an attempt. No row back
+	// (never used, or its window has ended) means nothing has been spent.
+	GetRateLimitCount(ctx context.Context, arg GetRateLimitCountParams) (int32, error)
 	GetSLAPolicy(ctx context.Context, id uuid.UUID) (SlaPolicy, error)
 	// The CURRENT record: a superseded row (000043) is history and is never read
 	// as "the ticket's SLA". Every statement below that addresses a ticket's
@@ -946,6 +954,11 @@ type Querier interface {
 	// Also clears must_change_password: this is the account holder choosing a
 	// password, which is what that flag is waiting for (#497).
 	RedeemPasswordResetToken(ctx context.Context, arg RedeemPasswordResetTokenParams) (uuid.UUID, error)
+	// Gives back one attempt TakeRateLimit counted, for a caller that spent before
+	// the work and found the work did not happen. Only inside the window the attempt
+	// was counted in: if the window has since ended and another begun, giving one
+	// back would take a slot the new window never lost. Never below zero.
+	RefundRateLimit(ctx context.Context, arg RefundRateLimitParams) error
 	// Sign-in upgrade of a hash made at a lower bcrypt cost (#453). The new hash
 	// was computed from the old one's password, so it is written only while the
 	// row still holds that old hash: a password changed during the ~250 ms of
@@ -978,6 +991,8 @@ type Querier interface {
 	// Position n (from 1) becomes the field's number. Only rows whose number
 	// changes are written.
 	ReorderCustomFieldDefs(ctx context.Context, ids []uuid.UUID) error
+	// Clears a key's budget, after a successful sign-in.
+	ResetRateLimit(ctx context.Context, key string) error
 	RestoreTag(ctx context.Context, id uuid.UUID) (int64, error)
 	RestoreUser(ctx context.Context, id uuid.UUID) error
 	RetryNotification(ctx context.Context, arg RetryNotificationParams) error
@@ -1184,6 +1199,19 @@ type Querier interface {
 	// to take the parent before queueing its children: zero rows means another
 	// worker already split or settled it (#513).
 	TakeNotification(ctx context.Context, id uuid.UUID) (int64, error)
+	// Counts one attempt against a key and says where it landed. One statement,
+	// so two attempts at once are serialised by the row lock and each gets its own
+	// number: both cannot be told they were the last one under the limit.
+	//
+	// The key's window is opened by this attempt when there is no row or the old
+	// window has ended (window_end <= now), and keeps its original end otherwise,
+	// so a window is never stretched by being used. Every SET expression reads the
+	// row as it was before the update, which is what makes the three CASEs agree.
+	//
+	// now comes from the caller, not the database, so a test can move a limiter's
+	// clock; replicas whose clocks differ by a second differ by a second in when a
+	// window ends, which no limit here is sensitive to.
+	TakeRateLimit(ctx context.Context, arg TakeRateLimitParams) (TakeRateLimitRow, error)
 	// First use stamps the row. Separate from the lookup so a read of the ticket
 	// is not also a write on the hot path when the column is already set.
 	TouchGuestAccessToken(ctx context.Context, tokenHash string) error
@@ -1216,8 +1244,9 @@ type Querier interface {
 	// The account half of /app/server unlock (#497), run in the same transaction
 	// as ClearFactors: re-enable, clear the TOTP lockout, install the generated
 	// password and require it to be changed. Not for a deleted account. The
-	// in-memory sign-in throttle is another process's memory and only ever delays,
-	// never refuses, so there is nothing of it to clear here.
+	// sign-in throttle (rate_limit_counters) only ever delays, never refuses the
+	// right password, and ends within a minute, so there is nothing of it to clear
+	// here.
 	UnlockUser(ctx context.Context, arg UnlockUserParams) (int64, error)
 	UpdateAPIKeyLastUsed(ctx context.Context, arg UpdateAPIKeyLastUsedParams) error
 	UpdateCannedResponse(ctx context.Context, arg UpdateCannedResponseParams) error

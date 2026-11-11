@@ -536,11 +536,15 @@ func (s *Server) ResolveOnBehalf(ctx context.Context, actorID uuid.UUID, in *tic
 		}
 	}
 	key := actorID.String()
-	if taken, _ := s.onBehalfMailLimiter.Take(key); !taken {
+	taken, err := s.onBehalfMailLimiter.Take(ctx, key)
+	if err != nil {
+		return err
+	}
+	if !taken.Allowed {
 		return &OnBehalfError{
 			Status: http.StatusTooManyRequests, Code: "rate_limited",
 			Message:    "too many tickets filed with reporter_email; please wait and try again",
-			RetryAfter: s.onBehalfMailLimiter.Remaining(),
+			RetryAfter: taken.RetryAfter,
 		}
 	}
 	u, err := s.users.GetByEmail(ctx, addr)
