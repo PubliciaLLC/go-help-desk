@@ -770,6 +770,10 @@ type UpdateSLARecordParams struct {
 	ResolutionBreachedAt sql.NullTime `json:"resolution_breached_at"`
 }
 
+// Deprecated: every SLA write is keyed by record id since #623, and this one is
+// keyed by ticket. It is a full-row read-modify-write with no production caller;
+// a write computed from a record read earlier must be addressed to that record
+// (see SetSLAFirstResponse, StampSLABreaches). Kept, not removed.
 func (q *Queries) UpdateSLARecord(ctx context.Context, arg UpdateSLARecordParams) error {
 	_, err := q.db.ExecContext(ctx, updateSLARecord,
 		arg.TicketID,

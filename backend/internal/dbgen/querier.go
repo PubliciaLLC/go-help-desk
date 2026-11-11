@@ -1138,6 +1138,10 @@ type Querier interface {
 	UpdateItem(ctx context.Context, arg UpdateItemParams) error
 	UpdatePlugin(ctx context.Context, arg UpdatePluginParams) error
 	UpdateSLAPolicy(ctx context.Context, arg UpdateSLAPolicyParams) error
+	// Deprecated: every SLA write is keyed by record id since #623, and this one is
+	// keyed by ticket. It is a full-row read-modify-write with no production caller;
+	// a write computed from a record read earlier must be addressed to that record
+	// (see SetSLAFirstResponse, StampSLABreaches). Kept, not removed.
 	UpdateSLARecord(ctx context.Context, arg UpdateSLARecordParams) error
 	UpdateStatus(ctx context.Context, arg UpdateStatusParams) error
 	UpdateTicket(ctx context.Context, arg UpdateTicketParams) error

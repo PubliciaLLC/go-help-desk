@@ -48,7 +48,7 @@ func TestReclassify_RematchesAndAuditsAgainstRealRows(t *testing.T) {
 	cat, pol := f.secondCategory(t)
 
 	require.NoError(t, f.ss.CreateRecord(f.ctx, sla.Record{TicketID: f.tk.ID, PolicyID: f.pol[ticket.PriorityMedium].ID}))
-	require.NoError(t, f.ss.SetFirstResponse(f.ctx, f.tk.ID, time.Now().UTC().Truncate(time.Millisecond), 600, 1800))
+	require.NoError(t, f.ss.SetFirstResponse(f.ctx, recordIDOf(t, f.ctx, f.ss, f.tk.ID), time.Now().UTC().Truncate(time.Millisecond), 600, 1800))
 	oldRow := f.records(t)[0]
 
 	got, err := svc.UpdateCTI(f.ctx, f.tk.ID, cat.ID, nil, nil, f.staff)

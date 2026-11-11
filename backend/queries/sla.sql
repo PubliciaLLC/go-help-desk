@@ -69,6 +69,10 @@ VALUES ($1, $2, $3, $4, $5, $6);
 SELECT * FROM sla_records WHERE ticket_id = $1 AND superseded_at IS NULL;
 
 -- name: UpdateSLARecord :exec
+-- Deprecated: every SLA write is keyed by record id since #623, and this one is
+-- keyed by ticket. It is a full-row read-modify-write with no production caller;
+-- a write computed from a record read earlier must be addressed to that record
+-- (see SetSLAFirstResponse, StampSLABreaches). Kept, not removed.
 UPDATE sla_records
 SET first_response_at = $2, resolved_at = $3,
     response_breached_at = $4, resolution_breached_at = $5

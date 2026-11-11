@@ -64,6 +64,10 @@ type Store interface {
 	// nothing in this codebase calls it any more, and nothing should start:
 	// see the comment on StampBreaches for why a full-row write is unsafe
 	// against a concurrent breach stamp.
+	//
+	// Deprecated: every SLA write is keyed by record id since #623 (the Set*
+	// writes and StampBreaches); this one is keyed by ticket, so it can land on
+	// a record that replaced the one the caller read. Kept, not removed.
 	UpdateRecord(ctx context.Context, r Record) error
 
 	// The three Set* writes below are addressed by RECORD id (the id the caller
