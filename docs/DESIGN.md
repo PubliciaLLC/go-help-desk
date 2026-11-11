@@ -3544,7 +3544,7 @@ on the existing webhook feature instead of as plugins.
   "everything". The payload carries the person's **id** (`user_id`), never their
   name, and no email is sent. Removing a ticket's old assignee's follow when the
   ticket is reassigned, or when that person is deleted, is an unfollow and is
-  announced as one, as one more kind of the reassignment's own event.
+  announced as one, as one more kind of the reassignment's own event. A hook that opted into the unfollow is told the event's first name it subscribes to (usually `ticket.assigned`), and that raw body also carries `user_id`; a hook that did not opt in never sees the kind or the id.
   **What the raw format carries** ([#448](https://github.com/PubliciaLLC/go-help-desk/issues/448)).
   The raw body is **ids only**: the event name (`Type`), `TicketID`, `ActorID`
   (null for a system event, and for a routed create under `ticket.assigned`), `OccurredAt` and a `Payload` holding only the ids

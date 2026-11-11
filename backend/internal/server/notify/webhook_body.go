@@ -54,7 +54,10 @@ func rawKeysFor(t notification.EventType) []string {
 }
 
 // historyPayloadKeys are what the copy kept for Redeliver holds: every key any
-// raw body carries. A replay needs them (the reply to look up again, the
+// raw body carries. It is the same slice as rawPayloadKeys on purpose, not a
+// leftover: the history must keep each id some raw body can send, or a replay
+// of that body would lose it. A key added to rawKeysFor goes in rawPayloadKeys
+// and so reaches the history with it. A replay needs them (the reply to look up again, the
 // attachment, the person), and the history view shows only the event name. The
 // link type is in the list for ticket.unlinked, and a ticket.linked replay
 // needs it for the chat headline although its raw body does not send it.
@@ -83,14 +86,40 @@ func keepOnly(ev notification.Event, keys []string) notification.Event {
 // has finally failed: ids only, plus historyPayloadKeys. No Attrs: a replay
 // reads the ticket's attributes from the ticket as it is now.
 func historyEvent(ev notification.Event) notification.Event {
-	return keepOnly(ev, historyPayloadKeys)
+	out := keepOnly(ev, historyPayloadKeys)
+	// The opt-in kinds the delivery carried, so a replay is sent the id they add
+	// to the body (rawBody). Kinds is otherwise left out: a replay is the name
+	// that was sent, and a hook that is no longer opted in drops these again.
+	for _, k := range ev.Kinds {
+		if k != ev.Type && notification.IsOptInWebhookEvent(k) {
+			out.Kinds = append(out.Kinds, k)
+		}
+	}
+	if len(out.Kinds) > 0 {
+		out.Kinds = append([]notification.EventType{ev.Type}, out.Kinds...)
+	}
+	return out
 }
 
 // rawBody is the body a raw (or empty-format) hook receives: ids only, as JSON.
 // The Slack, Teams, Discord and JIRA renderers do not use it; they render from
 // the full in-memory event (bodyFor), which is never sent as is.
+//
+// The keys are those of the name the hook is told, plus those of any opt-in
+// kind the hook subscribed to that the change also carries: a reassignment that
+// dropped a follow is sent as ticket.assigned, and a hook that listed
+// ticket.unfollowed must still learn who unfollowed. ev.Kinds is already cut to
+// what this hook subscribes to (forHook), so a hook that did not opt in has no
+// such kind and gets nothing extra. Only opt-in kinds do this: every other kind
+// keeps to its own name, which is what pins the bodies of the older events.
 func rawBody(ev notification.Event) ([]byte, error) {
-	return json.Marshal(keepOnly(ev, rawKeysFor(ev.Type)))
+	keys := rawKeysFor(ev.Type)
+	for _, k := range ev.Kinds {
+		if k != ev.Type && notification.IsOptInWebhookEvent(k) {
+			keys = append(keys, rawKeysFor(k)...)
+		}
+	}
+	return json.Marshal(keepOnly(ev, keys))
 }
 
 // rowFor is the event as it is stored in one hook's outbox row. Never an

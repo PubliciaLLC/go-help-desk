@@ -140,6 +140,102 @@ func TestOneDelivery_AnUnfollowRidingAReassignmentStaysOptIn(t *testing.T) {
 	require.Equal(t, notification.EventTicketUnfollowed, got.Type)
 }
 
+// A reassignment that drops a follow is told to a hook under the first name it
+// subscribes to, which is ticket.assigned. A hook that also opted into
+// ticket.unfollowed must still learn who unfollowed: the kind stays in the
+// delivery's kinds and its user_id rides in the raw body. A hook that did not
+// opt in sees neither.
+func TestRawBody_AnOptedInFollowKindRidesTheNameTheHookIsTold(t *testing.T) {
+	person := uuid.New()
+	newEv := func() notification.Event {
+		ev := g4Event(notification.EventTicketAssigned, map[string]any{"user_id": person})
+		ev.Kinds = []notification.EventType{notification.EventTicketAssigned, notification.EventTicketUnfollowed}
+		return ev
+	}
+	for _, tc := range []struct {
+		name      string
+		events    []string
+		wantUser  bool
+		wantKinds []notification.EventType
+	}{
+		{"star plus the opt-in name", []string{"*", "ticket.unfollowed"}, true,
+			[]notification.EventType{notification.EventTicketAssigned, notification.EventTicketUnfollowed}},
+		{"assigned plus the opt-in name", []string{"ticket.assigned", "ticket.unfollowed"}, true,
+			[]notification.EventType{notification.EventTicketAssigned, notification.EventTicketUnfollowed}},
+		{"star alone", []string{"*"}, false, []notification.EventType{notification.EventTicketAssigned}},
+		{"legacy empty list", nil, false, []notification.EventType{notification.EventTicketAssigned}},
+		{"assigned alone", []string{"ticket.assigned"}, false, []notification.EventType{notification.EventTicketAssigned}},
+		{"the other opt-in name", []string{"*", "ticket.followed"}, false, []notification.EventType{notification.EventTicketAssigned}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := forHook(hookOn("http://x", tc.events...), newEv())
+			require.True(t, ok)
+			require.Equal(t, notification.EventTicketAssigned, got.Type, "still told ticket.assigned")
+			require.Equal(t, tc.wantKinds, got.Kinds)
+			body, err := rawBody(got)
+			require.NoError(t, err)
+			if tc.wantUser {
+				require.Contains(t, string(body), `"user_id":"`+person.String()+`"`)
+			} else {
+				require.NotContains(t, string(body), "user_id")
+				require.NotContains(t, string(body), person.String())
+			}
+		})
+	}
+}
+
+// Only a follow kind adds its id to another name's body. Every other kind keeps
+// to its own name: a hook told ticket.reopened gets no reply_id.
+func TestRawBody_OnlyFollowKindsAddTheirIDToAnotherName(t *testing.T) {
+	ev := g4Event(notification.EventTicketReopened, map[string]any{"reply_id": uuid.New(), "target_id": uuid.New()})
+	ev.Kinds = []notification.EventType{notification.EventTicketReopened, notification.EventTicketReplied, notification.EventTicketLinked}
+	body, err := rawBody(ev)
+	require.NoError(t, err)
+	require.Contains(t, string(body), `"Payload":null`)
+}
+
+// Through the queue: the delivery is labelled ticket.assigned and carries the id
+// for the hook that opted in; the other hook gets the body it always had. A
+// replay of the opted-in delivery carries it too, and is refused once the hook
+// drops the name.
+func TestOneDelivery_AnOptedInUnfollowReachesTheReceiverAndReplays(t *testing.T) {
+	optedIn, plain := newReceiver(t, 200), newReceiver(t, 200)
+	bodiesIn, bodiesPlain := capture(optedIn), capture(plain)
+	hook := hookOn(optedIn.srv.URL, "*", "ticket.unfollowed")
+	rig := newQueueRig(t, optedIn.srv.Client(), hook, hookOn(plain.srv.URL, "*"))
+	person := uuid.New()
+	ev := g4Event(notification.EventTicketAssigned, map[string]any{"user_id": person})
+	ev.Kinds = []notification.EventType{notification.EventTicketAssigned, notification.EventTicketUnfollowed}
+
+	require.NoError(t, rig.front.Dispatch(context.Background(), ev))
+	rig.drain(t)
+
+	require.Equal(t, "ticket.assigned", optedIn.header(0, "X-GHD-Event"))
+	require.Contains(t, bodiesIn()[0], `"user_id":"`+person.String()+`"`)
+	require.Equal(t, 1, plain.count())
+	require.NotContains(t, bodiesPlain()[0], "user_id")
+
+	var first authstore.WebhookAttempt
+	rig.hooks.mu.Lock()
+	for _, a := range rig.hooks.attempts {
+		if a.HookID == hook.ID {
+			first = a
+		}
+	}
+	rig.hooks.mu.Unlock()
+	require.Equal(t, "ticket.assigned", first.EventType)
+	require.NoError(t, rig.disp.Redeliver(context.Background(), hook.ID, first.DeliveryID))
+	rig.drain(t)
+	require.Equal(t, 2, optedIn.count())
+	require.Contains(t, bodiesIn()[1], `"user_id":"`+person.String()+`"`, "the replay keeps the opted-in id")
+
+	rig.setHook(hook.ID, func(h *authstore.WebhookConfig) { h.Events = []string{"*"} })
+	require.NoError(t, rig.disp.Redeliver(context.Background(), hook.ID, first.DeliveryID))
+	rig.drain(t)
+	require.Equal(t, 3, optedIn.count())
+	require.NotContains(t, bodiesIn()[2], "user_id", "a hook that dropped the opt-in no longer gets it on a replay")
+}
+
 // The history keeps the ids a replay needs, and a replay is held to the
 // subscription as it is now: a hook that stopped naming the event is refused.
 func TestRedeliver_G4NamesKeepTheirIDsAndOptInIsRechecked(t *testing.T) {
