@@ -31,21 +31,20 @@ type parameterScope struct {
 	// package) that proves the handler refuses the parameter without the scope.
 	// Its body must name the scope.
 	handlerTest string
-	// pending is set only while handlerTest does not exist yet, and names who
-	// adds it. TestParameterScopes_AreCheckedByAHandlerTest skips such an entry
-	// while the test is absent and fails the moment the test appears, so the
-	// marker cannot outlive the thing it excuses.
-	pending string
+	// resourceConst is the auth constant production code uses for the scope's
+	// resource. Production code that names it, or the resource as a string
+	// literal, is the handler check (see checkParameterScope).
+	resourceConst string
 }
 
 var parameterScopes = []parameterScope{
 	{
-		scope:       "requester_search:read",
-		roles:       []user.Role{user.RoleAdmin, user.RoleStaff},
-		route:       "GET /api/v1/tickets",
-		param:       "requester",
-		handlerTest: "TestListTickets_RequesterSearchNeedsTheScope",
-		pending:     "the REST handler change for the ticket filters adds the handler check and this test",
+		scope:         "requester_search:read",
+		roles:         []user.Role{user.RoleAdmin, user.RoleStaff},
+		route:         "GET /api/v1/tickets",
+		param:         "requester",
+		handlerTest:   "TestListTickets_RequesterSearchNeedsTheScope",
+		resourceConst: "ResourceRequesterSearch",
 	},
 }
 
@@ -113,22 +112,140 @@ func functionBody(t *testing.T, dir, name string) (string, bool) {
 	return "", false
 }
 
+// Where the handler check may live, relative to this package's directory: the
+// REST handlers, the ticket domain, the MCP tool and middleware.
+var parameterScopeProductionDirs = []string{".", "../domain/ticket", "../mcp", "../middleware"}
+
+// referencedByProduction reports whether a non-test .go file in dirs uses the
+// scope's resource, as the auth constant or as a string literal. Comments are
+// not parsed in, so a note about the scope is not mistaken for the check.
+func referencedByProduction(t *testing.T, dirs []string, p parameterScope) bool {
+	t.Helper()
+	resource, _, _ := strings.Cut(p.scope, ":")
+	for _, dir := range dirs {
+		files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range files {
+			if strings.HasSuffix(f, "_test.go") {
+				continue
+			}
+			file, err := parser.ParseFile(token.NewFileSet(), f, nil, 0) // mode 0 drops comments
+			if err != nil {
+				t.Fatalf("%s: %v", f, err)
+			}
+			found := false
+			ast.Inspect(file, func(n ast.Node) bool {
+				switch n := n.(type) {
+				case *ast.Ident:
+					found = found || n.Name == p.resourceConst
+				case *ast.BasicLit:
+					found = found || (n.Kind == token.STRING && strings.Contains(n.Value, resource))
+				}
+				return !found
+			})
+			if found {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+type guardState int
+
+const (
+	guardPending guardState = iota // no production code uses the scope yet
+	guardOK
+	guardFails
+)
+
+// checkParameterScope decides what a parameter scope owes. While no production
+// code uses the scope there is no check to test, so the entry is pending. The
+// moment production code uses it, the named handler test must exist and name
+// the scope. Pending is tied to production code, not to a flag someone must
+// remember to clear: a handler test named differently from handlerTest cannot
+// hide behind it.
+func checkParameterScope(t *testing.T, prodDirs []string, testDir string, p parameterScope) (guardState, string) {
+	t.Helper()
+	if !referencedByProduction(t, prodDirs, p) {
+		return guardPending, "no production code uses " + p.scope + " yet"
+	}
+	body, found := functionBody(t, testDir, p.handlerTest)
+	switch {
+	case !found:
+		return guardFails, "production code uses " + p.scope + " but no test named " + p.handlerTest + " exists"
+	case !strings.Contains(body, p.scope):
+		return guardFails, p.handlerTest + " never names " + p.scope + ", so it cannot be checking it"
+	}
+	return guardOK, ""
+}
+
 // Every parameter scope must be exercised by a handler test: the router test
 // cannot see it, so without this a handler could forget the check and nothing
 // would fail.
 func TestParameterScopes_AreCheckedByAHandlerTest(t *testing.T) {
 	for _, p := range parameterScopes {
+		state, msg := checkParameterScope(t, parameterScopeProductionDirs, ".", p)
+		if state == guardPending {
+			// On the parent, so the skip is reported once at the top and not
+			// only inside a subtest.
+			t.Logf("PENDING: %s: %s; %s is required from the change that adds the check", p.scope, msg, p.handlerTest)
+		}
 		t.Run(p.scope, func(t *testing.T) {
-			body, found := functionBody(t, ".", p.handlerTest)
-			switch {
-			case !found && p.pending != "":
-				t.Skipf("pending: %s", p.pending)
-			case !found:
-				t.Fatalf("no test named %s: %s has no handler test", p.handlerTest, p.scope)
-			case p.pending != "":
-				t.Fatalf("%s exists now: delete the pending marker on the %s entry", p.handlerTest, p.scope)
-			case !strings.Contains(body, p.scope):
-				t.Errorf("%s never names %s, so it cannot be checking it", p.handlerTest, p.scope)
+			switch state {
+			case guardPending:
+				t.Skip(msg)
+			case guardFails:
+				t.Fatal(msg)
+			}
+		})
+	}
+}
+
+// The guard is only worth having if it can fail. This runs it against small
+// directories in each state it can be in.
+func TestCheckParameterScope_States(t *testing.T) {
+	p := parameterScope{
+		scope: "x_search:read", handlerTest: "TestHandlerNeedsScope", resourceConst: "ResourceXSearch",
+	}
+	write := func(t *testing.T, dir, name, src string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const (
+		handlerViaConst   = "package x\n\nfunc h() { _ = auth.ResourceXSearch }\n"
+		handlerViaLiteral = "package x\n\nfunc h() { _ = \"x_search:read\" }\n"
+		commentOnly       = "package x\n\n// x_search:read and ResourceXSearch are mentioned here only.\nfunc h() {}\n"
+		goodTest          = "package x\n\nimport \"testing\"\n\nfunc TestHandlerNeedsScope(t *testing.T) { _ = \"x_search:read\" }\n"
+		emptyTest         = "package x\n\nimport \"testing\"\n\nfunc TestHandlerNeedsScope(t *testing.T) {}\n"
+		renamedTest       = "package x\n\nimport \"testing\"\n\nfunc TestSomethingElse(t *testing.T) { _ = \"x_search:read\" }\n"
+	)
+
+	cases := []struct {
+		name  string
+		files map[string]string // in one directory, for production and tests alike
+		want  guardState
+	}{
+		{"nothing uses the scope yet", map[string]string{"a.go": commentOnly}, guardPending},
+		{"only a test mentions it", map[string]string{"a_test.go": goodTest}, guardPending},
+		{"production uses the constant, no test", map[string]string{"a.go": handlerViaConst}, guardFails},
+		{"production uses the literal, no test", map[string]string{"a.go": handlerViaLiteral}, guardFails},
+		{"production uses it, the test is named differently", map[string]string{"a.go": handlerViaConst, "a_test.go": renamedTest}, guardFails},
+		{"production uses it, the test never names the scope", map[string]string{"a.go": handlerViaConst, "a_test.go": emptyTest}, guardFails},
+		{"production uses it and the test names it", map[string]string{"a.go": handlerViaConst, "a_test.go": goodTest}, guardOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for name, src := range tc.files {
+				write(t, dir, name, src)
+			}
+			if got, msg := checkParameterScope(t, []string{dir}, dir, p); got != tc.want {
+				t.Errorf("state = %d (%s), want %d", got, msg, tc.want)
 			}
 		})
 	}
