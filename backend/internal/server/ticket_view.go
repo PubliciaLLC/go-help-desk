@@ -97,9 +97,9 @@ func viewerJSON(actor *authmw.Actor, v any) any {
 // ticketViews attaches each ticket's live SLA status via one batch call
 // (sla.Service.StatusesFor), so the cost is two extra queries per response
 // regardless of how many tickets are on the page. Callers pass the page
-// after it has already been paged/sliced/merged — never before, which would
-// compute SLA for rows the response throws away (see the staff "mine" scope
-// merge in handleListTickets and CLAUDE.md's "Ticket list paging" note).
+// after it has already been paged — never before, which would compute SLA for
+// rows the response throws away (a list's page is cut in SQL now; it used to be
+// cut in Go after a merge, see CLAUDE.md's "Ticket list paging" note).
 //
 // SLA visibility is staff/admin only: a reporting user must not see the
 // indicator, the policy name, the targets, or the breach/late status on their
@@ -158,8 +158,8 @@ func (s *Server) ticketViews(ctx context.Context, ts []ticket.Ticket, actor *aut
 }
 
 // writeTickets is handleListTickets' common exit: attach SLA status to the
-// page it was given and write the result as JSON. Every list branch in that
-// handler goes through here, so the wrapper runs exactly once per request.
+// page it was given and write the result as JSON. The wrapper runs exactly once
+// per request.
 func (s *Server) writeTickets(w http.ResponseWriter, r *http.Request, tickets []ticket.Ticket) {
 	views, err := s.ticketViews(r.Context(), tickets, authmw.GetActor(r))
 	if err != nil {
