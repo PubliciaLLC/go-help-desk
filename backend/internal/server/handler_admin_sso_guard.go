@@ -39,8 +39,9 @@ import (
 // reflects what will really happen rather than an optimistic guess) and the
 // generic PATCH /admin/settings endpoint (see ssoSettingsWarning in
 // handler_admin_settings.go, which uses the simpler field-completeness read
-// since that path does not live-reload either provider at all — a
-// pre-existing gap, not something this guard needs to paper over).
+// since that path reloads only after the settings are written
+// (reloadSSOAfterSettings), so the guard has no real construction attempt to
+// observe).
 //
 // Not the same kind of guard as the *UnlessLastAdmin statements: those decide
 // and write a single row in one UPDATE, atomic against a concurrent guard of
@@ -99,9 +100,9 @@ func (s *Server) oidcReachableNow() bool {
 // administrator the moment the real construction attempt failed. The two
 // dedicated endpoints no longer use these — they build the real
 // middleware/provider first and use that outcome (see server.go) — but
-// PATCH /admin/settings (handler_admin_settings.go) does not live-reload
-// either provider at all today, so there is no real construction attempt to
-// observe there; this field check is what it has, and it is still a real
+// PATCH /admin/settings (handler_admin_settings.go) reloads only after the
+// settings are written, so the guard, which runs before, has no real
+// construction attempt to observe there; this field check is what it has, and it is still a real
 // improvement over no check at all for the settings-PATCH bypass #300's
 // review found (that path could set oidc_enabled=false, or blank any SAML
 // field, with zero refusal).
@@ -119,6 +120,16 @@ func samlFieldsLookConfigured(c samlSettings) bool {
 // certificate and key.
 type samlSettings struct {
 	MetadataURL, MetadataXML, CertPEM, KeyPEM string
+}
+
+// readSAMLSettings is storedSAMLSettings for the reloads, which must not mistake
+// a failed read for an unconfigured SAML: they keep what is running on an error.
+func (s *Server) readSAMLSettings(ctx context.Context) (samlSettings, error) {
+	url, xml, cert, key, err := s.adminSvc.SAMLSettings(ctx)
+	if err != nil {
+		return samlSettings{}, err
+	}
+	return samlSettings{MetadataURL: url, MetadataXML: xml, CertPEM: cert, KeyPEM: key}, nil
 }
 
 // storedSAMLSettings reads the SAML configuration as currently stored.

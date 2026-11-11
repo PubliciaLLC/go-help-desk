@@ -120,6 +120,25 @@ func (s *Service) GetSAMLConfig(ctx context.Context) (metadataURL, certPEM, keyP
 	return
 }
 
+// SAMLSettings reads the four SAML settings in one query. An unset setting reads
+// as "", but a read that FAILS is an error, which GetSAMLConfig and
+// GetSAMLMetadataXML cannot tell apart from unset: a reload that mistook a
+// database hiccup for "SAML is not configured" would unload a working SAML.
+func (s *Service) SAMLSettings(ctx context.Context) (metadataURL, metadataXML, certPEM, keyPEM string, err error) {
+	all, err := s.store.List(ctx)
+	if err != nil {
+		return "", "", "", "", fmt.Errorf("reading the SAML settings: %w", err)
+	}
+	str := func(key string) string {
+		var v string
+		if raw, ok := all[key]; ok && json.Unmarshal(raw, &v) == nil {
+			return v
+		}
+		return ""
+	}
+	return str(KeySAMLMetadataURL), str(KeySAMLMetadataXML), str(KeySAMLCertPEM), str(KeySAMLKeyPEM), nil
+}
+
 // GetOIDCConfig returns the OIDC configuration stored in settings.
 func (s *Service) GetOIDCConfig(ctx context.Context) auth.OIDCConfig {
 
