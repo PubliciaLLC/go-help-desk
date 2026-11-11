@@ -3,7 +3,14 @@ import { renderNow } from '@/test/formatted'
 import type { Editor } from '@milkdown/kit/core'
 import { DOMParser as PMDOMParser, DOMSerializer } from '@milkdown/kit/prose/model'
 import { TextSelection } from '@milkdown/kit/prose/state'
-import { addLink, createEditor, insertAtCursor, markdownOf, setMarkdown, viewOf } from './editorCore'
+import { insertImageInputRule } from '@milkdown/kit/preset/commonmark'
+import {
+  extendListItemSchemaForTask,
+  footnoteDefinitionSchema,
+  footnoteReferenceSchema,
+  wrapInTaskListInputRule,
+} from '@milkdown/kit/preset/gfm'
+import { addLink, createEditor, editorPlugins, insertAtCursor, markdownOf, setMarkdown, viewOf } from './editorCore'
 import { EDITOR_MARKS, EDITOR_NODES } from '@/lib/markdownAllowList'
 import { TicketText } from '@/components/TicketText'
 
@@ -64,6 +71,32 @@ describe('the editor schema is the allow-list', () => {
     const names = [...Object.keys(view.state.schema.nodes), ...Object.keys(view.state.schema.marks)].join(' ')
     expect(names).not.toMatch(/footnote|task|resiz/i)
     expect(view.state.schema.nodes.list_item.spec.attrs).not.toHaveProperty('checked')
+  })
+})
+
+// editorCore.ts drops these preset parts by identity. If a preset upgrade renames
+// or re-wraps one, the drop silently stops matching and the part comes back; the
+// schema test above would only notice for the ones that add a node or attribute,
+// not for an input rule. So check the plugin list itself. (The commonmark preset
+// does not list insertImageInputRule at the moment, so that row guards a future
+// upgrade that starts including it; the other four are in the presets today.)
+describe('the preset parts the allow-list excludes are not installed', () => {
+  const dropped: [string, unknown][] = [
+    ['extendListItemSchemaForTask', extendListItemSchemaForTask],
+    ['footnoteDefinitionSchema', footnoteDefinitionSchema],
+    ['footnoteReferenceSchema', footnoteReferenceSchema],
+    ['wrapInTaskListInputRule', wrapInTaskListInputRule],
+    ['insertImageInputRule', insertImageInputRule],
+  ]
+
+  it.each(dropped)('%s is absent from editorPlugins', (_name, part) => {
+    // A part is an array of plugins; compare each plugin, not the wrapper.
+    const installed = new Set<unknown>(editorPlugins.flat(Infinity))
+    for (const plugin of [part].flat(Infinity)) expect(installed.has(plugin)).toBe(false)
+  })
+
+  it('compares against something real: every dropped part holds at least one plugin', () => {
+    for (const [name, part] of dropped) expect([part].flat(Infinity).length, name).toBeGreaterThan(0)
   })
 })
 

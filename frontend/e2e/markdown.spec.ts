@@ -22,7 +22,12 @@ for (const width of [320, 390]) {
       await mockApi(page, { ticket: MARKDOWN_DETAIL, replies: MARKDOWN_REPLIES })
       await page.goto(`/tickets/${TICKET_DETAIL.id}`)
       // Both the description and the reply, formatted (a lone first() could pass on one).
-      await expect(page.locator('[data-md-body]')).toHaveCount(2)
+      // The first formatted post of a run starts the worker, and a cold dev server has to
+      // transform the whole parser's module graph for it while both browser projects load
+      // it at once. That sometimes took longer than the default 5 s (the full run failed here
+      // with retries off; with CI's old retry it passed on the second go). How soon the
+      // first post formats is not what this test checks.
+      await expect(page.locator('[data-md-body]')).toHaveCount(2, { timeout: 30_000 })
       await mainFits(page)
 
       // The table and the code box scroll inside themselves, and can be focused to do it.
