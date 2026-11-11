@@ -730,13 +730,16 @@ func subscribedKind(hook authstore.WebhookConfig, ev notification.Event) (notifi
 }
 
 // subscribedKinds are the kinds of the change this hook subscribes to, in the
-// fixed order. For "*" or no list, every kind a webhook can carry (a name
-// outside WebhookEvents, guest.link_resent, is never sent, whatever "*" says).
+// fixed order. For "*" or no list, every kind a webhook can carry except the
+// opt-in ones (a name outside WebhookEvents, guest.link_resent, is never sent,
+// whatever "*" says; ticket.followed and ticket.unfollowed are sent only to a
+// hook that lists them, "*" or not, #630).
 func subscribedKinds(hook authstore.WebhookConfig, ev notification.Event) []notification.EventType {
 	all := len(hook.Events) == 0 || slices.Contains(hook.Events, "*")
 	var out []notification.EventType
 	for _, k := range ev.AllKinds() {
-		if all && IsWebhookEvent(string(k)) || !all && slices.Contains(hook.Events, string(k)) {
+		named := slices.Contains(hook.Events, string(k))
+		if named || all && IsWebhookEvent(string(k)) && !notification.IsOptInWebhookEvent(k) {
 			out = append(out, k)
 		}
 	}

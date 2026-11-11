@@ -310,7 +310,7 @@ type Querier interface {
 	// this database (whose clock sets spent_at).
 	DeleteStaleSAMLHandovers(ctx context.Context) error
 	DeleteStatus(ctx context.Context, id uuid.UUID) error
-	DeleteTicketLink(ctx context.Context, arg DeleteTicketLinkParams) error
+	DeleteTicketLink(ctx context.Context, arg DeleteTicketLinkParams) (int64, error)
 	// As DeleteCategory: the type's own and its items' field assignments go in the
 	// same statement.
 	DeleteType(ctx context.Context, arg DeleteTypeParams) (int64, error)

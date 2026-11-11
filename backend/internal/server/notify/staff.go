@@ -204,6 +204,12 @@ func holders(ev notification.Event) (user, group *uuid.UUID) {
 // holds the ticket. A failed lookup of followers or of a group's members is an
 // error, so the change is retried whole.
 func (f *StaffFanout) candidates(ctx context.Context, ev notification.Event) ([]candidate, bool, error) {
+	// A bulk unassignment is announced to webhooks and mails no staff (#630).
+	// Carries already keeps its email row from being queued; this stops a row
+	// that exists anyway (queued by an older build mid-upgrade).
+	if ev.SuppressStaffMail {
+		return nil, false, nil
+	}
 	kinds := ev.AllKinds()
 	assignee, _ := holders(ev)
 	var cands []candidate
