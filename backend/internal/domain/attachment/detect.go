@@ -9,17 +9,11 @@
 package attachment
 
 import (
-	"errors"
 	"mime"
 	"strings"
 
 	"github.com/gabriel-vasile/mimetype"
 )
-
-// errNotImplemented is the placeholder every function in this package returns
-// until it is written. Functions with no error to return panic with the same
-// words instead.
-var errNotImplemented = errors.New("not implemented")
 
 // Detect reports what the content of data is, independent of any filename.
 //

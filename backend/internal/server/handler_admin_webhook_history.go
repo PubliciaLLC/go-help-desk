@@ -71,6 +71,9 @@ func (s *Server) handleRedeliverWebhook(w http.ResponseWriter, r *http.Request) 
 		w.WriteHeader(http.StatusAccepted)
 	case errors.Is(err, notify.ErrWebhookNotFound), errors.Is(err, notify.ErrDeliveryNotFound):
 		Error(w, http.StatusNotFound, "not_found", "no such webhook delivery")
+	case errors.Is(err, notify.ErrWebhookPaused): // before Disabled, which it also matches
+		Error(w, http.StatusConflict, "webhook_paused",
+			"this webhook is paused because its API key is no longer active; re-approve it to redeliver")
 	case errors.Is(err, notify.ErrWebhookDisabled):
 		Error(w, http.StatusConflict, "webhook_disabled", "this webhook is disabled; enable it to redeliver")
 	case errors.Is(err, notify.ErrWebhookNotSubscribed):

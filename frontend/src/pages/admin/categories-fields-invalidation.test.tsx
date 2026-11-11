@@ -60,7 +60,7 @@ describe('Categories page, field attachments', () => {
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
 
     await userEvent.click(await screen.findByRole('button', { name: 'Expand' }))
-    await userEvent.click(await screen.findByLabelText('visible'))
+    await userEvent.click(await screen.findByLabelText('Show on new-ticket form for Region'))
 
     await waitFor(() => expect(patch).toHaveBeenCalled())
     await waitFor(() => {

@@ -268,7 +268,7 @@ func TestOnBehalf_ACreateThatFailsAfterTheUnitStillCostsIt(t *testing.T) {
 
 	good := newMCPSession(t, h, c.Token)
 	broken := newMCPSessionWith(t, h, c.Token, mcp.New(
-		ticket.NewService(downStore{}, nil, nil, nil, nil, nil), nil, h.srv, h.categorySvc, h.srv, h.srv))
+		ticket.NewService(downStore{}, nil, nil, nil, nil, nil), nil, h.srv, h.categorySvc, h.srv))
 	file := func(s *mcpSession, i int) (string, bool) {
 		return s.tool("create_ticket", map[string]any{
 			"subject": "x", "category_id": h.catID.String(),

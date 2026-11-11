@@ -283,15 +283,6 @@ func (s *Server) handlePutEmailTemplate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	subject, body := in.subject(), in.body()
-	rows, err := s.emailTemplates.List(r.Context())
-	if err != nil {
-		handleError(w, err)
-		return
-	}
-	stored := make(map[string]emailtemplate.Override, len(rows))
-	for _, o := range rows {
-		stored[o.Name] = o
-	}
 	siteName := s.adminSvc.SiteName(r.Context())
 	actor := authmw.GetActor(r)
 
@@ -302,7 +293,7 @@ func (s *Server) handlePutEmailTemplate(w http.ResponseWriter, r *http.Request) 
 	// Removing HTML takes an explicit empty string.
 	var refused []notify.TemplateError
 	var html string
-	err = s.emailTemplates.Update(r.Context(), def.Name, func(prev *emailtemplate.Override) (*emailtemplate.Override, *audit.Entry, error) {
+	err := s.emailTemplates.Save(r.Context(), def.Name, func(prev *emailtemplate.Override, stored map[string]emailtemplate.Override) (*emailtemplate.Override, *audit.Entry, error) {
 		refused = nil
 		html = in.html()
 		if in.HTML == nil && prev != nil {
@@ -314,7 +305,9 @@ func (s *Server) handlePutEmailTemplate(w http.ResponseWriter, r *http.Request) 
 		}
 		// The size limit is on the header, body and footer together, which no
 		// part can see alone: the same check a send makes, with long links so
-		// that what is saved here can be sent.
+		// that what is saved here can be sent. Against the rows as they are in
+		// this transaction (stored), not as they were when the request was read:
+		// a header saved in between would otherwise be measured at its old size.
 		if te := notify.CheckJoinedHTML(def, stored, emailtemplate.Override{Name: def.Name, Subject: subject, Body: body, HTML: html}, siteName); te != nil {
 			refused = []notify.TemplateError{*te}
 			return nil, nil, errTemplateRefused

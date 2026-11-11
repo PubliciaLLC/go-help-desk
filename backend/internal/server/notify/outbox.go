@@ -139,7 +139,7 @@ func NewWorker(store notification.Outbox, channels map[string]notification.Dispa
 		// row in it running to SendTimeout — or another replica claims rows
 		// this worker has not reached yet and sends them twice (#164 round
 		// 1: a batch of 20 against a 20-second SMTP timeout was 400 seconds
-		// under a 300-second lease). A send is SendTimeout for the work that
+		// under the 300-second lease it had then; it is 10 minutes now). A send is SendTimeout for the work that
 		// honours a context (the guest-link step's database work) plus
 		// ChannelOverrun for what does not (the email channel's own SMTP
 		// bounds: 20 s to dial, 20 s on the connection). 4 × (1 m + 40 s)

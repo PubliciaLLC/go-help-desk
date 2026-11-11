@@ -443,6 +443,19 @@ const SHOTS = [
     },
   },
   {
+    // A select field opened: its options (two held by tickets, so no Delete),
+    // Show retired on, how many tickets hold a value, and where it appears.
+    file: '41-admin-custom-fields.png', phase: 'extras', role: 'admin', path: '/admin/custom-fields', vp: DESK,
+    target: { tall: 2400 },
+    async prepare(page) {
+      const row = page.getByRole('group', { name: 'Condition on arrival', exact: true })
+      await row.getByRole('button', { expanded: false }).first().click()
+      await waitVisible(page.getByText(/tickets have a value for this field/))
+      await row.getByLabel('Show retired').check()
+      await waitVisible(row.getByText('Refurbished'))
+    },
+  },
+  {
     // The forced style also shows the rename pencils, which the touch layout
     // shows too (it has no hover for any of them).
     file: '33-admin-categories-archive.png', phase: 'extras', role: 'admin', path: '/admin/categories', vp: DESK,

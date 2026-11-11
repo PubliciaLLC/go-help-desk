@@ -314,6 +314,9 @@ type FieldsScope =
   | { kind: 'type'; categoryId: string; typeId: string }
   | { kind: 'item'; categoryId: string; typeId: string; itemId: string }
 
+const FIELD_CHECK = `inline-flex cursor-pointer select-none items-center gap-2 text-gray-700 ${TOUCH_SIZE}`
+const fieldName = (a: Assignment) => a.field_def?.name ?? a.field_def_id
+
 function FieldsSubsection({ scope }: { scope: FieldsScope }) {
   const qc = useQueryClient()
   const [addingField, setAddingField] = useState(false)
@@ -419,30 +422,39 @@ function FieldsSubsection({ scope }: { scope: FieldsScope }) {
       {removeError && <p role="alert" className="mb-2 text-xs text-red-600">{removeError}</p>}
       <div className="space-y-1">
         {(assignments as Assignment[]).map((a) => (
-          <div key={a.id} className="group flex items-center gap-2 rounded px-2 py-1 hover:bg-gray-50 text-xs">
-            <span className="flex-1 font-medium text-gray-700">
-              <Link to="/admin/custom-fields" search={{ field: a.field_def_id }} className="hover:text-blue-600 hover:underline">
+          <div key={a.id} className="group flex flex-wrap items-center gap-x-4 gap-y-1 rounded px-2 py-1 hover:bg-gray-50 text-xs">
+            <span className="min-w-0 flex-1 basis-40 font-medium text-gray-700 wrap-anywhere">
+              <Link
+                to="/admin/custom-fields"
+                search={{ field: a.field_def_id }}
+                className="rounded text-blue-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+              >
                 {a.field_def?.name ?? a.field_def_id}
               </Link>
               <span className="ml-1.5 text-gray-400 font-normal">{a.field_def?.field_type}</span>
             </span>
-            <label className="flex items-center gap-1 text-gray-500 cursor-pointer select-none">
+            <label className={FIELD_CHECK}>
+              {/* The field goes in the name so a screen reader can tell the rows apart. */}
               <input
                 type="checkbox"
+                aria-label={`Show on new-ticket form for ${fieldName(a)}`}
                 checked={a.visible_on_new}
                 onChange={(e) => toggleMutation.mutate({ id: a.id, patch: { visible_on_new: e.target.checked } })}
                 className="h-3 w-3"
               />
-              visible
+              Show on new-ticket form
             </label>
-            <label className="flex items-center gap-1 text-gray-500 cursor-pointer select-none">
+            <label className={FIELD_CHECK}>
               <input
                 type="checkbox"
+                aria-label={`Required for ${fieldName(a)}`}
                 checked={a.required_on_new}
+                // Required only means anything on a form the field is shown on.
+                disabled={!a.visible_on_new}
                 onChange={(e) => toggleMutation.mutate({ id: a.id, patch: { required_on_new: e.target.checked } })}
                 className="h-3 w-3"
               />
-              required
+              Required
             </label>
             <button
               onClick={() => removeMutation.mutate(a.id)}

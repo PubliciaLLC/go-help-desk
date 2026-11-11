@@ -41,7 +41,12 @@ type mcpConn struct {
 
 func openMCP(t *testing.T, h *harness, token string) *mcpConn {
 	t.Helper()
-	mcpSrv := mcp.New(h.ticketSvc, func(context.Context) string { return "GHD" }, h.srv, h.categorySvc, h.srv, h.srv)
+	return openMCPOn(t, h, token, mcp.New(h.ticketSvc, func(context.Context) string { return "GHD" }, h.srv, h.categorySvc, h.srv).WithRouter(h.srv))
+}
+
+// openMCPOn is openMCP for an MCP server the test configured itself.
+func openMCPOn(t *testing.T, h *harness, token string, mcpSrv *mcp.Server) *mcpConn {
+	t.Helper()
 	ts := httptest.NewServer(h.srv.ProtectMCP(mcpSrv.Handler()))
 	t.Cleanup(ts.Close)
 
@@ -136,7 +141,7 @@ func mcpTools(h *harness) []struct {
 		{"create_ticket", true, map[string]any{"subject": "x", "category_id": h.catID.String()}},
 		{"add_reply", true, map[string]any{"ticket_id": tid, "body": "x"}},
 		{"assign_ticket", true, map[string]any{"ticket_id": tid, "assignee_user_id": uuid.New().String()}},
-		{"update_ticket_status", true, map[string]any{"ticket_id": tid, "status": "Resolved"}},
+		{"update_ticket_status", true, map[string]any{"ticket_id": tid, "status_id": uuid.New().String()}},
 		{"create_follow_up", true, map[string]any{"ticket_id": tid}},
 	}
 }

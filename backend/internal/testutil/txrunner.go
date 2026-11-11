@@ -2,6 +2,7 @@ package testutil
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/database/auditstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
@@ -50,7 +51,12 @@ func (r *JoiningTxRunner) InTx(ctx context.Context, fn func(ticket.Store, audit.
 	}
 	if r.sink != nil {
 		for _, ev := range changes.Events() {
-			_ = r.sink.Dispatch(ctx, ev)
+			// An error fails the change, as an outbox write that fails rolls
+			// back the production transaction. Dropping it let tests pass over
+			// announcements that never happened.
+			if err := r.sink.Dispatch(ctx, ev); err != nil {
+				return fmt.Errorf("announcing %s: %w", ev.Type, err)
+			}
 		}
 	}
 	return nil

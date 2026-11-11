@@ -2643,7 +2643,7 @@ Exposes help desk operations as an MCP server for AI tool integration, over two 
 |------|-----------------|-------|
 | `get_ticket` | any signed-in user | By UUID or tracking number. Returns the reply thread and linked tickets; internal notes are omitted for reporting users. `include_replies` (default `true`): `false` returns the ticket alone, without replies or links. |
 | `list_tickets` | any signed-in user | Optional `assignee_user_id`, `status_id`, `priority`, `category_id`, `q` filters. `limit` defaults to 20 and is clamped to 100; `offset` pages the full result set. |
-| `list_categories` | any signed-in user | The Category/Type/Item tree, nested, for filling in CTI. Active entries only; `include_inactive: true` adds retired ones (the tool applies no role check to it, unlike the REST catalogue, which shows archived entries to staff and administrators only). |
+| `list_categories` | any signed-in user | The Category/Type/Item tree, nested, for filling in CTI. Active entries only; `include_inactive: true` adds retired ones, for staff and administrators only, as on the REST catalogue; for anyone else the flag is ignored and they get active entries (no error). |
 | `list_statuses` | any signed-in user | The statuses this instance defines. |
 | `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` or `reporter_email` (with `guest_name`, always required with the address) names the subject of the ticket; both are absent by default and the caller is the subject. `description` is Markdown unless `format: "plain"` is passed (#443); an invalid `format` is a tool error. The ticket is recorded as `mcp` (#130), including one filed for someone else; a `source_channel` argument is a tool error and nothing is written. |
 | `add_reply` | staff, admin | A public reply emails the requester exactly as the REST reply does (#442): the guest's address (with a guest link) or the reporting account's, through one shared rule, `ticket.Service.ReplyRecipient`. No mail is sent when the requester has no address on record or the account is gone, or when the requester is a staff member or administrator writing the reply on a ticket they filed (they are not mailed a copy of their own reply, over REST or MCP; an ordinary requester replying on their own ticket still is); the reply is still saved. `internal: true` posts a staff-only note and never notifies the requester. There is no `notify_customer` option over MCP: a public reply always notifies. `body` is Markdown unless `format: "plain"` is passed (#443). |
@@ -3520,6 +3520,8 @@ on the existing webhook feature instead of as plugins.
   the original, and a status-change message names the status the ticket has
   now. Redeliver is refused with
   `409 webhook_disabled` for a disabled hook,
+  `409 webhook_paused` for a paused one (its API key is no longer active; it
+  needs re-approving, and enabling does not help),
   `409 webhook_not_subscribed` when the hook no longer lists that event, and
   `409 webhook_filter_excludes` when the hook's ticket filter, as it is now,
   does not admit the ticket, and `409 webhook_filter_unverifiable` when the
@@ -3665,7 +3667,10 @@ on the existing webhook feature instead of as plugins.
     elsewhere, and if the server does not offer STARTTLS the send fails with
     `SMTP server does not offer STARTTLS, and SMTP_PASSWORD is set: refusing
     to send the password unencrypted`. Someone on the path stripping STARTTLS
-    from the greeting therefore costs a failed send, not the password.
+    from the greeting therefore costs a failed send, not the password. A user
+    name with no password is treated the same way, because AUTH PLAIN would send
+    the name in the clear: the send fails with `SMTP server does not offer
+    STARTTLS, and SMTP_USER is set: refusing to send credentials unencrypted`.
   - **With no password, plain SMTP is allowed only to a private address**:
     loopback, RFC 1918 (10/8, 172.16/12, 192.168/16) or IPv6 ULA (fc00::/7).
     STARTTLS is still used whenever it is offered. A public address with no
@@ -4101,7 +4106,7 @@ and each staff member's mail, then `outboxstore.Store.Split`
 the change's row in **one transaction**. A failure part way leaves nothing
 queued and the change's row to be tried again. The transaction deletes the
 change's row **first**, and only the call that deleted it queues anything
-(#513): a split that outlasts the 300-second claim lease lets a second worker
+(#513): a split that outlasts the 10-minute claim lease (`Worker.Lease`) lets a second worker
 claim and split the same row, and the first split's children may be sent and
 deleted by then, so `ON CONFLICT` alone would queue them again and the mail go
 out twice. The second worker finds no row to delete, queues nothing and
