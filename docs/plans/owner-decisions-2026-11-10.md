@@ -48,3 +48,7 @@ a recommendation he accepted in bulk ("Accept all") from `pretag-fixes.md` and `
   - a statement timeout on the reply arm, falling back to subject and description with `replies_searched: false`;
   - measured at 1M and 5M replies.
 - **Index-build warning:** "Bold warning + pre-build".
+- **Requester-name mask:** "Keep the three values", and each now covers every admin view in its scope. An unresolved name shows as **"Deleted account"**.
+- **Markdown formatter budget:** "Raise to 3 s".
+- **`content-visibility: auto`** on long plain-text posts: "Ship it".
+- **E2E against the production build** instead of the Vite dev server: "Use production build".
