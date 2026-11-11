@@ -234,6 +234,23 @@ type Server struct {
 	// something sniffed from the Authorizer; nil means reporter_email is
 	// refused rather than guessed at.
 	onBehalf OnBehalfResolver
+
+	// reopenWindowDays is the configured reopen window, read per call like the
+	// REST reply handler does. A function for the same reason as prefix.
+	reopenWindowDays func(context.Context) int
+}
+
+// defaultReopenWindowDays is what the setting reads as when nothing is stored
+// (admin.Service.ReopenWindowDays). Only a Server built without WithReopenWindowDays
+// uses it, which is a test.
+const defaultReopenWindowDays = 7
+
+// WithReopenWindowDays supplies the reopen window setting. A method rather than
+// a constructor argument because most callers of New are tests that never reach
+// a code path that reads it.
+func (s *Server) WithReopenWindowDays(f func(context.Context) int) *Server {
+	s.reopenWindowDays = f
+	return s
 }
 
 // OnBehalfResolver is the REST handler's rule for filing a ticket for someone
@@ -853,7 +870,10 @@ func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) 
 
 	isInternal, _ := args["internal"].(bool)
 
-	const reopenWindowDays = 7
+	reopenWindowDays := defaultReopenWindowDays
+	if s.reopenWindowDays != nil {
+		reopenWindowDays = s.reopenWindowDays(ctx)
+	}
 	// An internal note is a note to colleagues, so it never notifies the
 	// reporter; a public reply does, to the same address the REST reply uses.
 	notifyRequester := !isInternal
@@ -891,7 +911,7 @@ func buildListFilter(args map[string]any, vis ticket.Visibility, actorID uuid.UU
 		}
 		id, err := uuid.Parse(v)
 		if err != nil {
-			return nil, fmt.Errorf("invalid %s", key)
+			return nil, fmt.Errorf("%w: invalid %s", ticket.ErrValidation, key)
 		}
 		return &id, nil
 	}
@@ -909,7 +929,7 @@ func buildListFilter(args map[string]any, vis ticket.Visibility, actorID uuid.UU
 	if v, ok := args["priority"].(string); ok && v != "" {
 		p := ticket.Priority(v)
 		if !p.Valid() {
-			return f, fmt.Errorf("priority must be one of: critical, high, medium, low")
+			return f, fmt.Errorf("%w: priority must be one of: critical, high, medium, low", ticket.ErrValidation)
 		}
 		f.Priority = &p
 	}
@@ -1122,8 +1142,11 @@ func (s *Server) handleListCategories(ctx context.Context, req mcpgo.CallToolReq
 	if s.categories == nil {
 		return errResult("category catalogue is not available")
 	}
+	// Retired entries are for staff and admin only, as on REST
+	// (catalogueIsFullyVisible): anyone else gets active entries whatever they
+	// ask for, rather than an error that would say there is something to see.
 	includeInactive, _ := req.GetArguments()["include_inactive"].(bool)
-	activeOnly := !includeInactive
+	activeOnly := !(includeInactive && requireStaff(actorFrom(ctx)))
 
 	cats, err := s.categories.ListCategories(ctx, activeOnly)
 	if err != nil {
@@ -1211,6 +1234,16 @@ func storeErr(ctx context.Context, op string, err error) (*mcpgo.CallToolResult,
 	// retrying a move that can never succeed.
 	if errors.Is(err, ticket.ErrClosed) || errors.Is(err, ticket.ErrNotClosed) {
 		return errResult(err.Error())
+	}
+	// A move into a retired or nonexistent status is about the status the
+	// caller named, and REST answers it with a 409 or 404 for the same reason.
+	if errors.Is(err, ticket.ErrStatusInactive) || errors.Is(err, ticket.ErrStatusNotFound) {
+		return errResult(err.Error())
+	}
+	// A role boundary working as designed. The wrapped text names internals
+	// ("status transition not allowed"), so the sentence is REST's own.
+	if errors.Is(err, ticket.ErrForbidden) {
+		return errResult("you do not have permission to perform this action")
 	}
 	slog.ErrorContext(ctx, "mcp tool failed", "op", op, "error", err)
 	return errResult(op + " failed")

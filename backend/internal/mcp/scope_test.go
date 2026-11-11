@@ -65,7 +65,7 @@ func writeTools(s *Server) map[string]func(context.Context) (*mcpgo.CallToolResu
 		"update_ticket_status": func(ctx context.Context) (*mcpgo.CallToolResult, error) {
 			return scoped(mcpWrite, s.handleUpdateTicketStatus)(ctx,
 				callToolRequest("update_ticket_status", map[string]any{
-					"ticket_id": uuid.New().String(), "status": "Resolved"}))
+					"ticket_id": uuid.New().String(), "status_id": uuid.New().String()}))
 		},
 	}
 }

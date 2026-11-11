@@ -52,4 +52,11 @@ type Store interface {
 	// merges with what is stored must use this, not read and then Apply: the
 	// read may be stale by the time Apply commits.
 	Update(ctx context.Context, name string, decide func(prev *Override) (*Override, *audit.Entry, error)) error
+	// Save is Update with every stored row handed to decide as well, read in the
+	// same transaction and under a lock that holds off every other save. For a
+	// decision that depends on rows other than its own: the joined size limit of
+	// a template is measured against the shared header and footer, and checking
+	// it against rows read before the transaction let two saves that each fit
+	// commit together past the limit.
+	Save(ctx context.Context, name string, decide func(prev *Override, stored map[string]Override) (*Override, *audit.Entry, error)) error
 }

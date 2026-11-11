@@ -351,6 +351,34 @@ func TestQueue_BlockedAddressIsNeverRetried(t *testing.T) {
 	require.Empty(t, rig.store.failed)
 }
 
+// A receiver that answers 302 has not accepted the event. The production
+// client used to follow the redirect, turn the POST into an empty GET, and
+// record that 200 as a success. The transport here is the test server's (the
+// guarded one refuses loopback); the redirect policy is the production one.
+func TestQueue_RedirectIsRecordedWithItsRealCodeAndNotFollowed(t *testing.T) {
+	rc := newReceiver(t, 200)
+	var gets atomic.Int32
+	rc.onRequest(func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Method == http.MethodGet {
+			gets.Add(1)
+			return false // would answer 200: the false success
+		}
+		http.Redirect(w, r, "/elsewhere", http.StatusFound)
+		return true
+	})
+	client := safehttp.Client(2 * time.Second)
+	client.Transport = rc.srv.Client().Transport
+	rig := newQueueRig(t, client, hookFor(rc.srv.URL))
+
+	require.NoError(t, rig.front.Dispatch(context.Background(), fixtureReplyEvent(false)))
+	rig.drain(t)
+
+	require.Zero(t, gets.Load(), "the redirect must not be followed")
+	last := rig.hooks.last()
+	require.Equal(t, http.StatusFound, last.Result.Status)
+	require.Equal(t, DeliveryHTTPStatus, last.Result.Error)
+}
+
 // 8 attempts in all, on the email schedule, then the row is given up on with
 // a reason that names a class and not the address.
 func TestQueue_GivesUpAfterEightAndKeepsNoURL(t *testing.T) {

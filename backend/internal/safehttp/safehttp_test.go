@@ -1,6 +1,7 @@
 package safehttp
 
 import (
+	"context"
 	"net"
 	"testing"
 
@@ -60,6 +61,18 @@ func TestValidateURL(t *testing.T) {
 	require.Error(t, ValidateURL("gopher://example.com"), "only http and https")
 	require.Error(t, ValidateURL("http://"), "a URL needs a host")
 	require.Error(t, ValidateURL("://nonsense"), "unparseable")
+}
+
+// The lookup follows the caller's context: net.LookupIP takes none, so a save
+// of a webhook URL whose resolver stalls held the request open until the
+// resolver's own timeout, whether or not the client had gone. A cancelled
+// context must end it at once. The name is not an address literal, which is
+// resolved without a lookup.
+func TestValidateURLContext_ALookupFollowsTheContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := ValidateURLContext(ctx, "http://hook.example.test/")
+	require.ErrorIs(t, err, context.Canceled)
 }
 
 // The dialer is the boundary, not ValidateURL: a name that passes validation

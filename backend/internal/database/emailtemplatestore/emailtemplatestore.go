@@ -76,6 +76,14 @@ func (s *Store) Apply(ctx context.Context, name string, next *emailtemplate.Over
 // to break a lock cycle (dbretry); every attempt starts clean, and decide is
 // called afresh.
 func (s *Store) Update(ctx context.Context, name string, decide func(prev *emailtemplate.Override) (*emailtemplate.Override, *audit.Entry, error)) error {
+	return s.Save(ctx, name, func(prev *emailtemplate.Override, _ map[string]emailtemplate.Override) (*emailtemplate.Override, *audit.Entry, error) {
+		return decide(prev)
+	})
+}
+
+// Save is Update with every stored row handed to decide as well, read inside the
+// same transaction, for a decision that depends on rows other than its own.
+func (s *Store) Save(ctx context.Context, name string, decide func(prev *emailtemplate.Override, stored map[string]emailtemplate.Override) (*emailtemplate.Override, *audit.Entry, error)) error {
 	if s.db == nil {
 		return s.update(ctx, s.q, name, decide)
 	}
@@ -95,7 +103,17 @@ func (s *Store) Update(ctx context.Context, name string, decide func(prev *email
 	})
 }
 
-func (s *Store) update(ctx context.Context, q *dbgen.Queries, name string, decide func(prev *emailtemplate.Override) (*emailtemplate.Override, *audit.Entry, error)) error {
+func (s *Store) update(ctx context.Context, q *dbgen.Queries, name string, decide func(prev *emailtemplate.Override, stored map[string]emailtemplate.Override) (*emailtemplate.Override, *audit.Entry, error)) error {
+	// Every save takes this first, whatever its name. A template's joined size
+	// depends on the shared header and footer, which this save does not lock, so
+	// a body saved at the same moment as a header would measure the old header
+	// while the header measured the old body, and both would commit. Template
+	// saves are an administrator editing text, so serialising them costs
+	// nothing; the name below is not a template's, so it cannot collide with
+	// one, and every save takes the two in this order, so they cannot deadlock.
+	if err := q.LockEmailTemplateName(ctx, "*all saves*"); err != nil {
+		return fmt.Errorf("locking email template saves: %w", err)
+	}
 	// Locked, so decide sees the row this transaction then replaces and not one
 	// a concurrent save changed in between. The name is locked first: a row lock
 	// holds nothing when there is no row yet, and two first saves of a template
@@ -114,7 +132,16 @@ func (s *Store) update(ctx context.Context, q *dbgen.Queries, name string, decid
 		return fmt.Errorf("reading email template override: %w", err)
 	}
 
-	next, e, err := decide(prev)
+	rows, err := q.ListEmailTemplateOverrides(ctx)
+	if err != nil {
+		return fmt.Errorf("listing email template overrides: %w", err)
+	}
+	stored := make(map[string]emailtemplate.Override, len(rows))
+	for _, r := range rows {
+		stored[r.Name] = fromRow(r)
+	}
+
+	next, e, err := decide(prev, stored)
 	if err != nil {
 		return err
 	}

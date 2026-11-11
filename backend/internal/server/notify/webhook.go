@@ -133,8 +133,14 @@ type WebhookQueue struct {
 
 // Redeliver refusals.
 var (
-	ErrWebhookNotFound  = errors.New("webhook not found")
-	ErrWebhookDisabled  = errors.New("webhook is disabled")
+	ErrWebhookNotFound = errors.New("webhook not found")
+	ErrWebhookDisabled = errors.New("webhook is disabled")
+	// ErrWebhookPaused: the hook's API key is no longer active, so it sends
+	// nothing until an administrator re-approves it. Enabling does not help,
+	// which is why it is not reported as disabled. It still matches
+	// ErrWebhookDisabled under errors.Is, for callers written before the two
+	// were told apart.
+	ErrWebhookPaused    = fmt.Errorf("webhook is paused: %w", ErrWebhookDisabled)
 	ErrDeliveryNotFound = errors.New("delivery not found")
 
 	// ErrWebhookNotSubscribed: the hook no longer lists the delivery's event.
@@ -504,8 +510,11 @@ func (d *WebhookDispatcher) Redeliver(ctx context.Context, hookID, deliveryID uu
 	case err != nil:
 		return fmt.Errorf("loading webhook: %w", err)
 	}
-	if !hook.Enabled || hook.Paused {
+	if !hook.Enabled {
 		return ErrWebhookDisabled
+	}
+	if hook.Paused {
+		return ErrWebhookPaused
 	}
 	stored, err := d.queue.History.GetWebhookDeliveryEvent(ctx, hookID, deliveryID)
 	switch {

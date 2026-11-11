@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
@@ -491,6 +492,58 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 				handleError(w, err)
 				return
 			}
+		}
+	}
+
+	// The older keys, which took any JSON until now: a string "true" or a null
+	// reads back as off, so the administrator would believe they had chosen.
+	for _, key := range []string{
+		admin.KeyMFAEnabled, admin.KeyTicketScopeEnforced, admin.KeySLAEnabled,
+		admin.KeySelfSignupEnabled, admin.KeyOpenRegistrationEnabled, admin.KeySAMLEnabled,
+	} {
+		if raw, ok := body[key]; ok {
+			var on bool
+			if err := unmarshalSetting(raw, key, &on); err != nil {
+				handleError(w, err)
+				return
+			}
+		}
+	}
+	if raw, ok := body[admin.KeyReopenWindowDays]; ok {
+		var days int
+		if err := unmarshalSetting(raw, admin.KeyReopenWindowDays, &days); err != nil {
+			handleError(w, err)
+			return
+		}
+		if days < 0 {
+			Error(w, http.StatusBadRequest, "bad_request", "reopen_window_days must be 0 or more")
+			return
+		}
+	}
+	if raw, ok := body[admin.KeyMFAEnforcedRoles]; ok {
+		var roles []string
+		if err := unmarshalSetting(raw, admin.KeyMFAEnforcedRoles, &roles); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+	if raw, ok := body[admin.KeyReopenTargetStatusName]; ok {
+		var name string
+		if err := unmarshalSetting(raw, admin.KeyReopenTargetStatusName, &name); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+	if raw, ok := body[admin.KeySiteLogoURL]; ok {
+		var logo string
+		if err := unmarshalSetting(raw, admin.KeySiteLogoURL, &logo); err != nil {
+			handleError(w, err)
+			return
+		}
+		if !validLogoURL(logo) {
+			Error(w, http.StatusBadRequest, "bad_request",
+				"site_logo_url must be empty, an http(s) URL, or a path on this site")
+			return
 		}
 	}
 
@@ -1001,6 +1054,23 @@ func unmarshalSetting[T any](raw json.RawMessage, name string, dst *T) error {
 		return fmt.Errorf("%w: %s has the wrong type", user.ErrValidation, name)
 	}
 	return nil
+}
+
+// validLogoURL accepts what the sidebar can safely put in an <img src>: nothing
+// (no logo), an http(s) URL, or a path on this origin. The last is not optional:
+// the logo upload itself stores "/api/v1/logo?v=<unix>" (handler_logo.go), so a
+// client that sends back the settings it read would be refused on an instance
+// that has uploaded a logo. (The settings page sends only changed keys.)
+// "//host/x" is a path in form only; browsers read it as another origin.
+func validLogoURL(s string) bool {
+	if s == "" {
+		return true
+	}
+	if strings.HasPrefix(s, "/") {
+		return !strings.HasPrefix(s, "//") && !strings.HasPrefix(s, `/\`)
+	}
+	u, err := url.Parse(s)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
 }
 
 // securityWarnings is what an administrator needs to know about how this

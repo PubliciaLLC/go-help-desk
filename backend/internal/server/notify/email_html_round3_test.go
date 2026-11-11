@@ -24,17 +24,26 @@ var bracedTexts = []string{
 	"x { {{- if .TrackingNumber}}y{{end}}\n{{.TicketURL}}",
 	"{{if .TrackingNumber}}a{ {{- else}}b{{end}}\n{{.TicketURL}}",
 	"{{if .TrackingNumber}}a{ {{- end}}\n{{.TicketURL}}",
-	"{{.TicketURL}} }} and {{ not an action",
 	"}{{.TicketURL}}{",
+}
+
+// Not a valid template at all: the second "{{" opens an action that never
+// closes. It was once in bracedTexts, where the validity check skipped it on
+// every run, so it asserted nothing. What it pins is that the validator refuses
+// it, and so htmlFromText never sees it.
+const unclosedAction = "{{.TicketURL}} }} and {{ not an action"
+
+func TestHTMLFromText_AnUnclosedActionIsRefusedBeforeItIsConverted(t *testing.T) {
+	errs := ValidateTemplate(mustDef(t, "ticket_created"), "s", unclosedAction)
+	require.NotEmpty(t, errs, "an unclosed action must be refused")
+	require.Contains(t, errs[0].Message, "unclosed action")
 }
 
 func TestHTMLFromText_BracesInTheTextAreLiteral(t *testing.T) {
 	def := mustDef(t, "ticket_created")
 	for _, text := range bracedTexts {
 		t.Run(text, func(t *testing.T) {
-			if errs := ValidateTemplate(def, "s", text); len(errs) > 0 {
-				t.Skipf("not a valid template: %v", errs[0])
-			}
+			require.Empty(t, ValidateTemplate(def, "s", text), "every text in bracedTexts is a valid template")
 			src, err := htmlFromText(def, text)
 			require.NoError(t, err)
 			tp, err := htpl.New("x").Option("missingkey=error").Parse(src)
@@ -86,6 +95,7 @@ func FuzzHTMLFromText(f *testing.F) {
 	for _, s := range bracedTexts {
 		f.Add(s)
 	}
+	f.Add(unclosedAction) // refused by the validator, which the fuzz body returns on
 	for _, s := range []string{"{{.TicketURL}}", "a\n\nb {{.TicketURL}}\n", "{{if .TrackingNumber}}\n\n{{end}}{{.TicketURL}}", "<b>&</b>{{.TicketURL}}", "{{- .TicketURL -}}"} {
 		f.Add(s)
 	}
