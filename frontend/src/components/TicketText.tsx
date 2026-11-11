@@ -6,6 +6,7 @@ import { renderHast } from '@/lib/markdownComponents'
 import { formatMarkdown, type FormatResult } from '@/lib/markdownRunner'
 import { pageBudget } from '@/lib/pageBudget'
 import { MAX_FORMATTED_CHARS } from '@/lib/markdownLimits'
+import { plainRows } from '@/lib/plainRows'
 import type { TextFormat } from '@/api/types'
 
 interface Props {
@@ -17,6 +18,46 @@ interface Props {
 }
 
 const plainClass = 'whitespace-pre-wrap wrap-anywhere'
+
+// Plain text longer than this is laid out only when it scrolls near the screen
+// (content-visibility: auto, see .lazy-layout in index.css). 220 replies of 50 KB
+// took 3.3 s to lay out at once. Short posts are left alone: skipping them saves
+// nothing and every one would swap an estimate for its real height on scrolling.
+const LAZY_LAYOUT_CHARS = 5_000
+
+// The plain text of a post. A long one is laid out only when it scrolls near the
+// screen, and until then the browser needs a height for it. Too small a guess
+// and the page grows under the reader as posts are drawn, and Safari, which does
+// not hold the reader's place when content above them changes size, jumps; so the
+// guess is the post's own rows at the box's own width, and the browser remembers
+// the real height once it has drawn the post (`auto` in .lazy-layout).
+function PlainText({ text, className }: { text: string; className?: string }) {
+  const lazy = text.length > LAZY_LAYOUT_CHARS
+  const ref = useRef<HTMLParagraphElement>(null)
+  useEffect(() => {
+    const el = ref.current
+    if (!lazy || !el || typeof ResizeObserver === 'undefined') return
+    let width = -1
+    const observer = new ResizeObserver(() => {
+      // Also fires when the post is drawn and its height changes; the width is
+      // all the estimate depends on.
+      if (el.clientWidth === width) return
+      width = el.clientWidth
+      // Half the font size per character: measured from 320 to 1440 px in both
+      // engines, that puts the estimate at 0.9 to 1.0 of the drawn height for
+      // English prose, and exact for text written a line at a time.
+      const perRow = width / (0.5 * parseFloat(getComputedStyle(el).fontSize))
+      el.style.setProperty('--text-rows', String(plainRows(text, perRow)))
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [text, lazy])
+  return (
+    <p ref={ref} className={cn(plainClass, lazy && 'lazy-layout', className)}>
+      {text}
+    </p>
+  )
+}
 
 // A document the parser cannot handle (pathological nesting) falls back to the
 // stored source rather than taking the page down with it.
@@ -134,7 +175,7 @@ function FullText({ text, format, className }: Props) {
           <Formatted tree={tree} className={className} />
         </FallbackToSource>
       ) : (
-        <p className={cn(plainClass, className)}>{text}</p>
+        <PlainText text={text} className={className} />
       )}
       {refusal && <p className="mt-1 text-xs text-gray-500">Shown as plain text: {refusal}.</p>}
       {text.trim() !== '' && (

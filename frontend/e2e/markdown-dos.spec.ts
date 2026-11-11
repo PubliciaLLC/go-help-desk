@@ -193,12 +193,15 @@ test('220 hostile replies keep the heap bounded, on open and after jumping throu
   const replies = Array.from({ length: 220 }, (_, i) => ({ ...REPLIES[0], id: `r-${i}`, body: lines(i), body_format: 'markdown' }))
   await mockApi(page, { replies })
   await page.goto(`/tickets/${TICKET_DETAIL.id}`)
-  // Cold-start wait, not one of the bounds below. Before the first post can be
-  // formatted the browser lays out all 220 posts as plain text: 11 MB, 2.7 million
-  // lines. Measured on an idle 10-core Mac that is 3.3 s of main-thread layout and
-  // 7 s to the first formatted post, so a CI runner two or three times slower
-  // overran the old 15 s (the #640 flake; one trace showed the worker not even
-  // requested until 46 s in, the page being busy). Nothing asserted below waits on it.
+  // Cold-start wait, not one of the bounds below. The 220 posts are 11 MB, 2.7
+  // million lines of plain text. Laid out all at once that was 3.3 s of main-thread
+  // layout and 7 s to the first formatted post on an idle 10-core Mac (7 to 17 s on a
+  // busy one), so a CI runner two or three times slower overran the old 15 s (the
+  // #640 flake; one trace showed the worker not even requested until 46 s in, the
+  // page being busy). Long plain posts are now laid out only near the screen
+  // (.lazy-layout), which takes the first formatted post to about 1.6 s here; the
+  // wait stays long because a runner can still be slow for other reasons, and a
+  // test that waits longer than it needs costs nothing. Nothing asserted below waits on it.
   await expect(page.locator('[data-md-body]').first()).toBeVisible({ timeout: 45_000 })
   await page.waitForTimeout(3000)
 
@@ -208,9 +211,14 @@ test('220 hostile replies keep the heap bounded, on open and after jumping throu
   // Each reply is hundreds of thousands of pixels tall as plain text, so jump
   // from one to the next (then back to the top) instead of scrolling a screen
   // at a time: every post that comes near tries to format.
-  const height = await page.evaluate(() => document.querySelector('main')!.scrollHeight)
+  // The page's height is read again at every step: posts that are not laid out yet
+  // stand in with an estimate, and drawing them changes it, so a height read once
+  // at the start can end short of (or past) the real bottom.
   for (let i = 1; i <= 60 && !crashed; i++) {
-    await page.evaluate((y) => document.querySelector('main')!.scrollTo(0, y), Math.floor((height / 60) * i))
+    await page.evaluate((fraction) => {
+      const main = document.querySelector('main')!
+      main.scrollTo(0, Math.floor(main.scrollHeight * fraction))
+    }, i / 60)
     await page.waitForTimeout(400)
   }
   await page.evaluate(() => document.querySelector('main')!.scrollTo(0, 0))

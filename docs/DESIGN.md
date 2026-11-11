@@ -1625,7 +1625,13 @@ guarantee. `dangerouslySetInnerHTML` and `rehype-raw` are banned by lint.
   brackets rescan the rest of the text, hard breaks and nested lists add up), and
   a reply has no length cap. So text over 50,000 characters is never formatted,
   a table is limited to 5,000 cells, and everything else is parsed in a Web Worker
-  with a one-second budget; past it the worker is terminated. In every such case
+  with a three-second budget (`BUDGET_MS`); past it the worker is terminated. The
+  slowest text the length limit lets through (50,000 characters of hard breaks)
+  takes about 0.6 s on a developer laptop, and the budget is wall-clock, so it is
+  set to leave a loaded machine room: at one second a slow runner overran it and
+  an ordinary post was called "too complex". The page never waits for the worker
+  (the post is readable as written meanwhile), so a longer budget costs only the
+  core a runaway parse keeps busy for the extra seconds. In every such case
   the post is shown as plain text with a note ("too long to format", "too
   complex to format", or "formatting unavailable" when the worker could not
   start), and its **Plain text** button stays reachable. A failure that may be a
@@ -1652,6 +1658,24 @@ guarantee. `dangerouslySetInnerHTML` and `rehype-raw` are banned by lint.
   Expanding is allowed to be slow, once, and only when asked for. Nothing is
   truncated or rewritten: the rest is one click away. Over 50,000 characters is
   never formatted, expanded or not.
+- **A page of long plain-text posts is laid out only where it is read.** Plain
+  text over 5,000 characters has `content-visibility: auto`, so the browser lays
+  it out when it scrolls near the screen and not before (220 replies of 50 KB took
+  3.3 s of layout at once; in Chromium the page now reaches its first frame in
+  1.4 to 3.5 s instead of 7 to 16 s, and the first formatted post in about 1.6 s
+  instead of 7 to 17 s. WebKit gains little: the same 4 to 9 s to a first frame
+  and 4 to 5 s instead of 5 to 10 s to the first formatted post; #650). Until a post is drawn its height is an
+  estimate (`contain-intrinsic-block-size`, with `auto` so the browser keeps the
+  real height once it has drawn it): the post's own rows at the box's own width,
+  half the font size per character, which lands within 10 percent of the real
+  height for English prose and is exact for text written a line at a time. The
+  estimate matters because Safari does not keep the reader's place when content
+  above them changes size: with one row per stored line the page jumped 8,000 to
+  20,000 px and grew by 40 to 140 percent as it was read. Short posts are laid out
+  as usual, nothing is rewritten, and Select All still holds every post
+  (`e2e/lazy-layout.spec.ts`, both engines, four widths). **One post is still one
+  element**, unlike the chunked rendering removed before 1.3.0, so copying within a
+  post gives the stored text exactly.
 - **A page of long posts is formatted only where it is read.** A post is formatted
   when it comes within about 1,500 px of the screen (measured in the scrolling
   area that holds it), and the page as a whole has a budget of 300,000 formatted

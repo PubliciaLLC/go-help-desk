@@ -61,6 +61,16 @@
   }
 }
 
+/* Long plain-text posts are laid out only when they scroll near the screen.
+   While one is skipped its height is --text-rows (set by TicketText) rows
+   high, and `auto` makes the browser use the real height once it has drawn the
+   post, so scrolling back does not move the page. Browsers without
+   content-visibility ignore both lines and lay everything out as before. */
+.lazy-layout {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto calc(var(--text-rows, 1) * 1lh);
+}
+
 /* #443: code highlighting. highlight.js token classes only; no theme
    stylesheet is imported, so the colours here are all there is. Contrast is
    at least 4.5:1 on the code box's gray-100 background. */
