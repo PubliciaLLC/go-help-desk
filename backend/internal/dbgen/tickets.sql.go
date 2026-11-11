@@ -721,6 +721,37 @@ func (q *Queries) ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]At
 	return items, nil
 }
 
+const listQuarantinedTicketIDs = `-- name: ListQuarantinedTicketIDs :many
+SELECT DISTINCT ticket_id FROM attachments
+WHERE ticket_id = ANY($1::uuid[]) AND virus_name IS NOT NULL
+`
+
+// Which of these tickets hold a file the scanner held back. One row per ticket
+// however many files, because the ticket list shows a marker, not a count. Uses
+// the attachments ticket_id index; the page is already cut, so $1 is one page.
+func (q *Queries) ListQuarantinedTicketIDs(ctx context.Context, ticketIds []uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := q.db.QueryContext(ctx, listQuarantinedTicketIDs, pq.Array(ticketIds))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var ticket_id uuid.UUID
+		if err := rows.Scan(&ticket_id); err != nil {
+			return nil, err
+		}
+		items = append(items, ticket_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listReplies = `-- name: ListReplies :many
 SELECT r.id, r.ticket_id, r.author_id, r.body, r.internal, r.created_at, r.notify_customer, r.body_format, u.display_name AS author_display_name
 FROM ticket_replies r
