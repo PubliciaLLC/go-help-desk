@@ -1058,10 +1058,10 @@ func unmarshalSetting[T any](raw json.RawMessage, name string, dst *T) error {
 
 // validLogoURL accepts what the sidebar can safely put in an <img src>: nothing
 // (no logo), an http(s) URL, or a path on this origin. The last is not optional:
-// the logo upload itself stores "/api/v1/logo?v=<unix>", and the settings page
-// sends the whole object back, so refusing a relative path would fail every
-// save on an instance that has uploaded one. "//host/x" is a path in form only;
-// browsers read it as another origin.
+// the logo upload itself stores "/api/v1/logo?v=<unix>" (handler_logo.go), so a
+// client that sends back the settings it read would be refused on an instance
+// that has uploaded a logo. (The settings page sends only changed keys.)
+// "//host/x" is a path in form only; browsers read it as another origin.
 func validLogoURL(s string) bool {
 	if s == "" {
 		return true

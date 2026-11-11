@@ -5291,9 +5291,15 @@ paths:
           and then skipped when a ticket was routed.
         - saml_metadata_url, saml_metadata_xml, saml_cert_pem, saml_key_pem,
           oidc_issuer_url, oidc_client_id and oidc_client_secret must be strings
-          and oidc_enabled a boolean; null is refused (bad_request). saml_enabled and
-          oidc_redirect_url are not type-checked. Enabling OIDC needs an issuer
-          URL, a client id and a client secret.
+          and oidc_enabled a boolean; null is refused (bad_request). oidc_redirect_url
+          is not type-checked. Enabling OIDC needs an issuer URL, a client id and a
+          client secret.
+        - mfa_enabled, ticket_scope_enforced, sla_enabled, self_signup_enabled,
+          open_registration_enabled and saml_enabled must be booleans;
+          reopen_window_days a number of 0 or more; mfa_enforced_roles an array of
+          strings; reopen_target_status_name a string; site_logo_url a string that is
+          empty, an http(s) URL, or a path on this site (starting with a single "/").
+          null or any other type is refused (bad_request) and nothing is written.
         - saml_metadata_url and saml_metadata_xml cannot both be non-empty after
           the write, and saml_metadata_xml must be SAML IdP metadata of at most
           262144 bytes; either refusal is 400 bad_request.
@@ -5359,8 +5365,10 @@ paths:
           description: |
             The body is not a JSON object, a value is of the wrong type or outside
             its list, or the write would strand every administrator. Codes:
-            bad_request (invalid JSON, a wrong type, an audit retention above the
-            maximum, or a refusal from the SSO guard), readonly_setting, unknown_setting,
+            bad_request (invalid JSON, a wrong type or null for any typed setting
+            above, a negative reopen_window_days, a site_logo_url that is not empty,
+            http(s) or a path on this site, an audit retention above the maximum, or
+            a refusal from the SSO guard), readonly_setting, unknown_setting,
             invalid_closed_reopen_policy, invalid_audit_mask_requester_names,
             invalid_scan_policy, invalid_infected_handling,
             invalid_mismatch_handling, invalid_reputation_refresh,
