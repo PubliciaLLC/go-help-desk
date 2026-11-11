@@ -69,6 +69,14 @@ for (const [width, height] of [[320, 640], [390, 844], [768, 1024], [1440, 900]]
     await mockApi(page, { replies: replies as never })
     await page.goto(`/tickets/${TICKET_DETAIL.id}`)
     await page.waitForFunction((n) => document.querySelectorAll('p.whitespace-pre-wrap').length >= n, replies.length)
+    // Every lazy post has its estimate. It is set by a ResizeObserver, a frame or
+    // more after the post is in the page, and on a slow runner the first frames are
+    // long: a page measured before then is one row per post (4,821 px), which is
+    // not what a reader scrolls.
+    await page.waitForFunction(() => {
+      const lazy = Array.from(document.querySelectorAll<HTMLElement>('p.lazy-layout'))
+      return lazy.length > 0 && lazy.every((p) => p.style.getPropertyValue('--text-rows') !== '')
+    })
 
     const r = await page.evaluate(async () => {
       const frame = () => new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(() => res(0))))
