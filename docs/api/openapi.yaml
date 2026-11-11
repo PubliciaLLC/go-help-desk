@@ -4979,7 +4979,9 @@ paths:
                       IdP metadata cannot do its job or declined what it fetched.
                       http_url: the metadata URL is not https, so it is never
                       refreshed. entity_id_changed: the refreshed metadata names a
-                      different entity ID. new_certificate: the refreshed metadata
+                      different entity ID. metadata_invalid: the refreshed metadata has
+                      a signing certificate that cannot be read, or none, so it was
+                      not applied. new_certificate: the refreshed metadata
                       adds a signing certificate that is not trusted yet; a refresh
                       applies only metadata whose certificates are removed or
                       unchanged, so a certificate rollover needs the administrator to
@@ -4989,7 +4991,7 @@ paths:
                     properties:
                       problem:
                         type: string
-                        enum: [http_url, entity_id_changed, new_certificate]
+                        enum: [http_url, entity_id_changed, new_certificate, metadata_invalid]
                       new_certificates:
                         type: array
                         description: The added certificates, for new_certificate.

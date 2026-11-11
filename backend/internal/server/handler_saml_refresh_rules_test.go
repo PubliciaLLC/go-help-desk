@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/xml"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -16,6 +17,8 @@ import (
 	"github.com/crewjam/saml"
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/database/adminstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 )
 
@@ -262,8 +265,8 @@ func TestRefreshSAML_AppliesAnUnchangedCertificateSet(t *testing.T) {
 }
 
 // Metadata with no signing certificate would leave nobody able to sign in, and
-// is what a stripped response looks like: not applied, and not a certificate
-// warning.
+// is what a stripped response looks like: not applied, and shown as invalid
+// metadata rather than as a new certificate.
 func TestRefreshSAML_DoesNotApplyMetadataWithNoSigningCertificate(t *testing.T) {
 	r, cleanup := newRefreshRig(t)
 	defer cleanup()
@@ -274,7 +277,7 @@ func TestRefreshSAML_DoesNotApplyMetadataWithNoSigningCertificate(t *testing.T) 
 	r.h.srv.RefreshSAML(context.Background())
 
 	require.Equal(t, r.idp.idp.SSOURL.String(), r.ssoPrefix(t))
-	require.Empty(t, r.refreshProblem(t))
+	require.Equal(t, "metadata_invalid", r.refreshProblem(t))
 }
 
 func TestRefreshSAML_RefusesAChangedEntityID(t *testing.T) {
@@ -355,4 +358,97 @@ func TestRefreshSAML_AppliesSettingsSavedElsewhere(t *testing.T) {
 
 	require.Equal(t, movedSSO, r.ssoPrefix(t))
 	require.Empty(t, r.refreshProblem(t))
+}
+
+// A certificate with no use attribute is a signing certificate to the library
+// (it verifies with use "" and "signing"), so adding one is adding trust.
+func TestRefreshSAML_DoesNotApplyACertificateWithNoUseAttribute(t *testing.T) {
+	r, cleanup := newRefreshRig(t)
+	defer cleanup()
+
+	md, extra := r.withExtraCert(t, true)
+	kds := md.IDPSSODescriptors[0].KeyDescriptors
+	kds[len(kds)-1].Use = "" // no use: signing and encryption, and so signing to the library
+	r.publish(md)
+	r.h.srv.RefreshSAML(context.Background())
+
+	require.Equal(t, r.idp.idp.SSOURL.String(), r.ssoPrefix(t))
+	extra.Use = ""
+	r.requireNewCertWarning(t, extra)
+}
+
+// The library fails every sign-in when any signing certificate in the metadata
+// does not parse, so metadata with one good certificate and one unreadable one
+// must not replace a working configuration, on the unattended refresh or on a
+// manual save. Pasted XML is refused for the same reason.
+func (r *refreshRig) publishWithAnUnreadableCert(t *testing.T) {
+	t.Helper()
+	md, _ := r.withExtraCert(t, true)
+	kds := md.IDPSSODescriptors[0].KeyDescriptors
+	kds[len(kds)-1].KeyInfo.X509Data.X509Certificates[0].Data = "bm90IGEgY2VydA=="
+	r.publish(md)
+}
+
+func TestRefreshSAML_DoesNotApplyMetadataWithAnUnreadableCertificate(t *testing.T) {
+	r, cleanup := newRefreshRig(t)
+	defer cleanup()
+
+	r.publishWithAnUnreadableCert(t)
+	r.h.srv.RefreshSAML(context.Background())
+
+	require.Equal(t, r.idp.idp.SSOURL.String(), r.ssoPrefix(t), "the running configuration is kept")
+	require.Equal(t, "metadata_invalid", r.refreshProblem(t))
+
+	// The next good refresh clears it.
+	r.publish(r.moved())
+	r.h.srv.RefreshSAML(context.Background())
+	require.Equal(t, movedSSO, r.ssoPrefix(t))
+	require.Empty(t, r.refreshProblem(t))
+}
+
+func TestSaveSAMLConfig_AURLWithAnUnreadableCertificateKeepsTheLiveConfigAndWarns(t *testing.T) {
+	r, cleanup := newRefreshRig(t)
+	defer cleanup()
+
+	r.publishWithAnUnreadableCert(t)
+	res, body := r.sess.send(t, http.MethodPut, "/api/v1/admin/saml", map[string]any{
+		"metadata_url": r.tls.URL, "cert_pem": validSAMLCert, "key_pem": validSAMLKey,
+	})
+	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
+	require.Contains(t, string(body), "could not be loaded")
+	require.Equal(t, r.idp.idp.SSOURL.String(), r.ssoPrefix(t), "the running configuration is kept")
+}
+
+// failingSettings fails every read, as a database that is briefly unreachable
+// would.
+type failingSettings struct{ admin.Store }
+
+func (failingSettings) Get(context.Context, string) ([]byte, error) {
+	return nil, errors.New("injected settings read failure")
+}
+
+func (failingSettings) List(context.Context) (map[string][]byte, error) {
+	return nil, errors.New("injected settings read failure")
+}
+
+// A settings read that fails during the hourly tick must not read as "SAML is
+// not configured" and unload the middleware.
+func TestRefreshSAML_AFailedSettingsReadKeepsTheLiveConfiguration(t *testing.T) {
+	r, cleanup := newRefreshRig(t)
+	defer cleanup()
+	good := r.h.adminSvc
+
+	r.h.srv.SetAdminServiceForTest(admin.NewService(failingSettings{adminstore.New(r.h.q)}))
+	r.h.srv.RefreshSAML(context.Background())
+	require.Equal(t, r.idp.idp.SSOURL.String(), r.ssoPrefix(t), "still loaded")
+
+	// And the same when the reload is the settings PATCH's or startup's.
+	require.Error(t, r.h.srv.ReloadSAMLForTest(context.Background()))
+	require.Equal(t, r.idp.idp.SSOURL.String(), r.ssoPrefix(t), "still loaded")
+
+	// Once reads work again the next tick carries on as before.
+	r.h.srv.SetAdminServiceForTest(good)
+	r.publish(r.moved())
+	r.h.srv.RefreshSAML(context.Background())
+	require.Equal(t, movedSSO, r.ssoPrefix(t))
 }

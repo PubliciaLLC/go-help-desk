@@ -122,6 +122,16 @@ type samlSettings struct {
 	MetadataURL, MetadataXML, CertPEM, KeyPEM string
 }
 
+// readSAMLSettings is storedSAMLSettings for the reloads, which must not mistake
+// a failed read for an unconfigured SAML: they keep what is running on an error.
+func (s *Server) readSAMLSettings(ctx context.Context) (samlSettings, error) {
+	url, xml, cert, key, err := s.adminSvc.SAMLSettings(ctx)
+	if err != nil {
+		return samlSettings{}, err
+	}
+	return samlSettings{MetadataURL: url, MetadataXML: xml, CertPEM: cert, KeyPEM: key}, nil
+}
+
 // storedSAMLSettings reads the SAML configuration as currently stored.
 func (s *Server) storedSAMLSettings(ctx context.Context) samlSettings {
 	url, cert, key := s.adminSvc.GetSAMLConfig(ctx)

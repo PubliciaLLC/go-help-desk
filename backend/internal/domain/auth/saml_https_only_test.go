@@ -2,6 +2,7 @@ package auth_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -67,4 +68,20 @@ func TestNewSAMLMiddleware_HTTPSOnly(t *testing.T) {
 			t.Fatal("the http redirect target was requested")
 		}
 	})
+}
+
+// Fetched metadata gets the signing-certificate check pasted XML gets at save,
+// since the library fails every sign-in when a signing certificate is unreadable.
+func TestNewSAMLMiddleware_FetchedMetadataWithAnUnreadableCertificateIsRefused(t *testing.T) {
+	certPEM, keyPEM := selfSignedSP(t)
+	bad := samlCertRE.ReplaceAllString(samlIDPMetadataXML, "${1}bm90IGEgY2VydA==${2}")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(bad)) }))
+	defer srv.Close()
+
+	_, err := auth.NewSAMLMiddleware(context.Background(), auth.SAMLConfig{
+		BaseURL: "https://hd.test", MetadataURL: srv.URL, CertPEM: certPEM, KeyPEM: keyPEM,
+	})
+	if !errors.Is(err, auth.ErrIdPMetadataInvalid) {
+		t.Fatalf("err = %v, want ErrIdPMetadataInvalid", err)
+	}
 }

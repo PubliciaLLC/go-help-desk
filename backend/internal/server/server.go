@@ -4,6 +4,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -317,6 +318,12 @@ type Server struct {
 	// builds from them and commits: a build can take 15 seconds on the network,
 	// and an older reload that commits after a newer one puts the old
 	// configuration back live. oidcReloadMu does the same for OIDC.
+	//
+	// It is held across that network fetch on purpose, which is also the hourly
+	// refresh's: a save of the SAML settings (or a settings PATCH that reloads)
+	// can wait up to the 15 second metadata fetch timeout, about once an hour.
+	// Do not narrow the lock to the commit to avoid that wait: reading the
+	// settings before the lock is what lets an older reload win.
 	samlReloadMu sync.Mutex
 	oidcReloadMu sync.Mutex
 
@@ -967,7 +974,11 @@ func (s *Server) commitSAMLMiddleware(mw *samlsp.Middleware, c samlSettings) {
 func (s *Server) reloadSAML(ctx context.Context) error {
 	s.samlReloadMu.Lock()
 	defer s.samlReloadMu.Unlock()
-	return s.reloadSAMLLocked(ctx, s.storedSAMLSettings(ctx))
+	c, err := s.readSAMLSettings(ctx)
+	if err != nil {
+		return err // keep what is running
+	}
+	return s.reloadSAMLLocked(ctx, c)
 }
 
 // reloadSAMLLocked loads c, which the caller read while holding samlReloadMu.
@@ -988,6 +999,7 @@ func (s *Server) reloadSAMLLocked(ctx context.Context, c samlSettings) error {
 const (
 	samlRefreshHTTPURL       = "http_url"
 	samlRefreshEntityChanged = "entity_id_changed"
+	samlRefreshInvalid       = "metadata_invalid"
 	samlRefreshNewCert       = "new_certificate"
 )
 
@@ -1021,7 +1033,9 @@ type samlRefreshState struct {
 //     (which loads the full metadata as a save does) is what trusts it. So a
 //     certificate rollover needs one re-save after the IdP publishes the new
 //     certificate.
-//   - Metadata with no signing certificate at all is not applied either.
+//   - Every signing certificate must parse, and there must be at least one (the
+//     library fails every sign-in otherwise). Metadata that fails it is not
+//     applied and the warnings say so (metadata_invalid).
 //
 // Anything refused keeps the running middleware. A fetch that fails (the IdP is
 // down) also keeps it and is not a warning: an outage is not a trust problem.
@@ -1030,7 +1044,13 @@ func (s *Server) RefreshSAML(ctx context.Context) {
 	s.samlReloadMu.Lock()
 	defer s.samlReloadMu.Unlock()
 
-	c := s.storedSAMLSettings(ctx)
+	// A failed read is not "SAML is not configured": keep what is running, and
+	// try again next hour.
+	c, err := s.readSAMLSettings(ctx)
+	if err != nil {
+		slog.WarnContext(ctx, "SAML refresh skipped: the settings could not be read; keeping the running configuration", "error", err)
+		return
+	}
 	s.samlMu.RLock()
 	live, builtFrom := s.samlHandler, s.samlBuiltFrom
 	s.samlMu.RUnlock()
@@ -1053,6 +1073,11 @@ func (s *Server) RefreshSAML(ctx context.Context) {
 
 	_, mw, commit, err := s.buildSAMLMiddlewareWith(ctx, c, true)
 	if !commit || mw == nil {
+		if errors.Is(err, auth.ErrIdPMetadataInvalid) {
+			// Reachable and answering, but with certificates the library could
+			// not use: not an outage, so it is shown.
+			s.setSAMLRefresh(samlRefreshState{problem: samlRefreshInvalid})
+		}
 		slog.WarnContext(ctx, "SAML metadata refresh failed; keeping the running configuration", "error", err)
 		return
 	}
@@ -1070,6 +1095,8 @@ func (s *Server) RefreshSAML(ctx context.Context) {
 		}
 		slog.ErrorContext(ctx, "the identity provider published a new SAML signing certificate; keeping the running configuration until an administrator re-saves the SAML settings to trust it", "sha256", fingerprints)
 	case !auth.HasSigningCerts(newMD):
+		// Nothing could sign in. Shown, not silent: it is reachable and answering.
+		s.setSAMLRefresh(samlRefreshState{problem: samlRefreshInvalid})
 		slog.ErrorContext(ctx, "refreshed SAML metadata has no signing certificate; keeping the running configuration")
 	default:
 		s.commitSAMLMiddleware(mw, c)

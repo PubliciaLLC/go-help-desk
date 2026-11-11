@@ -69,6 +69,20 @@ func ParseIdPMetadataXML(data []byte) (*saml.EntityDescriptor, error) {
 // lockout guard (#300), and then refuse every sign-in. Expiry is not checked:
 // a certificate expires in place whatever its source.
 func checkIdPSigningCerts(ed *saml.EntityDescriptor) error {
+	n, err := readIdPSigningCerts(ed)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return errors.New("it has no signing certificate (a KeyDescriptor with use=\"signing\" or no use), so no sign-in could be verified")
+	}
+	return nil
+}
+
+// readIdPSigningCerts counts the signing certificates and fails on one that is
+// not base64 DER X.509, which is what the library fails on. Zero is not an
+// error here; checkIdPSigningCerts adds that.
+func readIdPSigningCerts(ed *saml.EntityDescriptor) (int, error) {
 	n := 0
 	for _, d := range ed.IDPSSODescriptors {
 		for _, kd := range d.KeyDescriptors {
@@ -78,19 +92,16 @@ func checkIdPSigningCerts(ed *saml.EntityDescriptor) error {
 			for _, c := range kd.KeyInfo.X509Data.X509Certificates {
 				der, err := base64.StdEncoding.DecodeString(certWhitespace.ReplaceAllString(c.Data, ""))
 				if err != nil {
-					return fmt.Errorf("its signing certificate is not base64: %v", err)
+					return 0, fmt.Errorf("its signing certificate is not base64: %v", err)
 				}
 				if _, err := x509.ParseCertificate(der); err != nil {
-					return fmt.Errorf("its signing certificate is not an X.509 certificate: %v", err)
+					return 0, fmt.Errorf("its signing certificate is not an X.509 certificate: %v", err)
 				}
 				n++
 			}
 		}
 	}
-	if n == 0 {
-		return errors.New("it has no signing certificate (a KeyDescriptor with use=\"signing\" or no use), so no sign-in could be verified")
-	}
-	return nil
+	return n, nil
 }
 
 // certWhitespace is the whitespace crewjam strips before decoding (`\s+`).

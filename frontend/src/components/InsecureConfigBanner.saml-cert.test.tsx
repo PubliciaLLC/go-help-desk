@@ -98,4 +98,13 @@ describe('the SAML metadata refresh warning', () => {
     expect(text).toContain('entity ID changed')
     expect(text).toContain('re-save')
   })
+
+  it('says the metadata could not be used and was not applied', async () => {
+    mockWarnings(undefined, { problem: 'metadata_invalid' })
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+
+    const text = (await screen.findByRole('region', { name: 'Server notices' })).textContent ?? ''
+    expect(text).toContain('The SAML metadata could not be used')
+    expect(text).toContain('was not applied')
+  })
 })

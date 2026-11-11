@@ -745,10 +745,12 @@ export interface SecurityWarnings {
    * published a signing certificate that is not trusted yet; `new_certificates`
    * carries each one's SHA-256 fingerprint and expiry, to compare with the
    * provider's, and an administrator must re-save the SAML settings to trust it.
+   * `metadata_invalid`: the refreshed metadata has a signing certificate that
+   * cannot be read (or none), so it was not applied.
    * Absent otherwise.
    */
   saml_metadata_refresh?: {
-    problem: 'http_url' | 'entity_id_changed' | 'new_certificate'
+    problem: 'http_url' | 'entity_id_changed' | 'new_certificate' | 'metadata_invalid'
     new_certificates?: { sha256: string; expires_at: string }[]
   }
 

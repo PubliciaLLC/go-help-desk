@@ -323,7 +323,9 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
         ? 'SAML metadata is not refreshed automatically'
         : samlRefresh.problem === 'entity_id_changed'
           ? 'The SAML identity provider entity ID changed'
-          : 'The identity provider published a new signing certificate'
+          : samlRefresh.problem === 'metadata_invalid'
+            ? 'The SAML metadata could not be used'
+            : 'The identity provider published a new signing certificate'
     notices.push({
       id: `saml-metadata-refresh:${samlRefresh.problem}`,
       severity: samlRefresh.problem === 'http_url' ? 'config' : 'failure',
@@ -337,6 +339,8 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
               'The metadata URL is not https, and an unattended refresh of what the server trusts to sign people in must not travel in the clear, so it is never fetched again after you save it. Switch to an https URL, or paste the metadata.'}
             {samlRefresh.problem === 'entity_id_changed' &&
               'The metadata at your metadata URL now names a different identity provider (entity ID) than the one in use. It was not applied and SAML sign-in continues on the saved configuration. If you expected this, re-save the SAML settings under Settings → SAML to accept it.'}
+            {samlRefresh.problem === 'metadata_invalid' &&
+              'The metadata at your metadata URL has a signing certificate that cannot be read, or none, so signing in with it would fail. It was not applied and SAML sign-in continues on the saved configuration. Ask your identity provider to fix its metadata.'}
             {samlRefresh.problem === 'new_certificate' &&
               'The identity provider published a new signing certificate. Re-save the SAML settings to trust it. Until then nothing from the refresh is applied and SAML sign-in continues on the saved configuration. Compare the fingerprint and expiry below with what your identity provider shows; if they do not match, treat the metadata URL as compromised.'}
           </p>
