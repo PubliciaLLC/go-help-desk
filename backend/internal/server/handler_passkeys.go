@@ -437,6 +437,28 @@ func (s *Server) handlePasskeyLoginStart(w http.ResponseWriter, r *http.Request)
 	JSON(w, http.StatusOK, assertion)
 }
 
+// refuseSuspectedClone answers a sign-in whose key's counter did not advance:
+// the sign-in is refused, the account's sessions end, and an administrator can
+// see it in the audit log (#616b).
+//
+// Every session, this one included. Whoever holds the other copy of the key
+// may well have a session already, and the person at this one has not proved
+// anything. Detached from the request, as the other post-write steps are, so a
+// client that hangs up cannot leave the sessions alive. The counter is NOT
+// written (the library leaves it alone and Touch is never called), so the
+// stored value stays the one the clone has to beat.
+func (s *Server) refuseSuspectedClone(w http.ResponseWriter, r *http.Request, userID, passkeyID uuid.UUID) {
+	ctx := context.WithoutCancel(r.Context())
+	s.users.RecordPasskeyCloneSuspected(ctx, userID, passkeyID)
+	if err := s.sessions.DeleteForUser(ctx, userID); err != nil {
+		handleError(w, fmt.Errorf("ending sessions after a suspected cloned key: %w", err))
+		return
+	}
+	Error(w, http.StatusUnauthorized, "passkey_suspect",
+		"that key's signature counter did not advance, which can mean it has been copied. "+
+			"You have been signed out. Sign in another way, or ask an administrator to remove the key.")
+}
+
 // POST /api/v1/auth/local/passkey/finish
 func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
@@ -459,6 +481,10 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 		return
 	}
 	used, err := s.passkeys.FinishLogin(r.Context(), acct, staged, r)
+	if errors.Is(err, webauthn.ErrCloneSuspected) {
+		s.refuseSuspectedClone(w, r, a.UserID, used.ID)
+		return
+	}
 	if err != nil {
 		passkeyCeremonyError(w, err)
 		return

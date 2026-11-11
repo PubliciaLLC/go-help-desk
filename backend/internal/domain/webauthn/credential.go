@@ -31,10 +31,10 @@ type Credential struct {
 	// authenticate as anybody, which is not true of a TOTP secret.
 	PublicKey []byte `json:"-"`
 
-	// SignCount is recorded and never enforced. Most authenticators report
-	// zero forever, so a "must increase" rule refuses honest sign-ins; a
-	// counter that was previously non-zero going backwards is the one case
-	// worth logging, and it gates nothing.
+	// SignCount is the last counter the authenticator reported, and the
+	// reference a later assertion has to beat. Most authenticators report zero
+	// forever, which is accepted; any other counter that fails to advance is
+	// refused as a suspected clone (#616b).
 	SignCount int64 `json:"-"`
 
 	// Transports is fed back on the sign-in challenge as

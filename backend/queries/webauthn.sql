@@ -35,12 +35,12 @@ SELECT count(*) FROM webauthn_credentials WHERE user_id = $1;
 -- when it was last used.
 --
 -- Written off the authentication path, so a sign-in never waits on it and
--- never fails because of it. The counter is stored and NOT enforced — see the
--- column comment in 000029 for why a "must increase" rule locks people out
--- for nothing, and why a previously-non-zero counter going backwards is worth
--- logging and worth refusing nothing over.
+-- never fails because of it. That also means two sign-ins can land out of
+-- order, so the counter only ever goes up: a late write of a lower value would
+-- put the stored counter back below one a cloned key has already used, and the
+-- clone check (#616b) compares against what is stored here.
 UPDATE webauthn_credentials
-SET sign_count = $2, last_used_at = now()
+SET sign_count = GREATEST(sign_count, $2), last_used_at = now()
 WHERE id = $1;
 
 -- name: DeleteWebAuthnCredential :one

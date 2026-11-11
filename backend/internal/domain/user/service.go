@@ -1217,6 +1217,23 @@ func (s *Service) ResetMFA(ctx context.Context, id uuid.UUID, actorID *uuid.UUID
 	return nil
 }
 
+// RecordPasskeyCloneSuspected writes the audit entry for a passkey sign-in
+// that was refused because the key's signature counter did not advance (#616b).
+//
+// No actor: nobody has proved who is at the other end. The account is named
+// as the entity, and the key by its id, never its label. Best effort and
+// detached, for the reasons writeAuditEntry and ResetMFA give: the refusal has
+// already happened, and the person at the other end must not be able to
+// suppress the entry by hanging up.
+func (s *Service) RecordPasskeyCloneSuspected(ctx context.Context, userID, passkeyID uuid.UUID) {
+	s.writeAuditEntry(context.WithoutCancel(ctx), audit.Entry{
+		EntityType: "user",
+		EntityID:   userID,
+		Action:     "passkey_clone_suspected",
+		After:      map[string]any{"passkey_id": passkeyID.String()},
+	})
+}
+
 // refuseServiceAccount answers ErrServiceAccount when id is a service account,
 // before an administrator's reset does any work for it. The database would
 // refuse the password write anyway (users_service_account_inert); this is so

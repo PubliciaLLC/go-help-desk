@@ -137,6 +137,24 @@ func TestWebAuthnStore(t *testing.T) {
 		require.NotNil(t, after.LastUsedAt, "a used credential still reports no last-used time")
 	})
 
+	// Touch is written in a goroutine, so two sign-ins can land out of order.
+	// A late write of a lower count would put the stored counter back below one
+	// a clone has already used, and the clone check compares against it (#616b).
+	t.Run("touch never lowers the counter", func(t *testing.T) {
+		uid := seedUser(t, db, q)
+		id := []byte("credential-" + uuid.NewString())
+		require.NoError(t, store.Create(ctx, cred(uid, id)))
+		c, err := store.GetByCredentialID(ctx, id)
+		require.NoError(t, err)
+
+		require.NoError(t, store.Touch(ctx, c.ID, 42))
+		require.NoError(t, store.Touch(ctx, c.ID, 7))
+
+		after, err := store.GetByCredentialID(ctx, id)
+		require.NoError(t, err)
+		require.EqualValues(t, 42, after.SignCount, "a late, lower write lowered the stored counter")
+	})
+
 	// An id is not an authorisation. The statement matches on both columns,
 	// so somebody else's credential id is simply not found — which is also
 	// the right answer to give, since confirming it exists would be telling
