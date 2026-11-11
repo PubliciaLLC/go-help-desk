@@ -365,30 +365,43 @@ defines the others; the store picks one of them from `Filter.ResolvedSort()`.
 ### 2.3 SLA state in SQL
 
 The indicator is computed in Go (`sla.StatusFor`, `colorFor`: red at ≥100%,
-amber at ≥80%). A filter has to run in SQL, or pages come back short. Pause-aware
-elapsed time is already expressed in SQL in `ListSLABreachCandidates`, and that
-query notes that it and `sla.ElapsedFrom` "must change together". The filter
-uses the same expression on the **current** record (`superseded_at IS NULL`):
+amber at ≥80%). A filter has to run in SQL, or pages come back short. The
+filter and the sort reproduce `StatusFor` on the **current** record
+(`superseded_at IS NULL`). **They follow `StatusFor`, not the breach stamps.**
+`StatusFor` never reads `response_breached_at` or `resolution_breached_at`, and
+a test pins that. A rule built on the stamps would disagree with the indicator
+in two places: a target met in the 80-100% band stays amber (a stamp is set
+only at 100%), and the stamp lags a breach by up to a sweep tick.
 
-- **`breached`** (the indicator is red): a breach stamp is set
-  (`response_breached_at` or `resolution_breached_at`), **or** a target that
-  is still outstanding has reached its deadline. The deadline check is the
-  same `<=` comparison against `LEAST(COALESCE(pending_since, now), now)` that
-  the breach sweep uses. This covers the time between a breach and the next
-  sweep tick, as the indicator does.
-- **`at_risk`** (amber): not breached, and some outstanding target has passed
-  80%. The 80% deadline is `target_min * 48` seconds, which is exactly 80% of
-  the target. That matches `colorFor`'s integer `elapsed*5 >= target*4`.
-- `now` is a parameter. Tests pass a fixed instant.
+For each of the two targets, with elapsed time as `sla.ElapsedFrom` has it:
 
-This is the **third** copy of the elapsed-time formula. A test (section 6)
-checks that the SQL filter and `sla.StatusFor` put each ticket in the same
-bucket. The test builds tickets at 79.9%, 80%, 99.9% and 100% of target, and
-tickets that are pending, paused or restarted.
+- a target that is **met** and has a frozen reading
+  (`response_elapsed_at_met_seconds` / `resolution_elapsed_at_met_seconds`)
+  uses that reading, however long ago it was met and whatever the ticket has
+  done since. Recomputing it would subtract pause time that had not happened
+  yet when it was met;
+- any other target uses `LEAST(COALESCE(pending_since, at), at) - start -
+  pause`, where `at` is the instant the target was met (a met target with no
+  frozen reading, which migration 000028 could leave) or `now` while it is
+  outstanding, `start` is the record's `started_at` (the ticket's creation when
+  null) and `pause` is `sla_paused_seconds - paused_seconds_at_start`.
 
-One known edge: migration 000028 could only estimate when some old targets
-were met. Such a target can read red in Go and have no breach stamp. The test
-documents this case and does not hide it.
+A target is red at or past 100% of its target and amber at or past 80%. The 80%
+point is `target_min * 48` seconds, exactly 80%, which matches `colorFor`'s
+integer `elapsed*5 >= target*4`. A ticket is in the **`breached`** bucket if
+either target is red, in **`at_risk`** if neither is red and either is amber,
+and in neither otherwise. A ticket with no current record is in neither.
+The `sla` sort uses the same buckets: breached, at risk, the rest.
+
+`now` is a parameter, so tests pass a fixed instant. This is the **third** copy
+of the elapsed-time formula (after `sla.ElapsedFrom` and
+`ListSLABreachCandidates`); all three carry a "must change together" note. A
+test (section 6) checks that the SQL filter and sort and `sla.StatusFor` put
+each ticket in the same bucket. It builds tickets at 79.9%, 80%, 99.9% and 100%
+of target, one microsecond either side, and tickets that are pending, paused,
+restarted, met on time, met late, met and then paused afterwards, and met with
+no frozen reading. Because the SQL mirrors `StatusFor` exactly, there is no
+known edge left to document: the migration 000028 case reads the same in both.
 
 ### 2.4 Indexes and migrations 000060 and 000061
 
