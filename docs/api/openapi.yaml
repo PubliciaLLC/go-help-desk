@@ -2270,6 +2270,11 @@ paths:
                       type: boolean
                       description: |
                         Whether the guest must give a value. POST /guest/tickets answers 400 without one.
+                    max_length:
+                      type: integer
+                      description: >-
+                        The longest value POST /guest/tickets accepts for the field, in characters (the field's
+                        own limit, else the type's: 255, or 10,000 for a textarea), so the form can set maxlength.
         '400':
           description: '`bad_request`: category_id is missing, is not an id, or is not a category open to guests.'
           content:
@@ -4343,11 +4348,14 @@ paths:
         underscores; it is stored as written, trimmed (1.50 stays 1.50). A value
         stored before 1.3.0 is left as it is, and blocks only a save that changes
         that field.
-        A value is also refused (400) when it is over the longest the field's type takes, in
-        characters and not bytes: 255 for a text, number (after trimming) or select
-        field, and 10,000 for a textarea field. The message names the field and the limit and does
-        not repeat the value. A value already stored over a limit is left as it is, and sending it
-        again is refused.
+        A value is also refused (400) when it is over the longest the field takes, in
+        characters and not bytes: the field's own max_length when it has one, else 255 for a text,
+        number (after trimming) or select field and 10,000 for a textarea field
+        (effective_max_length on the field). The message names the field and the limit and does
+        not repeat the value. A value already stored over a limit (lowered since, or older than
+        the limits) is left as it is, and a value that does not change is not checked again: it
+        may be sent back unchanged, and is not rewritten. A different value is held to the limit.
+        The limit is enforced here, in the API; the store and the database know only the type's.
         A reporting user cannot change a Closed ticket (409 ticket_closed). Staff
         and administrators can.
         A ticket the caller may not see answers 404 not_found, the same answer as a
@@ -10412,10 +10420,17 @@ paths:
                   items: {type: string}
                   description: >-
                     Allowed values. Required, at least one, when field_type is select. A blank value (after
-                    trimming) or a value listed twice is 400 bad_request.
+                    trimming) or a value listed twice is 400 bad_request, and so is an option over 255 characters.
                 sort_order:
                   type: integer
                   description: Display order. Defaults to 0.
+                max_length:
+                  type: [integer, 'null']
+                  description: >-
+                    The longest value a ticket may hold for this field, in characters, lower than the type's own
+                    (255 for text, 10,000 for textarea). A whole number from 1 to one below that cap; at or above it,
+                    zero, negative or not a whole number is 400 bad_request, as is any value for a number or select
+                    field. Absent or null is none: the type's cap applies.
       responses:
         '201':
           description: The created definition, active.
@@ -10519,6 +10534,14 @@ paths:
                 active:
                   type: boolean
                   description: False deactivates the definition. Absent leaves it unchanged.
+                max_length:
+                  type: [integer, 'null']
+                  description: >-
+                    The field's own limit on a value, in characters, lower than the type's (see
+                    createCustomField). A number sets it, null removes it, absent leaves it. The change is
+                    checked against the field's resulting type, so a change to number or select needs it
+                    cleared. Lowering it never touches values tickets already hold, and is audited
+                    (custom_field_max_length_changed, with the limit that applied before and after).
       responses:
         '200':
           description: >-
@@ -11809,6 +11832,9 @@ components:
           items:
             type: string
           description: Options no longer offered that tickets may still hold. Absent when there are none.
+        effective_max_length:
+          type: integer
+          description: The longest value the API accepts for the field, in characters, so an edit box can set maxlength.
         value:
           type: string
         updated_at:
@@ -12633,6 +12659,14 @@ components:
           type: array
           items: {type: string}
           description: Options no longer offered that tickets may still hold.
+        max_length:
+          type: integer
+          description: The administrator's own limit on a value, in characters, lower than the type's. Absent when there is none.
+        effective_max_length:
+          type: integer
+          description: >-
+            The longest value the API accepts for the field, in characters: max_length, else the type's
+            (255; 10,000 for textarea). Always present, so a form can set maxlength.
         place_count:
           type: integer
           description: How many places the field is attached to. Present on the list responses (GET /admin/custom-fields and PUT /admin/custom-fields/order) and not on a single definition; 0 for a field on no form.

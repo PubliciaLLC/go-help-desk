@@ -661,6 +661,13 @@ export interface FieldDef {
   // are none. The admin calls always returned it; the ticket routes do since
   // 1.3.0 (#626).
   retired_options?: string[]
+  // The administrator's own limit on a value, in characters, lower than the
+  // type's. Absent when there is none (#627).
+  max_length?: number
+  // What applies: max_length, else the type's limit (255; 10,000 for a text
+  // area). Every route that returns a definition sends it, so a form can set
+  // maxlength.
+  effective_max_length?: number
   // How many places the field is attached to. GET /admin/custom-fields only:
   // a POST or PATCH response does not carry it.
   place_count?: number
@@ -721,6 +728,8 @@ export interface GuestField {
   field_type: FieldType
   options?: string[]
   required: boolean
+  // The longest value the server accepts, in characters.
+  max_length?: number
 }
 
 export interface TicketFieldValue {
@@ -732,6 +741,8 @@ export interface TicketFieldValue {
   // Held values no longer offered, so a retired value reads as retired and not
   // as unknown (#626).
   retired_options?: string[]
+  // The longest value the server accepts for the field, in characters.
+  effective_max_length?: number
   value: string
   updated_at: string
 }

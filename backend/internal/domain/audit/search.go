@@ -19,7 +19,7 @@ var searchSpellings = []string{
 	"category_id", "client_name", "closed_reopen_policy", "credential_replaced",
 	"enabled", "events", "expires_at",
 	"field_name", "field_type", "filter", "follow_up_of", "forced_reopen",
-	"host", "id", "internal", "item_id",
+	"host", "id", "internal", "item_id", "max_length",
 	"key_linked", "keys_revoked", "node_deleted", "on_behalf", "option_value", "os_user", "owner_user_id",
 	"passkey_id", "passkeys_removed", "payload_format", "position", "previous_sla_record_id", "priority",
 	"priority_change_reason", "reply_id", "requester_name_mask", "required_on_new", "retired",

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithQuery } from '@/test/render'
 import * as ticketsApi from '@/api/tickets'
@@ -133,6 +133,39 @@ describe('GuestTicketPage custom fields', () => {
 
     await waitFor(() => expect(createGuestTicket).toHaveBeenCalledTimes(1))
     expect(createGuestTicket.mock.calls[0][0].custom_fields).toBeUndefined()
+  })
+
+  describe('maximum length', () => {
+    const SHORT = { id: 'f-short', name: 'Order number', field_type: 'text', required: false, max_length: 20 }
+    const LOG = { id: 'f-log', name: 'Error log', field_type: 'textarea', required: false, max_length: 10000 }
+
+    beforeEach(() => listGuestFields.mockReset().mockResolvedValue([SHORT, LOG]))
+
+    it('sets maxlength on each box from what the server says it accepts', async () => {
+      const user = await fillBasics()
+      await user.selectOptions(screen.getByLabelText(/category/i), 'cat-1')
+      expect((await screen.findByLabelText(/order number/i) as HTMLInputElement).maxLength).toBe(20)
+      expect((screen.getByLabelText(/error log/i) as HTMLTextAreaElement).maxLength).toBe(10000)
+    })
+
+    it('refuses an over-long value inline and does not call the server', async () => {
+      const user = await fillBasics()
+      await user.selectOptions(screen.getByLabelText(/category/i), 'cat-1')
+      fireEvent.change(await screen.findByLabelText(/order number/i), { target: { value: 'a'.repeat(21) } })
+      await user.click(submit())
+
+      expect((await screen.findByRole('alert')).textContent).toBe('Order number is too long: at most 20 characters.')
+      expect(createGuestTicket).not.toHaveBeenCalled()
+    })
+
+    it('counts characters: twenty emoji fit in twenty', async () => {
+      const user = await fillBasics()
+      await user.selectOptions(screen.getByLabelText(/category/i), 'cat-1')
+      fireEvent.change(await screen.findByLabelText(/order number/i), { target: { value: '😀'.repeat(20) } })
+      await user.click(submit())
+      await waitFor(() => expect(createGuestTicket).toHaveBeenCalledTimes(1))
+      expect(createGuestTicket.mock.calls[0][0].custom_fields).toEqual({ 'f-short': '😀'.repeat(20) })
+    })
   })
 
   // The lookup is throttled (429) and can fail like any request. A form that went

@@ -1,8 +1,8 @@
 -- ── Field definitions ─────────────────────────────────────────────────────────
 
 -- name: CreateCustomFieldDef :one
-INSERT INTO custom_field_defs (id, name, field_type, options, retired_options, sort_order, active)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO custom_field_defs (id, name, field_type, options, retired_options, sort_order, active, max_length)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING *;
 
 -- name: ListCustomFieldDefs :many
@@ -52,7 +52,7 @@ SELECT * FROM custom_field_defs ORDER BY id FOR UPDATE;
 
 -- name: UpdateCustomFieldDef :exec
 UPDATE custom_field_defs
-SET name = $2, field_type = $3, options = $4, retired_options = $5, sort_order = $6, active = $7
+SET name = $2, field_type = $3, options = $4, retired_options = $5, sort_order = $6, active = $7, max_length = $8
 WHERE id = $1;
 
 -- name: ReorderCustomFieldDefs :exec
@@ -107,6 +107,7 @@ SELECT
     d.field_type AS field_type,
     d.options    AS field_options,
     d.retired_options AS field_retired_options,
+    d.max_length AS field_max_length,
     d.sort_order AS field_sort_order,
     d.active     AS field_active
 FROM custom_field_assignments a
@@ -206,6 +207,7 @@ SELECT
     d.field_type AS field_type,
     d.options    AS field_options,
     d.retired_options AS field_retired_options,
+    d.max_length AS field_max_length,
     v.value,
     v.updated_at
 FROM ticket_custom_field_values v

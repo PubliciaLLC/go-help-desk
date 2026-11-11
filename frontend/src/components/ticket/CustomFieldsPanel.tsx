@@ -9,6 +9,7 @@ import { Select } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import type { FieldType, TicketFieldValue } from '@/api/types'
+import { overLimit } from '@/lib/fieldLimits'
 
 interface CustomFieldsPanelProps {
   ticketId: string
@@ -25,6 +26,8 @@ interface Row {
   name: string
   type: FieldType
   options?: string[]
+  // The longest value the server accepts, in characters.
+  maxLength?: number
   value: string
   editable: boolean
   inactive: boolean
@@ -109,6 +112,7 @@ export function CustomFieldsPanel({
       name: v?.field_name ?? def?.name ?? '',
       type: def?.field_type ?? v?.field_type ?? 'text',
       options: def?.options ?? v?.options,
+      maxLength: def?.effective_max_length ?? v?.effective_max_length,
       value,
       editable: isStaffOrAdmin && active,
       inactive: !active,
@@ -124,6 +128,7 @@ export function CustomFieldsPanel({
       name: v.field_name,
       type: v.field_type,
       options: v.options,
+      maxLength: v.effective_max_length,
       value: v.value,
       editable: false,
       inactive: false,
@@ -151,6 +156,17 @@ export function CustomFieldsPanel({
       setSaveError('')
       return
     }
+    // Only what changed is held to the limit: a value already there, over a limit
+    // lowered since, is left alone. maxlength counts UTF-16 units and a paste can
+    // get past it, so the exact check is made here; the server holds the same one.
+    for (const r of rows) {
+      const tooLong = r.id in changed ? overLimit(r.name, changed[r.id], r.maxLength) : ''
+      if (tooLong) {
+        setSaveError(tooLong)
+        return
+      }
+    }
+    setSaveError('')
     saveMutation.mutate(changed)
   }
 
@@ -168,6 +184,7 @@ export function CustomFieldsPanel({
             value={current}
             onChange={(e) => onChange(e.target.value)}
             rows={2}
+            maxLength={r.maxLength}
             className="text-xs"
           />
         )
@@ -212,6 +229,7 @@ export function CustomFieldsPanel({
             id={id}
             value={current}
             onChange={(e) => onChange(e.target.value)}
+            maxLength={r.maxLength}
             className="h-7 text-xs"
           />
         )

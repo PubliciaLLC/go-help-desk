@@ -528,6 +528,8 @@ export async function createFieldDef(input: {
   field_type: string
   options?: string[]
   sort_order?: number
+  // A limit on a value below the type's (text and text area only).
+  max_length?: number
 }): Promise<FieldDef> {
   const res = await api.post<FieldDef>('/admin/custom-fields', input)
   return res.data
@@ -535,7 +537,10 @@ export async function createFieldDef(input: {
 
 export async function updateFieldDef(
   id: string,
-  patch: Partial<Pick<FieldDef, 'name' | 'field_type' | 'options' | 'retired_options' | 'sort_order' | 'active'>>
+  patch: Partial<Pick<FieldDef, 'name' | 'field_type' | 'options' | 'retired_options' | 'sort_order' | 'active'>> & {
+    // A number sets the field's own limit, null removes it.
+    max_length?: number | null
+  }
 ): Promise<FieldDef> {
   const res = await api.patch<FieldDef>(`/admin/custom-fields/${id}`, patch)
   return res.data

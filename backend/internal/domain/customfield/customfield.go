@@ -1,6 +1,7 @@
 package customfield
 
 import (
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -62,6 +63,44 @@ type FieldDef struct {
 	// ListFieldDefs sets it (a pointer, so a field on no form says 0 rather than
 	// leaving the key out).
 	PlaceCount *int `json:"place_count,omitempty"`
+	// MaxLength is the administrator's own limit on a value, lower than the
+	// type's (MaxChars); nil means the type's applies. It is enforced by the API
+	// (checkValue) and the forms, and by nothing below them: the store and the
+	// database know only the type's limit.
+	MaxLength *int `json:"max_length,omitempty"`
+}
+
+// EffectiveMaxLength is the longest value the API accepts for the field: the
+// administrator's limit when there is one (it is always lower than the type's,
+// which CreateFieldDefLimited and PatchFieldDef see to), else the type's.
+func (d FieldDef) EffectiveMaxLength() int { return effectiveMax(d.FieldType, d.MaxLength) }
+
+func effectiveMax(ft FieldType, own *int) int {
+	if own != nil && *own > 0 && *own < MaxChars(ft) {
+		return *own
+	}
+	return MaxChars(ft)
+}
+
+// MarshalJSON adds effective_max_length to every definition the API sends, so a
+// form can set maxlength without knowing the type's limits: max_length is the
+// administrator's own setting (absent when there is none), and this is what
+// applies.
+func (d FieldDef) MarshalJSON() ([]byte, error) {
+	type plain FieldDef
+	return json.Marshal(struct {
+		plain
+		EffectiveMaxLength int `json:"effective_max_length"`
+	}{plain(d), d.EffectiveMaxLength()})
+}
+
+// MarshalJSON adds effective_max_length, for the edit box on the ticket page.
+func (v TicketFieldValue) MarshalJSON() ([]byte, error) {
+	type plain TicketFieldValue
+	return json.Marshal(struct {
+		plain
+		EffectiveMaxLength int `json:"effective_max_length"`
+	}{plain(v), effectiveMax(v.FieldType, v.MaxLength)})
 }
 
 // Assignment attaches a FieldDef to a specific CTI node.
@@ -141,9 +180,12 @@ type TicketFieldValue struct {
 	Options    []string  `json:"options,omitempty"`
 	// RetiredOptions lets a client show a held value that is no longer offered
 	// as retired rather than as unknown.
-	RetiredOptions []string  `json:"retired_options,omitempty"`
-	Value          string    `json:"value"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	RetiredOptions []string `json:"retired_options,omitempty"`
+	// MaxLength is the field's own limit, when it has one (FieldDef.MaxLength),
+	// so a form can set maxlength on the edit box. Sent as effective_max_length.
+	MaxLength *int      `json:"-"`
+	Value     string    `json:"value"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 var (

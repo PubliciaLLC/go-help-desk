@@ -6,4 +6,6 @@
 UPDATE ticket_custom_field_values SET value = left(value, 650) WHERE octet_length(value) > 2600;
 DROP INDEX idx_cfv_field_def;
 CREATE INDEX idx_cfv_field_def ON ticket_custom_field_values (field_def_id, value);
+-- The administrators' own limits on a value are lost; each field keeps its type's.
+ALTER TABLE custom_field_defs DROP COLUMN max_length;
 ALTER TABLE custom_field_assignments DROP COLUMN visible_to_guests;

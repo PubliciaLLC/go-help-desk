@@ -119,9 +119,9 @@ func (q *Queries) CreateCustomFieldAssignment(ctx context.Context, arg CreateCus
 
 const createCustomFieldDef = `-- name: CreateCustomFieldDef :one
 
-INSERT INTO custom_field_defs (id, name, field_type, options, retired_options, sort_order, active)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, name, field_type, options, sort_order, active, created_at, retired_options
+INSERT INTO custom_field_defs (id, name, field_type, options, retired_options, sort_order, active, max_length)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, name, field_type, options, sort_order, active, created_at, retired_options, max_length
 `
 
 type CreateCustomFieldDefParams struct {
@@ -132,6 +132,7 @@ type CreateCustomFieldDefParams struct {
 	RetiredOptions pqtype.NullRawMessage `json:"retired_options"`
 	SortOrder      int32                 `json:"sort_order"`
 	Active         bool                  `json:"active"`
+	MaxLength      sql.NullInt32         `json:"max_length"`
 }
 
 // ── Field definitions ─────────────────────────────────────────────────────────
@@ -144,6 +145,7 @@ func (q *Queries) CreateCustomFieldDef(ctx context.Context, arg CreateCustomFiel
 		arg.RetiredOptions,
 		arg.SortOrder,
 		arg.Active,
+		arg.MaxLength,
 	)
 	var i CustomFieldDef
 	err := row.Scan(
@@ -155,6 +157,7 @@ func (q *Queries) CreateCustomFieldDef(ctx context.Context, arg CreateCustomFiel
 		&i.Active,
 		&i.CreatedAt,
 		&i.RetiredOptions,
+		&i.MaxLength,
 	)
 	return i, err
 }
@@ -279,7 +282,7 @@ func (q *Queries) GetCustomFieldAssignmentForUpdate(ctx context.Context, id uuid
 }
 
 const getCustomFieldDef = `-- name: GetCustomFieldDef :one
-SELECT id, name, field_type, options, sort_order, active, created_at, retired_options FROM custom_field_defs WHERE id = $1
+SELECT id, name, field_type, options, sort_order, active, created_at, retired_options, max_length FROM custom_field_defs WHERE id = $1
 `
 
 func (q *Queries) GetCustomFieldDef(ctx context.Context, id uuid.UUID) (CustomFieldDef, error) {
@@ -294,6 +297,7 @@ func (q *Queries) GetCustomFieldDef(ctx context.Context, id uuid.UUID) (CustomFi
 		&i.Active,
 		&i.CreatedAt,
 		&i.RetiredOptions,
+		&i.MaxLength,
 	)
 	return i, err
 }
@@ -436,6 +440,7 @@ SELECT
     d.field_type AS field_type,
     d.options    AS field_options,
     d.retired_options AS field_retired_options,
+    d.max_length AS field_max_length,
     d.sort_order AS field_sort_order,
     d.active     AS field_active
 FROM custom_field_assignments a
@@ -462,6 +467,7 @@ type ListAssignmentsForScopeRow struct {
 	FieldType           string                `json:"field_type"`
 	FieldOptions        pqtype.NullRawMessage `json:"field_options"`
 	FieldRetiredOptions pqtype.NullRawMessage `json:"field_retired_options"`
+	FieldMaxLength      sql.NullInt32         `json:"field_max_length"`
 	FieldSortOrder      int32                 `json:"field_sort_order"`
 	FieldActive         bool                  `json:"field_active"`
 }
@@ -488,6 +494,7 @@ func (q *Queries) ListAssignmentsForScope(ctx context.Context, arg ListAssignmen
 			&i.FieldType,
 			&i.FieldOptions,
 			&i.FieldRetiredOptions,
+			&i.FieldMaxLength,
 			&i.FieldSortOrder,
 			&i.FieldActive,
 		); err != nil {
@@ -513,7 +520,7 @@ WITH placed AS (
     JOIN categories c ON c.id = CASE a.scope_type WHEN 'category' THEN a.scope_id ELSE t.category_id END
     GROUP BY a.field_def_id
 )
-SELECT d.id, d.name, d.field_type, d.options, d.sort_order, d.active, d.created_at, d.retired_options, COALESCE(p.places, 0)::int AS place_count
+SELECT d.id, d.name, d.field_type, d.options, d.sort_order, d.active, d.created_at, d.retired_options, d.max_length, COALESCE(p.places, 0)::int AS place_count
 FROM custom_field_defs d
 LEFT JOIN placed p ON p.field_def_id = d.id
 ORDER BY d.sort_order, d.name
@@ -528,6 +535,7 @@ type ListCustomFieldDefsRow struct {
 	Active         bool                  `json:"active"`
 	CreatedAt      time.Time             `json:"created_at"`
 	RetiredOptions pqtype.NullRawMessage `json:"retired_options"`
+	MaxLength      sql.NullInt32         `json:"max_length"`
 	PlaceCount     int32                 `json:"place_count"`
 }
 
@@ -553,6 +561,7 @@ func (q *Queries) ListCustomFieldDefs(ctx context.Context) ([]ListCustomFieldDef
 			&i.Active,
 			&i.CreatedAt,
 			&i.RetiredOptions,
+			&i.MaxLength,
 			&i.PlaceCount,
 		); err != nil {
 			return nil, err
@@ -576,6 +585,7 @@ SELECT
     d.field_type AS field_type,
     d.options    AS field_options,
     d.retired_options AS field_retired_options,
+    d.max_length AS field_max_length,
     v.value,
     v.updated_at
 FROM ticket_custom_field_values v
@@ -591,6 +601,7 @@ type ListCustomFieldValuesForTicketRow struct {
 	FieldType           string                `json:"field_type"`
 	FieldOptions        pqtype.NullRawMessage `json:"field_options"`
 	FieldRetiredOptions pqtype.NullRawMessage `json:"field_retired_options"`
+	FieldMaxLength      sql.NullInt32         `json:"field_max_length"`
 	Value               string                `json:"value"`
 	UpdatedAt           time.Time             `json:"updated_at"`
 }
@@ -611,6 +622,7 @@ func (q *Queries) ListCustomFieldValuesForTicket(ctx context.Context, ticketID u
 			&i.FieldType,
 			&i.FieldOptions,
 			&i.FieldRetiredOptions,
+			&i.FieldMaxLength,
 			&i.Value,
 			&i.UpdatedAt,
 		); err != nil {
@@ -628,7 +640,7 @@ func (q *Queries) ListCustomFieldValuesForTicket(ctx context.Context, ticketID u
 }
 
 const lockAllCustomFieldDefsForUpdate = `-- name: LockAllCustomFieldDefsForUpdate :many
-SELECT id, name, field_type, options, sort_order, active, created_at, retired_options FROM custom_field_defs ORDER BY id FOR UPDATE
+SELECT id, name, field_type, options, sort_order, active, created_at, retired_options, max_length FROM custom_field_defs ORDER BY id FOR UPDATE
 `
 
 // Every definition, locked, in id order (the order LockCustomFieldDefsForShare
@@ -651,6 +663,7 @@ func (q *Queries) LockAllCustomFieldDefsForUpdate(ctx context.Context) ([]Custom
 			&i.Active,
 			&i.CreatedAt,
 			&i.RetiredOptions,
+			&i.MaxLength,
 		); err != nil {
 			return nil, err
 		}
@@ -666,7 +679,7 @@ func (q *Queries) LockAllCustomFieldDefsForUpdate(ctx context.Context) ([]Custom
 }
 
 const lockCustomFieldDefForUpdate = `-- name: LockCustomFieldDefForUpdate :one
-SELECT id, name, field_type, options, sort_order, active, created_at, retired_options FROM custom_field_defs WHERE id = $1 FOR UPDATE
+SELECT id, name, field_type, options, sort_order, active, created_at, retired_options, max_length FROM custom_field_defs WHERE id = $1 FOR UPDATE
 `
 
 // The exclusive side of the lock above. An admin change takes the definition
@@ -686,12 +699,13 @@ func (q *Queries) LockCustomFieldDefForUpdate(ctx context.Context, id uuid.UUID)
 		&i.Active,
 		&i.CreatedAt,
 		&i.RetiredOptions,
+		&i.MaxLength,
 	)
 	return i, err
 }
 
 const lockCustomFieldDefsForShare = `-- name: LockCustomFieldDefsForShare :many
-SELECT id, name, field_type, options, sort_order, active, created_at, retired_options FROM custom_field_defs
+SELECT id, name, field_type, options, sort_order, active, created_at, retired_options, max_length FROM custom_field_defs
 WHERE id = ANY($1::uuid[])
 ORDER BY id
 FOR SHARE
@@ -720,6 +734,7 @@ func (q *Queries) LockCustomFieldDefsForShare(ctx context.Context, ids []uuid.UU
 			&i.Active,
 			&i.CreatedAt,
 			&i.RetiredOptions,
+			&i.MaxLength,
 		); err != nil {
 			return nil, err
 		}
@@ -774,7 +789,7 @@ func (q *Queries) UpdateCustomFieldAssignment(ctx context.Context, arg UpdateCus
 
 const updateCustomFieldDef = `-- name: UpdateCustomFieldDef :exec
 UPDATE custom_field_defs
-SET name = $2, field_type = $3, options = $4, retired_options = $5, sort_order = $6, active = $7
+SET name = $2, field_type = $3, options = $4, retired_options = $5, sort_order = $6, active = $7, max_length = $8
 WHERE id = $1
 `
 
@@ -786,6 +801,7 @@ type UpdateCustomFieldDefParams struct {
 	RetiredOptions pqtype.NullRawMessage `json:"retired_options"`
 	SortOrder      int32                 `json:"sort_order"`
 	Active         bool                  `json:"active"`
+	MaxLength      sql.NullInt32         `json:"max_length"`
 }
 
 func (q *Queries) UpdateCustomFieldDef(ctx context.Context, arg UpdateCustomFieldDefParams) error {
@@ -797,6 +813,7 @@ func (q *Queries) UpdateCustomFieldDef(ctx context.Context, arg UpdateCustomFiel
 		arg.RetiredOptions,
 		arg.SortOrder,
 		arg.Active,
+		arg.MaxLength,
 	)
 	return err
 }

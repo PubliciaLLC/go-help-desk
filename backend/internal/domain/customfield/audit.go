@@ -48,9 +48,15 @@ func newEntry(actor *uuid.UUID, fieldID uuid.UUID, action string, before, after 
 }
 
 func entriesForCreated(actor *uuid.UUID, d FieldDef) []audit.Entry {
-	out := []audit.Entry{newEntry(actor, d.ID, "custom_field_created", nil, map[string]any{
+	created := map[string]any{
 		"field_name": d.Name, "field_type": string(d.FieldType), "sort_order": d.SortOrder, "active": d.Active,
-	})}
+	}
+	// Only where the administrator set one, so every entry for a field without
+	// reads as it always did.
+	if d.MaxLength != nil {
+		created["max_length"] = d.EffectiveMaxLength()
+	}
+	out := []audit.Entry{newEntry(actor, d.ID, "custom_field_created", nil, created)}
 	for i, o := range d.Options {
 		out = append(out, newEntry(actor, d.ID, "custom_field_option_added", nil, optionKeys(d.Name, o, i+1)))
 	}
@@ -94,6 +100,13 @@ func entriesForChange(actor *uuid.UUID, before, after FieldDef) []audit.Entry {
 		add("custom_field_reordered",
 			map[string]any{"field_name": n, "sort_order": before.SortOrder},
 			map[string]any{"field_name": n, "sort_order": after.SortOrder})
+	}
+
+	// The limit that applies, before and after, so clearing one reads as the
+	// type's limit coming back rather than as a missing value.
+	if b, a := before.EffectiveMaxLength(), after.EffectiveMaxLength(); b != a {
+		add("custom_field_max_length_changed",
+			map[string]any{"field_name": n, "max_length": b}, map[string]any{"field_name": n, "max_length": a})
 	}
 
 	known := func(d FieldDef, v string) bool {

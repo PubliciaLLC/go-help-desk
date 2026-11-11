@@ -103,7 +103,7 @@ func TestGuestFields_ListsOnlyWhatWasOffered_InANarrowShape(t *testing.T) {
 		// Exactly the keys the form needs: nothing about sort order, where the
 		// field is attached, whether it is active, or its retired options.
 		for k := range e {
-			require.Contains(t, []string{"id", "name", "field_type", "options", "required"}, k, "key %q is not for guests", k)
+			require.Contains(t, []string{"id", "name", "field_type", "options", "required", "max_length"}, k, "key %q is not for guests", k)
 		}
 	}
 	require.Equal(t, f.serial.ID.String(), byName["Serial"]["id"])

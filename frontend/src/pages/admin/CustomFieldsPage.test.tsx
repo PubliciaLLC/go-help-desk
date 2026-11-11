@@ -465,6 +465,123 @@ describe('Details', () => {
   })
 })
 
+// #627: an administrator can set a limit on a value below the type's own (255
+// characters for a text field, 10,000 for a text area). The server enforces it;
+// the form says what the type allows and refuses a number it would refuse.
+describe('Maximum length', () => {
+  const NOTE = def({ id: 'f-note', name: 'Note', field_type: 'text', sort_order: 9, max_length: 100, effective_max_length: 100 })
+  const LOG = def({ id: 'f-log', name: 'Error log', field_type: 'textarea', sort_order: 10, effective_max_length: 10000 })
+  const noUsage = { tickets_with_value: 0, values: [] }
+
+  async function openCreate() {
+    const view = await renderPage()
+    await userEvent.click(screen.getByRole('button', { name: /New field/ }))
+    return view
+  }
+
+  it('is offered for Text and Text area, with the type\'s limit as the hint, and not for Number or Select', async () => {
+    await openCreate()
+    expect(screen.getByLabelText('Maximum length')).toBeTruthy()
+    expect(screen.getByText(/Up to 254 characters\. Leave empty for 255\./)).toBeTruthy()
+
+    await userEvent.selectOptions(screen.getByLabelText('Type'), 'textarea')
+    expect(screen.getByText(/Up to 9,999 characters\. Leave empty for 10,000\./)).toBeTruthy()
+
+    await userEvent.selectOptions(screen.getByLabelText('Type'), 'number')
+    expect(screen.queryByLabelText('Maximum length')).toBeNull()
+    await userEvent.selectOptions(screen.getByLabelText('Type'), 'select')
+    expect(screen.queryByLabelText('Maximum length')).toBeNull()
+  })
+
+  it('sends the limit on create, and nothing when it is empty', async () => {
+    const { server } = await openCreate()
+    await userEvent.type(screen.getByLabelText('Name'), 'Short')
+    await userEvent.type(screen.getByLabelText('Maximum length'), '100')
+    await userEvent.click(screen.getByRole('button', { name: 'Create field' }))
+    await waitFor(() =>
+      expect(server.post).toHaveBeenCalledWith('/admin/custom-fields', { name: 'Short', field_type: 'text', max_length: 100, sort_order: 5 }),
+    )
+  })
+
+  it.each(['0', '255', '300', '-4', '1.5'])('refuses %s before calling the server', async (bad) => {
+    const { server } = await openCreate()
+    await userEvent.type(screen.getByLabelText('Name'), 'Short')
+    await userEvent.type(screen.getByLabelText('Maximum length'), bad)
+    await userEvent.click(screen.getByRole('button', { name: 'Create field' }))
+
+    expect((await screen.findAllByRole('alert')).map((a) => a.textContent).join(' ')).toMatch(/between 1 and 254/)
+    expect(server.post).not.toHaveBeenCalled()
+  })
+
+  it('does not carry a limit from Text over to Number', async () => {
+    const { server } = await openCreate()
+    await userEvent.type(screen.getByLabelText('Name'), 'Cost')
+    await userEvent.type(screen.getByLabelText('Maximum length'), '100')
+    await userEvent.selectOptions(screen.getByLabelText('Type'), 'number')
+    await userEvent.click(screen.getByRole('button', { name: 'Create field' }))
+    await waitFor(() => expect(server.post).toHaveBeenCalled())
+    expect(server.post.mock.calls[0][1]).not.toHaveProperty('max_length')
+  })
+
+  it('shows the limit a field has, and saves a change to it', async () => {
+    const server = fakeServer({ defs: [NOTE, LOG], placements: {}, usage: { 'f-note': noUsage, 'f-log': noUsage } })
+    renderWithQuery(<CustomFieldsPage />)
+    const row = await expand('Note')
+    const input = (await within(row).findByLabelText('Maximum length')) as HTMLInputElement
+    expect(input.value).toBe('100')
+
+    await userEvent.clear(input)
+    await userEvent.type(input, '50')
+    await userEvent.click(within(row).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(server.patch).toHaveBeenCalledWith('/admin/custom-fields/f-note', { max_length: 50 }))
+  })
+
+  it('removes it with null when the box is emptied', async () => {
+    const server = fakeServer({ defs: [NOTE, LOG], placements: {}, usage: { 'f-note': noUsage, 'f-log': noUsage } })
+    renderWithQuery(<CustomFieldsPage />)
+    const row = await expand('Note')
+    await userEvent.clear(await within(row).findByLabelText('Maximum length'))
+    await userEvent.click(within(row).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(server.patch).toHaveBeenCalledWith('/admin/custom-fields/f-note', { max_length: null }))
+  })
+
+  it('refuses a limit at or above the type\'s without calling the server, using the text area\'s cap for a text area', async () => {
+    const server = fakeServer({ defs: [NOTE, LOG], placements: {}, usage: { 'f-note': noUsage, 'f-log': noUsage } })
+    renderWithQuery(<CustomFieldsPage />)
+    const row = await expand('Error log')
+    const input = await within(row).findByLabelText('Maximum length')
+    await userEvent.type(input, '10000')
+    await userEvent.click(within(row).getByRole('button', { name: 'Save' }))
+    expect((await within(row).findByRole('alert')).textContent).toMatch(/between 1 and 9,999/)
+    expect(server.patch).not.toHaveBeenCalled()
+
+    await userEvent.clear(input)
+    await userEvent.type(input, '9999')
+    await userEvent.click(within(row).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(server.patch).toHaveBeenCalledWith('/admin/custom-fields/f-log', { max_length: 9999 }))
+  })
+
+  it('says that lowering it leaves the values tickets already hold', async () => {
+    const server = fakeServer({ defs: [NOTE], placements: {}, usage: { 'f-note': noUsage } })
+    renderWithQuery(<CustomFieldsPage />)
+    const row = await expand('Note')
+    await within(row).findByLabelText('Maximum length')
+    expect(within(row).getByText(/Values already saved stay as they are/)).toBeTruthy()
+    expect(server.patch).not.toHaveBeenCalled()
+  })
+
+  it('removes the limit when the type becomes one that has none', async () => {
+    const server = fakeServer({ defs: [NOTE], placements: {}, usage: { 'f-note': noUsage } })
+    renderWithQuery(<CustomFieldsPage />)
+    const row = await expand('Note')
+    const type = await within(row).findByLabelText('Type')
+    await waitFor(() => expect((type as HTMLSelectElement).disabled).toBe(false))
+    await userEvent.selectOptions(type, 'number')
+    await userEvent.click(within(row).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(server.patch).toHaveBeenCalledWith('/admin/custom-fields/f-note', { field_type: 'number', max_length: null }))
+  })
+})
+
 describe('A definition changed elsewhere while its row is open', () => {
   const NOTICE = 'This field was changed elsewhere. Cancel to load the latest.'
   const refetchList = (qc: { invalidateQueries: (o: { queryKey: string[]; exact: boolean }) => Promise<void> }) =>

@@ -18,6 +18,12 @@ type Service struct{ store Store }
 func NewService(store Store) *Service { return &Service{store: store} }
 
 func (s *Service) CreateFieldDef(ctx context.Context, name string, fieldType FieldType, options []string, sortOrder int, actorID *uuid.UUID) (FieldDef, error) {
+	return s.CreateFieldDefLimited(ctx, name, fieldType, options, sortOrder, nil, actorID)
+}
+
+// CreateFieldDefLimited is CreateFieldDef with the field's own limit on a value
+// (see FieldDef.MaxLength).
+func (s *Service) CreateFieldDefLimited(ctx context.Context, name string, fieldType FieldType, options []string, sortOrder int, maxLength *int, actorID *uuid.UUID) (FieldDef, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return FieldDef{}, Invalid("field name is required")
@@ -33,6 +39,9 @@ func (s *Service) CreateFieldDef(ctx context.Context, name string, fieldType Fie
 			return FieldDef{}, err
 		}
 	}
+	if err := checkMaxLength(fieldType, maxLength); err != nil {
+		return FieldDef{}, err
+	}
 	def := FieldDef{
 		ID:        uuid.New(),
 		Name:      name,
@@ -40,6 +49,7 @@ func (s *Service) CreateFieldDef(ctx context.Context, name string, fieldType Fie
 		Options:   options,
 		SortOrder: sortOrder,
 		Active:    true,
+		MaxLength: maxLength,
 	}
 	return s.store.CreateFieldDef(ctx, def, entriesForCreated(actorID, def))
 }
@@ -59,6 +69,10 @@ func (s *Service) GetFieldDef(ctx context.Context, id uuid.UUID) (FieldDef, erro
 // not to a copy read earlier. A non-nil, empty Options or RetiredOptions
 // clears that list.
 type FieldDefPatch struct {
+	// MaxLength sets the field's own limit; ClearMaxLength removes it. Neither
+	// leaves it as it is.
+	MaxLength      *int
+	ClearMaxLength bool
 	Name           *string
 	FieldType      *FieldType
 	Options        []string
@@ -91,6 +105,11 @@ func (s *Service) PatchFieldDef(ctx context.Context, id uuid.UUID, p FieldDefPat
 		}
 		if p.Active != nil {
 			cur.Active = *p.Active
+		}
+		if p.ClearMaxLength {
+			cur.MaxLength = nil
+		} else if p.MaxLength != nil {
+			cur.MaxLength = p.MaxLength
 		}
 		return cur
 	})
@@ -127,6 +146,11 @@ func checkChange(cur, next FieldDef, held Held) error {
 		return Invalid("field name is required")
 	}
 	if err := validateFieldType(next.FieldType); err != nil {
+		return err
+	}
+	// Checked on every change, since a change of type can leave the limit above
+	// the new type's. Lowering it below values that exist is fine: they stay.
+	if err := checkMaxLength(next.FieldType, next.MaxLength); err != nil {
 		return err
 	}
 	if next.FieldType == FieldTypeSelect {
@@ -180,6 +204,22 @@ func checkChange(cur, next FieldDef, held Held) error {
 		if used {
 			return Conflict("the type can't change once a ticket has a value for this field")
 		}
+	}
+	return nil
+}
+
+// checkMaxLength is the rule for a field's own limit: only a text or long-text
+// field has one, and it is at least 1 and lower than the type's limit, so it can
+// only narrow what the type takes. Nil is no limit of its own.
+func checkMaxLength(ft FieldType, own *int) error {
+	if own == nil {
+		return nil
+	}
+	if ft != FieldTypeText && ft != FieldTypeTextarea {
+		return Invalid("only a text or long text field can have a maximum length")
+	}
+	if cap := MaxChars(ft); *own < 1 || *own >= cap {
+		return Invalid(fmt.Sprintf("the maximum length must be between 1 and %d characters, less than the %d a field of this type takes", cap-1, cap))
 	}
 	return nil
 }
@@ -412,6 +452,11 @@ func checkValue(def FieldDef, value string) (stored string, reason Reason) {
 	if tooLong(def, value) {
 		return "", ReasonTooLong
 	}
+	return checkRest(def, value)
+}
+
+// checkRest is checkValue after the length: what the type itself requires.
+func checkRest(def FieldDef, value string) (stored string, reason Reason) {
 	switch def.FieldType {
 	case FieldTypeNumber:
 		if value != "" && !IsNumber(value) {
@@ -436,7 +481,7 @@ func tooLong(def FieldDef, value string) bool {
 	}
 	// A byte count at or under the limit is under it in characters too, which
 	// spares counting the runes of every ordinary value.
-	max := MaxChars(def.FieldType)
+	max := def.EffectiveMaxLength()
 	return len(value) > max && utf8.RuneCountInString(value) > max
 }
 
@@ -458,7 +503,7 @@ func refusal(def FieldDef, value string, reason Reason) error {
 		return Invalid(fmt.Sprintf("field %q is deactivated", def.Name))
 	case ReasonTooLong:
 		// Not echoed: it can be ten thousand characters.
-		return Invalid(fmt.Sprintf("value for field %q is too long: at most %d characters", def.Name, MaxChars(def.FieldType)))
+		return Invalid(fmt.Sprintf("value for field %q is too long: at most %d characters", def.Name, def.EffectiveMaxLength()))
 	case ReasonRetiredOption:
 		return Invalid(fmt.Sprintf("value %q is a retired option for field %q", value, def.Name))
 	case ReasonNotANumber:
@@ -486,6 +531,13 @@ func (s *Service) SetValues(ctx context.Context, ticketID uuid.UUID, values map[
 	if len(values) == 0 {
 		return nil
 	}
+	// What the ticket holds, so that a value sent back unchanged is not held to
+	// a limit lowered since (see below). Read outside the lock: it only ever
+	// spares a check, and a value written in between is a different value.
+	held, err := s.heldValues(ctx, ticketID)
+	if err != nil {
+		return err
+	}
 	return s.store.SetValues(ctx, ticketID, values, func(defs map[uuid.UUID]FieldDef) (map[uuid.UUID]string, error) {
 		// Sorted so a request with two bad entries gets the same answer every
 		// time, not whichever the map happened to yield first.
@@ -496,6 +548,19 @@ func (s *Service) SetValues(ctx context.Context, ticketID uuid.UUID, values map[
 				return nil, fmt.Errorf("field not found: %w", ErrNotFound)
 			}
 			stored, reason := checkValue(def, values[id])
+			if reason == ReasonTooLong {
+				// Lowering a field's limit leaves the values that exist, and a
+				// value that has not changed is not checked again, so a save that
+				// sends it back (an API client that sends every field) is not
+				// refused over a limit it never chose. It is not rewritten either:
+				// a value over the type's own limit could not be, and nothing
+				// changed. A different value is held to the limit as usual.
+				if held[id] == values[id] {
+					if _, reason = checkRest(def, values[id]); reason == "" {
+						continue
+					}
+				}
+			}
 			if reason != "" {
 				return nil, refusal(def, values[id], reason)
 			}
@@ -503,6 +568,19 @@ func (s *Service) SetValues(ctx context.Context, ticketID uuid.UUID, values map[
 		}
 		return write, nil
 	})
+}
+
+// heldValues is the values the ticket holds, by field.
+func (s *Service) heldValues(ctx context.Context, ticketID uuid.UUID) (map[uuid.UUID]string, error) {
+	held, err := s.store.ListValuesForTicket(ctx, ticketID)
+	if err != nil {
+		return nil, fmt.Errorf("reading the values the ticket holds: %w", err)
+	}
+	out := make(map[uuid.UUID]string, len(held))
+	for _, v := range held {
+		out[v.FieldDefID] = v.Value
+	}
+	return out, nil
 }
 
 func sortedIDs[V any](m map[uuid.UUID]V) []uuid.UUID {

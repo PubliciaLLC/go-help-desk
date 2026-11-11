@@ -27,3 +27,12 @@ ALTER TABLE custom_field_assignments ADD COLUMN visible_to_guests BOOLEAN NOT NU
 -- looks up by value now states the prefix, so the index still answers it.
 DROP INDEX idx_cfv_field_def;
 CREATE INDEX idx_cfv_field_def ON ticket_custom_field_values (field_def_id, left(value, 255));
+
+-- An administrator's own limit on a value (#627), lower than the type's.
+--
+-- The limit is the API's and the forms': NULL means the type's applies, and
+-- nothing here, in a trigger or in the store reads it to refuse a write. The
+-- database knows only the fixed caps (255 characters, 10,000 for long text), so a
+-- write that does not go through the API is held to those. Lowering the limit
+-- therefore never touches a stored value.
+ALTER TABLE custom_field_defs ADD COLUMN max_length INTEGER;

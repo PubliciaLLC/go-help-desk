@@ -106,8 +106,8 @@ func TestPutCustomFields_ValueLimits(t *testing.T) {
 }
 
 // A value stored before the limits, over one, stays as it is and shows; a save
-// that does not send it is unaffected, and sending it again is refused.
-func TestPutCustomFields_AValueAlreadyOverTheLimitStaysUntilItIsWrittenAgain(t *testing.T) {
+// that does not send it is unaffected, and sending it back unchanged is not checked again.
+func TestPutCustomFields_AValueAlreadyOverTheLimitStaysAndIsNotRecheckedUnchanged(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	f := newLimitFixture(t, h)
@@ -123,7 +123,12 @@ func TestPutCustomFields_AValueAlreadyOverTheLimitStaysUntilItIsWrittenAgain(t *
 	require.Equal(t, old, h.storedValues(t, tk.ID.String())[f.line.ID.String()], "and the value is left as it was")
 
 	res = h.do(t, http.MethodPut, path, map[string]string{f.line.ID.String(): old})
-	require.Equal(t, http.StatusBadRequest, res.StatusCode, "writing it again is refused")
+	require.Equal(t, http.StatusNoContent, res.StatusCode, "sending it back unchanged is not checked again")
+	res.Body.Close()
+	require.Equal(t, old, h.storedValues(t, tk.ID.String())[f.line.ID.String()])
+
+	res = h.do(t, http.MethodPut, path, map[string]string{f.line.ID.String(): ascii(401)})
+	require.Equal(t, http.StatusBadRequest, res.StatusCode, "a different value is held to the limit")
 	res.Body.Close()
 }
 

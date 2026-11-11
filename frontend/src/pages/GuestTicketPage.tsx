@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { listPublicCategories } from '@/api/tickets'
 import { createGuestTicket, listGuestFields } from '@/api/guest'
 import type { GuestField } from '@/api/types'
+import { overLimit } from '@/lib/fieldLimits'
 import { extractError } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -30,7 +31,7 @@ function GuestFieldInput({
   const id = `cf-${field.id}`
   switch (field.field_type) {
     case 'textarea':
-      return <Textarea id={id} value={value} onChange={(e) => onChange(e.target.value)} rows={3} />
+      return <Textarea id={id} value={value} onChange={(e) => onChange(e.target.value)} rows={3} maxLength={field.max_length} />
     case 'number':
       return <Input id={id} type="number" value={value} onChange={(e) => onChange(e.target.value)} />
     case 'select':
@@ -43,7 +44,7 @@ function GuestFieldInput({
         </Select>
       )
     default:
-      return <Input id={id} value={value} onChange={(e) => onChange(e.target.value)} />
+      return <Input id={id} value={value} onChange={(e) => onChange(e.target.value)} maxLength={field.max_length} />
   }
 }
 
@@ -105,6 +106,10 @@ export function GuestTicketPage() {
     const customFields: Record<string, string> = {}
     for (const f of guestFields) {
       const v = fieldValues[f.id] ?? ''
+      // maxlength counts UTF-16 units and a paste can get past it, so the exact
+      // check is made here; the server holds the same limit.
+      const tooLong = overLimit(f.name, v, f.max_length)
+      if (tooLong) { setError(tooLong); return }
       if (v.trim()) customFields[f.id] = v
       else if (f.required) { setError(`${f.name} is required`); return }
     }

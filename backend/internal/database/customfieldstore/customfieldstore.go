@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -83,6 +84,7 @@ func (s *Store) CreateFieldDef(ctx context.Context, def customfield.FieldDef, en
 			RetiredOptions: optionsToNullRaw(def.RetiredOptions),
 			SortOrder:      int32(def.SortOrder),
 			Active:         def.Active,
+			MaxLength:      maxLengthToNull(def.MaxLength),
 		})
 		if err != nil {
 			return mapWriteError("creating field def", err, nameTaken, "")
@@ -105,7 +107,7 @@ func (s *Store) ListFieldDefs(ctx context.Context) ([]customfield.FieldDef, erro
 	for i, r := range rows {
 		out[i] = defFromRow(dbgen.CustomFieldDef{
 			ID: r.ID, Name: r.Name, FieldType: r.FieldType, Options: r.Options, SortOrder: r.SortOrder,
-			Active: r.Active, CreatedAt: r.CreatedAt, RetiredOptions: r.RetiredOptions,
+			Active: r.Active, CreatedAt: r.CreatedAt, RetiredOptions: r.RetiredOptions, MaxLength: r.MaxLength,
 		})
 		places := int(r.PlaceCount)
 		out[i].PlaceCount = &places
@@ -150,6 +152,7 @@ func (s *Store) UpdateFieldDef(ctx context.Context, id uuid.UUID, decide func(cu
 			RetiredOptions: optionsToNullRaw(next.RetiredOptions),
 			SortOrder:      int32(next.SortOrder),
 			Active:         next.Active,
+			MaxLength:      maxLengthToNull(next.MaxLength),
 		})
 		if err := mapWriteError("updating field def", err, nameTaken, ""); err != nil {
 			return err
@@ -352,6 +355,7 @@ func (s *Store) ListAssignments(ctx context.Context, scopeType customfield.Scope
 			RetiredOptions: optionsFromNullRaw(r.FieldRetiredOptions),
 			SortOrder:      int(r.FieldSortOrder),
 			Active:         r.FieldActive,
+			MaxLength:      maxLengthFromNull(r.FieldMaxLength),
 		}
 		out[i] = customfield.Assignment{
 			ID:              r.ID,
@@ -476,7 +480,17 @@ func assignmentInfo(ctx context.Context, q *dbgen.Queries, a customfield.Assignm
 // ── Values ────────────────────────────────────────────────────────────────────
 
 func (s *Store) UpsertValue(ctx context.Context, ticketID, fieldDefID uuid.UUID, value string) error {
-	err := s.q.UpsertCustomFieldValue(ctx, dbgen.UpsertCustomFieldValueParams{
+	def, err := s.q.GetCustomFieldDef(ctx, fieldDefID)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return customfield.InvalidReference("the ticket or the field does not exist")
+	case err != nil:
+		return fmt.Errorf("reading field def %s: %w", fieldDefID, err)
+	}
+	if err := checkTypeCap(customfield.FieldType(def.FieldType), value); err != nil {
+		return err
+	}
+	err = s.q.UpsertCustomFieldValue(ctx, dbgen.UpsertCustomFieldValueParams{
 		TicketID:   ticketID,
 		FieldDefID: fieldDefID,
 		Value:      value,
@@ -505,6 +519,7 @@ func (s *Store) ListValuesForTicket(ctx context.Context, ticketID uuid.UUID) ([]
 			FieldType:      customfield.FieldType(r.FieldType),
 			Options:        optionsFromNullRaw(r.FieldOptions),
 			RetiredOptions: optionsFromNullRaw(r.FieldRetiredOptions),
+			MaxLength:      maxLengthFromNull(r.FieldMaxLength),
 			Value:          r.Value,
 			UpdatedAt:      r.UpdatedAt,
 		}
@@ -536,6 +551,14 @@ func (s *Store) setValues(ctx context.Context, q *dbgen.Queries, ticketID uuid.U
 	write, err := decide(defs)
 	if err != nil {
 		return err
+	}
+	// Whatever decide let through, the store takes no more than the type does.
+	for _, id := range sortedIDs(write) {
+		if def, ok := defs[id]; ok {
+			if err := checkTypeCap(def.FieldType, write[id]); err != nil {
+				return err
+			}
+		}
 	}
 
 	// In id order: two batches that name the same fields then take the rows of
@@ -602,7 +625,38 @@ func defFromRow(r dbgen.CustomFieldDef) customfield.FieldDef {
 		SortOrder:      int(r.SortOrder),
 		Active:         r.Active,
 		CreatedAt:      r.CreatedAt,
+		MaxLength:      maxLengthFromNull(r.MaxLength),
 	}
+}
+
+// The administrator's own limit on a value is stored and returned here and read
+// by nothing in this package: the API and the forms enforce it, and the store
+// knows only the type's (checkTypeCap). A write that does not go through the API
+// is held to that, so lowering a limit never touches a stored value.
+func maxLengthToNull(n *int) sql.NullInt32 {
+	if n == nil {
+		return sql.NullInt32{}
+	}
+	return sql.NullInt32{Int32: int32(*n), Valid: true}
+}
+
+func maxLengthFromNull(n sql.NullInt32) *int {
+	if !n.Valid {
+		return nil
+	}
+	v := int(n.Int32)
+	return &v
+}
+
+// checkTypeCap refuses a value over the longest its field's type takes (255
+// characters, 10,000 for long text), whoever is writing: the API's own checks
+// run before this, in the domain, and this is what holds a write that skipped
+// them, an import or a direct call. It never looks at the field's own limit.
+func checkTypeCap(ft customfield.FieldType, value string) error {
+	if limit := customfield.MaxChars(ft); utf8.RuneCountInString(value) > limit {
+		return customfield.Invalid(fmt.Sprintf("a value is at most %d characters for this type of field", limit))
+	}
+	return nil
 }
 
 func assignmentFromRow(r dbgen.CustomFieldAssignment) customfield.Assignment {

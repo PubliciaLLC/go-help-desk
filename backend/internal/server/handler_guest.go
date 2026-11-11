@@ -206,6 +206,9 @@ type guestField struct {
 	FieldType customfield.FieldType `json:"field_type"`
 	Options   []string              `json:"options,omitempty"`
 	Required  bool                  `json:"required"`
+	// The longest value the form may send, in characters: what the API will
+	// accept, so the form can set maxlength (the field's own limit, else the type's).
+	MaxLength int `json:"max_length"`
 }
 
 // GET /api/v1/guest/fields?category_id=
@@ -253,7 +256,7 @@ func (s *Server) handleGuestFields(w http.ResponseWriter, r *http.Request) {
 	for _, a := range offered {
 		out = append(out, guestField{
 			ID: a.FieldDefID, Name: a.FieldDef.Name, FieldType: a.FieldDef.FieldType,
-			Options: a.FieldDef.Options, Required: a.RequiredOnNew,
+			Options: a.FieldDef.Options, Required: a.RequiredOnNew, MaxLength: a.FieldDef.EffectiveMaxLength(),
 		})
 	}
 	JSON(w, http.StatusOK, out)

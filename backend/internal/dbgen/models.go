@@ -100,6 +100,7 @@ type CustomFieldDef struct {
 	Active         bool                  `json:"active"`
 	CreatedAt      time.Time             `json:"created_at"`
 	RetiredOptions pqtype.NullRawMessage `json:"retired_options"`
+	MaxLength      sql.NullInt32         `json:"max_length"`
 }
 
 type EmailTemplateOverride struct {

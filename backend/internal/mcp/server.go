@@ -1028,6 +1028,8 @@ type ticketField struct {
 	FieldType customfield.FieldType `json:"field_type"`
 	Options   []string              `json:"options,omitempty"`
 	Required  bool                  `json:"required"`
+	// The longest value create_ticket accepts for it, in characters.
+	MaxLength int                   `json:"max_length"`
 	Level     customfield.ScopeType `json:"level"`
 }
 
@@ -1078,7 +1080,7 @@ func (s *Server) handleListTicketFields(ctx context.Context, req mcpgo.CallToolR
 		}
 		out = append(out, ticketField{
 			ID: a.FieldDefID, Name: a.FieldDef.Name, FieldType: a.FieldDef.FieldType,
-			Options: a.FieldDef.Options, Required: a.RequiredOnNew, Level: a.ScopeType,
+			Options: a.FieldDef.Options, Required: a.RequiredOnNew, MaxLength: a.FieldDef.EffectiveMaxLength(), Level: a.ScopeType,
 		})
 	}
 	return jsonResult(out)

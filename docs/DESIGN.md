@@ -2906,7 +2906,7 @@ Exposes help desk operations as an MCP server for AI tool integration, over two 
 | `list_attachments` | any signed-in user | `ticket_id` is a UUID or tracking number; a ticket the caller may not see answers the same "not found" as one that does not exist. Metadata for each file: `id`, `filename`, `mime_type`, `size_bytes`, `created_at`, `detected_mime`, `sha256`, `virus_name`, `mismatch` and `quarantined` (`virus_name` is set). `mismatch` is `null` for a file that predates the inspection, which is not the same as `false`. **No file content** (attachments are download-only) and **no reputation lookup**: that spends the operator's provider allowance, so it stays in the web interface. |
 | `list_categories` | any signed-in user | The Category/Type/Item tree, nested, for filling in CTI. Active entries only; `include_inactive: true` adds retired ones, for staff and administrators only, as on the REST catalogue; for anyone else the flag is ignored and they get active entries (no error). |
 | `list_statuses` | any signed-in user | The statuses this instance defines. |
-| `list_ticket_fields` | any signed-in user | `category_id` required; `type_id` and `item_id` optional. The custom fields the new-ticket form would show there (#627): shown on the form and active, at their most specific attachment, in the form's order. Each is `id`, `name`, `field_type`, `options` (select, in use only), `required` and `level`. These are the ids and options `create_ticket`'s `custom_fields` takes. A field hidden from the form, deactivated, or attached at a level not asked for is not listed. |
+| `list_ticket_fields` | any signed-in user | `category_id` required; `type_id` and `item_id` optional. The custom fields the new-ticket form would show there (#627): shown on the form and active, at their most specific attachment, in the form's order. Each is `id`, `name`, `field_type`, `options` (select, in use only), `required`, `max_length` (the longest value, in characters) and `level`. These are the ids and options `create_ticket`'s `custom_fields` takes. A field hidden from the form, deactivated, or attached at a level not asked for is not listed. |
 | `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` or `reporter_email` (with `guest_name`, always required with the address) names the subject of the ticket; both are absent by default and the caller is the subject. `description` is Markdown unless `format: "plain"` is passed (#443); an invalid `format` is a tool error. The ticket is recorded as `mcp` (#130), including one filed for someone else; a `source_channel` argument is a tool error and nothing is written. `custom_fields` (an object of field id to string, #627) is held to the REST rules from the same code: a field the classification requires must have a usable value or the call is a tool error and nothing is created (#626); any other value that cannot be written is dropped and returned under `warnings`, as on REST. A value that is not a string, or a `custom_fields` that is not an object, is a tool error. |
 | `add_reply` | staff, admin | A public reply emails the requester exactly as the REST reply does (#442): the guest's address (with a guest link) or the reporting account's, through one shared rule, `ticket.Service.ReplyRecipient`. No mail is sent when the requester has no address on record or the account is gone, or when the requester is a staff member or administrator writing the reply on a ticket they filed (they are not mailed a copy of their own reply, over REST or MCP; an ordinary requester replying on their own ticket still is); the reply is still saved. `internal: true` posts a staff-only note and never notifies the requester. There is no `notify_customer` option over MCP: a public reply always notifies. `body` is Markdown unless `format: "plain"` is passed (#443). |
 | `assign_ticket` | staff, admin | To a user (`assignee_user_id`) or a group (`assignee_group_id`). To take the ticket off whoever has it, pass `clear_assignee: true` (the audit entry is `unassigned`); it cannot be combined with an assignee id, and omitting everything is refused rather than read as unassigning, because that silently took tickets off the people working them. |
@@ -5131,13 +5131,43 @@ anything is created: `PUT /tickets/{id}/custom-fields` (all or none),
 `POST /tickets` for every caller (for any field, required or not), `POST
 /guest/tickets` and MCP `create_ticket`. The message names the field and the
 limit and never repeats the value. A value stored before the limits and over
-one is left as it is and shown as it is. An edit that does not send it, which
-is every save the ticket page makes for another field, is unaffected; sending it
-again is refused like any over-long value. The index under the values holds the
-first 255 characters of each (migration 000065), because Postgres refuses an
-index row over about 2,704 bytes and a long value could not otherwise be
-stored; the only lookups by value are of a select field's values, which never
-exceed 255 characters.
+one is left as it is and shown as it is. A value that does not change is not
+checked against a limit again: an edit that leaves it out (every save the ticket
+page makes for another field) is unaffected, and one that sends it back
+unchanged (an API client that sends every field) is accepted, and the stored
+value is not rewritten. A different value is held to the limit as usual. The
+index under the values holds the first 255 characters of each (migration 000065),
+because Postgres refuses an index row over about 2,704 bytes and a long value
+could not otherwise be stored; the only lookups by value are of a select
+field's values, which never exceed 255 characters.
+
+**A field's own maximum length** (owner, 2026-11-11: "fixed caps but admin can
+lower it when they're defining the field"). A `text` or `textarea` field can carry
+`max_length` (`custom_field_defs.max_length`, nullable), set when the field is
+defined or edited on **Admin → Custom Fields** (a **Maximum length** box, with the
+type's cap in the hint) or with `max_length` on `POST /admin/custom-fields` and
+`PATCH /admin/custom-fields/{id}` (`null` removes it). It can only narrow the
+type: a whole number from 1 to one below the type's cap (254, or 9,999 for a
+text area), else `400`; a `number` or `select` field has none, so changing a
+field's type to one of those needs it cleared. The limit that applies is
+`min(max_length, the type's cap)`, `FieldDef.EffectiveMaxLength`, which every
+route that returns a definition or a value's field sends as
+`effective_max_length`, `GET /guest/fields` and MCP `list_ticket_fields` send as
+`max_length`, and the forms (new ticket, ticket page, guest form) set as
+`maxlength` and check inline before submitting. Changing it is audited
+(`custom_field_max_length_changed`, the limit that applied before and after, so
+clearing one reads as the type's cap coming back).
+
+**Where each limit lives** (owner, 2026-11-11: "when we're writing it to the
+database, it's always at the fixed cap. The length limit is only enforced in the
+frontend, in the API."). The database and the store know only the fixed type caps
+(255; 10,000 for long text): `customfieldstore` refuses a value over its type's
+cap whatever `decide` allowed, and reads a field's own `max_length` for nothing
+but returning it. The field's own limit is enforced in the API (`checkValue`, at
+every door) and the forms. Two consequences. **Lowering a field's limit never
+touches stored data**, and a value over a lowered limit stays and shows. **A write
+that bypasses the API** (an import, a migration, a direct store call) **is held
+only to the fixed cap**, so it can store a value the API would refuse.
 
 Guests are offered the fields an administrator chose for them, through their own endpoints, and see no custom fields on a ticket after (see *Guests*). The public form offers exactly the fields `GET /guest/fields` returns for the category, and holds the visitor to the required ones; the server judges what is sent. The authenticated field endpoints do not filter by role: the fields a ticket has are resolved from its own category, type and item, and `PUT /tickets/{id}/custom-fields` accepts any of them from any role that may write to the ticket. What a reporting user is offered follows from what they can pick (category and type, never an item), so in practice they see category and type fields, while staff and admin, who can pick all three, see all levels.
 
