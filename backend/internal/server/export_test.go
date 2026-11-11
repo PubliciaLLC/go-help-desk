@@ -42,6 +42,20 @@ func (s *Server) PasskeyStartHandlersForTest() map[string]http.HandlerFunc {
 	}
 }
 
+// failingUserBatchLookup makes the many-ids lookup fail and leaves every other
+// call to the real store, so a handler's other reads still work.
+type failingUserBatchLookup struct{ user.Store }
+
+func (failingUserBatchLookup) GetByIDs(context.Context, []uuid.UUID) ([]user.User, error) {
+	return nil, errors.New("injected batch user lookup failure")
+}
+
+// FailUserBatchLookupForTest makes the one-query lookup of many accounts fail as
+// a database outage would, in front of the store the harness built.
+func (s *Server) FailUserBatchLookupForTest(real user.Store) {
+	s.users = user.NewService(failingUserBatchLookup{real})
+}
+
 // FailUserLookupForTest makes user lookups fail as a database outage would.
 func (s *Server) FailUserLookupForTest() { s.users = user.NewService(failingUserLookup{}) }
 
@@ -151,6 +165,14 @@ func (s *Server) SetAdminServiceForTest(a *admin.Service) { s.adminSvc = a }
 
 // ReloadSAMLForTest runs the reload startup and the settings PATCH use.
 func (s *Server) ReloadSAMLForTest(ctx context.Context) error { return s.reloadSAML(ctx) }
+
+// SaveAuditMaskForTest is the mask setting's save and audit entry, which the
+// handler runs on the request's context, so a test can hand it one that is
+// already cancelled: the router would never let such a request reach the
+// handler to begin with.
+func (s *Server) SaveAuditMaskForTest(ctx context.Context, actor uuid.UUID, raw []byte, before string) error {
+	return s.saveAuditMask(ctx, actor, raw, before)
+}
 
 // RefuseSuspectedCloneForTest runs the clone refusal on a request whose
 // context a test has already cancelled: the refusal sits after the ceremony,
