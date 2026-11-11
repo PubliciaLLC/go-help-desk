@@ -63,6 +63,48 @@ func TestStatusHistory_RequesterNameIsMaskedLikeTheActivityFeed(t *testing.T) {
 	}
 }
 
+// The mask fails closed: a name is shown only for an account positively known
+// to be staff or an administrator. A requester whose account has since been
+// deleted is not found by the role lookup, and their name is still on the
+// timeline (it comes from the row, not from the lookup), so "not found" must
+// mean "mask", never "show".
+func TestStatusHistory_DeletedRequesterIsStillMasked(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	id := createTicketVia(t, h, h.doAsUser)
+	require.NoError(t, h.userStore.SoftDelete(ctx, h.userID))
+
+	var seen bool
+	for _, r := range statusHistoryAsAdmin(t, h, id) {
+		if r.ChangedByUserID == nil || *r.ChangedByUserID != h.userID.String() {
+			continue
+		}
+		seen = true
+		require.NotContains(t, r.ChangedByName, "Reporting User", "the deleted requester's name must not be sent")
+		require.Equal(t, "Requester", r.ChangedByName)
+		require.True(t, r.ChangedByMasked)
+	}
+	require.True(t, seen, "the deleted requester's row is on the timeline")
+}
+
+// The same for a deleted account in the audit views: the name is never sent for
+// an account the lookup cannot find (the actor is left unnamed, not named).
+func TestAudit_DeletedRequesterIsNeverNamed(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	id := createTicketVia(t, h, h.doAsUser)
+	require.NoError(t, h.userStore.SoftDelete(ctx, h.userID))
+
+	for _, view := range []string{"admin", "ticket"} {
+		t.Run(view, func(t *testing.T) {
+			e := maskEntryFor(t, maskEntriesFor(t, h, view, id), "created")
+			require.NotContains(t, e.ActorName, "Reporting User")
+		})
+	}
+}
+
 // Staff are named, whatever the setting.
 func TestStatusHistory_StaffAreStillNamed(t *testing.T) {
 	h, cleanup := newHarness(t)

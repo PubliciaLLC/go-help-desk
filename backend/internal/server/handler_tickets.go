@@ -1270,26 +1270,24 @@ func (s *Server) maskStatusHistory(ctx context.Context, history []ticket.StatusH
 	if len(ids) == 0 {
 		return out
 	}
+	// Fails closed: a name stays only for an account positively found and known
+	// to be staff or an administrator. The name on the row comes from a join, not
+	// from this lookup, so an account the lookup does not return (deleted since,
+	// or the lookup failed) still has its name in the row, and must be masked, not
+	// shown. A deleted staff member is masked too: the label is wrong for them,
+	// and the id stays, which is the price of not trusting a gap.
+	named := map[uuid.UUID]bool{}
 	users, err := s.users.GetByIDs(ctx, ids)
 	if err != nil {
-		// Withholding is the safe answer when the roles cannot be read: every
-		// name goes, and the ids are still there.
 		slog.ErrorContext(ctx, "resolving status history roles failed", "error", err)
-		for i := range out {
-			if out[i].ChangedByUserID != nil {
-				out[i].ChangedByName, out[i].ChangedByMasked = "Requester", true
-			}
-		}
-		return out
 	}
-	requesters := map[uuid.UUID]bool{}
 	for _, u := range users {
-		if auditActorName(u, true).masked {
-			requesters[u.ID] = true
+		if !auditActorName(u, true).masked {
+			named[u.ID] = true
 		}
 	}
 	for i := range out {
-		if out[i].ChangedByUserID != nil && requesters[*out[i].ChangedByUserID] {
+		if out[i].ChangedByUserID != nil && !named[*out[i].ChangedByUserID] {
 			out[i].ChangedByName, out[i].ChangedByMasked = "Requester", true
 		}
 	}
