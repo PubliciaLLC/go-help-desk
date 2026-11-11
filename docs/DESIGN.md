@@ -275,17 +275,20 @@ entry, and the request announces one event (Ticket Events: One Change, One
 Event). The handler still decides every refusal it can before the transaction
 starts: an invalid priority value, a priority or assignment or reclassification
 from a role that may not make it, an invalid classification (`ValidateCTI`), a
-priority on a ticket that would end up Resolved or Closed, an assignee that
+priority or a classification change on a ticket that would end up Resolved or
+Closed (`ValidatePriorityChange`, `ValidateReclassify`), an assignee that
 cannot be given a ticket (unknown, deleted, disabled or a reporting user), a
 group that does not exist. The handler makes no status check. `Update` itself
 checks that the status exists and that the role may move to it (`statusFor`)
 before it opens the transaction. Inside the transaction the steps check, on the
 locked row, what each can: the assignment re-checks the assignee and group; the
-priority step re-checks the role and the closed state; the status step checks
-the reopen policy and an inactive status, for the first time and only there
-(`updateStatusInTx`). The
-classification step takes the row lock and does not check again: `ValidateCTI`
-before the transaction is its only check. The assignment and reclassification
+priority step re-checks the role and the closed state; the classification step
+re-checks the closed state (a Resolved or Closed ticket refuses it, `ErrClosed`;
+the status step runs first, so a request that reopens the ticket and
+reclassifies it passes) but not the classification itself, which `ValidateCTI`
+before the transaction is the only check of; the status step checks the reopen
+policy and an inactive status, for the first time and only there
+(`updateStatusInTx`). The assignment and reclassification
 roles are not checked by the service: authorisation belongs to the caller, so
 the handler does it first, and a caller other than this handler (MCP, the
 scheduler) must do its own. A concurrent change between the early check and the

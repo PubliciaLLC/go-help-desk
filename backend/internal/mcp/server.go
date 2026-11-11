@@ -237,7 +237,8 @@ type Server struct {
 
 	// router decides who a new ticket is routed to, so create_ticket and
 	// create_follow_up route as every other door does. Nil routes nothing.
-	// Supplied by WithRouter; cmd/server/main.go must call it.
+	// A required argument of New, so forgetting it is a compile error; nil
+	// (unit tests only) routes nothing.
 	router Router
 
 	// reopenWindowDays is the configured reopen window, read per call like the
@@ -255,14 +256,6 @@ const defaultReopenWindowDays = 7
 // a code path that reads it.
 func (s *Server) WithReopenWindowDays(f func(context.Context) int) *Server {
 	s.reopenWindowDays = f
-	return s
-}
-
-// WithRouter supplies the routing rule, so create_ticket and create_follow_up
-// route a new ticket as every other door does. A method for the same reason as
-// WithReopenWindowDays. Without it nothing is routed.
-func (s *Server) WithRouter(r Router) *Server {
-	s.router = r
 	return s
 }
 
@@ -321,6 +314,7 @@ func New(
 	authz Authorizer,
 	categories CategoryLister,
 	onBehalf OnBehalfResolver,
+	router Router,
 ) *Server {
 	if prefix == nil {
 		// Tests and any caller that does not care still mint well-formed
@@ -337,6 +331,7 @@ func New(
 		authz:      authz,
 		categories: categories,
 		onBehalf:   onBehalf,
+		router:     router,
 	}
 	s.registerTools()
 	return s
