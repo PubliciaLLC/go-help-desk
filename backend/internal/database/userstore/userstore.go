@@ -15,13 +15,15 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/dbretry"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/webauthn"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Store implements user.Store.
 type Store struct {
-	q *dbgen.Queries
+	q  *dbgen.Queries
+	db *sql.DB // nil: SetFirstMFA runs on q as it is; see database.InTx
 
 	// retryPause replaces the wait between guardedWrite attempts. Nil in
 	// production, which waits a jittered 10-50 ms; a test sets it to hold the
@@ -32,6 +34,11 @@ type Store struct {
 
 // New returns a Store backed by the given Queries.
 func New(q *dbgen.Queries) *Store { return &Store{q: q} }
+
+// NewWithDB is New with db for SetFirstMFA to begin its transaction on.
+// Production uses it; the integration harness uses New, and see database.InTx
+// for what that does not exercise.
+func NewWithDB(q *dbgen.Queries, db *sql.DB) *Store { return &Store{q: q, db: db} }
 
 func (s *Store) Create(ctx context.Context, u user.User) error {
 	return s.q.CreateUser(ctx, dbgen.CreateUserParams{
@@ -188,6 +195,19 @@ func (s *Store) ClearFactors(ctx context.Context, id uuid.UUID) (int, error) {
 		return 0, fmt.Errorf("%w: user %s", ErrNotFound, id)
 	}
 	return int(row.PasskeysRemoved), nil
+}
+
+// RemovePasskey removes one of the user's credentials and ends their sessions
+// (all but keepSessionID), in one statement. See the RemoveUserPasskey query.
+func (s *Store) RemovePasskey(ctx context.Context, userID, passkeyID uuid.UUID, keepSessionID string) error {
+	row, err := s.q.RemoveUserPasskey(ctx, dbgen.RemoveUserPasskeyParams{ID: passkeyID, UserID: userID, KeepSession: keepSessionID})
+	if err != nil {
+		return fmt.Errorf("removing passkey %s of user %s: %w", passkeyID, userID, err)
+	}
+	if row.PasskeysRemoved == 0 {
+		return webauthn.ErrNotFound
+	}
+	return nil
 }
 
 // ClaimMFAAttempt takes one attempt off the account's TOTP budget before the
@@ -460,12 +480,34 @@ func (s *Store) SetMFA(ctx context.Context, id uuid.UUID, secret string, enabled
 	return nil
 }
 
+// SetFirstMFA adopts the secret only if the account holds no second factor,
+// a TOTP enrolment or a passkey, once it has the user row (#617). The passkey
+// half of the question is asked here, in a statement after the lock, and the
+// TOTP half is the write's own WHERE (#338).
 func (s *Store) SetFirstMFA(ctx context.Context, id uuid.UUID, secret string) (bool, error) {
-	n, err := s.q.SetFirstUserMFA(ctx, dbgen.SetFirstUserMFAParams{ID: id, MfaSecret: secret})
+	var adopted bool
+	err := database.InTx(ctx, s.db, s.q, func(q *dbgen.Queries) error {
+		if _, err := q.LockUserForFactorWrite(ctx, id); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil // missing or deleted: nothing adopted, as the bare UPDATE found
+			}
+			return err
+		}
+		passkeys, err := q.CountWebAuthnCredentialsForUser(ctx, id)
+		if err != nil {
+			return err
+		}
+		if passkeys > 0 {
+			return nil
+		}
+		n, err := q.SetFirstUserMFA(ctx, dbgen.SetFirstUserMFAParams{ID: id, MfaSecret: secret})
+		adopted = n == 1
+		return err
+	})
 	if err != nil {
 		return false, fmt.Errorf("setting first MFA: %w", inertViolation(err))
 	}
-	return n == 1, nil
+	return adopted, nil
 }
 
 func (s *Store) SyncFederated(ctx context.Context, id uuid.UUID, email, displayName string) error {
