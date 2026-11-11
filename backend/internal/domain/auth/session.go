@@ -122,6 +122,11 @@ const (
 	// MFAEnrolWindow is longer because first-time enrolment means installing
 	// an app and scanning a code.
 	MFAEnrolWindow = 15 * time.Minute
+	// PreLoginWindow is how long a session that belongs to nobody yet (the
+	// OIDC state, a passkey challenge) lives. GET /auth/oidc/login is anonymous
+	// and writes one per hit, so it must not get the full session lifetime; it
+	// only has to outlast one trip to the identity provider.
+	PreLoginWindow = 10 * time.Minute
 )
 
 // PendingDeadline is the PendingUntil for a session created now that has

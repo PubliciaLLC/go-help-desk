@@ -112,7 +112,7 @@ func TestKeysCannotWriteUsers_EveryRouteRefusesAKey(t *testing.T) {
 			h, cleanup := newHarness(t)
 			defer cleanup()
 			g := h.groupWithMemberAndScope(t)
-			client := h.newServiceClient(t, "writer", allScopes()...)
+			client := h.newOverScopedServiceClient(t, "writer", allScopes()...)
 			before := h.snapshot(t, g)
 
 			// An administrator's API key, holding every scope.

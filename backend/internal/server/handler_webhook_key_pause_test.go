@@ -173,7 +173,7 @@ func TestWebhookKeyPause_AKeyCannotReapprove(t *testing.T) {
 	// A different live key tries; the paused hook's own key is gone.
 	require.NoError(t, h.authStore.Delete(context.Background(), keyID))
 
-	client := h.newServiceClient(t, "approver", allScopes()...)
+	client := h.newOverScopedServiceClient(t, "approver", allScopes()...)
 	for name, res := range map[string]*http.Response{
 		"an administrator's API key": h.doAsAdmin(t, http.MethodPost, hooksPath+"/"+id.String()+"/reapprove", nil),
 		"an OAuth client":            h.doBearer(t, client.Token, http.MethodPost, hooksPath+"/"+id.String()+"/reapprove", nil),

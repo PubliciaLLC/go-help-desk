@@ -448,6 +448,10 @@ type Querier interface {
 	GetLatestSupersededSLARecord(ctx context.Context, ticketID uuid.UUID) (SlaRecord, error)
 	GetMFALock(ctx context.Context, id uuid.UUID) (GetMFALockRow, error)
 	GetOAuthClientByClientID(ctx context.Context, clientID string) (OauthClient, error)
+	// The client as it is while its delete is written, for the audit entry that
+	// says what was removed. FOR UPDATE so a concurrent delete waits, and the entry
+	// cannot describe a client the other delete already took.
+	GetOAuthClientForUpdate(ctx context.Context, id uuid.UUID) (OauthClient, error)
 	// The client a service user belongs to, for the message that says to delete
 	// the client instead.
 	GetOAuthClientNameByUser(ctx context.Context, userID uuid.UUID) (string, error)
@@ -570,6 +574,9 @@ type Querier interface {
 	// the lookup sign-in depends on. The unique index on credential_id serves it.
 	GetWebAuthnCredentialByCredentialID(ctx context.Context, credentialID []byte) (WebauthnCredential, error)
 	GetWebhookConfig(ctx context.Context, id uuid.UUID) (WebhookConfig, error)
+	// The hook as it is while its change is written, for the audit entry's
+	// "before". FOR UPDATE so two edits cannot both claim the same before.
+	GetWebhookConfigForUpdate(ctx context.Context, id uuid.UUID) (WebhookConfig, error)
 	GetWebhookDeliveryEvent(ctx context.Context, arg GetWebhookDeliveryEventParams) (json.RawMessage, error)
 	InsertInstanceSecretIfAbsent(ctx context.Context, arg InsertInstanceSecretIfAbsentParams) error
 	// A record started by a re-match: its own id, an explicit clock start (NULL

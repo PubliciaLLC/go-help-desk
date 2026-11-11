@@ -229,7 +229,7 @@ func run() error {
 	aStore := adminstore.New(q)
 	auStore := auditstore.New(q)
 	slStore := slastore.New(q)
-	authStore := authstore.New(q)
+	authStore := authstore.NewWithDB(q, sqlDB)
 	cfStore := customfieldstore.New(q, sqlDB)
 	regStore := registrationstore.New(q)
 	crStore := cannedresponsestore.New(q)

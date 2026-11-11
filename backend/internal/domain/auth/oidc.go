@@ -36,6 +36,17 @@ type OIDCConfig struct {
 type OIDCProvider struct {
 	Config   *oauth2.Config
 	Verifier *oidc.IDTokenVerifier
+
+	// fetchTimeout bounds the token exchange; zero means oidcFetchTimeout.
+	// A field so a test can shorten it, nothing else sets it.
+	fetchTimeout time.Duration
+}
+
+func (p *OIDCProvider) exchangeTimeout() time.Duration {
+	if p.fetchTimeout > 0 {
+		return p.fetchTimeout
+	}
+	return oidcFetchTimeout
 }
 
 // OIDCClaims contains the standard identity claims returned
@@ -93,7 +104,9 @@ func (c OIDCClaims) AssertedMFA() bool {
 	return false
 }
 
-// oidcFetchTimeout bounds discovery, JWKS fetches and token exchange.
+// oidcFetchTimeout bounds discovery, JWKS fetches and token exchange. Discovery
+// and the key fetch get it from the client NewOIDCProvider puts on its context;
+// the exchange runs on the caller's context, so Exchange sets it itself.
 const oidcFetchTimeout = 15 * time.Second
 
 // NewOIDCProvider initializes an OIDC provider using discovery.
@@ -104,8 +117,8 @@ func NewOIDCProvider(
 
 	// go-oidc uses http.DefaultClient unless one is in the context: no timeout
 	// at all. Discovery runs synchronously at startup, so a tarpit issuer hung
-	// the boot indefinitely, and every login's token exchange inherited the
-	// same client.
+	// the boot indefinitely. This context reaches discovery and the key set
+	// only; Exchange puts the same bound on its own.
 	//
 	// Not address-guarded, for the same reason as the SAML metadata fetch: a
 	// self-hosted IdP on a private network is a normal topology and refusing it
@@ -204,6 +217,11 @@ func (p *OIDCProvider) Exchange(
 	code string,
 	verifier string,
 ) (*oauth2.Token, error) {
+
+	// The client rides on the context: oauth2 takes it from there, and with
+	// none it uses http.DefaultClient, which waits forever. Set here rather
+	// than at the call so no caller can forget it.
+	ctx = oidc.ClientContext(ctx, &http.Client{Timeout: p.exchangeTimeout()})
 
 	return p.Config.Exchange(
 		ctx,

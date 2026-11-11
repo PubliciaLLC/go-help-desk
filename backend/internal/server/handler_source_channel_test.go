@@ -64,7 +64,7 @@ func TestSourceChannel_EachEntryPointRecordsItsOwn(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	enableGuests(t, h)
-	client := h.newServiceClient(t, "intake", allScopes()...)
+	client := h.newOverScopedServiceClient(t, "intake", allScopes()...)
 
 	for _, tc := range []struct {
 		name string
@@ -230,7 +230,7 @@ func TestSourceChannel_PhoneOnlyFromStaffOnBehalfInTheWebForm(t *testing.T) {
 func TestSourceChannel_APIKeyAndOAuthClientCannotSetIt(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
-	client := h.newServiceClient(t, "intake", allScopes()...)
+	client := h.newOverScopedServiceClient(t, "intake", allScopes()...)
 
 	for _, v := range []string{"phone", "api", "web", "mcp", "guest", "email", "bogus"} {
 		for _, onBehalf := range []bool{false, true} {

@@ -112,7 +112,7 @@ func (s *Server) ProtectMCP(next http.Handler) http.Handler {
 		authmw.RequireMFA(next),
 	)
 	chain = authmw.BearerAuth(s.cfg.JWTSecret, s.oauthClientStore.GetWithUser)(chain)
-	chain = authmw.APIKeyAuth(s.apiKeyLookup)(chain)
+	chain = authmw.APIKeyAuth(s.apiKeyLookup, s.apiKeyUsedHook())(chain)
 	chain = authmw.SessionAuth(s.sessions)(chain)
 
 	// /mcp/ is mounted on the bare ServeMux, not on the chi router, so it never
@@ -149,6 +149,8 @@ type OAuthClientLookup interface {
 // AuthStoreIface is the server-facing interface for auth key management.
 type AuthStoreIface interface {
 	CreateAPIKey(ctx context.Context, k auth.APIKey) error
+	// UpdateLastUsed records a key's use; APIKeyAuth calls it, throttled.
+	UpdateLastUsed(ctx context.Context, id uuid.UUID, at time.Time) error
 	Delete(ctx context.Context, id uuid.UUID) error
 	// DeleteForUser is Delete limited to a key the user owns (#450).
 	DeleteForUser(ctx context.Context, id, userID uuid.UUID) error
@@ -158,6 +160,11 @@ type AuthStoreIface interface {
 	ListWithOwner(ctx context.Context, keyID *uuid.UUID) ([]auth.APIKeyWithOwner, error)
 	CreateOAuthClient(ctx context.Context, c auth.OAuthClient) error
 	DeleteOAuthClient(ctx context.Context, id uuid.UUID) error
+	// The *Audited writes put an audit entry in the same transaction as the
+	// change. The handlers use these; the plain ones above and below are for
+	// fixtures and for paths with nothing to audit.
+	CreateOAuthClientAudited(ctx context.Context, c auth.OAuthClient, entry audit.Entry) error
+	DeleteOAuthClientAudited(ctx context.Context, id uuid.UUID, entry func(before auth.OAuthClient) audit.Entry) error
 	ListOAuthClients(ctx context.Context) ([]auth.OAuthClient, error)
 	// OAuthClientNameForUser is the client a service user belongs to.
 	OAuthClientNameForUser(ctx context.Context, userID uuid.UUID) (string, error)
@@ -171,6 +178,10 @@ type AuthStoreIface interface {
 	GetWebhook(ctx context.Context, id uuid.UUID) (authstore.WebhookConfig, error)
 	UpdateWebhook(ctx context.Context, wh authstore.WebhookConfig) error
 	DeleteWebhook(ctx context.Context, id uuid.UUID) error
+	CreateWebhookAudited(ctx context.Context, wh authstore.WebhookConfig, entry audit.Entry) error
+	UpdateWebhookAudited(ctx context.Context, wh authstore.WebhookConfig, entry func(before authstore.WebhookConfig) *audit.Entry) error
+	DeleteWebhookAudited(ctx context.Context, id uuid.UUID, entry func(before authstore.WebhookConfig) audit.Entry) error
+	ReapproveWebhookAudited(ctx context.Context, id uuid.UUID, entry func(before authstore.WebhookConfig) audit.Entry) error
 	// ReapproveWebhook clears the hook's link to the API key that made it.
 	ReapproveWebhook(ctx context.Context, id uuid.UUID) error
 	ListEnabledWebhooks(ctx context.Context) ([]authstore.WebhookConfig, error)
@@ -592,7 +603,7 @@ func (s *Server) buildRouter() *chi.Mux {
 
 	// Auth middleware chain: each layer runs only when no prior actor is set.
 	r.Use(authmw.SessionAuth(s.sessions))
-	r.Use(authmw.APIKeyAuth(s.apiKeyLookup))
+	r.Use(authmw.APIKeyAuth(s.apiKeyLookup, s.apiKeyUsedHook()))
 	r.Use(authmw.BearerAuth(s.cfg.JWTSecret, s.oauthClientStore.GetWithUser))
 
 	// Health check — no auth required.
@@ -970,6 +981,15 @@ func (s *Server) SetLoginThrottleDelayForTest(d time.Duration) {
 	s.loginThrottleDelay = d
 }
 
+// apiKeyUsedHook is APIKeyAuth's last_used_at hook, or nil (no recording) for a
+// Server built without a store, as the route-only one the spec tests walk is.
+func (s *Server) apiKeyUsedHook() authmw.APIKeyMarkUsedFunc {
+	if s.authStore == nil {
+		return nil
+	}
+	return s.authStore.UpdateLastUsed
+}
+
 // requireSignedInOrGuestsEnabled admits any authenticated caller, and an
 // anonymous one only when this instance takes guest submissions.
 //
@@ -979,8 +999,16 @@ func (s *Server) SetLoginThrottleDelayForTest(d time.Duration) {
 // operator saying they do not want anonymous people filing tickets here, and
 // therefore do not want the anonymous internet reading their category tree.
 func (s *Server) requireSignedInOrGuestsEnabled(next http.Handler) http.Handler {
+	signedIn := authmw.RequireMFA(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if authmw.GetActor(r) != nil || s.adminSvc.GuestSubmissionEnabled(r.Context()) {
+		// A session is not "signed in" until it has answered the second factor
+		// and owes no password change; a half-signed-in one is refused the way
+		// every other route refuses it, not waved through as an actor.
+		if authmw.GetActor(r) != nil {
+			signedIn.ServeHTTP(w, r)
+			return
+		}
+		if s.adminSvc.GuestSubmissionEnabled(r.Context()) {
 			next.ServeHTTP(w, r)
 			return
 		}

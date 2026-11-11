@@ -372,6 +372,79 @@ describe('custom field entries', () => {
   })
 })
 
+describe('OAuth client and webhook entries', () => {
+  it('offers oauth_client and webhook in the entity-type filter', async () => {
+    mockList({ entries: [], total: 0, has_more: false })
+    renderWithQuery(<AdminAuditPage />)
+    const select = await screen.findByLabelText(/entity type/i)
+    expect(within(select).getByRole('option', { name: 'oauth_client' })).toBeTruthy()
+    expect(within(select).getByRole('option', { name: 'webhook' })).toBeTruthy()
+  })
+
+  // A create has no "before" and a delete has no "after", and AuditDiff shows
+  // neither, so without a line of its own the row would not say which client
+  // or hook it is about.
+  it('names the client and its scopes on a create entry', async () => {
+    mockList({
+      entries: [entry({ entity_type: 'oauth_client', action: 'oauth_client_created', before: null,
+        after: { client_name: 'Nightly sync', scopes: 'tickets:read,tickets:write', service_user_id: 'u-9' } })],
+      total: 1, has_more: false,
+    })
+    renderWithQuery(<AdminAuditPage />)
+    const row = (await screen.findByText('Oauth client created')).closest('tr')!
+    expect(row.textContent).toContain('Nightly sync · tickets:read,tickets:write')
+  })
+
+  it('names the client on a delete entry, from the before side', async () => {
+    mockList({
+      entries: [entry({ entity_type: 'oauth_client', action: 'oauth_client_deleted',
+        before: { client_name: 'Nightly sync', scopes: 'tickets:read', service_user_id: 'u-9' }, after: null })],
+      total: 1, has_more: false,
+    })
+    renderWithQuery(<AdminAuditPage />)
+    const row = (await screen.findByText('Oauth client deleted')).closest('tr')!
+    expect(row.textContent).toContain('Nightly sync')
+  })
+
+  it('names the webhook by its host and events on a delete entry', async () => {
+    mockList({
+      entries: [entry({ entity_type: 'webhook', action: 'webhook_deleted',
+        before: { url_host: 'hooks.example.com', events: 'ticket.created', enabled: true, signed: true }, after: null })],
+      total: 1, has_more: false,
+    })
+    renderWithQuery(<AdminAuditPage />)
+    const row = (await screen.findByText('Webhook deleted')).closest('tr')!
+    expect(row.textContent).toContain('hooks.example.com · ticket.created')
+  })
+
+  it('shows a re-approval as the hook losing its link to a key', async () => {
+    mockList({
+      entries: [entry({ entity_type: 'webhook', action: 'webhook_reapproved',
+        before: { url_host: 'example.com', events: 'ticket.created', enabled: true, signed: false, key_linked: true },
+        after: { url_host: 'example.com', events: 'ticket.created', enabled: true, signed: false, key_linked: false } })],
+      total: 1, has_more: false,
+    })
+    renderWithQuery(<AdminAuditPage />)
+    const row = (await screen.findByText('Webhook reapproved')).closest('tr')!
+    expect(row.textContent).toContain('key_linked: true → false')
+    expect(row.textContent).toContain('example.com · ticket.created')
+  })
+
+  it('shows what an update changed, and not the keys it left alone', async () => {
+    mockList({
+      entries: [entry({ entity_type: 'webhook', action: 'webhook_updated',
+        before: { url_host: 'hooks.example.com', enabled: true, signed: true },
+        after: { url_host: 'hooks.example.com', enabled: false, signed: true, url_changed: true } })],
+      total: 1, has_more: false,
+    })
+    renderWithQuery(<AdminAuditPage />)
+    const row = (await screen.findByText('Webhook updated')).closest('tr')!
+    expect(row.textContent).toContain('enabled: true → false')
+    expect(row.textContent).toContain('url_changed: — → true')
+    expect(row.textContent).not.toContain('signed:')
+  })
+})
+
 describe('a failed load or refresh', () => {
   // /admin/audit answers normally until `failAudit` is set, then rejects.
   function mockFlaky() {

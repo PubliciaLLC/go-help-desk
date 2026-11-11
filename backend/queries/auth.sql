@@ -175,3 +175,14 @@ SET last_delivery_at     = sqlc.arg(at)::timestamptz,
 WHERE id = sqlc.arg(id)
   AND url = sqlc.arg(url)
   AND (last_delivery_at IS NULL OR last_delivery_at <= sqlc.arg(at)::timestamptz);
+
+-- name: GetOAuthClientForUpdate :one
+-- The client as it is while its delete is written, for the audit entry that
+-- says what was removed. FOR UPDATE so a concurrent delete waits, and the entry
+-- cannot describe a client the other delete already took.
+SELECT * FROM oauth_clients WHERE id = $1 FOR UPDATE;
+
+-- name: GetWebhookConfigForUpdate :one
+-- The hook as it is while its change is written, for the audit entry's
+-- "before". FOR UPDATE so two edits cannot both claim the same before.
+SELECT * FROM webhook_configs WHERE id = $1 FOR UPDATE;

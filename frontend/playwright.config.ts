@@ -24,11 +24,15 @@ export default defineConfig({
   testDir: './e2e',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 1 : 0,
+  // No retries, here or on CI. A retry turns a flaky test into a green run that
+  // nobody investigates; a test that fails once should fail the run. (CI used to
+  // retry once with no recorded reason.)
+  retries: 0,
   reporter: 'list',
   use: {
     baseURL: origin,
-    trace: 'on-first-retry',
+    // There is no retry to take a trace on, so keep the one from the failure itself.
+    trace: 'retain-on-failure',
   },
   projects: [
     {
