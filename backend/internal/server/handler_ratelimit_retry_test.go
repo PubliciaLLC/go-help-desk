@@ -36,7 +36,7 @@ func TestSendSteps_DoNotGoAheadWhenTheCountErrors(t *testing.T) {
 		t.Run("forgot-password mail, "+name, func(t *testing.T) {
 			h, cleanup := harnessWithEmail(t)
 			defer cleanup()
-			breakRateCounters(t, h)
+			h.failRateCounts()
 			err := h.srv.SendPasswordReset(ctx, notification.Event{
 				Type: notification.EventPasswordResetRequested, Recipient: "user@test.local"})
 			require.Error(t, err, "the error reaches the worker, which retries it")
@@ -48,7 +48,7 @@ func TestSendSteps_DoNotGoAheadWhenTheCountErrors(t *testing.T) {
 			defer cleanup()
 			tk, _ := seedGuestTicket(t, h)
 			ev := resendEvent(string(tk.TrackingNumber), "guest@test.local")
-			breakRateCounters(t, h)
+			h.failRateCounts()
 			out, ok, err := h.srv.PrepareGuestLink(ctx, ev)
 			require.Error(t, err, "the error reaches the worker, which retries it")
 			require.False(t, ok)

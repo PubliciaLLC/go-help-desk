@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ratelimitstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/ratelimit"
 	"github.com/publiciallc/go-help-desk/backend/internal/testutil"
 )
@@ -180,6 +181,57 @@ func TestSweepDoesNotDeleteAWindowReopenedDuringIt(t *testing.T) {
 	require.NoError(t, db.SQL.QueryRowContext(ctx,
 		`SELECT count(*) FROM rate_limit_counters WHERE window_end > $1`, now).Scan(&live))
 	require.Equal(t, total, live, "a live window was deleted by the sweep that raced it")
+}
+
+// The same race, made certain instead of likely. Connection A reopens an
+// expired key in a transaction and holds it open, so the row is locked and the
+// committed version is still the expired one. The sweep (connection B) picks the
+// key from that old version and its DELETE blocks on the lock. Only when A
+// commits does the DELETE go on, and it must re-test the row it now finds: a
+// reopened window no longer matches. Without the expiry test in the outer WHERE
+// the DELETE goes by key alone and removes the live window, every time.
+func TestSweepWaitsForAReopenAndThenKeepsIt(t *testing.T) {
+	db, closeDB := testutil.NewIsolatedDB(t)
+	defer closeDB()
+	ctx := context.Background()
+	now := time.Now()
+
+	_, err := db.SQL.ExecContext(ctx, `
+		INSERT INTO rate_limit_counters (key, window_start, window_end, count)
+		VALUES ('k', $1::timestamptz - interval '2 hours', $1::timestamptz - interval '1 hour', 1)`, now)
+	require.NoError(t, err)
+
+	tx, err := db.SQL.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	c, err := ratelimitstore.New(dbgen.New(tx)).Take(ctx, "k", time.Hour, now)
+	require.NoError(t, err)
+	require.Equal(t, 1, c.N, "reopened, and the row is locked until the commit")
+
+	swept := make(chan error, 1)
+	go func() {
+		_, err := ratelimitstore.New(db.Queries).DeleteExpired(ctx, now)
+		swept <- err
+	}()
+
+	// Wait until the sweep's DELETE is blocked on the lock, so the commit below
+	// is certain to come after it chose the key.
+	require.Eventually(t, func() bool {
+		var n int
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `
+			SELECT count(*) FROM pg_stat_activity
+			WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid()
+			  AND query ILIKE '%DELETE FROM rate_limit_counters%'`).Scan(&n))
+		return n > 0
+	}, 10*time.Second, 20*time.Millisecond, "the sweep never reached the row lock")
+
+	require.NoError(t, tx.Commit())
+	require.NoError(t, <-swept)
+
+	var live int
+	require.NoError(t, db.SQL.QueryRowContext(ctx,
+		`SELECT count(*) FROM rate_limit_counters WHERE key = 'k' AND window_end > $1`, now).Scan(&live))
+	require.Equal(t, 1, live, "the sweep deleted a window that was reopened while it ran")
 }
 
 func countRows(t *testing.T, db *testutil.DB) int {

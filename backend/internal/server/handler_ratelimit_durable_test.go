@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"testing"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
+	"github.com/publiciallc/go-help-desk/backend/internal/ratelimit"
 )
 
 // #621: every rate limit counts in the database, so a restart does not clear it
@@ -171,26 +173,59 @@ func TestGuestUploadLimits_EachTicketHasItsOwnWindow(t *testing.T) {
 	require.InDelta(t, 29*60, secs, 5, "B waits out B's own window")
 }
 
-// breakRateCounters makes every statement on the counter table fail, inside the
-// harness transaction, so it rolls back with the test.
-func breakRateCounters(t *testing.T, h *harness) {
-	t.Helper()
-	_, err := h.tx.Exec(`ALTER TABLE rate_limit_counters RENAME TO rate_limit_counters_gone`)
-	require.NoError(t, err)
+// rateFault is the harness's rate-limit store: the real one until a test sets
+// err, and then every call answers that error without touching the database.
+//
+// Breaking the table instead (renaming it inside the harness transaction) also
+// poisons the transaction, so the 500 a test saw came from the NEXT query and
+// not from the limiter: a handler that went ahead on a count error passed. An
+// injected error is returned by the limiter's own store call and nothing else.
+type rateFault struct {
+	ratelimit.Store
+	err error
+}
+
+func (f *rateFault) Take(ctx context.Context, key string, w time.Duration, now time.Time) (ratelimit.Count, error) {
+	if f.err != nil {
+		return ratelimit.Count{}, f.err
+	}
+	return f.Store.Take(ctx, key, w, now)
+}
+
+func (f *rateFault) Refund(ctx context.Context, key string, windowStart time.Time) error {
+	if f.err != nil {
+		return f.err
+	}
+	return f.Store.Refund(ctx, key, windowStart)
+}
+
+func (f *rateFault) Spent(ctx context.Context, key string, now time.Time) (int, error) {
+	if f.err != nil {
+		return 0, f.err
+	}
+	return f.Store.Spent(ctx, key, now)
+}
+
+func (f *rateFault) Reset(ctx context.Context, key string) error {
+	if f.err != nil {
+		return f.err
+	}
+	return f.Store.Reset(ctx, key)
+}
+
+// failRateCounts makes every rate-limit count fail from now on.
+func (h *harness) failRateCounts() {
+	h.rateFault.err = errors.New("rate limit store: injected failure")
 }
 
 // A counter that cannot be written refuses; it does not wave the request
 // through. The limits guard mail to strangers and guesses at passwords, so
-// "could not check" must not be "go ahead". The table is renamed inside the
-// harness transaction, which makes every statement on it fail and rolls back
-// with the test.
+// "could not check" must not be "go ahead".
 func TestRateLimits_FailClosedWhenTheCounterCannotBeUsed(t *testing.T) {
-	breakCounters := breakRateCounters
-
 	t.Run("reporter_email is refused", func(t *testing.T) {
 		h, cleanup := newLimitHarness(t)
 		defer cleanup()
-		breakCounters(t, h)
+		h.failRateCounts()
 		res := typedNew(t, h, "staff", 1)
 		body := readBody(t, res)
 		// A server fault, not the 429 a refused unit answers: the zero value of
@@ -205,7 +240,7 @@ func TestRateLimits_FailClosedWhenTheCounterCannotBeUsed(t *testing.T) {
 		h, cleanup := newHarnessWithRateLimit(t, 3)
 		defer cleanup()
 		require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeyGuestSubmissionEnabled, true))
-		breakCounters(t, h)
+		h.failRateCounts()
 		res := h.doUnauth(t, http.MethodPost, "/api/v1/guest/tickets", map[string]any{})
 		res.Body.Close()
 		require.Equal(t, http.StatusInternalServerError, res.StatusCode)
@@ -214,7 +249,7 @@ func TestRateLimits_FailClosedWhenTheCounterCannotBeUsed(t *testing.T) {
 	t.Run("a wrong password is not answered as a plain 401", func(t *testing.T) {
 		h, cleanup := newHarnessWithRateLimit(t, 3)
 		defer cleanup()
-		breakCounters(t, h)
+		h.failRateCounts()
 		res := h.doUnauth(t, http.MethodPost, "/api/v1/auth/local/login",
 			map[string]any{"email": "staff@test.local", "password": "wrong"})
 		res.Body.Close()

@@ -109,6 +109,7 @@ type harness struct {
 	verifyMail      *verifyMailbox      // the signup verification links sent, so a test can follow one
 	resetMail       *resetMailbox       // the password reset links sent, so a test can follow one
 	resetQueue      *lateDispatcher     // where a reset request goes; swap in the real outbox to drive it through the worker
+	rateFault       *rateFault          // set its err to make every rate-limit count fail, without touching the transaction
 }
 
 func newHarness(t *testing.T) (*harness, func()) {
@@ -383,7 +384,9 @@ func newHarnessOn(t *testing.T, openDB func(*testing.T) (*testutil.DB, func()), 
 	srvOpts = append(srvOpts, server.WithWebhookRedeliverer(webhookDisp))
 	srvOpts = append(srvOpts, server.WithEmailHealth(outboxstore.New(q)))
 	// Over the harness transaction, so counts roll back with the test.
-	srvOpts = append(srvOpts, server.WithRateLimitStore(ratelimitstore.New(q)))
+	// Through rateFault, which is transparent until a test sets its err.
+	rateFault := &rateFault{Store: ratelimitstore.New(q)}
+	srvOpts = append(srvOpts, server.WithRateLimitStore(rateFault))
 	// The template editor (#158) over the harness transaction, so a test's
 	// saves roll back with it. The dispatcher is the real one: SMTP is off
 	// unless a test sets it, and preview needs none.
@@ -446,6 +449,7 @@ func newHarnessOn(t *testing.T, openDB func(*testing.T) (*testutil.DB, func()), 
 		userID:          reportingUser.ID,
 		sessions:        sessionStore,
 		authStore:       authSt,
+		rateFault:       rateFault,
 		auditStore:      auStore,
 		attachDir:       cfg.AttachmentDir,
 	}
