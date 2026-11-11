@@ -363,3 +363,23 @@ func TestPrepare_RefusesAMaintenanceWorkMemItCannotSet(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "maintenance_work_mem")
 }
+
+// An administrator who raised maintenance_work_mem for the upgrade (the upgrade
+// notes tell them to, on a large table) must not have it lowered by the job: it
+// raises the session to 256 MB only when the server's own value is smaller.
+func TestPrepare_DoesNotLowerAnAdministratorsMaintenanceWorkMem(t *testing.T) {
+	db, closeDB := testutil.NewIsolatedDB(t)
+	defer closeDB()
+	ctx := context.Background()
+	replies(t, db.SQL, 3)
+	_, err := db.SQL.Exec(`DO $$ BEGIN EXECUTE format('ALTER DATABASE %I SET maintenance_work_mem = ''512MB''', current_database()); END $$`)
+	require.NoError(t, err)
+	db.SQL.SetMaxIdleConns(0) // so the build's connection is a new one, which sees the new default
+
+	var seen []string
+	p := newPreparer(db.SQL)
+	p.OnBuild = func(index, mwm string) { seen = append(seen, mwm) }
+	_, err = p.Prepare(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []string{"512MB", "512MB"}, seen, "the larger setting stays")
+}

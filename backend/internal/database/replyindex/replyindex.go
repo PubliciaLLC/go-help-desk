@@ -306,7 +306,7 @@ func (p *Preparer) buildIndexes(ctx context.Context) (built bool, err error) {
 // often that at 5,000,000 replies it was 14% done after 16 minutes, and with 1 GB
 // it finished in 47 (not under equal load, so the exact ratio is not claimed).
 //
-// The setting is made on one connection taken out of the pool and undone before
+// The setting is raised (never lowered) on one connection taken out of the pool and undone before
 // it goes back. If it cannot be undone the connection is discarded, so it never
 // reaches a query that did not ask for it. It is a plain session SET, not SET
 // LOCAL: CONCURRENTLY is refused inside a transaction and SET LOCAL needs one.
@@ -323,7 +323,10 @@ func (p *Preparer) buildIndex(ctx context.Context, name, create string) (err err
 		_ = conn.Close()
 	}()
 	if p.MaintenanceWorkMem != "" {
-		if _, err := conn.ExecContext(ctx, `SELECT set_config('maintenance_work_mem', $1, false)`, p.MaintenanceWorkMem); err != nil {
+		// Only ever raised: an administrator who set it higher for this build keeps
+		// theirs. set_config applies the value for the session (is_local false).
+		if _, err := conn.ExecContext(ctx, `SELECT set_config('maintenance_work_mem', $1, false)
+			WHERE pg_size_bytes($1) > pg_size_bytes(current_setting('maintenance_work_mem'))`, p.MaintenanceWorkMem); err != nil {
 			return fmt.Errorf("reply search: setting maintenance_work_mem to %q for %s: %w", p.MaintenanceWorkMem, name, err)
 		}
 	}
