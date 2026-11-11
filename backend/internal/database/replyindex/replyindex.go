@@ -24,6 +24,7 @@ package replyindex
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -70,9 +71,16 @@ type Preparer struct {
 	// finding another runner holding the lock.
 	Retry time.Duration
 
+	// MaintenanceWorkMem is the maintenance_work_mem the index builds run with, in
+	// a session of their own (see buildIndex). It is not a server setting.
+	MaintenanceWorkMem string
+
 	// OnBatch, if set, is called after each batch with the rows filled so far.
 	// For tests.
 	OnBatch func(filled int64)
+	// OnBuild, if set, is called just before each index build with the index and
+	// the maintenance_work_mem the building session reports. For tests.
+	OnBuild func(index, maintenanceWorkMem string)
 }
 
 // New returns a Preparer with the production settings: batches of 1,000 and a
@@ -80,7 +88,7 @@ type Preparer struct {
 func New(db *sql.DB, log *slog.Logger) *Preparer {
 	return &Preparer{
 		DB: db, Log: log,
-		BatchSize: 1000, Pause: 250 * time.Millisecond,
+		BatchSize: 1000, Pause: 250 * time.Millisecond, MaintenanceWorkMem: "256MB",
 		ProgressEvery: 30 * time.Second, Retry: 30 * time.Second,
 	}
 }
@@ -283,14 +291,54 @@ func (p *Preparer) buildIndexes(ctx context.Context) (built bool, err error) {
 		}
 		t := time.Now()
 		p.Log.InfoContext(ctx, "reply search: building an index without blocking writes", "index", ix.name)
-		// Autocommit: CONCURRENTLY is refused inside a transaction.
-		if _, err := p.DB.ExecContext(ctx, ix.create); err != nil {
-			return built, fmt.Errorf("reply search: building %s: %w", ix.name, err)
+		if err := p.buildIndex(ctx, ix.name, ix.create); err != nil {
+			return built, err
 		}
 		built = true
 		p.Log.InfoContext(ctx, "reply search: index built", "index", ix.name, "took", time.Since(t).Round(time.Second).String())
 	}
 	return built, nil
+}
+
+// buildIndex runs one CREATE INDEX CONCURRENTLY in a session with a larger
+// maintenance_work_mem. The GIN build keeps new entries in memory and merges
+// them into the index each time that fills; at the default of 64 MB it merges so
+// often that at 5,000,000 replies it was 14% done after 16 minutes, and with 1 GB
+// it finished in 47 (not under equal load, so the exact ratio is not claimed).
+//
+// The setting is made on one connection taken out of the pool and undone before
+// it goes back. If it cannot be undone the connection is discarded, so it never
+// reaches a query that did not ask for it. It is a plain session SET, not SET
+// LOCAL: CONCURRENTLY is refused inside a transaction and SET LOCAL needs one.
+func (p *Preparer) buildIndex(ctx context.Context, name, create string) (err error) {
+	conn, err := p.DB.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("reply search: taking a connection to build %s: %w", name, err)
+	}
+	defer func() {
+		// The caller's ctx may be the thing that ended; the reset must still run.
+		if _, rerr := conn.ExecContext(context.WithoutCancel(ctx), `RESET maintenance_work_mem`); rerr != nil {
+			_ = conn.Raw(func(any) error { return driver.ErrBadConn }) // discard it
+		}
+		_ = conn.Close()
+	}()
+	if p.MaintenanceWorkMem != "" {
+		if _, err := conn.ExecContext(ctx, `SELECT set_config('maintenance_work_mem', $1, false)`, p.MaintenanceWorkMem); err != nil {
+			return fmt.Errorf("reply search: setting maintenance_work_mem to %q for %s: %w", p.MaintenanceWorkMem, name, err)
+		}
+	}
+	if p.OnBuild != nil {
+		var got string
+		if err := conn.QueryRowContext(ctx, `SHOW maintenance_work_mem`).Scan(&got); err != nil {
+			return fmt.Errorf("reply search: reading maintenance_work_mem: %w", err)
+		}
+		p.OnBuild(name, got)
+	}
+	// Autocommit: CONCURRENTLY is refused inside a transaction.
+	if _, err := conn.ExecContext(ctx, create); err != nil {
+		return fmt.Errorf("reply search: building %s: %w", name, err)
+	}
+	return nil
 }
 
 // Run prepares reply search and returns when it is ready or ctx ends. It is

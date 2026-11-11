@@ -307,3 +307,59 @@ func TestPrepare_RechecksForRowsLeftBehind(t *testing.T) {
 	require.True(t, res.Done)
 	require.Zero(t, nullCount(t, db.SQL), "the row that was left behind was filled before the indexes were built")
 }
+
+// The GIN build is the long step, and Postgres' default maintenance_work_mem
+// (64 MB) makes it flush its in-memory list into the index far more often than
+// it needs to: at 5,000,000 replies a build with 1 GB was done in 47 minutes
+// while one with the default was 14% through after 16. The job gives its own
+// session 256 MB for the build, and only that session: a setting left on a
+// pooled connection would apply to whatever query the server ran on it next.
+func TestPrepare_BuildsWithItsOwnMaintenanceWorkMem(t *testing.T) {
+	db, closeDB := testutil.NewIsolatedDB(t)
+	defer closeDB()
+	ctx := context.Background()
+	replies(t, db.SQL, 5)
+
+	var serverDefault string
+	require.NoError(t, db.SQL.QueryRow(`SHOW maintenance_work_mem`).Scan(&serverDefault))
+	require.NotEqual(t, "256MB", serverDefault, "the check below would prove nothing")
+
+	var seen []string
+	p := newPreparer(db.SQL)
+	p.OnBuild = func(index, maintenanceWorkMem string) { seen = append(seen, index+"="+maintenanceWorkMem) }
+	_, err := p.Prepare(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"ticket_replies_created_at_idx=256MB",
+		"ticket_replies_body_tsv_idx=256MB",
+	}, seen, "each build ran in a session set to 256MB")
+
+	// Nothing leaked: every connection the pool can hand out has the default.
+	db.SQL.SetMaxOpenConns(8)
+	var conns []*sql.Conn
+	defer func() { // also when an assertion fails: closeDB waits for open connections
+		for _, c := range conns {
+			c.Close()
+		}
+	}()
+	for i := 0; i < 8; i++ {
+		c, err := db.SQL.Conn(ctx)
+		require.NoError(t, err)
+		conns = append(conns, c)
+		var got string
+		require.NoError(t, c.QueryRowContext(ctx, `SHOW maintenance_work_mem`).Scan(&got))
+		require.Equal(t, serverDefault, got, "connection %d", i)
+	}
+}
+
+// A size Postgres does not understand fails the build instead of being ignored.
+func TestPrepare_RefusesAMaintenanceWorkMemItCannotSet(t *testing.T) {
+	db, closeDB := testutil.NewIsolatedDB(t)
+	defer closeDB()
+	replies(t, db.SQL, 2)
+	p := newPreparer(db.SQL)
+	p.MaintenanceWorkMem = "a lot"
+	_, err := p.Prepare(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "maintenance_work_mem")
+}
