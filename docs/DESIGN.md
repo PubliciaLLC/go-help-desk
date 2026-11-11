@@ -122,7 +122,8 @@ Admins manage accounts from **Admin → Users**. The list is paged, 50 to a page
 
 - **Profile** — edit display name, email address, and role. Changes take effect immediately.
 - **Account info** — member since date, login type (Local / SSO (SAML) / SSO (OIDC) / Local + SSO), MFA enrollment status. The login type is read off what the account holds: a password, a SAML subject, an OIDC subject. The API reports it as `auth_type`: `local`, `saml`, `oidc`, `both` (password and SAML), or a `+`-joined combination that includes `oidc` (`local+oidc`, `saml+oidc`, `local+saml+oidc`).
-- **MFA reset** — clears every second factor the user holds (the authenticator and all registered passkeys) and ends all of their sessions, so the user re-enrols on next login. Only shown when the user holds any second factor.
+- **MFA reset** — clears every second factor the user holds (the authenticator and all registered passkeys) and ends all of their sessions, so the user re-enrols on next login. Only shown when the user holds any second factor, and not on your own account (refused with `409 own_account`; see Passkeys, Losing a key).
+- **Passkeys** — the user's registered passkeys, each with **Remove**: one key goes and the user is signed out everywhere (`GET` and `DELETE /admin/users/{id}/passkeys[/{credId}]`, session only, audited). Not offered on your own account.
 - **Enable / Disable** — disabled accounts cannot log in. Tickets and history are preserved. Re-enable at any time.
 - **Password reset** — set a new password directly (shown only for accounts with a local password). No email link required for admin-initiated resets. The account holder can also reset their own by email (Authentication → Forgot password, #451); the administrator's route is unchanged and is the way back when email is off.
 - **Groups** — view current group membership, add to groups, or remove from groups.
@@ -795,13 +796,57 @@ e.g. "Security key, added 3 March") and created/last-used timestamps.
 - `backup_eligible` / `backup_state` say whether a credential is synced: the
   only way an administrator can tell a hardware key from an iCloud passkey.
   Not captured at registration, the question is unanswerable forever.
-- **Sign count is stored and not enforced.** Most modern authenticators return
-  zero always and a "must increase" rule locks those people out. A counter that
-  was non-zero and goes backwards is a genuine clone signal with no
-  false-positive cost; it is logged and gates nothing (the shape of
-  `KnownMalicious` in `circl.go`).
+- **A sign count that does not advance is refused**
+  ([#616](https://github.com/PubliciaLLC/go-help-desk/issues/616), part b). Each
+  assertion carries the authenticator's signature counter, and a copy of a key
+  runs its own counter, so two copies in use soon assert a count at or below the
+  one on record. The rule is the library's (`go-webauthn`'s `CloneWarning`): an
+  asserted count at or below the stored one is a warning **unless both are
+  zero**. Zero forever is what most authenticators report (synced passkeys among
+  them), and refusing that would refuse honest sign-ins, so the all-zero case
+  passes. On a warning `POST /auth/local/passkey/finish` answers
+  `401 passkey_suspect`, **ends every session the account holds** (the one doing
+  the sign-in included), and writes a `passkey_clone_suspected` audit entry on
+  the account, naming the key by id and no actor (nobody has proved who is at the
+  other end). The entry is best effort and detached from the request, as the
+  other factor audits are. The stored counter is **not** written on a refusal, and
+  the write that records a good sign-in (`Touch`) only ever raises it, because it
+  runs off the response path and two sign-ins can land out of order: a late write
+  of a lower count would otherwise put the counter back below one a clone had
+  used.
+  The cost is a real person whose authenticator reports a buggy counter being
+  refused; how many such authenticators exist is not known. Refusal is per assertion,
+  not a ban: a key that later asserts a count above the stored one signs in
+  again, which is also why a clone and its original keep tripping each other. The
+  remedy is to remove the key and register a new one. The key's owner cannot do
+  that from the Account page when the key is their only way past the second step
+  (the key blocks that step, and enrolment refuses a session that has not proved
+  the factor the account already has), so who can recover depends on who is
+  locked out.
+  **Who can be locked out:** any account, of any role, while sign-in MFA is on
+  server-wide, that holds no TOTP and whose registered key (or every one of its
+  keys) is refused. The sign-in asks for the key whenever MFA is on and a passkey
+  is the account's only factor (`handler_auth.go`), whether or not the account's
+  role is one MFA is enforced for, so enforcement is not a condition. An account
+  that also has a TOTP signs in with it and is not locked out, and an account
+  with a second, unaffected key signs in with that one. **How each recovers:** a
+  staff member or requester has an administrator remove the key (user page) or
+  Reset MFA. An administrator has another administrator do the same, since
+  nobody can Reset MFA on their own account. **A sole administrator has no one to
+  ask**, so the way back is `reset-factors` on the server, below. It does not
+  touch the last-administrator guard, because the password is still a way in and
+  the factors are not what that guard watches.
+- **Counter wraparound is refused like a clone.** The counter is 32 bits. A key
+  that reaches the maximum and wraps to 0 asserts a count at or below the stored
+  one, and the stored one is not zero, so the rule above refuses it, and it keeps
+  being refused: the stored counter is never lowered, so the key would have to
+  climb past the old maximum again. It is refused until the key is removed and
+  registered again, the same remedy and the same recoveries as a suspected clone.
+  No real authenticator is expected to get there (4 billion sign-ins), so it is
+  not special-cased.
 - The ceremonies are `github.com/go-webauthn/webauthn`'s; nothing is hand-rolled.
-- A passkey's `last_used_at` is written in a goroutine, off the response path,
+- A passkey's `last_used_at` (and its counter, which only rises) is written in a
+  goroutine, off the response path,
   with a context that does not belong to the request (as webhook dispatch
   does): it answers "which key is still in use", but a sign-in must not wait on
   it or fail because of it.
@@ -861,13 +906,29 @@ owner protected the account does not outlive that protection. Enrolment confirm
 re-runs the guard rather than trusting the check made when enrolment was staged
 ([#327](https://github.com/PubliciaLLC/go-help-desk/issues/327)).
 
-**A first TOTP enrolment is a conditional write.** The guard asks "does this
-account hold no factor yet?" and the confirm then writes; two confirmations
+**A first factor is a conditional write, under a lock.** The guard asks "does
+this account hold no factor yet?" and the confirm then writes; two requests
 racing on a fresh account could both pass the question. A session that has not
-proved a factor therefore writes with `WHERE NOT mfa_enabled` and the loser is
-answered 403; a session that has proved one (a rotation) still overwrites, on
-purpose ([#338](https://github.com/PubliciaLLC/go-help-desk/issues/338)).
-Passkey registration has no such condition in its write.
+proved a factor therefore writes its first TOTP with `WHERE NOT mfa_enabled` and
+the loser is answered 403; a session that has proved one (a rotation) still
+overwrites, on purpose
+([#338](https://github.com/PubliciaLLC/go-help-desk/issues/338)). That covered
+two TOTP confirms and said nothing about a passkey, which has its own door: a
+TOTP confirm racing a passkey registration, or two registrations, could each pass
+the check and a password-only session could end up adding a factor beside the
+owner's first one
+([#617](https://github.com/PubliciaLLC/go-help-desk/issues/617)). Both doors now
+take the user row (`SELECT ... FOR UPDATE`) and only then ask, in a statement of
+their own, whether the account holds a TOTP or a passkey; whichever gets the row
+second sees what the first wrote, writes nothing and is answered
+`403 mfa_required`, the answer the frontend already handles. The question cannot
+be folded into one statement with the lock: under READ COMMITTED a statement
+that waits on a row keeps the snapshot it started with. Lock order is the user
+row, then credentials, the same as `ClearFactors`. A passkey registration from a
+session that has proved a factor (`FactorVerified`) is unconditional, as a TOTP
+rotation is. The tests hold the row in one transaction, start the write, wait for
+Postgres to report it queued and commit the other factor, so the interleaving is
+staged rather than raced.
 
 **Verifying from the Account page**
 ([#336](https://github.com/PubliciaLLC/go-help-desk/issues/336)). A session that
@@ -903,9 +964,49 @@ a TOTP enrolment or at least one registered passkey** (refusing the phishing-res
 
 **Losing a key.** The owner removes it from their own account page
 (`DELETE /me/passkeys/{id}`, behind the same factor guard) and registers a new
-one; that is the ordinary case. An administrator removing ONE credential for
-somebody else is **not built**: every passkey route lives under `/me` and
-`adminRouter` has none; the user admin page is where it belongs when it is built, and saying it already exists is how an operator ends up looking for a button that was never written. What an administrator can do is the user page's **Reset
+one; that is the ordinary case. **Removing your own key ends your OTHER
+sessions and keeps this one**
+([#615](https://github.com/PubliciaLLC/go-help-desk/issues/615)), as a password
+change and a new factor do: the key may be the one somebody else is signed in
+with. The delete and the sessions ending are one statement (the same
+`RemoveUserPasskey` the administrator's removal uses, which is told which session
+to spare), so a failure between them cannot leave the key gone and the other
+sessions alive, and a credential that is not yours is a `404` that ends nothing.
+It writes a `passkey_removed` audit entry on the account with **the user as the
+actor** (the factor guard has already required that they proved a factor), naming
+the key by id and not its label; best effort and detached from the request, like
+the administrator's. **An administrator can remove ONE credential
+for somebody else** ([#615](https://github.com/PubliciaLLC/go-help-desk/issues/615)):
+the user page lists the person's passkeys (`GET /admin/users/{id}/passkeys`, the
+same JSON as `/me/passkeys`) with a Remove on each
+(`DELETE /admin/users/{id}/passkeys/{credId}`). Neither route depends on passkeys
+being available (#494), because a lost key has to be cleanable while they are off.
+
+- **Always ends every session the account has**, whether or not it was the last
+  factor: the key is presumed lost or compromised, and one rule is simpler than
+  two. The removal and the sessions ending are one statement, and the credential
+  is matched on its owner in that statement, so naming somebody else's key under
+  this person's path is a `404` that removes nothing and ends nothing.
+- **Audited** as `passkey_removed_by_admin` on the account, naming the
+  administrator and the key's id (never its label, which is free text the owner
+  typed). Like `mfa_reset`, it is not transactional with the removal: whoever can
+  remove a key already holds the capability, so the entry is visibility, and the
+  write is detached from the request so hanging up cannot suppress it.
+- **Session only.** A key or OAuth client is refused (`403`): how a person signs
+  in is not something a machine credential may change.
+- **Not your own account.** `DELETE` on your own id is `409 own_account`, and so
+  is `PATCH /admin/users/{your id}` with `reset_mfa: true` (refused whole, before
+  any write). `adminRouter` checks only that the session passed MFA, and a
+  session that owed no factor has passed it without proving one, so either door
+  would let such a session strip its own factor around
+  `requireFactorOrFirstEnrolment`. The Account page is the way for your own, and
+  it holds that guard; another administrator, or `reset-factors` on the server,
+  resets yours. The user page does not offer either on your own account.
+- **Last administrator:** not affected. Removing a key leaves the password as a
+  way in, and enrolment stays outside `RequireMFA` (see the guard note under User
+  Management and the end of this section).
+
+What an administrator can also do is the user page's **Reset
 MFA**, which clears **every** second factor (the authenticator and all passkeys)
 and ends the account's sessions in one statement (`ClearFactors`, all or
 nothing; it used to clear only the authenticator, leaving a passkey-only person
@@ -923,8 +1024,10 @@ holding only the password registers their own key and obtains the second factor,
 passing the gate rather than breaking it. The consequence is a real lockout:
 **an administrator whose registered key is lost cannot recover alone**, and a
 *sole* administrator has no one to ask (setup does not reopen). The recovery is
-`reset-factors` on the server, not an administrator clearing one credential,
-which is not built. This is not new: `GenerateMFASecret` has refused
+`reset-factors` on the server: another administrator can remove the key (one
+credential, or Reset MFA for all of them), but a sole administrator has none.
+The same holds for a key refused as a suspected clone (the sign count paragraph
+above). This is not new: `GenerateMFASecret` has refused
 re-enrolment for a TOTP-protected account since the re-enrolment fix.
 
 **The way back in is a command run on the server**, not a recovery code and not
@@ -1075,7 +1178,39 @@ unavailable: ...` with the reason) and carries on with no passkey service, and:
 sign-in; attestation verification against a metadata service; a per-role
 "passkey required, TOTP no longer sufficient" policy; and any route by which a
 machine credential could register or use a passkey (`DenyMachineCredentials`
-refuses that and will keep refusing it).
+refuses that and will keep refusing it). The two of those that
+[#616](https://github.com/PubliciaLLC/go-help-desk/issues/616) raised are limits
+of 1.3.0 and are described next.
+
+**Two limits of the passkey check in 1.3.0** ([#616](https://github.com/PubliciaLLC/go-help-desk/issues/616),
+parts a and c). Both were decided to be documented now and built in 1.3.x, not
+before the tag.
+
+- **Attestation is not verified: any authenticator is accepted.** Registration
+  asks for no attestation, so browsers send `fmt: none`, and the library checks a
+  present statement's signature but not its trust chain. Nothing here knows what
+  kind of authenticator a key is. The AAGUID is stored but is self-reported, so
+  an allow-list on it would not be a control. Enforcing attestation (the FIDO
+  Metadata Service, a request for `direct` attestation, a refusal of `none`, a
+  cache and a refresh, an answer for installs with no outbound access) would
+  also very likely mean **hardware keys only**, because synced passkeys (iCloud
+  Keychain, Google Password Manager) generally send none; that would contradict
+  accepting synced passkeys, which this section does on purpose. That is a
+  product decision before it is a code change. What the property above does
+  claim, phishing-resistance, holds for every credential this accepts; what an
+  operator cannot do is require a particular kind of authenticator. The
+  `backup_eligible` flag is how to tell a synced credential from a hardware key
+  afterwards.
+- **There is no "passkey required" policy.** `MFARequiredFor(role)` is satisfied
+  by a TOTP enrolment **or** a passkey, so an operator who enforces MFA for a
+  role cannot also require that role to use a passkey rather than TOTP, and a
+  role's members with TOTP are not nudged to move to a key. Building it means a
+  new setting, a login state in which TOTP proves a factor but does not pass
+  the gate (so the person can only enrol a key), TOTP enrolment that stops
+  satisfying the gate for those roles, a rule for what happens while passkeys
+  are off (#494) and an exemption for SSO sign-ins, and it touches the login
+  state machine, which has had many fixes. An operator who needs this today
+  has no setting for it.
 
 ### SAML (Optional, Off by Default)
 

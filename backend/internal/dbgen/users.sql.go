@@ -965,6 +965,29 @@ func (q *Queries) ListUsersAdmin(ctx context.Context, arg ListUsersAdminParams) 
 	return items, nil
 }
 
+const lockUserForFactorWrite = `-- name: LockUserForFactorWrite :one
+SELECT id FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE
+`
+
+// Takes the user row so that two writers of a first factor are ordered (#617).
+//
+// A first TOTP confirm and a first passkey registration each ask "does this
+// account hold any factor?" and then write. Without an order, both can pass the
+// question before either writes, and a session that only knows the password
+// ends up adding a factor beside the owner's first one. Both take this lock,
+// then ask in a NEW statement: under READ COMMITTED a statement waiting on this
+// row keeps the snapshot it started with, so the question cannot be folded into
+// one statement with the lock. The lock order is users, then credentials, the
+// same as ClearFactors.
+//
+// No row for a deleted account: there is nothing to write a factor onto.
+func (q *Queries) LockUserForFactorWrite(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
+	row := q.db.QueryRowContext(ctx, lockUserForFactorWrite, id)
+	var id_2 uuid.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
 const lookupRequesterByID = `-- name: LookupRequesterByID :one
 SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account, email_notify_assigned, email_notify_activity, email_notify_group, must_change_password FROM users
 WHERE id = $1

@@ -170,6 +170,10 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.With(authmw.DenyMachineCredentials).Patch("/{id}", s.handleUpdateUser)
 		r.With(authmw.DenyMachineCredentials).Delete("/{id}", s.handleDeleteUser)
 		r.With(authmw.DenyMachineCredentials).Post("/{id}/password", s.handleAdminResetPassword)
+		// One passkey at a time (#615). Not behind requirePasskeys: neither
+		// uses the ceremony service, and cleanup must work while passkeys are off.
+		r.Get("/{id}/passkeys", s.handleAdminListPasskeys)
+		r.With(authmw.DenyMachineCredentials).Delete("/{id}/passkeys/{credId}", s.handleAdminDeletePasskey)
 	})
 
 	// The admin-wide audit view (#129). Administrators only (Erik, 2026-11-03):
