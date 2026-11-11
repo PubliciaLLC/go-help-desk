@@ -199,10 +199,9 @@ test('220 hostile replies keep the heap bounded, on open and after jumping throu
   // busy one), so a CI runner two or three times slower overran the old 15 s (the
   // #640 flake; one trace showed the worker not even requested until 46 s in, the
   // page being busy). Long plain posts are now laid out only near the screen
-  // (.lazy-layout), which takes the first formatted post to about 1.6 s here; the
-  // wait stays long because a runner can still be slow for other reasons, and a
-  // test that waits longer than it needs costs nothing. Nothing asserted below waits on it.
-  await expect(page.locator('[data-md-body]').first()).toBeVisible({ timeout: 45_000 })
+  // (.lazy-layout), which takes the first formatted post to about 1.6 s here, so
+  // the wait is back to its old 15 s. Nothing asserted below waits on it.
+  await expect(page.locator('[data-md-body]').first()).toBeVisible({ timeout: 15_000 })
   await page.waitForTimeout(3000)
 
   expect(await page.locator('[data-md-body]').count(), 'posts far below the screen were formatted').toBeLessThan(25)

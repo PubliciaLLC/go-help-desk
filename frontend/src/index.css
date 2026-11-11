@@ -65,10 +65,20 @@
    While one is skipped its height is --text-rows (set by TicketText) rows
    high, and `auto` makes the browser use the real height once it has drawn the
    post, so scrolling back does not move the page. Browsers without
-   content-visibility ignore both lines and lay everything out as before. */
+   content-visibility ignore all of this and lay everything out as before. The
+   `lh` unit is newer than content-visibility (Chrome 95 to 108 have one and not
+   the other), where the estimate would be dropped and a skipped post would have no
+   height; so the em version is the base and `lh` replaces it where understood
+   (@supports, not a second declaration: one that uses var() is never dropped at
+   parse time, so the later one would win even where it is invalid). */
 .lazy-layout {
   content-visibility: auto;
-  contain-intrinsic-block-size: auto calc(var(--text-rows, 1) * 1lh);
+  contain-intrinsic-block-size: auto calc(var(--text-rows, 1) * 1.5em);
+}
+@supports (height: 1lh) {
+  .lazy-layout {
+    contain-intrinsic-block-size: auto calc(var(--text-rows, 1) * 1lh);
+  }
 }
 
 /* #443: code highlighting. highlight.js token classes only; no theme

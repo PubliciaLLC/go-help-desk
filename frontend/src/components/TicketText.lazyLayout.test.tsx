@@ -1,3 +1,5 @@
+/// <reference types="node" />
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { renderNow } from '@/test/formatted'
 import { TicketText } from './TicketText'
@@ -34,3 +36,30 @@ describe('lazy layout of long plain-text posts', () => {
     expect(plainParagraph(container).textContent).toBe(text)
   })
 })
+
+// A browser that has content-visibility but not the lh unit (Chrome 95 to 108)
+// would drop an estimate written in lh, and a skipped post would have no height.
+// That cannot be a fallback declaration written before it: a declaration that
+// uses var() is valid at parse time whatever its unit, so the later one would win
+// and then be invalid. @supports is the gate, and the unit it does not need is
+// the fallback outside it.
+describe('the lazy layout stylesheet', () => {
+  // Read from disk: vitest replaces imported CSS, ?raw included, with an empty string.
+  const css = readFileSync('src/index.css', 'utf8')
+  const rule = css.slice(css.indexOf('.lazy-layout {'))
+  const supports = rule.slice(rule.indexOf('@supports (height: 1lh)'))
+  const outside = rule.slice(0, rule.indexOf('@supports (height: 1lh)'))
+
+  it('skips posts that are off screen', () => {
+    expect(outside).toMatch(/content-visibility:\s*auto/)
+  })
+  it('has a height estimate that needs no lh unit', () => {
+    expect(outside).toMatch(/contain-intrinsic-block-size:\s*auto calc\(var\(--text-rows, 1\) \* 1\.5em\)/)
+    expect(outside).not.toMatch(/\dlh/)
+  })
+  it('uses the lh unit only where the browser understands it', () => {
+    expect(rule).toContain('@supports (height: 1lh)')
+    expect(supports).toMatch(/contain-intrinsic-block-size:\s*auto calc\(var\(--text-rows, 1\) \* 1lh\)/)
+  })
+})
+

@@ -7,31 +7,46 @@ import { mockApi, REPLIES, TICKET_DETAIL } from './mock'
 // box's width. A wrong estimate shows as the page moving under the reader, worst
 // in WebKit, which does not keep the reader's place when content above changes
 // size (measured with an estimate of one row per stored line: jumps of 8,000 to
-// 20,000 px and a page that grew by 40 to 140 percent as it was read). Runs in Chromium
-// and WebKit at the widths the layout is tested at.
+// 20,000 px and a page that grew by 40 to 140 percent as it was read; with one
+// unit per UTF-16 character, Chinese text jumped 2,820 to 11,060 px). English and
+// Chinese are both run, in Chromium and WebKit, at the widths the layout is
+// tested at.
 
 const words = 'the printer on the second floor stopped answering after the update and nobody could reach the spooler service again so we restarted it twice'.split(' ')
-function prose(seed: number, chars: number) {
+// The same posts in Chinese: no spaces, every character twice the width of a
+// Latin one. Counting one unit per character made the estimate half the drawn
+// height, and Safari lost the reader's place by 5 to 13 screens.
+const sentences = '二楼的打印机在更新之后就没有响应了，没有人能够连接到打印服务。我们已经重启了两次，但是问题依然存在，请尽快处理。'.split('')
+type Language = 'English' | 'Chinese'
+function prose(language: Language, seed: number, chars: number) {
   let out = ''
   for (let n = seed; out.length < chars; n++) {
     let para = ''
-    for (let i = 0; i < 40 + (n % 70); i++) para += words[(n * 7 + i * 3) % words.length] + ' '
-    out += para.trim() + '.\n\n'
+    if (language === 'English') {
+      for (let i = 0; i < 40 + (n % 70); i++) para += words[(n * 7 + i * 3) % words.length] + ' '
+      out += para.trim() + '.\n\n'
+    } else {
+      for (let i = 0; i < 200 + (n % 300); i++) para += sentences[(n * 7 + i) % sentences.length]
+      out += para + '\n\n'
+    }
   }
   return out.slice(0, chars)
 }
 // Mixed sizes, all over the 5,000-character threshold but one in five short.
-const replies = Array.from({ length: 30 }, (_, i) => ({
-  ...REPLIES[0],
-  id: `r-${i}`,
-  body: i % 5 === 4 ? prose(i, 200) : prose(i, 6000 + ((i * 7919) % 42000)),
-  body_format: 'plain',
-}))
+const repliesIn = (language: Language) =>
+  Array.from({ length: 30 }, (_, i) => ({
+    ...REPLIES[0],
+    id: `r-${i}`,
+    body: i % 5 === 4 ? prose(language, i, 200) : prose(language, i, 6000 + ((i * 7919) % 42000)),
+    body_format: 'plain',
+  }))
 
+for (const language of ['English', 'Chinese'] as const)
 for (const [width, height] of [[320, 640], [390, 844], [768, 1024], [1440, 900]] as const) {
-  test(`long plain posts do not move the page under the reader: ${width}px`, async ({ page }) => {
+  test(`long plain posts in ${language} do not move the page under the reader: ${width}px`, async ({ page }) => {
     test.setTimeout(120_000)
     await page.setViewportSize({ width, height })
+    const replies = repliesIn(language)
     await mockApi(page, { replies: replies as never })
     await page.goto(`/tickets/${TICKET_DETAIL.id}`)
     await page.waitForFunction((n) => document.querySelectorAll('p.whitespace-pre-wrap').length >= n, replies.length)
@@ -46,6 +61,8 @@ for (const [width, height] of [[320, 640], [390, 844], [768, 1024], [1440, 900]]
       const top = () => main.getBoundingClientRect().top
       const posts = () => Array.from(document.querySelectorAll('p.whitespace-pre-wrap')) as HTMLElement[]
       const lazy = posts().filter((p) => p.classList.contains('lazy-layout')).length
+      // The rule itself, not only the class: a post that is not drawn is skipped by the browser.
+      const skipping = posts().filter((p) => p.classList.contains('lazy-layout') && getComputedStyle(p).contentVisibility === 'auto').length
       const heights = { min: main.scrollHeight, max: main.scrollHeight }
       let worst = 0
       // How far the post under the middle of the screen moved, beyond the scroll asked for.
@@ -93,10 +110,12 @@ for (const [width, height] of [[320, 640], [390, 844], [768, 1024], [1440, 900]]
       selection.addRange(range)
       const selected = selection.toString()
       const missing = posts().filter((p) => !selected.includes(p.textContent!.slice(-60).trim())).length
-      return { lazy, worst, heights, landed, missing, viewport: main.clientHeight }
+      return { lazy, skipping, worst, heights, landed, missing, viewport: main.clientHeight }
     })
 
+    console.log(`${language} ${width}px: worst jump ${r.worst}px, page ${r.heights.min} to ${r.heights.max}, landed ${r.landed.join('/')}`)
     expect(r.lazy, 'long posts should be lazy').toBe(24)
+    expect(r.skipping, 'every lazy post should compute content-visibility: auto').toBe(24)
     expect(r.missing, 'posts missing from Select All').toBe(0)
     // The page keeps its size as posts are drawn (it grew 40 to 140% with a one-row-per-line estimate).
     expect(r.heights.max / r.heights.min).toBeLessThan(1.05)

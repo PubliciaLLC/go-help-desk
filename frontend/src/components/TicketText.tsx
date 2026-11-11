@@ -43,9 +43,10 @@ function PlainText({ text, className }: { text: string; className?: string }) {
       // all the estimate depends on.
       if (el.clientWidth === width) return
       width = el.clientWidth
-      // Half the font size per character: measured from 320 to 1440 px in both
-      // engines, that puts the estimate at 0.9 to 1.0 of the drawn height for
-      // English prose, and exact for text written a line at a time.
+      // Half the font size per Latin character (a wide one counts as two, see
+      // plainRows): measured from 320 to 1440 px in both engines, that puts the
+      // estimate within about 5 percent of the drawn height for English and
+      // Chinese prose, and exact for text written a line at a time.
       const perRow = width / (0.5 * parseFloat(getComputedStyle(el).fontSize))
       el.style.setProperty('--text-rows', String(plainRows(text, perRow)))
     })
