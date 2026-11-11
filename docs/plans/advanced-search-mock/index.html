@@ -1,0 +1,560 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ticket Search Mock</title>
+<!--
+  Static mock of the proposed ticket-list filters (docs/plans/advanced-search.md).
+  Made-up data. Styles copy the Tailwind classes the real page uses
+  (TicketListPage.tsx, Layout.tsx, ui/button, ui/input, ui/badge, SLAIndicator),
+  written out as plain CSS. The only script switches between the five states.
+  ?shot=a … ?shot=e shows one state with no switcher, for screenshots.
+-->
+<style>
+  :root {
+    --gray-50:#f9fafb; --gray-100:#f3f4f6; --gray-200:#e5e7eb; --gray-300:#d1d5db;
+    --gray-400:#9ca3af; --gray-500:#6b7280; --gray-600:#4b5563; --gray-700:#374151;
+    --gray-900:#111827; --blue-50:#eff6ff; --blue-600:#2563eb; --blue-700:#1d4ed8;
+    --border: hsl(214.3 31.8% 91.4%); --input: hsl(214.3 31.8% 91.4%);
+    --muted-fg: hsl(215.4 16.3% 46.9%); --accent: hsl(210 40% 96.1%);
+    --fg: hsl(222.2 84% 4.9%); --secondary: hsl(210 40% 96.1%); --secondary-fg: hsl(222.2 47.4% 11.2%);
+  }
+  * { box-sizing: border-box; border: 0 solid var(--border); }
+  html, body { margin: 0; }
+  body { background: #fff; color: var(--fg); font-family: system-ui, -apple-system, sans-serif;
+         -webkit-font-smoothing: antialiased; font-size: 16px; line-height: 1.5; }
+  button, input, select { font: inherit; color: inherit; }
+  svg.i { width: 16px; height: 16px; flex-shrink: 0; stroke: currentColor; fill: none;
+          stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* ---------- state switcher (not part of the app) ---------- */
+  .switcher { position: sticky; top: 0; z-index: 50; display: flex; flex-wrap: wrap; gap: 8px;
+              align-items: center; padding: 10px 16px; background: #111827; color: #fff; font-size: 13px; }
+  .switcher b { margin-right: 8px; }
+  .switcher button { background: #374151; border-radius: 6px; padding: 4px 10px; cursor: pointer; border: 0; }
+  .switcher button[aria-pressed="true"] { background: var(--blue-600); }
+  .caption { max-width: 1440px; margin: 16px auto 8px; padding: 0 16px; font-size: 13px; color: var(--gray-600); }
+  .shot .switcher, .shot .caption { display: none; }
+  .state { display: none; }
+  .state.on { display: block; }
+
+  /* ---------- app shell (Layout.tsx) ---------- */
+  .app { display: flex; flex-direction: column; background: var(--gray-50); min-height: 900px; }
+  .shot .app { min-height: 100vh; }
+  .frame-desktop { max-width: 1440px; margin: 0 auto; border: 1px solid var(--gray-200); }
+  .shot .frame-desktop { border: 0; max-width: none; }
+  .frame-phone { width: 390px; margin: 0 auto 40px; border: 1px solid var(--gray-300); border-radius: 12px; overflow: hidden; }
+  .frame-phone .app { min-height: 844px; }
+  .shot .frame-phone { width: 100%; border: 0; border-radius: 0; margin: 0; }
+  .row { display: flex; flex: 1; }
+  aside.sidebar { width: 240px; background: #fff; border-right-width: 1px; display: flex; flex-direction: column; }
+  .brand { height: 56px; display: flex; align-items: center; padding: 0 16px; border-bottom-width: 1px;
+           font-size: 18px; font-weight: 600; color: var(--gray-900); }
+  nav.side { padding: 12px; display: flex; flex-direction: column; gap: 4px; flex: 1; }
+  .nav-item { display: flex; align-items: center; gap: 12px; border-radius: 6px; padding: 8px 12px;
+              font-size: 14px; font-weight: 500; color: var(--gray-600); }
+  .nav-item.active { background: var(--blue-50); color: var(--blue-700); }
+  .side-foot { border-top-width: 1px; padding: 12px; font-size: 12px; color: var(--gray-500); }
+  main { flex: 1; }
+  .content { max-width: 1024px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 24px; }
+  .topbar { height: 56px; display: flex; align-items: center; gap: 8px; border-bottom-width: 1px;
+            background: #fff; padding: 0 12px; }
+  .topbar .burger { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;
+                    color: var(--gray-600); }
+  .topbar .burger svg { width: 20px; height: 20px; }
+  .topbar .name { font-size: 16px; font-weight: 600; color: var(--gray-900); }
+  .phone .content { padding: 16px; gap: 16px; }
+  .phone .searchbox { flex-basis: 100%; }
+
+  /* ---------- primitives ---------- */
+  h1 { font-size: 24px; line-height: 32px; font-weight: 700; color: var(--gray-900); margin: 0; }
+  .between { display: flex; align-items: center; justify-content: space-between; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border-radius: 6px;
+         font-size: 14px; font-weight: 500; height: 40px; padding: 8px 16px; white-space: nowrap; cursor: pointer; }
+  .btn-primary { background: var(--blue-600); color: #fff; }
+  .btn-outline { border-width: 1px; border-color: var(--input); background: #fff; }
+  .btn-sm { height: 32px; padding: 0 12px; font-size: 12px; }
+  .count { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px;
+           padding: 0 6px; border-radius: 9999px; background: var(--blue-600); color: #fff; font-size: 12px; font-weight: 600; }
+  .input { display: flex; height: 40px; width: 100%; border-radius: 6px; border: 1px solid var(--input);
+           background: #fff; padding: 8px 12px; font-size: 14px; }
+  .input::placeholder { color: var(--muted-fg); }
+  .searchbox { position: relative; width: 100%; max-width: 512px; flex: 1; }
+  .searchbox svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--gray-400); }
+  .searchbox .input { padding-left: 36px; }
+  .toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .seg { display: inline-flex; border: 1px solid var(--gray-200); border-radius: 6px; overflow: hidden; font-size: 14px; }
+  .seg span { padding: 6px 12px; background: #fff; color: var(--gray-700); }
+  .seg span.on { background: var(--gray-900); color: #fff; }
+  .check { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--gray-600); white-space: nowrap; }
+  .box { width: 16px; height: 16px; border-radius: 4px; border: 1px solid var(--gray-300); background: #fff;
+         display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .box.on { background: var(--blue-600); border-color: var(--blue-600); }
+  .box.on::after { content: ""; width: 4px; height: 8px; border: solid #fff; border-width: 0 2px 2px 0;
+                   transform: rotate(45deg) translate(-1px, -1px); }
+
+  /* chips: same pill as the existing "Filtering by client" chip */
+  .chips { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 14px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; border-radius: 9999px; border: 1px solid var(--gray-300);
+          background: var(--gray-100); padding: 2px 6px 2px 10px; font-size: 12px; font-weight: 500; color: var(--gray-700); }
+  .chip .k { color: var(--gray-500); font-weight: 400; }
+  .chip .x { display: inline-flex; width: 16px; height: 16px; align-items: center; justify-content: center;
+             border-radius: 9999px; color: var(--gray-500); }
+  .chip .x svg { width: 12px; height: 12px; }
+  .chip.dark { background: var(--gray-900); border-color: var(--gray-900); color: #fff; }
+  .clear { font-size: 12px; color: var(--gray-500); text-decoration: underline; text-underline-offset: 2px; }
+  .reach { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--gray-500); }
+  .reach .chip { background: var(--gray-100); }
+
+  .dot { display: inline-block; width: 6px; height: 6px; border-radius: 9999px; }
+  .status { display: inline-flex; align-items: center; gap: 4px; border-radius: 9999px; border: 1px solid;
+            padding: 2px 8px; font-size: 12px; font-weight: 500; white-space: nowrap; }
+  .badge { display: inline-flex; align-items: center; border-radius: 9999px; padding: 2px 10px; font-size: 12px; font-weight: 600; }
+  .p-critical { background: #dc2626; color: #fff; }
+  .p-high { background: #eab308; color: #fff; }
+  .p-medium { background: var(--blue-600); color: #fff; }
+  .p-low { background: var(--secondary); color: var(--secondary-fg); }
+  .sla { display: inline-flex; gap: 6px; align-items: center; }
+  .sla i { display: inline-block; width: 10px; height: 10px; border-radius: 9999px; }
+  .g { background: #22c55e; } .a { background: #f59e0b; } .r { background: #ef4444; }
+
+  /* table */
+  .table-wrap { overflow: hidden; border-radius: 6px; border: 1px solid var(--gray-200); }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  thead { background: var(--gray-50); font-size: 12px; font-weight: 500; text-transform: uppercase;
+          letter-spacing: .05em; color: var(--gray-500); }
+  th { text-align: left; padding: 8px 16px; font-weight: 500; }
+  th.sel, td.sel { width: 32px; padding: 8px 12px; }
+  tbody { background: #fff; }
+  tbody tr + tr td { border-top: 1px solid var(--gray-100); }
+  td { padding: 8px 16px; vertical-align: top; }
+  td.trk { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--gray-500);
+           white-space: nowrap; padding-top: 10px; }
+  td.subj { font-weight: 500; color: var(--gray-900); }
+  .pager { display: flex; align-items: center; justify-content: space-between; padding-top: 8px; font-size: 14px; color: var(--gray-500); }
+
+  /* reply-match snippet (new) */
+  .snip { margin-top: 4px; display: flex; gap: 6px; align-items: baseline; font-size: 12px; font-weight: 400; color: var(--gray-600); }
+  .snip svg { width: 12px; height: 12px; color: var(--gray-400); position: relative; top: 2px; }
+  .snip .src { white-space: nowrap; color: var(--gray-500); }
+  .snip .src.internal { color: #92400e; background: #fffbeb; border: 1px solid #fcd34d; border-radius: 4px; padding: 0 4px; }
+  .snip .txt { color: var(--gray-600); }
+  mark { background: #fef08a; color: inherit; border-radius: 2px; padding: 0 1px; }
+
+  /* filters panel (desktop, inline) */
+  .panel { background: #fff; border: 1px solid var(--gray-200); border-radius: 6px; padding: 16px; }
+  .panel-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px 24px; }
+  .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .field > label, .field > .lbl { font-size: 12px; font-weight: 600; color: var(--gray-700); }
+  .opts { display: flex; flex-direction: column; gap: 4px; }
+  .opts.wrap { flex-direction: row; flex-wrap: wrap; gap: 4px 12px; }
+  .opt { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--gray-700); }
+  .select { position: relative; }
+  .select .input { padding-right: 32px; color: var(--gray-900); align-items: center; }
+  .select .input.placeholder { color: var(--muted-fg); }
+  .select svg { position: absolute; right: 10px; top: 12px; color: var(--gray-400); }
+  .range { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--gray-500); }
+  .range .input { min-width: 0; }
+  .picked { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .picked .who { display: flex; flex-direction: column; line-height: 1.2; min-width: 0; }
+  .picked .who small { color: var(--gray-500); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hint { font-size: 12px; color: var(--gray-500); }
+  .panel-foot { display: flex; justify-content: flex-end; align-items: center; gap: 12px; margin-top: 16px;
+                padding-top: 12px; border-top: 1px solid var(--gray-100); }
+  .span2 { grid-column: span 2; }
+
+  /* phone dialog (Radix Dialog, full screen below md) */
+  .sheet { display: flex; flex-direction: column; min-height: 844px; background: #fff; }
+  .shot .sheet { min-height: 100vh; }
+  .sheet-head { height: 56px; display: flex; align-items: center; justify-content: space-between; padding: 0 8px 0 16px;
+                border-bottom: 1px solid var(--gray-200); font-size: 18px; font-weight: 600; color: var(--gray-900); }
+  .sheet-head .close { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; color: var(--gray-600); }
+  .sheet-head .close svg { width: 20px; height: 20px; }
+  .sheet-body { flex: 1; padding: 16px; display: flex; flex-direction: column; gap: 18px; }
+  .sheet-foot { position: sticky; bottom: 0; display: flex; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--gray-200); background: #fff; }
+  .sheet-foot .btn { flex: 1; height: 44px; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .opt.tap { min-height: 32px; }
+  .more { font-size: 14px; color: var(--blue-600); display: flex; align-items: center; gap: 4px; }
+
+  /* phone cards (TicketListPage mobile list) */
+  ul.cards { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .card { border-radius: 6px; border: 1px solid var(--gray-200); background: #fff; padding: 12px; }
+  .card .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--gray-500); }
+  .card p { margin: 6px 0 0; font-weight: 500; color: var(--gray-900); overflow-wrap: anywhere; }
+  .card .meta { margin-top: 6px; display: flex; align-items: center; gap: 8px; }
+</style>
+</head>
+<body>
+
+<!-- SVG icons (lucide shapes) -->
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></symbol>
+  <symbol id="x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="filter" viewBox="0 0 24 24"><path d="M21 4H14M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4"/></symbol>
+  <symbol id="chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+  <symbol id="home" viewBox="0 0 24 24"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></symbol>
+  <symbol id="ticket" viewBox="0 0 24 24"><path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/><path d="M13 5v2M13 17v2M13 11v2"/></symbol>
+  <symbol id="wrench" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94z"/></symbol>
+  <symbol id="msg" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+  <symbol id="lock" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
+</svg>
+
+<div class="switcher" role="toolbar" aria-label="Mock state">
+  <b>Ticket search mock</b>
+  <button data-s="a">(a) Desktop, panel open</button>
+  <button data-s="b">(b) Desktop, panel closed</button>
+  <button data-s="c">(c) Phone, filter dialog</button>
+  <button data-s="d">(d) Phone, results</button>
+  <button data-s="e">(e) Reply-text match</button>
+</div>
+
+<!-- ======================= (a) desktop, panel open ======================= -->
+<section class="state" id="a">
+  <p class="caption">(a) Desktop, administrator. Filters panel open with five filters set. Each change applies at once; the chips repeat what is set and each one removes its own filter.</p>
+  <div class="frame-desktop"><div class="app"><div class="row">
+    <aside class="sidebar">
+      <div class="brand">Acme Help Desk</div>
+      <nav class="side">
+        <span class="nav-item"><svg class="i"><use href="#home"/></svg>Dashboard</span>
+        <span class="nav-item active"><svg class="i"><use href="#ticket"/></svg>Tickets</span>
+        <span class="nav-item"><svg class="i"><use href="#wrench"/></svg>Admin</span>
+      </nav>
+      <div class="side-foot">morgan.lee@acme.example</div>
+    </aside>
+    <main><div class="content">
+      <div class="between">
+        <h1>Tickets</h1>
+        <span class="btn btn-primary"><svg class="i"><use href="#plus"/></svg>New Ticket</span>
+      </div>
+
+      <div class="toolbar">
+        <div class="searchbox"><svg class="i"><use href="#search"/></svg>
+          <input class="input" placeholder="Search by tracking number, subject, description or replies…"></div>
+        <div class="seg"><span class="on">Mine</span><span>Unassigned</span><span>All</span></div>
+        <span class="btn btn-outline" aria-expanded="true"><svg class="i"><use href="#filter"/></svg>Filters <span class="count">5</span></span>
+        <span class="check"><span class="box"></span>Include closed</span>
+        <span class="check"><span class="box on"></span>Search replies</span>
+        <span class="btn btn-outline">Jump to ticket</span>
+      </div>
+
+      <div class="panel" aria-label="Filters">
+        <div class="panel-grid">
+          <div class="field"><span class="lbl">Status</span>
+            <div class="opts">
+              <span class="opt"><span class="box on"></span>New</span>
+              <span class="opt"><span class="box on"></span>In Progress</span>
+              <span class="opt"><span class="box on"></span>Pending</span>
+              <span class="opt"><span class="box"></span>Resolved</span>
+              <span class="opt"><span class="box"></span>Closed</span>
+            </div>
+          </div>
+          <div class="field"><span class="lbl">Priority</span>
+            <div class="opts">
+              <span class="opt"><span class="box"></span>Critical</span>
+              <span class="opt"><span class="box on"></span>High</span>
+              <span class="opt"><span class="box"></span>Medium</span>
+              <span class="opt"><span class="box"></span>Low</span>
+            </div>
+          </div>
+          <div class="field"><span class="lbl">Requester</span>
+            <div class="input picked"><span class="who">Dana Whitfield<small>dana.whitfield@acme.example</small></span>
+              <svg class="i" style="color:var(--gray-400)"><use href="#x"/></svg></div>
+            <span class="hint">Pick a person, or type part of a name or email address and choose “Any requester matching…”. Guests are found by name or address too.</span>
+          </div>
+          <div class="field"><span class="lbl">Assignee</span>
+            <div class="select"><span class="input placeholder">Anyone</span><svg class="i"><use href="#chev"/></svg></div>
+            <span class="lbl" style="margin-top:6px">Group</span>
+            <div class="select"><span class="input placeholder">Any group</span><svg class="i"><use href="#chev"/></svg></div>
+          </div>
+
+          <div class="field"><span class="lbl">Category</span>
+            <div class="select"><span class="input">Hardware</span><svg class="i"><use href="#chev"/></svg></div>
+          </div>
+          <div class="field"><span class="lbl">Type</span>
+            <div class="select"><span class="input">Printers</span><svg class="i"><use href="#chev"/></svg></div>
+          </div>
+          <div class="field"><span class="lbl">Item</span>
+            <div class="select"><span class="input placeholder">Any item</span><svg class="i"><use href="#chev"/></svg></div>
+          </div>
+          <div class="field"><span class="lbl">SLA</span>
+            <div class="select"><span class="input placeholder">Any</span><svg class="i"><use href="#chev"/></svg></div>
+          </div>
+
+          <div class="field span2"><span class="lbl">Created</span>
+            <div class="range"><span class="input">2026-10-01</span>to<span class="input">2026-10-31</span></div>
+          </div>
+          <div class="field span2"><span class="lbl">Last updated</span>
+            <div class="range"><span class="input placeholder" style="color:var(--muted-fg)">From</span>to<span class="input" style="color:var(--muted-fg)">To</span></div>
+          </div>
+
+          <div class="field span2"><span class="lbl">Came in by</span>
+            <div class="opts wrap">
+              <span class="opt"><span class="box"></span>Web</span>
+              <span class="opt"><span class="box"></span>Email / guest</span>
+              <span class="opt"><span class="box"></span>Phone</span>
+              <span class="opt"><span class="box"></span>API</span>
+              <span class="opt"><span class="box"></span>MCP</span>
+            </div>
+          </div>
+        </div>
+        <div class="panel-foot">
+          <a class="clear" href="#">Clear all</a>
+          <span class="btn btn-outline btn-sm">Hide filters</span>
+        </div>
+      </div>
+
+      <div class="chips" aria-label="Active filters">
+        <span class="chip"><span class="k">Status:</span> New, In Progress, Pending <span class="x"><svg class="i"><use href="#x"/></svg></span></span>
+        <span class="chip"><span class="k">Priority:</span> High <span class="x"><svg class="i"><use href="#x"/></svg></span></span>
+        <span class="chip"><span class="k">Requester:</span> Dana Whitfield <span class="x"><svg class="i"><use href="#x"/></svg></span></span>
+        <span class="chip"><span class="k">Category:</span> Hardware › Printers <span class="x"><svg class="i"><use href="#x"/></svg></span></span>
+        <span class="chip"><span class="k">Created:</span> 1 Oct – 31 Oct 2026 <span class="x"><svg class="i"><use href="#x"/></svg></span></span>
+        <a class="clear" href="#">Clear all</a>
+      </div>
+      <div class="reach">Searching all tickets you can see <span class="chip">Only my tickets</span></div>
+
+      <div class="table-wrap"><table>
+        <thead><tr><th class="sel"><span class="box"></span></th><th>Ticket</th><th>Subject</th><th>Status</th><th>Priority</th><th>SLA</th></tr></thead>
+        <tbody>
+          <tr><td class="sel"><span class="box"></span></td><td class="trk">GHD-2026-000412</td><td class="subj">Printer on the 3rd floor jams on tray 2</td>
+            <td><span class="status" style="border-color:#f59e0b;color:#f59e0b"><span class="dot" style="background:#f59e0b"></span>In Progress</span></td>
+            <td><span class="badge p-high">high</span></td><td><span class="sla"><i class="a"></i><i class="g"></i></span></td></tr>
+          <tr><td class="sel"><span class="box"></span></td><td class="trk">GHD-2026-000398</td><td class="subj">Toner warning stays on after replacement</td>
+            <td><span class="status" style="border-color:#6366f1;color:#6366f1"><span class="dot" style="background:#6366f1"></span>New</span></td>
+            <td><span class="badge p-high">high</span></td><td><span class="sla"><i class="r"></i><i class="a"></i></span></td></tr>
+          <tr><td class="sel"><span class="box"></span></td><td class="trk">GHD-2026-000371</td><td class="subj">Label printer prints blank lines between labels</td>
+            <td><span class="status" style="border-color:#8b5cf6;color:#8b5cf6"><span class="dot" style="background:#8b5cf6"></span>Pending</span></td>
+            <td><span class="badge p-high">high</span></td><td><span class="sla"><i class="g"></i><i class="g"></i></span></td></tr>
+          <tr><td class="sel"><span class="box"></span></td><td class="trk">GHD-2026-000355</td><td class="subj">Scan-to-email fails for files over 10 MB</td>
+            <td><span class="status" style="border-color:#f59e0b;color:#f59e0b"><span class="dot" style="background:#f59e0b"></span>In Progress</span></td>
+            <td><span class="badge p-high">high</span></td><td><span class="sla"><i class="g"></i><i class="a"></i></span></td></tr>
+          <tr><td class="sel"><span class="box"></span></td><td class="trk">GHD-2026-000340</td><td class="subj">Printer driver missing after laptop reimage</td>
+            <td><span class="status" style="border-color:#6366f1;color:#6366f1"><span class="dot" style="background:#6366f1"></span>New</span></td>
+            <td><span class="badge p-high">high</span></td><td><span class="sla"><i class="g"></i><i class="g"></i></span></td></tr>
+        </tbody>
+      </table></div>
+      <div class="pager"><span class="btn btn-outline btn-sm" style="opacity:.5">Previous</span>Page 1<span class="btn btn-outline btn-sm" style="opacity:.5">Next</span></div>
+    </div></main>
+  </div></div></div>
+</section>
+
+<!-- ======================= (b) desktop, panel closed ======================= -->
+<section class="state" id="b">
+  <p class="caption">(b) Desktop, staff member. Panel closed; the chips are the only trace of the filters. The requester chip shows free text (“contains”), which also finds guest tickets. Opening this page from a shared link shows exactly this.</p>
+  <div class="frame-desktop"><div class="app"><div class="row">
+    <aside class="sidebar">
+      <div class="brand">Acme Help Desk</div>
+      <nav class="side">
+        <span class="nav-item"><svg class="i"><use href="#home"/></svg>Dashboard</span>
+        <span class="nav-item active"><svg class="i"><use href="#ticket"/></svg>Tickets</span>
+      </nav>
+      <div class="side-foot">sam.ortiz@acme.example</div>
+    </aside>
+    <main><div class="content">
+      <div class="between">
+        <h1>Tickets</h1>
+        <span class="btn btn-primary"><svg class="i"><use href="#plus"/></svg>New Ticket</span>
+      </div>
+      <div class="toolbar">
+        <div class="searchbox"><svg class="i"><use href="#search"/></svg>
+          <input class="input" placeholder="Search by tracking number, subject, description or replies…"></div>
+        <span class="btn btn-outline" aria-expanded="false"><svg class="i"><use href="#filter"/></svg>Filters <span class="count">3</span></span>
+        <span class="check"><span class="box"></span>Include closed</span>
+        <span class="check"><span class="box on"></span>Search replies</span>
+        <span class="btn btn-outline">Jump to ticket</span>
+      </div>
+      <div class="chips" aria-label="Active filters">
+        <span class="chip"><span class="k">Requester contains:</span> “whitfield” <span class="x"><svg class="i"><use href="#x"/></svg></span></span>
+        <span class="chip"><span class="k">SLA:</span> At risk <span class="x"><svg class="i"><use href="#x"/></svg></span></span>
+        <span class="chip"><span class="k">Updated:</span> 3 Nov – 10 Nov 2026 <span class="x"><svg class="i"><use href="#x"/></svg></span></span>
+        <a class="clear" href="#">Clear all</a>
+      </div>
+      <div class="reach">Searching all tickets you can see <span class="chip">Only my tickets</span></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th class="sel"><span class="box"></span></th><th>Ticket</th><th>Subject</th><th>Status</th><th>Priority</th><th>SLA</th></tr></thead>
+        <tbody>
+          <tr><td class="sel"><span class="box"></span></td><td class="trk">GHD-2026-000412</td><td class="subj">Printer on the 3rd floor jams on tray 2</td>
+            <td><span class="status" style="border-color:#f59e0b;color:#f59e0b"><span class="dot" style="background:#f59e0b"></span>In Progress</span></td>
+            <td><span class="badge p-high">high</span></td><td><span class="sla"><i class="a"></i><i class="g"></i></span></td></tr>
+          <tr><td class="sel"><span class="box"></span></td><td class="trk">GHD-2026-000407</td><td class="subj">VPN drops every 20 minutes from home</td>
+            <td><span class="status" style="border-color:#6366f1;color:#6366f1"><span class="dot" style="background:#6366f1"></span>New</span></td>
+            <td><span class="badge p-medium">medium</span></td><td><span class="sla"><i class="a"></i><i class="g"></i></span></td></tr>
+          <tr><td class="sel"><span class="box"></span></td><td class="trk">GHD-2026-000355</td><td class="subj">Scan-to-email fails for files over 10 MB</td>
+            <td><span class="status" style="border-color:#f59e0b;color:#f59e0b"><span class="dot" style="background:#f59e0b"></span>In Progress</span></td>
+            <td><span class="badge p-high">high</span></td><td><span class="sla"><i class="g"></i><i class="a"></i></span></td></tr>
+          <tr><td class="sel"><span class="box"></span></td><td class="trk">GHD-2026-000349</td><td class="subj">Shared mailbox not showing in Outlook</td>
+            <td><span class="status" style="border-color:#8b5cf6;color:#8b5cf6"><span class="dot" style="background:#8b5cf6"></span>Pending</span></td>
+            <td><span class="badge p-low">low</span></td><td><span class="sla"><i class="a"></i><i class="a"></i></span></td></tr>
+        </tbody>
+      </table></div>
+    </div></main>
+  </div></div></div>
+</section>
+
+<!-- ======================= (c) phone, filter dialog ======================= -->
+<section class="state" id="c">
+  <p class="caption">(c) Phone, 390 px. “Filters” opens a full-screen dialog. Changes are collected and applied together with “Show results”, so the list behind does not reload on every tap. The admin queue switch moves in here.</p>
+  <div class="frame-phone phone">
+    <div class="sheet" role="dialog" aria-label="Filters">
+      <div class="sheet-head">Filters <span class="close" aria-label="Close"><svg class="i"><use href="#x"/></svg></span></div>
+      <div class="sheet-body">
+        <div class="field"><span class="lbl">Queue</span>
+          <div class="seg" style="align-self:flex-start"><span class="on">Mine</span><span>Unassigned</span><span>All</span></div>
+        </div>
+        <div class="field"><span class="lbl">Status</span>
+          <div class="two">
+            <span class="opt tap"><span class="box on"></span>New</span>
+            <span class="opt tap"><span class="box on"></span>In Progress</span>
+            <span class="opt tap"><span class="box on"></span>Pending</span>
+            <span class="opt tap"><span class="box"></span>Resolved</span>
+            <span class="opt tap"><span class="box"></span>Closed</span>
+          </div>
+        </div>
+        <div class="field"><span class="lbl">Priority</span>
+          <div class="two">
+            <span class="opt tap"><span class="box"></span>Critical</span>
+            <span class="opt tap"><span class="box on"></span>High</span>
+            <span class="opt tap"><span class="box"></span>Medium</span>
+            <span class="opt tap"><span class="box"></span>Low</span>
+          </div>
+        </div>
+        <div class="field"><span class="lbl">Requester</span>
+          <div class="input picked"><span class="who">Dana Whitfield<small>dana.whitfield@acme.example</small></span>
+            <svg class="i" style="color:var(--gray-400)"><use href="#x"/></svg></div>
+        </div>
+        <div class="field"><span class="lbl">Category</span>
+          <div class="select"><span class="input">Hardware</span><svg class="i"><use href="#chev"/></svg></div>
+        </div>
+        <div class="field"><span class="lbl">Type</span>
+          <div class="select"><span class="input">Printers</span><svg class="i"><use href="#chev"/></svg></div>
+        </div>
+        <div class="field"><span class="lbl">Created from</span><span class="input">2026-10-01</span></div>
+        <div class="field"><span class="lbl">Created to</span><span class="input">2026-10-31</span></div>
+        <span class="more">More filters: item, assignee, group, last updated, came in by, SLA <svg class="i"><use href="#chev"/></svg></span>
+      </div>
+      <div class="sheet-foot">
+        <span class="btn btn-outline">Clear all</span>
+        <span class="btn btn-primary">Show results</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= (d) phone, results ======================= -->
+<section class="state" id="d">
+  <p class="caption">(d) Phone, 390 px. Results with the chips. The chips wrap onto new lines; the page never scrolls sideways.</p>
+  <div class="frame-phone phone"><div class="app">
+    <div class="topbar"><span class="burger"><svg class="i"><use href="#menu"/></svg></span><span class="name">Acme Help Desk</span></div>
+    <div class="content">
+      <div class="between">
+        <h1>Tickets</h1>
+        <span class="btn btn-primary"><svg class="i"><use href="#plus"/></svg>New Ticket</span>
+      </div>
+      <div class="toolbar">
+        <div class="searchbox" style="max-width:none"><svg class="i"><use href="#search"/></svg>
+          <input class="input" placeholder="Search…"></div>
+        <span class="btn btn-outline"><svg class="i"><use href="#filter"/></svg>Filters <span class="count">5</span></span>
+        <span class="check"><span class="box"></span>Include closed</span>
+        <span class="check"><span class="box on"></span>Search replies</span>
+      </div>
+      <div class="chips" aria-label="Active filters">
+        <span class="chip"><span class="k">Status:</span> New, In Progress, Pending <span class="x"><svg class="i"><use href="#x"/></svg></span></span>
+        <span class="chip"><span class="k">Priority:</span> High <span class="x"><svg class="i"><use href="#x"/></svg></span></span>
+        <span class="chip"><span class="k">Requester:</span> Dana Whitfield <span class="x"><svg class="i"><use href="#x"/></svg></span></span>
+        <span class="chip"><span class="k">Category:</span> Hardware › Printers <span class="x"><svg class="i"><use href="#x"/></svg></span></span>
+        <span class="chip"><span class="k">Created:</span> 1–31 Oct 2026 <span class="x"><svg class="i"><use href="#x"/></svg></span></span>
+        <a class="clear" href="#">Clear all</a>
+      </div>
+      <ul class="cards">
+        <li class="card"><div class="between"><span class="mono">GHD-2026-000412</span>
+          <span class="status" style="border-color:#f59e0b;color:#f59e0b"><span class="dot" style="background:#f59e0b"></span>In Progress</span></div>
+          <p>Printer on the 3rd floor jams on tray 2</p>
+          <div class="meta"><span class="badge p-high">high</span><span class="sla"><i class="a"></i><i class="g"></i></span></div></li>
+        <li class="card"><div class="between"><span class="mono">GHD-2026-000398</span>
+          <span class="status" style="border-color:#6366f1;color:#6366f1"><span class="dot" style="background:#6366f1"></span>New</span></div>
+          <p>Toner warning stays on after replacement</p>
+          <div class="meta"><span class="badge p-high">high</span><span class="sla"><i class="r"></i><i class="a"></i></span></div></li>
+        <li class="card"><div class="between"><span class="mono">GHD-2026-000371</span>
+          <span class="status" style="border-color:#8b5cf6;color:#8b5cf6"><span class="dot" style="background:#8b5cf6"></span>Pending</span></div>
+          <p>Label printer prints blank lines between labels</p>
+          <div class="meta"><span class="badge p-high">high</span><span class="sla"><i class="g"></i><i class="g"></i></span></div></li>
+      </ul>
+    </div>
+  </div></div>
+</section>
+
+<!-- ======================= (e) reply-text match ======================= -->
+<section class="state" id="e">
+  <p class="caption">(e) Desktop, staff member, searching “fuser”. A ticket found only through its conversation shows one line under the subject: where the words were found (public reply or internal note), when, and the matching words highlighted. No author names. A requester gets public-reply matches only, and never sees an internal-note line.</p>
+  <div class="frame-desktop"><div class="app"><div class="row">
+    <aside class="sidebar">
+      <div class="brand">Acme Help Desk</div>
+      <nav class="side">
+        <span class="nav-item"><svg class="i"><use href="#home"/></svg>Dashboard</span>
+        <span class="nav-item active"><svg class="i"><use href="#ticket"/></svg>Tickets</span>
+      </nav>
+      <div class="side-foot">sam.ortiz@acme.example</div>
+    </aside>
+    <main><div class="content">
+      <div class="between">
+        <h1>Tickets</h1>
+        <span class="btn btn-primary"><svg class="i"><use href="#plus"/></svg>New Ticket</span>
+      </div>
+      <div class="toolbar">
+        <div class="searchbox"><svg class="i"><use href="#search"/></svg>
+          <input class="input" value="fuser"></div>
+        <span class="btn btn-outline"><svg class="i"><use href="#filter"/></svg>Filters</span>
+        <span class="check"><span class="box"></span>Include closed</span>
+        <span class="check"><span class="box on"></span>Search replies</span>
+        <span class="btn btn-outline">Jump to ticket</span>
+      </div>
+      <div class="reach">Searching all tickets you can see <span class="chip">Only my tickets</span></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th class="sel"><span class="box"></span></th><th>Ticket</th><th>Subject</th><th>Status</th><th>Priority</th><th>SLA</th></tr></thead>
+        <tbody>
+          <tr><td class="sel"><span class="box"></span></td><td class="trk">GHD-2026-000419</td>
+            <td class="subj">Replace fuser unit on HR printer</td>
+            <td><span class="status" style="border-color:#6366f1;color:#6366f1"><span class="dot" style="background:#6366f1"></span>New</span></td>
+            <td><span class="badge p-medium">medium</span></td><td><span class="sla"><i class="g"></i><i class="g"></i></span></td></tr>
+          <tr><td class="sel"><span class="box"></span></td><td class="trk">GHD-2026-000412</td>
+            <td class="subj">Printer on the 3rd floor jams on tray 2
+              <div class="snip"><svg class="i"><use href="#msg"/></svg><span class="src">Public reply · 3 Nov</span>
+                <span class="txt">…paper is creasing at the <mark>fuser</mark>, so I have ordered a new <mark>fuser</mark> kit and will fit it Thursday…</span></div></td>
+            <td><span class="status" style="border-color:#f59e0b;color:#f59e0b"><span class="dot" style="background:#f59e0b"></span>In Progress</span></td>
+            <td><span class="badge p-high">high</span></td><td><span class="sla"><i class="a"></i><i class="g"></i></span></td></tr>
+          <tr><td class="sel"><span class="box"></span></td><td class="trk">GHD-2026-000398</td>
+            <td class="subj">Toner warning stays on after replacement
+              <div class="snip"><svg class="i"><use href="#lock"/></svg><span class="src internal">Internal note · 4 Nov</span>
+                <span class="txt">…vendor says the counter resets with the <mark>fuser</mark>, not the toner; check the service menu before…</span></div></td>
+            <td><span class="status" style="border-color:#6366f1;color:#6366f1"><span class="dot" style="background:#6366f1"></span>New</span></td>
+            <td><span class="badge p-high">high</span></td><td><span class="sla"><i class="r"></i><i class="a"></i></span></td></tr>
+          <tr><td class="sel"><span class="box"></span></td><td class="trk">GHD-2026-000288</td>
+            <td class="subj">Burning smell from copier in room 2.14
+              <div class="snip"><svg class="i"><use href="#msg"/></svg><span class="src">Public reply · 12 Oct</span>
+                <span class="txt">…the smell was dust on the <mark>fuser</mark> heater after the long weekend; cleaned and tested…</span></div></td>
+            <td><span class="status" style="border-color:#10b981;color:#10b981"><span class="dot" style="background:#10b981"></span>Resolved</span></td>
+            <td><span class="badge p-low">low</span></td><td><span class="sla"><i class="g" style="opacity:.6"></i><i class="g" style="opacity:.6"></i></span></td></tr>
+        </tbody>
+      </table></div>
+    </div></main>
+  </div></div></div>
+</section>
+
+<script>
+  // Only switches which state is shown. ?shot=x shows one state, no switcher.
+  const params = new URLSearchParams(location.search)
+  const shot = params.get('shot')
+  if (shot) document.body.classList.add('shot')
+  function show(s) {
+    document.querySelectorAll('.state').forEach(el => el.classList.toggle('on', el.id === s))
+    document.querySelectorAll('.switcher button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.s === s)))
+  }
+  document.querySelectorAll('.switcher button').forEach(b => b.addEventListener('click', () => show(b.dataset.s)))
+  show(shot || 'a')
+</script>
+</body>
+</html>
