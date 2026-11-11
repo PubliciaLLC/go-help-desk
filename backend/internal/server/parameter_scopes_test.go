@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -122,17 +123,31 @@ var (
 	parameterScopeAuthDir = "../domain/auth"
 )
 
-// mentions reports whether n contains the scope's resource: the constant, a
-// name already known to alias it, or a string literal containing the resource.
-func mentions(n ast.Node, resource string, names map[string]bool) bool {
+// isScopeLiteral reports whether n is a string literal that is exactly the
+// scope's resource or the scope. Exactly: an error message that happens to
+// contain the scope's name is text, not a use of it.
+func isScopeLiteral(n ast.Node, p parameterScope) bool {
+	lit, ok := n.(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return false
+	}
+	v, err := strconv.Unquote(lit.Value)
+	if err != nil {
+		return false
+	}
+	resource, _, _ := strings.Cut(p.scope, ":")
+	return v == resource || v == p.scope
+}
+
+// mentions reports whether n contains the scope's resource: a name already
+// known to stand for it, or a string literal that is the resource or the scope.
+func mentions(n ast.Node, p parameterScope, names map[string]bool) bool {
 	found := false
 	ast.Inspect(n, func(n ast.Node) bool {
-		switch n := n.(type) {
-		case *ast.Ident:
-			found = found || names[n.Name]
-		case *ast.BasicLit:
-			found = found || (n.Kind == token.STRING && strings.Contains(n.Value, resource))
+		if id, ok := n.(*ast.Ident); ok {
+			found = found || names[id.Name]
 		}
+		found = found || isScopeLiteral(n, p)
 		return !found
 	})
 	return found
@@ -171,18 +186,33 @@ func goFiles(t *testing.T, roots []string, authDir string) []string {
 	return out
 }
 
-// authAliases returns the exported const and var names in authDir whose value
-// mentions the scope's resource, directly or through another such name. Using
-// auth.SomeAlias elsewhere is then as good as using auth.ResourceRequesterSearch.
+// authAliases returns every name declared in authDir that stands for the
+// scope: the constant itself, and anything whose value mentions it, directly or
+// through another such name. That covers
+//   - consts and vars, exported or not, so a chain through an unexported
+//     intermediate is followed;
+//   - top-level functions (no receiver) whose whole body is one return
+//     statement that mentions it, so auth.RequesterSearchScope() counts.
+//
+// A function with more in it (ScopesForRole, All, WithinRole) is not followed.
+// They mention the scope because they are the catalogue and the role table,
+// and every caller of those would otherwise look like a handler check.
+//
+// Names declared in other packages cannot be followed this way, and unexported
+// names cannot be reached from outside auth, so they only matter as links.
 func authAliases(t *testing.T, authDir string, p parameterScope) map[string]bool {
 	t.Helper()
-	resource, _, _ := strings.Cut(p.scope, ":")
 	names := map[string]bool{p.resourceConst: true}
 	files, err := filepath.Glob(filepath.Join(authDir, "*.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var specs []*ast.ValueSpec
+	// What each declaration is called and what it is made of.
+	type decl struct {
+		names []string
+		parts []ast.Node
+	}
+	var decls []decl
 	for _, f := range files {
 		if strings.HasSuffix(f, "_test.go") {
 			continue
@@ -192,24 +222,47 @@ func authAliases(t *testing.T, authDir string, p parameterScope) map[string]bool
 			t.Fatalf("%s: %v", f, err)
 		}
 		for _, d := range file.Decls {
-			if gd, ok := d.(*ast.GenDecl); ok && (gd.Tok == token.CONST || gd.Tok == token.VAR) {
-				for _, s := range gd.Specs {
-					specs = append(specs, s.(*ast.ValueSpec))
+			switch d := d.(type) {
+			case *ast.GenDecl:
+				if d.Tok != token.CONST && d.Tok != token.VAR {
+					continue
+				}
+				for _, s := range d.Specs {
+					vs := s.(*ast.ValueSpec)
+					dc := decl{}
+					for _, n := range vs.Names {
+						dc.names = append(dc.names, n.Name)
+					}
+					for _, v := range vs.Values {
+						dc.parts = append(dc.parts, v)
+					}
+					decls = append(decls, dc)
+				}
+			case *ast.FuncDecl:
+				if d.Recv != nil || d.Body == nil || len(d.Body.List) != 1 {
+					continue
+				}
+				if ret, ok := d.Body.List[0].(*ast.ReturnStmt); ok {
+					dc := decl{names: []string{d.Name.Name}}
+					for _, r := range ret.Results {
+						dc.parts = append(dc.parts, r)
+					}
+					decls = append(decls, dc)
 				}
 			}
 		}
 	}
-	// Repeat until nothing new is found, so an alias of an alias is followed.
+	// Repeat until nothing new is found, so a chain of any length is followed.
 	for changed := true; changed; {
 		changed = false
-		for _, s := range specs {
-			for _, v := range s.Values {
-				if !mentions(v, resource, names) {
+		for _, dc := range decls {
+			for _, part := range dc.parts {
+				if !mentions(part, p, names) {
 					continue
 				}
-				for _, n := range s.Names {
-					if n.IsExported() && !names[n.Name] {
-						names[n.Name] = true
+				for _, n := range dc.names {
+					if n != "_" && !names[n] {
+						names[n] = true
 						changed = true
 					}
 				}
@@ -220,12 +273,11 @@ func authAliases(t *testing.T, authDir string, p parameterScope) map[string]bool
 }
 
 // referencedByProduction reports whether non-test code outside authDir uses the
-// scope: a string literal containing the resource, or a selector (auth.X) naming
-// the constant or one of its aliases. Comments are not parsed in, so a note
-// about the scope is not mistaken for the check.
+// scope: a string literal that is the resource or the scope, or a selector
+// (auth.X) naming the constant or one of its aliases. Comments are not parsed
+// in, so a note about the scope is not mistaken for the check.
 func referencedByProduction(t *testing.T, roots []string, authDir string, p parameterScope) bool {
 	t.Helper()
-	resource, _, _ := strings.Cut(p.scope, ":")
 	aliases := authAliases(t, authDir, p)
 	for _, f := range goFiles(t, roots, authDir) {
 		file, err := parser.ParseFile(token.NewFileSet(), f, nil, 0) // mode 0 drops comments
@@ -234,12 +286,10 @@ func referencedByProduction(t *testing.T, roots []string, authDir string, p para
 		}
 		found := false
 		ast.Inspect(file, func(n ast.Node) bool {
-			switch n := n.(type) {
-			case *ast.SelectorExpr:
-				found = found || aliases[n.Sel.Name]
-			case *ast.BasicLit:
-				found = found || (n.Kind == token.STRING && strings.Contains(n.Value, resource))
+			if sel, ok := n.(*ast.SelectorExpr); ok {
+				found = found || aliases[sel.Sel.Name]
 			}
+			found = found || isScopeLiteral(n, p)
 			return !found
 		})
 		if found {
@@ -317,12 +367,21 @@ func TestCheckParameterScope_States(t *testing.T) {
 		}
 	}
 	const (
-		authDecl          = "package auth\n\nconst ResourceXSearch = \"x_search\"\n"
-		authAlias         = authDecl + "\nconst XSearchScope = ResourceXSearch + \":read\"\n"
-		authAliasOfAlias  = authAlias + "\nvar XSearchAgain = XSearchScope\n"
-		authLiteralAlias  = authDecl + "\nvar XSearchKey = \"x_search:read\"\n"
-		authUnexported    = authDecl + "\nvar xSearchScope = ResourceXSearch\n"
-		handlerViaConst   = "package y\n\nfunc h() { _ = auth.ResourceXSearch }\n"
+		authDecl         = "package auth\n\nconst ResourceXSearch = \"x_search\"\n"
+		authAlias        = authDecl + "\nconst XSearchScope = ResourceXSearch + \":read\"\n"
+		authAliasOfAlias = authAlias + "\nvar XSearchAgain = XSearchScope\n"
+		authLiteralAlias = authDecl + "\nvar XSearchKey = \"x_search:read\"\n"
+		authUnexported   = authDecl + "\nvar xSearchScope = ResourceXSearch\n"
+		handlerViaConst  = "package y\n\nfunc h() { _ = auth.ResourceXSearch }\n"
+		// An unexported link in the chain, and a getter function.
+		authViaPrivate    = authDecl + "\nvar xSearchScope = ResourceXSearch\n\nvar XSearchViaPrivate = xSearchScope\n"
+		authGetter        = authDecl + "\nfunc XSearchScope() string { return ResourceXSearch + \":read\" }\n"
+		authGetterViaFn   = authDecl + "\nfunc xSearch() string { return ResourceXSearch }\n\nfunc XSearchScope() string { return xSearch() + \":read\" }\n"
+		authCatalogue     = authDecl + "\nfunc ScopesFor(role string) []string {\n\tswitch role {\n\tcase \"staff\":\n\t\treturn []string{ResourceXSearch}\n\t}\n\treturn nil\n}\n"
+		handlerViaPriv    = "package y\n\nfunc h() { _ = auth.XSearchViaPrivate }\n"
+		handlerViaGetter  = "package y\n\nfunc h() { _ = auth.XSearchScope() }\n"
+		handlerViaCatlg   = "package y\n\nfunc h() { _ = auth.ScopesFor(\"staff\") }\n"
+		handlerMessage    = "package y\n\nvar errMsg = \"this credential does not carry the x_search:read scope\"\n"
 		handlerViaAlias   = "package y\n\nfunc h() { _ = auth.XSearchScope }\n"
 		handlerViaAlias2  = "package y\n\nfunc h() { _ = auth.XSearchAgain }\n"
 		handlerViaKey     = "package y\n\nfunc h() { _ = auth.XSearchKey }\n"
@@ -350,11 +409,21 @@ func TestCheckParameterScope_States(t *testing.T) {
 		{"an unrelated auth name", files{"auth/a.go": authAlias, "newpkg/a.go": handlerUnrelated}, guardPending},
 		{"an alias nobody uses, and an unexported one", files{"auth/a.go": authUnexported, "newpkg/a.go": handlerViaAlias}, guardPending},
 
+		// Error text that names the scope is not a use of it (#639's filter.go).
+		{"the scope named inside a longer message", files{"auth/a.go": authDecl, "newpkg/a.go": handlerMessage}, guardPending},
+		// A function with a body, like the role table, mentions the scope
+		// without being a way to ask for it.
+		{"a role table function is not an alias", files{"auth/a.go": authCatalogue, "newpkg/a.go": handlerViaCatlg}, guardPending},
+
 		{"production uses the constant, no test", files{"auth/a.go": authDecl, "server/a.go": handlerViaConst}, guardFails},
 		{"production uses the literal, no test", files{"auth/a.go": authDecl, "server/a.go": handlerViaLiteral}, guardFails},
 		// Fable's two holes.
 		{"the check is in a package nobody listed", files{"auth/a.go": authDecl, "newpkg/deep/a.go": handlerViaConst}, guardFails},
 		{"the check goes through an alias declared in auth", files{"auth/a.go": authAlias, "newpkg/a.go": handlerViaAlias}, guardFails},
+		// Fable's two remaining holes.
+		{"a chain through an unexported intermediate", files{"auth/a.go": authViaPrivate, "newpkg/a.go": handlerViaPriv}, guardFails},
+		{"an exported function that returns the scope", files{"auth/a.go": authGetter, "newpkg/a.go": handlerViaGetter}, guardFails},
+		{"a getter through an unexported function", files{"auth/a.go": authGetterViaFn, "newpkg/a.go": handlerViaGetter}, guardFails},
 		{"an alias of an alias", files{"auth/a.go": authAliasOfAlias, "newpkg/a.go": handlerViaAlias2}, guardFails},
 		{"an alias declared as a literal", files{"auth/a.go": authLiteralAlias, "newpkg/a.go": handlerViaKey}, guardFails},
 
