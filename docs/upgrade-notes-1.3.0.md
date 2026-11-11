@@ -92,6 +92,8 @@ A hook with payload format **Raw JSON** is sent only the event name (`Type`), `T
 
 Slack, Teams, Discord and Jira Automation hooks are not affected: their messages still carry the subject, tracking number, status and public reply text, and never an address or a note's text.
 
+Later in 1.3.0 the payload gained ids, and new events gained their own (all additive; see "Writes That Used to Announce Nothing (#630)" under Changed behaviour): `reply_id` on `ticket.replied` and `ticket.note_added`, `target_id` and `link_type` on `ticket.unlinked`, `attachment_id` on `ticket.attachment_added`, and `user_id` on `ticket.followed` and `ticket.unfollowed`. The `link_type` removed above is still not sent on `ticket.linked`.
+
 #### Internal notes are their own event
 
 `ticket.replied` is now sent for customer-visible replies only. Internal notes are sent as the new `ticket.note_added`. A hook subscribed to `ticket.replied` stops receiving notes; add `ticket.note_added` (or choose all events) to keep them.
@@ -149,6 +151,15 @@ In 1.2.0, `PATCH /api/v1/me/password` took `password` alone and did not ask for 
 - **`PUT /tickets/{id}/custom-fields` answers `400 bad_request` for a `number` field whose value is not a number.** It used to store any text. The value is trimmed, then must be what Go's `strconv.ParseFloat` accepts, except NaN, infinity, out-of-range values, hexadecimal and underscores. The text is stored as written. On ticket creation such a value is dropped instead of refused: see *`POST /tickets` may report dropped custom-field values* under New features. Values stored before the upgrade are left as they are and shown as they are; because the ticket page now sends only the fields that changed, one of them blocks only a save that changes that field.
 
 A write to a deactivated field is refused as well: see *Custom Fields: Order, Deactivation and Where a Field Appears* under Changed behaviour.
+
+### Passkeys: A Key Whose Counter Did Not Advance Is Refused, and You Cannot Reset Your Own MFA From the User Page (#616, #615)
+
+Two requests that used to succeed now fail.
+
+- **A passkey sign-in whose signature counter did not advance is refused.** `POST /api/v1/auth/local/passkey/finish` answers `401 passkey_suspect`, **every session the account holds ends** (the one signing in included), and an audit entry `passkey_clone_suspected` is written on the account, naming the key by id. A copy of a key runs its own counter, so two copies in use soon trip this. Authenticators that report a counter of zero forever, as most do, are not affected: zero against zero passes. The cost is a person whose authenticator reports a faulty counter being refused; the refusal is per sign-in and not a ban, and the fix is to remove the key (its owner from the Account page, or an administrator from the user page) and register a new one. **A sole administrator whose only second factor is that key cannot do this alone: run `docker compose exec app /app/server reset-factors <email>` (from the `docker/` directory) on the server.** Before this change a counter that did not advance was only written to the server log.
+- **`PATCH /api/v1/admin/users/{id}` with `reset_mfa: true` on your own account answers `409 own_account`**, and nothing in the request is applied. The user page no longer offers Reset MFA or Remove on your own account. Manage your own authenticator and passkeys from the Account page; another administrator, or `reset-factors` on the server, resets yours. `reset_mfa: false` and every other edit of your own account are unchanged.
+
+What to check: a script that clears an administrator's own MFA through the API now gets `409`; use another administrator or the server command.
 
 ### Also breaking, described elsewhere
 
@@ -416,6 +427,19 @@ A select field's options used to be a list you could only replace. A ticket that
 - **Three new admin calls**, for the Custom Fields page: `GET /admin/custom-fields/{id}/assignments` (every place a field is attached), `PUT /admin/custom-fields/order` (the order of all fields) and `GET /admin/custom-fields/{id}/usage` (how many tickets hold the field and each of its options). They refuse API keys and OAuth clients with `403 session_required`: use a browser session. The existing custom-field routes still accept them. `PUT /admin/custom-fields/order` takes `field_def_ids`, which must name every definition exactly once; a repeated id is `400 bad_request`, a list that no longer matches the stored fields is `409 conflict` with nothing written, and the answer is the full list in the new order. `GET /admin/custom-fields` and that answer now carry `place_count`, the number of categories, types and items the field is attached to (0 for a field on no form).
 - **Every admin change to a custom field is now audited**, in the same transaction as the change: the definition, its options and its attachments, under the entity type `custom_field` and the field's id. The actor is the signed-in administrator; for an API key, the key's owner; for an OAuth client, its service user. Every route that changes a field sits behind the administrator gate, so there is always an actor. Deleting a category, type or item also records each field attachment it removed, in the same statement as the delete. The Audit Log shows the field's name, the option text and the place, which are text an administrator wrote.
 
+### Administrators Can Remove One Passkey of Another User (#615)
+
+Until now an administrator who learned that somebody had lost one key could only press **Reset MFA**, which clears the authenticator app and every passkey. **Admin → Users → the user** now lists their passkeys, each with **Remove**.
+
+- **`GET /api/v1/admin/users/{id}/passkeys`** lists them (the same fields as `GET /me/passkeys`; `404` for an unknown account). **`DELETE /api/v1/admin/users/{id}/passkeys/{credId}`** removes one: `204`, `404` for an id that is not that user's (it removes nothing and ends nothing), `403` to an API key or OAuth client (a person signs in; a machine credential may not change how), `409 own_account` for your own id. Neither depends on passkeys being available (#494), so a lost key can be cleaned up while they are off.
+- **Every session the user has ends**, whether or not it was their last factor. The key is presumed lost or compromised.
+- **Audited** as `passkey_removed_by_admin` on the account, with the administrator and the key's id (not its label). Best effort, like `mfa_reset`.
+- **Removing your own passkey now ends your other sessions.** `DELETE /api/v1/me/passkeys/{id}` used to end none and write nothing. It now signs the account out everywhere except the session that made the request, in the same statement as the delete, and writes a `passkey_removed` audit entry with the user as the actor (the key's id, not its label). A script that removes a key and expects its other sessions to survive will find them ended. An id that is not the caller's is still `404` and ends nothing; the factor guard is unchanged.
+- **Two requests that could each add a second factor to an account that had none now cannot both win.** A password-only session confirming a first authenticator app while another request registered a first passkey, or two passkey registrations at once, could both pass the "no factor yet" check and write. A first factor is now written under a lock on the user row; the loser answers `403 mfa_required` and writes nothing (#617). A session that has proved a factor is unaffected.
+- **No migration, no setting.** Rolling back to 1.2.0 loses nothing.
+
+**Limits, stated plainly (#616).** 1.3.0 does not verify attestation: any authenticator is accepted, so an operator cannot require hardware keys, and there is no setting to require a passkey instead of TOTP for a role. Both are planned for 1.3.x. See Passkeys in `DESIGN.md`.
+
 ### OAuth Client and Webhook Changes Are Audited
 
 Creating and deleting an OAuth client, and creating, editing and deleting a webhook, now write to the Audit Log (**Admin → System → Audit Log**), the way issuing and revoking an API key already does. Until now they left no entry.
@@ -520,6 +544,32 @@ A change to a ticket is now **one event**, written to the notification queue in 
 A delivery that fails with a connection error, DNS or TLS failure, timeout, 5xx or 429 is tried again, 30 seconds doubling to an hour, 8 attempts in all. A `Retry-After` header from the receiver is honoured up to an hour. A blocked (internal) address and any other status, such as 400 or 404, are not retried. If you change a hook's URL, deliveries still waiting for the old address are dropped, and so are deliveries waiting for an event the hook no longer lists.
 
 Every delivery now carries two headers: `X-GHD-Delivery`, a UUID that stays the same across the retries of one delivery (use it to drop a repeat), and `X-GHD-Event`, the event name. The signature headers are unchanged.
+
+### Writes That Used to Announce Nothing (#630)
+
+Five writes changed a ticket and told nobody: removing a link, uploading an attachment, following, unfollowing, and the bulk unassignments when a user or a group is deleted. Each now raises its event in the same database transaction as the change, as every other ticket event does. No migration.
+
+**If you have a webhook on "All events" (`*`), or one with an empty event list, read this.** It starts receiving two new events:
+
+- **`ticket.unlinked`**: a link was removed. Sent for the ticket the link was on (the source), like `ticket.linked`. `Payload` has `target_id` and `link_type`. No email.
+- **`ticket.attachment_added`**: a file was uploaded to a ticket, by staff, the requester or a guest. `Payload` has `attachment_id`; read the ticket through the API for the file's name and size. **No email is sent for an upload**: a file usually comes with a reply, which already mails. An upload and a reply sent with it are two deliveries.
+- **Deleting a user or a group now sends `ticket.assigned`**, one delivery per ticket that moved (every ticket the group held, open or not; the user's open tickets), with the deleting administrator as the actor. 1.2.x and the earlier 1.3 betas sent nothing. **No staff email goes out for these**: nobody is told "assigned to you" about a ticket nobody assigned to them. The follow that goes with a deleted user's assignment is announced as `ticket.unfollowed`, below.
+
+If a receiver switches on the event name and treats an unknown name as an error, it will now see these. To keep a hook as it was, list the events it wants by name in Admin → Webhooks instead of "All events".
+
+**Opt-in only: `ticket.followed` and `ticket.unfollowed`.** A hook receives these **only if it lists them by name**. "All events" does not include them, and neither does an empty list: who follows a ticket is personal, and the audit of follows is hidden from staff by default. In Admin → Webhooks they are in their own group under the event list and can be ticked together with All events. `Payload` has `user_id`, the person's id and never their name; look them up through the users API. No email is sent. A follow that was removed because the ticket was reassigned, or its follower deleted, is announced too, as an unfollow riding on the reassignment's own delivery: a hook that lists `ticket.assigned` and not `ticket.unfollowed` is told only `ticket.assigned`, with the body it always had. A hook that lists both (or `*` and `ticket.unfollowed`) is still told `ticket.assigned`, since that is the first name it subscribes to, and that body also carries `Payload.user_id`, the person who unfollowed.
+
+**`reply_id` on replies and notes.** The raw body of `ticket.replied` and `ticket.note_added` now has `Payload.reply_id`, so a receiver can tell which reply a delivery means. It is an id; the text is still not sent. Hooks that read only the keys they know are unaffected.
+
+**Other behaviour.**
+
+- Removing a link that does not exist still answers 204 and announces nothing.
+- Removing a link writes no audit entry, the same as adding one.
+- History and Redeliver list and replay the new names. A hook that no longer lists `ticket.followed` or `ticket.unfollowed` by name is refused a replay (`409 webhook_not_subscribed`), even if it is on "All events".
+- Chat and Jira messages are headed "Unlinked from ...", "Attachment added", "Ticket followed" and "Ticket unfollowed". They name no file and no person.
+- The new names are in the `WebhookEvent` enum in `docs/api/openapi.yaml`.
+
+**Rolling back.** There is no migration and nothing is stored that needs undoing. A hook that lists one of the new names keeps it in its list; an older version never sends those events.
 
 ### Admin API: data left behind, half-applied edits and path checks (#419)
 
@@ -632,7 +682,7 @@ In 1.2.x, deleting a user left their open tickets pointing at them. Such a ticke
 
 - **Which tickets:** open ones (neither Resolved nor Closed) whose assignee is a deleted user. Resolved and Closed tickets are history and keep the person who handled them. A **disabled** user is still in the user list, so their tickets are left alone.
 - **What you see afterwards:** those tickets are in the unassigned queue, and each has an `unassigned` entry on its Activity feed and in the admin audit view, naming the deleted user it had. The entry has **no actor**, because no person ran the migration. Their `updated_at` is set to the time of the upgrade.
-- **Nothing else changes.** No mail is sent, no webhook or event is raised, and no SLA clock moves. A group assignment needs nothing: deleting a group has always cleared it.
+- **Nothing else changes.** No mail is sent, no webhook or event is raised, and no SLA clock moves. A group assignment needs nothing: deleting a group has always cleared it. (This is about the migration. A delete done after the upgrade is announced to webhooks, one `ticket.assigned` per ticket, with no staff mail: see "Writes That Used to Announce Nothing (#630)".)
 - **Rolling back:** the `down` migration does nothing. The tickets stay unassigned; the audit entries record who they had.
 
 ### The Audit Log Page Is for Administrators Only

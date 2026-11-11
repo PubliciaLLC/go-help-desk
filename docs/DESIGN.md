@@ -122,7 +122,8 @@ Admins manage accounts from **Admin → Users**. The list is paged, 50 to a page
 
 - **Profile** — edit display name, email address, and role. Changes take effect immediately.
 - **Account info** — member since date, login type (Local / SSO (SAML) / SSO (OIDC) / Local + SSO), MFA enrollment status. The login type is read off what the account holds: a password, a SAML subject, an OIDC subject. The API reports it as `auth_type`: `local`, `saml`, `oidc`, `both` (password and SAML), or a `+`-joined combination that includes `oidc` (`local+oidc`, `saml+oidc`, `local+saml+oidc`).
-- **MFA reset** — clears every second factor the user holds (the authenticator and all registered passkeys) and ends all of their sessions, so the user re-enrols on next login. Only shown when the user holds any second factor.
+- **MFA reset** — clears every second factor the user holds (the authenticator and all registered passkeys) and ends all of their sessions, so the user re-enrols on next login. Only shown when the user holds any second factor, and not on your own account (refused with `409 own_account`; see Passkeys, Losing a key).
+- **Passkeys** — the user's registered passkeys, each with **Remove**: one key goes and the user is signed out everywhere (`GET` and `DELETE /admin/users/{id}/passkeys[/{credId}]`, session only, audited). Not offered on your own account.
 - **Enable / Disable** — disabled accounts cannot log in. Tickets and history are preserved. Re-enable at any time.
 - **Password reset** — set a new password directly (shown only for accounts with a local password). No email link required for admin-initiated resets. The account holder can also reset their own by email (Authentication → Forgot password, #451); the administrator's route is unchanged and is the way back when email is off.
 - **Groups** — view current group membership, add to groups, or remove from groups.
@@ -794,13 +795,57 @@ e.g. "Security key, added 3 March") and created/last-used timestamps.
 - `backup_eligible` / `backup_state` say whether a credential is synced: the
   only way an administrator can tell a hardware key from an iCloud passkey.
   Not captured at registration, the question is unanswerable forever.
-- **Sign count is stored and not enforced.** Most modern authenticators return
-  zero always and a "must increase" rule locks those people out. A counter that
-  was non-zero and goes backwards is a genuine clone signal with no
-  false-positive cost; it is logged and gates nothing (the shape of
-  `KnownMalicious` in `circl.go`).
+- **A sign count that does not advance is refused**
+  ([#616](https://github.com/PubliciaLLC/go-help-desk/issues/616), part b). Each
+  assertion carries the authenticator's signature counter, and a copy of a key
+  runs its own counter, so two copies in use soon assert a count at or below the
+  one on record. The rule is the library's (`go-webauthn`'s `CloneWarning`): an
+  asserted count at or below the stored one is a warning **unless both are
+  zero**. Zero forever is what most authenticators report (synced passkeys among
+  them), and refusing that would refuse honest sign-ins, so the all-zero case
+  passes. On a warning `POST /auth/local/passkey/finish` answers
+  `401 passkey_suspect`, **ends every session the account holds** (the one doing
+  the sign-in included), and writes a `passkey_clone_suspected` audit entry on
+  the account, naming the key by id and no actor (nobody has proved who is at the
+  other end). The entry is best effort and detached from the request, as the
+  other factor audits are. The stored counter is **not** written on a refusal, and
+  the write that records a good sign-in (`Touch`) only ever raises it, because it
+  runs off the response path and two sign-ins can land out of order: a late write
+  of a lower count would otherwise put the counter back below one a clone had
+  used.
+  The cost is a real person whose authenticator reports a buggy counter being
+  refused; how many such authenticators exist is not known. Refusal is per assertion,
+  not a ban: a key that later asserts a count above the stored one signs in
+  again, which is also why a clone and its original keep tripping each other. The
+  remedy is to remove the key and register a new one. The key's owner cannot do
+  that from the Account page when the key is their only way past the second step
+  (the key blocks that step, and enrolment refuses a session that has not proved
+  the factor the account already has), so who can recover depends on who is
+  locked out.
+  **Who can be locked out:** any account, of any role, while sign-in MFA is on
+  server-wide, that holds no TOTP and whose registered key (or every one of its
+  keys) is refused. The sign-in asks for the key whenever MFA is on and a passkey
+  is the account's only factor (`handler_auth.go`), whether or not the account's
+  role is one MFA is enforced for, so enforcement is not a condition. An account
+  that also has a TOTP signs in with it and is not locked out, and an account
+  with a second, unaffected key signs in with that one. **How each recovers:** a
+  staff member or requester has an administrator remove the key (user page) or
+  Reset MFA. An administrator has another administrator do the same, since
+  nobody can Reset MFA on their own account. **A sole administrator has no one to
+  ask**, so the way back is `reset-factors` on the server, below. It does not
+  touch the last-administrator guard, because the password is still a way in and
+  the factors are not what that guard watches.
+- **Counter wraparound is refused like a clone.** The counter is 32 bits. A key
+  that reaches the maximum and wraps to 0 asserts a count at or below the stored
+  one, and the stored one is not zero, so the rule above refuses it, and it keeps
+  being refused: the stored counter is never lowered, so the key would have to
+  climb past the old maximum again. It is refused until the key is removed and
+  registered again, the same remedy and the same recoveries as a suspected clone.
+  No real authenticator is expected to get there (4 billion sign-ins), so it is
+  not special-cased.
 - The ceremonies are `github.com/go-webauthn/webauthn`'s; nothing is hand-rolled.
-- A passkey's `last_used_at` is written in a goroutine, off the response path,
+- A passkey's `last_used_at` (and its counter, which only rises) is written in a
+  goroutine, off the response path,
   with a context that does not belong to the request (as webhook dispatch
   does): it answers "which key is still in use", but a sign-in must not wait on
   it or fail because of it.
@@ -860,13 +905,29 @@ owner protected the account does not outlive that protection. Enrolment confirm
 re-runs the guard rather than trusting the check made when enrolment was staged
 ([#327](https://github.com/PubliciaLLC/go-help-desk/issues/327)).
 
-**A first TOTP enrolment is a conditional write.** The guard asks "does this
-account hold no factor yet?" and the confirm then writes; two confirmations
+**A first factor is a conditional write, under a lock.** The guard asks "does
+this account hold no factor yet?" and the confirm then writes; two requests
 racing on a fresh account could both pass the question. A session that has not
-proved a factor therefore writes with `WHERE NOT mfa_enabled` and the loser is
-answered 403; a session that has proved one (a rotation) still overwrites, on
-purpose ([#338](https://github.com/PubliciaLLC/go-help-desk/issues/338)).
-Passkey registration has no such condition in its write.
+proved a factor therefore writes its first TOTP with `WHERE NOT mfa_enabled` and
+the loser is answered 403; a session that has proved one (a rotation) still
+overwrites, on purpose
+([#338](https://github.com/PubliciaLLC/go-help-desk/issues/338)). That covered
+two TOTP confirms and said nothing about a passkey, which has its own door: a
+TOTP confirm racing a passkey registration, or two registrations, could each pass
+the check and a password-only session could end up adding a factor beside the
+owner's first one
+([#617](https://github.com/PubliciaLLC/go-help-desk/issues/617)). Both doors now
+take the user row (`SELECT ... FOR UPDATE`) and only then ask, in a statement of
+their own, whether the account holds a TOTP or a passkey; whichever gets the row
+second sees what the first wrote, writes nothing and is answered
+`403 mfa_required`, the answer the frontend already handles. The question cannot
+be folded into one statement with the lock: under READ COMMITTED a statement
+that waits on a row keeps the snapshot it started with. Lock order is the user
+row, then credentials, the same as `ClearFactors`. A passkey registration from a
+session that has proved a factor (`FactorVerified`) is unconditional, as a TOTP
+rotation is. The tests hold the row in one transaction, start the write, wait for
+Postgres to report it queued and commit the other factor, so the interleaving is
+staged rather than raced.
 
 **Verifying from the Account page**
 ([#336](https://github.com/PubliciaLLC/go-help-desk/issues/336)). A session that
@@ -902,9 +963,49 @@ a TOTP enrolment or at least one registered passkey** (refusing the phishing-res
 
 **Losing a key.** The owner removes it from their own account page
 (`DELETE /me/passkeys/{id}`, behind the same factor guard) and registers a new
-one; that is the ordinary case. An administrator removing ONE credential for
-somebody else is **not built**: every passkey route lives under `/me` and
-`adminRouter` has none; the user admin page is where it belongs when it is built, and saying it already exists is how an operator ends up looking for a button that was never written. What an administrator can do is the user page's **Reset
+one; that is the ordinary case. **Removing your own key ends your OTHER
+sessions and keeps this one**
+([#615](https://github.com/PubliciaLLC/go-help-desk/issues/615)), as a password
+change and a new factor do: the key may be the one somebody else is signed in
+with. The delete and the sessions ending are one statement (the same
+`RemoveUserPasskey` the administrator's removal uses, which is told which session
+to spare), so a failure between them cannot leave the key gone and the other
+sessions alive, and a credential that is not yours is a `404` that ends nothing.
+It writes a `passkey_removed` audit entry on the account with **the user as the
+actor** (the factor guard has already required that they proved a factor), naming
+the key by id and not its label; best effort and detached from the request, like
+the administrator's. **An administrator can remove ONE credential
+for somebody else** ([#615](https://github.com/PubliciaLLC/go-help-desk/issues/615)):
+the user page lists the person's passkeys (`GET /admin/users/{id}/passkeys`, the
+same JSON as `/me/passkeys`) with a Remove on each
+(`DELETE /admin/users/{id}/passkeys/{credId}`). Neither route depends on passkeys
+being available (#494), because a lost key has to be cleanable while they are off.
+
+- **Always ends every session the account has**, whether or not it was the last
+  factor: the key is presumed lost or compromised, and one rule is simpler than
+  two. The removal and the sessions ending are one statement, and the credential
+  is matched on its owner in that statement, so naming somebody else's key under
+  this person's path is a `404` that removes nothing and ends nothing.
+- **Audited** as `passkey_removed_by_admin` on the account, naming the
+  administrator and the key's id (never its label, which is free text the owner
+  typed). Like `mfa_reset`, it is not transactional with the removal: whoever can
+  remove a key already holds the capability, so the entry is visibility, and the
+  write is detached from the request so hanging up cannot suppress it.
+- **Session only.** A key or OAuth client is refused (`403`): how a person signs
+  in is not something a machine credential may change.
+- **Not your own account.** `DELETE` on your own id is `409 own_account`, and so
+  is `PATCH /admin/users/{your id}` with `reset_mfa: true` (refused whole, before
+  any write). `adminRouter` checks only that the session passed MFA, and a
+  session that owed no factor has passed it without proving one, so either door
+  would let such a session strip its own factor around
+  `requireFactorOrFirstEnrolment`. The Account page is the way for your own, and
+  it holds that guard; another administrator, or `reset-factors` on the server,
+  resets yours. The user page does not offer either on your own account.
+- **Last administrator:** not affected. Removing a key leaves the password as a
+  way in, and enrolment stays outside `RequireMFA` (see the guard note under User
+  Management and the end of this section).
+
+What an administrator can also do is the user page's **Reset
 MFA**, which clears **every** second factor (the authenticator and all passkeys)
 and ends the account's sessions in one statement (`ClearFactors`, all or
 nothing; it used to clear only the authenticator, leaving a passkey-only person
@@ -922,8 +1023,10 @@ holding only the password registers their own key and obtains the second factor,
 passing the gate rather than breaking it. The consequence is a real lockout:
 **an administrator whose registered key is lost cannot recover alone**, and a
 *sole* administrator has no one to ask (setup does not reopen). The recovery is
-`reset-factors` on the server, not an administrator clearing one credential,
-which is not built. This is not new: `GenerateMFASecret` has refused
+`reset-factors` on the server: another administrator can remove the key (one
+credential, or Reset MFA for all of them), but a sole administrator has none.
+The same holds for a key refused as a suspected clone (the sign count paragraph
+above). This is not new: `GenerateMFASecret` has refused
 re-enrolment for a TOTP-protected account since the re-enrolment fix.
 
 **The way back in is a command run on the server**, not a recovery code and not
@@ -1074,7 +1177,39 @@ unavailable: ...` with the reason) and carries on with no passkey service, and:
 sign-in; attestation verification against a metadata service; a per-role
 "passkey required, TOTP no longer sufficient" policy; and any route by which a
 machine credential could register or use a passkey (`DenyMachineCredentials`
-refuses that and will keep refusing it).
+refuses that and will keep refusing it). The two of those that
+[#616](https://github.com/PubliciaLLC/go-help-desk/issues/616) raised are limits
+of 1.3.0 and are described next.
+
+**Two limits of the passkey check in 1.3.0** ([#616](https://github.com/PubliciaLLC/go-help-desk/issues/616),
+parts a and c). Both were decided to be documented now and built in 1.3.x, not
+before the tag.
+
+- **Attestation is not verified: any authenticator is accepted.** Registration
+  asks for no attestation, so browsers send `fmt: none`, and the library checks a
+  present statement's signature but not its trust chain. Nothing here knows what
+  kind of authenticator a key is. The AAGUID is stored but is self-reported, so
+  an allow-list on it would not be a control. Enforcing attestation (the FIDO
+  Metadata Service, a request for `direct` attestation, a refusal of `none`, a
+  cache and a refresh, an answer for installs with no outbound access) would
+  also very likely mean **hardware keys only**, because synced passkeys (iCloud
+  Keychain, Google Password Manager) generally send none; that would contradict
+  accepting synced passkeys, which this section does on purpose. That is a
+  product decision before it is a code change. What the property above does
+  claim, phishing-resistance, holds for every credential this accepts; what an
+  operator cannot do is require a particular kind of authenticator. The
+  `backup_eligible` flag is how to tell a synced credential from a hardware key
+  afterwards.
+- **There is no "passkey required" policy.** `MFARequiredFor(role)` is satisfied
+  by a TOTP enrolment **or** a passkey, so an operator who enforces MFA for a
+  role cannot also require that role to use a passkey rather than TOTP, and a
+  role's members with TOTP are not nudged to move to a key. Building it means a
+  new setting, a login state in which TOTP proves a factor but does not pass
+  the gate (so the person can only enrol a key), TOTP enrolment that stops
+  satisfying the gate for those roles, a rule for what happens while passkeys
+  are off (#494) and an exemption for SSO sign-ins, and it touches the login
+  state machine, which has had many fixes. An operator who needs this today
+  has no setting for it.
 
 ### SAML (Optional, Off by Default)
 
@@ -3565,16 +3700,39 @@ on the existing webhook feature instead of as plugins.
   `ticket.created`, `ticket.assigned`, `ticket.status_changed`,
   `ticket.replied` (a customer-visible reply only), `ticket.note_added` (a
   staff-only note), `ticket.resolved`, `ticket.closed`, `ticket.reopened` (every reopen: a requester's reply, a status change out of Resolved or Closed, and `POST /reopen`) and
-  `ticket.linked`, `ticket.priority_changed` (a priority change) and
-  `ticket.classified` (a category, type or item change). A hook matches a change
-  when any of the change's kinds is in its list, and fires once. The raw body
-  keeps its shape. See Ticket Events: One Change, One Event.
+  `ticket.linked`, `ticket.priority_changed` (a priority change),
+  `ticket.classified` (a category, type or item change), `ticket.unlinked` (a
+  link removed), `ticket.attachment_added` (a file uploaded), and the two
+  **opt-in** events `ticket.followed` and `ticket.unfollowed`. A hook matches a
+  change when any of the change's kinds is in its list, and fires once. The raw
+  body keeps its shape. See Ticket Events: One Change, One Event.
+  **Opt-in events** ([#630](https://github.com/PubliciaLLC/go-help-desk/issues/630),
+  D40). `ticket.followed` and `ticket.unfollowed` are sent **only to a hook that
+  lists them by name**. A hook on "All events" (`*`), and a legacy hook with an
+  empty list, does not get them; a hook can list `*` and the follow events
+  together to get everything. Following is personal, and the follow audit that
+  staff may not see by default would be public the moment a hook subscribed to
+  "everything". The payload carries the person's **id** (`user_id`), never their
+  name, and no email is sent. Removing a ticket's old assignee's follow when the
+  ticket is reassigned, or when that person is deleted, is an unfollow and is
+  announced as one, as one more kind of the reassignment's own event. A hook that opted into the unfollow is told the event's first name it subscribes to (usually `ticket.assigned`), and that raw body also carries `user_id`; a hook that did not opt in never sees the kind or the id.
   **What the raw format carries** ([#448](https://github.com/PubliciaLLC/go-help-desk/issues/448)).
   The raw body is **ids only**: the event name (`Type`), `TicketID`, `ActorID`
   (null for a system event, and for a routed create under `ticket.assigned`), `OccurredAt` and a `Payload` holding only the ids
   `new_status_id` (status changed) and `target_id` (linked), where the event
-  has them. Every other event has no payload. Whether an event is a reply or a
-  note is its name, so there is no `internal` flag, and no link type is sent.
+  has them. Whether an event is a reply or a note is its name, so there is no
+  `internal` flag. The ids a name carries: `ticket.status_changed` has
+  `new_status_id`; `ticket.linked` has `target_id`; `ticket.unlinked` has
+  `target_id` and `link_type` (the same two tickets can be linked in more than
+  one way, so the id alone does not say which link went); `ticket.replied` and
+  `ticket.note_added` have `reply_id`; `ticket.attachment_added` has
+  `attachment_id`; `ticket.followed` and `ticket.unfollowed` have `user_id`.
+  Every other event has no payload, except that a hook which lists
+  `ticket.unfollowed` also gets `user_id` on a delivery under whatever name it
+  is told (for example `ticket.assigned`) when the change dropped a follow; a
+  hook that does not list it never does. Opting in counts from when the hook
+  named the event: a change that happened before is never upgraded, so a retry
+  after the edit carries no `user_id`. No link type is sent on `ticket.linked`.
   No address, subject, tracking number, priority, status name or reply text is
   sent, and none is stored with it. The keys are an allow list, so a key added
   to an event later stays off the wire until someone decides a receiver should
@@ -3605,7 +3763,7 @@ on the existing webhook feature instead of as plugins.
   No payload and no error text is shown or returned. The event is kept beside
   each entry only so **Redeliver** can queue it again, as a new delivery with a
   new `X-GHD-Delivery`. What is kept is ids only: the ids of a raw body plus
-  the link type and the id of the reply the event announced. No address,
+  the link type of a `ticket.linked`. No address,
   subject, tracking number or text. For a raw hook the replay is identical to
   the original. For a Slack, Teams, Discord or JIRA hook the message is
   **rebuilt from the ticket as it is now**: its current subject, tracking
@@ -3618,7 +3776,9 @@ on the existing webhook feature instead of as plugins.
   `409 webhook_disabled` for a disabled hook,
   `409 webhook_paused` for a paused one (its API key is no longer active; it
   needs re-approving, and enabling does not help),
-  `409 webhook_not_subscribed` when the hook no longer lists that event, and
+  `409 webhook_not_subscribed` when the hook no longer lists that event (for
+  `ticket.followed` and `ticket.unfollowed`, when it no longer lists it **by
+  name**: `*` does not cover them), and
   `409 webhook_filter_excludes` when the hook's ticket filter, as it is now,
   does not admit the ticket, and `409 webhook_filter_unverifiable` when the
   hook has a filter and the ticket no longer exists, so the filter cannot be
@@ -3977,36 +4137,59 @@ raises into the transaction's collector; none dispatches after the commit.
 | `close` (REST close, auto-close scheduler as the system) | the status kinds into Closed (`status_changed`, `closed`) | no recipient |
 | `Reopen` (REST `POST /reopen`) | the status kinds (`status_changed`, `reopened`), plus `priority_changed` on the first reopen, if the priority moved | recipient = guest; guest-link flag |
 | `AddLink` (REST link) | `ticket.linked` on the source ticket | `target_id`, `link_type` |
+| `RemoveLink` (REST `DELETE` link; staff and admin) | `ticket.unlinked` on the source ticket, only when a link was removed. In a transaction that locks both tickets in `AddLink`'s order (the #210 deadlock). Writes **no audit entry**, as `AddLink` writes none. | `target_id`, `link_type`. No mail. The actor is the caller, or nobody for a credential with no person behind it. |
+| `CreateAttachment`, `CreateGuestAttachment` (REST and guest upload) | `ticket.attachment_added`, in the transaction that writes the row, so a refused or failed upload announces nothing | `attachment_id`. **No mail** (D39): a file usually comes with a reply, which already mails. An upload plus a reply is two deliveries. |
+| `Follow`, `Unfollow` (REST `PUT` and `DELETE /follow`) | `ticket.followed` or `ticket.unfollowed`, only when it changed something, in the transaction that writes the follower row and its audit entry. **Opt-in by name.** | `user_id` (the person's id, not their name). No mail. |
+| `UnassignForUser` (an administrator deletes a user) | `ticket.assigned` per open ticket the user held, the assignee cleared, with the deleting administrator as the actor; plus `ticket.unfollowed` when the user followed it (the follow goes with the assignment). **Staff mail is suppressed.** | `user_id` only when an unfollow rides along. `Changes` has `assignee_user_id`. |
+| `DeleteGroup` (an administrator deletes a group) | `ticket.assigned` per ticket the group held, open or not, the group cleared, with the deleting administrator as the actor. **Staff mail is suppressed.** | `Changes` has `assignee_group_id`. |
 | `RequestGuestLink` (guest "resend my link") | `guest.link_resent` through `OutboxDispatcher` | what the guest typed; no ticket id |
 | `registration.Service.Signup` | `registration.verify` through `OutboxDispatcher` | `pending_id` only |
 
-Writes that change a ticket and announce nothing: `RemoveLink`, attachments,
-follow and unfollow, and the bulk unassignments `UnassignForUser` and
-`DeleteGroup`. (The last two move tickets without telling the new holder.
-That is a gap, but a separate one.) The `staff.*` events are not produced by
-domain code at all: the worker makes them (Staff email).
+The bulk unassignments announce to webhooks and **mail no staff** (D41). The
+event carries a `SuppressStaffMail` flag (`notification.Event`, kept in the
+outbox row). `MailsStaff` is false for it, so no `email` row is queued, and the
+staff fan-out also refuses it if a row exists anyway. Without that, a group
+delete would mail each member and follower "assigned" once per ticket in a
+burst. A deleted user's group, and the tickets' followers, hear nothing. The
+`staff.*` events are not produced by domain code at all: the worker makes them
+(Staff email).
+
+Still announcing nothing: `DeleteAttachment`, which has no route and no
+production caller, so there is no removal to announce.
 
 #### Consumers
 
 | Consumer | Reads | Decides by |
 | --- | --- | --- |
 | Requester email (`EmailDispatcher`, `notify/email.go`) | the requester's `email` row, made by `ChangeSplitter` | `Type` → template: created, reopened, resolved, replied, status_changed, guest_link. Needs a `Recipient` or a guest link. Status, resolve and reopen mail go to guests only. |
-| Staff email (`ChangeSplitter`, then `StaffMailDispatcher` + `StillEntitled` at send) | the change's `email` row, then the `staff.*` rows | `Kinds` → candidates (assigned, requester replied, reopened). Then switches, overrides, actor skip, one mail per person. At send: account still mailable, still holds, still in group, or still follows and can see the ticket. |
+| Staff email (`ChangeSplitter`, then `StaffMailDispatcher` + `StillEntitled` at send) | the change's `email` row, then the `staff.*` rows | `Kinds` → candidates (assigned, requester replied, reopened); none at all for a change flagged `SuppressStaffMail`. Then switches, overrides, actor skip, one mail per person. At send: account still mailable, still holds, still in group, or still follows and can see the ticket. |
 | Guest link (`GuestLinkDispatcher`) | `email` row with the guest-link flag | issues and rotates the token at send time |
 | Verification (`VerificationDispatcher`) | `verification` row | `Type`: `registration.verify` is sent by `pending_id` (the address and token are read from the pending row); `password.reset_requested` carries the typed address as its recipient and no `pending_id`, and is handed to the password-reset send step, which looks the account up and makes the token at send time (#451) |
-| Webhooks (`WebhookDispatcher`) | `webhook` row | `subscribedKinds(hook, event)`: any kind of the change in the hook's list, or `*`, or an empty list. Then the ticket filter on `Ticket`. Again at every retry and at Redeliver. |
+| Webhooks (`WebhookDispatcher`) | `webhook` row | `subscribedKinds(hook, event)`: any kind of the change in the hook's list, or `*`, or an empty list, except that `ticket.followed` and `ticket.unfollowed` match only a hook that lists them by name. Then the ticket filter on `Ticket`. Again at every retry and at Redeliver. |
 | Chat and ITSM formats (`notify/format*.go`) | the per-hook row | headline chosen by `Type`; "Also" line, reply text and status name chosen by the kinds the hook subscribes to |
 | Plugin registry | nothing | never called |
 
 #### What subscribers are promised
 
 The **raw body** is ids only: `Type`, `TicketID`, `ActorID`, `OccurredAt`, and
-a `Payload` holding only the id that belongs to the name the body is sent
+a `Payload` holding only the ids that belong to the name the body is sent
 under: `new_status_id` for `ticket.status_changed`, `target_id` for
-`ticket.linked`, nothing for any other name (`rawKeysFor`,
-`notify/webhook_body.go`). Headers: `X-GHD-Delivery` and `X-GHD-Event` (the same
-name as `Type`), plus the signature. The OpenAPI `WebhookEvent` enum lists `*`
-and the eleven names. The raw body already changed during the 1.3 betas
+`ticket.linked`, `target_id` and `link_type` for `ticket.unlinked`, `reply_id`
+for `ticket.replied` and `ticket.note_added`, `attachment_id` for
+`ticket.attachment_added`, `user_id` for `ticket.followed` and
+`ticket.unfollowed`, nothing for any other name (`rawKeysFor`,
+`notify/webhook_body.go`) with one exception: a hook that opted into
+`ticket.unfollowed` also gets `user_id` on a delivery under whatever name it is
+told (for example `ticket.assigned`) when the change dropped a follow, and a
+hook that did not opt in never does. Opting in counts from when the hook named
+the event: a change that happened before is never upgraded, so a retry after
+the edit carries no `user_id`. The history copy (every format) and a raw hook's
+queued row never hold that `user_id` for a hook that did not list the event. A
+Slack, Teams, Discord or JIRA hook's queued row holds the whole payload until it
+is sent or finally fails and is scrubbed. Headers: `X-GHD-Delivery` and `X-GHD-Event` (the same
+name as `Type`), plus the signature. `*` does not include `ticket.followed` and
+`ticket.unfollowed`: a hook gets those only by listing them. The OpenAPI
+`WebhookEvent` enum lists `*` and the fifteen names. The raw body already changed during the 1.3 betas
 (#448), and `docs/upgrade-notes-1.3.0.md` describes both changes to
 1.2.x users.
 
@@ -4029,6 +4212,11 @@ and the eleven names. The raw body already changed during the 1.3 betas
 | Resolve button on an already-Resolved ticket, new notes | `resolved` only | 1 |
 | `PATCH` priority only | `priority_changed` | 1 |
 | `PATCH` category only | `classified` | 1 |
+| Remove a link | `unlinked` | 1 |
+| Upload an attachment | `attachment_added` | 1 (and a reply sent with it is a second delivery) |
+| Follow or unfollow | `followed` or `unfollowed` | 0: only a hook that lists it by name |
+| Reassign a ticket away from a follower | `assigned` + `unfollowed` | 1 (a `*` hook is told `assigned`; the unfollow is for hooks that list it) |
+| Delete a user, or a group (per ticket held) | `assigned` (cleared) | 1 per ticket, **no staff mail** |
 
 The same status change has the same names whichever button made it. A hook
 subscribed to `ticket.resolved` sees a resolve done with `PATCH`, and a hook
@@ -4063,9 +4251,12 @@ older fields and has three more, none of which is sent in a raw body:
 order (`notification.KindOrder`) is the order of importance:
 `ticket.created`, `ticket.reopened`, `ticket.resolved`, `ticket.closed`,
 `ticket.status_changed`, `ticket.assigned`, `ticket.priority_changed`,
-`ticket.classified`, `ticket.replied`, `ticket.note_added`, `ticket.linked`.
-Two kinds are new: `ticket.priority_changed` and `ticket.classified`
-(category, type or item). Both can be subscribed to.
+`ticket.classified`, `ticket.replied`, `ticket.note_added`, `ticket.linked`,
+`ticket.unlinked`, `ticket.attachment_added`, `ticket.followed`,
+`ticket.unfollowed`. Two kinds are new: `ticket.priority_changed` and
+`ticket.classified` (category, type or item). Both can be subscribed to. Four
+more came with #630: `ticket.unlinked`, `ticket.attachment_added`,
+`ticket.followed` and `ticket.unfollowed`, the last two opt-in by name.
 
 **Status kinds are the same for every door** (`statusKinds`,
 `internal/domain/ticket/events.go`). Every status move carries
@@ -4270,7 +4461,10 @@ through the API by `TicketID`. The tracking number stays out, as #448 ruled on
 headline comes from the hook's `Type`, as before. The headline for
 `ticket.priority_changed` is "Priority changed" and for `ticket.classified`
 "Reclassified" (`headline`, `notify/format.go`); neither carries a value or a
-name. Jira has no headline and keeps the event name in its `event` key. Under
+name. `ticket.unlinked` is "Unlinked from <ticket id> (<link type>)",
+`ticket.attachment_added` is "Attachment added" (no file name), and
+`ticket.followed` and `ticket.unfollowed` are "Ticket followed" and "Ticket
+unfollowed": the person is an id, and a chat message does not look one up. Jira has no headline and keeps the event name in its `event` key. Under
 the headline:
 
 - **The "Also" line (ruling 10).** One line names the change's other kinds, such
@@ -4384,6 +4578,12 @@ from `Ticket`, after the commit.
     requester's reopening reply, and `ticket.resolved` and `ticket.closed` on a
     `PATCH`.
   - `*` hooks start receiving `ticket.priority_changed` and `ticket.classified`.
+  - `*` hooks also start receiving `ticket.unlinked` and `ticket.attachment_added`
+    (#630). They do **not** receive `ticket.followed` or `ticket.unfollowed`.
+  - A deleted user's tickets, and a deleted group's, are announced to `*` hooks as
+    `ticket.assigned` (cleared), one per ticket, with no staff mail (#630).
+  - The raw body of `ticket.replied` and `ticket.note_added` now carries
+    `reply_id` in `Payload`.
   - A status change to the status the ticket already has no longer announces
     `ticket.status_changed` (1.2.x did).
 - **Redeliver.** It sends the name that was sent, because the kept copy holds no
@@ -4418,11 +4618,7 @@ webhooks.
 
 - Ordering between events. Two changes to one ticket can still arrive out of
   order after a retry, as before.
-- Events for writes that announce nothing: `RemoveLink`, attachments, follow and
-  unfollow, and the bulk `UnassignForUser` and `DeleteGroup`.
 - A plugin API.
-- `reply_id` on the raw wire. A receiver still cannot tell which reply a
-  `ticket.replied` delivery means without listing replies.
 - A message broker.
 
 #### 9. Tests

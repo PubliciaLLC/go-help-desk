@@ -108,7 +108,7 @@ func newLockOrderFixture(t *testing.T, db *testutil.DB) *lockOrderFixture {
 // against real Postgres locking semantics rather than asserted from reading
 // the manual.
 func TestRawLockOrder_SourceThenLinkCanDeadlock(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	t.Cleanup(closeDB)
 	f := newLockOrderFixture(t, db)
 
@@ -188,7 +188,7 @@ func TestRawLockOrder_SourceThenLinkCanDeadlock(t *testing.T) {
 // simply cannot get far enough ahead to create one) — which is the point.
 // Both must complete without error.
 func TestRawLockOrder_BothLocksBeforeLinkAvoidsDeadlock(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	t.Cleanup(closeDB)
 	f := newLockOrderFixture(t, db)
 

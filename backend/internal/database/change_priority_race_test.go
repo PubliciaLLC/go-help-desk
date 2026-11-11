@@ -35,10 +35,6 @@ func (f *changePriorityFx) raceTicket(t *testing.T) ticket.Ticket {
 	tk.ID = uuid.New()
 	tk.TrackingNumber = ticket.TrackingNumber("CPR-" + uuid.NewString()[:8])
 	require.NoError(t, f.ts.Create(f.ctx, tk))
-	t.Cleanup(func() {
-		_, _ = f.db.SQL.Exec(`DELETE FROM tickets WHERE id = $1`, tk.ID)
-		_, _ = f.db.SQL.Exec(`DELETE FROM audit_log WHERE entity_id = $1`, tk.ID)
-	})
 	require.NoError(t, f.ss.CreateRecord(f.ctx, sla.Record{TicketID: tk.ID, PolicyID: f.pol[ticket.PriorityMedium].ID}))
 	return tk
 }

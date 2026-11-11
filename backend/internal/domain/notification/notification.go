@@ -24,6 +24,16 @@ const (
 	EventTicketReopened  EventType = "ticket.reopened"
 	EventTicketLinked    EventType = "ticket.linked"
 
+	// EventTicketUnlinked, EventTicketAttachmentAdded, EventTicketFollowed and
+	// EventTicketUnfollowed are writes that announced nothing before (#630).
+	// Followed and unfollowed are opt-in (OptInWebhookEvents): personal, so a
+	// hook gets them only by listing them. Their payloads carry ids:
+	// target_id and link_type, attachment_id, and user_id.
+	EventTicketUnlinked        EventType = "ticket.unlinked"
+	EventTicketAttachmentAdded EventType = "ticket.attachment_added"
+	EventTicketFollowed        EventType = "ticket.followed"
+	EventTicketUnfollowed      EventType = "ticket.unfollowed"
+
 	// EventTicketPriorityChanged and EventTicketClassified (category, type or
 	// item) are raised by changes that announced nothing before (#506). Both
 	// are names a webhook can subscribe to; neither carries an id on the wire.
@@ -133,6 +143,13 @@ type Event struct {
 	// account holder with the user role, or a guest) and that is not an
 	// internal note. It is what makes a reply a reason to mail staff.
 	FromRequester bool `json:"-"`
+
+	// SuppressStaffMail makes the change announce itself to webhooks and mail
+	// no member of staff. Set by the bulk unassignments (a deleted user or
+	// group, #630): one "assigned to you" mail per ticket is a burst about
+	// nothing anybody did to the recipient. Merged like the other flags: true
+	// if any piece said so.
+	SuppressStaffMail bool `json:"-"`
 
 	// StaffUserID is the one staff member a staff.* event is for. Their
 	// address is read at send time rather than copied here, so the outbox

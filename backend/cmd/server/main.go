@@ -223,7 +223,7 @@ func run() error {
 	}
 
 	// ── Stores ────────────────────────────────────────────────────────────────
-	uStore := userstore.New(q)
+	uStore := userstore.NewWithDB(q, sqlDB)
 	tStore := ticketstore.New(q)
 	cStore := categorystore.New(q)
 	gStore := groupstore.New(q)
@@ -435,7 +435,7 @@ func run() error {
 	// authentication works at all rather than only how links are built. An
 	// unusable value turns passkeys off with a warning instead of stopping
 	// startup (#494); see configurePasskeys.
-	passkeyStore := webauthnstore.New(q)
+	passkeyStore := webauthnstore.NewWithDB(q, sqlDB)
 	passkeySvc, passkeyReason := configurePasskeys(cfg.BaseURL, adminSvc.SiteName(ctx), slog.Default())
 
 	srv := server.New(

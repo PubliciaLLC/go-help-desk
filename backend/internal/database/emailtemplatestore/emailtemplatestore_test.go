@@ -19,17 +19,13 @@ import (
 )
 
 // These commit for real (the store opens its own transaction, which is the
-// thing under test), so each uses a name of its own and removes it after.
+// thing under test), so each runs on a database of its own.
 
 func newStore(t *testing.T) (*emailtemplatestore.Store, *dbgen.Queries, string) {
 	t.Helper()
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	t.Cleanup(closeDB)
 	name := "zz_store_" + uuid.NewString()
-	t.Cleanup(func() {
-		_, _ = db.SQL.Exec(`DELETE FROM email_template_overrides WHERE name = $1`, name)
-		_, _ = db.SQL.Exec(`DELETE FROM audit_log WHERE entity_type = 'email_template_test' AND after->>'template_name' = $1`, name)
-	})
 	return emailtemplatestore.NewWithDB(db.SQL), dbgen.New(db.SQL), name
 }
 

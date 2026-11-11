@@ -51,7 +51,7 @@ func visible(t *testing.T, db *testutil.DB, entityID uuid.UUID) int {
 }
 
 func TestInTx_CommitsWhenTheCallerSucceeds(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 
 	r := txrunner.New(db.SQL, nil, nil)
@@ -67,7 +67,7 @@ func TestInTx_CommitsWhenTheCallerSucceeds(t *testing.T) {
 
 // TestInTx_RollsBackWhenTheCallerFails is the case the whole change exists for.
 func TestInTx_RollsBackWhenTheCallerFails(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 
 	r := txrunner.New(db.SQL, nil, nil)
@@ -88,7 +88,7 @@ func TestInTx_RollsBackWhenTheCallerFails(t *testing.T) {
 // TestInTx_RollsBackEveryWrite covers the multi-write case, which is the shape
 // the ticket service actually uses: several rows, one of them failing.
 func TestInTx_RollsBackEveryWrite(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 
 	r := txrunner.New(db.SQL, nil, nil)
@@ -112,7 +112,7 @@ func TestInTx_RollsBackEveryWrite(t *testing.T) {
 // earlier committed transaction with it — the runner must begin a fresh
 // transaction per call rather than reusing one.
 func TestInTx_IsolatesSuccessFromFailure(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 
 	r := txrunner.New(db.SQL, nil, nil)

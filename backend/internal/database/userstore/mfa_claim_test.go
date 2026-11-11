@@ -32,7 +32,7 @@ import (
 //
 // Sent in parallel deliberately. One at a time, the old code passed.
 func TestClaimMFAAttempt_HoldsTheBudgetUnderConcurrentAttempts(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 
 	store := userstore.New(dbgen.New(db.SQL))
@@ -89,7 +89,7 @@ func TestClaimMFAAttempt_HoldsTheBudgetUnderConcurrentAttempts(t *testing.T) {
 // out with every guess and locks the owner out for as long as they keep
 // trying — a denial of service built out of the control meant to prevent one.
 func TestClaimMFAAttempt_TheLockExpiresAndDoesNotSlideAway(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 
 	store := userstore.New(dbgen.New(db.SQL))

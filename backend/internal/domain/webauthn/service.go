@@ -172,12 +172,15 @@ func (s *Service) BeginLogin(_ context.Context, a Account) (*protocolAssertion, 
 // FinishLogin verifies an assertion and reports which credential answered,
 // along with the sign count to record.
 //
-// The counter is returned for storage and is NOT enforced. Most authenticators
-// report zero forever, so refusing a non-increasing counter refuses honest
-// sign-ins. One case is worth noticing and is logged rather than refused: a
-// counter that was previously non-zero going backwards is a genuine clone
-// signal with no false positives. Detect, record, do not branch — the same
-// shape as KnownMalicious in internal/reputation/circl.go.
+// A counter that did not advance is refused with ErrCloneSuspected, and the
+// credential that answered is returned with it. The library's rule, not ours:
+// it flags an asserted count at or below the stored one, except when both are
+// zero. Zero forever is what most authenticators report, so that exception is
+// what keeps their owners signing in, and a counter that was ever above zero
+// and then fails to advance is the case a copy of the key produces (#616b).
+//
+// The cost is a real person with a buggy counter being refused. That trade was
+// made on purpose; see docs/DESIGN.md, Passkeys.
 func (s *Service) FinishLogin(ctx context.Context, a Account, staged Staged, r *http.Request) (Credential, error) {
 	if staged.expired(time.Now()) {
 		return Credential{}, ErrChallengeExpired
@@ -201,27 +204,24 @@ func (s *Service) FinishLogin(ctx context.Context, a Account, staged Staged, r *
 		// An earlier version of this compared used.SignCount against the
 		// stored one and could never fire: UpdateCounter does not write a
 		// lower value. When the asserted counter fails to advance it sets
-		// CloneWarning and returns, leaving SignCount untouched — so by the
-		// time we see the credential, the two numbers are equal and the
-		// comparison is dead code that reads like a working check.
-		//
-		//	if authDataCount <= a.SignCount && (authDataCount != 0 || a.SignCount != 0) {
-		//		a.CloneWarning = true
-		//		return
-		//	}
-		//	a.SignCount = authDataCount
-		//
-		// Still only logged, never enforced: most authenticators report zero
-		// forever, so refusing on this refuses honest sign-ins. Found by the
-		// pre-merge gate on #302.
+		// CloneWarning and returns, leaving SignCount untouched, so by the
+		// time we see the credential the two numbers are equal and the
+		// comparison is dead code that reads like a working check. Found by
+		// the pre-merge gate on #302.
 		if c.Authenticator.CloneWarning {
-			s.log.WarnContext(ctx, "passkey signature counter did not advance; possible cloned authenticator",
+			s.log.WarnContext(ctx, "passkey signature counter did not advance; refusing the sign-in",
 				"user_id", a.ID, "credential", known.ID, "stored", known.SignCount)
+			return used, ErrCloneSuspected
 		}
 		break
 	}
 	return used, nil
 }
+
+// ErrCloneSuspected is an assertion whose signature counter did not advance
+// past the one on record. FinishLogin returns it together with the credential
+// that answered, so the caller can say which key it was.
+var ErrCloneSuspected = errors.New("that key's signature counter did not advance")
 
 // ErrRegistrationRefused and ErrAssertionRefused wrap whatever the library
 // decided was wrong. The detail is kept for the log and not handed to the

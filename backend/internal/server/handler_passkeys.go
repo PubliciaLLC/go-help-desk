@@ -287,7 +287,22 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	cred.Name = name
-	if err := s.passkeyStore.Create(r.Context(), cred); err != nil {
+	// A session that has not proved a factor may only write the account's
+	// FIRST one, decided under a lock on the user row (#617). The check at the
+	// top of this handler is a fast refusal; this is the one that holds when
+	// two requests pass it together. A session that proved one is replacing or
+	// adding on purpose and has no condition to meet.
+	create := s.passkeyStore.CreateFirstFactor
+	if a.FactorVerified {
+		create = s.passkeyStore.Create
+	}
+	if err := create(r.Context(), cred); err != nil {
+		if errors.Is(err, webauthn.ErrAlreadyProtected) {
+			Error(w, http.StatusForbidden, "mfa_required",
+				"this account already has a second factor. Verify with it before adding or removing one, "+
+					"or ask an administrator to reset it.")
+			return
+		}
 		if errors.Is(err, webauthn.ErrCredentialExists) {
 			Error(w, http.StatusConflict, "credential_exists",
 				"that key is already registered")
@@ -377,7 +392,14 @@ func (s *Server) handleDeletePasskey(w http.ResponseWriter, r *http.Request) {
 	// Scoped to the owner in the statement, not by a check here: an id is not
 	// an authorisation, and "not yours" and "does not exist" deliberately
 	// answer the same way.
-	if err := s.passkeyStore.Delete(r.Context(), id, a.UserID); err != nil {
+	//
+	// The user's OTHER sessions end in that same statement, and this one stays:
+	// the key may be the one somebody else is signed in with, which is the
+	// reason to remove it, and signing yourself out of the tab you used is a
+	// bug, not security (as for a password change). Audited with the user as
+	// the actor (#615).
+	session, _ := s.sessions.Get(r, auth.SessionName)
+	if err := s.users.RemoveOwnPasskey(r.Context(), a.UserID, id, session.ID); err != nil {
 		if errors.Is(err, webauthn.ErrNotFound) {
 			Error(w, http.StatusNotFound, "not_found", "no such passkey on this account")
 			return
@@ -437,6 +459,28 @@ func (s *Server) handlePasskeyLoginStart(w http.ResponseWriter, r *http.Request)
 	JSON(w, http.StatusOK, assertion)
 }
 
+// refuseSuspectedClone answers a sign-in whose key's counter did not advance:
+// the sign-in is refused, the account's sessions end, and an administrator can
+// see it in the audit log (#616b).
+//
+// Every session, this one included. Whoever holds the other copy of the key
+// may well have a session already, and the person at this one has not proved
+// anything. Detached from the request, as the other post-write steps are, so a
+// client that hangs up cannot leave the sessions alive. The counter is NOT
+// written (the library leaves it alone and Touch is never called), so the
+// stored value stays the one the clone has to beat.
+func (s *Server) refuseSuspectedClone(w http.ResponseWriter, r *http.Request, userID, passkeyID uuid.UUID) {
+	ctx := context.WithoutCancel(r.Context())
+	s.users.RecordPasskeyCloneSuspected(ctx, userID, passkeyID)
+	if err := s.sessions.DeleteForUser(ctx, userID); err != nil {
+		handleError(w, fmt.Errorf("ending sessions after a suspected cloned key: %w", err))
+		return
+	}
+	Error(w, http.StatusUnauthorized, "passkey_suspect",
+		"that key's signature counter did not advance, which can mean it has been copied. "+
+			"You have been signed out. Sign in another way, or ask an administrator to remove the key.")
+}
+
 // POST /api/v1/auth/local/passkey/finish
 func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
@@ -459,6 +503,10 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 		return
 	}
 	used, err := s.passkeys.FinishLogin(r.Context(), acct, staged, r)
+	if errors.Is(err, webauthn.ErrCloneSuspected) {
+		s.refuseSuspectedClone(w, r, a.UserID, used.ID)
+		return
+	}
 	if err != nil {
 		passkeyCeremonyError(w, err)
 		return

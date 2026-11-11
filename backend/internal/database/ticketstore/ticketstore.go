@@ -703,12 +703,16 @@ func isDuplicateLinkViolation(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "ticket_links_unique"
 }
 
-func (s *Store) DeleteLink(ctx context.Context, source, target uuid.UUID, lt ticket.LinkType) error {
-	return s.q.DeleteTicketLink(ctx, dbgen.DeleteTicketLinkParams{
+func (s *Store) DeleteLink(ctx context.Context, source, target uuid.UUID, lt ticket.LinkType) (bool, error) {
+	n, err := s.q.DeleteTicketLink(ctx, dbgen.DeleteTicketLinkParams{
 		SourceTicketID: source,
 		TargetTicketID: target,
 		LinkType:       string(lt),
 	})
+	if err != nil {
+		return false, fmt.Errorf("deleting link: %w", err)
+	}
+	return n > 0, nil
 }
 
 func (s *Store) ListLinks(ctx context.Context, ticketID uuid.UUID) ([]ticket.TicketLink, error) {
