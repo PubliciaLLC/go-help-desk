@@ -43,7 +43,7 @@ type factorRig struct {
 
 func newFactorRig(t *testing.T) *factorRig {
 	t.Helper()
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	// A cleanup, so it runs after the holder is rolled back; closing the pool
 	// waits on a connection a failed test left blocked.
 	t.Cleanup(closeDB)

@@ -27,15 +27,15 @@ import (
 //
 // Run against a real connection pool rather than the usual rolled-back
 // transaction: the race is between concurrent statements, and a single
-// transaction serialises them by construction. The row is deleted afterwards.
+// transaction serialises them by construction. It runs on a database of its
+// own, so the committed row needs no cleanup.
 func TestConfirmFirstMFAEnrollment_OnlyOneConcurrentConfirmWins(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 
 	store := userstore.New(dbgen.New(db.SQL))
 	svc := user.NewService(store)
 	id := seedUserForClaim(t, store)
-	defer deleteUser(t, db, id)
 
 	const confirms = 20
 	secrets := make([]string, confirms)
@@ -90,13 +90,12 @@ func TestConfirmFirstMFAEnrollment_OnlyOneConcurrentConfirmWins(t *testing.T) {
 // owner has proved it, replaces the secret. The conditional write must not
 // refuse that.
 func TestConfirmMFAEnrollment_RotationStillReplacesTheSecret(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 
 	store := userstore.New(dbgen.New(db.SQL))
 	svc := user.NewService(store)
 	id := seedUserForClaim(t, store)
-	defer deleteUser(t, db, id)
 
 	// allowReplace=true is what the handler passes for a session that proved
 	// the current factor.
@@ -119,13 +118,12 @@ func TestConfirmMFAEnrollment_RotationStillReplacesTheSecret(t *testing.T) {
 // The same rule without the race: a first-enrolment confirm arriving after
 // the account already has a TOTP is refused, and the existing secret stays.
 func TestConfirmFirstMFAEnrollment_RefusedOnceAnAccountHasATOTP(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 
 	store := userstore.New(dbgen.New(db.SQL))
 	svc := user.NewService(store)
 	id := seedUserForClaim(t, store)
-	defer deleteUser(t, db, id)
 
 	newCode := func() (string, string) {
 		key, err := totp.Generate(totp.GenerateOpts{Issuer: "test", AccountName: "late@test.local"})

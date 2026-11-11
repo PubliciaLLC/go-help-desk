@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { listOAuthClients, createOAuthClient, deleteOAuthClient, listScopes } from '@/api/admin'
+import { listOAuthClients, createOAuthClient, deleteOAuthClient, rotateOAuthClientSecret, listScopes } from '@/api/admin'
 import { extractError } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
@@ -15,10 +15,12 @@ import type { OAuthClient } from '@/api/types'
 function SecretBanner({
   clientID,
   secret,
+  heading = 'Client created — copy the secret now',
   onDismiss,
 }: {
   clientID: string
   secret: string
+  heading?: string
   onDismiss: () => void
 }) {
   const [copied, setCopied] = useState(false)
@@ -33,9 +35,7 @@ function SecretBanner({
     <div className="rounded-lg border border-green-200 bg-green-50 p-4 space-y-3">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <p className="text-sm font-medium text-green-800">
-            Client created — copy the secret now
-          </p>
+          <p className="text-sm font-medium text-green-800">{heading}</p>
           <p className="text-xs text-green-700 mt-0.5">It will not be shown again.</p>
         </div>
         <button onClick={onDismiss} className="text-green-600 hover:text-green-800 text-xs">
@@ -72,7 +72,9 @@ export function OAuthClientsPage() {
   const [newScopes, setNewScopes] = useState<string[]>([])
   const [createError, setCreateError] = useState('')
   const [created, setCreated] = useState<{ clientID: string; secret: string } | null>(null)
+  const [rotated, setRotated] = useState<{ clientID: string; secret: string } | null>(null)
   const [pendingDelete, setPendingDelete] = useState<OAuthClient | null>(null)
+  const [pendingRotate, setPendingRotate] = useState<OAuthClient | null>(null)
 
   const { data: clients = [], isLoading } = useQuery({
     queryKey: ['admin', 'oauth-clients'],
@@ -106,6 +108,17 @@ export function OAuthClientsPage() {
     },
   })
 
+  const rotateMutation = useMutation({
+    mutationFn: (id: string) => rotateOAuthClientSecret(id),
+    onSuccess: (res) => {
+      // One banner at a time: a secret still on screen from a creation is
+      // replaced, never shown beside the new one.
+      setCreated(null)
+      setRotated({ clientID: res.client_id, secret: res.client_secret })
+      setPendingRotate(null)
+    },
+  })
+
   function fmt(date?: string) {
     if (!date) return '—'
     return new Date(date).toLocaleDateString()
@@ -123,6 +136,15 @@ export function OAuthClientsPage() {
             immediately and deletes its service user.
           </p>
         </div>
+
+        {rotated && (
+          <SecretBanner
+            clientID={rotated.clientID}
+            secret={rotated.secret}
+            heading="Secret rotated — copy the new secret now"
+            onDismiss={() => setRotated(null)}
+          />
+        )}
 
         {created && (
           <SecretBanner
@@ -240,7 +262,16 @@ export function OAuthClientsPage() {
                       )}
                     </td>
                     <td className="px-4 py-3 text-gray-500">{fmt(c.created_at)}</td>
-                    <td className="px-4 py-3 text-right">
+                    <td className="px-4 py-3 text-right whitespace-nowrap">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="mr-2"
+                        onClick={() => setPendingRotate(c)}
+                        disabled={rotateMutation.isPending}
+                      >
+                        Rotate secret
+                      </Button>
                       <Button
                         size="sm"
                         variant="outline"
@@ -265,6 +296,18 @@ export function OAuthClientsPage() {
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={pendingRotate !== null}
+        onOpenChange={(open) => { if (!open) { setPendingRotate(null); rotateMutation.reset() } }}
+        error={rotateMutation.isError ? extractError(rotateMutation.error) : undefined}
+        title={`Rotate the secret of "${pendingRotate?.name ?? ''}"?`}
+        description="The current secret stops working immediately, and so does every token issued with it. The integration stays broken until it is given the new secret, which is shown once."
+        confirmLabel="Rotate"
+        destructive={false}
+        isPending={rotateMutation.isPending}
+        onConfirm={() => { if (pendingRotate) rotateMutation.mutate(pendingRotate.id) }}
+      />
 
       <ConfirmDialog
         open={pendingDelete !== null}

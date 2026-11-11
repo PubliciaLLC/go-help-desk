@@ -575,6 +575,10 @@ export interface WebhookFilter {
   category_ids: string[]
   priorities: Priority[]
   group_ids: string[]
+  // Type and item (#631). The server leaves them out while empty, so they are
+  // optional here. Combined with the categories by AND.
+  type_ids?: string[]
+  item_ids?: string[]
   invert: boolean
 }
 

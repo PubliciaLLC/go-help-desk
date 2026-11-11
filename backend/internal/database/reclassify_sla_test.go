@@ -32,13 +32,6 @@ func (f *changePriorityFx) secondCategory(t *testing.T) (category.Category, sla.
 		ResponseTargetMin: 15, ResolutionTargetMin: 60,
 	}
 	require.NoError(t, f.ss.CreatePolicy(f.ctx, pol))
-	// Runs before the fixture's own cleanup (LIFO), which would otherwise still
-	// find the ticket pointing at this category.
-	t.Cleanup(func() {
-		_, _ = f.db.SQL.Exec(`DELETE FROM tickets WHERE id = $1`, f.tk.ID)
-		_, _ = f.db.SQL.Exec(`DELETE FROM sla_policies WHERE category_id = $1`, cat.ID)
-		_, _ = f.db.SQL.Exec(`DELETE FROM categories WHERE id = $1`, cat.ID)
-	})
 	return cat, pol
 }
 

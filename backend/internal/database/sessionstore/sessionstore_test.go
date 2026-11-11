@@ -424,7 +424,7 @@ func TestStore_SpendSAMLHandover_FirstUseOnly(t *testing.T) {
 // multiple goroutines attempt to spend the same cookie concurrently, exactly
 // one succeeds (the primary key ensures atomicity).
 func TestStore_SpendSAMLHandover_ConcurrentSpendsExactlyOneWins(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 	q := dbgen.New(db.SQL)
 	st := sessionstore.New(q, hashKey, blockKey, nil)
