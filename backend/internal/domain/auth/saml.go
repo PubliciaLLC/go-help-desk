@@ -160,13 +160,12 @@ func NewSAMLMiddleware(ctx context.Context, cfg SAMLConfig) (*samlsp.Middleware,
 		if err != nil {
 			return nil, err
 		}
-		// Pasted XML gets this check at save; fetched metadata gets it here. The
-		// library fails every sign-in when any signing certificate does not
-		// parse, so metadata with one good certificate and one unreadable one
-		// must not replace a working configuration. A URL whose metadata has NO
-		// signing certificate still loads here, as it always has (existing
-		// fixtures publish that); the hourly refresh refuses it separately.
-		if _, err := readIdPSigningCerts(idpMeta); err != nil {
+		// Pasted XML gets this check at save; fetched metadata gets it here, so
+		// startup, a manual save and the hourly refresh all refuse what pasted
+		// XML always did: no signing certificate, or one that does not parse. The
+		// library fails every sign-in in either case, so such metadata must not
+		// replace a working configuration (or load at all).
+		if err := checkIdPSigningCerts(idpMeta); err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrIdPMetadataInvalid, err)
 		}
 	}

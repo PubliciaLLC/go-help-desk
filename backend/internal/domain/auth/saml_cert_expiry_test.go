@@ -149,16 +149,3 @@ func TestAddedSigningCerts(t *testing.T) {
 		})
 	}
 }
-
-func TestHasSigningCerts(t *testing.T) {
-	kd := certDescriptor(t, "", time.Now().Add(time.Hour))
-	enc := certDescriptor(t, "encryption", time.Now().Add(time.Hour))
-	has := func(kds ...saml.KeyDescriptor) bool {
-		return auth.HasSigningCerts(&saml.EntityDescriptor{IDPSSODescriptors: []saml.IDPSSODescriptor{
-			{SSODescriptor: saml.SSODescriptor{RoleDescriptor: saml.RoleDescriptor{KeyDescriptors: kds}}},
-		}})
-	}
-	if !has(kd) || has() || has(enc) || auth.HasSigningCerts(nil) {
-		t.Fatal("HasSigningCerts gave the wrong answer")
-	}
-}

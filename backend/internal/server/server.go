@@ -1034,8 +1034,9 @@ type samlRefreshState struct {
 //     certificate rollover needs one re-save after the IdP publishes the new
 //     certificate.
 //   - Every signing certificate must parse, and there must be at least one (the
-//     library fails every sign-in otherwise). Metadata that fails it is not
-//     applied and the warnings say so (metadata_invalid).
+//     library fails every sign-in otherwise); this is the build's own check, the
+//     one pasted XML passes at save. Metadata that fails it is not applied and the
+//     warnings say so (metadata_invalid).
 //
 // Anything refused keeps the running middleware. A fetch that fails (the IdP is
 // down) also keeps it and is not a warning: an outage is not a trust problem.
@@ -1094,10 +1095,6 @@ func (s *Server) RefreshSAML(ctx context.Context) {
 			fingerprints[i] = a.SHA256
 		}
 		slog.ErrorContext(ctx, "the identity provider published a new SAML signing certificate; keeping the running configuration until an administrator re-saves the SAML settings to trust it", "sha256", fingerprints)
-	case !auth.HasSigningCerts(newMD):
-		// Nothing could sign in. Shown, not silent: it is reachable and answering.
-		s.setSAMLRefresh(samlRefreshState{problem: samlRefreshInvalid})
-		slog.ErrorContext(ctx, "refreshed SAML metadata has no signing certificate; keeping the running configuration")
 	default:
 		s.commitSAMLMiddleware(mw, c)
 	}

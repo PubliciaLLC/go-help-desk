@@ -452,3 +452,51 @@ func TestRefreshSAML_AFailedSettingsReadKeepsTheLiveConfiguration(t *testing.T) 
 	r.h.srv.RefreshSAML(context.Background())
 	require.Equal(t, movedSSO, r.ssoPrefix(t))
 }
+
+// certlessIdP serves IdP metadata with a sign-in endpoint and no signing
+// certificate: nothing could be verified against it, so every sign-in would
+// fail.
+func certlessIdP(t *testing.T) *httptest.Server {
+	t.Helper()
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		md := saml.EntityDescriptor{
+			EntityID: srv.URL + "/idp",
+			IDPSSODescriptors: []saml.IDPSSODescriptor{{
+				SingleSignOnServices: []saml.Endpoint{{Binding: saml.HTTPRedirectBinding, Location: srv.URL + "/sso"}},
+			}},
+		}
+		w.Header().Set("Content-Type", "application/samlmetadata+xml")
+		_ = xml.NewEncoder(w).Encode(md)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// Metadata with no signing certificate is refused wherever it is loaded, as
+// pasted XML always was, not only by the hourly refresh.
+func TestSaveSAMLConfig_AURLWithNoSigningCertificateKeepsTheLiveConfigAndWarns(t *testing.T) {
+	r, cleanup := newRefreshRig(t)
+	defer cleanup()
+
+	certless := certlessIdP(t)
+	res, body := r.sess.send(t, http.MethodPut, "/api/v1/admin/saml", map[string]any{
+		"metadata_url": certless.URL, "cert_pem": validSAMLCert, "key_pem": validSAMLKey,
+	})
+	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
+	require.Contains(t, string(body), "could not be loaded")
+	require.Equal(t, r.idp.idp.SSOURL.String(), r.ssoPrefix(t), "the running configuration is kept")
+}
+
+func TestInitSAML_AURLWithNoSigningCertificateIsNotLoaded(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	require.NoError(t, h.adminSvc.SetSAMLConfig(ctx, certlessIdP(t).URL, validSAMLCert, validSAMLKey))
+
+	h.srv.InitSAML(ctx)
+
+	res := h.rawGet(t, "/api/v1/auth/saml/login", nil)
+	res.Body.Close()
+	require.Equal(t, http.StatusServiceUnavailable, res.StatusCode, "SAML is not loaded from metadata nothing can sign in against")
+}
