@@ -482,6 +482,9 @@ func (f *fakeStore) CountGuestAttachments(context.Context, uuid.UUID) (int, erro
 func (f *fakeStore) ListAttachments(context.Context, uuid.UUID) ([]ticket.Attachment, error) {
 	return nil, nil
 }
+func (f *fakeStore) QuarantinedTicketIDs(context.Context, []uuid.UUID) ([]uuid.UUID, error) {
+	return nil, nil
+}
 func (f *fakeStore) DeleteAttachment(context.Context, uuid.UUID) error { return nil }
 func (f *fakeStore) AnyAttachmentExists(context.Context) (bool, error) { return false, nil }
 

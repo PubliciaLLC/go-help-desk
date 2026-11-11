@@ -1082,3 +1082,91 @@ describe('the expanded view', () => {
     expect(providerLines().length, 'the expanded lines survived the row being closed').toBe(0)
   })
 })
+
+// ── Which line the summary came from (#173) ───────────────────────────────────
+
+describe('the marker on the line the summary was taken from', () => {
+  const MARKER = /shown in the summary/i
+
+  // The summary is a copy of one provider line. Without a mark on that line a
+  // reader has to know the verdict ordering to work out which one it was.
+  it('marks the line the server flagged inline, and only that line', async () => {
+    const providers = [
+      line({ provider_key: 'virustotal', state: 'unseen', inline: true }),
+      line({ provider_key: 'circl', state: 'known', known_feeds: ['nsrl'] }),
+    ]
+    await renderTicket([quarantined(payload(providers)), OTHER])
+    await expand()
+
+    expect(lineFor('VirusTotal').textContent ?? '', 'the summary line is not marked').toMatch(MARKER)
+    expect(
+      lineFor('CIRCL').textContent ?? '',
+      'a line the summary did not come from is marked',
+    ).not.toMatch(MARKER)
+    expect(
+      within(quarantinedRow()).queryAllByText(MARKER).length,
+      'the marker must appear exactly once in the row',
+    ).toBe(1)
+  })
+
+  // Not only the words: a screen reader has to be told which item is current.
+  it('flags the marked line with aria-current and no other', async () => {
+    const providers = [
+      line({ provider_key: 'virustotal', state: 'unseen', inline: true }),
+      line({ provider_key: 'circl', state: 'known', known_feeds: ['nsrl'] }),
+    ]
+    await renderTicket([quarantined(payload(providers)), OTHER])
+    await expand()
+
+    expect(lineFor('VirusTotal').getAttribute('aria-current')).toBe('true')
+    expect(lineFor('CIRCL').hasAttribute('aria-current')).toBe(false)
+  })
+
+  // The marker follows the flag, not a position or this build's own ranking.
+  it('follows the flag when the marked line is not the first', async () => {
+    const providers = [
+      line({ provider_key: 'metadefender', state: 'clean', detected: 0, total: 78 }),
+      line({ provider_key: 'circl', state: 'known', known_feeds: ['nsrl'], inline: true }),
+    ]
+    await renderTicket([quarantined(payload(providers)), OTHER])
+    await expand()
+
+    expect(lineFor('CIRCL').textContent ?? '').toMatch(MARKER)
+    expect(lineFor('MetaDefender').textContent ?? '').not.toMatch(MARKER)
+  })
+
+  // Nothing answered: the summary belongs to nobody, so there is no line to mark.
+  it('appears nowhere when no service answered', async () => {
+    const providers = [
+      line({ provider_key: 'virustotal', state: 'unavailable' }),
+      line({ provider_key: 'metadefender', state: 'unavailable' }),
+    ]
+    await renderTicket([quarantined(payload(providers)), OTHER])
+    await expand()
+
+    expect(providerLines().length).toBe(2)
+    expect(quarantinedRowText()).not.toMatch(MARKER)
+    expect(quarantinedRow().querySelectorAll('[aria-current]').length).toBe(0)
+  })
+
+  // A list of one is not shown at all: the summary IS the line, and marking a
+  // line the reader cannot see separately would say the same thing twice.
+  it('is absent in the single-provider layout', async () => {
+    const providers = [line({ provider_key: 'virustotal', state: 'unseen', inline: true })]
+    await renderTicket([quarantined(payload(providers)), OTHER])
+
+    expect(quarantinedRowText()).not.toMatch(MARKER)
+    expect(expandControl(), 'a single provider offers an expander').toBeNull()
+  })
+
+  // The lines are not rendered while collapsed, so neither is the mark.
+  it('is not shown before the list is expanded', async () => {
+    const providers = [
+      line({ provider_key: 'virustotal', state: 'unseen', inline: true }),
+      line({ provider_key: 'circl', state: 'known', known_feeds: ['nsrl'] }),
+    ]
+    await renderTicket([quarantined(payload(providers)), OTHER])
+
+    expect(quarantinedRowText()).not.toMatch(MARKER)
+  })
+})
