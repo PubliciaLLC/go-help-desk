@@ -3083,7 +3083,7 @@ paths:
         - name: q
           in: query
           required: false
-          description: Case-insensitive substring, matched literally (% and _ are text), at most 200 characters. Matches entity_type, action, the display name and email of the actor (an account that still exists; a requester is left out while the admin log masks requester names), and, only when the request has both from and to at most 90 days apart, the text values of the change details at the keys the view shows, and no others (see details_searched in the response). With q, a from and to more than 90 days apart is refused with 400 date_range_too_long; without q any range is allowed. Trimmed. Must be valid UTF-8 without NUL bytes.
+          description: Case-insensitive substring, matched literally (% and _ are text), at most 200 characters. Matches entity_type, action, the display name and email of the actor (an account that still exists; a requester is left out while the admin log masks requester names), and, only when the request has both from and to at most 90 days apart (plus an hour, for a clock change), the text values of the change details at the keys the view shows, and no others (see details_searched in the response). With q, a from and to more than 90 days apart is refused with 400 date_range_too_long; without q any range is allowed. Trimmed. Must be valid UTF-8 without NUL bytes.
           schema:
             type: string
             maxLength: 200
@@ -3120,7 +3120,9 @@ paths:
             from or to must be an RFC 3339 timestamp, or entity_type, action or q
             is not valid UTF-8 or contains a NUL byte.
             `date_range_too_long` when q is sent with a from and to more than 90
-            days apart; the message names the limit. Without q any range is allowed.
+            days (and an hour, for a clock change) apart; the message names the
+            limit. `invalid_date_range` when q is sent with a from later than to.
+            Without q any range is allowed, and a reversed one answers an empty page.
           content:
             application/json:
               schema:

@@ -84,8 +84,12 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	f, limit, offset, err := parseAdminAuditQuery(r)
-	if errors.Is(err, errDateRangeTooLong) {
+	switch {
+	case errors.Is(err, errDateRangeTooLong):
 		Error(w, http.StatusBadRequest, "date_range_too_long", err.Error())
+		return
+	case errors.Is(err, errDateRangeReversed):
+		Error(w, http.StatusBadRequest, "invalid_date_range", err.Error())
 		return
 	}
 	if err != nil {
@@ -217,6 +221,9 @@ func parseAdminAuditQuery(r *http.Request) (f audit.Filter, limit, offset int, e
 	// A text search over more than the limit is refused, not narrowed: the details
 	// cannot be searched in a range that long, and a page that quietly searched
 	// less than was asked for would read as "nothing found".
+	if f.DateRangeReversed() {
+		return audit.Filter{}, 0, 0, errDateRangeReversed
+	}
 	if f.DateRangeTooLong() {
 		return audit.Filter{}, 0, 0, errDateRangeTooLong
 	}
@@ -234,7 +241,8 @@ var (
 	errBadTo      = errors.New("to must be an RFC3339 timestamp")
 	errBadText    = errors.New("filters must be valid UTF-8 without NUL bytes")
 
-	errDateRangeTooLong = fmt.Errorf("the date range of a search with text can be at most %d days: shorten from and to, or search without text", audit.DetailsSearchMaxDays)
+	errDateRangeReversed = errors.New("from must not be later than to")
+	errDateRangeTooLong  = fmt.Errorf("the date range of a search with text can be at most %d days: shorten from and to, or search without text", audit.DetailsSearchMaxDays)
 )
 
 // deletedAccountName is what every place that names a person in audit output

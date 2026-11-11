@@ -257,3 +257,43 @@ func TestAuditStore_Search_MaskLeavesTheRestOfQAlone(t *testing.T) {
 		require.Equal(t, 1, pg.Total, text)
 	}
 }
+
+// q is matched as text in the change details: a regular-expression character in
+// it is a character, not a pattern. The details are searched with a jsonpath
+// like_regex, where the "q" flag is what makes the text literal; without it
+// "a.c" would find "abc" and "(" would be a syntax error.
+func TestAuditStore_Search_QIsLiteralInChangeDetails(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+	ctx := context.Background()
+	aus := auditstore.New(q)
+	us := userstore.New(q)
+
+	actor := seedAuditActor(t, ctx, us, user.RoleStaff, "Literal Actor", "literal")
+	for action, path := range map[string]string{
+		"dot_plain": "zzabc", "dot_literal": "zza.c", "paren": "zz(a|b)", "star": "zzaaa", "star_literal": "zza*",
+		"anchor": "zz^start", "class_literal": "zz[ab]", "class_plain": "zza",
+	} {
+		require.NoError(t, aus.Create(ctx, audit.Entry{
+			ID: uuid.New(), ActorID: &actor, EntityType: "literal", EntityID: uuid.New(), Action: action,
+			After: map[string]any{"scope_path": path},
+		}))
+	}
+	hits := func(text string) []string {
+		pg, err := aus.Search(ctx, inDetailsRange(audit.Filter{ActorID: &actor, Q: text}), 50, 0)
+		require.NoError(t, err, text)
+		var actions []string
+		for _, e := range pg.Entries {
+			actions = append(actions, e.Action)
+		}
+		return actions
+	}
+
+	require.ElementsMatch(t, []string{"dot_literal"}, hits("zza.c"), "a dot is a dot, not any character")
+	require.ElementsMatch(t, []string{"paren"}, hits("zz(a|b)"), "parentheses and a bar are text")
+	require.ElementsMatch(t, []string{"star_literal"}, hits("zza*"), "a star is a star, not a repeat")
+	require.ElementsMatch(t, []string{"anchor"}, hits("zz^start"), "a caret is a caret, not an anchor")
+	require.ElementsMatch(t, []string{"class_literal"}, hits("zz[ab]"), "brackets are text, not a character class")
+}

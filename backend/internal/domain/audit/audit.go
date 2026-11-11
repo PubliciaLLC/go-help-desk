@@ -66,6 +66,14 @@ const TotalCap = 10000
 // were not searched.
 const DetailsSearchMaxDays = 90
 
+// DetailsSearchMaxSpan is the longest span between from and to that
+// DetailsSearchMaxDays allows: 90 days and an hour. The Audit Log page picks
+// local date-times, so a range of 90 calendar days is 90 days and an hour when it
+// crosses the clock change that gives a day 25 hours, and a range the page itself
+// offered would be refused. 90 days apart can cross at most one change, so one
+// hour of slack covers it; it adds at most an hour's entries to the search.
+const DetailsSearchMaxSpan = DetailsSearchMaxDays*24*time.Hour + time.Hour
+
 // DetailsSkippedNoRange is the value of details_skipped_reason in the admin
 // audit response when a search with text had no date range, so the change
 // details were not searched. A range over DetailsSearchMaxDays is not a reason
@@ -129,7 +137,7 @@ type Filter struct {
 // DetailsSearchMaxDays. Anything else is the same search without the details.
 func (f Filter) SearchesDetails() bool {
 	return f.Q != "" && f.From != nil && f.To != nil &&
-		f.To.Sub(*f.From) <= time.Duration(DetailsSearchMaxDays)*24*time.Hour
+		f.To.Sub(*f.From) <= DetailsSearchMaxSpan
 }
 
 // DateRangeTooLong reports whether a search with text carries a date range
@@ -138,7 +146,14 @@ func (f Filter) SearchesDetails() bool {
 // range of any length is only a date filter.
 func (f Filter) DateRangeTooLong() bool {
 	return f.Q != "" && f.From != nil && f.To != nil &&
-		f.To.Sub(*f.From) > time.Duration(DetailsSearchMaxDays)*24*time.Hour
+		f.To.Sub(*f.From) > DetailsSearchMaxSpan
+}
+
+// DateRangeReversed reports whether a search with text has a from later than its
+// to, which the admin view refuses. Without text the list keeps answering a
+// reversed range with nothing, as it always has.
+func (f Filter) DateRangeReversed() bool {
+	return f.Q != "" && f.From != nil && f.To != nil && f.To.Before(*f.From)
 }
 
 // DetailsSkippedReason says why a search with text did not look in the change

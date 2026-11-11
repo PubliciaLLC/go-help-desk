@@ -41,6 +41,20 @@ func (s *Server) PasskeyStartHandlersForTest() map[string]http.HandlerFunc {
 	}
 }
 
+// failingUserBatchLookup makes the many-ids lookup fail and leaves every other
+// call to the real store, so a handler's other reads still work.
+type failingUserBatchLookup struct{ user.Store }
+
+func (failingUserBatchLookup) GetByIDs(context.Context, []uuid.UUID) ([]user.User, error) {
+	return nil, errors.New("injected batch user lookup failure")
+}
+
+// FailUserBatchLookupForTest makes the one-query lookup of many accounts fail as
+// a database outage would, in front of the store the harness built.
+func (s *Server) FailUserBatchLookupForTest(real user.Store) {
+	s.users = user.NewService(failingUserBatchLookup{real})
+}
+
 // FailUserLookupForTest makes user lookups fail as a database outage would.
 func (s *Server) FailUserLookupForTest() { s.users = user.NewService(failingUserLookup{}) }
 

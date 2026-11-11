@@ -114,6 +114,35 @@ func TestStatusHistory_DeletedAccountIsMaskedAsDeletedAccount(t *testing.T) {
 	}
 }
 
+// When the role lookup itself fails nothing is known about anyone, so every name
+// is withheld as the requester mask, under every value of the setting: a name
+// shown "because the setting does not mask" would be a deleted account's, or a
+// requester's, shown on the strength of a lookup that did not happen.
+func TestStatusHistory_FailedRoleLookupWithholdsEveryNameUnderEverySetting(t *testing.T) {
+	for _, setting := range []string{
+		admin.MaskRequesterNamesEverywhere, admin.MaskRequesterNamesTicketLog, admin.MaskRequesterNamesAdminLog,
+	} {
+		t.Run(setting, func(t *testing.T) {
+			h, cleanup := newHarness(t)
+			defer cleanup()
+			require.NoError(t, h.adminSvc.SetString(context.Background(), admin.KeyAuditMaskRequesterNames, setting))
+			id := createTicketVia(t, h, h.doAsUser)
+			h.srv.FailUserBatchLookupForTest(h.userStore)
+
+			var named int
+			for _, r := range statusHistoryAsAdmin(t, h, id) {
+				if r.ChangedByUserID == nil {
+					continue
+				}
+				named++
+				require.Equal(t, "Requester", r.ChangedByName)
+				require.True(t, r.ChangedByMasked)
+			}
+			require.NotZero(t, named, "the timeline has a row with a person on it")
+		})
+	}
+}
+
 // The same for a deleted account in the audit views, whatever its role: the
 // name is never sent, and the actor reads "Deleted account".
 func TestAudit_DeletedAccountReadsDeletedAccountInBothViews(t *testing.T) {

@@ -59,7 +59,7 @@ func TestSearch_ChangeDetailsAreSearchedOnlyInsideADateRange(t *testing.T) {
 		return audit.Filter{Q: q, From: &from, To: &to}
 	}
 	day := 24 * time.Hour
-	maxSpan := time.Duration(audit.DetailsSearchMaxDays) * day
+	maxSpan := audit.DetailsSearchMaxSpan
 
 	require.ElementsMatch(t, ids[2:], found(rangeOf(needle, 30*day)), "inside the limit, the details of what the range holds are searched")
 	require.ElementsMatch(t, ids[2:], found(rangeOf(needle, maxSpan)), "a range of exactly the limit is inside it")
