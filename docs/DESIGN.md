@@ -3005,9 +3005,10 @@ one is a permission decision with one switch and no per-user exceptions.
   while a client or a hook is created and edited by an administrator and is how
   ticket data leaves or enters the system. Entity types `oauth_client` and
   `webhook`; actions `oauth_client_created`, `oauth_client_deleted`,
-  `webhook_created`, `webhook_updated` and `webhook_deleted`; the actor is the
-  signed-in administrator, or for a webhook changed with an API key, the key's
-  owner. An OAuth client has no update route (renaming its service user renames
+  `webhook_created`, `webhook_updated`, `webhook_deleted` and
+  `webhook_reapproved` (`POST /admin/webhooks/{id}/reapprove`, session only); the
+  actor is the signed-in administrator, or for a webhook changed with an API key,
+  the key's owner. An OAuth client has no update route (renaming its service user renames
   it, and is audited as that user's change), so it has no update action.
   **No secret and no URL token is ever written.** A client's entry carries
   `client_name`, `scopes` and `service_user_id`, never the secret or its hash. A
@@ -3021,7 +3022,10 @@ one is a permission decision with one switch and no per-user exceptions.
   by the Audit Log (they are text an administrator wrote and cannot hold ticket
   content); the Audit Log page offers both entity types in its filter and shows
   a client's name and scopes, or a hook's host and events, on create and delete
-  rows, which have no diff. Re-approving a paused webhook is not audited.
+  rows, which have no diff. A re-approval writes the hook's state on both sides
+  with `key_linked` (whether an API key was still tied to it) going from true to
+  false; it is written even for a hook with no link, because the approval is
+  what is recorded, and it carries the same fields as an edit, so no secret.
 - `api_keys.created_by` (migration 000050) records who issued each new key. It
   equals `user_id` when the owner made it and differs when it was issued on their
   behalf; NULL means unknown (a key made before 1.3, or an issuer deleted since).

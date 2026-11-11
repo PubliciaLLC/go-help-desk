@@ -417,6 +417,19 @@ describe('OAuth client and webhook entries', () => {
     expect(row.textContent).toContain('hooks.example.com · ticket.created')
   })
 
+  it('shows a re-approval as the hook losing its link to a key', async () => {
+    mockList({
+      entries: [entry({ entity_type: 'webhook', action: 'webhook_reapproved',
+        before: { url_host: 'example.com', events: 'ticket.created', enabled: true, signed: false, key_linked: true },
+        after: { url_host: 'example.com', events: 'ticket.created', enabled: true, signed: false, key_linked: false } })],
+      total: 1, has_more: false,
+    })
+    renderWithQuery(<AdminAuditPage />)
+    const row = (await screen.findByText('Webhook reapproved')).closest('tr')!
+    expect(row.textContent).toContain('key_linked: true → false')
+    expect(row.textContent).toContain('example.com · ticket.created')
+  })
+
   it('shows what an update changed, and not the keys it left alone', async () => {
     mockList({
       entries: [entry({ entity_type: 'webhook', action: 'webhook_updated',

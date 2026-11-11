@@ -40,6 +40,7 @@ const (
 	auditActionWebhookCreated     = "webhook_created"
 	auditActionWebhookUpdated     = "webhook_updated"
 	auditActionWebhookDeleted     = "webhook_deleted"
+	auditActionWebhookReapproved  = "webhook_reapproved"
 )
 
 func credentialEntry(actor uuid.UUID, entityType string, entityID uuid.UUID, action string, before, after map[string]any) audit.Entry {
@@ -137,6 +138,19 @@ func webhookUpdatedEntry(actor uuid.UUID, before, after authstore.WebhookConfig)
 	}
 	e := credentialEntry(actor, auditEntityWebhook, after.ID, auditActionWebhookUpdated, b, a)
 	return &e
+}
+
+// webhookReapprovedEntry records a signed-in administrator vouching for a hook
+// a key made or re-pointed (POST /admin/webhooks/{id}/reapprove). Nothing in the
+// hook changes except its link to that key, so key_linked is the one key that
+// differs: true before when a key was tied to it, false after. A session-made
+// hook has no link and reads false on both sides; the entry is still written,
+// because the approval itself is what is being recorded.
+func webhookReapprovedEntry(actor uuid.UUID, before authstore.WebhookConfig) audit.Entry {
+	b, a := webhookState(before), webhookState(before)
+	b["key_linked"] = before.APIKeyID != nil
+	a["key_linked"] = false
+	return credentialEntry(actor, auditEntityWebhook, before.ID, auditActionWebhookReapproved, b, a)
 }
 
 func mapsEqual(a, b map[string]any) bool {

@@ -238,6 +238,9 @@ var shownKeys = map[string]bool{
 	// secret because "secret" in a key name is redacted, and a flag is the point.
 	"serviceuserid": true, "events": true, "enabled": true, "payloadformat": true,
 	"signed": true, "signaturechanged": true, "urlchanged": true, "filter": true,
+	// A re-approved webhook: whether it was still tied to the API key that made
+	// or last re-pointed it (the link is cleared by the approval).
+	"keylinked": true,
 	// Then text an administrator wrote: a client's name and a webhook's host.
 	// Neither can hold ticket content, and without them a delete leaves nothing
 	// to say which client or hook it was. Named client_name and url_host because

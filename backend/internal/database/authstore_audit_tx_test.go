@@ -181,3 +181,37 @@ func TestWebhookAudit_RolledBackWithTheChange(t *testing.T) {
 		}), auth.ErrNotFound)
 	})
 }
+
+func TestWebhookReapproveAudit_CommitsAndRollsBackWithTheChange(t *testing.T) {
+	f := newCredFixture(t)
+	ctx := context.Background()
+	var keyID uuid.UUID
+	require.NoError(t, f.db.SQL.QueryRow(`INSERT INTO api_keys (name, hashed_token, user_id, scopes) VALUES ('k', 'h', $1, '{webhooks:write}') RETURNING id`, f.admin).Scan(&keyID))
+	wh := f.hook()
+	wh.APIKeyID = &keyID
+	require.NoError(t, f.store.CreateWebhookAudited(ctx, wh, f.entry(f.admin, "webhook", wh.ID, "webhook_created")))
+	linked := func() int {
+		return f.count(`SELECT count(*) FROM webhook_configs WHERE id = $1 AND api_key_id IS NOT NULL`, wh.ID)
+	}
+
+	err := f.store.ReapproveWebhookAudited(ctx, wh.ID, func(authstore.WebhookConfig) audit.Entry {
+		return f.entry(f.ghost, "webhook", wh.ID, "webhook_reapproved")
+	})
+	require.Error(t, err)
+	require.Equal(t, 1, linked(), "the hook must stay tied to its key when its entry failed")
+
+	var seen authstore.WebhookConfig
+	require.NoError(t, f.store.ReapproveWebhookAudited(ctx, wh.ID, func(before authstore.WebhookConfig) audit.Entry {
+		seen = before
+		return f.entry(f.admin, "webhook", wh.ID, "webhook_reapproved")
+	}))
+	require.NotNil(t, seen.APIKeyID, "the entry is built from the hook as it was")
+	require.Zero(t, linked())
+	require.Equal(t, 1, f.count(`SELECT count(*) FROM audit_log WHERE entity_id = $1 AND action = 'webhook_reapproved'`, wh.ID))
+
+	gone := uuid.New()
+	require.ErrorIs(t, f.store.ReapproveWebhookAudited(ctx, gone, func(authstore.WebhookConfig) audit.Entry {
+		return f.entry(f.admin, "webhook", gone, "webhook_reapproved")
+	}), auth.ErrNotFound)
+	require.Zero(t, f.count(`SELECT count(*) FROM audit_log WHERE entity_id = $1`, gone))
+}

@@ -614,6 +614,22 @@ func (s *Store) DeleteWebhookAudited(ctx context.Context, id uuid.UUID, entry fu
 	})
 }
 
+// ReapproveWebhookAudited is ReapproveWebhook with its audit entry, in one
+// transaction. entry gets the hook as it was, so the entry can say whether it
+// was tied to a key. A hook that is not there is auth.ErrNotFound.
+func (s *Store) ReapproveWebhookAudited(ctx context.Context, id uuid.UUID, entry func(before WebhookConfig) audit.Entry) error {
+	return s.inTx(ctx, "webhook re-approval", func(q *dbgen.Queries) error {
+		before, err := s.with(q).lockWebhook(ctx, id)
+		if err != nil {
+			return err
+		}
+		if err := s.with(q).ReapproveWebhook(ctx, id); err != nil {
+			return err
+		}
+		return writeEntry(ctx, q, entry(before))
+	})
+}
+
 // lockWebhook reads a hook FOR UPDATE, for the audited writes that need its
 // state as the change finds it.
 func (s *Store) lockWebhook(ctx context.Context, id uuid.UUID) (WebhookConfig, error) {

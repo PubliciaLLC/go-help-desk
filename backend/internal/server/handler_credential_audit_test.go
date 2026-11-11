@@ -332,3 +332,57 @@ func TestCredentialAudit_TheAuditViewShowsTheEntries(t *testing.T) {
 		}
 	}
 }
+
+// Re-approving a hook a key made is the administrator vouching for a
+// destination, so it is audited like the edits: same transaction, the hook's
+// state on both sides, and key_linked going from true to false. Nothing secret.
+func TestWebhookAudit_Reapprove(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	raw, _ := h.mintAdminKey(t, "webhooks:write")
+	id := h.createHook(t, func(m, p string, b any) *http.Response { return keyDo(t, h, raw, m, p, b) },
+		map[string]any{"url": hookURL, "events": []string{"ticket.created"}, "secret": hookSigSecret})
+	admin := h.session(t, asAdmin)
+
+	res := h.doSession(t, admin, http.MethodPost, hooksPath+"/"+id.String()+"/reapprove", nil)
+	res.Body.Close()
+	require.Equal(t, http.StatusNoContent, res.StatusCode)
+
+	es := h.entriesFor(t, "webhook", id)
+	require.Len(t, es, 2)
+	require.Equal(t, "webhook_reapproved", es[0].Action)
+	require.NotNil(t, es[0].ActorID)
+	require.Equal(t, h.adminID, *es[0].ActorID, "the signed-in administrator who vouched for it")
+	require.Equal(t, true, es[0].Before["key_linked"])
+	require.Equal(t, false, es[0].After["key_linked"])
+	require.Equal(t, "example.com", es[0].After["url_host"])
+	require.Equal(t, true, es[0].After["signed"])
+	stored := h.rawAudit(t, id)
+	for _, s := range []string{hookURLToken, hookURLQuery, hookSigSecret} {
+		require.NotContains(t, stored, s)
+	}
+
+	t.Run("the audit view shows key_linked", func(t *testing.T) {
+		res := h.doSession(t, admin, http.MethodGet, "/api/v1/admin/audit?entity_type=webhook&action=webhook_reapproved", nil)
+		body := readAll(t, res)
+		require.Contains(t, string(body), `"key_linked":false`)
+	})
+
+	t.Run("a session-made hook can be re-approved too, and says it was never linked", func(t *testing.T) {
+		own := h.createHook(t, h.asSession(t), map[string]any{"url": "https://example.com/hook", "events": []string{"*"}})
+		res := h.doSession(t, admin, http.MethodPost, hooksPath+"/"+own.String()+"/reapprove", nil)
+		res.Body.Close()
+		require.Equal(t, http.StatusNoContent, res.StatusCode)
+		e := h.entriesFor(t, "webhook", own)[0]
+		require.Equal(t, "webhook_reapproved", e.Action)
+		require.Equal(t, false, e.Before["key_linked"])
+	})
+
+	t.Run("an unknown hook writes nothing", func(t *testing.T) {
+		missing := uuid.New()
+		res := h.doSession(t, admin, http.MethodPost, hooksPath+"/"+missing.String()+"/reapprove", nil)
+		res.Body.Close()
+		require.Equal(t, http.StatusNotFound, res.StatusCode)
+		require.Empty(t, h.entriesFor(t, "webhook", missing))
+	})
+}

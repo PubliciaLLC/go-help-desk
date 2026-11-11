@@ -8359,6 +8359,7 @@ paths:
         longer depends on any key. An API key is refused with 403 session_required
         (an OAuth client with 403 forbidden). Calling it on a hook that is not
         paused simply clears the link. An unknown id answers 404 not_found.
+        Audited in the same transaction (entity_type webhook, action webhook_reapproved); the entry holds the hook's state as for an edit, with key_linked going from true to false, and never the URL path, query or secret.
       tags: ['Admin: Webhooks']
       x-ghd-handler: handleReapproveWebhook
       security:

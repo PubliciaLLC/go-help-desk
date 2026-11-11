@@ -794,7 +794,10 @@ func (s *Server) handleReapproveWebhook(w http.ResponseWriter, r *http.Request) 
 		Error(w, http.StatusBadRequest, "bad_request", "invalid ID")
 		return
 	}
-	if err := s.authStore.ReapproveWebhook(r.Context(), id); err != nil {
+	actor := authmw.GetActor(r).UserID
+	if err := s.authStore.ReapproveWebhookAudited(r.Context(), id, func(before authstore.WebhookConfig) audit.Entry {
+		return webhookReapprovedEntry(actor, before)
+	}); err != nil {
 		handleError(w, err)
 		return
 	}

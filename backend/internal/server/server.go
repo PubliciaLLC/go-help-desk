@@ -179,6 +179,7 @@ type AuthStoreIface interface {
 	CreateWebhookAudited(ctx context.Context, wh authstore.WebhookConfig, entry audit.Entry) error
 	UpdateWebhookAudited(ctx context.Context, wh authstore.WebhookConfig, entry func(before authstore.WebhookConfig) *audit.Entry) error
 	DeleteWebhookAudited(ctx context.Context, id uuid.UUID, entry func(before authstore.WebhookConfig) audit.Entry) error
+	ReapproveWebhookAudited(ctx context.Context, id uuid.UUID, entry func(before authstore.WebhookConfig) audit.Entry) error
 	// ReapproveWebhook clears the hook's link to the API key that made it.
 	ReapproveWebhook(ctx context.Context, id uuid.UUID) error
 	ListEnabledWebhooks(ctx context.Context) ([]authstore.WebhookConfig, error)
