@@ -287,7 +287,22 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	cred.Name = name
-	if err := s.passkeyStore.Create(r.Context(), cred); err != nil {
+	// A session that has not proved a factor may only write the account's
+	// FIRST one, decided under a lock on the user row (#617). The check at the
+	// top of this handler is a fast refusal; this is the one that holds when
+	// two requests pass it together. A session that proved one is replacing or
+	// adding on purpose and has no condition to meet.
+	create := s.passkeyStore.CreateFirstFactor
+	if a.FactorVerified {
+		create = s.passkeyStore.Create
+	}
+	if err := create(r.Context(), cred); err != nil {
+		if errors.Is(err, webauthn.ErrAlreadyProtected) {
+			Error(w, http.StatusForbidden, "mfa_required",
+				"this account already has a second factor. Verify with it before adding or removing one, "+
+					"or ask an administrator to reset it.")
+			return
+		}
 		if errors.Is(err, webauthn.ErrCredentialExists) {
 			Error(w, http.StatusConflict, "credential_exists",
 				"that key is already registered")

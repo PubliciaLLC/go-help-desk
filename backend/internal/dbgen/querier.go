@@ -838,6 +838,19 @@ type Querier interface {
 	// UnassignTicketsForGroup and the delete would lose its group silently, which
 	// is the gap this exists to close.
 	LockGroup(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
+	// Takes the user row so that two writers of a first factor are ordered (#617).
+	//
+	// A first TOTP confirm and a first passkey registration each ask "does this
+	// account hold any factor?" and then write. Without an order, both can pass the
+	// question before either writes, and a session that only knows the password
+	// ends up adding a factor beside the owner's first one. Both take this lock,
+	// then ask in a NEW statement: under READ COMMITTED a statement waiting on this
+	// row keeps the snapshot it started with, so the question cannot be folded into
+	// one statement with the lock. The lock order is users, then credentials, the
+	// same as ClearFactors.
+	//
+	// No row for a deleted account: there is nothing to write a factor onto.
+	LockUserForFactorWrite(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
 	// The requester picker's lookup (#444): the accounts a ticket can be filed
 	// for whose name or address contains q, at most ten. Matches the way
 	// SearchUsersAdmin does (q is already LIKE-escaped by the caller; backslash is

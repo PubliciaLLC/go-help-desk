@@ -21,7 +21,8 @@ import (
 
 // Store implements user.Store.
 type Store struct {
-	q *dbgen.Queries
+	q  *dbgen.Queries
+	db *sql.DB // nil: SetFirstMFA runs on q as it is; see database.InTx
 
 	// retryPause replaces the wait between guardedWrite attempts. Nil in
 	// production, which waits a jittered 10-50 ms; a test sets it to hold the
@@ -32,6 +33,11 @@ type Store struct {
 
 // New returns a Store backed by the given Queries.
 func New(q *dbgen.Queries) *Store { return &Store{q: q} }
+
+// NewWithDB is New with db for SetFirstMFA to begin its transaction on.
+// Production uses it; the integration harness uses New, and see database.InTx
+// for what that does not exercise.
+func NewWithDB(q *dbgen.Queries, db *sql.DB) *Store { return &Store{q: q, db: db} }
 
 func (s *Store) Create(ctx context.Context, u user.User) error {
 	return s.q.CreateUser(ctx, dbgen.CreateUserParams{
@@ -450,12 +456,34 @@ func (s *Store) SetMFA(ctx context.Context, id uuid.UUID, secret string, enabled
 	return nil
 }
 
+// SetFirstMFA adopts the secret only if the account holds no second factor,
+// a TOTP enrolment or a passkey, once it has the user row (#617). The passkey
+// half of the question is asked here, in a statement after the lock, and the
+// TOTP half is the write's own WHERE (#338).
 func (s *Store) SetFirstMFA(ctx context.Context, id uuid.UUID, secret string) (bool, error) {
-	n, err := s.q.SetFirstUserMFA(ctx, dbgen.SetFirstUserMFAParams{ID: id, MfaSecret: secret})
+	var adopted bool
+	err := database.InTx(ctx, s.db, s.q, func(q *dbgen.Queries) error {
+		if _, err := q.LockUserForFactorWrite(ctx, id); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil // missing or deleted: nothing adopted, as the bare UPDATE found
+			}
+			return err
+		}
+		passkeys, err := q.CountWebAuthnCredentialsForUser(ctx, id)
+		if err != nil {
+			return err
+		}
+		if passkeys > 0 {
+			return nil
+		}
+		n, err := q.SetFirstUserMFA(ctx, dbgen.SetFirstUserMFAParams{ID: id, MfaSecret: secret})
+		adopted = n == 1
+		return err
+	})
 	if err != nil {
 		return false, fmt.Errorf("setting first MFA: %w", inertViolation(err))
 	}
-	return n == 1, nil
+	return adopted, nil
 }
 
 func (s *Store) SyncFederated(ctx context.Context, id uuid.UUID, email, displayName string) error {

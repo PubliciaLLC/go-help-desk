@@ -52,8 +52,9 @@ type Store interface {
 	// a service account, with a bcrypt hash made below cost.
 	CountBelowCost(ctx context.Context, cost int) (int, error)
 	SetMFA(ctx context.Context, id uuid.UUID, secret string, enabled bool) error
-	// SetFirstMFA adopts secret only if the account has no TOTP when the row
-	// is written, and reports whether it did (#338).
+	// SetFirstMFA adopts secret only if the account holds no second factor
+	// when the row is written, neither a TOTP (#338) nor a passkey (#617), and
+	// reports whether it did.
 	SetFirstMFA(ctx context.Context, id uuid.UUID, secret string) (bool, error)
 	// EnableMFAIfStillEnrolled turns the flag on using the secret already on
 	// the row, so a caller that read, validated a code, and then wrote does

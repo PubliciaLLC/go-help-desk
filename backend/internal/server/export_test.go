@@ -11,6 +11,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/webauthn"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
 
@@ -59,6 +60,10 @@ func (failingSpend) SpendSAMLHandover(context.Context, string) (bool, error) {
 // a store that fails one write in front of the real one. The authentication
 // middleware keeps the lookup it was built with.
 func (s *Server) SetUsersForTest(u *user.Service) { s.users = u }
+
+// SetPasskeyStoreForTest swaps the credential store the handlers call, so a test
+// can put a second factor on the account between a handler's guard and its write.
+func (s *Server) SetPasskeyStoreForTest(st webauthn.Store) { s.passkeyStore = st }
 
 // failingDelete makes the session row delete fail, which is the first thing a
 // session rewrite does for a session that already has an id.

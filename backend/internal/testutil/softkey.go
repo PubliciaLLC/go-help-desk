@@ -58,6 +58,48 @@ func (k *SoftKey) PublicKey(t testing.TB) []byte {
 	return b
 }
 
+// Register answers a registration challenge with a "none" attestation, which is
+// what a browser sends unless the site asks otherwise, and returns the request
+// body a browser would post.
+func (k *SoftKey) Register(t testing.TB, challenge string) []byte {
+	t.Helper()
+	enc := base64.RawURLEncoding.EncodeToString
+
+	clientData, err := json.Marshal(map[string]string{
+		"type": "webauthn.create", "challenge": challenge, "origin": k.origin,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// rpIdHash, flags (user present, attested credential data), counter, an
+	// all-zero AAGUID, then the credential id and its public key.
+	rpHash := sha256.Sum256([]byte(k.rpID))
+	authData := append(rpHash[:], 0x41)
+	authData = binary.BigEndian.AppendUint32(authData, 0)
+	authData = append(authData, make([]byte, 16)...)
+	authData = binary.BigEndian.AppendUint16(authData, uint16(len(k.CredentialID)))
+	authData = append(authData, k.CredentialID...)
+	authData = append(authData, k.PublicKey(t)...)
+
+	attObj, err := webauthncbor.Marshal(map[string]any{
+		"fmt": "none", "attStmt": map[string]any{}, "authData": authData,
+	})
+	if err != nil {
+		t.Fatalf("encoding attestation: %v", err)
+	}
+	body, err := json.Marshal(map[string]any{
+		"id": enc(k.CredentialID), "rawId": enc(k.CredentialID), "type": "public-key",
+		"response": map[string]string{
+			"clientDataJSON":    enc(clientData),
+			"attestationObject": enc(attObj),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
 // Assert answers a sign-in challenge (the base64url string the server sent)
 // and returns the request body a browser would post. userHandle is the
 // account's WebAuthn user id.
