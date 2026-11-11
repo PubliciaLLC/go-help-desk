@@ -488,6 +488,8 @@ var requesterRules = []struct {
 // requester_search:read. The caller works that out, because the scope lives with
 // the credential, not with the ticket.
 //
+// An unknown sort or order is a FilterInvalid for every role.
+//
 // A requester, or any role this does not recognise, may use only the filters
 // and sorts marked requesterOK: 403 forbidden. Staff and administrators may
 // use all of them, except that `requester` without requesterSearch is 403
@@ -495,6 +497,15 @@ var requesterRules = []struct {
 // assignee_group_id membership check under scope enforcement, which needs the
 // caller's groups.
 func (f Filter) AllowedFor(role user.Role, requesterSearch bool) error {
+	// Fail closed on a sort or order ParseListFilter would have refused: MCP
+	// builds a Filter from a map and may not have gone through it. Before the
+	// role checks, so the answer is the same for everyone.
+	if f.Sort != "" && !knownSort(f.Sort) {
+		return invalid("invalid sort")
+	}
+	if f.Order != "" && f.Order != OrderAsc && f.Order != OrderDesc {
+		return invalid("invalid order")
+	}
 	if role == user.RoleStaff || role == user.RoleAdmin {
 		if f.Requester != "" && !requesterSearch {
 			return &FilterError{Kind: FilterMissingScope, Msg: "this credential does not carry the requester_search:read scope"}

@@ -441,3 +441,38 @@ func TestFilter_AllStatusIDsAndPriorities(t *testing.T) {
 	dup := Filter{StatusID: &a, StatusIDs: []uuid.UUID{a}}
 	require.Equal(t, []uuid.UUID{a}, dup.AllStatusIDs())
 }
+
+// ParseListFilter rejects an unknown sort, but MCP builds a Filter from a map
+// and may never call it. AllowedFor is the check every caller runs, so it must
+// refuse a sort or order the store has no ORDER BY for, whatever the role.
+func TestAllowedFor_UnknownSortOrOrderIsInvalidForEveryone(t *testing.T) {
+	for _, f := range []Filter{
+		{Sort: "colour"},
+		{Sort: SortRelevance}, // produced by ResolvedSort, never accepted as input
+		{Sort: SortCreated, Order: "sideways"},
+		{Order: "sideways"},
+	} {
+		for _, r := range allRoles {
+			err := f.AllowedFor(r.role, true)
+			var fe *FilterError
+			require.ErrorAs(t, err, &fe, "%+v/%s", f, r.name)
+			require.Equal(t, FilterInvalid, fe.Kind, "%+v/%s", f, r.name)
+		}
+	}
+	require.EqualError(t, Filter{Sort: "colour"}.AllowedFor(user.RoleStaff, true), "invalid sort")
+	require.EqualError(t, Filter{Order: "sideways"}.AllowedFor(user.RoleUser, false), "invalid order")
+}
+
+// Only an invalid filter is an ErrValidation (which MCP reports as the caller's
+// mistake). A refusal on authority is not one: reporting it as a validation
+// error would tell a caller to fix a request that is fine.
+func TestFilterError_IsErrValidationOnlyWhenInvalid(t *testing.T) {
+	require.True(t, errors.Is(&FilterError{Kind: FilterInvalid}, ErrValidation))
+	require.False(t, errors.Is(&FilterError{Kind: FilterForbidden}, ErrValidation))
+	require.False(t, errors.Is(&FilterError{Kind: FilterMissingScope}, ErrValidation))
+
+	// And through the functions that produce them.
+	require.False(t, errors.Is(Filter{Requester: "dana"}.AllowedFor(user.RoleStaff, false), ErrValidation))
+	require.False(t, errors.Is(Filter{Sort: SortUpdated}.AllowedFor(user.RoleUser, false), ErrValidation))
+	require.True(t, errors.Is(Filter{Sort: "colour"}.AllowedFor(user.RoleStaff, false), ErrValidation))
+}
