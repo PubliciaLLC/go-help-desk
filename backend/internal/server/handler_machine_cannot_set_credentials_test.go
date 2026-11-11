@@ -167,7 +167,7 @@ func TestMachineCredential_CannotChangeAnEmailAddress(t *testing.T) {
 	}
 
 	t.Run("an OAuth client is refused by its role, and changes nothing", func(t *testing.T) {
-		client := h.newServiceClient(t, "syncer", allScopes()...)
+		client := h.newOverScopedServiceClient(t, "syncer", allScopes()...)
 		res := h.doBearer(t, client.Token, http.MethodPatch, usersPath+"/"+h.staffID.String(),
 			map[string]any{"email": "attacker3@evil.test"})
 		res.Body.Close()

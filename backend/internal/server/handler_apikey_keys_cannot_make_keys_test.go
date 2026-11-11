@@ -17,7 +17,7 @@ import (
 func TestAdminCreateAPIKey_NoMachineCredentialCanCreateAnyKey(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
-	client := h.newServiceClient(t, "minter", allScopes()...)
+	client := h.newOverScopedServiceClient(t, "minter", allScopes()...)
 
 	body := map[string]any{"name": "successor", "scopes": []string{"tickets:read"}, "expires_at": inYears(1)}
 	for name, c := range map[string]struct {
@@ -86,7 +86,7 @@ func (h *harness) createCredential(t *testing.T, path string, body any) *http.Re
 func TestAdminCreateOAuthClient_NoMachineCredentialCanCreateOne(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
-	client := h.newServiceClient(t, "existing", allScopes()...)
+	client := h.newOverScopedServiceClient(t, "existing", allScopes()...)
 	before, err := h.authStore.ListOAuthClients(context.Background())
 	require.NoError(t, err)
 
@@ -124,7 +124,7 @@ func TestAdminCreateOAuthClient_NoMachineCredentialCanCreateOne(t *testing.T) {
 func TestAdminOAuthClients_AKeyCanStillListAndRevoke(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
-	client := h.newServiceClient(t, "doomed", allScopes()...)
+	client := h.newOverScopedServiceClient(t, "doomed", allScopes()...)
 
 	res := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/oauth-clients", nil)
 	res.Body.Close()

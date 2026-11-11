@@ -88,7 +88,7 @@ func (h *harness) templateAudit(t *testing.T, name string) []audit.Entry {
 func TestEmailTemplates_OnlyASignedInAdministrator(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
-	client := h.newServiceClient(t, "svc", "settings:read", "settings:write")
+	client := h.newOverScopedServiceClient(t, "svc", "settings:read", "settings:write")
 
 	routes := []struct{ method, path string }{
 		{http.MethodGet, tmplPath},

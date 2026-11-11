@@ -120,7 +120,7 @@ func TestUserLookup_RefusesMachineCredentials(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	client := h.newServiceClient(t, "Directory scraper", "users:read")
+	client := h.newOverScopedServiceClient(t, "Directory scraper", "users:read")
 	cases := []struct {
 		name string
 		res  func() *http.Response
