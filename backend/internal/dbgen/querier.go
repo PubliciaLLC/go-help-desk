@@ -1020,7 +1020,8 @@ type Querier interface {
 	//
 	// It matches the stored r.body_tsv, as the match query does, so the two cannot
 	// disagree about what a reply holds. ts_headline below still parses the body of
-	// the one reply per ticket it shows.
+	// the one reply per ticket it shows, from the same first 50,000 characters the
+	// column was computed from (migration 000062).
 	//
 	// Matched words are wrapped in U+0002 and U+0003, not HTML. No author is read.
 	ReplyMatchesForTickets(ctx context.Context, arg ReplyMatchesForTicketsParams) ([]ReplyMatchesForTicketsRow, error)

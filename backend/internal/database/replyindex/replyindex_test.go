@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ func newPreparer(db *sql.DB) *replyindex.Preparer {
 	p := replyindex.New(db, slog.Default())
 	p.BatchSize = 3
 	p.Pause = 0
+	p.EmptyPause = 0
 	return p
 }
 
@@ -87,7 +89,7 @@ func TestPrepare_FillsInBatchesAndBuildsBothIndexes(t *testing.T) {
 
 	// The filled column is what the search expression would have produced.
 	var mismatched int
-	require.NoError(t, db.SQL.QueryRow(`SELECT count(*) FROM ticket_replies WHERE body_tsv IS DISTINCT FROM to_tsvector('english', body)`).Scan(&mismatched))
+	require.NoError(t, db.SQL.QueryRow(`SELECT count(*) FROM ticket_replies WHERE body_tsv IS DISTINCT FROM to_tsvector('english', left(body, 50000))`).Scan(&mismatched))
 	require.Zero(t, mismatched)
 }
 
@@ -384,4 +386,122 @@ func TestPrepare_DoesNotLowerAnAdministratorsMaintenanceWorkMem(t *testing.T) {
 	_, err = p.Prepare(ctx)
 	require.NoError(t, err)
 	require.Equal(t, []string{"512MB", "512MB"}, seen, "the larger setting stays")
+}
+
+// oversizedReply writes a reply no tsvector can hold (Postgres refuses one over
+// 1,048,575 bytes): 31,000 distinct words, about a megabyte of text. 1.2.0 had no
+// limit on a reply's length, so one can be in the table from before the upgrade,
+// written by anyone who could reply to a ticket. The trigger is off for the
+// insert, which is the state a row written before the migration is in.
+func oversizedReply(t *testing.T, db *sql.DB) (id string) {
+	t.Helper()
+	replies(t, db, 5)
+	_, err := db.Exec(`ALTER TABLE ticket_replies DISABLE TRIGGER ticket_replies_body_tsv_trg`)
+	require.NoError(t, err)
+	require.NoError(t, db.QueryRow(`INSERT INTO ticket_replies (ticket_id, body, internal, created_at, body_format)
+		SELECT (SELECT id FROM tickets LIMIT 1), (SELECT string_agg(md5(i::text), ' ') FROM generate_series(1, 31000) i), false, now(), 'plain'
+		RETURNING id`).Scan(&id))
+	_, err = db.Exec(`ALTER TABLE ticket_replies ENABLE TRIGGER ticket_replies_body_tsv_trg`)
+	require.NoError(t, err)
+	return id
+}
+
+// One oversized reply must not stop the fill for good. The column is computed
+// from the first 50,000 characters, which is the limit 1.3.0 puts on a new reply,
+// so the row is filled like any other and reply search comes on.
+func TestPrepare_AnOversizedReplyDoesNotStopTheFill(t *testing.T) {
+	db, closeDB := testutil.NewIsolatedDB(t)
+	defer closeDB()
+	ctx := context.Background()
+	id := oversizedReply(t, db.SQL)
+
+	res, err := newPreparer(db.SQL).Prepare(ctx)
+	require.NoError(t, err, "a reply too big for a tsvector must not fail the fill")
+	require.True(t, res.Done)
+	require.Zero(t, nullCount(t, db.SQL))
+	ready, err := replyindex.Ready(ctx, db.SQL)
+	require.NoError(t, err)
+	require.True(t, ready, "reply search comes on")
+
+	// It is searched on its first 50,000 characters: word 1 is in them, word 31,000 is not.
+	var first, last bool
+	require.NoError(t, db.SQL.QueryRow(`SELECT body_tsv @@ plainto_tsquery('english', md5('1')), body_tsv @@ plainto_tsquery('english', md5('31000'))
+		FROM ticket_replies WHERE id = $1`, id).Scan(&first, &last))
+	require.True(t, first)
+	require.False(t, last)
+}
+
+// If a row still cannot be indexed, whatever the reason, the fill empties its
+// column and says which reply it was, rather than failing the whole batch and
+// starting again for ever. Here the prefix limit is raised past the row's size so
+// the row really does fail.
+func TestPrepare_ARowThatCannotBeIndexedIsEmptiedAndTheFillCarriesOn(t *testing.T) {
+	db, closeDB := testutil.NewIsolatedDB(t)
+	defer closeDB()
+	id := oversizedReply(t, db.SQL)
+
+	var logged strings.Builder
+	p := replyindex.New(db.SQL, slog.New(slog.NewTextHandler(&logged, nil)))
+	p.BatchSize, p.Pause, p.EmptyPause = 3, 0, 0
+	p.TextLimit = 10_000_000
+	res, err := p.Prepare(context.Background())
+	require.NoError(t, err)
+	require.True(t, res.Done)
+	require.Zero(t, nullCount(t, db.SQL), "every row has a column, the bad one an empty one")
+
+	var empty bool
+	require.NoError(t, db.SQL.QueryRow(`SELECT body_tsv = ''::tsvector FROM ticket_replies WHERE id = $1`, id).Scan(&empty))
+	require.True(t, empty)
+	require.Contains(t, logged.String(), id, "the reply is named in the log")
+	var others int
+	require.NoError(t, db.SQL.QueryRow(`SELECT count(*) FROM ticket_replies WHERE id <> $1 AND body_tsv <> ''::tsvector`, id).Scan(&others))
+	require.Equal(t, 5, others, "the other rows are filled normally")
+}
+
+// A persistent failure must not make the server read the table again every few
+// seconds: the wait between attempts grows, up to a ceiling.
+func TestRetryBackoff(t *testing.T) {
+	cur := 30 * time.Second
+	var got []time.Duration
+	for i := 0; i < 8; i++ {
+		got = append(got, cur)
+		cur = replyindex.NextRetry(cur, 10*time.Minute)
+	}
+	require.Equal(t, []time.Duration{
+		30 * time.Second, time.Minute, 2 * time.Minute, 4 * time.Minute, 8 * time.Minute, 10 * time.Minute, 10 * time.Minute, 10 * time.Minute,
+	}, got)
+}
+
+// A RESET that fails must not leave the 256 MB on a connection the pool then
+// hands out. With the server's pool (stdlib.OpenDBFromPool), returning
+// driver.ErrBadConn from conn.Raw only releases the connection to pgxpool, which
+// keeps it; the underlying connection has to be closed.
+func TestPrepare_AFailedResetDiscardsTheConnection(t *testing.T) {
+	db, closeDB := testutil.NewIsolatedDB(t)
+	defer closeDB()
+	ctx := context.Background()
+	replies(t, db.SQL, 3)
+
+	var serverDefault string
+	require.NoError(t, db.SQL.QueryRow(`SHOW maintenance_work_mem`).Scan(&serverDefault))
+
+	p := newPreparer(db.SQL)
+	p.ResetStatement = `RESET no_such_setting_fable_647` // fails on a live connection
+	_, err := p.Prepare(ctx)
+	require.NoError(t, err, "the build itself succeeded")
+
+	var conns []*sql.Conn
+	defer func() {
+		for _, c := range conns {
+			c.Close()
+		}
+	}()
+	for i := 0; i < 3; i++ {
+		c, err := db.SQL.Conn(ctx)
+		require.NoError(t, err)
+		conns = append(conns, c)
+		var got string
+		require.NoError(t, c.QueryRowContext(ctx, `SHOW maintenance_work_mem`).Scan(&got))
+		require.Equal(t, serverDefault, got, "connection %d", i)
+	}
 }

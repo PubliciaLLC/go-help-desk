@@ -21,6 +21,13 @@
 -- and Postgres parsed every reply on those pages again to recheck. A stored
 -- column is compared as it is.
 --
+-- The column is computed from the first 50,000 characters of a reply, the limit
+-- 1.3.0 puts on a new reply. 1.2.0 had no limit, and Postgres refuses a tsvector
+-- over 1,048,575 bytes (a megabyte of distinct words reaches it), which would fail
+-- the insert or update and, in the server's fill, stop it for good. Words past the
+-- first 50,000 characters of a very long reply are not searched. The fill
+-- (internal/database/replyindex) must use the same limit.
+--
 -- The trigger fires on insert and on an update of body only, so the background
 -- fill (which sets body_tsv) does not fire it. A row written before this
 -- migration has body_tsv NULL until the fill reaches it; a NULL never matches.
@@ -29,7 +36,7 @@ ALTER TABLE ticket_replies ADD COLUMN IF NOT EXISTS body_tsv tsvector;
 CREATE OR REPLACE FUNCTION ticket_replies_body_tsv() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
-    NEW.body_tsv := to_tsvector('english', NEW.body);
+    NEW.body_tsv := to_tsvector('english', left(NEW.body, 50000));
     RETURN NEW;
 END $$;
 

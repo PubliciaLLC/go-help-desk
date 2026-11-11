@@ -13,14 +13,15 @@
 --
 -- It matches the stored r.body_tsv, as the match query does, so the two cannot
 -- disagree about what a reply holds. ts_headline below still parses the body of
--- the one reply per ticket it shows.
+-- the one reply per ticket it shows, from the same first 50,000 characters the
+-- column was computed from (migration 000062).
 --
 -- Matched words are wrapped in U+0002 and U+0003, not HTML. No author is read.
 SELECT m.ticket_id,
        m.id AS reply_id,
        m.internal,
        m.created_at,
-       ts_headline('english', m.body, to_tsquery('english', sqlc.arg(search_query)::text),
+       ts_headline('english', left(m.body, 50000), to_tsquery('english', sqlc.arg(search_query)::text),
                    'MaxFragments=1, MaxWords=24, MinWords=10, StartSel=' || chr(2) || ', StopSel=' || chr(3))::text AS snippet
 FROM unnest(sqlc.arg(ticket_ids)::uuid[]) AS tid(id)
 CROSS JOIN LATERAL (

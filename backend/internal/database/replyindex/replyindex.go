@@ -30,6 +30,9 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/stdlib"
+
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 )
 
@@ -75,6 +78,25 @@ type Preparer struct {
 	// a session of their own (see buildIndex). It is not a server setting.
 	MaintenanceWorkMem string
 
+	// EmptyPause is the wait after a window that had nothing to fill. A walk over
+	// a large table is thousands of such windows, and without a pause a restart
+	// (or a persistent failure that sends the walk back to the start) would read
+	// the whole table flat out.
+	EmptyPause time.Duration
+	// TextLimit is how many characters of a reply the column is computed from. It
+	// is the limit 1.3.0 puts on a new reply and must match the trigger in
+	// migration 000062. 1.2.0 had no limit, and Postgres refuses a tsvector over
+	// 1,048,575 bytes (SQLSTATE 54000), so a megabyte of distinct words written
+	// before the upgrade could stop the fill for good. With the limit it cannot:
+	// 50,000 characters never make a vector that large.
+	TextLimit int
+	// MaxRetry is the ceiling of the wait between failed attempts, which doubles
+	// from Retry.
+	MaxRetry time.Duration
+	// ResetStatement undoes the maintenance_work_mem set for a build. A field so a
+	// test can make it fail.
+	ResetStatement string
+
 	// OnBatch, if set, is called after each batch with the rows filled so far.
 	// For tests.
 	OnBatch func(filled int64)
@@ -89,7 +111,9 @@ func New(db *sql.DB, log *slog.Logger) *Preparer {
 	return &Preparer{
 		DB: db, Log: log,
 		BatchSize: 1000, Pause: 250 * time.Millisecond, MaintenanceWorkMem: "256MB",
-		ProgressEvery: 30 * time.Second, Retry: 30 * time.Second,
+		EmptyPause: 10 * time.Millisecond, TextLimit: 50000, MaxRetry: 10 * time.Minute,
+		ResetStatement: `RESET maintenance_work_mem`,
+		ProgressEvery:  30 * time.Second, Retry: 30 * time.Second,
 	}
 }
 
@@ -166,7 +190,7 @@ const blocksPerWindow = 100
 
 // fillBatch fills the unfilled rows of one window of the table, in physical
 // (ctid) order, and returns how many it filled, how many it selected and the
-// last one. $1 and $2 bound the window ($1 exclusive), $3 is the batch size.
+// last one. $1 and $2 bound the window ($1 exclusive), $3 is the batch size and $4 the text limit.
 //
 // Physical order is the point. Reply ids are random UUIDs, so walking the
 // primary key visits one row per heap page and, on a table bigger than memory,
@@ -181,7 +205,7 @@ WITH b AS (
     WHERE ctid > $1::text::tid AND ctid < $2::text::tid AND body_tsv IS NULL
     ORDER BY ctid LIMIT $3
 ), u AS (
-    UPDATE ticket_replies r SET body_tsv = to_tsvector('english', r.body)
+    UPDATE ticket_replies r SET body_tsv = to_tsvector('english', left(r.body, $4))
     WHERE r.ctid = ANY (ARRAY(SELECT t FROM b))
     RETURNING 1
 )
@@ -233,7 +257,15 @@ func (p *Preparer) fillPass(ctx context.Context, res *Result, total int64, lastL
 		end := block + blocksPerWindow
 		var n, selected int64
 		var last sql.NullString
-		if err := p.DB.QueryRowContext(ctx, fillBatch, cursor, fmt.Sprintf("(%d,0)", end), p.BatchSize).Scan(&n, &selected, &last); err != nil {
+		if err := p.DB.QueryRowContext(ctx, fillBatch, cursor, fmt.Sprintf("(%d,0)", end), p.BatchSize, p.TextLimit).Scan(&n, &selected, &last); err != nil {
+			if isTooLongForTSVector(err) {
+				// A row in this window cannot be indexed even from its prefix. Deal
+				// with the rows one at a time, then take the window again.
+				if err := p.fillRowsOneByOne(ctx, cursor, fmt.Sprintf("(%d,0)", end), res); err != nil {
+					return err
+				}
+				continue
+			}
 			return fmt.Errorf("reply search: filling a batch: %w", err)
 		}
 		if selected >= int64(p.BatchSize) && last.Valid {
@@ -249,7 +281,12 @@ func (p *Preparer) fillPass(ctx context.Context, res *Result, total int64, lastL
 			return err
 		}
 		if n == 0 {
-			continue // an empty window cost one cheap read: no pause needed
+			// An empty window cost one cheap read, but thousands of them are the whole
+			// table: leave the database a moment between them.
+			if err := p.wait(ctx, p.EmptyPause); err != nil {
+				return err
+			}
+			continue
 		}
 		res.Filled += n
 		res.Batches++
@@ -260,14 +297,66 @@ func (p *Preparer) fillPass(ctx context.Context, res *Result, total int64, lastL
 			*lastLog = time.Now()
 			p.Log.InfoContext(ctx, "reply search: filling", "filled", res.Filled, "of_about", total)
 		}
-		if p.Pause > 0 {
-			select {
-			case <-time.After(p.Pause):
-			case <-ctx.Done():
-				return ctx.Err()
-			}
+		if err := p.wait(ctx, p.Pause); err != nil {
+			return err
 		}
 	}
+}
+
+func (p *Preparer) wait(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	select {
+	case <-time.After(d):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// isTooLongForTSVector is Postgres' "string is too long for tsvector" (54000,
+// program_limit_exceeded).
+func isTooLongForTSVector(err error) bool {
+	var pg *pgconn.PgError
+	return errors.As(err, &pg) && pg.Code == "54000"
+}
+
+// fillRowsOneByOne is the fallback when a batch failed because one of its rows
+// cannot be indexed: it fills the window's rows singly, and a row that still
+// fails gets an empty column (it matches nothing) and a line in the log naming
+// the reply. One bad row must never be able to stop reply search coming on.
+func (p *Preparer) fillRowsOneByOne(ctx context.Context, after, before string, res *Result) error {
+	rows, err := p.DB.QueryContext(ctx, `SELECT id FROM ticket_replies WHERE ctid > $1::text::tid AND ctid < $2::text::tid AND body_tsv IS NULL ORDER BY ctid LIMIT $3`,
+		after, before, p.BatchSize)
+	if err != nil {
+		return fmt.Errorf("reply search: listing rows to fill one at a time: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return fmt.Errorf("reply search: reading a row id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("reply search: listing rows to fill one at a time: %w", err)
+	}
+	for _, id := range ids {
+		_, err := p.DB.ExecContext(ctx, `UPDATE ticket_replies SET body_tsv = to_tsvector('english', left(body, $2)) WHERE id = $1::uuid AND body_tsv IS NULL`, id, p.TextLimit)
+		if isTooLongForTSVector(err) {
+			p.Log.WarnContext(ctx, "reply search: a reply cannot be indexed and will not be searched; its search column is left empty", "reply_id", id)
+			_, err = p.DB.ExecContext(ctx, `UPDATE ticket_replies SET body_tsv = ''::tsvector WHERE id = $1::uuid AND body_tsv IS NULL`, id)
+		}
+		if err != nil {
+			return fmt.Errorf("reply search: filling reply %s: %w", id, err)
+		}
+		res.Filled++
+	}
+	return nil
 }
 
 // buildIndexes builds each missing index without blocking writes, and replaces
@@ -317,8 +406,19 @@ func (p *Preparer) buildIndex(ctx context.Context, name, create string) (err err
 	}
 	defer func() {
 		// The caller's ctx may be the thing that ended; the reset must still run.
-		if _, rerr := conn.ExecContext(context.WithoutCancel(ctx), `RESET maintenance_work_mem`); rerr != nil {
-			_ = conn.Raw(func(any) error { return driver.ErrBadConn }) // discard it
+		rctx := context.WithoutCancel(ctx)
+		if _, rerr := conn.ExecContext(rctx, p.ResetStatement); rerr != nil {
+			// Not undone, so this connection must not go back into the pool. Returning
+			// driver.ErrBadConn is not enough: the server's *sql.DB sits on a pgxpool
+			// (stdlib.OpenDBFromPool), where closing a database/sql connection only
+			// releases it to pgxpool, which keeps a live one. Closing the pgx
+			// connection itself makes pgxpool destroy it.
+			_ = conn.Raw(func(dc any) error {
+				if c, ok := dc.(*stdlib.Conn); ok {
+					_ = c.Conn().Close(rctx)
+				}
+				return driver.ErrBadConn
+			})
 		}
 		_ = conn.Close()
 	}()
@@ -348,20 +448,34 @@ func (p *Preparer) buildIndex(ctx context.Context, name, create string) (err err
 // what the server starts in the background. It retries after a failure, and
 // while another replica is doing the work.
 func (p *Preparer) Run(ctx context.Context) {
+	wait := p.Retry
 	for {
 		res, err := p.Prepare(ctx)
 		switch {
 		case ctx.Err() != nil:
 			return
 		case err != nil:
-			p.Log.WarnContext(ctx, "reply search preparation failed; it will be tried again", "error", err, "retry_in", p.Retry.String())
+			p.Log.WarnContext(ctx, "reply search preparation failed; it will be tried again", "error", err, "retry_in", wait.String())
 		case res.Done:
 			return
+		default:
+			wait = p.Retry // another replica holds the lock: look again at the normal interval
 		}
 		select {
-		case <-time.After(p.Retry):
+		case <-time.After(wait):
 		case <-ctx.Done():
 			return
 		}
+		if err != nil {
+			wait = NextRetry(wait, p.MaxRetry) // a failure that persists waits longer each time
+		}
 	}
+}
+
+// NextRetry is the wait after cur: twice as long, up to max.
+func NextRetry(cur, max time.Duration) time.Duration {
+	if cur *= 2; cur > max {
+		return max
+	}
+	return cur
 }

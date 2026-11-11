@@ -5,13 +5,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/testutil"
 )
@@ -203,17 +203,48 @@ func TestListTickets_NoReplyMatchUnlessAskedFor(t *testing.T) {
 	}
 }
 
+// addPrinterNote puts a reply holding the word "printer" on the fixture's printer
+// ticket, whose subject also holds it. The ticket is then listed by its subject
+// whether or not replies are searched, and an excerpt of that reply is what a
+// handler that ignored the outcome of the reply search would wrongly attach.
+func addPrinterNote(t *testing.T, h *harness, f mcpReplyFixture) {
+	t.Helper()
+	require.NoError(t, h.ticketStore.CreateReply(t.Context(), ticket.Reply{
+		ID: uuid.New(), TicketID: f.printer.ID, AuthorID: &h.staffID, Body: "the printer roller again", BodyFormat: ticket.TextFormatPlain,
+		NotifyCustomer: true, CreatedAt: time.Now().UTC().Add(time.Hour),
+	}))
+}
+
 // While the reply index is being built the page is chosen without the reply arm,
 // so it must show no excerpt as if replies had been searched.
 func TestListTickets_NoReplyMatchWhileTheIndexIsBuilt(t *testing.T) {
 	h, cleanup := newIsolatedHarness(t)
 	defer cleanup()
 	f := newMCPReplyFixture(t, h)
+	addPrinterNote(t, h, f)
 
 	res := h.do(t, http.MethodGet, "/api/v1/tickets?q=printer&search_replies=true&scope=visible", nil)
 	body, _ := io.ReadAll(res.Body)
 	require.Equal(t, http.StatusOK, res.StatusCode)
 	require.Equal(t, "building", res.Header.Get("X-Reply-Index"))
 	require.Contains(t, string(body), f.printer.ID.String(), "the subject match is still listed")
-	require.False(t, strings.Contains(string(body), "reply_match"))
+	require.NotContains(t, string(body), "reply_match", "no excerpt for a page chosen without the reply arm")
+}
+
+// The same when the reply arm ran out of time.
+func TestListTickets_NoReplyMatchWhenTheTimeLimitPassed(t *testing.T) {
+	testutil.EnsureReplySearchReady(t)
+	harnessReplyTimeout = time.Nanosecond
+	defer func() { harnessReplyTimeout = ticketstore.DefaultReplyTimeout }()
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	f := newMCPReplyFixture(t, h)
+	addPrinterNote(t, h, f)
+
+	res := h.do(t, http.MethodGet, "/api/v1/tickets?q=printer&search_replies=true&scope=visible", nil)
+	body, _ := io.ReadAll(res.Body)
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	require.Equal(t, "false", res.Header.Get("X-Replies-Searched"))
+	require.Contains(t, string(body), f.printer.ID.String())
+	require.NotContains(t, string(body), "reply_match")
 }

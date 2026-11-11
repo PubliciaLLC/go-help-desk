@@ -181,3 +181,33 @@ func TestMigrate_ConcurrentIndexCannotRunInAMultiStatementFile(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "cannot run inside a transaction block")
 }
+
+// The trigger computes the column from the first 50,000 characters of a reply,
+// the limit 1.3.0 puts on a new reply. A longer one (1.2.0 had no limit, and an
+// update can still bring one in) must neither fail the write nor stop the
+// server's fill: Postgres refuses a tsvector over 1,048,575 bytes, which a
+// megabyte of distinct words reaches. It runs in an isolated database like the
+// other migration tests.
+func TestMigration062_TriggerBoundsALongReply(t *testing.T) {
+	db, closeDB := testutil.NewIsolatedDB(t)
+	defer closeDB()
+	ctx := context.Background()
+	tk := repliesFixture(t, ctx, db.SQL)
+
+	var huge string // 31,000 distinct words, about a megabyte
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT string_agg(md5(i::text), ' ') FROM generate_series(1, 31000) i`).Scan(&huge))
+
+	id := addReply(t, ctx, db.SQL, tk, huge)
+	got := replyTSV(t, ctx, db.SQL, id)
+	require.NotNil(t, got, "the insert is accepted and filled")
+	var first, last bool
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT body_tsv @@ plainto_tsquery('english', md5('1')), body_tsv @@ plainto_tsquery('english', md5('31000'))
+		FROM ticket_replies WHERE id = $1`, id).Scan(&first, &last))
+	require.True(t, first, "the start of the reply is searchable")
+	require.False(t, last, "what lies past the first 50,000 characters is not")
+
+	short := addReply(t, ctx, db.SQL, tk, "a short one")
+	_, err := db.SQL.ExecContext(ctx, `UPDATE ticket_replies SET body = $2 WHERE id = $1`, short, huge)
+	require.NoError(t, err, "an update to an over-long body is accepted too")
+	require.NotNil(t, replyTSV(t, ctx, db.SQL, short))
+}

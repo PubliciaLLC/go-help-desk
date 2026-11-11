@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -517,6 +518,10 @@ func TestReplySearch_SkippedWhilePreparing(t *testing.T) {
 	ctx := context.Background()
 
 	_, tx, rollback := testutil.TxQueriesTx(t, db)
+	// Also when an assertion below fails and ends the test here: closing the
+	// isolated database waits for an open transaction, and the test would hang.
+	// (rollback is called again before the second half; that is harmless.)
+	defer rollback()
 	f := newReplySearchFixture(t, dbgen.New(tx))
 	ts := ticketstore.New(dbgen.New(tx))
 	fl := ticket.Filter{ActorID: f.staff.ID, Visibility: ticket.VisibilityAll, Limit: 50, Query: wordSubject, SearchReplies: true, IncludeInternal: true}
@@ -742,4 +747,42 @@ func TestReplySearch_ScopedStaffFindsExactlyWhatTheirScopeAdmits(t *testing.T) {
 		require.Equal(t, want, got[id], "ticket %s", id)
 	}
 	require.Len(t, got, 5)
+}
+
+// A reply is searched, and excerpted, on its first 50,000 characters (migration
+// 000062): 1.2.0 allowed replies of any length, and a megabyte of distinct words
+// cannot be a tsvector. A word near the start of a very long reply is found and
+// excerpted; one past the limit is not found.
+func TestReplySearch_ALongReplyIsSearchedOnItsFirst50000Characters(t *testing.T) {
+	testutil.EnsureReplySearchReady(t)
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+	f := newReplySearchFixture(t, q)
+	ctx := context.Background()
+
+	const early, late = "paleontologist", "xylophonist"
+	long := early + " noted in the log. " + strings.Repeat("filler words go here. ", 5000) + late + " appears at the very end."
+	require.Greater(t, len(long), 50000)
+	tk := f.newTicket(t, "A very long reply", f.requester.ID, time.Now().UTC())
+	f.newReply(t, tk, long, false, time.Now().UTC())
+
+	fl := ticket.Filter{ActorID: f.staff.ID, Visibility: ticket.VisibilityAll, Limit: 50, Query: early, SearchReplies: true, IncludeInternal: true}
+	res, err := f.ts.ListFilteredWithMeta(ctx, fl)
+	require.NoError(t, err)
+	requireSearched(t, res.Replies)
+	var ids []uuid.UUID
+	for _, x := range res.Tickets {
+		ids = append(ids, x.ID)
+	}
+	require.True(t, has(ids, tk), "a word near the start is found")
+	matches, err := f.ts.ReplyMatches(ctx, fl, ids)
+	require.NoError(t, err)
+	require.Contains(t, matches[tk.ID].Snippet, "\u0002"+early+"\u0003", "and excerpted")
+
+	fl.Query = late
+	res, err = f.ts.ListFilteredWithMeta(ctx, fl)
+	require.NoError(t, err)
+	require.Empty(t, res.Tickets, "a word past the first 50,000 characters is not found")
 }

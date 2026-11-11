@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/testutil"
 )
@@ -217,6 +218,45 @@ func TestMCP_ReplySearch_SaysWhenRepliesWereNotSearched(t *testing.T) {
 			// Not asked for: the answer is the list alone.
 			texts = toolTexts(t, staff.call(t, "list_tickets", map[string]any{"q": "printer"}))
 			require.Len(t, texts, 1)
+		})
+	}
+}
+
+// A page chosen without the reply arm (the index still being built, or the time
+// limit passed) carries no excerpt over MCP either, even for a ticket that is
+// listed by its subject and holds a matching reply.
+func TestMCP_ReplySearch_NoExcerptWithoutTheReplyArm(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T) (*harness, func())
+	}{
+		{"index still being built", func(t *testing.T) (*harness, func()) { return newIsolatedHarness(t) }},
+		{"time limit passed", func(t *testing.T) (*harness, func()) {
+			testutil.EnsureReplySearchReady(t)
+			harnessReplyTimeout = time.Nanosecond
+			h, cleanup := newHarness(t)
+			return h, func() { cleanup(); harnessReplyTimeout = ticketstore.DefaultReplyTimeout }
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, cleanup := tc.setup(t)
+			defer cleanup()
+			f := newMCPReplyFixture(t, h)
+			addPrinterNote(t, h, f)
+			for _, tr := range mcpTransports {
+				t.Run(tr.name, func(t *testing.T) {
+					staff := tr.open(t, h, h.apiKey)
+					texts := toolTexts(t, staff.call(t, "list_tickets", map[string]any{"q": "printer", "search_replies": true}))
+					require.Len(t, texts, 2, "the list and the note")
+					var got []mcpListed
+					require.NoError(t, json.Unmarshal([]byte(texts[0]), &got))
+					require.True(t, idsOf(got)[f.printer.ID], "listed by its subject")
+					for _, l := range got {
+						require.Nil(t, l.ReplyMatch, "no excerpt for a page chosen without the reply arm")
+					}
+				})
+			}
 		})
 	}
 }
