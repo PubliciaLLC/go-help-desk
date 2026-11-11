@@ -39,11 +39,12 @@ WHERE (sqlc.narg(entity_type)::text IS NULL OR entity_type = sqlc.narg(entity_ty
     -- (which Redact hides) is an error, which a filter reads as "no", and so a
     -- diff that is itself an array is not searched. Measured against
     -- jsonb_each over every key: about 10 times cheaper on a full scan, and
-    -- still the dearest part of a search, so it is bounded: diff_floor is the
-    -- created_at of the Nth newest entry (AuditDiffSearchFloor), and older
-    -- entries are matched on what is cheap to search. NULL means no bound.
+    -- still the dearest part of a search, so it runs only when search_details is
+    -- true: the caller sets it when the request has a date range of at most
+    -- audit.DetailsSearchMaxDays (audit.Filter.SearchesDetails). Otherwise q is
+    -- matched on the entity type, the action and the actor alone.
     OR (
-      (sqlc.narg(diff_floor)::timestamptz IS NULL OR audit_log.created_at >= sqlc.narg(diff_floor)::timestamptz)
+      sqlc.arg(search_details)::bool
       AND (
         jsonb_path_exists(audit_log.before, sqlc.narg(diff_path)::jsonpath, '{}'::jsonb, true)
         OR jsonb_path_exists(audit_log.after, sqlc.narg(diff_path)::jsonpath, '{}'::jsonb, true)
@@ -62,11 +63,15 @@ LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
 -- SearchAuditLog for a search with text (q). The WHERE is the same, kept in step
 -- by hand; only the ORDER BY differs. With q the planner cannot tell how few rows
 -- match, expects plenty, and walks created_at backwards fetching every row from the
--- heap to find the first page: on 2,000,000 entries a text matching nothing took
--- 8 to 40 seconds (once past a 120 second limit) that way, against about 2 for a
--- parallel scan and a top-N sort. Adding an interval to created_at takes that
--- ordering away from the index, so a search reads the table once and predictably.
--- The listing with no q keeps the index, where stopping after a page is the point.
+-- heap to find the first page. Adding an interval to created_at takes that
+-- ordering away from the index, so a search reads the table once, in parallel.
+-- Kept after the date-range rule (audit.DetailsSearchMaxDays) because the range
+-- does not remove the need: on 2,000,000 entries over two years, for a text that
+-- matches nothing, the page took 0.6 to 2.1 seconds this way and 1.1 to 9.3 the
+-- other, whether the search had a 90-day range or none. The price is a text that
+-- matches plenty (a first page the index would have found at once): 0.6 to 3.5
+-- seconds here against a few milliseconds. The listing with no q keeps the
+-- index, where stopping after a page is the point.
 SELECT * FROM audit_log
 WHERE (sqlc.narg(entity_type)::text IS NULL OR entity_type = sqlc.narg(entity_type)::text)
   AND (sqlc.narg(action)::text IS NULL OR action = sqlc.narg(action)::text)
@@ -95,11 +100,12 @@ WHERE (sqlc.narg(entity_type)::text IS NULL OR entity_type = sqlc.narg(entity_ty
     -- (which Redact hides) is an error, which a filter reads as "no", and so a
     -- diff that is itself an array is not searched. Measured against
     -- jsonb_each over every key: about 10 times cheaper on a full scan, and
-    -- still the dearest part of a search, so it is bounded: diff_floor is the
-    -- created_at of the Nth newest entry (AuditDiffSearchFloor), and older
-    -- entries are matched on what is cheap to search. NULL means no bound.
+    -- still the dearest part of a search, so it runs only when search_details is
+    -- true: the caller sets it when the request has a date range of at most
+    -- audit.DetailsSearchMaxDays (audit.Filter.SearchesDetails). Otherwise q is
+    -- matched on the entity type, the action and the actor alone.
     OR (
-      (sqlc.narg(diff_floor)::timestamptz IS NULL OR audit_log.created_at >= sqlc.narg(diff_floor)::timestamptz)
+      sqlc.arg(search_details)::bool
       AND (
         jsonb_path_exists(audit_log.before, sqlc.narg(diff_path)::jsonpath, '{}'::jsonb, true)
         OR jsonb_path_exists(audit_log.after, sqlc.narg(diff_path)::jsonpath, '{}'::jsonb, true)
@@ -142,9 +148,9 @@ SELECT COUNT(*) FROM (
                OR u.email ILIKE '%' || sqlc.narg(q_pattern)::text || '%')
           AND NOT (sqlc.arg(mask_requesters)::bool AND u.role = 'user')
       )
-      -- The change details, bounded: see SearchAuditLog.
+      -- The change details, only inside a date range: see SearchAuditLog.
       OR (
-        (sqlc.narg(diff_floor)::timestamptz IS NULL OR audit_log.created_at >= sqlc.narg(diff_floor)::timestamptz)
+        sqlc.arg(search_details)::bool
         AND (
           jsonb_path_exists(audit_log.before, sqlc.narg(diff_path)::jsonpath, '{}'::jsonb, true)
           OR jsonb_path_exists(audit_log.after, sqlc.narg(diff_path)::jsonpath, '{}'::jsonb, true)
@@ -154,23 +160,6 @@ SELECT COUNT(*) FROM (
     AND (sqlc.narg(exclude_actions)::text[] IS NULL OR NOT (action = ANY (sqlc.narg(exclude_actions)::text[])))
   LIMIT sqlc.arg(count_cap)
 ) AS matched;
-
--- name: AuditDiffSearchFloor :one
--- Where a search of the change details stops (#629): the created_at of the
--- window_size'th newest entry that passes the filters other than q. No row
--- means fewer than that many, so nothing is left out. Scoped by the same
--- filters as the search, so narrowing a search (an entity, an actor, a date
--- range) moves the window to reach older entries.
-SELECT created_at FROM audit_log
-WHERE (sqlc.narg(entity_type)::text IS NULL OR entity_type = sqlc.narg(entity_type)::text)
-  AND (sqlc.narg(action)::text IS NULL OR action = sqlc.narg(action)::text)
-  AND (sqlc.narg(actor_id)::uuid IS NULL OR actor_id = sqlc.narg(actor_id)::uuid)
-  AND (sqlc.narg(from_ts)::timestamptz IS NULL OR created_at >= sqlc.narg(from_ts)::timestamptz)
-  AND (sqlc.narg(to_ts)::timestamptz IS NULL OR created_at <= sqlc.narg(to_ts)::timestamptz)
-  AND (sqlc.narg(exclude_actions)::text[] IS NULL OR NOT (action = ANY (sqlc.narg(exclude_actions)::text[])))
-ORDER BY created_at DESC
-OFFSET sqlc.arg(window_size)::int - 1
-LIMIT 1;
 
 -- name: DeleteAuditLogBatch :execrows
 -- The retention sweep's hard delete, one batch (#629). No archive table — see

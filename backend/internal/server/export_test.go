@@ -9,7 +9,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
-	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -155,7 +154,3 @@ func (s *Server) ReloadSAMLForTest(ctx context.Context) error { return s.reloadS
 func (s *Server) SaveAuditMaskForTest(ctx context.Context, actor uuid.UUID, raw []byte, before string) error {
 	return s.saveAuditMask(ctx, actor, raw, before)
 }
-
-// SetAuditStoreForTest swaps the store behind the audit view, so a test can
-// make it answer with a page the real store only produces at scale.
-func (s *Server) SetAuditStoreForTest(st audit.Store) { s.auditStore = st }

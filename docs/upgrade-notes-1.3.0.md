@@ -390,7 +390,7 @@ This adds a column to `webhook_configs` through a migration that runs at start-u
 - **A change to `audit_mask_requester_names` is an audit entry** (entity `setting`, action `audit_mask_changed`, the value before and after). A save that leaves the value as it was writes none.
 - **The mask is not protection against the database.** Anyone with direct access to the database can still read requester names.
 - **The retention purge runs in batches of 5,000** instead of one `DELETE`.
-- **Large logs.** Searching the change details covers the newest 100,000 entries that pass the other filters; older entries are still found by entity, action and actor, and a date range, entity, action or actor filter moves the window back. A text that matches nothing reads the whole table, as it always did: on 2,000,000 entries the page took 1 to 3 seconds and the count 2 to 7.
+- **Searching the change details needs a date range.** On `GET /admin/audit`, `q` looks in the change details only when the request has both `from` and `to`, at most 90 days apart. Without a range, or with a longer one, `q` still matches the entity type, the action and the actor (a longer range is not an error). The response carries `details_searched` (always sent) and, when `q` was sent and the details were not searched, `details_skipped_reason` (`no_date_range` or `range_too_long`); the Audit Log page tells the administrator to pick a range. An integration that searched the details with no range now finds fewer entries and should add `from` and `to`. On 2,000,000 entries over two years a text that matches nothing took 0.6 to 2.1 seconds for the page and 1.8 to 3.0 for the count.
 
 ### New Environment Variables (Compose-Forwarded)
 

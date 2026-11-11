@@ -54,12 +54,6 @@ type Querier interface {
 	// not exist matches nothing here: CategoryExists and CTIIsCoherent refuse
 	// those.
 	ArchivedCTINode(ctx context.Context, arg ArchivedCTINodeParams) (string, error)
-	// Where a search of the change details stops (#629): the created_at of the
-	// window_size'th newest entry that passes the filters other than q. No row
-	// means fewer than that many, so nothing is left out. Scoped by the same
-	// filters as the search, so narrowing a search (an entity, an actor, a date
-	// range) moves the window to reach older entries.
-	AuditDiffSearchFloor(ctx context.Context, arg AuditDiffSearchFloorParams) (time.Time, error)
 	// Whether a category/type/item triple exists and hangs together: the type
 	// belongs to the category, and the item belongs to the type.
 	//
@@ -968,11 +962,15 @@ type Querier interface {
 	// SearchAuditLog for a search with text (q). The WHERE is the same, kept in step
 	// by hand; only the ORDER BY differs. With q the planner cannot tell how few rows
 	// match, expects plenty, and walks created_at backwards fetching every row from the
-	// heap to find the first page: on 2,000,000 entries a text matching nothing took
-	// 8 to 40 seconds (once past a 120 second limit) that way, against about 2 for a
-	// parallel scan and a top-N sort. Adding an interval to created_at takes that
-	// ordering away from the index, so a search reads the table once and predictably.
-	// The listing with no q keeps the index, where stopping after a page is the point.
+	// heap to find the first page. Adding an interval to created_at takes that
+	// ordering away from the index, so a search reads the table once, in parallel.
+	// Kept after the date-range rule (audit.DetailsSearchMaxDays) because the range
+	// does not remove the need: on 2,000,000 entries over two years, for a text that
+	// matches nothing, the page took 0.6 to 2.1 seconds this way and 1.1 to 9.3 the
+	// other, whether the search had a 90-day range or none. The price is a text that
+	// matches plenty (a first page the index would have found at once): 0.6 to 3.5
+	// seconds here against a few milliseconds. The listing with no q keeps the
+	// index, where stopping after a page is the point.
 	// id breaks the tie, because created_at alone does not order entries written
 	// in the same microsecond — which happens inside a single request. Without a
 	// total order, two pages of one listing can disagree about which tied row

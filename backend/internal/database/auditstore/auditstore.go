@@ -6,7 +6,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -29,13 +28,11 @@ const purgeBatchSize = 5000
 type Store struct {
 	q          *dbgen.Queries
 	purgeBatch int32
-	// diffWindow is how many entries a search of the change details covers.
-	diffWindow int32
 }
 
 // New returns a Store backed by the given Queries.
 func New(q *dbgen.Queries) *Store {
-	return &Store{q: q, purgeBatch: purgeBatchSize, diffWindow: audit.DiffSearchWindow}
+	return &Store{q: q, purgeBatch: purgeBatchSize}
 }
 
 func (s *Store) Create(ctx context.Context, e audit.Entry) error {
@@ -63,27 +60,6 @@ func (s *Store) Search(ctx context.Context, f audit.Filter, limit, offset int) (
 	if err != nil {
 		return audit.Page{}, err
 	}
-	// Only a search with text has a window; without q the floor is not looked up.
-	windowReached := false
-	if f.Q != "" {
-		floor, err := s.q.AuditDiffSearchFloor(ctx, dbgen.AuditDiffSearchFloorParams{
-			EntityType: p.entityType, Action: p.action, ActorID: p.actorID, FromTs: p.from, ToTs: p.to,
-			ExcludeActions: p.excludeActions, WindowSize: s.diffWindow,
-		})
-		switch {
-		case err == nil:
-			p.diffFloor = sql.NullTime{Time: floor, Valid: true}
-			// The floor is the window'th entry, so the window was filled. With exactly
-			// that many entries nothing was left out, but the viewer's advice (narrow
-			// the search) holds there too, and telling the two apart would cost a
-			// second query on every search.
-			windowReached = true
-		case errors.Is(err, sql.ErrNoRows):
-			// Fewer entries than the window: nothing is left out.
-		default:
-			return audit.Page{}, fmt.Errorf("bounding the change-details search: %w", err)
-		}
-	}
 	rows, counted, err := s.search(ctx, p, limit, offset)
 	if err != nil {
 		return audit.Page{}, err
@@ -98,10 +74,7 @@ func (s *Store) Search(ctx context.Context, f audit.Filter, limit, offset int) (
 	if capped {
 		total = audit.TotalCap
 	}
-	return audit.Page{
-		Entries: toEntries(rows), Total: total, TotalCapped: capped,
-		DetailsWindowReached: windowReached, HasMore: hasMore,
-	}, nil
+	return audit.Page{Entries: toEntries(rows), Total: total, TotalCapped: capped, HasMore: hasMore}, nil
 }
 
 func (s *Store) search(ctx context.Context, p searchParamValues, limit, offset int) ([]dbgen.AuditLog, int64, error) {
@@ -116,7 +89,7 @@ func (s *Store) search(ctx context.Context, p searchParamValues, limit, offset i
 		PageOffset: pageInt32(offset),
 
 		MaskRequesters: p.maskRequesters,
-		DiffFloor:      p.diffFloor,
+		SearchDetails:  p.searchDetails,
 		DiffPath:       p.diffPath,
 		ExcludeActions: p.excludeActions,
 	}
@@ -142,7 +115,7 @@ func (s *Store) search(ctx context.Context, p searchParamValues, limit, offset i
 		CountCap:   audit.TotalCap + 1,
 
 		MaskRequesters: p.maskRequesters,
-		DiffFloor:      p.diffFloor,
+		SearchDetails:  p.searchDetails,
 		DiffPath:       p.diffPath,
 		ExcludeActions: p.excludeActions,
 	})
@@ -203,7 +176,7 @@ type searchParamValues struct {
 	// diffPath is the jsonpath that looks for q in the shown keys of a diff, see
 	// diffPath. nil without a q, which is SQL NULL.
 	diffPath       any
-	diffFloor      sql.NullTime
+	searchDetails  bool
 	maskRequesters bool
 	// nil, not empty, when nothing is excluded: SQL NULL means "no exclusion".
 	excludeActions []string
@@ -227,6 +200,7 @@ func searchParams(f audit.Filter) (searchParamValues, error) {
 			return searchParamValues{}, fmt.Errorf("building the change-details search: %w", err)
 		}
 		p.diffPath = path
+		p.searchDetails = f.SearchesDetails()
 	}
 	if len(f.ExcludeActions) > 0 {
 		p.excludeActions = f.ExcludeActions

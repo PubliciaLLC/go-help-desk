@@ -157,10 +157,16 @@ export interface AdminAuditListResponse {
    */
   total_capped: boolean
   /**
-   * True when a search with `q` stopped at the server's window of newest
-   * entries and did not look in the change details of older ones. Always sent.
+   * True when `q` was also looked for in the change details, which the server
+   * does only inside a date range (`from` and `to`) of at most 90 days. False
+   * without `q`. Always sent.
    */
-  details_window_reached: boolean
+  details_searched: boolean
+  /**
+   * Why a search with `q` did not look in the change details: no date range, or
+   * one longer than 90 days. Absent when it did, and when there was no `q`.
+   */
+  details_skipped_reason?: 'no_date_range' | 'range_too_long'
   /** Whether another page exists. The pager runs on this; `total` is for display. */
   has_more: boolean
 }

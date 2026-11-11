@@ -11,11 +11,3 @@ func NewWithPurgeBatchForTest(q *dbgen.Queries, batch int32) *Store {
 	s.purgeBatch = batch
 	return s
 }
-
-// NewWithDiffWindowForTest is New with a smaller change-details search window,
-// for the same reason.
-func NewWithDiffWindowForTest(q *dbgen.Queries, window int32) *Store {
-	s := New(q)
-	s.diffWindow = window
-	return s
-}

@@ -48,11 +48,16 @@ type adminAuditListResponse struct {
 	// stops there. Always sent, false included, so a client does not have to
 	// tell "not capped" from "an older server".
 	TotalCapped bool `json:"total_capped"`
-	// DetailsWindowReached is true when a search with q stopped at
-	// audit.DiffSearchWindow entries and did not look in the change details of
-	// the older ones (they are still matched on entity, action and actor). Always
-	// sent, false included, for the reason TotalCapped is.
-	DetailsWindowReached bool `json:"details_window_reached"`
+	// DetailsSearched is true when q was also looked for in the change details,
+	// which happens only inside a date range of at most audit.DetailsSearchMaxDays.
+	// False without q, and false when q was matched on the entity type, the action
+	// and the actor alone; DetailsSkippedReason then says why. Both always sent,
+	// for the reason TotalCapped is.
+	DetailsSearched bool `json:"details_searched"`
+	// DetailsSkippedReason is audit.DetailsSkippedNoRange or
+	// audit.DetailsSkippedRangeTooLong when q was sent and the details were not
+	// searched, and absent otherwise.
+	DetailsSkippedReason string `json:"details_skipped_reason,omitempty"`
 	// HasMore reports whether another page exists. It is read off the page
 	// itself (one row past it), not derived from Total, which stops at the cap
 	// while a pager keeps going. This is the client's only paging rule.
@@ -139,7 +144,7 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 
 	JSON(w, http.StatusOK, adminAuditListResponse{
 		Entries: views, Total: page.Total, TotalCapped: page.TotalCapped,
-		DetailsWindowReached: page.DetailsWindowReached, HasMore: page.HasMore,
+		DetailsSearched: f.SearchesDetails(), DetailsSkippedReason: f.DetailsSkippedReason(), HasMore: page.HasMore,
 	})
 }
 

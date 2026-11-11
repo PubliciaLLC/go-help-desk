@@ -58,15 +58,20 @@ type ActionFilter struct {
 // so. 10,000 is 200 pages of 50, more than anyone pages through.
 const TotalCap = 10000
 
-// DiffSearchWindow is how many entries a search of the change details covers:
-// the newest this many that pass the other filters (#629). The search reads
-// every row it covers, at roughly 6 microseconds each, so it is bounded where
-// the entity, action and actor match (which have indexes and are cheap) is not.
-// At 100,000 that is well under a second; unbounded on 2,000,000 entries it was
-// 20 seconds for the count and 40 for the page. An older entry is still found by
-// its entity, action and actor, and narrowing the search by date, entity or
-// actor moves the window back to reach it.
-const DiffSearchWindow = 100000
+// DetailsSearchMaxDays is the longest date range inside which a search looks in
+// the change details (#629, owner 2026-11-11). That search reads every row it
+// covers, so it is bounded by a date range, which the viewer can see and the
+// database can use (created_at has an index). Without a range of at most this many days, q still matches
+// the entity type, the action and the actor, and the response says the details
+// were not searched.
+const DetailsSearchMaxDays = 90
+
+// Why a search with text did not look in the change details. They are the
+// values of details_skipped_reason in the admin audit response.
+const (
+	DetailsSkippedNoRange      = "no_date_range"
+	DetailsSkippedRangeTooLong = "range_too_long"
+)
 
 // Page is one page of a Search and what a pager needs to move on from it.
 type Page struct {
@@ -79,14 +84,6 @@ type Page struct {
 	// TotalCapped is true when more than TotalCap entries match; Total is then
 	// TotalCap and means "at least this many".
 	TotalCapped bool
-
-	// DetailsWindowReached is true when a search with text had at least
-	// DiffSearchWindow entries to look through, so the change details of any
-	// older ones were not searched. A page that says so can tell the viewer to
-	// narrow the search; one that does not is complete. Entries older than the
-	// window are still matched on entity, action and actor either way. False
-	// for a search without text, which has no window.
-	DetailsWindowReached bool
 
 	// HasMore reports whether an entry exists after this page. It does not
 	// depend on Total, which stops at TotalCap while a pager keeps going.
@@ -101,7 +98,8 @@ type Page struct {
 //   - the actor's display name and email (D34), for an account that still
 //     exists. MaskRequesterActors leaves requesters out of this part;
 //   - the scalar values of Before and After at SearchableKeys, and nowhere else
-//     (D33). Matching a value Redact hides would let a search for it confirm
+//     (D33), only inside a date range of at most DetailsSearchMaxDays (see
+//     SearchesDetails). Matching a value Redact hides would let a search for it confirm
 //     that it exists without ever showing it, so the keys searched are the keys
 //     shown, and the store's tests prove a hidden value is never a hit.
 type Filter struct {
@@ -125,6 +123,27 @@ type Filter struct {
 	// the page afterwards, which would leave the count and the offset
 	// describing a different sequence from the one the caller reads.
 	ExcludeActions []string
+}
+
+// SearchesDetails reports whether a Search with this filter looks in the change
+// details: there is text, and a date range (both From and To) of at most
+// DetailsSearchMaxDays. Anything else is the same search without the details.
+func (f Filter) SearchesDetails() bool {
+	return f.Q != "" && f.From != nil && f.To != nil &&
+		f.To.Sub(*f.From) <= time.Duration(DetailsSearchMaxDays)*24*time.Hour
+}
+
+// DetailsSkippedReason says why a search with text did not look in the change
+// details, or is empty when it did, or had no text to look for.
+func (f Filter) DetailsSkippedReason() string {
+	switch {
+	case f.Q == "" || f.SearchesDetails():
+		return ""
+	case f.From == nil || f.To == nil:
+		return DetailsSkippedNoRange
+	default:
+		return DetailsSkippedRangeTooLong
+	}
 }
 
 // sensitiveFragments marks a Before/After key as one whose value must never

@@ -15,49 +15,6 @@ import (
 	"github.com/sqlc-dev/pqtype"
 )
 
-const auditDiffSearchFloor = `-- name: AuditDiffSearchFloor :one
-SELECT created_at FROM audit_log
-WHERE ($1::text IS NULL OR entity_type = $1::text)
-  AND ($2::text IS NULL OR action = $2::text)
-  AND ($3::uuid IS NULL OR actor_id = $3::uuid)
-  AND ($4::timestamptz IS NULL OR created_at >= $4::timestamptz)
-  AND ($5::timestamptz IS NULL OR created_at <= $5::timestamptz)
-  AND ($6::text[] IS NULL OR NOT (action = ANY ($6::text[])))
-ORDER BY created_at DESC
-OFFSET $7::int - 1
-LIMIT 1
-`
-
-type AuditDiffSearchFloorParams struct {
-	EntityType     sql.NullString `json:"entity_type"`
-	Action         sql.NullString `json:"action"`
-	ActorID        uuid.NullUUID  `json:"actor_id"`
-	FromTs         sql.NullTime   `json:"from_ts"`
-	ToTs           sql.NullTime   `json:"to_ts"`
-	ExcludeActions []string       `json:"exclude_actions"`
-	WindowSize     int32          `json:"window_size"`
-}
-
-// Where a search of the change details stops (#629): the created_at of the
-// window_size'th newest entry that passes the filters other than q. No row
-// means fewer than that many, so nothing is left out. Scoped by the same
-// filters as the search, so narrowing a search (an entity, an actor, a date
-// range) moves the window to reach older entries.
-func (q *Queries) AuditDiffSearchFloor(ctx context.Context, arg AuditDiffSearchFloorParams) (time.Time, error) {
-	row := q.db.QueryRowContext(ctx, auditDiffSearchFloor,
-		arg.EntityType,
-		arg.Action,
-		arg.ActorID,
-		arg.FromTs,
-		arg.ToTs,
-		pq.Array(arg.ExcludeActions),
-		arg.WindowSize,
-	)
-	var created_at time.Time
-	err := row.Scan(&created_at)
-	return created_at, err
-}
-
 const countAuditLog = `-- name: CountAuditLog :one
 SELECT COUNT(*) FROM (
   SELECT 1 FROM audit_log
@@ -81,9 +38,9 @@ SELECT COUNT(*) FROM (
                OR u.email ILIKE '%' || $6::text || '%')
           AND NOT ($7::bool AND u.role = 'user')
       )
-      -- The change details, bounded: see SearchAuditLog.
+      -- The change details, only inside a date range: see SearchAuditLog.
       OR (
-        ($8::timestamptz IS NULL OR audit_log.created_at >= $8::timestamptz)
+        $8::bool
         AND (
           jsonb_path_exists(audit_log.before, $9::jsonpath, '{}'::jsonb, true)
           OR jsonb_path_exists(audit_log.after, $9::jsonpath, '{}'::jsonb, true)
@@ -103,7 +60,7 @@ type CountAuditLogParams struct {
 	ToTs           sql.NullTime   `json:"to_ts"`
 	QPattern       sql.NullString `json:"q_pattern"`
 	MaskRequesters bool           `json:"mask_requesters"`
-	DiffFloor      sql.NullTime   `json:"diff_floor"`
+	SearchDetails  bool           `json:"search_details"`
 	DiffPath       interface{}    `json:"diff_path"`
 	ExcludeActions []string       `json:"exclude_actions"`
 	CountCap       int32          `json:"count_cap"`
@@ -123,7 +80,7 @@ func (q *Queries) CountAuditLog(ctx context.Context, arg CountAuditLogParams) (i
 		arg.ToTs,
 		arg.QPattern,
 		arg.MaskRequesters,
-		arg.DiffFloor,
+		arg.SearchDetails,
 		arg.DiffPath,
 		pq.Array(arg.ExcludeActions),
 		arg.CountCap,
@@ -270,11 +227,12 @@ WHERE ($1::text IS NULL OR entity_type = $1::text)
     -- (which Redact hides) is an error, which a filter reads as "no", and so a
     -- diff that is itself an array is not searched. Measured against
     -- jsonb_each over every key: about 10 times cheaper on a full scan, and
-    -- still the dearest part of a search, so it is bounded: diff_floor is the
-    -- created_at of the Nth newest entry (AuditDiffSearchFloor), and older
-    -- entries are matched on what is cheap to search. NULL means no bound.
+    -- still the dearest part of a search, so it runs only when search_details is
+    -- true: the caller sets it when the request has a date range of at most
+    -- audit.DetailsSearchMaxDays (audit.Filter.SearchesDetails). Otherwise q is
+    -- matched on the entity type, the action and the actor alone.
     OR (
-      ($8::timestamptz IS NULL OR audit_log.created_at >= $8::timestamptz)
+      $8::bool
       AND (
         jsonb_path_exists(audit_log.before, $9::jsonpath, '{}'::jsonb, true)
         OR jsonb_path_exists(audit_log.after, $9::jsonpath, '{}'::jsonb, true)
@@ -294,7 +252,7 @@ type SearchAuditLogParams struct {
 	ToTs           sql.NullTime   `json:"to_ts"`
 	QPattern       sql.NullString `json:"q_pattern"`
 	MaskRequesters bool           `json:"mask_requesters"`
-	DiffFloor      sql.NullTime   `json:"diff_floor"`
+	SearchDetails  bool           `json:"search_details"`
 	DiffPath       interface{}    `json:"diff_path"`
 	ExcludeActions []string       `json:"exclude_actions"`
 	PageOffset     int32          `json:"page_offset"`
@@ -316,7 +274,7 @@ func (q *Queries) SearchAuditLog(ctx context.Context, arg SearchAuditLogParams) 
 		arg.ToTs,
 		arg.QPattern,
 		arg.MaskRequesters,
-		arg.DiffFloor,
+		arg.SearchDetails,
 		arg.DiffPath,
 		pq.Array(arg.ExcludeActions),
 		arg.PageOffset,
@@ -381,11 +339,12 @@ WHERE ($1::text IS NULL OR entity_type = $1::text)
     -- (which Redact hides) is an error, which a filter reads as "no", and so a
     -- diff that is itself an array is not searched. Measured against
     -- jsonb_each over every key: about 10 times cheaper on a full scan, and
-    -- still the dearest part of a search, so it is bounded: diff_floor is the
-    -- created_at of the Nth newest entry (AuditDiffSearchFloor), and older
-    -- entries are matched on what is cheap to search. NULL means no bound.
+    -- still the dearest part of a search, so it runs only when search_details is
+    -- true: the caller sets it when the request has a date range of at most
+    -- audit.DetailsSearchMaxDays (audit.Filter.SearchesDetails). Otherwise q is
+    -- matched on the entity type, the action and the actor alone.
     OR (
-      ($8::timestamptz IS NULL OR audit_log.created_at >= $8::timestamptz)
+      $8::bool
       AND (
         jsonb_path_exists(audit_log.before, $9::jsonpath, '{}'::jsonb, true)
         OR jsonb_path_exists(audit_log.after, $9::jsonpath, '{}'::jsonb, true)
@@ -405,7 +364,7 @@ type SearchAuditLogTextParams struct {
 	ToTs           sql.NullTime   `json:"to_ts"`
 	QPattern       sql.NullString `json:"q_pattern"`
 	MaskRequesters bool           `json:"mask_requesters"`
-	DiffFloor      sql.NullTime   `json:"diff_floor"`
+	SearchDetails  bool           `json:"search_details"`
 	DiffPath       interface{}    `json:"diff_path"`
 	ExcludeActions []string       `json:"exclude_actions"`
 	PageOffset     int32          `json:"page_offset"`
@@ -415,11 +374,15 @@ type SearchAuditLogTextParams struct {
 // SearchAuditLog for a search with text (q). The WHERE is the same, kept in step
 // by hand; only the ORDER BY differs. With q the planner cannot tell how few rows
 // match, expects plenty, and walks created_at backwards fetching every row from the
-// heap to find the first page: on 2,000,000 entries a text matching nothing took
-// 8 to 40 seconds (once past a 120 second limit) that way, against about 2 for a
-// parallel scan and a top-N sort. Adding an interval to created_at takes that
-// ordering away from the index, so a search reads the table once and predictably.
-// The listing with no q keeps the index, where stopping after a page is the point.
+// heap to find the first page. Adding an interval to created_at takes that
+// ordering away from the index, so a search reads the table once, in parallel.
+// Kept after the date-range rule (audit.DetailsSearchMaxDays) because the range
+// does not remove the need: on 2,000,000 entries over two years, for a text that
+// matches nothing, the page took 0.6 to 2.1 seconds this way and 1.1 to 9.3 the
+// other, whether the search had a 90-day range or none. The price is a text that
+// matches plenty (a first page the index would have found at once): 0.6 to 3.5
+// seconds here against a few milliseconds. The listing with no q keeps the
+// index, where stopping after a page is the point.
 // id breaks the tie, because created_at alone does not order entries written
 // in the same microsecond — which happens inside a single request. Without a
 // total order, two pages of one listing can disagree about which tied row
@@ -433,7 +396,7 @@ func (q *Queries) SearchAuditLogText(ctx context.Context, arg SearchAuditLogText
 		arg.ToTs,
 		arg.QPattern,
 		arg.MaskRequesters,
-		arg.DiffFloor,
+		arg.SearchDetails,
 		arg.DiffPath,
 		pq.Array(arg.ExcludeActions),
 		arg.PageOffset,

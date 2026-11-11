@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -16,7 +17,21 @@ import (
 // the tickets it found.
 func adminAuditHits(t *testing.T, h *harness, q string) map[string]bool {
 	t.Helper()
-	res := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/audit?limit=500&q="+url.QueryEscape(q), nil)
+	return adminAuditHitsWith(t, h, q, "")
+}
+
+// adminAuditHitsInRange is adminAuditHits with the date range inside which the
+// change details are searched (audit.Filter.SearchesDetails): around now.
+func adminAuditHitsInRange(t *testing.T, h *harness, q string) map[string]bool {
+	t.Helper()
+	now := time.Now().UTC()
+	return adminAuditHitsWith(t, h, q, "&from="+url.QueryEscape(now.Add(-time.Hour).Format(time.RFC3339))+
+		"&to="+url.QueryEscape(now.Add(time.Hour).Format(time.RFC3339)))
+}
+
+func adminAuditHitsWith(t *testing.T, h *harness, q, extra string) map[string]bool {
+	t.Helper()
+	res := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/audit?limit=500&q="+url.QueryEscape(q)+extra, nil)
 	require.Equal(t, http.StatusOK, res.StatusCode)
 	var page struct {
 		Entries []maskEntry `json:"entries"`
@@ -99,8 +114,10 @@ func TestAdminAudit_QSearchesShownDetailsNotHiddenOnes(t *testing.T) {
 		"scope_path": "Hardware › Laptop", "subject": "Quarterly payroll breach", "api_key": "sk-live-abc",
 	})
 
-	require.True(t, adminAuditHits(t, h, "laptop")[id], "a shown value")
-	require.False(t, adminAuditHits(t, h, "payroll breach")[id], "a hidden value, planted next to a shown one")
-	require.False(t, adminAuditHits(t, h, "sk-live")[id], "a secret-looking key")
-	require.False(t, adminAuditHits(t, h, "mask test")[id], "the subject every ticket entry carries")
+	// Inside a date range: the only place the details are searched, so the hidden
+	// values below are tested where a hit would be possible.
+	require.True(t, adminAuditHitsInRange(t, h, "laptop")[id], "a shown value")
+	require.False(t, adminAuditHitsInRange(t, h, "payroll breach")[id], "a hidden value, planted next to a shown one")
+	require.False(t, adminAuditHitsInRange(t, h, "sk-live")[id], "a secret-looking key")
+	require.False(t, adminAuditHitsInRange(t, h, "mask test")[id], "the subject every ticket entry carries")
 }

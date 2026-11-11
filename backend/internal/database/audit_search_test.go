@@ -30,6 +30,14 @@ func seedAuditActor(t *testing.T, ctx context.Context, us *userstore.Store, role
 	return u.ID
 }
 
+// inDetailsRange adds the date range inside which q looks in the change details
+// (audit.Filter.SearchesDetails), around entries written a moment ago.
+func inDetailsRange(f audit.Filter) audit.Filter {
+	from, to := time.Now().Add(-time.Hour), time.Now().Add(time.Hour)
+	f.From, f.To = &from, &to
+	return f
+}
+
 // #629(a): q looks inside the change details, but only at what audit.Redact
 // would show. Every case is scoped to one actor, so rows this database already
 // holds cannot change the answer.
@@ -63,7 +71,7 @@ func TestAuditStore_Search_QReachesShownDiffValuesOnly(t *testing.T) {
 	write("scalar_types", nil, map[string]any{"sort_order": 4242, "active": true, "scope_path": nil})
 
 	hits := func(text string) []string {
-		pg, err := aus.Search(ctx, audit.Filter{ActorID: &actor, Q: text}, 50, 0)
+		pg, err := aus.Search(ctx, inDetailsRange(audit.Filter{ActorID: &actor, Q: text}), 50, 0)
 		require.NoError(t, err)
 		require.Equal(t, len(pg.Entries), pg.Total, "the count describes the page")
 		var actions []string
@@ -130,7 +138,7 @@ func TestAuditStore_Search_ParityWithRedact(t *testing.T) {
 			}
 		}
 		needle := fmt.Sprint(firstValue(after))
-		pg, err := aus.Search(ctx, audit.Filter{ActorID: &actor, Q: needle}, 200, 0)
+		pg, err := aus.Search(ctx, inDetailsRange(audit.Filter{ActorID: &actor, Q: needle}), 200, 0)
 		require.NoError(t, err)
 		found := false
 		for _, e := range pg.Entries {
@@ -244,7 +252,7 @@ func TestAuditStore_Search_MaskLeavesTheRestOfQAlone(t *testing.T) {
 		After: map[string]any{"scope_path": "zz-requester-path"},
 	}))
 	for _, text := range []string{"zz_requester_action", "zz-requester-path"} {
-		pg, err := aus.Search(ctx, audit.Filter{ActorID: &requester, Q: text, MaskRequesterActors: true}, 10, 0)
+		pg, err := aus.Search(ctx, inDetailsRange(audit.Filter{ActorID: &requester, Q: text, MaskRequesterActors: true}), 10, 0)
 		require.NoError(t, err)
 		require.Equal(t, 1, pg.Total, text)
 	}
