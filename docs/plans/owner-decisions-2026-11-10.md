@@ -39,3 +39,12 @@ a recommendation he accepted in bulk ("Accept all") from `pretag-fixes.md` and `
 - A12: "Enforce it, update tests" (merged in #635).
 - Reclassify: "Keep elapsed time", and "Cannot reclassify resolved and closed tickets" (#633).
 - Audit names: "Keep name and host", and re-approve is audited (merged in #637).
+
+## 2026-11-11
+- **Reply search at scale.** Erik: "this needs to scale to hundreds of thousands, possibly millions of tickets", then chose "Stored column + caps":
+  - a `tsvector` column on replies, filled online by a background job and a trigger;
+  - its index built without blocking writes;
+  - ranking capped to the N most recent reply matches;
+  - a statement timeout on the reply arm, falling back to subject and description with `replies_searched: false`;
+  - measured at 1M and 5M replies.
+- **Index-build warning:** "Bold warning + pre-build".
