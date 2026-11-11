@@ -1138,9 +1138,9 @@ type securityWarnings struct {
 	// SAMLMetadataRefresh is set when the hourly refresh of the IdP's metadata
 	// cannot do its job or declined to apply what it fetched (#619): the metadata
 	// URL is not https (problem http_url), the refreshed EntityID differs
-	// (entity_id_changed), or the signing certificate was replaced with none in
-	// common with the one in use (certificate_changed). The last two need an
-	// administrator to re-save the SAML settings. Absent otherwise.
+	// (entity_id_changed), or it added a signing certificate that is not trusted yet
+	// (new_certificate, with each one's fingerprint and expiry). The last two
+	// need an administrator to re-save the SAML settings. Absent otherwise.
 	SAMLMetadataRefresh *samlRefreshStatus `json:"saml_metadata_refresh,omitempty"`
 
 	// Update is set when the opt-in update check (#170) has found a release

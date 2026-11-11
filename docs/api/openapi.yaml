@@ -4979,16 +4979,30 @@ paths:
                       IdP metadata cannot do its job or declined what it fetched.
                       http_url: the metadata URL is not https, so it is never
                       refreshed. entity_id_changed: the refreshed metadata names a
-                      different entity ID. certificate_changed: the refreshed
-                      signing certificates have none in common with the one in use
-                      (a rollover that publishes the old certificate beside the new
-                      is applied without a warning). For the last two nothing was
-                      applied and an administrator must save the SAML settings again
-                      to accept the new metadata. The admin UI shows a notice.
+                      different entity ID. new_certificate: the refreshed metadata
+                      adds a signing certificate that is not trusted yet; a refresh
+                      applies only metadata whose certificates are removed or
+                      unchanged, so a certificate rollover needs the administrator to
+                      save the SAML settings again once the identity provider has
+                      published the new certificate. For the last two nothing was
+                      applied. The admin UI shows a notice.
                     properties:
                       problem:
                         type: string
-                        enum: [http_url, entity_id_changed, certificate_changed]
+                        enum: [http_url, entity_id_changed, new_certificate]
+                      new_certificates:
+                        type: array
+                        description: The added certificates, for new_certificate.
+                        items:
+                          type: object
+                          required: [sha256, expires_at]
+                          properties:
+                            sha256:
+                              type: string
+                              description: SHA-256 fingerprint of the certificate, as colon-separated upper-case hex pairs.
+                            expires_at:
+                              type: string
+                              format: date-time
                   update:
                     type: object
                     required: [current, latest, url]

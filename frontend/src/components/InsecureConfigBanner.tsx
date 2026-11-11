@@ -318,16 +318,15 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
     })
   }
   if (samlRefresh) {
-    const changed = samlRefresh.problem !== 'http_url'
     const title =
       samlRefresh.problem === 'http_url'
         ? 'SAML metadata is not refreshed automatically'
         : samlRefresh.problem === 'entity_id_changed'
           ? 'The SAML identity provider entity ID changed'
-          : 'The SAML identity provider signing certificate changed'
+          : 'The identity provider published a new signing certificate'
     notices.push({
       id: `saml-metadata-refresh:${samlRefresh.problem}`,
-      severity: changed ? 'failure' : 'config',
+      severity: samlRefresh.problem === 'http_url' ? 'config' : 'failure',
       signature: samlRefresh.problem,
       title,
       body: (
@@ -338,9 +337,14 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
               'The metadata URL is not https, and an unattended refresh of what the server trusts to sign people in must not travel in the clear, so it is never fetched again after you save it. Switch to an https URL, or paste the metadata.'}
             {samlRefresh.problem === 'entity_id_changed' &&
               'The metadata at your metadata URL now names a different identity provider (entity ID) than the one in use. It was not applied and SAML sign-in continues on the saved configuration. If you expected this, re-save the SAML settings under Settings → SAML to accept it.'}
-            {samlRefresh.problem === 'certificate_changed' &&
-              'The metadata at your metadata URL now has a signing certificate with none in common with the one in use, and it was not applied: SAML sign-in continues on the saved configuration. If your identity provider really replaced its certificate, re-save the SAML settings under Settings → SAML to accept it. If not, treat the metadata URL as compromised.'}
+            {samlRefresh.problem === 'new_certificate' &&
+              'The identity provider published a new signing certificate. Re-save the SAML settings to trust it. Until then nothing from the refresh is applied and SAML sign-in continues on the saved configuration. Compare the fingerprint and expiry below with what your identity provider shows; if they do not match, treat the metadata URL as compromised.'}
           </p>
+          {samlRefresh.new_certificates?.map((c) => (
+            <p key={c.sha256} className="mt-1 [overflow-wrap:anywhere]">
+              SHA-256 <code className={CODE}>{c.sha256}</code>, expires {new Date(c.expires_at).toLocaleDateString()}
+            </p>
+          ))}
         </>
       ),
     })

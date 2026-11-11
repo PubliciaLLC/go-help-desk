@@ -185,6 +185,16 @@ const samlCertWarnWindow = 30 * 24 * time.Hour
 // (see RefreshSAML). Problem is one of the samlRefresh* constants.
 type samlRefreshStatus struct {
 	Problem string `json:"problem"`
+	// NewCertificates are the signing certificates the refreshed metadata added,
+	// for problem new_certificate: what an administrator compares with the
+	// identity provider's own before re-saving to trust them.
+	NewCertificates []samlNewCert `json:"new_certificates,omitempty"`
+}
+
+type samlNewCert struct {
+	// SHA256 is the DER certificate's fingerprint, as colon-separated hex pairs.
+	SHA256    string    `json:"sha256"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // samlIdPCertStatus is the security warning for a SAML IdP signing certificate

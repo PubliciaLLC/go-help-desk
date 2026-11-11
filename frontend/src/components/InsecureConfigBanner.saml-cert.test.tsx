@@ -10,7 +10,10 @@ import { InsecureConfigBanner } from './InsecureConfigBanner'
 
 function mockWarnings(
   samlIdpCertificate?: { expires_at: string; expired: boolean },
-  samlMetadataRefresh?: { problem: string },
+  samlMetadataRefresh?: {
+    problem: string
+    new_certificates?: { sha256: string; expires_at: string }[]
+  },
 ) {
   vi.spyOn(api, 'get').mockImplementation(((url: string) => {
     if (url === '/admin/security-warnings') {
@@ -71,14 +74,20 @@ describe('the SAML metadata refresh warning', () => {
     expect(text).toContain('https')
   })
 
-  it('says the IdP changed its signing certificate and an administrator must re-save', async () => {
-    mockWarnings(undefined, { problem: 'certificate_changed' })
+  // The fingerprint and expiry are what the administrator compares with the
+  // identity provider's own page before trusting the certificate.
+  it('shows the new certificate fingerprint and expiry and says to re-save to trust it', async () => {
+    const expiresAt = '2031-05-17T12:00:00Z'
+    mockWarnings(undefined, {
+      problem: 'new_certificate',
+      new_certificates: [{ sha256: 'AB:CD:EF:01:23', expires_at: expiresAt }],
+    })
     renderWithQuery(<InsecureConfigBanner isAdmin />)
 
     const text = (await screen.findByRole('region', { name: 'Server notices' })).textContent ?? ''
-    expect(text).toContain('signing certificate changed')
-    expect(text).toContain('re-save')
-    expect(text).toContain('was not applied')
+    expect(text).toContain('The identity provider published a new signing certificate. Re-save the SAML settings to trust it.')
+    expect(text).toContain('AB:CD:EF:01:23')
+    expect(text).toContain(new Date(expiresAt).toLocaleDateString())
   })
 
   it('says the IdP entity ID changed and was not applied', async () => {

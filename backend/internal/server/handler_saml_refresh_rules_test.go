@@ -2,6 +2,8 @@ package server_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/xml"
 	"net/http"
 	"net/http/httptest"
@@ -13,13 +15,18 @@ import (
 
 	"github.com/crewjam/saml"
 	"github.com/stretchr/testify/require"
+
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 )
 
 // The hourly SAML metadata refresh runs unattended, so what it fetches may not
 // move the trust anchor on its own. These pin the rules: https only; the same
-// EntityID; a changed signing-certificate set only when one certificate in use
-// is still published (a rollover); anything else is refused, the running
-// configuration kept, and an administrator told to re-save to accept it.
+// EntityID; and a changed signing-certificate set applied only when it is a
+// subset of the one in use (certificates removed or unchanged). A refresh that
+// ADDS a certificate is never applied, whether or not a certificate in use is
+// still published beside it: the running configuration is kept, the new
+// certificate's fingerprint and expiry are shown, and an administrator accepts
+// it by saving the SAML settings again.
 
 const movedSSO = "https://sso.moved.test/sso"
 
@@ -87,15 +94,27 @@ func (r *refreshRig) moved() *saml.EntityDescriptor {
 	return md
 }
 
-// withExtraCert is moved() with a second signing certificate published beside
-// the one in use: the shape of a rollover.
-func (r *refreshRig) withExtraCert(t *testing.T) *saml.EntityDescriptor {
+// withExtraCert is the original metadata (endpoint moved if movedEndpoint) with
+// a second signing certificate published beside the one in use, and that
+// certificate's descriptor.
+func (r *refreshRig) withExtraCert(t *testing.T, movedEndpoint bool) (*saml.EntityDescriptor, saml.KeyDescriptor) {
 	t.Helper()
-	md := r.moved()
-	extra := idpMetadataExpiringAt(t, r.idp, time.Now().Add(400*24*time.Hour))
-	md.IDPSSODescriptors[0].KeyDescriptors = append(md.IDPSSODescriptors[0].KeyDescriptors,
-		extra.IDPSSODescriptors[0].KeyDescriptors...)
-	return md
+	md := r.idp.idp.Metadata()
+	if movedEndpoint {
+		md = r.moved()
+	}
+	extra := idpMetadataExpiringAt(t, r.idp, time.Now().Add(400*24*time.Hour)).IDPSSODescriptors[0].KeyDescriptors[0]
+	md.IDPSSODescriptors[0].KeyDescriptors = append(md.IDPSSODescriptors[0].KeyDescriptors, extra)
+	return md, extra
+}
+
+// fingerprintOf is the SHA-256 fingerprint of the descriptor's certificate.
+func fingerprintOf(t *testing.T, kd saml.KeyDescriptor) string {
+	t.Helper()
+	der, err := base64.StdEncoding.DecodeString(kd.KeyInfo.X509Data.X509Certificates[0].Data)
+	require.NoError(t, err)
+	sum := sha256.Sum256(der)
+	return auth.Fingerprint(sum[:])
 }
 
 // replaced is moved() with the signing certificate swapped for another.
@@ -110,44 +129,152 @@ func (r *refreshRig) replaced(t *testing.T) *saml.EntityDescriptor {
 	return md
 }
 
-func (r *refreshRig) refreshProblem(t *testing.T) string {
+// refreshWarning is saml_metadata_refresh from security-warnings, or nil.
+func (r *refreshRig) refreshWarning(t *testing.T) map[string]any {
 	t.Helper()
 	got := adminGet(t, r.sess, "/api/v1/admin/security-warnings")
-	p, ok := got["saml_metadata_refresh"].(map[string]any)
-	if !ok {
-		return ""
+	w, _ := got["saml_metadata_refresh"].(map[string]any)
+	return w
+}
+
+func (r *refreshRig) refreshProblem(t *testing.T) string {
+	t.Helper()
+	if w := r.refreshWarning(t); w != nil {
+		return w["problem"].(string)
 	}
-	return p["problem"].(string)
+	return ""
 }
 
-func TestRefreshSAML_AppliesARolloverThatKeepsACertificateInUse(t *testing.T) {
-	r, cleanup := newRefreshRig(t)
-	defer cleanup()
-
-	r.publish(r.withExtraCert(t))
-	r.h.srv.RefreshSAML(context.Background())
-
-	require.Equal(t, movedSSO, r.ssoPrefix(t), "the rollover is live")
-	require.Empty(t, r.refreshProblem(t))
-}
-
-func TestRefreshSAML_RefusesAFullReplacementOfTheSigningCertificate(t *testing.T) {
-	r, cleanup := newRefreshRig(t)
-	defer cleanup()
-
-	r.publish(r.replaced(t))
-	r.h.srv.RefreshSAML(context.Background())
-
-	require.Equal(t, r.idp.idp.SSOURL.String(), r.ssoPrefix(t), "the running configuration is kept")
-	require.Equal(t, "certificate_changed", r.refreshProblem(t))
-
-	// An administrator accepts it by saving the settings again.
+// resave is the administrator's manual save of the same settings.
+func (r *refreshRig) resave(t *testing.T) {
+	t.Helper()
 	res, body := r.sess.send(t, http.MethodPut, "/api/v1/admin/saml", map[string]any{
 		"metadata_url": r.tls.URL, "cert_pem": validSAMLCert, "key_pem": validSAMLKey,
 	})
 	require.Contains(t, []int{http.StatusNoContent, http.StatusOK}, res.StatusCode, "body: %s", body)
+}
+
+func (r *refreshRig) requireNewCertWarning(t *testing.T, kd saml.KeyDescriptor) {
+	t.Helper()
+	w := r.refreshWarning(t)
+	require.NotNil(t, w, "a warning is raised")
+	require.Equal(t, "new_certificate", w["problem"])
+	certs, ok := w["new_certificates"].([]any)
+	require.True(t, ok, "warning: %v", w)
+	require.Len(t, certs, 1)
+	c := certs[0].(map[string]any)
+	require.Equal(t, fingerprintOf(t, kd), c["sha256"], "the fingerprint to compare with the provider's")
+	exp, err := time.Parse(time.RFC3339, c["expires_at"].(string))
+	require.NoError(t, err)
+	require.WithinDuration(t, time.Now().Add(400*24*time.Hour), exp, 2*time.Minute)
+}
+
+// A certificate added beside the one in use is what an attacker serving the
+// response would do (keep the real one, add their own), so it is not applied.
+func TestRefreshSAML_DoesNotApplyACertificateAddedBesideTheOneInUse(t *testing.T) {
+	r, cleanup := newRefreshRig(t)
+	defer cleanup()
+
+	md, extra := r.withExtraCert(t, true)
+	r.publish(md)
+	r.h.srv.RefreshSAML(context.Background())
+
+	require.Equal(t, r.idp.idp.SSOURL.String(), r.ssoPrefix(t), "nothing from the refresh is applied, the endpoint included")
+	r.requireNewCertWarning(t, extra)
+
+	// The administrator saves the settings again: the full metadata, new
+	// certificate included, is applied and the warning clears.
+	r.resave(t)
 	require.Equal(t, movedSSO, r.ssoPrefix(t), "the saved configuration is live")
 	require.Empty(t, r.refreshProblem(t), "and the warning is gone")
+}
+
+func TestRefreshSAML_DoesNotApplyAReplacedCertificate(t *testing.T) {
+	r, cleanup := newRefreshRig(t)
+	defer cleanup()
+
+	md := r.replaced(t)
+	r.publish(md)
+	r.h.srv.RefreshSAML(context.Background())
+
+	require.Equal(t, r.idp.idp.SSOURL.String(), r.ssoPrefix(t), "the running configuration is kept")
+	r.requireNewCertWarning(t, md.IDPSSODescriptors[0].KeyDescriptors[0])
+
+	r.resave(t)
+	require.Equal(t, movedSSO, r.ssoPrefix(t))
+	require.Empty(t, r.refreshProblem(t))
+}
+
+// The warning follows the metadata: if the added certificate goes away again, a
+// refresh applies and clears it.
+func TestRefreshSAML_ThePendingWarningClearsWhenTheCertificateIsWithdrawn(t *testing.T) {
+	r, cleanup := newRefreshRig(t)
+	defer cleanup()
+
+	md, extra := r.withExtraCert(t, false)
+	r.publish(md)
+	r.h.srv.RefreshSAML(context.Background())
+	r.requireNewCertWarning(t, extra)
+
+	r.publish(r.moved())
+	r.h.srv.RefreshSAML(context.Background())
+	require.Equal(t, movedSSO, r.ssoPrefix(t))
+	require.Empty(t, r.refreshProblem(t))
+}
+
+// Removing trust is applied automatically, so a retired or revoked certificate
+// stops being trusted without anyone having to notice.
+func TestRefreshSAML_AppliesARefreshThatOnlyRemovesCertificates(t *testing.T) {
+	r, cleanup := newRefreshRig(t)
+	defer cleanup()
+
+	// Trust two certificates, by an administrator's save.
+	md, extra := r.withExtraCert(t, false)
+	r.publish(md)
+	r.resave(t)
+	require.Equal(t, r.idp.idp.SSOURL.String(), r.ssoPrefix(t))
+
+	// The IdP withdraws the second one (and moves its endpoint, to see the apply).
+	r.publish(r.moved())
+	r.h.srv.RefreshSAML(context.Background())
+	require.Equal(t, movedSSO, r.ssoPrefix(t), "a subset is applied")
+	require.Empty(t, r.refreshProblem(t))
+
+	// The withdrawn certificate is no longer trusted: publishing it again is an
+	// addition, and is not applied.
+	again, _ := r.withExtraCert(t, true)
+	again.IDPSSODescriptors[0].KeyDescriptors = r.moved().IDPSSODescriptors[0].KeyDescriptors
+	again.IDPSSODescriptors[0].KeyDescriptors = append(again.IDPSSODescriptors[0].KeyDescriptors, extra)
+	r.publish(again)
+	r.h.srv.RefreshSAML(context.Background())
+	require.Equal(t, "new_certificate", r.refreshProblem(t))
+}
+
+func TestRefreshSAML_AppliesAnUnchangedCertificateSet(t *testing.T) {
+	r, cleanup := newRefreshRig(t)
+	defer cleanup()
+
+	r.publish(r.moved())
+	r.h.srv.RefreshSAML(context.Background())
+
+	require.Equal(t, movedSSO, r.ssoPrefix(t))
+	require.Empty(t, r.refreshProblem(t))
+}
+
+// Metadata with no signing certificate would leave nobody able to sign in, and
+// is what a stripped response looks like: not applied, and not a certificate
+// warning.
+func TestRefreshSAML_DoesNotApplyMetadataWithNoSigningCertificate(t *testing.T) {
+	r, cleanup := newRefreshRig(t)
+	defer cleanup()
+
+	md := r.moved()
+	md.IDPSSODescriptors[0].KeyDescriptors = nil
+	r.publish(md)
+	r.h.srv.RefreshSAML(context.Background())
+
+	require.Equal(t, r.idp.idp.SSOURL.String(), r.ssoPrefix(t))
+	require.Empty(t, r.refreshProblem(t))
 }
 
 func TestRefreshSAML_RefusesAChangedEntityID(t *testing.T) {
@@ -174,7 +301,8 @@ func TestRefreshSAML_KeepsTheLiveConfigurationWhenTheIdPIsDown(t *testing.T) {
 	r, cleanup := newRefreshRig(t)
 	defer cleanup()
 
-	r.publish(r.withExtraCert(t))
+	md, _ := r.withExtraCert(t, true)
+	r.publish(md)
 	r.tls.Close()
 	r.h.srv.RefreshSAML(context.Background())
 
@@ -213,7 +341,7 @@ func TestRefreshSAML_DoesNothingForAnHTTPURLAndSaysWhy(t *testing.T) {
 }
 
 // A change an administrator saved (on another replica) is theirs to make: it is
-// loaded whatever it holds, with no overlap or EntityID rule, because what the
+// loaded whatever it holds, with no certificate or EntityID rule, because what the
 // refresh guards is the IdP's own answer changing under an unchanged setting.
 func TestRefreshSAML_AppliesSettingsSavedElsewhere(t *testing.T) {
 	r, cleanup := newRefreshRig(t)

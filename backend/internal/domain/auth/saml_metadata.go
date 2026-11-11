@@ -1,11 +1,13 @@
 package auth
 
 import (
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/crewjam/saml"
@@ -122,25 +124,49 @@ func idpSigningCerts(ed *saml.EntityDescriptor) []*x509.Certificate {
 	return certs
 }
 
-// SigningCertsOverlap reports whether at least one signing certificate in old is
-// still published in updated, compared by the certificate itself. It is the test
-// for applying refreshed metadata without an administrator: an IdP rolling its
-// certificate publishes the old and the new together, so the set it trusts
-// changes while one certificate stays common. With nothing in common there is no
-// continuity from what the SP trusts now, and whoever served the response chose
-// the new trust anchor.
-func SigningCertsOverlap(old, updated *saml.EntityDescriptor) bool {
+// CertSummary is what an administrator needs to compare a certificate with the
+// one their identity provider shows.
+type CertSummary struct {
+	// SHA256 is the fingerprint of the DER certificate, as upper-case hex pairs
+	// separated by colons (the form identity providers display).
+	SHA256   string
+	NotAfter time.Time
+}
+
+// Fingerprint formats a SHA-256 digest as AA:BB:CC.
+func Fingerprint(sum []byte) string {
+	parts := make([]string, len(sum))
+	for i, b := range sum {
+		parts[i] = fmt.Sprintf("%02X", b)
+	}
+	return strings.Join(parts, ":")
+}
+
+// AddedSigningCerts lists the signing certificates published in updated that old
+// does not have, compared by the certificate itself. It is the test for applying
+// refreshed metadata without an administrator: a refresh may remove trust (a
+// retired or revoked certificate) or leave it alone, but may not add any. An
+// attacker who controls the response adds a certificate they hold the key for,
+// either beside a real one or instead of it, so adding is what needs a person.
+func AddedSigningCerts(old, updated *saml.EntityDescriptor) []CertSummary {
 	have := map[string]bool{}
 	for _, c := range idpSigningCerts(old) {
 		have[string(c.Raw)] = true
 	}
+	var added []CertSummary
 	for _, c := range idpSigningCerts(updated) {
 		if have[string(c.Raw)] {
-			return true
+			continue
 		}
+		have[string(c.Raw)] = true // listed twice in the metadata: reported once
+		sum := sha256.Sum256(c.Raw)
+		added = append(added, CertSummary{SHA256: Fingerprint(sum[:]), NotAfter: c.NotAfter})
 	}
-	return false
+	return added
 }
+
+// HasSigningCerts reports whether ed has a signing certificate that parses.
+func HasSigningCerts(ed *saml.EntityDescriptor) bool { return len(idpSigningCerts(ed)) > 0 }
 
 // IdPSigningCertExpiry is when the IdP's signing certificate stops being good:
 // the latest NotAfter among the certificates the SP would verify with (the same

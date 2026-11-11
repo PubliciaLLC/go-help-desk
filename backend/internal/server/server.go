@@ -308,10 +308,10 @@ type Server struct {
 	samlMu      sync.RWMutex
 	samlHandler *samlsp.Middleware
 	// samlBuiltFrom is the stored configuration samlHandler was built from, and
-	// samlRefreshProblem why the hourly refresh declined to apply fresh metadata
-	// ("" when it did not). Both under samlMu. See RefreshSAML.
+	// samlRefresh why the hourly refresh declined to apply fresh metadata (the
+	// zero value when it did not). Both under samlMu. See RefreshSAML.
 	samlBuiltFrom      samlSettings
-	samlRefreshProblem string
+	samlRefresh        samlRefreshState
 	samlMetadataClient *http.Client // nil outside tests
 	// samlReloadMu serialises everything that reads the stored SAML settings,
 	// builds from them and commits: a build can take 15 seconds on the network,
@@ -956,7 +956,7 @@ func (s *Server) commitSAMLMiddleware(mw *samlsp.Middleware, c samlSettings) {
 	s.samlMu.Lock()
 	s.samlHandler = mw
 	s.samlBuiltFrom = c
-	s.samlRefreshProblem = ""
+	s.samlRefresh = samlRefreshState{}
 	s.samlMu.Unlock()
 }
 
@@ -988,8 +988,15 @@ func (s *Server) reloadSAMLLocked(ctx context.Context, c samlSettings) error {
 const (
 	samlRefreshHTTPURL       = "http_url"
 	samlRefreshEntityChanged = "entity_id_changed"
-	samlRefreshCertChanged   = "certificate_changed"
+	samlRefreshNewCert       = "new_certificate"
 )
+
+// samlRefreshState is a refresh that was declined: why, and for a new
+// certificate which ones, so the warning can show their fingerprints.
+type samlRefreshState struct {
+	problem  string
+	newCerts []auth.CertSummary
+}
 
 // RefreshSAML is main's hourly tick for SAML (#619). It does two different
 // things, and the line between them is what makes it safe.
@@ -1004,10 +1011,17 @@ const (
 //   - Only https is fetched, and no redirect may leave https. With an http URL
 //     the refresh does nothing; the security warnings say the URL must be https.
 //   - The EntityID must be the one in use.
-//   - A changed signing-certificate set is applied only if at least one
-//     certificate in use is still published (the normal rollover publishes old
-//     and new together). With none in common it is not applied, and the warnings
-//     tell an administrator to re-save the SAML settings to accept it.
+//   - The signing-certificate set must be a subset of the one in use:
+//     certificates removed or unchanged. Removal applies, so a retired or
+//     revoked certificate stops being trusted. Any ADDED certificate means
+//     nothing is applied, whether or not a certificate in use is still published
+//     beside it (an attacker serving the response would keep the real one and
+//     add theirs). The warnings then show the new certificate's SHA-256
+//     fingerprint and expiry, and an administrator re-saving the SAML settings
+//     (which loads the full metadata as a save does) is what trusts it. So a
+//     certificate rollover needs one re-save after the IdP publishes the new
+//     certificate.
+//   - Metadata with no signing certificate at all is not applied either.
 //
 // Anything refused keeps the running middleware. A fetch that fails (the IdP is
 // down) also keeps it and is not a warning: an outage is not a trust problem.
@@ -1045,19 +1059,26 @@ func (s *Server) RefreshSAML(ctx context.Context) {
 	oldMD, newMD := live.ServiceProvider.IDPMetadata, mw.ServiceProvider.IDPMetadata
 	switch {
 	case oldMD == nil || newMD == nil || newMD.EntityID != oldMD.EntityID:
-		s.setSAMLRefreshProblem(samlRefreshEntityChanged)
+		s.setSAMLRefresh(samlRefreshState{problem: samlRefreshEntityChanged})
 		slog.ErrorContext(ctx, "refreshed SAML metadata has a different EntityID; keeping the running configuration")
-	case !auth.SigningCertsOverlap(oldMD, newMD):
-		s.setSAMLRefreshProblem(samlRefreshCertChanged)
-		slog.ErrorContext(ctx, "refreshed SAML metadata has no signing certificate in common with the one in use; keeping the running configuration until an administrator re-saves the SAML settings")
+	case len(auth.AddedSigningCerts(oldMD, newMD)) > 0:
+		added := auth.AddedSigningCerts(oldMD, newMD)
+		s.setSAMLRefresh(samlRefreshState{problem: samlRefreshNewCert, newCerts: added})
+		fingerprints := make([]string, len(added))
+		for i, a := range added {
+			fingerprints[i] = a.SHA256
+		}
+		slog.ErrorContext(ctx, "the identity provider published a new SAML signing certificate; keeping the running configuration until an administrator re-saves the SAML settings to trust it", "sha256", fingerprints)
+	case !auth.HasSigningCerts(newMD):
+		slog.ErrorContext(ctx, "refreshed SAML metadata has no signing certificate; keeping the running configuration")
 	default:
 		s.commitSAMLMiddleware(mw, c)
 	}
 }
 
-func (s *Server) setSAMLRefreshProblem(problem string) {
+func (s *Server) setSAMLRefresh(st samlRefreshState) {
 	s.samlMu.Lock()
-	s.samlRefreshProblem = problem
+	s.samlRefresh = st
 	s.samlMu.Unlock()
 }
 
@@ -1066,13 +1087,17 @@ func (s *Server) setSAMLRefreshProblem(problem string) {
 // is nothing to say, or SAML is not loaded.
 func (s *Server) samlMetadataRefreshWarning(ctx context.Context) *samlRefreshStatus {
 	s.samlMu.RLock()
-	live, problem := s.samlHandler != nil, s.samlRefreshProblem
+	live, pending := s.samlHandler != nil, s.samlRefresh
 	s.samlMu.RUnlock()
 	if !live {
 		return nil
 	}
-	if problem != "" {
-		return &samlRefreshStatus{Problem: problem}
+	if pending.problem != "" {
+		st := &samlRefreshStatus{Problem: pending.problem}
+		for _, c := range pending.newCerts {
+			st.NewCertificates = append(st.NewCertificates, samlNewCert{SHA256: c.SHA256, ExpiresAt: c.NotAfter.UTC()})
+		}
+		return st
 	}
 	c := s.storedSAMLSettings(ctx)
 	if c.MetadataURL != "" && c.MetadataXML == "" {

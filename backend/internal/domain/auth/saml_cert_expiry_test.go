@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
@@ -93,9 +94,10 @@ func TestIdPSigningCertExpiry(t *testing.T) {
 	})
 }
 
-// A refresh may swap the IdP's trust anchor only when the published
-// certificates overlap: the normal rollover publishes old and new together.
-func TestSigningCertsOverlap(t *testing.T) {
+// A refresh may only remove trust or leave it as it is. Adding a certificate is
+// what an attacker who controls the response would do, next to a real one or
+// instead of it, so any addition needs an administrator.
+func TestAddedSigningCerts(t *testing.T) {
 	a := certDescriptor(t, "", time.Now().Add(100*24*time.Hour))
 	b := certDescriptor(t, "", time.Now().Add(200*24*time.Hour))
 	c := certDescriptor(t, "", time.Now().Add(300*24*time.Hour))
@@ -109,24 +111,54 @@ func TestSigningCertsOverlap(t *testing.T) {
 	tests := []struct {
 		name     string
 		old, new *saml.EntityDescriptor
-		want     bool
+		want     []saml.KeyDescriptor // the descriptors whose certificates are new
 	}{
-		{"identical", md(a), md(a), true},
-		{"rollover: old published alongside new", md(a), md(a, b), true},
-		{"rollover: one of two old certs remains", md(a, b), md(b, c), true},
-		{"full replacement", md(a), md(b), false},
-		{"full replacement of a pair", md(a, b), md(c), false},
-		{"the old cert only as an encryption key does not count", md(a), md(enc, b), false},
-		{"old has no signing cert", md(), md(a), false},
-		{"new has no signing cert", md(a), md(), false},
-		{"nil old", nil, md(a), false},
-		{"nil new", md(a), nil, false},
+		{"identical", md(a), md(a), nil},
+		{"one removed", md(a, b), md(a), nil},
+		{"all but one removed", md(a, b, c), md(b), nil},
+		{"one added beside the old one", md(a), md(a, b), []saml.KeyDescriptor{b}},
+		{"replaced", md(a), md(b), []saml.KeyDescriptor{b}},
+		{"one kept, one replaced", md(a, b), md(b, c), []saml.KeyDescriptor{c}},
+		{"two added", md(a), md(a, b, c), []saml.KeyDescriptor{b, c}},
+		{"the same certificate as an encryption key is not a signing cert", md(a), md(enc), nil},
+		{"a new certificate as an encryption key is not a signing cert", md(a), md(a, certDescriptor(t, "encryption", time.Now().Add(time.Hour))), nil},
+		{"nothing before: everything is new", md(), md(a), []saml.KeyDescriptor{a}},
+		{"nil old: everything is new", nil, md(a), []saml.KeyDescriptor{a}},
+		{"nil new", md(a), nil, nil},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := auth.SigningCertsOverlap(tc.old, tc.new); got != tc.want {
-				t.Fatalf("got %v, want %v", got, tc.want)
+			got := auth.AddedSigningCerts(tc.old, tc.new)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %d added, want %d: %v", len(got), len(tc.want), got)
+			}
+			for i, kd := range tc.want {
+				der, err := base64.StdEncoding.DecodeString(kd.KeyInfo.X509Data.X509Certificates[0].Data)
+				if err != nil {
+					t.Fatal(err)
+				}
+				sum := sha256.Sum256(der)
+				if want := auth.Fingerprint(sum[:]); got[i].SHA256 != want {
+					t.Errorf("added[%d].SHA256 = %s, want %s", i, got[i].SHA256, want)
+				}
+				cert, _ := x509.ParseCertificate(der)
+				if !got[i].NotAfter.Equal(cert.NotAfter) {
+					t.Errorf("added[%d].NotAfter = %v, want %v", i, got[i].NotAfter, cert.NotAfter)
+				}
 			}
 		})
+	}
+}
+
+func TestHasSigningCerts(t *testing.T) {
+	kd := certDescriptor(t, "", time.Now().Add(time.Hour))
+	enc := certDescriptor(t, "encryption", time.Now().Add(time.Hour))
+	has := func(kds ...saml.KeyDescriptor) bool {
+		return auth.HasSigningCerts(&saml.EntityDescriptor{IDPSSODescriptors: []saml.IDPSSODescriptor{
+			{SSODescriptor: saml.SSODescriptor{RoleDescriptor: saml.RoleDescriptor{KeyDescriptors: kds}}},
+		}})
+	}
+	if !has(kd) || has() || has(enc) || auth.HasSigningCerts(nil) {
+		t.Fatal("HasSigningCerts gave the wrong answer")
 	}
 }
