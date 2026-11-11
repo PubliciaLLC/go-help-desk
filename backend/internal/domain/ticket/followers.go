@@ -68,16 +68,17 @@ func (s *Service) setFollowing(ctx context.Context, ticketID uuid.UUID, actor Ac
 		return ErrForbidden
 	}
 	uid := *actor.UserID
-	return s.atomic.InTx(ctx, func(st Store, au audit.Store, _ *notification.Changes) error {
-		if _, err := st.GetByID(ctx, ticketID); err != nil {
+	return s.atomic.InTx(ctx, func(st Store, au audit.Store, ch *notification.Changes) error {
+		t, err := st.GetByID(ctx, ticketID)
+		if err != nil {
 			return err
 		}
 		var (
 			changed bool
-			err     error
 			action  string
 			before  map[string]any
 			after   map[string]any
+			kind    notification.EventType
 		)
 		if follow {
 			// IsAssignableUser is "an active staff or admin account that is not
@@ -91,9 +92,11 @@ func (s *Service) setFollowing(ctx context.Context, ticketID uuid.UUID, actor Ac
 			}
 			changed, err = st.AddFollower(ctx, ticketID, uid)
 			action, before, after = AuditActionFollowed, map[string]any{"following": false}, map[string]any{"following": true}
+			kind = notification.EventTicketFollowed
 		} else {
 			changed, err = st.RemoveFollower(ctx, ticketID, uid)
 			action, before, after = AuditActionUnfollowed, map[string]any{"following": true}, map[string]any{"following": false}
+			kind = notification.EventTicketUnfollowed
 		}
 		if err != nil {
 			return fmt.Errorf("updating followers: %w", err)
@@ -104,8 +107,21 @@ func (s *Service) setFollowing(ctx context.Context, ticketID uuid.UUID, actor Ac
 		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", ticketID, action, before, after)); err != nil {
 			return fmt.Errorf("auditing %s: %w", action, err)
 		}
+		raiseFollow(ch, t, actor.UserID, uid, kind)
 		return nil
 	})
+}
+
+// raiseFollow announces a follow or an unfollow to the webhooks that name it
+// (#630, D40: opt-in, see notification.OptInWebhookEvents). The payload is the
+// person's id and nothing else: a name would put in a webhook what the follow
+// audit keeps from staff by default, and the id is what a receiver can look up.
+// No mail: following is not something the requester or the assignee is told.
+func raiseFollow(ch *notification.Changes, t Ticket, actorID *uuid.UUID, person uuid.UUID, kind notification.EventType) {
+	ev := raiseOn(t, Actor{UserID: actorID}, time.Now())
+	ev.Kinds = []notification.EventType{kind}
+	ev.Payload = map[string]any{"user_id": person}
+	ch.Raise(ev)
 }
 
 // dropAssigneeFollow removes the follow of the person a ticket was just taken
@@ -114,7 +130,12 @@ func (s *Service) setFollowing(ctx context.Context, ticketID uuid.UUID, actor Ac
 // again to keep the mail). No follow row, no entry. The entry names whose
 // follow went, and who holds the ticket now, in the keys the audit view
 // already allow-lists and resolves to names.
-func dropAssigneeFollow(ctx context.Context, st Store, au audit.Store, ticketID, previous uuid.UUID, actorID, now *uuid.UUID) error {
+//
+// The unfollow is announced like any other (ticket.unfollowed, opt-in, #630),
+// as one more kind of the reassignment's own event. t is the ticket as the
+// reassignment leaves it.
+func dropAssigneeFollow(ctx context.Context, st Store, au audit.Store, ch *notification.Changes, t Ticket, previous uuid.UUID, actorID, now *uuid.UUID) error {
+	ticketID := t.ID
 	changed, err := st.RemoveFollower(ctx, ticketID, previous)
 	if err != nil {
 		return fmt.Errorf("removing the old assignee's follow: %w", err)
@@ -130,6 +151,7 @@ func dropAssigneeFollow(ctx context.Context, st Store, au audit.Store, ticketID,
 	if err := au.Create(ctx, auditEntry(actorID, "ticket", ticketID, AuditActionUnfollowed, before, after)); err != nil {
 		return fmt.Errorf("auditing the old assignee's unfollow: %w", err)
 	}
+	raiseFollow(ch, t, actorID, previous, notification.EventTicketUnfollowed)
 	return nil
 }
 

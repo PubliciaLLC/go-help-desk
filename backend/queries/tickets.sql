@@ -313,7 +313,7 @@ DELETE FROM attachments WHERE id = $1;
 INSERT INTO ticket_links (source_ticket_id, target_ticket_id, link_type)
 VALUES ($1, $2, $3);
 
--- name: DeleteTicketLink :exec
+-- name: DeleteTicketLink :execrows
 DELETE FROM ticket_links
 WHERE source_ticket_id = $1 AND target_ticket_id = $2 AND link_type = $3;
 
