@@ -167,7 +167,23 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeReplySearchHeaders(w, f, res.Replies)
-	s.writeTickets(w, r, res.Tickets)
+
+	// The excerpt of the reply each ticket matched through, for the page only, and
+	// only when the reply arm ran: a page chosen without it must not look as if it
+	// had been. f carries the IncludeInternal set above from the caller's role, and
+	// the query applies it again, so a requester is never given a note.
+	var matches map[uuid.UUID]ticket.ReplyMatch
+	if res.Replies.ExcerptsApply() && len(res.Tickets) > 0 {
+		ids := make([]uuid.UUID, len(res.Tickets))
+		for i, t := range res.Tickets {
+			ids[i] = t.ID
+		}
+		if matches, err = s.tickets.ReplyMatches(ctx, f, ids); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+	s.writeTickets(w, r, res.Tickets, matches)
 }
 
 // writeReplySearchHeaders tells the caller what a reply search could not do.
