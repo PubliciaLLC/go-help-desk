@@ -1149,6 +1149,13 @@ func (s *Service) LookupRequesters(ctx context.Context, q string) ([]User, error
 	return s.store.LookupRequesters(ctx, q)
 }
 
+// LookupRequesterByID returns one account by id under LookupRequesters' rules:
+// ErrNotFound for an unknown id and for a disabled, deleted or service account
+// alike, so the answer does not say which ids are real.
+func (s *Service) LookupRequesterByID(ctx context.Context, id uuid.UUID) (User, error) {
+	return s.store.LookupRequesterByID(ctx, id)
+}
+
 // ListAdmin returns all users including disabled ones.
 func (s *Service) ListAdmin(ctx context.Context, limit, offset int) ([]User, error) {
 	return s.store.ListAdmin(ctx, limit, offset)

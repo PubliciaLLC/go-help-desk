@@ -876,6 +876,11 @@ type Querier interface {
 	// UnassignTicketsForGroup and the delete would lose its group silently, which
 	// is the gap this exists to close.
 	LockGroup(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
+	// The same lookup by id (the ticket list's requester chip after a reload).
+	// Carries the same three exclusions as LookupRequesters, in the query, so an
+	// id that names a disabled, deleted or service account is no different from
+	// one that names nobody.
+	LookupRequesterByID(ctx context.Context, id uuid.UUID) (User, error)
 	// The requester picker's lookup (#444): the accounts a ticket can be filed
 	// for whose name or address contains q, at most ten. Matches the way
 	// SearchUsersAdmin does (q is already LIKE-escaped by the caller; backslash is

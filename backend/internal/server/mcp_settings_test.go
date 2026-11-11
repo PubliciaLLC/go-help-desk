@@ -20,7 +20,7 @@ func TestMCP_AddReplyReadsTheReopenWindowSetting(t *testing.T) {
 	tk := reporterOpenTicket(t, h)
 
 	var asked atomic.Int32
-	m := mcp.New(h.ticketSvc, nil, h.srv, h.categorySvc, h.srv).
+	m := mcp.New(h.ticketSvc, nil, h.srv, h.categorySvc, h.srv, h.srv).
 		WithReopenWindowDays(func(context.Context) int { asked.Add(1); return 3 })
 	c := openMCPOn(t, h, h.apiKey, m)
 	defer c.closeBody()

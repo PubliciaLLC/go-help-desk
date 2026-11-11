@@ -235,6 +235,12 @@ type Server struct {
 	// refused rather than guessed at.
 	onBehalf OnBehalfResolver
 
+	// router decides who a new ticket is routed to, so create_ticket and
+	// create_follow_up route as every other door does. Nil routes nothing.
+	// A required argument of New, so forgetting it is a compile error; nil
+	// (unit tests only) routes nothing.
+	router Router
+
 	// reopenWindowDays is the configured reopen window, read per call like the
 	// REST reply handler does. A function for the same reason as prefix.
 	reopenWindowDays func(context.Context) int
@@ -262,6 +268,14 @@ func (s *Server) WithReopenWindowDays(f func(context.Context) int) *Server {
 type OnBehalfResolver interface {
 	ResolveOnBehalf(ctx context.Context, actorID uuid.UUID, in *ticket.CreateInput,
 		id *uuid.UUID, email *string, guestName, guestPhone string) error
+}
+
+// Router is the server's routing rule (the CTI group, else the auto-assign
+// group, else the round-robin users), exposed so a ticket created over MCP is
+// routed by the same rule as one created over REST. It only names candidates;
+// ticket.Service assigns the first acceptable one inside the create.
+type Router interface {
+	Routing(ctx context.Context, categoryID uuid.UUID, typeID *uuid.UUID) []ticket.Assignment
 }
 
 // CategoryLister is the slice of the category service MCP needs. Narrow on
@@ -300,6 +314,7 @@ func New(
 	authz Authorizer,
 	categories CategoryLister,
 	onBehalf OnBehalfResolver,
+	router Router,
 ) *Server {
 	if prefix == nil {
 		// Tests and any caller that does not care still mint well-formed
@@ -316,6 +331,7 @@ func New(
 		authz:      authz,
 		categories: categories,
 		onBehalf:   onBehalf,
+		router:     router,
 	}
 	s.registerTools()
 	return s
@@ -811,6 +827,7 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 	}
 
 	in.TrackingPrefix = s.prefix(ctx)
+	in.AutoAssign = s.routing(ctx, in.CategoryID, in.TypeID)
 
 	t, err := s.tickets.Create(ctx, in)
 	if err != nil {
@@ -1122,6 +1139,14 @@ func (s *Server) handleUpdateTicketStatus(ctx context.Context, req mcpgo.CallToo
 	return ticketResult(caller.Role, t)
 }
 
+// routing is the candidates for a new ticket, or none when no Router was given.
+func (s *Server) routing(ctx context.Context, categoryID uuid.UUID, typeID *uuid.UUID) []ticket.Assignment {
+	if s.router == nil {
+		return nil
+	}
+	return s.router.Routing(ctx, categoryID, typeID)
+}
+
 // handleCreateFollowUp is create_follow_up (#349). The rule — staff and admin
 // only, closed tickets only, what is copied, the link back — is
 // ticket.Service.CreateFollowUp's, shared with POST /tickets/{id}/follow-up;
@@ -1149,7 +1174,8 @@ func (s *Server) handleCreateFollowUp(ctx context.Context, req mcpgo.CallToolReq
 		return errResult(notFoundFor(tid.String()))
 	}
 	actorID := caller.UserID
-	t, err := s.tickets.CreateFollowUp(ctx, tid, s.prefix(ctx), ticket.ChannelMCP, ticket.Actor{UserID: &actorID, Role: caller.Role})
+	t, err := s.tickets.CreateFollowUp(ctx, tid, s.prefix(ctx), ticket.ChannelMCP, ticket.Actor{UserID: &actorID, Role: caller.Role},
+		s.routing(ctx, existing.CategoryID, existing.TypeID)...)
 	if err != nil {
 		return storeErr(ctx, "create follow-up", err)
 	}
