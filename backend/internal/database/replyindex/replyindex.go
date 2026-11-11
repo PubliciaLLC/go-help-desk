@@ -57,8 +57,9 @@ type Preparer struct {
 	DB  *sql.DB
 	Log *slog.Logger
 
-	// BatchSize is the rows filled in one transaction. Small, so a batch holds
-	// its row locks for milliseconds.
+	// BatchSize is the rows filled in one transaction. Parsing a reply of about
+	// 1.2 KB takes about a millisecond, so a batch holds its row locks and one
+	// transaction open for about a second.
 	BatchSize int
 	// Pause is the wait between batches, so a large fill leaves the database
 	// time for everything else.
@@ -74,12 +75,12 @@ type Preparer struct {
 	OnBatch func(filled int64)
 }
 
-// New returns a Preparer with the production settings: batches of 5,000 and a
+// New returns a Preparer with the production settings: batches of 1,000 and a
 // quarter-second pause.
 func New(db *sql.DB, log *slog.Logger) *Preparer {
 	return &Preparer{
 		DB: db, Log: log,
-		BatchSize: 5000, Pause: 250 * time.Millisecond,
+		BatchSize: 1000, Pause: 250 * time.Millisecond,
 		ProgressEvery: 30 * time.Second, Retry: 30 * time.Second,
 	}
 }
@@ -150,51 +151,106 @@ func (p *Preparer) Prepare(ctx context.Context) (Result, error) {
 	return res, nil
 }
 
+// blocksPerWindow is how much of the table one fill statement looks at: 100
+// heap blocks, 800 KB. A batch is the first BatchSize unfilled rows in that
+// window, so a window of tiny replies is still cut to a batch.
+const blocksPerWindow = 100
+
+// fillBatch fills the unfilled rows of one window of the table, in physical
+// (ctid) order, and returns how many it filled, how many it selected and the
+// last one. $1 and $2 bound the window ($1 exclusive), $3 is the batch size.
+//
+// Physical order is the point. Reply ids are random UUIDs, so walking the
+// primary key visits one row per heap page and, on a table bigger than memory,
+// reads a thousand pages for a batch of a thousand rows: 1.5 s, against 20 ms
+// for the same rows read in page order (5,000,000 replies, a busy machine).
+// A TID range scan reads only the window's pages; the rows are then updated by
+// ctid, which is a direct fetch. ORDER BY ctid sorts only what the window
+// holds, and the window is small.
 const fillBatch = `
 WITH b AS (
-    SELECT id FROM ticket_replies WHERE id > $1::uuid AND body_tsv IS NULL ORDER BY id LIMIT $2
+    SELECT ctid AS t FROM ticket_replies
+    WHERE ctid > $1::text::tid AND ctid < $2::text::tid AND body_tsv IS NULL
+    ORDER BY ctid LIMIT $3
 ), u AS (
     UPDATE ticket_replies r SET body_tsv = to_tsvector('english', r.body)
-    FROM b WHERE r.id = b.id
-    RETURNING r.id
+    WHERE r.ctid = ANY (ARRAY(SELECT t FROM b))
+    RETURNING 1
 )
-SELECT (SELECT count(*) FROM u), (SELECT id::text FROM b ORDER BY id DESC LIMIT 1)`
+SELECT (SELECT count(*) FROM u), (SELECT count(*) FROM b), (SELECT t::text FROM b ORDER BY t DESC LIMIT 1)`
 
-// fill gives every reply without a body_tsv one, a batch at a time, walking the
-// primary key so no batch has to look past the rows an earlier one handled.
+// fill gives every reply without a body_tsv one, a batch at a time, then looks
+// again: a row can be left behind a window that was already passed (a write that
+// raced the batch updating its page), and search switches on only when the
+// column is complete.
 func (p *Preparer) fill(ctx context.Context, res *Result) error {
+	// The planner's estimate, not count(*): counting the unfilled rows reads the
+	// whole table, and this only sizes a log line. A negative estimate means the
+	// table has never been analysed.
 	var total int64
-	if err := p.DB.QueryRowContext(ctx, `SELECT count(*) FROM ticket_replies WHERE body_tsv IS NULL`).Scan(&total); err != nil {
-		return fmt.Errorf("reply search: counting replies to fill: %w", err)
+	if err := p.DB.QueryRowContext(ctx, `SELECT greatest(reltuples, 0)::bigint FROM pg_class WHERE oid = 'ticket_replies'::regclass`).Scan(&total); err != nil {
+		return fmt.Errorf("reply search: sizing the table: %w", err)
 	}
-	if total > 0 {
-		p.Log.InfoContext(ctx, "reply search: filling the search column of existing replies in the background",
-			"replies", total, "batch", p.BatchSize)
-	}
-
-	cursor := "00000000-0000-0000-0000-000000000000"
+	p.Log.InfoContext(ctx, "reply search: filling the search column of replies that lack one, in the background",
+		"replies_about", total, "batch", p.BatchSize)
 	lastLog := time.Now()
 	for {
-		var n int64
+		if err := p.fillPass(ctx, res, total, &lastLog); err != nil {
+			return err
+		}
+		var left bool
+		if err := p.DB.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM ticket_replies WHERE body_tsv IS NULL)`).Scan(&left); err != nil {
+			return fmt.Errorf("reply search: checking for replies left unfilled: %w", err)
+		}
+		if !left {
+			return nil
+		}
+	}
+}
+
+// fillPass walks the table once, from the first block to the end as it is when
+// the walk gets there. A fill's own new row versions are appended past the
+// window, already filled, so the walk finishes.
+func (p *Preparer) fillPass(ctx context.Context, res *Result, total int64, lastLog *time.Time) error {
+	var block int64
+	cursor := "(0,0)"
+	for {
+		var size int64
+		if err := p.DB.QueryRowContext(ctx, `SELECT pg_relation_size('ticket_replies') / current_setting('block_size')::int`).Scan(&size); err != nil {
+			return fmt.Errorf("reply search: measuring the table: %w", err)
+		}
+		if block >= size {
+			return nil
+		}
+		end := block + blocksPerWindow
+		var n, selected int64
 		var last sql.NullString
-		if err := p.DB.QueryRowContext(ctx, fillBatch, cursor, p.BatchSize).Scan(&n, &last); err != nil {
+		if err := p.DB.QueryRowContext(ctx, fillBatch, cursor, fmt.Sprintf("(%d,0)", end), p.BatchSize).Scan(&n, &selected, &last); err != nil {
 			return fmt.Errorf("reply search: filling a batch: %w", err)
 		}
-		if !last.Valid {
-			return nil // nothing past the cursor without a column
+		if selected >= int64(p.BatchSize) && last.Valid {
+			// The batch filled up before the window ended: carry on from its last row.
+			cursor = last.String
+			if _, err := fmt.Sscanf(cursor, "(%d,", &block); err != nil {
+				return fmt.Errorf("reply search: reading cursor %q: %w", cursor, err)
+			}
+		} else {
+			block, cursor = end, fmt.Sprintf("(%d,0)", end)
 		}
-		cursor = last.String
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if n == 0 {
+			continue // an empty window cost one cheap read: no pause needed
+		}
 		res.Filled += n
 		res.Batches++
 		if p.OnBatch != nil {
 			p.OnBatch(res.Filled)
 		}
-		if p.ProgressEvery > 0 && time.Since(lastLog) >= p.ProgressEvery {
-			lastLog = time.Now()
-			p.Log.InfoContext(ctx, "reply search: filling", "filled", res.Filled, "of", total)
-		}
-		if err := ctx.Err(); err != nil {
-			return err
+		if p.ProgressEvery > 0 && time.Since(*lastLog) >= p.ProgressEvery {
+			*lastLog = time.Now()
+			p.Log.InfoContext(ctx, "reply search: filling", "filled", res.Filled, "of_about", total)
 		}
 		if p.Pause > 0 {
 			select {
