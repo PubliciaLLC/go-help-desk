@@ -310,8 +310,10 @@ SELECT EXISTS (SELECT 1 FROM attachments);
 DELETE FROM attachments WHERE id = $1;
 
 -- name: CreateTicketLink :exec
-INSERT INTO ticket_links (source_ticket_id, target_ticket_id, link_type)
-VALUES ($1, $2, $3);
+-- follow_up is true only for the link the follow-up action writes (#625); it is
+-- what a requester's one-follow-up cap counts.
+INSERT INTO ticket_links (source_ticket_id, target_ticket_id, link_type, follow_up)
+VALUES ($1, $2, $3, $4);
 
 -- name: DeleteTicketLink :execrows
 DELETE FROM ticket_links

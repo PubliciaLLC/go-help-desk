@@ -334,8 +334,12 @@ Three doors, one creation path:
 - **Linked:** the closed ticket is the **parent** of the follow-up
   (`parent_child`, source = closed ticket), written in the same transaction as
   the ticket, so a follow-up never exists without its link. The existing link
-  types are reused; no new relation or table. A requester seeing the link on
-  either ticket sees only their own tickets.
+  types are reused; no new relation or table. The link row carries a
+  `follow_up` flag (migration 000064): only the link the follow-up action wrote
+  has it, and only such a link counts as a requester's one follow-up. A
+  `parent_child` link made by hand does not. Every `parent_child` link that
+  existed at the upgrade was marked, so what counted before still counts. A
+  requester seeing the link on either ticket sees only their own tickets.
 - **The original is not written:** still Closed, same replies and history, and a
   guest's links untouched.
 - **Only from a Closed ticket** (`409 ticket_not_closed` otherwise): an open
@@ -348,9 +352,10 @@ limits a normal ticket has, and the action must not become a stream of tickets:
 
 - **One per closed ticket for a requester** (`409 follow_up_exists`; for a guest
   the generic `404`). A follow-up staff opened counts; staff are not limited. The
-  check is made before a tracking number is taken, and again on the locked
-  original in the transaction that writes the ticket and its link, so two clicks
-  make one ticket. To go on, follow up the follow-up once it is closed.
+  check is made before the transaction, and again on the locked original inside
+  it, and the tracking number is taken after that locked check, so two clicks
+  make one ticket and the one refused takes no number. To go on, follow up the
+  follow-up once it is closed.
 - **Account holders** are held to what a direct create is: there is no rate
   limit on an account holder creating a ticket, so none is added; the cap above
   is what bounds this door.
@@ -373,51 +378,53 @@ tracking number and nothing else, as for a normal submission. The audit entry ha
 no actor for a guest, as a normal guest ticket's has none; the identity is the new
 ticket's own guest columns, and `follow_up_of` says what it continues.
 
-**Known limits** (recorded, not fixed, in #349):
+**What the closed ticket tells the page (#625).** The single-ticket read of a
+Closed ticket carries `follow_up: {id, tracking_number}` when it already has one
+(the newest the follow-up action made from it; absent otherwise, and on a list),
+for every role, and the requester allowed list keeps it. The ticket page then
+shows the link and hides the follow-up button for a requester; staff keep the
+button, since they are not limited. The guest ticket response carries
+`has_follow_up`, a boolean and nothing else: the page says a follow-up exists
+and to look for the mail, and shows no link, because the guest's link to the new
+ticket goes by mail. A guest is told this once they hold a good link to a closed
+ticket, which the follow-up route's own answers already assumed. The page also
+shows staff and administrators the reply composer on a closed ticket, with "Replying
+does not reopen this ticket"; the API always allowed it.
 
-- **Follow-up mail wording.** A guest's follow-up sends the ordinary
-  `ticket_created` mail ("We have received [TICKET]") for a ticket the guest did
-  not file themselves. A follow-up-specific line needs a new typed field on the
-  notification event, which the outbox record must round-trip (#346's code);
-  email never reads `Payload`, deliberately. The mail still carries the new
-  tracking number and a working link, so the guest can follow it.
-- **A lost double-submit burns one tracking number.** A requester's follow-up
-  is checked for an existing one before a tracking number is taken, and again on
-  the locked original in the transaction that writes the ticket. Two requests in
-  flight at once both pass the first check and both take a number
-  (`NextSeq`); the loser is refused at the locked check, so its number is never
-  used and the sequence has a gap. One gap per lost race, never a second ticket.
-- **"The follow-up" is any parent_child link out of the closed ticket.** The
-  one-per-closed-ticket cap cannot tell a follow-up from a link someone made by
-  hand: the link row has no marker, a marker would be a schema change, and an
-  audit entry is the wrong place (the retention sweep deletes it, and the cap
-  would quietly lapse). So a staff member who links a closed ticket as the
-  parent of another ticket uses up its requester's one follow-up. This is the
-  conservative direction (it can only refuse a requester, never admit a second
-  ticket), staff are unaffected, and a follow-up of the new child still works;
-  pinned by a test so that changing it is a decision.
+**Follow-up mail.** A follow-up's created event carries a typed `FollowUp` flag
+(round-tripped by the outbox codec), and its mail is the template
+`ticket_follow_up_created`, "We have opened a new ticket to follow up on your
+earlier one", with the new tracking number and the working link. It is its own
+editable template, so an operator's rewrite of "Ticket received" does not
+reach it. Email still never reads `Payload`.
+
+**A deleted reporter.** A staff follow-up of a ticket whose reporting account
+has been deleted answers `409 reporter_deleted` ("restore the account, or open a
+new ticket"), over MCP the same words. Deletion is soft, and the refusal is the
+existing check that a reporter is a live account, now with its own code; filing
+a ticket with no reporter and no guest address would mean dropping the
+reporter-or-guest rule for the path every ticket takes. A requester cannot meet
+it: they are the account.
+
+**Guest tokens** expire after thirty days, and an hourly sweep now deletes the
+expired rows (a closed ticket collects one per mail sent on it).
+
+**Known limits:**
+
+- **A lost double-submit can still leave a gap in the tracking numbers**, but
+  no longer by being refused: the number is taken inside the transaction, after
+  the locked check, so a request that loses the race for a requester's one
+  follow-up takes none. A number is still lost to a rollback after it is drawn
+  and to a retried transaction, which is what a sequence does.
 - **An archived category or type is a 400 on the guest route.** Every refusal
   that would say something about a link or a ticket's state is the generic 404,
   but a guest follow-up of a ticket whose category (or type) an administrator has
   since archived answers `400` with the reason, as a direct submission does. The
   caller already holds a good link to a closed ticket and knows the category it
   was filed under, so nothing is revealed that they could not see.
-- **Deleted reporter.** A follow-up of a ticket whose reporting account has been
-  deleted fails validation (`400`): creation requires a reporter or a guest
-  address, and loosening that for follow-ups only would weaken the rule for the
-  path every ticket takes.
-- **Tokens accumulate on a closed ticket.** One per mail sent on it (each reply
-  staff add, each resend), each expiring thirty days after it is issued. Expired
-  token rows are not swept anywhere today, closed or not.
-- **Requester follow-up on the ticket page.** The button stays after a reload
-  and a second click is refused with a message (`follow_up_exists`); the page
-  does not look the existing follow-up up for a requester, who is not shown the
-  linked-tickets panel. After creating one the page offers a link to the new
-  ticket rather than navigating to it.
-- **Staff composer.** The ticket page hides the reply composer on a closed
-  ticket for every role, though the API still lets staff and admin reply to,
-  annotate and attach to one (the decision above). Staff do that over the API or
-  MCP, not from the page.
+- **Custom-field values are not copied** to a follow-up: they live outside the
+  ticket service, and copying them on one surface and not the other would be
+  two rules. Planned with the custom-field work (#625, item 8).
 - **Custom-field edits are not atomic with a close.** A reporter's custom-field
   edit (through the API; the ticket page offers Edit only to staff and admin) is
   checked once (`CanRequesterWrite`) and then written in a single transaction of
@@ -460,11 +467,11 @@ A requester is any account that is not staff or an administrator, including a ro
 | `assignee_user_id` | who holds it, as an id only; a requester has no route that turns the id into a name (the staff list and the user routes are staff-only), though a public reply by that person carries their name as it always has |
 | `resolution_notes` | sent to requesters before the list existed; their visibility is unchanged |
 
-The wrapper keys a response may add around a ticket are kept as they are: `sla` (already null for a requester), `can_reopen` (always false for a requester), `replies` (already without internal notes) and `links` (ticket ids and a link type). Any other wrapper key is dropped.
+The wrapper keys a response may add around a ticket are kept as they are: `sla` (already null for a requester), `can_reopen` (always false for a requester), `replies` (already without internal notes), `links` (ticket ids and a link type) and `follow_up` (#625: the id and tracking number of the follow-up already opened from a closed ticket, which is the requester's own new ticket). Any other wrapper key is dropped.
 
 **Never sent to a requester**: `assignee_group_id` (which team holds it), `reporter_user_id` (their own id; the page never reads it), `guest_email`, `guest_name` and `guest_phone`, `closed_at` and `updated_at` (history-like timestamps: when it was archived, when anything last touched it), `pending_since` and `sla_paused_seconds` (when and for how long the ticket waited: audit information, not state), and `reopen_count` (staff information), and `source_channel` (how it arrived: operational, and `phone` says staff filed it for them). The conversation, the audit feed and the status timeline are separate: the conversation stays (public replies only), the other two are staff-only routes.
 
-**Guests** (the `/guest` routes) are shown less: a strict subset of the same list, `tracking_number`, `subject`, `description` and `created_at`, plus the status's *name* and the replies. (A guest used to receive `updated_at`; it is gone, because a requester does not receive it and the guest list stays a subset.) The guest ticket response goes through `ticket.FilterForGuest`, so there is still one definition.
+**Guests** (the `/guest` routes) are shown less: a strict subset of the same list, `tracking_number`, `subject`, `description` and `created_at`, plus the status's *name*, the replies and `has_follow_up` (#625, a boolean: whether a follow-up has been opened from a closed ticket, never which one). (A guest used to receive `updated_at`; it is gone, because a requester does not receive it and the guest list stays a subset.) The guest ticket response goes through `ticket.FilterForGuest`, so there is still one definition.
 
 **Tests.** `TestRequesterKeys_EveryTicketKeyIsClassified` fails when a ticket field is on neither the allowed list nor the never list. `TestRequesterResponses_*` walks the router and calls every route a requester can reach (the router's own list, so a new route is included) with an empty body, against a ticket with every field filled; only create and follow-up are also called with a real body that succeeds. `TestGuestResponses_*` does the same for the guest routes. Both fail if a never-listed key appears anywhere in a body, or a ticket-shaped object carries a key off the list. The MCP tools are not on the router: the test takes its list from `mcp.TicketTools`, and a tool that is not classified in `internal/mcp` fails that package's test. Emails are not JSON and carry only the tracking number and a link to the ticket.
 
@@ -3585,7 +3592,7 @@ on the existing webhook feature instead of as plugins.
   **Guest tickets** carry a per-ticket link instead of a ticket id, so a
   recipient with no account reaches their own thread and nothing else.
 - **Editable email templates** ([#158](https://github.com/PubliciaLLC/go-help-desk/issues/158)).
-  An administrator edits the wording of all 17 emails under **Admin → Email
+  An administrator edits the wording of all 18 emails under **Admin → Email
   Templates** (`/admin/email-templates`), and a shared **header** and **footer**
   that wrap every mail. Each can also have an optional HTML part (see *The HTML
   part* below); without one, mail is plain text.
@@ -3600,7 +3607,7 @@ on the existing webhook feature instead of as plugins.
 
   | Template | Variables | Must print (outside any `if`) |
   | --- | --- | --- |
-  | the six requester mails (created, replied, status changed, resolved, reopened, guest link) | `TrackingNumber`, `TicketURL` | `TicketURL` |
+  | the seven requester mails (created, follow-up created, replied, status changed, resolved, reopened, guest link) | `TrackingNumber`, `TicketURL` | `TicketURL` |
   | the nine staff mails | `TrackingNumber`, `TicketURL` | `TicketURL` |
   | email verification | `VerifyURL` | `VerifyURL` |
   | password reset | `ResetURL` | `ResetURL` |

@@ -35,6 +35,23 @@ func (q *Queries) CreateGuestAccessToken(ctx context.Context, arg CreateGuestAcc
 	return err
 }
 
+const deleteExpiredGuestAccessTokens = `-- name: DeleteExpiredGuestAccessTokens :execrows
+DELETE FROM guest_access_tokens WHERE expires_at <= clock_timestamp()
+`
+
+// Housekeeping, not a security control: an expired token already resolves to
+// nothing (GetTicketByGuestToken filters on expiry), so this only stops the
+// table growing, by one row per mail sent on a closed ticket among others.
+// clock_timestamp() for the same reason as the lookup: one clock decides a
+// token's lifetime. Uses idx_guest_access_tokens_expires_at.
+func (q *Queries) DeleteExpiredGuestAccessTokens(ctx context.Context) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteExpiredGuestAccessTokens)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const deleteGuestAccessTokensForTicket = `-- name: DeleteGuestAccessTokensForTicket :exec
 DELETE FROM guest_access_tokens WHERE ticket_id = $1
 `

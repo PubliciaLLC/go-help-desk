@@ -256,18 +256,26 @@ func (q *Queries) CreateTicket(ctx context.Context, arg CreateTicketParams) erro
 }
 
 const createTicketLink = `-- name: CreateTicketLink :exec
-INSERT INTO ticket_links (source_ticket_id, target_ticket_id, link_type)
-VALUES ($1, $2, $3)
+INSERT INTO ticket_links (source_ticket_id, target_ticket_id, link_type, follow_up)
+VALUES ($1, $2, $3, $4)
 `
 
 type CreateTicketLinkParams struct {
 	SourceTicketID uuid.UUID `json:"source_ticket_id"`
 	TargetTicketID uuid.UUID `json:"target_ticket_id"`
 	LinkType       string    `json:"link_type"`
+	FollowUp       bool      `json:"follow_up"`
 }
 
+// follow_up is true only for the link the follow-up action writes (#625); it is
+// what a requester's one-follow-up cap counts.
 func (q *Queries) CreateTicketLink(ctx context.Context, arg CreateTicketLinkParams) error {
-	_, err := q.db.ExecContext(ctx, createTicketLink, arg.SourceTicketID, arg.TargetTicketID, arg.LinkType)
+	_, err := q.db.ExecContext(ctx, createTicketLink,
+		arg.SourceTicketID,
+		arg.TargetTicketID,
+		arg.LinkType,
+		arg.FollowUp,
+	)
 	return err
 }
 
@@ -922,7 +930,7 @@ func (q *Queries) ListStaffScopeRows(ctx context.Context, userID uuid.UUID) ([]L
 }
 
 const listTicketLinks = `-- name: ListTicketLinks :many
-SELECT source_ticket_id, target_ticket_id, link_type FROM ticket_links
+SELECT source_ticket_id, target_ticket_id, link_type, follow_up FROM ticket_links
 WHERE source_ticket_id = $1 OR target_ticket_id = $1
 `
 
@@ -935,7 +943,12 @@ func (q *Queries) ListTicketLinks(ctx context.Context, sourceTicketID uuid.UUID)
 	var items []TicketLink
 	for rows.Next() {
 		var i TicketLink
-		if err := rows.Scan(&i.SourceTicketID, &i.TargetTicketID, &i.LinkType); err != nil {
+		if err := rows.Scan(
+			&i.SourceTicketID,
+			&i.TargetTicketID,
+			&i.LinkType,
+			&i.FollowUp,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

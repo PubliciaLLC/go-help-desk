@@ -92,6 +92,25 @@ describe('the guest view of a ticket', () => {
     await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/could not create a follow-up/i))
   })
 
+  // #625: the page stops offering what the server would refuse. Text only: the
+  // new ticket has its own link, which goes by email.
+  it('says a follow-up is already open, and offers no button, when the server says so', async () => {
+    getGuestTicket.mockResolvedValue({ ...ticket('Closed'), has_follow_up: true })
+    renderWithQuery(<GuestTicketViewPage />)
+
+    await waitFor(() => expect(document.body.textContent).toContain('Replaced the drum.'))
+    expect(screen.queryByRole('button', { name: 'Create follow-up' })).toBeNull()
+    expect(screen.getByRole('note').textContent).toMatch(/follow-up ticket has already been opened/i)
+    expect(screen.getByRole('note').textContent).toMatch(/email/i)
+    expect(screen.queryByRole('link')).toBeNull()
+  })
+
+  it('still offers the button when has_follow_up is false', async () => {
+    getGuestTicket.mockResolvedValue({ ...ticket('Closed'), has_follow_up: false })
+    renderWithQuery(<GuestTicketViewPage />)
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Create follow-up' })).not.toBeNull())
+  })
+
   it('offers no follow-up on an open ticket', async () => {
     getGuestTicket.mockResolvedValue(ticket('In Progress'))
     renderWithQuery(<GuestTicketViewPage />)

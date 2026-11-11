@@ -74,7 +74,7 @@ func TestCreateFollowUp_CopiesTheDetailsAndLinksBack(t *testing.T) {
 
 	// Linked: the closed ticket is the parent, the follow-up its child.
 	require.Equal(t, []ticket.TicketLink{{
-		SourceTicketID: orig.ID, TargetTicketID: got.ID, LinkType: ticket.LinkParentChild,
+		SourceTicketID: orig.ID, TargetTicketID: got.ID, LinkType: ticket.LinkParentChild, FollowUp: true,
 	}}, h.store.links[orig.ID])
 }
 

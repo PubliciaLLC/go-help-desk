@@ -206,11 +206,14 @@ export function GuestTicketViewPage() {
               reply box that could only fail. */}
           {ticket.status === 'Closed' ? (
             <div role="note" className="space-y-3 border-t pt-4 text-sm text-gray-600">
+              {/* Text only (#625): the follow-up has its own link, by email. */}
               <p>
-                This ticket is closed, so it can no longer be replied to. If you
-                still need help, you can open a follow-up ticket based on it.
+                This ticket is closed, so it can no longer be replied to.{' '}
+                {ticket.has_follow_up && !followUp.isSuccess
+                  ? 'A follow-up ticket has already been opened from it; look for the email we sent you.'
+                  : 'If you still need help, you can open a follow-up ticket based on it.'}
               </p>
-              {followUp.isSuccess ? (
+              {ticket.has_follow_up && !followUp.isSuccess ? null : followUp.isSuccess ? (
                 <p role="status" className="text-green-700">
                   Your follow-up ticket is{' '}
                   <span className="font-mono">{followUp.data}</span>. We have

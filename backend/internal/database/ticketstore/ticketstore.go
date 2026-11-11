@@ -656,6 +656,7 @@ func (s *Store) CreateLink(ctx context.Context, link ticket.TicketLink) error {
 		SourceTicketID: link.SourceTicketID,
 		TargetTicketID: link.TargetTicketID,
 		LinkType:       string(link.LinkType),
+		FollowUp:       link.FollowUp,
 	})
 	if err != nil && isDuplicateLinkViolation(err) {
 		return ticket.ErrLinkAlreadyExists
@@ -703,6 +704,7 @@ func (s *Store) ListLinks(ctx context.Context, ticketID uuid.UUID) ([]ticket.Tic
 			SourceTicketID: r.SourceTicketID,
 			TargetTicketID: r.TargetTicketID,
 			LinkType:       ticket.LinkType(r.LinkType),
+			FollowUp:       r.FollowUp,
 		}
 	}
 	return out, nil
@@ -1167,6 +1169,14 @@ func (s *Store) DeleteGuestTokensForTicket(ctx context.Context, ticketID uuid.UU
 		return fmt.Errorf("deleting guest access tokens: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) DeleteExpiredGuestTokens(ctx context.Context) (int64, error) {
+	n, err := s.q.DeleteExpiredGuestAccessTokens(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("deleting expired guest access tokens: %w", err)
+	}
+	return n, nil
 }
 
 func (s *Store) TicketIDByTrackingAndGuestEmail(ctx context.Context, tn ticket.TrackingNumber, email string) (uuid.UUID, error) {

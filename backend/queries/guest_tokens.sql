@@ -55,3 +55,11 @@ SELECT id FROM tickets
 WHERE tracking_number = $1
   AND guest_email IS NOT NULL
   AND lower(guest_email) = lower($2);
+
+-- name: DeleteExpiredGuestAccessTokens :execrows
+-- Housekeeping, not a security control: an expired token already resolves to
+-- nothing (GetTicketByGuestToken filters on expiry), so this only stops the
+-- table growing, by one row per mail sent on a closed ticket among others.
+-- clock_timestamp() for the same reason as the lookup: one clock decides a
+-- token's lifetime. Uses idx_guest_access_tokens_expires_at.
+DELETE FROM guest_access_tokens WHERE expires_at <= clock_timestamp();

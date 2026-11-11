@@ -240,6 +240,8 @@ type Querier interface {
 	CreateStatusHistoryEntry(ctx context.Context, arg CreateStatusHistoryEntryParams) error
 	CreateTag(ctx context.Context, name string) (Tag, error)
 	CreateTicket(ctx context.Context, arg CreateTicketParams) error
+	// follow_up is true only for the link the follow-up action writes (#625); it is
+	// what a requester's one-follow-up cap counts.
 	CreateTicketLink(ctx context.Context, arg CreateTicketLinkParams) error
 	CreateType(ctx context.Context, arg CreateTypeParams) error
 	CreateUser(ctx context.Context, arg CreateUserParams) error
@@ -282,6 +284,12 @@ type Querier interface {
 	DeleteCustomFieldAssignment(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteCustomFieldValue(ctx context.Context, arg DeleteCustomFieldValueParams) error
 	DeleteEmailTemplateOverride(ctx context.Context, name string) error
+	// Housekeeping, not a security control: an expired token already resolves to
+	// nothing (GetTicketByGuestToken filters on expiry), so this only stops the
+	// table growing, by one row per mail sent on a closed ticket among others.
+	// clock_timestamp() for the same reason as the lookup: one clock decides a
+	// token's lifetime. Uses idx_guest_access_tokens_expires_at.
+	DeleteExpiredGuestAccessTokens(ctx context.Context) (int64, error)
 	DeleteExpiredSessions(ctx context.Context) (int64, error)
 	DeleteFailedNotificationsBefore(ctx context.Context, failedAt sql.NullTime) (int64, error)
 	DeleteGroup(ctx context.Context, id uuid.UUID) (int64, error)

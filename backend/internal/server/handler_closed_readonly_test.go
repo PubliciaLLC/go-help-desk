@@ -454,7 +454,7 @@ func TestFollowUp_StaffAndAdminOpenALinkedTicketFromAClosedOne(t *testing.T) {
 			links, err := h.ticketSvc.ListLinks(ctx, orig.ID)
 			require.NoError(t, err)
 			require.Equal(t, []ticket.TicketLink{{
-				SourceTicketID: orig.ID, TargetTicketID: got.ID, LinkType: ticket.LinkParentChild,
+				SourceTicketID: orig.ID, TargetTicketID: got.ID, LinkType: ticket.LinkParentChild, FollowUp: true,
 			}}, links)
 
 			// The original is untouched.

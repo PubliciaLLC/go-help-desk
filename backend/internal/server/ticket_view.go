@@ -36,6 +36,14 @@ type ticketView struct {
 	// requester allowed list, so FilterForViewer drops it. Absent when the
 	// account cannot be read.
 	Requester *ticketRequester `json:"requester,omitempty"`
+
+	// FollowUp is the follow-up already opened from this ticket, when it is
+	// Closed and has one (#625): the newest ticket the follow-up action made
+	// from it. It is how the ticket page stops offering a follow-up that would
+	// be refused, and links to the one that exists. Set on the single-ticket
+	// read only, so a list pays no lookup; sent to every role, since it is a
+	// requester's own new ticket. Absent otherwise.
+	FollowUp *ticket.FollowUpRef `json:"follow_up,omitempty"`
 }
 
 // ticketRequester is the Requester line of the staff ticket page.

@@ -82,6 +82,9 @@ type fakeStore struct {
 	errCreateLink    error
 
 	errCreateAttachment error
+
+	// deletedUsers are accounts UserExists reports gone.
+	deletedUsers map[uuid.UUID]bool
 }
 
 func newFakeStore() *fakeStore {
@@ -361,8 +364,8 @@ func (f *fakeStore) CategoryExists(context.Context, uuid.UUID) (bool, error) {
 	return true, nil
 }
 
-func (f *fakeStore) UserExists(context.Context, uuid.UUID) (bool, error) {
-	return true, nil
+func (f *fakeStore) UserExists(_ context.Context, id uuid.UUID) (bool, error) {
+	return !f.deletedUsers[id], nil
 }
 
 func (f *fakeStore) IsAssignableGroup(context.Context, uuid.UUID) (bool, error) {
@@ -849,6 +852,17 @@ func (f *fakeStore) TicketIDByTrackingAndGuestEmail(_ context.Context, tn ticket
 		}
 	}
 	return uuid.Nil, ticket.ErrGuestTokenNotFound
+}
+
+func (f *fakeStore) DeleteExpiredGuestTokens(context.Context) (int64, error) {
+	var n int64
+	for h, row := range f.guestTokens {
+		if !row.expiresAt.After(time.Now()) {
+			delete(f.guestTokens, h)
+			n++
+		}
+	}
+	return n, nil
 }
 
 // expireGuestTokens backdates every token a ticket holds, as thirty days

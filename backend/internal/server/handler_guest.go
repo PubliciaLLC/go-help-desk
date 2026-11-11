@@ -199,6 +199,16 @@ func (s *Server) handleGuestGetTicket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Only whether one exists (#625), so the page stops offering a follow-up
+	// the route would refuse. Not which ticket: its link goes by mail.
+	var followUp *ticket.FollowUpRef
+	if s.tickets.IsClosed(t) {
+		if followUp, err = s.tickets.FollowUpOf(ctx, t.ID); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+
 	// A deliberately narrow view, built here rather than returning the ticket.
 	// Marshalling ticket.Ticket would ship assignee ids, group ids, the
 	// reporter id and the resolution notes to someone with no account, and
@@ -211,6 +221,7 @@ func (s *Server) handleGuestGetTicket(w http.ResponseWriter, r *http.Request) {
 		"status":             statusName,
 		"created_at":         t.CreatedAt,
 		"replies":            guestReplyView(ticket.VisibleReplies(replies, user.RoleUser)),
+		"has_follow_up":      followUp != nil,
 	}))
 }
 
