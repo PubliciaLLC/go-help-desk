@@ -225,7 +225,7 @@ func TestNarrowWrites_TouchOnlyWhatTheyName(t *testing.T) {
 // Staged rather than raced: the reset is applied between the read and the
 // write, which is the whole window expressed as two statements.
 func TestEnableMFAIfStillEnrolled_ResetWins(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 	store := userstore.New(dbgen.New(db.SQL))
 	ctx := context.Background()

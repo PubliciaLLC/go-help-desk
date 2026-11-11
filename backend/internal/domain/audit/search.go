@@ -16,7 +16,7 @@ import "slices"
 // here does not normalise to a shown key.
 var searchSpellings = []string{
 	"active", "assignee_group_id", "assignee_user_id", "assignment_id",
-	"category_id", "client_name", "closed_reopen_policy",
+	"category_id", "client_name", "closed_reopen_policy", "credential_replaced",
 	"enabled", "events", "expires_at",
 	"field_name", "field_type", "filter", "follow_up_of", "forced_reopen",
 	"host", "id", "internal", "item_id",

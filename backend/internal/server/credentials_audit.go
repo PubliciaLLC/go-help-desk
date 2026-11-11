@@ -37,6 +37,7 @@ const (
 
 	auditActionOAuthClientCreated = "oauth_client_created"
 	auditActionOAuthClientDeleted = "oauth_client_deleted"
+	auditActionOAuthClientRotated = "oauth_client_secret_rotated"
 	auditActionWebhookCreated     = "webhook_created"
 	auditActionWebhookUpdated     = "webhook_updated"
 	auditActionWebhookDeleted     = "webhook_deleted"
@@ -67,6 +68,16 @@ func oauthClientCreatedEntry(actor uuid.UUID, c auth.OAuthClient) audit.Entry {
 
 func oauthClientDeletedEntry(actor uuid.UUID, c auth.OAuthClient) audit.Entry {
 	return credentialEntry(actor, auditEntityOAuthClient, c.ID, auditActionOAuthClientDeleted, oauthClientState(c), nil)
+}
+
+// oauthClientRotatedEntry records a new secret being issued (#622). The
+// secrets, old and new, and their hashes are never written: credential_replaced
+// is the bare fact, and is not named for the secret because a key with "secret"
+// in its name is redacted to a placeholder.
+func oauthClientRotatedEntry(actor uuid.UUID, c auth.OAuthClient) audit.Entry {
+	after := oauthClientState(c)
+	after["credential_replaced"] = true
+	return credentialEntry(actor, auditEntityOAuthClient, c.ID, auditActionOAuthClientRotated, oauthClientState(c), after)
 }
 
 // webhookState is what a webhook's entries say about it. The filter is one JSON
@@ -103,8 +114,10 @@ func filterText(f notification.WebhookFilter) string {
 		CategoryIDs []uuid.UUID `json:"category_ids,omitempty"`
 		Priorities  []string    `json:"priorities,omitempty"`
 		GroupIDs    []uuid.UUID `json:"group_ids,omitempty"`
+		TypeIDs     []uuid.UUID `json:"type_ids,omitempty"`
+		ItemIDs     []uuid.UUID `json:"item_ids,omitempty"`
 		Invert      bool        `json:"invert,omitempty"`
-	}{f.CategoryIDs, f.Priorities, f.GroupIDs, f.Invert})
+	}{f.CategoryIDs, f.Priorities, f.GroupIDs, f.TypeIDs, f.ItemIDs, f.Invert})
 	if err != nil {
 		return "" // unreachable for these types; not worth failing a change over
 	}

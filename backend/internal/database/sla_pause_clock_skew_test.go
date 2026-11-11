@@ -30,7 +30,7 @@ import (
 // whole status-change transaction with a raw constraint-violation 500; after
 // it, the transition simply contributes nothing negative and commits.
 func TestUpdateStatus_LeavingPendingUnderClockSkewDoesNotFailTheCheckConstraint(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	t.Cleanup(closeDB)
 	ctx := context.Background()
 

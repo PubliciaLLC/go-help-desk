@@ -173,3 +173,26 @@ func TestAdminAudit_ReversedRangeIsRefusedWithTextAndEmptyWithout(t *testing.T) 
 	require.Equal(t, http.StatusOK, r.StatusCode, "no text: unchanged")
 	require.Empty(t, page.Entries)
 }
+
+// Written out, not read from audit.DetailsSearchMaxSpan, so that raising the
+// slack past the hour a clock change needs fails here.
+func TestAdminAudit_NinetyDaysAnHourAndASecondIsRefused(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	to := time.Date(2026, 11, 30, 0, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name   string
+		span   time.Duration
+		status int
+	}{
+		{"90 days and an hour", 90*24*time.Hour + time.Hour, http.StatusOK},
+		{"90 days, an hour and a second", 90*24*time.Hour + time.Hour + time.Second, http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := url.Values{"q": {"anything"}, "from": {to.Add(-tc.span).Format(time.RFC3339)}, "to": {to.Format(time.RFC3339)}}
+			r := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/audit?"+v.Encode(), nil)
+			r.Body.Close()
+			require.Equal(t, tc.status, r.StatusCode)
+		})
+	}
+}

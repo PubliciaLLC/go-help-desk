@@ -47,3 +47,19 @@ func TestFilter_DetailsSearch(t *testing.T) {
 		})
 	}
 }
+
+// The other tests read DetailsSearchMaxSpan, so they would follow it if the slack
+// grew. This one writes the numbers out: 90 days and an hour is the most a clock
+// change can add to 90 calendar days, and anything past it is refused.
+func TestDetailsSearchMaxSpan_IsNinetyDaysAndAnHour(t *testing.T) {
+	require.Equal(t, 90, audit.DetailsSearchMaxDays)
+	require.Equal(t, 90*24*time.Hour+time.Hour, audit.DetailsSearchMaxSpan)
+
+	to := time.Date(2026, 11, 30, 0, 0, 0, 0, time.UTC)
+	within := to.Add(-(90*24*time.Hour + time.Hour))
+	over := to.Add(-(90*24*time.Hour + time.Hour + time.Second))
+	require.False(t, audit.Filter{Q: "x", From: &within, To: &to}.DateRangeTooLong())
+	require.True(t, audit.Filter{Q: "x", From: &within, To: &to}.SearchesDetails())
+	require.True(t, audit.Filter{Q: "x", From: &over, To: &to}.DateRangeTooLong(), "90 days, 1 hour and 1 second is refused")
+	require.False(t, audit.Filter{Q: "x", From: &over, To: &to}.SearchesDetails())
+}

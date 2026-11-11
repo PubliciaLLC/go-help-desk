@@ -505,3 +505,24 @@ func TestQueueFilter_FailedRowScrubKeepsNoAttrs(t *testing.T) {
 		})
 	}
 }
+
+// A filter with only a type (#631) is a filter: it must turn away a ticket of
+// another type and admit one of the named type. If the filter read as empty the
+// hook would be given a row for every ticket.
+func TestQueueFilter_TypeOnlyFilterIsApplied(t *testing.T) {
+	typ := uuid.New()
+	hit, miss := newReceiver(t, 200), newReceiver(t, 503)
+	hm := filtered(hookFor(hit.srv.URL), notification.WebhookFilter{TypeIDs: []uuid.UUID{typ}})
+	hx := filtered(hookFor(miss.srv.URL), notification.WebhookFilter{TypeIDs: []uuid.UUID{uuid.New()}})
+	rig := newQueueRig(t, hit.srv.Client(), hm, hx)
+	spy := spyOn(rig)
+
+	ev := fixtureReplyEvent(false)
+	ev.Ticket = &notification.TicketState{CategoryID: uuid.New(), Priority: "low", TypeID: &typ}
+	require.NoError(t, rig.front.Dispatch(context.Background(), ev))
+	rig.drain(t)
+
+	require.Equal(t, []uuid.UUID{hm.ID}, spy.targets(t))
+	require.Equal(t, 0, miss.count())
+	require.Equal(t, 1, hit.count())
+}

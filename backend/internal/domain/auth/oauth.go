@@ -36,7 +36,25 @@ type ClientGroup struct {
 type Claims struct {
 	ClientID string   `json:"cid"`
 	Scopes   []string `json:"scopes"`
+	// SecretVersion names the client secret the token was issued under, so
+	// rotating the secret (#622) revokes every token issued before it. Empty on
+	// a token issued before the claim existed, which stays valid until it
+	// expires; refusing those would log every integration out on upgrade.
+	SecretVersion string `json:"sv,omitempty"`
 	jwt.RegisteredClaims
+}
+
+// SecretVersion identifies the client's current secret without a column for it:
+// a short prefix of the stored hash, which changes whenever the secret does. It
+// is a prefix on purpose, since the token carrying it is readable by whoever
+// holds it and the full hash must not be. A hash too short to be real yields
+// "", which is the "no version" a legacy token has, so it is never compared.
+func SecretVersion(c OAuthClient) string {
+	const n = 16
+	if len(c.HashedSecret) < n {
+		return ""
+	}
+	return c.HashedSecret[:n]
 }
 
 const accessTokenTTL = time.Hour
@@ -45,8 +63,9 @@ const accessTokenTTL = time.Hour
 func IssueAccessToken(client OAuthClient, jwtSecret string) (string, error) {
 	now := time.Now()
 	claims := Claims{
-		ClientID: client.ClientID,
-		Scopes:   client.Scopes,
+		ClientID:      client.ClientID,
+		Scopes:        client.Scopes,
+		SecretVersion: SecretVersion(client),
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   client.ID.String(),
 			IssuedAt:  jwt.NewNumericDate(now),

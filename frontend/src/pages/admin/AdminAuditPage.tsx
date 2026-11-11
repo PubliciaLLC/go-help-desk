@@ -23,6 +23,9 @@ const PAGE_SIZE = 50
 // long the limit is, so a change to the server's value must be made here too.
 const DETAILS_SEARCH_MAX_DAYS = 90
 
+// The 400 codes the server answers a bad date range with, on a text search.
+const DATE_RANGE_REFUSALS = ['date_range_too_long', 'invalid_date_range']
+
 // Known entity types an audit entry can name today (audit.Entry.EntityType's
 // own comment: "ticket", "user", "group", etc.) — a starting set, not an
 // enum the server enforces. The filter still accepts any string typed
@@ -88,10 +91,11 @@ export function AdminAuditPage() {
     setOffset(0)
   }
 
-  // A text search over a range longer than the limit is a 400 with its own code.
-  // It is the person's input to fix, so it is shown by the fields that caused it
-  // and not as a failure to load.
-  const rangeRefusal = isError && extractErrorCode(error) === 'date_range_too_long' ? extractError(error) : ''
+  // A text search over a range longer than the limit, or with From after To, is a
+  // 400 with its own code. It is the person's input to fix, so it is shown by the
+  // fields that caused it and not as a failure to load.
+  const rangeRefusal =
+    isError && DATE_RANGE_REFUSALS.includes(extractErrorCode(error)) ? extractError(error) : ''
 
   const entries = data?.entries ?? []
   const total = data?.total ?? 0

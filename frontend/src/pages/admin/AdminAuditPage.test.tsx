@@ -186,18 +186,21 @@ describe('AdminAuditPage', () => {
     )
   })
 
-  // A text search over a date range longer than 90 days is refused with a 400
-  // (Erik, 2026-11-11). The page shows the server's message by the From and To
-  // fields and keeps what was typed, instead of the generic load failure.
-  it('shows the server refusal of a too-long range by the date fields and keeps the filters', async () => {
-    const message = 'the date range of a search with text can be at most 90 days: shorten from and to, or search without text'
+  // A text search over a date range longer than 90 days (date_range_too_long), or
+  // with From after To (invalid_date_range), is refused with a 400. The page shows
+  // the server's message by the From and To fields and keeps what was typed,
+  // instead of the generic load failure.
+  it.each([
+    ['date_range_too_long', 'the date range of a search with text can be at most 90 days: shorten from and to, or search without text', '2026-01-01T00:00', '2026-09-01T00:00'],
+    ['invalid_date_range', 'from must not be later than to', '2026-09-01T00:00', '2026-01-01T00:00'],
+  ])('shows the server refusal %s by the date fields and keeps the filters', async (code, message, from, to) => {
     vi.spyOn(api, 'get').mockImplementation(((url: string, config?: { params?: Record<string, unknown> }) => {
       if (url === '/admin/audit') {
         if (config?.params?.q && config?.params?.from && config?.params?.to) {
           return Promise.reject(
             Object.assign(new Error('Request failed with status code 400'), {
               isAxiosError: true,
-              response: { status: 400, data: { error: { code: 'date_range_too_long', message } } },
+              response: { status: 400, data: { error: { code, message } } },
             }),
           )
         }
@@ -210,15 +213,15 @@ describe('AdminAuditPage', () => {
     await waitFor(() => expect(screen.getByText('Resolved')).toBeTruthy())
 
     await userEvent.type(screen.getByLabelText(/^search$/i), 'laptop')
-    fireEvent.change(screen.getByLabelText(/^from$/i), { target: { value: '2026-01-01T00:00' } })
-    fireEvent.change(screen.getByLabelText(/^to$/i), { target: { value: '2026-09-01T00:00' } })
+    fireEvent.change(screen.getByLabelText(/^from$/i), { target: { value: from } })
+    fireEvent.change(screen.getByLabelText(/^to$/i), { target: { value: to } })
 
     const alert = await screen.findByText(message)
     expect(alert.getAttribute('role')).toBe('alert')
     expect(screen.queryByText('Could not load the audit log.')).toBeNull()
     expect((screen.getByLabelText(/^search$/i) as HTMLInputElement).value).toBe('laptop')
-    expect((screen.getByLabelText(/^from$/i) as HTMLInputElement).value).toBe('2026-01-01T00:00')
-    expect((screen.getByLabelText(/^to$/i) as HTMLInputElement).value).toBe('2026-09-01T00:00')
+    expect((screen.getByLabelText(/^from$/i) as HTMLInputElement).value).toBe(from)
+    expect((screen.getByLabelText(/^to$/i) as HTMLInputElement).value).toBe(to)
   })
 
   it('says nothing when the details were searched', async () => {

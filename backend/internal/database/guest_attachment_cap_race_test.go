@@ -27,7 +27,7 @@ import (
 // Real Postgres on separate connections, repeated, because the defect is a
 // check-then-insert gap and a single connection would serialise it away.
 func TestCreateGuestAttachment_ParallelUploadsCannotOvershootTheCap(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	t.Cleanup(closeDB)
 	ctx := context.Background()
 	q := db.Queries

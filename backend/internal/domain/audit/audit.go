@@ -326,6 +326,8 @@ var shownKeys = map[string]bool{
 	// value before and after, one of admin_log, ticket_log or everywhere. A
 	// fixed vocabulary, and the whole point of the entry.
 	"requesternamemask": true,
+	// A client's secret being replaced (#622): the fact, not the secret.
+	"credentialreplaced": true,
 }
 
 // Redact returns copies of before/after showing only allow-listed keys
