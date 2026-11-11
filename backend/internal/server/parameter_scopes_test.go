@@ -112,42 +112,138 @@ func functionBody(t *testing.T, dir, name string) (string, bool) {
 	return "", false
 }
 
-// Where the handler check may live, relative to this package's directory: the
-// REST handlers, the ticket domain, the MCP tool and middleware.
-var parameterScopeProductionDirs = []string{".", "../domain/ticket", "../mcp", "../middleware"}
+// Where production code is looked for, relative to this package's directory:
+// everything under backend/internal and backend/cmd, so a check in a package
+// nobody listed is still seen. internal/domain/auth is the exception, because
+// it is where the scope is defined; what it declares is followed by name
+// instead (see authAliases).
+var (
+	parameterScopeRoots   = []string{"../../internal", "../../cmd"}
+	parameterScopeAuthDir = "../domain/auth"
+)
 
-// referencedByProduction reports whether a non-test .go file in dirs uses the
-// scope's resource, as the auth constant or as a string literal. Comments are
-// not parsed in, so a note about the scope is not mistaken for the check.
-func referencedByProduction(t *testing.T, dirs []string, p parameterScope) bool {
+// mentions reports whether n contains the scope's resource: the constant, a
+// name already known to alias it, or a string literal containing the resource.
+func mentions(n ast.Node, resource string, names map[string]bool) bool {
+	found := false
+	ast.Inspect(n, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.Ident:
+			found = found || names[n.Name]
+		case *ast.BasicLit:
+			found = found || (n.Kind == token.STRING && strings.Contains(n.Value, resource))
+		}
+		return !found
+	})
+	return found
+}
+
+// goFiles lists the non-test .go files under roots, skipping testdata and
+// authDir.
+func goFiles(t *testing.T, roots []string, authDir string) []string {
 	t.Helper()
-	resource, _, _ := strings.Cut(p.scope, ":")
-	for _, dir := range dirs {
-		files, err := filepath.Glob(filepath.Join(dir, "*.go"))
-		if err != nil {
+	skip, err := filepath.Abs(authDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, root := range roots {
+		err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				abs, _ := filepath.Abs(path)
+				if d.Name() == "testdata" || abs == skip {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, "_test.go") {
+				out = append(out, path)
+			}
+			return nil
+		})
+		if err != nil && !os.IsNotExist(err) {
 			t.Fatal(err)
 		}
-		for _, f := range files {
-			if strings.HasSuffix(f, "_test.go") {
-				continue
-			}
-			file, err := parser.ParseFile(token.NewFileSet(), f, nil, 0) // mode 0 drops comments
-			if err != nil {
-				t.Fatalf("%s: %v", f, err)
-			}
-			found := false
-			ast.Inspect(file, func(n ast.Node) bool {
-				switch n := n.(type) {
-				case *ast.Ident:
-					found = found || n.Name == p.resourceConst
-				case *ast.BasicLit:
-					found = found || (n.Kind == token.STRING && strings.Contains(n.Value, resource))
+	}
+	return out
+}
+
+// authAliases returns the exported const and var names in authDir whose value
+// mentions the scope's resource, directly or through another such name. Using
+// auth.SomeAlias elsewhere is then as good as using auth.ResourceRequesterSearch.
+func authAliases(t *testing.T, authDir string, p parameterScope) map[string]bool {
+	t.Helper()
+	resource, _, _ := strings.Cut(p.scope, ":")
+	names := map[string]bool{p.resourceConst: true}
+	files, err := filepath.Glob(filepath.Join(authDir, "*.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var specs []*ast.ValueSpec
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), f, nil, 0)
+		if err != nil {
+			t.Fatalf("%s: %v", f, err)
+		}
+		for _, d := range file.Decls {
+			if gd, ok := d.(*ast.GenDecl); ok && (gd.Tok == token.CONST || gd.Tok == token.VAR) {
+				for _, s := range gd.Specs {
+					specs = append(specs, s.(*ast.ValueSpec))
 				}
-				return !found
-			})
-			if found {
-				return true
 			}
+		}
+	}
+	// Repeat until nothing new is found, so an alias of an alias is followed.
+	for changed := true; changed; {
+		changed = false
+		for _, s := range specs {
+			for _, v := range s.Values {
+				if !mentions(v, resource, names) {
+					continue
+				}
+				for _, n := range s.Names {
+					if n.IsExported() && !names[n.Name] {
+						names[n.Name] = true
+						changed = true
+					}
+				}
+			}
+		}
+	}
+	return names
+}
+
+// referencedByProduction reports whether non-test code outside authDir uses the
+// scope: a string literal containing the resource, or a selector (auth.X) naming
+// the constant or one of its aliases. Comments are not parsed in, so a note
+// about the scope is not mistaken for the check.
+func referencedByProduction(t *testing.T, roots []string, authDir string, p parameterScope) bool {
+	t.Helper()
+	resource, _, _ := strings.Cut(p.scope, ":")
+	aliases := authAliases(t, authDir, p)
+	for _, f := range goFiles(t, roots, authDir) {
+		file, err := parser.ParseFile(token.NewFileSet(), f, nil, 0) // mode 0 drops comments
+		if err != nil {
+			t.Fatalf("%s: %v", f, err)
+		}
+		found := false
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch n := n.(type) {
+			case *ast.SelectorExpr:
+				found = found || aliases[n.Sel.Name]
+			case *ast.BasicLit:
+				found = found || (n.Kind == token.STRING && strings.Contains(n.Value, resource))
+			}
+			return !found
+		})
+		if found {
+			return true
 		}
 	}
 	return false
@@ -167,9 +263,9 @@ const (
 // the scope. Pending is tied to production code, not to a flag someone must
 // remember to clear: a handler test named differently from handlerTest cannot
 // hide behind it.
-func checkParameterScope(t *testing.T, prodDirs []string, testDir string, p parameterScope) (guardState, string) {
+func checkParameterScope(t *testing.T, roots []string, authDir, testDir string, p parameterScope) (guardState, string) {
 	t.Helper()
-	if !referencedByProduction(t, prodDirs, p) {
+	if !referencedByProduction(t, roots, authDir, p) {
 		return guardPending, "no production code uses " + p.scope + " yet"
 	}
 	body, found := functionBody(t, testDir, p.handlerTest)
@@ -187,7 +283,7 @@ func checkParameterScope(t *testing.T, prodDirs []string, testDir string, p para
 // would fail.
 func TestParameterScopes_AreCheckedByAHandlerTest(t *testing.T) {
 	for _, p := range parameterScopes {
-		state, msg := checkParameterScope(t, parameterScopeProductionDirs, ".", p)
+		state, msg := checkParameterScope(t, parameterScopeRoots, parameterScopeAuthDir, ".", p)
 		if state == guardPending {
 			// On the parent, so the skip is reported once at the top and not
 			// only inside a subtest.
@@ -210,41 +306,71 @@ func TestCheckParameterScope_States(t *testing.T) {
 	p := parameterScope{
 		scope: "x_search:read", handlerTest: "TestHandlerNeedsScope", resourceConst: "ResourceXSearch",
 	}
-	write := func(t *testing.T, dir, name, src string) {
+	write := func(t *testing.T, root, name, src string) {
 		t.Helper()
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o600); err != nil {
+		path := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	const (
-		handlerViaConst   = "package x\n\nfunc h() { _ = auth.ResourceXSearch }\n"
-		handlerViaLiteral = "package x\n\nfunc h() { _ = \"x_search:read\" }\n"
-		commentOnly       = "package x\n\n// x_search:read and ResourceXSearch are mentioned here only.\nfunc h() {}\n"
-		goodTest          = "package x\n\nimport \"testing\"\n\nfunc TestHandlerNeedsScope(t *testing.T) { _ = \"x_search:read\" }\n"
-		emptyTest         = "package x\n\nimport \"testing\"\n\nfunc TestHandlerNeedsScope(t *testing.T) {}\n"
-		renamedTest       = "package x\n\nimport \"testing\"\n\nfunc TestSomethingElse(t *testing.T) { _ = \"x_search:read\" }\n"
+		authDecl          = "package auth\n\nconst ResourceXSearch = \"x_search\"\n"
+		authAlias         = authDecl + "\nconst XSearchScope = ResourceXSearch + \":read\"\n"
+		authAliasOfAlias  = authAlias + "\nvar XSearchAgain = XSearchScope\n"
+		authLiteralAlias  = authDecl + "\nvar XSearchKey = \"x_search:read\"\n"
+		authUnexported    = authDecl + "\nvar xSearchScope = ResourceXSearch\n"
+		handlerViaConst   = "package y\n\nfunc h() { _ = auth.ResourceXSearch }\n"
+		handlerViaAlias   = "package y\n\nfunc h() { _ = auth.XSearchScope }\n"
+		handlerViaAlias2  = "package y\n\nfunc h() { _ = auth.XSearchAgain }\n"
+		handlerViaKey     = "package y\n\nfunc h() { _ = auth.XSearchKey }\n"
+		handlerViaLiteral = "package y\n\nfunc h() { _ = \"x_search:read\" }\n"
+		handlerUnrelated  = "package y\n\nfunc h() { _ = auth.ResourceTickets }\n"
+		commentOnly       = "package y\n\n// x_search:read and ResourceXSearch are mentioned here only.\nfunc h() {}\n"
+		goodTest          = "package server\n\nimport \"testing\"\n\nfunc TestHandlerNeedsScope(t *testing.T) { _ = \"x_search:read\" }\n"
+		emptyTest         = "package server\n\nimport \"testing\"\n\nfunc TestHandlerNeedsScope(t *testing.T) {}\n"
+		renamedTest       = "package server\n\nimport \"testing\"\n\nfunc TestSomethingElse(t *testing.T) { _ = \"x_search:read\" }\n"
 	)
+	// The tree mirrors the real one: auth, the server tests, and any other
+	// package ("newpkg"), none of them on a list the guard was told about.
+	type files = map[string]string
 
 	cases := []struct {
 		name  string
-		files map[string]string // in one directory, for production and tests alike
+		files files
 		want  guardState
 	}{
-		{"nothing uses the scope yet", map[string]string{"a.go": commentOnly}, guardPending},
-		{"only a test mentions it", map[string]string{"a_test.go": goodTest}, guardPending},
-		{"production uses the constant, no test", map[string]string{"a.go": handlerViaConst}, guardFails},
-		{"production uses the literal, no test", map[string]string{"a.go": handlerViaLiteral}, guardFails},
-		{"production uses it, the test is named differently", map[string]string{"a.go": handlerViaConst, "a_test.go": renamedTest}, guardFails},
-		{"production uses it, the test never names the scope", map[string]string{"a.go": handlerViaConst, "a_test.go": emptyTest}, guardFails},
-		{"production uses it and the test names it", map[string]string{"a.go": handlerViaConst, "a_test.go": goodTest}, guardOK},
+		{"nothing uses the scope yet", files{"auth/a.go": authDecl, "newpkg/a.go": commentOnly}, guardPending},
+		{"only auth mentions it", files{"auth/a.go": authAlias}, guardPending},
+		{"only a test mentions it", files{"auth/a.go": authDecl, "server/a_test.go": goodTest}, guardPending},
+		{"a test file in another package uses it", files{"auth/a.go": authDecl, "newpkg/a_test.go": handlerViaConst}, guardPending},
+		{"testdata is not production", files{"auth/a.go": authDecl, "newpkg/testdata/a.go": handlerViaConst}, guardPending},
+		{"an unrelated auth name", files{"auth/a.go": authAlias, "newpkg/a.go": handlerUnrelated}, guardPending},
+		{"an alias nobody uses, and an unexported one", files{"auth/a.go": authUnexported, "newpkg/a.go": handlerViaAlias}, guardPending},
+
+		{"production uses the constant, no test", files{"auth/a.go": authDecl, "server/a.go": handlerViaConst}, guardFails},
+		{"production uses the literal, no test", files{"auth/a.go": authDecl, "server/a.go": handlerViaLiteral}, guardFails},
+		// Fable's two holes.
+		{"the check is in a package nobody listed", files{"auth/a.go": authDecl, "newpkg/deep/a.go": handlerViaConst}, guardFails},
+		{"the check goes through an alias declared in auth", files{"auth/a.go": authAlias, "newpkg/a.go": handlerViaAlias}, guardFails},
+		{"an alias of an alias", files{"auth/a.go": authAliasOfAlias, "newpkg/a.go": handlerViaAlias2}, guardFails},
+		{"an alias declared as a literal", files{"auth/a.go": authLiteralAlias, "newpkg/a.go": handlerViaKey}, guardFails},
+
+		{"the test is named differently", files{"auth/a.go": authDecl, "server/a.go": handlerViaConst, "server/a_test.go": renamedTest}, guardFails},
+		{"the test never names the scope", files{"auth/a.go": authDecl, "server/a.go": handlerViaConst, "server/a_test.go": emptyTest}, guardFails},
+		{"the check is elsewhere and the test is named differently", files{"auth/a.go": authAlias, "newpkg/a.go": handlerViaAlias, "server/a_test.go": renamedTest}, guardFails},
+		{"production uses it and the test names it", files{"auth/a.go": authDecl, "newpkg/a.go": handlerViaConst, "server/a_test.go": goodTest}, guardOK},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
+			root := t.TempDir()
 			for name, src := range tc.files {
-				write(t, dir, name, src)
+				write(t, root, name, src)
 			}
-			if got, msg := checkParameterScope(t, []string{dir}, dir, p); got != tc.want {
+			got, msg := checkParameterScope(t, []string{root}, filepath.Join(root, "auth"), filepath.Join(root, "server"), p)
+			if got != tc.want {
 				t.Errorf("state = %d (%s), want %d", got, msg, tc.want)
 			}
 		})
