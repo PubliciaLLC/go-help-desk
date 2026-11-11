@@ -3561,6 +3561,11 @@ paths:
         - A reporting user cannot change the status (403 forbidden), cannot
           assign (403 forbidden), cannot reclassify (403, "only staff can
           reclassify tickets"), and cannot change the priority (403 forbidden).
+        - category_id, type_id and item_id (a reclassification) are refused on a
+          Resolved or Closed ticket with 409 ticket_closed, for staff and
+          administrators alike, and nothing in the request is saved. A request
+          that moves a Resolved ticket to an open status and reclassifies it is
+          allowed. A request with no classification field is unaffected.
         - priority is one of critical, high, medium and low. Anything else
           answers 400 bad_request before any change in the request is saved. A
           Resolved or Closed ticket's priority cannot be changed: 409

@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // Reclassifying a ticket (1.3.0 audit D3, the gap #468 left open). A policy is
@@ -18,8 +19,8 @@ import (
 // The SLA follows the rule a staff priority change already has (DESIGN.md → SLA
 // Tracking → Re-matching): the policy is matched again, the clock keeps its
 // start, and a target already met stays met. Only a reopen restarts a clock.
-// A Resolved or Closed ticket can still be reclassified, but its SLA is not
-// re-matched: what it was measured against is a fact about what happened.
+// Only an open ticket can be reclassified (see classifyInTx), so no finished
+// ticket's SLA is ever re-matched.
 
 type reclassifyHarness struct {
 	*prioHarness
@@ -184,29 +185,93 @@ func TestReclassify_AChangeThatChangesNothingWritesNothing(t *testing.T) {
 	require.Len(t, h.store.slaRows(tk.ID), 1)
 }
 
-// What a finished ticket was measured against does not move with it.
-func TestReclassify_AResolvedOrClosedTicketIsReclassifiedButItsSLAIsFrozen(t *testing.T) {
+// Classification only happens to open tickets: a Resolved or Closed ticket
+// refuses it, for every role, with the same 409 every other write to a finished
+// ticket gets, and nothing is written (no category, no SLA row, no audit entry).
+func TestReclassify_AResolvedOrClosedTicketIsRefusedAndNothingIsWritten(t *testing.T) {
+	typ := uuid.New()
 	for name, seed := range map[string]func(h *reclassifyHarness) ticket.Ticket{
 		"resolved": func(h *reclassifyHarness) ticket.Ticket { return h.seedResolved(uuid.New()) },
 		"closed":   func(h *reclassifyHarness) ticket.Ticket { return h.seedClosed() },
 	} {
+		for _, role := range []user.Role{user.RoleStaff, user.RoleAdmin} {
+			for _, newCategory := range []bool{true, false} {
+				what := "a type only"
+				if newCategory {
+					what = "a new category"
+				}
+				t.Run(name+" "+string(role)+" "+what, func(t *testing.T) {
+					h := newReclassifyHarness(t)
+					tk := seed(h)
+					tk.Priority, tk.CategoryID = ticket.PriorityMedium, h.oldCat
+					h.store.seed(tk)
+					h.store.seedSLARecord(tk.ID, h.medium, nil, 0, metFacts())
+					rows := h.store.slaRows(tk.ID)
+					c := ticket.Classification{CategoryID: h.oldCat, TypeID: &typ}
+					if newCategory {
+						c = ticket.Classification{CategoryID: h.newCat}
+					}
+					id := uuid.New()
+					actor := ticket.Actor{UserID: &id, Role: role}
+					updatesBefore := h.store.updates
+
+					_, err := h.svc.UpdateCTI(context.Background(), tk.ID, c.CategoryID, c.TypeID, c.ItemID, actor)
+					require.ErrorIs(t, err, ticket.ErrClosed)
+					_, err = h.svc.Update(context.Background(), tk.ID, ticket.Patch{CTI: &c}, actor)
+					require.ErrorIs(t, err, ticket.ErrClosed)
+
+					stored, _ := h.store.GetByID(context.Background(), tk.ID)
+					require.Equal(t, h.oldCat, stored.CategoryID)
+					require.Nil(t, stored.TypeID)
+					require.Equal(t, rows, h.store.slaRows(tk.ID), "its SLA record is untouched")
+					require.Empty(t, h.auditStore.entries, "a refused change writes no entry")
+					require.Equal(t, updatesBefore, h.store.updates)
+				})
+			}
+		}
+	}
+}
+
+// Every open status takes it: the default one and the ones a ticket sits in
+// while it is being worked.
+func TestReclassify_AnOpenTicketInAnyOpenStatusIsReclassified(t *testing.T) {
+	for name, statusOf := range map[string]func(h *reclassifyHarness) uuid.UUID{
+		"new":         func(h *reclassifyHarness) uuid.UUID { return h.newStatus.ID },
+		"in progress": func(h *reclassifyHarness) uuid.UUID { return h.inProgressStatus.ID },
+		"pending":     func(h *reclassifyHarness) uuid.UUID { return h.pendingStatus.ID },
+	} {
 		t.Run(name, func(t *testing.T) {
 			h := newReclassifyHarness(t)
-			tk := seed(h)
-			tk.Priority, tk.CategoryID = ticket.PriorityMedium, h.oldCat
+			tk := h.seed()
+			tk.StatusID = statusOf(h)
 			h.store.seed(tk)
-			h.store.seedSLARecord(tk.ID, h.medium, nil, 0, metFacts())
-			rows := h.store.slaRows(tk.ID)
 
 			got, err := reclassify(h, tk.ID, h.newCat, nil)
 			require.NoError(t, err)
-
-			require.Equal(t, h.newCat, got.CategoryID, "reclassifying a finished ticket is still allowed")
-			require.Equal(t, rows, h.store.slaRows(tk.ID), "its SLA record is untouched")
-			e := onlyEntry(t, h.auditStore.entries, "classified")
-			require.NotContains(t, e.After, "sla_outcome")
+			require.Equal(t, h.newCat, got.CategoryID)
+			onlyEntry(t, h.auditStore.entries, "classified")
 		})
 	}
+}
+
+// A request that moves the ticket out of Resolved and reclassifies it is one
+// transaction: the status step runs first, so the classification finds an open
+// ticket on the locked row.
+func TestReclassify_ARequestThatReopensAndReclassifiesIsAllowed(t *testing.T) {
+	h := newReclassifyHarness(t)
+	tk := h.seedResolved(uuid.New())
+	tk.Priority, tk.CategoryID = ticket.PriorityMedium, h.oldCat
+	h.store.seed(tk)
+	newStatus := h.newStatus.ID
+
+	_, err := h.svc.Update(context.Background(), tk.ID, ticket.Patch{
+		StatusID: &newStatus,
+		CTI:      &ticket.Classification{CategoryID: h.newCat},
+	}, priorityStaff)
+	require.NoError(t, err)
+
+	stored, _ := h.store.GetByID(context.Background(), tk.ID)
+	require.Equal(t, h.newCat, stored.CategoryID)
 }
 
 // The audit entry is in the change's transaction: when it cannot be written the

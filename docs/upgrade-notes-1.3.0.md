@@ -74,8 +74,9 @@ What to check: if your instance is on an IP or single-word host and you want pas
 
 ### API requests that now fail (#421)
 
-These affect scripts and integrations that call the API. Three can make a request that used to succeed now fail:
+These affect scripts and integrations that call the API. Four can make a request that used to succeed now fail:
 
+- **Reclassifying a Resolved or Closed ticket is `409 ticket_closed`.** See *Reclassifying a Ticket Re-matches Its SLA Policy and Is Audited*. Before, `PATCH /tickets/{id}` with `category_id`, `type_id` or `item_id` succeeded on a Closed ticket. Fix: reopen it first, or open a follow-up.
 - **Unknown settings keys are refused.** `PATCH /api/v1/admin/settings` with a key that is not a real setting now answers `400 unknown_setting`, names the key, and writes nothing (not even the valid keys in the same request). Before, any key was stored, so a typo such as `mfa_enabld` answered 204 and changed nothing. Fix: use the exact setting names from `GET /api/v1/admin/settings` (the `_set` presence flags are still refused with `readonly_setting`).
 - **`POST /api/v1/tickets/{id}/resolve` with a body that is not valid JSON is `400`.** Before, it resolved the ticket and dropped the notes. An empty body still resolves with no notes.
 - **`GET /api/v1/auth/verify-email?token=` is `422 token_invalid` for an address that has since gained an account.** Before, it answered 200 and only the POST refused.
@@ -623,12 +624,12 @@ Auto-assignment (**Admin → Routing**, and a group's own category and type scop
 
 ### Reclassifying a Ticket Re-matches Its SLA Policy and Is Audited
 
-Changing a ticket's category (`PATCH /tickets/{id}` with `category_id`, or the category picker on the ticket page) now does two things it did not do before.
+Changing a ticket's category (`PATCH /tickets/{id}` with `category_id`, or the category picker on the ticket page) now does two things it did not do before, and is refused on a Resolved or Closed ticket (below).
 
 - **The SLA policy is matched again.** A policy is matched on priority and category, so a new category can mean a different policy. Before, the ticket kept the policy of the category it was filed under, and its targets stayed measured against that. Now the new category's policy takes over, in the same change. **The clock is not restarted**: the time already elapsed still counts, and a target already met stays met, exactly as when staff change a priority. Only a reopen restarts a clock. If no policy matches the new category, the ticket shows no SLA from then on; if the old record had none and the new category has one, the ticket gets one whose clock runs from its creation, so it can already be breached.
 - **It is audited.** A `classified` entry now appears on the ticket's Activity feed and in the admin audit view, with who changed it, the old and new category, type and item (as ids), and what happened to the SLA. It is written in the same transaction as the change. Before, a reclassification left no entry. Changes made before the upgrade are not backfilled.
 
-- **Resolved and Closed tickets** can still be reclassified, but their SLA record is left as it was.
+- **Resolved and Closed tickets can no longer be reclassified.** Changing the category, type or item of a Resolved or Closed ticket now answers `409 ticket_closed` for every role, and nothing is written. In 1.2.x staff could reclassify a Closed ticket. A script that does that must reopen the ticket first (or open a follow-up). A `PATCH` that sends no category, type or item is unaffected, and a request that moves a Resolved ticket to an open status and reclassifies it in one go still works. The ticket page shows the classification read-only on these tickets.
 - **A change of type or item alone** is audited but never changes the SLA, since a policy is matched on category.
 - **If SLA tracking is off**, nothing is re-matched (the entry says `sla_off`).
 - **No migration, no setting.** Nothing is recomputed for tickets reclassified before the upgrade.

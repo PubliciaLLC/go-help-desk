@@ -786,6 +786,13 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
+		// Classification only happens to an open ticket (409 ticket_closed),
+		// asked here so a status or assignment in the same request is not
+		// saved first. The service checks again on the locked row.
+		if err := s.tickets.ValidateReclassify(r.Context(), id, body.StatusID); err != nil {
+			handleError(w, err)
+			return
+		}
 	}
 
 	// A Resolved or Closed ticket's priority cannot change, and a request that

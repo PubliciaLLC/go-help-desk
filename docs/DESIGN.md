@@ -196,7 +196,7 @@ Admin row is the default, `off`:
 |-----|--------------------|
 | Guest (link holder) | **Read only.** Reply, upload and anything that could reopen are refused with the generic `404`, byte-identical to a bad link (below). The one write that accepts a closed ticket is `POST /guest/follow-up`: a new, linked ticket (below). |
 | Account holder (User role) | **Read only.** Reply, attachment upload, custom-field edit and linking are refused with `409 ticket_closed`; status change, assign, reclassify, resolve and close are refused with `403`, as for any state. They **can** open a follow-up of their own closed ticket (below). |
-| Staff, Admin | **Cannot reopen, by default.** A status change out of Closed, Resolve, Resolve-as-duplicate and `POST /tickets/{id}/reopen` are refused with `409 ticket_closed`, and the message says why: reopening closed tickets is disabled on this instance, or restricted to administrators. With `closed_reopen_policy` = `admin`, an administrator may use all four (staff still get the refusal); with `staff_admin`, staff and administrators may. They **can** always open a follow-up, and keep replying, internal notes, assignment, reclassification, tags and linking (see below). |
+| Staff, Admin | **Cannot reopen, by default.** A status change out of Closed, Resolve, Resolve-as-duplicate and `POST /tickets/{id}/reopen` are refused with `409 ticket_closed`, and the message says why: reopening closed tickets is disabled on this instance, or restricted to administrators. With `closed_reopen_policy` = `admin`, an administrator may use all four (staff still get the refusal); with `staff_admin`, staff and administrators may. They **can** always open a follow-up, and keep replying, internal notes, assignment, tags and linking (see below). Reclassification is refused (`409 ticket_closed`) on Resolved and Closed tickets alike. |
 | Resolved (any requester) | Unchanged: a requester's reply inside the reopen window reopens the ticket; outside it, `409 reopen_window_closed`. |
 
 **One rule, in the domain.** The service decides it, not each handler: the
@@ -250,16 +250,20 @@ role (status, assignment, reclassification, priority, resolve, close, tags) keep
 `403`; the closed state does not change which refusal a role gets.
 
 **Staff and admin: the minimal reading.** Only *leaving* Closed is removed.
-Replying (including internal notes), assignment, reclassification, tags,
+Replying (including internal notes), assignment, tags,
 linking and attachments are unchanged on a closed ticket, because they do not
 change what state the ticket is in, and removing them is not what was decided.
 (A staff reply on a closed ticket still mails the guest a read-only link, below.)
-**Priority is the exception:** it cannot be changed on a Resolved or Closed
-ticket (`409 ticket_closed`), because a finished ticket's priority is part of
-what its SLA was measured against (#443). A `PATCH /tickets/{id}` that sends a
-priority and would leave the ticket Resolved or Closed (or that touches one
-already there) is refused whole with that `409`: the status or assignment in the
-same request is not saved first.
+**Priority and classification are the exceptions:** neither can be changed on a
+Resolved or Closed ticket (`409 ticket_closed`, for every role). A finished
+ticket's priority and category are part of what its SLA was measured against
+(#443), and classification only happens to open tickets (Erik, 2026-11-10;
+before 1.3.0 staff could reclassify a Closed ticket). A `PATCH /tickets/{id}`
+that sends a priority, or a category, type or item, and would leave the ticket
+Resolved or Closed (or that touches one already there) is refused whole with
+that `409`: the status or assignment in the same request is not saved first. A
+request that moves the ticket out of Resolved to an open status and reclassifies
+it is allowed, and a `PATCH` that sends no classification field is unaffected.
 
 **One PATCH, one outcome (#468, #506).** `PATCH /tickets/{id}` can change a
 ticket's status, assignment, classification and priority in one request. It is
@@ -4900,10 +4904,10 @@ policy and record ids before and after).
   Only a reopen restarts a clock.
 - **Only the category matters.** A change of type or item alone cannot change the
   match; it is audited, with no SLA outcome.
-- **Resolved and Closed tickets are reclassified but not re-matched.** Staff may
-  still reclassify a finished ticket (it is not refused, unlike a priority
-  change), but its SLA record is left as it was: what it was measured against is a
-  fact about what happened. Its entry carries no SLA outcome.
+- **Resolved and Closed tickets are not reclassified at all** (`409
+  ticket_closed`, for every role), so a finished ticket's SLA is never re-matched:
+  what it was measured against is a fact about what happened. Classification
+  only happens to open tickets (Erik, 2026-11-10).
 - **Gated on the toggle**, as for a priority change: with SLA tracking off nothing
   is re-matched and the entry says `sla_off`.
 - **Atomic.** The classification, the SLA rows and the entry commit together.

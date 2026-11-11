@@ -34,6 +34,10 @@ export interface ClassificationPanelProps {
   typeId?: string | null
   itemId?: string | null
   canEdit: boolean
+  // Resolved or Closed: classification only happens to open tickets, and the
+  // server answers 409 ticket_closed. Read-only, with the reason, rather than an
+  // Edit that can only fail.
+  locked?: boolean
 }
 
 /**
@@ -50,7 +54,7 @@ export interface ClassificationPanelProps {
  * and a Type invalidates the Item — and that cascade is only coherent if one
  * component owns all three.
  */
-export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canEdit }: ClassificationPanelProps) {
+export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canEdit, locked = false }: ClassificationPanelProps) {
   const qc = useQueryClient()
 
   const [editing, setEditing] = useState(false)
@@ -126,7 +130,7 @@ export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canE
           <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gray-400">
             Classification
           </CardTitle>
-          {canEdit && !editing && (
+          {canEdit && !locked && !editing && (
             <button
               className="min-h-6 rounded px-2 py-1 text-xs text-blue-600 hover:underline"
               onClick={startEdit}
@@ -201,6 +205,11 @@ export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canE
           </div>
         ) : (
           <>
+            {canEdit && locked && (
+              <p className="text-xs text-gray-400">
+                Classification is locked on a Resolved or Closed ticket.
+              </p>
+            )}
             <div className="flex justify-between gap-2">
               <span className="text-gray-500">Category</span>
               <span className="min-w-0 text-right text-xs font-medium wrap-anywhere">{categoryName ?? '—'}</span>

@@ -1363,7 +1363,8 @@ func (s *Service) changePriorityLocked(ctx context.Context, st Store, au audit.S
 }
 
 // isFinished reports whether a status is Resolved or Closed: the two states in
-// which a ticket's priority is frozen (#443).
+// which a ticket's priority is frozen (#443) and its classification cannot
+// change.
 func (s *Service) isFinished(statusID uuid.UUID) bool {
 	return statusID == s.sys.closedID || statusID == s.sys.resolvedID
 }
@@ -1378,6 +1379,17 @@ func (s *Service) isFinished(statusID uuid.UUID) bool {
 // out. ChangePriority still checks on the locked row, so this is the early
 // answer, not the guarantee.
 func (s *Service) ValidatePriorityChange(ctx context.Context, ticketID uuid.UUID, statusAfter *uuid.UUID) error {
+	return s.validateOpenAfter(ctx, ticketID, statusAfter)
+}
+
+// ValidateReclassify is the same early check for a classification change, which
+// is refused on a Resolved or Closed ticket just as a priority change is. The
+// locked-row check in classifyInTx is the guarantee.
+func (s *Service) ValidateReclassify(ctx context.Context, ticketID uuid.UUID, statusAfter *uuid.UUID) error {
+	return s.validateOpenAfter(ctx, ticketID, statusAfter)
+}
+
+func (s *Service) validateOpenAfter(ctx context.Context, ticketID uuid.UUID, statusAfter *uuid.UUID) error {
 	if statusAfter != nil {
 		if s.isFinished(*statusAfter) {
 			return ErrClosed
@@ -2674,20 +2686,27 @@ func (s *Service) UpdateCTI(ctx context.Context, id, categoryID uuid.UUID, typeI
 // policy, in the same transaction, so a reclassification and what it did to the
 // SLA are in the trail together or not at all (1.3.0 audit D3, #468's gap).
 //
+// Classification only happens to an open ticket: a Resolved or Closed one
+// refuses it (ErrClosed, the 409 every other write to a finished ticket gets),
+// for every role, checked on the locked row. A request that reopens the ticket
+// and reclassifies it in one transaction passes, since its status step ran
+// first. This is also why no finished ticket's SLA is ever re-matched.
+//
 // The category is the only level a policy is matched on, so only a change of
 // category can change the match. The re-match is the one a staff priority change
 // makes (rematchSLA, planSLARematch): the clock keeps its start and a target
-// already met stays met. It is skipped for a Resolved or Closed ticket, which
-// may still be reclassified: what a finished ticket's SLA was measured against
-// is a fact about what happened, and a priority change is refused for the same
-// reason. Its entry then carries no SLA outcome.
+// already met stays met.
 //
-// A reclassification that changed nothing writes nothing and announces nothing.
+// A reclassification that changed nothing on an open ticket writes nothing and
+// announces nothing.
 func (s *Service) classifyInTx(ctx context.Context, st Store, au audit.Store, ch *notification.Changes,
 	id uuid.UUID, c Classification, actor Actor) (Ticket, error) {
 	t, err := st.GetByIDForUpdate(ctx, id)
 	if err != nil {
 		return Ticket{}, err
+	}
+	if s.isFinished(t.StatusID) {
+		return Ticket{}, ErrClosed
 	}
 	now := time.Now()
 	if err := st.UpdateCTI(ctx, id, c.CategoryID, c.TypeID, c.ItemID); err != nil {
@@ -2706,7 +2725,7 @@ func (s *Service) classifyInTx(ctx context.Context, st Store, au audit.Store, ch
 	}
 
 	before, after := classificationMap(was), classificationMap(t)
-	if was.CategoryID != t.CategoryID && !s.isFinished(t.StatusID) {
+	if was.CategoryID != t.CategoryID {
 		cur, outcome, start, err := s.rematchSLA(ctx, st, t, false, now)
 		if err != nil {
 			return Ticket{}, err
