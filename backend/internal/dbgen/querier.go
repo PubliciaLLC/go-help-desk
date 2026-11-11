@@ -733,7 +733,8 @@ type Querier interface {
 	// Tickets the breach sweep must evaluate: open, under a policy, with at least
 	// one target that is neither met nor already stamped, using the same
 	// pause-aware elapsed time as sla.Record.Elapsed (see sla.ElapsedFrom's doc
-	// comment; the two must change together). The clock starts at the record's
+	// comment; the two must change together, and so must ListTicketsFiltered in
+	// tickets.sql, the third copy). The clock starts at the record's
 	// started_at (the ticket's creation when NULL) and counts the ticket's pause
 	// total from the record's paused_seconds_at_start. Superseded records are
 	// history and are never evaluated. LEAST(COALESCE(pending_since, now), now) is

@@ -1343,43 +1343,46 @@ WHERE
     $7::text = 'any'
     OR ($7::text = 'unassigned'
         AND t.assignee_user_id IS NULL AND t.assignee_group_id IS NULL)
-    -- The groups are an ARRAY(subquery), not IN (subquery): that is a one-time
-    -- InitPlan whose result is a plain array, so both assignee indexes can
-    -- serve the OR. IN (subquery) is a per-row hashed subplan, which cannot
-    -- feed a BitmapOr, and "mine" read the whole table (160 ms at 200k).
+    -- mine_group_ids is the caller's groups, read by the store just before this
+    -- runs and passed as a plain array. That is deliberate: the planner cannot
+    -- know how many groups a subquery will return, assumes a lot, and then walks
+    -- the whole created_at index looking for rows a user with few or no
+    -- assignments does not have (83-95 ms at 200k tickets for an administrator).
+    -- Given the array itself it sees an empty or two-element list, and drives the
+    -- queue from the two assignee indexes instead (0.8 ms).
     OR ($7::text = 'mine' AND (
         t.assignee_user_id = $6::uuid
-        OR t.assignee_group_id = ANY(ARRAY(SELECT gm.group_id FROM group_members gm WHERE gm.user_id = $6::uuid))))
+        OR t.assignee_group_id = ANY($8::uuid[])))
   )
-  AND (cardinality($8::uuid[]) = 0 OR t.status_id = ANY($8::uuid[]))
+  AND (cardinality($9::uuid[]) = 0 OR t.status_id = ANY($9::uuid[]))
   -- IS DISTINCT FROM, not <>: if the Closed status were ever missing the
   -- subquery is NULL, and <> would then exclude every ticket.
-  AND (NOT $9::bool
+  AND (NOT $10::bool
        OR t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Closed' AND s.kind = 'system'))
-  AND (cardinality($10::text[]) = 0 OR t.priority = ANY($10::text[]))
-  AND ($11::uuid IS NULL OR t.category_id = $11::uuid)
-  AND ($12::uuid IS NULL OR t.type_id = $12::uuid)
-  AND ($13::uuid IS NULL OR t.item_id = $13::uuid)
-  AND ($14::uuid IS NULL OR t.assignee_user_id = $14::uuid)
-  AND ($15::uuid IS NULL OR t.assignee_group_id = $15::uuid)
-  AND ($16::uuid IS NULL OR t.reporter_user_id = $16::uuid)
+  AND (cardinality($11::text[]) = 0 OR t.priority = ANY($11::text[]))
+  AND ($12::uuid IS NULL OR t.category_id = $12::uuid)
+  AND ($13::uuid IS NULL OR t.type_id = $13::uuid)
+  AND ($14::uuid IS NULL OR t.item_id = $14::uuid)
+  AND ($15::uuid IS NULL OR t.assignee_user_id = $15::uuid)
+  AND ($16::uuid IS NULL OR t.assignee_group_id = $16::uuid)
+  AND ($17::uuid IS NULL OR t.reporter_user_id = $17::uuid)
   -- requester_pattern is '%' || LIKE-escaped text || '%', built in the store.
   -- It matches the ticket's guest fields and the reporting account's name and
   -- email. Deleted and disabled accounts are included on purpose: their tickets
   -- still exist and the ticket page still names them.
-  AND ($17::text IS NULL
-       OR t.guest_name ILIKE $17::text
-       OR t.guest_email ILIKE $17::text
+  AND ($18::text IS NULL
+       OR t.guest_name ILIKE $18::text
+       OR t.guest_email ILIKE $18::text
        -- ARRAY(subquery), not IN (subquery), so all three arms can be indexes
        -- feeding one BitmapOr (see the queue arm above for the same reason).
        OR t.reporter_user_id = ANY(ARRAY(SELECT u.id FROM users u
-                                         WHERE u.display_name ILIKE $17::text
-                                            OR u.email ILIKE $17::text)))
-  AND ($18::timestamptz IS NULL OR t.created_at >= $18::timestamptz)
-  AND ($19::timestamptz IS NULL OR t.created_at < $19::timestamptz)
-  AND ($20::timestamptz IS NULL OR t.updated_at >= $20::timestamptz)
-  AND ($21::timestamptz IS NULL OR t.updated_at < $21::timestamptz)
-  AND (cardinality($22::text[]) = 0 OR t.source_channel = ANY($22::text[]))
+                                         WHERE u.display_name ILIKE $18::text
+                                            OR u.email ILIKE $18::text)))
+  AND ($19::timestamptz IS NULL OR t.created_at >= $19::timestamptz)
+  AND ($20::timestamptz IS NULL OR t.created_at < $20::timestamptz)
+  AND ($21::timestamptz IS NULL OR t.updated_at >= $21::timestamptz)
+  AND ($22::timestamptz IS NULL OR t.updated_at < $22::timestamptz)
+  AND (cardinality($23::text[]) = 0 OR t.source_channel = ANY($23::text[]))
   AND ($2::text = ''
        OR ($2::text = 'breached' AND sb.bucket = 0)
        OR ($2::text = 'at_risk' AND sb.bucket = 1))
@@ -1390,38 +1393,38 @@ WHERE
   -- though each one matched. A search that tokenises to nothing must match on
   -- the tracking number or not at all.
   AND (
-    NOT $23::bool
-    OR t.tracking_number ILIKE $24::text
+    NOT $24::bool
+    OR t.tracking_number ILIKE $25::text
     OR (
-      $25::text <> ''
-      AND t.search_vector @@ to_tsquery('english', $25::text)
+      $26::text <> ''
+      AND t.search_vector @@ to_tsquery('english', $26::text)
     )
   )
 ORDER BY
-  CASE WHEN $3::text = 'relevance' AND $25::text <> ''
-       THEN ts_rank(t.search_vector, to_tsquery('english', $25::text)) END DESC,
-  CASE WHEN $3::text = 'number' AND $26::text = 'asc' THEN t.tracking_number END ASC,
-  CASE WHEN $3::text = 'number' AND $26::text = 'desc' THEN t.tracking_number END DESC,
-  CASE WHEN $3::text = 'subject' AND $26::text = 'asc' THEN lower(t.subject) END ASC,
-  CASE WHEN $3::text = 'subject' AND $26::text = 'desc' THEN lower(t.subject) END DESC,
+  CASE WHEN $3::text = 'relevance' AND $26::text <> ''
+       THEN ts_rank(t.search_vector, to_tsquery('english', $26::text)) END DESC,
+  CASE WHEN $3::text = 'number' AND $27::text = 'asc' THEN t.tracking_number END ASC,
+  CASE WHEN $3::text = 'number' AND $27::text = 'desc' THEN t.tracking_number END DESC,
+  CASE WHEN $3::text = 'subject' AND $27::text = 'asc' THEN lower(t.subject) END ASC,
+  CASE WHEN $3::text = 'subject' AND $27::text = 'desc' THEN lower(t.subject) END DESC,
   -- Status order is each status's place in (sort_order, name), looked up in an
   -- array built once per query. A join or a subquery per ticket cost 85 to
   -- 684 ms at 200k when sorting by status, and a join cost every other list too.
   CASE WHEN $3::text = 'status'
        THEN array_position((SELECT array_agg(s.id ORDER BY s.sort_order, s.name) FROM statuses s), t.status_id)
-            * CASE WHEN $26::text = 'asc' THEN 1 ELSE -1 END END ASC,
+            * CASE WHEN $27::text = 'asc' THEN 1 ELSE -1 END END ASC,
   CASE WHEN $3::text = 'priority'
        THEN (CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END)
-            * CASE WHEN $26::text = 'asc' THEN 1 ELSE -1 END END ASC,
+            * CASE WHEN $27::text = 'asc' THEN 1 ELSE -1 END END ASC,
   CASE WHEN $3::text = 'sla'
-       THEN COALESCE(sb.bucket, 2) * CASE WHEN $26::text = 'asc' THEN 1 ELSE -1 END END ASC,
-  CASE WHEN $3::text = 'created' AND $26::text = 'asc' THEN t.created_at END ASC,
-  CASE WHEN $3::text = 'created' AND $26::text = 'desc' THEN t.created_at END DESC,
-  CASE WHEN $3::text = 'updated' AND $26::text = 'asc' THEN t.updated_at END ASC,
-  CASE WHEN $3::text = 'updated' AND $26::text = 'desc' THEN t.updated_at END DESC,
+       THEN COALESCE(sb.bucket, 2) * CASE WHEN $27::text = 'asc' THEN 1 ELSE -1 END END ASC,
+  CASE WHEN $3::text = 'created' AND $27::text = 'asc' THEN t.created_at END ASC,
+  CASE WHEN $3::text = 'created' AND $27::text = 'desc' THEN t.created_at END DESC,
+  CASE WHEN $3::text = 'updated' AND $27::text = 'asc' THEN t.updated_at END ASC,
+  CASE WHEN $3::text = 'updated' AND $27::text = 'desc' THEN t.updated_at END DESC,
   t.created_at DESC,
   t.id
-LIMIT $28 OFFSET $27
+LIMIT $29 OFFSET $28
 `
 
 type ListTicketsFilteredParams struct {
@@ -1432,6 +1435,7 @@ type ListTicketsFilteredParams struct {
 	ReporterOnly     bool           `json:"reporter_only"`
 	ActorID          uuid.UUID      `json:"actor_id"`
 	Queue            string         `json:"queue"`
+	MineGroupIds     []uuid.UUID    `json:"mine_group_ids"`
 	StatusIds        []uuid.UUID    `json:"status_ids"`
 	ExcludeClosed    bool           `json:"exclude_closed"`
 	Priorities       []string       `json:"priorities"`
@@ -1539,6 +1543,7 @@ func (q *Queries) ListTicketsFiltered(ctx context.Context, arg ListTicketsFilter
 		arg.ReporterOnly,
 		arg.ActorID,
 		arg.Queue,
+		pq.Array(arg.MineGroupIds),
 		pq.Array(arg.StatusIds),
 		arg.ExcludeClosed,
 		pq.Array(arg.Priorities),
