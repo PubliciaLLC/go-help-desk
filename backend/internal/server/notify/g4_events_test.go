@@ -424,3 +424,79 @@ func TestStoredCopies_HoldOnlyWhatTheHookMayReceive(t *testing.T) {
 	_, row := stores(t, "ticket.unfollowed")
 	require.Contains(t, row, person.String())
 }
+
+// The name a queued row is sent under is worked out again at every attempt, so
+// an edit to a raw hook's events while a delivery is retrying can change it. The
+// row must still carry the id of whatever ordinary kind the hook now names.
+// An opt-in kind is the exception: opt-in counts from when the hook named the
+// event, so a change that happened while the hook did not list ticket.unfollowed
+// is never upgraded to carry the person's id by a later edit.
+func TestRetry_AnEditedEventListStillGetsTheIDsOfTheNewName(t *testing.T) {
+	reply, status, person := uuid.New(), uuid.New(), uuid.New()
+	for _, tc := range []struct {
+		name   string
+		before []string
+		after  []string
+		wantID string // "" for none
+		want   string
+	}{
+		{"assigned to status_changed", []string{"ticket.assigned"}, []string{"ticket.status_changed"},
+			"new_status_id", status.String()},
+		{"assigned to replied", []string{"ticket.assigned"}, []string{"ticket.replied"},
+			"reply_id", reply.String()},
+		{"unfollowed named from the start", []string{"ticket.assigned", "ticket.unfollowed"}, []string{"ticket.unfollowed"},
+			"user_id", person.String()},
+		{"unfollowed named only after the change", []string{"ticket.assigned"}, []string{"ticket.unfollowed"},
+			"", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := newReceiver(t, 503, 200)
+			bodies := bodiesOf(rc)
+			hook := hookOn(rc.srv.URL, tc.before...)
+			rig := newQueueRig(t, rc.srv.Client(), hook)
+			ev := g4Event(notification.EventTicketAssigned, map[string]any{
+				"new_status_id": status, "reply_id": reply, "user_id": person})
+			ev.Kinds = []notification.EventType{notification.EventTicketAssigned, notification.EventTicketStatusChanged,
+				notification.EventTicketReplied, notification.EventTicketUnfollowed}
+			require.NoError(t, rig.front.Dispatch(context.Background(), ev))
+			rig.store.makeDue()
+			_, err := rig.worker.RunOnce(context.Background()) // fan-out
+			require.NoError(t, err)
+			rig.store.makeDue()
+			_, err = rig.worker.RunOnce(context.Background()) // 503
+			require.NoError(t, err)
+			require.Len(t, bodies(), 1)
+
+			rig.setHook(hook.ID, func(h *authstore.WebhookConfig) { h.Events = tc.after })
+			rig.drain(t)
+			require.Len(t, bodies(), 2)
+			var got struct {
+				Type    string
+				Payload map[string]any
+			}
+			require.NoError(t, json.Unmarshal([]byte(bodies()[1]), &got))
+			require.Equal(t, tc.after[len(tc.after)-1], got.Type, "the retry is sent under the name now listed")
+			if tc.wantID == "" {
+				require.NotContains(t, bodies()[1], person.String(), "an opt-in the hook did not hold at the time is not added")
+				require.Empty(t, got.Payload)
+				return
+			}
+			require.Equal(t, map[string]any{tc.wantID: tc.want}, got.Payload)
+		})
+	}
+}
+
+// link_type is kept for ticket.linked although its raw body never sends it: a
+// chat replay's headline reads it (format.go). Dropping it shortens that
+// headline for every replay.
+func TestStoredCopies_ALinkedChangeKeepsItsLinkTypeForTheReplayHeadline(t *testing.T) {
+	ev := g4Event(notification.EventTicketLinked, map[string]any{
+		"target_id": uuid.New(), "link_type": "related_to"})
+	require.Equal(t, "related_to", historyEvent(ev).Payload["link_type"])
+	for _, hook := range []authstore.WebhookConfig{hookOn("http://x", "*"), slackHook("http://x", "*")} {
+		require.Equal(t, "related_to", rowFor(ev, hook).Payload["link_type"], hook.PayloadFormat)
+	}
+	body, err := rawBody(ev)
+	require.NoError(t, err)
+	require.NotContains(t, string(body), "link_type", "the raw body still does not send it")
+}

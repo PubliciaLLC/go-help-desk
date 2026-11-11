@@ -3593,8 +3593,11 @@ on the existing webhook feature instead of as plugins.
   `ticket.note_added` have `reply_id`; `ticket.attachment_added` has
   `attachment_id`; `ticket.followed` and `ticket.unfollowed` have `user_id`.
   Every other event has no payload, except that a hook which lists
-  `ticket.unfollowed` also gets `user_id` on a `ticket.assigned` delivery whose
-  reassignment dropped a follow; a hook that does not list it never does. No link type is sent on `ticket.linked`.
+  `ticket.unfollowed` also gets `user_id` on a delivery under whatever name it
+  is told (for example `ticket.assigned`) when the change dropped a follow; a
+  hook that does not list it never does. Opting in counts from when the hook
+  named the event: a change that happened before is never upgraded, so a retry
+  after the edit carries no `user_id`. No link type is sent on `ticket.linked`.
   No address, subject, tracking number, priority, status name or reply text is
   sent, and none is stored with it. The keys are an allow list, so a key added
   to an event later stays off the wire until someone decides a receiver should
@@ -4041,10 +4044,14 @@ for `ticket.replied` and `ticket.note_added`, `attachment_id` for
 `ticket.attachment_added`, `user_id` for `ticket.followed` and
 `ticket.unfollowed`, nothing for any other name (`rawKeysFor`,
 `notify/webhook_body.go`) with one exception: a hook that opted into
-`ticket.unfollowed` also gets `user_id` on a `ticket.assigned` delivery whose
-reassignment dropped a follow, and a hook that did not opt in never does. What
-is stored for a hook (its history, its queued row) holds only the ids that hook
-may receive. Headers: `X-GHD-Delivery` and `X-GHD-Event` (the same
+`ticket.unfollowed` also gets `user_id` on a delivery under whatever name it is
+told (for example `ticket.assigned`) when the change dropped a follow, and a
+hook that did not opt in never does. Opting in counts from when the hook named
+the event: a change that happened before is never upgraded, so a retry after
+the edit carries no `user_id`. The history copy (every format) and a raw hook's
+queued row never hold that `user_id` for a hook that did not list the event. A
+Slack, Teams, Discord or JIRA hook's queued row holds the whole payload until it
+is sent or finally fails and is scrubbed. Headers: `X-GHD-Delivery` and `X-GHD-Event` (the same
 name as `Type`), plus the signature. `*` does not include `ticket.followed` and
 `ticket.unfollowed`: a hook gets those only by listing them. The OpenAPI
 `WebhookEvent` enum lists `*` and the fifteen names. The raw body already changed during the 1.3 betas

@@ -8247,9 +8247,12 @@ paths:
         target_id and link_type for ticket.unlinked, reply_id for ticket.replied and
         ticket.note_added, attachment_id for ticket.attachment_added, and user_id for
         ticket.followed and ticket.unfollowed. Every other name has no Payload, with one
-        exception: a hook that lists ticket.unfollowed also gets user_id on a
-        ticket.assigned delivery whose reassignment dropped a follow, so it learns who
-        unfollowed. A hook that does not list ticket.unfollowed never gets it there.
+        exception: a hook that lists ticket.unfollowed also gets user_id on a delivery
+        under whatever name it is told (for example ticket.assigned) when the change
+        dropped a follow, so it learns who unfollowed. A hook that does not list
+        ticket.unfollowed never gets it there. Opting in counts from when the hook named
+        the event: a change that happened before the hook listed it is never upgraded,
+        so a retry after the edit carries no user_id.
         A hook on "*" (or with no events) does not receive ticket.followed or
         ticket.unfollowed; list them by name to receive them. The secret is write-only. When it is set, each delivery
         carries sha256=<hex HMAC-SHA256 of the body> in the X-GHD-Signature header, and the

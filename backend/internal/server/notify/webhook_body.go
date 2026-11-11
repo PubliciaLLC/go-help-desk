@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"maps"
+	"slices"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/database/authstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
@@ -148,16 +149,26 @@ func rawBody(ev notification.Event) ([]byte, error) {
 // Every row of either kind keeps the kinds and the ticket state: ids, enums and
 // a priority, for the next attempt, which works out the name to send and judges
 // the hook's filter as they are then (#413, #506). They are internal. No body
-// is built from them (rawBody and the renderers never read them as content),
-// and the copy kept in the history and the scrubbed failed row go through
-// historyEvent, which drops the kinds and the ticket state.
+// is built from them (rawBody and the renderers never read them as content).
+// The copy kept in the history and the scrubbed failed row go through
+// historyEvent, which drops the ticket state and keeps only the opt-in kinds.
 //
-// A raw row holds the ids of the kinds this hook subscribes to and no others:
-// which of them is the name sent is decided at the attempt, but the person's id
-// of an unfollow is never stored for a hook that did not opt into it.
+// The name is worked out again at every attempt, so an edit to the hook's events
+// while a delivery is retrying can change it. A raw row therefore holds the ids
+// of every ordinary kind of the change, as it did before opt-in kinds existed.
+// An opt-in kind's id is the exception, and it is held only when the hook named
+// that kind when the row was queued. Opt-in counts from when the hook named the
+// event: a change that happened before is never upgraded by a later edit, so a
+// retry then sends the new name without the person's id.
 func rowFor(ev notification.Event, hook authstore.WebhookConfig) notification.Event {
 	if isRaw(hook) {
-		out := keepOnly(ev, keptKeys(subscribedKinds(hook, ev)))
+		var kinds []notification.EventType
+		for _, k := range ev.AllKinds() {
+			if !notification.IsOptInWebhookEvent(k) || slices.Contains(hook.Events, string(k)) {
+				kinds = append(kinds, k)
+			}
+		}
+		out := keepOnly(ev, keptKeys(kinds))
 		out.Kinds, out.Ticket = ev.Kinds, ev.Ticket
 		// forHook reads it on the next attempt: a routed assignment names no actor.
 		out.RoutedAssignment = ev.RoutedAssignment
