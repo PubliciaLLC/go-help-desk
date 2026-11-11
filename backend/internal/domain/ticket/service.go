@@ -3146,6 +3146,12 @@ func (s *Service) ListFiltered(ctx context.Context, f Filter) ([]Ticket, error) 
 	return s.store.ListFiltered(ctx, f)
 }
 
+// ReplyMatches is Store.ReplyMatches: the reply each ticket of a page matched
+// through, read with the same Filter that listed them.
+func (s *Service) ReplyMatches(ctx context.Context, f Filter, ticketIDs []uuid.UUID) (map[uuid.UUID]ReplyMatch, error) {
+	return s.store.ReplyMatches(ctx, f, ticketIDs)
+}
+
 // SearchVisibleToStaff is ListVisibleToStaff with a search term.
 func (s *Service) SearchVisibleToStaff(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error) {
 	return s.store.SearchVisibleToStaff(ctx, userID, q, limit, offset)

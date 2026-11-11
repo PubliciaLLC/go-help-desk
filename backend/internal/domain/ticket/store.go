@@ -123,6 +123,12 @@ type Store interface {
 	ListVisibleToStaff(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Ticket, error)
 	SearchVisibleToStaff(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error)
 	ListFiltered(ctx context.Context, f Filter) ([]Ticket, error)
+	// ReplyMatches reads, for the tickets of one page of a ListFiltered result,
+	// the reply each matched through: at most one per ticket, absent for a ticket
+	// that did not match through a reply. It takes the same Filter, so
+	// IncludeInternal governs both steps. Empty unless f.SearchReplies and the
+	// query has searchable words.
+	ReplyMatches(ctx context.Context, f Filter, ticketIDs []uuid.UUID) (map[uuid.UUID]ReplyMatch, error)
 
 	// Next sequence value for tracking-number generation
 	NextSeq(ctx context.Context) (int64, error)

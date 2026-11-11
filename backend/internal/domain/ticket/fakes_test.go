@@ -444,6 +444,10 @@ func (f *fakeStore) ListFiltered(context.Context, ticket.Filter) ([]ticket.Ticke
 	return nil, nil
 }
 
+func (f *fakeStore) ReplyMatches(context.Context, ticket.Filter, []uuid.UUID) (map[uuid.UUID]ticket.ReplyMatch, error) {
+	return nil, nil
+}
+
 func (f *fakeStore) SearchVisibleToStaff(context.Context, uuid.UUID, string, int, int) ([]ticket.Ticket, error) {
 	return nil, nil
 }

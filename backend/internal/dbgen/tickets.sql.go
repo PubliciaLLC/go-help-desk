@@ -1273,6 +1273,13 @@ func (q *Queries) ListTicketsByStatus(ctx context.Context, arg ListTicketsByStat
 }
 
 const listTicketsFiltered = `-- name: ListTicketsFiltered :many
+WITH reply_hits AS (
+  SELECT DISTINCT r.ticket_id FROM ticket_replies r
+  WHERE $13::bool
+    AND $10::text <> ''
+    AND to_tsvector('english', r.body) @@ to_tsquery('english', $10::text)
+    AND ($14::bool OR NOT r.internal)
+)
 SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format, source_channel FROM tickets t
 WHERE
   (
@@ -1315,6 +1322,7 @@ WHERE
       $10::text <> ''
       AND t.search_vector @@ to_tsquery('english', $10::text)
     )
+    OR t.id IN (SELECT ticket_id FROM reply_hits)
   )
 ORDER BY
   CASE WHEN $10::text <> '' THEN ts_rank(t.search_vector, to_tsquery('english', $10::text)) ELSE 0 END DESC,
@@ -1335,6 +1343,8 @@ type ListTicketsFilteredParams struct {
 	SearchQuery     string         `json:"search_query"`
 	ResultOffset    int32          `json:"result_offset"`
 	ResultLimit     int32          `json:"result_limit"`
+	SearchReplies   bool           `json:"search_replies"`
+	IncludeInternal bool           `json:"include_internal"`
 }
 
 type ListTicketsFilteredRow struct {
@@ -1382,6 +1392,18 @@ type ListTicketsFilteredRow struct {
 // all combinations. Filtering and paginating in the same statement is what
 // keeps pages full: a page fetched and then filtered returns short pages and
 // skips rows.
+//
+// reply_hits is reply-text search (advanced search, section 2.5). It is empty
+// unless search_replies is set and the search has words. A ticket matches when
+// ONE reply holds every word, so a public reply and an internal note cannot
+// combine. include_internal comes from the actor's role and nothing else
+// (ticket.IncludeInternalFor); for a requester it is false, and an internal note
+// is then never read, so it cannot decide which tickets match. The snippet read
+// (ReplyMatchesForTickets) applies the same condition. The expression must be
+// spelled to_tsvector('english', r.body) exactly, or the planner will not use
+// ticket_replies_body_fts_idx (migration 000061). The visibility rule and every
+// filter below still apply to the ticket, so a reply hit cannot bring in a
+// ticket the viewer cannot see.
 func (q *Queries) ListTicketsFiltered(ctx context.Context, arg ListTicketsFilteredParams) ([]ListTicketsFilteredRow, error) {
 	rows, err := q.db.QueryContext(ctx, listTicketsFiltered,
 		arg.Unrestricted,
@@ -1396,6 +1418,8 @@ func (q *Queries) ListTicketsFiltered(ctx context.Context, arg ListTicketsFilter
 		arg.SearchQuery,
 		arg.ResultOffset,
 		arg.ResultLimit,
+		arg.SearchReplies,
+		arg.IncludeInternal,
 	)
 	if err != nil {
 		return nil, err

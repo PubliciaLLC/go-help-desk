@@ -385,6 +385,25 @@ LIMIT $2 OFFSET $3;
 -- all combinations. Filtering and paginating in the same statement is what
 -- keeps pages full: a page fetched and then filtered returns short pages and
 -- skips rows.
+--
+-- reply_hits is reply-text search (advanced search, section 2.5). It is empty
+-- unless search_replies is set and the search has words. A ticket matches when
+-- ONE reply holds every word, so a public reply and an internal note cannot
+-- combine. include_internal comes from the actor's role and nothing else
+-- (ticket.IncludeInternalFor); for a requester it is false, and an internal note
+-- is then never read, so it cannot decide which tickets match. The snippet read
+-- (ReplyMatchesForTickets) applies the same condition. The expression must be
+-- spelled to_tsvector('english', r.body) exactly, or the planner will not use
+-- ticket_replies_body_fts_idx (migration 000061). The visibility rule and every
+-- filter below still apply to the ticket, so a reply hit cannot bring in a
+-- ticket the viewer cannot see.
+WITH reply_hits AS (
+  SELECT DISTINCT r.ticket_id FROM ticket_replies r
+  WHERE sqlc.arg(search_replies)::bool
+    AND sqlc.arg(search_query)::text <> ''
+    AND to_tsvector('english', r.body) @@ to_tsquery('english', sqlc.arg(search_query)::text)
+    AND (sqlc.arg(include_internal)::bool OR NOT r.internal)
+)
 SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format, source_channel FROM tickets t
 WHERE
   (
@@ -427,6 +446,7 @@ WHERE
       sqlc.arg(search_query)::text <> ''
       AND t.search_vector @@ to_tsquery('english', sqlc.arg(search_query)::text)
     )
+    OR t.id IN (SELECT ticket_id FROM reply_hits)
   )
 ORDER BY
   CASE WHEN sqlc.arg(search_query)::text <> '' THEN ts_rank(t.search_vector, to_tsquery('english', sqlc.arg(search_query)::text)) ELSE 0 END DESC,

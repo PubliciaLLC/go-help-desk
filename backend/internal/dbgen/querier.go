@@ -788,6 +788,18 @@ type Querier interface {
 	// all combinations. Filtering and paginating in the same statement is what
 	// keeps pages full: a page fetched and then filtered returns short pages and
 	// skips rows.
+	//
+	// reply_hits is reply-text search (advanced search, section 2.5). It is empty
+	// unless search_replies is set and the search has words. A ticket matches when
+	// ONE reply holds every word, so a public reply and an internal note cannot
+	// combine. include_internal comes from the actor's role and nothing else
+	// (ticket.IncludeInternalFor); for a requester it is false, and an internal note
+	// is then never read, so it cannot decide which tickets match. The snippet read
+	// (ReplyMatchesForTickets) applies the same condition. The expression must be
+	// spelled to_tsvector('english', r.body) exactly, or the planner will not use
+	// ticket_replies_body_fts_idx (migration 000061). The visibility rule and every
+	// filter below still apply to the ticket, so a reply hit cannot bring in a
+	// ticket the viewer cannot see.
 	ListTicketsFiltered(ctx context.Context, arg ListTicketsFilteredParams) ([]ListTicketsFilteredRow, error)
 	// Every ticket a staff member may see under DESIGN.md's scope model: reported
 	// by them, assigned to them, assigned to one of their groups, or falling in a
@@ -903,6 +915,23 @@ type Querier interface {
 	// Position n (from 1) becomes the field's number. Only rows whose number
 	// changes are written.
 	ReorderCustomFieldDefs(ctx context.Context, ids []uuid.UUID) error
+	// One snippet per ticket: its newest matching reply the viewer may read. The
+	// second half of reply search; the first is the reply_hits CTE in
+	// ListTicketsFiltered, and both take the same include_internal.
+	//
+	// Run only for the tickets on the page (at most 200). ts_headline parses the
+	// body again, so it runs once per ticket, not once per matching reply.
+	//
+	// include_internal comes from the actor's role and nothing else (see
+	// ticket.IncludeInternalFor). It is applied HERE as well as in the match
+	// query, because a ticket that matches on its own subject must not show a
+	// snippet from an internal note, to a requester least of all.
+	//
+	// The expression must be spelled to_tsvector('english', r.body) exactly, or the
+	// planner will not use ticket_replies_body_fts_idx (migration 000061).
+	//
+	// Matched words are wrapped in U+0002 and U+0003, not HTML. No author is read.
+	ReplyMatchesForTickets(ctx context.Context, arg ReplyMatchesForTicketsParams) ([]ReplyMatchesForTicketsRow, error)
 	RestoreTag(ctx context.Context, id uuid.UUID) (int64, error)
 	RestoreUser(ctx context.Context, id uuid.UUID) error
 	RetryNotification(ctx context.Context, arg RetryNotificationParams) error

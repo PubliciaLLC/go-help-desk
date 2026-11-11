@@ -992,6 +992,10 @@ func (s *Store) ListFiltered(ctx context.Context, f ticket.Filter) ([]ticket.Tic
 		Searching:       strings.TrimSpace(f.Query) != "",
 		SearchQuery:     buildSearchTSQuery(f.Query),
 		TrackingPattern: searchPattern(f.Query),
+		// Both come from the Filter, which the caller built from the actor's
+		// role; ReplyMatches reads the same two for the snippets.
+		SearchReplies:   f.SearchReplies,
+		IncludeInternal: f.IncludeInternal,
 		ResultLimit:     pageInt32(f.Limit),
 		ResultOffset:    pageInt32(f.Offset),
 	}
@@ -1008,6 +1012,54 @@ func (s *Store) ListFiltered(ctx context.Context, f ticket.Filter) ([]ticket.Tic
 		out[i] = fromRow(ticketRow(r))
 	}
 	return out, nil
+}
+
+// ReplyMatches reads, for the tickets of one page, the newest reply each matched
+// through (ticket.ReplyMatch). It takes the Filter ListFiltered ran with, so the
+// words searched and f.IncludeInternal are the ones that chose the page: a
+// ticket that matched on its own subject must not show a snippet from an
+// internal note the viewer may not read, so the guard is in this query too.
+//
+// A query with no searchable words, SearchReplies off or no ids reads nothing.
+func (s *Store) ReplyMatches(ctx context.Context, f ticket.Filter, ticketIDs []uuid.UUID) (map[uuid.UUID]ticket.ReplyMatch, error) {
+	out := map[uuid.UUID]ticket.ReplyMatch{}
+	query := buildSearchTSQuery(f.Query)
+	if !f.SearchReplies || query == "" || len(ticketIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.q.ReplyMatchesForTickets(ctx, dbgen.ReplyMatchesForTicketsParams{
+		SearchQuery:     query,
+		TicketIds:       ticketIDs,
+		IncludeInternal: f.IncludeInternal,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("reading reply matches: %w", err)
+	}
+	for _, r := range rows {
+		out[r.TicketID] = ticket.ReplyMatch{
+			ReplyID:   r.ReplyID,
+			Internal:  r.Internal,
+			CreatedAt: r.CreatedAt,
+			Snippet:   cutSnippet(r.Snippet),
+		}
+	}
+	return out, nil
+}
+
+// cutSnippet limits a snippet to ticket.MaxSnippetRunes. ts_headline keeps to
+// about two dozen words, but a word can be 2,000 characters long. A cut that
+// lands inside a highlight would leave it open, so it is closed.
+func cutSnippet(s string) string {
+	r := []rune(s)
+	if len(r) <= ticket.MaxSnippetRunes {
+		return s
+	}
+	cut := string(r[:ticket.MaxSnippetRunes])
+	if strings.Count(cut, ticket.SnippetStart) > strings.Count(cut, ticket.SnippetStop) {
+		// Reserve a rune for the marker so the result is still within the limit.
+		cut = string(r[:ticket.MaxSnippetRunes-1]) + ticket.SnippetStop
+	}
+	return cut
 }
 
 // ── Guest access tokens ──────────────────────────────────────────────────────
