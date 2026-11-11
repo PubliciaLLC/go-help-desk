@@ -199,6 +199,18 @@ export interface Status {
 // How a ticket arrived (#130), recorded by the server from the entry point.
 export type SourceChannel = 'web' | 'api' | 'mcp' | 'guest' | 'phone'
 
+// Why a ticket is in a search's results when only a reply matched (reply search,
+// 1.3.0). It says where the words were found and when, and never who wrote them.
+// The snippet is raw reply text with each matched word wrapped in U+0002 and
+// U+0003. Never HTML: render it as text (components/ticket/ReplyMatch.tsx).
+export interface ReplyMatch {
+  reply_id: string
+  // Always false for a requester, whose search never reads an internal note.
+  internal: boolean
+  created_at: string
+  snippet: string
+}
+
 export interface Ticket {
   id: string
   tracking_number: string
@@ -238,6 +250,9 @@ export interface Ticket {
   // the Reopen button; the server decides again when it is clicked. Absent on
   // a response that does not carry it, which reads as no.
   can_reopen?: boolean
+  // Present only on a search that matched through a reply (and not on a ticket
+  // that matched on its own subject or description).
+  reply_match?: ReplyMatch
   // How many times the ticket has been moved from Resolved or Closed back to an
   // open status (#464). Never reset. Staff and administrators only: absent for a requester, and when 0. Absent on a response that does not carry
   // it, which reads as never.

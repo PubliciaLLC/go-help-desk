@@ -35,6 +35,7 @@ import { SignupPage } from '@/pages/SignupPage'
 import { VerifyEmailPage } from '@/pages/VerifyEmailPage'
 import { ForgotPasswordPage } from '@/pages/ForgotPasswordPage'
 import { ResetPasswordPage } from '@/pages/ResetPasswordPage'
+import { parseTicketSearch } from '@/lib/ticketSearch'
 
 async function requireAuth() {
   const { user, setUser } = useAuthStore.getState()
@@ -115,13 +116,10 @@ const ticketsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/tickets',
   beforeLoad: requireAuth,
-  validateSearch: (search: Record<string, unknown>) => ({
-    status: typeof search.status === 'string' ? search.status : undefined,
-    reporter:
-      typeof search.reporter === 'string'
-        ? search.reporter
-        : undefined,
-  }),
+  // The ticket list keeps its whole search in the address. The old
+  // status=<id> and reporter=<id> links (Dashboard, the user page) are read by
+  // the same parser, as one-value lists and a requester.
+  validateSearch: (search: Record<string, unknown>) => parseTicketSearch(search),
   component: TicketListPage,
 })
 

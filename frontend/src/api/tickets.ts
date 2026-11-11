@@ -1,4 +1,6 @@
 import { api } from './client'
+import axios from 'axios'
+import type { TicketListParams } from '@/lib/ticketSearch'
 import type { Ticket, Reply, TicketLink, LinkType, Tag, Attachment, Category, TicketType, TicketItem, StatusHistoryEntry, TicketAuditEntry, TicketFollower, Assignment, TicketFieldValue, CannedResponse, Priority } from './types'
 
 export interface CreateTicketInput {
@@ -38,6 +40,20 @@ export async function lookupRequesters(q: string): Promise<RequesterHit[]> {
   return res.data ?? []
 }
 
+// One account by id: what the requester chip does with the id in the address
+// after a reload. Null for a 404, which the server gives alike to an id that
+// names nobody and to a disabled, deleted or service account, so the page
+// cannot tell those apart and does not try.
+export async function lookupRequesterById(id: string): Promise<RequesterHit | null> {
+  try {
+    const res = await api.get<RequesterHit>('/users/lookup', { params: { id } })
+    return res.data
+  } catch (err) {
+    if (axios.isAxiosError(err) && err.response?.status === 404) return null
+    throw err
+  }
+}
+
 // 'visible' is every ticket the caller can see, for staff/admin search (#444).
 export type TicketScope = 'mine' | 'unassigned' | 'all' | 'visible'
 
@@ -51,6 +67,33 @@ export async function listTickets(params?: {
 }): Promise<Ticket[]> {
   const res = await api.get<Ticket[]>('/tickets', { params })
   return res.data ?? []
+}
+
+export interface TicketSearchResult {
+  tickets: Ticket[]
+  // False when the reply arm gave up (a timeout) and the answer covers the
+  // subject and description only.
+  repliesSearched: boolean
+  // False while the reply index is still being built after an upgrade.
+  replyIndexReady: boolean
+}
+
+// The ticket list page's request. Separate from listTickets, which the linked
+// tickets panel uses and which keeps sending arrays the way axios does by
+// default: here a repeated filter is a repeated key (status_id=a&status_id=b),
+// which is what the API reads.
+//
+// The body stays a bare array, as it always has. The two facts about how much
+// of the replies were searched travel in headers so that no existing caller
+// changes. NOTE: the header names are this page's reading of a contract the
+// REST handler (PR C) owns; they are read here and nowhere else.
+export async function searchTickets(params: TicketListParams): Promise<TicketSearchResult> {
+  const res = await api.get<Ticket[] | null>('/tickets', { params, paramsSerializer: { indexes: null } })
+  return {
+    tickets: res.data ?? [],
+    repliesSearched: res.headers?.['x-replies-searched'] !== 'false',
+    replyIndexReady: res.headers?.['x-reply-index'] !== 'building',
+  }
 }
 
 export async function createTicket(input: CreateTicketInput): Promise<Ticket> {
