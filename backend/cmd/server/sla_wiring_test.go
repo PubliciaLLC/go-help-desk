@@ -364,16 +364,31 @@ func (s *tinySLAStore) GetRecord(_ context.Context, ticketID uuid.UUID) (sla.Rec
 	if !ok {
 		return sla.Record{}, sla.ErrNoRecord
 	}
+	if r.ID == uuid.Nil {
+		r.ID = r.TicketID // see find
+	}
 	return r, nil
+}
+
+// find is what the record-addressed writes look a record up by: a record built
+// by hand without an id is addressed by its ticket's id, which is what
+// GetRecord reports for it.
+func (s *tinySLAStore) find(recordID uuid.UUID) (sla.Record, error) {
+	for _, r := range s.records {
+		if r.ID == recordID || (r.ID == uuid.Nil && r.TicketID == recordID) {
+			return r, nil
+		}
+	}
+	return sla.Record{}, sla.ErrRecordSuperseded
 }
 func (s *tinySLAStore) UpdateRecord(_ context.Context, r sla.Record) error {
 	s.records[r.TicketID] = r
 	return nil
 }
-func (s *tinySLAStore) SetResolved(_ context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds, resolutionTargetSeconds int64) error {
-	r, ok := s.records[ticketID]
-	if !ok {
-		return nil
+func (s *tinySLAStore) SetResolved(_ context.Context, recordID uuid.UUID, at time.Time, elapsedSeconds, resolutionTargetSeconds int64) error {
+	r, err := s.find(recordID)
+	if err != nil {
+		return err
 	}
 	if r.ResolvedAt == nil {
 		r.ResolvedAt = &at
@@ -382,13 +397,13 @@ func (s *tinySLAStore) SetResolved(_ context.Context, ticketID uuid.UUID, at tim
 			r.ResolutionBreachedAt = &at
 		}
 	}
-	s.records[ticketID] = r
+	s.records[r.TicketID] = r
 	return nil
 }
-func (s *tinySLAStore) SetFirstResponse(_ context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds, responseTargetSeconds int64) error {
-	r, ok := s.records[ticketID]
-	if !ok {
-		return nil
+func (s *tinySLAStore) SetFirstResponse(_ context.Context, recordID uuid.UUID, at time.Time, elapsedSeconds, responseTargetSeconds int64) error {
+	r, err := s.find(recordID)
+	if err != nil {
+		return err
 	}
 	if r.FirstResponseAt == nil {
 		r.FirstResponseAt = &at
@@ -397,13 +412,13 @@ func (s *tinySLAStore) SetFirstResponse(_ context.Context, ticketID uuid.UUID, a
 			r.ResponseBreachedAt = &at
 		}
 	}
-	s.records[ticketID] = r
+	s.records[r.TicketID] = r
 	return nil
 }
-func (s *tinySLAStore) SetResolvedAndFirstResponse(_ context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds, resolutionTargetSeconds, responseTargetSeconds int64) error {
-	r, ok := s.records[ticketID]
-	if !ok {
-		return nil
+func (s *tinySLAStore) SetResolvedAndFirstResponse(_ context.Context, recordID uuid.UUID, at time.Time, elapsedSeconds, resolutionTargetSeconds, responseTargetSeconds int64) error {
+	r, err := s.find(recordID)
+	if err != nil {
+		return err
 	}
 	if r.ResolvedAt == nil {
 		r.ResolvedAt = &at
@@ -419,7 +434,7 @@ func (s *tinySLAStore) SetResolvedAndFirstResponse(_ context.Context, ticketID u
 			r.ResponseBreachedAt = &at
 		}
 	}
-	s.records[ticketID] = r
+	s.records[r.TicketID] = r
 	return nil
 }
 func (s *tinySLAStore) ListRecordsByTicketIDs(context.Context, []uuid.UUID) ([]sla.Record, error) {
@@ -431,10 +446,10 @@ func (s *tinySLAStore) ListRecordsForTicket(context.Context, uuid.UUID) ([]sla.R
 func (s *tinySLAStore) ListBreachCandidates(context.Context, time.Time) ([]uuid.UUID, error) {
 	return nil, nil
 }
-func (s *tinySLAStore) StampBreaches(_ context.Context, ticketID uuid.UUID, response, resolution *time.Time) error {
-	r, ok := s.records[ticketID]
-	if !ok {
-		return nil
+func (s *tinySLAStore) StampBreaches(_ context.Context, recordID uuid.UUID, response, resolution *time.Time) error {
+	r, err := s.find(recordID)
+	if err != nil {
+		return err
 	}
 	if r.ResponseBreachedAt == nil {
 		r.ResponseBreachedAt = response
@@ -442,7 +457,7 @@ func (s *tinySLAStore) StampBreaches(_ context.Context, ticketID uuid.UUID, resp
 	if r.ResolutionBreachedAt == nil {
 		r.ResolutionBreachedAt = resolution
 	}
-	s.records[ticketID] = r
+	s.records[r.TicketID] = r
 	return nil
 }
 

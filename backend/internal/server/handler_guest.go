@@ -148,6 +148,7 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 		GuestName:         name,
 		GuestPhone:        strings.TrimSpace(body.GuestPhone),
 		TrackingPrefix:    s.adminSvc.TicketPrefix(ctx),
+		AutoAssign:        s.Routing(ctx, body.CategoryID, nil), // a guest picks a category and nothing below it
 	}
 	t, err := s.tickets.Create(ctx, in)
 	if err != nil {
@@ -450,7 +451,7 @@ func (s *Server) handleGuestFollowUp(w http.ResponseWriter, r *http.Request) {
 	}
 	created, err := s.tickets.CreateRequesterFollowUp(ctx, t.ID, s.adminSvc.TicketPrefix(ctx), ticket.ChannelGuest,
 		ticket.Actor{Role: user.RoleUser}, s.requesterClassificationOpen,
-		s.routing(ctx, t.CategoryID, nil)...) // a guest's follow-up carries no type
+		s.Routing(ctx, t.CategoryID, nil)...) // a guest's follow-up carries no type
 	if err != nil {
 		switch {
 		case errors.Is(err, ticket.ErrNotClosed), errors.Is(err, ticket.ErrFollowUpExists),

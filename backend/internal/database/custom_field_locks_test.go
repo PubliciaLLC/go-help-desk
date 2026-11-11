@@ -2,6 +2,7 @@ package database_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -110,6 +111,59 @@ func (f *lockFixture) holdWrite(id uuid.UUID, value string) *heldWrite {
 	return w
 }
 
+// A definition change that has locked the definition and run its checks, held
+// open at the point where it would write. proceed lets it write and commit.
+//
+// Every wait is bounded. A check that failed, or a test that gave up early,
+// must end the stage in seconds: an unbounded receive here turns any failure
+// into a hang until `go test`'s own 10-minute timeout, with the failure message
+// buried under a goroutine dump.
+type heldChange struct {
+	proceedOnce sync.Once
+	release     chan struct{}
+	done        chan error
+}
+
+func (c *heldChange) proceed() { c.proceedOnce.Do(func() { close(c.release) }) }
+
+// holdChange starts UpdateFieldDef on id and returns once it holds the
+// definition. inspect, when not nil, runs on the locked row before the hold;
+// what it returns is how the change ends, so a failed check ends the stage
+// rather than leaving the test waiting on a lock that was never reported.
+func (f *lockFixture) holdChange(id uuid.UUID, inspect func(customfield.Held) error, apply func(*customfield.FieldDef)) *heldChange {
+	f.t.Helper()
+	locked := make(chan struct{})
+	c := &heldChange{release: make(chan struct{}), done: make(chan error, 1)}
+	// A test that fails before proceed would leave the change holding its lock.
+	f.t.Cleanup(c.proceed)
+	go func() {
+		_, err := f.store.UpdateFieldDef(context.Background(), id, func(cur customfield.FieldDef, held customfield.Held) (customfield.FieldDef, []audit.Entry, error) {
+			if inspect != nil {
+				if err := inspect(held); err != nil {
+					return cur, nil, err
+				}
+			}
+			close(locked)
+			select {
+			case <-c.release:
+			case <-time.After(30 * time.Second):
+				return cur, nil, errors.New("the held change was never released")
+			}
+			apply(&cur)
+			return cur, nil, nil
+		})
+		c.done <- err
+	}()
+	select {
+	case <-locked:
+	case err := <-c.done:
+		f.t.Fatalf("the held change ended before it held the lock: %v", err)
+	case <-time.After(5 * time.Second):
+		f.t.Fatal("the held change never took its lock")
+	}
+	return c
+}
+
 // stillWaiting reports that ch has not been written to for a while. The wait is
 // what shows a lock holding; it is a negative, so it is as long as it can
 // afford to be.
@@ -163,21 +217,16 @@ func TestDeleteOption_ConcurrentValueWriteIsSerialised(t *testing.T) {
 		f := newLockFixture(t)
 		sel := f.field("Brand", customfield.FieldTypeSelect, "Dell", "HP")
 
-		locked, release := make(chan struct{}), make(chan struct{})
-		deleted := make(chan error, 1)
-		go func() {
-			_, err := f.store.UpdateFieldDef(context.Background(), sel.ID, func(cur customfield.FieldDef, held customfield.Held) (customfield.FieldDef, []audit.Entry, error) {
-				any, err := held.Any()
-				require.NoError(t, err)
-				require.False(t, any)
-				close(locked)
-				<-release
-				cur.Options = []string{"Dell"}
-				return cur, nil, nil
-			})
-			deleted <- err
-		}()
-		<-locked
+		deletion := f.holdChange(sel.ID, func(held customfield.Held) error {
+			any, err := held.Any()
+			if err != nil {
+				return err
+			}
+			if any {
+				return errors.New("a value is held; this stage needs none")
+			}
+			return nil
+		}, func(cur *customfield.FieldDef) { cur.Options = []string{"Dell"} })
 
 		wrote := make(chan error, 1)
 		go func() {
@@ -185,8 +234,8 @@ func TestDeleteOption_ConcurrentValueWriteIsSerialised(t *testing.T) {
 		}()
 		require.True(t, stillWaiting(wrote), "a value write ran while the delete held the definition")
 
-		close(release)
-		require.NoError(t, within(t, deleted, "the delete"))
+		deletion.proceed()
+		require.NoError(t, within(t, deletion.done, "the delete"))
 		require.ErrorIs(t, within(t, wrote, "the write"), customfield.ErrValidation, "the write sees the new lists and refuses the deleted value")
 		_, ok := f.stored(sel.ID)
 		require.False(t, ok, "the database never holds a value the field no longer offers")
@@ -198,18 +247,15 @@ func TestDeleteOption_ConcurrentValueWriteIsSerialised(t *testing.T) {
 		f := newLockFixture(t)
 		for i := range 40 {
 			sel := f.field("Raced "+uuid.NewString()[:8], customfield.FieldTypeSelect, "keep", "X")
-			var wg sync.WaitGroup
-			var setErr, delErr error
-			wg.Add(2)
+			setDone, delDone := make(chan error, 1), make(chan error, 1)
 			go func() {
-				defer wg.Done()
-				setErr = f.svc.SetValues(context.Background(), f.ticketID, map[uuid.UUID]string{sel.ID: "X"})
+				setDone <- f.svc.SetValues(context.Background(), f.ticketID, map[uuid.UUID]string{sel.ID: "X"})
 			}()
 			go func() {
-				defer wg.Done()
-				_, delErr = f.svc.PatchFieldDef(context.Background(), sel.ID, customfield.FieldDefPatch{Options: []string{"keep"}}, nil)
+				_, err := f.svc.PatchFieldDef(context.Background(), sel.ID, customfield.FieldDefPatch{Options: []string{"keep"}}, nil)
+				delDone <- err
 			}()
-			wg.Wait()
+			setErr, delErr := within(t, setDone, "the write"), within(t, delDone, "the delete")
 
 			require.Equal(t, 1, boolToInt(setErr == nil)+boolToInt(delErr == nil), "round %d: exactly one succeeds (set: %v, delete: %v)", i, setErr, delErr)
 			v, held := f.stored(sel.ID)
@@ -263,18 +309,7 @@ func TestTypeLock_ConcurrentValueWriteIsSerialised(t *testing.T) {
 		f := newLockFixture(t)
 		def := f.field("Cost", customfield.FieldTypeText)
 
-		locked, release := make(chan struct{}), make(chan struct{})
-		changed := make(chan error, 1)
-		go func() {
-			_, err := f.store.UpdateFieldDef(context.Background(), def.ID, func(cur customfield.FieldDef, held customfield.Held) (customfield.FieldDef, []audit.Entry, error) {
-				close(locked)
-				<-release
-				cur.FieldType = customfield.FieldTypeNumber
-				return cur, nil, nil
-			})
-			changed <- err
-		}()
-		<-locked
+		change := f.holdChange(def.ID, nil, func(cur *customfield.FieldDef) { cur.FieldType = customfield.FieldTypeNumber })
 
 		wrote := make(chan error, 1)
 		go func() {
@@ -282,8 +317,8 @@ func TestTypeLock_ConcurrentValueWriteIsSerialised(t *testing.T) {
 		}()
 		require.True(t, stillWaiting(wrote))
 
-		close(release)
-		require.NoError(t, within(t, changed, "the type change"))
+		change.proceed()
+		require.NoError(t, within(t, change.done, "the type change"))
 		require.ErrorIs(t, within(t, wrote, "the write"), customfield.ErrValidation, "text that was fine for a text field is not a number")
 		_, ok := f.stored(def.ID)
 		require.False(t, ok, "no text sits in a number field")
@@ -319,18 +354,7 @@ func TestDeactivate_ConcurrentValueWriteIsSerialised(t *testing.T) {
 		f := newLockFixture(t)
 		def := f.field("Serial", customfield.FieldTypeText)
 
-		locked, release := make(chan struct{}), make(chan struct{})
-		deactivated := make(chan error, 1)
-		go func() {
-			_, err := f.store.UpdateFieldDef(context.Background(), def.ID, func(cur customfield.FieldDef, held customfield.Held) (customfield.FieldDef, []audit.Entry, error) {
-				close(locked)
-				<-release
-				cur.Active = false
-				return cur, nil, nil
-			})
-			deactivated <- err
-		}()
-		<-locked
+		deactivation := f.holdChange(def.ID, nil, func(cur *customfield.FieldDef) { cur.Active = false })
 
 		wrote := make(chan error, 1)
 		go func() {
@@ -338,8 +362,8 @@ func TestDeactivate_ConcurrentValueWriteIsSerialised(t *testing.T) {
 		}()
 		require.True(t, stillWaiting(wrote))
 
-		close(release)
-		require.NoError(t, within(t, deactivated, "the deactivation"))
+		deactivation.proceed()
+		require.NoError(t, within(t, deactivation.done, "the deactivation"))
 		require.ErrorIs(t, within(t, wrote, "the write"), customfield.ErrValidation)
 		_, ok := f.stored(def.ID)
 		require.False(t, ok, "the database never holds a value written after the deactivation committed")

@@ -41,7 +41,7 @@ type mcpConn struct {
 
 func openMCP(t *testing.T, h *harness, token string) *mcpConn {
 	t.Helper()
-	return openMCPOn(t, h, token, mcp.New(h.ticketSvc, func(context.Context) string { return "GHD" }, h.srv, h.categorySvc, h.srv))
+	return openMCPOn(t, h, token, mcp.New(h.ticketSvc, func(context.Context) string { return "GHD" }, h.srv, h.categorySvc, h.srv, h.srv))
 }
 
 // openMCPOn is openMCP for an MCP server the test configured itself.
