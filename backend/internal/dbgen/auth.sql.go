@@ -756,6 +756,25 @@ func (q *Queries) RecordWebhookDelivery(ctx context.Context, arg RecordWebhookDe
 	return err
 }
 
+const setOAuthClientSecret = `-- name: SetOAuthClientSecret :execrows
+UPDATE oauth_clients SET hashed_secret = $2 WHERE id = $1
+`
+
+type SetOAuthClientSecretParams struct {
+	ID           uuid.UUID `json:"id"`
+	HashedSecret string    `json:"hashed_secret"`
+}
+
+// Replaces the client's secret hash (#622). The caller holds the row's lock
+// (GetOAuthClientForUpdate), so the entry it writes describes this write.
+func (q *Queries) SetOAuthClientSecret(ctx context.Context, arg SetOAuthClientSecretParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setOAuthClientSecret, arg.ID, arg.HashedSecret)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const updateAPIKeyLastUsed = `-- name: UpdateAPIKeyLastUsed :exec
 UPDATE api_keys SET last_used_at = $2 WHERE id = $1
 `

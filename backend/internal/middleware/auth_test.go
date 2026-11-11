@@ -200,6 +200,40 @@ func TestBearerAuth_ValidJWT_SetsActor(t *testing.T) {
 	require.Equal(t, []string{"tickets:write"}, captured.Scopes)
 }
 
+// Rotating a client's secret refuses the tokens issued under the old one (#622).
+// A token that names no secret version predates that and is still accepted, so
+// the upgrade does not log every integration out.
+func TestBearerAuth_SecretVersion(t *testing.T) {
+	const jwtSecret = "test-secret"
+	_, oldHash, _ := auth.GenerateToken()
+	_, newHash, _ := auth.GenerateToken()
+	issue := func(hash string) string {
+		tok, err := auth.IssueAccessToken(auth.OAuthClient{
+			ID: uuid.New(), ClientID: "client-abc", HashedSecret: hash, Scopes: []string{"tickets:read"},
+		}, jwtSecret)
+		require.NoError(t, err)
+		return tok
+	}
+	// The client as stored now: its secret has been rotated to newHash.
+	lookup := func(_ context.Context, clientID string) (auth.OAuthClient, user.User, error) {
+		return auth.OAuthClient{ClientID: clientID, HashedSecret: newHash}, serviceUser(nil), nil
+	}
+	run := func(token string) *Actor {
+		var captured *Actor
+		h := BearerAuth(jwtSecret, lookup)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			captured = GetActor(r)
+		}))
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		h.ServeHTTP(httptest.NewRecorder(), req)
+		return captured
+	}
+
+	require.NotNil(t, run(issue(newHash)), "a token under the current secret works")
+	require.Nil(t, run(issue(oldHash)), "a token under a replaced secret does not")
+	require.NotNil(t, run(issue("")), "a token with no version predates rotation and is accepted")
+}
+
 // serviceUserID is the id of the user clientFound's clients act as.
 var serviceUserID = uuid.MustParse("5e5e5e5e-0000-4000-8000-000000000001")
 

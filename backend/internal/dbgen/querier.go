@@ -1006,6 +1006,9 @@ type Querier interface {
 	// row, so exactly one confirm matches. Zero rows means somebody else enrolled
 	// first. Rotation of an existing secret uses SetUserMFA.
 	SetFirstUserMFA(ctx context.Context, arg SetFirstUserMFAParams) (int64, error)
+	// Replaces the client's secret hash (#622). The caller holds the row's lock
+	// (GetOAuthClientForUpdate), so the entry it writes describes this write.
+	SetOAuthClientSecret(ctx context.Context, arg SetOAuthClientSecretParams) (int64, error)
 	// Addressed by the RECORD's id, not the ticket's (#623). The caller read that
 	// record, computed its elapsed time from its clock and its targets from its
 	// policy, and the reading means nothing on any other record. A re-match

@@ -109,6 +109,46 @@ func TestOAuthClientAudit_RolledBackWithTheChange(t *testing.T) {
 	})
 }
 
+// Rotating a secret and its entry are one transaction too (#622): a rotation
+// whose entry failed must leave the old secret working.
+func TestOAuthClientSecretRotation_AuditedInOneTransaction(t *testing.T) {
+	f := newCredFixture(t)
+	ctx := context.Background()
+	c := f.client()
+	require.NoError(t, f.store.CreateOAuthClientAudited(ctx, c, f.entry(f.admin, "oauth_client", c.ID, "oauth_client_created")))
+	hash := func() (h string) {
+		require.NoError(t, f.db.SQL.QueryRow(`SELECT hashed_secret FROM oauth_clients WHERE id = $1`, c.ID).Scan(&h))
+		return h
+	}
+
+	t.Run("a failed entry keeps the old secret", func(t *testing.T) {
+		err := f.store.RotateOAuthClientSecretAudited(ctx, c.ID, "new-hash", func(auth.OAuthClient) audit.Entry {
+			return f.entry(f.ghost, "oauth_client", c.ID, "oauth_client_secret_rotated")
+		})
+		require.Error(t, err)
+		require.Equal(t, "h", hash())
+		require.Zero(t, f.count(`SELECT count(*) FROM audit_log WHERE entity_id = $1 AND action = 'oauth_client_secret_rotated'`, c.ID))
+	})
+	t.Run("commits with its entry, built from the row as it was", func(t *testing.T) {
+		var seen auth.OAuthClient
+		require.NoError(t, f.store.RotateOAuthClientSecretAudited(ctx, c.ID, "new-hash", func(before auth.OAuthClient) audit.Entry {
+			seen = before
+			return f.entry(f.admin, "oauth_client", c.ID, "oauth_client_secret_rotated")
+		}))
+		require.Equal(t, c.Name, seen.Name)
+		require.Equal(t, "new-hash", hash())
+		require.Equal(t, 1, f.count(`SELECT count(*) FROM audit_log WHERE entity_id = $1 AND action = 'oauth_client_secret_rotated'`, c.ID))
+	})
+	t.Run("a client that is not there is a not-found and writes nothing", func(t *testing.T) {
+		missing := uuid.New()
+		err := f.store.RotateOAuthClientSecretAudited(ctx, missing, "x", func(auth.OAuthClient) audit.Entry {
+			return f.entry(f.admin, "oauth_client", missing, "oauth_client_secret_rotated")
+		})
+		require.ErrorIs(t, err, auth.ErrNotFound)
+		require.Zero(t, f.count(`SELECT count(*) FROM audit_log WHERE entity_id = $1`, missing))
+	})
+}
+
 func TestWebhookAudit_CommitsWithTheChange(t *testing.T) {
 	f := newCredFixture(t)
 	ctx := context.Background()

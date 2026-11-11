@@ -182,6 +182,11 @@ WHERE id = sqlc.arg(id)
 -- cannot describe a client the other delete already took.
 SELECT * FROM oauth_clients WHERE id = $1 FOR UPDATE;
 
+-- name: SetOAuthClientSecret :execrows
+-- Replaces the client's secret hash (#622). The caller holds the row's lock
+-- (GetOAuthClientForUpdate), so the entry it writes describes this write.
+UPDATE oauth_clients SET hashed_secret = $2 WHERE id = $1;
+
 -- name: GetWebhookConfigForUpdate :one
 -- The hook as it is while its change is written, for the audit entry's
 -- "before". FOR UPDATE so two edits cannot both claim the same before.
