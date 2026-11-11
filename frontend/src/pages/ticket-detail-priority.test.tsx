@@ -80,6 +80,27 @@ beforeEach(() => {
   signInAs('staff')
 })
 
+// Classification only happens to open tickets, as priority does: the panel is
+// read-only on a Resolved or Closed ticket and editable on an open one.
+describe('the classification panel on the ticket page', () => {
+  it('has an Edit control on an open ticket, for staff', async () => {
+    await renderTicket('st-new')
+    expect(await screen.findByRole('button', { name: 'Edit' })).toBeDefined()
+  })
+
+  it('is read-only, with the reason, on a Resolved or Closed ticket', async () => {
+    for (const statusId of ['st-resolved', 'st-closed']) {
+      mockApiGet(statusId)
+      const { unmount } = renderWithQuery(<TicketDetailPage />)
+      await waitFor(() => expect(document.body.textContent).toContain('Printer is on fire'))
+
+      expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+      expect(screen.getByText(/classification is locked on a resolved or closed ticket/i)).toBeDefined()
+      unmount()
+    }
+  })
+})
+
 describe('the priority control on the ticket page', () => {
   it('lets staff and admin change it, sending PATCH {priority}', async () => {
     for (const role of ['staff', 'admin'] as const) {

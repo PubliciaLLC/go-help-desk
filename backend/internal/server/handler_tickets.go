@@ -497,7 +497,7 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	in.TrackingPrefix = s.adminSvc.TicketPrefix(r.Context())
-	in.AutoAssign = s.routing(r.Context(), in.CategoryID, in.TypeID)
+	in.AutoAssign = s.Routing(r.Context(), in.CategoryID, in.TypeID)
 
 	t, err := s.tickets.Create(r.Context(), in)
 	if err != nil {
@@ -786,6 +786,13 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
+		// Classification only happens to an open ticket (409 ticket_closed),
+		// asked here so a status or assignment in the same request is not
+		// saved first. The service checks again on the locked row.
+		if err := s.tickets.ValidateReclassify(r.Context(), id, body.StatusID); err != nil {
+			handleError(w, err)
+			return
+		}
 	}
 
 	// A Resolved or Closed ticket's priority cannot change, and a request that
@@ -1049,10 +1056,10 @@ func (s *Server) handleCreateFollowUp(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.Role == user.RoleUser {
 		t, err = s.tickets.CreateRequesterFollowUp(r.Context(), id, s.adminSvc.TicketPrefix(r.Context()), followUpChannel(a), actor,
-			s.requesterClassificationOpen, s.routing(r.Context(), orig.CategoryID, orig.TypeID)...)
+			s.requesterClassificationOpen, s.Routing(r.Context(), orig.CategoryID, orig.TypeID)...)
 	} else {
 		t, err = s.tickets.CreateFollowUp(r.Context(), id, s.adminSvc.TicketPrefix(r.Context()), followUpChannel(a), actor,
-			s.routing(r.Context(), orig.CategoryID, orig.TypeID)...)
+			s.Routing(r.Context(), orig.CategoryID, orig.TypeID)...)
 	}
 	if err != nil {
 		if errors.Is(err, ticket.ErrValidation) {
@@ -1357,12 +1364,13 @@ func (s *Server) handleListLinks(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, links)
 }
 
-// routing works out who a newly created ticket may be routed to, best first:
+// Routing works out who a newly created ticket may be routed to, best first:
 // the CTI-scoped group, else the global group, else the round-robin users, else
-// nobody. Shared by the create and both follow-ups, because a follow-up is a new
-// ticket and goes through the same routing (#349). The ticket service assigns
+// nobody. Every door that creates a ticket calls it (REST create, the follow-ups,
+// the guest form, and the MCP tools through mcp.Router), because a follow-up is a
+// new ticket and goes through the same routing (#349). The ticket service assigns
 // the first one the assignment accepts, inside the create's transaction (#506).
-func (s *Server) routing(ctx context.Context, categoryID uuid.UUID, typeID *uuid.UUID) []ticket.Assignment {
+func (s *Server) Routing(ctx context.Context, categoryID uuid.UUID, typeID *uuid.UUID) []ticket.Assignment {
 	if matched, _ := s.groups.GetGroupsForTicket(ctx, categoryID, typeID); len(matched) > 0 {
 		gid := matched[0].ID
 		return []ticket.Assignment{{GroupID: &gid}}

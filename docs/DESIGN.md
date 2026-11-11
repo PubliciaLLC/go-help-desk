@@ -196,7 +196,7 @@ Admin row is the default, `off`:
 |-----|--------------------|
 | Guest (link holder) | **Read only.** Reply, upload and anything that could reopen are refused with the generic `404`, byte-identical to a bad link (below). The one write that accepts a closed ticket is `POST /guest/follow-up`: a new, linked ticket (below). |
 | Account holder (User role) | **Read only.** Reply, attachment upload, custom-field edit and linking are refused with `409 ticket_closed`; status change, assign, reclassify, resolve and close are refused with `403`, as for any state. They **can** open a follow-up of their own closed ticket (below). |
-| Staff, Admin | **Cannot reopen, by default.** A status change out of Closed, Resolve, Resolve-as-duplicate and `POST /tickets/{id}/reopen` are refused with `409 ticket_closed`, and the message says why: reopening closed tickets is disabled on this instance, or restricted to administrators. With `closed_reopen_policy` = `admin`, an administrator may use all four (staff still get the refusal); with `staff_admin`, staff and administrators may. They **can** always open a follow-up, and keep replying, internal notes, assignment, reclassification, tags and linking (see below). |
+| Staff, Admin | **Cannot reopen, by default.** A status change out of Closed, Resolve, Resolve-as-duplicate and `POST /tickets/{id}/reopen` are refused with `409 ticket_closed`, and the message says why: reopening closed tickets is disabled on this instance, or restricted to administrators. With `closed_reopen_policy` = `admin`, an administrator may use all four (staff still get the refusal); with `staff_admin`, staff and administrators may. They **can** always open a follow-up, and keep replying, internal notes, assignment, tags and linking (see below). Reclassification is refused (`409 ticket_closed`) on Resolved and Closed tickets alike. |
 | Resolved (any requester) | Unchanged: a requester's reply inside the reopen window reopens the ticket; outside it, `409 reopen_window_closed`. |
 
 **One rule, in the domain.** The service decides it, not each handler: the
@@ -250,37 +250,45 @@ role (status, assignment, reclassification, priority, resolve, close, tags) keep
 `403`; the closed state does not change which refusal a role gets.
 
 **Staff and admin: the minimal reading.** Only *leaving* Closed is removed.
-Replying (including internal notes), assignment, reclassification, tags,
+Replying (including internal notes), assignment, tags,
 linking and attachments are unchanged on a closed ticket, because they do not
 change what state the ticket is in, and removing them is not what was decided.
 (A staff reply on a closed ticket still mails the guest a read-only link, below.)
-**Priority is the exception:** it cannot be changed on a Resolved or Closed
-ticket (`409 ticket_closed`), because a finished ticket's priority is part of
-what its SLA was measured against (#443). A `PATCH /tickets/{id}` that sends a
-priority and would leave the ticket Resolved or Closed (or that touches one
-already there) is refused whole with that `409`: the status or assignment in the
-same request is not saved first.
+**Priority and classification are the exceptions:** neither can be changed on a
+Resolved or Closed ticket (`409 ticket_closed`, for every role). A finished
+ticket's priority and category are part of what its SLA was measured against
+(#443), and classification only happens to open tickets (Erik, 2026-11-10;
+before 1.3.0 staff could reclassify a Closed ticket). A `PATCH /tickets/{id}`
+that sends a priority, or a category, type or item, and would leave the ticket
+Resolved or Closed (or that touches one already there) is refused whole with
+that `409`: the status or assignment in the same request is not saved first. A
+request that moves the ticket out of Resolved to an open status and reclassifies
+it is allowed, and a `PATCH` that sends no classification field is unaffected.
 
 **One PATCH, one outcome (#468, #506).** `PATCH /tickets/{id}` can change a
 ticket's status, assignment, classification and priority in one request. It is
 one service call, `Update`, in **one transaction**, in that order (the priority
-last, so a category changed in the same request is the one its SLA policy is
-matched against). A refusal at any step leaves nothing saved and writes no audit
+last; a category changed in the same request is re-matched first and the priority
+then re-matches again, so the ticket ends on one current record under the policy
+for both). A refusal at any step leaves nothing saved and writes no audit
 entry, and the request announces one event (Ticket Events: One Change, One
 Event). The handler still decides every refusal it can before the transaction
 starts: an invalid priority value, a priority or assignment or reclassification
 from a role that may not make it, an invalid classification (`ValidateCTI`), a
-priority on a ticket that would end up Resolved or Closed, an assignee that
+priority or a classification change on a ticket that would end up Resolved or
+Closed (`ValidatePriorityChange`, `ValidateReclassify`), an assignee that
 cannot be given a ticket (unknown, deleted, disabled or a reporting user), a
 group that does not exist. The handler makes no status check. `Update` itself
 checks that the status exists and that the role may move to it (`statusFor`)
 before it opens the transaction. Inside the transaction the steps check, on the
 locked row, what each can: the assignment re-checks the assignee and group; the
-priority step re-checks the role and the closed state; the status step checks
-the reopen policy and an inactive status, for the first time and only there
-(`updateStatusInTx`). The
-classification step takes the row lock and does not check again: `ValidateCTI`
-before the transaction is its only check. The assignment and reclassification
+priority step re-checks the role and the closed state; the classification step
+re-checks the closed state (a Resolved or Closed ticket refuses it, `ErrClosed`;
+the status step runs first, so a request that reopens the ticket and
+reclassifies it passes) but not the classification itself, which `ValidateCTI`
+before the transaction is the only check of; the status step checks the reopen
+policy and an inactive status, for the first time and only there
+(`updateStatusInTx`). The assignment and reclassification
 roles are not checked by the service: authorisation belongs to the caller, so
 the handler does it first, and a caller other than this handler (MCP, the
 scheduler) must do its own. A concurrent change between the early check and the
@@ -293,8 +301,8 @@ refusal and names the follow-up instead.
 mode. It creates a **new** ticket from the closed one, through the same creation
 path as any ticket (`Service.create`): the same validation, tracking number,
 opening status history, audit entry (carrying `follow_up_of`), "created"
-notification and routing. REST applies the auto-assignment rules like a new
-ticket; MCP's `create_ticket` does not, so neither does `create_follow_up`.
+notification and routing. Every door applies the auto-assignment rules, as for a new
+ticket (REST, the guest form and MCP alike).
 Three doors, one creation path:
 
 | Who | Route | Notes |
@@ -476,7 +484,7 @@ Staff and administrators can **follow** a ticket to hear about its activity with
 
 `GET /api/v1/tickets/{id}/audit` (#129) answers "who changed this ticket, and when" from the audit log the domain layer already writes, without database access. Shown on the ticket detail page next to the status timeline. **Staff and administrators only** (Erik, 2026-10-15: requesters and guests see the current state of the ticket and its conversation, not its history or its audit trail): the route sits behind the same role gate as tags and followers, so a requester gets `403 forbidden` on a ticket they can see, and `404` on one they cannot, as for every route under `/tickets/{id}` (`requireTicketAccess` answers first). `GET /tickets/{id}/history` is gated the same way. Guests have neither route. Public replies stay visible to requesters; internal notes stay hidden.
 
-This route only *reads* the audit log; it does not change what the domain layer writes to it. What gets written is narrower than "every mutation": `created`, `status_changed`, `assigned`, `unassigned` (an assignment cleared, or a departing user's tickets returned to the queue, #326), `resolved`, `closed`, `followed` and `unfollowed` (Ticket Followers above; withheld from staff unless `staff_can_view_follow_audit` is on, and from requesters always), and `reopened` (every reopen: a requester's reply that reopens a Resolved ticket, a status change out of Resolved or Closed, and `POST /reopen`; a move out of Closed is a force-reopen allowed only by `closed_reopen_policy` (#349) and says so with `forced_reopen` and the policy in its "after"), `priority_changed` (#443: the "after" says why the priority changed, `manual` or `reopened`, what happened to the ticket's SLA, and the ids of the SLA policy and record in force before and after) and `sla_restarted` (#443, #464: written by a reopen that replaces an SLA record, with the id of the record it replaced and, when one starts, the new one; a reopen that starts a first clock on a ticket that had none replaced nothing and writes nothing; a staff priority change never writes it). A reply and an internal note are recorded too, as `reply_added` (a public reply) and `note_added` (an internal note). Each is written in the same transaction as the reply, by its author; a guest's has no actor. The entry carries only `reply_id` and `internal` in its "after" and never the text (`audit.Redact` allow-lists exactly those two keys). The feed shows it as a sentence such as "Erik Test added an internal note", a requester's name is masked like any other action's, and a reply by a deleted account reads "Someone". Replies and notes written before this existed are not backfilled. Reply and note entries are fetched on their own, with a cap of their own (like follows), so a long conversation cannot push a ticket's history off its feed. CTI reclassification and custom-field edits are not recorded. Those are gaps in what `ticket.Service` writes, not something this route introduces.
+This route only *reads* the audit log; it does not change what the domain layer writes to it. What gets written is narrower than "every mutation": `created`, `status_changed`, `assigned`, `unassigned` (an assignment cleared, or a departing user's tickets returned to the queue, #326), `resolved`, `closed`, `followed` and `unfollowed` (Ticket Followers above; withheld from staff unless `staff_can_view_follow_audit` is on, and from requesters always), and `reopened` (every reopen: a requester's reply that reopens a Resolved ticket, a status change out of Resolved or Closed, and `POST /reopen`; a move out of Closed is a force-reopen allowed only by `closed_reopen_policy` (#349) and says so with `forced_reopen` and the policy in its "after"), `classified` (1.3.0: a change of category, type or item, by id, with the actor; a change of category also says what happened to the ticket's SLA, with the same `sla_outcome` and policy and record ids as `priority_changed`, see SLA Tracking → Re-matching when the category changes; the entry is written in the same transaction as the change, and a request that changes nothing writes none), `priority_changed` (#443: the "after" says why the priority changed, `manual` or `reopened`, what happened to the ticket's SLA, and the ids of the SLA policy and record in force before and after) and `sla_restarted` (#443, #464: written by a reopen that replaces an SLA record, with the id of the record it replaced and, when one starts, the new one; a reopen that starts a first clock on a ticket that had none replaced nothing and writes nothing; a staff priority change never writes it). A reply and an internal note are recorded too, as `reply_added` (a public reply) and `note_added` (an internal note). Each is written in the same transaction as the reply, by its author; a guest's has no actor. The entry carries only `reply_id` and `internal` in its "after" and never the text (`audit.Redact` allow-lists exactly those two keys). The feed shows it as a sentence such as "Erik Test added an internal note", a requester's name is masked like any other action's, and a reply by a deleted account reads "Someone". Replies and notes written before this existed are not backfilled. Reply and note entries are fetched on their own, with a cap of their own (like follows), so a long conversation cannot push a ticket's history off its feed. Custom-field edits on a ticket are not recorded. Those are gaps in what `ticket.Service` writes, not something this route introduces.
 
 (The paragraphs below about what a *reporting user* sees in this feed describe the code's response shaping, which a requester no longer reaches: the route is refused to them. They still apply to the staff and administrator views where they mention the diff.)
 
@@ -693,7 +701,7 @@ Scope does two separate jobs: it can restrict what staff see, and it routes new 
 3. `auto_assign_user_ids`: a list of staff the tickets are dealt out to round-robin. The rotation is in memory, per server process. A listed user the assignment refuses (deleted, disabled or no longer staff) is skipped and the next one tried, so a departed colleague does not silently take every Nth ticket out of the queue.
 4. Otherwise the ticket stays unassigned.
 
-Routing is best-effort in one respect: a candidate that cannot be given a ticket (a departed colleague still on the round-robin list, a group that no longer exists) is skipped for the next, and if none is acceptable the ticket is left unassigned and the creation succeeds. A database error while checking a candidate is not skipped: it aborts the create. It runs for tickets created through `POST /tickets` and for follow-ups (`POST /tickets/{id}/follow-up`, `POST /guest/follow-up`). It does **not** run for MCP `create_ticket` and `create_follow_up`, and a new guest submission (`POST /guest/tickets`) does not call it either. `auto_assign_group_id` (a UUID string) and `auto_assign_user_ids` (an array of UUID strings) are set on **Admin → Routing** (a group picker and a staff checklist, with the rules above listed in order) or through `PATCH /admin/settings`. Saving is checked: a group id that names no group, or a user id that names no one or someone who is neither staff nor an administrator, is refused with 400 `invalid_auto_assign` and nothing in the request is written (before #447 such an id was saved and then skipped at routing time). An empty value clears the setting.
+Routing is best-effort in one respect: a candidate that cannot be given a ticket (a departed colleague still on the round-robin list, a group that no longer exists) is skipped for the next, and if none is acceptable the ticket is left unassigned and the creation succeeds. A database error while checking a candidate is not skipped: it aborts the create. It runs for every door that creates a ticket: `POST /tickets`, a guest submission (`POST /guest/tickets`), MCP `create_ticket`, and the three follow-ups (`POST /tickets/{id}/follow-up`, `POST /guest/follow-up`, MCP `create_follow_up`). They all call the one routing rule (`Server.Routing`; MCP reaches it through `mcp.Router`), so a rule cannot apply to one door and not another. Until 1.3.0 the guest form and the two MCP tools skipped it, so a ticket filed through them was never given to anyone; a follow-up is routed on its original's category and type, the guest form and a guest's follow-up on the category alone. `auto_assign_group_id` (a UUID string) and `auto_assign_user_ids` (an array of UUID strings) are set on **Admin → Routing** (a group picker and a staff checklist, with the rules above listed in order) or through `PATCH /admin/settings`. Saving is checked: a group id that names no group, or a user id that names no one or someone who is neither staff nor an administrator, is refused with 400 `invalid_auto_assign` and nothing in the request is written (before #447 such an id was saved and then skipped at routing time). An empty value clears the setting.
 
 ### Branding
 
@@ -2709,7 +2717,7 @@ Tests: `TestOriginPolicy_Allows` (the comparison), `TestMCPOrigin_*` (the check 
 | Browser (SPA) | Session cookies | HttpOnly cookie carrying an opaque id; the session itself is a row in Postgres. Backed by local auth, SAML or OIDC. |
 | Formal integrations (JIRA, chatbots, CI) | OAuth2 client credentials | client_id + client_secret → short-lived JWT, scoped per integration. The client acts as its own service user (see [OAuth Clients and Service Users](#oauth-clients-and-service-users)) |
 | Lightweight scripting / webhooks | API keys | Hashed bearer tokens with scoped permissions |
-| MCP | Inherits from above | Served at `/mcp` (Streamable HTTP) and `/mcp/sse` + `/mcp/message` (SSE), behind the same authentication chain as `/api/`, and scopes are enforced per tool. It calls the domain services directly, not the REST API, so a rule that lives in a REST handler does not apply to it unless the tool repeats it (for example, `create_ticket` does not run auto-assignment). |
+| MCP | Inherits from above | Served at `/mcp` (Streamable HTTP) and `/mcp/sse` + `/mcp/message` (SSE), behind the same authentication chain as `/api/`, and scopes are enforced per tool. It calls the domain services directly, not the REST API, so a rule that lives in a REST handler does not apply to it unless the tool repeats it (for example, MCP repeats the REST create's routing by calling the same rule, `Server.Routing`, rather than carrying a copy). |
 
 Sessions are server-side rows, not self-contained cookies, because that is the
 only shape in which a session can be revoked. Logout, a password change, an MFA
@@ -3925,7 +3933,7 @@ raises into the transaction's collector; none dispatches after the commit.
 | `UpdateStatus` (MCP `update_ticket_status`; REST `PATCH status_id` runs the same in-transaction step inside `Update`) | the status kinds | `new_status_id`; recipient = guest (none when closing); guest-link flag unless closing |
 | `Assign` (MCP `assign_ticket`; REST `PATCH` assignee or `clear_assignee` runs the same step inside `Update`) | `ticket.assigned`, only when the assignee user or group moved. A clear of an assigned ticket is a change; a clear of an unassigned one, or assigning the person and group already held, raises nothing (ruling 16). The audit entry is still written, as for a same-status move. | |
 | `ChangePriority` (no production caller: REST `PATCH priority` runs its step inside `Update`) | `ticket.priority_changed`, only when the priority moved | |
-| `UpdateCTI` (no production caller: REST `PATCH category_id` runs its step inside `Update`) | `ticket.classified`, only when category, type or item changed. Now in a transaction; still writes no audit entry. | |
+| `UpdateCTI` (no production caller: REST `PATCH category_id` runs its step inside `Update`) | `ticket.classified`, only when category, type or item changed. Now in a transaction, and writes a `classified` audit entry in it (1.3.0). | |
 | `Update` (REST `PATCH /tickets/{id}`, `handler_tickets.go`; it calls the in-transaction step functions of the four rows above) | whatever its steps raise, merged | see *One transaction* |
 | `addReply` (REST reply, MCP `add_reply`, guest reply) | `ticket.replied`, or `ticket.note_added` for an internal note. A requester's reply that reopens a Resolved ticket adds the status kinds (`status_changed`, `reopened`) and, on the ticket's first reopen, `priority_changed` if the priority moved (a critical ticket cannot be raised). | `reply_id`, `internal`, `ReplyBody` (public only); recipient = reporter when "notify customer" is on; `FromRequester` true for the requester's public reply **including one that reopens** |
 | `Resolve` (REST resolve) | the status kinds into Resolved (`status_changed`, `resolved`). On an already-Resolved ticket with new notes: `ticket.resolved` only. | `new_status_id`; recipient = guest; guest-link flag |
@@ -4099,7 +4107,7 @@ transaction, and the collector merges them.
   The priority is last so that a category changed in the same request is the
   one its SLA policy is matched against.
 - **Create, then auto-assign.** Routing is inside the create's transaction. The
-  handler still works out the candidates before the transaction (`routing` in
+  handler still works out the candidates before the transaction (`Routing` in
   `handler_tickets.go`: the CTI group, else the global group, else the
   round-robin users) and passes them in `CreateInput.AutoAssign`. Inside the
   transaction, the first candidate that `checkAssignable` accepts is assigned; a
@@ -4113,9 +4121,9 @@ transaction, and the collector merges them.
   `ticket.created` still gets the creator (ruling 17). Limit: only create's routing
   sets the flag and create raises no manual assignment in the same transaction; if
   a future change lets one transaction raise both, the merge would null the
-  human's actor under `ticket.assigned`, and per-kind actors would be needed. Guest create, MCP `create_ticket` and MCP `create_follow_up` do not auto-assign, as before.
+  human's actor under `ticket.assigned`, and per-kind actors would be needed. Guest create, MCP `create_ticket` and MCP `create_follow_up` route the same way (they did not before 1.3.0).
   - **Round-robin takes its turn up front.** When no group routes the ticket,
-    `roundRobin` advances its counter with one atomic add as `routing` runs,
+    `roundRobin` advances its counter with one atomic add as `Routing` runs,
     before the transaction, and offers the whole user list rotated from that
     slot. A create that is then refused still used a turn, and two overlapping
     creates each get their own.
@@ -4376,8 +4384,6 @@ webhooks.
   order after a retry, as before.
 - Events for writes that announce nothing: `RemoveLink`, attachments, follow and
   unfollow, and the bulk `UnassignForUser` and `DeleteGroup`.
-- An audit entry for a classification change (`UpdateCTI` still writes none).
-- Auto-assignment for guest-created and MCP-created tickets.
 - A plugin API.
 - `reply_id` on the raw wire. A receiver still cannot tell which reply a
   `ticket.replied` delivery means without listing replies.
@@ -4808,6 +4814,8 @@ When a ticket is created, the system selects an SLA policy by specificity:
 
 #### Re-matching when priority changes
 
+The same re-match runs when the **category** changes: see *Re-matching when the category changes* below.
+
 A ticket can change priority after it is created (staff and admin,
 `PATCH /tickets/{id}`, #443). The SLA policy is then matched again, by the same
 four tiers, against the new priority and the ticket's category, and the change
@@ -4943,6 +4951,31 @@ pass. The window is
 milliseconds. Closing it would need the write to report rows affected and the
 recording code to retry once, which changes the store signatures; it is left
 until there is a real report.
+
+#### Re-matching when the category changes
+
+A policy is matched on priority and category, so reclassifying a ticket can mean
+a different policy (1.3.0; until then a reclassified ticket kept the policy of
+its old category). `PATCH /tickets/{id}` with a new `category_id` (and
+`ticket.Service.UpdateCTI`) matches the policy again, by the same four tiers, in
+the reclassification's own transaction, and writes a `classified` audit entry
+carrying the same outcome vocabulary as a priority change (`sla_outcome` and the
+policy and record ids before and after).
+
+- **The clock is kept.** A reclassification is a staff change, and a staff change
+  never restarts a clock: the new record takes the old record's start and pause
+  base and its met and breach facts, exactly as for a priority change, with the
+  same outcomes (`rematched`, `unchanged`, `attached`, `removed`, `sla_off`).
+  Only a reopen restarts a clock.
+- **Only the category matters.** A change of type or item alone cannot change the
+  match; it is audited, with no SLA outcome.
+- **Resolved and Closed tickets are not reclassified at all** (`409
+  ticket_closed`, for every role), so a finished ticket's SLA is never re-matched:
+  what it was measured against is a fact about what happened. Classification
+  only happens to open tickets (Erik, 2026-11-10).
+- **Gated on the toggle**, as for a priority change: with SLA tracking off nothing
+  is re-matched and the entry says `sla_off`.
+- **Atomic.** The classification, the SLA rows and the entry commit together.
 
 ### Timer Mechanics (pause / resume)
 
