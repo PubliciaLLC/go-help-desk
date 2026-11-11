@@ -2663,12 +2663,13 @@ verdict, its own `analysed_at`, its own `fetched_at`, its own link and its own
 *Check again* control where the state allows one.
 
 The wire carries an `inline` flag saying which of those lines the one-line
-summary was taken from, and **nothing renders it yet**. The intent is that the
-summary's source is marked, so the row's single sentence does not look as
-though it came from nowhere; today a reader has to work it out from the
-verdict ordering. Tracked as an issue. Stated here rather than left implied
-because this document is what the next person builds from, and a sentence
-describing a marker that does not exist is how a gap becomes invisible.
+summary was copied from, and the expanded view marks it: a quiet grey
+"· shown in the summary" at the end of that line's details, with
+`aria-current="true"` on the line, so the row's single sentence has a visible
+source. The marker follows the flag and never this build's own ranking. It is
+absent when nothing answered (the summary belongs to nobody, so no line is
+marked), before the list is expanded, and in the single-provider layout, where
+there is no list to mark.
 
 **All four off is a supported configuration, not a broken one.** It means
 attachments are judged by this instance's own scanner alone, which is a complete
