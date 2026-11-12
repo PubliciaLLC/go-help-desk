@@ -29,6 +29,7 @@ vi.mock('@/api/passkeys', async (orig) => {
     removePasskey: vi.fn(),
     signInWithPasskey: vi.fn(),
     browserSupportsPasskeys: vi.fn(() => true),
+    prepareRegistration: vi.fn(() => Promise.reject(new Error("no prefetch in this test"))),
   }
 })
 

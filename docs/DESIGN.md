@@ -1044,7 +1044,25 @@ click, the page says "The browser didn't create the passkey. Try again." and kee
 the button, so the person retries without verifying again. If the session lost its
 factor in the meantime the verify panel comes back. Without a step-up (the session
 had already proved a factor) adding is still one click, and a dismissed prompt
-there still shows nothing. Safari itself is not covered by an automated test (the
+there still shows nothing.
+
+**The click calls the browser with nothing in front of it.** Safari can also
+refuse a prompt that follows a network wait inside the click, so the page does
+not start the ceremony in the click. `POST /me/passkeys/register/start` is sent
+ahead of it: when the Account page has loaded its passkey list, and again as
+soon as the step-up succeeds (a session that owes a factor is refused until
+then, and that refusal at load is not shown). The decoded options are held in
+memory and the click passes them to `addPasskey`, which calls
+`navigator.credentials.create` before it awaits anything. The name is not part
+of register/start (it travels in the query string of register/finish), so the
+options can be fetched before one is typed; no server change. The server keeps
+one staged challenge per session and forgets it 5 minutes after minting
+(`challengeTTL`), so options are single use, are not used once 3 minutes old,
+and are refetched every 2 minutes while the tab is visible (a hidden tab
+catches up when shown) and after every attempt. A click that finds nothing
+usable falls back to starting inside itself, as it did before; a request still
+in flight is waited for, not restarted, because a second start would replace
+the challenge the first staged. Safari itself is not covered by an automated test (the
 Playwright virtual authenticator is Chromium-only); it is on the manual checklist
 for the release candidate.
 

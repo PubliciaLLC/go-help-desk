@@ -39,6 +39,7 @@ test('add a passkey after step-up: no prompt until the button is clicked', async
   let verified = false
   const keys: object[] = []
   let finishName: string | null = null
+  let startCallsAtFinish = -1
 
   await page.route('**/api/v1/me/passkeys', (route) => route.fulfill({ json: keys }))
   await page.route('**/api/v1/auth/local/mfa/verify', (route) => {
@@ -68,6 +69,7 @@ test('add a passkey after step-up: no prompt until the button is clicked', async
     })
   })
   await page.route('**/api/v1/me/passkeys/register/finish?*', (route) => {
+    startCallsAtFinish = startCalls
     finishName = new URL(route.request().url()).searchParams.get('name')
     keys.push({
       id: 'pk-new',
@@ -93,16 +95,22 @@ test('add a passkey after step-up: no prompt until the button is clicked', async
 
   const button = page.getByRole('button', { name: 'Verified — add the passkey' })
   await expect(button).toBeVisible()
-  // Nothing has asked the browser for a key, and the server has not been asked
-  // to start a second ceremony.
-  expect(startCalls).toBe(1)
+  // Nothing has asked the browser for a key. The server was asked to start
+  // three times, the first two refused: once when the page loaded, once from
+  // the first click (nothing was held), and the third is the fetch that
+  // follows the step-up, which is what the button will use.
+  await expect.poll(() => startCalls).toBe(3)
   expect(await credentials()).toHaveLength(0)
+  // Let the response be absorbed by the page before the click.
+  await page.waitForTimeout(200)
 
   await button.click()
 
   await expect(page.getByText('Work laptop', { exact: true })).toBeVisible()
   await expect(button).toHaveCount(0)
-  expect(startCalls).toBe(2)
+  // No request to start came between the click and the key reaching the
+  // server: the click used the options it already held.
+  expect(startCallsAtFinish).toBe(3)
   expect(finishName).toBe('Work laptop')
   expect(await credentials()).toHaveLength(1)
 })
