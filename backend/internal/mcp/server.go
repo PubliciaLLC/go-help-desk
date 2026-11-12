@@ -619,6 +619,7 @@ func (s *Server) registerTools() {
 		mcpgo.WithString("priority", mcpgo.Description("Only tickets at this priority: critical|high|medium|low")),
 		mcpgo.WithString("category_id", mcpgo.Description("Only tickets in this category UUID (see list_categories)")),
 		mcpgo.WithString("q", mcpgo.Description("Full-text search over subject, description and tracking number")),
+		mcpgo.WithBoolean("search_replies", mcpgo.Description("With q, also match the replies: a ticket matches when one reply holds every word. Staff and administrators search internal notes too; a requester searches public replies only. A ticket found this way carries a reply_match with an excerpt. If the replies could not be searched (still being prepared after an upgrade, or too slow), a second text block says so (default false)")),
 		mcpgo.WithNumber("limit", mcpgo.Description("Max results, 1-100 (default 20)")),
 		mcpgo.WithNumber("offset", mcpgo.Description("Pagination offset")),
 	), scoped(mcpRead, s.handleListTickets))
@@ -1019,6 +1020,10 @@ func buildListFilter(args map[string]any, vis ticket.Visibility, actorID uuid.UU
 		f.Priority = &p
 	}
 	f.Query, _ = args["q"].(string)
+	// Whether to search replies is the caller's choice. WHICH replies is not:
+	// IncludeInternal is set by the handler from the caller's role, and there is
+	// no argument for it.
+	f.SearchReplies, _ = args["search_replies"].(bool)
 
 	// Clamped, not rejected: a caller asking for 500 gets 100 rather than an
 	// error, and offset still walks the whole result set.
@@ -1053,11 +1058,67 @@ func (s *Server) handleListTickets(ctx context.Context, req mcpgo.CallToolReques
 		return storeErr(ctx, "list tickets", err)
 	}
 
-	tickets, err := s.tickets.ListFiltered(ctx, f)
+	// From the role and nothing else, for the match and for the snippet alike. A
+	// requester, or any role this does not recognise, never searches an internal
+	// note: searching one would let them test, a word at a time, what staff wrote
+	// about them.
+	f.IncludeInternal = ticket.IncludeInternalFor(caller.Role)
+
+	res, err := s.tickets.ListFilteredWithMeta(ctx, f)
 	if err != nil {
 		return storeErr(ctx, "list tickets", err)
 	}
-	return ticketResult(caller.Role, tickets)
+	tickets := res.Tickets
+	if !f.SearchReplies {
+		return ticketResult(caller.Role, tickets)
+	}
+
+	// Excerpts only when the replies were searched: a page chosen without them
+	// must not look as if it had been.
+	var matches map[uuid.UUID]ticket.ReplyMatch
+	if res.Replies.ExcerptsApply() {
+		ids := make([]uuid.UUID, len(tickets))
+		for i, tk := range tickets {
+			ids[i] = tk.ID
+		}
+		if matches, err = s.tickets.ReplyMatches(ctx, f, ids); err != nil {
+			return storeErr(ctx, "list tickets", err)
+		}
+	}
+	type listed struct {
+		ticket.Ticket
+		ReplyMatch *ticket.ReplyMatch `json:"reply_match,omitempty"`
+	}
+	out := make([]listed, len(tickets))
+	for i, tk := range tickets {
+		out[i].Ticket = tk
+		if m, ok := matches[tk.ID]; ok {
+			out[i].ReplyMatch = &m
+		}
+	}
+	result, err := ticketResult(caller.Role, out)
+	if err != nil || result.IsError {
+		return result, err
+	}
+	// A second block, not a new shape for the first: the list stays the JSON
+	// array every client already reads.
+	if note := repliesNote(res.Replies); note != "" {
+		result.Content = append(result.Content, mcpgo.NewTextContent(note))
+	}
+	return result, nil
+}
+
+// repliesNote says, for a search that asked for replies and did not get them
+// searched, why the list may be shorter than the caller expects.
+func repliesNote(m ticket.ReplySearchMeta) string {
+	switch {
+	case m.Searched == nil || *m.Searched:
+		return ""
+	case m.IndexBuilding:
+		return "Replies were not searched: reply search is still being prepared after an upgrade. The tickets listed match on subject, description or number only. Try again later."
+	default:
+		return "Replies were not searched: the search took too long. The tickets listed match on subject, description or number only. A more specific search may finish in time."
+	}
 }
 
 func (s *Server) handleAssignTicket(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {

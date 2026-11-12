@@ -3331,8 +3331,13 @@ paths:
           required: false
           description: >-
             true or false (the default is false for the API). Accepted with q to also search reply text;
-            any other value is 400. It has no effect yet: reply search ships separately, and until it
-            does the response never carries the X-Replies-Searched or X-Reply-Index headers.
+            any other value is 400. A ticket then also matches when ONE reply holds every word (words
+            found in different replies do not combine). Staff and administrators search public replies and
+            internal notes; a requester, and any role not recognised, searches public replies only, whatever
+            the request says. Ranking looks at the 2,000 newest matching replies the caller may see, and the
+            whole search runs under a five-second limit. When replies could not be searched (the reply index
+            is still being built after an upgrade, or the limit passed) the answer is the tickets that match
+            on their own text, and the X-Replies-Searched and X-Reply-Index headers say so.
           schema:
             type: boolean
             default: false
@@ -11365,6 +11370,26 @@ components:
             can_reopen:
               type: boolean
               description: True when the ticket is Closed and closed_reopen_policy allows the viewer's role to force-reopen it. Always false for a reporting user.
+            reply_match:
+              description: >-
+                On a list that searched replies (search_replies=true), a ticket found through a reply carries
+                the newest matching reply the caller may read. Absent for any other ticket, when replies were
+                not asked for, and when they were not searched (X-Replies-Searched: false). A reporting user
+                gets it too, but for them it is always a public reply: internal notes are never searched or
+                excerpted for them, even on a ticket that matched by its subject. It names no author.
+              type: object
+              required: [reply_id, internal, created_at, snippet]
+              properties:
+                reply_id:
+                  $ref: '#/components/schemas/Uuid'
+                internal:
+                  type: boolean
+                created_at:
+                  type: string
+                  format: date-time
+                snippet:
+                  type: string
+                  description: The reply's own text, cut to 300 characters, with each matched word wrapped in the control characters U+0002 and U+0003. Not HTML; render it as text.
             requester:
               description: Who the ticket is for, shown as the Requester line on the staff ticket page (#444). Sent on getTicket only (never on a list row), to staff and administrators only, on every ticket; never to a reporting user. Absent when the reporting account cannot be read. A deleted account is still named.
               type: object

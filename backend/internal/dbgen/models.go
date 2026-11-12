@@ -320,6 +320,7 @@ type TicketReply struct {
 	CreatedAt      time.Time     `json:"created_at"`
 	NotifyCustomer bool          `json:"notify_customer"`
 	BodyFormat     string        `json:"body_format"`
+	BodyTsv        interface{}   `json:"body_tsv"`
 }
 
 type TicketStatusHistory struct {
