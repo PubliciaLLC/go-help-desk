@@ -326,11 +326,9 @@ Three doors, one creation path:
   for a normal create (`400` if an administrator has since archived it). The
   request body is ignored: there is no field to set.
 - **Not copied, for anyone:** replies and internal notes, attachments, status
-  history, custom-field values, tags, the assignee, any SLA state. The new ticket
-  starts in New and runs its own SLA clock. Custom-field values are not copied
-  because they live outside the ticket service, and copying them on one surface
-  and not the other would be two rules; a later change can add them to the
-  service for both.
+  history, tags, the assignee, any SLA state. The new ticket
+  starts in New and runs its own SLA clock. Custom-field values are copied, by a
+  hook after the follow-up commits (see *Custom-field values are copied* below).
 - **Linked:** the closed ticket is the **parent** of the follow-up
   (`parent_child`, source = closed ticket), written in the same transaction as
   the ticket, so a follow-up never exists without its link. The existing link
@@ -426,9 +424,24 @@ expired rows (a closed ticket collects one per mail sent on it).
   since archived answers `400` with the reason, as a direct submission does. The
   caller already holds a good link to a closed ticket and knows the category it
   was filed under, so nothing is revealed that they could not see.
-- **Custom-field values are not copied** to a follow-up: they live outside the
-  ticket service, and copying them on one surface and not the other would be
-  two rules. Planned with the custom-field work (#625, item 8).
+- **Custom-field values are copied** to a follow-up (#625 item 8, owner decision
+  D24). `ticket.Service` runs a hook the server wires (`SetFollowUpValueCopier`,
+  like `SetUserEmailLookup`) after the follow-up commits, for every door (REST,
+  guest link, MCP), and the hook calls `customfield.Service.CopyValues`. **Staff
+  and administrators** carry every value whose field resolves on the follow-up's
+  classification. **A requester** (an account holder or a guest) carries only the
+  fields the new-ticket form shows (`visible_on_new`), so what the form keeps
+  from a requester is not handed to their new ticket. A field the new
+  classification does not have is left behind (a guest's follow-up is filed
+  under the category alone). Each value is written through the creation write
+  (`SetCreationValues`), so it is held to the field as it is now: a value the
+  field no longer accepts (a retired option, a limit lowered since, a
+  deactivated field) is left out, logged, and the rest are copied. **It is not
+  atomic with the follow-up:** the ticket is already committed when the copy
+  runs, so a failure is logged at the boundary and the follow-up stands without
+  its values, the same trade as the values of an ordinary new ticket, and it is
+  not retried. The copy runs on a context detached from the request, so a client
+  that hangs up does not decide whether the follow-up keeps its values.
 - **Custom-field edits are not atomic with a close.** A reporter's custom-field
   edit (through the API; the ticket page offers Edit only to staff and admin) is
   checked once (`CanRequesterWrite`) and then written in a single transaction of
@@ -816,7 +829,7 @@ Every rate limit counts in the database, in one table, `rate_limit_counters` (mi
 | Limiter | Key | Budget |
 |---|---|---|
 | sign-in and wrong current password | `auth:login:<email>`, `auth:change-password:<user id>` | `AUTH_RATE_LIMIT_PER_MINUTE` a minute, failures only |
-| signup, guest form, guest resend form, forgot-password request, reset-password | `auth:<route>:<source address>` | the same figure, per address |
+| signup, guest form, guest form field lookup (`GET /guest/fields`), guest resend form, forgot-password request, reset-password | `auth:<route>:<source address>` | the same figure, per address |
 | `reporter_email` | `on-behalf:<staff user id>` | 40 an hour |
 | guest uploads | `guest-upload:<ticket id>` | `guest_attachment_uploads_per_hour` an hour |
 | refused guest uploads | `guest-refusal:<ticket id>` | 20 an hour |
@@ -2919,7 +2932,7 @@ Serves both the frontend SPA and external integrations.
 - `GET /api/v1/logo` — the stored logo (PNG), with a 5-minute cache header
 - `GET /api/v1/setup/status` — whether first-run setup is needed; `POST /api/v1/setup` creates the first administrator (and the first category, see Ticket Classification). It answers `409 already_configured` once **any** user row exists, disabled and deleted accounts included, so setup never reopens.
 - `/api/v1/auth/*` — `POST /local/login`, `POST /local/logout`, `GET /providers`, `POST /oauth/token` (OAuth client credentials), the SAML and OIDC sign-in routes, and `GET /signup/status`, `POST /signup`, `GET` and `POST /verify-email` (see Authentication). `POST /local/mfa/verify` and `POST /local/passkey/*` need the session the password step produced and are refused to machine credentials.
-- `/api/v1/guest/*` — `POST /tickets` (submit) and `POST /resend` (re-request a link) are public, throttled, and answer `404` while guest submission is off. `GET /ticket`, `POST /follow-up`, `POST /replies` and `POST /attachments` are authenticated by the per-ticket link token alone (see Guest Submission); `POST /follow-up`, `GET /ticket`, `POST /replies` and `POST /attachments` answer `404` while guest submission is off (#424).
+- `/api/v1/guest/*` — `POST /tickets` (submit), `GET /fields?category_id=` (the custom fields the form offers, #627) and `POST /resend` (re-request a link) are public, throttled, and answer `404` while guest submission is off. `GET /ticket`, `POST /follow-up`, `POST /replies` and `POST /attachments` are authenticated by the per-ticket link token alone (see Guest Submission); `POST /follow-up`, `GET /ticket`, `POST /replies` and `POST /attachments` answer `404` while guest submission is off (#424).
 - `GET /api/v1/categories` and its `/{id}/types` and `/{id}/types/{typeId}/items` children — public **only while guest submission is on**, because the guest form needs them; otherwise they require a fully signed-in caller (a session that has passed MFA and owes no password change, an API key or an OAuth token; a half-signed-in session gets `403` like every other route). Active entries for a guest or a reporting user, all of them for staff and administrators.
 
 Everything else under `/api/v1` requires a session, API key or OAuth token, and the role and scope rules below.
@@ -2941,12 +2954,13 @@ Exposes help desk operations as an MCP server for AI tool integration, over two 
 
 | Tool | Who may call it | Notes |
 |------|-----------------|-------|
-| `get_ticket` | any signed-in user | By UUID or tracking number. Returns the reply thread and linked tickets; internal notes are omitted for reporting users. `include_replies` (default `true`): `false` returns the ticket alone, without replies or links. |
+| `get_ticket` | any signed-in user | By UUID or tracking number. Returns the reply thread and linked tickets; internal notes are omitted for reporting users. `include_replies` (default `true`): `false` returns the ticket alone, without replies or links. Staff and administrators also get the ticket's `custom_fields` (field id, name, type, options, retired options, value), left out when it has none (#627); a reporting user is never given them here. |
 | `list_tickets` | any signed-in user | Optional `assignee_user_id`, `status_id`, `priority`, `category_id`, `q` filters. `limit` defaults to 20 and is clamped to 100; `offset` pages the full result set. |
 | `list_attachments` | any signed-in user | `ticket_id` is a UUID or tracking number; a ticket the caller may not see answers the same "not found" as one that does not exist. Metadata for each file: `id`, `filename`, `mime_type`, `size_bytes`, `created_at`, `detected_mime`, `sha256`, `virus_name`, `mismatch` and `quarantined` (`virus_name` is set). `mismatch` is `null` for a file that predates the inspection, which is not the same as `false`. **No file content** (attachments are download-only) and **no reputation lookup**: that spends the operator's provider allowance, so it stays in the web interface. |
 | `list_categories` | any signed-in user | The Category/Type/Item tree, nested, for filling in CTI. Active entries only; `include_inactive: true` adds retired ones, for staff and administrators only, as on the REST catalogue; for anyone else the flag is ignored and they get active entries (no error). |
 | `list_statuses` | any signed-in user | The statuses this instance defines. |
-| `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` or `reporter_email` (with `guest_name`, always required with the address) names the subject of the ticket; both are absent by default and the caller is the subject. `description` is Markdown unless `format: "plain"` is passed (#443); an invalid `format` is a tool error. The ticket is recorded as `mcp` (#130), including one filed for someone else; a `source_channel` argument is a tool error and nothing is written. |
+| `list_ticket_fields` | any signed-in user | `category_id` required; `type_id` and `item_id` optional. The custom fields the new-ticket form would show there (#627): shown on the form and active, at their most specific attachment, in the form's order. Each is `id`, `name`, `field_type`, `options` (select, in use only), `required`, `max_length` (the longest value, in characters) and `level`. These are the ids and options `create_ticket`'s `custom_fields` takes. A field hidden from the form, deactivated, or attached at a level not asked for is not listed. |
+| `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` or `reporter_email` (with `guest_name`, always required with the address) names the subject of the ticket; both are absent by default and the caller is the subject. `description` is Markdown unless `format: "plain"` is passed (#443); an invalid `format` is a tool error. The ticket is recorded as `mcp` (#130), including one filed for someone else; a `source_channel` argument is a tool error and nothing is written. `custom_fields` (an object of field id to string, #627) is held to the REST rules from the same code: a field the classification requires must have a usable value or the call is a tool error and nothing is created (#626); any other value that cannot be written is dropped and returned under `warnings`, as on REST. A value that is not a string, or a `custom_fields` that is not an object, is a tool error. |
 | `add_reply` | staff, admin | A public reply emails the requester exactly as the REST reply does (#442): the guest's address (with a guest link) or the reporting account's, through one shared rule, `ticket.Service.ReplyRecipient`. No mail is sent when the requester has no address on record or the account is gone, or when the requester is a staff member or administrator writing the reply on a ticket they filed (they are not mailed a copy of their own reply, over REST or MCP; an ordinary requester replying on their own ticket still is); the reply is still saved. `internal: true` posts a staff-only note and never notifies the requester. There is no `notify_customer` option over MCP: a public reply always notifies. `body` is Markdown unless `format: "plain"` is passed (#443). |
 | `assign_ticket` | staff, admin | To a user (`assignee_user_id`) or a group (`assignee_group_id`). To take the ticket off whoever has it, pass `clear_assignee: true` (the audit entry is `unassigned`); it cannot be combined with an assignee id, and omitting everything is refused rather than read as unassigning, because that silently took tickets off the people working them. |
 | `update_ticket_status` | staff, admin | Target status must be one the caller's role may transition to. A ticket in Closed cannot be moved out of it unless `closed_reopen_policy` lets the caller's role (#349; off by default): the result says reopening is disabled or restricted and points at `create_follow_up`. There is no separate reopen tool and never was; this is MCP's path out of Closed, through the same service rule as REST. A move out of Resolved or Closed is a reopen like any other (flagged, priority raised on the first, SLA restarted, staff mailed), with the caller as the actor. |
@@ -3100,7 +3114,7 @@ Add to that list only a scope that truly gates a parameter.
 
 **MCP is covered too.** Every MCP message is a POST, so the action cannot come
 from the method; each tool declares what it needs at registration. The read
-tools (`get_ticket`, `list_tickets`, `list_categories`, `list_statuses`) need
+tools (`get_ticket`, `list_tickets`, `list_categories`, `list_statuses`, `list_ticket_fields`) need
 `tickets:read` and the write tools (`create_ticket`, `add_reply`,
 `assign_ticket`, `update_ticket_status`, `create_follow_up`) need `tickets:write`. The two reference
 tools sit under `tickets` rather than `categories`/`settings` because they exist
@@ -4890,9 +4904,14 @@ Defined globally under **Admin → Custom Fields**. Each definition has:
   stored as a JSON array of strings, so an option may contain a comma. The admin
   page edits them as a list: add, edit, reorder, retire, bring back, delete.
   Blank and duplicate options (a retired option's text counts) are refused by
-  the page. The API refuses only a value that is in both `options` and
-  `retired_options` (`400 bad_request`); it does not check for a blank value or
-  for a duplicate within one list. On any other type the server stores `options`
+  the page, and by the server (#626): a select field's lists are checked on
+  create, and on any `PATCH` that changes `options` or `retired_options` or makes
+  the field a select, for a blank option (after trimming), an option that is in
+  both lists, and one listed twice, compared exactly (`a` and `A` are two
+  options), and an option over 255 characters, which no ticket could be set to
+  (see *Values*, length limits). All are `400 bad_request`. A `PATCH` that leaves both lists as they
+  are is not checked, so a field that was saved with a bad option before can
+  still be renamed or reordered. On any other type the server stores `options`
   as sent and nothing reads it.
 - **Retired options** (select only): see *Options: retiring and deleting*. On
   any other type `retired_options` is stored as sent, like `options`, and
@@ -4989,20 +5008,114 @@ Each attachment has:
 
 - **Show on new-ticket form** (`visible_on_new`)
 - **Required on new-ticket form** (`required_on_new`): only meaningful while
-  shown; the page disables it when the field is not shown. Only the
-  new-ticket form holds a person to it. The server does not refuse a ticket
-  created without a value for a required field, so an API client is not held
-  to it.
+  shown; the page disables it when the field is not shown. The server holds
+  every caller to it, not only the form (#626): see *Required fields*.
+- **Offer to guests** (`visible_to_guests`, #627): off for every attachment
+  until an administrator turns it on, and available on a category's own
+  attachment only. See *Guests*.
 
 A field reaches a ticket once, however many of the ticket's category, type and
 item it is attached to. The most specific attachment wins — item over type over
-category — for its settings and for the level the field is shown at. The API
-does not refuse an overlapping attachment. The Custom Fields page does not offer
-one, and lists any that exist with a note saying which settings apply.
+category — for its settings and for the level the field is shown at. The server
+refuses to attach a field above or below a place it is already attached on one
+path (`409 conflict`, naming where; #626): it checks under a lock on the field's
+definition row, so two attachments made at once cannot both land. Overlaps that
+already exist, which a 1.3.0-beta database can hold, are left as they are and the
+rule above still resolves them. The Custom Fields page lists any that exist with
+a note saying which settings apply.
 
 On the ticket page, staff see every active field the ticket has, empty or not,
 and every inactive field that holds a value. Requesters see fields that hold a
-value. Guests see no custom fields.
+value. Guests see no custom fields, on the form or after (see *Guests*).
+
+### Required fields
+
+A field is required of a new ticket when its most specific attachment is shown
+on the new-ticket form and marked required, and the field is active. A hidden
+field, a deactivated one, and one attached at a type or item the ticket does not
+have are not required. `POST /tickets` and MCP `create_ticket` check this **before
+the ticket is created**, so a refusal spends no tracking number, and for every
+caller: browser session, API key, OAuth client, and staff or administrators
+filing for someone else. A reporting user's request is judged without an item,
+because a requester cannot pick one. A missing field, an empty value or spaces is
+`400 bad_request` naming each missing field. The value must also be one the field
+accepts (an option in use, a number for a number field): a required value that
+creation would drop is refused instead, because a ticket without it is what the
+rule is there to prevent. The check and the create are not one transaction. An
+administrator who makes a field required between them lets one ticket through
+without it; that is accepted, since the ticket was valid against the form as the
+requester last saw it. Before 1.3.0 only the form held anyone to this; it is
+listed under breaking changes in the upgrade notes (#626, owner decision D25).
+
+**Follow-ups are exempt.** `POST /tickets/{id}/follow-up` (staff and requester),
+`POST /guest/follow-up` and MCP `create_follow_up` file a ticket in the original's
+category, type and item; their routes take no `custom_fields`, so the request
+can never satisfy a required field, and the check is not made. They carry their
+original's values afterwards (see *Custom-field values are copied* under
+Follow-up), which usually satisfies it, but a follow-up is filed whether or not
+it does.
+
+**A failed write of the values.** Once the ticket exists its values are written
+in one transaction. Values are bounded (see *Values*), so a failure is a database
+fault. When the classification has a required field, the REST and MCP request
+then fails with `500` (the answer names the ticket that was filed, so it can be
+checked) rather than answering `201` for a ticket that lost the required value.
+A guest, who has no warnings and no way to check, is answered `201` with the
+tracking number and a notice (see *Guests*).
+When it has none, the values stay best-effort: `201`, with `not_saved` in
+`warnings`.
+
+### Guests
+
+A guest is shown, and may write, only the custom fields an administrator
+**offered to guests** (#627). This reverses the earlier rule that guests see no
+fields at all. What an anonymous visitor may write into an operator's own
+fields is the operator's decision, so the offer is an explicit per-attachment
+switch and not a reading of another flag: reusing `visible_on_new` would have
+published, at upgrade, the name and options of every field staff see on the
+form, some of them internal, to anyone on the internet.
+
+- **What is offered** (`customfield.Service.GuestFields`): the category's own
+  attachments with `visible_to_guests` on that are also shown on the new-ticket
+  form, whose field is active. A guest picks a category and nothing below it, so
+  nothing attached to a type or an item is ever offered, and the service refuses
+  the switch on one (`400`). A field added later is not offered until someone
+  says so. Everything a guest asks about is judged against this one list.
+- **`GET /guest/fields?category_id=`** answers with `id`, `name`, `field_type`,
+  `options` (in use) and `required` for each, and nothing else: it is a struct of
+  its own, so a key added to the definition later reaches a guest only by being
+  added there. It answers `404` while guest submission is off, `429` past a
+  per-address budget, and `400` for a category not open to guests, the test
+  `POST /guest/tickets` applies.
+- **`POST /guest/tickets` takes `custom_fields`** and judges it strictly
+  (`CheckGuestValues`), before anything is written: a key that is not an offered
+  field is `400` whatever it is (a staff-only field, one on a type, a
+  deactivated one, an unknown id, text that is not an id), the same for an empty
+  value, and the message never says whether such a field exists; a value the
+  field does not accept (including one over its length limit) is `400`, and a
+  retired option reads exactly like one that never existed, because the form is
+  never shown retired options; a required offered field without a value is
+  `400`. A guest is never warned and never partly saved, because the form is
+  ours. If the write of the values fails after the ticket exists, the guest is
+  told the truth in a success-like answer (owner, 2026-11-11: "Say it was filed,
+  check email"): `201` with the tracking number as on success, plus
+  `custom_fields_saved: false` and a `notice` that the request was received, some
+  details could not be saved, and to check the email for the ticket link and add
+  them there. Not a `500`, which invites a retry that files the ticket twice, and
+  the notice does not suggest one. Required is judged over the offered fields only, so a field the staff
+  form requires but guests are not offered does not stop a guest filing. After
+  the ticket exists the write is held to the offered set again
+  (`SetGuestCreationValues`), so a field withdrawn between the check and the
+  write is dropped, not stored.
+- **The form.** The public form asks `GET /guest/fields` when a category is
+  chosen, and does not submit until it has the answer. If the lookup is
+  throttled (`429`) or fails, it says "try again in a moment", offers **Try
+  again** and keeps submit disabled: a form that went on would show no fields and
+  then be refused for a required one it never offered.
+- **Nothing flows back.** The response is the tracking number, and the guest's
+  view of their ticket carries no custom fields.
+- **Audit.** A change to the switch is recorded on both sides of the entry
+  (`visible_to_guests`), and its text is shown on the Audit Log.
 
 ### Display order
 
@@ -5044,10 +5157,14 @@ statement as the delete.
 Stored normalized in `ticket_custom_field_values` (one row per ticket + field def, `value TEXT`) for filterability — not as a JSON blob. Values are edited with `PUT /tickets/{id}/custom-fields`, restricted to fields the ticket actually has (those assigned to its category, type and item, for every role). Staff and admin can edit at any time after creation, from the ticket detail page, except a deactivated field, which is read-only; a reporting user can edit the fields on their own ticket through the API until it is Closed, and is refused with `409 ticket_closed` after (Closed is read-only to every requester). The ticket page offers **Edit** only to staff and admin.
 
 On ticket creation, custom field values are written after the ticket exists
-and never fail the request. A value that is not written is reported in the 201
+and never fail the request, except for the fields the classification requires,
+which are checked first (see *Required fields*). MCP `create_ticket` returns the
+same `warnings`. A value that is not written is reported in the 201
 response's `warnings` array, one entry per dropped field with a reason:
 `invalid_field_id`, `duplicate_field_id`, `not_on_ticket`, `inactive`,
-`retired_option`, `not_an_option`, `not_a_number` or `not_saved`. The entry's
+`retired_option`, `not_an_option`, `not_a_number`, `too_long` or `not_saved`
+(`too_long` only as a backstop: a value over its limit is refused with `400`
+before the ticket is created). The entry's
 `field_id` is the key exactly as sent, and entries are sorted by it. Two keys
 that spell the same field id (upper and lower case, say) get
 `duplicate_field_id` and neither is written, because which value to keep would
@@ -5064,7 +5181,57 @@ rather than pick one. Values stored before 1.3.0 are left as they are and shown 
 they are; since the ticket page sends only the fields that changed, such a value
 blocks only a save that changes that field.
 
-Guests are shown no custom fields at all. The guest endpoint accepts none — a deliberate choice, since what an anonymous visitor may write into an operator's own fields is the operator's decision — and the public form no longer offers them. It did offer them for a while and threw the answers away on submit, which also meant a field marked required could stop a visitor filing a ticket at all. The field endpoints do not filter by role: the fields a ticket has are resolved from its own category, type and item, and `PUT /tickets/{id}/custom-fields` accepts any of them from any role that may write to the ticket. What a reporting user is offered follows from what they can pick (category and type, never an item), so in practice they see category and type fields, while staff and admin, who can pick all three, see all levels.
+**Length limits** (owner, 2026-11-11). A value is at most **255 characters** for
+a `text` field, **10,000** for a `textarea` field, and 255 for `number` (counted
+after trimming) and `select` (which is one of the options, themselves at most 255
+characters: the options list refuses a longer one). Characters are Unicode code
+points, not bytes, so 10,000 four-byte characters (40 KB) is allowed and
+10,001 is not. They are the constants `customfield.MaxTextChars` and
+`MaxLongTextChars`, applied in `checkValue`, the one check every write goes
+through. Every door refuses an over-long value with `400 bad_request` before
+anything is created: `PUT /tickets/{id}/custom-fields` (all or none),
+`POST /tickets` for every caller (for any field, required or not), `POST
+/guest/tickets` and MCP `create_ticket`. The message names the field and the
+limit and never repeats the value. A value stored before the limits and over
+one is left as it is and shown as it is. A value that does not change is not
+checked against a limit again: an edit that leaves it out (every save the ticket
+page makes for another field) is unaffected, and one that sends it back
+unchanged (an API client that sends every field) is accepted, and the stored
+value is not rewritten. A different value is held to the limit as usual. The
+index under the values holds the first 255 characters of each (migration 000065),
+because Postgres refuses an index row over about 2,704 bytes and a long value
+could not otherwise be stored; the only lookups by value are of a select
+field's values, which never exceed 255 characters.
+
+**A field's own maximum length** (owner, 2026-11-11: "fixed caps but admin can
+lower it when they're defining the field"). A `text` or `textarea` field can carry
+`max_length` (`custom_field_defs.max_length`, nullable), set when the field is
+defined or edited on **Admin → Custom Fields** (a **Maximum length** box, with the
+type's cap in the hint) or with `max_length` on `POST /admin/custom-fields` and
+`PATCH /admin/custom-fields/{id}` (`null` removes it). It can only narrow the
+type: a whole number from 1 to one below the type's cap (254, or 9,999 for a
+text area), else `400`; a `number` or `select` field has none, so changing a
+field's type to one of those needs it cleared. The limit that applies is
+`min(max_length, the type's cap)`, `FieldDef.EffectiveMaxLength`, which every
+route that returns a definition or a value's field sends as
+`effective_max_length`, `GET /guest/fields` and MCP `list_ticket_fields` send as
+`max_length`, and the forms (new ticket, ticket page, guest form) set as
+`maxlength` and check inline before submitting. Changing it is audited
+(`custom_field_max_length_changed`, the limit that applied before and after, so
+clearing one reads as the type's cap coming back).
+
+**Where each limit lives** (owner, 2026-11-11: "when we're writing it to the
+database, it's always at the fixed cap. The length limit is only enforced in the
+frontend, in the API."). The database and the store know only the fixed type caps
+(255; 10,000 for long text): `customfieldstore` refuses a value over its type's
+cap whatever `decide` allowed, and reads a field's own `max_length` for nothing
+but returning it. The field's own limit is enforced in the API (`checkValue`, at
+every door) and the forms. Two consequences. **Lowering a field's limit never
+touches stored data**, and a value over a lowered limit stays and shows. **A write
+that bypasses the API** (an import, a migration, a direct store call) **is held
+only to the fixed cap**, so it can store a value the API would refuse.
+
+Guests are offered the fields an administrator chose for them, through their own endpoints, and see no custom fields on a ticket after (see *Guests*). The public form offers exactly the fields `GET /guest/fields` returns for the category, and holds the visitor to the required ones; the server judges what is sent. The authenticated field endpoints do not filter by role: the fields a ticket has are resolved from its own category, type and item, and `PUT /tickets/{id}/custom-fields` accepts any of them from any role that may write to the ticket. What a reporting user is offered follows from what they can pick (category and type, never an item), so in practice they see category and type fields, while staff and admin, who can pick all three, see all levels.
 
 ---
 

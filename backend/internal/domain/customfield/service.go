@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
@@ -17,6 +18,12 @@ type Service struct{ store Store }
 func NewService(store Store) *Service { return &Service{store: store} }
 
 func (s *Service) CreateFieldDef(ctx context.Context, name string, fieldType FieldType, options []string, sortOrder int, actorID *uuid.UUID) (FieldDef, error) {
+	return s.CreateFieldDefLimited(ctx, name, fieldType, options, sortOrder, nil, actorID)
+}
+
+// CreateFieldDefLimited is CreateFieldDef with the field's own limit on a value
+// (see FieldDef.MaxLength).
+func (s *Service) CreateFieldDefLimited(ctx context.Context, name string, fieldType FieldType, options []string, sortOrder int, maxLength *int, actorID *uuid.UUID) (FieldDef, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return FieldDef{}, Invalid("field name is required")
@@ -24,8 +31,19 @@ func (s *Service) CreateFieldDef(ctx context.Context, name string, fieldType Fie
 	if err := validateFieldType(fieldType); err != nil {
 		return FieldDef{}, err
 	}
-	if fieldType == FieldTypeSelect && len(options) == 0 {
-		return FieldDef{}, Invalid("select fields require at least one option")
+	if fieldType == FieldTypeSelect {
+		if len(options) == 0 {
+			return FieldDef{}, Invalid("select fields require at least one option")
+		}
+		if err := checkOptionLists(options, nil); err != nil {
+			return FieldDef{}, err
+		}
+		if err := checkOptionLength(options, nil); err != nil {
+			return FieldDef{}, err
+		}
+	}
+	if err := checkMaxLength(fieldType, maxLength); err != nil {
+		return FieldDef{}, err
 	}
 	def := FieldDef{
 		ID:        uuid.New(),
@@ -34,6 +52,7 @@ func (s *Service) CreateFieldDef(ctx context.Context, name string, fieldType Fie
 		Options:   options,
 		SortOrder: sortOrder,
 		Active:    true,
+		MaxLength: maxLength,
 	}
 	return s.store.CreateFieldDef(ctx, def, entriesForCreated(actorID, def))
 }
@@ -53,6 +72,10 @@ func (s *Service) GetFieldDef(ctx context.Context, id uuid.UUID) (FieldDef, erro
 // not to a copy read earlier. A non-nil, empty Options or RetiredOptions
 // clears that list.
 type FieldDefPatch struct {
+	// MaxLength sets the field's own limit; ClearMaxLength removes it. Neither
+	// leaves it as it is.
+	MaxLength      *int
+	ClearMaxLength bool
 	Name           *string
 	FieldType      *FieldType
 	Options        []string
@@ -85,6 +108,11 @@ func (s *Service) PatchFieldDef(ctx context.Context, id uuid.UUID, p FieldDefPat
 		}
 		if p.Active != nil {
 			cur.Active = *p.Active
+		}
+		if p.ClearMaxLength {
+			cur.MaxLength = nil
+		} else if p.MaxLength != nil {
+			cur.MaxLength = p.MaxLength
 		}
 		return cur
 	})
@@ -123,6 +151,11 @@ func checkChange(cur, next FieldDef, held Held) error {
 	if err := validateFieldType(next.FieldType); err != nil {
 		return err
 	}
+	// Checked on every change, since a change of type can leave the limit above
+	// the new type's. Lowering it below values that exist is fine: they stay.
+	if err := checkMaxLength(next.FieldType, next.MaxLength); err != nil {
+		return err
+	}
 	if next.FieldType == FieldTypeSelect {
 		if len(next.Options) == 0 {
 			return Invalid("select fields require at least one option")
@@ -137,6 +170,25 @@ func checkChange(cur, next FieldDef, held Held) error {
 			// delete check.
 			if !slices.Contains(cur.Options, o) && !slices.Contains(cur.RetiredOptions, o) {
 				return Invalid(fmt.Sprintf("option %q can be retired only from the options in use", o))
+			}
+		}
+		// Only when this change touches the lists (or makes the field a select),
+		// so a field that 1.2.0 or an earlier API call left with a blank or
+		// repeated option can still be renamed or reordered.
+		if !slices.Equal(cur.Options, next.Options) || !slices.Equal(cur.RetiredOptions, next.RetiredOptions) || cur.FieldType != next.FieldType {
+			if err := checkOptionLists(next.Options, next.RetiredOptions); err != nil {
+				return err
+			}
+			// An option is one the field already had only if it was a select: on any
+			// other type the list is stored as sent and nothing reads it, so a long
+			// option there is not a legacy select option, and becoming a select does
+			// not carry it in.
+			had := cur.Options
+			if cur.FieldType != FieldTypeSelect {
+				had = nil
+			}
+			if err := checkOptionLength(next.Options, had); err != nil {
+				return err
 			}
 		}
 		// A value in neither list now that was in one before is a delete.
@@ -165,6 +217,55 @@ func checkChange(cur, next FieldDef, held Held) error {
 		}
 		if used {
 			return Conflict("the type can't change once a ticket has a value for this field")
+		}
+	}
+	return nil
+}
+
+// checkMaxLength is the rule for a field's own limit: only a text or long-text
+// field has one, and it is at least 1 and lower than the type's limit, so it can
+// only narrow what the type takes. Nil is no limit of its own.
+func checkMaxLength(ft FieldType, own *int) error {
+	if own == nil {
+		return nil
+	}
+	if ft != FieldTypeText && ft != FieldTypeTextarea {
+		return Invalid("only a text or long text field can have a maximum length")
+	}
+	if cap := MaxChars(ft); *own < 1 || *own >= cap {
+		return Invalid(fmt.Sprintf("the maximum length must be between 1 and %d characters, less than the %d a field of this type takes", cap-1, cap))
+	}
+	return nil
+}
+
+// checkOptionLists refuses a blank option and an option that appears twice
+// across both lists, compared exactly (so "a" and "A" are two options, as the
+// ticket value check treats them). The page has always refused both; the API
+// did not (#626).
+func checkOptionLists(options, retired []string) error {
+	seen := make(map[string]bool, len(options)+len(retired))
+	for _, o := range append(slices.Clone(options), retired...) {
+		if strings.TrimSpace(o) == "" {
+			return Invalid("an option cannot be blank")
+		}
+		if seen[o] {
+			return Invalid(fmt.Sprintf("option %q is listed twice", o))
+		}
+		seen[o] = true
+	}
+	return nil
+}
+
+// checkOptionLength refuses an option in use over the longest a select value may
+// be (MaxTextChars), which could never be chosen. Only a new one: an option the
+// field already had, which a 1.3.0-beta database can hold at any length, is left,
+// or no edit to the list could be saved until it was shortened, and a rename (the
+// way to shorten one: it retires the old text) would be refused for the retired
+// copy. A retired option cannot be chosen at all, so its length does not matter.
+func checkOptionLength(options, had []string) error {
+	for _, o := range options {
+		if utf8.RuneCountInString(o) > MaxTextChars && !slices.Contains(had, o) {
+			return Invalid(fmt.Sprintf("an option is at most %d characters", MaxTextChars))
 		}
 	}
 	return nil
@@ -246,17 +347,36 @@ func (s *Service) ListPlacements(ctx context.Context, id uuid.UUID) ([]Placement
 	return s.store.ListPlacements(ctx, id)
 }
 
+// CreateAssignment attaches a field to a node without offering it to guests.
+// Attach takes the whole attachment.
 func (s *Service) CreateAssignment(ctx context.Context, fieldDefID uuid.UUID, scopeType ScopeType, scopeID uuid.UUID, sortOrder int, visibleOnNew, requiredOnNew bool, actor *uuid.UUID) (Assignment, error) {
-	a := Assignment{
-		ID:            uuid.New(),
+	return s.Attach(ctx, Assignment{
 		FieldDefID:    fieldDefID,
 		ScopeType:     scopeType,
 		ScopeID:       scopeID,
 		SortOrder:     sortOrder,
 		VisibleOnNew:  visibleOnNew,
 		RequiredOnNew: requiredOnNew,
+	}, actor)
+}
+
+// Attach attaches a field to a node. The id is assigned here.
+func (s *Service) Attach(ctx context.Context, a Assignment, actor *uuid.UUID) (Assignment, error) {
+	if err := checkGuestScope(a); err != nil {
+		return Assignment{}, err
 	}
+	a.ID = uuid.New()
 	return s.store.CreateAssignment(ctx, a, func(info AssignmentInfo) audit.Entry { return entryAttached(actor, info, a) })
+}
+
+// checkGuestScope: a guest chooses a category and nothing below it, so only a
+// category's attachment can be offered to one. A flag on a type or an item would
+// promise a field no guest can ever be given.
+func checkGuestScope(a Assignment) error {
+	if a.VisibleToGuests && a.ScopeType != CategoryScope {
+		return Invalid("only a field attached to a category can be offered to guests")
+	}
+	return nil
 }
 
 func (s *Service) ListAssignments(ctx context.Context, scopeType ScopeType, scopeID uuid.UUID) ([]Assignment, error) {
@@ -268,6 +388,9 @@ func (s *Service) GetAssignment(ctx context.Context, id uuid.UUID) (Assignment, 
 }
 
 func (s *Service) UpdateAssignment(ctx context.Context, a Assignment, actor *uuid.UUID) error {
+	if err := checkGuestScope(a); err != nil {
+		return err
+	}
 	return s.store.UpdateAssignment(ctx, a, func(before Assignment, info AssignmentInfo) []audit.Entry {
 		return entriesForAttachmentChange(actor, info, before, a)
 	})
@@ -337,13 +460,30 @@ func (s *Service) ResolveFieldsForCTI(ctx context.Context, categoryID uuid.UUID,
 //     refused too, though a ticket that already holds it keeps showing it.
 //   - A number field takes a number (IsNumber), stored trimmed; text that is
 //     only spaces is a clear.
+//   - A value is at most MaxChars(type) characters, checked before the type's
+//     own rule so that a refusal never has a long value to echo. This is the one
+//     place every door's check ends up (the rest of this package, the PUT route,
+//     creation, the guest form, MCP), so none of them can store what the index
+//     under the values would refuse (a write that failed for length lost the
+//     whole request's values, a required one included). A value already stored
+//     over the limit is left alone and is refused only if someone writes it again.
 func checkValue(def FieldDef, value string) (stored string, reason Reason) {
 	if !def.Active {
 		return "", ReasonInactive
 	}
+	if def.FieldType == FieldTypeNumber {
+		value = strings.TrimSpace(value)
+	}
+	if tooLong(def, value) {
+		return "", ReasonTooLong
+	}
+	return checkRest(def, value)
+}
+
+// checkRest is checkValue after the length: what the type itself requires.
+func checkRest(def FieldDef, value string) (stored string, reason Reason) {
 	switch def.FieldType {
 	case FieldTypeNumber:
-		value = strings.TrimSpace(value)
 		if value != "" && !IsNumber(value) {
 			return "", ReasonNotANumber
 		}
@@ -358,11 +498,37 @@ func checkValue(def FieldDef, value string) (stored string, reason Reason) {
 	return value, ""
 }
 
+// tooLong is whether value is over the field's limit, in characters. A number is
+// counted trimmed, as it is stored.
+func tooLong(def FieldDef, value string) bool {
+	if def.FieldType == FieldTypeNumber {
+		value = strings.TrimSpace(value)
+	}
+	// A byte count at or under the limit is under it in characters too, which
+	// spares counting the runes of every ordinary value.
+	max := def.EffectiveMaxLength()
+	return len(value) > max && utf8.RuneCountInString(value) > max
+}
+
+// refusalFor is refusal in the words for the caller. A guest is told a retired
+// option is "not a valid option", the same as for one that never existed: the
+// guest form is never shown retired options (GET /guest/fields leaves them out),
+// so a different message would let a visitor confirm a guess about one.
+func refusalFor(def FieldDef, value string, reason Reason, guest bool) error {
+	if guest && reason == ReasonRetiredOption {
+		reason = ReasonNotAnOption
+	}
+	return refusal(def, value, reason)
+}
+
 // refusal is checkValue's reason as the 400 a caller sees.
 func refusal(def FieldDef, value string, reason Reason) error {
 	switch reason {
 	case ReasonInactive:
 		return Invalid(fmt.Sprintf("field %q is deactivated", def.Name))
+	case ReasonTooLong:
+		// Not echoed: it can be ten thousand characters.
+		return Invalid(fmt.Sprintf("value for field %q is too long: at most %d characters", def.Name, def.EffectiveMaxLength()))
 	case ReasonRetiredOption:
 		return Invalid(fmt.Sprintf("value %q is a retired option for field %q", value, def.Name))
 	case ReasonNotANumber:
@@ -390,6 +556,13 @@ func (s *Service) SetValues(ctx context.Context, ticketID uuid.UUID, values map[
 	if len(values) == 0 {
 		return nil
 	}
+	// What the ticket holds, so that a value sent back unchanged is not held to
+	// a limit lowered since (see below). Read outside the lock: it only ever
+	// spares a check, and a value written in between is a different value.
+	held, err := s.heldValues(ctx, ticketID)
+	if err != nil {
+		return err
+	}
 	return s.store.SetValues(ctx, ticketID, values, func(defs map[uuid.UUID]FieldDef) (map[uuid.UUID]string, error) {
 		// Sorted so a request with two bad entries gets the same answer every
 		// time, not whichever the map happened to yield first.
@@ -400,6 +573,19 @@ func (s *Service) SetValues(ctx context.Context, ticketID uuid.UUID, values map[
 				return nil, fmt.Errorf("field not found: %w", ErrNotFound)
 			}
 			stored, reason := checkValue(def, values[id])
+			if reason == ReasonTooLong {
+				// Lowering a field's limit leaves the values that exist, and a
+				// value that has not changed is not checked again, so a save that
+				// sends it back (an API client that sends every field) is not
+				// refused over a limit it never chose. It is not rewritten either:
+				// a value over the type's own limit could not be, and nothing
+				// changed. A different value is held to the limit as usual.
+				if held[id] == values[id] {
+					if _, reason = checkRest(def, values[id]); reason == "" {
+						continue
+					}
+				}
+			}
 			if reason != "" {
 				return nil, refusal(def, values[id], reason)
 			}
@@ -407,6 +593,19 @@ func (s *Service) SetValues(ctx context.Context, ticketID uuid.UUID, values map[
 		}
 		return write, nil
 	})
+}
+
+// heldValues is the values the ticket holds, by field.
+func (s *Service) heldValues(ctx context.Context, ticketID uuid.UUID) (map[uuid.UUID]string, error) {
+	held, err := s.store.ListValuesForTicket(ctx, ticketID)
+	if err != nil {
+		return nil, fmt.Errorf("reading the values the ticket holds: %w", err)
+	}
+	out := make(map[uuid.UUID]string, len(held))
+	for _, v := range held {
+		out[v.FieldDefID] = v.Value
+	}
+	return out, nil
 }
 
 func sortedIDs[V any](m map[uuid.UUID]V) []uuid.UUID {
@@ -430,6 +629,24 @@ func sortedIDs[V any](m map[uuid.UUID]V) []uuid.UUID {
 // caller to log: it means the entries could not be saved (the lookup or the
 // write failed), and each non-empty one is then in the warnings as not_saved.
 func (s *Service) SetCreationValues(ctx context.Context, ticketID, categoryID uuid.UUID, typeID, itemID *uuid.UUID, raw map[string]string) ([]Warning, error) {
+	return s.setCreationValues(ctx, ticketID, raw, func() ([]Assignment, error) {
+		return s.ResolveFieldsForCTI(ctx, categoryID, typeID, itemID)
+	})
+}
+
+// SetGuestCreationValues is SetCreationValues for a ticket a guest filed: the
+// fields it may hold are the ones offered to guests, not everything its category
+// has, so a value for any other field is dropped and reported as not_on_ticket
+// even if the request check let it through.
+func (s *Service) SetGuestCreationValues(ctx context.Context, ticketID, categoryID uuid.UUID, raw map[string]string) ([]Warning, error) {
+	return s.setCreationValues(ctx, ticketID, raw, func() ([]Assignment, error) {
+		return s.GuestFields(ctx, categoryID)
+	})
+}
+
+// setCreationValues is the body of both. fields says which fields the ticket
+// may hold, and is not asked when nothing was sent.
+func (s *Service) setCreationValues(ctx context.Context, ticketID uuid.UUID, raw map[string]string, fields func() ([]Assignment, error)) ([]Warning, error) {
 	var keys []string // the non-empty entries, sorted
 	for key, value := range raw {
 		if value != "" {
@@ -454,7 +671,7 @@ func (s *Service) SetCreationValues(ctx context.Context, ticketID, categoryID uu
 		return out
 	}
 
-	resolved, err := s.ResolveFieldsForCTI(ctx, categoryID, typeID, itemID)
+	resolved, err := fields()
 	if err != nil {
 		return allNotSaved(), fmt.Errorf("resolving the ticket's fields: %w", err)
 	}
@@ -539,4 +756,203 @@ func validateFieldType(ft FieldType) error {
 	default:
 		return Invalid(fmt.Sprintf("invalid field type %q", ft))
 	}
+}
+
+// valuesByID reads the request's map by field id. Keys that are not ids are not
+// in it (SetCreationValues reports them); two keys that spell one id are in dup.
+func valuesByID(raw map[string]string) (values map[uuid.UUID]string, dup map[uuid.UUID]bool) {
+	values, dup = make(map[uuid.UUID]string, len(raw)), map[uuid.UUID]bool{}
+	for key, v := range raw {
+		id, err := uuid.Parse(key)
+		if err != nil {
+			continue
+		}
+		if _, seen := values[id]; seen {
+			dup[id] = true
+		}
+		values[id] = v
+	}
+	return values, dup
+}
+
+// checkRequired is the rule for the fields a door offers: each one the form
+// would hold a person to (shown, required, active, at its most specific
+// attachment, which is what offered holds) needs a value, and the value has to
+// be one the field accepts, because a value refused after the ticket exists
+// would leave it without the field this was checking for. Spaces are no value.
+//
+// FieldDef is always set by the store; an assignment without one is skipped
+// rather than guessed at.
+//
+// It also refuses, for every offered active field, a value over the field's
+// length limit, required or not: creation otherwise drops such a value with a
+// warning after the ticket exists, and the guest and REST doors are meant to say
+// 400 before anything is written. guest says whose words the refusal uses.
+func checkRequired(offered []Assignment, raw map[string]string, guest bool) error {
+	values, dup := valuesByID(raw)
+	var missing []string
+	for _, a := range offered {
+		def := a.FieldDef
+		if def == nil || !def.Active {
+			continue
+		}
+		if v, ok := values[a.FieldDefID]; ok && tooLong(*def, v) {
+			return refusalFor(*def, v, ReasonTooLong, guest)
+		}
+		if !a.VisibleOnNew || !a.RequiredOnNew {
+			continue
+		}
+		if dup[a.FieldDefID] {
+			return Invalid(fmt.Sprintf("field %q is listed twice", def.Name))
+		}
+		v := values[a.FieldDefID]
+		if strings.TrimSpace(v) == "" {
+			missing = append(missing, fmt.Sprintf("%q", def.Name))
+			continue
+		}
+		if _, reason := checkValue(*def, v); reason != "" {
+			return refusalFor(*def, v, reason, guest)
+		}
+	}
+	switch len(missing) {
+	case 0:
+		return nil
+	case 1:
+		return Invalid(fmt.Sprintf("custom field %s is required", missing[0]))
+	}
+	return Invalid("custom fields are required: " + strings.Join(missing, ", "))
+}
+
+// CheckRequired refuses, as a 400, a ticket about to be created without a value
+// for a field its classification requires. It is the server's rule, not the
+// form's: before 1.3.0 only the new-ticket form held anyone to it. Called before
+// the ticket is created so that no tracking number is spent on a refusal.
+//
+// The check and the create are not one transaction: an administrator who makes a
+// field required between them lets one ticket through without it. Accepted; the
+// ticket is not wrong, only the form was a moment out of date.
+func (s *Service) CheckRequired(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID, raw map[string]string) error {
+	_, err := s.CheckCreation(ctx, categoryID, typeID, itemID, raw)
+	return err
+}
+
+// CheckCreation is CheckRequired that also says whether the classification has a
+// required field. The creation doors need that if the write of the values fails
+// afterwards: a ticket that was to hold a required value and does not is what
+// the rule exists to prevent, so for such a ticket the failure fails the request,
+// while for any other the values stay best-effort as they always were. It is
+// answered here, from the lookup the check already made, and not asked after the
+// failure, when the database may be the thing that failed.
+func (s *Service) CheckCreation(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID, raw map[string]string) (hasRequired bool, err error) {
+	fields, err := s.ResolveFieldsForCTI(ctx, categoryID, typeID, itemID)
+	if err != nil {
+		return false, fmt.Errorf("resolving the ticket's fields: %w", err)
+	}
+	for _, a := range fields {
+		if a.FieldDef != nil && a.FieldDef.Active && a.VisibleOnNew && a.RequiredOnNew {
+			hasRequired = true
+		}
+	}
+	return hasRequired, checkRequired(fields, raw, false)
+}
+
+// GuestFields is the fields an anonymous visitor filing under the category is
+// offered: the category's own attachments that an administrator switched on for
+// guests, that are shown on the new-ticket form, and whose field is active. A
+// guest picks a category and nothing below it, so nothing attached to a type or
+// an item can be here. Everything else a guest asks about is judged against this
+// list, which is why it is built from an explicit opt-in and never from "not
+// marked internal": a field added later is not offered until someone says so.
+func (s *Service) GuestFields(ctx context.Context, categoryID uuid.UUID) ([]Assignment, error) {
+	all, err := s.store.ListAssignments(ctx, CategoryScope, categoryID)
+	if err != nil {
+		return nil, fmt.Errorf("listing the category's fields: %w", err)
+	}
+	var out []Assignment
+	for _, a := range all {
+		if a.VisibleToGuests && a.VisibleOnNew && a.FieldDef != nil && a.FieldDef.Active {
+			out = append(out, a)
+		}
+	}
+	return out, nil
+}
+
+// CheckGuestValues is what the guest endpoint asks before it files anything. It
+// is strict where CheckRequired is not: a guest is told no rather than warned,
+// because the form is ours and an anonymous caller has nothing to gain from a
+// partial save. Every key must be a field offered to guests (naming any other,
+// an empty value included, is refused, and the message does not say whether such
+// a field exists); every value must be one the field accepts; every required
+// offered field needs one. Required is judged only over the offered fields, so
+// a field the staff form requires but guests are not offered does not stop a
+// guest filing.
+func (s *Service) CheckGuestValues(ctx context.Context, categoryID uuid.UUID, raw map[string]string) error {
+	offered, err := s.GuestFields(ctx, categoryID)
+	if err != nil {
+		return err
+	}
+	defs := make(map[uuid.UUID]*FieldDef, len(offered))
+	for _, a := range offered {
+		defs[a.FieldDefID] = a.FieldDef
+	}
+	seen := make(map[uuid.UUID]bool, len(raw))
+	for key, v := range raw {
+		id, err := uuid.Parse(key)
+		def, ok := defs[id]
+		if err != nil || !ok {
+			return Invalid("custom_fields names a field that is not offered to guests")
+		}
+		if seen[id] {
+			return Invalid(fmt.Sprintf("field %q is listed twice", def.Name))
+		}
+		seen[id] = true
+		if v == "" {
+			continue
+		}
+		if _, reason := checkValue(*def, v); reason != "" {
+			return refusalFor(*def, v, reason, true)
+		}
+	}
+	return checkRequired(offered, raw, true)
+}
+
+// CopyValues carries the custom field values of ticket from to its follow-up to,
+// which has just been filed under the given classification (#625 item 8, D24).
+//
+// Staff and administrators carry every value whose field resolves on the new
+// classification. A requester (requester true) carries only the fields the
+// new-ticket form shows (visible_on_new): what the form keeps from a requester is
+// not handed to their new ticket. A field the new classification does not have is
+// left behind (a guest's follow-up is filed under the category alone).
+//
+// It is SetCreationValues' write, so each value is held to the rules of the field
+// as they are now: a value the field no longer accepts (a retired option, a limit
+// lowered since, a deactivated field) is left out and reported as a Warning, and
+// the rest are copied. It is not atomic with the follow-up: the ticket is already
+// committed when this runs, so a failure here is the caller's to log and cannot
+// undo it, and it is not retried.
+func (s *Service) CopyValues(ctx context.Context, from, to, categoryID uuid.UUID, typeID, itemID *uuid.UUID, requester bool) ([]Warning, error) {
+	held, err := s.store.ListValuesForTicket(ctx, from)
+	if err != nil {
+		return nil, fmt.Errorf("reading the values of the original: %w", err)
+	}
+	raw := make(map[string]string, len(held))
+	for _, v := range held {
+		if v.Value != "" {
+			raw[v.FieldDefID.String()] = v.Value
+		}
+	}
+	return s.setCreationValues(ctx, to, raw, func() ([]Assignment, error) {
+		fields, err := s.ResolveFieldsForCTI(ctx, categoryID, typeID, itemID)
+		if err != nil || !requester {
+			return fields, err
+		}
+		shown := make([]Assignment, 0, len(fields))
+		for _, a := range fields {
+			if a.VisibleOnNew {
+				shown = append(shown, a)
+			}
+		}
+		return shown, nil
+	})
 }

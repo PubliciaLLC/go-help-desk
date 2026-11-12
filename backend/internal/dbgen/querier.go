@@ -440,6 +440,9 @@ type Querier interface {
 	// stored nor matched.
 	FindSLAPolicy(ctx context.Context, arg FindSLAPolicyParams) (SlaPolicy, error)
 	// One value from the list that some ticket holds; no row when none does.
+	// The prefix test is what idx_cfv_field_def holds (migration 000065: it indexes the
+	// first 255 characters of the value, not the whole of a long one); the exact
+	// test after it is the answer.
 	FirstHeldCustomFieldValue(ctx context.Context, arg FirstHeldCustomFieldValueParams) (string, error)
 	GetAPIKeyByHash(ctx context.Context, hashedToken string) (ApiKey, error)
 	// The path of a node as the audit log records it: "Hardware", "Hardware › Laptop",
@@ -502,6 +505,10 @@ type Querier interface {
 	// as "the ticket's SLA". Every statement below that addresses a ticket's
 	// record carries the same filter.
 	GetSLARecord(ctx context.Context, ticketID uuid.UUID) (SlaRecord, error)
+	// The category, type and item a node sits under, NULL below the node's own level
+	// and everywhere for a node that does not exist. Read with ListAssignmentsForFieldDef
+	// to find an attachment of the same field above or below a new one.
+	GetScopeChain(ctx context.Context, arg GetScopeChainParams) (GetScopeChainRow, error)
 	// Only for go-help-desk unlock (#497), which must say WHY it refuses a service
 	// account rather than report "no such account" (GetUserByEmail below hides
 	// them on purpose). Returns the display name, which is the OAuth client's.

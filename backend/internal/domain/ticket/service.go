@@ -66,7 +66,23 @@ type Service struct {
 	// domain does not import the user package's store; the server wires it.
 	// Nil means no account address can be found.
 	userEmail func(context.Context, uuid.UUID) (string, error)
+
+	// copyValues carries a closed ticket's custom field values to its follow-up
+	// (#625 item 8). A function because this package does not import
+	// customfield; the server wires it. Nil copies nothing.
+	copyValues FollowUpValueCopier
 }
+
+// FollowUpValueCopier copies the custom field values of from to its follow-up to,
+// after the follow-up has committed. requester says the follow-up was opened by
+// the ticket's requester, who may carry only what the new-ticket form shows.
+// It returns nothing: the follow-up is already committed, so a failure cannot
+// undo it, and the implementation logs it at the boundary.
+type FollowUpValueCopier func(ctx context.Context, from, to Ticket, requester bool)
+
+// SetFollowUpValueCopier wires the copy. Called once at start-up, before the
+// service takes requests.
+func (s *Service) SetFollowUpValueCopier(f FollowUpValueCopier) { s.copyValues = f }
 
 // SetUserEmailLookup wires the lookup ReplyRecipient uses for tickets filed by
 // an account. Called once at start-up, before the service takes requests.
@@ -342,7 +358,21 @@ func (s *Service) CreateFollowUp(ctx context.Context, originalID uuid.UUID, trac
 		TrackingPrefix: trackingPrefix,
 		AutoAssign:     route,
 	}
-	return s.create(ctx, in, actor, &orig)
+	t, err := s.create(ctx, in, actor, &orig)
+	if err != nil {
+		return Ticket{}, err
+	}
+	s.carryValues(ctx, orig, t, false)
+	return t, nil
+}
+
+// carryValues runs the wired copy for a follow-up that has committed. Detached
+// from the request's cancellation: the follow-up exists, and a client that
+// hangs up now should not decide whether it keeps its values.
+func (s *Service) carryValues(ctx context.Context, from, to Ticket, requester bool) {
+	if s.copyValues != nil {
+		s.copyValues(context.WithoutCancel(ctx), from, to, requester)
+	}
 }
 
 // CreateRequesterFollowUp opens a follow-up of a Closed ticket on behalf of its
@@ -426,7 +456,12 @@ func (s *Service) CreateRequesterFollowUp(
 			return Ticket{}, fmt.Errorf("%s: %w", err.Error(), ErrValidation)
 		}
 	}
-	return s.create(ctx, in, actor, &orig)
+	t, err := s.create(ctx, in, actor, &orig)
+	if err != nil {
+		return Ticket{}, err
+	}
+	s.carryValues(ctx, orig, t, true)
+	return t, nil
 }
 
 // IsClosed reports whether t is in the Closed system status. For a caller that

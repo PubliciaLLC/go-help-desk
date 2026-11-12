@@ -25,6 +25,7 @@ import { MarkdownEditor } from '@/components/editor/MarkdownEditor'
 import { Select } from '@/components/ui/select'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import type { Assignment } from '@/api/types'
+import { overLimit } from '@/lib/fieldLimits'
 
 const PRIORITIES = ['critical', 'high', 'medium', 'low'] as const
 
@@ -58,6 +59,7 @@ function CustomFieldInput({
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled}
           rows={3}
+          maxLength={def.effective_max_length}
         />
       )
     case 'number':
@@ -86,6 +88,7 @@ function CustomFieldInput({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled}
+          maxLength={def.effective_max_length}
         />
       )
   }
@@ -168,6 +171,13 @@ export function NewTicketPage() {
     for (const f of visibleFields) {
       if (f.required_on_new && !customFieldValues[f.field_def_id]) {
         setError(`${f.field_def?.name ?? 'A required field'} is required`)
+        return
+      }
+      // maxlength counts UTF-16 units and a paste can get past it; this is the
+      // exact check, and the server holds the same limit.
+      const tooLong = overLimit(f.field_def?.name ?? 'A field', customFieldValues[f.field_def_id] ?? '', f.field_def?.effective_max_length)
+      if (tooLong) {
+        setError(tooLong)
         return
       }
     }

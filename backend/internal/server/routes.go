@@ -516,6 +516,7 @@ func (s *Server) guestRouter() *chi.Mux {
 	// instance with guest submission off answers 404 rather than advertising a
 	// route it will not serve.
 	r.Post("/tickets", s.handleGuestCreateTicket)
+	r.Get("/fields", s.handleGuestFields)
 	r.Post("/resend", s.handleGuestResend)
 
 	// Reading accepts a closed ticket: closing stops rotating the link, it

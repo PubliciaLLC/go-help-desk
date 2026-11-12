@@ -90,6 +90,25 @@ describe('creating a ticket', () => {
   })
 })
 
+describe('a ticket filed whose custom field values could not be saved', () => {
+  it('still resolves the tracking number, and hands the server\'s notice to the caller', async () => {
+    post.mockResolvedValue({ data: { tracking_number: 'GHD-9', custom_fields_saved: false, notice: 'We received your request, but some details could not be saved.' } })
+    const onNotice = vi.fn()
+
+    await expect(
+      createGuestTicket({ subject: 's', description: 'd', category_id: 'c', guest_email: 'a@b.test', guest_name: 'A' }, onNotice),
+    ).resolves.toBe('GHD-9')
+    expect(onNotice).toHaveBeenCalledWith('We received your request, but some details could not be saved.')
+  })
+
+  it('says nothing when the values were saved', async () => {
+    post.mockResolvedValue({ data: { tracking_number: 'GHD-9' } })
+    const onNotice = vi.fn()
+    await createGuestTicket({ subject: 's', description: 'd', category_id: 'c', guest_email: 'a@b.test', guest_name: 'A' }, onNotice)
+    expect(onNotice).not.toHaveBeenCalled()
+  })
+})
+
 describe('re-requesting a link', () => {
   // The endpoint answers 202 whatever it is given. If this rejected on failure
   // the page could show a different message, which would answer the existence
