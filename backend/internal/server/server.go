@@ -39,6 +39,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/webauthn"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
+	"github.com/publiciallc/go-help-desk/backend/internal/ratelimit"
 	"github.com/publiciallc/go-help-desk/backend/internal/reputation"
 	"github.com/publiciallc/go-help-desk/backend/internal/version"
 	"golang.org/x/sync/singleflight"
@@ -198,18 +199,19 @@ type Server struct {
 	// submitted email and the transport address respectively.
 	//
 	// TOTP attempts are NOT limited here: they are counted on the user row
-	// (user.RecordMFAFailure), because an in-memory counter is cleared by a
-	// restart and multiplied by the replica count, which is not a limit on a
-	// six-digit secret.
-	loginLimiter *authmw.RateLimiter
+	// (user.RecordMFAFailure), a lock of its own with an escalating time, where
+	// this is a count in a one-minute window.
+	//
+	// Like every limiter below, it counts in the database (ratelimit.Store), so
+	// a restart does not clear it and N replicas share one budget (#621).
+	loginLimiter *ratelimit.Limiter
 
 	// guestUploadLimiter spends one unit per guest upload attempt, keyed by the
 	// ticket the guest link names (#445). The key is the ticket and not the
-	// address for the reason RateLimiter's comment gives, and because one guest
-	// behind a shared address must not use up another's. INTERIM like the
-	// others: in memory and per process.
-	guestUploadLimiter  *authmw.RateLimiter
-	guestRefusalLimiter *authmw.RateLimiter
+	// address for the reason ratelimit.Limiter's comment gives, and because one guest
+	// behind a shared address must not use up another's.
+	guestUploadLimiter  *ratelimit.Limiter
+	guestRefusalLimiter *ratelimit.Limiter
 
 	// loginThrottleDelay is how long an over-budget login waits before the
 	// password is checked. See config.AuthThrottleDelay.
@@ -233,7 +235,7 @@ type Server struct {
 	// is holding ten times a minute, indefinitely, from one address. One every
 	// five minutes still lets a customer who lost their link get another
 	// straight away, and turns a sustained lockout into an inconvenience.
-	guestResendLimiter *authmw.RateLimiter
+	guestResendLimiter *ratelimit.Limiter
 
 	// onBehalfMailLimiter caps how many times one member of staff can use
 	// reporter_email in an hour (#290, #444): each one may mail a stranger the
@@ -244,28 +246,28 @@ type Server struct {
 	// reporter_user_id does not. Keyed on the authenticated user, never on the
 	// address of the request: a machine credential is its owner.
 	//
-	// INTERIM, like loginLimiter: in memory and per process, so a restart
-	// clears every count and N replicas multiply the cap by N. Its window is
-	// fixed and shared by every key (see RateLimiter), so a member of staff
-	// can file a full budget just before the window ends and another just
+	// The window is fixed, and each member of staff's opens at their first use,
+	// so one can still file a full budget just before it ends and another just
 	// after: "40 an hour" is a cap on the pace, not a promise about any
 	// particular sixty minutes.
-	onBehalfMailLimiter *authmw.RateLimiter
+	onBehalfMailLimiter *ratelimit.Limiter
 
 	// passwordResetLimiter is per account, charged when the reset mail is sent
 	// and not when it is asked for (SendPasswordReset): one mail per account
 	// per five minutes, however many requests arrive and from however many
 	// addresses, so the endpoint cannot be used to fill an inbox. Charged off
 	// the request, so it tells the requester nothing about the account.
-	passwordResetLimiter *authmw.RateLimiter
+	passwordResetLimiter *ratelimit.Limiter
 
 	// The template editor (#158). Nil unless WithEmailTemplates gave them.
 	emailTemplates emailtemplate.Store
 	templateMailer TemplateMailer
 	// templateTestLimiter caps template test sends per administrator
-	// (templateTestsPerWindow in templateTestWindow). INTERIM like the others:
-	// in memory and per process.
-	templateTestLimiter *authmw.RateLimiter
+	// (templateTestsPerWindow in templateTestWindow).
+	templateTestLimiter *ratelimit.Limiter
+
+	// rateStore is where every limiter above counts. See WithRateLimitStore.
+	rateStore ratelimit.Store
 
 	cfg      *config.Config
 	router   *chi.Mux
@@ -417,6 +419,36 @@ func WithPasswordReset(svc *passwordreset.Service) Option {
 	}
 }
 
+// WithRateLimitStore is where every rate limit counts. Counts are in the
+// database so that a restart does not clear them and replicas share them
+// (#621). cmd/server always passes it. Without it a limiter that is switched on
+// refuses every request (see unconfiguredRateStore), so a missing store is loud
+// and safe, and there is no in-memory fallback to drift back to.
+func WithRateLimitStore(store ratelimit.Store) Option {
+	return func(s *Server) {
+		s.rateStore = store
+	}
+}
+
+// unconfiguredRateStore is the store of a Server built without
+// WithRateLimitStore. It fails closed: no count can be taken, so a limiter that
+// is on refuses, which is loud in a deployment that forgot to wire it and
+// harmless in a test that never reaches a limiter.
+type unconfiguredRateStore struct{}
+
+var errRateStoreMissing = errors.New("no rate limit store: server built without WithRateLimitStore")
+
+func (unconfiguredRateStore) Take(context.Context, string, time.Duration, time.Time) (ratelimit.Count, error) {
+	return ratelimit.Count{}, errRateStoreMissing
+}
+func (unconfiguredRateStore) Refund(context.Context, string, time.Time) error {
+	return errRateStoreMissing
+}
+func (unconfiguredRateStore) Spent(context.Context, string, time.Time) (int, error) {
+	return 0, errRateStoreMissing
+}
+func (unconfiguredRateStore) Reset(context.Context, string) error { return errRateStoreMissing }
+
 // WithEmailHealth lets the admin security warnings say whether email is being
 // delivered (#456). Without it the warning reports configuration only.
 func WithEmailHealth(r notification.HealthReader) Option {
@@ -466,23 +498,6 @@ func New(
 		oauthClientStore: oauthClients,
 		authStore:        authStore,
 		cannedResponses:  cannedResponses,
-		// Built here rather than injected: derived entirely from config, no
-		// other collaborators.
-		loginLimiter:       authmw.NewRateLimiter(cfg.AuthRateLimitPerMinute, time.Minute),
-		loginThrottleDelay: cfg.AuthThrottleDelay,
-		guestResendLimiter: authmw.NewRateLimiter(1, 5*time.Minute),
-		// Keyed by ticket, with the figure read from the setting on each use
-		// (TakeWithLimit): the constructor's limit is not consulted.
-		guestUploadLimiter: authmw.NewRateLimiter(1, time.Hour),
-		// Every REFUSED guest upload, refunded or not, against a fixed budget
-		// (guestRefusalsPerHour): a refusal decided before the scan is free of
-		// the hourly upload budget, so this is what stops a stream of them.
-		guestRefusalLimiter: authmw.NewRateLimiter(guestRefusalsPerHour, time.Hour),
-		// Not configurable: the figure is the ruling on #444, not a tuning knob.
-		onBehalfMailLimiter: authmw.NewRateLimiter(onBehalfMailPerHour, time.Hour),
-		// The same shape and the same reasoning (#451).
-		passwordResetLimiter: authmw.NewRateLimiter(1, 5*time.Minute),
-		templateTestLimiter:  authmw.NewRateLimiter(templateTestsPerWindow, templateTestWindow),
 		// One Budget for the life of the process, always — even when no
 		// lookup is wired, so that nothing has to check for nil later. A
 		// Budget built per request is a fresh allowance per request, which is
@@ -516,6 +531,25 @@ func New(
 	for _, opt := range opts {
 		opt(s)
 	}
+	if s.rateStore == nil {
+		s.rateStore = unconfiguredRateStore{}
+	}
+	// Built here, after the options, because they count in the store.
+	s.loginThrottleDelay = cfg.AuthThrottleDelay
+	s.loginLimiter = ratelimit.New(s.rateStore, "auth", cfg.AuthRateLimitPerMinute, time.Minute)
+	s.guestResendLimiter = ratelimit.New(s.rateStore, "guest-resend", 1, 5*time.Minute)
+	// Keyed by ticket, with the figure read from the setting on each use
+	// (TakeWithLimit): the constructor's limit is not consulted.
+	s.guestUploadLimiter = ratelimit.New(s.rateStore, "guest-upload", 1, time.Hour)
+	// Every REFUSED guest upload, refunded or not, against a fixed budget
+	// (guestRefusalsPerHour): a refusal decided before the scan is free of the
+	// hourly upload budget, so this is what stops a stream of them.
+	s.guestRefusalLimiter = ratelimit.New(s.rateStore, "guest-refusal", guestRefusalsPerHour, time.Hour)
+	// Not configurable: the figure is the ruling on #444, not a tuning knob.
+	s.onBehalfMailLimiter = ratelimit.New(s.rateStore, "on-behalf", onBehalfMailPerHour, time.Hour)
+	// The same shape and the same reasoning (#451).
+	s.passwordResetLimiter = ratelimit.New(s.rateStore, "password-reset", 1, 5*time.Minute)
+	s.templateTestLimiter = ratelimit.New(s.rateStore, "template-test", templateTestsPerWindow, templateTestWindow)
 	s.router = s.buildRouter()
 	return s
 }

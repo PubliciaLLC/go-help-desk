@@ -292,6 +292,18 @@ type Querier interface {
 	// serves it; SKIP LOCKED so a row someone else holds is left for the next sweep
 	// and not waited on.
 	DeleteExpiredGuestAccessTokens(ctx context.Context, batchSize int32) (int64, error)
+	// Removes up to batch rows whose window has ended. A bounded batch, called in a
+	// loop, so that clearing a backlog (a burst of attempts on made-up email
+	// addresses) is many short statements and not one that holds locks and writes a
+	// huge amount of WAL at once. The window_end index serves it.
+	//
+	// The outer WHERE repeats the expiry test on purpose. The subquery picks keys
+	// from a snapshot, and a request can reopen one (TakeRateLimit replaces its
+	// window) before this statement reaches the row; matching on the key alone then
+	// deleted the live window and the key's budget started again from nothing. With
+	// the test here the row is re-read after the lock wait, and a reopened one no
+	// longer matches.
+	DeleteExpiredRateLimits(ctx context.Context, arg DeleteExpiredRateLimitsParams) (int64, error)
 	DeleteExpiredSessions(ctx context.Context) (int64, error)
 	DeleteFailedNotificationsBefore(ctx context.Context, failedAt sql.NullTime) (int64, error)
 	DeleteGroup(ctx context.Context, id uuid.UUID) (int64, error)
@@ -482,6 +494,9 @@ type Querier interface {
 	GetPendingRegistrationByID(ctx context.Context, id uuid.UUID) (PendingRegistration, error)
 	GetPendingRegistrationByToken(ctx context.Context, token uuid.UUID) (PendingRegistration, error)
 	GetPlugin(ctx context.Context, id string) (Plugin, error)
+	// The count in a key's live window, without counting an attempt. No row back
+	// (never used, or its window has ended) means nothing has been spent.
+	GetRateLimitCount(ctx context.Context, arg GetRateLimitCountParams) (int32, error)
 	GetSLAPolicy(ctx context.Context, id uuid.UUID) (SlaPolicy, error)
 	// The CURRENT record: a superseded row (000043) is history and is never read
 	// as "the ticket's SLA". Every statement below that addresses a ticket's
@@ -813,6 +828,30 @@ type Querier interface {
 	// Every other criterion is a further AND, so a filter can only narrow what the
 	// caller may already see. Nothing below widens it.
 	//
+	// reply_hits is reply-text search (advanced search, section 2.5). It is empty
+	// unless search_replies is set and the search has words. A ticket matches when
+	// ONE reply holds every word, so a public reply and an internal note cannot
+	// combine. include_internal comes from the actor's role and nothing else
+	// (ticket.IncludeInternalFor); for a requester it is false, and an internal note
+	// is then never read, so it cannot decide which tickets match. The snippet read
+	// (ReplyMatchesForTickets) applies the same condition.
+	//
+	// It matches ticket_replies.body_tsv, a stored column the migration adds and a
+	// trigger keeps current. The store sets search_replies false until the
+	// background fill and the two indexes are done (ReplySearchReady), so this arm
+	// never runs against a half-filled column.
+	//
+	// It looks at only the reply_cap NEWEST matching replies of the tickets the
+	// viewer may see, so a word in a quarter of all replies is not matched, joined
+	// and deduplicated a million times over. The recency index lets the planner
+	// walk replies newest first and stop; the content index serves the rare words.
+	// The cap is applied AFTER the viewer's visibility, with the same predicate as
+	// the main query below (rt is that ticket): applied before it, a requester's
+	// own matches would be crowded out by everyone else's, and a ticket the viewer
+	// may see could be missed because newer matches elsewhere used up the cap. The
+	// main query still applies visibility and every filter itself, so this can
+	// only narrow what it returns. Keep the two predicates in step: a store test
+	// searches as a scoped member of staff and a requester with a cap of one.
 	// Single values are NULL-means-absent and arrays are cardinality(...) = 0, so
 	// one prepared statement serves every combination. The store always passes a
 	// non-nil array.
@@ -960,6 +999,11 @@ type Querier interface {
 	// Also clears must_change_password: this is the account holder choosing a
 	// password, which is what that flag is waiting for (#497).
 	RedeemPasswordResetToken(ctx context.Context, arg RedeemPasswordResetTokenParams) (uuid.UUID, error)
+	// Gives back one attempt TakeRateLimit counted, for a caller that spent before
+	// the work and found the work did not happen. Only inside the window the attempt
+	// was counted in: if the window has since ended and another begun, giving one
+	// back would take a slot the new window never lost. Never below zero.
+	RefundRateLimit(ctx context.Context, arg RefundRateLimitParams) error
 	// Sign-in upgrade of a hash made at a lower bcrypt cost (#453). The new hash
 	// was computed from the old one's password, so it is written only while the
 	// row still holds that old hash: a password changed during the ~250 ms of
@@ -992,6 +1036,37 @@ type Querier interface {
 	// Position n (from 1) becomes the field's number. Only rows whose number
 	// changes are written.
 	ReorderCustomFieldDefs(ctx context.Context, ids []uuid.UUID) error
+	// One snippet per ticket: its newest matching reply the viewer may read. The
+	// second half of reply search; the first is the reply_hits CTE in
+	// ListTicketsFiltered, and both take the same include_internal.
+	//
+	// Run only for the tickets on the page (at most 200). ts_headline parses the
+	// body again, so it runs once per ticket, not once per matching reply.
+	//
+	// include_internal comes from the actor's role and nothing else (see
+	// ticket.IncludeInternalFor). It is applied HERE as well as in the match
+	// query, because a ticket that matches on its own subject must not show a
+	// snippet from an internal note, to a requester least of all.
+	//
+	// It matches the stored r.body_tsv, as the match query does, so the two cannot
+	// disagree about what a reply holds. ts_headline below still parses the body of
+	// the one reply per ticket it shows, from the same first 50,000 characters the
+	// column was computed from (migration 000062).
+	//
+	// Matched words are wrapped in U+0002 and U+0003, not HTML. No author is read.
+	ReplyMatchesForTickets(ctx context.Context, arg ReplyMatchesForTicketsParams) ([]ReplyMatchesForTicketsRow, error)
+	// Whether reply search may run: both indexes it needs exist and are valid.
+	// The server builds them in the background after the migration, and only once
+	// every existing reply has its body_tsv (internal/database/replyindex), so a
+	// valid index means the column is complete: a reply written since the
+	// migration is filled by the trigger, an older one by the background fill.
+	// Until then a search skips replies and says so.
+	//
+	// indisvalid is false for the index a failed CREATE INDEX CONCURRENTLY leaves
+	// behind, which still exists under its name and must not count.
+	ReplySearchReady(ctx context.Context) (bool, error)
+	// Clears a key's budget, after a successful sign-in.
+	ResetRateLimit(ctx context.Context, key string) error
 	RestoreTag(ctx context.Context, id uuid.UUID) (int64, error)
 	RestoreUser(ctx context.Context, id uuid.UUID) error
 	RetryNotification(ctx context.Context, arg RetryNotificationParams) error
@@ -1198,6 +1273,19 @@ type Querier interface {
 	// to take the parent before queueing its children: zero rows means another
 	// worker already split or settled it (#513).
 	TakeNotification(ctx context.Context, id uuid.UUID) (int64, error)
+	// Counts one attempt against a key and says where it landed. One statement,
+	// so two attempts at once are serialised by the row lock and each gets its own
+	// number: both cannot be told they were the last one under the limit.
+	//
+	// The key's window is opened by this attempt when there is no row or the old
+	// window has ended (window_end <= now), and keeps its original end otherwise,
+	// so a window is never stretched by being used. Every SET expression reads the
+	// row as it was before the update, which is what makes the three CASEs agree.
+	//
+	// now comes from the caller, not the database, so a test can move a limiter's
+	// clock; replicas whose clocks differ by a second differ by a second in when a
+	// window ends, which no limit here is sensitive to.
+	TakeRateLimit(ctx context.Context, arg TakeRateLimitParams) (TakeRateLimitRow, error)
 	// First use stamps the row. Separate from the lookup so a read of the ticket
 	// is not also a write on the hot path when the column is already set.
 	TouchGuestAccessToken(ctx context.Context, tokenHash string) error
@@ -1230,8 +1318,9 @@ type Querier interface {
 	// The account half of /app/server unlock (#497), run in the same transaction
 	// as ClearFactors: re-enable, clear the TOTP lockout, install the generated
 	// password and require it to be changed. Not for a deleted account. The
-	// in-memory sign-in throttle is another process's memory and only ever delays,
-	// never refuses, so there is nothing of it to clear here.
+	// sign-in throttle (rate_limit_counters) only ever delays, never refuses the
+	// right password, and ends within a minute, so there is nothing of it to clear
+	// here.
 	UnlockUser(ctx context.Context, arg UnlockUserParams) (int64, error)
 	UpdateAPIKeyLastUsed(ctx context.Context, arg UpdateAPIKeyLastUsedParams) error
 	UpdateCannedResponse(ctx context.Context, arg UpdateCannedResponseParams) error

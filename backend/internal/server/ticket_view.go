@@ -46,6 +46,14 @@ type ticketView struct {
 	// requester's own new ticket. Absent otherwise.
 	FollowUp *ticket.FollowUpRef `json:"follow_up,omitempty"`
 
+	// ReplyMatch is the reply a reply search found this ticket through: an
+	// excerpt, never an author. Present only on a list that searched replies and
+	// only for a ticket that matched through one. It is on the requester allowed
+	// list, so a requester gets it too: the store reads it with the same
+	// IncludeInternal that chose the page, which is false for them, so it is never
+	// an internal note.
+	ReplyMatch *ticket.ReplyMatch `json:"reply_match,omitempty"`
+
 	// HasQuarantinedAttachment is whether any file on this ticket was held by
 	// the scanner (attachments.virus_name IS NOT NULL), so staff scanning the
 	// queue can tell without opening each ticket (#628). Staff and
@@ -192,11 +200,16 @@ func (s *Server) ticketViews(ctx context.Context, ts []ticket.Ticket, actor *aut
 // writeTickets is handleListTickets' common exit: attach SLA status to the
 // page it was given and write the result as JSON. The wrapper runs exactly once
 // per request.
-func (s *Server) writeTickets(w http.ResponseWriter, r *http.Request, tickets []ticket.Ticket) {
+func (s *Server) writeTickets(w http.ResponseWriter, r *http.Request, tickets []ticket.Ticket, matches map[uuid.UUID]ticket.ReplyMatch) {
 	views, err := s.ticketViews(r.Context(), tickets, authmw.GetActor(r))
 	if err != nil {
 		handleError(w, err)
 		return
+	}
+	for i := range views {
+		if m, ok := matches[views[i].ID]; ok {
+			views[i].ReplyMatch = &m
+		}
 	}
 	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), views))
 }

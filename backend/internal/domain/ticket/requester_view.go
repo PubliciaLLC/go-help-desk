@@ -66,7 +66,8 @@ var requesterNeverTicketKeys = []string{
 //	links       ticket-to-ticket ids and a type: no content, and the REST links route sends the same to a requester
 //	warnings    custom field values dropped when the ticket was created (#603): the ids the requester sent themselves and a reason code
 //	follow_up   the id and tracking number of the follow-up already opened from a closed ticket (#625): their own new ticket, so the page links to it instead of offering a second
-var requesterWrapperKeys = []string{"sla", "can_reopen", "replies", "links", "warnings", "follow_up"}
+//	reply_match where a search found the ticket in its conversation: a requester's matches are their own public conversation, because the search never reads an internal note for them (ReplyMatch, Filter.IncludeInternal)
+var requesterWrapperKeys = []string{"sla", "can_reopen", "replies", "links", "warnings", "follow_up", "reply_match"}
 
 // guestTicketKeys are the Ticket keys a guest receives: a subset of the
 // requester's, since a guest has no account and needs only to read their own

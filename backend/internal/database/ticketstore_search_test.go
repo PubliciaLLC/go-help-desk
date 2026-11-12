@@ -685,6 +685,21 @@ func TestListFiltered_SLAAgreesWithStatusFor(t *testing.T) {
 			mutate: func(tk *ticket.Ticket) { tk.SLAPausedSeconds = 3000 },
 			record: `first_response_at = $2::timestamptz, response_elapsed_at_met_seconds = 5100, resolved_at = $2::timestamptz, resolution_elapsed_at_met_seconds = 5100`,
 			args:   func(tk ticket.Ticket) []any { return []any{tk.CreatedAt.Add(85 * time.Minute)} }},
+		// The same for the RESOLUTION target, which the cases above only exercise
+		// on the response side. Resolved late (72000 s of a 60000 s target, 120%),
+		// the ticket then paused for 50000 s: recomputing the met target against
+		// the pause total would read 22000 s, 37%, green. The frozen reading is
+		// red, and so is StatusFor. The response was met on time, so the red
+		// bucket comes from the resolution alone.
+		{name: "resolved late (frozen 120%), paused afterwards", age: s(200000),
+			mutate: func(tk *ticket.Ticket) {
+				tk.SLAPausedSeconds = 50000
+				tk.PendingSince = ref(now.Add(-time.Hour))
+			},
+			record: `first_response_at = $2::timestamptz, response_elapsed_at_met_seconds = 10, resolved_at = $3::timestamptz, resolution_elapsed_at_met_seconds = 72000`,
+			args: func(tk ticket.Ticket) []any {
+				return []any{tk.CreatedAt.Add(10 * time.Second), tk.CreatedAt.Add(72000 * time.Second)}
+			}},
 		// No frozen number (a record migration 000028 could only estimate):
 		// StatusFor recomputes at the met instant, and so does the SQL.
 		{name: "met with no frozen reading, 90% at the met instant", age: resp(500), record: `first_response_at = $2::timestamptz, resolved_at = $2::timestamptz`,

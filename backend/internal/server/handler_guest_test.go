@@ -15,9 +15,9 @@ import (
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
-	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
 
 // doGuest sends a request carrying a guest token and nothing else.
@@ -490,20 +490,30 @@ func TestGuest_FromYouDistinguishesTheTwoSides(t *testing.T) {
 // could not tell a close that mails a link from one that mails nothing.
 
 // The per-ticket resend budget lives in Server.PrepareGuestLink, charged at
-// send time, and the budget is the
-// RateLimiter's contract, so it is asserted where it can actually be observed:
-// the limiter directly, and the endpoint answering identically either way.
+// send time, so it is asserted there, through the real server and the real
+// counter, and the endpoint is asserted answering identically either way (next
+// test).
 //
 // Not by counting rows. The harness runs inside an uncommitted transaction, so
 // a query outside it sees nothing — a test that "passed" by finding zero rows
 // would be measuring the harness, not the budget.
 func TestGuest_ResendBudgetIsOnePerTicketPerFiveMinutes(t *testing.T) {
-	limiter := authmw.NewRateLimiter(1, 5*time.Minute)
-	id := uuid.New().String()
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	first, _ := seedGuestTicket(t, h)
+	second, _ := seedGuestTicketFor(t, h, "other@test.local")
+	resend := func(tk ticket.Ticket, email string) bool {
+		t.Helper()
+		_, ok, err := h.srv.PrepareGuestLink(ctx, notification.Event{
+			Type: notification.EventGuestLinkResent, TrackingNumber: string(tk.TrackingNumber), Recipient: email})
+		require.NoError(t, err)
+		return ok
+	}
 
-	require.True(t, limiter.Allow(id), "the customer who lost their link gets one")
-	require.False(t, limiter.Allow(id), "a second inside the window must not rotate")
-	require.True(t, limiter.Allow(uuid.New().String()),
+	require.True(t, resend(first, "guest@test.local"), "the customer who lost their link gets one")
+	require.False(t, resend(first, "guest@test.local"), "a second inside the window must not rotate")
+	require.True(t, resend(second, "other@test.local"),
 		"the budget is per ticket, so another ticket is unaffected")
 }
 

@@ -21,7 +21,28 @@ import (
 )
 
 // Store implements ticket.Store and ticket.StatusStore.
-type Store struct{ q *dbgen.Queries }
+type Store struct {
+	q            *dbgen.Queries
+	replyCap     int
+	replyTimeout time.Duration
+}
+
+const (
+	// DefaultReplyCap is how many of the newest matching replies a reply search
+	// looks at (see reply_hits in ListTicketsFiltered).
+	DefaultReplyCap = 2000
+	// DefaultReplyTimeout is how long a search that includes replies may run
+	// before the reply arm is dropped and the page is answered without it.
+	//
+	// Five seconds is the owner's decision of 2026-11-11 ("Longer limit (e.g.
+	// 5 s)"). It was two. At 5,000,000 replies a word in 1% of them or more took
+	// longer than two seconds on the machine measured, so those searches were
+	// answered from ticket text; five lets more of them finish. A request that
+	// still runs out costs the limit plus the ticket-only search, because the
+	// statement is answered again without the reply arm. The cap above is
+	// unchanged.
+	DefaultReplyTimeout = 5 * time.Second
+)
 
 // New returns a Store backed by the given Queries.
 // pageInt32 narrows a page bound to what the generated queries accept.
@@ -45,7 +66,17 @@ func pageInt32(n int) int32 {
 	return int32(n)
 }
 
-func New(q *dbgen.Queries) *Store { return &Store{q: q} }
+func New(q *dbgen.Queries) *Store {
+	return &Store{q: q, replyCap: DefaultReplyCap, replyTimeout: DefaultReplyTimeout}
+}
+
+// WithReplyLimits returns a Store with a different reply cap and time limit, for
+// a test that needs a cap of one or a limit that has already passed.
+func (s *Store) WithReplyLimits(replyCap int, timeout time.Duration) *Store {
+	c := *s
+	c.replyCap, c.replyTimeout = replyCap, timeout
+	return &c
+}
 
 // ── ticket.Store ────────────────────────────────────────────────────────────
 
@@ -1000,17 +1031,78 @@ func (s *Store) ListFiltered(ctx context.Context, f ticket.Filter) ([]ticket.Tic
 // outstanding targets by. ListFiltered passes the wall clock; a test passes a
 // fixed instant to put tickets exactly on the 80% and 100% boundaries.
 func (s *Store) ListFilteredAt(ctx context.Context, f ticket.Filter, now time.Time) ([]ticket.Ticket, error) {
-	res, err := s.listFilteredAt(ctx, f, now)
+	res, err := s.searchFilteredAt(ctx, f, now)
 	return res.Tickets, err
 }
 
-// ListFilteredWithMeta is ListFiltered plus what the query could not do about
-// reply text. The reply search fills Replies; until it does the zero value says
-// nothing and the handler sends no header.
+// ListFilteredWithMeta is ListFiltered plus what became of a request to search
+// replies, in ticket.ReplySearchMeta (GET /tickets turns it into headers):
+//
+//   - Replies were not asked for, or the search has no words: the zero value.
+//   - They were searched: Searched is true.
+//   - They could not be, because the server is still filling and indexing them
+//     after an upgrade: Searched is false and IndexBuilding is true. The reply arm
+//     is SKIPPED, not run as a scan: without the index a scan parses every
+//     reply, which at the sizes this is built for is minutes, and a half-filled
+//     column would give answers that are silently incomplete.
+//   - The reply arm ran out of its time limit (five seconds for the whole
+//     statement): Searched is false. The statement is cancelled and answered
+//     again without the reply arm, so the caller still gets the tickets that
+//     match on their own text.
+//
+// A page chosen without the reply arm must show no reply excerpts
+// (ReplySearchMeta.ExcerptsApply).
 func (s *Store) ListFilteredWithMeta(ctx context.Context, f ticket.Filter) (ticket.ListResult, error) {
-	return s.listFilteredAt(ctx, f, time.Now())
+	return s.searchFilteredAt(ctx, f, time.Now())
 }
 
+func (s *Store) searchFilteredAt(ctx context.Context, f ticket.Filter, now time.Time) (ticket.ListResult, error) {
+	if !f.SearchReplies || buildSearchTSQuery(f.Query) == "" {
+		f.SearchReplies = false
+		return s.listFilteredAt(ctx, f, now)
+	}
+
+	ready, err := s.q.ReplySearchReady(ctx)
+	if err != nil {
+		return ticket.ListResult{}, fmt.Errorf("checking reply search: %w", err)
+	}
+	if !ready {
+		f.SearchReplies = false
+		res, err := s.listFilteredAt(ctx, f, now)
+		res.Replies = ticket.ReplySearchMeta{Searched: ptr(false), IndexBuilding: true}
+		return res, err
+	}
+
+	limited, cancel := context.WithTimeout(ctx, s.replyTimeout)
+	defer cancel()
+	res, err := s.listFilteredAt(limited, f, now)
+	switch {
+	case err == nil:
+		res.Replies = ticket.ReplySearchMeta{Searched: ptr(true)}
+		return res, nil
+	case ctx.Err() == nil && isTimeout(err):
+		// Our limit, not the caller's: answer without the reply arm.
+		f.SearchReplies = false
+		res, err = s.listFilteredAt(ctx, f, now)
+		res.Replies = ticket.ReplySearchMeta{Searched: ptr(false)}
+		return res, err
+	}
+	return ticket.ListResult{}, err
+}
+
+func ptr[T any](v T) *T { return &v }
+
+// isTimeout says whether err is a statement cancelled by a context deadline,
+// however the driver words it.
+func isTimeout(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var pg *pgconn.PgError
+	return errors.As(err, &pg) && pg.Code == "57014" // query_canceled
+}
+
+// listFilteredAt runs ListTicketsFiltered for f exactly as it stands.
 func (s *Store) listFilteredAt(ctx context.Context, f ticket.Filter, now time.Time) (ticket.ListResult, error) {
 	sortKey, sortDir := f.ResolvedSort()
 	p := dbgen.ListTicketsFilteredParams{
@@ -1046,6 +1138,11 @@ func (s *Store) listFilteredAt(ctx context.Context, f ticket.Filter, now time.Ti
 		Searching:       strings.TrimSpace(f.Query) != "",
 		SearchQuery:     buildSearchTSQuery(f.Query),
 		TrackingPattern: searchPattern(f.Query),
+		// Both come from the Filter, which the caller built from the actor's
+		// role; ReplyMatches reads the same two for the snippets.
+		SearchReplies:   f.SearchReplies,
+		IncludeInternal: f.IncludeInternal,
+		ReplyCap:        pageInt32(s.replyCap),
 		ResultLimit:     pageInt32(f.Limit),
 		ResultOffset:    pageInt32(f.Offset),
 	}
@@ -1101,6 +1198,54 @@ func (s *Store) listFilteredAt(ctx context.Context, f ticket.Filter, now time.Ti
 		out[i] = fromRow(ticketRow(r))
 	}
 	return ticket.ListResult{Tickets: out}, nil
+}
+
+// ReplyMatches reads, for the tickets of one page, the newest reply each matched
+// through (ticket.ReplyMatch). It takes the Filter ListFiltered ran with, so the
+// words searched and f.IncludeInternal are the ones that chose the page: a
+// ticket that matched on its own subject must not show a snippet from an
+// internal note the viewer may not read, so the guard is in this query too.
+//
+// A query with no searchable words, SearchReplies off or no ids reads nothing.
+func (s *Store) ReplyMatches(ctx context.Context, f ticket.Filter, ticketIDs []uuid.UUID) (map[uuid.UUID]ticket.ReplyMatch, error) {
+	out := map[uuid.UUID]ticket.ReplyMatch{}
+	query := buildSearchTSQuery(f.Query)
+	if !f.SearchReplies || query == "" || len(ticketIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.q.ReplyMatchesForTickets(ctx, dbgen.ReplyMatchesForTicketsParams{
+		SearchQuery:     query,
+		TicketIds:       ticketIDs,
+		IncludeInternal: f.IncludeInternal,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("reading reply matches: %w", err)
+	}
+	for _, r := range rows {
+		out[r.TicketID] = ticket.ReplyMatch{
+			ReplyID:   r.ReplyID,
+			Internal:  r.Internal,
+			CreatedAt: r.CreatedAt,
+			Snippet:   cutSnippet(r.Snippet),
+		}
+	}
+	return out, nil
+}
+
+// cutSnippet limits a snippet to ticket.MaxSnippetRunes. ts_headline keeps to
+// about two dozen words, but a word can be 2,000 characters long. A cut that
+// lands inside a highlight would leave it open, so it is closed.
+func cutSnippet(s string) string {
+	r := []rune(s)
+	if len(r) <= ticket.MaxSnippetRunes {
+		return s
+	}
+	cut := string(r[:ticket.MaxSnippetRunes])
+	if strings.Count(cut, ticket.SnippetStart) > strings.Count(cut, ticket.SnippetStop) {
+		// Reserve a rune for the marker so the result is still within the limit.
+		cut = string(r[:ticket.MaxSnippetRunes-1]) + ticket.SnippetStop
+	}
+	return cut
 }
 
 // likeEscaper makes %, _ and the escape character itself match literally in an

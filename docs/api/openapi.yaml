@@ -525,7 +525,8 @@ paths:
         accepted, even when the budget is spent. The budget is one minute: when it
         is spent, the request is delayed before the password is checked and a
         refused attempt answers 429 with Retry-After set to the seconds left in
-        that minute (at most 60). A correct password on a hash made below cost 12
+        that account's minute (at most 60). The count is kept in the database,
+        so a restart does not clear it and replicas share it. A correct password on a hash made below cost 12
         is upgraded at this sign-in. From password_rehash_grace_days after 1.3.0
         first ran, it is refused instead (403 password_reset_required).
         The response says what
@@ -3334,8 +3335,13 @@ paths:
           required: false
           description: >-
             true or false (the default is false for the API). Accepted with q to also search reply text;
-            any other value is 400. It has no effect yet: reply search ships separately, and until it
-            does the response never carries the X-Replies-Searched or X-Reply-Index headers.
+            any other value is 400. A ticket then also matches when ONE reply holds every word (words
+            found in different replies do not combine). Staff and administrators search public replies and
+            internal notes; a requester, and any role not recognised, searches public replies only, whatever
+            the request says. Ranking looks at the 2,000 newest matching replies the caller may see, and the
+            whole search runs under a five-second limit. When replies could not be searched (the reply index
+            is still being built after an upgrade, or the limit passed) the answer is the tickets that match
+            on their own text, and the X-Replies-Searched and X-Reply-Index headers say so.
           schema:
             type: boolean
             default: false
@@ -3496,9 +3502,11 @@ paths:
         same way for every address. A unit is never given back once taken,
         not even when the create itself then fails. A picked reporter_user_id is not counted. The count is per user, not per address of the
         request: a machine credential counts against the user it acts as, and
-        another member of staff is unaffected. It is kept in memory, so it
-        resets when the server restarts and each replica of a multi-instance
-        deployment counts separately. Its window is fixed, not sliding.
+        another member of staff is unaffected. It is kept in the database, so
+        a restart does not clear it and every replica of a multi-instance
+        deployment shares it. Its window is fixed, not sliding, and opens at
+        that user's first count: Retry-After is the time left in it. If the
+        count cannot be written the answer is 500 and nothing is created.
       tags: ['Tickets']
       x-ghd-handler: handleCreateTicket
       security:
@@ -5768,7 +5776,8 @@ paths:
         guest_attachment_max_per_ticket guest-uploaded files (409
         guest_attachment_limit) and one link may upload
         guest_attachment_uploads_per_hour times an hour (429 rate_limited, with
-        Retry-After).
+        Retry-After set to the time left in that ticket's own hour; the count
+        is kept in the database and shared by replicas).
         Submission being switched off suspends guest links and answers 404 until
         the setting is enabled again. A Closed ticket answers 404 not_found, the same as a bad link, where
         uploadAttachment answers 409. As there, a Resolved ticket past its reopen
@@ -11052,9 +11061,10 @@ components:
   headers:
     RetryAfter:
       description: >-
-        Seconds to wait before trying again. On a 429 rate_limited from the
-        one-minute budget window it is the time left in that window, rounded up
-        and at least 1 (at most 60); before 1.3.0 it was always 60. The MFA lock
+        Seconds to wait before trying again. On a 429 rate_limited from a
+        counted window it is the time left in the refused key's own window,
+        rounded up and at least 1 (at most the window's length, 60 for the
+        one-minute budget); before 1.3.0 it was always 60. The MFA lock
         keeps its fixed length. On a 429 checked_recently it is the time until the earliest
         provider's seven-day floor clears. On a 503 it is a fixed 60, a
         suggestion rather than a promise.
@@ -11371,6 +11381,26 @@ components:
             can_reopen:
               type: boolean
               description: True when the ticket is Closed and closed_reopen_policy allows the viewer's role to force-reopen it. Always false for a reporting user.
+            reply_match:
+              description: >-
+                On a list that searched replies (search_replies=true), a ticket found through a reply carries
+                the newest matching reply the caller may read. Absent for any other ticket, when replies were
+                not asked for, and when they were not searched (X-Replies-Searched: false). A reporting user
+                gets it too, but for them it is always a public reply: internal notes are never searched or
+                excerpted for them, even on a ticket that matched by its subject. It names no author.
+              type: object
+              required: [reply_id, internal, created_at, snippet]
+              properties:
+                reply_id:
+                  $ref: '#/components/schemas/Uuid'
+                internal:
+                  type: boolean
+                created_at:
+                  type: string
+                  format: date-time
+                snippet:
+                  type: string
+                  description: The reply's own text, cut to 300 characters, with each matched word wrapped in the control characters U+0002 and U+0003. Not HTML; render it as text.
             requester:
               description: Who the ticket is for, shown as the Requester line on the staff ticket page (#444). Sent on getTicket only (never on a list row), to staff and administrators only, on every ticket; never to a reporting user. Absent when the reporting account cannot be read. A deleted account is still named.
               type: object

@@ -130,6 +130,12 @@ type Store interface {
 	// ListFilteredWithMeta is ListFiltered plus what the query could not do
 	// about reply text. ListFiltered is the same call without it.
 	ListFilteredWithMeta(ctx context.Context, f Filter) (ListResult, error)
+	// ReplyMatches reads, for the tickets of one page of a ListFiltered result,
+	// the reply each matched through: at most one per ticket, absent for a ticket
+	// that did not match through a reply. It takes the same Filter, so
+	// IncludeInternal governs both steps. Empty unless f.SearchReplies and the
+	// query has searchable words.
+	ReplyMatches(ctx context.Context, f Filter, ticketIDs []uuid.UUID) (map[uuid.UUID]ReplyMatch, error)
 
 	// Next sequence value for tracking-number generation
 	NextSeq(ctx context.Context) (int64, error)
