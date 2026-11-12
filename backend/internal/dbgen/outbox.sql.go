@@ -15,10 +15,7 @@ import (
 )
 
 const claimNotifications = `-- name: ClaimNotifications :many
-UPDATE notification_outbox
-SET claimed_until = now() + make_interval(secs => $1::int),
-    attempts = attempts + 1
-WHERE id IN (
+WITH page AS MATERIALIZED (
     SELECT id FROM notification_outbox
     WHERE failed_at IS NULL
       AND available_at <= now()
@@ -27,7 +24,12 @@ WHERE id IN (
     LIMIT $2
     FOR UPDATE SKIP LOCKED
 )
-RETURNING id, channel, event, attempts
+UPDATE notification_outbox
+SET claimed_until = now() + make_interval(secs => $1::int),
+    attempts = notification_outbox.attempts + 1
+FROM page
+WHERE notification_outbox.id = page.id
+RETURNING notification_outbox.id, notification_outbox.channel, notification_outbox.event, notification_outbox.attempts
 `
 
 type ClaimNotificationsParams struct {
@@ -47,6 +49,13 @@ type ClaimNotificationsRow struct {
 // (claimed_until) returns a row to the pool if its worker dies mid-send.
 // attempts counts the claim, so a row that crashes its worker every time
 // still runs out of attempts.
+//
+// The page is a MATERIALIZED CTE, not `id IN (SELECT ... LIMIT n)`: with the
+// subquery inline a nested-loop semi join re-runs it per row of the table, and
+// each re-run skips the rows already updated and takes the next n, so one claim
+// can lease every due row and count an attempt against each. The bad plan is
+// chosen when the table is estimated at about one row, which is the outbox's
+// usual state (measured at default planner settings).
 func (q *Queries) ClaimNotifications(ctx context.Context, arg ClaimNotificationsParams) ([]ClaimNotificationsRow, error) {
 	rows, err := q.db.QueryContext(ctx, claimNotifications, arg.LeaseSeconds, arg.PageLimit)
 	if err != nil {

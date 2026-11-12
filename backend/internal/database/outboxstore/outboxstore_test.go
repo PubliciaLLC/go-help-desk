@@ -271,3 +271,30 @@ func TestEnqueue_ARepeatedIDIsIgnored(t *testing.T) {
 	require.Equal(t, 1, n)
 	require.JSONEq(t, `{"n":1}`, ev, "the first row stands")
 }
+
+// One claim takes at most page_limit rows, whatever plan Postgres picks. The
+// statement used to be `id IN (SELECT ... LIMIT n FOR UPDATE SKIP LOCKED)`, and
+// under a nested-loop semi join the subquery was re-run per outbox row, so a
+// claim of 3 leased (and counted an attempt against) every due row. The
+// transaction and the forced plan keep this deterministic; see
+// testutil.ForceRescannedBatchPlan.
+func TestClaimNotifications_NeverTakesMoreThanItsLimit(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, tx, rollback := testutil.TxQueriesTx(t, db)
+	defer rollback()
+	testutil.ForceRescannedBatchPlan(t, tx)
+
+	for range 7 {
+		require.NoError(t, q.EnqueueNotification(context.Background(), dbgen.EnqueueNotificationParams{
+			ID: uuid.New(), Channel: "email", Event: []byte(`{"type":"ticket.created"}`),
+		}))
+	}
+	rows, err := q.ClaimNotifications(context.Background(), dbgen.ClaimNotificationsParams{LeaseSeconds: 60, PageLimit: 3})
+	require.NoError(t, err)
+	require.Len(t, rows, 3)
+
+	var leased int
+	require.NoError(t, tx.QueryRow(`SELECT count(*) FROM notification_outbox WHERE claimed_until IS NOT NULL`).Scan(&leased))
+	require.Equal(t, 3, leased, "rows leased beyond the page limit are over-leased: no other worker can take them until the lease runs out")
+}
