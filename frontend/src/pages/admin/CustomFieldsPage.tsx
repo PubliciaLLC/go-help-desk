@@ -20,6 +20,7 @@ import { Badge } from '@/components/ui/badge'
 import { Spinner } from '@/components/ui/spinner'
 import { ChevronDownIcon, ChevronRightIcon, PlusIcon, XIcon } from 'lucide-react'
 import type { FieldDef, FieldPlacement, FieldType, FieldUsage } from '@/api/types'
+import { hasOwnLimit, maxLengthHint, parseMaxLength } from '@/lib/fieldLimits'
 
 const FIELD_TYPES: { value: FieldType; label: string }[] = [
   { value: 'text', label: 'Text' },
@@ -171,7 +172,7 @@ function optionErrors(draft: OptionsDraft, retired: string[], attempted: boolean
 }
 
 // What makes two copies of a definition the same, for the parts the Details form edits.
-const definitionKey = (d: FieldDef) => JSON.stringify([d.name, d.field_type, d.options, d.retired_options])
+const definitionKey = (d: FieldDef) => JSON.stringify([d.name, d.field_type, d.options, d.retired_options, d.max_length ?? null])
 
 const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((v, i) => v === b[i])
 
@@ -284,6 +285,42 @@ function OptionsEditor({
   )
 }
 
+// The Maximum length box of a text or text area field: a limit below the type's
+// own. Blank leaves the type's. The hint says what the type allows, and the
+// problem, when there is one, is shown once the form has been tried.
+function MaxLengthField({
+  type, text, onChange, attempted, note,
+}: {
+  type: FieldType
+  text: string
+  onChange: (text: string) => void
+  attempted: boolean
+  note?: string
+}) {
+  const id = useId()
+  if (!hasOwnLimit(type)) return null
+  const parsed = parseMaxLength(text, type)
+  return (
+    <div className="space-y-1">
+      <label htmlFor={id} className={LABEL}>Maximum length</label>
+      <Input
+        id={id}
+        type="number"
+        inputMode="numeric"
+        min={1}
+        value={text}
+        onChange={(e) => onChange(e.target.value)}
+        className="max-w-40 pointer-coarse:h-11"
+      />
+      <p className="text-xs text-gray-500">
+        {maxLengthHint(type)}
+        {note ? ` ${note}` : ''}
+      </p>
+      {attempted && !parsed.ok && <p role="alert" className="text-sm text-red-600">{parsed.message}</p>}
+    </div>
+  )
+}
+
 // ── Details ───────────────────────────────────────────────────────────────────
 
 function FieldDetails({
@@ -305,6 +342,8 @@ function FieldDetails({
   const [name, setName] = useState(def.name)
   const [type, setType] = useState<FieldType>(def.field_type)
   const draft = useOptionsDraft(def.options ?? [], def.retired_options ?? [])
+  const initialMax = def.max_length != null ? String(def.max_length) : ''
+  const [maxText, setMaxText] = useState(initialMax)
   const [attempted, setAttempted] = useState(false)
   const [error, setError] = useState('')
 
@@ -323,7 +362,17 @@ function FieldDetails({
     if (!sameList(options, def.options ?? [])) patch.options = options
     if (!sameList(retired, def.retired_options ?? [])) patch.retired_options = retired
   }
-  const dirty = Object.keys(patch).length > 0
+  // The field's own limit: a number sets it, null removes it (also when the type
+  // becomes one that has none). Anything the server would refuse is not sent, but
+  // it still counts as a change, so Save can say what is wrong with it.
+  const maxParsed = parseMaxLength(maxText, type)
+  const maxChanged = hasOwnLimit(type) ? maxText.trim() !== initialMax : def.max_length != null
+  if (!hasOwnLimit(type)) {
+    if (def.max_length != null) patch.max_length = null
+  } else if (maxParsed.ok && maxChanged) {
+    patch.max_length = maxParsed.value
+  }
+  const dirty = Object.keys(patch).length > 0 || (maxChanged && !maxParsed.ok)
 
   // The row holds off rebuilding this form while it has unsaved edits.
   useEffect(() => {
@@ -359,6 +408,7 @@ function FieldDetails({
   function save() {
     setAttempted(true)
     if (!name.trim()) return
+    if (hasOwnLimit(type) && !maxParsed.ok) return
     if (type === 'select') {
       if (draft.rows.length === 0) return
       if (Object.keys(optionErrors(draft, retired, true)).length > 0) return
@@ -405,6 +455,14 @@ function FieldDetails({
         )}
       </div>
 
+      <MaxLengthField
+        type={type}
+        text={maxText}
+        onChange={setMaxText}
+        attempted={attempted}
+        note="Values already saved stay as they are."
+      />
+
       {type === 'select' && <OptionsEditor draft={draft} usage={usage} attempted={attempted} persisted showRetired={showRetired} onShowRetired={onShowRetired} />}
 
       {attempted && !name.trim() && <p role="alert" className="text-sm text-red-600">A field needs a name.</p>}
@@ -426,7 +484,7 @@ function FieldDetails({
 
 interface Scope { categoryId: string; typeId?: string; itemId?: string }
 interface PlaceInput { field_def_id: string; visible_on_new: boolean; required_on_new: boolean }
-interface PlacePatch { visible_on_new?: boolean; required_on_new?: boolean }
+interface PlacePatch { visible_on_new?: boolean; required_on_new?: boolean; visible_to_guests?: boolean }
 
 const scopeOf = (p: FieldPlacement): Scope => ({ categoryId: p.category.id, typeId: p.type?.id, itemId: p.item?.id })
 
@@ -462,8 +520,8 @@ function describePlaces(places: FieldPlacement[]): string {
 }
 
 // Which place the settings of an overlapping pair come from: the more specific
-// one wins. The API allows an overlap; this page does not create one, but lists
-// any that exist.
+// one wins. Neither the API nor this page makes an overlap any more (#626), but a
+// database written by 1.3.0-beta can hold one, so the page lists any that exist.
 function overlapsBelow(p: FieldPlacement, all: FieldPlacement[]): FieldPlacement[] {
   return all.filter((q) => {
     if (q.id === p.id) return false
@@ -547,6 +605,21 @@ function PlacesSection({ def, autoFocusAdd }: { def: FieldDef; autoFocusAdd: boo
                       />
                       Required
                     </label>
+                    {/* Only a category's own place: a guest picks a category and nothing below it. */}
+                    {p.scope_type === 'category' && (
+                      <label className={`${CHECK_LABEL} max-sm:order-4 max-sm:basis-full pointer-coarse:justify-start`}>
+                        <input
+                          type="checkbox"
+                          aria-label={`Offer to guests at ${path}`}
+                          checked={p.visible_to_guests ?? false}
+                          // Offered only while shown on the form; one already on stays
+                          // enabled so it can be turned off.
+                          disabled={!p.visible_on_new && !p.visible_to_guests}
+                          onChange={(e) => toggleMutation.mutate({ p, patch: { visible_to_guests: e.target.checked } })}
+                        />
+                        Offer to guests
+                      </label>
+                    )}
                     <button
                       type="button"
                       aria-label={`Remove ${path}`}
@@ -927,8 +1000,10 @@ function CreateForm({
   const [name, setName] = useState('')
   const [type, setType] = useState<FieldType>('text')
   const draft = useOptionsDraft([], [])
+  const [maxText, setMaxText] = useState('')
   const [attempted, setAttempted] = useState(false)
 
+  const maxParsed = parseMaxLength(maxText, type)
   const options = draft.rows.map((r) => r.text.trim())
   const optionsOk = type !== 'select' || (options.length > 0 && Object.keys(optionErrors(draft, [], true)).length === 0)
 
@@ -938,6 +1013,8 @@ function CreateForm({
       name: name.trim(),
       field_type: type,
       ...(type === 'select' ? { options } : {}),
+      // Only a text or text area field has a limit of its own.
+      ...(hasOwnLimit(type) && maxParsed.ok && maxParsed.value !== null ? { max_length: maxParsed.value } : {}),
       sort_order: defs.reduce((max, d) => Math.max(max, d.sort_order), 0) + 1,
     }),
     onSuccess: onCreated,
@@ -946,6 +1023,7 @@ function CreateForm({
   function submit() {
     setAttempted(true)
     if (!name.trim() || !optionsOk) return
+    if (hasOwnLimit(type) && !maxParsed.ok) return
     createMutation.mutate()
   }
 
@@ -983,6 +1061,7 @@ function CreateForm({
           </Select>
         </div>
       </div>
+      <MaxLengthField type={type} text={maxText} onChange={setMaxText} attempted={attempted} />
       {type === 'select' && <OptionsEditor draft={draft} usage={undefined} attempted={attempted} persisted={false} />}
       {createMutation.isError && <p role="alert" className="text-sm text-red-600">{extractError(createMutation.error)}</p>}
       <div className="flex gap-2">

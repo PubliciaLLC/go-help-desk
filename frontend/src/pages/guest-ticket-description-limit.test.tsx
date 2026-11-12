@@ -6,8 +6,8 @@ import * as ticketsApi from '@/api/tickets'
 
 // The guest form holds the description to 50,000 bytes too.
 
-const { createGuestTicket } = vi.hoisted(() => ({ createGuestTicket: vi.fn() }))
-vi.mock('@/api/guest', async (orig) => ({ ...(await orig<typeof import('@/api/guest')>()), createGuestTicket }))
+const { createGuestTicket, listGuestFields } = vi.hoisted(() => ({ createGuestTicket: vi.fn(), listGuestFields: vi.fn() }))
+vi.mock('@/api/guest', async (orig) => ({ ...(await orig<typeof import('@/api/guest')>()), createGuestTicket, listGuestFields }))
 vi.mock('@/components/editor/MarkdownEditor', () => ({
   MarkdownEditor: (p: { value: string; onChange: (v: string) => void }) => (
     <textarea aria-label="Description text" value={p.value} onChange={(e) => p.onChange(e.target.value)} />
@@ -19,6 +19,8 @@ import { GuestTicketPage } from './GuestTicketPage'
 beforeEach(() => {
   vi.restoreAllMocks()
   createGuestTicket.mockReset().mockResolvedValue('GHD-1')
+  // The page waits for the category's custom fields before it submits (#627).
+  listGuestFields.mockReset().mockResolvedValue([])
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   vi.spyOn(ticketsApi, 'listPublicCategories').mockResolvedValue([{ id: 'cat-1', name: 'Network', active: true, sort_order: 1 }] as any)
 })

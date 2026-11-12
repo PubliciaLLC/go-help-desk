@@ -81,13 +81,14 @@ type Category struct {
 }
 
 type CustomFieldAssignment struct {
-	ID            uuid.UUID `json:"id"`
-	FieldDefID    uuid.UUID `json:"field_def_id"`
-	ScopeType     string    `json:"scope_type"`
-	ScopeID       uuid.UUID `json:"scope_id"`
-	SortOrder     int32     `json:"sort_order"`
-	VisibleOnNew  bool      `json:"visible_on_new"`
-	RequiredOnNew bool      `json:"required_on_new"`
+	ID              uuid.UUID `json:"id"`
+	FieldDefID      uuid.UUID `json:"field_def_id"`
+	ScopeType       string    `json:"scope_type"`
+	ScopeID         uuid.UUID `json:"scope_id"`
+	SortOrder       int32     `json:"sort_order"`
+	VisibleOnNew    bool      `json:"visible_on_new"`
+	RequiredOnNew   bool      `json:"required_on_new"`
+	VisibleToGuests bool      `json:"visible_to_guests"`
 }
 
 type CustomFieldDef struct {
@@ -99,6 +100,7 @@ type CustomFieldDef struct {
 	Active         bool                  `json:"active"`
 	CreatedAt      time.Time             `json:"created_at"`
 	RetiredOptions pqtype.NullRawMessage `json:"retired_options"`
+	MaxLength      sql.NullInt32         `json:"max_length"`
 }
 
 type EmailTemplateOverride struct {

@@ -62,6 +62,12 @@ import (
 )
 
 func main() {
+	// Before anything else: a command line the binary does not understand must not
+	// start a server (see serverArgsProblem).
+	if msg := serverArgsProblem(os.Args[1:]); msg != "" {
+		fmt.Fprintln(os.Stderr, msg)
+		os.Exit(2)
+	}
 	// One subcommand, handled before run() so it never starts a server or a
 	// sweep. Everything else is the server, which keeps `docker run <image>`
 	// meaning what it has always meant.
@@ -75,6 +81,13 @@ func main() {
 			os.Exit(1)
 		}
 		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "prepare-reply-search" {
+		// Interruptible: the fill and the build resume where they stopped.
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		code := prepareReplySearchCommand(ctx, os.Args[2:], os.Stdout)
+		stop()
+		os.Exit(code)
 	}
 	if len(os.Args) > 1 && os.Args[1] == "unlock" {
 		var email string
@@ -484,7 +497,8 @@ func run() error {
 	// the REST API rather than a second copy of it.
 	// The last srv is the routing rule, the same one REST uses (Server.Routing).
 	mcpSrv := mcp.New(ticketSvc, adminSvc.TicketPrefix, srv, categorySvc, srv, srv).
-		WithReopenWindowDays(adminSvc.ReopenWindowDays)
+		WithReopenWindowDays(adminSvc.ReopenWindowDays).
+		WithCustomFields(customFieldSvc)
 
 	mux := http.NewServeMux()
 	// Wrapped, never bare: Handler() authenticates nothing on its own, and this

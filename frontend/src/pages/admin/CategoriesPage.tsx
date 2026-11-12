@@ -314,6 +314,10 @@ type FieldsScope =
   | { kind: 'type'; categoryId: string; typeId: string }
   | { kind: 'item'; categoryId: string; typeId: string; itemId: string }
 
+// visible_to_guests is sent for a category's own attachment only; the server
+// refuses it on a type or an item, where no guest can reach the field (#627).
+type AssignmentPatch = { visible_on_new?: boolean; required_on_new?: boolean; visible_to_guests?: boolean }
+
 const FIELD_CHECK = `inline-flex cursor-pointer select-none items-center gap-2 text-gray-700 ${TOUCH_SIZE}`
 const fieldName = (a: Assignment) => a.field_def?.name ?? a.field_def_id
 
@@ -377,7 +381,7 @@ function FieldsSubsection({ scope }: { scope: FieldsScope }) {
     return deleteItemAssignment(scope.categoryId, scope.typeId, scope.itemId, assignmentId)
   }
 
-  function updateAssignment(assignmentId: string, patch: { visible_on_new?: boolean; required_on_new?: boolean }) {
+  function updateAssignment(assignmentId: string, patch: AssignmentPatch) {
     if (scope.kind === 'category') return updateCategoryAssignment(scope.categoryId, assignmentId, patch)
     if (scope.kind === 'type') return updateTypeAssignment(scope.categoryId, scope.typeId, assignmentId, patch)
     return updateItemAssignment(scope.categoryId, scope.typeId, scope.itemId, assignmentId, patch)
@@ -390,7 +394,7 @@ function FieldsSubsection({ scope }: { scope: FieldsScope }) {
   const removeError = removeMutation.isError ? extractError(removeMutation.error) : ''
 
   const toggleMutation = useMutation({
-    mutationFn: ({ id, patch }: { id: string; patch: { visible_on_new?: boolean; required_on_new?: boolean } }) =>
+    mutationFn: ({ id, patch }: { id: string; patch: AssignmentPatch }) =>
       updateAssignment(id, patch),
     onSuccess: invalidateAssignments,
   })
@@ -460,6 +464,22 @@ function FieldsSubsection({ scope }: { scope: FieldsScope }) {
               />
               Required
             </label>
+            {scope.kind === 'category' && (
+              <label className={FIELD_CHECK}>
+                <input
+                  type="checkbox"
+                  aria-label={`Offer to guests for ${fieldName(a)}`}
+                  checked={a.visible_to_guests ?? false}
+                  // Guests are offered a field only while it is on the form, so it
+                  // cannot be switched on for one that is not. A box already on
+                  // stays enabled, so it can still be turned off.
+                  disabled={!a.visible_on_new && !a.visible_to_guests}
+                  onChange={(e) => toggleMutation.mutate({ id: a.id, patch: { visible_to_guests: e.target.checked } })}
+                  className="h-3 w-3"
+                />
+                Offer to guests
+              </label>
+            )}
             <button
               onClick={() => removeMutation.mutate(a.id)}
               className="opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 hover:text-red-500"

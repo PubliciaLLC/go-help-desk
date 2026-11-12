@@ -515,6 +515,22 @@ func New(
 	tickets.SetClosedReopenPolicy(adminSvc.ClosedReopenPolicy)
 	// Same reasoning: REST and MCP both ask the ticket service who a reply is
 	// mailed to (#442), and it needs the user lookup the server already holds.
+	// A follow-up carries its original's custom field values (#625 item 8). Run by
+	// the ticket service after the follow-up commits, from every door (REST, guest
+	// link, MCP), so it is wired once, here. The ticket is already committed, so a
+	// failure is logged and cannot undo it: the copy is not atomic with it.
+	tickets.SetFollowUpValueCopier(func(ctx context.Context, from, to ticket.Ticket, requester bool) {
+		warnings, err := customFields.CopyValues(ctx, from.ID, to.ID, to.CategoryID, to.TypeID, to.ItemID, requester)
+		if err != nil {
+			slog.ErrorContext(ctx, "copying custom field values to a follow-up failed; the follow-up was filed without them",
+				"ticket_id", to.ID, "original_id", from.ID, "error", err)
+			return
+		}
+		if len(warnings) > 0 {
+			slog.WarnContext(ctx, "some custom field values were not copied to a follow-up: the field no longer accepts them",
+				"ticket_id", to.ID, "original_id", from.ID, "values_left_out", len(warnings))
+		}
+	})
 	tickets.SetUserEmailLookup(func(ctx context.Context, id uuid.UUID) (string, error) {
 		u, err := users.GetByID(ctx, id)
 		if err != nil {

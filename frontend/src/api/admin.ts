@@ -528,6 +528,8 @@ export async function createFieldDef(input: {
   field_type: string
   options?: string[]
   sort_order?: number
+  // A limit on a value below the type's (text and text area only).
+  max_length?: number
 }): Promise<FieldDef> {
   const res = await api.post<FieldDef>('/admin/custom-fields', input)
   return res.data
@@ -535,7 +537,10 @@ export async function createFieldDef(input: {
 
 export async function updateFieldDef(
   id: string,
-  patch: Partial<Pick<FieldDef, 'name' | 'field_type' | 'options' | 'retired_options' | 'sort_order' | 'active'>>
+  patch: Partial<Pick<FieldDef, 'name' | 'field_type' | 'options' | 'retired_options' | 'sort_order' | 'active'>> & {
+    // A number sets the field's own limit, null removes it.
+    max_length?: number | null
+  }
 ): Promise<FieldDef> {
   const res = await api.patch<FieldDef>(`/admin/custom-fields/${id}`, patch)
   return res.data
@@ -617,7 +622,9 @@ export async function createItemAssignment(
 export async function updateCategoryAssignment(
   categoryId: string,
   assignmentId: string,
-  patch: { sort_order?: number; visible_on_new?: boolean; required_on_new?: boolean }
+  // visible_to_guests is for a category's own attachment only: the server
+  // refuses it on a type or an item (#627).
+  patch: { sort_order?: number; visible_on_new?: boolean; required_on_new?: boolean; visible_to_guests?: boolean }
 ): Promise<Assignment> {
   const res = await api.patch<Assignment>(`/admin/categories/${categoryId}/fields/${assignmentId}`, patch)
   return res.data

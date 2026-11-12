@@ -9,6 +9,7 @@ import { Select } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import type { FieldType, TicketFieldValue } from '@/api/types'
+import { overLimit } from '@/lib/fieldLimits'
 
 interface CustomFieldsPanelProps {
   ticketId: string
@@ -25,6 +26,8 @@ interface Row {
   name: string
   type: FieldType
   options?: string[]
+  // The longest value the server accepts, in characters.
+  maxLength?: number
   value: string
   editable: boolean
   inactive: boolean
@@ -109,6 +112,7 @@ export function CustomFieldsPanel({
       name: v?.field_name ?? def?.name ?? '',
       type: def?.field_type ?? v?.field_type ?? 'text',
       options: def?.options ?? v?.options,
+      maxLength: def?.effective_max_length ?? v?.effective_max_length,
       value,
       editable: isStaffOrAdmin && active,
       inactive: !active,
@@ -124,6 +128,7 @@ export function CustomFieldsPanel({
       name: v.field_name,
       type: v.field_type,
       options: v.options,
+      maxLength: v.effective_max_length,
       value: v.value,
       editable: false,
       inactive: false,
@@ -151,6 +156,17 @@ export function CustomFieldsPanel({
       setSaveError('')
       return
     }
+    // Only what changed is held to the limit: a value already there, over a limit
+    // lowered since, is left alone. maxlength counts UTF-16 units and a paste can
+    // get past it, so the exact check is made here; the server holds the same one.
+    for (const r of rows) {
+      const tooLong = r.id in changed ? overLimit(r.name, changed[r.id], r.maxLength) : ''
+      if (tooLong) {
+        setSaveError(tooLong)
+        return
+      }
+    }
+    setSaveError('')
     saveMutation.mutate(changed)
   }
 
@@ -168,6 +184,7 @@ export function CustomFieldsPanel({
             value={current}
             onChange={(e) => onChange(e.target.value)}
             rows={2}
+            maxLength={r.maxLength}
             className="text-xs"
           />
         )
@@ -194,9 +211,10 @@ export function CustomFieldsPanel({
                 that is not one of them was retired since: keep it as the current
                 choice, but never offer it to pick. "(retired)" marks any held
                 value missing from `options`, which also covers one stored before
-                1.3 that was never an option: the ticket routes do not carry
-                `retired_options`, so the card cannot tell the two apart. That is
-                intended. */}
+                1.3 that was never an option. The ticket routes now carry
+                `retired_options` (#626), so the two could be told apart; the card
+                still does not, on purpose: either way the value is no longer
+                offered, and the label says so. */}
             {r.value && !(r.options ?? []).includes(r.value) && (
               <option value={r.value} disabled>{r.value} (retired)</option>
             )}
@@ -211,6 +229,7 @@ export function CustomFieldsPanel({
             id={id}
             value={current}
             onChange={(e) => onChange(e.target.value)}
+            maxLength={r.maxLength}
             className="h-7 text-xs"
           />
         )

@@ -127,6 +127,14 @@ func TestTools_RefuseWithoutAuthenticatedActor(t *testing.T) {
 				return s.handleListStatuses(ctx, callToolRequest("list_statuses", map[string]any{}))
 			},
 		},
+		{
+			name: "list_ticket_fields",
+			call: func(ctx context.Context) (*mcpgo.CallToolResult, error) {
+				return s.handleListTicketFields(ctx, callToolRequest("list_ticket_fields", map[string]any{
+					"category_id": uuid.New().String(),
+				}))
+			},
+		},
 	}
 
 	for _, tc := range cases {

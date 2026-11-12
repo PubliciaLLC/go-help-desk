@@ -2229,6 +2229,68 @@ paths:
                     items: {$ref: '#/components/schemas/AccountGuestReply'}
         '404':
           $ref: '#/components/responses/GuestNotFound'
+  /api/v1/guest/fields:
+    get:
+      operationId: guestListFields
+      summary: List the custom fields the guest form offers under a category.
+      description: |
+        The custom fields an administrator has chosen to offer visitors under a category: the category's own
+        attachments with Offer to guests (visible_to_guests) switched on that are also shown on the new-ticket
+        form, and whose field is active. Nothing attached to a type or an item is ever offered, because a guest
+        picks a category and nothing below it. The answer is exactly the set POST /guest/tickets accepts in
+        custom_fields, in the order the form shows them (field number, then name).
+
+        Answers 404 not_found while guest submission is switched off, 400 bad_request when category_id is
+        missing, is not an id or is not a category open to guests (the same test POST /guest/tickets applies),
+        and 429 when the per-client-address budget is spent. The budget is its own, the size of the sign-in one.
+        The answer carries nothing about a field that is not offered, and no retired options.
+      tags: ['Guest']
+      x-ghd-handler: handleGuestFields
+      security: []
+      parameters:
+        - name: category_id
+          in: query
+          required: true
+          schema: {$ref: '#/components/schemas/Uuid'}
+      responses:
+        '200':
+          description: The offered fields, possibly none.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [id, name, field_type, required]
+                  properties:
+                    id: {$ref: '#/components/schemas/Uuid'}
+                    name: {type: string}
+                    field_type: {type: string, enum: [text, textarea, number, select]}
+                    options:
+                      type: array
+                      items: {type: string}
+                      description: The options in use, for a select field. Absent for any other type.
+                    required:
+                      type: boolean
+                      description: |
+                        Whether the guest must give a value. POST /guest/tickets answers 400 without one.
+                    max_length:
+                      type: integer
+                      description: >-
+                        The longest value POST /guest/tickets accepts for the field, in characters (the field's
+                        own limit, else the type's: 255, or 10,000 for a textarea), so the form can set maxlength.
+        '400':
+          description: '`bad_request`: category_id is missing, is not an id, or is not a category open to guests.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '404':
+          description: Guest submission is switched off (not_found).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
   /api/v1/guest/tickets:
     post:
       operationId: guestCreateTicket
@@ -2239,7 +2301,19 @@ paths:
         must name an active category that is open to guests. guest_email is required and must be a plain
         ASCII address without a display name (400 otherwise). guest_name is required. guest_phone is optional. Priority is always
         medium and cannot be set by a guest.
-        The response carries only the tracking number. The access link is emailed to guest_email, so a guest
+        custom_fields takes only the fields GET /guest/fields lists for the category. Anything else (a field
+        offered only to staff, one on a type, a deactivated one, an id that names nothing, a key that is not an
+        id, an empty value for one of those) is 400 bad_request, as is a value the field does not accept and a
+        missing value for an offered field that is required. A value over the field's limit (255
+        characters, or 10,000 for a textarea field; characters, not bytes) is 400, and a retired
+        option is refused with exactly the words used for one that never existed. A guest is never
+        warned and never partly saved: nothing is created, and no tracking number is used. If the
+        values cannot be saved after the ticket was created (a database fault), the answer is still 201
+        with the tracking number, plus custom_fields_saved false and a notice saying the request was
+        received, some details could not be saved, and to check the email for the ticket link and add
+        them there; it does not suggest trying again, which would file the ticket twice. A field that the staff form requires but guests
+        are not offered does not stop a guest filing.
+        The response carries only the tracking number (and, in the one case above, the notice). The access link is emailed to guest_email, so a guest
         proves ownership of the address by using the link. The per-client-address budget is shared with
         POST /guest/follow-up.
       tags: ['Guest']
@@ -2272,6 +2346,12 @@ paths:
                 guest_phone:
                   type: string
                   description: Optional phone number. Trimmed.
+                custom_fields:
+                  type: object
+                  additionalProperties: {type: string}
+                  description: |
+                    Field id to value, for the fields GET /guest/fields lists for category_id and no others.
+                    An empty value means no value.
       responses:
         '201':
           description: The tracking number of the new ticket.
@@ -2282,6 +2362,12 @@ paths:
                 required: [tracking_number]
                 properties:
                   tracking_number: {type: string}
+                  custom_fields_saved:
+                    type: boolean
+                    description: Present, and false, only when the ticket was filed but its custom field values could not be saved.
+                  notice:
+                    type: string
+                    description: 'With custom_fields_saved false, what to tell the guest (received, some details not saved, check the email).'
         '400':
           description: |
             `bad_request`: malformed body or a failed check; `invalid_format`: format is present and is not
@@ -3338,7 +3424,9 @@ paths:
             any other value is 400. A ticket then also matches when ONE reply holds every word (words
             found in different replies do not combine). Staff and administrators search public replies and
             internal notes; a requester, and any role not recognised, searches public replies only, whatever
-            the request says. Ranking looks at the 2,000 newest matching replies the caller may see, and the
+            the request says. A reply is searched, and excerpted, on its first 50,000 characters (the limit on a
+            new reply; replies written before 1.3.0 can be longer), so a word after that in a very long reply is
+            not found. Ranking looks at the 2,000 newest matching replies the caller may see, and the
             whole search runs under a five-second limit. When replies could not be searched (the reply index
             is still being built after an upgrade, or the limit passed) the answer is the tickets that match
             on their own text, and the X-Replies-Searched and X-Reply-Index headers say so.
@@ -3468,6 +3556,25 @@ paths:
         (anything else, including the lookup failing; every non-empty entry then
         gets this reason and nothing was written). Requesters receive `warnings`
         on their own tickets too: it names only the keys they sent.
+        A field the ticket's classification requires is the exception: it is checked
+        before the ticket is created, for every caller (staff and administrators
+        filing for someone else included), and a ticket without a usable value is
+        400 bad_request with nothing created and no tracking number used. A field is
+        required when its most specific attachment (item over type over category) is
+        shown on the new-ticket form and marked required and the field is active. The
+        value must be one the field accepts, so a retired option, an option that does
+        not exist or text in a number field is refused, not dropped; an empty value or
+        spaces is no value. The message names each missing field. A reporting user's
+        item_id is dropped before the check. One window remains: a field made required
+        between the check and the create lets that one ticket through without it.
+        Follow-ups (POST /tickets/{id}/follow-up) are exempt from the required rule: they take no
+        custom_fields. They carry their original's values (see that route), which usually satisfies it.
+        A value over the longest its field's type takes (255 characters for text, number and select;
+        10,000 for textarea; characters, not bytes) is refused with 400 before the ticket is created,
+        for any field and any caller, naming the field and the limit and not repeating the value.
+        If the values cannot be saved after the ticket was created (a database fault) and the
+        classification has a required field, the answer is 500 internal_error naming the ticket
+        that was filed; with no required field the answer stays 201 with `not_saved` warnings.
         An OAuth client creates the ticket as its service user, which becomes
         the reporter, and needs the tickets:write scope. Nobody is mailed for a
         service user.
@@ -4262,6 +4369,14 @@ paths:
         underscores; it is stored as written, trimmed (1.50 stays 1.50). A value
         stored before 1.3.0 is left as it is, and blocks only a save that changes
         that field.
+        A value is also refused (400) when it is over the longest the field takes, in
+        characters and not bytes: the field's own max_length when it has one, else 255 for a text,
+        number (after trimming) or select field and 10,000 for a textarea field
+        (effective_max_length on the field). The message names the field and the limit and does
+        not repeat the value. A value already stored over a limit (lowered since, or older than
+        the limits) is left as it is, and a value that does not change is not checked again: it
+        may be sent back unchanged, and is not rewritten. A different value is held to the limit.
+        The limit is enforced here, in the API; the store and the database know only the type's.
         A reporting user cannot change a Closed ticket (409 ticket_closed). Staff
         and administrators can.
         A ticket the caller may not see answers 404 not_found, the same answer as a
@@ -4334,6 +4449,14 @@ paths:
           added by hand does not use up the reporter's one follow-up. The
           follow-up keeps the original
           category and type, which must both still be active (400 otherwise).
+        The follow-up carries the closed ticket's custom field values, written after it
+        is committed. Staff and administrators carry every value whose field applies to
+        the follow-up's category, type and item; a reporting user carries only the fields
+        the new-ticket form shows (visible_on_new). A value the field no longer accepts (a
+        retired option, a limit lowered since, a deactivated field) is left out. It is not
+        atomic with the follow-up: if the copy fails the follow-up is still filed (201) and
+        the failure is logged. The follow-up is exempt from the required rule, which needs
+        custom_fields the route does not take.
         The ticket must be Closed (409 ticket_not_closed otherwise). The path id is a UUID
         or a tracking number. An OAuth client opens the follow-up as its service user,
         and needs the tickets:write scope.
@@ -9301,6 +9424,10 @@ paths:
         are written for the caller and never carry database text. visible_on_new is
         decoded as an optional boolean, so absent and false are the same, and the
         database column defaults to false to match (migration 000040).
+        visible_to_guests, also off when omitted, offers the field on the public guest form
+        (see GET /guest/fields); it is accepted on a category only, and a type or an item answers
+        400 bad_request. The field cannot be assigned here if it is already attached at one of
+        this category's types or items (409 conflict, naming where).
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleCreateAssignment
       security:
@@ -9327,6 +9454,9 @@ paths:
                 required_on_new:
                   type: boolean
                   description: Whether the field must be filled in on the new-ticket form. Defaults to false when omitted.
+                visible_to_guests:
+                  type: boolean
+                  description: Whether the public guest form offers the field. Defaults to false when omitted.
       responses:
         '201':
           description: The created assignment. It has no field_def.
@@ -9340,7 +9470,7 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '409':
-          description: "conflict: this field is already assigned to this category."
+          description: "conflict: this field is already assigned to this category, or is already attached at one of its types or items."
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -9366,7 +9496,7 @@ paths:
       summary: Change the order or flags of a category's field assignment.
       description: >-
         Administrators only (second factor required).
-        Changes the sort order and the visible_on_new and required_on_new flags of one
+        Changes the sort order and the visible_on_new, required_on_new and visible_to_guests flags of one
         assignment, identified by assignmentId. The field and the scope of an
         assignment cannot be changed here. The ids in the path must name a real chain
         and the assignment must belong to the scope the path ends at; an unknown
@@ -9394,6 +9524,9 @@ paths:
                 required_on_new:
                   type: boolean
                   description: Absent leaves it unchanged.
+                visible_to_guests:
+                  type: boolean
+                  description: Offers the field on the public guest form. Absent leaves it unchanged.
       responses:
         '200':
           description: The assignment as stored after the update. It has no field_def.
@@ -9728,7 +9861,7 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '409':
-          description: "conflict: this field is already assigned to this type."
+          description: "conflict: this field is already assigned to this type, to its category, or to one of its items."
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -10143,7 +10276,7 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '409':
-          description: "conflict: this field is already assigned to this item."
+          description: "conflict: this field is already assigned to this item, to its type, or to its category."
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -10318,10 +10451,19 @@ paths:
                 options:
                   type: array
                   items: {type: string}
-                  description: Allowed values. Required, at least one, when field_type is select.
+                  description: >-
+                    Allowed values. Required, at least one, when field_type is select. A blank value (after
+                    trimming) or a value listed twice is 400 bad_request, and so is an option over 255 characters.
                 sort_order:
                   type: integer
                   description: Display order. Defaults to 0.
+                max_length:
+                  type: [integer, 'null']
+                  description: >-
+                    The longest value a ticket may hold for this field, in characters, lower than the type's own
+                    (255 for text, 10,000 for textarea). A whole number from 1 to one below that cap; at or above it,
+                    zero, negative or not a whole number is 400 bad_request, as is any value for a number or select
+                    field. Absent or null is none: the type's cap applies.
       responses:
         '201':
           description: The created definition, active.
@@ -10368,7 +10510,11 @@ paths:
         Retire an option by moving it from options to retired_options. A value enters
         retired_options only from options, is never in both lists, and a select field
         keeps at least one option in use (400 otherwise). Renaming an option that
-        tickets hold is retiring the old text and adding the new.
+        tickets hold is retiring the old text and adding the new. A request that changes
+        either list (or makes the field a select) is also 400 when a value is blank after
+        trimming or appears twice across the two lists, compared exactly. A request that
+        leaves both lists as they are is not checked for that, so a field saved with a
+        blank option before can still be renamed.
 
         Audit. Every change is written to the audit log in the same transaction, as
         entity_type `custom_field` with the definition's id, so a field's whole history
@@ -10421,6 +10567,14 @@ paths:
                 active:
                   type: boolean
                   description: False deactivates the definition. Absent leaves it unchanged.
+                max_length:
+                  type: [integer, 'null']
+                  description: >-
+                    The field's own limit on a value, in characters, lower than the type's (see
+                    createCustomField). A number sets it, null removes it, absent leaves it. The change is
+                    checked against the field's resulting type, so a change to number or select needs it
+                    cleared. Lowering it never touches values tickets already hold, and is audited
+                    (custom_field_max_length_changed, with the limit that applied before and after).
       responses:
         '200':
           description: >-
@@ -11743,6 +11897,14 @@ components:
           items:
             type: string
           description: The allowed values. Present only for a select field.
+        retired_options:
+          type: array
+          items:
+            type: string
+          description: Options no longer offered that tickets may still hold. Absent when there are none.
+        effective_max_length:
+          type: integer
+          description: The longest value the API accepts for the field, in characters, so an edit box can set maxlength.
         value:
           type: string
         updated_at:
@@ -12552,8 +12714,8 @@ components:
         A custom field definition. options is present
         only when the definition has options. The server stores options as sent for any
         field type, and only select fields use them. options holds the options in use
-        only. retired_options, on the admin routes only, holds the retired ones and is
-        absent when there are none; the ticket routes never return it.
+        only. retired_options holds the retired ones and is absent when there are none;
+        the admin routes always returned it and the ticket routes do since 1.3.0.
       type: object
       required: [id, name, field_type, sort_order, active, created_at]
       properties:
@@ -12566,7 +12728,15 @@ components:
         retired_options:
           type: array
           items: {type: string}
-          description: Options no longer offered that tickets may still hold. Admin routes only.
+          description: Options no longer offered that tickets may still hold.
+        max_length:
+          type: integer
+          description: The administrator's own limit on a value, in characters, lower than the type's. Absent when there is none.
+        effective_max_length:
+          type: integer
+          description: >-
+            The longest value the API accepts for the field, in characters: max_length, else the type's
+            (255; 10,000 for textarea). Always present, so a form can set maxlength.
         place_count:
           type: integer
           description: How many places the field is attached to. Present on the list responses (GET /admin/custom-fields and PUT /admin/custom-fields/order) and not on a single definition; 0 for a field on no form.
@@ -12585,7 +12755,7 @@ components:
           description: The key exactly as sent. A string because for invalid_field_id it is not a UUID.
         reason:
           type: string
-          enum: [invalid_field_id, duplicate_field_id, not_on_ticket, inactive, retired_option, not_an_option, not_a_number, not_saved]
+          enum: [invalid_field_id, duplicate_field_id, not_on_ticket, inactive, retired_option, not_an_option, not_a_number, too_long, not_saved]
     CustomFieldPlaceNode:
       type: object
       required: [id, name, active]
@@ -12607,6 +12777,7 @@ components:
           description: The attachment's own number. Stored and returned; nothing orders by it.
         visible_on_new: {type: boolean}
         required_on_new: {type: boolean}
+        visible_to_guests: {type: boolean, description: Offered on the public guest form. Category attachments only.}
         category: {$ref: '#/components/schemas/CustomFieldPlaceNode'}
         type:
           oneOf:
@@ -12650,6 +12821,11 @@ components:
         sort_order: {type: integer}
         visible_on_new: {type: boolean}
         required_on_new: {type: boolean}
+        visible_to_guests:
+          type: boolean
+          description: >-
+            Whether the public guest form offers the field (see GET /guest/fields). Off unless an
+            administrator turns it on, and only a category's own attachment can be on.
     SlaPolicy:
       description: >-
         An SLA policy. priority and category_id are absent when the
