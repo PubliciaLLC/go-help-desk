@@ -33,6 +33,12 @@ const ST_CLOSED = uid('a2')
 const ST_PROG = uid('a3')
 const ST_PEND = uid('a4')
 const ST_RESOLVED = uid('a5')
+// Status names are whatever an administrator types. These are the lengths the
+// table has to survive: 25 characters costs it a few pixels, 53 a whole column.
+const ST_LONG = uid('a6')
+const ST_LONGER = uid('a7')
+const NAME_LONG = 'Waiting on customer reply'
+const NAME_LONGER = 'Waiting on the vendor to confirm the replacement part'
 const CAT_HW = uid('c1')
 const CAT_SW = uid('c2')
 const TY_PRINTERS = uid('d1')
@@ -57,6 +63,8 @@ const LIST = [
   { ...TICKETS[0], status_id: ST_PROG, category_id: CAT_HW, subject: 'Printer on the 3rd floor jams on tray 2', priority: 'high', sla: SLA, updated_at: '2026-10-28T10:00:00Z' },
   { ...TICKETS[1], status_id: ST_PEND, category_id: CAT_SW, subject: 'Toner warning stays on after replacement', priority: 'high', sla: SLA, updated_at: '2026-10-27T10:00:00Z' },
   { ...TICKETS[2], status_id: ST_NEW, category_id: CAT_SW, subject: 'Label printer prints blank lines between labels', priority: 'medium', sla: null, updated_at: '2026-10-26T10:00:00Z' },
+  { ...TICKETS[0], id: 'tk-4', tracking_number: 'GHD-2026-000004', status_id: ST_LONG, category_id: CAT_HW, subject: 'Badge reader rejects the new cards', priority: 'low', sla: null, updated_at: '2026-10-25T10:00:00Z' },
+  { ...TICKETS[0], id: 'tk-5', tracking_number: 'GHD-2026-000005', status_id: ST_LONGER, category_id: CAT_HW, subject: 'Replacement fuser has not arrived', priority: 'low', sla: null, updated_at: '2026-10-24T10:00:00Z' },
 ]
 
 const MATCHES = [
@@ -76,6 +84,25 @@ const MATCHES = [
       internal: true,
       created_at: '2026-11-04T09:30:00Z',
       snippet: `…vendor says the counter resets with the ${START}fuser${STOP}, not the toner; check the service menu before…`,
+    },
+  },
+  // Rows with the long status names, so the match rows are the tall ones.
+  {
+    ...LIST[3],
+    reply_match: {
+      reply_id: 'r-3',
+      internal: false,
+      created_at: '2026-11-05T08:15:00Z',
+      snippet: `…the badge reader log shows the ${START}fuser${STOP} was never the cause, so closing that line of enquiry…`,
+    },
+  },
+  {
+    ...LIST[4],
+    reply_match: {
+      reply_id: 'r-4',
+      internal: true,
+      created_at: '2026-11-05T11:40:00Z',
+      snippet: `…courier says the ${START}fuser${STOP} is on the next van and should be with us before the weekend…`,
     },
   },
 ]
@@ -112,6 +139,8 @@ async function mockSearch(page: Page, opts: { headers?: Record<string, string> }
         { id: ST_PEND, name: 'Pending', kind: 'custom', sort_order: 3, color: '#8b5cf6', active: true, ticket_count: 1 },
         { ...STATUSES[1], id: ST_RESOLVED },
         { ...STATUSES[2], id: ST_CLOSED },
+        { id: ST_LONG, name: NAME_LONG, kind: 'custom', sort_order: 6, color: '#0ea5e9', active: true, ticket_count: 1 },
+        { id: ST_LONGER, name: NAME_LONGER, kind: 'custom', sort_order: 7, color: '#14b8a6', active: true, ticket_count: 1 },
       ],
     }),
   )
@@ -152,19 +181,36 @@ async function tableFits(page: Page) {
 // Progress" is a two-line pill beside a one-line row. Measured against its own
 // line height and padding so it does not depend on a font.
 async function statusChipsAreOneLine(page: Page) {
-  const chips = await page.evaluate(() =>
-    [...document.querySelectorAll('tbody tr td span[title]')].map(el => {
+  // The status chips are the titled spans named for a status; the SLA
+  // indicators carry titles too.
+  const known = ['New', 'In Progress', 'Pending', 'Resolved', 'Closed', NAME_LONG, NAME_LONGER]
+  const chips = await page.evaluate(known =>
+    [...document.querySelectorAll('tbody tr td span[title]')].filter(el => known.includes(el.getAttribute('title')!)).map(el => {
       const cs = getComputedStyle(el)
       const oneLine =
         parseFloat(cs.lineHeight) +
         parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) +
         parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth)
-      return { name: el.getAttribute('title'), height: el.getBoundingClientRect().height, oneLine }
-    }),
+      // Cut by an ellipsis: the chip or something in it holds more than it shows.
+      const cut = [el, ...el.querySelectorAll('*')].some(n => n.scrollWidth > n.clientWidth + 1)
+      return { name: el.getAttribute('title'), text: el.textContent, height: el.getBoundingClientRect().height, width: el.getBoundingClientRect().width, oneLine, cut }
+    }), known,
   )
-  expect(chips.length).toBeGreaterThan(0)
-  expect(chips.map(c => c.name)).toContain('In Progress')
-  for (const c of chips) expect(c.height, `"${c.name}" wraps`).toBeLessThanOrEqual(c.oneLine + 1)
+  const names = chips.map(c => c.name)
+  expect(names).toContain('In Progress')
+  expect(names).toContain(NAME_LONG)
+  expect(names).toContain(NAME_LONGER)
+  for (const c of chips) {
+    expect(c.height, `"${c.name}" wraps`).toBeLessThanOrEqual(c.oneLine + 1)
+    // The whole name is still in the page for a screen reader; the cut is only
+    // what is drawn.
+    expect(c.text, `"${c.name}" lost its text`).toContain(c.name!)
+    // A name an administrator typed must not make the table wider than 120px of chip.
+    expect(c.width, `"${c.name}" is too wide`).toBeLessThanOrEqual(130)
+  }
+  // The name the owner asked about shows in full; the long ones are cut.
+  expect(chips.find(c => c.name === 'In Progress')!.cut, '"In Progress" is cut').toBe(false)
+  expect(chips.find(c => c.name === NAME_LONGER)!.cut, 'a 53-character name is not cut').toBe(true)
 }
 
 test.describe('desktop, 1440x900', () => {
@@ -281,7 +327,7 @@ test.describe('desktop, 1440x900', () => {
 
     // The table and the cards both render the match; only one is on screen.
     const marks = page.locator('mark:visible')
-    await expect(marks).toHaveCount(3)
+    await expect(marks).toHaveCount(5)
     await expect(marks.first()).toHaveText('fuser')
     await expect(page.getByText('Internal note', { exact: false }).first()).toBeVisible()
     await shot(page, 'desktop-reply-match')

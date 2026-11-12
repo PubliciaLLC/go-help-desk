@@ -790,12 +790,17 @@ export function TicketListPage() {
                         <td className="px-3 py-2">
                           {status ? (
                             <span
-                              className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-medium"
+                              // One line, and at most 7.5rem: status names are free text and the
+                              // table's box clips instead of scrolling, so an unbounded chip
+                              // pushes the date columns out of sight. "In Progress" is 93px.
+                              // The text is all in the page (title as well); the cut is only
+                              // what is drawn.
+                              className="inline-flex max-w-[7.5rem] items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-medium"
                               title={status.name}
                               style={{ borderColor: status.color, color: status.color }}
                             >
-                              <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: status.color }} />
-                              {status.name}
+                              <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: status.color }} />
+                              <span className="min-w-0 truncate">{status.name}</span>
                             </span>
                           ) : '—'}
                         </td>
