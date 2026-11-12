@@ -98,6 +98,7 @@
       <li><a href="#api-on-behalf">Filing for someone else</a></li>
       <li><a href="#api-format">Text format</a></li>
       <li><a href="#api-webhook-events">Webhook events</a></li>
+      <li><a href="#api-ticket-search">Searching tickets</a></li>
       <li><a href="#api-errors">Errors &amp; pagination</a></li>
       <li><a href="api-reference.html">API Reference</a></li>
       <li><a href="mcp.html">MCP Server</a></li>
@@ -176,6 +177,7 @@
 <ul>
   <li><code>tickets</code>, <code>users</code>, <code>groups</code>, <code>categories</code>, <code>tags</code>, <code>canned_responses</code>, <code>sla</code>, <code>settings</code>, <code>plugins</code>, <code>webhooks</code> and <code>credentials</code>: read and write.</li>
   <li><code>audit</code>: read only. No credential can write the audit log. The admin audit view (administrators only) needs <code>audit:read</code>; <code>tickets:read</code> does not reach it.</li>
+  <li><code>requester_search</code>: read only, and <strong>never implied</strong> by another scope. It lets an API key or OAuth client use the free-text <code>requester</code> filter on <code>GET /api/v1/tickets</code>. <span class="badge-new">New in 1.3.0</span> See <a href="#api-ticket-search-requester">Searching tickets</a>.</li>
 </ul>
 
 <ul>
@@ -217,7 +219,7 @@
   <li><strong>Where:</strong> <code>GET</code> and <code>POST /api/v1/me/api-keys</code>, <code>GET /api/v1/me/api-keys/scopes</code> and <code>DELETE /api/v1/me/api-keys/{id}</code> for your own keys (session only; a requester gets <code>403</code>), and <code>GET</code> and <code>POST /api/v1/admin/api-keys</code> for an administrator. <code>POST /api/v1/admin/api-keys</code> takes an optional <code>user_id</code> to issue a key for a staff member or for yourself, from a signed-in administrator only. It refuses another administrator (<code>400 cannot_issue_for_administrator</code>), a requester (<code>400 requester_cannot_own_key</code>) and a service account (<code>400 service_account_cannot_own_key</code>). Responses carry <code>user_id</code> and <code>created_by</code>.</li>
   <li><strong>A key cannot make keys or OAuth clients.</strong> <code>POST /api/v1/admin/api-keys</code>, <code>POST /api/v1/admin/oauth-clients</code> and the <code>/me/api-keys</code> routes answer <code>403 session_required</code> to an API key and <code>403 forbidden</code> to an OAuth client. A key can still list and delete clients, and list and revoke itself.</li>
   <li><strong>A key cannot write users.</strong> It can read users and groups. These answer <code>403 session_required</code> to an API key (<code>403 forbidden</code> to an OAuth client): <code>POST /admin/users</code>, <code>PATCH /admin/users/{id}</code>, <code>DELETE /admin/users/{id}</code>, <code>POST /admin/users/{id}/password</code>, <code>POST</code> and <code>DELETE</code> on <code>/admin/groups/{id}/members…</code>, and <code>POST</code> and <code>DELETE /admin/groups/{id}/scopes</code>. That covers creating, renaming, re-addressing, promoting, disabling and deleting accounts, password and second-factor resets, and group membership and scope. A key that could write a user could make itself a person: set a password, sign in, and create keys that outlive it.</li>
-  <li><strong>Scopes never exceed the owner's role.</strong> A staff key can carry <code>tickets:read</code>, <code>tickets:write</code> and <code>groups:read</code> (<code>audit:read</code> is for administrators' keys, and <code>users:read</code> is no longer offered: its one staff route, the requester lookup, is session-only); an administrator's key can carry any scope. Anything else is <code>400 invalid_scope</code>. <code>GET /api/v1/admin/scopes?role=staff</code> lists what a staff key may carry. <code>users:write</code> is no longer offered and a new key cannot hold it; keys that already hold it keep it, and it opens nothing.</li>
+  <li><strong>Scopes never exceed the owner's role.</strong> A staff key can carry <code>tickets:read</code>, <code>tickets:write</code>, <code>groups:read</code> and <code>requester_search:read</code> (<code>audit:read</code> is for administrators' keys, and <code>users:read</code> is no longer offered: its one staff route, the requester lookup, is session-only); an administrator's key can carry any scope. Anything else is <code>400 invalid_scope</code>. <code>GET /api/v1/admin/scopes?role=staff</code> lists what a staff key may carry. <code>users:write</code> is no longer offered and a new key cannot hold it; keys that already hold it keep it, and it opens nothing.</li>
   <li><strong>Every new key must expire.</strong> While the maximum lifetime is a number of years (<code>api_key_max_lifetime_years</code>, 1 to 5, default 2), <code>expires_at</code> is required (<code>400 expires_at_required</code>) and may be no later than that many years from now (<code>400 expires_at_too_far</code>). Only when the setting is Never (<code>-1</code>) may it be omitted. The limit is checked when the key is created, not when it is used. Both key lists carry <code>beyond_limit</code> for a key with no expiry or one past the current limit.</li>
   <li><code>GET /api/v1/me</code> gains <code>can_create_api_keys</code> and <code>api_key_max_lifetime_years</code>.</li>
   <li><strong>Webhooks a key makes stop with the key.</strong> A webhook an API key created, or last changed the URL of, is paused once that key is no longer active: revoked, expired (a key counts as expired from the instant of its expiry), or its owner disabled or deleted. A key cannot edit a paused hook (<code>403 webhook_paused</code>). A signed-in administrator re-approves it with <code>POST /api/v1/admin/webhooks/{id}/reapprove</code> (session only).</li>
@@ -343,6 +345,70 @@ Cache-Control: private, max-age=3600</code></pre>
 
 <p>A webhook subscribes to event names, set with <code>events</code> on <code>/api/v1/admin/webhooks</code>. The names are <code>*</code> (all), <code>ticket.created</code>, <code>ticket.assigned</code>, <code>ticket.status_changed</code>, <code>ticket.replied</code>, <code>ticket.note_added</code>, <code>ticket.resolved</code>, <code>ticket.closed</code>, <code>ticket.reopened</code>, <code>ticket.linked</code>, <code>ticket.priority_changed</code> and <code>ticket.classified</code>. A change to a ticket is one event, and a hook gets <strong>one delivery per change</strong>, labelled with the first name it subscribes to that the change carries. The raw body holds ids only. When a change is announced under several names, a receiver that reads only <code>Type</code> can miss one; read the ticket by <code>TicketID</code> to know more. For a new ticket that auto-assignment routes, the <code>ticket.assigned</code> delivery has a null <code>ActorID</code>. Assigning a ticket to who and what it already has announces nothing. A webhook's delivery history (<code>/api/v1/admin/webhooks/{id}/deliveries</code>) shows a retry that was dropped as <code>result: "dropped"</code> with a <code>drop_reason</code>; see the API reference. See <a href="admin-guide.html#admin-webhook-one">Webhooks in the admin guide</a> for the order of names and the chat messages, and the <a href="api-reference.html">API reference</a> for the request fields.</p>
 
+<h2 id="api-ticket-search">Searching tickets <span class="badge-new">New in 1.3.0</span></h2>
+
+<p><code>GET /api/v1/tickets</code> takes the search text, filters, a sort and reply search, and the ticket list page and MCP <code>list_tickets</code> use the same rules. Every request that worked before returns the same tickets. The differences are listed at the end of this section.</p>
+
+<p><strong>Filters combine with AND, and a filter can only narrow what the caller can already see.</strong> What a caller may see comes from their role and the <code>ticket_scope_enforced</code> setting, never from a parameter. A filter that names something outside the caller's scope matches nothing, and an id that names nothing answers <code>200 []</code>. An empty value counts as absent, and an unknown parameter is ignored.</p>
+
+<table>
+  <thead><tr><th>Parameter</th><th>Value</th><th>Who</th></tr></thead>
+  <tbody>
+    <tr><td><code>q</code></td><td>Search text. Words are prefix-matched against subject and description, and the tracking number is prefix-matched. A search is ranked by relevance unless <code>sort</code> is given.</td><td>Everyone</td></tr>
+    <tr><td><code>search_replies</code></td><td><code>true</code> or <code>false</code>. With <code>q</code>, also search replies. <strong>Off unless you ask</strong> (the web page asks by default). Any other value is <code>400</code>.</td><td>Everyone</td></tr>
+    <tr><td><code>status_id</code>, <code>priority</code></td><td>Repeat the key for several values (at most 20). Values of one key are ORed. <code>priority</code> is <code>critical</code>, <code>high</code>, <code>medium</code> or <code>low</code>.</td><td>Everyone</td></tr>
+    <tr><td><code>category_id</code>, <code>type_id</code>, <code>item_id</code></td><td>Ids. A category also matches every type and item under it.</td><td>Everyone</td></tr>
+    <tr><td><code>created_after</code>, <code>created_before</code></td><td>RFC 3339 times. <code>after</code> is included, <code>before</code> is not, and <code>after</code> must be earlier.</td><td>Everyone</td></tr>
+    <tr><td><code>include_closed</code></td><td><code>true</code> (the default) or <code>false</code>, which leaves out Closed. Ignored when <code>status_id</code> is given.</td><td>Everyone</td></tr>
+    <tr><td><code>updated_after</code>, <code>updated_before</code></td><td>As for created.</td><td>Staff and administrators</td></tr>
+    <tr><td><code>assignee_user_id</code></td><td>An account id.</td><td>Staff and administrators</td></tr>
+    <tr><td><code>assignee_group_id</code></td><td>A group id. With <code>ticket_scope_enforced</code> on, staff may only name a group they belong to (<code>403</code> otherwise).</td><td>Staff and administrators</td></tr>
+    <tr><td><code>reporter_id</code></td><td>An account id: the tickets that account reported. Limited to what the caller can see.</td><td>Staff and administrators</td></tr>
+    <tr><td><code>requester</code></td><td>Free text, 2 to 254 characters after trimming. Matched anywhere in the reporting account's name or email and in a guest ticket's name and email, ignoring case. Deleted accounts are included. <strong>An API key or OAuth client needs the <code>requester_search:read</code> scope.</strong></td><td>Staff and administrators</td></tr>
+    <tr><td><code>source_channel</code></td><td><code>web</code>, <code>api</code>, <code>mcp</code>, <code>guest</code> or <code>phone</code> (repeatable).</td><td>Staff and administrators</td></tr>
+    <tr><td><code>sla</code></td><td><code>breached</code> or <code>at_risk</code>. <code>400</code> while SLA tracking is off, so an empty list is never read as "nothing is breached".</td><td>Staff and administrators</td></tr>
+    <tr><td><code>sort</code>, <code>order</code></td><td><code>sort</code> is <code>number</code>, <code>subject</code>, <code>status</code>, <code>priority</code>, <code>sla</code>, <code>created</code> or <code>updated</code>. <code>order</code> is <code>asc</code> or <code>desc</code>. With no <code>order</code>, <code>created</code> and <code>updated</code> are newest first and the rest ascending (for <code>priority</code> and <code>sla</code>, most urgent first). A <code>sort</code> replaces relevance. <code>sort=relevance</code>, or any unknown value, is <code>400</code>. <code>sort=sla</code> is <code>400</code> while SLA tracking is off.</td><td>Everyone, except that a requester cannot sort by <code>updated</code> or <code>sla</code> (<code>403</code>)</td></tr>
+    <tr><td><code>limit</code>, <code>offset</code></td><td>See <a href="#api-errors">Errors &amp; pagination</a>.</td><td>Everyone</td></tr>
+  </tbody>
+</table>
+
+<h3 id="api-ticket-search-requester">Free-text requester search needs its own scope</h3>
+<ul>
+  <li><strong><code>requester_search:read</code></strong> is a new scope. It is <strong>never implied</strong>: <code>tickets:read</code>, <code>users:read</code> and <code>tickets:write</code> do not grant it, and a key made before 1.3.0 does not have it. Whoever creates the key or the OAuth client has to tick it. There is no <code>requester_search:write</code>.</li>
+  <li>Without it, <code>requester</code> answers <code>403 insufficient_scope</code>: "this credential does not carry the requester_search:read scope".</li>
+  <li>A key owned by <strong>staff or an administrator</strong> can hold it, and so can an OAuth client, whose service user is staff. A requester never owns a key.</li>
+  <li>A signed-in staff or administrator session needs no scope.</li>
+  <li>It does <strong>not</strong> open <code>GET /api/v1/users/lookup</code>, which stays session-only. The id-based <code>reporter_id</code> filter needs only <code>tickets:read</code>.</li>
+  <li>The setting <em>Mask requester names in Audit Trail</em> does not turn off this search. It changes what the audit views display, and a staff member who can see a ticket can already read its requester's name.</li>
+</ul>
+
+<h3 id="api-ticket-search-replies">Reply search over the API</h3>
+<ul>
+  <li><code>search_replies=true</code> with <code>q</code>: a ticket also matches when <strong>one</strong> reply holds every word. Words found in different replies do not combine. A ticket that matches on its own text ranks ahead of one that only matches through a reply.</li>
+  <li>A ticket found through a reply has a <code>reply_match</code> object: <code>reply_id</code>, <code>internal</code>, <code>created_at</code> and <code>snippet</code>. <code>snippet</code> is the reply's own text, with each matched word wrapped in the control characters U+0002 and U+0003. It is not HTML, and there is no author. The key is absent on every other ticket.</li>
+  <li><strong>Staff and administrators search public replies and internal notes. A requester, and any role the help desk does not recognise, searches public replies only</strong>, and never receives an excerpt of an internal note. The server decides this from the role. An <code>include_internal</code> parameter is ignored. For a requester, <code>internal</code> is always <code>false</code>.</li>
+  <li>The reply search looks at the 2,000 newest matching replies the caller may see and runs under a five-second limit. Only the first 50,000 characters of a reply are searched.</li>
+  <li>The body stays a bare array. Two response headers say what the server could not do, and only on a request that sent <code>search_replies=true</code>:
+    <ul>
+      <li><code>X-Replies-Searched: false</code> means the replies were not fully searched, because the five-second limit ran out or the reply index is not ready. The results match ticket text only.</li>
+      <li><code>X-Reply-Index: building</code> means the reply index is not ready yet. See <a href="upgrading-1.3.0.html#reply-search">Upgrading to 1.3.0: reply search</a>.</li>
+    </ul>
+    A header is sent only when there is something to say. The API sets no CORS headers, so a browser page on the same origin reads them directly.</li>
+</ul>
+
+<h3 id="api-ticket-search-requesters">What a requester may use</h3>
+<p>A requester may filter and sort only on what they are sent. They can use <code>status_id</code>, <code>priority</code>, <code>category_id</code>, <code>type_id</code>, <code>item_id</code>, <code>created_after</code>, <code>created_before</code> and <code>include_closed</code>, and sort by <code>number</code>, <code>subject</code>, <code>status</code>, <code>priority</code> and <code>created</code>. Any other filter is <code>403 forbidden</code>: "&lt;param&gt; is not available to requesters". A filter on a field a requester is never sent would otherwise let them work it out.</p>
+
+<h3 id="api-ticket-search-sla">Knowing whether SLA tracking is on</h3>
+<p><code>GET /api/v1/me</code> carries <code>sla_enabled</code> for staff and administrators, so a client can offer the SLA filter and sort only while they work. A requester's <code>/me</code> has no such key. If the setting could not be read the key is missing: treat that as unknown, not as off.</p>
+
+<h3 id="api-ticket-search-changes">What changed for existing requests</h3>
+<ul>
+  <li><code>reporter_id</code> is open to staff, limited to the tickets they can see. It was administrators only.</li>
+  <li><code>reporter_id</code>, <code>requester</code> and <code>assignee_group_id</code> now combine with each other and with the other filters. Before, the first one present won and the rest were ignored, so <code>reporter_id</code> with <code>assignee_group_id</code> dropped the group. They still ignore <code>scope</code>.</li>
+  <li>A search (<code>q</code>) on the default <code>mine</code> queue, for an administrator or for staff with scope enforcement off, is now ranked by relevance like every other search. It used to be newest first. The same tickets match.</li>
+</ul>
+
 <h2 id="api-errors">Errors &amp; pagination</h2>
 
 <h3>Error format</h3>
@@ -407,7 +473,7 @@ Cache-Control: private, max-age=3600</code></pre>
 <h3>Pagination</h3>
 <p>Two list endpoints are paged, <code>GET /api/v1/tickets</code> and <code>GET /api/v1/admin/audit</code>. Both take <code>limit</code> (default 100, maximum 200) and <code>offset</code>. A <code>limit</code> above the maximum is clamped rather than rejected, and a non-numeric or non-positive value is ignored, so the default applies.</p>
 <ul>
-  <li>The ticket list is a bare JSON array with no total. Page until a response is shorter than <code>limit</code>.</li>
+  <li>The ticket list is a bare JSON array with no total. Page until a response is shorter than <code>limit</code>. It also takes search text, filters and a sort: see <a href="#api-ticket-search">Searching tickets</a>.</li>
   <li><code>GET /api/v1/admin/audit</code> takes a repeatable <code>exclude_action</code> to leave out entries with that action, for example <code>exclude_action=reply_added&amp;exclude_action=note_added</code>. It is applied in the query, so <code>entries</code>, <code>has_more</code> and <code>total</code> describe the same sequence. The actions <code>reply_added</code> (a public reply) and <code>note_added</code> (an internal note) hold only the reply's id and an <code>internal</code> flag, never the text; a guest's reply has no actor.</li>
   <li>The audit list returns an object with <code>entries</code>, <code>total</code>, <code>total_capped</code> and <code>has_more</code>. Page while <code>has_more</code> is true. When <code>total_capped</code> is true, <code>total</code> is the cap (10,000) and means "at least this many".</li>
 </ul>

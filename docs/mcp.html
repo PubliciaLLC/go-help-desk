@@ -178,11 +178,24 @@
     <tr><td><code>priority</code></td><td>string (optional)</td><td><code>critical</code>, <code>high</code>, <code>medium</code> or <code>low</code>.</td></tr>
     <tr><td><code>category_id</code></td><td>string (optional)</td><td>Only tickets in this category (see <code>list_categories</code>).</td></tr>
     <tr><td><code>q</code></td><td>string (optional)</td><td>Full-text search over subject, description and tracking number.</td></tr>
+    <tr><td><code>search_replies</code></td><td>boolean (optional)</td><td>With <code>q</code>, also match the replies. A ticket matches when <strong>one</strong> reply holds every word. Default <code>false</code>. <span class="badge-new">New in 1.3.0</span></td></tr>
     <tr><td><code>limit</code></td><td>number (optional)</td><td>1 to 100, default 20. A larger value is clamped to 100.</td></tr>
     <tr><td><code>offset</code></td><td>number (optional)</td><td>Pagination offset.</td></tr>
   </tbody>
 </table>
 <p>The filters narrow what the caller can already see. They never widen it: a reporting user lists only their own tickets whatever the arguments say.</p>
+
+<h4 id="mcp-search-replies">Searching replies <span class="badge-new">New in 1.3.0</span></h4>
+<ul>
+  <li><code>search_replies</code> is <strong>off unless the call asks for it</strong>, so a call without it returns the tickets it always did. The ticket list page has it on by default. MCP does not.</li>
+  <li>A ticket found through a reply carries a <code>reply_match</code> object: <code>reply_id</code>, <code>internal</code>, <code>created_at</code> and <code>snippet</code>. The key is absent on any other ticket. The snippet is the reply's own text with each matched word wrapped in the control characters U+0002 and U+0003, not HTML. It never names an author.</li>
+  <li><strong>Internal notes are searched for staff and administrators only.</strong> A reporting user searches public replies and never receives an excerpt of an internal note. The server decides this from the caller's role. No argument can change it, and an <code>include_internal</code> argument is ignored.</li>
+  <li>If the replies could not be searched, the answer carries a <strong>second text block</strong> after the list, and the list is still a plain JSON array. It says either that reply search is still being prepared after an upgrade, or that the search took too long. The tickets listed then match on subject, description or number only. See <a href="tickets.html#tickets-search-limits">the limits on reply search</a>.</li>
+  <li>Only the first 50,000 characters of a reply are searched.</li>
+</ul>
+
+<h4 id="mcp-requester-search">Free-text requester search</h4>
+<p>MCP <code>list_tickets</code> in 1.3.0 has no requester argument. The free-text <code>requester</code> filter, and the <code>requester_search:read</code> permission an API key or OAuth client needs for it, belong to the REST list, <code>GET /api/v1/tickets</code>. See <a href="api.html#api-ticket-search">Searching tickets over the REST API</a>.</p>
 
 <h3><code>list_categories</code></h3>
 <p>The Category, Type and Item catalogue, as a tree, for composing <code>create_ticket</code>.</p>
