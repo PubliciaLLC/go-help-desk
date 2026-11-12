@@ -30,6 +30,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strconv"
 	"sync"
 	"time"
 
@@ -252,6 +254,10 @@ type Server struct {
 	// create_ticket refuse custom_fields rather than skip the required check
 	// quietly.
 	customFields CustomFields
+
+	// slaEnabled reads the SLA tracking setting for list_tickets' sla filter and
+	// sort. Set with WithSLAEnabled; nil reads as off.
+	slaEnabled func(context.Context) (bool, error)
 }
 
 // CustomFields is the slice of the custom field service MCP needs: the same
@@ -639,11 +645,29 @@ func (s *Server) registerTools() {
 
 	s.mcp.AddTool(mcpgo.NewTool(
 		"list_tickets",
-		mcpgo.WithDescription("List tickets the caller may see, with optional filters"),
-		mcpgo.WithString("assignee_user_id", mcpgo.Description("Only tickets assigned to this user UUID")),
-		mcpgo.WithString("status_id", mcpgo.Description("Only tickets in this status UUID (see list_statuses)")),
-		mcpgo.WithString("priority", mcpgo.Description("Only tickets at this priority: critical|high|medium|low")),
-		mcpgo.WithString("category_id", mcpgo.Description("Only tickets in this category UUID (see list_categories)")),
+		mcpgo.WithDescription("List tickets the caller may see, with optional filters. Filters combine with AND and can only narrow what the caller may already see; "+
+			"the values of one list-valued filter are ORed. An argument of the wrong type, an unknown value, or an unknown sort or order is refused, not ignored. "+
+			"A requester may use only the filters marked as open to them, and is refused the others. "+
+			"Without sort, a search with q is ranked by relevance and everything else is newest first."),
+		mcpgo.WithString("assignee_user_id", mcpgo.Description("Only tickets assigned to this user UUID (staff and administrators)")),
+		mcpgo.WithString("assignee_group_id", mcpgo.Description("Only tickets assigned to this group UUID (staff and administrators)")),
+		mcpgo.WithString("status_id", mcpgo.Description("Only tickets in this status UUID (see list_statuses). Kept for existing callers; status_ids takes several")),
+		mcpgo.WithArray("status_ids", mcpgo.WithStringItems(), mcpgo.MaxItems(ticket.MaxRepeated), mcpgo.Description("Only tickets in any of these status UUIDs, at most 20 (see list_statuses). May be combined with status_id")),
+		mcpgo.WithBoolean("include_closed", mcpgo.Description("false leaves out the Closed status. Ignored when a status is named (default true)")),
+		mcpgo.WithAny("priority", mcpgo.Description("Only tickets at this priority, or at any of these in a JSON array (at most 20): critical|high|medium|low"), stringOrStringArray(ticket.MaxRepeated)),
+		mcpgo.WithString("category_id", mcpgo.Description("Only tickets in this category UUID, including every type and item under it (see list_categories)")),
+		mcpgo.WithString("type_id", mcpgo.Description("Only tickets of this type UUID")),
+		mcpgo.WithString("item_id", mcpgo.Description("Only tickets of this item UUID")),
+		mcpgo.WithString("reporter_id", mcpgo.Description("Only tickets this account reported, by user UUID (staff and administrators)")),
+		mcpgo.WithString("requester", mcpgo.Description("Free text, 2 to 254 characters: only tickets whose reporter's name or email, or whose guest name or email, contains it (staff and administrators). An API key or OAuth client needs the requester_search:read scope for this; without it the call is refused. reporter_id does not need it")),
+		mcpgo.WithString("created_after", mcpgo.Description("Only tickets created at or after this RFC 3339 time")),
+		mcpgo.WithString("created_before", mcpgo.Description("Only tickets created before this RFC 3339 time")),
+		mcpgo.WithString("updated_after", mcpgo.Description("Only tickets updated at or after this RFC 3339 time (staff and administrators)")),
+		mcpgo.WithString("updated_before", mcpgo.Description("Only tickets updated before this RFC 3339 time (staff and administrators)")),
+		mcpgo.WithArray("source_channel", mcpgo.WithStringEnumItems([]string{"web", "api", "mcp", "guest", "phone"}), mcpgo.MaxItems(ticket.MaxRepeated), mcpgo.Description("Only tickets opened through any of these channels (staff and administrators)")),
+		mcpgo.WithString("sla", mcpgo.Description("breached|at_risk: only tickets the SLA indicator shows in that state (staff and administrators). Refused while SLA tracking is off"), mcpgo.Enum("breached", "at_risk")),
+		mcpgo.WithString("sort", mcpgo.Description("Order by number|subject|status|priority|sla|created|updated. A requester may sort by number, subject, status, priority and created. Ties keep a stable order. Refused for sla while SLA tracking is off"), mcpgo.Enum("number", "subject", "status", "priority", "sla", "created", "updated")),
+		mcpgo.WithString("order", mcpgo.Description("asc|desc. Without it a sort uses its natural order: created and updated newest first, the rest first to last (priority and sla most urgent first). Has no effect without sort"), mcpgo.Enum("asc", "desc")),
 		mcpgo.WithString("q", mcpgo.Description("Full-text search over subject, description and tracking number")),
 		mcpgo.WithBoolean("search_replies", mcpgo.Description("With q, also match the replies: a ticket matches when one reply holds every word. Staff and administrators search internal notes too; a requester searches public replies only. A ticket found this way carries a reply_match with an excerpt. If the replies could not be searched (still being prepared after an upgrade, or too slow), a second text block says so (default false)")),
 		mcpgo.WithNumber("limit", mcpgo.Description("Max results, 1-100 (default 20)")),
@@ -1162,55 +1186,183 @@ func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) 
 	return jsonResult(reply)
 }
 
+// stringOrStringArray is the schema of an argument that takes one string, as it
+// always has, or a JSON array of them. mcp-go has no option for it, and a client
+// that validates against the schema could not send the array form otherwise.
+func stringOrStringArray(maxItems int) mcpgo.PropertyOption {
+	return func(schema map[string]any) {
+		schema["oneOf"] = []any{
+			map[string]any{"type": "string"},
+			map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": maxItems},
+		}
+	}
+}
+
+// listFilterParams are the string arguments that are one filter parameter each,
+// with the name GET /tickets calls it. Everything else list_tickets reads is
+// handled in listQuery by its shape.
+var listFilterParams = []string{
+	"q", "reporter_id", "requester", "category_id", "type_id", "item_id",
+	"assignee_user_id", "assignee_group_id",
+	"created_after", "created_before", "updated_after", "updated_before",
+	"sla", "sort", "order",
+}
+
+func badListArg(key string) error {
+	return fmt.Errorf("%w: invalid %s", ticket.ErrValidation, key)
+}
+
+// listArgString reads an argument that must be a string. Absent and JSON null
+// are the same as not given. Any other type is refused: skipping a filter the
+// caller meant would return more than they asked to narrow to.
+func listArgString(args map[string]any, key string) (string, error) {
+	switch v := args[key].(type) {
+	case nil:
+		return "", nil
+	case string:
+		return v, nil
+	}
+	return "", badListArg(key)
+}
+
+// listArgStrings reads an argument that is a JSON array of strings, or one
+// string for the parameters that predate arrays (status_id, priority).
+func listArgStrings(args map[string]any, key string) ([]string, error) {
+	switch v := args[key].(type) {
+	case nil:
+		return nil, nil
+	case string:
+		return []string{v}, nil
+	case []any:
+		// Before anything is done per value. mcp-go does not enforce the schema's
+		// maxItems and the body limit admits ~100,000 values, so a check made
+		// later (the parser's) comes after work that grows with the length.
+		if len(v) > ticket.MaxRepeated {
+			return nil, fmt.Errorf("%w: too many %s values (max %d)", ticket.ErrValidation, key, ticket.MaxRepeated)
+		}
+		out := make([]string, 0, len(v))
+		for _, e := range v {
+			s, ok := e.(string)
+			if !ok {
+				return nil, badListArg(key)
+			}
+			out = append(out, s)
+		}
+		return out, nil
+	}
+	return nil, badListArg(key)
+}
+
+func listArgBool(args map[string]any, key string) (string, error) {
+	switch v := args[key].(type) {
+	case nil:
+		return "", nil
+	case bool:
+		return strconv.FormatBool(v), nil
+	}
+	return "", badListArg(key)
+}
+
+// listQuery turns list_tickets arguments into the query string GET /tickets
+// takes, so that one parser, ticket.ParseListFilter, reads both and the two
+// cannot disagree about what a filter means.
+//
+// status_id (one) is older than status_ids and is kept: both name the same
+// parameter, and their values are ORed.
+func listQuery(args map[string]any) (url.Values, error) {
+	q := url.Values{}
+	for _, key := range listFilterParams {
+		v, err := listArgString(args, key)
+		if err != nil {
+			return nil, err
+		}
+		if v != "" {
+			q.Set(key, v)
+		}
+	}
+	for _, key := range []string{"search_replies", "include_closed"} {
+		v, err := listArgBool(args, key)
+		if err != nil {
+			return nil, err
+		}
+		if v != "" {
+			q.Set(key, v)
+		}
+	}
+	type value struct{ param, v string }
+	seen := map[value]struct{}{}
+	for _, p := range []struct{ arg, param string }{
+		{"status_id", "status_id"}, {"status_ids", "status_id"},
+		{"priority", "priority"}, {"source_channel", "source_channel"},
+	} {
+		vals, err := listArgStrings(args, p.arg)
+		if err != nil {
+			return nil, err
+		}
+		for _, v := range vals {
+			if _, dup := seen[value{p.param, v}]; !dup {
+				seen[value{p.param, v}] = struct{}{}
+				q[p.param] = append(q[p.param], v)
+			}
+		}
+	}
+	return q, nil
+}
+
 // buildListFilter turns list_tickets arguments into a ticket.Filter. Pure and
 // separate from the handler so the clamping and filter-parsing rules can be
 // tested without a database or a ticket service behind them.
 //
 // vis and actorID come from the Authorizer and the request, never from the
-// arguments: a caller cannot widen its own visibility by asking.
+// arguments: a caller cannot widen its own visibility by asking. This parses;
+// it does not check the filter against the caller (see listFilterFor).
 func buildListFilter(args map[string]any, vis ticket.Visibility, actorID uuid.UUID) (ticket.Filter, error) {
-	f := ticket.Filter{ActorID: actorID, Visibility: vis}
-
-	parseID := func(key string) (*uuid.UUID, error) {
-		v, ok := args[key].(string)
-		if !ok || v == "" {
-			return nil, nil
+	// The wording this tool has always used for a priority it does not know.
+	priorities, err := listArgStrings(args, "priority")
+	if err != nil {
+		return ticket.Filter{}, err
+	}
+	for _, p := range priorities {
+		if p != "" && !ticket.Priority(p).Valid() {
+			return ticket.Filter{}, fmt.Errorf("%w: priority must be one of: critical, high, medium, low", ticket.ErrValidation)
 		}
-		id, err := uuid.Parse(v)
-		if err != nil {
-			return nil, fmt.Errorf("%w: invalid %s", ticket.ErrValidation, key)
-		}
-		return &id, nil
 	}
 
-	var err error
-	if f.AssigneeUserID, err = parseID("assignee_user_id"); err != nil {
-		return f, err
+	q, err := listQuery(args)
+	if err != nil {
+		return ticket.Filter{}, err
 	}
-	if f.StatusID, err = parseID("status_id"); err != nil {
-		return f, err
+	f, err := ticket.ParseListFilter(q)
+	if err != nil {
+		return ticket.Filter{}, err
 	}
-	if f.CategoryID, err = parseID("category_id"); err != nil {
-		return f, err
+	f.ActorID, f.Visibility = actorID, vis
+
+	// A single status_id or priority was always held in these fields, and the
+	// parser has put it in StatusIDs and Priorities too; the store reads both
+	// through AllStatusIDs and AllPriorities, which count it once.
+	if v, _ := args["status_id"].(string); v != "" {
+		id, _ := uuid.Parse(v) // checked by the parser above
+		f.StatusID = &id
 	}
-	if v, ok := args["priority"].(string); ok && v != "" {
+	if v, _ := args["priority"].(string); v != "" {
 		p := ticket.Priority(v)
-		if !p.Valid() {
-			return f, fmt.Errorf("%w: priority must be one of: critical, high, medium, low", ticket.ErrValidation)
-		}
 		f.Priority = &p
 	}
-	f.Query, _ = args["q"].(string)
-	// Whether to search replies is the caller's choice. WHICH replies is not:
-	// IncludeInternal is set by the handler from the caller's role, and there is
-	// no argument for it.
-	f.SearchReplies, _ = args["search_replies"].(bool)
 
 	// Clamped, not rejected: a caller asking for 500 gets 100 rather than an
 	// error, and offset still walks the whole result set.
+	limit, err := listArgNumber(args, "limit")
+	if err != nil {
+		return ticket.Filter{}, err
+	}
+	offset, err := listArgNumber(args, "offset")
+	if err != nil {
+		return ticket.Filter{}, err
+	}
 	f.Limit = 20
-	if v, ok := args["limit"].(float64); ok {
-		f.Limit = int(v)
+	if limit != nil {
+		f.Limit = int(*limit)
 	}
 	if f.Limit > maxListLimit {
 		f.Limit = maxListLimit
@@ -1218,10 +1370,61 @@ func buildListFilter(args map[string]any, vis ticket.Visibility, actorID uuid.UU
 	if f.Limit < 1 {
 		f.Limit = 1
 	}
-	if v, ok := args["offset"].(float64); ok && v > 0 {
-		f.Offset = int(v)
+	if offset != nil && *offset > 0 {
+		f.Offset = int(*offset)
 	}
 	return f, nil
+}
+
+// listArgNumber reads limit or offset: a JSON number, or absent or null. Any
+// other type is refused like every other argument, not silently replaced by the
+// default.
+func listArgNumber(args map[string]any, key string) (*float64, error) {
+	switch v := args[key].(type) {
+	case nil:
+		return nil, nil
+	case float64:
+		return &v, nil
+	}
+	return nil, badListArg(key)
+}
+
+// canSearchRequesters says whether the caller may send the free-text
+// `requester` filter: a person at a session always, and an API key or OAuth
+// client only if it holds requester_search:read. The same rule as the REST
+// handler's, for the same reason: the scope gates a parameter, and no route
+// check can express that.
+func canSearchRequesters(a *authmw.Actor) bool {
+	return !a.Machine || auth.Allows(a.Scopes, auth.Scope{Resource: auth.ResourceRequesterSearch, Action: auth.ActionRead})
+}
+
+// listFilterFor is everything list_tickets decides before it touches the store:
+// the arguments parsed by the domain, the filter checked against who is asking
+// (the same Filter.AllowedFor REST uses), and the one field that comes from the
+// caller's role. Pure so the refusals can be tested without a database.
+func listFilterFor(a *authmw.Actor, vis ticket.Visibility, args map[string]any) (ticket.Filter, error) {
+	f, err := buildListFilter(args, vis, a.UserID)
+	if err != nil {
+		return ticket.Filter{}, err
+	}
+	if err := f.AllowedFor(a.Role, canSearchRequesters(a)); err != nil {
+		return ticket.Filter{}, err
+	}
+	// From the role and nothing else, for the match and for the snippet alike. A
+	// requester, or any role this does not recognise, never searches an internal
+	// note: searching one would let them test, a word at a time, what staff wrote
+	// about them. There is no argument for it.
+	f.IncludeInternal = ticket.IncludeInternalFor(a.Role)
+	return f, nil
+}
+
+// WithSLAEnabled supplies the SLA tracking setting. A method for the reason
+// WithCustomFields is one. Without it list_tickets answers as if tracking were
+// off, which refuses the sla filter and sort rather than serving a list whose
+// SLA order means nothing.
+func (s *Server) WithSLAEnabled(read func(context.Context) (bool, error)) *Server {
+	s.slaEnabled = read
+	return s
 }
 
 func (s *Server) handleListTickets(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -1234,16 +1437,25 @@ func (s *Server) handleListTickets(ctx context.Context, req mcpgo.CallToolReques
 	if err != nil {
 		return storeErr(ctx, "list tickets", err)
 	}
-	f, err := buildListFilter(req.GetArguments(), vis, caller.UserID)
+	f, err := listFilterFor(caller, vis, req.GetArguments())
 	if err != nil {
 		return storeErr(ctx, "list tickets", err)
 	}
 
-	// From the role and nothing else, for the match and for the snippet alike. A
-	// requester, or any role this does not recognise, never searches an internal
-	// note: searching one would let them test, a word at a time, what staff wrote
-	// about them.
-	f.IncludeInternal = ticket.IncludeInternalFor(caller.Role)
+	// After the role check, so a requester asking for sla is told it is not
+	// theirs to use, and not that the feature is off. An empty list would read as
+	// "nothing is breached".
+	if f.SLA != "" || f.Sort == ticket.SortSLA {
+		on := false
+		if s.slaEnabled != nil {
+			if on, err = s.slaEnabled(ctx); err != nil {
+				return storeErr(ctx, "list tickets", err)
+			}
+		}
+		if !on {
+			return errResult("SLA tracking is off")
+		}
+	}
 
 	res, err := s.tickets.ListFilteredWithMeta(ctx, f)
 	if err != nil {
@@ -1563,6 +1775,14 @@ func errResult(msg string) (*mcpgo.CallToolResult, error) {
 func storeErr(ctx context.Context, op string, err error) (*mcpgo.CallToolResult, error) {
 	if errors.Is(err, ticket.ErrValidation) {
 		return errResult(err.Error())
+	}
+	// A listing the caller may not ask for (a filter outside a requester's
+	// view, free-text requester search without the scope). Its text is the
+	// wording REST answers with, and like a validation refusal it is about what
+	// the caller sent.
+	var fe *ticket.FilterError
+	if errors.As(err, &fe) {
+		return errResult(fe.Msg)
 	}
 	// A closed ticket's refusals say so, and say where to go instead (#349).
 	// Like a validation refusal they are about the ticket the caller already
