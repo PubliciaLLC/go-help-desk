@@ -114,13 +114,39 @@ export async function listPasskeys(): Promise<Passkey[]> {
 }
 
 /**
- * Runs the registration ceremony and stores the result under `name`.
+ * Registration options as the server minted them, decoded for the browser, and
+ * when they arrived.
  *
- * The name goes in the query string because that is where the handler reads
- * it from: the request body is the attestation, which the WebAuthn library
- * parses whole and would reject with an extra field in it.
+ * Fetched ahead of the click (#632): Safari wants the WebAuthn call inside the
+ * user's gesture and can refuse it after a network wait, so the click must
+ * not have one in front of it.
  */
-export async function addPasskey(name: string): Promise<void> {
+export interface PreparedRegistration {
+  options: PublicKeyCredentialCreationOptions
+  fetchedAt: number
+}
+
+// The server forgets a staged challenge 5 minutes after minting it
+// (`challengeTTL` in internal/domain/webauthn/service.go) and finish checks
+// that. Options older than MAX_AGE are not used, which leaves the rest of the
+// five minutes for the person to touch their key and for finish to land; the
+// page refetches at REFRESH, so a held set is replaced well before that.
+export const REGISTRATION_MAX_AGE_MS = 3 * 60_000
+export const REGISTRATION_REFRESH_MS = 2 * 60_000
+
+export function registrationIsFresh(p: PreparedRegistration, now = Date.now()): boolean {
+  return now - p.fetchedAt < REGISTRATION_MAX_AGE_MS
+}
+
+/**
+ * Asks the server to start a registration. It stages the challenge in the
+ * session, in a single slot: a second start replaces the first, so whoever
+ * holds options must use the newest ones.
+ *
+ * The name is not part of this. It travels with register/finish, so options
+ * can be fetched before the person has typed one.
+ */
+export async function prepareRegistration(): Promise<PreparedRegistration> {
   const start = await api.post<CreationOptionsJSON>('/me/passkeys/register/start')
   const { challenge, user, excludeCredentials, ...rest } = start.data.publicKey
   const options: PublicKeyCredentialCreationOptions = {
@@ -132,6 +158,32 @@ export async function addPasskey(name: string): Promise<void> {
     user: { ...user, id: b64urlToBytes(user.id) },
     excludeCredentials: decodeDescriptors(excludeCredentials),
   }
+  return { options, fetchedAt: Date.now() }
+}
+
+/**
+ * Runs the registration ceremony and stores the result under `name`.
+ *
+ * Given fresh `prepared` options, `navigator.credentials.create` is called
+ * before anything is awaited, so it runs inside the caller's click. A request
+ * still in flight is awaited rather than restarted, because a second start
+ * would replace the challenge the first one staged. Missing or stale options
+ * are fetched here, as this function always did.
+ *
+ * The name goes in the query string because that is where the handler reads
+ * it from: the request body is the attestation, which the WebAuthn library
+ * parses whole and would reject with an extra field in it.
+ */
+export async function addPasskey(
+  name: string,
+  prepared?: PreparedRegistration | Promise<PreparedRegistration> | null,
+): Promise<void> {
+  let ready = prepared
+  // Only a promise is awaited: for a plain object nothing is, and that is the
+  // point.
+  if (ready instanceof Promise) ready = await ready
+  if (!ready || !registrationIsFresh(ready)) ready = await prepareRegistration()
+  const options = ready.options
 
   const cred = (await navigator.credentials.create({ publicKey: options })) as PublicKeyCredential | null
   if (!cred) throw new Error('no passkey was created')

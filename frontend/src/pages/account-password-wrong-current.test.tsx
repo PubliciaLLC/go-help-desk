@@ -19,7 +19,7 @@ vi.mock('@tanstack/react-router', () => ({
 }))
 vi.mock('@/api/passkeys', async (orig) => {
   const actual = await orig<typeof import('@/api/passkeys')>()
-  return { ...actual, listPasskeys: vi.fn().mockResolvedValue([]), browserSupportsPasskeys: vi.fn(() => true) }
+  return { ...actual, listPasskeys: vi.fn().mockResolvedValue([]), browserSupportsPasskeys: vi.fn(() => true), prepareRegistration: vi.fn(() => Promise.reject(new Error("no prefetch in this test"))) }
 })
 vi.mock('@/hooks/useSiteBranding', () => ({ useSiteBranding: () => ({ name: 'Help Desk', logoURL: null }) }))
 

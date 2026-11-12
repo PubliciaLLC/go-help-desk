@@ -1,4 +1,4 @@
-import { useId, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { KeyRoundIcon, SmartphoneIcon, LockIcon, TrashIcon } from 'lucide-react'
 import { changePassword, enrollMFAStart, enrollMFAConfirm, verifyMFA } from '@/api/auth'
@@ -21,6 +21,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import { useAuthStore } from '@/store/auth'
+import { useRegistrationOptions } from '@/hooks/useRegistrationOptions'
 
 // Everything a signed-in person can change about their own sign-in, in one
 // place. Before this existed there was nowhere to do any of it: enrolment
@@ -347,26 +348,71 @@ function PasskeySection() {
   const [name, setName] = useState('')
   const [error, setError] = useState('')
   const [pending, setPending] = useState<Passkey | null>(null)
+  // True between the step-up succeeding and the passkey being added. See the
+  // button below for why the ceremony waits for a click.
+  const [verified, setVerified] = useState(false)
   const supported = browserSupportsPasskeys()
   const stepUp = useStepUp()
 
   const passkeys = useQuery({ queryKey: ['passkeys'], queryFn: listPasskeys, enabled: supported })
 
-  const add = useMutation({
-    mutationFn: () => addPasskey(name.trim()),
-    onSuccess: () => {
+  // Options for the add click, fetched before it (#632). Held only once the
+  // list has loaded, which is the page's own proof that passkeys are on offer
+  // here; a refusal (a step-up is owed) just leaves nothing held.
+  const registration = useRegistrationOptions(supported && passkeys.isSuccess)
+  const [adding, setAdding] = useState(false)
+  // Proving the factor is what lets the server stage a challenge, so this is
+  // when the options for the button are fetched.
+  const refreshOptions = registration.refresh
+  useEffect(() => {
+    if (verified) refreshOptions()
+  }, [verified, refreshOptions])
+
+  // Not a useMutation: its mutationFn runs behind a few awaits, and this must
+  // reach navigator.credentials.create from inside the click. addPasskey is
+  // called before anything here is awaited. `afterVerify` is the click on the
+  // "Verified — add the passkey" button.
+  async function startAdd(afterVerify: boolean) {
+    setError('')
+    setAdding(true)
+    const held = registration.take()
+    const attempt = held ? addPasskey(name.trim(), held) : addPasskey(name.trim())
+    let stepUpOwed = false
+    try {
+      await attempt
       setName('')
+      setVerified(false)
       qc.invalidateQueries({ queryKey: ['passkeys'] })
-    },
-    onError: (err) => {
-      if (stepUp.offer(err, () => add.mutate())) return
-      // Dismissing the browser's prompt is a choice, not a failure. Showing
-      // "The operation either timed out or was not allowed" for it reads as
-      // something being broken.
-      if (wasCancelled(err)) return
+    } catch (err) {
+      // Not retried here: a retry would start the WebAuthn ceremony from a
+      // promise callback rather than a click, which Safari can refuse. The
+      // person gets a button instead (#632).
+      setVerified(false)
+      stepUpOwed = stepUp.offer(err, () => setVerified(true))
+      if (stepUpOwed) return
+      if (wasCancelled(err)) {
+        // Dismissing the browser's prompt is a choice, not a failure, and
+        // showing "The operation either timed out or was not allowed" for it
+        // reads as something being broken. The exception is the click that
+        // follows a step-up: a refusal there is more likely the browser than
+        // the person, and silence leaves them with no key and no clue.
+        if (afterVerify) {
+          setVerified(true)
+          setError("The browser didn't create the passkey. Try again.")
+        }
+        return
+      }
+      // Other failures on the button path leave the button where it is.
+      if (afterVerify) setVerified(true)
       setError(extractError(err))
-    },
-  })
+    } finally {
+      setAdding(false)
+      // A challenge is single use, so a retry needs a new one. Skipped when a
+      // step-up is owed: the server would only refuse, and the refetch after
+      // the step-up (below) is what gets one.
+      if (!stepUpOwed) registration.refresh()
+    }
+  }
 
   const remove = useMutation({
     mutationFn: (p: Passkey) => removePasskey(p.id),
@@ -433,8 +479,7 @@ function PasskeySection() {
         className="mt-4 flex flex-wrap items-end gap-2 border-t pt-4"
         onSubmit={(e) => {
           e.preventDefault()
-          setError('')
-          add.mutate()
+          void startAdd(false)
         }}
       >
         <div className="min-w-[12rem] flex-1">
@@ -448,10 +493,29 @@ function PasskeySection() {
             placeholder="Work laptop"
           />
         </div>
-        <Button type="submit" disabled={add.isPending}>
-          {add.isPending ? 'Waiting for your key…' : 'Add a passkey'}
+        <Button type="submit" disabled={adding}>
+          {adding ? 'Waiting for your key…' : 'Add a passkey'}
         </Button>
       </form>
+      {verified && (
+        // The ceremony is started by this click and by nothing else. Safari
+        // requires a fresh user gesture for WebAuthn and can refuse a prompt
+        // that a callback started after the step-up, reporting it as a
+        // cancel. It is one extra click; guessing at Safari's gesture rules
+        // is not worth it.
+        <div className="mt-4 space-y-2 rounded-md border border-green-300 bg-green-50 p-3">
+          <p className="text-xs text-gray-700">
+            Your second factor is verified. Add the passkey to carry on.
+          </p>
+          <Button
+            type="button"
+            disabled={adding}
+            onClick={() => void startAdd(true)}
+          >
+            {adding ? 'Waiting for your key…' : 'Verified — add the passkey'}
+          </Button>
+        </div>
+      )}
       <Notice kind="error">{error}</Notice>
       {stepUp.panel}
 

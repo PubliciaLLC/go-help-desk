@@ -1,6 +1,14 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { api } from './client'
-import { addPasskey, signInWithPasskey, b64urlToBytes, bytesToB64url, wasCancelled } from './passkeys'
+import {
+  addPasskey,
+  prepareRegistration,
+  signInWithPasskey,
+  b64urlToBytes,
+  bytesToB64url,
+  wasCancelled,
+  REGISTRATION_MAX_AGE_MS,
+} from './passkeys'
 
 // The browser's credentials API speaks ArrayBuffer and the server speaks
 // base64url in JSON. Everything here is about that boundary, because a
@@ -125,6 +133,80 @@ describe('registering a passkey', () => {
     await addPasskey('Key')
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((post.mock.calls[1][1] as any).response.transports).toEqual([])
+  })
+})
+
+// #632. Safari wants the WebAuthn call inside the user's click, with no network
+// wait in front of it. The registration options are therefore fetched ahead of
+// the click (prepareRegistration) and addPasskey is handed them.
+describe('registering with options fetched ahead of the click', () => {
+  const START = { data: {
+    publicKey: {
+      challenge: CHALLENGE,
+      rp: { id: 'localhost', name: 'Help Desk' },
+      user: { id: USER_ID, name: 'sam@example.com', displayName: 'Sam' },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }],
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } } as any
+
+  it('prepareRegistration asks the server for options and does not touch the browser', async () => {
+    const post = vi.spyOn(api, 'post').mockResolvedValue(START)
+
+    const prepared = await prepareRegistration()
+
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(post.mock.calls[0][0]).toBe('/me/passkeys/register/start')
+    expect(create).not.toHaveBeenCalled()
+    expect(Array.from(new Uint8Array(prepared.options.challenge as ArrayBuffer))).toEqual([1, 2, 3, 4])
+  })
+
+  it('calls the browser before anything is awaited, and does not ask the server to start again', async () => {
+    const post = vi.spyOn(api, 'post').mockResolvedValue(START)
+    const prepared = await prepareRegistration()
+    post.mockClear()
+    post.mockResolvedValue({ data: undefined } as never)
+
+    const done = addPasskey('Work laptop', prepared)
+
+    // Synchronously: no await has run, so nothing was between the click and
+    // the browser. This is the whole point of preparing ahead.
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(post).not.toHaveBeenCalled()
+    await done
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(post.mock.calls[0][0]).toBe('/me/passkeys/register/finish?name=Work%20laptop')
+  })
+
+  it('falls back to starting inside the call when the options are stale', async () => {
+    const post = vi.spyOn(api, 'post').mockResolvedValue(START)
+    const prepared = await prepareRegistration()
+    // The server forgets a challenge after five minutes.
+    const stale = { ...prepared, fetchedAt: Date.now() - REGISTRATION_MAX_AGE_MS - 1000 }
+    post.mockClear()
+
+    const done = addPasskey('Key', stale)
+
+    expect(create).not.toHaveBeenCalled()
+    await done
+    expect(post.mock.calls.map((c) => c[0])).toEqual([
+      '/me/passkeys/register/start',
+      '/me/passkeys/register/finish?name=Key',
+    ])
+    expect(create).toHaveBeenCalledTimes(1)
+  })
+
+  it('waits for options that are still being fetched rather than starting a second ceremony', async () => {
+    const post = vi.spyOn(api, 'post').mockResolvedValue(START)
+    const inflight = prepareRegistration()
+    post.mockClear()
+
+    await addPasskey('Key', inflight)
+
+    // Two starts would stage two challenges in the one session slot, and the
+    // first would then fail at finish.
+    expect(post.mock.calls.map((c) => c[0])).toEqual(['/me/passkeys/register/finish?name=Key'])
+    expect(create).toHaveBeenCalledTimes(1)
   })
 })
 

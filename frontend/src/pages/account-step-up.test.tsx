@@ -29,6 +29,7 @@ vi.mock('@/api/passkeys', async (orig) => {
     removePasskey: vi.fn(),
     signInWithPasskey: vi.fn(),
     browserSupportsPasskeys: vi.fn(() => true),
+    prepareRegistration: vi.fn(() => Promise.reject(new Error("no prefetch in this test"))),
   }
 })
 
@@ -101,7 +102,11 @@ beforeEach(() => {
 afterEach(() => vi.clearAllMocks())
 
 describe('adding a passkey to an account with an authenticator app', () => {
-  it('asks for a code, verifies it, then adds the passkey', async () => {
+  // Reversed by #632: this used to assert that the passkey was added by itself
+  // as soon as the code was accepted. Safari needs a fresh click for a WebAuthn
+  // prompt and can refuse one started from a promise callback, so the person
+  // now clicks once more; see the describe block below.
+  it('asks for a code, verifies it, then offers the button that adds the passkey', async () => {
     const user = userEvent.setup()
     vi.mocked(addPasskey).mockRejectedValueOnce(MFA_REQUIRED()).mockResolvedValue(undefined)
     vi.mocked(verifyMFA).mockResolvedValue(undefined)
@@ -121,10 +126,12 @@ describe('adding a passkey to an account with an authenticator app', () => {
     await user.click(within(panel).getByRole('button', { name: 'Verify' }))
 
     await waitFor(() => expect(verifyMFA).toHaveBeenCalledWith('123456'))
+    await user.click(await screen.findByRole('button', { name: 'Verified — add the passkey' }))
     // Retried with what the person had already typed.
     await waitFor(() => expect(addPasskey).toHaveBeenCalledTimes(2))
     expect(addPasskey).toHaveBeenLastCalledWith('Work laptop')
     await waitFor(() => expect(stepUp()).toBeNull())
+    expect(screen.queryByRole('button', { name: 'Verified — add the passkey' })).toBeNull()
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
@@ -180,6 +187,134 @@ describe('adding a passkey to an account with an authenticator app', () => {
     expect(await screen.findByRole('alert')).toBeTruthy()
     expect(screen.getByText('the passkey was refused')).toBeTruthy()
     expect(stepUp()).toBeNull()
+  })
+})
+
+// #632. After step-up the passkey ceremony must start from a click of its own.
+// Safari will not show a WebAuthn prompt that was started from a promise
+// callback and reports it as NotAllowedError, which this page used to treat as
+// the person cancelling: no prompt, no message, no key.
+describe('adding a passkey after verifying (#632)', () => {
+  const VERIFIED = { name: 'Verified — add the passkey' }
+
+  async function verifyWithCode(user: ReturnType<typeof userEvent.setup>) {
+    const panel = await screen.findByRole('group', { name: 'Verify your second factor' })
+    await user.type(within(panel).getByLabelText('Code from your authenticator app'), '123456')
+    await user.click(within(panel).getByRole('button', { name: 'Verify' }))
+  }
+
+  it('does not start the ceremony by itself once the factor is proved', async () => {
+    const user = userEvent.setup()
+    vi.mocked(addPasskey).mockRejectedValueOnce(MFA_REQUIRED()).mockResolvedValue(undefined)
+    vi.mocked(verifyMFA).mockResolvedValue(undefined)
+    renderWithQuery(<AccountPage />)
+    await screen.findByText('No passkeys yet.')
+
+    await user.click(screen.getByRole('button', { name: 'Add a passkey' }))
+    await verifyWithCode(user)
+
+    expect(await screen.findByRole('button', VERIFIED)).toBeTruthy()
+    // The panel is done with, and nothing has been asked of the browser.
+    expect(stepUp()).toBeNull()
+    expect(addPasskey).toHaveBeenCalledTimes(1)
+  })
+
+  it('starts the ceremony from the click, with the name that was typed', async () => {
+    const user = userEvent.setup()
+    vi.mocked(addPasskey).mockRejectedValueOnce(MFA_REQUIRED()).mockResolvedValue(undefined)
+    vi.mocked(verifyMFA).mockResolvedValue(undefined)
+    renderWithQuery(<AccountPage />)
+    await screen.findByText('No passkeys yet.')
+
+    await user.type(screen.getByLabelText('Name this key'), 'Work laptop')
+    await user.click(screen.getByRole('button', { name: 'Add a passkey' }))
+    await verifyWithCode(user)
+    await user.click(await screen.findByRole('button', VERIFIED))
+
+    await waitFor(() => expect(addPasskey).toHaveBeenCalledTimes(2))
+    expect(addPasskey).toHaveBeenLastCalledWith('Work laptop')
+    // Added: the name field is cleared and the button has gone.
+    await waitFor(() => expect(screen.queryByRole('button', VERIFIED)).toBeNull())
+    expect((screen.getByLabelText('Name this key') as HTMLInputElement).value).toBe('')
+  })
+
+  it('says so when the browser will not make the key, and the person can try again', async () => {
+    const user = userEvent.setup()
+    vi.mocked(addPasskey)
+      .mockRejectedValueOnce(MFA_REQUIRED())
+      .mockRejectedValueOnce(new DOMException('', 'NotAllowedError'))
+      .mockResolvedValue(undefined)
+    vi.mocked(verifyMFA).mockResolvedValue(undefined)
+    renderWithQuery(<AccountPage />)
+    await screen.findByText('No passkeys yet.')
+
+    await user.type(screen.getByLabelText('Name this key'), 'Work laptop')
+    await user.click(screen.getByRole('button', { name: 'Add a passkey' }))
+    await verifyWithCode(user)
+    await user.click(await screen.findByRole('button', VERIFIED))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toBe("The browser didn't create the passkey. Try again.")
+    // The person is already verified, so the retry is the same button, not
+    // another trip through the code.
+    expect(stepUp()).toBeNull()
+
+    await user.click(screen.getByRole('button', VERIFIED))
+    await waitFor(() => expect(addPasskey).toHaveBeenCalledTimes(3))
+    expect(addPasskey).toHaveBeenLastCalledWith('Work laptop')
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+    expect(screen.queryByRole('button', VERIFIED)).toBeNull()
+  })
+
+  it('asks for the factor again if the session lost it before the click', async () => {
+    const user = userEvent.setup()
+    vi.mocked(addPasskey).mockRejectedValue(MFA_REQUIRED())
+    vi.mocked(verifyMFA).mockResolvedValue(undefined)
+    renderWithQuery(<AccountPage />)
+    await screen.findByText('No passkeys yet.')
+
+    await user.click(screen.getByRole('button', { name: 'Add a passkey' }))
+    await verifyWithCode(user)
+    await user.click(await screen.findByRole('button', VERIFIED))
+
+    expect(await screen.findByRole('group', { name: 'Verify your second factor' })).toBeTruthy()
+    expect(screen.queryByRole('button', VERIFIED)).toBeNull()
+  })
+
+  it('verifying with a passkey also ends at the button, not at a second prompt', async () => {
+    const user = userEvent.setup()
+    signedIn(false)
+    vi.mocked(listPasskeys).mockResolvedValue([KEY])
+    vi.mocked(addPasskey).mockRejectedValueOnce(MFA_REQUIRED()).mockResolvedValue(undefined)
+    vi.mocked(signInWithPasskey).mockResolvedValue(undefined)
+    renderWithQuery(<AccountPage />)
+    await screen.findByText('iPhone')
+
+    await user.click(screen.getByRole('button', { name: 'Add a passkey' }))
+    const panel = await screen.findByRole('group', { name: 'Verify your second factor' })
+    await user.click(within(panel).getByRole('button', { name: 'Verify with a passkey' }))
+
+    const button = await screen.findByRole('button', VERIFIED)
+    expect(signInWithPasskey).toHaveBeenCalledTimes(1)
+    expect(addPasskey).toHaveBeenCalledTimes(1)
+    await user.click(button)
+    await waitFor(() => expect(addPasskey).toHaveBeenCalledTimes(2))
+  })
+
+  it('leaves the other step-up retries alone: they make no WebAuthn call of their own', async () => {
+    const user = userEvent.setup()
+    vi.mocked(listPasskeys).mockResolvedValue([KEY])
+    vi.mocked(removePasskey).mockRejectedValueOnce(MFA_REQUIRED()).mockResolvedValue(undefined)
+    vi.mocked(verifyMFA).mockResolvedValue(undefined)
+    renderWithQuery(<AccountPage />)
+    await screen.findByText('iPhone')
+
+    await removeIPhone(user)
+    await verifyWithCode(user)
+
+    // Removing a key is plain HTTP, so there is no gesture to protect.
+    await waitFor(() => expect(removePasskey).toHaveBeenCalledTimes(2))
+    expect(screen.queryByRole('button', VERIFIED)).toBeNull()
   })
 })
 
