@@ -75,3 +75,4 @@ a recommendation he accepted in bulk ("Accept all") from `pretag-fixes.md` and `
 - **MCP `list_tickets` (#664): wrong-typed arguments.** MCP `list_tickets` now refuses an argument of the wrong JSON type
   (for example `status_id: 5` or `search_replies: "yes"`), where it used to skip the argument and return unnarrowed results.
   Erik chose "Refuse bad arguments, note it (Recommended)": the strict check stays, and the upgrade notes say so.
+- **Native arm64 CI job (#632, G12, D19).** Erik chose "Add the required arm64 CI job (Recommended)". The option reads: "A job on GitHub's ubuntu-24.04-arm runner builds the Compose stack and runs the existing image smoke test; made required. If the runner isn't available on your plan, it says so and I come back to you." Built as a second leg of the existing `image` job (PR #665): "Docker image, arm64 (build + run)". Making it required is a repo setting the owner applies.
