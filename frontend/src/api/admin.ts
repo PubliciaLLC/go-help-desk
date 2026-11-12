@@ -108,14 +108,14 @@ export async function adminResetPassword(id: string, newPassword: string, revoke
 
 /** One user's passkeys, as the owner sees them on their Account page (#615). */
 export async function listUserPasskeys(id: string): Promise<Passkey[]> {
-  const res = await api.get<Passkey[] | null>(`/admin/users/${id}/passkeys`)
+  const res = await api.get<Passkey[] | null>(`/admin/users/${seg(id)}/passkeys`)
   // An account with no passkeys comes back as JSON null, not [].
   return res.data ?? []
 }
 
 /** Removes one passkey and ends that user's sessions. Refused for your own account (409). */
 export async function removeUserPasskey(id: string, credId: string): Promise<void> {
-  await api.delete(`/admin/users/${id}/passkeys/${credId}`)
+  await api.delete(`/admin/users/${seg(id)}/passkeys/${seg(credId)}`)
 }
 
 export async function deleteUser(id: string): Promise<void> {
@@ -386,7 +386,7 @@ export async function createOAuthClient(input: {
 /** Replaces the client's secret at once; the old one and every token issued under it stop working (#622). */
 export async function rotateOAuthClientSecret(id: string): Promise<{ id: string; client_id: string; client_secret: string }> {
   const res = await api.post<{ id: string; client_id: string; client_secret: string }>(
-    `/admin/oauth-clients/${id}/rotate-secret`,
+    `/admin/oauth-clients/${seg(id)}/rotate-secret`,
   )
   return res.data
 }

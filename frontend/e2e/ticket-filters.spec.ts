@@ -25,7 +25,24 @@ async function shot(page: Page, name: string, fit = true) {
   await page.setViewportSize(size)
 }
 
-const DANA = { id: 'u-dana', display_name: 'Dana Whitfield', email: 'dana.whitfield@acme.example' }
+// The filters in the address are ids, and the page keeps only UUID-shaped ones,
+// so these fixtures are too.
+const uid = (n: string) => `00000000-0000-4000-8000-0000000000${n}`
+const ST_NEW = uid('a1')
+const ST_CLOSED = uid('a2')
+const ST_PROG = uid('a3')
+const ST_PEND = uid('a4')
+const ST_RESOLVED = uid('a5')
+const CAT_HW = uid('c1')
+const CAT_SW = uid('c2')
+const TY_PRINTERS = uid('d1')
+
+// What GET /me sends staff when SLA tracking is on; the page shows its SLA
+// column and sort only then.
+const STAFF = { ...ME_STAFF, sla_enabled: true }
+const ADMIN = { ...ME_ADMIN, sla_enabled: true }
+
+const DANA = { id: uid('b1'), display_name: 'Dana Whitfield', email: 'dana.whitfield@acme.example' }
 const START = '\u0002'
 const STOP = '\u0003'
 
@@ -37,9 +54,9 @@ const SLA = {
 }
 
 const LIST = [
-  { ...TICKETS[0], subject: 'Printer on the 3rd floor jams on tray 2', priority: 'high', sla: SLA, updated_at: '2026-10-28T10:00:00Z' },
-  { ...TICKETS[1], subject: 'Toner warning stays on after replacement', priority: 'high', sla: SLA, updated_at: '2026-10-27T10:00:00Z' },
-  { ...TICKETS[2], subject: 'Label printer prints blank lines between labels', priority: 'medium', sla: null, updated_at: '2026-10-26T10:00:00Z' },
+  { ...TICKETS[0], status_id: ST_NEW, category_id: CAT_HW, subject: 'Printer on the 3rd floor jams on tray 2', priority: 'high', sla: SLA, updated_at: '2026-10-28T10:00:00Z' },
+  { ...TICKETS[1], status_id: ST_NEW, category_id: CAT_SW, subject: 'Toner warning stays on after replacement', priority: 'high', sla: SLA, updated_at: '2026-10-27T10:00:00Z' },
+  { ...TICKETS[2], status_id: ST_NEW, category_id: CAT_SW, subject: 'Label printer prints blank lines between labels', priority: 'medium', sla: null, updated_at: '2026-10-26T10:00:00Z' },
 ]
 
 const MATCHES = [
@@ -81,17 +98,20 @@ async function mockSearch(page: Page, opts: { headers?: Record<string, string> }
     const url = new URL(route.request().url())
     await route.fulfill({ json: url.searchParams.get('id') ? DANA : [DANA] })
   })
-  await page.route('**/api/v1/categories/cat-1/types', route =>
-    route.fulfill({ json: [{ id: 'ty-1', category_id: 'cat-1', name: 'Printers', active: true }] }),
+  await page.route('**/api/v1/categories', route =>
+    route.fulfill({ json: [{ id: CAT_HW, name: 'Hardware', active: true }, { id: CAT_SW, name: 'Software', active: true }] }),
+  )
+  await page.route(`**/api/v1/categories/${CAT_HW}/types`, route =>
+    route.fulfill({ json: [{ id: TY_PRINTERS, category_id: CAT_HW, name: 'Printers', active: true }] }),
   )
   await page.route('**/api/v1/statuses', route =>
     route.fulfill({
       json: [
-        STATUSES[0],
-        { id: 'st-prog', name: 'In Progress', kind: 'custom', sort_order: 2, color: '#f59e0b', active: true, ticket_count: 1 },
-        { id: 'st-pend', name: 'Pending', kind: 'custom', sort_order: 3, color: '#8b5cf6', active: true, ticket_count: 1 },
-        STATUSES[1],
-        STATUSES[2],
+        { ...STATUSES[0], id: ST_NEW },
+        { id: ST_PROG, name: 'In Progress', kind: 'custom', sort_order: 2, color: '#f59e0b', active: true, ticket_count: 1 },
+        { id: ST_PEND, name: 'Pending', kind: 'custom', sort_order: 3, color: '#8b5cf6', active: true, ticket_count: 1 },
+        { ...STATUSES[1], id: ST_RESOLVED },
+        { ...STATUSES[2], id: ST_CLOSED },
       ],
     }),
   )
@@ -111,9 +131,9 @@ test.describe('desktop, 1440x900', () => {
   test.use({ viewport: { width: 1440, height: 900 } })
 
   test('panel, chips, sort by a column, and the address holds all of it', async ({ page }) => {
-    await mockApi(page, { me: ME_ADMIN })
+    await mockApi(page, { me: ADMIN })
     const seen = await mockSearch(page)
-    await page.goto('/tickets?status=st-new&reporter=u-dana')
+    await page.goto(`/tickets?status=${ST_NEW}&reporter=${DANA.id}`)
 
     // The two old links still work, and the chip names the account by id.
     const chips = page.getByRole('group', { name: 'Active filters' })
@@ -125,8 +145,8 @@ test.describe('desktop, 1440x900', () => {
     await panel.getByLabel('In Progress').check()
     await panel.getByLabel('Pending').check()
     await panel.getByLabel('High').check()
-    await panel.getByLabel('Category').selectOption('cat-1')
-    await panel.getByLabel('Type').selectOption('ty-1')
+    await panel.getByLabel('Category').selectOption(CAT_HW)
+    await panel.getByLabel('Type').selectOption(TY_PRINTERS)
     await panel.getByLabel('Created from').fill('2026-10-01')
     await panel.getByLabel('Created to').fill('2026-10-31')
     await expect(chips.getByText('Hardware › Printers')).toBeVisible()
@@ -139,11 +159,11 @@ test.describe('desktop, 1440x900', () => {
     await expect.poll(() => seen.at(-1)?.get('sort')).toBe('subject')
     const last = seen.at(-1)!
     expect(last.get('order')).toBe('desc')
-    expect(last.getAll('status_id').sort()).toEqual(['st-new', 'st-pend', 'st-prog'].sort())
+    expect(last.getAll('status_id').sort()).toEqual([ST_NEW, ST_PEND, ST_PROG].sort())
     expect(last.getAll('priority')).toEqual(['high'])
-    expect(last.get('reporter_id')).toBe('u-dana')
-    expect(last.get('category_id')).toBe('cat-1')
-    expect(last.get('type_id')).toBe('ty-1')
+    expect(last.get('reporter_id')).toBe(DANA.id)
+    expect(last.get('category_id')).toBe(CAT_HW)
+    expect(last.get('type_id')).toBe(TY_PRINTERS)
     expect(last.has('created_after')).toBe(true)
     expect(last.has('scope')).toBe(false) // an account names a set of tickets: no queue
 
@@ -164,7 +184,7 @@ test.describe('desktop, 1440x900', () => {
   })
 
   test('a reply match: highlighted words as text, the note marked, no author', async ({ page }) => {
-    await mockApi(page, { me: ME_STAFF })
+    await mockApi(page, { me: STAFF })
     const seen = await mockSearch(page)
     await page.goto('/tickets')
     await page.getByPlaceholder(/Search by tracking number/).fill('fuser')
@@ -182,14 +202,14 @@ test.describe('desktop, 1440x900', () => {
   })
 
   test('replies that could not be searched say so', async ({ page }) => {
-    await mockApi(page, { me: ME_STAFF })
+    await mockApi(page, { me: STAFF })
     await mockSearch(page, { headers: { 'x-replies-searched': 'false' } })
     await page.goto('/tickets?q=fuser')
     await expect(page.getByText(/Replies weren.t fully searched/)).toBeVisible()
   })
 
   test('a reply index still being built says so', async ({ page }) => {
-    await mockApi(page, { me: ME_STAFF })
+    await mockApi(page, { me: STAFF })
     await mockSearch(page, { headers: { 'x-reply-index': 'building' } })
     await page.goto('/tickets?q=fuser')
     await expect(page.getByText(/Reply search is still being prepared/)).toBeVisible()
@@ -214,9 +234,9 @@ test.describe('phone, 390x844', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
 
   async function openDialog(page: Page) {
-    await mockApi(page, { me: ME_ADMIN })
+    await mockApi(page, { me: ADMIN })
     const seen = await mockSearch(page)
-    await page.goto('/tickets?status=st-new&priority=high&reporter=u-dana&created_from=2026-10-01&created_to=2026-10-31&category=cat-1&type=ty-1')
+    await page.goto(`/tickets?status=${ST_NEW}&priority=high&reporter=${DANA.id}&created_from=2026-10-01&created_to=2026-10-31&category=${CAT_HW}&type=${TY_PRINTERS}`)
     await page.getByRole('button', { name: /^Filters/ }).click()
     const dialog = page.getByRole('dialog', { name: 'Filters' })
     await expect(dialog).toBeVisible()
@@ -262,9 +282,9 @@ test.describe('phone, 390x844', () => {
   })
 
   test('results are cards, the sort has a control, and chips wrap', async ({ page }) => {
-    await mockApi(page, { me: ME_STAFF })
+    await mockApi(page, { me: STAFF })
     await mockSearch(page)
-    await page.goto('/tickets?priority=high&status=st-new&created_from=2026-10-01&created_to=2026-10-31')
+    await page.goto(`/tickets?priority=high&status=${ST_NEW}&created_from=2026-10-01&created_to=2026-10-31`)
     await expect(page.getByRole('group', { name: 'Active filters' })).toBeVisible()
     await expect(page.getByLabel('Sort by')).toBeVisible()
     await page.getByLabel('Sort by').selectOption('subject')
@@ -274,7 +294,7 @@ test.describe('phone, 390x844', () => {
   })
 
   test('a reply match shows under the subject on the card', async ({ page }) => {
-    await mockApi(page, { me: ME_STAFF })
+    await mockApi(page, { me: STAFF })
     await mockSearch(page)
     await page.goto('/tickets?q=fuser')
     await expect(page.locator('mark:visible').first()).toBeVisible()
@@ -287,9 +307,9 @@ test.describe('nothing scrolls sideways at 320 px', () => {
   test.use({ viewport: { width: 320, height: 844 } })
 
   test('results with chips, and the open dialog', async ({ page }) => {
-    await mockApi(page, { me: ME_ADMIN })
+    await mockApi(page, { me: ADMIN })
     await mockSearch(page)
-    await page.goto('/tickets?q=fuser&reporter=u-dana&priority=high&priority=low&status=st-new&created_from=2026-10-01&created_to=2026-10-31&category=cat-1&type=ty-1')
+    await page.goto(`/tickets?q=fuser&reporter=${DANA.id}&priority=high&priority=low&status=${ST_NEW}&created_from=2026-10-01&created_to=2026-10-31&category=${CAT_HW}&type=${TY_PRINTERS}`)
     await expect(page.locator('mark:visible').first()).toBeVisible()
     await noHorizontalScroll(page)
 
