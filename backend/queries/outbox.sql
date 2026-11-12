@@ -11,10 +11,14 @@ ON CONFLICT (id) DO NOTHING;
 -- (claimed_until) returns a row to the pool if its worker dies mid-send.
 -- attempts counts the claim, so a row that crashes its worker every time
 -- still runs out of attempts.
-UPDATE notification_outbox
-SET claimed_until = now() + make_interval(secs => sqlc.arg(lease_seconds)::int),
-    attempts = attempts + 1
-WHERE id IN (
+--
+-- The page is a MATERIALIZED CTE, not `id IN (SELECT ... LIMIT n)`: with the
+-- subquery inline a nested-loop semi join re-runs it per row of the table, and
+-- each re-run skips the rows already updated and takes the next n, so one claim
+-- can lease every due row and count an attempt against each. The bad plan is
+-- chosen when the table is estimated at about one row, which is the outbox's
+-- usual state (measured at default planner settings).
+WITH page AS MATERIALIZED (
     SELECT id FROM notification_outbox
     WHERE failed_at IS NULL
       AND available_at <= now()
@@ -23,7 +27,12 @@ WHERE id IN (
     LIMIT sqlc.arg(page_limit)
     FOR UPDATE SKIP LOCKED
 )
-RETURNING id, channel, event, attempts;
+UPDATE notification_outbox
+SET claimed_until = now() + make_interval(secs => sqlc.arg(lease_seconds)::int),
+    attempts = notification_outbox.attempts + 1
+FROM page
+WHERE notification_outbox.id = page.id
+RETURNING notification_outbox.id, notification_outbox.channel, notification_outbox.event, notification_outbox.attempts;
 
 -- name: DeleteNotification :exec
 DELETE FROM notification_outbox WHERE id = $1;

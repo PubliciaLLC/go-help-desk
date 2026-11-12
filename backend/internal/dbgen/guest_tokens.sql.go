@@ -36,13 +36,14 @@ func (q *Queries) CreateGuestAccessToken(ctx context.Context, arg CreateGuestAcc
 }
 
 const deleteExpiredGuestAccessTokens = `-- name: DeleteExpiredGuestAccessTokens :execrows
-DELETE FROM guest_access_tokens WHERE id IN (
+WITH batch AS MATERIALIZED (
   SELECT old.id FROM guest_access_tokens AS old
   WHERE old.expires_at <= clock_timestamp()
   ORDER BY old.expires_at
   LIMIT $1
   FOR UPDATE SKIP LOCKED
 )
+DELETE FROM guest_access_tokens USING batch WHERE guest_access_tokens.id = batch.id
 `
 
 // Housekeeping, not a security control: an expired token already resolves to
@@ -52,6 +53,13 @@ DELETE FROM guest_access_tokens WHERE id IN (
 // token's lifetime. One batch, oldest first so idx_guest_access_tokens_expires_at
 // serves it; SKIP LOCKED so a row someone else holds is left for the next sweep
 // and not waited on.
+//
+// The batch is a MATERIALIZED CTE, not `id IN (SELECT ... LIMIT n)`: with the
+// subquery inline a nested-loop semi join re-runs it per row of the table, and
+// each re-run skips the rows already deleted and takes the next n, so one batch
+// can delete every expired token. The CTE is evaluated once, whatever the plan.
+// The bad plan is chosen when the table is estimated at about one row (measured
+// at default planner settings).
 func (q *Queries) DeleteExpiredGuestAccessTokens(ctx context.Context, batchSize int32) (int64, error) {
 	result, err := q.db.ExecContext(ctx, deleteExpiredGuestAccessTokens, batchSize)
 	if err != nil {
