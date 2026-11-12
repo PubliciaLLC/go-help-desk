@@ -24,6 +24,7 @@ func newPreparer(db *sql.DB) *replyindex.Preparer {
 	p.BatchSize = 3
 	p.Pause = 0
 	p.EmptyPause = 0
+	p.LockPause = 10 * time.Millisecond
 	return p
 }
 

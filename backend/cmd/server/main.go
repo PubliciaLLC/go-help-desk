@@ -62,6 +62,12 @@ import (
 )
 
 func main() {
+	// Before anything else: a command line the binary does not understand must not
+	// start a server (see serverArgsProblem).
+	if msg := serverArgsProblem(os.Args[1:]); msg != "" {
+		fmt.Fprintln(os.Stderr, msg)
+		os.Exit(2)
+	}
 	// One subcommand, handled before run() so it never starts a server or a
 	// sweep. Everything else is the server, which keeps `docker run <image>`
 	// meaning what it has always meant.

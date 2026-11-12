@@ -56,7 +56,13 @@ func TestEnsureSchema_AppliesTheDDLAndLeavesTheMigrationVersionAlone(t *testing.
 	dropReplySearch(t, db.SQL)
 	col, trg := hasColumnAndTrigger(t, db.SQL)
 	require.False(t, col || trg, "precondition: a database without the feature")
+	// The test database is migrated to the newest version, which is this very
+	// migration. A 1.2 database is at 21; set it there, so that a command that
+	// recorded the migration would change the number.
+	_, err = db.SQL.Exec(`UPDATE schema_migrations SET version = 21`)
+	require.NoError(t, err)
 	versionBefore, dirtyBefore := migrationVersion(t, db.SQL)
+	require.EqualValues(t, 21, versionBefore)
 
 	p := newPreparer(db.SQL)
 	require.NoError(t, p.EnsureSchema(ctx, ddl))
@@ -205,4 +211,94 @@ func TestEnsureSchema_GivesUpWhenTheTableStaysLocked(t *testing.T) {
 	require.Contains(t, err.Error(), "gave up", "it was the lock timeout that ended it, not the deadline")
 	col, trg := hasColumnAndTrigger(t, db.SQL)
 	require.False(t, col || trg, "nothing was half applied")
+}
+
+// Run again, with the column, function and trigger already there (a second run,
+// or the server's own migration having run), the DDL is not run at all. Its
+// ALTER TABLE would ask for an ACCESS EXCLUSIVE lock, which conflicts with a
+// CREATE INDEX CONCURRENTLY in progress and, queued, blocks every reader and
+// writer of the table behind it. Here another transaction holds the table's
+// strongest lock, and EnsureSchema still returns at once.
+func TestEnsureSchema_TakesNoTableLockWhenTheSchemaIsAlreadyThere(t *testing.T) {
+	db, closeDB := testutil.NewIsolatedDB(t)
+	defer closeDB()
+	ctx := context.Background()
+	ddl, _ := database.ReplySearchSchemaSQL()
+
+	tx, err := db.SQL.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	_, err = tx.Exec(`LOCK TABLE ticket_replies IN ACCESS EXCLUSIVE MODE`)
+	require.NoError(t, err)
+
+	limited, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	start := time.Now()
+	require.NoError(t, newPreparer(db.SQL).EnsureSchema(limited, ddl))
+	require.Less(t, time.Since(start), 2*time.Second, "it did not wait for the table")
+}
+
+// A lock_timeout that fails is followed by a wait, so that the table has clear
+// time between attempts; attempts back to back would keep a lock request queued
+// almost all the time, and every reply behind it with it.
+func TestEnsureSchema_PausesBetweenAttempts(t *testing.T) {
+	db, closeDB := testutil.NewIsolatedDB(t)
+	defer closeDB()
+	ctx := context.Background()
+	ddl, _ := database.ReplySearchSchemaSQL()
+	dropReplySearch(t, db.SQL)
+
+	tx, err := db.SQL.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	_, err = tx.Exec(`LOCK TABLE ticket_replies IN ACCESS SHARE MODE`)
+	require.NoError(t, err)
+	released := time.AfterFunc(1500*time.Millisecond, func() { _ = tx.Rollback() })
+	defer released.Stop()
+
+	p := newPreparer(db.SQL)
+	p.LockTimeout = 100 * time.Millisecond
+	p.LockPause = 300 * time.Millisecond
+	p.LockAttempts = 50
+	attempts := 0
+	p.OnSchemaRetry = func(int) { attempts++ }
+	require.NoError(t, p.EnsureSchema(ctx, ddl))
+	// 1.5 s at one attempt per 0.4 s is about four; with no pause it would be
+	// about fifteen.
+	require.Positive(t, attempts)
+	require.LessOrEqual(t, attempts, 6)
+}
+
+// A runner that cannot take the advisory lock does nothing at all, the DDL
+// included: it must not ask for the table's exclusive lock while the runner that
+// holds the advisory lock is building an index (which holds a conflicting one).
+// Here the advisory lock and a SHARE UPDATE EXCLUSIVE lock on the table are held
+// the way a build holds them, and the column is missing so the DDL would be
+// needed.
+func TestPrepareWithSchema_ARunnerThatCannotTakeTheLockTouchesNothing(t *testing.T) {
+	db, closeDB := testutil.NewIsolatedDB(t)
+	defer closeDB()
+	ctx := context.Background()
+	ddl, _ := database.ReplySearchSchemaSQL()
+	dropReplySearch(t, db.SQL)
+
+	holder, err := db.SQL.Conn(ctx)
+	require.NoError(t, err)
+	defer holder.Close()
+	_, err = holder.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, replyindex.LockKey)
+	require.NoError(t, err)
+	tx, err := db.SQL.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	_, err = tx.Exec(`LOCK TABLE ticket_replies IN SHARE UPDATE EXCLUSIVE MODE`)
+	require.NoError(t, err)
+
+	limited, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	start := time.Now()
+	res, err := newPreparer(db.SQL).PrepareWithSchema(limited, ddl)
+	require.NoError(t, err)
+	require.True(t, res.Locked)
+	require.Less(t, time.Since(start), 2*time.Second, "at once, not after queueing behind the build")
+	col, trg := hasColumnAndTrigger(t, db.SQL)
+	require.False(t, col || trg, "no DDL was run")
 }

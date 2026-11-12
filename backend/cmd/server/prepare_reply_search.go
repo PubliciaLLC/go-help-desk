@@ -8,11 +8,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"time"
 
 	"github.com/jackc/pgx/v5/stdlib"
 
-	"github.com/publiciallc/go-help-desk/backend/internal/config"
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/replyindex"
 )
@@ -24,13 +24,18 @@ type prepareOptions struct {
 	BatchSize          int
 }
 
-const prepareReplySearchUsage = `usage: /app/server prepare-reply-search [--progress-interval 30s] [--maintenance-work-mem 1GB] [--batch-size 1000]
+const prepareReplySearchUsage = `usage: prepare-reply-search [--progress-interval 30s] [--maintenance-work-mem 1GB] [--batch-size 1000]
 
-Gets reply search ready on a large database before 1.3.0 starts, so search works the moment it does.
-Run it against the 1.2 database while 1.2 is still serving (it does not record the migration, which
-1.2 would refuse to start on), or with 1.2 stopped, which is faster and costs downtime. It is safe to
-interrupt: run it again and it carries on. Exit codes: 0 ready, 1 error, 3 another run (or the 1.3.0
-server) is already preparing reply search.`
+Gets reply search ready on a large database before 1.3.0 starts, so it works the moment 1.3.0 does.
+It needs only DATABASE_URL. The 1.3.0 image's entrypoint is already the server binary, so do NOT put
+/app/server in front: the command is the first argument. Run it from the 1.3.0 image against the
+1.2 database, while 1.2 is still serving (it does not record the migration, which 1.2 would refuse to
+start on):
+
+  docker run --rm --network <the network the database is on> -e DATABASE_URL=... <1.3.0 image> prepare-reply-search
+
+Safe to interrupt (it exits 1 and the next run carries on). Exit codes: 0 ready, 1 error or interrupted,
+2 bad arguments, 3 another run, or the 1.3.0 server, is already preparing reply search.`
 
 func parsePrepareReplySearchFlags(args []string) (prepareOptions, error) {
 	o := prepareOptions{ProgressInterval: 30 * time.Second, MaintenanceWorkMem: "1GB", BatchSize: 1000}
@@ -40,7 +45,7 @@ func parsePrepareReplySearchFlags(args []string) (prepareOptions, error) {
 	fs.StringVar(&o.MaintenanceWorkMem, "maintenance-work-mem", o.MaintenanceWorkMem, "maintenance_work_mem for the index builds")
 	fs.IntVar(&o.BatchSize, "batch-size", o.BatchSize, "rows filled per transaction")
 	if err := fs.Parse(args); err != nil {
-		return o, err
+		return o, err // flag.ErrHelp for --help
 	}
 	switch {
 	case fs.NArg() > 0:
@@ -60,16 +65,23 @@ func parsePrepareReplySearchFlags(args []string) (prepareOptions, error) {
 // exit code.
 func prepareReplySearchCommand(ctx context.Context, args []string, out io.Writer) int {
 	opts, err := parsePrepareReplySearchFlags(args)
+	if errors.Is(err, flag.ErrHelp) {
+		fmt.Fprintln(out, prepareReplySearchUsage)
+		return 0
+	}
 	if err != nil {
 		fmt.Fprintf(out, "prepare-reply-search: %v\n\n%s\n", err, prepareReplySearchUsage)
 		return 2
 	}
-	cfg, err := config.Load()
-	if err != nil {
-		fmt.Fprintf(out, "prepare-reply-search: loading config: %v\n", err)
+	// Only the database. config.Load wants BASE_URL, SESSION_SECRET and the rest, which
+	// are a server's, and failed the command for anyone who had not copied the whole
+	// environment.
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		fmt.Fprintf(out, "prepare-reply-search: DATABASE_URL is not set\n\n%s\n", prepareReplySearchUsage)
 		return 1
 	}
-	pool, err := database.New(ctx, cfg.DatabaseURL)
+	pool, err := database.New(ctx, dsn)
 	if err != nil {
 		fmt.Fprintf(out, "prepare-reply-search: connecting to the database: %v\n", err)
 		return 1
@@ -80,7 +92,11 @@ func prepareReplySearchCommand(ctx context.Context, args []string, out io.Writer
 
 	code, err := prepareReplySearch(ctx, db, opts, out)
 	if err != nil {
-		fmt.Fprintf(out, "prepare-reply-search: %v\n", err)
+		if ctx.Err() != nil {
+			fmt.Fprintln(out, "Interrupted. Run the command again to carry on where it stopped.")
+		} else {
+			fmt.Fprintf(out, "prepare-reply-search: %v\n", err)
+		}
 	}
 	return code
 }
@@ -98,28 +114,34 @@ func prepareReplySearch(ctx context.Context, db *sql.DB, opts prepareOptions, ou
 	p.ProgressEvery = opts.ProgressInterval
 	p.BatchSize = opts.BatchSize
 	p.MaintenanceWorkMem = opts.MaintenanceWorkMem
-
-	fmt.Fprintln(out, "Adding the search column and its trigger to ticket_replies (the migration is not recorded, so 1.2 keeps running).")
-	if err := p.EnsureSchema(ctx, ddl); err != nil {
-		return 1, err
+	// What each build really runs with, read back from its own session: the flag
+	// only raises the setting, so an administrator's larger value stays.
+	p.OnBuild = func(index, maintenanceWorkMem string) {
+		fmt.Fprintf(out, "building %s with maintenance_work_mem %s\n", index, maintenanceWorkMem)
 	}
-	fmt.Fprintf(out, "Filling the search column of existing replies, then building the indexes with maintenance_work_mem %s. Safe to interrupt; run again to carry on.\n", opts.MaintenanceWorkMem)
+
+	fmt.Fprintln(out, "Preparing reply search. If the column and trigger are missing they are added first (the migration is not recorded, so 1.2 keeps running); then the search column of existing replies is filled and the indexes are built. Safe to interrupt; run again to carry on.")
 
 	stop := make(chan struct{})
 	defer close(stop)
 	go reportIndexBuild(ctx, db, opts.ProgressInterval, out, stop)
 
-	res, err := p.Prepare(ctx)
+	// The lock is taken before any DDL: a run that cannot take it touches nothing.
+	res, err := p.PrepareWithSchema(ctx, ddl)
 	switch {
 	case err != nil:
 		return 1, err
 	case res.Locked:
-		fmt.Fprintln(out, "Reply search is already being prepared by another process (the 1.3.0 server, or another run of this command). Nothing was done.")
+		fmt.Fprintln(out, "Reply search is already being prepared by another process (the 1.3.0 server, or another run of this command). Nothing was done. Let it finish, or stop it, then run this again.")
 		return 3, nil
-	case res.Filled == 0 && res.Batches == 0:
+	case res.Filled == 0 && res.Batches == 0 && !res.Built:
 		fmt.Fprintln(out, "Reply search is already prepared; nothing to do.")
 	default:
-		fmt.Fprintf(out, "Filled %d replies.\n", res.Filled)
+		fmt.Fprintf(out, "Filled %d replies.", res.Filled)
+		if res.Built {
+			fmt.Fprint(out, " Indexes built.")
+		}
+		fmt.Fprintln(out)
 	}
 	fmt.Fprintln(out, "reply search is ready. Start 1.3.0 when you like.")
 	return 0, nil
@@ -139,7 +161,7 @@ func reportIndexBuild(ctx context.Context, db *sql.DB, every time.Duration, out 
 		case <-t.C:
 			var phase string
 			var done, total int64
-			err := db.QueryRowContext(ctx, `SELECT phase, blocks_done, blocks_total FROM pg_stat_progress_create_index LIMIT 1`).Scan(&phase, &done, &total)
+			err := db.QueryRowContext(ctx, `SELECT phase, blocks_done, blocks_total FROM pg_stat_progress_create_index WHERE datname = current_database() LIMIT 1`).Scan(&phase, &done, &total)
 			if err == nil {
 				fmt.Fprintf(out, "building an index: %s, %d of %d blocks\n", phase, done, total)
 			}

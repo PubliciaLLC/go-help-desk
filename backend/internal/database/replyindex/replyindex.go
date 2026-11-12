@@ -93,10 +93,17 @@ type Preparer struct {
 	// MaxRetry is the ceiling of the wait between failed attempts, which doubles
 	// from Retry.
 	MaxRetry time.Duration
-	// LockTimeout and LockAttempts: EnsureSchema's DDL waits at most LockTimeout
-	// for the locks it needs and tries LockAttempts times.
+	// LockTimeout, LockPause and LockAttempts: EnsureSchema's DDL waits at most
+	// LockTimeout for the locks it needs, then waits LockPause (longer than the
+	// timeout, so the table has clear time between attempts and nothing queues
+	// behind a lock request that is about to be given up), and tries LockAttempts
+	// times.
 	LockTimeout  time.Duration
+	LockPause    time.Duration
 	LockAttempts int
+	// OnSchemaRetry, if set, is called with the attempt number after each failed
+	// attempt at the DDL. For tests.
+	OnSchemaRetry func(attempt int)
 	// ResetStatement undoes the maintenance_work_mem set for a build. A field so a
 	// test can make it fail.
 	ResetStatement string
@@ -120,7 +127,7 @@ func New(db *sql.DB, log *slog.Logger) *Preparer {
 		BatchSize: 1000, Pause: 250 * time.Millisecond, MaintenanceWorkMem: "256MB",
 		EmptyPause: 10 * time.Millisecond, TextLimit: 50000, MaxRetry: 10 * time.Minute,
 		ResetStatement: `RESET maintenance_work_mem`,
-		LockTimeout:    5 * time.Second, LockAttempts: 60,
+		LockTimeout:    2 * time.Second, LockPause: 10 * time.Second, LockAttempts: 30,
 		ProgressEvery: 30 * time.Second, Retry: 30 * time.Second,
 	}
 }
@@ -132,6 +139,7 @@ type Result struct {
 	// Locked: another runner holds the lock; nothing was done.
 	Locked  bool
 	Filled  int64 // rows given a body_tsv by this pass
+	Built   bool  // this pass built at least one index
 	Batches int
 }
 
@@ -148,6 +156,20 @@ func Ready(ctx context.Context, db *sql.DB) (bool, error) {
 // be interrupted at any point and run again; a restart resumes where the
 // committed batches stopped.
 func (p *Preparer) Prepare(ctx context.Context) (Result, error) {
+	return p.prepare(ctx, "")
+}
+
+// PrepareWithSchema is Prepare for the pre-build command, which may be run
+// against a database that does not have the column and trigger yet. It takes the
+// advisory lock FIRST and only then applies ddl (EnsureSchema), so a runner that
+// cannot take the lock never touches the table: the runner that has it may be
+// building an index, which holds a lock that the DDL's ALTER TABLE would queue
+// behind, blocking every reader and writer of ticket_replies.
+func (p *Preparer) PrepareWithSchema(ctx context.Context, ddl string) (Result, error) {
+	return p.prepare(ctx, ddl)
+}
+
+func (p *Preparer) prepare(ctx context.Context, ddl string) (Result, error) {
 	var res Result
 	ready, err := Ready(ctx, p.DB)
 	if err != nil {
@@ -176,6 +198,11 @@ func (p *Preparer) Prepare(ctx context.Context) (Result, error) {
 	defer func() { _, _ = conn.ExecContext(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, LockKey) }()
 
 	start := time.Now()
+	if ddl != "" {
+		if err := p.EnsureSchema(ctx, ddl); err != nil {
+			return res, err
+		}
+	}
 	if err := p.fill(ctx, &res); err != nil {
 		return res, err
 	}
@@ -184,6 +211,7 @@ func (p *Preparer) Prepare(ctx context.Context) (Result, error) {
 		return res, err
 	}
 	res.Done = true
+	res.Built = built
 	if res.Filled > 0 || built {
 		p.Log.InfoContext(ctx, "reply search is ready",
 			"replies_filled", res.Filled, "took", time.Since(start).Round(time.Second).String())
@@ -231,8 +259,11 @@ func (p *Preparer) fill(ctx context.Context, res *Result) error {
 	if err := p.DB.QueryRowContext(ctx, `SELECT greatest(reltuples, 0)::bigint FROM pg_class WHERE oid = 'ticket_replies'::regclass`).Scan(&total); err != nil {
 		return fmt.Errorf("reply search: sizing the table: %w", err)
 	}
-	p.Log.InfoContext(ctx, "reply search: filling the search column of replies that lack one, in the background",
-		"replies_about", total, "batch", p.BatchSize)
+	attrs := []any{"batch", p.BatchSize}
+	if total > 0 { // 0 is a table Postgres has never analysed: no estimate
+		attrs = append(attrs, "replies_about", total)
+	}
+	p.Log.InfoContext(ctx, "reply search: filling the search column of replies that lack one", attrs...)
 	lastLog := time.Now()
 	for {
 		if err := p.fillPass(ctx, res, total, &lastLog); err != nil {
@@ -307,7 +338,11 @@ func (p *Preparer) fillPass(ctx context.Context, res *Result, total int64, lastL
 			// A rate, not a time left: on a run that resumes, the rows already filled
 			// are in "of_about" but were not filled by this run.
 			rate := int(float64(res.Filled) / time.Since(fillStart).Seconds())
-			p.Log.InfoContext(ctx, "reply search: filling", "filled", res.Filled, "of_about", total, "per_second", rate)
+			attrs := []any{"filled", res.Filled, "per_second", rate}
+			if total > 0 {
+				attrs = append(attrs, "of_about", total)
+			}
+			p.Log.InfoContext(ctx, "reply search: filling", attrs...)
 		}
 		if err := p.wait(ctx, p.Pause); err != nil {
 			return err
@@ -508,6 +543,16 @@ func NextRetry(cur, max time.Duration) time.Duration {
 // pooled connection) and gives up, rolled back, and tries again. A busy table
 // gets its turn between its transactions.
 func (p *Preparer) EnsureSchema(ctx context.Context, ddl string) error {
+	// Already there: no DDL, so no lock. The migration's ALTER TABLE asks for an
+	// ACCESS EXCLUSIVE lock even when the column exists, and that conflicts with a
+	// CREATE INDEX CONCURRENTLY in progress.
+	present, err := p.schemaPresent(ctx)
+	if err != nil {
+		return fmt.Errorf("reply search: checking for the column and trigger: %w", err)
+	}
+	if present {
+		return nil
+	}
 	var last error
 	for attempt := 1; attempt <= p.LockAttempts; attempt++ {
 		err := p.applyDDL(ctx, ddl)
@@ -519,12 +564,28 @@ func (p *Preparer) EnsureSchema(ctx context.Context, ddl string) error {
 			return fmt.Errorf("reply search: adding the column and trigger: %w", err)
 		}
 		last = err
-		p.Log.InfoContext(ctx, "reply search: ticket_replies is busy; trying again", "attempt", attempt, "of", p.LockAttempts)
-		if err := ctx.Err(); err != nil {
+		p.Log.InfoContext(ctx, "reply search: ticket_replies is busy (a backup or another long transaction is holding it); trying again after a pause",
+			"attempt", attempt, "of", p.LockAttempts, "pause", p.LockPause.String())
+		if p.OnSchemaRetry != nil {
+			p.OnSchemaRetry(attempt)
+		}
+		if err := p.wait(ctx, p.LockPause); err != nil {
 			return err
 		}
 	}
 	return fmt.Errorf("reply search: gave up adding the column and trigger to ticket_replies after %d attempts, a long transaction is holding the table: %w", p.LockAttempts, last)
+}
+
+// schemaPresent says whether the column, the trigger function (with the 50,000
+// character limit) and the trigger exist, from the catalogs alone: it opens no
+// table, so it waits for no lock.
+func (p *Preparer) schemaPresent(ctx context.Context) (bool, error) {
+	var ok bool
+	err := p.DB.QueryRowContext(ctx, `SELECT
+		EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('ticket_replies') AND attname = 'body_tsv' AND NOT attisdropped)
+		AND EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = to_regclass('ticket_replies') AND tgname = 'ticket_replies_body_tsv_trg' AND NOT tgisinternal)
+		AND EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'ticket_replies_body_tsv' AND prosrc LIKE '%left(NEW.body, 50000)%')`).Scan(&ok)
+	return ok, err
 }
 
 func (p *Preparer) applyDDL(ctx context.Context, ddl string) error {
