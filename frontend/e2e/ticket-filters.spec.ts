@@ -171,9 +171,11 @@ async function tableFits(page: Page) {
     table.style.width = before
     return out
   })
-  // Room to spare, not just room: CI's Linux fonts made a table that fit here
-  // 1px too wide, so a fit with no margin is a fit on this machine only.
-  expect(clientWidth - minWidth, 'the narrowest the table can get leaves too little room for another font').toBeGreaterThanOrEqual(32)
+  // Room to spare, not just room: CI's Linux fonts made a table that fit on a
+  // Mac 1px too wide, so a fit with no margin is a fit on this machine only.
+  // The same rows leave about 70px here and 30px on CI; a status name with no
+  // limit leaves none (25 characters is over by 14px, 53 by far more).
+  expect(clientWidth - minWidth, 'the narrowest the table can get leaves too little room for another font').toBeGreaterThanOrEqual(16)
   expect(scrollWidth, 'a column is cut off at the right of the table').toBeLessThanOrEqual(clientWidth)
 }
 
@@ -185,7 +187,9 @@ async function statusChipsAreOneLine(page: Page) {
   // indicators carry titles too.
   const known = ['New', 'In Progress', 'Pending', 'Resolved', 'Closed', NAME_LONG, NAME_LONGER]
   const chips = await page.evaluate(known =>
-    [...document.querySelectorAll('tbody tr td span[title]')].filter(el => known.includes(el.getAttribute('title')!)).map(el => {
+    // The title is on the text inside the chip; the chip is its parent.
+    [...document.querySelectorAll('tbody tr td span[title]')].filter(t => known.includes(t.getAttribute('title')!)).map(t => {
+      const el = t.parentElement!
       const cs = getComputedStyle(el)
       const oneLine =
         parseFloat(cs.lineHeight) +
@@ -193,7 +197,7 @@ async function statusChipsAreOneLine(page: Page) {
         parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth)
       // Cut by an ellipsis: the chip or something in it holds more than it shows.
       const cut = [el, ...el.querySelectorAll('*')].some(n => n.scrollWidth > n.clientWidth + 1)
-      return { name: el.getAttribute('title'), text: el.textContent, height: el.getBoundingClientRect().height, width: el.getBoundingClientRect().width, oneLine, cut }
+      return { name: t.getAttribute('title'), text: el.textContent, height: el.getBoundingClientRect().height, width: el.getBoundingClientRect().width, oneLine, cut }
     }), known,
   )
   const names = chips.map(c => c.name)

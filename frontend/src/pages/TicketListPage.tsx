@@ -796,11 +796,11 @@ export function TicketListPage() {
                               // The text is all in the page (title as well); the cut is only
                               // what is drawn.
                               className="inline-flex max-w-[7.5rem] items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-medium"
-                              title={status.name}
                               style={{ borderColor: status.color, color: status.color }}
                             >
                               <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: status.color }} />
-                              <span className="min-w-0 truncate">{status.name}</span>
+                              {/* The title is on the text, the element the ellipsis cuts. */}
+                              <span className="min-w-0 truncate" title={status.name}>{status.name}</span>
                             </span>
                           ) : '—'}
                         </td>
