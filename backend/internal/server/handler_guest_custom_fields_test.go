@@ -168,6 +168,38 @@ func TestGuestFields_IsThrottled(t *testing.T) {
 	require.Equal(t, http.StatusTooManyRequests, code, "an unauthenticated read has a budget")
 }
 
+// The count lives in the database (#621), and a count that cannot be taken
+// refuses: "could not check" is not "go ahead", for an unauthenticated read of the
+// operator's data as for everything else under the limit.
+func TestGuestFields_RefusesWhenTheCounterCannotBeUsed(t *testing.T) {
+	h, cleanup := newHarnessWithRateLimit(t, 3)
+	defer cleanup()
+	newGuestFixture(t, h)
+	h.failRateCounts()
+
+	code, body := h.guestFields(t, h.catID.String())
+	require.Equal(t, http.StatusInternalServerError, code, string(body))
+	require.NotContains(t, string(body), "Serial", "and nothing of the fields was sent")
+	require.NotContains(t, string(body), "injected", "nor the fault")
+}
+
+// Its own budget, apart from the submit key, as before: spending one does not
+// spend the other.
+func TestGuestFields_HasItsOwnBudget(t *testing.T) {
+	h, cleanup := newHarnessWithRateLimit(t, 2)
+	defer cleanup()
+	newGuestFixture(t, h)
+
+	for i := 0; i < 2; i++ {
+		code, _ := h.guestFields(t, h.catID.String())
+		require.Equal(t, http.StatusOK, code)
+	}
+	code, _ := h.guestFields(t, h.catID.String())
+	require.Equal(t, http.StatusTooManyRequests, code)
+	code, body := h.guestCreate(t, map[string]string{})
+	require.NotEqual(t, http.StatusTooManyRequests, code, "the form's lookups did not spend the submit budget: %s", body)
+}
+
 func TestGuestCreate_StoresOfferedValues(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()

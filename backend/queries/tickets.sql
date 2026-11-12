@@ -400,6 +400,63 @@ WHERE gm.user_id = $1;
 -- Every other criterion is a further AND, so a filter can only narrow what the
 -- caller may already see. Nothing below widens it.
 --
+-- reply_hits is reply-text search (advanced search, section 2.5). It is empty
+-- unless search_replies is set and the search has words. A ticket matches when
+-- ONE reply holds every word, so a public reply and an internal note cannot
+-- combine. include_internal comes from the actor's role and nothing else
+-- (ticket.IncludeInternalFor); for a requester it is false, and an internal note
+-- is then never read, so it cannot decide which tickets match. The snippet read
+-- (ReplyMatchesForTickets) applies the same condition.
+--
+-- It matches ticket_replies.body_tsv, a stored column the migration adds and a
+-- trigger keeps current. The store sets search_replies false until the
+-- background fill and the two indexes are done (ReplySearchReady), so this arm
+-- never runs against a half-filled column.
+--
+-- It looks at only the reply_cap NEWEST matching replies of the tickets the
+-- viewer may see, so a word in a quarter of all replies is not matched, joined
+-- and deduplicated a million times over. The recency index lets the planner
+-- walk replies newest first and stop; the content index serves the rare words.
+-- The cap is applied AFTER the viewer's visibility, with the same predicate as
+-- the main query below (rt is that ticket): applied before it, a requester's
+-- own matches would be crowded out by everyone else's, and a ticket the viewer
+-- may see could be missed because newer matches elsewhere used up the cap. The
+-- main query still applies visibility and every filter itself, so this can
+-- only narrow what it returns. Keep the two predicates in step: a store test
+-- searches as a scoped member of staff and a requester with a cap of one.
+WITH reply_hits AS (
+  SELECT DISTINCT m.ticket_id FROM (
+    SELECT r.ticket_id
+    FROM ticket_replies r
+    JOIN tickets rt ON rt.id = r.ticket_id
+    WHERE sqlc.arg(search_replies)::bool
+      AND sqlc.arg(search_query)::text <> ''
+      AND r.body_tsv @@ to_tsquery('english', sqlc.arg(search_query)::text)
+      AND (sqlc.arg(include_internal)::bool OR NOT r.internal)
+      AND (
+        sqlc.arg(unrestricted)::bool
+        OR (sqlc.arg(reporter_only)::bool AND rt.reporter_user_id = sqlc.arg(actor_id)::uuid)
+        OR (
+          NOT sqlc.arg(unrestricted)::bool
+          AND NOT sqlc.arg(reporter_only)::bool
+          AND (
+            rt.reporter_user_id = sqlc.arg(actor_id)::uuid
+            OR rt.assignee_user_id = sqlc.arg(actor_id)::uuid
+            -- The same arrays as the main query's scope below, for the same reason
+            -- given there, and the same rule.
+            OR rt.assignee_group_id = ANY(sqlc.arg(scope_group_ids)::uuid[])
+            OR rt.category_id = ANY(sqlc.arg(scope_category_ids)::uuid[])
+            OR (rt.type_id = ANY(sqlc.arg(scope_type_ids)::uuid[])
+                AND (rt.category_id, rt.type_id) IN (SELECT c.id, ty.id
+                    FROM unnest(sqlc.arg(scope_type_category_ids)::uuid[]) WITH ORDINALITY AS c(id, n)
+                    JOIN unnest(sqlc.arg(scope_type_ids)::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+          )
+        )
+      )
+    ORDER BY r.created_at DESC, r.id
+    LIMIT sqlc.arg(reply_cap)
+  ) m
+)
 -- Single values are NULL-means-absent and arrays are cardinality(...) = 0, so
 -- one prepared statement serves every combination. The store always passes a
 -- non-nil array.
@@ -553,6 +610,7 @@ WHERE
       sqlc.arg(search_query)::text <> ''
       AND t.search_vector @@ to_tsquery('english', sqlc.arg(search_query)::text)
     )
+    OR t.id IN (SELECT ticket_id FROM reply_hits)
   )
 -- sort_key and sort_dir come from Filter.ResolvedSort, already validated. Each
 -- CASE is NULL for every row unless it is the chosen column, so exactly one of

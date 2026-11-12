@@ -204,6 +204,13 @@ type Plugin struct {
 	InstalledAt time.Time `json:"installed_at"`
 }
 
+type RateLimitCounter struct {
+	Key         string    `json:"key"`
+	WindowStart time.Time `json:"window_start"`
+	WindowEnd   time.Time `json:"window_end"`
+	Count       int32     `json:"count"`
+}
+
 type Session struct {
 	ID        string        `json:"id"`
 	UserID    uuid.NullUUID `json:"user_id"`
@@ -322,6 +329,7 @@ type TicketReply struct {
 	CreatedAt      time.Time     `json:"created_at"`
 	NotifyCustomer bool          `json:"notify_customer"`
 	BodyFormat     string        `json:"body_format"`
+	BodyTsv        interface{}   `json:"body_tsv"`
 }
 
 type TicketStatusHistory struct {

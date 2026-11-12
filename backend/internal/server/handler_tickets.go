@@ -167,7 +167,23 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeReplySearchHeaders(w, f, res.Replies)
-	s.writeTickets(w, r, res.Tickets)
+
+	// The excerpt of the reply each ticket matched through, for the page only, and
+	// only when the reply arm ran: a page chosen without it must not look as if it
+	// had been. f carries the IncludeInternal set above from the caller's role, and
+	// the query applies it again, so a requester is never given a note.
+	var matches map[uuid.UUID]ticket.ReplyMatch
+	if res.Replies.ExcerptsApply() && len(res.Tickets) > 0 {
+		ids := make([]uuid.UUID, len(res.Tickets))
+		for i, t := range res.Tickets {
+			ids[i] = t.ID
+		}
+		if matches, err = s.tickets.ReplyMatches(ctx, f, ids); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+	s.writeTickets(w, r, res.Tickets, matches)
 }
 
 // writeReplySearchHeaders tells the caller what a reply search could not do.
@@ -554,11 +570,15 @@ func (s *Server) ResolveOnBehalf(ctx context.Context, actorID uuid.UUID, in *tic
 		}
 	}
 	key := actorID.String()
-	if taken, _ := s.onBehalfMailLimiter.Take(key); !taken {
+	taken, err := s.onBehalfMailLimiter.Take(ctx, key)
+	if err != nil {
+		return err
+	}
+	if !taken.Allowed {
 		return &OnBehalfError{
 			Status: http.StatusTooManyRequests, Code: "rate_limited",
 			Message:    "too many tickets filed with reporter_email; please wait and try again",
-			RetryAfter: s.onBehalfMailLimiter.Remaining(),
+			RetryAfter: taken.RetryAfter,
 		}
 	}
 	u, err := s.users.GetByEmail(ctx, addr)

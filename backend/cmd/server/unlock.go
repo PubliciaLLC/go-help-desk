@@ -53,9 +53,9 @@ const unlockAlphabet = "23456789abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXY
 // audit entry. It is shown once and the account must replace it at its next
 // sign-in (users.must_change_password).
 //
-// The in-memory sign-in throttle is not touched. It lives in the server
-// process, which this is not, and it only ever delays a login, never refuses
-// the right password, so it cannot be what is keeping anybody out.
+// The sign-in throttle (rate_limit_counters) is not touched. It only ever
+// delays a login, never refuses the right password, and ends within a minute,
+// so it cannot be what is keeping anybody out.
 func unlock(ctx context.Context, email string, out io.Writer) error {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if email == "" {

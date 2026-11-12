@@ -49,6 +49,14 @@ func RowID(ctx context.Context) uuid.UUID {
 	return id
 }
 
+// WithDeliveryForTest returns a context that looks like the worker delivering
+// attempt number attempt of the row rowID, for a test of a send-time step that
+// behaves differently on a retry.
+func WithDeliveryForTest(ctx context.Context, rowID uuid.UUID, attempt int) context.Context {
+	ctx = context.WithValue(ctx, rowKey{}, rowID)
+	return context.WithValue(ctx, attemptKey{}, attempt)
+}
+
 // LastAttempt reports whether the worker will give up on the row if this
 // attempt fails.
 func LastAttempt(ctx context.Context) bool {
