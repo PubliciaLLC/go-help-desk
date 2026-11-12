@@ -346,7 +346,7 @@ func TestTicketStore_NotFound(t *testing.T) {
 // table's columns rather than using SELECT *, so a query left off that list
 // fails silently (it compiles, and the field just always reads zero) rather
 // than with an error. This round-trips through Update, GetByID,
-// GetByIDForUpdate and ListAll, which is the query the one-off round-trip
+// GetByIDForUpdate and ListFiltered, which is the query the one-off round-trip
 // case above would not have caught.
 func TestTicketStore_PersistsSLAPause(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
@@ -410,8 +410,8 @@ func TestTicketStore_PersistsSLAPause(t *testing.T) {
 	require.Equal(t, int64(42), locked.SLAPausedSeconds)
 
 	// A listing query must carry the fields too — this is what catches a
-	// SELECT column list that was missed on one of the eighteen ticket reads.
-	all, err := ts.ListAll(ctx, 100, 0)
+	// SELECT column list that was missed on one of the ticket reads.
+	all, err := ts.ListFiltered(ctx, ticket.Filter{Visibility: ticket.VisibilityAll, Limit: 100})
 	require.NoError(t, err)
 	var found bool
 	for _, l := range all {
@@ -434,8 +434,8 @@ func TestTicketStore_PersistsSLAPause(t *testing.T) {
 	require.Equal(t, int64(42), cleared.SLAPausedSeconds, "clearing the interval must not touch the accumulated total")
 }
 
-// TestTicketStore_ScopedListsAndCounts covers the admin-scope list helpers
-// (ListAll / ListUnassigned and their Search variants) and the scoped status
+// TestTicketStore_ScopedListsAndCounts covers the administrator's lists (every
+// ticket, the unassigned queue, and a search in each) and the scoped status
 // counts used to drive per-role dashboard numbers.
 func TestTicketStore_ScopedListsAndCounts(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
@@ -495,14 +495,14 @@ func TestTicketStore_ScopedListsAndCounts(t *testing.T) {
 	unassigned1 := mkTicket("no owner alpha", nil, nil)
 	unassigned2 := mkTicket("no owner beta", nil, nil)
 
-	t.Run("ListAll returns every ticket", func(t *testing.T) {
-		all, err := ts.ListAll(ctx, 100, 0)
+	t.Run("an unfiltered list returns every ticket", func(t *testing.T) {
+		all, err := ts.ListFiltered(ctx, ticket.Filter{Visibility: ticket.VisibilityAll, Limit: 100})
 		require.NoError(t, err)
 		require.Len(t, all, 4)
 	})
 
-	t.Run("ListUnassigned returns only unassigned tickets", func(t *testing.T) {
-		got, err := ts.ListUnassigned(ctx, 100, 0)
+	t.Run("the unassigned queue returns only unassigned tickets", func(t *testing.T) {
+		got, err := ts.ListFiltered(ctx, ticket.Filter{Visibility: ticket.VisibilityAll, Queue: ticket.QueueUnassigned, Limit: 100})
 		require.NoError(t, err)
 		require.Len(t, got, 2)
 		ids := map[uuid.UUID]bool{}
@@ -513,15 +513,15 @@ func TestTicketStore_ScopedListsAndCounts(t *testing.T) {
 		require.True(t, ids[unassigned2.ID])
 	})
 
-	t.Run("SearchAll filters by subject", func(t *testing.T) {
-		got, err := ts.SearchAll(ctx, "alpha", 100, 0)
+	t.Run("a search filters by subject", func(t *testing.T) {
+		got, err := ts.ListFiltered(ctx, ticket.Filter{Visibility: ticket.VisibilityAll, Query: "alpha", Limit: 100})
 		require.NoError(t, err)
 		require.Len(t, got, 1)
 		require.Equal(t, unassigned1.ID, got[0].ID)
 	})
 
-	t.Run("SearchUnassigned filters and excludes assigned", func(t *testing.T) {
-		got, err := ts.SearchUnassigned(ctx, "assigned", 100, 0)
+	t.Run("a search in the unassigned queue excludes assigned", func(t *testing.T) {
+		got, err := ts.ListFiltered(ctx, ticket.Filter{Visibility: ticket.VisibilityAll, Queue: ticket.QueueUnassigned, Query: "assigned", Limit: 100})
 		require.NoError(t, err)
 		require.Len(t, got, 0)
 	})
@@ -614,7 +614,7 @@ func TestTicketStore_FullTextSearch(t *testing.T) {
 	unrelated := mkTicket("VPN login failing", "Cannot authenticate with the VPN client.", now.Add(2*time.Minute))
 
 	t.Run("prefix matching on a partial word", func(t *testing.T) {
-		got, err := ts.SearchAll(ctx, "print", 100, 0)
+		got, err := ts.ListFiltered(ctx, ticket.Filter{Visibility: ticket.VisibilityAll, Query: "print", Limit: 100})
 		require.NoError(t, err)
 		ids := map[uuid.UUID]bool{}
 		for _, tk := range got {
@@ -626,7 +626,7 @@ func TestTicketStore_FullTextSearch(t *testing.T) {
 	})
 
 	t.Run("multi-word query ANDs terms across subject and description", func(t *testing.T) {
-		got, err := ts.SearchAll(ctx, "print jam", 100, 0)
+		got, err := ts.ListFiltered(ctx, ticket.Filter{Visibility: ticket.VisibilityAll, Query: "print jam", Limit: 100})
 		require.NoError(t, err)
 		ids := map[uuid.UUID]bool{}
 		for _, tk := range got {
@@ -637,20 +637,20 @@ func TestTicketStore_FullTextSearch(t *testing.T) {
 		require.False(t, ids[unrelated.ID])
 
 		// A word that appears in neither ticket excludes both.
-		got, err = ts.SearchAll(ctx, "print rebooted", 100, 0)
+		got, err = ts.ListFiltered(ctx, ticket.Filter{Visibility: ticket.VisibilityAll, Query: "print rebooted", Limit: 100})
 		require.NoError(t, err)
 		require.Len(t, got, 0)
 	})
 
 	t.Run("subject match ranks above description-only match", func(t *testing.T) {
-		got, err := ts.SearchAll(ctx, "printer", 100, 0)
+		got, err := ts.ListFiltered(ctx, ticket.Filter{Visibility: ticket.VisibilityAll, Query: "printer", Limit: 100})
 		require.NoError(t, err)
 		require.GreaterOrEqual(t, len(got), 2)
 		require.Equal(t, subjectMatch.ID, got[0].ID, "the ticket with the term in its subject should rank first")
 	})
 
 	t.Run("unrelated ticket never matches", func(t *testing.T) {
-		got, err := ts.SearchAll(ctx, "printer", 100, 0)
+		got, err := ts.ListFiltered(ctx, ticket.Filter{Visibility: ticket.VisibilityAll, Query: "printer", Limit: 100})
 		require.NoError(t, err)
 		for _, tk := range got {
 			require.NotEqual(t, unrelated.ID, tk.ID)
@@ -658,7 +658,7 @@ func TestTicketStore_FullTextSearch(t *testing.T) {
 	})
 
 	t.Run("punctuation-only query matches nothing but never errors", func(t *testing.T) {
-		got, err := ts.SearchAll(ctx, "---", 100, 0)
+		got, err := ts.ListFiltered(ctx, ticket.Filter{Visibility: ticket.VisibilityAll, Query: "---", Limit: 100})
 		require.NoError(t, err)
 		require.Len(t, got, 0)
 	})
@@ -682,7 +682,7 @@ func TestTicketStore_FullTextSearch(t *testing.T) {
 		}
 		require.NoError(t, ts.Create(ctx, trackingOnly))
 
-		got, err := ts.SearchAll(ctx, "jam", 100, 0)
+		got, err := ts.ListFiltered(ctx, ticket.Filter{Visibility: ticket.VisibilityAll, Query: "jam", Limit: 100})
 		require.NoError(t, err)
 		require.Len(t, got, 3)
 		ids := make([]uuid.UUID, len(got))

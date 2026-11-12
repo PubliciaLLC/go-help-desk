@@ -189,9 +189,9 @@ func TestSearchVisible_Paging(t *testing.T) {
 	}
 }
 
-// The same scope=visible request with nothing in the box takes the List*
-// branch, a different query from the search one. #511's review found that
-// pointing scoped staff at ListAll there left every test green.
+// The same scope=visible request with nothing in the box. It used to take a
+// different query from the search one, and #511's review found that pointing
+// scoped staff at the unscoped listing there left every test green.
 func TestVisibleNoQuery_ScopedStaffGetOnlyTheirGroups(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()

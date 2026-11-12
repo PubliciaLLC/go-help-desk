@@ -2933,56 +2933,6 @@ func (s *Service) ListLinks(ctx context.Context, ticketID uuid.UUID) ([]TicketLi
 	return s.store.ListLinks(ctx, ticketID)
 }
 
-// ListByReporter returns tickets submitted by the given user.
-func (s *Service) ListByReporter(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Ticket, error) {
-	return s.store.ListByReporter(ctx, userID, limit, offset)
-}
-
-// ListByAssigneeUser returns tickets assigned to the given user.
-func (s *Service) ListByAssigneeUser(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Ticket, error) {
-	return s.store.ListByAssigneeUser(ctx, userID, limit, offset)
-}
-
-// ListByAssigneeGroup returns tickets assigned to the given group.
-func (s *Service) ListByAssigneeGroup(ctx context.Context, groupID uuid.UUID, limit, offset int) ([]Ticket, error) {
-	return s.store.ListByAssigneeGroup(ctx, groupID, limit, offset)
-}
-
-// SearchByReporter filters the reporter's tickets by tracking number, subject, or description.
-func (s *Service) SearchByReporter(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error) {
-	return s.store.SearchByReporter(ctx, userID, q, limit, offset)
-}
-
-// SearchByAssigneeUser filters tickets assigned to the user by tracking number, subject, or description.
-func (s *Service) SearchByAssigneeUser(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error) {
-	return s.store.SearchByAssigneeUser(ctx, userID, q, limit, offset)
-}
-
-// SearchByAssigneeGroup filters tickets assigned to the group by tracking number, subject, or description.
-func (s *Service) SearchByAssigneeGroup(ctx context.Context, groupID uuid.UUID, q string, limit, offset int) ([]Ticket, error) {
-	return s.store.SearchByAssigneeGroup(ctx, groupID, q, limit, offset)
-}
-
-// ListAll returns every ticket, newest first. Intended for admin-scope views.
-func (s *Service) ListAll(ctx context.Context, limit, offset int) ([]Ticket, error) {
-	return s.store.ListAll(ctx, limit, offset)
-}
-
-// SearchAll filters every ticket by tracking number, subject, or description.
-func (s *Service) SearchAll(ctx context.Context, q string, limit, offset int) ([]Ticket, error) {
-	return s.store.SearchAll(ctx, q, limit, offset)
-}
-
-// ListUnassigned returns tickets with neither an assignee user nor an assignee group.
-func (s *Service) ListUnassigned(ctx context.Context, limit, offset int) ([]Ticket, error) {
-	return s.store.ListUnassigned(ctx, limit, offset)
-}
-
-// SearchUnassigned filters unassigned tickets by tracking number, subject, or description.
-func (s *Service) SearchUnassigned(ctx context.Context, q string, limit, offset int) ([]Ticket, error) {
-	return s.store.SearchUnassigned(ctx, q, limit, offset)
-}
-
 // ListResolvedBefore is used by the auto-close scheduler.
 func (s *Service) ListResolvedBefore(ctx context.Context, before time.Time, limit int) ([]Ticket, error) {
 	return s.store.ListResolvedBefore(ctx, before, s.sys.resolvedID, limit)
@@ -3413,12 +3363,6 @@ func (s *Service) DeleteAttachment(ctx context.Context, id uuid.UUID) error {
 	return s.store.DeleteAttachment(ctx, id)
 }
 
-// ListVisibleToStaff returns the tickets a staff member may see under the
-// scope model. Used when an instance has scope enforcement switched on.
-func (s *Service) ListVisibleToStaff(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Ticket, error) {
-	return s.store.ListVisibleToStaff(ctx, userID, limit, offset)
-}
-
 // ListFiltered returns tickets matching a Filter. The caller is responsible
 // for setting Filter.Visibility correctly — this does not re-derive the
 // actor's authority, it applies what it is given.
@@ -3436,9 +3380,4 @@ func (s *Service) ListFilteredWithMeta(ctx context.Context, f Filter) (ListResul
 // through, read with the same Filter that listed them.
 func (s *Service) ReplyMatches(ctx context.Context, f Filter, ticketIDs []uuid.UUID) (map[uuid.UUID]ReplyMatch, error) {
 	return s.store.ReplyMatches(ctx, f, ticketIDs)
-}
-
-// SearchVisibleToStaff is ListVisibleToStaff with a search term.
-func (s *Service) SearchVisibleToStaff(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error) {
-	return s.store.SearchVisibleToStaff(ctx, userID, q, limit, offset)
 }

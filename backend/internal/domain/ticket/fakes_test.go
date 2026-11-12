@@ -324,25 +324,6 @@ func (f *fakeStore) ListLinks(_ context.Context, ticketID uuid.UUID) ([]ticket.T
 	return f.links[ticketID], nil
 }
 
-// Listings and search are not exercised by these tests; they exist to satisfy
-// the interface and return empty rather than pretending to filter.
-func (f *fakeStore) ListByReporter(context.Context, uuid.UUID, int, int) ([]ticket.Ticket, error) {
-	return nil, nil
-}
-func (f *fakeStore) ListByAssigneeUser(context.Context, uuid.UUID, int, int) ([]ticket.Ticket, error) {
-	return nil, nil
-}
-func (f *fakeStore) ListByAssigneeGroup(context.Context, uuid.UUID, int, int) ([]ticket.Ticket, error) {
-	return nil, nil
-}
-func (f *fakeStore) ListByStatus(context.Context, uuid.UUID, int, int) ([]ticket.Ticket, error) {
-	return nil, nil
-}
-func (f *fakeStore) ListAll(context.Context, int, int) ([]ticket.Ticket, error) { return nil, nil }
-func (f *fakeStore) ListUnassigned(context.Context, int, int) ([]ticket.Ticket, error) {
-	return nil, nil
-}
-
 // IsAssignableUser and IsAssignableGroup: this fake has no user table, so
 // everything it is asked about is assignable. The real rule lives in SQL and
 // is exercised against a real database.
@@ -436,29 +417,10 @@ func (f *fakeStore) ListResolvedBefore(_ context.Context, before time.Time, reso
 	}
 	return candidates, nil
 }
-func (f *fakeStore) SearchByReporter(context.Context, uuid.UUID, string, int, int) ([]ticket.Ticket, error) {
-	return nil, nil
-}
-func (f *fakeStore) SearchByAssigneeUser(context.Context, uuid.UUID, string, int, int) ([]ticket.Ticket, error) {
-	return nil, nil
-}
-func (f *fakeStore) SearchByAssigneeGroup(context.Context, uuid.UUID, string, int, int) ([]ticket.Ticket, error) {
-	return nil, nil
-}
-func (f *fakeStore) SearchAll(context.Context, string, int, int) ([]ticket.Ticket, error) {
-	return nil, nil
-}
-func (f *fakeStore) SearchUnassigned(context.Context, string, int, int) ([]ticket.Ticket, error) {
-	return nil, nil
-}
 
 // Scope-aware listing is exercised against real Postgres in the server suite,
 // where the SQL predicate is the thing under test. A Go reimplementation here
 // would assert that the fake matches itself.
-func (f *fakeStore) ListVisibleToStaff(context.Context, uuid.UUID, int, int) ([]ticket.Ticket, error) {
-	return nil, nil
-}
-
 func (f *fakeStore) ListFiltered(context.Context, ticket.Filter) ([]ticket.Ticket, error) {
 	return nil, nil
 }
@@ -471,9 +433,6 @@ func (f *fakeStore) ReplyMatches(context.Context, ticket.Filter, []uuid.UUID) (m
 	return nil, nil
 }
 
-func (f *fakeStore) SearchVisibleToStaff(context.Context, uuid.UUID, string, int, int) ([]ticket.Ticket, error) {
-	return nil, nil
-}
 func (f *fakeStore) CreateAttachment(context.Context, ticket.Attachment) error {
 	if f.errCreateAttachment != nil {
 		return f.errCreateAttachment

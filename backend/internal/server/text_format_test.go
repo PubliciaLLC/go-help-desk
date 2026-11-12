@@ -72,12 +72,12 @@ func TestRESTCreateTicket_FormatDefaultsToPlainAndIsValidated(t *testing.T) {
 
 	for _, bad := range badFormats {
 		t.Run("refuses "+bad.name, func(t *testing.T) {
-			before, err := h.ticketSvc.ListAll(ctx, 1000, 0)
+			before, err := h.ticketSvc.ListFiltered(ctx, ticket.Filter{Visibility: ticket.VisibilityAll, Limit: 1000})
 			require.NoError(t, err)
 			code, out := postFormatBody(t, h, "/api/v1/tickets", `{`+base+`,"format":`+bad.json+`}`)
 			require.Equal(t, http.StatusBadRequest, code)
 			require.Equal(t, "invalid_format", fmtErrCode(out))
-			after, err := h.ticketSvc.ListAll(ctx, 1000, 0)
+			after, err := h.ticketSvc.ListFiltered(ctx, ticket.Filter{Visibility: ticket.VisibilityAll, Limit: 1000})
 			require.NoError(t, err)
 			require.Len(t, after, len(before), "nothing is written")
 		})
@@ -239,11 +239,11 @@ func TestMCP_FormatDefaultsToMarkdownAndIsValidated(t *testing.T) {
 	require.Contains(t, text, `"description_format":"plain"`)
 
 	for _, bad := range []any{"html", "Markdown", "", 1.0} {
-		before, err := h.ticketSvc.ListAll(ctx, 1000, 0)
+		before, err := h.ticketSvc.ListFiltered(ctx, ticket.Filter{Visibility: ticket.VisibilityAll, Limit: 1000})
 		require.NoError(t, err)
 		text, isErr = createWith(map[string]any{"format": bad})
 		require.True(t, isErr, "%v: %s", bad, text)
-		after, err := h.ticketSvc.ListAll(ctx, 1000, 0)
+		after, err := h.ticketSvc.ListFiltered(ctx, ticket.Filter{Visibility: ticket.VisibilityAll, Limit: 1000})
 		require.NoError(t, err)
 		require.Len(t, after, len(before), "nothing is written")
 	}

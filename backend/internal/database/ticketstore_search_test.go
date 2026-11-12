@@ -307,11 +307,20 @@ func TestListFiltered_EveryFilterNarrows(t *testing.T) {
 }
 
 // A zero Filter has every slice nil. The store turns "absent" into an empty
-// array, so no filter must not mean "match nothing".
-func TestListFiltered_NoFilterEqualsListAll(t *testing.T) {
+// array, so no filter must not mean "match nothing". The default order is
+// newest first, ties broken by id.
+func TestListFiltered_NoFilterReturnsEveryTicketNewestFirst(t *testing.T) {
 	f := newSearchFixture(t)
-	want, err := f.ts.ListAll(f.ctx, 200, 0)
-	require.NoError(t, err)
+	want := make([]ticket.Ticket, 0, len(f.byName))
+	for _, tk := range f.byName {
+		want = append(want, tk)
+	}
+	slices.SortFunc(want, func(a, b ticket.Ticket) int {
+		if c := b.CreatedAt.Compare(a.CreatedAt); c != 0 {
+			return c
+		}
+		return strings.Compare(a.ID.String(), b.ID.String())
+	})
 	got, err := f.ts.ListFiltered(f.ctx, f.all())
 	require.NoError(t, err)
 	require.Equal(t, ids(want), ids(got))
@@ -401,11 +410,10 @@ func TestListFiltered_FiltersNeverEscapeVisibility(t *testing.T) {
 	require.Equal(t, []string{"alpha"}, f.list(fl))
 }
 
-// The scoped-staff predicate in ListTicketsFiltered is written differently from
-// the one in ListTicketsVisibleToStaff (it is faster under a selective filter),
-// so this holds the two to the same answer over every kind of scope: a whole
-// category, one type of a category, a group assignment, reporter and assignee.
-func TestListFiltered_ScopedVisibilityMatchesStaffQuery(t *testing.T) {
+// The scoped-staff predicate has more arms than any other, so this holds it to
+// a hand-derived answer over every kind of scope: a whole category, one type of
+// a category, a group assignment, reporter and assignee.
+func TestListFiltered_ScopedVisibility(t *testing.T) {
 	f := newSearchFixture(t)
 	q := dbgen.New(f.tx)
 	gs := groupstore.New(q)
@@ -438,23 +446,27 @@ func TestListFiltered_ScopedVisibilityMatchesStaffQuery(t *testing.T) {
 	f.mk(spec{subject: "A typeA", cat: &f.catA, typ: &f.typeA})
 	f.mk(spec{subject: "A typeB", cat: &f.catA, typ: &f.typeB})
 	f.mk(spec{subject: "B none", cat: &f.catB})
+	// A ticket that names an item, under a category the actor is scoped to whole.
+	// Items never factor in, so the item must not hide it.
+	typeBItem := category.Type{ID: uuid.New(), CategoryID: f.catB.ID, Name: "TBI", SortOrder: 1, Active: true}
+	itemB := category.Item{ID: uuid.New(), TypeID: typeBItem.ID, Name: "IB", SortOrder: 1, Active: true}
+	require.NoError(t, cs.CreateType(f.ctx, typeBItem))
+	require.NoError(t, cs.CreateItem(f.ctx, itemB))
+	f.mk(spec{subject: "B with item", cat: &f.catB, typ: &typeBItem, item: &itemB})
 	f.mk(spec{subject: "assigned to scoped", cat: &f.catA, typ: &f.typeB, assignee: &f.scoped})
 	f.mk(spec{subject: "scoped's group", cat: &f.catA, typ: &f.typeB, group: &g2})
 	f.mk(spec{subject: "reported by scoped", cat: &f.catA, typ: &f.typeB, reporter: &f.scoped})
 
-	for _, actor := range []user.User{f.scoped, f.staff, f.dana} {
-		want, err := f.ts.ListVisibleToStaff(f.ctx, actor.ID, 500, 0)
-		require.NoError(t, err)
-		got, err := f.ts.ListFiltered(f.ctx, ticket.Filter{ActorID: actor.ID, Visibility: ticket.VisibilityScoped, Limit: 500})
-		require.NoError(t, err)
-		wantIDs, gotIDs := ids(want), ids(got)
-		slices.SortFunc(wantIDs, func(a, b uuid.UUID) int { return strings.Compare(a.String(), b.String()) })
-		slices.SortFunc(gotIDs, func(a, b uuid.UUID) int { return strings.Compare(a.String(), b.String()) })
-		require.Equal(t, wantIDs, gotIDs, "actor %s", actor.DisplayName)
-	}
+	// staff is in the fixture's group, which has no scope, so sees what is
+	// assigned to them or that group. dana is in no group and sees only what she
+	// reported.
+	staffSees := ticket.Filter{ActorID: f.staff.ID, Visibility: ticket.VisibilityScoped, Limit: 500}
+	require.Equal(t, []string{"Bravo", "alpha"}, f.set(staffSees))
+	danaSees := ticket.Filter{ActorID: f.dana.ID, Visibility: ticket.VisibilityScoped, Limit: 500}
+	require.Equal(t, []string{"Foxtrot", "alpha"}, f.set(danaSees))
 
 	fl := ticket.Filter{ActorID: f.scoped.ID, Visibility: ticket.VisibilityScoped, Limit: 500}
-	require.Equal(t, []string{"A typeA", "B none", "C typeC", "Delta", "alpha", "assigned to scoped", "charlie", "reported by scoped", "scoped's group"}, f.set(fl))
+	require.Equal(t, []string{"A typeA", "B none", "B with item", "C typeC", "Delta", "alpha", "assigned to scoped", "charlie", "reported by scoped", "scoped's group"}, f.set(fl))
 }
 
 // "Mine" is the caller's own assignments plus those of every group they are in,
