@@ -91,12 +91,12 @@ func TestEvent_GuestTokenStaysOutOfTheWebhookPayload(t *testing.T) {
 // webhook body, and a webhook subscriber must never receive a guest's access
 // token, nor the flag that says one is coming (#164).
 func TestEvent_GuestFieldsNeverReachTheWebhookBody(t *testing.T) {
-	ev := Event{Type: EventTicketReplied, GuestToken: "raw-token", GuestLink: true}
+	ev := Event{Type: EventTicketReplied, GuestToken: "raw-token", GuestLink: true, FollowUp: true}
 	b, err := json.Marshal(ev)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, leaked := range []string{"raw-token", "GuestToken", "GuestLink", "guest_link"} {
+	for _, leaked := range []string{"raw-token", "GuestToken", "GuestLink", "guest_link", "FollowUp", "follow_up"} {
 		if strings.Contains(string(b), leaked) {
 			t.Fatalf("webhook body carries %q: %s", leaked, b)
 		}

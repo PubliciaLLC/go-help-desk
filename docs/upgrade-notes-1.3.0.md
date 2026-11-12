@@ -299,7 +299,7 @@ Archiving was possible only through the API (`PATCH` with `active`). Each catego
 
 ### Administrators Can Edit the Wording of the Emails (#158)
 
-Under **Admin → Email Templates** an administrator edits the subject and body of all 17 emails, and a shared header and footer that go around every one. Each email, and the header and footer, can also have an optional HTML part; with none, the email is plain text exactly as before. With nothing edited, every email is byte for byte what it was before the editor existed.
+Under **Admin → Email Templates** an administrator edits the subject and body of all 18 emails, and a shared header and footer that go around every one. Each email, and the header and footer, can also have an optional HTML part; with none, the email is plain text exactly as before. With nothing edited, every email is byte for byte what it was before the editor existed.
 
 - **Still no ticket content.** A template may hold only words, `{{.Name}}` for a value the template has, and `{{if .Name}}...{{else}}...{{end}}`. The ticket emails can print the tracking number and the ticket link, the verification and reset emails their link, the header and footer the help desk's name. Anything else is refused with its line and column. Each mail must print its link outside any `if`, because a guest's link is replaced each time.
 - **Limits:** body 8 KiB, subject 200 bytes on one line.
@@ -519,6 +519,18 @@ Creating and deleting an OAuth client, and creating, editing and deleting a webh
 - **`GET /tickets/fields` returns one entry per field,** at its most specific level, in the order above. `field_def.sort_order` now carries the field's real number; it used to be 0 in this response.
 - **"Required on new-ticket form" is enforced by the form only.** The server does not refuse a ticket created through the API without a value for a required field; this is unchanged.
 - **Migration 000059** adds the nullable column `custom_field_defs.retired_options`. No row is rewritten. See *Retiring and Deleting Custom-Field Options (#603)*.
+
+### Follow-ups of Closed Tickets: Seven Limits Fixed (#625)
+
+Follow-ups of closed tickets (#349) shipped in the betas with eight recorded limits. Seven are fixed in 1.3.0; the eighth, custom-field values on a follow-up, comes with the custom-field work.
+
+- **A hand-made link no longer uses up a requester's one follow-up.** Until now any `parent_child` link out of a closed ticket counted, so a staff member who linked a closed ticket as the parent of another ticket refused the requester's follow-up. The link row now says whether the follow-up action made it (`follow_up` on `GET /tickets/{id}/links`), and only such a link counts. **Migration `000064`** adds the column and marks each existing `parent_child` link as a follow-up only when both tickets belong to one requester (the same account, or the same guest address), which every real follow-up does. A hand-made link between different people's tickets is not marked, so a requester it used to refuse can now open a follow-up, and the closed ticket's page never names another person's ticket. It is quick: a catalogue change, then an update of the `parent_child` rows only.
+- **A guest's follow-up has its own mail.** It said "We have received your ticket", for a ticket the guest did not file. It now says "We have opened a new ticket to follow up on your earlier one", with the new tracking number and a working link. It is a new editable template, **Follow-up ticket opened**, on **Admin → Email Templates**, so wording an administrator changed for "Ticket received" does not reach it. A new template starts at the shipped text; edit it if you edit the others.
+- **The follow-up button goes once it has been used.** The single-ticket read of a closed ticket gains `follow_up` (`{id, tracking_number}`), and the guest ticket read gains `has_follow_up`. The ticket page shows a requester the link to the follow-up instead of a button that would be refused; a guest is told one exists and to look for the mail. Both are new keys, so a client that ignores unknown keys needs no change.
+- **A follow-up of a ticket whose reporter's account was deleted is `409 reporter_deleted`**, not `400 bad_request`. A script that matched the 400 will see a 409 with a new code, and a message that says to restore the account or open a new ticket.
+- **A lost double-submit no longer takes a tracking number.** The number is drawn after the locked check for a requester's one follow-up, so the request that loses the race takes none. A number can still be lost to a rollback or a retried transaction, which is what a sequence does.
+- **Expired guest links are deleted.** An hourly sweep removes guest tokens past their thirty days. They already did nothing once expired; this stops a closed ticket collecting one row for every mail sent on it.
+- **Staff and administrators get the reply box on a closed ticket**, with the words "Replying does not reopen this ticket". The API always allowed a reply, a note or an attachment there; the page hid the box.
 
 ### Reopening a Ticket (#464)
 
@@ -838,6 +850,7 @@ Each `down` migration undoes its `up`. These are dropped or deleted, and cannot 
 - **Used SAML hand-over cookies** (000035): the table `spent_saml_handovers` is dropped. It holds only short-lived replay-protection rows, and 1.2.0 does not make those cookies single-use.
 - **Rate-limit counters** (000063): the table `rate_limit_counters` is dropped, so every limit starts again with a full budget. Nothing else is stored in it, and 1.2.0 counts in memory.
 - **Ticket list indexes** (000060, 000061): the four indexes `tickets_updated_at_idx`, `tickets_guest_name_trgm_idx`, `tickets_guest_email_trgm_idx` and `tickets_type_id_idx` are dropped. Nothing is lost, and 1.2.0 has no query that uses them; upgrading again recreates them.
+- **Which links are follow-ups** (000064): `ticket_links.follow_up` is dropped. The links stay, and under 1.2.0 nothing reads the flag. After you upgrade again the marker is worked out afresh by the same rule, from the tickets' requesters.
 - **Audit log search indexes** (000030): three indexes on `audit_log` (by time, actor and action) are dropped. Nothing is lost, and 1.2.0 has no query that uses them; upgrading again recreates them.
 - **Reply search column** (000062): `ticket_replies.body_tsv`, its trigger and its two indexes are dropped. It is derived from the reply text, so nothing is lost, and 1.2.0 has no query that uses it. Upgrading again adds the column and the server fills it in the background (see *Search Can Include Replies (Migration 000062)* for how long that takes on a large table).
 - **Custom field default** (000040): `custom_field_assignments.visible_on_new` goes back to a column default of `true`. Existing rows are untouched.

@@ -53,7 +53,7 @@ func TestRequesterFollowUp_AnAccountHolderCopiesOnlyWhatTheyMaySet(t *testing.T)
 
 	// Linked, the closed ticket the parent, in the same transaction.
 	require.Equal(t, []ticket.TicketLink{{
-		SourceTicketID: orig.ID, TargetTicketID: got.ID, LinkType: ticket.LinkParentChild,
+		SourceTicketID: orig.ID, TargetTicketID: got.ID, LinkType: ticket.LinkParentChild, FollowUp: true,
 	}}, h.store.links[orig.ID])
 	require.Equal(t, 1, h.atomic.commits)
 }
@@ -227,9 +227,10 @@ func TestRequesterFollowUp_OnePerClosedTicket(t *testing.T) {
 		require.ErrorIs(t, err, ticket.ErrFollowUpExists)
 	})
 
-	// The conservative reading, pinned so that changing it is a decision: the
-	// cap cannot tell a follow-up from a parent_child link someone made by hand.
-	t.Run("a hand-made parent link counts", func(t *testing.T) {
+	// Reversed by #625 (owner decision D21): the link row now says whether it was
+	// made by the follow-up action, so a link someone made by hand is not the
+	// requester's follow-up and does not use it up.
+	t.Run("a hand-made parent link does not count", func(t *testing.T) {
 		h := newHarness(t)
 		orig := closedWithEverything(t, h)
 		other := h.seedOpen()
@@ -238,7 +239,7 @@ func TestRequesterFollowUp_OnePerClosedTicket(t *testing.T) {
 
 		_, err := h.svc.CreateRequesterFollowUp(ctx, orig.ID, "GHD", ticket.ChannelWeb, reporterActor(orig), openAlways)
 
-		require.ErrorIs(t, err, ticket.ErrFollowUpExists)
+		require.NoError(t, err)
 	})
 
 	t.Run("other links do not count", func(t *testing.T) {
@@ -275,7 +276,7 @@ func TestRequesterFollowUp_OnePerClosedTicket(t *testing.T) {
 		h.store.onRead = func(x ticket.Ticket) ticket.Ticket {
 			if x.ID == orig.ID && h.store.forUpdateReads > 0 && len(h.store.links[orig.ID]) == 0 {
 				h.store.links[orig.ID] = []ticket.TicketLink{{
-					SourceTicketID: orig.ID, TargetTicketID: uuid.New(), LinkType: ticket.LinkParentChild,
+					SourceTicketID: orig.ID, TargetTicketID: uuid.New(), LinkType: ticket.LinkParentChild, FollowUp: true,
 				}}
 			}
 			return x

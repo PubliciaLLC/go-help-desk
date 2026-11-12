@@ -28,6 +28,9 @@ export interface GuestTicket {
   created_at: string
   updated_at?: string // no longer sent (2026-10-15); nothing reads it
   replies: GuestReply[]
+  // A follow-up has been opened from this closed ticket (#625). Only whether:
+  // the new ticket has its own link, which goes by email.
+  has_follow_up?: boolean
 }
 
 // The server answers 404 for every reason a token does not work — expired,

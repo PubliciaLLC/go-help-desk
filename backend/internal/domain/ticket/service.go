@@ -435,24 +435,64 @@ func (s *Service) CreateRequesterFollowUp(
 func (s *Service) IsClosed(t Ticket) bool { return t.StatusID == s.sys.closedID }
 
 // refuseSecondFollowUp is ErrFollowUpExists when the closed ticket already has
-// a follow-up — conservatively: ANY parent_child link out of it counts, because
-// the link row carries no marker for "made by the follow-up action" and a marker
-// would be a schema change (an audit entry would lapse with the retention
-// sweep). A staff member who hand-links the closed ticket as a parent therefore
-// uses up its requester's one follow-up: it can only refuse a requester, never
-// admit a second ticket. Documented in DESIGN.md -> Known limits and pinned by
-// TestRequesterFollowUp_OnePerClosedTicket/a_hand-made_parent_link_counts.
+// a follow-up: a parent_child link out of it that the follow-up action wrote
+// (TicketLink.FollowUp, #625). A parent_child link someone made by hand is not
+// one and does not use up the requester's one follow-up. Links that existed
+// before the marker was added were backfilled only where both tickets belong to
+// one requester (the same account or guest address, which every real follow-up
+// is), so a real follow-up from before still counts.
 func (s *Service) refuseSecondFollowUp(ctx context.Context, st Store, closedID uuid.UUID) error {
 	links, err := st.ListLinks(ctx, closedID)
 	if err != nil {
 		return err
 	}
 	for _, l := range links {
-		if l.SourceTicketID == closedID && l.LinkType == LinkParentChild {
+		if l.SourceTicketID == closedID && l.LinkType == LinkParentChild && l.FollowUp {
 			return ErrFollowUpExists
 		}
 	}
 	return nil
+}
+
+// FollowUpOf is the follow-up of a closed ticket: the newest ticket the
+// follow-up action opened from it that the viewer may open, or nil when there
+// is none. It is what the ticket page and the guest page ask so they stop
+// offering a follow-up that would be refused. A parent_child link made by hand
+// is not a follow-up.
+//
+// canSee is the caller's view rule for the target, because only the caller
+// knows who is asking. The marker does not guarantee the target is the
+// viewer's: the migration backfills only links between one requester's
+// tickets, but a row written another way would otherwise name somebody else's
+// ticket by id and tracking number. A target the viewer cannot open is
+// skipped, and none left reads as no follow-up.
+func (s *Service) FollowUpOf(ctx context.Context, closedID uuid.UUID, canSee func(Ticket) (bool, error)) (*FollowUpRef, error) {
+	links, err := s.store.ListLinks(ctx, closedID)
+	if err != nil {
+		return nil, err
+	}
+	var newest *Ticket
+	for _, l := range links {
+		if l.SourceTicketID != closedID || l.LinkType != LinkParentChild || !l.FollowUp {
+			continue
+		}
+		t, err := s.store.GetByID(ctx, l.TargetTicketID)
+		if err != nil {
+			return nil, err
+		}
+		if ok, err := canSee(t); err != nil {
+			return nil, err
+		} else if !ok {
+			continue
+		}
+		if newest == nil || t.CreatedAt.After(newest.CreatedAt) {
+			newest = &t
+		}
+	}
+	if newest == nil {
+		return nil, nil
+	}
+	return &FollowUpRef{ID: newest.ID, TrackingNumber: newest.TrackingNumber}, nil
 }
 
 // CheckFreeText refuses what Postgres refuses in a text column, and nothing
@@ -658,21 +698,24 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 			return Ticket{}, err
 		}
 		if !ok {
+			// A follow-up copies its reporter from the closed ticket, so an
+			// account that has since been deleted is not a mistake in what the
+			// caller sent. It is its own answer (#625): restore the account or
+			// open a new ticket.
+			if followUpOf != nil {
+				return Ticket{}, ErrReporterDeleted
+			}
 			return Ticket{}, fmt.Errorf("%w: reporter_user_id is not a user on this help desk", ErrValidation)
 		}
-	}
-
-	seq, err := s.store.NextSeq(ctx)
-	if err != nil {
-		return Ticket{}, fmt.Errorf("getting ticket sequence: %w", err)
 	}
 
 	now := time.Now()
 	var guestLink bool
 	filedFor := s.filedForAddress(ctx, in)
 	t := Ticket{
-		ID:                uuid.New(),
-		TrackingNumber:    GenerateTrackingNumber(in.TrackingPrefix, now.Year(), seq),
+		ID: uuid.New(),
+		// TrackingNumber is taken inside the transaction, after the checks
+		// that can still refuse the request.
 		Subject:           strings.TrimSpace(in.Subject),
 		Description:       in.Description,
 		DescriptionFormat: in.DescriptionFormat,
@@ -708,6 +751,17 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 				return err
 			}
 		}
+		// The number is drawn here, after the locked check, so a request that
+		// loses a race for a requester's one follow-up never takes one (#625),
+		// and again on every attempt, because a retried transaction runs this
+		// body from the top and t outlives the attempt that rolled back.
+		// A number is still lost to a rollback after this point, and to a
+		// retry: that is what a sequence is.
+		seq, err := st.NextSeq(ctx)
+		if err != nil {
+			return fmt.Errorf("getting ticket sequence: %w", err)
+		}
+		t.TrackingNumber = GenerateTrackingNumber(in.TrackingPrefix, now.Year(), seq)
 		// Routing (#506): the first candidate the assignment accepts. A
 		// candidate refused as unassignable (a departed colleague still on the
 		// round-robin list) is skipped for the next, as the handler did when
@@ -761,7 +815,7 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 		// without its link is a ticket nobody can trace to the one it
 		// continues. The closed ticket itself is not written.
 		if followUpOf != nil {
-			link := TicketLink{SourceTicketID: followUpOf.ID, TargetTicketID: t.ID, LinkType: LinkParentChild}
+			link := TicketLink{SourceTicketID: followUpOf.ID, TargetTicketID: t.ID, LinkType: LinkParentChild, FollowUp: true}
 			if err := st.CreateLink(ctx, link); err != nil {
 				return fmt.Errorf("linking follow-up to the closed ticket: %w", err)
 			}
@@ -813,6 +867,7 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 		created.Payload = createdPayload
 		created.Recipient = emailRecipient
 		created.GuestLink = guestLink
+		created.FollowUp = followUpOf != nil
 		ch.Raise(created)
 		if routed != nil {
 			assigned := raiseOn(t, actor, now)

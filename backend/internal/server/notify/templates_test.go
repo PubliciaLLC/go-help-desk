@@ -22,6 +22,7 @@ func allEventShapes() []notification.Event {
 	} {
 		out = append(out, notification.Event{Type: typ, TicketID: uuid.New(), TrackingNumber: "GHD-1", Recipient: "a@example.com", GuestToken: "g"})
 	}
+	out = append(out, notification.Event{Type: notification.EventTicketCreated, TicketID: uuid.New(), TrackingNumber: "GHD-1", Recipient: "a@example.com", GuestToken: "g", FollowUp: true})
 	for _, typ := range []notification.EventType{notification.EventStaffAssigned, notification.EventStaffRequesterReplied, notification.EventStaffReopened} {
 		for _, r := range []notification.StaffSwitch{notification.SwitchAssigned, notification.SwitchGroup, notification.SwitchFollow} {
 			out = append(out, notification.Event{Type: typ, TicketID: uuid.New(), TrackingNumber: "GHD-1", Recipient: "a@example.com", StaffReason: r})
@@ -203,7 +204,7 @@ func TestValidate_TheSubjectFollowsTheSameRules(t *testing.T) {
 
 // ── the registry ─────────────────────────────────────────────────────────────
 
-func TestRegistry_HasSeventeenContentTemplatesAndTwoShells(t *testing.T) {
+func TestRegistry_HasEighteenContentTemplatesAndTwoShells(t *testing.T) {
 	var content, shells []string
 	for _, d := range Templates() {
 		if d.Shell {
@@ -212,7 +213,7 @@ func TestRegistry_HasSeventeenContentTemplatesAndTwoShells(t *testing.T) {
 			content = append(content, d.Name)
 		}
 	}
-	require.Len(t, content, 17)
+	require.Len(t, content, 18)
 	require.Equal(t, []string{"_header", "_footer"}, shells)
 }
 
@@ -265,7 +266,7 @@ func TestRegistry_VariableSetsArePinned(t *testing.T) {
 		"_footer":            {"SiteName"},
 	}
 	for _, n := range []string{
-		"ticket_created", "ticket_replied", "ticket_status_changed", "ticket_resolved", "ticket_reopened", "guest_link",
+		"ticket_created", "ticket_follow_up_created", "ticket_replied", "ticket_status_changed", "ticket_resolved", "ticket_reopened", "guest_link",
 		"staff_assigned", "staff_assigned_group", "staff_assigned_follow",
 		"staff_requester_replied", "staff_requester_replied_group", "staff_requester_replied_follow",
 		"staff_reopened", "staff_reopened_group", "staff_reopened_follow",
@@ -277,7 +278,7 @@ func TestRegistry_VariableSetsArePinned(t *testing.T) {
 		sort.Strings(got)
 		require.Equal(t, want[def.Name], got, def.Name)
 	}
-	require.Len(t, want, 19)
+	require.Len(t, want, 20)
 }
 
 // The data the dispatcher actually hands a template has exactly the variables
@@ -302,7 +303,7 @@ func TestRegistry_TheViewBuiltPerEventHasExactlyTheAllowedKeys(t *testing.T) {
 	}
 }
 
-// A template whose link is dropped is refused, for every one of the 17 and
+// A template whose link is dropped is refused, for every content template and
 // whichever link it is, and a link that only appears under an if does not count.
 func TestRegistry_EveryContentTemplateRequiresItsLink(t *testing.T) {
 	for _, def := range Templates() {

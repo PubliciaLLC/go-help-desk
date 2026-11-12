@@ -47,7 +47,7 @@ func requesterRules() fieldRules {
 
 func guestRules() fieldRules {
 	r := requesterRules()
-	r.allowed = map[string]bool{"status": true, "replies": true}
+	r.allowed = map[string]bool{"status": true, "replies": true, "has_follow_up": true}
 	for _, k := range ticket.GuestTicketKeys() {
 		r.allowed[k] = true
 	}
@@ -245,7 +245,7 @@ func TestGuestResponses_NoRouteLeaksAFieldOutsideTheGuestList(t *testing.T) {
 	for k := range got {
 		keys = append(keys, k)
 	}
-	require.ElementsMatch(t, []string{"tracking_number", "subject", "description", "description_format", "status", "created_at", "replies"}, keys)
+	require.ElementsMatch(t, []string{"tracking_number", "subject", "description", "description_format", "status", "created_at", "replies", "has_follow_up"}, keys)
 	_ = tk
 
 	for _, rt := range routes {

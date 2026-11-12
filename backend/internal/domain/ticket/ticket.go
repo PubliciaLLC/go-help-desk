@@ -126,6 +126,16 @@ type TicketLink struct {
 	SourceTicketID uuid.UUID `json:"source_id"`
 	TargetTicketID uuid.UUID `json:"target_id"`
 	LinkType       LinkType  `json:"link_type"`
+	// FollowUp marks the link the follow-up action wrote (#625). Only such a
+	// link counts as a requester's one follow-up of a closed ticket; a
+	// parent_child link made by hand is just a link.
+	FollowUp bool `json:"follow_up"`
+}
+
+// FollowUpRef names a follow-up ticket: enough for a page to link to it.
+type FollowUpRef struct {
+	ID             uuid.UUID      `json:"id"`
+	TrackingNumber TrackingNumber `json:"tracking_number"`
 }
 
 // TextFormat says how a stored piece of ticket text is displayed. Every
@@ -692,6 +702,11 @@ var (
 	// (#349): they get one, so the action cannot become a stream of tickets.
 	// Staff are not limited. 409.
 	ErrFollowUpExists = errors.New("a follow-up of this ticket already exists")
+	// ErrReporterDeleted is a follow-up of a ticket whose reporting account has
+	// been deleted (#625). Not a validation error: nothing the caller sent is
+	// wrong. A ticket needs a reporter or a guest address and this one has
+	// neither any more. 409.
+	ErrReporterDeleted = errors.New("the account that reported this ticket has been deleted")
 )
 
 // The three values of the closed_reopen_policy setting (#349): whether a Closed

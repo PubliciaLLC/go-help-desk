@@ -103,6 +103,10 @@ type Store interface {
 	CreateGuestToken(ctx context.Context, id, ticketID uuid.UUID, hash string, expiresAt time.Time) error
 	TicketByGuestToken(ctx context.Context, hash string) (Ticket, error)
 	TouchGuestToken(ctx context.Context, hash string) error
+	// DeleteExpiredGuestTokens removes every token past its expiry and reports
+	// how many. Expired tokens already resolve to nothing; this only stops the
+	// table growing.
+	DeleteExpiredGuestTokens(ctx context.Context) (int64, error)
 	DeleteGuestTokensForTicket(ctx context.Context, ticketID uuid.UUID) error
 	TicketIDByTrackingAndGuestEmail(ctx context.Context, tn TrackingNumber, email string) (uuid.UUID, error)
 
