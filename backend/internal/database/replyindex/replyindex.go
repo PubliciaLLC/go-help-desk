@@ -93,6 +93,10 @@ type Preparer struct {
 	// MaxRetry is the ceiling of the wait between failed attempts, which doubles
 	// from Retry.
 	MaxRetry time.Duration
+	// LockTimeout and LockAttempts: EnsureSchema's DDL waits at most LockTimeout
+	// for the locks it needs and tries LockAttempts times.
+	LockTimeout  time.Duration
+	LockAttempts int
 	// ResetStatement undoes the maintenance_work_mem set for a build. A field so a
 	// test can make it fail.
 	ResetStatement string
@@ -113,7 +117,8 @@ func New(db *sql.DB, log *slog.Logger) *Preparer {
 		BatchSize: 1000, Pause: 250 * time.Millisecond, MaintenanceWorkMem: "256MB",
 		EmptyPause: 10 * time.Millisecond, TextLimit: 50000, MaxRetry: 10 * time.Minute,
 		ResetStatement: `RESET maintenance_work_mem`,
-		ProgressEvery:  30 * time.Second, Retry: 30 * time.Second,
+		LockTimeout:    5 * time.Second, LockAttempts: 60,
+		ProgressEvery: 30 * time.Second, Retry: 30 * time.Second,
 	}
 }
 
@@ -246,6 +251,7 @@ func (p *Preparer) fill(ctx context.Context, res *Result) error {
 func (p *Preparer) fillPass(ctx context.Context, res *Result, total int64, lastLog *time.Time) error {
 	var block int64
 	cursor := "(0,0)"
+	fillStart := time.Now()
 	for {
 		var size int64
 		if err := p.DB.QueryRowContext(ctx, `SELECT pg_relation_size('ticket_replies') / current_setting('block_size')::int`).Scan(&size); err != nil {
@@ -295,7 +301,10 @@ func (p *Preparer) fillPass(ctx context.Context, res *Result, total int64, lastL
 		}
 		if p.ProgressEvery > 0 && time.Since(*lastLog) >= p.ProgressEvery {
 			*lastLog = time.Now()
-			p.Log.InfoContext(ctx, "reply search: filling", "filled", res.Filled, "of_about", total)
+			// A rate, not a time left: on a run that resumes, the rows already filled
+			// are in "of_about" but were not filled by this run.
+			rate := int(float64(res.Filled) / time.Since(fillStart).Seconds())
+			p.Log.InfoContext(ctx, "reply search: filling", "filled", res.Filled, "of_about", total, "per_second", rate)
 		}
 		if err := p.wait(ctx, p.Pause); err != nil {
 			return err
@@ -478,4 +487,51 @@ func NextRetry(cur, max time.Duration) time.Duration {
 		return max
 	}
 	return cur
+}
+
+// EnsureSchema applies ddl (the SQL of migration 000062, see
+// database.ReplySearchSchemaSQL) without recording the migration. It is for the
+// pre-build command: run against a database that 1.2 is still serving, 1.2 must
+// not see a migration version it has no file for (it would refuse to start), and
+// the DDL itself is idempotent, so 1.3.0's own migration runs over it later.
+//
+// The DDL needs brief ACCESS EXCLUSIVE locks on ticket_replies, and a lock
+// request queues behind every open transaction on the table and blocks every
+// reply behind it. So each attempt runs in a transaction with a short
+// lock_timeout (SET LOCAL: it ends with the transaction and cannot leak onto a
+// pooled connection) and gives up, rolled back, and tries again. A busy table
+// gets its turn between its transactions.
+func (p *Preparer) EnsureSchema(ctx context.Context, ddl string) error {
+	var last error
+	for attempt := 1; attempt <= p.LockAttempts; attempt++ {
+		err := p.applyDDL(ctx, ddl)
+		if err == nil {
+			return nil
+		}
+		var pg *pgconn.PgError
+		if !errors.As(err, &pg) || pg.Code != "55P03" { // lock_not_available
+			return fmt.Errorf("reply search: adding the column and trigger: %w", err)
+		}
+		last = err
+		p.Log.InfoContext(ctx, "reply search: ticket_replies is busy; trying again", "attempt", attempt, "of", p.LockAttempts)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf("reply search: gave up adding the column and trigger to ticket_replies after %d attempts, a long transaction is holding the table: %w", p.LockAttempts, last)
+}
+
+func (p *Preparer) applyDDL(ctx context.Context, ddl string) error {
+	tx, err := p.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`SET LOCAL lock_timeout = '%dms'`, p.LockTimeout.Milliseconds())); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, ddl); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

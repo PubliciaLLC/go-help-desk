@@ -75,6 +75,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "prepare-reply-search" {
+		// Interruptible: the fill and the build resume where they stopped.
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		code := prepareReplySearchCommand(ctx, os.Args[2:], os.Stdout)
+		stop()
+		os.Exit(code)
+	}
 	if len(os.Args) > 1 && os.Args[1] == "unlock" {
 		var email string
 		if len(os.Args) > 2 {
