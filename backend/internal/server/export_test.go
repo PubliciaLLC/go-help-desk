@@ -12,6 +12,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/webauthn"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
 
@@ -41,6 +42,20 @@ func (s *Server) PasskeyStartHandlersForTest() map[string]http.HandlerFunc {
 	}
 }
 
+// failingUserBatchLookup makes the many-ids lookup fail and leaves every other
+// call to the real store, so a handler's other reads still work.
+type failingUserBatchLookup struct{ user.Store }
+
+func (failingUserBatchLookup) GetByIDs(context.Context, []uuid.UUID) ([]user.User, error) {
+	return nil, errors.New("injected batch user lookup failure")
+}
+
+// FailUserBatchLookupForTest makes the one-query lookup of many accounts fail as
+// a database outage would, in front of the store the harness built.
+func (s *Server) FailUserBatchLookupForTest(real user.Store) {
+	s.users = user.NewService(failingUserBatchLookup{real})
+}
+
 // FailUserLookupForTest makes user lookups fail as a database outage would.
 func (s *Server) FailUserLookupForTest() { s.users = user.NewService(failingUserLookup{}) }
 
@@ -60,6 +75,10 @@ func (failingSpend) SpendSAMLHandover(context.Context, string) (bool, error) {
 // a store that fails one write in front of the real one. The authentication
 // middleware keeps the lookup it was built with.
 func (s *Server) SetUsersForTest(u *user.Service) { s.users = u }
+
+// SetPasskeyStoreForTest swaps the credential store the handlers call, so a test
+// can put a second factor on the account between a handler's guard and its write.
+func (s *Server) SetPasskeyStoreForTest(st webauthn.Store) { s.passkeyStore = st }
 
 // failingDelete makes the session row delete fail, which is the first thing a
 // session rewrite does for a session that already has an id.
@@ -146,3 +165,19 @@ func (s *Server) SetAdminServiceForTest(a *admin.Service) { s.adminSvc = a }
 
 // ReloadSAMLForTest runs the reload startup and the settings PATCH use.
 func (s *Server) ReloadSAMLForTest(ctx context.Context) error { return s.reloadSAML(ctx) }
+
+// SaveAuditMaskForTest is the mask setting's save and audit entry, which the
+// handler runs on the request's context, so a test can hand it one that is
+// already cancelled: the router would never let such a request reach the
+// handler to begin with.
+func (s *Server) SaveAuditMaskForTest(ctx context.Context, actor uuid.UUID, raw []byte, before string) error {
+	return s.saveAuditMask(ctx, actor, raw, before)
+}
+
+// RefuseSuspectedCloneForTest runs the clone refusal on a request whose
+// context a test has already cancelled: the refusal sits after the ceremony,
+// which needs the live context, so there is no way to hang up at exactly that
+// point through the router.
+func (s *Server) RefuseSuspectedCloneForTest(w http.ResponseWriter, r *http.Request, userID, passkeyID uuid.UUID) {
+	s.refuseSuspectedClone(w, r, userID, passkeyID)
+}

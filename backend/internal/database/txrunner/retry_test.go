@@ -57,7 +57,7 @@ type outcome struct {
 // test's own ids are touched.
 func runWithDeadlocks(t *testing.T, kills int, finalAttempt bool) outcome {
 	t.Helper()
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	// A cleanup, not a defer: it must run after the partners are rolled back,
 	// or closing the pool waits forever on a connection a failed test left
 	// blocked.
@@ -65,9 +65,6 @@ func runWithDeadlocks(t *testing.T, kills int, finalAttempt bool) outcome {
 	ctx := context.Background()
 
 	entityID, idX, idY := uuid.New(), uuid.New(), uuid.New()
-	t.Cleanup(func() {
-		_, _ = db.SQL.Exec(`DELETE FROM audit_log WHERE entity_id = $1`, entityID)
-	})
 	row := func(id uuid.UUID) audit.Entry {
 		e := entry(entityID, "retry-row")
 		e.ID = id

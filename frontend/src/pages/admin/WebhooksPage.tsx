@@ -1,6 +1,6 @@
 import { Fragment, useId, useState } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { listWebhooks, createWebhook, updateWebhook, deleteWebhook, reapproveWebhook, listWebhookDeliveries, redeliverWebhook, listCategories, listGroups } from '@/api/admin'
+import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query'
+import { listWebhooks, createWebhook, updateWebhook, deleteWebhook, reapproveWebhook, listWebhookDeliveries, redeliverWebhook, listCategories, listGroups, listTypes, listItems } from '@/api/admin'
 import { extractError, extractErrorCode } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
@@ -11,7 +11,7 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Spinner } from '@/components/ui/spinner'
 import { PlusIcon, PencilIcon, Trash2Icon } from 'lucide-react'
-import type { WebhookConfig, WebhookPayloadFormat, WebhookDelivery, WebhookDeliveryRecord, WebhookFilter, Priority, Category, Group } from '@/api/types'
+import type { WebhookConfig, WebhookPayloadFormat, WebhookDelivery, WebhookDeliveryRecord, WebhookFilter, Priority, Category, Group, TicketType, TicketItem } from '@/api/types'
 
 // What the server accepts, in the order it lists them (notify.WebhookEvents).
 // "*" is sent for "all events"; the server refuses an empty list.
@@ -27,7 +27,16 @@ const EVENTS = [
   'ticket.linked',
   'ticket.priority_changed',
   'ticket.classified',
+  'ticket.unlinked',
+  'ticket.attachment_added',
 ] as const
+
+// The events a hook gets only if it lists them by name (notification.OptInWebhookEvents):
+// "All events" does not include them. Who follows a ticket is personal, and
+// the follow audit that staff may not see by default would be public the
+// moment a hook subscribed to everything.
+const OPT_IN_EVENTS = ['ticket.followed', 'ticket.unfollowed'] as const
+const isOptIn = (e: string) => (OPT_IN_EVENTS as readonly string[]).includes(e)
 
 // notify.Formats, in the same order. The values are what the API stores; the
 // labels are what an operator recognises.
@@ -70,7 +79,9 @@ function LastDelivery({ d }: { d: WebhookDelivery | null | undefined }) {
 // ── Form state ────────────────────────────────────────────────────────────────
 
 // "All events" is its own flag rather than a "*" entry in the set, so there is
-// no state in which "*" and a specific event are both selected.
+// no state in which "*" and an ordinary event are both selected. The opt-in
+// events are the exception: they are listed by name beside "*", because "*"
+// does not cover them. With "All events" ticked, events holds only those.
 interface FormState {
   url: string
   secret: string
@@ -81,6 +92,8 @@ interface FormState {
   categoryIds: string[]
   priorities: Priority[]
   groupIds: string[]
+  typeIds: string[]
+  itemIds: string[]
   invert: boolean
   // Whether the hook had a filter when the form opened. An edit that clears
   // every condition must still send the empty filter, or the stored one stays.
@@ -89,7 +102,7 @@ interface FormState {
 
 const emptyForm: FormState = {
   url: '', secret: '', format: 'raw', all: false, events: [],
-  categoryIds: [], priorities: [], groupIds: [], invert: false, hadFilter: false,
+  categoryIds: [], priorities: [], groupIds: [], typeIds: [], itemIds: [], invert: false, hadFilter: false,
 }
 
 function fromHook(h: WebhookConfig): FormState {
@@ -103,10 +116,12 @@ function fromHook(h: WebhookConfig): FormState {
     secret: '',
     format: h.payload_format ?? 'raw',
     all,
-    events: all ? [] : h.events,
+    events: all ? h.events.filter(isOptIn) : h.events,
     categoryIds: filter.category_ids,
     priorities: filter.priorities,
     groupIds: filter.group_ids,
+    typeIds: filter.type_ids ?? [],
+    itemIds: filter.item_ids ?? [],
     invert: filter.invert,
     hadFilter: apiHasConditions(filter),
   }
@@ -118,9 +133,9 @@ const NO_FILTER: WebhookFilter = { category_ids: [], priorities: [], group_ids: 
 
 // A filter has conditions when any list is non-empty. invert is not one.
 const apiHasConditions = (f: WebhookFilter) =>
-  f.category_ids.length + f.priorities.length + f.group_ids.length > 0
+  f.category_ids.length + f.priorities.length + f.group_ids.length + (f.type_ids?.length ?? 0) + (f.item_ids?.length ?? 0) > 0
 const hasConditions = (f: FormState) =>
-  f.categoryIds.length + f.priorities.length + f.groupIds.length > 0
+  f.categoryIds.length + f.priorities.length + f.groupIds.length + f.typeIds.length + f.itemIds.length > 0
 
 // The filter as the API takes it. invert goes only with a condition to invert:
 // the server refuses an inverted empty filter, and with no conditions "send
@@ -130,6 +145,9 @@ function filterOf(f: FormState): WebhookFilter {
     category_ids: f.categoryIds,
     priorities: f.priorities,
     group_ids: f.groupIds,
+    // Left out while empty, like the server leaves them out.
+    ...(f.typeIds.length > 0 ? { type_ids: f.typeIds } : {}),
+    ...(f.itemIds.length > 0 ? { item_ids: f.itemIds } : {}),
     invert: f.invert && hasConditions(f),
   }
 }
@@ -155,6 +173,10 @@ function filterSummary(
   if (filter.category_ids.length > 0) {
     chips.push(`Category: ${filter.category_ids.map((id) => nameOf(categories, id, 'Deleted category')).join(' or ')}`)
   }
+  // Counts, not names: naming them would take a request per category and type
+  // for every row.
+  if (filter.type_ids?.length) chips.push(`Type: ${filter.type_ids.length} selected`)
+  if (filter.item_ids?.length) chips.push(`Item: ${filter.item_ids.length} selected`)
   if (filter.priorities.length > 0) chips.push(`Priority: ${filter.priorities.join(' or ')}`)
   if (filter.group_ids.length > 0) {
     chips.push(`Group: ${filter.group_ids.map((id) => nameOf(groups, id, 'Deleted group')).join(' or ')}`)
@@ -170,7 +192,8 @@ function nameOf(list: { id: string; name: string }[] | undefined, id: string, go
 }
 
 function eventsOf(f: FormState): string[] {
-  return f.all ? ['*'] : EVENTS.filter((e) => f.events.includes(e))
+  const named = OPT_IN_EVENTS.filter((e) => f.events.includes(e))
+  return f.all ? ['*', ...named] : [...EVENTS.filter((e) => f.events.includes(e)), ...named]
 }
 
 const canSubmit = (f: FormState) => f.url.trim() !== '' && eventsOf(f).length > 0
@@ -197,6 +220,22 @@ function describe(err: unknown): string {
     return `The URL was refused: ${message}. Webhook targets must be public http or https addresses; private, loopback and link-local addresses are blocked.`
   }
   return message
+}
+
+// The server refuses a type outside the ticked categories and an item outside
+// the ticked types (D37), so unticking a parent unticks what hangs under it.
+// types and items are what the form has loaded; a child whose parent is not
+// among them (not loaded yet) is kept.
+function pruneUnder(form: FormState, types: TicketType[], items: TicketItem[]): FormState {
+  const typeIds = form.typeIds.filter((tid) => {
+    const t = types.find((x) => x.id === tid)
+    return !t || form.categoryIds.length === 0 || form.categoryIds.includes(t.category_id)
+  })
+  const itemIds = form.itemIds.filter((iid) => {
+    const it = items.find((x) => x.id === iid)
+    return !it || typeIds.includes(it.type_id)
+  })
+  return { ...form, typeIds, itemIds }
 }
 
 // CheckGroup is one kind of condition: a legend and a checkbox per value.
@@ -244,6 +283,47 @@ function WebhookFields({
   groups: Group[] | undefined
 }) {
   const id = useId()
+
+  // Types of the ticked categories (of every category while none is ticked, so a
+  // types-only filter can be seen and edited), and items of the ticked types.
+  // Loaded per category and per type, only for what is shown.
+  const typeSources = form.categoryIds.length > 0 ? form.categoryIds : (categories ?? []).map((c) => c.id)
+  const typeQueries = useQueries({
+    queries: typeSources.map((cid) => ({
+      queryKey: ['admin', 'categories', cid, 'types'],
+      queryFn: () => listTypes(cid),
+    })),
+  })
+  const types: TicketType[] = typeQueries.flatMap((q) => q.data ?? [])
+  const itemQueries = useQueries({
+    queries: form.typeIds.map((tid) => {
+      const cid = types.find((t) => t.id === tid)?.category_id
+      return {
+        queryKey: ['admin', 'categories', cid, 'types', tid, 'items'],
+        queryFn: () => listItems(cid as string, tid),
+        enabled: cid !== undefined,
+      }
+    }),
+  })
+  const items: TicketItem[] = itemQueries.flatMap((q) => q.data ?? [])
+  const typesLoaded = typeQueries.every((q) => q.isSuccess)
+  const categoryName = (cid: string) => (categories ?? []).find((c) => c.id === cid)?.name ?? ''
+
+  const typeOptions = [
+    ...types.map((t) => ({ value: t.id, label: `${categoryName(t.category_id)} › ${t.name}${t.active ? '' : ' (inactive)'}` })),
+    ...(typesLoaded ? form.typeIds
+      .filter((tid) => !types.some((t) => t.id === tid))
+      .map((tid) => ({ value: tid, label: 'Unlisted type' })) : []),
+  ]
+  const itemOptions = [
+    ...items.map((i) => ({
+      value: i.id,
+      label: `${types.find((t) => t.id === i.type_id)?.name ?? ''} › ${i.name}${i.active ? '' : ' (inactive)'}`,
+    })),
+    ...form.itemIds
+      .filter((iid) => !items.some((i) => i.id === iid) && itemQueries.every((q) => !q.isLoading))
+      .map((iid) => ({ value: iid, label: 'Unlisted item' })),
+  ]
 
   // A condition naming a category or group that is no longer in the list is
   // still shown, ticked, so it can be seen and unticked. Nothing is shown for
@@ -334,6 +414,21 @@ function WebhookFields({
             </label>
           ))}
         </div>
+        <p className="pt-1 text-xs text-gray-500">
+          Sent only when ticked, even with All events: they say who follows a ticket, by id.
+        </p>
+        <div className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2 lg:grid-cols-3">
+          {OPT_IN_EVENTS.map((e) => (
+            <label key={e} className="flex min-h-[24px] items-center gap-2 text-sm text-gray-700">
+              <input
+                type="checkbox"
+                checked={form.events.includes(e)}
+                onChange={(ev) => toggle(e, ev.target.checked)}
+              />
+              <span className="font-mono text-xs">{e}</span>
+            </label>
+          ))}
+        </div>
       </fieldset>
 
       <fieldset className="space-y-3">
@@ -346,8 +441,24 @@ function WebhookFields({
           legend="Category"
           options={categoryOptions}
           selected={form.categoryIds}
-          onToggle={(v, on) => onChange({ ...form, categoryIds: withToggled(form.categoryIds, v, on) })}
+          onToggle={(v, on) => onChange(pruneUnder({ ...form, categoryIds: withToggled(form.categoryIds, v, on) }, types, items))}
         />
+        {typeOptions.length > 0 && (
+          <CheckGroup
+            legend="Type"
+            options={typeOptions}
+            selected={form.typeIds}
+            onToggle={(v, on) => onChange(pruneUnder({ ...form, typeIds: withToggled(form.typeIds, v, on) }, types, items))}
+          />
+        )}
+        {itemOptions.length > 0 && (
+          <CheckGroup
+            legend="Item"
+            options={itemOptions}
+            selected={form.itemIds}
+            onToggle={(v, on) => onChange({ ...form, itemIds: withToggled(form.itemIds, v, on) })}
+          />
+        )}
         <CheckGroup
           legend="Priority"
           options={PRIORITIES.map((p) => ({ value: p, label: p }))}
@@ -607,7 +718,7 @@ export function WebhooksPage() {
             addresses. When a secret is set, each delivery is signed with it in the{' '}
             <code className="font-mono text-xs">X-GHD-Signature</code> header. A secret is never
             shown again once saved. The list shows each hook&apos;s most recent delivery; History shows the last 25. Failed deliveries are retried for about an hour, so a receiver may see the same event more than once: use the <code className="font-mono text-xs">X-GHD-Delivery</code> header to spot a repeat.
-            A hook can be limited to tickets in chosen categories, priorities or assigned groups. An event it filters out is not a delivery, so it gets no History entry. The filter is checked again at every retry and at Redeliver, so tightening it also stops what is still waiting to be sent.
+            A hook can be limited to tickets in chosen categories, types, items, priorities or assigned groups. An event it filters out is not a delivery, so it gets no History entry. The filter is checked again at every retry and at Redeliver, so tightening it also stops what is still waiting to be sent.
           </p>
         </div>
 
@@ -696,9 +807,19 @@ export function WebhooksPage() {
                       <td className="px-4 py-3">
                         <div className="flex flex-wrap gap-1">
                           {h.events.length === 0 || h.events.includes('*') ? (
-                            <span className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-700">
-                              All events
-                            </span>
+                            <>
+                              <span className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-700">
+                                All events
+                              </span>
+                              {h.events.filter(isOptIn).map((e) => (
+                                <span
+                                  key={e}
+                                  className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-xs text-gray-700"
+                                >
+                                  {e}
+                                </span>
+                              ))}
+                            </>
                           ) : (
                             h.events.map((e) => (
                               <span

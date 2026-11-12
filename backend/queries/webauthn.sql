@@ -35,12 +35,12 @@ SELECT count(*) FROM webauthn_credentials WHERE user_id = $1;
 -- when it was last used.
 --
 -- Written off the authentication path, so a sign-in never waits on it and
--- never fails because of it. The counter is stored and NOT enforced — see the
--- column comment in 000029 for why a "must increase" rule locks people out
--- for nothing, and why a previously-non-zero counter going backwards is worth
--- logging and worth refusing nothing over.
+-- never fails because of it. That also means two sign-ins can land out of
+-- order, so the counter only ever goes up: a late write of a lower value would
+-- put the stored counter back below one a cloned key has already used, and the
+-- clone check (#616b) compares against what is stored here.
 UPDATE webauthn_credentials
-SET sign_count = $2, last_used_at = now()
+SET sign_count = GREATEST(sign_count, $2), last_used_at = now()
 WHERE id = $1;
 
 -- name: DeleteWebAuthnCredential :one
@@ -53,3 +53,37 @@ WHERE id = $1;
 DELETE FROM webauthn_credentials
 WHERE id = $1 AND user_id = $2
 RETURNING id;
+
+-- name: RemoveUserPasskey :one
+-- Removes ONE credential of a user, and ends the user's sessions with it, as one
+-- statement (#615, D1: always, not only when it was the last factor; the key is
+-- presumed lost or compromised).
+--
+-- keep_session is the one session to leave alone: the owner's own, when they
+-- remove their own key (they just proved a factor there, and signing yourself
+-- out of the tab you used is a bug, not security). An administrator removing
+-- somebody else's key passes '', which no session id is, so every session ends.
+--
+-- The credential is matched on its owner as well as its id, in the statement:
+-- an id is not an authorisation, and a credential that is not this user's is
+-- reported as nothing removed. Sessions end only when a credential went, so
+-- naming somebody else's key under this user's path cannot be used to sign the
+-- user out.
+--
+-- One statement, like ClearFactors, so that a failure between the two cannot
+-- leave the key gone and its sessions alive, or the other way round. The
+-- sessions matter because one may carry MFAPassed from the key just removed.
+WITH gone AS (
+    DELETE FROM webauthn_credentials
+    WHERE webauthn_credentials.id = $1 AND webauthn_credentials.user_id = $2
+    RETURNING webauthn_credentials.id
+), ended AS (
+    DELETE FROM sessions
+    WHERE sessions.user_id = $2
+      AND sessions.id <> sqlc.arg(keep_session)::text
+      AND EXISTS (SELECT 1 FROM gone)
+    RETURNING sessions.id
+)
+SELECT
+    (SELECT count(*) FROM gone)::int  AS passkeys_removed,
+    (SELECT count(*) FROM ended)::int AS sessions_ended;

@@ -415,6 +415,25 @@ func TestListFiltered_ScopedVisibilityMatchesStaffQuery(t *testing.T) {
 	require.NoError(t, gs.AddScope(f.ctx, group.GroupScope{GroupID: g2.ID, CategoryID: f.catB.ID}))                      // all of catB
 	require.NoError(t, gs.AddScope(f.ctx, group.GroupScope{GroupID: g2.ID, CategoryID: f.catA.ID, TypeID: &f.typeA.ID})) // one type of catA
 
+	// A second group, and a second typed row in a different category. The
+	// store passes the covered categories and types as two arrays that must stay
+	// aligned by position, and one typed row cannot tell aligned from reversed.
+	// The category and the type here are inactive: coverage does not look.
+	cs := categorystore.New(q)
+	catC := category.Category{ID: uuid.New(), Name: "SrchC", SortOrder: 3, Active: false}
+	typeC := category.Type{ID: uuid.New(), CategoryID: catC.ID, Name: "TC", SortOrder: 1, Active: false}
+	typeC2 := category.Type{ID: uuid.New(), CategoryID: catC.ID, Name: "TC2", SortOrder: 2, Active: true}
+	require.NoError(t, cs.CreateCategory(f.ctx, catC))
+	require.NoError(t, cs.CreateType(f.ctx, typeC))
+	require.NoError(t, cs.CreateType(f.ctx, typeC2))
+	g3 := group.Group{ID: uuid.New(), Name: "SrchGroup3"}
+	require.NoError(t, gs.Create(f.ctx, g3))
+	require.NoError(t, gs.AddMember(f.ctx, g3.ID, f.scoped.ID))
+	require.NoError(t, gs.AddScope(f.ctx, group.GroupScope{GroupID: g3.ID, CategoryID: catC.ID, TypeID: &typeC.ID}))
+	f.mk(spec{subject: "C typeC", cat: &catC, typ: &typeC})
+	f.mk(spec{subject: "C typeC2", cat: &catC, typ: &typeC2})
+	f.mk(spec{subject: "C none", cat: &catC})
+
 	f.mk(spec{subject: "A none", cat: &f.catA})
 	f.mk(spec{subject: "A typeA", cat: &f.catA, typ: &f.typeA})
 	f.mk(spec{subject: "A typeB", cat: &f.catA, typ: &f.typeB})
@@ -435,7 +454,7 @@ func TestListFiltered_ScopedVisibilityMatchesStaffQuery(t *testing.T) {
 	}
 
 	fl := ticket.Filter{ActorID: f.scoped.ID, Visibility: ticket.VisibilityScoped, Limit: 500}
-	require.Equal(t, []string{"A typeA", "B none", "Delta", "alpha", "assigned to scoped", "charlie", "reported by scoped", "scoped's group"}, f.set(fl))
+	require.Equal(t, []string{"A typeA", "B none", "C typeC", "Delta", "alpha", "assigned to scoped", "charlie", "reported by scoped", "scoped's group"}, f.set(fl))
 }
 
 // "Mine" is the caller's own assignments plus those of every group they are in,
@@ -666,6 +685,21 @@ func TestListFiltered_SLAAgreesWithStatusFor(t *testing.T) {
 			mutate: func(tk *ticket.Ticket) { tk.SLAPausedSeconds = 3000 },
 			record: `first_response_at = $2::timestamptz, response_elapsed_at_met_seconds = 5100, resolved_at = $2::timestamptz, resolution_elapsed_at_met_seconds = 5100`,
 			args:   func(tk ticket.Ticket) []any { return []any{tk.CreatedAt.Add(85 * time.Minute)} }},
+		// The same for the RESOLUTION target, which the cases above only exercise
+		// on the response side. Resolved late (72000 s of a 60000 s target, 120%),
+		// the ticket then paused for 50000 s: recomputing the met target against
+		// the pause total would read 22000 s, 37%, green. The frozen reading is
+		// red, and so is StatusFor. The response was met on time, so the red
+		// bucket comes from the resolution alone.
+		{name: "resolved late (frozen 120%), paused afterwards", age: s(200000),
+			mutate: func(tk *ticket.Ticket) {
+				tk.SLAPausedSeconds = 50000
+				tk.PendingSince = ref(now.Add(-time.Hour))
+			},
+			record: `first_response_at = $2::timestamptz, response_elapsed_at_met_seconds = 10, resolved_at = $3::timestamptz, resolution_elapsed_at_met_seconds = 72000`,
+			args: func(tk ticket.Ticket) []any {
+				return []any{tk.CreatedAt.Add(10 * time.Second), tk.CreatedAt.Add(72000 * time.Second)}
+			}},
 		// No frozen number (a record migration 000028 could only estimate):
 		// StatusFor recomputes at the met instant, and so does the SQL.
 		{name: "met with no frozen reading, 90% at the met instant", age: resp(500), record: `first_response_at = $2::timestamptz, resolved_at = $2::timestamptz`,
@@ -818,4 +852,28 @@ func TestMigration060_TicketFilterIndexes(t *testing.T) {
 	for _, name := range indexes {
 		require.True(t, have(name), "up restores %s", name)
 	}
+}
+
+// 000061 adds the index the scoped list uses for a group that covers one type
+// of a category. Index only, and partial: most tickets have no type.
+func TestMigration061_TicketTypeIndex(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	ctx := context.Background()
+	tx, err := db.SQL.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+
+	const name = "tickets_type_id_idx"
+	have := func() bool {
+		var ok bool
+		require.NoError(t, tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE tablename = 'tickets' AND indexname = $1)`, name).Scan(&ok))
+		return ok
+	}
+	require.True(t, have(), "exists once the migrations have run")
+	execMigrationFile(t, ctx, tx, "migrations/000061_ticket_type_index.down.sql", nil)
+	require.False(t, have(), "down drops it")
+	execMigrationFile(t, ctx, tx, "migrations/000061_ticket_type_index.up.sql", nil)
+	execMigrationFile(t, ctx, tx, "migrations/000061_ticket_type_index.up.sql", nil) // IF NOT EXISTS: running twice is harmless
+	require.True(t, have(), "up restores it")
 }

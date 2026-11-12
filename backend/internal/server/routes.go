@@ -170,6 +170,10 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.With(authmw.DenyMachineCredentials).Patch("/{id}", s.handleUpdateUser)
 		r.With(authmw.DenyMachineCredentials).Delete("/{id}", s.handleDeleteUser)
 		r.With(authmw.DenyMachineCredentials).Post("/{id}/password", s.handleAdminResetPassword)
+		// One passkey at a time (#615). Not behind requirePasskeys: neither
+		// uses the ceremony service, and cleanup must work while passkeys are off.
+		r.Get("/{id}/passkeys", s.handleAdminListPasskeys)
+		r.With(authmw.DenyMachineCredentials).Delete("/{id}/passkeys/{credId}", s.handleAdminDeletePasskey)
 	})
 
 	// The admin-wide audit view (#129). Administrators only (Erik, 2026-11-03):
@@ -345,9 +349,11 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.Get("/", s.handleListOAuthClients)
 		// An OAuth client is a credential like an API key: keys can't make
 		// keys (Erik, 2026-10-16). A client made by a leaked key would outlive
-		// it. Listing and deleting stay open. There is no route that rotates
-		// a client's secret, so this is the only creating path.
+		// it. Listing and deleting stay open. Rotating a secret mints a new one,
+		// so it is closed to a key for the same reason; these two are the only
+		// paths that make a secret.
 		r.With(authmw.DenyMachineCredentials).Post("/", s.handleCreateOAuthClient)
+		r.With(authmw.DenyMachineCredentials).Post("/{id}/rotate-secret", s.handleRotateOAuthClientSecret)
 		r.Delete("/{id}", s.handleDeleteOAuthClient)
 	})
 

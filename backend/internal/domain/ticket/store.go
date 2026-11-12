@@ -123,6 +123,15 @@ type Store interface {
 	ListVisibleToStaff(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Ticket, error)
 	SearchVisibleToStaff(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error)
 	ListFiltered(ctx context.Context, f Filter) ([]Ticket, error)
+	// ListFilteredWithMeta is ListFiltered plus what the query could not do
+	// about reply text. ListFiltered is the same call without it.
+	ListFilteredWithMeta(ctx context.Context, f Filter) (ListResult, error)
+	// ReplyMatches reads, for the tickets of one page of a ListFiltered result,
+	// the reply each matched through: at most one per ticket, absent for a ticket
+	// that did not match through a reply. It takes the same Filter, so
+	// IncludeInternal governs both steps. Empty unless f.SearchReplies and the
+	// query has searchable words.
+	ReplyMatches(ctx context.Context, f Filter, ticketIDs []uuid.UUID) (map[uuid.UUID]ReplyMatch, error)
 
 	// Next sequence value for tracking-number generation
 	NextSeq(ctx context.Context) (int64, error)
@@ -135,6 +144,9 @@ type Store interface {
 	CreateAttachment(ctx context.Context, a Attachment) error
 	GetAttachmentByID(ctx context.Context, id uuid.UUID) (Attachment, error)
 	ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]Attachment, error)
+	// QuarantinedTicketIDs returns the subset of ticketIDs that hold at least one
+	// attachment the scanner identified as malicious (virus_name is set).
+	QuarantinedTicketIDs(ctx context.Context, ticketIDs []uuid.UUID) ([]uuid.UUID, error)
 	// CountGuestAttachments counts only the files a guest uploaded (#445).
 	CountGuestAttachments(ctx context.Context, ticketID uuid.UUID) (int, error)
 	DeleteAttachment(ctx context.Context, id uuid.UUID) error
@@ -143,7 +155,9 @@ type Store interface {
 
 	// Links
 	CreateLink(ctx context.Context, link TicketLink) error
-	DeleteLink(ctx context.Context, source, target uuid.UUID, lt LinkType) error
+	// DeleteLink reports whether there was a link to delete, so removing one
+	// that is not there is not announced as an unlink.
+	DeleteLink(ctx context.Context, source, target uuid.UUID, lt LinkType) (bool, error)
 	ListLinks(ctx context.Context, ticketID uuid.UUID) ([]TicketLink, error)
 
 	// Followers (#441). On Store because following is audited, and the audit

@@ -138,5 +138,20 @@ func (s *Service) ListItems(ctx context.Context, typeID uuid.UUID, activeOnly bo
 	return s.store.ListItems(ctx, typeID, activeOnly)
 }
 
+// CategoryNames, TypeNames and ItemNames name many ids with one statement each.
+// An id that no longer exists is absent from the map, which is how a caller
+// tells a deleted entry from one that was found.
+func (s *Service) CategoryNames(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]string, error) {
+	return s.store.CategoryNames(ctx, ids)
+}
+
+func (s *Service) TypeNames(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]string, error) {
+	return s.store.TypeNames(ctx, ids)
+}
+
+func (s *Service) ItemNames(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]string, error) {
+	return s.store.ItemNames(ctx, ids)
+}
+
 // unused import prevention
 var _ = time.Now

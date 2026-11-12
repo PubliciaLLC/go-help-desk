@@ -29,6 +29,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/outboxstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/passwordresetstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/registrationstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/replyindex"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/reputationstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/sessionstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/slastore"
@@ -222,7 +223,7 @@ func run() error {
 	}
 
 	// ── Stores ────────────────────────────────────────────────────────────────
-	uStore := userstore.New(q)
+	uStore := userstore.NewWithDB(q, sqlDB)
 	tStore := ticketstore.New(q)
 	cStore := categorystore.New(q)
 	gStore := groupstore.New(q)
@@ -434,7 +435,7 @@ func run() error {
 	// authentication works at all rather than only how links are built. An
 	// unusable value turns passkeys off with a warning instead of stopping
 	// startup (#494); see configurePasskeys.
-	passkeyStore := webauthnstore.New(q)
+	passkeyStore := webauthnstore.NewWithDB(q, sqlDB)
 	passkeySvc, passkeyReason := configurePasskeys(cfg.BaseURL, adminSvc.SiteName(ctx), slog.Default())
 
 	srv := server.New(
@@ -528,6 +529,12 @@ func run() error {
 	// The opt-in weekly release check (#170). Does nothing, and makes no
 	// request, unless an administrator turned update_check_enabled on.
 	go updatecheck.New(adminSvc, slog.Default()).Run(sweepCtx)
+	// Fills the search column of the replies that existed before migration 000062
+	// and builds its indexes, in the background, so an upgrade of a large
+	// database does not hold up the first request. Returns once reply search is
+	// ready, which on a database that is already prepared is at once. Until then
+	// searches skip replies and the page says so.
+	go replyindex.New(sqlDB, slog.Default()).Run(sweepCtx)
 	go func() {
 		t := time.NewTicker(time.Hour)
 		defer t.Stop()

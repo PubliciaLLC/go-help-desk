@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -48,6 +49,16 @@ type adminAuditListResponse struct {
 	// stops there. Always sent, false included, so a client does not have to
 	// tell "not capped" from "an older server".
 	TotalCapped bool `json:"total_capped"`
+	// DetailsSearched is true when q was also looked for in the change details,
+	// which happens only inside a date range of at most audit.DetailsSearchMaxDays.
+	// False without q, and false when q was matched on the entity type, the action
+	// and the actor alone; DetailsSkippedReason then says why. Both always sent,
+	// for the reason TotalCapped is.
+	DetailsSearched bool `json:"details_searched"`
+	// DetailsSkippedReason is audit.DetailsSkippedNoRange when q was sent without
+	// a date range, and absent otherwise. A range over audit.DetailsSearchMaxDays
+	// with q is a 400 (date_range_too_long), not a reason.
+	DetailsSkippedReason string `json:"details_skipped_reason,omitempty"`
 	// HasMore reports whether another page exists. It is read off the page
 	// itself (one row past it), not derived from Total, which stops at the cap
 	// while a pager keeps going. This is the client's only paging rule.
@@ -73,10 +84,24 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	f, limit, offset, err := parseAdminAuditQuery(r)
+	switch {
+	case errors.Is(err, errDateRangeTooLong):
+		Error(w, http.StatusBadRequest, "date_range_too_long", err.Error())
+		return
+	case errors.Is(err, errDateRangeReversed):
+		Error(w, http.StatusBadRequest, "invalid_date_range", err.Error())
+		return
+	}
 	if err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
+
+	// The same decision masks the names in the page and keeps q from finding a
+	// requester by name: a search that answered "yes" for a requester's name
+	// would identify them as well as showing it would.
+	maskRequesters := s.masksRequestersIn(ctx, admin.MaskRequesterNamesAdminLog)
+	f.MaskRequesterActors = maskRequesters
 
 	page, err := s.auditStore.Search(ctx, f, limit, offset)
 	if err != nil {
@@ -85,7 +110,6 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	entries := page.Entries
 
-	maskRequesters := s.masksRequestersIn(ctx, admin.MaskRequesterNamesAdminLog)
 	views := make([]adminAuditEntryView, len(entries))
 	names := make(map[uuid.UUID]auditActor)
 	diffs := make([]map[string]any, 0, 2*len(entries))
@@ -104,7 +128,9 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 				case err == nil:
 					a = auditActorName(u, maskRequesters)
 				case errors.Is(err, user.ErrNotFound):
-					// Account since deleted; actor_id stays, only the name is left blank.
+					// Account since deleted; actor_id stays. Its name is not sent, and
+					// the view says so, of any role (owner, 2026-11-11).
+					a = auditActor{name: deletedAccountName}
 				default:
 					slog.ErrorContext(ctx, "resolving admin audit actor name failed", "actor_id", *e.ActorID, "error", err)
 				}
@@ -126,7 +152,8 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	JSON(w, http.StatusOK, adminAuditListResponse{
-		Entries: views, Total: page.Total, TotalCapped: page.TotalCapped, HasMore: page.HasMore,
+		Entries: views, Total: page.Total, TotalCapped: page.TotalCapped,
+		DetailsSearched: f.SearchesDetails(), DetailsSkippedReason: f.DetailsSkippedReason(), HasMore: page.HasMore,
 	})
 }
 
@@ -146,6 +173,12 @@ func parseAdminAuditQuery(r *http.Request) (f audit.Filter, limit, offset int, e
 		if strings.ContainsRune(v, 0) || !utf8.ValidString(v) {
 			return audit.Filter{}, 0, 0, errBadText
 		}
+	}
+
+	// q is sent to the database once for every searchable key, so its length is
+	// bounded. Nobody types a longer search; a longer one is a mistake or a probe.
+	if utf8.RuneCountInString(f.Q) > maxAuditQueryRunes {
+		return audit.Filter{}, 0, 0, errQTooLong
 	}
 
 	// exclude_action (repeatable) leaves those actions out, in the query, so
@@ -185,15 +218,39 @@ func parseAdminAuditQuery(r *http.Request) (f audit.Filter, limit, offset int, e
 		f.To = &t
 	}
 
+	// A text search over more than the limit is refused, not narrowed: the details
+	// cannot be searched in a range that long, and a page that quietly searched
+	// less than was asked for would read as "nothing found".
+	if f.DateRangeReversed() {
+		return audit.Filter{}, 0, 0, errDateRangeReversed
+	}
+	if f.DateRangeTooLong() {
+		return audit.Filter{}, 0, 0, errDateRangeTooLong
+	}
+
 	return f, limit, offset, nil
 }
 
+// maxAuditQueryRunes bounds q (#629).
+const maxAuditQueryRunes = 200
+
 var (
+	errQTooLong   = errors.New("q must be at most 200 characters")
 	errBadActorID = errors.New("actor_id must be a UUID")
 	errBadFrom    = errors.New("from must be an RFC3339 timestamp")
 	errBadTo      = errors.New("to must be an RFC3339 timestamp")
 	errBadText    = errors.New("filters must be valid UTF-8 without NUL bytes")
+
+	errDateRangeReversed = errors.New("from must not be later than to")
+	errDateRangeTooLong  = fmt.Errorf("the date range of a search with text can be at most %d days: shorten from and to, or search without text", audit.DetailsSearchMaxDays)
 )
+
+// deletedAccountName is what every place that names a person in audit output
+// shows for one it cannot resolve (owner, 2026-11-11): accurate, the same for
+// every role, and never the name. Where the mask is on, it is also what stands
+// in for a requester's name once the account is gone, so it tells nobody
+// which role the account had.
+const deletedAccountName = "Deleted account"
 
 // auditActor is what an audit view shows for one actor.
 type auditActor struct {
@@ -218,6 +275,59 @@ func auditActorName(u user.User, maskRequesters bool) auditActor {
 		return auditActor{name: "Requester", masked: true}
 	}
 	return auditActor{name: u.DisplayName}
+}
+
+// auditMaskChange records a change to the requester-name mask (D35), when the
+// value in force is no longer the one it was before the save. Loosening the
+// mask is the one settings change that shows requester names, so it must leave
+// a trace of who did it and when; a save that leaves the value as it was
+// records nothing.
+//
+// Best effort and detached from the request, like the API key entries
+// (writeAudit): a mask that read back as a failure would block the change it
+// describes, and an administrator who hangs up right after saving must not be
+// able to suppress the entry. Like those entries it is not transactional with
+// the write, so a crash between the two loses the entry; the setting is
+// admin-only, so the person who could change it unrecorded already holds the
+// capability, as for a factor reset.
+func (s *Server) auditMaskChange(ctx context.Context, actor uuid.UUID, before string) {
+	after := s.adminSvc.AuditMaskRequesterNames(ctx)
+	if after == before || s.auditStore == nil {
+		return
+	}
+	s.writeAudit(ctx, audit.Entry{
+		ID: uuid.New(), ActorID: &actor, EntityType: auditEntitySetting,
+		EntityID: settingEntityID(admin.KeyAuditMaskRequesterNames), Action: auditActionMaskChanged,
+		Before: map[string]any{"requester_name_mask": before}, After: map[string]any{"requester_name_mask": after},
+		CreatedAt: time.Now(),
+	})
+}
+
+// saveAuditMask stores the mask setting and records the change, both detached
+// from the request. The read-back of the new value in auditMaskChange is a
+// database call too: on a cancelled request context it fails, reads as the
+// default, and an entry for a real change is skipped. The save is detached for
+// the reason the audit write is: once it commits, a client that hangs up must
+// not get a false 500 for a change that landed (pgx reports `context canceled`
+// after an autocommit write completes), nor suppress the entry.
+func (s *Server) saveAuditMask(ctx context.Context, actor uuid.UUID, raw []byte, before string) error {
+	ctx = context.WithoutCancel(ctx)
+	if err := s.adminSvc.SetRaw(ctx, admin.KeyAuditMaskRequesterNames, raw); err != nil {
+		return err
+	}
+	s.auditMaskChange(ctx, actor, before)
+	return nil
+}
+
+const (
+	auditEntitySetting     = "setting"
+	auditActionMaskChanged = "audit_mask_changed"
+)
+
+// settingEntityID is the audit entity id for a setting, which has a name and no
+// row id; the audit log keys on a UUID. Derived the way emailTemplateEntityID is.
+func settingEntityID(key string) uuid.UUID {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("setting:"+key))
 }
 
 // masksRequestersIn reports whether the given audit view masks requester

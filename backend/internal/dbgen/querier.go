@@ -260,9 +260,11 @@ type Querier interface {
 	// revoke them too (#450). Returns how many, which the audit entry records.
 	DeleteAllAPIKeysForUser(ctx context.Context, userID uuid.UUID) (int64, error)
 	DeleteAttachment(ctx context.Context, id uuid.UUID) error
-	// The retention sweep's hard delete. No archive table — see audit.Store's
-	// own comment on DeleteOlderThan for why.
-	DeleteAuditLogBefore(ctx context.Context, createdAt time.Time) (int64, error)
+	// The retention sweep's hard delete, one batch (#629). No archive table — see
+	// audit.Store's own comment on DeleteOlderThan for why. Oldest first, so the
+	// created_at index serves it; SKIP LOCKED so a row someone else holds is left
+	// for the next sweep and not waited on.
+	DeleteAuditLogBatch(ctx context.Context, arg DeleteAuditLogBatchParams) (int64, error)
 	DeleteCannedResponse(ctx context.Context, id uuid.UUID) (int64, error)
 	// Takes the custom-field assignments of the category, of its types and of
 	// their items with it (#419). custom_field_assignments.scope_id has no foreign
@@ -308,7 +310,7 @@ type Querier interface {
 	// this database (whose clock sets spent_at).
 	DeleteStaleSAMLHandovers(ctx context.Context) error
 	DeleteStatus(ctx context.Context, id uuid.UUID) error
-	DeleteTicketLink(ctx context.Context, arg DeleteTicketLinkParams) error
+	DeleteTicketLink(ctx context.Context, arg DeleteTicketLinkParams) (int64, error)
 	// As DeleteCategory: the type's own and its items' field assignments go in the
 	// same statement.
 	DeleteType(ctx context.Context, arg DeleteTypeParams) (int64, error)
@@ -432,6 +434,9 @@ type Querier interface {
 	GetAttachmentReputation(ctx context.Context, arg GetAttachmentReputationParams) (AttachmentReputation, error)
 	GetCannedResponse(ctx context.Context, id uuid.UUID) (CannedResponse, error)
 	GetCategory(ctx context.Context, id uuid.UUID) (Category, error)
+	// The audit view's name lookup (1.3.0): one statement for every id on a page,
+	// never one per id. An id with no row is simply absent from the result.
+	GetCategoryNamesByIDs(ctx context.Context, ids []uuid.UUID) ([]GetCategoryNamesByIDsRow, error)
 	// The ticket's current record, locked for the duration of a re-match.
 	GetCurrentSLARecordForUpdate(ctx context.Context, ticketID uuid.UUID) (SlaRecord, error)
 	GetCustomFieldAssignment(ctx context.Context, id uuid.UUID) (CustomFieldAssignment, error)
@@ -442,6 +447,7 @@ type Querier interface {
 	GetGroup(ctx context.Context, id uuid.UUID) (Group, error)
 	GetInstanceSecret(ctx context.Context, name string) ([]byte, error)
 	GetItem(ctx context.Context, id uuid.UUID) (Item, error)
+	GetItemNamesByIDs(ctx context.Context, ids []uuid.UUID) ([]GetItemNamesByIDsRow, error)
 	// The record a ticket most recently stopped having. Read, in the same
 	// transaction that holds the ticket's row lock, when a ticket with no current
 	// record gets one back, so the new clock resumes where the last one ran.
@@ -557,6 +563,7 @@ type Querier interface {
 	// a read-only link beside the existing ones rather than rotating them.
 	GetTicketIDByTrackingAndGuestEmail(ctx context.Context, arg GetTicketIDByTrackingAndGuestEmailParams) (uuid.UUID, error)
 	GetType(ctx context.Context, id uuid.UUID) (Type, error)
+	GetTypeNamesByIDs(ctx context.Context, ids []uuid.UUID) ([]GetTypeNamesByIDsRow, error)
 	// This is the lookup behind password login, OIDC adoption by address and
 	// password reset, so it is where a service account (an OAuth client's
 	// identity, #420) is kept from ever signing in: it simply is not found. A miss
@@ -712,6 +719,10 @@ type Querier interface {
 	// disagree (#523). One clock, one rule.
 	ListPausedWebhookIDs(ctx context.Context, now time.Time) ([]uuid.UUID, error)
 	ListPlugins(ctx context.Context) ([]Plugin, error)
+	// Which of these tickets hold a file the scanner held back. One row per ticket
+	// however many files, because the ticket list shows a marker, not a count. Uses
+	// the attachments ticket_id index; the page is already cut, so $1 is one page.
+	ListQuarantinedTicketIDs(ctx context.Context, ticketIds []uuid.UUID) ([]uuid.UUID, error)
 	// The author's display name comes back with the reply.
 	//
 	// Without it the ticket page had nothing but author_id to render, and rendered
@@ -763,6 +774,9 @@ type Querier interface {
 	// first. A NULL started_at is the ticket's creation.
 	ListSLARecordsForTicket(ctx context.Context, ticketID uuid.UUID) ([]SlaRecord, error)
 	ListSettings(ctx context.Context) ([]Setting, error)
+	// The category/type pairs the caller's groups cover, for ListTicketsFiltered's
+	// scoped visibility. type_id NULL means the whole category.
+	ListStaffScopeRows(ctx context.Context, userID uuid.UUID) ([]ListStaffScopeRowsRow, error)
 	ListStatuses(ctx context.Context) ([]Status, error)
 	// The list staff see on the ticket. Soft-deleted accounts are left out: there
 	// is nobody to show. A disabled account is shown, because the row is still
@@ -789,6 +803,30 @@ type Querier interface {
 	// Every other criterion is a further AND, so a filter can only narrow what the
 	// caller may already see. Nothing below widens it.
 	//
+	// reply_hits is reply-text search (advanced search, section 2.5). It is empty
+	// unless search_replies is set and the search has words. A ticket matches when
+	// ONE reply holds every word, so a public reply and an internal note cannot
+	// combine. include_internal comes from the actor's role and nothing else
+	// (ticket.IncludeInternalFor); for a requester it is false, and an internal note
+	// is then never read, so it cannot decide which tickets match. The snippet read
+	// (ReplyMatchesForTickets) applies the same condition.
+	//
+	// It matches ticket_replies.body_tsv, a stored column the migration adds and a
+	// trigger keeps current. The store sets search_replies false until the
+	// background fill and the two indexes are done (ReplySearchReady), so this arm
+	// never runs against a half-filled column.
+	//
+	// It looks at only the reply_cap NEWEST matching replies of the tickets the
+	// viewer may see, so a word in a quarter of all replies is not matched, joined
+	// and deduplicated a million times over. The recency index lets the planner
+	// walk replies newest first and stop; the content index serves the rare words.
+	// The cap is applied AFTER the viewer's visibility, with the same predicate as
+	// the main query below (rt is that ticket): applied before it, a requester's
+	// own matches would be crowded out by everyone else's, and a ticket the viewer
+	// may see could be missed because newer matches elsewhere used up the cap. The
+	// main query still applies visibility and every filter itself, so this can
+	// only narrow what it returns. Keep the two predicates in step: a store test
+	// searches as a scoped member of staff and a requester with a cap of one.
 	// Single values are NULL-means-absent and arrays are cardinality(...) = 0, so
 	// one prepared statement serves every combination. The store always passes a
 	// non-nil array.
@@ -866,6 +904,19 @@ type Querier interface {
 	// UnassignTicketsForGroup and the delete would lose its group silently, which
 	// is the gap this exists to close.
 	LockGroup(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
+	// Takes the user row so that two writers of a first factor are ordered (#617).
+	//
+	// A first TOTP confirm and a first passkey registration each ask "does this
+	// account hold any factor?" and then write. Without an order, both can pass the
+	// question before either writes, and a session that only knows the password
+	// ends up adding a factor beside the owner's first one. Both take this lock,
+	// then ask in a NEW statement: under READ COMMITTED a statement waiting on this
+	// row keeps the snapshot it started with, so the question cannot be folded into
+	// one statement with the lock. The lock order is users, then credentials, the
+	// same as ClearFactors.
+	//
+	// No row for a deleted account: there is nothing to write a factor onto.
+	LockUserForFactorWrite(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
 	// The same lookup by id (the ticket list's requester chip after a reload).
 	// Carries the same three exclusions as LookupRequesters, in the query, so an
 	// id that names a disabled, deleted or service account is no different from
@@ -933,9 +984,57 @@ type Querier interface {
 	RemoveGroupScope(ctx context.Context, arg RemoveGroupScopeParams) (int64, error)
 	RemoveTicketFollower(ctx context.Context, arg RemoveTicketFollowerParams) (int64, error)
 	RemoveTicketTag(ctx context.Context, arg RemoveTicketTagParams) error
+	// Removes ONE credential of a user, and ends the user's sessions with it, as one
+	// statement (#615, D1: always, not only when it was the last factor; the key is
+	// presumed lost or compromised).
+	//
+	// keep_session is the one session to leave alone: the owner's own, when they
+	// remove their own key (they just proved a factor there, and signing yourself
+	// out of the tab you used is a bug, not security). An administrator removing
+	// somebody else's key passes '', which no session id is, so every session ends.
+	//
+	// The credential is matched on its owner as well as its id, in the statement:
+	// an id is not an authorisation, and a credential that is not this user's is
+	// reported as nothing removed. Sessions end only when a credential went, so
+	// naming somebody else's key under this user's path cannot be used to sign the
+	// user out.
+	//
+	// One statement, like ClearFactors, so that a failure between the two cannot
+	// leave the key gone and its sessions alive, or the other way round. The
+	// sessions matter because one may carry MFAPassed from the key just removed.
+	RemoveUserPasskey(ctx context.Context, arg RemoveUserPasskeyParams) (RemoveUserPasskeyRow, error)
 	// Position n (from 1) becomes the field's number. Only rows whose number
 	// changes are written.
 	ReorderCustomFieldDefs(ctx context.Context, ids []uuid.UUID) error
+	// One snippet per ticket: its newest matching reply the viewer may read. The
+	// second half of reply search; the first is the reply_hits CTE in
+	// ListTicketsFiltered, and both take the same include_internal.
+	//
+	// Run only for the tickets on the page (at most 200). ts_headline parses the
+	// body again, so it runs once per ticket, not once per matching reply.
+	//
+	// include_internal comes from the actor's role and nothing else (see
+	// ticket.IncludeInternalFor). It is applied HERE as well as in the match
+	// query, because a ticket that matches on its own subject must not show a
+	// snippet from an internal note, to a requester least of all.
+	//
+	// It matches the stored r.body_tsv, as the match query does, so the two cannot
+	// disagree about what a reply holds. ts_headline below still parses the body of
+	// the one reply per ticket it shows, from the same first 50,000 characters the
+	// column was computed from (migration 000062).
+	//
+	// Matched words are wrapped in U+0002 and U+0003, not HTML. No author is read.
+	ReplyMatchesForTickets(ctx context.Context, arg ReplyMatchesForTicketsParams) ([]ReplyMatchesForTicketsRow, error)
+	// Whether reply search may run: both indexes it needs exist and are valid.
+	// The server builds them in the background after the migration, and only once
+	// every existing reply has its body_tsv (internal/database/replyindex), so a
+	// valid index means the column is complete: a reply written since the
+	// migration is filled by the trigger, an older one by the background fill.
+	// Until then a search skips replies and says so.
+	//
+	// indisvalid is false for the index a failed CREATE INDEX CONCURRENTLY leaves
+	// behind, which still exists under its name and must not count.
+	ReplySearchReady(ctx context.Context) (bool, error)
 	RestoreTag(ctx context.Context, id uuid.UUID) (int64, error)
 	RestoreUser(ctx context.Context, id uuid.UUID) error
 	RetryNotification(ctx context.Context, arg RetryNotificationParams) error
@@ -952,6 +1051,23 @@ type Querier interface {
 	// total order, two pages of one listing can disagree about which tied row
 	// comes first and the same entry appears twice, or not at all.
 	SearchAuditLog(ctx context.Context, arg SearchAuditLogParams) ([]AuditLog, error)
+	// SearchAuditLog for a search with text (q). The WHERE is the same, kept in step
+	// by hand; only the ORDER BY differs. With q the planner cannot tell how few rows
+	// match, expects plenty, and walks created_at backwards fetching every row from the
+	// heap to find the first page. Adding an interval to created_at takes that
+	// ordering away from the index, so a search reads the table once, in parallel.
+	// Kept after the date-range rule (audit.DetailsSearchMaxDays) because the range
+	// does not remove the need: on 2,000,000 entries over two years, for a text that
+	// matches nothing, the page took 0.6 to 2.1 seconds this way and 1.1 to 9.3 the
+	// other, whether the search had a 90-day range or none. The price is a text that
+	// matches plenty (a first page the index would have found at once): 0.6 to 3.5
+	// seconds here against a few milliseconds. The listing with no q keeps the
+	// index, where stopping after a page is the point.
+	// id breaks the tie, because created_at alone does not order entries written
+	// in the same microsecond — which happens inside a single request. Without a
+	// total order, two pages of one listing can disagree about which tied row
+	// comes first and the same entry appears twice, or not at all.
+	SearchAuditLogText(ctx context.Context, arg SearchAuditLogTextParams) ([]AuditLog, error)
 	SearchTicketsByAssigneeGroup(ctx context.Context, arg SearchTicketsByAssigneeGroupParams) ([]SearchTicketsByAssigneeGroupRow, error)
 	SearchTicketsByAssigneeUser(ctx context.Context, arg SearchTicketsByAssigneeUserParams) ([]SearchTicketsByAssigneeUserRow, error)
 	SearchTicketsByReporter(ctx context.Context, arg SearchTicketsByReporterParams) ([]SearchTicketsByReporterRow, error)
@@ -974,6 +1090,9 @@ type Querier interface {
 	// row, so exactly one confirm matches. Zero rows means somebody else enrolled
 	// first. Rotation of an existing secret uses SetUserMFA.
 	SetFirstUserMFA(ctx context.Context, arg SetFirstUserMFAParams) (int64, error)
+	// Replaces the client's secret hash (#622). The caller holds the row's lock
+	// (GetOAuthClientForUpdate), so the entry it writes describes this write.
+	SetOAuthClientSecret(ctx context.Context, arg SetOAuthClientSecretParams) (int64, error)
 	// Addressed by the RECORD's id, not the ticket's (#623). The caller read that
 	// record, computed its elapsed time from its clock and its targets from its
 	// policy, and the reading means nothing on any other record. A re-match
@@ -1129,10 +1248,10 @@ type Querier interface {
 	// when it was last used.
 	//
 	// Written off the authentication path, so a sign-in never waits on it and
-	// never fails because of it. The counter is stored and NOT enforced — see the
-	// column comment in 000029 for why a "must increase" rule locks people out
-	// for nothing, and why a previously-non-zero counter going backwards is worth
-	// logging and worth refusing nothing over.
+	// never fails because of it. That also means two sign-ins can land out of
+	// order, so the counter only ever goes up: a late write of a lower value would
+	// put the stored counter back below one a cloned key has already used, and the
+	// clone check (#616b) compares against what is stored here.
 	TouchWebAuthnCredential(ctx context.Context, arg TouchWebAuthnCredentialParams) error
 	// Takes every ticket off a group that is about to be deleted, and says which.
 	// All of them, resolved and closed too: the foreign key (ON DELETE SET NULL)

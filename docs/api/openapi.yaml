@@ -688,8 +688,12 @@ paths:
         POST /auth/local/passkey/start and, on success, rotates the session with the
         second factor marked as passed. The challenge is consumed on every call,
         whether the answer verifies or not, so a failed attempt must start again.
-        A challenge expires five minutes after it was issued. The sign count is
-        recorded but not enforced. Reachable with a session only (403
+        A challenge expires five minutes after it was issued. A key whose sign count
+        did not advance past the one on record (a counter of zero reported by a key
+        that has only ever reported zero is not that) is refused with 401
+        passkey_suspect, the account's sessions all end and an audit entry
+        (passkey_clone_suspected) is written: a copied key shows itself this way.
+        Reachable with a session only (403
         session_required for an API key or OAuth client). The body is read by
         the WebAuthn library, not by the server's JSON decoder, and is capped at
         64 KiB (413 too_large above that, before the challenge is touched). A body
@@ -730,7 +734,9 @@ paths:
           description: >-
             Either no session (unauthorized, text/plain, from the auth middleware)
             or an answer that did not verify, including a body that is not JSON
-            (assertion_refused, application/json, from the handler).
+            (assertion_refused, application/json, from the handler), or a key whose
+            sign count did not advance (passkey_suspect, application/json): the
+            sessions of the account have all been ended.
           content:
             text/plain:
               schema: {$ref: '#/components/schemas/Error'}
@@ -2826,7 +2832,9 @@ paths:
       description: |
         Removes one of the caller's passkeys. An id that belongs to another account answers the same 404 as an
         id that does not exist. A session that has only passed the password cannot remove a factor from an
-        account that already has one: the answer is 403 mfa_required. Session only.
+        account that already has one: the answer is 403 mfa_required. Every other session of the account ends,
+        in the same statement as the removal, and the session that made the request stays signed in. A
+        passkey_removed audit entry is written with the caller as the actor (best effort). Session only.
       tags: ['Account']
       x-ghd-handler: handleDeletePasskey
       security:
@@ -3083,9 +3091,10 @@ paths:
         - name: q
           in: query
           required: false
-          description: Case-insensitive substring match against entity_type or action (nothing else is searched). Trimmed. Must be valid UTF-8 without NUL bytes.
+          description: Case-insensitive substring, matched literally (% and _ are text), at most 200 characters. Matches entity_type, action, the display name and email of the actor (an account that still exists; a requester is left out while the admin log masks requester names), and, only when the request has both from and to at most 90 days apart (plus an hour, for a clock change), the text values of the change details at the keys the view shows, and no others (see details_searched in the response). With q, a from and to more than 90 days apart is refused with 400 date_range_too_long; without q any range is allowed. Trimmed. Must be valid UTF-8 without NUL bytes.
           schema:
             type: string
+            maxLength: 200
         - name: actor_id
           in: query
           required: false
@@ -3118,6 +3127,10 @@ paths:
             `bad_request`. The message names the problem: actor_id must be a UUID,
             from or to must be an RFC 3339 timestamp, or entity_type, action or q
             is not valid UTF-8 or contains a NUL byte.
+            `date_range_too_long` when q is sent with a from and to more than 90
+            days (and an hour, for a clock change) apart; the message names the
+            limit. `invalid_date_range` when q is sent with a from later than to.
+            Without q any range is allowed, and a reversed one answers an empty page.
           content:
             application/json:
               schema:
@@ -3147,18 +3160,26 @@ paths:
           group sees nothing then. It can list a group's tickets with
           assignee_group_id only for a group its user belongs to while
           enforcement is on, and for any group while it is off.
-        Four parameters can change the listing. reporter_id (admin only) is
-        checked first, then assignee_group_id, then scope=visible (staff and
-        admin: every ticket the caller can see; ignored for a reporting user),
-        then scope=unassigned or scope=all (admin only). The first one present wins. Any other scope
-        value is ignored and the default listing is used.
+        Every request is one query. Filters combine with AND, and each one can only
+        narrow what the caller may already see: a filter that names a group,
+        category, account or requester outside the caller's scope matches nothing,
+        and an id that names nothing gives an empty list. Repeatable parameters
+        (status_id, priority, source_channel) are sent as repeated keys, at most 20
+        values each; values of one key are ORed.
+        scope picks the queue and is ANDed with the filters: mine (the default),
+        unassigned and all (admin only), visible (every ticket the caller can see).
+        Any other value is mine. When reporter_id, requester or assignee_group_id
+        is present the queue is "any" and scope is not consulted, so those
+        parameters combine with each other and with every other filter (reporter_id
+        and assignee_group_id together used to drop the group).
         q searches by tracking number prefix, subject and description (full-text
-        search). Results are newest first. With q they are ordered by relevance
-        first and then newest first, except for the default listing of an
-        administrator, or of staff while scope enforcement is off, which merges
-        several sources and stays newest first. The
-        response is a bare array with no
-        total and no next link, so page with limit and offset.
+        search). With q the results are ordered by relevance first and then newest
+        first, on every queue; before 1.3.0 the default listing of an administrator,
+        or of staff while scope enforcement is off, was newest first. sort replaces
+        relevance. Without q and without sort the order is newest first.
+        A requester may filter and sort only by what they are sent; any other filter
+        or sort is 403 forbidden. The response is a bare array with no total and no
+        next link, so page with limit and offset.
       tags: ['Tickets']
       x-ghd-handler: handleListTickets
       security:
@@ -3183,20 +3204,186 @@ paths:
         - name: reporter_id
           in: query
           required: false
-          description: Only tickets this account reported. Admin only.
+          description: Only tickets this account reported. Staff and administrators (403 for a reporting user); staff see only what their scope admits. Needs only tickets:read.
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - name: requester
+          in: query
+          required: false
+          description: >-
+            Free text, 2 to 254 characters after trimming, matched anywhere and ignoring case in the
+            reporting account's name or email and in the ticket's guest name and email (deleted accounts
+            included). Staff and administrators in a session; an API key or OAuth client also needs the
+            requester_search:read scope, otherwise 403 insufficient_scope. A reporting user gets 403 forbidden.
+          schema:
+            type: string
+            minLength: 2
+            maxLength: 254
+        - name: created_after
+          in: query
+          required: false
+          description: Only tickets created at or after this instant (RFC 3339). Must be before created_before.
+          schema:
+            type: string
+            format: date-time
+        - name: created_before
+          in: query
+          required: false
+          description: Only tickets created before this instant (RFC 3339, exclusive).
+          schema:
+            type: string
+            format: date-time
+        - name: updated_after
+          in: query
+          required: false
+          description: Only tickets updated at or after this instant (RFC 3339). Staff and administrators; 403 for a reporting user, who is never sent updated_at.
+          schema:
+            type: string
+            format: date-time
+        - name: updated_before
+          in: query
+          required: false
+          description: Only tickets updated before this instant (RFC 3339, exclusive). Staff and administrators.
+          schema:
+            type: string
+            format: date-time
+        - name: priority
+          in: query
+          required: false
+          style: form
+          explode: true
+          description: Only tickets with one of these priorities. Repeat the key for several.
+          schema:
+            type: array
+            maxItems: 20
+            items:
+              {type: string, enum: [critical, high, medium, low]}
+        - name: category_id
+          in: query
+          required: false
+          description: Only tickets in this category, including every type and item under it.
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - name: type_id
+          in: query
+          required: false
+          description: Only tickets of this type.
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - name: item_id
+          in: query
+          required: false
+          description: Only tickets of this item.
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - name: assignee_user_id
+          in: query
+          required: false
+          description: Only tickets assigned to this account. Staff and administrators; 403 for a reporting user.
           schema:
             $ref: '#/components/schemas/Uuid'
         - name: assignee_group_id
           in: query
           required: false
-          description: Only tickets assigned to this group. Staff must belong to the group when ticket scope enforcement is on.
+          description: Only tickets assigned to this group. Staff and administrators (403 for a reporting user). Staff must belong to the group when ticket scope enforcement is on.
           schema:
             $ref: '#/components/schemas/Uuid'
+        - name: status_id
+          in: query
+          required: false
+          style: form
+          explode: true
+          description: Only tickets in one of these statuses. Repeat the key for several.
+          schema:
+            type: array
+            maxItems: 20
+            items:
+              $ref: '#/components/schemas/Uuid'
+        - name: include_closed
+          in: query
+          required: false
+          description: "true (the default) or false, which leaves out the Closed system status. Ignored when status_id is given."
+          schema:
+            type: boolean
+            default: true
+        - name: source_channel
+          in: query
+          required: false
+          style: form
+          explode: true
+          description: Only tickets that arrived by one of these channels. Staff and administrators; 403 for a reporting user.
+          schema:
+            type: array
+            maxItems: 20
+            items:
+              {type: string, enum: [web, api, mcp, guest, phone]}
+        - name: sla
+          in: query
+          required: false
+          description: >-
+            Only tickets whose SLA indicator shows this state. Staff and administrators; 403 for a reporting
+            user. 400 while SLA tracking is off.
+          schema:
+            type: string
+            enum: [breached, at_risk]
+        - name: search_replies
+          in: query
+          required: false
+          description: >-
+            true or false (the default is false for the API). Accepted with q to also search reply text;
+            any other value is 400. A ticket then also matches when ONE reply holds every word (words
+            found in different replies do not combine). Staff and administrators search public replies and
+            internal notes; a requester, and any role not recognised, searches public replies only, whatever
+            the request says. Ranking looks at the 2,000 newest matching replies the caller may see, and the
+            whole search runs under a five-second limit. When replies could not be searched (the reply index
+            is still being built after an upgrade, or the limit passed) the answer is the tickets that match
+            on their own text, and the X-Replies-Searched and X-Reply-Index headers say so.
+          schema:
+            type: boolean
+            default: false
+        - name: sort
+          in: query
+          required: false
+          description: >-
+            The column to order by. Without it a search with q is ranked by relevance and everything else is
+            newest first; relevance is not accepted here. For priority and sla, asc is most urgent first.
+            A requester may use number, subject, status, priority and created; updated and sla are 403
+            forbidden for them. sla is 400 while SLA tracking is off. Every sort ends with created_at
+            descending and the id, so pages are stable.
+          schema:
+            type: string
+            enum: [number, subject, status, priority, sla, created, updated]
+        - name: order
+          in: query
+          required: false
+          description: >-
+            asc or desc. Without it each column's natural direction applies: created and updated newest
+            first, the rest asc. Ignored without sort, but an unknown value is still 400.
+          schema:
+            type: string
+            enum: [asc, desc]
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Offset'
       responses:
         '200':
           description: The caller's tickets, in the order described above, as a bare array (never null).
+          headers:
+            X-Replies-Searched:
+              description: >-
+                Sent only when search_replies=true was asked for and the server knows the answer. "false"
+                means replies were not fully searched (the time cap was hit, or the reply index is not ready), so
+                the results match ticket text only. The page shows a notice. Absent otherwise.
+              schema:
+                type: string
+                enum: ['true', 'false']
+            X-Reply-Index:
+              description: >-
+                Sent only when search_replies=true was asked for. "building" means the reply index is not ready
+                yet. Absent otherwise. The API sets no CORS headers (the app is same-origin), so a browser page
+                reads both headers without Access-Control-Expose-Headers.
+              schema:
+                type: string
+                enum: [building]
           content:
             application/json:
               schema:
@@ -3205,8 +3392,11 @@ paths:
                   $ref: '#/components/schemas/TicketView'
         '400':
           description: |
-            `bad_request`: invalid reporter_id or invalid assignee_group_id (not a
-            UUID).
+            `bad_request`: `invalid <param>` for a value that is not a UUID, an unknown
+            enum value, an unparseable instant or a bad boolean; `created_after must be
+            before created_before` (and the same for updated); `too many <param> values
+            (max 20)`; `requester must be 2 to 254 characters`; `invalid sort` or `invalid
+            order`; `SLA tracking is off` for sla or sort=sla while tracking is off.
           content:
             application/json:
               schema:
@@ -3217,9 +3407,12 @@ paths:
           description: |
             Refused by the middleware (text/plain): the role or MFA or scope check
             failed. Or refused by the handler (application/json, `forbidden`):
-            only admins can filter by reporter; users cannot list group tickets;
+            users cannot list group tickets; `<param> is not available to requesters`
+            for a staff-only filter; `sort by <column> is not available to requesters`;
             you are not a member of that group (staff, scope enforcement on);
-            only admins can use this scope (scope=unassigned or scope=all).
+            only admins can use this scope (scope=unassigned or scope=all). Or
+            `insufficient_scope` (application/json): `requester` from an API key or OAuth
+            client that does not carry the requester_search:read scope.
           content:
             text/plain:
               schema:
@@ -3805,7 +3998,8 @@ paths:
         either.
 
         Following a ticket already followed answers 204 and changes nothing. A
-        first follow is audited as followed. The caller must be able to see the
+        first follow is audited as followed and raises ticket.followed (user_id is the
+        caller's id), which only a webhook that lists it by name receives. No email. The caller must be able to see the
         ticket. Whether they still can is checked again each time an email is
         sent; one they can no longer see is skipped and the follow is kept.
         The id is a UUID or a tracking number.
@@ -3838,7 +4032,7 @@ paths:
         Staff and administrators only, in a signed-in session (second factor required).
         As for following, an API key or OAuth client is refused. Answers 204 whether or
         not the caller was following. Stopping is audited as unfollowed when it changed
-        something. The id is a UUID or a tracking number.
+        something, and then raises ticket.unfollowed (opt-in by name, like ticket.followed). The id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -4202,8 +4396,11 @@ paths:
         Staff and administrators only (second factor required). Every status
         transition on the ticket, oldest first. A reporting user is refused with
         403 forbidden, as for the audit feed. Status names and
-        colours are read from the statuses table when the request is served. The
-        id is a UUID or a tracking number.
+        colours are read from the statuses table when the request is served. A
+        requester's name is masked (changed_by_name Requester, changed_by_masked
+        true) under the audit_mask_requester_names setting, as in the audit feed.
+        An account that has been deleted, of any role, is Deleted account.
+        The id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -4398,7 +4595,10 @@ paths:
         Staff and administrators only. A reporting user gets 403 forbidden on a
         ticket they can see. The target must also be visible to the caller,
         otherwise the answer is 404 not_found with the target's id in the message.
-        A link that does not exist still answers 204.
+        A link that does not exist still answers 204 and announces nothing. A link
+        that is removed raises ticket.unlinked on this ticket, in the same transaction,
+        with target_id and link_type; no email is sent and no audit entry is written
+        (adding a link writes none either).
         linkType must be one of related_to, parent_child, caused_by or
         duplicate_of. Both ids must be UUIDs.
         A ticket the caller may not see answers 404 not_found, the same answer as a
@@ -5557,7 +5757,8 @@ paths:
         Authenticated by the guest token alone. The token names the ticket, so no
         ticket id appears in the path. The request is the same multipart upload as
         uploadAttachment, with the same checks, scanning, quarantine and wrapping,
-        and the instance-wide 25 MB cap. Three things are specific to guests.
+        and the instance-wide 25 MB cap. A stored file raises ticket.attachment_added
+        with no actor and no email. Three things are specific to guests.
         Attaching is off unless an administrator has turned on
         guest_attachments_enabled (#445): then the route answers the generic
         404, byte-identical to a bad link. A guest's per-file limit is
@@ -5746,6 +5947,8 @@ paths:
         reopen_window_closed. Staff and admin are not limited by the ticket's state.
         The response is the stored attachment. Its reputation block is null, since
         only listAttachments and the re-check fill it in.
+        A stored file raises ticket.attachment_added (attachment_id) in the transaction
+        that writes it. No email is sent for an upload.
         The ticket checks run before the body is read, so a 409 is answered before
         any 400, 413 or 415 about the file.
         The path id is a UUID or a tracking number.
@@ -6706,7 +6909,9 @@ paths:
         assigned to the group, open or not, is taken off it (their assigned user, if
         any, is kept) and gets an "unassigned" audit entry naming the administrator.
         The unassignments, their audit entries and the delete are one transaction:
-        if any part fails, none is applied. An unknown id answers 404 not_found.
+        if any part fails, none is applied. Each ticket is announced to webhooks as
+        ticket.assigned (cleared), with this administrator as the actor, in the same
+        transaction. No staff email is sent. An unknown id answers 404 not_found.
       tags: ['Admin: Groups']
       x-ghd-handler: handleDeleteGroup
       security:
@@ -7164,6 +7369,67 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/Error'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/admin/oauth-clients/{id}/rotate-secret:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The OAuth client's id, as listed by GET /api/v1/admin/oauth-clients.
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: rotateOAuthClientSecret
+      summary: Replace an OAuth client's secret.
+      description: >-
+        Administrators only, in a signed-in session (second factor required). An API key is
+        refused with 403 session_required and an OAuth client by the role check: minting a
+        secret is creating a credential. The new secret replaces the old one at once, with no
+        overlap, and every access token issued under the old secret is refused from the next
+        request. A token that carries no secret version (issued before this existed) is still
+        accepted until it expires. The client_id and the service user do not change.
+        The client_secret is returned once.
+        Audited in the same transaction (entity_type oauth_client, action
+        oauth_client_secret_rotated); the entry holds the name, scopes and service user id and
+        credential_replaced true, never a secret or a hash.
+      tags: ['Admin: Credentials']
+      x-ghd-handler: handleRotateOAuthClientSecret
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      responses:
+        '200':
+          description: Rotated. client_secret is shown only in this response.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, client_id, client_secret]
+                properties:
+                  id:
+                    $ref: '#/components/schemas/Uuid'
+                  client_id:
+                    type: string
+                  client_secret:
+                    type: string
+                    description: The raw secret, 64 hexadecimal characters. Shown once.
+        '400':
+          description: bad_request, message "invalid ID", when the path id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: not_found, for an id that names no OAuth client.
+          content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
@@ -7654,7 +7920,8 @@ paths:
         answers 400, and an email address another account holds answers 409
         email_taken. A refused request changes nothing: disabled true with an
         invalid or taken email leaves the account enabled, and reset_mfa with a
-        refused demotion leaves the factors in place. The writes themselves are
+        refused demotion leaves the factors in place. reset_mfa on your own account
+        is refused whole, with 409 own_account. The writes themselves are
         still separate steps, so a request that loses a race with another
         administrator, or a failure of the database partway through, can leave the
         earlier ones applied. The last
@@ -7731,7 +7998,10 @@ paths:
         '409':
           description: >-
             email_taken, when the new address belongs to another account, deleted accounts
-            included. service_account, when the account is a service account (an
+            included. own_account, when reset_mfa is true and the account is the caller's
+            own: an administrator cannot clear their own second factor here (the Account
+            page is the way, or another administrator, or reset-factors on the server), and
+            nothing in the request is applied. service_account, when the account is a service account (an
             OAuth client's identity) and the body carries email, a role of admin,
             or reset_mfa true (reset_mfa false is accepted: it asks for nothing):
             the whole request is refused and nothing in it is
@@ -7750,7 +8020,9 @@ paths:
       description: >-
         Administrators only, in a signed-in session (second factor required). Keys can't write users: an API key is refused with 403 session_required (an OAuth client, which is a staff identity, with 403 forbidden), whatever the body. A key may read.
         Soft-deletes the account. It is hidden from lists, its sign-in is refused, its
-        sessions end, and its open tickets return to the unassigned queue. A failure to
+        sessions end, and its open tickets return to the unassigned queue, each
+        announced to webhooks as ticket.assigned (cleared) with no staff email, and as
+        ticket.unfollowed too when the user followed it. A failure to
         return the tickets is logged and does not change the answer. The row is kept,
         so the email address stays taken. The last active administrator cannot be
         deleted, and that answers 400.
@@ -7801,6 +8073,133 @@ paths:
             "This is the service account for OAuth client <name>. Delete the
             client instead." and an interface should show it as written. Nothing
             is changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/admin/users/{id}/passkeys:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The user's UUID.
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: adminListPasskeys
+      summary: List a user's passkeys.
+      description: >-
+        Administrators only (second factor required). The same list GET /me/passkeys
+        gives the owner: the key's label, transports, whether it can sync, and when it
+        was added and last used. Key material and the credential id are never returned.
+        An unknown id answers 404, so a mistyped id does not read as "no keys". It does
+        not depend on passkeys being available on the instance (BASE_URL), so a lost
+        key can be cleaned up while they are off.
+      tags: ['Admin: Users']
+      x-ghd-handler: handleAdminListPasskeys
+      security:
+        - sessionCookie: []
+        - apiKey: ['users:read']
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      responses:
+        '200':
+          description: The account's passkeys. An empty array when there are none.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Passkey'}
+        '400':
+          description: >-
+            bad_request, message "invalid user ID", when the path id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: >-
+            not_found, when no account has this id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/admin/users/{id}/passkeys/{credId}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The user's UUID.
+        schema:
+          type: string
+          format: uuid
+      - name: credId
+        in: path
+        required: true
+        description: The passkey's UUID, as listed by GET /admin/users/{id}/passkeys.
+        schema:
+          type: string
+          format: uuid
+    delete:
+      operationId: adminDeletePasskey
+      summary: Remove one of a user's passkeys.
+      description: >-
+        Administrators only, in a signed-in session (second factor required). Keys can't
+        change how a person signs in: an API key is refused with 403 session_required (an
+        OAuth client, by the role check, with 403 forbidden). Removes that one key and ends
+        every session the account has, whether or not it was the last factor, because the
+        key is presumed lost or compromised. The removal and the sessions ending are one
+        statement. The credential is matched on its owner in that statement: an id that is
+        another account's answers the same 404 as one that does not exist, and ends no
+        session. The removal is recorded in the audit log (passkey_removed_by_admin, with the
+        key's id and not its label) on a best-effort basis. Your own account is refused with
+        409 own_account: use the Account page. Reset MFA on the user page still clears every
+        factor at once. It does not depend on passkeys being available on the instance.
+      tags: ['Admin: Users']
+      x-ghd-handler: handleAdminDeletePasskey
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          description: >-
+            bad_request, "invalid user ID" or "invalid credential id", when a path id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: >-
+            The authentication middleware refuses with text/plain: forbidden (role),
+            mfa_required (second factor not passed) or session_required (an API key).
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/Error'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: >-
+            not_found, "no such passkey on this account", when the id does not exist or is not this
+            user's.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: >-
+            own_account, when the user is the caller. The message points to the Account page.
           content:
             application/json:
               schema:
@@ -8231,8 +8630,19 @@ paths:
         X-GHD-Delivery, a UUID that is the same on every retry of one delivery, so it can
         drop a repeat, and X-GHD-Event, the event name (for example ticket.replied). The
         raw body is ids only: Type (the event name), TicketID, ActorID, OccurredAt and,
-        where the event has them, a Payload of new_status_id and target_id, and nothing
-        else The secret is write-only. When it is set, each delivery
+        where the event has them, a Payload of ids, and nothing else. The ids belong to the
+        name: new_status_id for ticket.status_changed, target_id for ticket.linked,
+        target_id and link_type for ticket.unlinked, reply_id for ticket.replied and
+        ticket.note_added, attachment_id for ticket.attachment_added, and user_id for
+        ticket.followed and ticket.unfollowed. Every other name has no Payload, with one
+        exception: a hook that lists ticket.unfollowed also gets user_id on a delivery
+        under whatever name it is told (for example ticket.assigned) when the change
+        dropped a follow, so it learns who unfollowed. A hook that does not list
+        ticket.unfollowed never gets it there. Opting in counts from when the hook named
+        the event: a change that happened before the hook listed it is never upgraded,
+        so a retry after the edit carries no user_id.
+        A hook on "*" (or with no events) does not receive ticket.followed or
+        ticket.unfollowed; list them by name to receive them. The secret is write-only. When it is set, each delivery
         carries sha256=<hex HMAC-SHA256 of the body> in the X-GHD-Signature header, and the
         same value in X-OHD-Signature for older consumers. An empty secret means deliveries
         are not signed. enabled defaults to true.
@@ -8288,10 +8698,12 @@ paths:
             list of valid names in the message. invalid_url when the scheme is not http or
             https, the host is missing, or the host does not resolve or resolves to an
             internal address. invalid_payload_format when payload_format is not one of the
-            five. invalid_filter when filter is not an object of those four keys or an id is not
-            a UUID. invalid_filter_priority for a priority that is not critical, high, medium or
+            five. invalid_filter when filter is not an object of the WebhookFilter keys, an id is
+            not a UUID, or type_ids or item_ids holds more than 200 ids. invalid_filter_priority for a priority that is not critical, high, medium or
             low. unknown_filter_category or unknown_filter_group for an id that names no category
-            (inactive ones are accepted) or no group. empty_inverted_filter when invert is true
+            (inactive ones are accepted) or no group; unknown_filter_type or unknown_filter_item
+            likewise. contradictory_filter for a type outside the ticked categories or an item
+            outside the ticked types or categories. empty_inverted_filter when invert is true
             with no condition, which would match no ticket.
           content:
             application/json:
@@ -10731,6 +11143,13 @@ components:
             administrator, for staff only while staff_can_create_api_keys is on,
             never for a requester. Present only on GET /me and PATCH
             /me/email-preferences.
+        sla_enabled:
+          type: boolean
+          description: >-
+            Whether SLA tracking is on. Present only on GET /me and PATCH /me/email-preferences, only for
+            staff and administrators, and only when the setting could be read: absent means unknown, not off.
+            A requester never gets it, and it is not on the public GET /site. The ticket list offers the sla
+            filter and sort only while it is true; both answer 400 while it is false.
         email_notifications:
           type: object
           description: |
@@ -10865,7 +11284,7 @@ components:
         assignee_user_id and resolution_notes. Everything else here
         (assignee_group_id, reporter_user_id, guest_email, guest_name,
         guest_phone, closed_at, updated_at, pending_since, sla_paused_seconds,
-        reopen_count, source_channel) is for staff and administrators only. The same list applies to every
+        reopen_count, source_channel, has_quarantined_attachment) is for staff and administrators only. The same list applies to every
         response that carries a ticket, MCP included.
       type: object
       required: [id, tracking_number, subject, description, description_format, category_id, priority, status_id, created_at]
@@ -10925,6 +11344,9 @@ components:
         reopen_count:
           type: integer
           description: How many times the ticket has been moved from Resolved or Closed back to an open status (#464). Never reset. Staff and administrators only, and omitted when 0; a requester never receives the key (see Ticket). The Reopened badge shows while this is above 0 and the ticket is open. 0 for a ticket reopened before 1.3.0.
+        has_quarantined_attachment:
+          type: boolean
+          description: True when any file attached to the ticket was identified as malicious by the scanner and quarantined (#628). Staff and administrators only, and present only when true; a requester never receives the key (see Ticket). Sent on the list and on a single ticket read.
         created_at:
           type: string
           format: date-time
@@ -10948,6 +11370,26 @@ components:
             can_reopen:
               type: boolean
               description: True when the ticket is Closed and closed_reopen_policy allows the viewer's role to force-reopen it. Always false for a reporting user.
+            reply_match:
+              description: >-
+                On a list that searched replies (search_replies=true), a ticket found through a reply carries
+                the newest matching reply the caller may read. Absent for any other ticket, when replies were
+                not asked for, and when they were not searched (X-Replies-Searched: false). A reporting user
+                gets it too, but for them it is always a public reply: internal notes are never searched or
+                excerpted for them, even on a ticket that matched by its subject. It names no author.
+              type: object
+              required: [reply_id, internal, created_at, snippet]
+              properties:
+                reply_id:
+                  $ref: '#/components/schemas/Uuid'
+                internal:
+                  type: boolean
+                created_at:
+                  type: string
+                  format: date-time
+                snippet:
+                  type: string
+                  description: The reply's own text, cut to 300 characters, with each matched word wrapped in the control characters U+0002 and U+0003. Not HTML; render it as text.
             requester:
               description: Who the ticket is for, shown as the Requester line on the staff ticket page (#444). Sent on getTicket only (never on a list row), to staff and administrators only, on every ticket; never to a reporting user. Absent when the reporting account cannot be read. A deleted account is still named.
               type: object
@@ -11106,6 +11548,9 @@ components:
             - type: 'null'
         changed_by_name:
           type: string
+        changed_by_masked:
+          description: True when changed_by_name is the Requester mask, not the account's own name. Omitted otherwise.
+          type: boolean
         created_at:
           type: string
           format: date-time
@@ -11228,7 +11673,7 @@ components:
       description: |
         One page of the admin-wide audit view.
       type: object
-      required: [entries, total, total_capped, has_more]
+      required: [entries, total, total_capped, details_searched, has_more]
       properties:
         entries:
           type: array
@@ -11240,6 +11685,13 @@ components:
         total_capped:
           type: boolean
           description: True when more than 10,000 entries match. Always sent, so a client can tell this from an older server.
+        details_searched:
+          type: boolean
+          description: True when q was also looked for in the change details, which is done only when the request has both from and to, at most 90 days apart. False without q. Always sent.
+        details_skipped_reason:
+          type: string
+          enum: [no_date_range]
+          description: Present when q was sent without a date range (from or to is missing), so the change details were not searched. q was still matched on entity type, action and actor. A range over 90 days with q is not a reason but a 400 date_range_too_long.
         has_more:
           type: boolean
           description: True when another page exists. Read from the page itself, so it keeps working past the cap.
@@ -11778,11 +12230,17 @@ components:
           format: date-time
     WebhookEvent:
       description: >-
-        An event name a webhook can subscribe to. The wildcard "*" subscribes to all
-        eleven. guest.link_resent is never sent to a webhook.
+        An event name a webhook can subscribe to. The wildcard "*" subscribes to every
+        name except ticket.followed and ticket.unfollowed, which a hook receives only if
+        it lists them by name (alone or beside "*"): who follows a ticket is personal.
+        guest.link_resent is never sent to a webhook.
         ticket.replied is a customer-visible reply only; a staff-only note is ticket.note_added.
+        ticket.unlinked is a link removed, ticket.attachment_added a file uploaded, and
+        ticket.followed and ticket.unfollowed a person starting or stopping following a
+        ticket (the person's id is in the payload, never their name). None of the four
+        sends email. The raw Payload ids each name carries are listed on createWebhook.
       type: string
-      enum: ['*', ticket.created, ticket.assigned, ticket.status_changed, ticket.replied, ticket.note_added, ticket.resolved, ticket.closed, ticket.reopened, ticket.linked, ticket.priority_changed, ticket.classified]
+      enum: ['*', ticket.created, ticket.assigned, ticket.status_changed, ticket.replied, ticket.note_added, ticket.resolved, ticket.closed, ticket.reopened, ticket.linked, ticket.priority_changed, ticket.classified, ticket.unlinked, ticket.attachment_added, ticket.followed, ticket.unfollowed]
     WebhookPayloadFormat:
       description: >-
         The body shape a delivery uses.
@@ -11800,8 +12258,14 @@ components:
         delivery is tested against the ticket as it was when the event happened; a Redeliver,
         which has no stored classification, against the ticket as it is now. category matches
         the ticket's category, so all its types and items are included. group is the group the
-        ticket is assigned to; an unassigned ticket never matches it. Responses always carry
-        all four keys.
+        ticket is assigned to; an unassigned ticket never matches it. type_ids and item_ids
+        (#631) match the ticket's type and item and combine with the categories by AND; a
+        ticket with no type or item never matches one. A filter that could never match is
+        refused with 400 contradictory_filter (a type outside the ticked categories, an item
+        outside the ticked types or categories); unknown ids are unknown_filter_type and
+        unknown_filter_item; each of the two lists holds at most 200 ids. Responses always
+        carry category_ids, priorities, group_ids and invert, and carry type_ids and item_ids
+        only while they are not empty.
         The filter is read as it is now, not once: when the event is fanned out to the hooks,
         at every attempt of a queued delivery (retries included) and at Redeliver. An event
         it filters out at the fan-out creates no delivery: no X-GHD-Delivery, no retry and no
@@ -11821,6 +12285,14 @@ components:
           items: {$ref: '#/components/schemas/Priority'}
         group_ids:
           type: array
+          items: {$ref: '#/components/schemas/Uuid'}
+        type_ids:
+          type: array
+          maxItems: 200
+          items: {$ref: '#/components/schemas/Uuid'}
+        item_ids:
+          type: array
+          maxItems: 200
           items: {$ref: '#/components/schemas/Uuid'}
         invert:
           type: boolean

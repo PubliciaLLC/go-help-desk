@@ -58,6 +58,28 @@ type ActionFilter struct {
 // so. 10,000 is 200 pages of 50, more than anyone pages through.
 const TotalCap = 10000
 
+// DetailsSearchMaxDays is the longest date range inside which a search looks in
+// the change details (#629, owner 2026-11-11). That search reads every row it
+// covers, so it is bounded by a date range, which the viewer can see and the
+// database can use (created_at has an index). Without a range of at most this many days, q still matches
+// the entity type, the action and the actor, and the response says the details
+// were not searched.
+const DetailsSearchMaxDays = 90
+
+// DetailsSearchMaxSpan is the longest span between from and to that
+// DetailsSearchMaxDays allows: 90 days and an hour. The Audit Log page picks
+// local date-times, so a range of 90 calendar days is 90 days and an hour when it
+// crosses the clock change that gives a day 25 hours, and a range the page itself
+// offered would be refused. 90 days apart can cross at most one change, so one
+// hour of slack covers it; it adds at most an hour's entries to the search.
+const DetailsSearchMaxSpan = DetailsSearchMaxDays*24*time.Hour + time.Hour
+
+// DetailsSkippedNoRange is the value of details_skipped_reason in the admin
+// audit response when a search with text had no date range, so the change
+// details were not searched. A range over DetailsSearchMaxDays is not a reason
+// but a refusal (DateRangeTooLong).
+const DetailsSkippedNoRange = "no_date_range"
+
 // Page is one page of a Search and what a pager needs to move on from it.
 type Page struct {
 	Entries []Entry
@@ -77,20 +99,30 @@ type Page struct {
 
 // Filter narrows a Search call. The zero value matches everything.
 //
-// Q is deliberately metadata-only: it matches against the entity type and
-// action, never against the Before/After payload. Matching payload content
-// would let a search for a redacted field's value still surface a hit
-// confirming the value existed — see Redact. It does not match the actor's
-// name either: a Store has no join to the users table to offer, and name
-// resolution already happens one layer up, in the HTTP handler — the same
-// place ListByEntity's callers resolve names today.
+// Q is a case-insensitive substring, matched literally ("%" and "_" are text),
+// against four things (#629):
+//   - the entity type and the action;
+//   - the actor's display name and email (D34), for an account that still
+//     exists. MaskRequesterActors leaves requesters out of this part;
+//   - the scalar values of Before and After at SearchableKeys, and nowhere else
+//     (D33), only inside a date range of at most DetailsSearchMaxDays (see
+//     SearchesDetails). Matching a value Redact hides would let a search for it confirm
+//     that it exists without ever showing it, so the keys searched are the keys
+//     shown, and the store's tests prove a hidden value is never a hit.
 type Filter struct {
 	EntityType string     // exact match, e.g. "ticket"
 	Action     string     // exact match, e.g. "resolved"
 	ActorID    *uuid.UUID // exact match; nil means "any actor, including system"
 	From       *time.Time // inclusive
 	To         *time.Time // inclusive
-	Q          string     // case-insensitive substring against entity_type and action
+	Q          string     // see above
+
+	// MaskRequesterActors leaves an actor whose role is requester out of Q's
+	// name and email match. Set it where the view masks requester names
+	// (audit_mask_requester_names): otherwise the search is a way round the
+	// mask, because "does a hit appear when I type this name?" identifies the
+	// requester without the name ever being rendered.
+	MaskRequesterActors bool
 
 	// ExcludeActions leaves out every entry whose action is listed, in the
 	// page and in the count alike. It is how a view withholds a kind of entry
@@ -98,6 +130,40 @@ type Filter struct {
 	// the page afterwards, which would leave the count and the offset
 	// describing a different sequence from the one the caller reads.
 	ExcludeActions []string
+}
+
+// SearchesDetails reports whether a Search with this filter looks in the change
+// details: there is text, and a date range (both From and To) of at most
+// DetailsSearchMaxDays. Anything else is the same search without the details.
+func (f Filter) SearchesDetails() bool {
+	return f.Q != "" && f.From != nil && f.To != nil &&
+		f.To.Sub(*f.From) <= DetailsSearchMaxSpan
+}
+
+// DateRangeTooLong reports whether a search with text carries a date range
+// longer than DetailsSearchMaxDays, which the admin view refuses (Erik,
+// 2026-11-11). Without text there is nothing to search in the details, so a
+// range of any length is only a date filter.
+func (f Filter) DateRangeTooLong() bool {
+	return f.Q != "" && f.From != nil && f.To != nil &&
+		f.To.Sub(*f.From) > DetailsSearchMaxSpan
+}
+
+// DateRangeReversed reports whether a search with text has a from later than its
+// to, which the admin view refuses. Without text the list keeps answering a
+// reversed range with nothing, as it always has.
+func (f Filter) DateRangeReversed() bool {
+	return f.Q != "" && f.From != nil && f.To != nil && f.To.Before(*f.From)
+}
+
+// DetailsSkippedReason says why a search with text did not look in the change
+// details because it had no date range, or is empty when it did, or had no text
+// to look for. A range that was too long is refused before the search.
+func (f Filter) DetailsSkippedReason() string {
+	if f.Q != "" && (f.From == nil || f.To == nil) {
+		return DetailsSkippedNoRange
+	}
+	return ""
 }
 
 // sensitiveFragments marks a Before/After key as one whose value must never
@@ -192,7 +258,11 @@ var shownKeys = map[string]bool{
 	// as ids.
 	"categoryid": true, "typeid": true, "itemid": true,
 	"passkeysremoved": true, "totpcleared": true, "sessionsrevoked": true,
-	"osuser": true, "host": true, "source": true,
+	// A passkey removed by an administrator, or refused as a suspected clone
+	// (#615, #616b): its id. Its label is free text the owner typed and is not
+	// written.
+	"passkeyid": true,
+	"osuser":    true, "host": true, "source": true,
 	// The priority change and SLA re-match (#443b): why the priority changed
 	// and what happened to the SLA (fixed enums), and the policy and record
 	// ids before and after.
@@ -252,6 +322,12 @@ var shownKeys = map[string]bool{
 	// command ran on.
 	// Shown for EVERY entity type, so no other writer may reuse these key names.
 	"clientname": true, "urlhost": true,
+	// A change to the requester-name mask (audit_mask_requester_names, D35): its
+	// value before and after, one of admin_log, ticket_log or everywhere. A
+	// fixed vocabulary, and the whole point of the entry.
+	"requesternamemask": true,
+	// A client's secret being replaced (#622): the fact, not the secret.
+	"credentialreplaced": true,
 }
 
 // Redact returns copies of before/after showing only allow-listed keys

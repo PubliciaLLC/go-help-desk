@@ -31,6 +31,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -424,8 +425,8 @@ func (s *Server) Handler() http.Handler {
 // MaxRequestBody caps an MCP request body on both transports (#481). 1 MiB is
 // the REST API's cap (server.maxJSONBody) and is far above the largest
 // legitimate MCP request: a request is one JSON-RPC call, and the biggest
-// arguments any tool takes are a ticket description or reply body. MCP has no
-// attachment tool. Without a cap the body was read whole: a 100 MB POST
+// arguments any tool takes are a ticket description or reply body. No MCP
+// tool takes a file upload. Without a cap the body was read whole: a 100 MB POST
 // allocated 340 to 712 MB.
 const MaxRequestBody = 1 << 20
 
@@ -568,6 +569,15 @@ func (s *Server) registerTools() {
 	), scoped(mcpRead, s.handleGetTicket))
 
 	s.mcp.AddTool(mcpgo.NewTool(
+		"list_attachments",
+		mcpgo.WithDescription("List the files attached to a ticket: name, type, size, hash, and the scan result. "+
+			"quarantined is true when the scanner identified the file as malicious (virus_name says what it found); "+
+			"mismatch is true when the content contradicts the file's name, and null when the file was never inspected. "+
+			"Metadata only: file contents are download-only in the web interface, and no reputation lookup is made."),
+		mcpgo.WithString("ticket_id", mcpgo.Required(), mcpgo.Description("Ticket UUID or tracking number")),
+	), scoped(mcpRead, s.handleListAttachments))
+
+	s.mcp.AddTool(mcpgo.NewTool(
 		"create_ticket",
 		mcpgo.WithDescription("Open a new help desk ticket"),
 		mcpgo.WithString("subject", mcpgo.Required(), mcpgo.Description("Short summary")),
@@ -609,6 +619,7 @@ func (s *Server) registerTools() {
 		mcpgo.WithString("priority", mcpgo.Description("Only tickets at this priority: critical|high|medium|low")),
 		mcpgo.WithString("category_id", mcpgo.Description("Only tickets in this category UUID (see list_categories)")),
 		mcpgo.WithString("q", mcpgo.Description("Full-text search over subject, description and tracking number")),
+		mcpgo.WithBoolean("search_replies", mcpgo.Description("With q, also match the replies: a ticket matches when one reply holds every word. Staff and administrators search internal notes too; a requester searches public replies only. A ticket found this way carries a reply_match with an excerpt. If the replies could not be searched (still being prepared after an upgrade, or too slow), a second text block says so (default false)")),
 		mcpgo.WithNumber("limit", mcpgo.Description("Max results, 1-100 (default 20)")),
 		mcpgo.WithNumber("offset", mcpgo.Description("Pagination offset")),
 	), scoped(mcpRead, s.handleListTickets))
@@ -712,6 +723,64 @@ func (s *Server) handleGetTicket(ctx context.Context, req mcpgo.CallToolRequest)
 		out.Links = links
 	}
 	return ticketResult(caller.Role, out)
+}
+
+// attachmentView is list_attachments' row. An explicit struct rather than
+// ticket.Attachment so a field added to the domain type later is not sent to
+// MCP clients by accident; StoragePath in particular must never be.
+type attachmentView struct {
+	ID           uuid.UUID `json:"id"`
+	Filename     string    `json:"filename"`
+	MimeType     string    `json:"mime_type"`
+	SizeBytes    int64     `json:"size_bytes"`
+	CreatedAt    time.Time `json:"created_at"`
+	DetectedMime *string   `json:"detected_mime"`
+	SHA256       *string   `json:"sha256"`
+	VirusName    *string   `json:"virus_name"`
+	Mismatch     *bool     `json:"mismatch"`
+	// Quarantined is virus_name being set, spelled out so a client does not
+	// have to know that is what the column means.
+	Quarantined bool `json:"quarantined"`
+}
+
+func (s *Server) handleListAttachments(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	caller := actorFrom(ctx)
+	if caller == nil {
+		return errResult(noActorMessage)
+	}
+	id, _ := req.GetArguments()["ticket_id"].(string)
+	if id == "" {
+		return errResult("ticket_id is required")
+	}
+	var t ticket.Ticket
+	var err error
+	ident := id
+	if uid, parseErr := uuid.Parse(id); parseErr == nil {
+		ident = uid.String()
+		t, err = s.tickets.GetByID(ctx, uid)
+	} else {
+		t, err = s.tickets.GetByTrackingNumber(ctx, ticket.TrackingNumber(id))
+	}
+	if err != nil {
+		return ticketLookupErr(ctx, "list attachments", ident, err)
+	}
+	if !s.visible(ctx, t) {
+		return errResult(notFoundFor(ident))
+	}
+
+	atts, err := s.tickets.ListAttachments(ctx, t.ID)
+	if err != nil {
+		return storeErr(ctx, "list attachments", err)
+	}
+	out := make([]attachmentView, len(atts))
+	for i, a := range atts {
+		out[i] = attachmentView{
+			ID: a.ID, Filename: a.Filename, MimeType: a.MimeType, SizeBytes: a.SizeBytes,
+			CreatedAt: a.CreatedAt, DetectedMime: a.DetectedMime, SHA256: a.SHA256,
+			VirusName: a.VirusName, Mismatch: a.ContentMismatch, Quarantined: a.VirusName != nil,
+		}
+	}
+	return jsonResult(out)
 }
 
 func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -951,6 +1020,10 @@ func buildListFilter(args map[string]any, vis ticket.Visibility, actorID uuid.UU
 		f.Priority = &p
 	}
 	f.Query, _ = args["q"].(string)
+	// Whether to search replies is the caller's choice. WHICH replies is not:
+	// IncludeInternal is set by the handler from the caller's role, and there is
+	// no argument for it.
+	f.SearchReplies, _ = args["search_replies"].(bool)
 
 	// Clamped, not rejected: a caller asking for 500 gets 100 rather than an
 	// error, and offset still walks the whole result set.
@@ -985,11 +1058,67 @@ func (s *Server) handleListTickets(ctx context.Context, req mcpgo.CallToolReques
 		return storeErr(ctx, "list tickets", err)
 	}
 
-	tickets, err := s.tickets.ListFiltered(ctx, f)
+	// From the role and nothing else, for the match and for the snippet alike. A
+	// requester, or any role this does not recognise, never searches an internal
+	// note: searching one would let them test, a word at a time, what staff wrote
+	// about them.
+	f.IncludeInternal = ticket.IncludeInternalFor(caller.Role)
+
+	res, err := s.tickets.ListFilteredWithMeta(ctx, f)
 	if err != nil {
 		return storeErr(ctx, "list tickets", err)
 	}
-	return ticketResult(caller.Role, tickets)
+	tickets := res.Tickets
+	if !f.SearchReplies {
+		return ticketResult(caller.Role, tickets)
+	}
+
+	// Excerpts only when the replies were searched: a page chosen without them
+	// must not look as if it had been.
+	var matches map[uuid.UUID]ticket.ReplyMatch
+	if res.Replies.ExcerptsApply() {
+		ids := make([]uuid.UUID, len(tickets))
+		for i, tk := range tickets {
+			ids[i] = tk.ID
+		}
+		if matches, err = s.tickets.ReplyMatches(ctx, f, ids); err != nil {
+			return storeErr(ctx, "list tickets", err)
+		}
+	}
+	type listed struct {
+		ticket.Ticket
+		ReplyMatch *ticket.ReplyMatch `json:"reply_match,omitempty"`
+	}
+	out := make([]listed, len(tickets))
+	for i, tk := range tickets {
+		out[i].Ticket = tk
+		if m, ok := matches[tk.ID]; ok {
+			out[i].ReplyMatch = &m
+		}
+	}
+	result, err := ticketResult(caller.Role, out)
+	if err != nil || result.IsError {
+		return result, err
+	}
+	// A second block, not a new shape for the first: the list stays the JSON
+	// array every client already reads.
+	if note := repliesNote(res.Replies); note != "" {
+		result.Content = append(result.Content, mcpgo.NewTextContent(note))
+	}
+	return result, nil
+}
+
+// repliesNote says, for a search that asked for replies and did not get them
+// searched, why the list may be shorter than the caller expects.
+func repliesNote(m ticket.ReplySearchMeta) string {
+	switch {
+	case m.Searched == nil || *m.Searched:
+		return ""
+	case m.IndexBuilding:
+		return "Replies were not searched: reply search is still being prepared after an upgrade. The tickets listed match on subject, description or number only. Try again later."
+	default:
+		return "Replies were not searched: the search took too long. The tickets listed match on subject, description or number only. A more specific search may finish in time."
+	}
 }
 
 func (s *Server) handleAssignTicket(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {

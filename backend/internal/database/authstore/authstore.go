@@ -338,6 +338,30 @@ func (s *Store) DeleteOAuthClientAudited(ctx context.Context, id uuid.UUID, entr
 	})
 }
 
+// RotateOAuthClientSecretAudited replaces the client's secret hash with its
+// audit entry, in one transaction: a rotation whose entry fails leaves the old
+// secret working. entry gets the client as it was before the write, and a
+// client that is not there is auth.ErrNotFound and writes no entry. The new
+// secret is replaced at once, with no overlap (#622, D15).
+func (s *Store) RotateOAuthClientSecretAudited(ctx context.Context, id uuid.UUID, newHash string, entry func(before auth.OAuthClient) audit.Entry) error {
+	return s.inTx(ctx, "OAuth client secret rotation", func(q *dbgen.Queries) error {
+		r, err := q.GetOAuthClientForUpdate(ctx, id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("OAuth client %s: %w", id, auth.ErrNotFound)
+		}
+		if err != nil {
+			return fmt.Errorf("getting OAuth client %s: %w", id, err)
+		}
+		if _, err := q.SetOAuthClientSecret(ctx, dbgen.SetOAuthClientSecretParams{ID: id, HashedSecret: newHash}); err != nil {
+			return fmt.Errorf("rotating secret of OAuth client %s: %w", id, err)
+		}
+		return writeEntry(ctx, q, entry(auth.OAuthClient{
+			ID: r.ID, ClientID: r.ClientID, HashedSecret: r.HashedSecret, Name: r.Name,
+			Scopes: r.Scopes, CreatedAt: r.CreatedAt, UserID: r.UserID,
+		}))
+	})
+}
+
 func (s *Store) ListOAuthClients(ctx context.Context) ([]auth.OAuthClient, error) {
 	rows, err := s.q.ListOAuthClients(ctx)
 	if err != nil {

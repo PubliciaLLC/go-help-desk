@@ -280,7 +280,7 @@ func (q *Queries) DeleteAttachment(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
-const deleteTicketLink = `-- name: DeleteTicketLink :exec
+const deleteTicketLink = `-- name: DeleteTicketLink :execrows
 DELETE FROM ticket_links
 WHERE source_ticket_id = $1 AND target_ticket_id = $2 AND link_type = $3
 `
@@ -291,9 +291,12 @@ type DeleteTicketLinkParams struct {
 	LinkType       string    `json:"link_type"`
 }
 
-func (q *Queries) DeleteTicketLink(ctx context.Context, arg DeleteTicketLinkParams) error {
-	_, err := q.db.ExecContext(ctx, deleteTicketLink, arg.SourceTicketID, arg.TargetTicketID, arg.LinkType)
-	return err
+func (q *Queries) DeleteTicketLink(ctx context.Context, arg DeleteTicketLinkParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteTicketLink, arg.SourceTicketID, arg.TargetTicketID, arg.LinkType)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const getAttachmentByID = `-- name: GetAttachmentByID :one
@@ -718,8 +721,39 @@ func (q *Queries) ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]At
 	return items, nil
 }
 
+const listQuarantinedTicketIDs = `-- name: ListQuarantinedTicketIDs :many
+SELECT DISTINCT ticket_id FROM attachments
+WHERE ticket_id = ANY($1::uuid[]) AND virus_name IS NOT NULL
+`
+
+// Which of these tickets hold a file the scanner held back. One row per ticket
+// however many files, because the ticket list shows a marker, not a count. Uses
+// the attachments ticket_id index; the page is already cut, so $1 is one page.
+func (q *Queries) ListQuarantinedTicketIDs(ctx context.Context, ticketIds []uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := q.db.QueryContext(ctx, listQuarantinedTicketIDs, pq.Array(ticketIds))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var ticket_id uuid.UUID
+		if err := rows.Scan(&ticket_id); err != nil {
+			return nil, err
+		}
+		items = append(items, ticket_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listReplies = `-- name: ListReplies :many
-SELECT r.id, r.ticket_id, r.author_id, r.body, r.internal, r.created_at, r.notify_customer, r.body_format, u.display_name AS author_display_name
+SELECT r.id, r.ticket_id, r.author_id, r.body, r.internal, r.created_at, r.notify_customer, r.body_format, r.body_tsv, u.display_name AS author_display_name
 FROM ticket_replies r
 LEFT JOIN users u ON u.id = r.author_id
 WHERE r.ticket_id = $1
@@ -735,6 +769,7 @@ type ListRepliesRow struct {
 	CreatedAt         time.Time      `json:"created_at"`
 	NotifyCustomer    bool           `json:"notify_customer"`
 	BodyFormat        string         `json:"body_format"`
+	BodyTsv           interface{}    `json:"body_tsv"`
 	AuthorDisplayName sql.NullString `json:"author_display_name"`
 }
 
@@ -766,6 +801,7 @@ func (q *Queries) ListReplies(ctx context.Context, ticketID uuid.UUID) ([]ListRe
 			&i.CreatedAt,
 			&i.NotifyCustomer,
 			&i.BodyFormat,
+			&i.BodyTsv,
 			&i.AuthorDisplayName,
 		); err != nil {
 			return nil, err
@@ -868,6 +904,43 @@ func (q *Queries) ListResolvedTicketsBefore(ctx context.Context, arg ListResolve
 			&i.DescriptionFormat,
 			&i.SourceChannel,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStaffScopeRows = `-- name: ListStaffScopeRows :many
+SELECT gs.category_id, gs.type_id
+FROM group_scopes gs
+JOIN group_members gm ON gm.group_id = gs.group_id
+WHERE gm.user_id = $1
+`
+
+type ListStaffScopeRowsRow struct {
+	CategoryID uuid.UUID     `json:"category_id"`
+	TypeID     uuid.NullUUID `json:"type_id"`
+}
+
+// The category/type pairs the caller's groups cover, for ListTicketsFiltered's
+// scoped visibility. type_id NULL means the whole category.
+func (q *Queries) ListStaffScopeRows(ctx context.Context, userID uuid.UUID) ([]ListStaffScopeRowsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listStaffScopeRows, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListStaffScopeRowsRow
+	for rows.Next() {
+		var i ListStaffScopeRowsRow
+		if err := rows.Scan(&i.CategoryID, &i.TypeID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -1274,6 +1347,39 @@ func (q *Queries) ListTicketsByStatus(ctx context.Context, arg ListTicketsByStat
 }
 
 const listTicketsFiltered = `-- name: ListTicketsFiltered :many
+WITH reply_hits AS (
+  SELECT DISTINCT m.ticket_id FROM (
+    SELECT r.ticket_id
+    FROM ticket_replies r
+    JOIN tickets rt ON rt.id = r.ticket_id
+    WHERE $34::bool
+      AND $30::text <> ''
+      AND r.body_tsv @@ to_tsquery('english', $30::text)
+      AND ($35::bool OR NOT r.internal)
+      AND (
+        $4::bool
+        OR ($5::bool AND rt.reporter_user_id = $6::uuid)
+        OR (
+          NOT $4::bool
+          AND NOT $5::bool
+          AND (
+            rt.reporter_user_id = $6::uuid
+            OR rt.assignee_user_id = $6::uuid
+            -- The same arrays as the main query's scope below, for the same reason
+            -- given there, and the same rule.
+            OR rt.assignee_group_id = ANY($7::uuid[])
+            OR rt.category_id = ANY($8::uuid[])
+            OR (rt.type_id = ANY($9::uuid[])
+                AND (rt.category_id, rt.type_id) IN (SELECT c.id, ty.id
+                    FROM unnest($10::uuid[]) WITH ORDINALITY AS c(id, n)
+                    JOIN unnest($9::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+          )
+        )
+      )
+    ORDER BY r.created_at DESC, r.id
+    LIMIT $36
+  ) m
+)
 SELECT t.id, t.tracking_number, t.subject, t.description, t.category_id, t.type_id, t.item_id, t.priority, t.status_id, t.assignee_user_id, t.assignee_group_id, t.reporter_user_id, t.guest_email, t.resolution_notes, t.resolved_at, t.closed_at, t.created_at, t.updated_at, t.guest_name, t.guest_phone, t.pending_since, t.sla_paused_seconds, t.reopen_count, t.last_reopened_at, t.paused_seconds_at_last_reopen, t.description_format, t.source_channel
 FROM tickets t
 LEFT JOIN LATERAL (
@@ -1320,28 +1426,35 @@ WHERE
       AND (
         t.reporter_user_id = $6::uuid
         OR t.assignee_user_id = $6::uuid
-        OR t.assignee_group_id IN (SELECT gm.group_id FROM group_members gm WHERE gm.user_id = $6::uuid)
-        -- The category/type scope, as two uncorrelated sets rather than the
-        -- correlated EXISTS ListTicketsVisibleToStaff uses: a hashed set is probed
-        -- once per ticket, where EXISTS re-ran its join for every ticket the other
-        -- filters let through (a scoped staff member's text search took 140 ms at
-        -- 200k tickets, against 14 ms). Same answer:
+        -- The caller's groups and the categories and types those groups cover
+        -- arrive as plain arrays, read by the store just before this runs, for
+        -- the reason given at mine_group_ids below. As subqueries the planner
+        -- could not tell a staff member in no group from one in every group,
+        -- assumed most tickets match, and walked the whole of tickets_created_at_idx
+        -- discarding every row that did not: 1M tickets read 205k buffers and took
+        -- 0.9 s for a staff member with 10 assignments, and the cost grew with the
+        -- table. As arrays an empty set folds away and each arm that remains can
+        -- use an index (reporter, assignee, group, category).
+        -- Same answer as ListTicketsVisibleToStaff:
         -- TestListFiltered_ScopedVisibilityMatchesStaffQuery holds them together.
+        OR t.assignee_group_id = ANY($7::uuid[])
+        OR t.category_id = ANY($8::uuid[])
+        -- One type of a category: the type conjunct is what lets an index
+        -- (tickets_type_id_idx) serve the arm, and the pair test is the rule.
+        -- The conjunct is implied by the pair, so it never changes the answer.
         -- A ticket with no type never matches the row comparison, as it never
         -- matched gs.type_id = t.type_id.
-        OR t.category_id IN (SELECT gs.category_id FROM group_scopes gs
-                             JOIN group_members gm ON gm.group_id = gs.group_id
-                             WHERE gm.user_id = $6::uuid AND gs.type_id IS NULL)
-        OR (t.category_id, t.type_id) IN (SELECT gs.category_id, gs.type_id FROM group_scopes gs
-                                          JOIN group_members gm ON gm.group_id = gs.group_id
-                                          WHERE gm.user_id = $6::uuid AND gs.type_id IS NOT NULL)
+        OR (t.type_id = ANY($9::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest($10::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest($9::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
       )
     )
   )
   -- queue: 'any' | 'mine' | 'unassigned'. Set by the handler, never the caller.
   AND (
-    $7::text = 'any'
-    OR ($7::text = 'unassigned'
+    $11::text = 'any'
+    OR ($11::text = 'unassigned'
         AND t.assignee_user_id IS NULL AND t.assignee_group_id IS NULL)
     -- mine_group_ids is the caller's groups, read by the store just before this
     -- runs and passed as a plain array. That is deliberate: the planner cannot
@@ -1350,39 +1463,39 @@ WHERE
     -- assignments does not have (83-95 ms at 200k tickets for an administrator).
     -- Given the array itself it sees an empty or two-element list, and drives the
     -- queue from the two assignee indexes instead (0.8 ms).
-    OR ($7::text = 'mine' AND (
+    OR ($11::text = 'mine' AND (
         t.assignee_user_id = $6::uuid
-        OR t.assignee_group_id = ANY($8::uuid[])))
+        OR t.assignee_group_id = ANY($12::uuid[])))
   )
-  AND (cardinality($9::uuid[]) = 0 OR t.status_id = ANY($9::uuid[]))
+  AND (cardinality($13::uuid[]) = 0 OR t.status_id = ANY($13::uuid[]))
   -- IS DISTINCT FROM, not <>: if the Closed status were ever missing the
   -- subquery is NULL, and <> would then exclude every ticket.
-  AND (NOT $10::bool
+  AND (NOT $14::bool
        OR t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Closed' AND s.kind = 'system'))
-  AND (cardinality($11::text[]) = 0 OR t.priority = ANY($11::text[]))
-  AND ($12::uuid IS NULL OR t.category_id = $12::uuid)
-  AND ($13::uuid IS NULL OR t.type_id = $13::uuid)
-  AND ($14::uuid IS NULL OR t.item_id = $14::uuid)
-  AND ($15::uuid IS NULL OR t.assignee_user_id = $15::uuid)
-  AND ($16::uuid IS NULL OR t.assignee_group_id = $16::uuid)
-  AND ($17::uuid IS NULL OR t.reporter_user_id = $17::uuid)
+  AND (cardinality($15::text[]) = 0 OR t.priority = ANY($15::text[]))
+  AND ($16::uuid IS NULL OR t.category_id = $16::uuid)
+  AND ($17::uuid IS NULL OR t.type_id = $17::uuid)
+  AND ($18::uuid IS NULL OR t.item_id = $18::uuid)
+  AND ($19::uuid IS NULL OR t.assignee_user_id = $19::uuid)
+  AND ($20::uuid IS NULL OR t.assignee_group_id = $20::uuid)
+  AND ($21::uuid IS NULL OR t.reporter_user_id = $21::uuid)
   -- requester_pattern is '%' || LIKE-escaped text || '%', built in the store.
   -- It matches the ticket's guest fields and the reporting account's name and
   -- email. Deleted and disabled accounts are included on purpose: their tickets
   -- still exist and the ticket page still names them.
-  AND ($18::text IS NULL
-       OR t.guest_name ILIKE $18::text
-       OR t.guest_email ILIKE $18::text
+  AND ($22::text IS NULL
+       OR t.guest_name ILIKE $22::text
+       OR t.guest_email ILIKE $22::text
        -- ARRAY(subquery), not IN (subquery), so all three arms can be indexes
        -- feeding one BitmapOr (see the queue arm above for the same reason).
        OR t.reporter_user_id = ANY(ARRAY(SELECT u.id FROM users u
-                                         WHERE u.display_name ILIKE $18::text
-                                            OR u.email ILIKE $18::text)))
-  AND ($19::timestamptz IS NULL OR t.created_at >= $19::timestamptz)
-  AND ($20::timestamptz IS NULL OR t.created_at < $20::timestamptz)
-  AND ($21::timestamptz IS NULL OR t.updated_at >= $21::timestamptz)
-  AND ($22::timestamptz IS NULL OR t.updated_at < $22::timestamptz)
-  AND (cardinality($23::text[]) = 0 OR t.source_channel = ANY($23::text[]))
+                                         WHERE u.display_name ILIKE $22::text
+                                            OR u.email ILIKE $22::text)))
+  AND ($23::timestamptz IS NULL OR t.created_at >= $23::timestamptz)
+  AND ($24::timestamptz IS NULL OR t.created_at < $24::timestamptz)
+  AND ($25::timestamptz IS NULL OR t.updated_at >= $25::timestamptz)
+  AND ($26::timestamptz IS NULL OR t.updated_at < $26::timestamptz)
+  AND (cardinality($27::text[]) = 0 OR t.source_channel = ANY($27::text[]))
   AND ($2::text = ''
        OR ($2::text = 'breached' AND sb.bucket = 0)
        OR ($2::text = 'at_risk' AND sb.bucket = 1))
@@ -1393,70 +1506,78 @@ WHERE
   -- though each one matched. A search that tokenises to nothing must match on
   -- the tracking number or not at all.
   AND (
-    NOT $24::bool
-    OR t.tracking_number ILIKE $25::text
+    NOT $28::bool
+    OR t.tracking_number ILIKE $29::text
     OR (
-      $26::text <> ''
-      AND t.search_vector @@ to_tsquery('english', $26::text)
+      $30::text <> ''
+      AND t.search_vector @@ to_tsquery('english', $30::text)
     )
+    OR t.id IN (SELECT ticket_id FROM reply_hits)
   )
 ORDER BY
-  CASE WHEN $3::text = 'relevance' AND $26::text <> ''
-       THEN ts_rank(t.search_vector, to_tsquery('english', $26::text)) END DESC,
-  CASE WHEN $3::text = 'number' AND $27::text = 'asc' THEN t.tracking_number END ASC,
-  CASE WHEN $3::text = 'number' AND $27::text = 'desc' THEN t.tracking_number END DESC,
-  CASE WHEN $3::text = 'subject' AND $27::text = 'asc' THEN lower(t.subject) END ASC,
-  CASE WHEN $3::text = 'subject' AND $27::text = 'desc' THEN lower(t.subject) END DESC,
+  CASE WHEN $3::text = 'relevance' AND $30::text <> ''
+       THEN ts_rank(t.search_vector, to_tsquery('english', $30::text)) END DESC,
+  CASE WHEN $3::text = 'number' AND $31::text = 'asc' THEN t.tracking_number END ASC,
+  CASE WHEN $3::text = 'number' AND $31::text = 'desc' THEN t.tracking_number END DESC,
+  CASE WHEN $3::text = 'subject' AND $31::text = 'asc' THEN lower(t.subject) END ASC,
+  CASE WHEN $3::text = 'subject' AND $31::text = 'desc' THEN lower(t.subject) END DESC,
   -- Status order is each status's place in (sort_order, name), looked up in an
   -- array built once per query. A join or a subquery per ticket cost 85 to
   -- 684 ms at 200k when sorting by status, and a join cost every other list too.
   CASE WHEN $3::text = 'status'
        THEN array_position((SELECT array_agg(s.id ORDER BY s.sort_order, s.name) FROM statuses s), t.status_id)
-            * CASE WHEN $27::text = 'asc' THEN 1 ELSE -1 END END ASC,
+            * CASE WHEN $31::text = 'asc' THEN 1 ELSE -1 END END ASC,
   CASE WHEN $3::text = 'priority'
        THEN (CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END)
-            * CASE WHEN $27::text = 'asc' THEN 1 ELSE -1 END END ASC,
+            * CASE WHEN $31::text = 'asc' THEN 1 ELSE -1 END END ASC,
   CASE WHEN $3::text = 'sla'
-       THEN COALESCE(sb.bucket, 2) * CASE WHEN $27::text = 'asc' THEN 1 ELSE -1 END END ASC,
-  CASE WHEN $3::text = 'created' AND $27::text = 'asc' THEN t.created_at END ASC,
-  CASE WHEN $3::text = 'created' AND $27::text = 'desc' THEN t.created_at END DESC,
-  CASE WHEN $3::text = 'updated' AND $27::text = 'asc' THEN t.updated_at END ASC,
-  CASE WHEN $3::text = 'updated' AND $27::text = 'desc' THEN t.updated_at END DESC,
+       THEN COALESCE(sb.bucket, 2) * CASE WHEN $31::text = 'asc' THEN 1 ELSE -1 END END ASC,
+  CASE WHEN $3::text = 'created' AND $31::text = 'asc' THEN t.created_at END ASC,
+  CASE WHEN $3::text = 'created' AND $31::text = 'desc' THEN t.created_at END DESC,
+  CASE WHEN $3::text = 'updated' AND $31::text = 'asc' THEN t.updated_at END ASC,
+  CASE WHEN $3::text = 'updated' AND $31::text = 'desc' THEN t.updated_at END DESC,
   t.created_at DESC,
   t.id
-LIMIT $29 OFFSET $28
+LIMIT $33 OFFSET $32
 `
 
 type ListTicketsFilteredParams struct {
-	Now              time.Time      `json:"now"`
-	Sla              string         `json:"sla"`
-	SortKey          string         `json:"sort_key"`
-	Unrestricted     bool           `json:"unrestricted"`
-	ReporterOnly     bool           `json:"reporter_only"`
-	ActorID          uuid.UUID      `json:"actor_id"`
-	Queue            string         `json:"queue"`
-	MineGroupIds     []uuid.UUID    `json:"mine_group_ids"`
-	StatusIds        []uuid.UUID    `json:"status_ids"`
-	ExcludeClosed    bool           `json:"exclude_closed"`
-	Priorities       []string       `json:"priorities"`
-	CategoryID       uuid.NullUUID  `json:"category_id"`
-	TypeID           uuid.NullUUID  `json:"type_id"`
-	ItemID           uuid.NullUUID  `json:"item_id"`
-	AssigneeUserID   uuid.NullUUID  `json:"assignee_user_id"`
-	AssigneeGroupID  uuid.NullUUID  `json:"assignee_group_id"`
-	ReporterID       uuid.NullUUID  `json:"reporter_id"`
-	RequesterPattern sql.NullString `json:"requester_pattern"`
-	CreatedAfter     sql.NullTime   `json:"created_after"`
-	CreatedBefore    sql.NullTime   `json:"created_before"`
-	UpdatedAfter     sql.NullTime   `json:"updated_after"`
-	UpdatedBefore    sql.NullTime   `json:"updated_before"`
-	SourceChannels   []string       `json:"source_channels"`
-	Searching        bool           `json:"searching"`
-	TrackingPattern  string         `json:"tracking_pattern"`
-	SearchQuery      string         `json:"search_query"`
-	SortDir          string         `json:"sort_dir"`
-	ResultOffset     int32          `json:"result_offset"`
-	ResultLimit      int32          `json:"result_limit"`
+	Now                  time.Time      `json:"now"`
+	Sla                  string         `json:"sla"`
+	SortKey              string         `json:"sort_key"`
+	Unrestricted         bool           `json:"unrestricted"`
+	ReporterOnly         bool           `json:"reporter_only"`
+	ActorID              uuid.UUID      `json:"actor_id"`
+	ScopeGroupIds        []uuid.UUID    `json:"scope_group_ids"`
+	ScopeCategoryIds     []uuid.UUID    `json:"scope_category_ids"`
+	ScopeTypeIds         []uuid.UUID    `json:"scope_type_ids"`
+	ScopeTypeCategoryIds []uuid.UUID    `json:"scope_type_category_ids"`
+	Queue                string         `json:"queue"`
+	MineGroupIds         []uuid.UUID    `json:"mine_group_ids"`
+	StatusIds            []uuid.UUID    `json:"status_ids"`
+	ExcludeClosed        bool           `json:"exclude_closed"`
+	Priorities           []string       `json:"priorities"`
+	CategoryID           uuid.NullUUID  `json:"category_id"`
+	TypeID               uuid.NullUUID  `json:"type_id"`
+	ItemID               uuid.NullUUID  `json:"item_id"`
+	AssigneeUserID       uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID      uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterID           uuid.NullUUID  `json:"reporter_id"`
+	RequesterPattern     sql.NullString `json:"requester_pattern"`
+	CreatedAfter         sql.NullTime   `json:"created_after"`
+	CreatedBefore        sql.NullTime   `json:"created_before"`
+	UpdatedAfter         sql.NullTime   `json:"updated_after"`
+	UpdatedBefore        sql.NullTime   `json:"updated_before"`
+	SourceChannels       []string       `json:"source_channels"`
+	Searching            bool           `json:"searching"`
+	TrackingPattern      string         `json:"tracking_pattern"`
+	SearchQuery          string         `json:"search_query"`
+	SortDir              string         `json:"sort_dir"`
+	ResultOffset         int32          `json:"result_offset"`
+	ResultLimit          int32          `json:"result_limit"`
+	SearchReplies        bool           `json:"search_replies"`
+	IncludeInternal      bool           `json:"include_internal"`
+	ReplyCap             int32          `json:"reply_cap"`
 }
 
 type ListTicketsFilteredRow struct {
@@ -1505,6 +1626,30 @@ type ListTicketsFilteredRow struct {
 // Every other criterion is a further AND, so a filter can only narrow what the
 // caller may already see. Nothing below widens it.
 //
+// reply_hits is reply-text search (advanced search, section 2.5). It is empty
+// unless search_replies is set and the search has words. A ticket matches when
+// ONE reply holds every word, so a public reply and an internal note cannot
+// combine. include_internal comes from the actor's role and nothing else
+// (ticket.IncludeInternalFor); for a requester it is false, and an internal note
+// is then never read, so it cannot decide which tickets match. The snippet read
+// (ReplyMatchesForTickets) applies the same condition.
+//
+// It matches ticket_replies.body_tsv, a stored column the migration adds and a
+// trigger keeps current. The store sets search_replies false until the
+// background fill and the two indexes are done (ReplySearchReady), so this arm
+// never runs against a half-filled column.
+//
+// It looks at only the reply_cap NEWEST matching replies of the tickets the
+// viewer may see, so a word in a quarter of all replies is not matched, joined
+// and deduplicated a million times over. The recency index lets the planner
+// walk replies newest first and stop; the content index serves the rare words.
+// The cap is applied AFTER the viewer's visibility, with the same predicate as
+// the main query below (rt is that ticket): applied before it, a requester's
+// own matches would be crowded out by everyone else's, and a ticket the viewer
+// may see could be missed because newer matches elsewhere used up the cap. The
+// main query still applies visibility and every filter itself, so this can
+// only narrow what it returns. Keep the two predicates in step: a store test
+// searches as a scoped member of staff and a requester with a cap of one.
 // Single values are NULL-means-absent and arrays are cardinality(...) = 0, so
 // one prepared statement serves every combination. The store always passes a
 // non-nil array.
@@ -1542,6 +1687,10 @@ func (q *Queries) ListTicketsFiltered(ctx context.Context, arg ListTicketsFilter
 		arg.Unrestricted,
 		arg.ReporterOnly,
 		arg.ActorID,
+		pq.Array(arg.ScopeGroupIds),
+		pq.Array(arg.ScopeCategoryIds),
+		pq.Array(arg.ScopeTypeIds),
+		pq.Array(arg.ScopeTypeCategoryIds),
 		arg.Queue,
 		pq.Array(arg.MineGroupIds),
 		pq.Array(arg.StatusIds),
@@ -1565,6 +1714,9 @@ func (q *Queries) ListTicketsFiltered(ctx context.Context, arg ListTicketsFilter
 		arg.SortDir,
 		arg.ResultOffset,
 		arg.ResultLimit,
+		arg.SearchReplies,
+		arg.IncludeInternal,
+		arg.ReplyCap,
 	)
 	if err != nil {
 		return nil, err

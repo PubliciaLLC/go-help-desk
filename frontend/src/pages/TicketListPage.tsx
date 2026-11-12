@@ -13,6 +13,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { ArrowDownIcon, ArrowUpIcon, ChevronsUpDownIcon, PlusIcon, SearchIcon, SlidersHorizontalIcon } from 'lucide-react'
 import { priorityVariant } from '@/lib/format'
 import { ReopenedBadge } from '@/components/ticket/ReopenedBadge'
+import { QuarantinedBadge } from '@/components/ticket/QuarantinedBadge'
 import { SLAIndicator } from '@/components/ticket/SLAIndicator'
 import { FilterChips, type ChipNames } from '@/components/ticket/FilterChips'
 import { FilterDialog } from '@/components/ticket/FilterDialog'
@@ -764,6 +765,7 @@ export function TicketListPage() {
                               {t.priority}
                             </Badge>
                             {isStaffOrAdmin && <ReopenedBadge reopenCount={t.reopen_count} statusName={status?.name} />}
+                            {isStaffOrAdmin && <QuarantinedBadge hasQuarantined={t.has_quarantined_attachment} />}
                           </div>
                         </td>
                         {showSLAColumn && (
@@ -817,11 +819,12 @@ export function TicketListPage() {
                       </div>
                       <p className="mt-1.5 wrap-anywhere font-medium text-gray-900">{t.subject}</p>
                       {t.reply_match && <ReplyMatchLine match={t.reply_match} />}
-                      <div className="mt-1.5 flex items-center gap-2">
+                      <div className="mt-1.5 flex flex-wrap items-center gap-2">
                         <Badge variant={priorityVariant(t.priority) as never}>
                           {t.priority}
                         </Badge>
                         {isStaffOrAdmin && <ReopenedBadge reopenCount={t.reopen_count} statusName={status?.name} />}
+                        {isStaffOrAdmin && <QuarantinedBadge hasQuarantined={t.has_quarantined_attachment} />}
                         {showSLAColumn && <SLAIndicator sla={t.sla} compact />}
                       </div>
                     </Link>

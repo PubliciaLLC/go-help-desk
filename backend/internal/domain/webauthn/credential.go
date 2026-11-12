@@ -31,10 +31,10 @@ type Credential struct {
 	// authenticate as anybody, which is not true of a TOTP secret.
 	PublicKey []byte `json:"-"`
 
-	// SignCount is recorded and never enforced. Most authenticators report
-	// zero forever, so a "must increase" rule refuses honest sign-ins; a
-	// counter that was previously non-zero going backwards is the one case
-	// worth logging, and it gates nothing.
+	// SignCount is the last counter the authenticator reported, and the
+	// reference a later assertion has to beat. Most authenticators report zero
+	// forever, which is accepted; any other counter that fails to advance is
+	// refused as a suspected clone (#616b).
 	SignCount int64 `json:"-"`
 
 	// Transports is fed back on the sign-in challenge as
@@ -79,6 +79,10 @@ func (c Credential) Synced() bool { return c.BackupEligible }
 // read and the insert whatever the read said.
 var ErrCredentialExists = errors.New("this credential is already registered")
 
+// ErrAlreadyProtected is a first-factor write refused because the account
+// already holds a second factor, a TOTP enrolment or a passkey.
+var ErrAlreadyProtected = errors.New("this account already has a second factor")
+
 // ErrNotFound is a credential that does not exist, or does not belong to the
 // user asking about it. Deliberately one error for both: telling a caller
 // that somebody else's credential id is real is an answer they were not
@@ -92,6 +96,11 @@ type Store interface {
 	// GetByCredentialID is the sign-in lookup: an assertion carries the
 	// credential id and nothing else.
 	GetByCredentialID(ctx context.Context, credentialID []byte) (Credential, error)
+	// CreateFirstFactor is Create for a session that has not proved a second
+	// factor: it writes only if the account holds none, and reports
+	// ErrAlreadyProtected otherwise. See the store for how the two writers of a
+	// first factor are ordered (#617).
+	CreateFirstFactor(ctx context.Context, c Credential) error
 	// CountForUser answers whether this account has a passkey, which is what
 	// lets one satisfy the instance's MFA requirement.
 	CountForUser(ctx context.Context, userID uuid.UUID) (int64, error)

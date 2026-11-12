@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -36,6 +37,22 @@ type ticketView struct {
 	// requester allowed list, so FilterForViewer drops it. Absent when the
 	// account cannot be read.
 	Requester *ticketRequester `json:"requester,omitempty"`
+
+	// ReplyMatch is the reply a reply search found this ticket through: an
+	// excerpt, never an author. Present only on a list that searched replies and
+	// only for a ticket that matched through one. It is on the requester allowed
+	// list, so a requester gets it too: the store reads it with the same
+	// IncludeInternal that chose the page, which is false for them, so it is never
+	// an internal note.
+	ReplyMatch *ticket.ReplyMatch `json:"reply_match,omitempty"`
+
+	// HasQuarantinedAttachment is whether any file on this ticket was held by
+	// the scanner (attachments.virus_name IS NOT NULL), so staff scanning the
+	// queue can tell without opening each ticket (#628). Staff and
+	// administrators only: it is not on the requester allowed list, and
+	// ticketViews does not look it up for anyone else. omitempty, so a ticket
+	// without one carries no key at all.
+	HasQuarantinedAttachment bool `json:"has_quarantined_attachment,omitempty"`
 }
 
 // ticketRequester is the Requester line of the staff ticket page.
@@ -97,9 +114,9 @@ func viewerJSON(actor *authmw.Actor, v any) any {
 // ticketViews attaches each ticket's live SLA status via one batch call
 // (sla.Service.StatusesFor), so the cost is two extra queries per response
 // regardless of how many tickets are on the page. Callers pass the page
-// after it has already been paged/sliced/merged — never before, which would
-// compute SLA for rows the response throws away (see the staff "mine" scope
-// merge in handleListTickets and CLAUDE.md's "Ticket list paging" note).
+// after it has already been paged — never before, which would compute SLA for
+// rows the response throws away (a list's page is cut in SQL now; it used to be
+// cut in Go after a merge, see DESIGN.md's "Ticket list paging" note).
 //
 // SLA visibility is staff/admin only: a reporting user must not see the
 // indicator, the policy name, the targets, or the breach/late status on their
@@ -117,8 +134,9 @@ func (s *Server) ticketViews(ctx context.Context, ts []ticket.Ticket, actor *aut
 	for i, t := range ts {
 		views[i] = ticketView{Ticket: t}
 	}
-	// Only staff and administrators get the SLA status and can_reopen. Any other
-	// role, one this code does not recognise included, gets neither.
+	// Only staff and administrators get the SLA status, can_reopen and the
+	// quarantine marker. Any other role, one this code does not recognise
+	// included, gets none of them.
 	if actor == nil || (actor.Role != user.RoleStaff && actor.Role != user.RoleAdmin) {
 		return views, nil
 	}
@@ -132,6 +150,20 @@ func (s *Server) ticketViews(ctx context.Context, ts []ticket.Ticket, actor *aut
 			policy = s.adminSvc.ClosedReopenPolicy(ctx)
 		}
 		views[i].CanReopen = ticket.CanForceReopen(policy, actor.Role)
+	}
+	// One query for the page. A failure leaves the marker off rather than
+	// failing the list: it is an aid to scanning the queue, and the ticket page
+	// still shows the warning per file.
+	ids := make([]uuid.UUID, len(ts))
+	for i, t := range ts {
+		ids[i] = t.ID
+	}
+	quarantined, err := s.tickets.QuarantinedTicketIDs(ctx, ids)
+	if err != nil {
+		slog.WarnContext(ctx, "reading which tickets hold quarantined attachments failed; omitting the marker", "error", err)
+	}
+	for i := range views {
+		views[i].HasQuarantinedAttachment = quarantined[views[i].ID]
 	}
 	enabled, err := s.adminSvc.SLAEnabled(ctx)
 	if err != nil {
@@ -158,13 +190,18 @@ func (s *Server) ticketViews(ctx context.Context, ts []ticket.Ticket, actor *aut
 }
 
 // writeTickets is handleListTickets' common exit: attach SLA status to the
-// page it was given and write the result as JSON. Every list branch in that
-// handler goes through here, so the wrapper runs exactly once per request.
-func (s *Server) writeTickets(w http.ResponseWriter, r *http.Request, tickets []ticket.Ticket) {
+// page it was given and write the result as JSON. The wrapper runs exactly once
+// per request.
+func (s *Server) writeTickets(w http.ResponseWriter, r *http.Request, tickets []ticket.Ticket, matches map[uuid.UUID]ticket.ReplyMatch) {
 	views, err := s.ticketViews(r.Context(), tickets, authmw.GetActor(r))
 	if err != nil {
 		handleError(w, err)
 		return
+	}
+	for i := range views {
+		if m, ok := matches[views[i].ID]; ok {
+			views[i].ReplyMatch = &m
+		}
 	}
 	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), views))
 }

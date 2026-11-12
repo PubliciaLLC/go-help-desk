@@ -2,12 +2,9 @@ package server
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 
 	"github.com/google/uuid"
-
-	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 )
 
 // auditName is what a diff id resolves to when an audit view is rendered
@@ -56,9 +53,10 @@ var auditNameFields = map[string]auditNameKind{
 // the diff to be read.
 //
 // The lookups are batched for the whole page: one read of the statuses table
-// if any status id is present, one query for all the user ids. Never one per
-// entry. A category, type or item is read by id, once per distinct id on the
-// page: only a reclassification writes them, so a page holds few.
+// if any status id is present, one query for all the user ids, and one query
+// per catalogue table (category, type, item) for all of that table's ids. Never
+// one per entry and never one per id; TestAuditNames_CatalogueLookupIsOneQueryPerTable
+// pins the count.
 type auditNames struct {
 	statuses  map[string]string // id -> name
 	users     map[string]auditName
@@ -68,7 +66,9 @@ type auditNames struct {
 func (s *Server) resolveAuditNames(ctx context.Context, maskRequesters bool, diffs ...map[string]any) auditNames {
 	statusIDs := map[string]bool{}
 	userIDs := map[uuid.UUID]bool{}
-	catalogue := map[uuid.UUID]auditNameKind{}
+	categoryIDs := map[uuid.UUID]bool{}
+	typeIDs := map[uuid.UUID]bool{}
+	itemIDs := map[uuid.UUID]bool{}
 	for _, d := range diffs {
 		for key, kind := range auditNameFields {
 			id, ok := diffID(d[key])
@@ -80,37 +80,44 @@ func (s *Server) resolveAuditNames(ctx context.Context, maskRequesters bool, dif
 				statusIDs[id.String()] = true
 			case auditNameUser:
 				userIDs[id] = true
-			default:
-				catalogue[id] = kind
+			case auditNameCategory:
+				categoryIDs[id] = true
+			case auditNameType:
+				typeIDs[id] = true
+			case auditNameItem:
+				itemIDs[id] = true
 			}
 		}
 	}
 
 	res := auditNames{statuses: map[string]string{}, users: map[string]auditName{}, catalogue: map[string]string{}}
-	for id, kind := range catalogue {
-		var name string
-		var err error
-		switch kind {
-		case auditNameCategory:
-			var c category.Category
-			c, err = s.categories.GetCategory(ctx, id)
-			name = c.Name
-		case auditNameType:
-			var t category.Type
-			t, err = s.categories.GetType(ctx, id)
-			name = t.Name
-		case auditNameItem:
-			var it category.Item
-			it, err = s.categories.GetItem(ctx, id)
-			name = it.Name
+	// One statement per table, whatever the number of ids. This used to be a
+	// point query per distinct id, which a page of reclassifications turns into
+	// about 1,200. A failed lookup costs those names, not the page.
+	for _, l := range []struct {
+		what  string
+		ids   map[uuid.UUID]bool
+		names func(context.Context, []uuid.UUID) (map[uuid.UUID]string, error)
+	}{
+		{"category", categoryIDs, s.categories.CategoryNames},
+		{"type", typeIDs, s.categories.TypeNames},
+		{"item", itemIDs, s.categories.ItemNames},
+	} {
+		if len(l.ids) == 0 {
+			continue
 		}
-		switch {
-		case err == nil:
+		ids := make([]uuid.UUID, 0, len(l.ids))
+		for id := range l.ids {
+			ids = append(ids, id)
+		}
+		names, err := l.names(ctx, ids)
+		if err != nil {
+			slog.ErrorContext(ctx, "resolving audit catalogue names failed", "kind", l.what, "error", err)
+			continue
+		}
+		// An id with no row was deleted: the id is all there is to show.
+		for id, name := range names {
 			res.catalogue[id.String()] = name
-		case errors.Is(err, category.ErrNotFound):
-			// Deleted: the id is all there is to show.
-		default:
-			slog.ErrorContext(ctx, "resolving audit catalogue name failed", "error", err)
 		}
 	}
 	// A failed lookup costs the names, not the page: the ids are still there to
@@ -139,6 +146,16 @@ func (s *Server) resolveAuditNames(ctx context.Context, maskRequesters bool, dif
 			// The same rule, and the same per-view setting, as the actor column.
 			a := auditActorName(u, maskRequesters)
 			res.users[u.ID.String()] = auditName{Name: a.name, Masked: a.masked}
+		}
+		// An id the lookup did not return is an account that is gone, of any
+		// role: say so, as the actor column does, rather than leave the bare id.
+		// Not when the lookup failed: then nothing is known, and no entry is made.
+		if err == nil {
+			for _, id := range ids {
+				if _, found := res.users[id.String()]; !found {
+					res.users[id.String()] = auditName{Name: deletedAccountName}
+				}
+			}
 		}
 	}
 	return res

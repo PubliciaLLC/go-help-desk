@@ -520,7 +520,11 @@ function ProviderLine({
     verdict.state === 'clean' || verdict.state === 'unseen' || verdict.state === 'unscanned'
 
   return (
-    <li className="space-y-1">
+    // `inline` is the server's own record of which line the row's one-line
+    // summary was copied from. Marked quietly: it answers "where did that
+    // sentence come from", it is not a warning, and a loud mark would pull
+    // the eye toward the line that is already summarised above.
+    <li className="space-y-1" aria-current={verdict.inline ? 'true' : undefined}>
       <ReputationVerdict
         verdict={verdict}
         who={who}
@@ -542,6 +546,7 @@ function ProviderLine({
             Open {named ?? 'the report'} ↗
           </a>
         )}
+        {verdict.inline && <span>· shown in the summary</span>}
       </p>
       {decays && (
         <CheckAgain

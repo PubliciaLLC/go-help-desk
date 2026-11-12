@@ -1295,7 +1295,7 @@ func (s *Service) assignInTx(ctx context.Context, st Store, au audit.Store, ch *
 	// feed reads the reassignment first. The same person again changes
 	// nothing.
 	if previous != nil && (assigneeUserID == nil || *assigneeUserID != *previous) {
-		if err := dropAssigneeFollow(ctx, st, au, t.ID, *previous, actor.UserID, assigneeUserID); err != nil {
+		if err := dropAssigneeFollow(ctx, st, au, ch, t, *previous, actor.UserID, assigneeUserID); err != nil {
 			return Ticket{}, err
 		}
 	}
@@ -2564,29 +2564,9 @@ func (s *Service) AddLink(ctx context.Context, sourceID, targetID uuid.UUID, lt 
 	}
 
 	if err := s.atomic.InTx(ctx, func(st Store, _ audit.Store, ch *notification.Changes) error {
-		// Lock both ticket rows FOR UPDATE up front, in the same fixed order
-		// (lexicographically smaller id first) ResolveAsDuplicate uses, before
-		// the link insert. Without this, a plain AddLink relies only on
-		// CreateLink's FK-triggered FOR KEY SHARE lock, which does not
-		// participate in that ordering discipline — a concurrent
-		// ResolveAsDuplicate on the same ticket pair, holding its ordered FOR
-		// UPDATE locks, can still deadlock against it (40P01, surfacing as an
-		// unhandled 500). See #210.
-		first, second := sourceID, targetID
-		if bytes.Compare(second[:], first[:]) < 0 {
-			first, second = second, first
-		}
-		lockedFirst, err := st.GetByIDForUpdate(ctx, first)
+		source, target, err := lockLinkPair(ctx, st, sourceID, targetID)
 		if err != nil {
 			return err
-		}
-		lockedSecond, err := st.GetByIDForUpdate(ctx, second)
-		if err != nil {
-			return err
-		}
-		source, target := lockedFirst, lockedSecond
-		if source.ID != sourceID {
-			source, target = lockedSecond, lockedFirst
 		}
 		// A link is written onto both tickets' threads, so a requester may
 		// not add one to or from a Closed ticket (#349). Staff may: linking a
@@ -2609,9 +2589,62 @@ func (s *Service) AddLink(ctx context.Context, sourceID, targetID uuid.UUID, lt 
 	return nil
 }
 
-// RemoveLink deletes a directed link between two tickets.
-func (s *Service) RemoveLink(ctx context.Context, sourceID, targetID uuid.UUID, lt LinkType) error {
-	return s.store.DeleteLink(ctx, sourceID, targetID, lt)
+// lockLinkPair locks both ticket rows FOR UPDATE up front, in the same fixed
+// order (lexicographically smaller id first) ResolveAsDuplicate uses, before
+// a link is written or deleted. Without this, a plain AddLink relies only on
+// CreateLink's FK-triggered FOR KEY SHARE lock, which does not participate in
+// that ordering discipline: a concurrent ResolveAsDuplicate on the same ticket
+// pair, holding its ordered FOR UPDATE locks, can still deadlock against it
+// (40P01, surfacing as an unhandled 500). See #210. RemoveLink takes the same
+// two locks in the same order for the same reason. Returns the rows as source
+// and target, whichever was locked first.
+func lockLinkPair(ctx context.Context, st Store, sourceID, targetID uuid.UUID) (source, target Ticket, err error) {
+	first, second := sourceID, targetID
+	if bytes.Compare(second[:], first[:]) < 0 {
+		first, second = second, first
+	}
+	lockedFirst, err := st.GetByIDForUpdate(ctx, first)
+	if err != nil {
+		return Ticket{}, Ticket{}, err
+	}
+	lockedSecond, err := st.GetByIDForUpdate(ctx, second)
+	if err != nil {
+		return Ticket{}, Ticket{}, err
+	}
+	source, target = lockedFirst, lockedSecond
+	if source.ID != sourceID {
+		source, target = lockedSecond, lockedFirst
+	}
+	return source, target, nil
+}
+
+// RemoveLink deletes a directed link between two tickets and announces it as
+// ticket.unlinked on the source ticket, as ticket.linked is (#630). It writes
+// no audit entry, for symmetry with AddLink, which writes none (D41).
+//
+// actor is who removed it; a credential with no person behind it passes an
+// Actor with a nil UserID and the event names nobody. Removing a link that is
+// not there is a success and announces nothing. The route is staff-only; that
+// check is the handler's.
+func (s *Service) RemoveLink(ctx context.Context, sourceID, targetID uuid.UUID, lt LinkType, actor Actor) error {
+	return s.atomic.InTx(ctx, func(st Store, _ audit.Store, ch *notification.Changes) error {
+		source, _, err := lockLinkPair(ctx, st, sourceID, targetID)
+		if err != nil {
+			return err
+		}
+		removed, err := st.DeleteLink(ctx, sourceID, targetID, lt)
+		if err != nil {
+			return err
+		}
+		if !removed {
+			return nil
+		}
+		ev := raiseOn(source, actor, time.Now())
+		ev.Kinds = []notification.EventType{notification.EventTicketUnlinked}
+		ev.Payload = map[string]any{"target_id": targetID, "link_type": lt}
+		ch.Raise(ev)
+		return nil
+	})
 }
 
 // GetByID returns the ticket with the given ID.
@@ -3064,7 +3097,13 @@ func (s *Service) UnassignForUser(ctx context.Context, actorID, userID uuid.UUID
 	// no row explaining it. An audit entry written apart from the change it
 	// describes is not an audit trail, and one that is missing entirely is
 	// worse.
-	err := s.atomic.InTx(ctx, func(st Store, au audit.Store, _ *notification.Changes) error {
+	//
+	// Each ticket is announced to webhooks as ticket.assigned, cleared, with the
+	// deleting administrator as the actor (#630, D41; one event per ticket, #506).
+	// Staff mail is suppressed: a mail per ticket to the people of its group and
+	// its followers, "assigned to you" about a ticket nobody assigned to them,
+	// is a burst about nothing.
+	err := s.atomic.InTx(ctx, func(st Store, au audit.Store, ch *notification.Changes) error {
 		ids, err := st.UnassignForUser(ctx, userID)
 		if err != nil {
 			return err
@@ -3075,14 +3114,30 @@ func (s *Service) UnassignForUser(ctx context.Context, actorID, userID uuid.UUID
 			if err := au.Create(ctx, auditEntry(&actorID, "ticket", id, "unassigned", before, after)); err != nil {
 				return fmt.Errorf("auditing unassignment: %w", err)
 			}
-			if err := dropAssigneeFollow(ctx, st, au, id, userID, &actorID, nil); err != nil {
+			t, err := st.GetByID(ctx, id)
+			if err != nil {
+				return fmt.Errorf("reading unassigned ticket: %w", err)
+			}
+			if err := dropAssigneeFollow(ctx, st, au, ch, t, userID, &actorID, nil); err != nil {
 				return err
 			}
+			raiseUnassigned(ch, t, &actorID, notification.IDChange("assignee_user_id", &userID, nil))
 		}
 		moved = len(ids)
 		return nil
 	})
 	return moved, err
+}
+
+// raiseUnassigned announces a ticket the bulk unassignment took off a user or a
+// group: ticket.assigned with the field cleared, webhooks only (#630, D41).
+// t is the ticket after the unassignment.
+func raiseUnassigned(ch *notification.Changes, t Ticket, actorID *uuid.UUID, change notification.Change) {
+	ev := raiseOn(t, Actor{UserID: actorID}, time.Now())
+	ev.Kinds = []notification.EventType{notification.EventTicketAssigned}
+	ev.Changes = []notification.Change{change}
+	ev.SuppressStaffMail = true
+	ch.Raise(ev)
 }
 
 // DeleteGroup deletes a group and returns every ticket it held to the queue,
@@ -3093,6 +3148,9 @@ func (s *Service) UnassignForUser(ctx context.Context, actorID, userID uuid.UUID
 // used to lose their group with nothing in the trail to say so: the same gap
 // UnassignForUser closed for a deleted user.
 //
+// Every ticket is announced to webhooks, with staff mail suppressed, exactly as
+// UnassignForUser does (#630, D41).
+//
 // This is the one place the ticket service deletes something that is not a
 // ticket. Atomic hands out only the ticket and audit stores, and the audit
 // entries must commit with the unassignment they describe, so the delete rides
@@ -3102,7 +3160,7 @@ func (s *Service) UnassignForUser(ctx context.Context, actorID, userID uuid.UUID
 // ticket's group as well, and the trail should say what actually happened.
 func (s *Service) DeleteGroup(ctx context.Context, actorID *uuid.UUID, groupID uuid.UUID) (int, error) {
 	var moved int
-	err := s.atomic.InTx(ctx, func(st Store, au audit.Store, _ *notification.Changes) error {
+	err := s.atomic.InTx(ctx, func(st Store, au audit.Store, ch *notification.Changes) error {
 		ids, err := st.UnassignForGroup(ctx, groupID)
 		if err != nil {
 			return err
@@ -3113,6 +3171,11 @@ func (s *Service) DeleteGroup(ctx context.Context, actorID *uuid.UUID, groupID u
 			if err := au.Create(ctx, auditEntry(actorID, "ticket", id, "unassigned", before, after)); err != nil {
 				return fmt.Errorf("auditing unassignment: %w", err)
 			}
+			t, err := st.GetByID(ctx, id)
+			if err != nil {
+				return fmt.Errorf("reading unassigned ticket: %w", err)
+			}
+			raiseUnassigned(ch, t, actorID, notification.IDChange("assignee_group_id", &groupID, nil))
 		}
 		if err := st.DeleteGroup(ctx, groupID); err != nil {
 			return err
@@ -3139,12 +3202,35 @@ var ErrValidation = errors.New("validation failed")
 // the system, and a close that committed in it must refuse the row. Returns
 // ErrClosed, and the caller removes the file. Staff are not asked.
 func (s *Service) CreateAttachment(ctx context.Context, a Attachment, actor Actor) error {
-	return s.atomic.InTx(ctx, func(st Store, _ audit.Store, _ *notification.Changes) error {
-		if _, err := s.refuseRequesterOnClosed(ctx, st, a.TicketID, actor); err != nil {
+	return s.atomic.InTx(ctx, func(st Store, _ audit.Store, ch *notification.Changes) error {
+		locked, err := s.refuseRequesterOnClosed(ctx, st, a.TicketID, actor)
+		if err != nil {
 			return err
 		}
-		return st.CreateAttachment(ctx, a)
+		return s.addAttachment(ctx, st, ch, locked, a, actor)
 	})
+}
+
+// addAttachment writes the row and raises ticket.attachment_added with its id
+// (#630). No mail (D39): a file usually comes with a reply, which mails. locked
+// is the ticket row when the caller already read it, and zero otherwise (staff
+// are not locked), in which case it is read here, inside the transaction, so the
+// event describes the ticket the row was added to.
+func (s *Service) addAttachment(ctx context.Context, st Store, ch *notification.Changes, locked Ticket, a Attachment, actor Actor) error {
+	if err := st.CreateAttachment(ctx, a); err != nil {
+		return err
+	}
+	if locked.ID == uuid.Nil {
+		var err error
+		if locked, err = st.GetByID(ctx, a.TicketID); err != nil {
+			return err
+		}
+	}
+	ev := raiseOn(locked, actor, time.Now())
+	ev.Kinds = []notification.EventType{notification.EventTicketAttachmentAdded}
+	ev.Payload = map[string]any{"attachment_id": a.ID}
+	ch.Raise(ev)
+	return nil
 }
 
 // CreateGuestAttachment is CreateAttachment for a guest, and the authority on the
@@ -3155,11 +3241,12 @@ func (s *Service) CreateAttachment(ctx context.Context, a Attachment, actor Acto
 // The closure is safe to run again (the transaction runner retries a deadlock,
 // #541): it captures nothing it writes to; n and err are its own.
 func (s *Service) CreateGuestAttachment(ctx context.Context, a Attachment, actor Actor, max int) error {
-	return s.atomic.InTx(ctx, func(st Store, _ audit.Store, _ *notification.Changes) error {
+	return s.atomic.InTx(ctx, func(st Store, _ audit.Store, ch *notification.Changes) error {
 		// Takes the ticket's row lock (a guest is a requester), which is what
 		// serialises concurrent uploads: the second one's count below waits
 		// for the first to commit and sees its row.
-		if _, err := s.refuseRequesterOnClosed(ctx, st, a.TicketID, actor); err != nil {
+		locked, err := s.refuseRequesterOnClosed(ctx, st, a.TicketID, actor)
+		if err != nil {
 			return err
 		}
 		n, err := st.CountGuestAttachments(ctx, a.TicketID)
@@ -3169,7 +3256,7 @@ func (s *Service) CreateGuestAttachment(ctx context.Context, a Attachment, actor
 		if n >= max {
 			return ErrGuestAttachmentLimit
 		}
-		return st.CreateAttachment(ctx, a)
+		return s.addAttachment(ctx, st, ch, locked, a, actor)
 	})
 }
 
@@ -3213,6 +3300,23 @@ func (s *Service) ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]At
 	return s.store.ListAttachments(ctx, ticketID)
 }
 
+// QuarantinedTicketIDs reports which of the given tickets hold a quarantined
+// attachment, as a set. One query for a whole page of the ticket list.
+func (s *Service) QuarantinedTicketIDs(ctx context.Context, ticketIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
+	if len(ticketIDs) == 0 {
+		return nil, nil
+	}
+	ids, err := s.store.QuarantinedTicketIDs(ctx, ticketIDs)
+	if err != nil {
+		return nil, fmt.Errorf("finding tickets with quarantined attachments: %w", err)
+	}
+	out := make(map[uuid.UUID]bool, len(ids))
+	for _, id := range ids {
+		out[id] = true
+	}
+	return out, nil
+}
+
 // DeleteAttachment removes attachment metadata from the DB. Callers are
 // responsible for deleting the file on disk.
 func (s *Service) DeleteAttachment(ctx context.Context, id uuid.UUID) error {
@@ -3230,6 +3334,18 @@ func (s *Service) ListVisibleToStaff(ctx context.Context, userID uuid.UUID, limi
 // actor's authority, it applies what it is given.
 func (s *Service) ListFiltered(ctx context.Context, f Filter) ([]Ticket, error) {
 	return s.store.ListFiltered(ctx, f)
+}
+
+// ListFilteredWithMeta is ListFiltered for a caller that reports what the
+// reply search could not do (GET /tickets).
+func (s *Service) ListFilteredWithMeta(ctx context.Context, f Filter) (ListResult, error) {
+	return s.store.ListFilteredWithMeta(ctx, f)
+}
+
+// ReplyMatches is Store.ReplyMatches: the reply each ticket of a page matched
+// through, read with the same Filter that listed them.
+func (s *Service) ReplyMatches(ctx context.Context, f Filter, ticketIDs []uuid.UUID) (map[uuid.UUID]ReplyMatch, error) {
+	return s.store.ReplyMatches(ctx, f, ticketIDs)
 }
 
 // SearchVisibleToStaff is ListVisibleToStaff with a search term.
