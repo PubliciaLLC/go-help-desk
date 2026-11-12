@@ -522,6 +522,24 @@ rewrite and a migration that stops the server, and neither is needed:
   50,000 characters of a long reply are not found. A row that still cannot be
   indexed gets an empty column and a log line naming it, and the fill carries on.
   Retries double from 30 s to a ten-minute ceiling, and empty windows pause.
+- **Optional pre-build (owner, 2026-11-11: "Add an optional pre-build command").**
+  `/app/server prepare-reply-search` (PR "search: reply pre-build") does the
+  fill and both index builds in the foreground, with progress, so search is on
+  the moment 1.3.0 starts. It can run against a 1.2 database that 1.2 is still
+  serving, because of two checks against `v1.2.0`: 1.2 refuses to start on a
+  migration version it has no file for (golang-migrate: "no migration found for
+  version 62"), and it tolerates the column and trigger (its statements name
+  their columns, and the trigger only sets the new one). So the command applies
+  the SQL of migration 000062 (`replyindex.EnsureSchema`, from the embedded file,
+  with a short `lock_timeout` and retry) and **does not write
+  `schema_migrations`**; every statement in 000062 is idempotent, so 1.3.0's own
+  migration runs over it harmlessly. It then calls the same `replyindex.Prepare`
+  as the server's job, under the same advisory lock, so the two cannot both run.
+  Flags: `--maintenance-work-mem` (default 1 GB, "1 GB, overridable"),
+  `--progress-interval` (30s), `--batch-size` (1000). Exit codes: 0 ready, 1
+  error, 3 another runner holds the lock. It can also be run with 1.2 stopped
+  (faster, with downtime), which the notes mention in one line ("Mention it as an
+  alternative").
 - **The query must match `body_tsv`**, and the plan test checks that the match
   uses the GIN index for a rare word and the recency index for a common one.
 
