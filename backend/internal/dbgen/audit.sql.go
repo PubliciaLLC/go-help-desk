@@ -121,13 +121,14 @@ func (q *Queries) CreateAuditEntry(ctx context.Context, arg CreateAuditEntryPara
 }
 
 const deleteAuditLogBatch = `-- name: DeleteAuditLogBatch :execrows
-DELETE FROM audit_log WHERE id IN (
+WITH batch AS MATERIALIZED (
   SELECT old.id FROM audit_log AS old
   WHERE old.created_at < $1
   ORDER BY old.created_at
   LIMIT $2
   FOR UPDATE SKIP LOCKED
 )
+DELETE FROM audit_log USING batch WHERE audit_log.id = batch.id
 `
 
 type DeleteAuditLogBatchParams struct {
@@ -139,6 +140,13 @@ type DeleteAuditLogBatchParams struct {
 // audit.Store's own comment on DeleteOlderThan for why. Oldest first, so the
 // created_at index serves it; SKIP LOCKED so a row someone else holds is left
 // for the next sweep and not waited on.
+//
+// The batch is a MATERIALIZED CTE, not `id IN (SELECT ... LIMIT n)`. With the
+// subquery inline, a nested-loop semi join re-runs it for every row of
+// audit_log, and each re-run skips the rows this statement has already deleted
+// and takes the next n: one batch then deletes every expired row, not n. Which
+// plan wins follows the table statistics. The CTE is evaluated once, whatever
+// the plan.
 func (q *Queries) DeleteAuditLogBatch(ctx context.Context, arg DeleteAuditLogBatchParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, deleteAuditLogBatch, arg.Cutoff, arg.BatchSize)
 	if err != nil {

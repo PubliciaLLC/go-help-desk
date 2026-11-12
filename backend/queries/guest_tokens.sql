@@ -64,10 +64,16 @@ WHERE tracking_number = $1
 -- token's lifetime. One batch, oldest first so idx_guest_access_tokens_expires_at
 -- serves it; SKIP LOCKED so a row someone else holds is left for the next sweep
 -- and not waited on.
-DELETE FROM guest_access_tokens WHERE id IN (
+--
+-- The batch is a MATERIALIZED CTE, not `id IN (SELECT ... LIMIT n)`: with the
+-- subquery inline a nested-loop semi join re-runs it per row of the table, and
+-- each re-run skips the rows already deleted and takes the next n, so one batch
+-- can delete every expired token. The CTE is evaluated once, whatever the plan.
+WITH batch AS MATERIALIZED (
   SELECT old.id FROM guest_access_tokens AS old
   WHERE old.expires_at <= clock_timestamp()
   ORDER BY old.expires_at
   LIMIT sqlc.arg(batch_size)
   FOR UPDATE SKIP LOCKED
-);
+)
+DELETE FROM guest_access_tokens USING batch WHERE guest_access_tokens.id = batch.id;

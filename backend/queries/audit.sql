@@ -166,10 +166,18 @@ SELECT COUNT(*) FROM (
 -- audit.Store's own comment on DeleteOlderThan for why. Oldest first, so the
 -- created_at index serves it; SKIP LOCKED so a row someone else holds is left
 -- for the next sweep and not waited on.
-DELETE FROM audit_log WHERE id IN (
+--
+-- The batch is a MATERIALIZED CTE, not `id IN (SELECT ... LIMIT n)`. With the
+-- subquery inline, a nested-loop semi join re-runs it for every row of
+-- audit_log, and each re-run skips the rows this statement has already deleted
+-- and takes the next n: one batch then deletes every expired row, not n. Which
+-- plan wins follows the table statistics. The CTE is evaluated once, whatever
+-- the plan.
+WITH batch AS MATERIALIZED (
   SELECT old.id FROM audit_log AS old
   WHERE old.created_at < sqlc.arg(cutoff)
   ORDER BY old.created_at
   LIMIT sqlc.arg(batch_size)
   FOR UPDATE SKIP LOCKED
-);
+)
+DELETE FROM audit_log USING batch WHERE audit_log.id = batch.id;

@@ -240,3 +240,34 @@ func countRows(t *testing.T, db *testutil.DB) int {
 	require.NoError(t, db.SQL.QueryRow(`SELECT count(*) FROM rate_limit_counters`).Scan(&n))
 	return n
 }
+
+// One sweep batch removes at most batch rows, whatever plan Postgres picks. The
+// statement used to be `key IN (SELECT ... LIMIT n)`, and under a nested-loop
+// semi join the subquery was re-run per row of the table, so a batch of 3 could
+// remove every expired row. The transaction and the forced plan keep this
+// deterministic; see testutil.ForceRescannedBatchPlan.
+func TestDeleteExpiredRateLimits_NeverDeletesMoreThanItsBatch(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, tx, rollback := testutil.TxQueriesTx(t, db)
+	defer rollback()
+	testutil.ForceRescannedBatchPlan(t, tx)
+
+	// Windows ended in 1970, so a cutoff in February 1970 matches these and
+	// nothing else a long-lived test database might hold.
+	for i := range 7 {
+		_, err := tx.Exec(`INSERT INTO rate_limit_counters (key, window_start, window_end, count)
+			VALUES ($1, '1970-01-01', '1970-01-02'::timestamptz + $2 * interval '1 second', 1)`,
+			"batch-test-"+strconv.Itoa(i), i)
+		require.NoError(t, err)
+	}
+	n, err := q.DeleteExpiredRateLimits(context.Background(), dbgen.DeleteExpiredRateLimitsParams{
+		Now: time.Date(1970, 2, 1, 0, 0, 0, 0, time.UTC), Batch: 3,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 3, n)
+
+	var left int
+	require.NoError(t, tx.QueryRow(`SELECT count(*) FROM rate_limit_counters WHERE key LIKE 'batch-test-%'`).Scan(&left))
+	require.Equal(t, 4, left)
+}
