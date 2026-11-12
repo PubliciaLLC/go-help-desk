@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -44,12 +45,20 @@ func (s *Server) handleCreateFieldDef(w http.ResponseWriter, r *http.Request) {
 		FieldType customfield.FieldType `json:"field_type"`
 		Options   []string              `json:"options"`
 		SortOrder int                   `json:"sort_order"`
+		// The administrator's own limit on a value, lower than the type's.
+		// Absent or null is none.
+		MaxLength json.RawMessage `json:"max_length"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	def, err := s.customFields.CreateFieldDef(r.Context(), body.Name, body.FieldType, body.Options, body.SortOrder, actorIDOf(r))
+	maxLength, _, err := parseMaxLength(body.MaxLength)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	def, err := s.customFields.CreateFieldDefLimited(r.Context(), body.Name, body.FieldType, body.Options, body.SortOrder, maxLength, actorIDOf(r))
 	if err != nil {
 		handleError(w, err)
 		return
@@ -73,9 +82,16 @@ func (s *Server) handleUpdateFieldDef(w http.ResponseWriter, r *http.Request) {
 		RetiredOptions []string `json:"retired_options"`
 		SortOrder      *int     `json:"sort_order"`
 		Active         *bool    `json:"active"`
+		// Absent leaves the limit as it is, null removes it, a number sets it.
+		MaxLength json.RawMessage `json:"max_length"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+	maxLength, clearMaxLength, err := parseMaxLength(body.MaxLength)
+	if err != nil {
+		handleError(w, err)
 		return
 	}
 	// Applied to the row as it is under the lock the service takes, not to a
@@ -83,7 +99,7 @@ func (s *Server) handleUpdateFieldDef(w http.ResponseWriter, r *http.Request) {
 	// tickets hold at that moment.
 	saved, err := s.customFields.PatchFieldDef(r.Context(), id, customfield.FieldDefPatch{
 		Name: body.Name, FieldType: body.FieldType, Options: body.Options, RetiredOptions: body.RetiredOptions,
-		SortOrder: body.SortOrder, Active: body.Active,
+		SortOrder: body.SortOrder, Active: body.Active, MaxLength: maxLength, ClearMaxLength: clearMaxLength,
 	}, actorIDOf(r))
 	if err != nil {
 		handleFieldDefNotFound(w, err)
@@ -93,6 +109,23 @@ func (s *Server) handleUpdateFieldDef(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleReorderFieldDefs sets every field's number from the order of the list.
+// parseMaxLength reads max_length as the three things it can be: absent (leave
+// it), null (remove it) and a whole number (set it, for the service to judge).
+// Anything else is a 400, so "100" and 100.5 are not read as a number.
+func parseMaxLength(raw json.RawMessage) (set *int, clear bool, err error) {
+	if len(raw) == 0 {
+		return nil, false, nil
+	}
+	if string(raw) == "null" {
+		return nil, true, nil
+	}
+	var n int
+	if err := json.Unmarshal(raw, &n); err != nil {
+		return nil, false, customfield.Invalid("max_length must be a whole number, or null for none")
+	}
+	return &n, false, nil
+}
+
 func (s *Server) handleReorderFieldDefs(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		// A pointer: a missing key and null are 400, an empty list is not.
@@ -173,6 +206,9 @@ func (s *Server) handleCreateAssignment(w http.ResponseWriter, r *http.Request) 
 		SortOrder     int       `json:"sort_order"`
 		VisibleOnNew  *bool     `json:"visible_on_new"`
 		RequiredOnNew bool      `json:"required_on_new"`
+		// Offers the field on the public guest form. Off unless sent, and
+		// refused on anything but a category (#627).
+		VisibleToGuests bool `json:"visible_to_guests"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -186,7 +222,10 @@ func (s *Server) handleCreateAssignment(w http.ResponseWriter, r *http.Request) 
 	if body.VisibleOnNew != nil {
 		visibleOnNew = *body.VisibleOnNew
 	}
-	a, err := s.customFields.CreateAssignment(r.Context(), body.FieldDefID, scopeType, scopeID, body.SortOrder, visibleOnNew, body.RequiredOnNew, actorIDOf(r))
+	a, err := s.customFields.Attach(r.Context(), customfield.Assignment{
+		FieldDefID: body.FieldDefID, ScopeType: scopeType, ScopeID: scopeID, SortOrder: body.SortOrder,
+		VisibleOnNew: visibleOnNew, RequiredOnNew: body.RequiredOnNew, VisibleToGuests: body.VisibleToGuests,
+	}, actorIDOf(r))
 	if err != nil {
 		handleError(w, err)
 		return
@@ -200,9 +239,10 @@ func (s *Server) handleUpdateAssignment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var body struct {
-		SortOrder     *int  `json:"sort_order"`
-		VisibleOnNew  *bool `json:"visible_on_new"`
-		RequiredOnNew *bool `json:"required_on_new"`
+		SortOrder       *int  `json:"sort_order"`
+		VisibleOnNew    *bool `json:"visible_on_new"`
+		RequiredOnNew   *bool `json:"required_on_new"`
+		VisibleToGuests *bool `json:"visible_to_guests"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -216,6 +256,9 @@ func (s *Server) handleUpdateAssignment(w http.ResponseWriter, r *http.Request) 
 	}
 	if body.RequiredOnNew != nil {
 		existing.RequiredOnNew = *body.RequiredOnNew
+	}
+	if body.VisibleToGuests != nil {
+		existing.VisibleToGuests = *body.VisibleToGuests
 	}
 	if err := s.customFields.UpdateAssignment(r.Context(), existing, actorIDOf(r)); err != nil {
 		handleError(w, err)

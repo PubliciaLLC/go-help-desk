@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -83,6 +84,7 @@ func (s *Store) CreateFieldDef(ctx context.Context, def customfield.FieldDef, en
 			RetiredOptions: optionsToNullRaw(def.RetiredOptions),
 			SortOrder:      int32(def.SortOrder),
 			Active:         def.Active,
+			MaxLength:      maxLengthToNull(def.MaxLength),
 		})
 		if err != nil {
 			return mapWriteError("creating field def", err, nameTaken, "")
@@ -105,7 +107,7 @@ func (s *Store) ListFieldDefs(ctx context.Context) ([]customfield.FieldDef, erro
 	for i, r := range rows {
 		out[i] = defFromRow(dbgen.CustomFieldDef{
 			ID: r.ID, Name: r.Name, FieldType: r.FieldType, Options: r.Options, SortOrder: r.SortOrder,
-			Active: r.Active, CreatedAt: r.CreatedAt, RetiredOptions: r.RetiredOptions,
+			Active: r.Active, CreatedAt: r.CreatedAt, RetiredOptions: r.RetiredOptions, MaxLength: r.MaxLength,
 		})
 		places := int(r.PlaceCount)
 		out[i].PlaceCount = &places
@@ -150,6 +152,7 @@ func (s *Store) UpdateFieldDef(ctx context.Context, id uuid.UUID, decide func(cu
 			RetiredOptions: optionsToNullRaw(next.RetiredOptions),
 			SortOrder:      int32(next.SortOrder),
 			Active:         next.Active,
+			MaxLength:      maxLengthToNull(next.MaxLength),
 		})
 		if err := mapWriteError("updating field def", err, nameTaken, ""); err != nil {
 			return err
@@ -241,14 +244,18 @@ func (s *Store) CountValuesByValue(ctx context.Context, fieldDefID uuid.UUID) (m
 func (s *Store) CreateAssignment(ctx context.Context, a customfield.Assignment, entry func(customfield.AssignmentInfo) audit.Entry) (customfield.Assignment, error) {
 	var out customfield.Assignment
 	err := s.inTx(ctx, "field attachment", func(q *dbgen.Queries) error {
+		if err := refuseOverlap(ctx, q, a); err != nil {
+			return err
+		}
 		row, err := q.CreateCustomFieldAssignment(ctx, dbgen.CreateCustomFieldAssignmentParams{
-			ID:            a.ID,
-			FieldDefID:    a.FieldDefID,
-			ScopeType:     string(a.ScopeType),
-			ScopeID:       a.ScopeID,
-			SortOrder:     int32(a.SortOrder),
-			VisibleOnNew:  a.VisibleOnNew,
-			RequiredOnNew: a.RequiredOnNew,
+			ID:              a.ID,
+			FieldDefID:      a.FieldDefID,
+			ScopeType:       string(a.ScopeType),
+			ScopeID:         a.ScopeID,
+			SortOrder:       int32(a.SortOrder),
+			VisibleOnNew:    a.VisibleOnNew,
+			RequiredOnNew:   a.RequiredOnNew,
+			VisibleToGuests: a.VisibleToGuests,
 		})
 		if err != nil {
 			return mapWriteError("creating assignment", err, alreadyAssigned, "field_def_id does not name a field")
@@ -269,6 +276,66 @@ func (s *Store) CreateAssignment(ctx context.Context, a customfield.Assignment, 
 	return out, nil
 }
 
+// refuseOverlap answers Conflict if the field is already attached at the same
+// place, or above or below it on one path of the tree (its category, one of that
+// category's types, one of that type's items). Several levels would be shown
+// once, at the most specific, and a person editing the ones that lose would
+// change nothing they can see; the Custom Fields page has never offered it.
+//
+// The definition's row is locked FOR UPDATE first, so two attachments of one
+// field made at the same moment (one at a category, one at its type) are
+// checked one after the other and the second sees the first. Attachments that
+// overlap already are not touched: nothing here reads them except to find the
+// one a new attachment collides with.
+//
+// A same-place attach is refused here too, with the same words the unique
+// constraint uses, so the common mistake never reaches the database as an error
+// that would abort an enclosing transaction.
+func refuseOverlap(ctx context.Context, q *dbgen.Queries, a customfield.Assignment) error {
+	if _, err := q.LockCustomFieldDefForUpdate(ctx, a.FieldDefID); errors.Is(err, sql.ErrNoRows) {
+		return customfield.InvalidReference("field_def_id does not name a field")
+	} else if err != nil {
+		return fmt.Errorf("locking field def %s: %w", a.FieldDefID, err)
+	}
+	chain, err := q.GetScopeChain(ctx, dbgen.GetScopeChainParams{ScopeType: string(a.ScopeType), ScopeID: a.ScopeID})
+	if err != nil {
+		return fmt.Errorf("reading where %s %s sits: %w", a.ScopeType, a.ScopeID, err)
+	}
+	here := [3]uuid.NullUUID{chain.CategoryID, chain.TypeID, chain.ItemID}
+	placed, err := q.ListAssignmentsForFieldDef(ctx, a.FieldDefID)
+	if err != nil {
+		return fmt.Errorf("listing where field %s is attached: %w", a.FieldDefID, err)
+	}
+	for _, p := range placed {
+		there := [3]uuid.NullUUID{{UUID: p.CategoryID, Valid: true}, p.TypeID, p.ItemID}
+		if p.ScopeType == string(a.ScopeType) && p.ScopeID == a.ScopeID {
+			return customfield.Conflict(alreadyAssigned)
+		}
+		// The shallower of the two decides: the deeper one is under it, or not.
+		level := min(depth(p.ScopeType), depth(string(a.ScopeType)))
+		if here[level].Valid && here[level] == there[level] {
+			path, err := q.GetAssignmentScopePath(ctx, dbgen.GetAssignmentScopePathParams{ScopeType: p.ScopeType, ScopeID: p.ScopeID})
+			if err != nil {
+				return fmt.Errorf("reading the path of %s %s: %w", p.ScopeType, p.ScopeID, err)
+			}
+			return customfield.Conflict(fmt.Sprintf(
+				"this field is already attached at %s; a field is attached at one level of a category, its types and their items", path))
+		}
+	}
+	return nil
+}
+
+// depth is a scope type's level in the tree: 0 category, 1 type, 2 item.
+func depth(scopeType string) int {
+	switch scopeType {
+	case string(customfield.TypeScope):
+		return 1
+	case string(customfield.ItemScope):
+		return 2
+	}
+	return 0
+}
+
 func (s *Store) ListAssignments(ctx context.Context, scopeType customfield.ScopeType, scopeID uuid.UUID) ([]customfield.Assignment, error) {
 	rows, err := s.q.ListAssignmentsForScope(ctx, dbgen.ListAssignmentsForScopeParams{
 		ScopeType: string(scopeType),
@@ -281,22 +348,25 @@ func (s *Store) ListAssignments(ctx context.Context, scopeType customfield.Scope
 	for i, r := range rows {
 		opts := optionsFromNullRaw(r.FieldOptions)
 		fd := &customfield.FieldDef{
-			ID:        r.FieldDefID,
-			Name:      r.FieldName,
-			FieldType: customfield.FieldType(r.FieldType),
-			Options:   opts,
-			SortOrder: int(r.FieldSortOrder),
-			Active:    r.FieldActive,
+			ID:             r.FieldDefID,
+			Name:           r.FieldName,
+			FieldType:      customfield.FieldType(r.FieldType),
+			Options:        opts,
+			RetiredOptions: optionsFromNullRaw(r.FieldRetiredOptions),
+			SortOrder:      int(r.FieldSortOrder),
+			Active:         r.FieldActive,
+			MaxLength:      maxLengthFromNull(r.FieldMaxLength),
 		}
 		out[i] = customfield.Assignment{
-			ID:            r.ID,
-			FieldDefID:    r.FieldDefID,
-			FieldDef:      fd,
-			ScopeType:     customfield.ScopeType(r.ScopeType),
-			ScopeID:       r.ScopeID,
-			SortOrder:     int(r.SortOrder),
-			VisibleOnNew:  r.VisibleOnNew,
-			RequiredOnNew: r.RequiredOnNew,
+			ID:              r.ID,
+			FieldDefID:      r.FieldDefID,
+			FieldDef:        fd,
+			ScopeType:       customfield.ScopeType(r.ScopeType),
+			ScopeID:         r.ScopeID,
+			SortOrder:       int(r.SortOrder),
+			VisibleOnNew:    r.VisibleOnNew,
+			RequiredOnNew:   r.RequiredOnNew,
+			VisibleToGuests: r.VisibleToGuests,
 		}
 	}
 	return out, nil
@@ -312,7 +382,7 @@ func (s *Store) ListPlacements(ctx context.Context, fieldDefID uuid.UUID) ([]cus
 		p := customfield.Placement{
 			Assignment: customfield.Assignment{
 				ID: r.ID, FieldDefID: r.FieldDefID, ScopeType: customfield.ScopeType(r.ScopeType), ScopeID: r.ScopeID,
-				SortOrder: int(r.SortOrder), VisibleOnNew: r.VisibleOnNew, RequiredOnNew: r.RequiredOnNew,
+				SortOrder: int(r.SortOrder), VisibleOnNew: r.VisibleOnNew, RequiredOnNew: r.RequiredOnNew, VisibleToGuests: r.VisibleToGuests,
 			},
 			Category: customfield.PlaceNode{ID: r.CategoryID, Name: r.CategoryName, Active: r.CategoryActive},
 		}
@@ -342,10 +412,11 @@ func (s *Store) UpdateAssignment(ctx context.Context, a customfield.Assignment, 
 			return err
 		}
 		if err := q.UpdateCustomFieldAssignment(ctx, dbgen.UpdateCustomFieldAssignmentParams{
-			ID:            a.ID,
-			SortOrder:     int32(a.SortOrder),
-			VisibleOnNew:  a.VisibleOnNew,
-			RequiredOnNew: a.RequiredOnNew,
+			ID:              a.ID,
+			SortOrder:       int32(a.SortOrder),
+			VisibleOnNew:    a.VisibleOnNew,
+			RequiredOnNew:   a.RequiredOnNew,
+			VisibleToGuests: a.VisibleToGuests,
 		}); err != nil {
 			return fmt.Errorf("updating assignment %s: %w", a.ID, err)
 		}
@@ -409,7 +480,17 @@ func assignmentInfo(ctx context.Context, q *dbgen.Queries, a customfield.Assignm
 // ── Values ────────────────────────────────────────────────────────────────────
 
 func (s *Store) UpsertValue(ctx context.Context, ticketID, fieldDefID uuid.UUID, value string) error {
-	err := s.q.UpsertCustomFieldValue(ctx, dbgen.UpsertCustomFieldValueParams{
+	def, err := s.q.GetCustomFieldDef(ctx, fieldDefID)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return customfield.InvalidReference("the ticket or the field does not exist")
+	case err != nil:
+		return fmt.Errorf("reading field def %s: %w", fieldDefID, err)
+	}
+	if err := checkTypeCap(customfield.FieldType(def.FieldType), value); err != nil {
+		return err
+	}
+	err = s.q.UpsertCustomFieldValue(ctx, dbgen.UpsertCustomFieldValueParams{
 		TicketID:   ticketID,
 		FieldDefID: fieldDefID,
 		Value:      value,
@@ -432,13 +513,15 @@ func (s *Store) ListValuesForTicket(ctx context.Context, ticketID uuid.UUID) ([]
 	out := make([]customfield.TicketFieldValue, len(rows))
 	for i, r := range rows {
 		out[i] = customfield.TicketFieldValue{
-			TicketID:   r.TicketID,
-			FieldDefID: r.FieldDefID,
-			FieldName:  r.FieldName,
-			FieldType:  customfield.FieldType(r.FieldType),
-			Options:    optionsFromNullRaw(r.FieldOptions),
-			Value:      r.Value,
-			UpdatedAt:  r.UpdatedAt,
+			TicketID:       r.TicketID,
+			FieldDefID:     r.FieldDefID,
+			FieldName:      r.FieldName,
+			FieldType:      customfield.FieldType(r.FieldType),
+			Options:        optionsFromNullRaw(r.FieldOptions),
+			RetiredOptions: optionsFromNullRaw(r.FieldRetiredOptions),
+			MaxLength:      maxLengthFromNull(r.FieldMaxLength),
+			Value:          r.Value,
+			UpdatedAt:      r.UpdatedAt,
 		}
 	}
 	return out, nil
@@ -468,6 +551,14 @@ func (s *Store) setValues(ctx context.Context, q *dbgen.Queries, ticketID uuid.U
 	write, err := decide(defs)
 	if err != nil {
 		return err
+	}
+	// Whatever decide let through, the store takes no more than the type does.
+	for _, id := range sortedIDs(write) {
+		if def, ok := defs[id]; ok {
+			if err := checkTypeCap(def.FieldType, write[id]); err != nil {
+				return err
+			}
+		}
 	}
 
 	// In id order: two batches that name the same fields then take the rows of
@@ -534,7 +625,38 @@ func defFromRow(r dbgen.CustomFieldDef) customfield.FieldDef {
 		SortOrder:      int(r.SortOrder),
 		Active:         r.Active,
 		CreatedAt:      r.CreatedAt,
+		MaxLength:      maxLengthFromNull(r.MaxLength),
 	}
+}
+
+// The administrator's own limit on a value is stored and returned here and read
+// by nothing in this package: the API and the forms enforce it, and the store
+// knows only the type's (checkTypeCap). A write that does not go through the API
+// is held to that, so lowering a limit never touches a stored value.
+func maxLengthToNull(n *int) sql.NullInt32 {
+	if n == nil {
+		return sql.NullInt32{}
+	}
+	return sql.NullInt32{Int32: int32(*n), Valid: true}
+}
+
+func maxLengthFromNull(n sql.NullInt32) *int {
+	if !n.Valid {
+		return nil
+	}
+	v := int(n.Int32)
+	return &v
+}
+
+// checkTypeCap refuses a value over the longest its field's type takes (255
+// characters, 10,000 for long text), whoever is writing: the API's own checks
+// run before this, in the domain, and this is what holds a write that skipped
+// them, an import or a direct call. It never looks at the field's own limit.
+func checkTypeCap(ft customfield.FieldType, value string) error {
+	if limit := customfield.MaxChars(ft); utf8.RuneCountInString(value) > limit {
+		return customfield.Invalid(fmt.Sprintf("a value is at most %d characters for this type of field", limit))
+	}
+	return nil
 }
 
 func assignmentFromRow(r dbgen.CustomFieldAssignment) customfield.Assignment {
@@ -546,6 +668,8 @@ func assignmentFromRow(r dbgen.CustomFieldAssignment) customfield.Assignment {
 		SortOrder:     int(r.SortOrder),
 		VisibleOnNew:  r.VisibleOnNew,
 		RequiredOnNew: r.RequiredOnNew,
+
+		VisibleToGuests: r.VisibleToGuests,
 	}
 }
 

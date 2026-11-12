@@ -48,9 +48,15 @@ func newEntry(actor *uuid.UUID, fieldID uuid.UUID, action string, before, after 
 }
 
 func entriesForCreated(actor *uuid.UUID, d FieldDef) []audit.Entry {
-	out := []audit.Entry{newEntry(actor, d.ID, "custom_field_created", nil, map[string]any{
+	created := map[string]any{
 		"field_name": d.Name, "field_type": string(d.FieldType), "sort_order": d.SortOrder, "active": d.Active,
-	})}
+	}
+	// Only where the administrator set one, so every entry for a field without
+	// reads as it always did.
+	if d.MaxLength != nil {
+		created["max_length"] = d.EffectiveMaxLength()
+	}
+	out := []audit.Entry{newEntry(actor, d.ID, "custom_field_created", nil, created)}
 	for i, o := range d.Options {
 		out = append(out, newEntry(actor, d.ID, "custom_field_option_added", nil, optionKeys(d.Name, o, i+1)))
 	}
@@ -94,6 +100,13 @@ func entriesForChange(actor *uuid.UUID, before, after FieldDef) []audit.Entry {
 		add("custom_field_reordered",
 			map[string]any{"field_name": n, "sort_order": before.SortOrder},
 			map[string]any{"field_name": n, "sort_order": after.SortOrder})
+	}
+
+	// The limit that applies, before and after, so clearing one reads as the
+	// type's limit coming back rather than as a missing value.
+	if b, a := before.EffectiveMaxLength(), after.EffectiveMaxLength(); b != a {
+		add("custom_field_max_length_changed",
+			map[string]any{"field_name": n, "max_length": b}, map[string]any{"field_name": n, "max_length": a})
 	}
 
 	known := func(d FieldDef, v string) bool {
@@ -171,21 +184,37 @@ func attachmentKeys(info AssignmentInfo, a Assignment) map[string]any {
 	}
 }
 
+// withGuests adds visible_to_guests to an attachment's keys where it is true,
+// so every entry for a field not offered to guests, and every one recorded
+// before the flag existed, reads exactly as it did. A change to it is recorded
+// on both sides (entriesForAttachmentChange), because publishing a field to
+// anonymous visitors is the one change here someone will later want to find.
+func withGuests(keys map[string]any, a Assignment) map[string]any {
+	if a.VisibleToGuests {
+		keys["visible_to_guests"] = true
+	}
+	return keys
+}
+
 func entryAttached(actor *uuid.UUID, info AssignmentInfo, a Assignment) audit.Entry {
-	return newEntry(actor, a.FieldDefID, "custom_field_attached", nil, attachmentKeys(info, a))
+	return newEntry(actor, a.FieldDefID, "custom_field_attached", nil, withGuests(attachmentKeys(info, a), a))
 }
 
 func entriesForAttachmentChange(actor *uuid.UUID, info AssignmentInfo, before, after Assignment) []audit.Entry {
-	if before.VisibleOnNew == after.VisibleOnNew && before.RequiredOnNew == after.RequiredOnNew && before.SortOrder == after.SortOrder {
+	if before.VisibleOnNew == after.VisibleOnNew && before.RequiredOnNew == after.RequiredOnNew &&
+		before.SortOrder == after.SortOrder && before.VisibleToGuests == after.VisibleToGuests {
 		return nil
 	}
-	b, a := attachmentKeys(info, before), attachmentKeys(info, after)
+	b, a := withGuests(attachmentKeys(info, before), before), withGuests(attachmentKeys(info, after), after)
+	if before.VisibleToGuests != after.VisibleToGuests {
+		b["visible_to_guests"], a["visible_to_guests"] = before.VisibleToGuests, after.VisibleToGuests
+	}
 	b["sort_order"], a["sort_order"] = before.SortOrder, after.SortOrder
 	return []audit.Entry{newEntry(actor, after.FieldDefID, "custom_field_attachment_changed", b, a)}
 }
 
 func entryDetached(actor *uuid.UUID, info AssignmentInfo, a Assignment) audit.Entry {
-	return newEntry(actor, a.FieldDefID, "custom_field_detached", attachmentKeys(info, a), nil)
+	return newEntry(actor, a.FieldDefID, "custom_field_detached", withGuests(attachmentKeys(info, a), a), nil)
 }
 
 // movedOptions is the options of the new order that were moved, among those
