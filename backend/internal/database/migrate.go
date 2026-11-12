@@ -111,3 +111,16 @@ func MigrationFiles() fs.FS {
 	}
 	return sub
 }
+
+// ReplySearchSchemaSQL is the SQL of migration 000062 (reply search: the
+// ticket_replies.body_tsv column and its trigger), read from the embedded
+// migration files. The pre-build command applies it to a database still at 1.2
+// without recording the migration; every statement in it is idempotent, so the
+// migration runs over it harmlessly when 1.3.0 starts.
+func ReplySearchSchemaSQL() (string, error) {
+	b, err := migrationsFS.ReadFile("migrations/000062_reply_search.up.sql")
+	if err != nil {
+		return "", fmt.Errorf("reading the reply search migration: %w", err)
+	}
+	return string(b), nil
+}
