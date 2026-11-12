@@ -272,8 +272,10 @@ func invalid(format string, args ...any) *FilterError {
 	return &FilterError{Kind: FilterInvalid, Msg: fmt.Sprintf(format, args...)}
 }
 
-// maxRepeated is the most values one repeatable key may carry.
-const maxRepeated = 20
+// MaxRepeated is the most values one repeatable key may carry. Exported so a
+// caller that has the values in hand before it reaches the parser (MCP) can
+// refuse a long list without doing any work per value.
+const MaxRepeated = 20
 
 // ParseListFilter reads the filter and sort parameters of GET /tickets. It does
 // no authorisation (see AllowedFor) and sets none of the server fields.
@@ -435,8 +437,8 @@ func parseRepeated[T any](q url.Values, key string, conv func(string) (T, bool))
 		if raw == "" {
 			continue
 		}
-		if len(out) == maxRepeated {
-			return nil, invalid("too many %s values (max %d)", key, maxRepeated)
+		if len(out) == MaxRepeated {
+			return nil, invalid("too many %s values (max %d)", key, MaxRepeated)
 		}
 		v, ok := conv(raw)
 		if !ok {

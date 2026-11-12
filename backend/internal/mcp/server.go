@@ -31,7 +31,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -653,9 +652,9 @@ func (s *Server) registerTools() {
 		mcpgo.WithString("assignee_user_id", mcpgo.Description("Only tickets assigned to this user UUID (staff and administrators)")),
 		mcpgo.WithString("assignee_group_id", mcpgo.Description("Only tickets assigned to this group UUID (staff and administrators)")),
 		mcpgo.WithString("status_id", mcpgo.Description("Only tickets in this status UUID (see list_statuses). Kept for existing callers; status_ids takes several")),
-		mcpgo.WithArray("status_ids", mcpgo.WithStringItems(), mcpgo.MaxItems(20), mcpgo.Description("Only tickets in any of these status UUIDs, at most 20 (see list_statuses). May be combined with status_id")),
+		mcpgo.WithArray("status_ids", mcpgo.WithStringItems(), mcpgo.MaxItems(ticket.MaxRepeated), mcpgo.Description("Only tickets in any of these status UUIDs, at most 20 (see list_statuses). May be combined with status_id")),
 		mcpgo.WithBoolean("include_closed", mcpgo.Description("false leaves out the Closed status. Ignored when a status is named (default true)")),
-		mcpgo.WithString("priority", mcpgo.Description("Only tickets at this priority: critical|high|medium|low. A JSON array of them is also accepted, at most 20")),
+		mcpgo.WithAny("priority", mcpgo.Description("Only tickets at this priority, or at any of these in a JSON array (at most 20): critical|high|medium|low"), stringOrStringArray(ticket.MaxRepeated)),
 		mcpgo.WithString("category_id", mcpgo.Description("Only tickets in this category UUID, including every type and item under it (see list_categories)")),
 		mcpgo.WithString("type_id", mcpgo.Description("Only tickets of this type UUID")),
 		mcpgo.WithString("item_id", mcpgo.Description("Only tickets of this item UUID")),
@@ -665,7 +664,7 @@ func (s *Server) registerTools() {
 		mcpgo.WithString("created_before", mcpgo.Description("Only tickets created before this RFC 3339 time")),
 		mcpgo.WithString("updated_after", mcpgo.Description("Only tickets updated at or after this RFC 3339 time (staff and administrators)")),
 		mcpgo.WithString("updated_before", mcpgo.Description("Only tickets updated before this RFC 3339 time (staff and administrators)")),
-		mcpgo.WithArray("source_channel", mcpgo.WithStringEnumItems([]string{"web", "api", "mcp", "guest", "phone"}), mcpgo.MaxItems(20), mcpgo.Description("Only tickets opened through any of these channels (staff and administrators)")),
+		mcpgo.WithArray("source_channel", mcpgo.WithStringEnumItems([]string{"web", "api", "mcp", "guest", "phone"}), mcpgo.MaxItems(ticket.MaxRepeated), mcpgo.Description("Only tickets opened through any of these channels (staff and administrators)")),
 		mcpgo.WithString("sla", mcpgo.Description("breached|at_risk: only tickets the SLA indicator shows in that state (staff and administrators). Refused while SLA tracking is off"), mcpgo.Enum("breached", "at_risk")),
 		mcpgo.WithString("sort", mcpgo.Description("Order by number|subject|status|priority|sla|created|updated. A requester may sort by number, subject, status, priority and created. Ties keep a stable order. Refused for sla while SLA tracking is off"), mcpgo.Enum("number", "subject", "status", "priority", "sla", "created", "updated")),
 		mcpgo.WithString("order", mcpgo.Description("asc|desc. Without it a sort uses its natural order: created and updated newest first, the rest first to last (priority and sla most urgent first). Has no effect without sort"), mcpgo.Enum("asc", "desc")),
@@ -1187,6 +1186,18 @@ func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) 
 	return jsonResult(reply)
 }
 
+// stringOrStringArray is the schema of an argument that takes one string, as it
+// always has, or a JSON array of them. mcp-go has no option for it, and a client
+// that validates against the schema could not send the array form otherwise.
+func stringOrStringArray(maxItems int) mcpgo.PropertyOption {
+	return func(schema map[string]any) {
+		schema["oneOf"] = []any{
+			map[string]any{"type": "string"},
+			map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": maxItems},
+		}
+	}
+}
+
 // listFilterParams are the string arguments that are one filter parameter each,
 // with the name GET /tickets calls it. Everything else list_tickets reads is
 // handled in listQuery by its shape.
@@ -1223,6 +1234,12 @@ func listArgStrings(args map[string]any, key string) ([]string, error) {
 	case string:
 		return []string{v}, nil
 	case []any:
+		// Before anything is done per value. mcp-go does not enforce the schema's
+		// maxItems and the body limit admits ~100,000 values, so a check made
+		// later (the parser's) comes after work that grows with the length.
+		if len(v) > ticket.MaxRepeated {
+			return nil, fmt.Errorf("%w: too many %s values (max %d)", ticket.ErrValidation, key, ticket.MaxRepeated)
+		}
 		out := make([]string, 0, len(v))
 		for _, e := range v {
 			s, ok := e.(string)
@@ -1272,6 +1289,8 @@ func listQuery(args map[string]any) (url.Values, error) {
 			q.Set(key, v)
 		}
 	}
+	type value struct{ param, v string }
+	seen := map[value]struct{}{}
 	for _, p := range []struct{ arg, param string }{
 		{"status_id", "status_id"}, {"status_ids", "status_id"},
 		{"priority", "priority"}, {"source_channel", "source_channel"},
@@ -1281,7 +1300,8 @@ func listQuery(args map[string]any) (url.Values, error) {
 			return nil, err
 		}
 		for _, v := range vals {
-			if !slices.Contains(q[p.param], v) {
+			if _, dup := seen[value{p.param, v}]; !dup {
+				seen[value{p.param, v}] = struct{}{}
 				q[p.param] = append(q[p.param], v)
 			}
 		}
@@ -1332,9 +1352,17 @@ func buildListFilter(args map[string]any, vis ticket.Visibility, actorID uuid.UU
 
 	// Clamped, not rejected: a caller asking for 500 gets 100 rather than an
 	// error, and offset still walks the whole result set.
+	limit, err := listArgNumber(args, "limit")
+	if err != nil {
+		return ticket.Filter{}, err
+	}
+	offset, err := listArgNumber(args, "offset")
+	if err != nil {
+		return ticket.Filter{}, err
+	}
 	f.Limit = 20
-	if v, ok := args["limit"].(float64); ok {
-		f.Limit = int(v)
+	if limit != nil {
+		f.Limit = int(*limit)
 	}
 	if f.Limit > maxListLimit {
 		f.Limit = maxListLimit
@@ -1342,10 +1370,23 @@ func buildListFilter(args map[string]any, vis ticket.Visibility, actorID uuid.UU
 	if f.Limit < 1 {
 		f.Limit = 1
 	}
-	if v, ok := args["offset"].(float64); ok && v > 0 {
-		f.Offset = int(v)
+	if offset != nil && *offset > 0 {
+		f.Offset = int(*offset)
 	}
 	return f, nil
+}
+
+// listArgNumber reads limit or offset: a JSON number, or absent or null. Any
+// other type is refused like every other argument, not silently replaced by the
+// default.
+func listArgNumber(args map[string]any, key string) (*float64, error) {
+	switch v := args[key].(type) {
+	case nil:
+		return nil, nil
+	case float64:
+		return &v, nil
+	}
+	return nil, badListArg(key)
 }
 
 // canSearchRequesters says whether the caller may send the free-text

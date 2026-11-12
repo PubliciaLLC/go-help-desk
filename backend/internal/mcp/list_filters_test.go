@@ -122,7 +122,7 @@ func TestBuildListFilter_RejectsWhatTheParserRejects(t *testing.T) {
 		{"sla", map[string]any{"sla": "late"}, "invalid sla"},
 		{"source_channel", map[string]any{"source_channel": []any{"carrier-pigeon"}}, "invalid source_channel"},
 		{"status_ids", map[string]any{"status_ids": []any{"nope"}}, "invalid status_id"},
-		{"too many status_ids", map[string]any{"status_ids": many}, "too many status_id values"},
+		{"too many status_ids", map[string]any{"status_ids": many}, "too many status_ids values (max 20)"},
 		{"reporter_id", map[string]any{"reporter_id": "nope"}, "invalid reporter_id"},
 		{"type_id", map[string]any{"type_id": "nope"}, "invalid type_id"},
 		{"item_id", map[string]any{"item_id": "nope"}, "invalid item_id"},
@@ -140,6 +140,9 @@ func TestBuildListFilter_RejectsWhatTheParserRejects(t *testing.T) {
 		{"a string for a bool", map[string]any{"search_replies": "yes"}, "invalid search_replies"},
 		{"a string for include_closed", map[string]any{"include_closed": "no"}, "invalid include_closed"},
 		{"a number for sort", map[string]any{"sort": 3.0}, "invalid sort"},
+		{"a string for limit", map[string]any{"limit": "100"}, "invalid limit"},
+		{"a bool for limit", map[string]any{"limit": true}, "invalid limit"},
+		{"a string for offset", map[string]any{"offset": "5"}, "invalid offset"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -373,6 +376,13 @@ func TestToolSchema_ListTicketsAdvertisesTheFilters(t *testing.T) {
 		require.True(t, ok, name)
 		require.Equal(t, "array", p["type"], "%s is a JSON array", name)
 	}
-	// priority stays a string for existing callers, and a list is also accepted.
-	require.Equal(t, "string", props["priority"].(map[string]any)["type"])
+	// priority is one string for existing callers or a list, and the schema says
+	// so: a client that validates against it must be able to send either.
+	oneOf, ok := props["priority"].(map[string]any)["oneOf"].([]any)
+	require.True(t, ok, "priority declares both shapes")
+	var types []string
+	for _, alt := range oneOf {
+		types = append(types, alt.(map[string]any)["type"].(string))
+	}
+	require.ElementsMatch(t, []string{"string", "array"}, types)
 }
