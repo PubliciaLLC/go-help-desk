@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os"
+	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -39,4 +42,32 @@ func TestServerArgsProblem(t *testing.T) {
 	}
 	require.Contains(t, serverArgsProblem([]string{"/app/server", "prepare-reply-search"}), "entrypoint",
 		"and says why the repeated binary is wrong")
+}
+
+// The function is tested above; this tests that main() calls it, which is what
+// keeps a stray argument from starting a server. The test binary runs main()
+// itself, as a child process with the arguments in an environment variable and
+// nothing else in its environment: with the guard in place the child exits 2 with
+// the message; without it main() goes on to start the server, which fails on its
+// missing configuration and exits 1.
+func TestMainRefusesAStrayArgument(t *testing.T) {
+	if args := os.Getenv("GHD_TEST_MAIN_ARGS"); args != "" {
+		os.Args = append([]string{"server"}, strings.Fields(args)...)
+		main()
+		return // not reached: main exits
+	}
+	for name, args := range map[string]string{
+		"the binary repeated": "/app/server prepare-reply-search",
+		"an unknown word":     "serve",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestMainRefusesAStrayArgument$")
+			cmd.Env = []string{"GHD_TEST_MAIN_ARGS=" + args} // no DATABASE_URL, no secrets
+			out, err := cmd.CombinedOutput()
+			var exit *exec.ExitError
+			require.ErrorAs(t, err, &exit, "output: %s", out)
+			require.Equal(t, 2, exit.ExitCode(), "output: %s", out)
+			require.Contains(t, string(out), "unknown argument")
+		})
+	}
 }

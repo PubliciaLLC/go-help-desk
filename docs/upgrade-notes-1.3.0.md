@@ -517,6 +517,10 @@ Creating and deleting an OAuth client, and creating, editing and deleting a webh
 
 ## Changed behaviour
 
+### The Server Refuses Command-Line Arguments It Does Not Know
+
+**The server binary used to ignore any command-line argument it did not recognise and start anyway. It now prints the commands it has (`reset-factors`, `unlock` and `prepare-reply-search`) and exits with status `2`, without starting.** If your container or service definition passes extra arguments to the server (a `command:` or `args:` line, a leftover flag, or `/app/server` repeated after the image's own entrypoint), remove them: the server is configured by its environment, and the only arguments it takes are those commands. This is so that a mistyped command, such as `docker run <image> /app/server prepare-reply-search`, cannot start a full server that migrates the database. A container with no arguments is unchanged.
+
 ### Custom Fields: Order, Deactivation and Where a Field Appears (#603)
 
 - **Field order changes on upgrade.** On both the new-ticket form and the ticket page, fields are grouped by level: the category's first, then the type's, then the item's. Within each level they are sorted by field number (`sort_order` on the definition), then by name.
