@@ -662,7 +662,6 @@ type Querier interface {
 	ListActiveAdmins(ctx context.Context) ([]User, error)
 	ListActiveTags(ctx context.Context) ([]Tag, error)
 	ListAllTags(ctx context.Context) ([]Tag, error)
-	ListAllTickets(ctx context.Context, arg ListAllTicketsParams) ([]ListAllTicketsRow, error)
 	// The people work can be given to: active staff and administrators, name and
 	// id only.
 	//
@@ -817,10 +816,6 @@ type Querier interface {
 	ListTicketLinks(ctx context.Context, sourceTicketID uuid.UUID) ([]TicketLink, error)
 	ListTicketStatusHistory(ctx context.Context, ticketID uuid.UUID) ([]ListTicketStatusHistoryRow, error)
 	ListTicketTags(ctx context.Context, ticketID uuid.UUID) ([]Tag, error)
-	ListTicketsByAssigneeGroup(ctx context.Context, arg ListTicketsByAssigneeGroupParams) ([]ListTicketsByAssigneeGroupRow, error)
-	ListTicketsByAssigneeUser(ctx context.Context, arg ListTicketsByAssigneeUserParams) ([]ListTicketsByAssigneeUserRow, error)
-	ListTicketsByReporter(ctx context.Context, arg ListTicketsByReporterParams) ([]ListTicketsByReporterRow, error)
-	ListTicketsByStatus(ctx context.Context, arg ListTicketsByStatusParams) ([]ListTicketsByStatusRow, error)
 	// The one list query: every optional filter, the visibility rule and the sort,
 	// in one statement, so a caller never chooses among single-purpose queries and
 	// then filters in Go. Filtering and paginating in the same statement is what
@@ -830,8 +825,10 @@ type Querier interface {
 	// Visibility is three cases, not a patchable special case:
 	//   unrestricted   — an admin, or staff while scope enforcement is off
 	//   reporter_only  — a reporting user, who sees only tickets they reported
-	//   otherwise      — the DESIGN.md staff scope (same predicate as
-	//                    ListTicketsVisibleToStaff)
+	//   otherwise      — the DESIGN.md staff scope: reported by them, assigned to
+	//                    them, assigned to one of their groups, or in a Category/Type
+	//                    their groups cover. A NULL group_scopes.type_id covers every
+	//                    type of the category; items never factor in.
 	// Every other criterion is a further AND, so a filter can only narrow what the
 	// caller may already see. Nothing below widens it.
 	//
@@ -887,16 +884,7 @@ type Querier interface {
 	// Every sort ends with created_at DESC, id, so equal rows keep a stable order
 	// across pages.
 	ListTicketsFiltered(ctx context.Context, arg ListTicketsFilteredParams) ([]ListTicketsFilteredRow, error)
-	// Every ticket a staff member may see under DESIGN.md's scope model: reported
-	// by them, assigned to them, assigned to one of their groups, or falling in a
-	// Category/Type their groups cover. A NULL group_scopes.type_id is a
-	// category-level scope covering every type beneath it; items never factor in.
-	//
-	// Filtering happens here rather than in Go because the caller paginates: a page
-	// fetched and then filtered returns short pages and skips rows.
-	ListTicketsVisibleToStaff(ctx context.Context, arg ListTicketsVisibleToStaffParams) ([]ListTicketsVisibleToStaffRow, error)
 	ListTypes(ctx context.Context, arg ListTypesParams) ([]Type, error)
-	ListUnassignedTickets(ctx context.Context, arg ListUnassignedTicketsParams) ([]ListUnassignedTicketsRow, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
 	ListUsersAdmin(ctx context.Context, arg ListUsersAdminParams) ([]User, error)
 	// Everything this person has registered, newest last so the list reads in the
@@ -1082,7 +1070,6 @@ type Querier interface {
 	// rows are kept (#448).
 	RewriteNotificationEvent(ctx context.Context, arg RewriteNotificationEventParams) error
 	SearchActiveTags(ctx context.Context, name string) ([]Tag, error)
-	SearchAllTickets(ctx context.Context, arg SearchAllTicketsParams) ([]SearchAllTicketsRow, error)
 	// The admin-wide audit view (#129), administrators only. Every filter is
 	// optional; see audit.Filter.
 	// id breaks the tie, because created_at alone does not order entries written
@@ -1107,13 +1094,6 @@ type Querier interface {
 	// total order, two pages of one listing can disagree about which tied row
 	// comes first and the same entry appears twice, or not at all.
 	SearchAuditLogText(ctx context.Context, arg SearchAuditLogTextParams) ([]AuditLog, error)
-	SearchTicketsByAssigneeGroup(ctx context.Context, arg SearchTicketsByAssigneeGroupParams) ([]SearchTicketsByAssigneeGroupRow, error)
-	SearchTicketsByAssigneeUser(ctx context.Context, arg SearchTicketsByAssigneeUserParams) ([]SearchTicketsByAssigneeUserRow, error)
-	SearchTicketsByReporter(ctx context.Context, arg SearchTicketsByReporterParams) ([]SearchTicketsByReporterRow, error)
-	// Search variant of ListTicketsVisibleToStaff, matching the predicate and
-	// ranking used by the other ticket searches.
-	SearchTicketsVisibleToStaff(ctx context.Context, arg SearchTicketsVisibleToStaffParams) ([]SearchTicketsVisibleToStaffRow, error)
-	SearchUnassignedTickets(ctx context.Context, arg SearchUnassignedTicketsParams) ([]SearchUnassignedTicketsRow, error)
 	// The paged admin list (#449). role = '' means any role; q is already
 	// LIKE-escaped by the caller (backslash is the escape character), and an empty
 	// q matches everyone. id breaks created_at ties so a page boundary never

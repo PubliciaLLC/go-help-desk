@@ -48,13 +48,6 @@ type Store interface {
 	Update(ctx context.Context, t Ticket) error
 	UpdateCTI(ctx context.Context, id, categoryID uuid.UUID, typeID, itemID *uuid.UUID) error
 
-	// Listings
-	ListByReporter(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Ticket, error)
-	ListByAssigneeUser(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Ticket, error)
-	ListByAssigneeGroup(ctx context.Context, groupID uuid.UUID, limit, offset int) ([]Ticket, error)
-	ListByStatus(ctx context.Context, statusID uuid.UUID, limit, offset int) ([]Ticket, error)
-	ListAll(ctx context.Context, limit, offset int) ([]Ticket, error)
-	ListUnassigned(ctx context.Context, limit, offset int) ([]Ticket, error)
 	// UnassignForUser clears the assignee on every OPEN ticket held by a
 	// user, and reports how many moved. Used when an account is deleted.
 	UnassignForUser(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
@@ -110,22 +103,13 @@ type Store interface {
 	DeleteGuestTokensForTicket(ctx context.Context, ticketID uuid.UUID) error
 	TicketIDByTrackingAndGuestEmail(ctx context.Context, tn TrackingNumber, email string) (uuid.UUID, error)
 
-	// Search — ILIKE across tracking_number, subject, description
-	SearchByReporter(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error)
-	SearchByAssigneeUser(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error)
-	SearchByAssigneeGroup(ctx context.Context, groupID uuid.UUID, q string, limit, offset int) ([]Ticket, error)
-	SearchAll(ctx context.Context, q string, limit, offset int) ([]Ticket, error)
-	SearchUnassigned(ctx context.Context, q string, limit, offset int) ([]Ticket, error)
-
-	// Scope-aware listing. Returns the tickets a staff member may see under
-	// DESIGN.md's model — reported by them, assigned to them, assigned to one
-	// of their groups, or within a Category/Type their groups cover.
+	// ListFiltered is the one listing: every filter, the visibility rule (for
+	// staff, DESIGN.md's scope model: reported by them, assigned to them or one
+	// of their groups, or within a Category/Type their groups cover) and the sort.
 	//
-	// This has to be a query rather than a filter over another listing,
-	// because callers paginate: filtering a fetched page returns short pages
-	// and silently skips rows.
-	ListVisibleToStaff(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Ticket, error)
-	SearchVisibleToStaff(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error)
+	// It has to be a query rather than a filter over another listing, because
+	// callers paginate: filtering a fetched page returns short pages and
+	// silently skips rows.
 	ListFiltered(ctx context.Context, f Filter) ([]Ticket, error)
 	// ListFilteredWithMeta is ListFiltered plus what the query could not do
 	// about reply text. ListFiltered is the same call without it.

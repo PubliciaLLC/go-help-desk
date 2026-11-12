@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -369,77 +370,35 @@ func TestListTickets_OrderAndPagingAreUnchanged(t *testing.T) {
 	require.Len(t, h.listAs(t, "admin", "?scope=all&limit=5&offset=6").tickets, 2)
 }
 
-// The 1+N merge the handler used to run for "mine": the caller's own tickets
-// and each group's, each read up to the end of the page, deduplicated, sorted
-// newest first with the id as the tiebreak, and sliced once. Rebuilt here from
-// the service calls it made, so the one-query handler is held to what it
-// replaced. Removing those service methods removes this reference; the
-// equality it proves has by then been merged.
-func oldMineMerge(t *testing.T, h *harness, q string, limit, offset int) []string {
-	t.Helper()
-	ctx := context.Background()
-	window := offset + limit
+// A ticket the test assigned to the caller or one of their groups, with what
+// the "mine" queue orders by.
+type mineTicket struct {
+	id      string
+	subject string
+	created time.Time
+}
 
-	var all []struct {
-		id      string
-		created int64
-	}
-	seen := map[uuid.UUID]bool{}
-	add := func(id uuid.UUID, created int64) {
-		if !seen[id] {
-			seen[id] = true
-			all = append(all, struct {
-				id      string
-				created int64
-			}{id.String(), created})
+// wantMine is what the "mine" queue must return, worked out from the tickets
+// the test itself assigned and not from any query: those matching the term (all
+// of them for ""), newest first with the id as the tiebreak, sliced once. It
+// replaces a reference built from the per-assignee list methods that the single
+// list query made unnecessary.
+func wantMine(all []mineTicket, q string, limit, offset int) []string {
+	var hit []mineTicket
+	for _, m := range all {
+		if q == "" || strings.Contains(m.subject, q) {
+			hit = append(hit, m)
 		}
 	}
-
-	if q != "" {
-		mine, err := h.ticketSvc.SearchByAssigneeUser(ctx, h.staffID, q, window, 0)
-		require.NoError(t, err)
-		for _, tk := range mine {
-			add(tk.ID, tk.CreatedAt.UnixNano())
-		}
-	} else {
-		mine, err := h.ticketSvc.ListByAssigneeUser(ctx, h.staffID, window, 0)
-		require.NoError(t, err)
-		for _, tk := range mine {
-			add(tk.ID, tk.CreatedAt.UnixNano())
-		}
-	}
-	groups, err := h.groupSvc.ListGroupsForUser(ctx, h.staffID)
-	require.NoError(t, err)
-	for _, g := range groups {
-		if q != "" {
-			ts, err := h.ticketSvc.SearchByAssigneeGroup(ctx, g.ID, q, window, 0)
-			require.NoError(t, err)
-			for _, tk := range ts {
-				add(tk.ID, tk.CreatedAt.UnixNano())
-			}
-		} else {
-			ts, err := h.ticketSvc.ListByAssigneeGroup(ctx, g.ID, window, 0)
-			require.NoError(t, err)
-			for _, tk := range ts {
-				add(tk.ID, tk.CreatedAt.UnixNano())
-			}
-		}
-	}
-	slices.SortFunc(all, func(x, y struct {
-		id      string
-		created int64
-	}) int {
-		if x.created != y.created {
-			if x.created > y.created {
-				return -1
-			}
-			return 1
+	slices.SortFunc(hit, func(x, y mineTicket) int {
+		if c := y.created.Compare(x.created); c != 0 {
+			return c
 		}
 		return strings.Compare(x.id, y.id)
 	})
-	ids := make([]string, len(all))
-	for i, a := range all {
-		ids[i] = a.id
+	ids := make([]string, len(hit))
+	for i, m := range hit {
+		ids[i] = m.id
 	}
 	if offset >= len(ids) {
 		return []string{}
@@ -449,7 +408,7 @@ func oldMineMerge(t *testing.T, h *harness, q string, limit, offset int) []strin
 
 // The "mine" queue, for a staff member in two groups, with tickets assigned to
 // them, to either group, to both them and a group, and to neither.
-func TestListTickets_MineQueueEqualsTheOldMerge(t *testing.T) {
+func TestListTickets_MineQueueIsOwnAndGroupAssignments(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	ctx := context.Background()
@@ -473,6 +432,7 @@ func TestListTickets_MineQueueEqualsTheOldMerge(t *testing.T) {
 		{"assignee_user_id": h.adminID.String()},
 		nil,
 	}
+	var mine []mineTicket
 	const total = 28
 	for i := 0; i < total; i++ {
 		word := "item"
@@ -486,9 +446,16 @@ func TestListTickets_MineQueueEqualsTheOldMerge(t *testing.T) {
 		require.Equal(t, http.StatusCreated, res.StatusCode, "body: %s", raw)
 		var tk listedTicket
 		require.NoError(t, json.Unmarshal(raw, &tk))
-		if p := patches[i%len(patches)]; p != nil {
+		p := patches[i%len(patches)]
+		if p != nil {
 			res = h.doAsAdmin(t, http.MethodPatch, "/api/v1/tickets/"+tk.ID, p)
 			require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", readAll(t, res))
+		}
+		// Mine is the caller, or a group they are in.
+		if p["assignee_user_id"] == h.staffID.String() || p["assignee_group_id"] == gA.ID.String() || p["assignee_group_id"] == gB.ID.String() {
+			stored, err := h.ticketSvc.GetByID(ctx, uuid.MustParse(tk.ID))
+			require.NoError(t, err)
+			mine = append(mine, mineTicket{id: tk.ID, subject: tk.Subject, created: stored.CreatedAt})
 		}
 	}
 
@@ -497,7 +464,7 @@ func TestListTickets_MineQueueEqualsTheOldMerge(t *testing.T) {
 			t.Run(fmt.Sprintf("limit=%d offset=%d", limit, offset), func(t *testing.T) {
 				got := h.listAs(t, "staff", fmt.Sprintf("?limit=%d&offset=%d", limit, offset))
 				require.Equal(t, http.StatusOK, got.status, "body: %s", got.raw)
-				require.Equal(t, oldMineMerge(t, h, "", limit, offset), got.ids())
+				require.Equal(t, wantMine(mine, "", limit, offset), got.ids())
 			})
 		}
 	}
@@ -509,7 +476,7 @@ func TestListTickets_MineQueueEqualsTheOldMerge(t *testing.T) {
 		t.Run("text "+q, func(t *testing.T) {
 			got := h.listAs(t, "staff", "?q="+q)
 			require.Equal(t, http.StatusOK, got.status, "body: %s", got.raw)
-			require.ElementsMatch(t, oldMineMerge(t, h, q, 100, 0), got.ids())
+			require.ElementsMatch(t, wantMine(mine, q, 100, 0), got.ids())
 		})
 	}
 }

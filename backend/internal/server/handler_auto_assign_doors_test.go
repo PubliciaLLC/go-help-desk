@@ -28,7 +28,7 @@ func routeEverythingTo(t *testing.T, h *harness) *ticket.Assignment {
 
 func ticketNamed(t *testing.T, h *harness, subject string) ticket.Ticket {
 	t.Helper()
-	all, err := h.ticketSvc.ListAll(context.Background(), 200, 0)
+	all, err := h.ticketSvc.ListFiltered(context.Background(), ticket.Filter{Visibility: ticket.VisibilityAll, Limit: 200})
 	require.NoError(t, err)
 	for _, tk := range all {
 		if tk.Subject == subject {
