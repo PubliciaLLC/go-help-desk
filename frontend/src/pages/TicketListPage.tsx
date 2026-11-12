@@ -89,17 +89,21 @@ function SortHeader({
   staff,
   onSort,
   className = '',
+  tight = false,
 }: {
   k: SortKey
   now: { sort: SortKey | 'relevance'; order: 'asc' | 'desc' }
   staff: boolean
   onSort: (k: SortKey) => void
   className?: string
+  // Less side padding, for the two date columns: on Linux fonts the table was
+  // 1px wider than its box with px-3 everywhere, and the box clips.
+  tight?: boolean
 }) {
   const active = now.sort === k
   // px-3, not px-4: with the SLA, Created and Updated columns the table is
   // 976px wide at most, and its box clips rather than scrolls.
-  const th = `px-3 py-2 text-left ${className}`
+  const th = `${tight ? 'px-2' : 'px-3'} py-2 text-left ${className}`
   if (!canSort(k, staff)) return <th className={th}>{SORT_LABEL[k]}</th>
   return (
     <th className={th} aria-sort={active ? (now.order === 'asc' ? 'ascending' : 'descending') : undefined}>
@@ -734,9 +738,9 @@ export function TicketListPage() {
                     <SortHeader k="status" now={sortNow} staff={isStaffOrAdmin} onSort={sortBy} />
                     <SortHeader k="priority" now={sortNow} staff={isStaffOrAdmin} onSort={sortBy} />
                     {showSLAColumn && <SortHeader k="sla" now={sortNow} staff={isStaffOrAdmin} onSort={sortBy} />}
-                    <SortHeader k="created" now={sortNow} staff={isStaffOrAdmin} onSort={sortBy} className="hidden xl:table-cell" />
+                    <SortHeader k="created" now={sortNow} staff={isStaffOrAdmin} onSort={sortBy} tight className="hidden xl:table-cell" />
                     {isStaffOrAdmin && (
-                      <SortHeader k="updated" now={sortNow} staff={isStaffOrAdmin} onSort={sortBy} className="hidden xl:table-cell" />
+                      <SortHeader k="updated" now={sortNow} staff={isStaffOrAdmin} onSort={sortBy} tight className="hidden xl:table-cell" />
                     )}
                   </tr>
                 </thead>
@@ -808,11 +812,11 @@ export function TicketListPage() {
                             </div>
                           </td>
                         )}
-                        <td className="hidden whitespace-nowrap px-3 py-2 text-xs text-gray-500 xl:table-cell" title={new Date(t.created_at).toLocaleString()}>
+                        <td className="hidden whitespace-nowrap px-2 py-2 text-xs text-gray-500 xl:table-cell" title={new Date(t.created_at).toLocaleString()}>
                           {shortDate(t.created_at)}
                         </td>
                         {isStaffOrAdmin && (
-                          <td className="hidden whitespace-nowrap px-3 py-2 text-xs text-gray-500 xl:table-cell" title={new Date(t.updated_at ?? t.created_at).toLocaleString()}>
+                          <td className="hidden whitespace-nowrap px-2 py-2 text-xs text-gray-500 xl:table-cell" title={new Date(t.updated_at ?? t.created_at).toLocaleString()}>
                             {t.updated_at ? shortDate(t.updated_at) : ''}
                           </td>
                         )}
