@@ -93,6 +93,9 @@ beforeEach(() => {
       mfa_enabled: false,
       created_at: '2026-01-01T00:00:00Z',
       updated_at: '2026-01-01T00:00:00Z',
+      // What GET /me sends staff when SLA tracking is on. The list no longer
+      // works that out from the rows.
+      sla_enabled: true,
     },
   })
 })

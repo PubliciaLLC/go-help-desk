@@ -1,4 +1,5 @@
 import { api } from './client'
+import { seg } from './seg'
 
 /**
  * One registered authenticator, as GET /me/passkeys returns it.
@@ -152,7 +153,7 @@ export async function addPasskey(name: string): Promise<void> {
 }
 
 export async function removePasskey(id: string): Promise<void> {
-  await api.delete(`/me/passkeys/${id}`)
+  await api.delete(`/me/passkeys/${seg(id)}`)
 }
 
 // ── Signing in with one ───────────────────────────────────────────────────────

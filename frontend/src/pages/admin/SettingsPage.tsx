@@ -2246,6 +2246,8 @@ export function SettingsPage() {
       // The scan policy and address feed the banner and the scanner status;
       // without this a saved "Do not scan" keeps warning for five minutes.
       qc.invalidateQueries({ queryKey: ['security-warnings'] })
+      // The ticket list reads sla_enabled from /me.
+      qc.invalidateQueries({ queryKey: ['me'] })
     },
     onError: (err) =>
       setSaveError(
