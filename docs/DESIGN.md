@@ -1029,6 +1029,25 @@ then it retries what the person was doing. No new route. A wrong code or refused
 key answers 401 on a live session, so the client does not treat
 `invalid_mfa_code` or `assertion_refused` as a lost session.
 
+**Adding a passkey after verifying takes one more click**
+([#632](https://github.com/PubliciaLLC/go-help-desk/issues/632)). Removing a
+passkey and starting an authenticator enrolment are plain HTTP calls, so the page
+retries them by itself once the factor is proved. Adding a passkey is not: it ends
+in `navigator.credentials.create`, and Safari requires a fresh user gesture for
+WebAuthn. A prompt started from the callback of the verify request is not one, and
+Safari can refuse it, which the browser reports as `NotAllowedError`, the same
+error as the person dismissing the prompt. The page used to read that as a cancel:
+no prompt, no message, no key. So after the step-up succeeds the page shows a
+**Verified — add the passkey** button and the ceremony starts from that click and
+nothing else. The name typed earlier is kept. If the browser still refuses on that
+click, the page says "The browser didn't create the passkey. Try again." and keeps
+the button, so the person retries without verifying again. If the session lost its
+factor in the meantime the verify panel comes back. Without a step-up (the session
+had already proved a factor) adding is still one click, and a dismissed prompt
+there still shows nothing. Safari itself is not covered by an automated test (the
+Playwright virtual authenticator is Chromium-only); it is on the manual checklist
+for the release candidate.
+
 **Signing in.** `POST /auth/local/passkey/start` and `/finish` sit beside
 `/auth/local/mfa/verify`, are refused to machine credentials, and need the
 session the password step already produced (`401` otherwise). On a valid

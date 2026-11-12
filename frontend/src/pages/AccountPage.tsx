@@ -347,23 +347,43 @@ function PasskeySection() {
   const [name, setName] = useState('')
   const [error, setError] = useState('')
   const [pending, setPending] = useState<Passkey | null>(null)
+  // True between the step-up succeeding and the passkey being added. See the
+  // button below for why the ceremony waits for a click.
+  const [verified, setVerified] = useState(false)
   const supported = browserSupportsPasskeys()
   const stepUp = useStepUp()
 
   const passkeys = useQuery({ queryKey: ['passkeys'], queryFn: listPasskeys, enabled: supported })
 
-  const add = useMutation({
+  // The variable is not an input to the call; it only tells onError which
+  // click this was.
+  const add = useMutation<void, unknown, { afterVerify?: boolean } | void>({
     mutationFn: () => addPasskey(name.trim()),
     onSuccess: () => {
       setName('')
+      setVerified(false)
       qc.invalidateQueries({ queryKey: ['passkeys'] })
     },
-    onError: (err) => {
-      if (stepUp.offer(err, () => add.mutate())) return
-      // Dismissing the browser's prompt is a choice, not a failure. Showing
-      // "The operation either timed out or was not allowed" for it reads as
-      // something being broken.
-      if (wasCancelled(err)) return
+    onError: (err, vars) => {
+      // Not retried here: the retry would start the WebAuthn ceremony from a
+      // promise callback rather than a click, which Safari can refuse. The
+      // person gets a button instead (#632).
+      setVerified(false)
+      if (stepUp.offer(err, () => setVerified(true))) return
+      if (wasCancelled(err)) {
+        // Dismissing the browser's prompt is a choice, not a failure, and
+        // showing "The operation either timed out or was not allowed" for it
+        // reads as something being broken. The exception is the click that
+        // follows a step-up: a refusal there is more likely the browser than
+        // the person, and silence leaves them with no key and no clue.
+        if (vars?.afterVerify) {
+          setVerified(true)
+          setError("The browser didn't create the passkey. Try again.")
+        }
+        return
+      }
+      // Other failures on the button path leave the button where it is.
+      if (vars?.afterVerify) setVerified(true)
       setError(extractError(err))
     },
   })
@@ -452,6 +472,28 @@ function PasskeySection() {
           {add.isPending ? 'Waiting for your key…' : 'Add a passkey'}
         </Button>
       </form>
+      {verified && (
+        // The ceremony is started by this click and by nothing else. Safari
+        // requires a fresh user gesture for WebAuthn and can refuse a prompt
+        // that a callback started after the step-up, reporting it as a
+        // cancel. It is one extra click; guessing at Safari's gesture rules
+        // is not worth it.
+        <div className="mt-4 space-y-2 rounded-md border border-green-300 bg-green-50 p-3">
+          <p className="text-xs text-gray-700">
+            Your second factor is verified. Add the passkey to carry on.
+          </p>
+          <Button
+            type="button"
+            disabled={add.isPending}
+            onClick={() => {
+              setError('')
+              add.mutate({ afterVerify: true })
+            }}
+          >
+            {add.isPending ? 'Waiting for your key…' : 'Verified — add the passkey'}
+          </Button>
+        </div>
+      )}
       <Notice kind="error">{error}</Notice>
       {stepUp.panel}
 
