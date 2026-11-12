@@ -535,6 +535,16 @@ rewrite and a migration that stops the server, and neither is needed:
   `schema_migrations`**; every statement in 000062 is idempotent, so 1.3.0's own
   migration runs over it harmlessly. It then calls the same `replyindex.Prepare`
   as the server's job, under the same advisory lock, so the two cannot both run.
+  The command is the container's first argument (`docker run --rm --network
+  <db network> -e DATABASE_URL=... <1.3.0 image> prepare-reply-search`): the
+  image's entrypoint is already `/app/server`, and a repeated `/app/server`
+  used to start a full server that migrated the database, so the server now
+  refuses any command line it does not know. It needs only `DATABASE_URL`. A
+  runner takes the advisory lock **before** any DDL (a runner that cannot exits
+  3 without touching the table: the holder may be building an index, whose lock
+  an `ALTER TABLE` would queue behind, blocking every reader and writer), and
+  skips the DDL when the column, function and trigger are already there.
+  Lock attempts wait 2 s and pause 10 s between tries.
   Flags: `--maintenance-work-mem` (default 1 GB, "1 GB, overridable"),
   `--progress-interval` (30s), `--batch-size` (1000). Exit codes: 0 ready, 1
   error, 3 another runner holds the lock. It can also be run with 1.2 stopped
