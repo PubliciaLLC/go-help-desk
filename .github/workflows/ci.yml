@@ -249,8 +249,34 @@ jobs:
           echo "All ${#files[@]} changed Go file(s) are gofmt-clean."
 
   image:
-    name: Docker image (build + run)
-    runs-on: ubuntu-latest
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+
+    # One job definition, two runners, so the smoke test below cannot drift
+    # between architectures. The names are the required-check contexts: do not
+    # rename them without updating branch protection.
+    #
+    # The arm64 leg runs on GitHub's native arm64 runner (#632): the image is
+    # built and RUN on the architecture it ships for, with no QEMU. Until this,
+    # the arm64 image was only ever cross-built under emulation and never
+    # started. The ClamAV compose profile is amd64-only (clamav/clamav
+    # publishes no arm64 image), so it is left out: this smoke test runs the
+    # app image against Postgres and never starts ClamAV on either leg.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            name: Docker image (build + run)
+            runner: ubuntu-latest
+            # The default scope, so the amd64 cache is unchanged.
+            cache_scope: buildkit
+          - arch: arm64
+            name: Docker image, arm64 (build + run)
+            runner: ubuntu-24.04-arm
+            # Separate scope: layers for the two architectures must not
+            # overwrite each other's cache entry.
+            cache_scope: buildkit-arm64
 
     # Builds the runtime image the way docker-compose does: context at the repo
     # root, Dockerfile at backend/Dockerfile. Nothing else in CI exercises the
@@ -268,6 +294,8 @@ jobs:
       # without QEMU the arm64 leg dies at `apk add` with "exec format error".
       # ubuntu-latest ships no qemu-user-static and BuildKit does not bundle it.
       - uses: docker/setup-qemu-action@v3
+        # The arm64 leg is native and needs no emulation.
+        if: matrix.arch == 'amd64'
 
       - uses: docker/setup-buildx-action@v3
 
@@ -281,8 +309,8 @@ jobs:
           # it buildx leaves the image in its own cache and `docker run` fails.
           load: true
           tags: ghd:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.cache_scope }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.cache_scope }}
 
       # The smoke test above only ever runs the runner's own architecture. The
       # release is multi-arch, and the way that breaks is asymmetric: the build
@@ -295,7 +323,10 @@ jobs:
       # is not those architectures. The Dockerfile asserts its own GOARCH
       # internally, so a wrong-architecture binary fails the build rather than
       # producing an image that merely looks fine.
+      #
+      # amd64 leg only: the arm64 leg builds natively above, and has no QEMU.
       - name: Cross-build every released platform
+        if: matrix.arch == 'amd64'
         uses: docker/build-push-action@v6
         with:
           context: .
