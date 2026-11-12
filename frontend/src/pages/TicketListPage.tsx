@@ -97,7 +97,9 @@ function SortHeader({
   className?: string
 }) {
   const active = now.sort === k
-  const th = `px-4 py-2 text-left ${className}`
+  // px-3, not px-4: with the SLA, Created and Updated columns the table is
+  // 976px wide at most, and its box clips rather than scrolls.
+  const th = `px-3 py-2 text-left ${className}`
   if (!canSort(k, staff)) return <th className={th}>{SORT_LABEL[k]}</th>
   return (
     <th className={th} aria-sort={active ? (now.order === 'asc' ? 'ascending' : 'descending') : undefined}>
@@ -758,10 +760,10 @@ export function TicketListPage() {
                             />
                           </td>
                         )}
-                        <td className="whitespace-nowrap px-4 py-2 font-mono text-xs text-gray-500">
+                        <td className="whitespace-nowrap px-3 py-2 font-mono text-xs text-gray-500">
                           {t.tracking_number}
                         </td>
-                        <td className={'px-4 py-2 font-medium text-gray-900 ' + (t.reply_match ? 'max-w-lg' : 'max-w-xs truncate')}>
+                        <td className={'px-3 py-2 font-medium text-gray-900 ' + (t.reply_match ? 'max-w-lg' : 'max-w-xs truncate')}>
                           {/* A real link, not just a row click. The row was a
                               <tr onClick>, which no amount of tabbing reaches,
                               so a keyboard-only user had no way into a ticket
@@ -778,7 +780,7 @@ export function TicketListPage() {
                           </Link>
                           {t.reply_match && <ReplyMatchLine match={t.reply_match} />}
                         </td>
-                        <td className="px-4 py-2">
+                        <td className="px-3 py-2">
                           {status ? (
                             <span
                               className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium"
@@ -790,7 +792,7 @@ export function TicketListPage() {
                             </span>
                           ) : '—'}
                         </td>
-                        <td className="px-4 py-2">
+                        <td className="px-3 py-2">
                           <div className="flex flex-wrap items-center gap-1.5">
                             <Badge variant={priorityVariant(t.priority) as never}>
                               {t.priority}
@@ -800,17 +802,17 @@ export function TicketListPage() {
                           </div>
                         </td>
                         {showSLAColumn && (
-                          <td className="px-4 py-2">
+                          <td className="px-3 py-2">
                             <div className="flex items-center gap-1.5">
                               <SLAIndicator sla={t.sla} compact />
                             </div>
                           </td>
                         )}
-                        <td className="hidden whitespace-nowrap px-4 py-2 text-xs text-gray-500 xl:table-cell" title={new Date(t.created_at).toLocaleString()}>
+                        <td className="hidden whitespace-nowrap px-3 py-2 text-xs text-gray-500 xl:table-cell" title={new Date(t.created_at).toLocaleString()}>
                           {shortDate(t.created_at)}
                         </td>
                         {isStaffOrAdmin && (
-                          <td className="hidden whitespace-nowrap px-4 py-2 text-xs text-gray-500 xl:table-cell" title={new Date(t.updated_at ?? t.created_at).toLocaleString()}>
+                          <td className="hidden whitespace-nowrap px-3 py-2 text-xs text-gray-500 xl:table-cell" title={new Date(t.updated_at ?? t.created_at).toLocaleString()}>
                             {t.updated_at ? shortDate(t.updated_at) : ''}
                           </td>
                         )}

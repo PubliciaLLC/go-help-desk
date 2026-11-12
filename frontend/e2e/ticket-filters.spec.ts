@@ -127,6 +127,17 @@ async function noHorizontalScroll(page: Page) {
   expect(scrollWidth, 'main is wider than its own box').toBeLessThanOrEqual(clientWidth)
 }
 
+// The table sits in a box that clips what does not fit, so a column that is too
+// wide is not scrolled to: it is cut off. main never overflows, so the check
+// is on the box itself.
+async function tableFits(page: Page) {
+  const { scrollWidth, clientWidth } = await page.evaluate(() => {
+    const box = document.querySelector('table')!.parentElement!
+    return { scrollWidth: box.scrollWidth, clientWidth: box.clientWidth }
+  })
+  expect(scrollWidth, 'a column is cut off at the right of the table').toBeLessThanOrEqual(clientWidth)
+}
+
 test.describe('desktop, 1440x900', () => {
   test.use({ viewport: { width: 1440, height: 900 } })
 
@@ -204,6 +215,7 @@ test.describe('desktop, 1440x900', () => {
     await expect(header).toHaveAttribute('aria-sort', 'ascending')
     await expect.poll(() => seen.at(-1)?.get('order')).toBe('asc')
     await noHorizontalScroll(page)
+    await tableFits(page)
   })
 
   test('a requester has no Updated column', async ({ page }) => {
@@ -271,6 +283,7 @@ test.describe('desktop, 1280x800', () => {
     await expect(page.getByRole('columnheader', { name: /Updated/ })).toBeVisible()
     await expect(page.getByRole('columnheader', { name: /Created/ })).toBeVisible()
     await noHorizontalScroll(page)
+    await tableFits(page)
   })
 })
 
