@@ -86,7 +86,7 @@ func TestRequesterFollowUp_AnAccountHolderOpensOneFromTheirClosedTicket(t *testi
 	links, err := h.ticketSvc.ListLinks(ctx, orig.ID)
 	require.NoError(t, err)
 	require.Equal(t, []ticket.TicketLink{{
-		SourceTicketID: orig.ID, TargetTicketID: got.ID, LinkType: ticket.LinkParentChild,
+		SourceTicketID: orig.ID, TargetTicketID: got.ID, LinkType: ticket.LinkParentChild, FollowUp: true,
 	}}, links)
 
 	// The original is untouched.
@@ -272,7 +272,7 @@ func TestGuestFollowUp_ACloseTicketsLinkOpensANewGuestTicket(t *testing.T) {
 	links, err := h.ticketSvc.ListLinks(ctx, orig.ID)
 	require.NoError(t, err)
 	require.Equal(t, []ticket.TicketLink{{
-		SourceTicketID: orig.ID, TargetTicketID: created.ID, LinkType: ticket.LinkParentChild,
+		SourceTicketID: orig.ID, TargetTicketID: created.ID, LinkType: ticket.LinkParentChild, FollowUp: true,
 	}}, links)
 
 	// Its link goes by the ordinary guest-ticket-created mail, to the guest's

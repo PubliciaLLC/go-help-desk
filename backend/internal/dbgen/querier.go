@@ -240,6 +240,8 @@ type Querier interface {
 	CreateStatusHistoryEntry(ctx context.Context, arg CreateStatusHistoryEntryParams) error
 	CreateTag(ctx context.Context, name string) (Tag, error)
 	CreateTicket(ctx context.Context, arg CreateTicketParams) error
+	// follow_up is true only for the link the follow-up action writes (#625); it is
+	// what a requester's one-follow-up cap counts.
 	CreateTicketLink(ctx context.Context, arg CreateTicketLinkParams) error
 	CreateType(ctx context.Context, arg CreateTypeParams) error
 	CreateUser(ctx context.Context, arg CreateUserParams) error
@@ -282,6 +284,14 @@ type Querier interface {
 	DeleteCustomFieldAssignment(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteCustomFieldValue(ctx context.Context, arg DeleteCustomFieldValueParams) error
 	DeleteEmailTemplateOverride(ctx context.Context, name string) error
+	// Housekeeping, not a security control: an expired token already resolves to
+	// nothing (GetTicketByGuestToken filters on expiry), so this only stops the
+	// table growing, by one row per mail sent on a closed ticket among others.
+	// clock_timestamp() for the same reason as the lookup: one clock decides a
+	// token's lifetime. One batch, oldest first so idx_guest_access_tokens_expires_at
+	// serves it; SKIP LOCKED so a row someone else holds is left for the next sweep
+	// and not waited on.
+	DeleteExpiredGuestAccessTokens(ctx context.Context, batchSize int32) (int64, error)
 	// Removes up to batch rows whose window has ended. A bounded batch, called in a
 	// loop, so that clearing a backlog (a burst of attempts on made-up email
 	// addresses) is many short statements and not one that holds locks and writes a

@@ -149,11 +149,13 @@ func TestFilterForViewer_RequesterGetsOnlyTheAllowedList(t *testing.T) {
 		Replies   []any              `json:"replies,omitempty"`
 		Links     []any              `json:"links,omitempty"`
 		Warnings  []any              `json:"warnings,omitempty"`
+		FollowUp  any                `json:"follow_up,omitempty"`
 		Match     *ticket.ReplyMatch `json:"reply_match,omitempty"`
 		Extra     string             `json:"surprise,omitempty"`
 	}
 	wrapped := view{Ticket: tk, Replies: []any{map[string]any{"id": "r", "body": "hi"}}, Links: []any{map[string]any{"source_id": "a"}},
 		Warnings: []any{map[string]any{"field_id": "f", "reason": "inactive"}},
+		FollowUp: ticket.FollowUpRef{ID: uuid.New(), TrackingNumber: "GHD-2026-000043"},
 		Match:    &ticket.ReplyMatch{ReplyID: uuid.New(), CreatedAt: tk.CreatedAt, Snippet: "a \x02hit\x03"}, Extra: "x"}
 
 	allowed := asSet(append(ticket.RequesterTicketKeys(), ticket.RequesterWrapperKeys()...))
@@ -276,6 +278,20 @@ func TestFilterForGuest_IsASubsetOfTheRequesterList(t *testing.T) {
 	// No updated_at: a guest's list is a strict subset of the requester's, which
 	// has none either.
 	require.Equal(t, []string{"created_at", "description", "replies", "status", "subject", "tracking_number"}, sorted(keys))
+}
+
+// #625: a requester is told their closed ticket already has a follow-up (the id
+// and tracking number of their own new ticket), and a guest only that it has
+// one. Neither is a Ticket field, so each is a wrapper key on its own list.
+func TestFilter_TheFollowUpReachesTheRequesterAndTheGuestIsToldOnlyThatThereIsOne(t *testing.T) {
+	ref := ticket.FollowUpRef{ID: uuid.New(), TrackingNumber: "GHD-2026-000043"}
+	got, err := ticket.FilterForViewer(user.RoleUser, map[string]any{"id": "i", "follow_up": ref})
+	require.NoError(t, err)
+	require.Contains(t, keysOf(t, got), "follow_up")
+
+	got, err = ticket.FilterForGuest(map[string]any{"subject": "s", "has_follow_up": true, "follow_up": ref})
+	require.NoError(t, err)
+	require.Equal(t, []string{"has_follow_up", "subject"}, sorted(keysOf(t, got)), "a guest is given the boolean, never the ticket")
 }
 
 // Numbers inside a response pass through the filter exactly. Decoding into

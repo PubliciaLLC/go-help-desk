@@ -1571,6 +1571,11 @@ func storeErr(ctx context.Context, op string, err error) (*mcpgo.CallToolResult,
 	if errors.Is(err, ticket.ErrClosed) || errors.Is(err, ticket.ErrNotClosed) {
 		return errResult(err.Error())
 	}
+	// A follow-up of a ticket whose reporter was deleted (#625): REST answers
+	// 409 reporter_deleted with the same advice.
+	if errors.Is(err, ticket.ErrReporterDeleted) {
+		return errResult(err.Error() + ": restore the account, or open a new ticket")
+	}
 	// A move into a retired or nonexistent status is about the status the
 	// caller named, and REST answers it with a 409 or 404 for the same reason.
 	if errors.Is(err, ticket.ErrStatusInactive) || errors.Is(err, ticket.ErrStatusNotFound) {

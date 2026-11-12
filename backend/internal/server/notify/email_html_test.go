@@ -122,7 +122,7 @@ func TestHTML_TheShellWrapsTheHTMLPartAndTheTextShellWrapsTheTextPart(t *testing
 }
 
 func TestHTML_EveryTemplateCanCarryAnHTMLPart(t *testing.T) {
-	// The 17 templates each get a plain HTML override; each mail comes out as
+	// Every content template gets a plain HTML override; each mail comes out as
 	// two parts and the HTML part holds the link the mail exists to deliver.
 	for _, c := range goldenCases() {
 		t.Run(c.file, func(t *testing.T) {

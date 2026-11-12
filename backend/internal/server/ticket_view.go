@@ -38,6 +38,14 @@ type ticketView struct {
 	// account cannot be read.
 	Requester *ticketRequester `json:"requester,omitempty"`
 
+	// FollowUp is the follow-up already opened from this ticket, when it is
+	// Closed and has one (#625): the newest ticket the follow-up action made
+	// from it. It is how the ticket page stops offering a follow-up that would
+	// be refused, and links to the one that exists. Set on the single-ticket
+	// read only, so a list pays no lookup; sent to every role, since it is a
+	// requester's own new ticket. Absent otherwise.
+	FollowUp *ticket.FollowUpRef `json:"follow_up,omitempty"`
+
 	// ReplyMatch is the reply a reply search found this ticket through: an
 	// excerpt, never an author. Present only on a list that searched replies and
 	// only for a ticket that matched through one. It is on the requester allowed

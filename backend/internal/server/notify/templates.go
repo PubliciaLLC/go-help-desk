@@ -35,7 +35,7 @@ import (
 // walked and anything outside the list is refused, with the line and column.
 
 // Name constants for the two reserved rows that wrap every mail. They sit in
-// the same table as the 17 content templates so the HTML variants (PR2) can be
+// the same table as the content templates so the HTML variants (PR2) can be
 // added beside them without a new table.
 const (
 	NameHeader = "_header"
@@ -113,7 +113,7 @@ var (
 // subject its reference, not the customer the mail.
 const subjectRef = "{{if .TrackingNumber}}[{{.TrackingNumber}}]{{else}}your ticket{{end}}"
 
-// contentDefs is the registry of the 17 content templates, in the order the
+// contentDefs is the registry of the content templates, in the order the
 // editor lists them. The default body is the embedded file of the same name.
 // Subjects are templates, not Go strings, so that the text shown as "the
 // default" is the text the mail actually uses.
@@ -123,6 +123,11 @@ var contentDefs = []struct {
 	required                    string
 }{
 	{"ticket_created", "Ticket received", GroupRequester, "We have received " + subjectRef, nil, ""},
+	// A follow-up of a closed ticket (#625). The subject has no "your ticket"
+	// fallback like subjectRef: the ticket is new, so "We have opened a
+	// follow-up ticket your ticket" would say the wrong thing.
+	{"ticket_follow_up_created", "Follow-up ticket opened", GroupRequester,
+		"We have opened a follow-up ticket{{if .TrackingNumber}} [{{.TrackingNumber}}]{{end}}", nil, ""},
 	{"ticket_replied", "New reply on a ticket", GroupRequester, "There is a new reply on " + subjectRef, nil, ""},
 	{"ticket_status_changed", "Ticket update (guest)", GroupRequester, "There is an update on " + subjectRef, nil, ""},
 	{"ticket_resolved", "Ticket resolved (guest)", GroupRequester, "We have resolved " + subjectRef, nil, ""},
@@ -143,7 +148,7 @@ var contentDefs = []struct {
 	{"password_reset", "Reset your password", GroupAccount, "Reset your password", []Variable{varReset}, "ResetURL"},
 }
 
-// Templates returns every editable template: the 17 content templates, then
+// Templates returns every editable template: the content templates, then
 // the shared header and footer.
 func Templates() []TemplateDef {
 	out := make([]TemplateDef, 0, len(contentDefs)+2)

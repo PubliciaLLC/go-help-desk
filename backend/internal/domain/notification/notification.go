@@ -106,6 +106,14 @@ type Event struct {
 	// Excluded from JSON like GuestToken: a webhook has no use for it.
 	GuestLink bool `json:"-"`
 
+	// FollowUp marks a ticket.created that is a follow-up of a closed ticket
+	// (#625), so its mail says "we have opened a new ticket to follow up on
+	// your earlier one" and not "we have received your ticket". A typed field,
+	// not a Payload key, because email never reads Payload; the outbox codec
+	// stores it. Excluded from JSON like GuestLink: the webhook body is
+	// unchanged.
+	FollowUp bool `json:"-"`
+
 	// Kinds is everything that happened in the change this event announces,
 	// as the existing event names, in KindOrder (#506). Consumers match on it:
 	// a hook fires when any kind is one it subscribes to. Empty on an event

@@ -139,6 +139,7 @@ func (c *Changes) Raise(ev Event) {
 		}
 	}
 	dst.GuestLink = dst.GuestLink || ev.GuestLink
+	dst.FollowUp = dst.FollowUp || ev.FollowUp
 	dst.FromRequester = dst.FromRequester || ev.FromRequester
 	dst.SuppressStaffMail = dst.SuppressStaffMail || ev.SuppressStaffMail
 	dst.RoutedAssignment = dst.RoutedAssignment || ev.RoutedAssignment
