@@ -267,7 +267,12 @@ func TestStatusCount_FailureFailsTheRequest(t *testing.T) {
 		{"patch", http.MethodPatch, map[string]any{"color": "#000000"}, http.StatusOK},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h, cleanup := newHarness(t)
+			// Its own database: the rename below takes an exclusive lock on
+			// tickets, and the status just inserted holds a write on statuses.
+			// The 000028 migration tests write tickets and then take
+			// LOCK TABLE statuses IN SHARE MODE, which closes a lock cycle
+			// with this test on the shared database.
+			h, cleanup := newIsolatedHarness(t)
 			defer cleanup()
 			id := mkStatus(t, h, "Parked")
 			// Counting reads tickets; nothing else here does.

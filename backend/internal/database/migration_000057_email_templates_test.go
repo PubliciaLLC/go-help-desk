@@ -18,9 +18,9 @@ const (
 // runs the down file and then the up file verbatim, inside a transaction that
 // is rolled back.
 //
-// It has a database of its own because the down's DROP TABLE and the up's
-// CREATE TABLE take an exclusive lock on users (the updated_by foreign key),
-// and the test then writes to users. A test in another package that holds a
+// It has a database of its own because the down's DROP TABLE takes an exclusive
+// lock on users (the updated_by foreign key; the up's CREATE TABLE takes a
+// weaker one), and the test then writes to users. A test in another package that holds a
 // users row and then reads the templates completes a lock cycle, and Postgres
 // aborts one of the two with "deadlock detected". Same reason as 000041's down
 // test (service_account_migration_down_test.go).
