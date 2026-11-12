@@ -117,9 +117,21 @@ function id(v: unknown): string | undefined {
   return t !== undefined && ID_SHAPE.test(t) ? t : undefined
 }
 
+// The server refuses more than this many statuses; the address keeps the first.
+const MAX_STATUSES = 20
+
 function ids(v: unknown): string[] | undefined {
-  const out = list(v)?.filter(s => ID_SHAPE.test(s))
+  const out = list(v)?.filter(s => ID_SHAPE.test(s)).slice(0, MAX_STATUSES)
   return out && out.length > 0 ? out : undefined
+}
+
+// Free-text requester: the server holds it to 2-254 characters and answers 400
+// to anything else, so the address drops what is outside that.
+function requesterText(v: unknown): string | undefined {
+  const t = text(v)
+  if (t === undefined) return undefined
+  const n = [...t].length
+  return n >= 2 && n <= 254 ? t : undefined
 }
 
 function oneOf<T extends string>(v: unknown, allowed: readonly T[]): T | undefined {
@@ -153,6 +165,7 @@ function isOn(v: unknown) {
 export function parseTicketSearch(raw: Record<string, unknown>): TicketSearch {
   const sort = oneOf(raw.sort, SORT_KEYS)
   const page = Number(raw.page)
+  const reporter = id(raw.reporter)
   const s: TicketSearch = {
     q: text(raw.q),
     replies: isOff(raw.replies) ? false : undefined,
@@ -164,8 +177,10 @@ export function parseTicketSearch(raw: Record<string, unknown>): TicketSearch {
     item: id(raw.item),
     assignee: id(raw.assignee),
     group: id(raw.group),
-    reporter: id(raw.reporter),
-    requester: text(raw.requester),
+    reporter,
+    // An account is what the chip names and the page sends; with both in an
+    // address (the form cannot make that) the account wins.
+    requester: reporter ? undefined : requesterText(raw.requester),
     created_from: day(raw.created_from),
     created_to: day(raw.created_to),
     updated_from: day(raw.updated_from),
@@ -201,10 +216,17 @@ export function isFilterActive(s: TicketSearch, key: FilterKey): boolean {
 
 // How many chips there would be. Text, the queue, the toggles and the sort
 // are not filters.
-export function activeFilterCount(s: TicketSearch): number {
+//
+// A requester is sent only some of the filters (see toApiParams), so a staff
+// link opened by one counts just those: the badge should match what is applied.
+const REQUESTER_FILTER_KEYS: FilterKey[] = ['status', 'priority', 'category', 'created']
+
+export function activeFilterCount(s: TicketSearch, staff = true): number {
   // A type or item alone (no category) is not a thing the form can make, and a
   // typed address can: count it once, under the category.
-  return FILTER_KEYS.filter(k => k !== 'type' && k !== 'item' && isFilterActive(s, k)).length
+  return FILTER_KEYS.filter(
+    k => k !== 'type' && k !== 'item' && (staff || REQUESTER_FILTER_KEYS.includes(k)) && isFilterActive(s, k),
+  ).length
 }
 
 // Whether the viewer is narrowing the list: text, or any filter. A staff search
@@ -290,6 +312,9 @@ export interface Viewer {
   admin: boolean
   // The "Only <queue>" chip is on: a search stays in the selected queue.
   onlyQueue: boolean
+  // GET /me said SLA tracking is on. The SLA filter and sort are refused with
+  // 400 while it is off, so they are not sent unless it is known to be on.
+  slaOn: boolean
 }
 
 export type ApiQueue = Queue | 'visible'
@@ -360,10 +385,10 @@ export function toApiParams(s: TicketSearch, viewer: Viewer): TicketListParams {
     set('updated_after', s.updated_from ? dayStart(s.updated_from) : undefined)
     set('updated_before', s.updated_to ? dayEnd(s.updated_to) : undefined)
     set('source_channel', s.channel)
-    set('sla', s.sla)
+    if (viewer.slaOn) set('sla', s.sla)
   }
 
-  if (s.sort && (viewer.staff || REQUESTER_SORTS.includes(s.sort))) {
+  if (s.sort && (viewer.staff || REQUESTER_SORTS.includes(s.sort)) && (s.sort !== 'sla' || viewer.slaOn)) {
     p.sort = s.sort
     p.order = s.order ?? NATURAL_ORDER[s.sort]
   }

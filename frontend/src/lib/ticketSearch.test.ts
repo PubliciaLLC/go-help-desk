@@ -53,6 +53,26 @@ describe('parseTicketSearch: URL to state', () => {
     expect(parseTicketSearch({ status: '../admin/users' })).toEqual({})
   })
 
+  // An address with both is one the form cannot make. The chip names the
+  // account, so the account is what the page keeps and sends.
+  it('an account wins over free-text requester, so the chip and the request agree', () => {
+    expect(parseTicketSearch({ reporter: ID_A, requester: 'whit' })).toEqual({ reporter: ID_A })
+    expect(parseTicketSearch({ requester: 'whit' })).toEqual({ requester: 'whit' })
+  })
+
+  // The server holds requester to 2-254 characters and status to 20 values.
+  it('drops a requester the server would refuse for its length', () => {
+    expect(parseTicketSearch({ requester: 'w' })).toEqual({})
+    expect(parseTicketSearch({ requester: 'wh' })).toEqual({ requester: 'wh' })
+    expect(parseTicketSearch({ requester: 'x'.repeat(254) })).toEqual({ requester: 'x'.repeat(254) })
+    expect(parseTicketSearch({ requester: 'x'.repeat(255) })).toEqual({})
+  })
+
+  it('keeps at most 20 statuses', () => {
+    const many = Array.from({ length: 25 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`)
+    expect(parseTicketSearch({ status: many }).status).toEqual(many.slice(0, 20))
+  })
+
   it('drops values the server would answer 400 for', () => {
     expect(
       parseTicketSearch({
@@ -151,9 +171,9 @@ describe('dates are the viewer\'s own', () => {
 })
 
 describe('toApiParams', () => {
-  const staff = { staff: true, admin: false, onlyQueue: false }
-  const admin = { staff: true, admin: true, onlyQueue: false }
-  const requester = { staff: false, admin: false, onlyQueue: false }
+  const staff = { staff: true, admin: false, onlyQueue: false, slaOn: true }
+  const admin = { staff: true, admin: true, onlyQueue: false, slaOn: true }
+  const requester = { staff: false, admin: false, onlyQueue: false, slaOn: false }
 
   it('names every filter the way the API does', () => {
     const p = toApiParams(
@@ -294,7 +314,42 @@ describe('toApiParams', () => {
   })
 })
 
+describe('toApiParams while SLA tracking is not known to be on', () => {
+  const off = { staff: true, admin: false, onlyQueue: false, slaOn: false }
+
+  it('drops the SLA filter and the SLA sort, which the server would answer 400', () => {
+    const p = toApiParams({ sla: 'breached', sort: 'sla', order: 'desc', priority: ['high'] }, off)
+    expect(p).toMatchObject({ priority: ['high'] })
+    for (const k of ['sla', 'sort', 'order']) expect(p, k).not.toHaveProperty(k)
+  })
+
+  it('keeps another sort, and everything when SLA is on', () => {
+    expect(toApiParams({ sort: 'subject', order: 'asc' }, off)).toMatchObject({ sort: 'subject', order: 'asc' })
+    expect(toApiParams({ sla: 'breached', sort: 'sla', order: 'desc' }, { ...off, slaOn: true })).toMatchObject({
+      sla: 'breached',
+      sort: 'sla',
+      order: 'desc',
+    })
+  })
+})
+
 describe('hasNarrowing / activeFilterCount', () => {
+  it('a requester counts only the filters they are sent', () => {
+    const link = {
+      status: [ID_A],
+      priority: ['high' as const],
+      assignee: ID_B,
+      group: ID_B,
+      reporter: ID_A,
+      channel: ['web' as const],
+      sla: 'breached' as const,
+      updated_from: '2026-10-01',
+    }
+    expect(activeFilterCount(link, false)).toBe(2)
+    expect(activeFilterCount(link, true)).toBe(8)
+    expect(activeFilterCount(link)).toBe(8)
+  })
+
   it('counts a filter once, however many values it has', () => {
     expect(activeFilterCount({ status: [ID_A, ID_B], priority: ['high'], created_from: '2026-10-01', created_to: '2026-10-31' })).toBe(3)
   })

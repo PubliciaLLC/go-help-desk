@@ -78,6 +78,9 @@ const sla = {
 
 let tickets: Ticket[]
 let headers: Record<string, string>
+// What GET /me answers. Nothing by default, so a test that sets the store alone
+// sees the store.
+let meAnswer: unknown
 let get: ReturnType<typeof vi.spyOn>
 
 function ticketCalls(): Record<string, unknown>[] {
@@ -130,8 +133,10 @@ beforeEach(() => {
   router.replaced = []
   tickets = [ticket({ id: 'tk-1', subject: 'Printer jam' })]
   headers = {}
+  meAnswer = []
   get = vi.spyOn(api, 'get').mockImplementation(((url: string, cfg?: { params?: Record<string, unknown> }) => {
     if (url === '/tickets') return Promise.resolve({ data: tickets, headers })
+    if (url === '/me') return Promise.resolve({ data: meAnswer })
     if (url === '/statuses') return Promise.resolve({ data: STATUSES })
     if (url === '/categories') return Promise.resolve({ data: [{ id: '00000000-0000-4000-8000-0000000000c1', name: 'Hardware' }, { id: '00000000-0000-4000-8000-0000000000c2', name: 'Software' }] })
     if (url === '/categories/00000000-0000-4000-8000-0000000000c1/types') return Promise.resolve({ data: [{ id: '00000000-0000-4000-8000-0000000000d1', name: 'Printers' }] })
@@ -248,6 +253,39 @@ describe('the Filters panel', () => {
     expect(within(screen.getByRole('region', { name: 'Filters' })).getByLabelText('SLA')).toBeTruthy()
   })
 
+  // A password sign-in puts the sign-in response's user in the store, and that
+  // user has no sla_enabled: only GET /me does. The list asks /me itself.
+  it('offers the SLA filter after a password sign-in, whose user has no sla_enabled', async () => {
+    setRole('staff')
+    meAnswer = { ...useAuthStore.getState().user, sla_enabled: true }
+    renderWithQuery(<TicketListPage />)
+    fireEvent.click(await screen.findByRole('button', { name: /^Filters/ }))
+    await waitFor(() =>
+      expect(within(screen.getByRole('region', { name: 'Filters' })).getByLabelText('SLA')).toBeTruthy(),
+    )
+  })
+
+  it('follows /me over a stale store: an administrator who switched SLA off', async () => {
+    setRole('staff', true)
+    meAnswer = { ...useAuthStore.getState().user, sla_enabled: false }
+    tickets = [ticket({ id: 'tk-1', subject: 'Tracked', sla })]
+    renderWithQuery(<TicketListPage />)
+    await screen.findAllByText('Tracked')
+    await waitFor(() => expect(get.mock.calls.some((c: unknown[]) => c[0] === '/me')).toBe(true))
+    fireEvent.click(screen.getByRole('button', { name: /^Filters/ }))
+    await waitFor(() =>
+      expect(within(screen.getByRole('region', { name: 'Filters' })).queryByLabelText('SLA')).toBeNull(),
+    )
+    expect(screen.queryByRole('button', { name: /^SLA/ })).toBeNull()
+  })
+
+  it('a requester does not ask /me for it', async () => {
+    setRole('user')
+    renderWithQuery(<TicketListPage />)
+    await screen.findAllByText('Printer jam')
+    expect(get.mock.calls.some((c: unknown[]) => c[0] === '/me')).toBe(false)
+  })
+
   // A ticket with a live SLA is not evidence either way: only /me is asked.
   it.each([
     ['off', false],
@@ -270,6 +308,55 @@ describe('the Filters panel', () => {
     renderWithQuery(<TicketListPage />)
     await screen.findAllByText('Tracked')
     expect(screen.queryByRole('button', { name: /^SLA/ })).toBeNull()
+  })
+
+  it('an old link with sla= and sort=sla sends neither once SLA is off, and says so', async () => {
+    setRole('staff', false)
+    meAnswer = { ...useAuthStore.getState().user, sla_enabled: false }
+    go({ sla: 'breached', sort: 'sla', order: 'desc', priority: ['high'] })
+    renderWithQuery(<TicketListPage />)
+    await waitFor(() => expect(ticketCalls().length).toBeGreaterThan(0))
+    for (const p of ticketCalls()) {
+      for (const k of ['sla', 'sort', 'order']) expect(p, k).not.toHaveProperty(k)
+      expect(p.priority).toEqual(['high'])
+    }
+    expect(await screen.findByText(/SLA tracking is off/)).toBeTruthy()
+    // Not "Sorted by SLA": the list is in the default order.
+    expect(screen.queryByText(/Sorted by SLA/)).toBeNull()
+  })
+
+  it('and sends them when /me says SLA is on', async () => {
+    setRole('staff', true)
+    meAnswer = { ...useAuthStore.getState().user, sla_enabled: true }
+    go({ sla: 'breached', sort: 'sla', order: 'desc' })
+    renderWithQuery(<TicketListPage />)
+    await waitFor(() => expect(ticketCalls().length).toBeGreaterThan(0))
+    expect(lastCall()).toMatchObject({ sla: 'breached', sort: 'sla', order: 'desc' })
+    expect(screen.queryByText(/SLA tracking is off/)).toBeNull()
+  })
+
+  it('asks nothing of the server until /me has answered, so the first request is the right one', async () => {
+    setRole('staff')
+    let answer: (v: unknown) => void = () => {}
+    const pending = new Promise(r => { answer = r })
+    const prior = get.getMockImplementation()!
+    get.mockImplementation(((url: string, cfg?: unknown) =>
+      url === '/me' ? pending : prior(url, cfg)) as never)
+    go({ sla: 'breached' })
+    renderWithQuery(<TicketListPage />)
+    await new Promise(r => setTimeout(r, 50))
+    expect(ticketCalls()).toHaveLength(0)
+    answer({ data: { ...useAuthStore.getState().user, sla_enabled: true } })
+    await waitFor(() => expect(ticketCalls().length).toBe(1))
+    expect(lastCall()).toMatchObject({ sla: 'breached' })
+  })
+
+  it('the Filters badge does not count what a requester is not sent', async () => {
+    setRole('user')
+    go({ priority: ['high'], assignee: '00000000-0000-4000-8000-0000000000b2', group: '00000000-0000-4000-8000-0000000000e1', channel: ['web'], sla: 'breached' })
+    renderWithQuery(<TicketListPage />)
+    await screen.findAllByText('Printer jam')
+    expect(screen.getByLabelText('1 active')).toBeTruthy()
   })
 
   it('a requester is offered only what the server will let them use', async () => {
@@ -433,6 +520,16 @@ describe('sort', () => {
     expect(screen.queryByText(/^Updated /)).toBeNull()
   })
 
+  it('a header click goes back to the first page', async () => {
+    setRole('staff')
+    go({ page: 3 })
+    renderWithQuery(<TicketListPage />)
+    await screen.findAllByText('Printer jam')
+    fireEvent.click(screen.getByRole('button', { name: /^Subject/ }))
+    expect(router.search.page).toBeUndefined()
+    expect(router.search).toMatchObject({ sort: 'subject' })
+  })
+
   it('a requester gets no header the server would refuse', async () => {
     setRole('user')
     renderWithQuery(<TicketListPage />)
@@ -528,6 +625,29 @@ describe('reply matches', () => {
   })
 })
 
+describe('the search box and the notices are announced', () => {
+  it('the search box has a name', async () => {
+    setRole('staff')
+    renderWithQuery(<TicketListPage />)
+    expect(await screen.findByRole('textbox', { name: 'Search tickets' })).toBeTruthy()
+  })
+
+  // A live region added together with its text is often not announced, so the
+  // region is in the page before the server says anything and only its text
+  // changes.
+  it('the notice region is on the page before there is a notice, and its text changes', async () => {
+    setRole('staff')
+    go({ q: 'fuser' })
+    headers = { 'x-reply-index': 'building' }
+    renderWithQuery(<TicketListPage />)
+    const region = await screen.findByRole('status', { name: 'Reply search' })
+    expect(region.textContent).toBe('')
+    await screen.findByText(/Reply search is still being prepared/)
+    expect(screen.getByRole('status', { name: 'Reply search' })).toBe(region)
+    expect(region.textContent).toMatch(/still being prepared/)
+  })
+})
+
 describe('what the server could not search', () => {
   beforeEach(() => {
     setRole('staff')
@@ -602,6 +722,20 @@ describe('on a phone', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close filters' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     expect(router.search).toEqual({})
+  })
+
+  it.each([
+    ['Close filters', (d: HTMLElement) => fireEvent.click(within(d).getByRole('button', { name: 'Close filters' }))],
+    ['Show results', (d: HTMLElement) => fireEvent.click(within(d).getByRole('button', { name: 'Show results' }))],
+    ['Escape', (d: HTMLElement) => fireEvent.keyDown(d, { key: 'Escape' })],
+  ])('closing the dialog with %s puts focus back on the Filters button', async (_name, close) => {
+    renderWithQuery(<TicketListPage />)
+    const open = await screen.findByRole('button', { name: /^Filters/ })
+    fireEvent.click(open)
+    const dialog = await screen.findByRole('dialog', { name: 'Filters' })
+    close(dialog)
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: /^Filters/ })))
   })
 
   it('Clear all in the dialog empties the draft, and Show results applies that', async () => {

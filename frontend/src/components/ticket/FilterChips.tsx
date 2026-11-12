@@ -85,7 +85,8 @@ export function FilterChips({
       case 'priority':
         return search.priority!.map(cap).join(', ')
       case 'requester':
-        // An account wins: it is what the page sends when an address has both.
+        // An account wins: parseTicketSearch drops a free-text requester when an
+        // address has both, so only one of them can be set here.
         return search.reporter ? <RequesterName id={search.reporter} /> : `“${search.requester}”`
       case 'category':
         return [

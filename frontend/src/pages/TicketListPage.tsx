@@ -1,8 +1,9 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { getTicket, searchTickets, updateTicket, type TicketScope } from '@/api/tickets'
 import { listStatuses } from '@/api/admin'
+import { getMe } from '@/api/auth'
 import { useAuthStore } from '@/store/auth'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
@@ -164,6 +165,7 @@ export function TicketListPage() {
   const [bulkError, setBulkError] = useState('')
   const [jumpError, setJumpError] = useState('')
   const [filtersOpen, setFiltersOpen] = useState(false)
+  const filtersButton = useRef<HTMLButtonElement>(null)
   // md is where the sidebar and the table appear; below it the filters are a
   // full-screen dialog and the results are cards.
   const wide = useMediaQuery('(min-width: 768px)', true)
@@ -201,7 +203,24 @@ export function TicketListPage() {
     queryFn: listStatuses,
   })
 
-  const viewer = { staff: isStaffOrAdmin, admin: isAdmin, onlyQueue }
+  // Whether SLA tracking is on is what GET /me says, for staff and
+  // administrators. The sign-in response's user does not carry it and the store
+  // is not refreshed after that, so the page asks /me itself; Settings makes
+  // this query stale when it saves. Absent is unknown, and unknown hides it
+  // rather than guessing from the rows: the SLA filter and sort are refused
+  // with 400 while tracking is off. Until /me has answered the store's copy
+  // stands in, and the list waits for the answer so its first request is right.
+  const { data: me, isFetched: meSettled } = useQuery({
+    queryKey: ['me'],
+    queryFn: getMe,
+    enabled: isStaffOrAdmin,
+    retry: false,
+  })
+  const slaOn = (me?.sla_enabled ?? user?.sla_enabled) === true
+  // A saved link that names SLA, opened while tracking is off or unknown.
+  const slaLinkDropped = isStaffOrAdmin && meSettled && !slaOn && Boolean(search.sla || search.sort === 'sla')
+
+  const viewer = { staff: isStaffOrAdmin, admin: isAdmin, onlyQueue, slaOn }
   const params = toApiParams(effective, viewer)
   // Non-admins are always on "mine": the backend rejects other queues.
   const effectiveScope: TicketScope = isAdmin ? scope : 'mine'
@@ -210,6 +229,7 @@ export function TicketListPage() {
   const { data: result, isFetching, error: listError } = useQuery({
     queryKey: ['tickets', params],
     queryFn: () => searchTickets(params),
+    enabled: !isStaffOrAdmin || meSettled,
     // Keeping the previous page visible while the next loads stops the table
     // collapsing to empty on every click.
     placeholderData: (previous) => previous,
@@ -225,12 +245,8 @@ export function TicketListPage() {
   // next/previous.
   const mayHaveMore = tickets.length === PAGE_SIZE
 
-  // Whether SLA tracking is on is what GET /me says, for staff and
-  // administrators. Absent is unknown, and unknown hides it: the SLA filter is
-  // refused with 400 while tracking is off, so nothing here guesses it from the
-  // rows. The column also waits for a row with a status to show, so an instance
-  // whose tickets carry no policy sees the table it always saw.
-  const slaOn = user?.sla_enabled === true
+  // The column waits for a row with a status to show, so an instance whose
+  // tickets carry no policy sees the table it always saw.
   const showSLAColumn = useMemo(() => slaOn && tickets.some(t => t.sla != null), [slaOn, tickets])
 
   // Names for the chips. The panel loads the same lists for its selects.
@@ -244,7 +260,7 @@ export function TicketListPage() {
     group: id => lookups.groups.find(g => g.id === id)?.name,
   }
 
-  const filterCount = activeFilterCount(search)
+  const filterCount = activeFilterCount(search, isStaffOrAdmin)
   const named = namesASet(effective, isStaffOrAdmin)
   // Staff and admin searches that narrow cover everything they can see (S7),
   // except where a set of tickets is named, which has no queue.
@@ -276,7 +292,8 @@ export function TicketListPage() {
     update(s => ({ ...s, page: n >= 2 ? n : undefined }))
   }
 
-  const sortNow = effectiveSort(effective)
+  // A link's sort=sla is not sent while SLA is off, so the list is not in that order.
+  const sortNow = effectiveSort(effective.sort === 'sla' && !slaOn ? { ...effective, sort: undefined, order: undefined } : effective)
   function sortBy(key: SortKey) {
     const { sort, order } = nextSort(effective, key)
     update(s => ({ ...s, sort, order, page: undefined }))
@@ -287,6 +304,14 @@ export function TicketListPage() {
   // X-Replies-Searched: false when the reply arm gave up (the time cap), and
   // X-Reply-Index: building while the index is still being built.
   const askedForReplies = Boolean(params.search_replies)
+  const replyNotice =
+    result && askedForReplies
+      ? result.replyIndex === 'building'
+        ? 'Reply search is still being prepared, so these results cover ticket subjects and descriptions only. Try again later to include replies.'
+        : result.repliesSearched === false
+          ? "Replies weren't fully searched, so tickets that matched only through a reply may be missing. Try a narrower search, or search again."
+          : ''
+      : ''
 
   function statusFor(id: string) {
     return statuses.find(s => s.id === id)
@@ -368,6 +393,7 @@ export function TicketListPage() {
             <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
             <Input
               className="pl-9"
+              aria-label="Search tickets"
               placeholder="Search by tracking number, subject, or description…"
               value={query}
               onChange={e => setQuery(e.target.value)}
@@ -393,6 +419,7 @@ export function TicketListPage() {
             </div>
           )}
           <Button
+            ref={filtersButton}
             type="button"
             variant="outline"
             aria-expanded={filtersOpen}
@@ -499,6 +526,7 @@ export function TicketListPage() {
             onOpenChange={setFiltersOpen}
             search={{ ...effective, q: undefined }}
             onApply={applyDraft}
+            returnFocusTo={filtersButton}
             staff={isStaffOrAdmin}
             slaOn={slaOn}
             statuses={statuses}
@@ -583,21 +611,24 @@ export function TicketListPage() {
           </div>
         )}
 
-        {/* What the server could not do for the replies. Both are about this
-            search only: the results are still right for the subject and the
-            description. */}
-        {result && askedForReplies && result.replyIndex === 'building' && (
-          <p role="status" className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-            Reply search is still being prepared, so these results cover ticket subjects and descriptions only. Try
-            again later to include replies.
-          </p>
-        )}
-        {result && askedForReplies && result.replyIndex !== 'building' && result.repliesSearched === false && (
-          <p role="status" className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-            Replies weren&apos;t fully searched, so tickets that matched only through a reply may be missing. Try a
-            narrower search, or search again.
-          </p>
-        )}
+        {/* What the server could not do for the replies, and what a link's SLA
+            parts came to. Both are about this search only: the results are still
+            right for the subject and the description. The regions are always in
+            the page and only their text changes: a live region added together
+            with its text is often not announced. */}
+        <div role="status" aria-label="Reply search" className={replyNotice ? '' : 'sr-only'}>
+          {replyNotice && (
+            <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">{replyNotice}</p>
+          )}
+        </div>
+        <div role="status" aria-label="SLA in this link" className={slaLinkDropped ? '' : 'sr-only'}>
+          {slaLinkDropped && (
+            <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              SLA tracking is off, so this link&apos;s SLA {search.sla && search.sort === 'sla' ? 'filter and sort were' : search.sla ? 'filter was' : 'sort was'} not
+              applied.
+            </p>
+          )}
+        </div>
 
         {/* Results */}
         {listError && !result ? (

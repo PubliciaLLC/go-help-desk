@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type RefObject } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import { XIcon } from 'lucide-react'
 import type { Status } from '@/api/types'
@@ -14,10 +14,12 @@ import { TicketFilters } from './TicketFilters'
 function DialogBody({
   initial,
   onApply,
+  returnFocusTo,
   ...rest
 }: {
   initial: TicketSearch
   onApply: (draft: TicketSearch) => void
+  returnFocusTo: RefObject<HTMLElement | null>
   staff: boolean
   slaOn: boolean
   statuses: Status[]
@@ -28,6 +30,13 @@ function DialogBody({
   return (
     <Dialog.Content
       aria-describedby={undefined}
+      // Radix returns focus to its trigger, and this dialog has none (the page's
+      // Filters button opens it by state), so without this focus falls to the
+      // top of the document on Escape, Close and Show results alike.
+      onCloseAutoFocus={e => {
+        e.preventDefault()
+        returnFocusTo.current?.focus()
+      }}
       className="fixed inset-0 z-50 flex flex-col bg-white focus:outline-none"
     >
       <div className="flex items-center justify-between border-b border-gray-200 px-4 py-2">
@@ -61,6 +70,7 @@ export function FilterDialog({
   onOpenChange,
   search,
   onApply,
+  returnFocusTo,
   staff,
   slaOn,
   statuses,
@@ -69,6 +79,7 @@ export function FilterDialog({
   onOpenChange: (open: boolean) => void
   search: TicketSearch
   onApply: (draft: TicketSearch) => void
+  returnFocusTo: RefObject<HTMLElement | null>
   staff: boolean
   slaOn: boolean
   statuses: Status[]
@@ -83,6 +94,7 @@ export function FilterDialog({
             onApply(d)
             onOpenChange(false)
           }}
+          returnFocusTo={returnFocusTo}
           staff={staff}
           slaOn={slaOn}
           statuses={statuses}
