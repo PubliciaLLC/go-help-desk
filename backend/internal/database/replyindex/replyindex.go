@@ -104,6 +104,9 @@ type Preparer struct {
 	// OnBatch, if set, is called after each batch with the rows filled so far.
 	// For tests.
 	OnBatch func(filled int64)
+	// OnRetry, if set, is called with the wait before each retry of Run after a
+	// failure. For tests.
+	OnRetry func(wait time.Duration)
 	// OnBuild, if set, is called just before each index build with the index and
 	// the maintenance_work_mem the building session reports. For tests.
 	OnBuild func(index, maintenanceWorkMem string)
@@ -465,6 +468,9 @@ func (p *Preparer) Run(ctx context.Context) {
 			return
 		case err != nil:
 			p.Log.WarnContext(ctx, "reply search preparation failed; it will be tried again", "error", err, "retry_in", wait.String())
+			if p.OnRetry != nil {
+				p.OnRetry(wait)
+			}
 		case res.Done:
 			return
 		default:
