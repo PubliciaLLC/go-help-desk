@@ -126,7 +126,7 @@ func TestEmailTemplates_OnlyASignedInAdministrator(t *testing.T) {
 
 // ── reading ──────────────────────────────────────────────────────────────────
 
-func TestEmailTemplates_ListHasAllNineteenInGroups(t *testing.T) {
+func TestEmailTemplates_ListHasAllTwentyInGroups(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	res := h.doAsAdminSession(t, http.MethodGet, tmplPath, nil)
@@ -139,14 +139,14 @@ func TestEmailTemplates_ListHasAllNineteenInGroups(t *testing.T) {
 		Broken     bool   `json:"broken"`
 	}
 	require.NoError(t, json.Unmarshal(b, &list))
-	require.Len(t, list, 19)
+	require.Len(t, list, 20)
 	groups := map[string]int{}
 	for _, e := range list {
 		groups[e.Group]++
 		require.False(t, e.Customised, e.Name)
 		require.False(t, e.Broken, e.Name)
 	}
-	require.Equal(t, map[string]int{"requester": 6, "staff": 9, "account": 2, "shared": 2}, groups)
+	require.Equal(t, map[string]int{"requester": 7, "staff": 9, "account": 2, "shared": 2}, groups)
 }
 
 func TestEmailTemplates_DetailCarriesTheDefaultTheVariablesAndTheRequiredLink(t *testing.T) {

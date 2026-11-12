@@ -286,6 +286,10 @@ export interface Ticket {
   // only, on every ticket; absent for a requester, on a list, and when the
   // account could not be read.
   requester?: { name: string; email: string }
+  // The follow-up already opened from this ticket, on the single-ticket read of
+  // a Closed one (#625): the newest ticket the follow-up action made from it.
+  // Absent when there is none, and on any ticket that is not Closed.
+  follow_up?: { id: string; tracking_number: string }
 }
 
 export interface Attachment {

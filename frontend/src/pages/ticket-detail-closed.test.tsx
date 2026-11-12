@@ -93,7 +93,9 @@ describe('a closed ticket', () => {
     expect(screen.queryByRole('button', { name: 'Reopen' })).toBeNull()
   })
 
-  it('offers staff and admin a follow-up instead, and no way to change its status or reply', async () => {
+  // Staff may reply to a closed ticket (#625, ticket-detail-closed-follow-up.test.tsx):
+  // the API always allowed it, and the page now does.
+  it('offers staff and admin a follow-up instead, and no way to change its status', async () => {
     for (const role of ['staff', 'admin'] as const) {
       signInAs(role)
       mockApiGet(ticketWithStatus('st-closed'))
@@ -103,7 +105,6 @@ describe('a closed ticket', () => {
       })
       // The status picker would only offer moves the server refuses.
       expect(screen.queryByRole('combobox', { name: 'Ticket status' })).toBeNull()
-      expect(screen.queryByPlaceholderText(/describe the work performed/i)).toBeNull()
       expect(screen.getByRole('note').textContent).toMatch(/cannot be reopened/i)
       unmount()
     }

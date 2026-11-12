@@ -24,6 +24,7 @@ func newPreparer(db *sql.DB) *replyindex.Preparer {
 	p.BatchSize = 3
 	p.Pause = 0
 	p.EmptyPause = 0
+	p.LockPause = 10 * time.Millisecond
 	return p
 }
 
@@ -504,4 +505,28 @@ func TestPrepare_AFailedResetDiscardsTheConnection(t *testing.T) {
 		require.NoError(t, c.QueryRowContext(ctx, `SHOW maintenance_work_mem`).Scan(&got))
 		require.Equal(t, serverDefault, got, "connection %d", i)
 	}
+}
+
+// Run must actually back off: a database that keeps failing makes it wait twice
+// as long after each failure, up to MaxRetry. (TestRetryBackoff checks the
+// arithmetic; this fails if Run stops using it.)
+func TestRun_WaitsLongerAfterEachFailure(t *testing.T) {
+	db, closeDB := testutil.NewIsolatedDB(t)
+	closeDB() // every attempt now fails: the database is gone
+	broken := db.SQL
+
+	p := newPreparer(broken)
+	p.Retry = 10 * time.Millisecond
+	p.MaxRetry = 40 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var waits []time.Duration
+	p.OnRetry = func(wait time.Duration) {
+		waits = append(waits, wait)
+		if len(waits) == 5 {
+			cancel()
+		}
+	}
+	p.Run(ctx)
+	require.Equal(t, []time.Duration{10 * time.Millisecond, 20 * time.Millisecond, 40 * time.Millisecond, 40 * time.Millisecond, 40 * time.Millisecond}, waits)
 }

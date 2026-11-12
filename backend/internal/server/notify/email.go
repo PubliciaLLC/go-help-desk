@@ -552,6 +552,10 @@ func emailTemplateFor(event notification.Event) (string, bool) {
 	}
 	switch event.Type {
 	case notification.EventTicketCreated:
+		// A follow-up of a closed ticket is told in its own words (#625).
+		if event.FollowUp {
+			return "ticket_follow_up_created.tmpl", true
+		}
 		return "ticket_created.tmpl", true
 	case notification.EventTicketReplied:
 		return "ticket_replied.tmpl", true

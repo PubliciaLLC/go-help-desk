@@ -33,6 +33,28 @@ func TestOutboxRecord_CoversEveryEventField(t *testing.T) {
 	}
 }
 
+// A follow-up's created event is worded differently, and the mail is written
+// from the queued row, so the flag has to survive the queue (#625). Rows queued
+// before it read as an ordinary ticket.
+func TestEventCodec_RoundTripsTheFollowUpFlag(t *testing.T) {
+	b, err := EncodeEvent(Event{Type: EventTicketCreated, TicketID: uuid.New(), FollowUp: true})
+	require.NoError(t, err)
+	got, err := DecodeEvent(b)
+	require.NoError(t, err)
+	require.True(t, got.FollowUp)
+
+	b, err = EncodeEvent(Event{Type: EventTicketCreated, TicketID: uuid.New()})
+	require.NoError(t, err)
+	require.NotContains(t, string(b), "follow_up", "absent unless set, as the other flags are")
+	got, err = DecodeEvent(b)
+	require.NoError(t, err)
+	require.False(t, got.FollowUp)
+
+	got, err = DecodeEvent([]byte(`{"type":"ticket.created","ticket_id":"11111111-2222-3333-4444-555555555555","occurred_at":"2026-01-01T00:00:00Z"}`))
+	require.NoError(t, err)
+	require.False(t, got.FollowUp, "a row queued before the flag existed")
+}
+
 func TestEncodeEvent_RefusesARawGuestToken(t *testing.T) {
 	_, err := EncodeEvent(Event{Type: EventTicketReplied, GuestToken: "raw"})
 	require.ErrorIs(t, err, ErrRawGuestToken)

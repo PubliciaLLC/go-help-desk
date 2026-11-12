@@ -2211,7 +2211,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [tracking_number, subject, description, description_format, status, created_at, replies]
+                required: [tracking_number, subject, description, description_format, status, created_at, replies, has_follow_up]
                 properties:
                   tracking_number: {type: string}
                   subject: {type: string}
@@ -2220,6 +2220,9 @@ paths:
                   status:
                     type: string
                     description: The name of the ticket's current status. Empty if the status cannot be found.
+                  has_follow_up:
+                    type: boolean
+                    description: True when this ticket is Closed and a follow-up has been opened from it (#625). Only whether, and never which ticket, because the new ticket link goes by email.
                   created_at: {type: string, format: date-time}
                   replies:
                     type: array
@@ -3335,7 +3338,9 @@ paths:
             any other value is 400. A ticket then also matches when ONE reply holds every word (words
             found in different replies do not combine). Staff and administrators search public replies and
             internal notes; a requester, and any role not recognised, searches public replies only, whatever
-            the request says. Ranking looks at the 2,000 newest matching replies the caller may see, and the
+            the request says. A reply is searched, and excerpted, on its first 50,000 characters (the limit on a
+            new reply; replies written before 1.3.0 can be longer), so a word after that in a very long reply is
+            not found. Ranking looks at the 2,000 newest matching replies the caller may see, and the
             whole search runs under a five-second limit. When replies could not be searched (the reply index
             is still being built after an upgrade, or the limit passed) the answer is the tickets that match
             on their own text, and the X-Replies-Searched and X-Reply-Index headers say so.
@@ -4326,9 +4331,9 @@ paths:
         - Staff and administrators may follow up any closed ticket they can see,
           as many times as they like.
         - A reporting user may follow up their own closed ticket once. A second
-          attempt is 409 follow_up_exists. Any parent_child link out of the
-          closed ticket counts as its follow-up, including one staff added by
-          hand, so such a link also uses up the reporter's one follow-up. The
+          attempt is 409 follow_up_exists. Only a follow-up the follow-up action made counts
+          (the link carries a follow_up flag), whoever opened it; a parent_child link staff
+          added by hand does not use up the reporter's one follow-up. The
           follow-up keeps the original
           category and type, which must both still be active (400 otherwise).
         The ticket must be Closed (409 ticket_not_closed otherwise). The path id is a UUID
@@ -4384,7 +4389,10 @@ paths:
         '409':
           description: |
             `ticket_not_closed`: the ticket is not Closed. Or `follow_up_exists`: a
-            reporting user already has a follow-up of this ticket.
+            reporting user already has a follow-up of this ticket. Or `reporter_deleted`
+            (staff and administrators): the account that reported the ticket has been
+            deleted, so there is nobody to file the follow-up for; restore the account or
+            open a new ticket.
           content:
             application/json:
               schema:
@@ -11406,6 +11414,19 @@ components:
                 email:
                   type: string
                   description: The account's address, or the guest's.
+            follow_up:
+              description: |
+                The follow-up already opened from this ticket (#625): the newest ticket the follow-up action made
+                from it. Sent on getTicket only (never on a list row), for a Closed ticket that has one, to every
+                role (a reporting user keeps it: it is their own new ticket). Absent otherwise. A parent_child link
+                made by hand is not a follow-up. The ticket page uses it to hide the follow-up button and link to the ticket.
+              type: object
+              required: [id, tracking_number]
+              properties:
+                id:
+                  $ref: '#/components/schemas/Uuid'
+                tracking_number:
+                  type: string
     SlaStatus:
       description: |
         A ticket's live SLA status. Computed fresh on every read from the
@@ -11511,7 +11532,7 @@ components:
         A directed link between two tickets. Each
         ticket is named by its UUID only.
       type: object
-      required: [source_id, target_id, link_type]
+      required: [source_id, target_id, link_type, follow_up]
       properties:
         source_id:
           $ref: '#/components/schemas/Uuid'
@@ -11520,6 +11541,9 @@ components:
         link_type:
           type: string
           enum: [related_to, parent_child, caused_by, duplicate_of]
+        follow_up:
+          type: boolean
+          description: True for the link the follow-up action wrote (#625), and for each parent_child link that existed when 1.3.0 was installed between two tickets of one requester (the same account, or the same guest address). Only such a link counts as a reporting user's one follow-up of a closed ticket; a parent_child link made by hand does not.
     StatusHistoryEntry:
       description: |
         One status

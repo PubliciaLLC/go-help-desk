@@ -62,6 +62,12 @@ import (
 )
 
 func main() {
+	// Before anything else: a command line the binary does not understand must not
+	// start a server (see serverArgsProblem).
+	if msg := serverArgsProblem(os.Args[1:]); msg != "" {
+		fmt.Fprintln(os.Stderr, msg)
+		os.Exit(2)
+	}
 	// One subcommand, handled before run() so it never starts a server or a
 	// sweep. Everything else is the server, which keeps `docker run <image>`
 	// meaning what it has always meant.
@@ -75,6 +81,13 @@ func main() {
 			os.Exit(1)
 		}
 		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "prepare-reply-search" {
+		// Interruptible: the fill and the build resume where they stopped.
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		code := prepareReplySearchCommand(ctx, os.Args[2:], os.Stdout)
+		stop()
+		os.Exit(code)
 	}
 	if len(os.Args) > 1 && os.Args[1] == "unlock" {
 		var email string
@@ -549,6 +562,14 @@ func run() error {
 				// First, so a failing session sweep below (which continues)
 				// cannot starve it. Bounded by the metadata fetch timeout.
 				srv.RefreshSAML(sweepCtx)
+				// Before the session sweep, whose failure continues the loop:
+				// a closed ticket collects a guest token per mail sent on it
+				// and nothing else deletes the expired ones (#625).
+				if n, err := ticketSvc.SweepExpiredGuestTokens(sweepCtx); err != nil {
+					slog.WarnContext(sweepCtx, "sweeping expired guest tokens failed", "error", err)
+				} else if n > 0 {
+					slog.InfoContext(sweepCtx, "swept expired guest tokens", "count", n)
+				}
 				n, err := sessionStore.DeleteExpired(sweepCtx)
 				if err != nil {
 					slog.WarnContext(sweepCtx, "sweeping expired sessions failed", "error", err)

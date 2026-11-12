@@ -199,6 +199,17 @@ func (s *Server) handleGuestGetTicket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Only whether one exists (#625), so the page stops offering a follow-up
+	// the route would refuse. Not which ticket: its link goes by mail.
+	var followUp *ticket.FollowUpRef
+	if s.tickets.IsClosed(t) {
+		if followUp, err = s.tickets.FollowUpOf(ctx, t.ID,
+			func(target ticket.Ticket) (bool, error) { return sameGuest(t, target), nil }); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+
 	// A deliberately narrow view, built here rather than returning the ticket.
 	// Marshalling ticket.Ticket would ship assignee ids, group ids, the
 	// reporter id and the resolution notes to someone with no account, and
@@ -211,7 +222,39 @@ func (s *Server) handleGuestGetTicket(w http.ResponseWriter, r *http.Request) {
 		"status":             statusName,
 		"created_at":         t.CreatedAt,
 		"replies":            guestReplyView(ticket.VisibleReplies(replies, user.RoleUser)),
+		"has_follow_up":      followUp != nil,
 	}))
+}
+
+// sameGuest is whether target is a ticket of the same guest as t: no account,
+// and the same address. A guest holds no session, so this is the whole of
+// "could they open it" for a ticket other than the one their link names.
+//
+// The address is compared by ASCII case alone. strings.EqualFold also folds the
+// Kelvin sign (U+212A) to k and the long s (U+017F) to s, which would make a
+// stored look-alike address the same person; addresses here are ASCII.
+func sameGuest(t, target ticket.Ticket) bool {
+	return target.ReporterUserID == nil && t.GuestEmail != nil && target.GuestEmail != nil &&
+		equalASCIIFold(*t.GuestEmail, *target.GuestEmail)
+}
+
+// equalASCIIFold is a == b with A-Z and a-z equal, and every other byte exact.
+func equalASCIIFold(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	lower := func(c byte) byte {
+		if c >= 'A' && c <= 'Z' {
+			return c + 'a' - 'A'
+		}
+		return c
+	}
+	for i := 0; i < len(a); i++ {
+		if lower(a[i]) != lower(b[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // guestJSON runs a guest's ticket response through the guest allowed list, the
