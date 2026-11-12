@@ -316,6 +316,7 @@ type TicketLink struct {
 	SourceTicketID uuid.UUID `json:"source_ticket_id"`
 	TargetTicketID uuid.UUID `json:"target_ticket_id"`
 	LinkType       string    `json:"link_type"`
+	FollowUp       bool      `json:"follow_up"`
 }
 
 type TicketReply struct {

@@ -51,6 +51,7 @@ func goldenCases() []goldenCase {
 		{"ticket_created", goldenEvent(notification.EventTicketCreated, nil)},
 		{"ticket_created_no_tracking", goldenEvent(notification.EventTicketCreated, func(e *notification.Event) { e.TrackingNumber = "" })},
 		{"ticket_created_guest", goldenEvent(notification.EventTicketCreated, guest)},
+		{"ticket_follow_up_created_guest", goldenEvent(notification.EventTicketCreated, func(e *notification.Event) { guest(e); e.FollowUp = true })},
 		{"ticket_replied", goldenEvent(notification.EventTicketReplied, nil)},
 		{"ticket_status_changed", goldenEvent(notification.EventTicketStatusChanged, guest)},
 		{"ticket_resolved", goldenEvent(notification.EventTicketResolved, guest)},
@@ -121,15 +122,15 @@ func TestGolden_EveryMailIsByteIdenticalWithNoOverride(t *testing.T) {
 	}
 }
 
-// The 17 templates are all reached by the cases above.
-func TestGolden_CoversEverySeventeenTemplates(t *testing.T) {
+// The 18 templates are all reached by the cases above.
+func TestGolden_CoversEveryTemplate(t *testing.T) {
 	seen := map[string]bool{}
 	for _, c := range goldenCases() {
 		seen[strings.TrimSuffix(strings.TrimSuffix(c.file, "_no_tracking"), "_guest")] = true
 	}
 	files, err := templateFS.ReadDir("templates")
 	require.NoError(t, err)
-	require.Len(t, files, 17)
+	require.Len(t, files, 18)
 	for _, f := range files {
 		name := strings.TrimSuffix(f.Name(), ".tmpl")
 		require.True(t, seen[name], "no golden case for %s", name)

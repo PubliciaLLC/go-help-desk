@@ -132,6 +132,26 @@ func TestChanges_MergesScalars(t *testing.T) {
 	require.True(t, ev.FromRequester)
 }
 
+// The follow-up flag is true if any piece said so, like the other flags,
+// whichever piece was raised first.
+func TestChanges_MergesTheFollowUpFlag(t *testing.T) {
+	for name, flagged := range map[string]int{"flagged piece first": 0, "flagged piece second": 1} {
+		t.Run(name, func(t *testing.T) {
+			tid := uuid.New()
+			pieces := []Event{
+				{Kinds: []EventType{EventTicketAssigned}, TicketID: tid},
+				{Kinds: []EventType{EventTicketCreated}, TicketID: tid},
+			}
+			pieces[flagged].FollowUp = true
+			c := &Changes{}
+			for _, p := range pieces {
+				c.Raise(p)
+			}
+			require.True(t, c.Events()[0].FollowUp)
+		})
+	}
+}
+
 func TestChange_Constructors(t *testing.T) {
 	id := uuid.New()
 	require.Equal(t, Change{Field: "x", From: nil, To: ptr(id.String())}, IDChange("x", nil, &id))

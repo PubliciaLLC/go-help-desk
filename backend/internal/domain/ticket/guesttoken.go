@@ -271,3 +271,11 @@ func guestNotifyTarget(t Ticket, closing bool) string {
 	}
 	return guestRecipient(t)
 }
+
+// SweepExpiredGuestTokens deletes guest tokens past their expiry and reports
+// how many (#625). An expired token already resolves to nothing, so this is
+// housekeeping: a closed ticket collects one token per mail sent on it, each
+// good for thirty days, and nothing else removes them.
+func (s *Service) SweepExpiredGuestTokens(ctx context.Context) (int64, error) {
+	return s.store.DeleteExpiredGuestTokens(ctx)
+}

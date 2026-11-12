@@ -562,6 +562,14 @@ func run() error {
 				// First, so a failing session sweep below (which continues)
 				// cannot starve it. Bounded by the metadata fetch timeout.
 				srv.RefreshSAML(sweepCtx)
+				// Before the session sweep, whose failure continues the loop:
+				// a closed ticket collects a guest token per mail sent on it
+				// and nothing else deletes the expired ones (#625).
+				if n, err := ticketSvc.SweepExpiredGuestTokens(sweepCtx); err != nil {
+					slog.WarnContext(sweepCtx, "sweeping expired guest tokens failed", "error", err)
+				} else if n > 0 {
+					slog.InfoContext(sweepCtx, "swept expired guest tokens", "count", n)
+				}
 				n, err := sessionStore.DeleteExpired(sweepCtx)
 				if err != nil {
 					slog.WarnContext(sweepCtx, "sweeping expired sessions failed", "error", err)

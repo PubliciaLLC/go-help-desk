@@ -347,6 +347,7 @@ export function TicketDetailPage() {
   const followUpMutation = useMutation({
     mutationFn: () => createFollowUp(id),
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['ticket', id] })
       qc.invalidateQueries({ queryKey: ['links', id] })
       qc.invalidateQueries({ queryKey: ['tickets'] })
     },
@@ -396,7 +397,10 @@ export function TicketDetailPage() {
   const isClosed = statusName === 'Closed'
   // Staff and admin may open one from any closed ticket; a requester from their
   // own (the server holds them to one, and to what a normal create allows).
-  const canFollowUp = isClosed
+  // Once a requester's one exists the button goes and the link takes its place:
+  // the server would only refuse it (#625). Staff are not limited, so theirs stays.
+  const existingFollowUp = isClosed ? ticket.follow_up : undefined
+  const canFollowUp = isClosed && (isStaffOrAdmin || !existingFollowUp)
   const canReopen = isStaffOrAdmin && isClosed && ticket.can_reopen === true
   const canClose = isAdmin && statusName === 'Resolved'
 
@@ -518,6 +522,19 @@ export function TicketDetailPage() {
           </p>
         )}
 
+        {existingFollowUp && !followUpMutation.isSuccess && (
+          <p className="text-sm text-gray-700">
+            A follow-up has been opened:{' '}
+            <Link
+              to="/tickets/$id"
+              params={{ id: existingFollowUp.id }}
+              className="font-medium underline"
+            >
+              {existingFollowUp.tracking_number}
+            </Link>
+          </p>
+        )}
+
         {/* A closed ticket is an archive. Said once, near the top, so a
             requester who cannot find the reply box knows it is not a bug. */}
         {isClosed && (
@@ -526,7 +543,9 @@ export function TicketDetailPage() {
               ? canReopen
                 ? 'This ticket is closed. You can reopen it, or use “Create follow-up” to continue the work in a new, linked ticket.'
                 : 'This ticket is closed and cannot be reopened. Use “Create follow-up” to continue the work in a new, linked ticket.'
-              : 'This ticket is closed and read-only. If you still need help, use “Create follow-up” to open a new ticket based on this one.'}
+              : existingFollowUp
+                ? 'This ticket is closed and read-only. A follow-up ticket has been opened from it.'
+                : 'This ticket is closed and read-only. If you still need help, use “Create follow-up” to open a new ticket based on this one.'}
           </p>
         )}
 
@@ -619,8 +638,15 @@ export function TicketDetailPage() {
             </div>
 
             {/* Reply / work log form */}
-            {!isClosed && (
-              <ReplyComposer ticketId={id} isStaffOrAdmin={isStaffOrAdmin} />
+            {/* Staff and admin may reply to, annotate and attach to a closed
+                ticket: the API always allowed it (#625). Requesters cannot. */}
+            {(!isClosed || isStaffOrAdmin) && (
+              <>
+                {isClosed && (
+                  <p className="text-sm text-gray-500">Replying does not reopen this ticket.</p>
+                )}
+                <ReplyComposer ticketId={id} isStaffOrAdmin={isStaffOrAdmin} />
+              </>
             )}
           </div>
 

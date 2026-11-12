@@ -16,14 +16,21 @@ const (
 
 // Migration 000057 adds the table of edited email templates (#158). The test
 // runs the down file and then the up file verbatim, inside a transaction that
-// is rolled back, so the shared database is never left without the table.
+// is rolled back.
+//
+// It has a database of its own because the down's DROP TABLE and the up's
+// CREATE TABLE take an exclusive lock on users (the updated_by foreign key),
+// and the test then writes to users. A test in another package that holds a
+// users row and then reads the templates completes a lock cycle, and Postgres
+// aborts one of the two with "deadlock detected". Same reason as 000041's down
+// test (service_account_migration_down_test.go).
 //
 //   - down removes the table, up brings it back empty;
 //   - a name is stored once;
 //   - the two reserved shell names (_header, _footer) share the table;
 //   - removing the user who last edited a row keeps the row and blanks the editor.
 func TestMigration057_EmailTemplateOverrides(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 	ctx := context.Background()
 	tx, err := db.SQL.BeginTx(ctx, nil)

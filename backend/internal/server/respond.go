@@ -111,6 +111,14 @@ func handleError(w http.ResponseWriter, err error) {
 		Error(w, http.StatusConflict, "follow_up_exists", "this ticket already has a follow-up")
 		return
 	}
+	// A staff follow-up of a ticket whose reporting account was deleted (#625).
+	// 409, not 400: nothing the caller sent is wrong, and the answer is to
+	// restore the account or start a new ticket.
+	if errors.Is(err, ticket.ErrReporterDeleted) {
+		Error(w, http.StatusConflict, "reporter_deleted",
+			"the account that reported this ticket has been deleted: restore the account, or open a new ticket")
+		return
+	}
 	// A force-reopen refused by closed_reopen_policy keeps the status and code,
 	// and says why (#349): disabled, or restricted to administrators.
 	var reopenRefused *ticket.ReopenRefusedError
