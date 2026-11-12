@@ -1458,8 +1458,9 @@ type UnlockUserParams struct {
 // The account half of /app/server unlock (#497), run in the same transaction
 // as ClearFactors: re-enable, clear the TOTP lockout, install the generated
 // password and require it to be changed. Not for a deleted account. The
-// in-memory sign-in throttle is another process's memory and only ever delays,
-// never refuses, so there is nothing of it to clear here.
+// sign-in throttle (rate_limit_counters) only ever delays, never refuses the
+// right password, and ends within a minute, so there is nothing of it to clear
+// here.
 func (q *Queries) UnlockUser(ctx context.Context, arg UnlockUserParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, unlockUser, arg.ID, arg.PasswordHash)
 	if err != nil {

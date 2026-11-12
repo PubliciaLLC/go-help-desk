@@ -11,6 +11,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/passwordreset"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
+	"github.com/publiciallc/go-help-desk/backend/internal/ratelimit"
 	"github.com/publiciallc/go-help-desk/backend/internal/server/notify"
 )
 
@@ -62,8 +63,7 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 	// Counted per source address, as signup is: there is no account to key on,
 	// because whether there is one must not be learned. The per-account limit is
 	// on the send, where it costs the requester no information.
-	if !s.loginLimiter.Allow(forgotPasswordKey(r)) {
-		tooManyAttempts(w, s.loginLimiter.Remaining())
+	if !allowOrRefuse(r.Context(), w, s.loginLimiter, forgotPasswordKey(r)) {
 		return
 	}
 	var body struct {
@@ -79,23 +79,48 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// allowOncePerRow charges a send-time budget once per queued row. In the worker
+// that is once however many times the row is retried, and a retry skips the
+// charge only when an earlier attempt of the row really made it (see
+// Limiter.AllowOnce); the attempt number alone cannot say so. Outside the worker
+// there is no row and the call is counted.
+func allowOncePerRow(ctx context.Context, l *ratelimit.Limiter, key string) (bool, error) {
+	if row := notify.RowID(ctx); row != uuid.Nil {
+		return l.AllowOnce(ctx, key, row.String())
+	}
+	return l.Allow(ctx, key)
+}
+
 // SendPasswordReset is the send-time step for a password reset (#451), run by
 // the verification channel when the worker takes a request off the queue. It
 // decides whether the address is to be mailed and mails the link; see
 // passwordreset.Service.Send.
 //
-// The per-account budget is charged here, once per request on its first
-// attempt, not once per attempt: charging the retry of a send that failed would
-// refuse it, and the request would be dropped with no mail sent (the same defect
-// #164 round 1 found for guest links). Outside the worker the attempt is 0,
-// which is a first attempt too.
+// The per-account budget is charged here, once per request, not once per
+// attempt: charging the retry of a send that failed would refuse it, and the
+// request would be dropped with no mail sent (the same defect #164 round 1
+// found for guest links). A retry skips the charge only if an earlier attempt
+// of the row made it (allowOncePerRow).
 func (s *Server) SendPasswordReset(ctx context.Context, ev notification.Event) error {
 	if s.passwordReset == nil {
 		return errors.New("password reset is not set up")
 	}
-	return s.passwordReset.Send(ctx, ev, func(id uuid.UUID) bool {
-		return notify.Attempt(ctx) > 1 || s.passwordResetLimiter.Allow(id.String())
+	// The callback can only say yes or no, so a count that could not be taken is
+	// kept aside and returned: the outbox retries an error, where a "no" would
+	// drop the request.
+	var limitErr error
+	err := s.passwordReset.Send(ctx, ev, func(id uuid.UUID) bool {
+		ok, err := allowOncePerRow(ctx, s.passwordResetLimiter, id.String())
+		if err != nil {
+			limitErr = err
+			return false
+		}
+		return ok
 	})
+	if limitErr != nil {
+		return limitErr
+	}
+	return err
 }
 
 // POST /api/v1/auth/reset-password — choose a new password with a mailed link.
@@ -114,8 +139,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	// Counted per source address like the request. A link is 256 random bits, so
 	// this is not what protects it; it bounds the bcrypt work an anonymous caller
 	// can make the server spend.
-	if !s.loginLimiter.Allow("reset-password:" + authmw.ClientAddr(r)) {
-		tooManyAttempts(w, s.loginLimiter.Remaining())
+	if !allowOrRefuse(r.Context(), w, s.loginLimiter, "reset-password:"+authmw.ClientAddr(r)) {
 		return
 	}
 	var body struct {

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -22,6 +23,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/tag"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	"github.com/publiciallc/go-help-desk/backend/internal/ratelimit"
 )
 
 // JSON writes v as JSON with the given status code.
@@ -247,16 +249,71 @@ func handleError(w http.ResponseWriter, err error) {
 	Error(w, http.StatusInternalServerError, "internal_error", "an internal error occurred")
 }
 
+// allowOrRefuse counts one attempt against key and, when the caller must not
+// proceed, writes the answer and returns false: 429 with the Retry-After of the
+// key's own window, or an error when the count could not be taken. The limit
+// fails closed on a database error (#621): it guards mail to strangers and
+// guesses at passwords, so "could not check" is not "go ahead".
+func allowOrRefuse(ctx context.Context, w http.ResponseWriter, l *ratelimit.Limiter, key string) bool {
+	t, err := l.Take(ctx, key)
+	if err != nil {
+		handleError(w, err)
+		return false
+	}
+	if !t.Allowed {
+		tooManyAttempts(w, t.RetryAfter)
+		return false
+	}
+	return true
+}
+
+// allowQuietly is allowOrRefuse for a caller with no response to write. A
+// count that could not be taken is logged here, at the boundary, and refuses.
+func allowQuietly(ctx context.Context, l *ratelimit.Limiter, key string) bool {
+	ok, err := l.Allow(ctx, key)
+	if err != nil {
+		slog.ErrorContext(ctx, "rate limit could not be checked; refusing", "error", err)
+		return false
+	}
+	return ok
+}
+
+// tarpitIfExceeded slows a key that has spent its budget before the caller
+// goes on to check a password. A count that cannot be read is logged and the
+// attempt is not slowed: this is a delay and not a refusal, and refusing here
+// would turn a database fault into a way to keep somebody out of their own
+// account. The wrong guess that follows still has to be counted, and that
+// refuses (allowOrRefuse).
+func (s *Server) tarpitIfExceeded(ctx context.Context, key string) {
+	over, err := s.loginLimiter.Exceeded(ctx, key)
+	if err != nil {
+		slog.ErrorContext(ctx, "attempt count could not be read; not slowing this attempt", "error", err)
+		return
+	}
+	if over {
+		s.loginLimiter.Tarpit(ctx, key, s.loginThrottleDelay)
+	}
+}
+
+// resetLoginLimit clears a key's budget after a correct password. A failure is
+// logged and does not fail the sign-in: the person has proved who they are, and
+// what is left is a count that expires on its own within the window.
+func (s *Server) resetLoginLimit(ctx context.Context, key string) {
+	if err := s.loginLimiter.Reset(ctx, key); err != nil {
+		slog.ErrorContext(ctx, "attempt count could not be cleared", "error", err)
+	}
+}
+
 // tooManyAttempts is the refusal for a spent credential budget.
 //
 // Deliberately the same message for every throttled endpoint: saying which
 // budget was spent, or how much remains, tells an attacker whether an account
 // exists and how close they are.
 func tooManyAttempts(w http.ResponseWriter, retryAfter time.Duration) {
-	// The header has to match the limit that actually refused: for the shared
-	// window it is the time left in it (RateLimiter.Remaining), for the MFA
-	// lock the lock's length, and telling a locked-out user to come back in
-	// sixty seconds is simply wrong. Whole seconds, rounded up so waiting that
+	// The header has to match the limit that actually refused: for a window it
+	// is the time left in the refused key's own window (Taken.RetryAfter), for
+	// the MFA lock the lock's length, and telling a locked-out user to come back
+	// in sixty seconds is simply wrong. Whole seconds, rounded up so waiting that
 	// long is enough, and never 0, which a client reads as "retry now".
 	secs := max(1, int(math.Ceil(retryAfter.Seconds())))
 	w.Header().Set("Retry-After", strconv.Itoa(secs))

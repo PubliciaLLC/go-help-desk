@@ -27,6 +27,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/groupstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/outboxstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/passwordresetstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/ratelimitstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/registrationstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/sessionstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/slastore"
@@ -108,6 +109,7 @@ type harness struct {
 	verifyMail      *verifyMailbox      // the signup verification links sent, so a test can follow one
 	resetMail       *resetMailbox       // the password reset links sent, so a test can follow one
 	resetQueue      *lateDispatcher     // where a reset request goes; swap in the real outbox to drive it through the worker
+	rateFault       *rateFault          // set its err to make every rate-limit count fail, without touching the transaction
 }
 
 // harnessReplyTimeout is the time limit on the reply arm of a search in a
@@ -385,6 +387,10 @@ func newHarnessOn(t *testing.T, openDB func(*testing.T) (*testutil.DB, func()), 
 		WithQueue(notify.WebhookQueue{Outbox: outboxstore.New(q), Hooks: authSt, History: authSt, Source: server.NewWebhookEventSource(ticketSvc)})
 	srvOpts = append(srvOpts, server.WithWebhookRedeliverer(webhookDisp))
 	srvOpts = append(srvOpts, server.WithEmailHealth(outboxstore.New(q)))
+	// Over the harness transaction, so counts roll back with the test.
+	// Through rateFault, which is transparent until a test sets its err.
+	rateFault := &rateFault{Store: ratelimitstore.New(q)}
+	srvOpts = append(srvOpts, server.WithRateLimitStore(rateFault))
 	// The template editor (#158) over the harness transaction, so a test's
 	// saves roll back with it. The dispatcher is the real one: SMTP is off
 	// unless a test sets it, and preview needs none.
@@ -447,6 +453,7 @@ func newHarnessOn(t *testing.T, openDB func(*testing.T) (*testutil.DB, func()), 
 		userID:          reportingUser.ID,
 		sessions:        sessionStore,
 		authStore:       authSt,
+		rateFault:       rateFault,
 		auditStore:      auStore,
 		attachDir:       cfg.AttachmentDir,
 	}

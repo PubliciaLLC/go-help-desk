@@ -1,4 +1,4 @@
-package middleware_test
+package ratelimit_test
 
 import (
 	"context"
@@ -7,8 +7,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-
-	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
 
 // The tarpit slows an over-budget key down, one turn at a time, and never
@@ -27,8 +25,8 @@ func TestTarpit_SlowsACallerAndNeverQueuesOneForLong(t *testing.T) {
 		delay    = 80 * time.Millisecond
 		parallel = 12
 	)
-	rl := authmw.NewRateLimiter(1, time.Minute)
-	rl.Allow("victim@example.com") // spend the budget, so the key is over it
+	rl, _ := newLimiter(t, 1, time.Minute)
+	allow(t, rl, "victim@example.com") // spend the budget, so the key is over it
 
 	var (
 		mu      sync.Mutex
@@ -91,8 +89,8 @@ func TestTarpit_SlowsASerialCaller(t *testing.T) {
 		delay    = 20 * time.Millisecond
 		attempts = 10
 	)
-	rl := authmw.NewRateLimiter(1, time.Minute)
-	rl.Allow("victim@example.com")
+	rl, _ := newLimiter(t, 1, time.Minute)
+	allow(t, rl, "victim@example.com")
 
 	began := time.Now()
 	for range attempts {
@@ -111,21 +109,21 @@ func TestTarpit_DoesNothingWhenItShouldNot(t *testing.T) {
 	const delay = 200 * time.Millisecond
 
 	t.Run("the limiter is off", func(t *testing.T) {
-		rl := authmw.NewRateLimiter(0, time.Minute)
+		rl, _ := newLimiter(t, 0, time.Minute)
 		began := time.Now()
 		rl.Tarpit(context.Background(), "k", delay)
 		require.Less(t, time.Since(began), delay)
 	})
 
 	t.Run("the delay is zero", func(t *testing.T) {
-		rl := authmw.NewRateLimiter(1, time.Minute)
+		rl, _ := newLimiter(t, 1, time.Minute)
 		began := time.Now()
 		rl.Tarpit(context.Background(), "k", 0)
 		require.Less(t, time.Since(began), 50*time.Millisecond)
 	})
 
 	t.Run("a cancelled request does not sit out its delay", func(t *testing.T) {
-		rl := authmw.NewRateLimiter(1, time.Minute)
+		rl, _ := newLimiter(t, 1, time.Minute)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		began := time.Now()
@@ -133,23 +131,4 @@ func TestTarpit_DoesNothingWhenItShouldNot(t *testing.T) {
 		require.Less(t, time.Since(began), delay,
 			"a client that has gone away should not hold a turn")
 	})
-}
-
-// Exceeded answers the question without spending an attempt, which is what
-// lets the handler ask it before doing the expensive part.
-func TestExceeded_DoesNotCount(t *testing.T) {
-	rl := authmw.NewRateLimiter(2, time.Minute)
-
-	require.False(t, rl.Exceeded("k"))
-	for range 20 {
-		require.False(t, rl.Exceeded("k"), "asking the question spent an attempt")
-	}
-
-	require.True(t, rl.Allow("k"))
-	require.False(t, rl.Exceeded("k"))
-	require.True(t, rl.Allow("k"))
-	require.True(t, rl.Exceeded("k"), "the budget is spent and Exceeded says otherwise")
-
-	rl.Reset("k")
-	require.False(t, rl.Exceeded("k"), "a correct password should clear the budget")
 }
