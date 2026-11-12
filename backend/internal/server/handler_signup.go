@@ -43,8 +43,7 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 	// weaknesses are acceptable here — signup abuse is spam, not credential
 	// guessing, and a shared bucket behind a proxy throttles registrations
 	// rather than locking anyone out of their own account.
-	if !s.loginLimiter.Allow("signup:" + authmw.ClientAddr(r)) {
-		tooManyAttempts(w, s.loginLimiter.Remaining())
+	if !allowOrRefuse(ctx, w, s.loginLimiter, "signup:"+authmw.ClientAddr(r)) {
 		return
 	}
 

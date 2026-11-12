@@ -185,12 +185,9 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	// password always works and nothing here can keep somebody out of their own
 	// account. See handleLocalLogin for the reasoning behind that ordering.
 	throttleKey := "change-password:" + a.UserID.String()
-	if s.loginLimiter.Exceeded(throttleKey) {
-		s.loginLimiter.Tarpit(r.Context(), throttleKey, s.loginThrottleDelay)
-	}
+	s.tarpitIfExceeded(r.Context(), throttleKey)
 	if _, err := s.users.VerifyPassword(r.Context(), u.Email, body.CurrentPassword); err != nil {
-		if !s.loginLimiter.Allow(throttleKey) {
-			tooManyAttempts(w, s.loginLimiter.Remaining())
+		if !allowOrRefuse(r.Context(), w, s.loginLimiter, throttleKey) {
 			return
 		}
 		// 400, not 401 (#555): the session is good and a field in the body is
