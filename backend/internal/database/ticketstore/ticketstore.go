@@ -700,7 +700,7 @@ func (s *Store) CountByStatusForAssignee(ctx context.Context, statusID, userID u
 //
 // Each query below explicitly lists these same columns rather than
 // SELECT *, so sqlc generates a distinct Go struct per query (e.g.
-// dbgen.ListAllTicketsRow, dbgen.SearchAllTicketsRow, ...) instead of
+// dbgen.GetTicketByIDRow, dbgen.ListTicketsFilteredRow, ...) instead of
 // reusing dbgen.Ticket. All of them share this exact field name/type/order,
 // so a plain Go type conversion (ticketRow(row)) safely reinterprets any of
 // them as a ticketRow — see the Go spec on struct conversion (identical

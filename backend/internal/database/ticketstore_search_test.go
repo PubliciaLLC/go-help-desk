@@ -446,6 +446,13 @@ func TestListFiltered_ScopedVisibility(t *testing.T) {
 	f.mk(spec{subject: "A typeA", cat: &f.catA, typ: &f.typeA})
 	f.mk(spec{subject: "A typeB", cat: &f.catA, typ: &f.typeB})
 	f.mk(spec{subject: "B none", cat: &f.catB})
+	// A ticket that names an item, under a category the actor is scoped to whole.
+	// Items never factor in, so the item must not hide it.
+	typeBItem := category.Type{ID: uuid.New(), CategoryID: f.catB.ID, Name: "TBI", SortOrder: 1, Active: true}
+	itemB := category.Item{ID: uuid.New(), TypeID: typeBItem.ID, Name: "IB", SortOrder: 1, Active: true}
+	require.NoError(t, cs.CreateType(f.ctx, typeBItem))
+	require.NoError(t, cs.CreateItem(f.ctx, itemB))
+	f.mk(spec{subject: "B with item", cat: &f.catB, typ: &typeBItem, item: &itemB})
 	f.mk(spec{subject: "assigned to scoped", cat: &f.catA, typ: &f.typeB, assignee: &f.scoped})
 	f.mk(spec{subject: "scoped's group", cat: &f.catA, typ: &f.typeB, group: &g2})
 	f.mk(spec{subject: "reported by scoped", cat: &f.catA, typ: &f.typeB, reporter: &f.scoped})
@@ -459,7 +466,7 @@ func TestListFiltered_ScopedVisibility(t *testing.T) {
 	require.Equal(t, []string{"Foxtrot", "alpha"}, f.set(danaSees))
 
 	fl := ticket.Filter{ActorID: f.scoped.ID, Visibility: ticket.VisibilityScoped, Limit: 500}
-	require.Equal(t, []string{"A typeA", "B none", "C typeC", "Delta", "alpha", "assigned to scoped", "charlie", "reported by scoped", "scoped's group"}, f.set(fl))
+	require.Equal(t, []string{"A typeA", "B none", "B with item", "C typeC", "Delta", "alpha", "assigned to scoped", "charlie", "reported by scoped", "scoped's group"}, f.set(fl))
 }
 
 // "Mine" is the caller's own assignments plus those of every group they are in,

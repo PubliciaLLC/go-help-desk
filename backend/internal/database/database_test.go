@@ -346,7 +346,7 @@ func TestTicketStore_NotFound(t *testing.T) {
 // table's columns rather than using SELECT *, so a query left off that list
 // fails silently (it compiles, and the field just always reads zero) rather
 // than with an error. This round-trips through Update, GetByID,
-// GetByIDForUpdate and ListAll, which is the query the one-off round-trip
+// GetByIDForUpdate and ListFiltered, which is the query the one-off round-trip
 // case above would not have caught.
 func TestTicketStore_PersistsSLAPause(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
@@ -410,7 +410,7 @@ func TestTicketStore_PersistsSLAPause(t *testing.T) {
 	require.Equal(t, int64(42), locked.SLAPausedSeconds)
 
 	// A listing query must carry the fields too — this is what catches a
-	// SELECT column list that was missed on one of the eighteen ticket reads.
+	// SELECT column list that was missed on one of the ticket reads.
 	all, err := ts.ListFiltered(ctx, ticket.Filter{Visibility: ticket.VisibilityAll, Limit: 100})
 	require.NoError(t, err)
 	var found bool
