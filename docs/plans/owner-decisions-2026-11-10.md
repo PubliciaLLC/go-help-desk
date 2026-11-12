@@ -72,3 +72,6 @@ a recommendation he accepted in bulk ("Accept all") from `pretag-fixes.md` and `
 - **Search page (#654): the subject column.** Erik, on the screenshots with the subject cell cut off at 16rem: "i like it as is in these
   screenshots?" The page is approved as it looks there, and the subject column keeps its 16rem limit (a longer subject is cut
   with an ellipsis; the whole subject stays in the link's text and its `title`). Do not change that width without asking him again.
+- **MCP `list_tickets` (#664): wrong-typed arguments.** MCP `list_tickets` now refuses an argument of the wrong JSON type
+  (for example `status_id: 5` or `search_replies: "yes"`), where it used to skip the argument and return unnarrowed results.
+  Erik chose "Refuse bad arguments, note it (Recommended)": the strict check stays, and the upgrade notes say so.
