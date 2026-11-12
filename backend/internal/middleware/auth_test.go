@@ -100,7 +100,7 @@ func TestAPIKeyAuth_ValidKey_SetsActor(t *testing.T) {
 	})
 
 	var captured *Actor
-	handler := APIKeyAuth(lookup)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	handler := APIKeyAuth(lookup, nil)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		captured = GetActor(r)
 	}))
 
@@ -133,7 +133,7 @@ func TestAPIKeyAuth_ExpiredKey_PassesThrough(t *testing.T) {
 	})
 
 	var captured *Actor
-	handler := APIKeyAuth(lookup)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	handler := APIKeyAuth(lookup, nil)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		captured = GetActor(r)
 	}))
 
@@ -155,7 +155,7 @@ func TestAPIKeyAuth_SkipsWhenActorAlreadySet(t *testing.T) {
 	})
 
 	var captured *Actor
-	handler := APIKeyAuth(lookup)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	handler := APIKeyAuth(lookup, nil)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		captured = GetActor(r)
 	}))
 
@@ -191,9 +191,109 @@ func TestBearerAuth_ValidJWT_SetsActor(t *testing.T) {
 	handler.ServeHTTP(rr, req)
 
 	require.NotNil(t, captured)
-	require.Equal(t, user.RoleStaff, captured.Role) // OAuth clients act at staff level
+	require.Equal(t, user.RoleStaff, captured.Role)
 	require.Equal(t, "client-abc", captured.ClientID)
 	require.True(t, captured.MFAPassed)
+	require.True(t, captured.Machine)
+	// It acts as its service user (#420), not as nobody.
+	require.Equal(t, serviceUserID, captured.UserID)
+	require.Equal(t, []string{"tickets:write"}, captured.Scopes)
+}
+
+// Rotating a client's secret refuses the tokens issued under the old one (#622).
+// A token that names no secret version predates that and is still accepted, so
+// the upgrade does not log every integration out.
+func TestBearerAuth_SecretVersion(t *testing.T) {
+	const jwtSecret = "test-secret"
+	_, oldHash, _ := auth.GenerateToken()
+	_, newHash, _ := auth.GenerateToken()
+	issue := func(hash string) string {
+		tok, err := auth.IssueAccessToken(auth.OAuthClient{
+			ID: uuid.New(), ClientID: "client-abc", HashedSecret: hash, Scopes: []string{"tickets:read"},
+		}, jwtSecret)
+		require.NoError(t, err)
+		return tok
+	}
+	// The client as stored now: its secret has been rotated to newHash.
+	lookup := func(_ context.Context, clientID string) (auth.OAuthClient, user.User, error) {
+		return auth.OAuthClient{ClientID: clientID, HashedSecret: newHash}, serviceUser(nil), nil
+	}
+	run := func(token string) *Actor {
+		var captured *Actor
+		h := BearerAuth(jwtSecret, lookup)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			captured = GetActor(r)
+		}))
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		h.ServeHTTP(httptest.NewRecorder(), req)
+		return captured
+	}
+
+	require.NotNil(t, run(issue(newHash)), "a token under the current secret works")
+	require.Nil(t, run(issue(oldHash)), "a token under a replaced secret does not")
+	require.NotNil(t, run(issue("")), "a token with no version predates rotation and is accepted")
+}
+
+// serviceUserID is the id of the user clientFound's clients act as.
+var serviceUserID = uuid.MustParse("5e5e5e5e-0000-4000-8000-000000000001")
+
+func serviceUser(mut func(*user.User)) user.User {
+	u := user.User{ID: serviceUserID, DisplayName: "client", Role: user.RoleStaff, ServiceAccount: true}
+	if mut != nil {
+		mut(&u)
+	}
+	return u
+}
+
+// bearerActor runs one request with a valid token for a client whose lookup
+// answers (client, u, err), and returns the actor the handler saw.
+func bearerActor(t *testing.T, u user.User, lookupErr error) *Actor {
+	t.Helper()
+	const jwtSecret = "test-secret"
+	token, err := auth.IssueAccessToken(auth.OAuthClient{
+		ID: uuid.New(), ClientID: "client-abc", Scopes: []string{"tickets:read"},
+	}, jwtSecret)
+	require.NoError(t, err)
+	lookup := func(_ context.Context, clientID string) (auth.OAuthClient, user.User, error) {
+		return auth.OAuthClient{ClientID: clientID}, u, lookupErr
+	}
+	var captured *Actor
+	handler := BearerAuth(jwtSecret, lookup)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		captured = GetActor(r)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+	return captured
+}
+
+// The actor's role is the service user's stored role, so an administrator can
+// make a client a reporting user and have the router believe it.
+func TestBearerAuth_ActorRoleIsTheUsersStoredRole(t *testing.T) {
+	a := bearerActor(t, serviceUser(func(u *user.User) { u.Role = user.RoleUser }), nil)
+	require.NotNil(t, a)
+	require.Equal(t, user.RoleUser, a.Role)
+}
+
+// Switching the service user off switches the client off.
+func TestBearerAuth_DisabledOrDeletedServiceUser_PassesThrough(t *testing.T) {
+	now := time.Now()
+	for name, mut := range map[string]func(*user.User){
+		"disabled": func(u *user.User) { u.Disabled = true },
+		"deleted":  func(u *user.User) { u.DeletedAt = &now },
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.Nil(t, bearerActor(t, serviceUser(mut), nil),
+				"a %s service user must not produce an actor", name)
+		})
+	}
+}
+
+// A client row pointing at a person would hand the client that person's
+// identity, so the middleware insists on a service account.
+func TestBearerAuth_ClientPointingAtAPerson_PassesThrough(t *testing.T) {
+	person := serviceUser(func(u *user.User) { u.ServiceAccount = false; u.Role = user.RoleAdmin })
+	require.Nil(t, bearerActor(t, person, nil))
 }
 
 func TestBearerAuth_Invalid_PassesThrough(t *testing.T) {
@@ -241,7 +341,7 @@ func TestAPIKeyAuth_DisabledUser_AttachesNoActor(t *testing.T) {
 			})
 
 			var got *Actor
-			h := APIKeyAuth(lookup)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h := APIKeyAuth(lookup, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				got = GetActor(r)
 				w.WriteHeader(http.StatusOK)
 			}))
@@ -272,7 +372,7 @@ func TestAPIKeyAuth_SoftDeletedUser_AttachesNoActor(t *testing.T) {
 	})
 
 	var got *Actor
-	h := APIKeyAuth(lookup)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := APIKeyAuth(lookup, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got = GetActor(r)
 	}))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -284,8 +384,8 @@ func TestAPIKeyAuth_SoftDeletedUser_AttachesNoActor(t *testing.T) {
 
 // clientFound is the lookup for tests about token validity itself: the client
 // still exists, so the only thing under test is the token.
-func clientFound(_ context.Context, clientID string) (auth.OAuthClient, error) {
-	return auth.OAuthClient{ClientID: clientID}, nil
+func clientFound(_ context.Context, clientID string) (auth.OAuthClient, user.User, error) {
+	return auth.OAuthClient{ClientID: clientID}, serviceUser(nil), nil
 }
 
 // A signature-valid, unexpired token for a client that has since been deleted
@@ -298,8 +398,8 @@ func TestBearerAuth_DeletedClient_PassesThrough(t *testing.T) {
 	}, jwtSecret)
 	require.NoError(t, err)
 
-	notFound := func(_ context.Context, _ string) (auth.OAuthClient, error) {
-		return auth.OAuthClient{}, errors.New("no such client")
+	notFound := func(_ context.Context, _ string) (auth.OAuthClient, user.User, error) {
+		return auth.OAuthClient{}, user.User{}, errors.New("no such client")
 	}
 
 	var captured *Actor

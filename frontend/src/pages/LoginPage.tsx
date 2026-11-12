@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, Link } from '@tanstack/react-router'
-import { login, verifyMFA, getMe, enrollMFAStart, enrollMFAConfirm, getSignupStatus, getAuthProviders } from '@/api/auth'
+import { login, verifyMFA, getMe, changePassword, getSignupStatus, getAuthProviders } from '@/api/auth'
+import type { LoginResponse } from '@/api/auth'
 import { getSiteConfig } from '@/api/admin'
 import { useAuthStore } from '@/store/auth'
 import { extractError } from '@/api/client'
@@ -9,8 +10,39 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useSiteBranding } from '@/hooks/useSiteBranding'
+import { signInWithPasskey, wasCancelled } from '@/api/passkeys'
+import { MFAEnrollForm } from '@/components/MFAEnrollForm'
 
-type Step = 'credentials' | 'verify' | 'enroll'
+type Step = 'credentials' | 'verify' | 'enroll' | 'passkey' | 'newpassword'
+
+// Refusal codes the server puts in /login?error= after SAML or OIDC sends the
+// browser back. Only these strings are ever shown: the query string is
+// attacker-controlled, so the code is a key and never text (#401). A Map, not
+// an object literal, so "constructor" or "__proto__" cannot find anything.
+const SSO_ERRORS = new Map<string, string>([
+  ['email_taken', 'Another account here already uses the email address your identity provider sent. Ask an administrator to sort it out.'],
+  ['domain_not_allowed', 'Accounts from your email domain cannot sign in here.'],
+  ['account_disabled', 'This account is disabled. Ask an administrator if you need access.'],
+  ['account_link_refused', 'Your single sign-on identity could not be linked to the existing account with that email address. Ask an administrator.'],
+  ['invalid_assertion', 'Your identity provider did not send the details this help desk needs. Ask an administrator to check the single sign-on setup.'],
+  ['email_not_verified', 'Your identity provider did not send a verified email address, so you could not be signed in.'],
+  ['invalid_email', 'Your identity provider sent an email address this help desk cannot use. Ask an administrator.'],
+  ['sso_session_used', 'That sign-in has already been used. Please sign in again.'],
+  ['invalid_session', 'Your sign-in expired or was started in another window. Please try again.'],
+  ['invalid_state', 'Your sign-in expired or was started in another window. Please try again.'],
+  ['idp_error', 'Your identity provider did not allow the sign-in.'],
+  ['missing_code', 'The response from your identity provider could not be checked. Please try again.'],
+  ['missing_id_token', 'The response from your identity provider could not be checked. Please try again.'],
+  ['invalid_id_token', 'The response from your identity provider could not be checked. Please try again.'],
+  ['internal_error', 'Something went wrong while signing you in. Please try again.'],
+])
+const SSO_ERROR_FALLBACK = 'Single sign-on did not finish. Please try again, or ask an administrator.'
+
+function ssoErrorMessage(search: string): string {
+  const code = new URLSearchParams(search).get('error')
+  if (code === null) return ''
+  return SSO_ERRORS.get(code) ?? SSO_ERROR_FALLBACK
+}
 
 export function LoginPage() {
   const navigate = useNavigate()
@@ -20,12 +52,20 @@ export function LoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [mfaCode, setMfaCode] = useState('')
-  const [enrollSecret, setEnrollSecret] = useState('')
-  const [enrollQRDataURL, setEnrollQRDataURL] = useState('')
-  const [error, setError] = useState('')
+  // The unlock command's password has to be replaced before the rest of the
+  // sign-in (#497). What the sign-in answered is kept so it can carry on.
+  const [afterPasswordChange, setAfterPasswordChange] = useState<LoginResponse | null>(null)
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  // Seeded from ?error= so a refused single sign-on says why; handleLogin
+  // clears it when the person tries again.
+  const [error, setError] = useState(() => ssoErrorMessage(window.location.search))
   const [loading, setLoading] = useState(false)
   const [signupEnabled, setSignupEnabled] = useState(false)
   const [guestEnabled, setGuestEnabled] = useState(false)
+  // True when the server can email a reset link (#451); the link is offered
+  // only then, because it would lead to a page that cannot work.
+  const [resetOffered, setResetOffered] = useState(false)
   const [providers, setProviders] = useState({
     password: true,
     saml: false,
@@ -48,6 +88,7 @@ export function LoginPage() {
           data.providers.map((provider) => [provider.name, provider.enabled])
         )
 
+        setResetOffered(data.password_reset ?? false)
         setProviders({
           password: enabled.local ?? false,
           saml: enabled.saml ?? false,
@@ -68,15 +109,49 @@ export function LoginPage() {
     setError('')
     setLoading(true)
     try {
-      const { user, mfa_needed, mfa_enrollment_needed } = await login(email, password)
-      if (mfa_enrollment_needed) {
-        setStep('enroll')
-      } else if (mfa_needed) {
-        setStep('verify')
+      const answer = await login(email, password)
+      if (answer.password_change_required) {
+        setAfterPasswordChange(answer)
+        setStep('newpassword')
       } else {
-        setUser(user)
-        navigate({ to: '/dashboard' })
+        proceed(answer)
       }
+    } catch (err) {
+      setError(extractError(err))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Where a sign-in goes once the password is settled.
+  function proceed({ user, mfa_needed, passkey_needed, mfa_enrollment_needed }: LoginResponse) {
+    if (mfa_enrollment_needed) {
+      setStep('enroll')
+    } else if (mfa_needed) {
+      setStep('verify')
+    } else if (passkey_needed) {
+      // An account holding passkeys and no authenticator app. The password
+      // has been accepted and the session already names the account; this
+      // step only has to prove the key.
+      setStep('passkey')
+    } else {
+      setUser(user)
+      navigate({ to: '/dashboard' })
+    }
+  }
+
+  async function handleNewPassword(e: React.FormEvent) {
+    e.preventDefault()
+    setError('')
+    if (newPassword !== confirmPassword) {
+      setError('The two passwords do not match.')
+      return
+    }
+    setLoading(true)
+    try {
+      // The password just typed to sign in is the current one.
+      await changePassword(password, newPassword)
+      if (afterPasswordChange) proceed(afterPasswordChange)
     } catch (err) {
       setError(extractError(err))
     } finally {
@@ -98,26 +173,16 @@ export function LoginPage() {
     }
   }
 
-  // Kick off enrollment when we reach the enroll step.
-  useEffect(() => {
-    if (step !== 'enroll' || enrollSecret) return
-    enrollMFAStart()
-      .then(({ secret, qr_data_url }) => {
-        setEnrollSecret(secret)
-        setEnrollQRDataURL(qr_data_url)
-      })
-      .catch((err) => setError(extractError(err)))
-  }, [step, enrollSecret])
-
-  async function handleEnroll(e: React.FormEvent) {
-    e.preventDefault()
+  async function handlePasskey() {
     setError('')
     setLoading(true)
     try {
-      await enrollMFAConfirm(mfaCode)
+      await signInWithPasskey()
       await completeLogin()
     } catch (err) {
-      setError(extractError(err))
+      // Dismissing the browser prompt is a choice, not a failure, and the
+      // person is still on this screen with the button in front of them.
+      if (!wasCancelled(err)) setError(extractError(err))
     } finally {
       setLoading(false)
     }
@@ -126,15 +191,17 @@ export function LoginPage() {
   // Previously hardcoded "Sign in to Go Help Desk", so a branded instance
   // showed its own name everywhere except the first screen anyone sees (#56).
   const title =
-    step === 'verify' ? 'Two-factor authentication'
+    step === 'newpassword' ? 'Choose a new password'
+    : step === 'verify' ? 'Two-factor authentication'
     : step === 'enroll' ? 'Set up two-factor authentication'
+    : step === 'passkey' ? 'Confirm it is you'
     : `Sign in to ${siteName}`
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-gray-50">
       <Card className="w-full max-w-sm">
         <CardHeader>
-          <CardTitle className="text-xl">{title}</CardTitle>
+          <CardTitle className="text-xl wrap-anywhere">{title}</CardTitle>
         </CardHeader>
         <CardContent>
           {step === 'credentials' && (
@@ -162,7 +229,14 @@ export function LoginPage() {
                   autoComplete="current-password"
                 />
               </div>
-              {error && <p className="text-sm text-red-600">{error}</p>}
+              {resetOffered && (
+                <p className="text-right text-sm">
+                  <Link to="/forgot-password" className="text-blue-600 hover:underline">
+                    Forgot password?
+                  </Link>
+                </p>
+              )}
+              {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
               <Button type="submit" className="w-full" disabled={loading}>
                 {loading ? 'Signing in…' : 'Sign in'}
               </Button>
@@ -197,7 +271,54 @@ export function LoginPage() {
                 Sign in with OIDC
                </Button>
              )}
+            {/* A plain link, not a button with an onClick: a full-page
+                navigation the router leaves alone (#393). Classes match the
+                OIDC button; Button has no asChild. */}
+            {providers.saml && (
+              <a
+                href="/api/v1/auth/saml/login"
+                className="mt-3 inline-flex h-10 w-full items-center justify-center rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-green-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2"
+              >
+                Sign in with SAML
+              </a>
+            )}
             </>
+          )}
+
+          {step === 'newpassword' && (
+            <form onSubmit={handleNewPassword} className="space-y-4">
+              <p className="text-sm text-gray-600">
+                You signed in with a password an administrator generated for you. Choose a
+                new one to continue.
+              </p>
+              <div className="space-y-1">
+                <Label htmlFor="new-password">New password</Label>
+                <Input
+                  id="new-password"
+                  type="password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  required
+                  minLength={8}
+                  autoComplete="new-password"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="confirm-password">Confirm new password</Label>
+                <Input
+                  id="confirm-password"
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  required
+                  autoComplete="new-password"
+                />
+              </div>
+              {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+              <Button type="submit" className="w-full" disabled={loading}>
+                {loading ? 'Saving…' : 'Change password'}
+              </Button>
+            </form>
           )}
 
           {step === 'verify' && (
@@ -216,53 +337,26 @@ export function LoginPage() {
                   autoComplete="one-time-code"
                 />
               </div>
-              {error && <p className="text-sm text-red-600">{error}</p>}
+              {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
               <Button type="submit" className="w-full" disabled={loading}>
                 {loading ? 'Verifying…' : 'Verify'}
               </Button>
             </form>
           )}
 
-          {step === 'enroll' && (
-            <form onSubmit={handleEnroll} className="space-y-4">
+          {step === 'passkey' && (
+            <div className="space-y-4">
               <p className="text-sm text-gray-600">
-                Your administrator requires two-factor authentication for your role. Scan the QR
-                code with an authenticator app (Google Authenticator, Authy, 1Password), or enter
-                the secret manually, then confirm with a code.
+                Use your fingerprint, face, screen lock or security key to finish signing in.
               </p>
-              {enrollQRDataURL ? (
-                <div className="flex flex-col items-center gap-2">
-                  <img
-                    alt="TOTP QR code"
-                    className="h-44 w-44 rounded border bg-white p-2"
-                    src={enrollQRDataURL}
-                  />
-                  <code className="max-w-full truncate text-[11px] text-gray-500" title={enrollSecret}>
-                    Secret: {enrollSecret}
-                  </code>
-                </div>
-              ) : (
-                <p className="text-sm text-gray-400">Generating setup code…</p>
-              )}
-              <div className="space-y-1">
-                <Label htmlFor="enroll">Verification code</Label>
-                <Input
-                  id="enroll"
-                  type="text"
-                  inputMode="numeric"
-                  maxLength={6}
-                  value={mfaCode}
-                  onChange={(e) => setMfaCode(e.target.value)}
-                  required
-                  autoComplete="one-time-code"
-                />
-              </div>
-              {error && <p className="text-sm text-red-600">{error}</p>}
-              <Button type="submit" className="w-full" disabled={loading || !enrollSecret}>
-                {loading ? 'Confirming…' : 'Confirm & sign in'}
+              {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+              <Button type="button" className="w-full" disabled={loading} onClick={handlePasskey}>
+                {loading ? 'Waiting for your key…' : 'Continue with a passkey'}
               </Button>
-            </form>
+            </div>
           )}
+
+          {step === 'enroll' && <MFAEnrollForm onEnrolled={completeLogin} />}
         </CardContent>
       </Card>
     </div>

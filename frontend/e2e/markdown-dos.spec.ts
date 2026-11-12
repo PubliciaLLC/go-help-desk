@@ -1,0 +1,230 @@
+import { test, expect, type Page } from '@playwright/test'
+import { mockApi, REPLIES, TICKET_DETAIL } from './mock'
+
+// #443 security review: Markdown text is written by requesters, guests
+// included, and opened by staff. Parsing it is not linear (a table header's
+// width multiplies every short row, unclosed brackets rescan the rest of the
+// text, hard breaks and nested lists add up), and a reply has no length cap.
+// Counting markers in the text cannot catch all of that, so the formatting runs
+// in a Web Worker with a time budget, and over-large text is never formatted.
+// Each of these inputs must leave the page usable within a few seconds, with
+// the post shown formatted or as plain text with a note, and its Plain text
+// button reachable.
+
+const MB = 1_000_000
+const fill = (u: string, n: number) => u.repeat(Math.ceil(n / u.length)).slice(0, n)
+const ladder = (ch: string, n: number, sep: string) => Array.from({ length: n }, (_, k) => ch.repeat(k + 1) + sep).join('')
+
+// [name, body, must the post fall back to plain text?] (for a body over 50,000 characters,
+// which is old stored data now that replies are capped, the page shows it collapsed instead)
+const inputs: [string, string, boolean][] = [
+  ['baseline 1 MB words', fill('lorem ipsum ', MB), true],
+  ['1 MB soft newlines', fill('a\n', MB), true],
+  ['1 MB hard breaks', fill('a  \n', MB), true],
+  ['1 MB backslash hard breaks', fill('a\\\n', MB), true],
+  ['2999 "[" then 300 KB', '[a '.repeat(2999) + fill('b ', 300_000), true],
+  ['2-column table at 1 MB', '|a|b|\n|-|-|\n' + fill('|x|y|\n', MB), true],
+  ['1000-column table, 1 MB of short rows', '|' + 'a|'.repeat(1000) + '\n|' + '-|'.repeat(1000) + '\n' + fill('|x\n', MB), true],
+  ['1 MB indented list ladder', Array.from({ length: 1000 }, (_, i) => ' '.repeat(i * 2) + '- x').join('\n'), true],
+  ['1 MB code fence json', '```json\n' + fill('[{"a":', MB) + '\n```', true],
+  ['50K: 300-column table header, short rows', ('|' + 'a|'.repeat(300) + '\n|' + '-|'.repeat(300) + '\n' + fill('|x\n', 50_000)).slice(0, 50_000), false],
+  ['50K: 1000-column table header, short rows', ('|' + 'a|'.repeat(1000) + '\n|' + '-|'.repeat(1000) + '\n' + fill('|x\n', 50_000)).slice(0, 50_000), false],
+  ['50K: 2999 "[" then text', ('[a '.repeat(2999) + fill('b ', 50_000)).slice(0, 50_000), false],
+  ['50K: indented list ladder, depth 220', Array.from({ length: 220 }, (_, i) => ' '.repeat(i * 2) + '- x').join('\n'), false],
+  ['50K: indented ordered ladder, depth 150', Array.from({ length: 150 }, (_, i) => ' '.repeat(i * 3) + '1. x').join('\n'), false],
+  ['50K: backtick ladder', ladder('`', 310, ' x '), false],
+  ['50K: hard breaks', fill('a  \n', 50_000), false],
+  ['200K: hard breaks', fill('a  \n', 200_000), true],
+  ['1990 unclosed "<!--" then text', '<!--a '.repeat(1990) + fill('a ', 40_000), false],
+  ['1 MB links', fill('[a](http://x.example) ', MB), true],
+  ['1 MB emphasis pairs', fill('*a* ', MB), true],
+]
+
+async function responsive(page: Page) {
+  let worst = 0
+  for (let i = 0; i < 6; i++) {
+    const t = Date.now()
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => r(1))))
+    worst = Math.max(worst, Date.now() - t)
+    await page.waitForTimeout(150)
+  }
+  return worst
+}
+
+for (const [where, mk] of [
+  ['a reply', (body: string) => ({ replies: [{ ...REPLIES[0], body, body_format: 'markdown' }] })],
+  ['a description', (body: string) => ({ ticket: { ...TICKET_DETAIL, description: body, description_format: 'markdown' } })],
+] as const) {
+  test.describe(`hostile Markdown in ${where}`, () => {
+    for (const [name, body] of inputs) {
+      test(name, async ({ page }) => {
+        test.setTimeout(30_000)
+        let crashed = false
+        page.on('crash', () => (crashed = true))
+        await mockApi(page, mk(body))
+        await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+        const worst = await responsive(page)
+        expect(worst, 'the page stopped answering while the text was formatted').toBeLessThan(1500)
+        if (body.length > 50_000) {
+          // Older data (a reply had no cap before 1.3.0): collapsed to its start, with the
+          // rest one click away. Nothing was formatted, so there is nothing slow to wait for.
+          await expect(page.getByRole('button', { name: /^Show full text/ }).first()).toBeVisible({ timeout: 8000 })
+          await expect(page.getByRole('note').first()).toContainText(/only part of the post/)
+          expect(crashed).toBe(false)
+          return
+        }
+        const toggle = page.getByRole('button', { name: 'Plain text' }).first()
+        await expect(toggle).toBeVisible({ timeout: 8000 })
+        expect(crashed).toBe(false)
+        // The stored text can always be reached.
+        await toggle.click()
+        await expect(toggle).toHaveAttribute('aria-pressed', 'true')
+      })
+    }
+  })
+}
+
+test('a normal post is still formatted, and soon', async ({ page }) => {
+  await mockApi(page, { replies: [{ ...REPLIES[0], body: '**bold** and a | b', body_format: 'markdown' }] })
+  await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+  await expect(page.locator('[data-md-body] strong').first()).toHaveText('bold', { timeout: 3000 })
+})
+
+// The budget itself: BUDGET_MS (3 s) in lib/markdownBackend.ts. The inputs above
+// are refused by the length and complexity limits or finish in time, so none of
+// them proves that a worker which does NOT answer is cut off. This forces that:
+// the worker script is served with a hook that spins forever on one marker text
+// (nothing the parser does is slow enough to rely on), and everything else
+// still runs the real parser.
+test('a post that overruns the time budget is shown as written, its worker is terminated, and the next post formats', async ({
+  page,
+}) => {
+  test.setTimeout(30_000)
+  await page.route('**/markdown.worker*', async (route) => {
+    const response = await route.fetch()
+    const hook = `
+;{
+  const real = self.onmessage
+  self.onmessage = (e) => {
+    if (e.data.text.includes('OVERRUN-ME')) for (;;);
+    real(e)
+  }
+}
+`
+    await route.fulfill({ response, body: (await response.text()) + hook })
+  })
+
+  const workers: { closed: boolean }[] = []
+  page.on('worker', (w) => {
+    const entry = { closed: false }
+    workers.push(entry)
+    w.on('close', () => (entry.closed = true))
+  })
+
+  await mockApi(page, {
+    replies: [
+      { ...REPLIES[0], id: 'r-overrun', body: 'OVERRUN-ME **never formatted**', body_format: 'markdown' },
+      { ...REPLIES[0], id: 'r-next', body: 'the **next** post', body_format: 'markdown' },
+    ],
+  })
+  await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+
+  // The hung post is shown as written, with the note. Only the budget can end it.
+  await expect(page.getByText(/too complex to format/i).first()).toBeVisible({ timeout: 8000 })
+  await expect(page.getByText('OVERRUN-ME **never formatted**')).toBeVisible()
+  expect(workers.length, 'the hook never reached a worker: the test is not exercising anything').toBeGreaterThan(0)
+  // Terminated, not merely abandoned: a spinning worker left alive would keep a core busy.
+  await expect.poll(() => workers[0].closed, { message: 'the worker that overran was not terminated' }).toBe(true)
+
+  // The next post is formatted by a fresh worker.
+  await expect(page.locator('[data-md-body] strong').filter({ hasText: 'next' })).toBeVisible({ timeout: 8000 })
+  expect(workers.length, 'the next post should have started a new worker').toBeGreaterThan(1)
+})
+
+// The budget must leave room for a slow machine. A post at the length limit made
+// of 12,400 hard breaks takes about 0.6 s to format on a developer laptop, so a
+// 1 s budget had under 2x headroom: on a loaded CI runner the first post of the
+// page overran, was shown as "too complex to format" (untrue of it), and as it is
+// tall nothing else came near the screen to be formatted, so the page never held
+// a formatted post. The worker here is made 1.2 s slower, as a machine about three
+// times slower would be; the post must still be formatted.
+test('a post at the length limit on a slow machine is still formatted, not called too complex', async ({ page }) => {
+  test.setTimeout(30_000)
+  await page.route('**/markdown.worker*', async (route) => {
+    const response = await route.fetch()
+    const hook = `
+;{
+  const real = self.onmessage
+  self.onmessage = (e) => {
+    const start = performance.now()
+    while (performance.now() - start < 1200);
+    real(e)
+  }
+}
+`
+    await route.fulfill({ response, body: (await response.text()) + hook })
+  })
+  await mockApi(page, { replies: [{ ...REPLIES[0], body: lines(0), body_format: 'markdown' }] })
+  await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+  await expect(page.locator('[data-md-body]').first()).toBeVisible({ timeout: 8000 })
+  await expect(page.getByText(/too complex to format/i)).toHaveCount(0)
+})
+
+// Memory: every formatted post holds a tree and its elements. 220 replies of
+// 50 KB each took 3.76 GB of heap when all were formatted. Posts now format only
+// near the screen and the page has a budget, so the heap stays bounded however
+// many there are, and whatever is scrolled past.
+const lines = (seed: number) => Array.from({ length: 12_400 }, (_, i) => `${String.fromCharCode(97 + ((i + seed) % 26))}  `).join('\n')
+// Live memory, not garbage: usedJSHeapSize counts objects nobody references any
+// more until the collector next runs, which on a slow machine can be after the
+// reading (one run read 1998 MB against a 900 MB bound, and passed with a forced
+// collection). So collect first, then read. The bound itself is unchanged.
+const heapMB = async (page: Page) => {
+  const cdp = await page.context().newCDPSession(page)
+  await cdp.send('HeapProfiler.collectGarbage')
+  await cdp.detach()
+  return page.evaluate(() => ((performance as unknown as { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? 0) / 1e6)
+}
+
+test('220 hostile replies keep the heap bounded, on open and after jumping through them', async ({ page }) => {
+  test.setTimeout(180_000)
+  let crashed = false
+  page.on('crash', () => (crashed = true))
+  const replies = Array.from({ length: 220 }, (_, i) => ({ ...REPLIES[0], id: `r-${i}`, body: lines(i), body_format: 'markdown' }))
+  await mockApi(page, { replies })
+  await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+  // Cold-start wait, not one of the bounds below. The 220 posts are 11 MB, 2.7
+  // million lines of plain text. Laid out all at once that was 3.3 s of main-thread
+  // layout and 7 s to the first formatted post on an idle 10-core Mac (7 to 17 s on a
+  // busy one), so a CI runner two or three times slower overran the old 15 s (the
+  // #640 flake; one trace showed the worker not even requested until 46 s in, the
+  // page being busy). Long plain posts are now laid out only near the screen
+  // (.lazy-layout), which takes the first formatted post to about 1.6 s here, so
+  // the wait is back to its old 15 s. Nothing asserted below waits on it.
+  await expect(page.locator('[data-md-body]').first()).toBeVisible({ timeout: 15_000 })
+  await page.waitForTimeout(3000)
+
+  expect(await page.locator('[data-md-body]').count(), 'posts far below the screen were formatted').toBeLessThan(25)
+  expect(await heapMB(page)).toBeLessThan(500)
+
+  // Each reply is hundreds of thousands of pixels tall as plain text, so jump
+  // from one to the next (then back to the top) instead of scrolling a screen
+  // at a time: every post that comes near tries to format.
+  // The page's height is read again at every step: posts that are not laid out yet
+  // stand in with an estimate, and drawing them changes it, so a height read once
+  // at the start can end short of (or past) the real bottom.
+  for (let i = 1; i <= 60 && !crashed; i++) {
+    await page.evaluate((fraction) => {
+      const main = document.querySelector('main')!
+      main.scrollTo(0, Math.floor(main.scrollHeight * fraction))
+    }, i / 60)
+    await page.waitForTimeout(400)
+  }
+  await page.evaluate(() => document.querySelector('main')!.scrollTo(0, 0))
+  await page.waitForTimeout(1500)
+  expect(crashed).toBe(false)
+  // Past the budget the rest stay as written, with the note.
+  expect(await page.locator('[data-md-body]').count()).toBeLessThan(40)
+  await expect(page.getByText(/Shown as plain text: this page already shows a lot of formatted text/).first()).toBeAttached()
+  expect(await heapMB(page)).toBeLessThan(900)
+})

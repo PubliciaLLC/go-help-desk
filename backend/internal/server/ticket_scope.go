@@ -2,11 +2,14 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/google/uuid"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
@@ -57,12 +60,15 @@ func (s *Server) staffScopeFor(ctx context.Context, a *authmw.Actor) (ticket.Sta
 // Exported and context-shaped rather than request-shaped so the MCP server can
 // use the same function. Two surfaces deciding ticket visibility independently
 // is what produced GHSA-2x4f-j4jv-m2cm; there is one rule and this is it.
+//
+// A query that can apply the rule itself does, and is held equal to this by a
+// test rather than by sharing code: TicketVisibility says which mode to apply,
+// and the audit view's SQL is checked against this function in
+// handler_admin_audit_scope_test.go.
 func (s *Server) CanViewTicket(ctx context.Context, a *authmw.Actor, t ticket.Ticket) (bool, error) {
 	if a == nil {
 		return false, nil
 	}
-
-	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
 
 	if !s.adminSvc.TicketScopeEnforced(ctx) {
 		// Legacy behaviour: admins and staff see everything, users see their own.
@@ -76,6 +82,7 @@ func (s *Server) CanViewTicket(ctx context.Context, a *authmw.Actor, t ticket.Ti
 	if err != nil {
 		return false, err
 	}
+	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
 	return ticket.CanView(t, actor, scope), nil
 }
 
@@ -102,4 +109,51 @@ func (s *Server) TicketVisibility(ctx context.Context, a *authmw.Actor) (ticket.
 		return ticket.VisibilityAll, nil
 	}
 	return ticket.VisibilityScoped, nil
+}
+
+// StillEntitled is the send-time check on staff email (#441): whether u should
+// still hear about the ticket now, however long ago the mail was queued. It
+// implements notify.StaffAccess.
+//
+// Why the mail was queued says what has to still be true. Somebody mailed as
+// the assignee must still be it; somebody mailed as a group member must still
+// be in the group the ticket is assigned to; a follower (PR-D of #464) must
+// still be able to see the ticket under the same rule every other surface uses
+// (CanViewTicket, #391), which is the one that changes when scope enforcement
+// is switched on or a group changes.
+//
+// A ticket that no longer exists answers false with no error: nothing to say.
+func (s *Server) StillEntitled(ctx context.Context, u user.User, ticketID uuid.UUID, reason notification.StaffSwitch) (bool, error) {
+	t, err := s.tickets.GetByID(ctx, ticketID)
+	if err != nil {
+		if errors.Is(err, ticket.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	switch reason {
+	case notification.SwitchAssigned, notification.SwitchActivity:
+		return t.AssigneeUserID != nil && *t.AssigneeUserID == u.ID, nil
+	case notification.SwitchGroup:
+		if t.AssigneeGroupID == nil {
+			return false, nil
+		}
+		members, err := s.groups.ListMembers(ctx, *t.AssigneeGroupID)
+		if err != nil {
+			return false, fmt.Errorf("listing group members: %w", err)
+		}
+		return slices.Contains(members, u.ID), nil
+	case notification.SwitchFollow:
+		// Unfollowing after the mail was queued stops it: the row must still be
+		// there.
+		ids, err := s.tickets.ListMailableFollowerIDs(ctx, ticketID)
+		if err != nil {
+			return false, fmt.Errorf("listing followers: %w", err)
+		}
+		if !slices.Contains(ids, u.ID) {
+			return false, nil
+		}
+		return s.CanViewTicket(ctx, &authmw.Actor{UserID: u.ID, Role: u.Role}, t)
+	}
+	return false, nil
 }

@@ -1,53 +1,52 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { listPublicCategories, resolveFieldsForCTI } from '@/api/tickets'
-import { createGuestTicket } from '@/api/guest'
+import { listPublicCategories } from '@/api/tickets'
+import { createGuestTicket, listGuestFields } from '@/api/guest'
+import type { GuestField } from '@/api/types'
+import { overLimit } from '@/lib/fieldLimits'
 import { extractError } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { TextLimit } from '@/components/TextLimit'
+import { isOverLimit } from '@/lib/textLimit'
+import { MarkdownEditor } from '@/components/editor/MarkdownEditor'
 import { Select } from '@/components/ui/select'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import type { Assignment } from '@/api/types'
 
 interface SuccessInfo {
   trackingNumber: string
+  // Set when the ticket was filed but some details could not be saved.
+  notice?: string
 }
 
-function CustomFieldInput({
+function GuestFieldInput({
   field,
   value,
   onChange,
 }: {
-  field: Assignment
+  field: GuestField
   value: string
   onChange: (v: string) => void
 }) {
-  const def = field.field_def!
   const id = `cf-${field.id}`
-  switch (def.field_type) {
+  switch (field.field_type) {
     case 'textarea':
-      return (
-        <Textarea id={id} value={value} onChange={(e) => onChange(e.target.value)} rows={3} />
-      )
+      return <Textarea id={id} value={value} onChange={(e) => onChange(e.target.value)} rows={3} maxLength={field.max_length} />
     case 'number':
-      return (
-        <Input id={id} type="number" value={value} onChange={(e) => onChange(e.target.value)} />
-      )
+      return <Input id={id} type="number" value={value} onChange={(e) => onChange(e.target.value)} />
     case 'select':
       return (
         <Select id={id} value={value} onChange={(e) => onChange(e.target.value)}>
           <option value="">Select…</option>
-          {(def.options ?? []).map((opt) => (
+          {(field.options ?? []).map((opt) => (
             <option key={opt} value={opt}>{opt}</option>
           ))}
         </Select>
       )
     default:
-      return (
-        <Input id={id} value={value} onChange={(e) => onChange(e.target.value)} />
-      )
+      return <Input id={id} value={value} onChange={(e) => onChange(e.target.value)} maxLength={field.max_length} />
   }
 }
 
@@ -55,10 +54,10 @@ export function GuestTicketPage() {
   const [subject, setSubject] = useState('')
   const [description, setDescription] = useState('')
   const [categoryId, setCategoryId] = useState('')
+  const [fieldValues, setFieldValues] = useState<Record<string, string>>({})
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
-  const [customFieldValues, setCustomFieldValues] = useState<Record<string, string>>({})
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [success, setSuccess] = useState<SuccessInfo | null>(null)
@@ -68,12 +67,33 @@ export function GuestTicketPage() {
     queryFn: listPublicCategories,
   })
 
-  const { data: ctiFields = [] } = useQuery({
-    queryKey: ['ctiFields-guest', categoryId],
-    queryFn: () => resolveFieldsForCTI({ category_id: categoryId }),
+  // The custom fields an administrator chose to offer visitors under this
+  // category (#627), and only those: the server tells this form which they are
+  // and refuses any other key. This form asked for every field once and threw
+  // the answers away on submit, which could also stop a visitor filing over a
+  // field the server never took; it was removed, and is back only because the
+  // server now decides what a guest may fill.
+  //
+  // The form does not go on without the list. The lookup is throttled (429) and
+  // can fail like any request, and a form that carried on would show no fields
+  // and then be refused for a required one it never offered, with nothing to
+  // fill in. So a failure says so and offers a retry, and submit waits until the
+  // fields are known.
+  const fieldsQuery = useQuery({
+    queryKey: ['guest-fields', categoryId],
+    queryFn: () => listGuestFields(categoryId),
     enabled: !!categoryId,
+    retry: false,
   })
-  const visibleFields = ctiFields.filter((f) => f.visible_on_new)
+  const guestFields = fieldsQuery.data ?? []
+  const fieldsPending = !!categoryId && !fieldsQuery.isSuccess
+
+  function chooseCategory(id: string) {
+    setCategoryId(id)
+    // Another category may not offer these fields, and the server refuses a
+    // field it did not offer, so nothing typed for one is carried to the next.
+    setFieldValues({})
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -82,12 +102,18 @@ export function GuestTicketPage() {
     if (!categoryId) { setError('Category is required'); return }
     if (!name.trim()) { setError('Name is required'); return }
     if (!email.trim()) { setError('Email is required'); return }
+    if (isOverLimit(description)) { setError('The description is too long. Shorten it to send.'); return }
+    if (fieldsPending) return // the button is disabled; this covers Enter in a field
 
-    for (const f of visibleFields) {
-      if (f.required_on_new && !customFieldValues[f.field_def_id]) {
-        setError(`${f.field_def?.name ?? 'A required field'} is required`)
-        return
-      }
+    const customFields: Record<string, string> = {}
+    for (const f of guestFields) {
+      const v = fieldValues[f.id] ?? ''
+      // maxlength counts UTF-16 units and a paste can get past it, so the exact
+      // check is made here; the server holds the same limit.
+      const tooLong = overLimit(f.name, v, f.max_length)
+      if (tooLong) { setError(tooLong); return }
+      if (v.trim()) customFields[f.id] = v
+      else if (f.required) { setError(`${f.name} is required`); return }
     }
 
     setLoading(true)
@@ -95,6 +121,7 @@ export function GuestTicketPage() {
       // The guest endpoint, not the authenticated one. This page posted to
       // /tickets for as long as it has existed, which sits behind a role check,
       // so every submission from a visitor answered 401.
+      let notice: string | undefined
       const trackingNumber = await createGuestTicket({
         subject,
         description,
@@ -102,8 +129,9 @@ export function GuestTicketPage() {
         guest_name: name.trim(),
         guest_email: email.trim(),
         guest_phone: phone.trim() || undefined,
-      })
-      setSuccess({ trackingNumber })
+        custom_fields: Object.keys(customFields).length > 0 ? customFields : undefined,
+      }, (n) => { notice = n })
+      setSuccess({ trackingNumber, notice })
     } catch (err) {
       setError(extractError(err))
     } finally {
@@ -126,6 +154,11 @@ export function GuestTicketPage() {
               <p className="text-center text-2xl font-mono font-bold tracking-widest text-gray-900">
                 {success.trackingNumber}
               </p>
+              {success.notice && (
+                <p role="status" className="rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-900">
+                  {success.notice}
+                </p>
+              )}
               <p className="text-gray-500">
                 We have emailed you a link to follow the ticket. Keep this
                 number too — with your email address it will get you a fresh
@@ -139,11 +172,10 @@ export function GuestTicketPage() {
                   setSuccess(null)
                   setSubject('')
                   setDescription('')
-                  setCategoryId('')
+                  chooseCategory('')
                   setName('')
                   setEmail('')
                   setPhone('')
-                  setCustomFieldValues({})
                 }}
               >
                 Submit another ticket
@@ -219,14 +251,14 @@ export function GuestTicketPage() {
               </div>
 
               <div className="space-y-1">
-                <Label htmlFor="description">Description</Label>
-                <Textarea
-                  id="description"
+                <Label id="description-label">Description</Label>
+                <MarkdownEditor
                   value={description}
-                  onChange={(e) => setDescription(e.target.value)}
+                  onChange={setDescription}
+                  labelId="description-label"
                   placeholder="Full details of the request or issue"
-                  rows={5}
                 />
+                <TextLimit value={description} />
               </div>
 
               <div className="space-y-1">
@@ -234,7 +266,7 @@ export function GuestTicketPage() {
                 <Select
                   id="category"
                   value={categoryId}
-                  onChange={(e) => { setCategoryId(e.target.value); setCustomFieldValues({}) }}
+                  onChange={(e) => chooseCategory(e.target.value)}
                 >
                   <option value="">Select…</option>
                   {categories.map((c) => (
@@ -243,30 +275,32 @@ export function GuestTicketPage() {
                 </Select>
               </div>
 
-              {visibleFields.length > 0 && (
-                <div className="space-y-4">
-                  <div className="border-t border-gray-100" />
-                  {visibleFields.map((f) => (
-                    <div key={f.id} className="space-y-1">
-                      <Label htmlFor={`cf-${f.id}`}>
-                        {f.field_def?.name}
-                        {f.required_on_new && <span className="ml-0.5 text-red-500"> *</span>}
-                      </Label>
-                      <CustomFieldInput
-                        field={f}
-                        value={customFieldValues[f.field_def_id] ?? ''}
-                        onChange={(v) =>
-                          setCustomFieldValues((prev) => ({ ...prev, [f.field_def_id]: v }))
-                        }
-                      />
-                    </div>
-                  ))}
+              {guestFields.map((f) => (
+                <div key={f.id} className="space-y-1">
+                  <Label htmlFor={`cf-${f.id}`}>
+                    {f.name}
+                    {f.required && <span className="ml-0.5 text-red-500"> *</span>}
+                  </Label>
+                  <GuestFieldInput
+                    field={f}
+                    value={fieldValues[f.id] ?? ''}
+                    onChange={(v) => setFieldValues((prev) => ({ ...prev, [f.id]: v }))}
+                  />
+                </div>
+              ))}
+
+              {fieldsQuery.isError && (
+                <div role="alert" className="space-y-2 text-sm text-red-600">
+                  <p>The extra questions for this category could not be loaded. Try again in a moment.</p>
+                  <Button type="button" variant="outline" size="sm" onClick={() => fieldsQuery.refetch()}>
+                    Try again
+                  </Button>
                 </div>
               )}
 
-              {error && <p className="text-sm text-red-600">{error}</p>}
+              {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
 
-              <Button type="submit" className="w-full" disabled={loading}>
+              <Button type="submit" className="w-full" disabled={loading || fieldsPending || isOverLimit(description)}>
                 {loading ? 'Submitting…' : 'Submit request'}
               </Button>
             </form>

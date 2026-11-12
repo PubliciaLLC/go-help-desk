@@ -1,0 +1,13 @@
+From: <helpdesk@example.com>
+To: <to@example.com>
+Subject: We have resolved [GHD-2026-000042]
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+We have marked your ticket resolved.
+
+Ticket: GHD-2026-000042
+
+If this is not fixed, reply here and the ticket reopens:
+https://help.example.com/g#guest-token-abc

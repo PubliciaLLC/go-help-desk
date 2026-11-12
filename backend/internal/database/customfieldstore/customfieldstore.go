@@ -3,36 +3,99 @@ package customfieldstore
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"slices"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/auditstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/dbretry"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/sqlc-dev/pqtype"
 )
 
 // Store implements customfield.Store.
-type Store struct{ q *dbgen.Queries }
+type Store struct {
+	q  *dbgen.Queries
+	db *sql.DB // nil: writes join the transaction q is already bound to
+}
 
-// New returns a Store backed by the given Queries.
-func New(q *dbgen.Queries) *Store { return &Store{q: q} }
+// New returns a Store backed by the given Queries. db is what the writes open
+// their transactions on. The integration harness passes nil: it already wraps each
+// test in a transaction that is rolled back, over the Queries it gives every
+// store, and a second transaction on another connection could not see the
+// rows that one has written (testutil.JoiningTxRunner is the same trade). A nil
+// db therefore does not exercise commit or rollback.
+func New(q *dbgen.Queries, db *sql.DB) *Store { return &Store{q: q, db: db} }
+
+// inTx runs fn in one transaction: its statements and the audit entries it
+// writes commit together or not at all. Run again when Postgres aborts the
+// transaction to break a lock cycle (dbretry has the rules); every attempt
+// starts clean, so fn must not keep state between calls.
+func (s *Store) inTx(ctx context.Context, what string, fn func(q *dbgen.Queries) error) error {
+	if s.db == nil {
+		return fn(s.q)
+	}
+	return dbretry.Do(ctx, nil, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("beginning transaction: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }() // a no-op once committed
+		if err := fn(s.q.WithTx(tx)); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing %s: %w", what, err)
+		}
+		return nil
+	})
+}
+
+// writeEntries puts the audit entries in the caller's transaction. A failure is
+// returned, and rolls the change back with it.
+func writeEntries(ctx context.Context, q *dbgen.Queries, entries ...audit.Entry) error {
+	au := auditstore.New(q)
+	for _, e := range entries {
+		if err := au.Create(ctx, e); err != nil {
+			return fmt.Errorf("writing audit entry: %w", err)
+		}
+	}
+	return nil
+}
 
 // ── Field definitions ──────────────────────────────────────────────────────────
 
-func (s *Store) CreateFieldDef(ctx context.Context, def customfield.FieldDef) (customfield.FieldDef, error) {
-	row, err := s.q.CreateCustomFieldDef(ctx, dbgen.CreateCustomFieldDefParams{
-		ID:        def.ID,
-		Name:      def.Name,
-		FieldType: string(def.FieldType),
-		Options:   optionsToNullRaw(def.Options),
-		SortOrder: int32(def.SortOrder),
-		Active:    def.Active,
+func (s *Store) CreateFieldDef(ctx context.Context, def customfield.FieldDef, entries []audit.Entry) (customfield.FieldDef, error) {
+	var out customfield.FieldDef
+	err := s.inTx(ctx, "field definition", func(q *dbgen.Queries) error {
+		row, err := q.CreateCustomFieldDef(ctx, dbgen.CreateCustomFieldDefParams{
+			ID:             def.ID,
+			Name:           def.Name,
+			FieldType:      string(def.FieldType),
+			Options:        optionsToNullRaw(def.Options),
+			RetiredOptions: optionsToNullRaw(def.RetiredOptions),
+			SortOrder:      int32(def.SortOrder),
+			Active:         def.Active,
+			MaxLength:      maxLengthToNull(def.MaxLength),
+		})
+		if err != nil {
+			return mapWriteError("creating field def", err, nameTaken, "")
+		}
+		out = defFromRow(row)
+		return writeEntries(ctx, q, entries...)
 	})
 	if err != nil {
-		return customfield.FieldDef{}, fmt.Errorf("creating field def: %w", err)
+		return customfield.FieldDef{}, err
 	}
-	return defFromRow(row), nil
+	return out, nil
 }
 
 func (s *Store) ListFieldDefs(ctx context.Context) ([]customfield.FieldDef, error) {
@@ -42,54 +105,235 @@ func (s *Store) ListFieldDefs(ctx context.Context) ([]customfield.FieldDef, erro
 	}
 	out := make([]customfield.FieldDef, len(rows))
 	for i, r := range rows {
-		out[i] = defFromRow(r)
+		out[i] = defFromRow(dbgen.CustomFieldDef{
+			ID: r.ID, Name: r.Name, FieldType: r.FieldType, Options: r.Options, SortOrder: r.SortOrder,
+			Active: r.Active, CreatedAt: r.CreatedAt, RetiredOptions: r.RetiredOptions, MaxLength: r.MaxLength,
+		})
+		places := int(r.PlaceCount)
+		out[i].PlaceCount = &places
 	}
 	return out, nil
 }
 
 func (s *Store) GetFieldDef(ctx context.Context, id uuid.UUID) (customfield.FieldDef, error) {
 	row, err := s.q.GetCustomFieldDef(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return customfield.FieldDef{}, fmt.Errorf("field def %s: %w", id, customfield.ErrNotFound)
+	}
 	if err != nil {
 		return customfield.FieldDef{}, fmt.Errorf("getting field def %s: %w", id, err)
 	}
 	return defFromRow(row), nil
 }
 
-func (s *Store) UpdateFieldDef(ctx context.Context, def customfield.FieldDef) error {
-	return s.q.UpdateCustomFieldDef(ctx, dbgen.UpdateCustomFieldDefParams{
-		ID:        def.ID,
-		Name:      def.Name,
-		FieldType: string(def.FieldType),
-		Options:   optionsToNullRaw(def.Options),
-		SortOrder: int32(def.SortOrder),
-		Active:    def.Active,
+// UpdateFieldDef takes the definition's row FOR UPDATE, which waits for every
+// value write holding it FOR SHARE (SetValues) and holds off every one that
+// starts after, until this commits. decide's answers about what tickets hold
+// (held) are therefore still true when the change is written.
+func (s *Store) UpdateFieldDef(ctx context.Context, id uuid.UUID, decide func(cur customfield.FieldDef, held customfield.Held) (customfield.FieldDef, []audit.Entry, error)) (customfield.FieldDef, error) {
+	var saved customfield.FieldDef
+	err := s.inTx(ctx, "field definition change", func(q *dbgen.Queries) error {
+		row, err := q.LockCustomFieldDefForUpdate(ctx, id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("field def %s: %w", id, customfield.ErrNotFound)
+		}
+		if err != nil {
+			return fmt.Errorf("locking field def %s: %w", id, err)
+		}
+		next, entries, err := decide(defFromRow(row), held{ctx: ctx, q: q, id: id})
+		if err != nil {
+			return err
+		}
+		err = q.UpdateCustomFieldDef(ctx, dbgen.UpdateCustomFieldDefParams{
+			ID:             id,
+			Name:           next.Name,
+			FieldType:      string(next.FieldType),
+			Options:        optionsToNullRaw(next.Options),
+			RetiredOptions: optionsToNullRaw(next.RetiredOptions),
+			SortOrder:      int32(next.SortOrder),
+			Active:         next.Active,
+			MaxLength:      maxLengthToNull(next.MaxLength),
+		})
+		if err := mapWriteError("updating field def", err, nameTaken, ""); err != nil {
+			return err
+		}
+		if err := writeEntries(ctx, q, entries...); err != nil {
+			return err
+		}
+		// The row as stored, not the edited copy.
+		after, err := q.GetCustomFieldDef(ctx, id)
+		if err != nil {
+			return fmt.Errorf("reading field def %s back: %w", id, err)
+		}
+		saved = defFromRow(after)
+		return nil
 	})
+	if err != nil {
+		return customfield.FieldDef{}, err
+	}
+	return saved, nil
+}
+
+// ReorderFieldDefs locks every definition, in id order (the order SetValues
+// takes the ones it names), so no field is added, changed or written to while
+// the numbers are rewritten.
+func (s *Store) ReorderFieldDefs(ctx context.Context, decide func(cur []customfield.FieldDef) ([]uuid.UUID, []audit.Entry, error)) error {
+	return s.inTx(ctx, "field order", func(q *dbgen.Queries) error {
+		rows, err := q.LockAllCustomFieldDefsForUpdate(ctx)
+		if err != nil {
+			return fmt.Errorf("locking field defs: %w", err)
+		}
+		cur := make([]customfield.FieldDef, len(rows))
+		for i, r := range rows {
+			cur[i] = defFromRow(r)
+		}
+		ids, entries, err := decide(cur)
+		if err != nil {
+			return err
+		}
+		if len(ids) > 0 {
+			if err := q.ReorderCustomFieldDefs(ctx, ids); err != nil {
+				return fmt.Errorf("reordering field defs: %w", err)
+			}
+		}
+		return writeEntries(ctx, q, entries...)
+	})
+}
+
+// held answers customfield.Held on the transaction the definition is locked in.
+type held struct {
+	ctx context.Context
+	q   *dbgen.Queries
+	id  uuid.UUID
+}
+
+func (h held) Any() (bool, error) { return h.q.AnyCustomFieldValue(h.ctx, h.id) }
+
+func (h held) OneOf(values []string) (string, bool, error) {
+	v, err := h.q.FirstHeldCustomFieldValue(h.ctx, dbgen.FirstHeldCustomFieldValueParams{FieldDefID: h.id, Candidates: values})
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return v, err == nil, err
+}
+
+// ── Usage ─────────────────────────────────────────────────────────────────────
+
+func (s *Store) CountValues(ctx context.Context, fieldDefID uuid.UUID) (int, error) {
+	n, err := s.q.CountCustomFieldValues(ctx, fieldDefID)
+	if err != nil {
+		return 0, fmt.Errorf("counting values of field %s: %w", fieldDefID, err)
+	}
+	return int(n), nil
+}
+
+func (s *Store) CountValuesByValue(ctx context.Context, fieldDefID uuid.UUID) (map[string]int, error) {
+	rows, err := s.q.CountCustomFieldValuesByValue(ctx, fieldDefID)
+	if err != nil {
+		return nil, fmt.Errorf("counting values of field %s by value: %w", fieldDefID, err)
+	}
+	out := make(map[string]int, len(rows))
+	for _, r := range rows {
+		out[r.Value] = int(r.Tickets)
+	}
+	return out, nil
 }
 
 // ── Assignments ───────────────────────────────────────────────────────────────
 
-func (s *Store) CreateAssignment(ctx context.Context, a customfield.Assignment) (customfield.Assignment, error) {
-	row, err := s.q.CreateCustomFieldAssignment(ctx, dbgen.CreateCustomFieldAssignmentParams{
-		ID:            a.ID,
-		FieldDefID:    a.FieldDefID,
-		ScopeType:     string(a.ScopeType),
-		ScopeID:       a.ScopeID,
-		SortOrder:     int32(a.SortOrder),
-		VisibleOnNew:  a.VisibleOnNew,
-		RequiredOnNew: a.RequiredOnNew,
+func (s *Store) CreateAssignment(ctx context.Context, a customfield.Assignment, entry func(customfield.AssignmentInfo) audit.Entry) (customfield.Assignment, error) {
+	var out customfield.Assignment
+	err := s.inTx(ctx, "field attachment", func(q *dbgen.Queries) error {
+		if err := refuseOverlap(ctx, q, a); err != nil {
+			return err
+		}
+		row, err := q.CreateCustomFieldAssignment(ctx, dbgen.CreateCustomFieldAssignmentParams{
+			ID:              a.ID,
+			FieldDefID:      a.FieldDefID,
+			ScopeType:       string(a.ScopeType),
+			ScopeID:         a.ScopeID,
+			SortOrder:       int32(a.SortOrder),
+			VisibleOnNew:    a.VisibleOnNew,
+			RequiredOnNew:   a.RequiredOnNew,
+			VisibleToGuests: a.VisibleToGuests,
+		})
+		if err != nil {
+			return mapWriteError("creating assignment", err, alreadyAssigned, "field_def_id does not name a field")
+		}
+		out = assignmentFromRow(row)
+		if entry == nil {
+			return nil
+		}
+		info, err := assignmentInfo(ctx, q, out)
+		if err != nil {
+			return err
+		}
+		return writeEntries(ctx, q, entry(info))
 	})
 	if err != nil {
-		return customfield.Assignment{}, fmt.Errorf("creating assignment: %w", err)
+		return customfield.Assignment{}, err
 	}
-	return customfield.Assignment{
-		ID:            row.ID,
-		FieldDefID:    row.FieldDefID,
-		ScopeType:     customfield.ScopeType(row.ScopeType),
-		ScopeID:       row.ScopeID,
-		SortOrder:     int(row.SortOrder),
-		VisibleOnNew:  row.VisibleOnNew,
-		RequiredOnNew: row.RequiredOnNew,
-	}, nil
+	return out, nil
+}
+
+// refuseOverlap answers Conflict if the field is already attached at the same
+// place, or above or below it on one path of the tree (its category, one of that
+// category's types, one of that type's items). Several levels would be shown
+// once, at the most specific, and a person editing the ones that lose would
+// change nothing they can see; the Custom Fields page has never offered it.
+//
+// The definition's row is locked FOR UPDATE first, so two attachments of one
+// field made at the same moment (one at a category, one at its type) are
+// checked one after the other and the second sees the first. Attachments that
+// overlap already are not touched: nothing here reads them except to find the
+// one a new attachment collides with.
+//
+// A same-place attach is refused here too, with the same words the unique
+// constraint uses, so the common mistake never reaches the database as an error
+// that would abort an enclosing transaction.
+func refuseOverlap(ctx context.Context, q *dbgen.Queries, a customfield.Assignment) error {
+	if _, err := q.LockCustomFieldDefForUpdate(ctx, a.FieldDefID); errors.Is(err, sql.ErrNoRows) {
+		return customfield.InvalidReference("field_def_id does not name a field")
+	} else if err != nil {
+		return fmt.Errorf("locking field def %s: %w", a.FieldDefID, err)
+	}
+	chain, err := q.GetScopeChain(ctx, dbgen.GetScopeChainParams{ScopeType: string(a.ScopeType), ScopeID: a.ScopeID})
+	if err != nil {
+		return fmt.Errorf("reading where %s %s sits: %w", a.ScopeType, a.ScopeID, err)
+	}
+	here := [3]uuid.NullUUID{chain.CategoryID, chain.TypeID, chain.ItemID}
+	placed, err := q.ListAssignmentsForFieldDef(ctx, a.FieldDefID)
+	if err != nil {
+		return fmt.Errorf("listing where field %s is attached: %w", a.FieldDefID, err)
+	}
+	for _, p := range placed {
+		there := [3]uuid.NullUUID{{UUID: p.CategoryID, Valid: true}, p.TypeID, p.ItemID}
+		if p.ScopeType == string(a.ScopeType) && p.ScopeID == a.ScopeID {
+			return customfield.Conflict(alreadyAssigned)
+		}
+		// The shallower of the two decides: the deeper one is under it, or not.
+		level := min(depth(p.ScopeType), depth(string(a.ScopeType)))
+		if here[level].Valid && here[level] == there[level] {
+			path, err := q.GetAssignmentScopePath(ctx, dbgen.GetAssignmentScopePathParams{ScopeType: p.ScopeType, ScopeID: p.ScopeID})
+			if err != nil {
+				return fmt.Errorf("reading the path of %s %s: %w", p.ScopeType, p.ScopeID, err)
+			}
+			return customfield.Conflict(fmt.Sprintf(
+				"this field is already attached at %s; a field is attached at one level of a category, its types and their items", path))
+		}
+	}
+	return nil
+}
+
+// depth is a scope type's level in the tree: 0 category, 1 type, 2 item.
+func depth(scopeType string) int {
+	switch scopeType {
+	case string(customfield.TypeScope):
+		return 1
+	case string(customfield.ItemScope):
+		return 2
+	}
+	return 0
 }
 
 func (s *Store) ListAssignments(ctx context.Context, scopeType customfield.ScopeType, scopeID uuid.UUID) ([]customfield.Assignment, error) {
@@ -104,22 +348,51 @@ func (s *Store) ListAssignments(ctx context.Context, scopeType customfield.Scope
 	for i, r := range rows {
 		opts := optionsFromNullRaw(r.FieldOptions)
 		fd := &customfield.FieldDef{
-			ID:        r.FieldDefID,
-			Name:      r.FieldName,
-			FieldType: customfield.FieldType(r.FieldType),
-			Options:   opts,
-			Active:    r.FieldActive,
+			ID:             r.FieldDefID,
+			Name:           r.FieldName,
+			FieldType:      customfield.FieldType(r.FieldType),
+			Options:        opts,
+			RetiredOptions: optionsFromNullRaw(r.FieldRetiredOptions),
+			SortOrder:      int(r.FieldSortOrder),
+			Active:         r.FieldActive,
+			MaxLength:      maxLengthFromNull(r.FieldMaxLength),
 		}
 		out[i] = customfield.Assignment{
-			ID:            r.ID,
-			FieldDefID:    r.FieldDefID,
-			FieldDef:      fd,
-			ScopeType:     customfield.ScopeType(r.ScopeType),
-			ScopeID:       r.ScopeID,
-			SortOrder:     int(r.SortOrder),
-			VisibleOnNew:  r.VisibleOnNew,
-			RequiredOnNew: r.RequiredOnNew,
+			ID:              r.ID,
+			FieldDefID:      r.FieldDefID,
+			FieldDef:        fd,
+			ScopeType:       customfield.ScopeType(r.ScopeType),
+			ScopeID:         r.ScopeID,
+			SortOrder:       int(r.SortOrder),
+			VisibleOnNew:    r.VisibleOnNew,
+			RequiredOnNew:   r.RequiredOnNew,
+			VisibleToGuests: r.VisibleToGuests,
 		}
+	}
+	return out, nil
+}
+
+func (s *Store) ListPlacements(ctx context.Context, fieldDefID uuid.UUID) ([]customfield.Placement, error) {
+	rows, err := s.q.ListAssignmentsForFieldDef(ctx, fieldDefID)
+	if err != nil {
+		return nil, fmt.Errorf("listing placements of field %s: %w", fieldDefID, err)
+	}
+	out := make([]customfield.Placement, len(rows))
+	for i, r := range rows {
+		p := customfield.Placement{
+			Assignment: customfield.Assignment{
+				ID: r.ID, FieldDefID: r.FieldDefID, ScopeType: customfield.ScopeType(r.ScopeType), ScopeID: r.ScopeID,
+				SortOrder: int(r.SortOrder), VisibleOnNew: r.VisibleOnNew, RequiredOnNew: r.RequiredOnNew, VisibleToGuests: r.VisibleToGuests,
+			},
+			Category: customfield.PlaceNode{ID: r.CategoryID, Name: r.CategoryName, Active: r.CategoryActive},
+		}
+		if r.TypeID.Valid {
+			p.Type = &customfield.PlaceNode{ID: r.TypeID.UUID, Name: r.TypeName.String, Active: r.TypeActive.Bool}
+		}
+		if r.ItemID.Valid {
+			p.Item = &customfield.PlaceNode{ID: r.ItemID.UUID, Name: r.ItemName.String, Active: r.ItemActive.Bool}
+		}
+		out[i] = p
 	}
 	return out, nil
 }
@@ -129,38 +402,100 @@ func (s *Store) GetAssignment(ctx context.Context, id uuid.UUID) (customfield.As
 	if err != nil {
 		return customfield.Assignment{}, fmt.Errorf("getting assignment %s: %w", id, err)
 	}
-	return customfield.Assignment{
-		ID:            row.ID,
-		FieldDefID:    row.FieldDefID,
-		ScopeType:     customfield.ScopeType(row.ScopeType),
-		ScopeID:       row.ScopeID,
-		SortOrder:     int(row.SortOrder),
-		VisibleOnNew:  row.VisibleOnNew,
-		RequiredOnNew: row.RequiredOnNew,
-	}, nil
+	return assignmentFromRow(row), nil
 }
 
-func (s *Store) UpdateAssignment(ctx context.Context, a customfield.Assignment) error {
-	return s.q.UpdateCustomFieldAssignment(ctx, dbgen.UpdateCustomFieldAssignmentParams{
-		ID:            a.ID,
-		SortOrder:     int32(a.SortOrder),
-		VisibleOnNew:  a.VisibleOnNew,
-		RequiredOnNew: a.RequiredOnNew,
+func (s *Store) UpdateAssignment(ctx context.Context, a customfield.Assignment, entries func(before customfield.Assignment, info customfield.AssignmentInfo) []audit.Entry) error {
+	return s.inTx(ctx, "field attachment change", func(q *dbgen.Queries) error {
+		before, err := lockAssignment(ctx, q, a.ID)
+		if err != nil {
+			return err
+		}
+		if err := q.UpdateCustomFieldAssignment(ctx, dbgen.UpdateCustomFieldAssignmentParams{
+			ID:              a.ID,
+			SortOrder:       int32(a.SortOrder),
+			VisibleOnNew:    a.VisibleOnNew,
+			RequiredOnNew:   a.RequiredOnNew,
+			VisibleToGuests: a.VisibleToGuests,
+		}); err != nil {
+			return fmt.Errorf("updating assignment %s: %w", a.ID, err)
+		}
+		info, err := assignmentInfo(ctx, q, before)
+		if err != nil {
+			return err
+		}
+		return writeEntries(ctx, q, entries(before, info)...)
 	})
 }
 
-func (s *Store) DeleteAssignment(ctx context.Context, id uuid.UUID) error {
-	return s.q.DeleteCustomFieldAssignment(ctx, id)
+func (s *Store) DeleteAssignment(ctx context.Context, id uuid.UUID, entry func(before customfield.Assignment, info customfield.AssignmentInfo) audit.Entry) error {
+	return s.inTx(ctx, "field detachment", func(q *dbgen.Queries) error {
+		before, err := lockAssignment(ctx, q, id)
+		if err != nil {
+			return err
+		}
+		info, err := assignmentInfo(ctx, q, before)
+		if err != nil {
+			return err
+		}
+		n, err := q.DeleteCustomFieldAssignment(ctx, id)
+		if err != nil {
+			return fmt.Errorf("deleting field assignment %s: %w", id, err)
+		}
+		if n == 0 {
+			return fmt.Errorf("field assignment %s: %w", id, customfield.ErrNotFound)
+		}
+		return writeEntries(ctx, q, entry(before, info))
+	})
+}
+
+// lockAssignment reads the row FOR UPDATE, so the entry's "before" is what this
+// transaction then changes.
+func lockAssignment(ctx context.Context, q *dbgen.Queries, id uuid.UUID) (customfield.Assignment, error) {
+	row, err := q.GetCustomFieldAssignmentForUpdate(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return customfield.Assignment{}, fmt.Errorf("field assignment %s: %w", id, customfield.ErrNotFound)
+	}
+	if err != nil {
+		return customfield.Assignment{}, fmt.Errorf("locking field assignment %s: %w", id, err)
+	}
+	return assignmentFromRow(row), nil
+}
+
+// assignmentInfo is the field's name and the node's path as they stand in this
+// transaction, for the audit entry. The path is empty if the node is gone, which
+// the routes do not let happen: they check the whole path first.
+func assignmentInfo(ctx context.Context, q *dbgen.Queries, a customfield.Assignment) (customfield.AssignmentInfo, error) {
+	def, err := q.GetCustomFieldDef(ctx, a.FieldDefID)
+	if err != nil {
+		return customfield.AssignmentInfo{}, fmt.Errorf("reading field %s for its audit entry: %w", a.FieldDefID, err)
+	}
+	path, err := q.GetAssignmentScopePath(ctx, dbgen.GetAssignmentScopePathParams{ScopeType: string(a.ScopeType), ScopeID: a.ScopeID})
+	if err != nil {
+		return customfield.AssignmentInfo{}, fmt.Errorf("reading the path of %s %s for its audit entry: %w", a.ScopeType, a.ScopeID, err)
+	}
+	return customfield.AssignmentInfo{FieldName: def.Name, ScopePath: path}, nil
 }
 
 // ── Values ────────────────────────────────────────────────────────────────────
 
 func (s *Store) UpsertValue(ctx context.Context, ticketID, fieldDefID uuid.UUID, value string) error {
-	return s.q.UpsertCustomFieldValue(ctx, dbgen.UpsertCustomFieldValueParams{
+	def, err := s.q.GetCustomFieldDef(ctx, fieldDefID)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return customfield.InvalidReference("the ticket or the field does not exist")
+	case err != nil:
+		return fmt.Errorf("reading field def %s: %w", fieldDefID, err)
+	}
+	if err := checkTypeCap(customfield.FieldType(def.FieldType), value); err != nil {
+		return err
+	}
+	err = s.q.UpsertCustomFieldValue(ctx, dbgen.UpsertCustomFieldValueParams{
 		TicketID:   ticketID,
 		FieldDefID: fieldDefID,
 		Value:      value,
 	})
+	return mapWriteError("saving field value", err, "", "the ticket or the field does not exist")
 }
 
 func (s *Store) DeleteValue(ctx context.Context, ticketID, fieldDefID uuid.UUID) error {
@@ -178,29 +513,163 @@ func (s *Store) ListValuesForTicket(ctx context.Context, ticketID uuid.UUID) ([]
 	out := make([]customfield.TicketFieldValue, len(rows))
 	for i, r := range rows {
 		out[i] = customfield.TicketFieldValue{
-			TicketID:   r.TicketID,
-			FieldDefID: r.FieldDefID,
-			FieldName:  r.FieldName,
-			FieldType:  customfield.FieldType(r.FieldType),
-			Options:    optionsFromNullRaw(r.FieldOptions),
-			Value:      r.Value,
-			UpdatedAt:  r.UpdatedAt,
+			TicketID:       r.TicketID,
+			FieldDefID:     r.FieldDefID,
+			FieldName:      r.FieldName,
+			FieldType:      customfield.FieldType(r.FieldType),
+			Options:        optionsFromNullRaw(r.FieldOptions),
+			RetiredOptions: optionsFromNullRaw(r.FieldRetiredOptions),
+			MaxLength:      maxLengthFromNull(r.FieldMaxLength),
+			Value:          r.Value,
+			UpdatedAt:      r.UpdatedAt,
 		}
 	}
 	return out, nil
 }
 
+// SetValues locks the named definitions FOR SHARE in id order, lets decide
+// refuse or trim the batch, and writes what it returns in the same transaction.
+// The lock is what makes decide's answer still true when the rows are written:
+// an admin change to a definition (UpdateFieldDef) takes the row FOR UPDATE and
+// waits for this transaction to finish.
+func (s *Store) SetValues(ctx context.Context, ticketID uuid.UUID, entries map[uuid.UUID]string, decide func(map[uuid.UUID]customfield.FieldDef) (map[uuid.UUID]string, error)) error {
+	return s.inTx(ctx, "field values", func(q *dbgen.Queries) error {
+		return s.setValues(ctx, q, ticketID, entries, decide)
+	})
+}
+
+func (s *Store) setValues(ctx context.Context, q *dbgen.Queries, ticketID uuid.UUID, entries map[uuid.UUID]string, decide func(map[uuid.UUID]customfield.FieldDef) (map[uuid.UUID]string, error)) error {
+	ids := sortedIDs(entries)
+	rows, err := q.LockCustomFieldDefsForShare(ctx, ids)
+	if err != nil {
+		return fmt.Errorf("locking field defs: %w", err)
+	}
+	defs := make(map[uuid.UUID]customfield.FieldDef, len(rows))
+	for _, r := range rows {
+		defs[r.ID] = defFromRow(r)
+	}
+	write, err := decide(defs)
+	if err != nil {
+		return err
+	}
+	// Whatever decide let through, the store takes no more than the type does.
+	for _, id := range sortedIDs(write) {
+		if def, ok := defs[id]; ok {
+			if err := checkTypeCap(def.FieldType, write[id]); err != nil {
+				return err
+			}
+		}
+	}
+
+	// In id order: two batches that name the same fields then take the rows of
+	// ticket_custom_field_values in the same order, and cannot deadlock.
+	for _, id := range sortedIDs(write) {
+		if write[id] == "" {
+			if err := q.DeleteCustomFieldValue(ctx, dbgen.DeleteCustomFieldValueParams{TicketID: ticketID, FieldDefID: id}); err != nil {
+				return fmt.Errorf("clearing field value: %w", err)
+			}
+			continue
+		}
+		err := q.UpsertCustomFieldValue(ctx, dbgen.UpsertCustomFieldValueParams{TicketID: ticketID, FieldDefID: id, Value: write[id]})
+		if err := mapWriteError("saving field value", err, "", "the ticket or the field does not exist"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func sortedIDs[V any](m map[uuid.UUID]V) []uuid.UUID {
+	ids := make([]uuid.UUID, 0, len(m))
+	for id := range m {
+		ids = append(ids, id)
+	}
+	slices.SortFunc(ids, func(a, b uuid.UUID) int { return strings.Compare(a.String(), b.String()) })
+	return ids
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+const (
+	nameTaken       = "a custom field with this name already exists"
+	alreadyAssigned = "this field is already assigned here"
+)
+
+// mapWriteError turns the two constraint failures a caller can cause into
+// errors that carry a message written here. Detected from the SQLSTATE, never
+// from the driver's text, and that text is not passed on: it names the
+// constraint and the table. Anything else is wrapped as it always was and
+// reaches the handler as a 500.
+func mapWriteError(op string, err error, conflictMsg, refMsg string) error {
+	if err == nil {
+		return nil
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch {
+		case pgErr.Code == "23505" && conflictMsg != "":
+			return customfield.Conflict(conflictMsg)
+		case pgErr.Code == "23503" && refMsg != "":
+			return customfield.InvalidReference(refMsg)
+		}
+	}
+	return fmt.Errorf("%s: %w", op, err)
+}
 
 func defFromRow(r dbgen.CustomFieldDef) customfield.FieldDef {
 	return customfield.FieldDef{
-		ID:        r.ID,
-		Name:      r.Name,
-		FieldType: customfield.FieldType(r.FieldType),
-		Options:   optionsFromNullRaw(r.Options),
-		SortOrder: int(r.SortOrder),
-		Active:    r.Active,
-		CreatedAt: r.CreatedAt,
+		ID:             r.ID,
+		Name:           r.Name,
+		FieldType:      customfield.FieldType(r.FieldType),
+		Options:        optionsFromNullRaw(r.Options),
+		RetiredOptions: optionsFromNullRaw(r.RetiredOptions),
+		SortOrder:      int(r.SortOrder),
+		Active:         r.Active,
+		CreatedAt:      r.CreatedAt,
+		MaxLength:      maxLengthFromNull(r.MaxLength),
+	}
+}
+
+// The administrator's own limit on a value is stored and returned here and read
+// by nothing in this package: the API and the forms enforce it, and the store
+// knows only the type's (checkTypeCap). A write that does not go through the API
+// is held to that, so lowering a limit never touches a stored value.
+func maxLengthToNull(n *int) sql.NullInt32 {
+	if n == nil {
+		return sql.NullInt32{}
+	}
+	return sql.NullInt32{Int32: int32(*n), Valid: true}
+}
+
+func maxLengthFromNull(n sql.NullInt32) *int {
+	if !n.Valid {
+		return nil
+	}
+	v := int(n.Int32)
+	return &v
+}
+
+// checkTypeCap refuses a value over the longest its field's type takes (255
+// characters, 10,000 for long text), whoever is writing: the API's own checks
+// run before this, in the domain, and this is what holds a write that skipped
+// them, an import or a direct call. It never looks at the field's own limit.
+func checkTypeCap(ft customfield.FieldType, value string) error {
+	if limit := customfield.MaxChars(ft); utf8.RuneCountInString(value) > limit {
+		return customfield.Invalid(fmt.Sprintf("a value is at most %d characters for this type of field", limit))
+	}
+	return nil
+}
+
+func assignmentFromRow(r dbgen.CustomFieldAssignment) customfield.Assignment {
+	return customfield.Assignment{
+		ID:            r.ID,
+		FieldDefID:    r.FieldDefID,
+		ScopeType:     customfield.ScopeType(r.ScopeType),
+		ScopeID:       r.ScopeID,
+		SortOrder:     int(r.SortOrder),
+		VisibleOnNew:  r.VisibleOnNew,
+		RequiredOnNew: r.RequiredOnNew,
+
+		VisibleToGuests: r.VisibleToGuests,
 	}
 }
 

@@ -5,6 +5,7 @@ import { extractError } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { UPDATE_CHECK_LABEL } from '@/lib/updateCheck'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
 export function SetupPage() {
@@ -13,6 +14,9 @@ export function SetupPage() {
   const [displayName, setDisplayName] = useState('')
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
+  // Pre-filled, not blank: the point is that nobody has to think about it.
+  const [category, setCategory] = useState('General')
+  const [updateCheck, setUpdateCheck] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -25,7 +29,8 @@ export function SetupPage() {
     }
     setLoading(true)
     try {
-      await setupAdmin(email, displayName, password)
+      // Only a ticked box is sent: absent means off to the server.
+      await setupAdmin(email, displayName, password, category, ...(updateCheck ? [true as const] : []))
       navigate({ to: '/login' })
     } catch (err) {
       setError(extractError(err))
@@ -40,7 +45,7 @@ export function SetupPage() {
         <CardHeader>
           <CardTitle className="text-xl">Welcome to Go Help Desk</CardTitle>
           <p className="text-sm text-gray-500 mt-1">
-            Create your administrator account to get started.
+            Create your administrator account and name your first category.
           </p>
         </CardHeader>
         <CardContent>
@@ -89,7 +94,35 @@ export function SetupPage() {
                 autoComplete="new-password"
               />
             </div>
-            {error && <p className="text-sm text-red-600">{error}</p>}
+            <div className="space-y-1">
+              <Label htmlFor="category">First category</Label>
+              <Input
+                id="category"
+                type="text"
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                required
+              />
+              <p className="text-xs text-gray-500">
+                Tickets are filed under a category. You can rename this one or add more later.
+              </p>
+            </div>
+            <div className="flex items-start gap-2">
+              <input
+                id="update-check"
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                checked={updateCheck}
+                onChange={(e) => setUpdateCheck(e.target.checked)}
+              />
+              <div className="space-y-1">
+                <Label htmlFor="update-check" className="font-normal">{UPDATE_CHECK_LABEL}</Label>
+                <p className="text-xs text-gray-500">
+                  Off unless you tick it. You can change it later under Settings.
+                </p>
+              </div>
+            </div>
+            {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
             <Button type="submit" className="w-full" disabled={loading}>
               {loading ? 'Creating account…' : 'Create admin account'}
             </Button>

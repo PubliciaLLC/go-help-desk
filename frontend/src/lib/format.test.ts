@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { fmtMin, priorityVariant } from './format'
+import { fmtMin, priorityVariant, slaTargetText } from './format'
+import type { SLATargetStatus } from '@/api/types'
 
 describe('priorityVariant', () => {
   it('maps each known priority to its badge variant', () => {
@@ -45,5 +46,63 @@ describe('fmtMin', () => {
   it('renders the default SLA targets', () => {
     expect(fmtMin(480)).toBe('8h')
     expect(fmtMin(2880)).toBe('48h')
+  })
+})
+
+function target(over: Partial<SLATargetStatus> = {}): SLATargetStatus {
+  return {
+    color: 'green',
+    target_min: 60,
+    elapsed_min: 12,
+    remaining_min: 48,
+    met_at: null,
+    ...over,
+  }
+}
+
+describe('slaTargetText', () => {
+  it('reads "left" while outstanding and under target', () => {
+    expect(slaTargetText(target({ remaining_min: 48 }))).toBe('48m left')
+  })
+
+  it('reads "over" while outstanding and past target', () => {
+    expect(slaTargetText(target({ remaining_min: -80 }))).toBe('1h 20m over')
+  })
+
+  it('reads "to spare" for a target met before its deadline', () => {
+    expect(slaTargetText(target({ met_at: '2026-09-25T10:12:00Z', remaining_min: 12 }))).toBe(
+      'Met with 12m to spare',
+    )
+  })
+
+  it('reads "late" for a target met after its deadline', () => {
+    expect(slaTargetText(target({ met_at: '2026-09-25T10:12:00Z', remaining_min: -65 }))).toBe(
+      'Met 1h 5m late',
+    )
+  })
+
+  // The server truncates (target - elapsed) toward zero, so remaining_min is 0
+  // for anything within a minute of the target on EITHER side. Only the color
+  // tells them apart: red is "at or past 100%" (colorFor in domain/sla/status.go),
+  // green and amber are strictly under it. A red zero must never read as on time.
+  describe('remaining_min of 0', () => {
+    const met = '2026-09-25T10:12:00Z'
+    const cases: {
+      name: string
+      color: SLATargetStatus['color']
+      met_at: string | null
+      want: string
+    }[] = [
+      { name: 'outstanding, green, under a minute left', color: 'green', met_at: null, want: '0m left' },
+      { name: 'outstanding, amber, under a minute left', color: 'amber', met_at: null, want: '0m left' },
+      { name: 'outstanding, red, under a minute overdue', color: 'red', met_at: null, want: '<1m over' },
+      { name: 'met, green, on time', color: 'green', met_at: met, want: 'Met with 0m to spare' },
+      { name: 'met, amber, on time', color: 'amber', met_at: met, want: 'Met with 0m to spare' },
+      { name: 'met, red, under a minute late', color: 'red', met_at: met, want: 'Met <1m late' },
+    ]
+
+    it.each(cases)('$name', ({ color, met_at, want }) => {
+      expect(slaTargetText(target({ color, met_at, remaining_min: 0 }))).toBe(want)
+    })
   })
 })

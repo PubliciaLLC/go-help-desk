@@ -221,11 +221,18 @@ pkg_test_dirs() {
 }
 
 # Does any valid test location for this package contain a test file, at HEAD?
+#
+# The listing is captured before it is searched, never piped into `grep -q`.
+# grep -q exits on its first match; if git is still writing, it gets SIGPIPE and
+# `pipefail` fails the pipeline although grep matched, which reported a package
+# with tests as having none (#478). Reading it into a variable first leaves no
+# writer to kill. scripts/check-test-coverage-test.sh pins this.
 pkg_has_any_test() {
-  local pkg="$1" lang="$2" dir pattern
+  local pkg="$1" lang="$2" dir pattern listing
   pattern="$(test_file_pattern "$lang")"
   while IFS= read -r dir; do
-    if git ls-tree --name-only "$HEAD_REF" "${dir}/" 2>/dev/null | grep -qE "$pattern"; then
+    listing="$(git ls-tree --name-only "$HEAD_REF" "${dir}/" 2>/dev/null || true)"
+    if grep -qE "$pattern" <<<"$listing"; then
       return 0
     fi
   done < <(pkg_test_dirs "$pkg")

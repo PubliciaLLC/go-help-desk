@@ -41,7 +41,12 @@ type mcpConn struct {
 
 func openMCP(t *testing.T, h *harness, token string) *mcpConn {
 	t.Helper()
-	mcpSrv := mcp.New(h.ticketSvc, func(context.Context) string { return "GHD" }, h.srv, h.categorySvc)
+	return openMCPOn(t, h, token, mcp.New(h.ticketSvc, func(context.Context) string { return "GHD" }, h.srv, h.categorySvc, h.srv, h.srv))
+}
+
+// openMCPOn is openMCP for an MCP server the test configured itself.
+func openMCPOn(t *testing.T, h *harness, token string, mcpSrv *mcp.Server) *mcpConn {
+	t.Helper()
 	ts := httptest.NewServer(h.srv.ProtectMCP(mcpSrv.Handler()))
 	t.Cleanup(ts.Close)
 
@@ -133,61 +138,87 @@ func mcpTools(h *harness) []struct {
 		{"list_tickets", false, map[string]any{}},
 		{"list_categories", false, map[string]any{}},
 		{"list_statuses", false, map[string]any{}},
+		{"list_ticket_fields", false, map[string]any{"category_id": h.catID.String()}},
+		{"list_attachments", false, map[string]any{"ticket_id": tid}},
 		{"create_ticket", true, map[string]any{"subject": "x", "category_id": h.catID.String()}},
 		{"add_reply", true, map[string]any{"ticket_id": tid, "body": "x"}},
 		{"assign_ticket", true, map[string]any{"ticket_id": tid, "assignee_user_id": uuid.New().String()}},
-		{"update_ticket_status", true, map[string]any{"ticket_id": tid, "status": "Resolved"}},
+		{"update_ticket_status", true, map[string]any{"ticket_id": tid, "status_id": uuid.New().String()}},
+		{"create_follow_up", true, map[string]any{"ticket_id": tid}},
 	}
+}
+
+// mcpCaller is one client of the MCP endpoint: (*mcpConn).call over SSE, or
+// (*streamConn).call over Streamable HTTP.
+type mcpCaller interface {
+	call(t *testing.T, tool string, args map[string]any) string
+}
+
+// mcpTransports opens a client on each transport, so one set of assertions
+// proves both reach the same tools under the same scopes.
+var mcpTransports = []struct {
+	name string
+	open func(t *testing.T, h *harness, token string) mcpCaller
+}{
+	{"sse", func(t *testing.T, h *harness, token string) mcpCaller {
+		c := openMCP(t, h, token)
+		t.Cleanup(c.closeBody)
+		return c
+	}},
+	{"streamable", func(t *testing.T, h *harness, token string) mcpCaller {
+		return openStream(t, h, token)
+	}},
 }
 
 func TestMCP_RestrictedKeyIsRefusedOverTheRealTransport(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	t.Run("no scopes reaches no tool", func(t *testing.T) {
-		c := openMCP(t, h, mintLegacyKey(t, h))
-		defer c.closeBody()
+	for _, tr := range mcpTransports {
+		t.Run(tr.name, func(t *testing.T) {
+			t.Run("no scopes reaches no tool", func(t *testing.T) {
+				c := tr.open(t, h, mintLegacyKey(t, h))
 
-		for _, tc := range mcpTools(h) {
-			t.Run(tc.tool, func(t *testing.T) {
-				got := c.call(t, tc.tool, tc.args)
-				require.Contains(t, got, "scope",
-					"%s must refuse a credential with no scopes; got %s", tc.tool, got)
-			})
-		}
-	})
-
-	t.Run("read scope cannot write", func(t *testing.T) {
-		c := openMCP(t, h, mintKey(t, h, []string{"tickets:read"}))
-		defer c.closeBody()
-
-		for _, tc := range mcpTools(h) {
-			t.Run(tc.tool, func(t *testing.T) {
-				got := c.call(t, tc.tool, tc.args)
-				if tc.write {
-					require.Contains(t, got, "scope",
-						"tickets:read must not reach the write tool %s; got %s", tc.tool, got)
-					return
+				for _, tc := range mcpTools(h) {
+					t.Run(tc.tool, func(t *testing.T) {
+						got := c.call(t, tc.tool, tc.args)
+						require.Contains(t, got, "scope",
+							"%s must refuse a credential with no scopes; got %s", tc.tool, got)
+					})
 				}
-				require.NotContains(t, got, "does not carry",
-					"tickets:read must reach the read tool %s; got %s", tc.tool, got)
 			})
-		}
-	})
 
-	t.Run("write scope reaches the write tools", func(t *testing.T) {
-		c := openMCP(t, h, mintKey(t, h, []string{"tickets:write"}))
-		defer c.closeBody()
+			t.Run("read scope cannot write", func(t *testing.T) {
+				c := tr.open(t, h, mintKey(t, h, []string{"tickets:read"}))
 
-		for _, tc := range mcpTools(h) {
-			if !tc.write {
-				continue
-			}
-			t.Run(tc.tool, func(t *testing.T) {
-				got := c.call(t, tc.tool, tc.args)
-				require.NotContains(t, got, "does not carry",
-					"tickets:write must reach %s; got %s", tc.tool, got)
+				for _, tc := range mcpTools(h) {
+					t.Run(tc.tool, func(t *testing.T) {
+						got := c.call(t, tc.tool, tc.args)
+						if tc.write {
+							require.Contains(t, got, "scope",
+								"tickets:read must not reach the write tool %s; got %s", tc.tool, got)
+							return
+						}
+						require.NotContains(t, got, "does not carry",
+							"tickets:read must reach the read tool %s; got %s", tc.tool, got)
+					})
+				}
 			})
-		}
-	})
+
+			t.Run("write scope reaches the write tools", func(t *testing.T) {
+				c := tr.open(t, h, mintKey(t, h, []string{"tickets:write"}))
+
+				for _, tc := range mcpTools(h) {
+					if !tc.write {
+						continue
+					}
+					t.Run(tc.tool, func(t *testing.T) {
+						got := c.call(t, tc.tool, tc.args)
+						require.NotContains(t, got, "does not carry",
+							"tickets:write must reach %s; got %s", tc.tool, got)
+					})
+				}
+			})
+		})
+	}
 }

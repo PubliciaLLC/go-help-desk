@@ -1,10 +1,15 @@
 package server
 
 import (
+	"context"
 	"crypto/tls"
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 )
 
@@ -20,6 +25,10 @@ import (
 //
 // Returns the persisted OIDC configuration.
 // The client secret is intentionally never returned to the browser.
+//
+// `configured` says the saved settings are complete; `live` says the provider
+// is loaded and can sign someone in now. They differ when the identity
+// provider did not answer at startup or at the last save (#421).
 func (s *Server) handleGetOIDCConfig(w http.ResponseWriter, r *http.Request) {
 	cfg := s.adminSvc.GetOIDCConfig(r.Context())
 
@@ -30,6 +39,7 @@ func (s *Server) handleGetOIDCConfig(w http.ResponseWriter, r *http.Request) {
 		"client_secret": "",
 		"redirect_url":  cfg.RedirectURL,
 		"configured":    s.adminSvc.OIDCConfigured(r.Context()),
+		"live":          s.oidcReachableNow(),
 	})
 }
 
@@ -50,6 +60,11 @@ func (s *Server) handleSaveOIDCConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+
+	// Held from reading the stored config to the commit, as InitOIDC holds it,
+	// so a settings PATCH cannot commit older settings over this save.
+	s.oidcReloadMu.Lock()
+	defer s.oidcReloadMu.Unlock()
 
 	existing := s.adminSvc.GetOIDCConfig(ctx)
 
@@ -73,94 +88,310 @@ func (s *Server) handleSaveOIDCConfig(w http.ResponseWriter, r *http.Request) {
 		RedirectURL:  redirectURL,
 	}
 
+	// Refused outright rather than reachability-checked: see
+	// errIncompleteOIDCConfig's own comment for why "enabled but incomplete"
+	// cannot be allowed through to the guard below at all.
+	if cfg.Enabled && !oidcConfigComplete(cfg) {
+		handleError(w, errIncompleteOIDCConfig)
+		return
+	}
+
+	// Built against the CANDIDATE config, before anything is persisted — this
+	// is what #300's guard decides on, so it reflects whether OIDC will
+	// really answer rather than "the fields all look filled in". reachable is
+	// the fail-safe-aware truth for a disabled or incomplete config too; see
+	// buildOIDCProvider's own comment.
+	reachable, provider, commit, buildErr := s.buildOIDCProvider(ctx, cfg)
+
+	warning, err := s.refuseIfOrphaning(ctx, s.samlReachableNow(), reachable)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+
 	if err := s.adminSvc.SetOIDCConfig(ctx, cfg); err != nil {
 		handleError(w, err)
 		return
 	}
 
-	// Reload the in-memory OIDC provider immediately after persisting.
-	// InitOIDC is fail-safe: on discovery/initialization failure it leaves
-	// the currently active provider untouched and reports the error here.
-	if err := s.InitOIDC(ctx); err != nil {
-		handleError(w, err)
+	// Commit the provider already built above rather than re-running
+	// discovery: the guard's decision and the live effect must agree, and a
+	// second attempt could answer differently than the first (the IdP
+	// recovering or failing in between).
+	if commit {
+		s.commitOIDCProvider(provider)
+	}
+	if buildErr != nil {
+		// Fail-safe: config is saved regardless (retried on next restart),
+		// the live provider is untouched, and the caller is told why. Folded
+		// together with any stranding warning, matching handleSaveSAMLConfig
+		// below — returning buildErr alone through handleError used to fall
+		// through to a bare 500 and silently drop the stranding warning
+		// computed above, the one case where the caller most needs to see
+		// it: the config LOOKS complete enough to pass validation, so
+		// whatever guard ran on field-completeness alone would have called
+		// it reachable and said nothing.
+		slog.Error("OIDC provider reload failed", "error", buildErr)
+		reloadWarning := fmt.Sprintf(
+			"OIDC config saved, but the identity provider could not be reached: %s", buildErr)
+		if warning != "" {
+			reloadWarning = warning + " " + reloadWarning
+		}
+		JSON(w, http.StatusOK, map[string]any{"warning": reloadWarning})
 		return
 	}
+	if provider != nil {
+		slog.Info("OIDC provider loaded", "issuer", cfg.IssuerURL)
+	}
 
-	JSON(w, http.StatusOK, map[string]any{
-		"ok": true,
-	})
+	resp := map[string]any{"ok": true}
+	if warning != "" {
+		resp["warning"] = warning
+	}
+	JSON(w, http.StatusOK, resp)
 }
 
 // ── SAML ──────────────────────────────────────────────────────────────────────
 
+// touchesSAML reports whether a settings body carries a key the SAML middleware
+// is built from. saml_enabled is not one: it is read live (see
+// buildSAMLMiddleware).
+func touchesSAML(body map[string]json.RawMessage) bool {
+	for _, k := range []string{admin.KeySAMLMetadataURL, admin.KeySAMLMetadataXML, admin.KeySAMLCertPEM, admin.KeySAMLKeyPEM} {
+		if _, ok := body[k]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// touchesOIDCProvider is the same for the OIDC provider, which also depends on
+// the redirect URL.
+func touchesOIDCProvider(body map[string]json.RawMessage) bool {
+	for _, k := range []string{admin.KeyOIDCEnabled, admin.KeyOIDCIssuerURL, admin.KeyOIDCClientID, admin.KeyOIDCClientSecret, admin.KeyOIDCRedirectURL} {
+		if _, ok := body[k]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// samlCertWarnWindow is how long before expiry the IdP certificate warning
+// starts. Long enough for an IdP admin to be found and for a new certificate to
+// be downloaded and pasted.
+const samlCertWarnWindow = 30 * 24 * time.Hour
+
+// samlRefreshStatus is the security warning for the hourly metadata refresh
+// (see RefreshSAML). Problem is one of the samlRefresh* constants.
+type samlRefreshStatus struct {
+	Problem string `json:"problem"`
+	// NewCertificates are the signing certificates the refreshed metadata added,
+	// for problem new_certificate: what an administrator compares with the
+	// identity provider's own before re-saving to trust them.
+	NewCertificates []samlNewCert `json:"new_certificates,omitempty"`
+}
+
+type samlNewCert struct {
+	// SHA256 is the DER certificate's fingerprint, as colon-separated hex pairs.
+	SHA256    string    `json:"sha256"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// samlIdPCertStatus is the security warning for a SAML IdP signing certificate
+// that is expired or about to be (#619).
+type samlIdPCertStatus struct {
+	// ExpiresAt is the latest NotAfter among the IdP's signing certificates.
+	ExpiresAt time.Time `json:"expires_at"`
+	Expired   bool      `json:"expired"`
+}
+
+// samlIdPCertificateWarning reads the LIVE middleware's IdP metadata, not the
+// stored settings, so it describes what is verifying sign-ins now (a URL's
+// metadata is refreshed hourly, pasted XML is what was pasted). Nil when SAML is
+// not loaded or the certificate is more than samlCertWarnWindow from expiry.
+func (s *Server) samlIdPCertificateWarning() *samlIdPCertStatus {
+	mw := s.samlHTTP()
+	if mw == nil {
+		return nil
+	}
+	expires, ok := auth.IdPSigningCertExpiry(mw.ServiceProvider.IDPMetadata)
+	if !ok {
+		return nil
+	}
+	now := time.Now()
+	if expires.After(now.Add(samlCertWarnWindow)) {
+		return nil
+	}
+	return &samlIdPCertStatus{ExpiresAt: expires.UTC(), Expired: !expires.After(now)}
+}
+
+// reloadSSOAfterSettings loads whatever a PATCH /admin/settings body changed
+// into the running SAML middleware and OIDC provider, which only startup and the
+// two dedicated PUT endpoints did before (#619). It returns the warning text for
+// a load that failed, or "".
+//
+// A failed load keeps the running one (the same fail-safe as the PUT endpoints
+// and startup) and the settings stay saved. The warning says that and nothing
+// more: the error text can describe whatever the administrator's URL pointed at
+// (a closed port reads differently from an open one), so it goes to the log, not
+// the response.
+func (s *Server) reloadSSOAfterSettings(ctx context.Context, body map[string]json.RawMessage) string {
+	var warning string
+	if touchesSAML(body) {
+		if err := s.reloadSAML(ctx); err != nil {
+			slog.Error("SAML reload after a settings change failed", "error", err)
+			warning = "SAML config saved, but the identity provider metadata could not be loaded. Check the metadata URL and the server log."
+		}
+	}
+	if touchesOIDCProvider(body) {
+		if err := s.InitOIDC(ctx); err != nil {
+			slog.Error("OIDC reload after a settings change failed", "error", err)
+			warning = joinWarnings(warning,
+				"OIDC config saved, but the identity provider could not be reached. Check the issuer URL and the server log.")
+		}
+	}
+	return warning
+}
+
 // GET /api/v1/admin/saml
+//
+// `configured` is "the saved settings are complete", `live` is "the SAML
+// middleware is loaded" (see handleGetOIDCConfig).
 func (s *Server) handleGetSAMLConfig(w http.ResponseWriter, r *http.Request) {
 	metadataURL, certPEM, _ := s.adminSvc.GetSAMLConfig(r.Context())
 	configured := s.adminSvc.SAMLConfigured(r.Context())
 	JSON(w, http.StatusOK, map[string]any{
 		"configured":      configured,
+		"live":            s.samlReachableNow(),
 		"metadata_url":    metadataURL,
+		"metadata_xml":    s.adminSvc.GetSAMLMetadataXML(r.Context()),
 		"cert_pem":        certPEM,
 		"sp_metadata_url": s.cfg.BaseURL + "/api/v1/auth/saml/metadata",
 	})
 }
 
 // PUT /api/v1/admin/saml
-// Accepts metadata_url, cert_pem, key_pem. Any field left empty retains the
-// existing value from the database, so callers never need to re-upload a key
-// they did not change. To clear all SAML config, send all three as empty strings.
+// Accepts metadata_url or metadata_xml (alternatives: a save that leaves both
+// set is refused), cert_pem, key_pem. A field OMITTED from the request
+// retains the existing value from the database, so callers never need to
+// re-upload a key they did not change. To clear a field, send it as an
+// explicit empty string; to clear all SAML config, send all four that way.
 func (s *Server) handleSaveSAMLConfig(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		MetadataURL string `json:"metadata_url"`
-		CertPEM     string `json:"cert_pem"`
-		KeyPEM      string `json:"key_pem"`
+		// Pointers, not plain strings: JSON has no way to tell "omitted" from
+		// "sent as the zero value" once decoded into a string, so a caller
+		// clearing metadata_url with "" was indistinguishable from one who
+		// simply left it out of the body. That made the second sentence of
+		// this comment a promise the code below could not keep: sending all
+		// three fields as "" backfilled every one of them from the existing
+		// stored value, since the old logic's only question was "is this
+		// empty", and an explicit clear answers that the same way an
+		// omission does. Nil means omitted; a non-nil pointer to "" is a
+		// deliberate clear.
+		MetadataURL *string `json:"metadata_url"`
+		MetadataXML *string `json:"metadata_xml"`
+		CertPEM     *string `json:"cert_pem"`
+		KeyPEM      *string `json:"key_pem"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
 
-	// Fill in blanks from the existing saved config so partial updates work.
-	existingURL, existingCert, existingKey := s.adminSvc.GetSAMLConfig(r.Context())
-	metadataURL := body.MetadataURL
-	if metadataURL == "" {
-		metadataURL = existingURL
+	ctx := r.Context()
+
+	// Held from reading the stored settings to the commit, as every SAML reload
+	// is, so the hourly refresh or a settings PATCH cannot commit older settings
+	// over this save.
+	s.samlReloadMu.Lock()
+	defer s.samlReloadMu.Unlock()
+
+	// Omitted fields retain the existing saved value; a field present in the
+	// body, even as "", is the caller's explicit answer.
+	c := s.storedSAMLSettings(ctx)
+	if body.MetadataURL != nil {
+		c.MetadataURL = *body.MetadataURL
 	}
-	certPEM := body.CertPEM
-	if certPEM == "" {
-		certPEM = existingCert
+	if body.MetadataXML != nil {
+		c.MetadataXML = *body.MetadataXML
 	}
-	keyPEM := body.KeyPEM
-	if keyPEM == "" {
-		keyPEM = existingKey
+	if body.CertPEM != nil {
+		c.CertPEM = *body.CertPEM
+	}
+	if body.KeyPEM != nil {
+		c.KeyPEM = *body.KeyPEM
 	}
 
 	// Validate the cert/key pair when either is present.
-	if certPEM != "" || keyPEM != "" {
-		if _, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM)); err != nil {
+	if c.CertPEM != "" || c.KeyPEM != "" {
+		if _, err := tls.X509KeyPair([]byte(c.CertPEM), []byte(c.KeyPEM)); err != nil {
 			Error(w, http.StatusBadRequest, "invalid_cert_key",
 				"certificate and private key do not match or are invalid: "+err.Error())
 			return
 		}
 	}
 
-	if err := s.adminSvc.SetSAMLConfig(r.Context(), metadataURL, certPEM, keyPEM); err != nil {
+	// Refused before anything is built or saved. Otherwise an unparseable
+	// paste would take the build's fail-safe path below ("saved, but could not
+	// be loaded": 200 plus a warning), and a value that can never work would
+	// be accepted and then ignored. The echoed parse error describes the
+	// admin's own input, never anything the server fetched, unlike the URL
+	// path's, which is why it is safe to return here.
+	if code, msg := c.metadataRefusal(); code != "" {
+		Error(w, http.StatusBadRequest, code, msg)
+		return
+	}
+
+	// Built against the CANDIDATE fields, before anything is persisted — same
+	// reasoning as handleSaveOIDCConfig: the guard needs to know whether SAML
+	// will really answer, not just whether the fields are non-empty.
+	reachable, mw, commit, buildErr := s.buildSAMLMiddleware(ctx, c)
+
+	warning, err := s.refuseIfOrphaning(ctx, reachable, s.oidcReachableNow())
+	if err != nil {
 		handleError(w, err)
 		return
 	}
 
-	// Hot-reload the SAML middleware. A failure here is non-fatal: the config is
-	// saved and will be retried on next restart, but we report it to the caller.
-	if err := s.reloadSAML(r.Context()); err != nil {
-		// The error is logged, not returned. The fetch reaches whatever URL the
-		// caller supplied, and the failure text distinguishes a closed port
-		// from a listening one, and names the root element of whatever it did
-		// reach ("expected <EntityDescriptor> but have <html>"). Echoed back,
-		// that turns this form into an internal port and protocol scanner.
-		slog.Error("SAML reload failed", "error", err)
+	if err := s.adminSvc.SetSAMLConfig(ctx, c.MetadataURL, c.CertPEM, c.KeyPEM); err != nil {
+		handleError(w, err)
+		return
+	}
+	if err := s.adminSvc.SetSAMLMetadataXML(ctx, c.MetadataXML); err != nil {
+		handleError(w, err)
+		return
+	}
+
+	// Commit the middleware already built above rather than re-fetching the
+	// IdP's metadata a second time: the guard's decision and the live effect
+	// must agree.
+	if commit {
+		s.commitSAMLMiddleware(mw, c)
+	}
+	if buildErr != nil {
+		// Non-fatal: the config is saved regardless (retried on next
+		// restart), the live handler is untouched, and the caller is told
+		// why. The fetch reaches whatever URL the caller supplied, and the
+		// failure text distinguishes a closed port from a listening one, and
+		// names the root element of whatever it did reach ("expected
+		// <EntityDescriptor> but have <html>"). Echoed back, that turns this
+		// form into an internal port and protocol scanner.
+		slog.Error("SAML reload failed", "error", buildErr)
+		reloadWarning := "SAML config saved, but the identity provider metadata could not be loaded. Check the metadata URL and the server log."
+		if warning != "" {
+			reloadWarning = warning + " " + reloadWarning
+		}
 		JSON(w, http.StatusOK, map[string]any{
-			"warning": "SAML config saved, but the identity provider metadata could not be loaded. Check the metadata URL and the server log.",
+			"warning": reloadWarning,
 		})
+		return
+	}
+	if mw != nil {
+		slog.Info("SAML middleware loaded", "metadata_url", c.MetadataURL, "metadata_xml", c.MetadataXML != "")
+	}
+
+	if warning != "" {
+		JSON(w, http.StatusOK, map[string]any{"warning": warning})
 		return
 	}
 

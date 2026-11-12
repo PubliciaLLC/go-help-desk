@@ -1,5 +1,8 @@
 import { api } from './client'
-import type { Ticket, Reply, TicketLink, LinkType, Tag, Attachment, Category, TicketType, TicketItem, StatusHistoryEntry, Assignment, TicketFieldValue, CannedResponse } from './types'
+import { seg } from './seg'
+import axios from 'axios'
+import type { TicketListParams } from '@/lib/ticketSearch'
+import type { Ticket, Reply, TicketLink, LinkType, Tag, Attachment, Category, TicketType, TicketItem, StatusHistoryEntry, TicketAuditEntry, TicketFollower, Assignment, TicketFieldValue, CannedResponse, Priority } from './types'
 
 export interface CreateTicketInput {
   subject: string
@@ -12,9 +15,48 @@ export interface CreateTicketInput {
   guest_name?: string
   guest_phone?: string
   custom_fields?: Record<string, string>
+  // Staff and administrators only (#444): who the ticket is for when it is not
+  // the caller. At most one; the server refuses both, and refuses either from
+  // a requester.
+  reporter_user_id?: string
+  reporter_email?: string
+  // The one channel a person picks (#130): staff who took a call and are
+  // filing for the caller. Sent only with one of the two fields above, from the
+  // web form; the server refuses it from an API key and without a requester.
+  source_channel?: 'phone'
 }
 
-export type TicketScope = 'mine' | 'unassigned' | 'all'
+// A person the requester picker offers: all it draws, and no more.
+export interface RequesterHit {
+  id: string
+  display_name: string
+  email: string
+}
+
+// Accounts to file a ticket for, found by name or address. Staff and
+// administrators only; the server answers 400 under two characters and returns
+// at most ten.
+export async function lookupRequesters(q: string): Promise<RequesterHit[]> {
+  const res = await api.get<RequesterHit[]>('/users/lookup', { params: { q } })
+  return res.data ?? []
+}
+
+// One account by id: what the requester chip does with the id in the address
+// after a reload. Null for a 404, which the server gives alike to an id that
+// names nobody and to a disabled, deleted or service account, so the page
+// cannot tell those apart and does not try.
+export async function lookupRequesterById(id: string): Promise<RequesterHit | null> {
+  try {
+    const res = await api.get<RequesterHit>('/users/lookup', { params: { id } })
+    return res.data
+  } catch (err) {
+    if (axios.isAxiosError(err) && err.response?.status === 404) return null
+    throw err
+  }
+}
+
+// 'visible' is every ticket the caller can see, for staff/admin search (#444).
+export type TicketScope = 'mine' | 'unassigned' | 'all' | 'visible'
 
 export async function listTickets(params?: {
   assignee_group_id?: string
@@ -28,13 +70,45 @@ export async function listTickets(params?: {
   return res.data ?? []
 }
 
+export interface TicketSearchResult {
+  tickets: Ticket[]
+  // The server's verdict on whether the replies were fully searched, or
+  // undefined when it gave none. Undefined is unknown, not false: the header
+  // comes only with a reply search, and only when the server has something to
+  // say, so a missing one must not be read as either answer.
+  repliesSearched?: boolean
+  // 'building' while the reply index is still being built after an upgrade;
+  // undefined when the server did not say, which is not the same as ready.
+  replyIndex?: 'building'
+}
+
+// The ticket list page's request. Separate from listTickets, which the linked
+// tickets panel uses and which keeps sending arrays the way axios does by
+// default: here a repeated filter is a repeated key (status_id=a&status_id=b),
+// which is what the API reads.
+//
+// The body stays a bare array. What the server could not do for the replies
+// travels in two response headers (X-Replies-Searched, X-Reply-Index), read
+// here and nowhere else.
+export async function searchTickets(params: TicketListParams): Promise<TicketSearchResult> {
+  const res = await api.get<Ticket[] | null>('/tickets', { params, paramsSerializer: { indexes: null } })
+  const searched = res.headers?.['x-replies-searched']
+  return {
+    tickets: res.data ?? [],
+    repliesSearched: searched === 'true' ? true : searched === 'false' ? false : undefined,
+    replyIndex: res.headers?.['x-reply-index'] === 'building' ? 'building' : undefined,
+  }
+}
+
 export async function createTicket(input: CreateTicketInput): Promise<Ticket> {
-  const res = await api.post<Ticket>('/tickets', input)
+  // The description comes from the Markdown editor (or its textarea fallback),
+  // so it is Markdown. A REST client that says nothing gets plain; this one says.
+  const res = await api.post<Ticket>('/tickets', { ...input, format: 'markdown' })
   return res.data
 }
 
 export async function getTicket(id: string): Promise<Ticket> {
-  const res = await api.get<Ticket>(`/tickets/${id}`)
+  const res = await api.get<Ticket>(`/tickets/${seg(id)}`)
   return res.data
 }
 
@@ -51,34 +125,67 @@ export async function updateTicket(
     category_id?: string
     type_id?: string | null
     item_id?: string | null
+    // Staff and admin only; refused (409 ticket_closed) on a Resolved or
+    // Closed ticket. The server re-matches the SLA policy (#443).
+    priority?: Priority
   }
 ): Promise<Ticket> {
-  const res = await api.patch<Ticket>(`/tickets/${id}`, patch)
+  const res = await api.patch<Ticket>(`/tickets/${seg(id)}`, patch)
   return res.data
 }
 
 export async function resolveTicket(id: string, notes?: string): Promise<Ticket> {
-  const res = await api.post<Ticket>(`/tickets/${id}/resolve`, { notes })
+  const res = await api.post<Ticket>(`/tickets/${seg(id)}/resolve`, { notes })
   return res.data
 }
 
+// Force-reopens a Closed ticket. Refused (409) unless the instance's
+// closed_reopen_policy lets the caller's role; the ticket response's
+// can_reopen says whether to offer it.
 export async function reopenTicket(id: string): Promise<Ticket> {
-  const res = await api.post<Ticket>(`/tickets/${id}/reopen`, {})
+  const res = await api.post<Ticket>(`/tickets/${seg(id)}/reopen`, {})
+  return res.data
+}
+
+// The way forward from a Closed ticket (#349): a new ticket, linked to it,
+// that starts open. Available whether or not the instance lets anyone reopen a
+// closed ticket (closed_reopen_policy, off by default).
+export async function createFollowUp(id: string): Promise<Ticket> {
+  const res = await api.post<Ticket>(`/tickets/${seg(id)}/follow-up`, {})
   return res.data
 }
 
 export async function closeTicket(id: string): Promise<Ticket> {
-  const res = await api.post<Ticket>(`/tickets/${id}/close`, {})
+  const res = await api.post<Ticket>(`/tickets/${seg(id)}/close`, {})
   return res.data
 }
 
 export async function listReplies(ticketId: string): Promise<Reply[]> {
-  const res = await api.get<Reply[]>(`/tickets/${ticketId}/replies`)
+  const res = await api.get<Reply[]>(`/tickets/${seg(ticketId)}/replies`)
   return res.data
 }
 
 export async function listStatusHistory(ticketId: string): Promise<StatusHistoryEntry[]> {
-  const res = await api.get<StatusHistoryEntry[]>(`/tickets/${ticketId}/history`)
+  const res = await api.get<StatusHistoryEntry[]>(`/tickets/${seg(ticketId)}/history`)
+  return res.data
+}
+
+export async function listTicketFollowers(ticketId: string): Promise<TicketFollower[]> {
+  const res = await api.get<TicketFollower[]>(`/tickets/${seg(ticketId)}/followers`)
+  return res.data ?? []
+}
+
+// Both are idempotent and answer 204 (#441).
+export async function followTicket(ticketId: string): Promise<void> {
+  await api.put(`/tickets/${seg(ticketId)}/follow`)
+}
+
+export async function unfollowTicket(ticketId: string): Promise<void> {
+  await api.delete(`/tickets/${seg(ticketId)}/follow`)
+}
+
+export async function listTicketAudit(ticketId: string): Promise<TicketAuditEntry[]> {
+  const res = await api.get<TicketAuditEntry[]>(`/tickets/${seg(ticketId)}/audit`)
   return res.data
 }
 
@@ -88,16 +195,18 @@ export async function addReply(
   internal = false,
   notifyCustomer = true
 ): Promise<Reply> {
-  const res = await api.post<Reply>(`/tickets/${ticketId}/replies`, {
+  const res = await api.post<Reply>(`/tickets/${seg(ticketId)}/replies`, {
     body,
     internal,
     notify_customer: notifyCustomer,
+    // Written in the Markdown editor; see createTicket.
+    format: 'markdown',
   })
   return res.data
 }
 
 export async function listLinks(ticketId: string): Promise<TicketLink[]> {
-  const res = await api.get<TicketLink[]>(`/tickets/${ticketId}/links`)
+  const res = await api.get<TicketLink[]>(`/tickets/${seg(ticketId)}/links`)
   return res.data
 }
 
@@ -106,7 +215,7 @@ export async function addLink(
   targetId: string,
   linkType: LinkType
 ): Promise<void> {
-  await api.post(`/tickets/${ticketId}/links`, { target_id: targetId, link_type: linkType })
+  await api.post(`/tickets/${seg(ticketId)}/links`, { target_id: targetId, link_type: linkType })
 }
 
 export async function removeLink(
@@ -114,7 +223,25 @@ export async function removeLink(
   targetId: string,
   linkType: LinkType
 ): Promise<void> {
-  await api.delete(`/tickets/${ticketId}/links/${targetId}/${linkType}`)
+  await api.delete(`/tickets/${seg(ticketId)}/links/${seg(targetId)}/${seg(linkType)}`)
+}
+
+export function duplicateResolutionNotes(targetTrackingNumber: string): string {
+  return `Duplicate of ${targetTrackingNumber}`
+}
+
+export async function addDuplicateLinkAndResolve(
+  ticketId: string,
+  targetId: string,
+  resolutionNotes: string
+): Promise<Ticket> {
+  const res = await api.post<Ticket>(`/tickets/${seg(ticketId)}/links`, {
+    target_id: targetId,
+    link_type: 'duplicate_of',
+    resolve_as_duplicate: true,
+    resolution_notes: resolutionNotes,
+  })
+  return res.data
 }
 
 // ── Tags ──────────────────────────────────────────────────────────────────────
@@ -125,17 +252,17 @@ export async function searchTags(q: string): Promise<Tag[]> {
 }
 
 export async function listTicketTags(ticketId: string): Promise<Tag[]> {
-  const res = await api.get<Tag[]>(`/tickets/${ticketId}/tags`)
+  const res = await api.get<Tag[]>(`/tickets/${seg(ticketId)}/tags`)
   return res.data
 }
 
 export async function addTicketTag(ticketId: string, name: string): Promise<Tag> {
-  const res = await api.post<Tag>(`/tickets/${ticketId}/tags`, { name })
+  const res = await api.post<Tag>(`/tickets/${seg(ticketId)}/tags`, { name })
   return res.data
 }
 
 export async function removeTicketTag(ticketId: string, tagId: string): Promise<void> {
-  await api.delete(`/tickets/${ticketId}/tags/${tagId}`)
+  await api.delete(`/tickets/${seg(ticketId)}/tags/${seg(tagId)}`)
 }
 
 // ── Public categories/types (no admin auth, active only) ──────────────────────
@@ -146,33 +273,59 @@ export async function listPublicCategories(): Promise<Category[]> {
 }
 
 export async function listPublicTypes(categoryId: string): Promise<TicketType[]> {
-  const res = await api.get<TicketType[]>(`/categories/${categoryId}/types`)
+  const res = await api.get<TicketType[]>(`/categories/${seg(categoryId)}/types`)
   return res.data
 }
 
 export async function listPublicItems(categoryId: string, typeId: string): Promise<TicketItem[]> {
-  const res = await api.get<TicketItem[]>(`/categories/${categoryId}/types/${typeId}/items`)
+  const res = await api.get<TicketItem[]>(`/categories/${seg(categoryId)}/types/${seg(typeId)}/items`)
   return res.data
 }
 
 // ── Attachments ───────────────────────────────────────────────────────────────
 
 export async function listAttachments(ticketId: string): Promise<Attachment[]> {
-  const res = await api.get<Attachment[]>(`/tickets/${ticketId}/attachments`)
+  const res = await api.get<Attachment[]>(`/tickets/${seg(ticketId)}/attachments`)
   return res.data
 }
 
 export async function uploadAttachment(ticketId: string, file: File): Promise<Attachment> {
   const form = new FormData()
   form.append('file', file)
-  const res = await api.post<Attachment>(`/tickets/${ticketId}/attachments`, form, {
+  const res = await api.post<Attachment>(`/tickets/${seg(ticketId)}/attachments`, form, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
   return res.data
 }
 
+/**
+ * Asks the configured reputation service about this attachment again.
+ *
+ * Returns the attachment with its refreshed verdict. Refused with 409 on a
+ * detection (engines do not un-flag a file), 429 when the same hash was
+ * checked inside the last seven days, and 503 when there is no lookup
+ * configured or the day's allowance is spent — each carrying a message that
+ * says which.
+ */
+// `provider` re-checks one service rather than every enabled one. The expanded
+// attachment row gives each service its own control, because each verdict has
+// its own expiry clock; omitting it keeps the original behaviour, which the
+// row's own merged control still wants.
+export async function recheckAttachmentReputation(
+  ticketId: string,
+  attachmentId: string,
+  provider?: string
+): Promise<Attachment> {
+  const path = `/tickets/${seg(ticketId)}/attachments/${seg(attachmentId)}/reputation`
+  const res = await api.post<Attachment>(
+    provider ? `${path}?provider=${encodeURIComponent(provider)}` : path,
+    {}
+  )
+  return res.data
+}
+
 export function attachmentDownloadUrl(ticketId: string, attachmentId: string): string {
-  return `/api/v1/tickets/${ticketId}/attachments/${attachmentId}`
+  return `/api/v1/tickets/${seg(ticketId)}/attachments/${seg(attachmentId)}`
 }
 
 // ── Custom fields ─────────────────────────────────────────────────────────────
@@ -187,7 +340,7 @@ export async function resolveFieldsForCTI(params: {
 }
 
 export async function listTicketCustomFields(ticketId: string): Promise<TicketFieldValue[]> {
-  const res = await api.get<TicketFieldValue[]>(`/tickets/${ticketId}/custom-fields`)
+  const res = await api.get<TicketFieldValue[]>(`/tickets/${seg(ticketId)}/custom-fields`)
   return res.data
 }
 
@@ -195,12 +348,12 @@ export async function putTicketCustomFields(
   ticketId: string,
   values: Record<string, string>
 ): Promise<void> {
-  await api.put(`/tickets/${ticketId}/custom-fields`, values)
+  await api.put(`/tickets/${seg(ticketId)}/custom-fields`, values)
 }
 
 // ── Canned responses ──────────────────────────────────────────────────────────
 
 export async function listTicketCannedResponses(ticketId: string): Promise<CannedResponse[]> {
-  const res = await api.get<CannedResponse[]>(`/tickets/${ticketId}/canned-responses`)
+  const res = await api.get<CannedResponse[]>(`/tickets/${seg(ticketId)}/canned-responses`)
   return res.data
 }

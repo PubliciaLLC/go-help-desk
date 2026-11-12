@@ -1,4 +1,5 @@
 import axios from 'axios'
+import type { GuestField, TextFormat } from './types'
 
 // A separate axios instance, not the shared `api`.
 //
@@ -11,6 +12,7 @@ const guestApi = axios.create({ baseURL: '/api/v1/guest' })
 export interface GuestReply {
   id: string
   body: string
+  body_format: TextFormat
   created_at: string
   // True for the guest's own messages. The server derives it from the reply
   // having no author and sends no identity, so staff are never named.
@@ -21,15 +23,20 @@ export interface GuestTicket {
   tracking_number: string
   subject: string
   description: string
+  description_format: TextFormat
   status: string
   created_at: string
-  updated_at: string
+  updated_at?: string // no longer sent (2026-10-15); nothing reads it
   replies: GuestReply[]
+  // A follow-up has been opened from this closed ticket (#625). Only whether:
+  // the new ticket has its own link, which goes by email.
+  has_follow_up?: boolean
 }
 
 // The server answers 404 for every reason a token does not work — expired,
-// rotated, never issued, ticket closed — and deliberately does not say which.
-// So there is one error here too.
+// rotated, never issued — and deliberately does not say which. So there is one
+// error here too. A reply or upload to a CLOSED ticket gets the same 404
+// (#349): reading a closed ticket works, writing to it looks like a bad link.
 export class GuestLinkInvalid extends Error {}
 
 function auth(token: string) {
@@ -46,8 +53,31 @@ export async function getGuestTicket(token: string): Promise<GuestTicket> {
 }
 
 export async function addGuestReply(token: string, body: string): Promise<GuestReply> {
-  const res = await guestApi.post<GuestReply>('/replies', { body }, auth(token))
+  const res = await guestApi.post<GuestReply>('/replies', { body, format: 'markdown' }, auth(token))
   return res.data
+}
+
+// A file the server refused (#445): too large, a type this instance does not
+// accept, infected. `message` is the server's own sentence, which is safe to
+// show; it never carries anything about the link. A 404 is not this: it means
+// the link is dead or guest uploads are off, and the server says no more.
+export class GuestUploadRefused extends Error {}
+
+export async function uploadGuestAttachment(token: string, file: File): Promise<void> {
+  const form = new FormData()
+  form.append('file', file)
+  try {
+    await guestApi.post('/attachments', form, auth(token))
+  } catch (err) {
+    if (axios.isAxiosError(err)) {
+      if (err.response?.status === 404) {
+        throw new GuestUploadRefused('Files cannot be added to this ticket any more. The link may have been replaced, or attaching files may have been turned off.')
+      }
+      const message = err.response?.data?.error?.message
+      if (typeof message === 'string' && message) throw new GuestUploadRefused(message)
+    }
+    throw new GuestUploadRefused('The file could not be uploaded.')
+  }
 }
 
 export interface GuestTicketInput {
@@ -59,13 +89,52 @@ export interface GuestTicketInput {
   guest_email: string
   guest_name: string
   guest_phone?: string
+  // Field id to value, for the fields listGuestFields returned for this category
+  // and no others: the server refuses a key it did not offer (#627).
+  custom_fields?: Record<string, string>
+}
+
+// The custom fields the public form offers under a category, which an
+// administrator chose (#627). Empty when none are. 404 when guest submission is
+// off, 429 when asked too often, 400 for a category that is not open to guests;
+// the form treats any failure as "no fields" and lets the server decide on submit.
+export async function listGuestFields(categoryId: string): Promise<GuestField[]> {
+  const res = await guestApi.get<GuestField[]>('/fields', { params: { category_id: categoryId } })
+  return res.data
 }
 
 // Returns the tracking number, which is all the server gives. The link arrives
 // by email, because the mailbox is the credential.
-export async function createGuestTicket(input: GuestTicketInput): Promise<string> {
-  const res = await guestApi.post<{ tracking_number: string }>('/tickets', input)
+//
+// When the ticket was filed but its custom field values could not be saved (a
+// fault on our side), the server still answers with the tracking number and adds
+// a notice saying so and to check the email; onNotice gets it. It is a callback
+// so the return stays the tracking number, which is all every other caller wants.
+export async function createGuestTicket(input: GuestTicketInput, onNotice?: (notice: string) => void): Promise<string> {
+  const res = await guestApi.post<{ tracking_number: string; custom_fields_saved?: boolean; notice?: string }>(
+    '/tickets', { ...input, format: 'markdown' },
+  )
+  if (res.data.custom_fields_saved === false && res.data.notice) onNotice?.(res.data.notice)
   return res.data.tracking_number
+}
+
+// A follow-up of the closed ticket this link names (#349). Returns the new
+// ticket's tracking number and nothing else: its link arrives by email, like a
+// normal submission's. Every refusal — an open ticket, a bad link, a follow-up
+// already opened, submissions switched off — is the same 404 and becomes
+// GuestFollowUpRefused, because the server deliberately does not say which; a
+// 429 is the one thing it does say, and is kept apart.
+export class GuestFollowUpRefused extends Error {}
+export class GuestFollowUpRateLimited extends Error {}
+
+export async function createGuestFollowUp(token: string): Promise<string> {
+  try {
+    const res = await guestApi.post<{ tracking_number: string }>('/follow-up', {}, auth(token))
+    return res.data.tracking_number
+  } catch (err) {
+    if (axios.isAxiosError(err) && err.response?.status === 429) throw new GuestFollowUpRateLimited()
+    throw new GuestFollowUpRefused()
+  }
 }
 
 // Always resolves. The server answers 202 whether or not anything matched, so

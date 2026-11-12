@@ -1,6 +1,23 @@
-import { api } from './client'
-import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, Tag, CannedResponse, FieldDef, Assignment, ScopeType, SLAPolicy, ScopeInfo, OAuthClient } from './types'
+import axios from 'axios'
+import { api, extractErrorCode } from './client'
+import { seg } from './seg'
+import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, WebhookDeliveryRecord, WebhookFilter, WebhookPayloadFormat, Tag, CannedResponse, FieldDef, FieldPlacement, FieldUsage, Assignment, ScopeType, SLAPolicy, ScopeInfo, OAuthClient, AdminAuditListResponse } from './types'
 import type { Role } from './types'
+import type { Passkey } from './passkeys'
+
+// DELETE where a not_found 404 means the row is already gone (#418). That is the
+// outcome the caller asked for, so it resolves. Any other failure rejects,
+// including the router's plain-text 404 for a path that is not a route, which
+// is a bug rather than a row that is gone.
+async function deleteIfPresent(url: string, config?: { data: unknown }): Promise<void> {
+  try {
+    if (config) await api.delete(url, config)
+    else await api.delete(url)
+  } catch (err) {
+    if (axios.isAxiosError(err) && err.response?.status === 404 && extractErrorCode(err) === 'not_found') return
+    throw err
+  }
+}
 
 // ── Site config (public) ──────────────────────────────────────────────────────
 
@@ -10,6 +27,15 @@ export interface SiteConfig {
   version: string
   // Whether the instance accepts tickets from visitors with no account.
   guest_submission_enabled?: boolean
+  // Whether a guest may attach files (#445), and the limit that actually
+  // applies per file in bytes: the lower of the guest setting and the
+  // instance-wide maximum. The size is absent while attaching is off.
+  guest_attachments_enabled?: boolean
+  guest_attachment_max_bytes?: number
+  // The most files guests may attach to one ticket (#445), present with the size.
+  guest_attachment_max_per_ticket?: number
+  // Uploads one guest link may make per hour (#445), present with the size.
+  guest_attachment_uploads_per_hour?: number
 }
 
 export async function getSiteConfig(): Promise<SiteConfig> {
@@ -24,8 +50,29 @@ export async function listUsers(limit = 200, offset = 0): Promise<AdminUser[]> {
   return res.data
 }
 
+export const USERS_PER_PAGE = 50
+
+/**
+ * One page of the admin user list (#449). Sending `page` is what switches the
+ * server into paged mode; without it the endpoint answers the first 200 and
+ * ignores everything else. The total is in X-Total-Count, not the body.
+ */
+export async function listUsersPage(
+  page: number,
+  filters: { q?: string; role?: Role | ''; serviceAccount?: boolean } = {},
+): Promise<{ users: AdminUser[]; total: number }> {
+  const params: Record<string, string | number | boolean> = { page, per_page: USERS_PER_PAGE }
+  if (filters.q) params.q = filters.q
+  if (filters.role) params.role = filters.role
+  // true is only service accounts, false only people; absent is everyone (#420).
+  if (filters.serviceAccount !== undefined) params.service_account = filters.serviceAccount
+  const res = await api.get<AdminUser[]>('/admin/users', { params })
+  const total = Number(res.headers?.['x-total-count'])
+  return { users: res.data, total: Number.isFinite(total) ? total : res.data.length }
+}
+
 export async function getUser(id: string): Promise<AdminUser> {
-  const res = await api.get<AdminUser>(`/admin/users/${id}`)
+  const res = await api.get<AdminUser>(`/admin/users/${seg(id)}`)
   return res.data
 }
 
@@ -46,16 +93,33 @@ export async function updateUser(id: string, patch: {
   disabled?: boolean
   reset_mfa?: boolean
 }): Promise<AdminUser> {
-  const res = await api.patch<AdminUser>(`/admin/users/${id}`, patch)
+  const res = await api.patch<AdminUser>(`/admin/users/${seg(id)}`, patch)
   return res.data
 }
 
-export async function adminResetPassword(id: string, newPassword: string): Promise<void> {
-  await api.post(`/admin/users/${id}/password`, { new_password: newPassword })
+/**
+ * Sets someone's password. revokeAPIKeys also deletes every API key they own
+ * (#450); it is always sent, false included, so what was asked for is visible
+ * on the wire.
+ */
+export async function adminResetPassword(id: string, newPassword: string, revokeAPIKeys = false): Promise<void> {
+  await api.post(`/admin/users/${seg(id)}/password`, { new_password: newPassword, revoke_api_keys: revokeAPIKeys })
+}
+
+/** One user's passkeys, as the owner sees them on their Account page (#615). */
+export async function listUserPasskeys(id: string): Promise<Passkey[]> {
+  const res = await api.get<Passkey[] | null>(`/admin/users/${seg(id)}/passkeys`)
+  // An account with no passkeys comes back as JSON null, not [].
+  return res.data ?? []
+}
+
+/** Removes one passkey and ends that user's sessions. Refused for your own account (409). */
+export async function removeUserPasskey(id: string, credId: string): Promise<void> {
+  await api.delete(`/admin/users/${seg(id)}/passkeys/${seg(credId)}`)
 }
 
 export async function deleteUser(id: string): Promise<void> {
-  await api.delete(`/admin/users/${id}`)
+  await api.delete(`/admin/users/${seg(id)}`)
 }
 
 // ── Groups ───────────────────────────────────────────────────────────────────
@@ -71,25 +135,25 @@ export async function createGroup(input: { name: string; description?: string })
 }
 
 export async function updateGroup(id: string, patch: Partial<Pick<Group, 'name' | 'description'>>): Promise<Group> {
-  const res = await api.patch<Group>(`/admin/groups/${id}`, patch)
+  const res = await api.patch<Group>(`/admin/groups/${seg(id)}`, patch)
   return res.data
 }
 
 export async function deleteGroup(id: string): Promise<void> {
-  await api.delete(`/admin/groups/${id}`)
+  await deleteIfPresent(`/admin/groups/${seg(id)}`)
 }
 
 export async function listGroupMembers(groupId: string): Promise<User[]> {
-  const res = await api.get<User[]>(`/admin/groups/${groupId}/members`)
+  const res = await api.get<User[]>(`/admin/groups/${seg(groupId)}/members`)
   return res.data
 }
 
 export async function addGroupMember(groupId: string, userId: string): Promise<void> {
-  await api.post(`/admin/groups/${groupId}/members`, { user_id: userId })
+  await api.post(`/admin/groups/${seg(groupId)}/members`, { user_id: userId })
 }
 
 export async function removeGroupMember(groupId: string, userId: string): Promise<void> {
-  await api.delete(`/admin/groups/${groupId}/members/${userId}`)
+  await api.delete(`/admin/groups/${seg(groupId)}/members/${seg(userId)}`)
 }
 
 export interface GroupScope {
@@ -99,16 +163,16 @@ export interface GroupScope {
 }
 
 export async function listGroupScopes(groupId: string): Promise<GroupScope[]> {
-  const res = await api.get<GroupScope[]>(`/admin/groups/${groupId}/scopes`)
+  const res = await api.get<GroupScope[]>(`/admin/groups/${seg(groupId)}/scopes`)
   return res.data
 }
 
 export async function addGroupScope(groupId: string, input: { category_id: string; type_id?: string }): Promise<void> {
-  await api.post(`/admin/groups/${groupId}/scopes`, input)
+  await api.post(`/admin/groups/${seg(groupId)}/scopes`, input)
 }
 
 export async function removeGroupScope(groupId: string, input: { category_id: string; type_id?: string }): Promise<void> {
-  await api.delete(`/admin/groups/${groupId}/scopes`, { data: input })
+  await deleteIfPresent(`/admin/groups/${seg(groupId)}/scopes`, { data: input })
 }
 
 // ── Categories ───────────────────────────────────────────────────────────────
@@ -124,35 +188,35 @@ export async function createCategory(input: { name: string; sort_order?: number 
 }
 
 export async function updateCategory(id: string, patch: { name?: string; sort_order?: number; active?: boolean }): Promise<Category> {
-  const res = await api.patch<Category>(`/admin/categories/${id}`, patch)
+  const res = await api.patch<Category>(`/admin/categories/${seg(id)}`, patch)
   return res.data
 }
 
 export async function deleteCategory(id: string): Promise<void> {
-  await api.delete(`/admin/categories/${id}`)
+  await deleteIfPresent(`/admin/categories/${seg(id)}`)
 }
 
 export async function listTypes(categoryId: string): Promise<TicketType[]> {
-  const res = await api.get<TicketType[]>(`/admin/categories/${categoryId}/types`)
+  const res = await api.get<TicketType[]>(`/admin/categories/${seg(categoryId)}/types`)
   return res.data
 }
 
 export async function createType(categoryId: string, input: { name: string; sort_order?: number }): Promise<TicketType> {
-  const res = await api.post<TicketType>(`/admin/categories/${categoryId}/types`, input)
+  const res = await api.post<TicketType>(`/admin/categories/${seg(categoryId)}/types`, input)
   return res.data
 }
 
-export async function updateType(categoryId: string, typeId: string, patch: { name?: string; sort_order?: number }): Promise<TicketType> {
-  const res = await api.patch<TicketType>(`/admin/categories/${categoryId}/types/${typeId}`, patch)
+export async function updateType(categoryId: string, typeId: string, patch: { name?: string; sort_order?: number; active?: boolean }): Promise<TicketType> {
+  const res = await api.patch<TicketType>(`/admin/categories/${seg(categoryId)}/types/${seg(typeId)}`, patch)
   return res.data
 }
 
 export async function deleteType(categoryId: string, typeId: string): Promise<void> {
-  await api.delete(`/admin/categories/${categoryId}/types/${typeId}`)
+  await deleteIfPresent(`/admin/categories/${seg(categoryId)}/types/${seg(typeId)}`)
 }
 
 export async function listItems(categoryId: string, typeId: string): Promise<TicketItem[]> {
-  const res = await api.get<TicketItem[]>(`/admin/categories/${categoryId}/types/${typeId}/items`)
+  const res = await api.get<TicketItem[]>(`/admin/categories/${seg(categoryId)}/types/${seg(typeId)}/items`)
   return res.data
 }
 
@@ -162,19 +226,19 @@ export async function createItem(
   input: { name: string; sort_order?: number }
 ): Promise<TicketItem> {
   const res = await api.post<TicketItem>(
-    `/admin/categories/${categoryId}/types/${typeId}/items`,
+    `/admin/categories/${seg(categoryId)}/types/${seg(typeId)}/items`,
     input
   )
   return res.data
 }
 
-export async function updateItem(categoryId: string, typeId: string, itemId: string, patch: { name?: string; sort_order?: number }): Promise<TicketItem> {
-  const res = await api.patch<TicketItem>(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}`, patch)
+export async function updateItem(categoryId: string, typeId: string, itemId: string, patch: { name?: string; sort_order?: number; active?: boolean }): Promise<TicketItem> {
+  const res = await api.patch<TicketItem>(`/admin/categories/${seg(categoryId)}/types/${seg(typeId)}/items/${seg(itemId)}`, patch)
   return res.data
 }
 
 export async function deleteItem(categoryId: string, typeId: string, itemId: string): Promise<void> {
-  await api.delete(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}`)
+  await deleteIfPresent(`/admin/categories/${seg(categoryId)}/types/${seg(typeId)}/items/${seg(itemId)}`)
 }
 
 // ── Statuses ─────────────────────────────────────────────────────────────────
@@ -190,12 +254,12 @@ export async function createStatus(input: { name: string; sort_order?: number; c
 }
 
 export async function updateStatus(id: string, patch: { name?: string; sort_order?: number; color?: string; active?: boolean }): Promise<Status> {
-  const res = await api.patch<Status>(`/admin/statuses/${id}`, patch)
+  const res = await api.patch<Status>(`/admin/statuses/${seg(id)}`, patch)
   return res.data
 }
 
 export async function deleteStatus(id: string): Promise<void> {
-  await api.delete(`/admin/statuses/${id}`)
+  await api.delete(`/admin/statuses/${seg(id)}`)
 }
 
 // ── SAML ─────────────────────────────────────────────────────────────────────
@@ -203,6 +267,9 @@ export async function deleteStatus(id: string): Promise<void> {
 export interface SAMLConfig {
   configured: boolean
   metadata_url: string
+  // The IdP metadata as pasted, returned as stored (it is public data). Empty
+  // when the metadata is given by URL or not at all.
+  metadata_xml: string
   cert_pem: string
   sp_metadata_url: string
 }
@@ -212,10 +279,21 @@ export async function getSAMLConfig(): Promise<SAMLConfig> {
   return res.data
 }
 
+// Each field is optional on purpose, not just individually falsy-safe: the
+// backend now distinguishes "omitted" (keep the stored value) from "sent as
+// an explicit empty string" (clear it) — see #300. key_pem in particular is
+// never round-tripped by getSAMLConfig (the server never returns a private
+// key at all), so a caller must genuinely leave it out to preserve the
+// stored key rather than send back the blank the form started with.
+//
+// metadata_url and metadata_xml are alternatives (#461): the server refuses a
+// save that would leave both set, so the source the admin did not choose is
+// sent as "" rather than left out.
 export async function saveSAMLConfig(input: {
-  metadata_url: string
-  cert_pem: string
-  key_pem: string
+  metadata_url?: string
+  metadata_xml?: string
+  cert_pem?: string
+  key_pem?: string
 }): Promise<{ warning?: string }> {
   const res = await api.put<{ warning?: string }>('/admin/saml', input)
   return res.data ?? {}
@@ -269,14 +347,23 @@ export async function getSettings(): Promise<Record<string, unknown>> {
   return res.data
 }
 
-export async function updateSettings(patch: Record<string, unknown>): Promise<void> {
-  await api.patch('/admin/settings', patch)
+/**
+ * A save can succeed with something the administrator should read: the server
+ * answers 200 {"warning"} instead of 204 (an SSO setting that locks people out,
+ * or ticket scope turned on while an OAuth client has no group, #420).
+ */
+export async function updateSettings(patch: Record<string, unknown>): Promise<{ warning?: string }> {
+  const res = await api.patch<{ warning?: string } | undefined>('/admin/settings', patch)
+  return { warning: res.data?.warning }
 }
 
 // ── API Keys ─────────────────────────────────────────────────────────────────
 
-export async function listScopes(): Promise<ScopeInfo[]> {
-  const res = await api.get<ScopeInfo[]>('/admin/scopes')
+/** The scope catalogue, or with role the scopes a key owned by that role may carry. */
+export async function listScopes(role?: 'admin' | 'staff'): Promise<ScopeInfo[]> {
+  const res = role
+    ? await api.get<ScopeInfo[]>('/admin/scopes', { params: { role } })
+    : await api.get<ScopeInfo[]>('/admin/scopes')
   return res.data
 }
 
@@ -296,8 +383,16 @@ export async function createOAuthClient(input: {
   return res.data
 }
 
+/** Replaces the client's secret at once; the old one and every token issued under it stop working (#622). */
+export async function rotateOAuthClientSecret(id: string): Promise<{ id: string; client_id: string; client_secret: string }> {
+  const res = await api.post<{ id: string; client_id: string; client_secret: string }>(
+    `/admin/oauth-clients/${seg(id)}/rotate-secret`,
+  )
+  return res.data
+}
+
 export async function deleteOAuthClient(id: string): Promise<void> {
-  await api.delete(`/admin/oauth-clients/${id}`)
+  await deleteIfPresent(`/admin/oauth-clients/${seg(id)}`)
 }
 
 export async function listAPIKeys(): Promise<APIKey[]> {
@@ -309,13 +404,15 @@ export async function createAPIKey(input: {
   name: string
   scopes?: string[]
   expires_at?: string
+  // Issue the key for this account instead of the caller (#450).
+  user_id?: string
 }): Promise<{ id: string; name: string; token: string }> {
   const res = await api.post<{ id: string; name: string; token: string }>('/admin/api-keys', input)
   return res.data
 }
 
 export async function deleteAPIKey(id: string): Promise<void> {
-  await api.delete(`/admin/api-keys/${id}`)
+  await deleteIfPresent(`/admin/api-keys/${seg(id)}`)
 }
 
 // ── Tags (admin) ──────────────────────────────────────────────────────────────
@@ -331,11 +428,11 @@ export async function createTag(name: string): Promise<Tag> {
 }
 
 export async function deleteTag(id: string): Promise<void> {
-  await api.delete(`/admin/tags/${id}`)
+  await api.delete(`/admin/tags/${seg(id)}`)
 }
 
 export async function restoreTag(id: string): Promise<void> {
-  await api.post(`/admin/tags/${id}/restore`)
+  await api.post(`/admin/tags/${seg(id)}/restore`)
 }
 
 // ── Canned responses (admin) ──────────────────────────────────────────────────
@@ -363,12 +460,12 @@ export async function updateCannedResponse(id: string, patch: {
   type_id?: string | null
   sort_order?: number
 }): Promise<CannedResponse> {
-  const res = await api.patch<CannedResponse>(`/admin/canned-responses/${id}`, patch)
+  const res = await api.patch<CannedResponse>(`/admin/canned-responses/${seg(id)}`, patch)
   return res.data
 }
 
 export async function deleteCannedResponse(id: string): Promise<void> {
-  await api.delete(`/admin/canned-responses/${id}`)
+  await api.delete(`/admin/canned-responses/${seg(id)}`)
 }
 
 // ── Webhooks ─────────────────────────────────────────────────────────────────
@@ -382,6 +479,9 @@ export async function createWebhook(input: {
   url: string
   events?: string[]
   secret?: string
+  payload_format?: WebhookPayloadFormat
+  enabled?: boolean
+  filter?: WebhookFilter
 }): Promise<WebhookConfig> {
   const res = await api.post<WebhookConfig>('/admin/webhooks', input)
   return res.data
@@ -389,14 +489,32 @@ export async function createWebhook(input: {
 
 export async function updateWebhook(
   id: string,
-  patch: Partial<Pick<WebhookConfig, 'url' | 'events' | 'secret' | 'enabled'>>
+  patch: Partial<Pick<WebhookConfig, 'url' | 'events' | 'enabled' | 'payload_format' | 'filter'>> & {
+    // Write-only: sent to replace the stored secret, never returned.
+    secret?: string
+  }
 ): Promise<WebhookConfig> {
-  const res = await api.patch<WebhookConfig>(`/admin/webhooks/${id}`, patch)
+  const res = await api.patch<WebhookConfig>(`/admin/webhooks/${seg(id)}`, patch)
   return res.data
 }
 
+/** Clears a paused hook's link to the API key that made it, so it fires again. */
+export async function reapproveWebhook(id: string): Promise<void> {
+  await api.post(`/admin/webhooks/${seg(id)}/reapprove`)
+}
+
 export async function deleteWebhook(id: string): Promise<void> {
-  await api.delete(`/admin/webhooks/${id}`)
+  await api.delete(`/admin/webhooks/${seg(id)}`)
+}
+
+export async function listWebhookDeliveries(id: string): Promise<WebhookDeliveryRecord[]> {
+  const res = await api.get<WebhookDeliveryRecord[]>(`/admin/webhooks/${seg(id)}/deliveries`)
+  return res.data
+}
+
+// Queues the delivery's event again as a new delivery; the server answers 202.
+export async function redeliverWebhook(id: string, deliveryId: string): Promise<void> {
+  await api.post(`/admin/webhooks/${seg(id)}/deliveries/${seg(deliveryId)}/redeliver`)
 }
 
 // ── Custom field definitions ──────────────────────────────────────────────────
@@ -411,6 +529,8 @@ export async function createFieldDef(input: {
   field_type: string
   options?: string[]
   sort_order?: number
+  // A limit on a value below the type's (text and text area only).
+  max_length?: number
 }): Promise<FieldDef> {
   const res = await api.post<FieldDef>('/admin/custom-fields', input)
   return res.data
@@ -418,9 +538,30 @@ export async function createFieldDef(input: {
 
 export async function updateFieldDef(
   id: string,
-  patch: Partial<Pick<FieldDef, 'name' | 'field_type' | 'options' | 'sort_order' | 'active'>>
+  patch: Partial<Pick<FieldDef, 'name' | 'field_type' | 'options' | 'retired_options' | 'sort_order' | 'active'>> & {
+    // A number sets the field's own limit, null removes it.
+    max_length?: number | null
+  }
 ): Promise<FieldDef> {
-  const res = await api.patch<FieldDef>(`/admin/custom-fields/${id}`, patch)
+  const res = await api.patch<FieldDef>(`/admin/custom-fields/${seg(id)}`, patch)
+  return res.data
+}
+
+// Every place the field is attached, in tree order.
+export async function listFieldPlacements(id: string): Promise<FieldPlacement[]> {
+  const res = await api.get<FieldPlacement[]>(`/admin/custom-fields/${seg(id)}/assignments`)
+  return res.data
+}
+
+// How many tickets hold a value for the field, and for each of its options.
+export async function getFieldUsage(id: string): Promise<FieldUsage> {
+  const res = await api.get<FieldUsage>(`/admin/custom-fields/${seg(id)}/usage`)
+  return res.data
+}
+
+// `ids` must name every field definition, active and inactive, exactly once.
+export async function reorderFieldDefs(ids: string[]): Promise<FieldDef[]> {
+  const res = await api.put<FieldDef[]>('/admin/custom-fields/order', { field_def_ids: ids })
   return res.data
 }
 
@@ -428,27 +569,27 @@ export async function updateFieldDef(
 
 export async function listAssignments(scopeType: ScopeType, scopeId: string): Promise<Assignment[]> {
   const path = scopeType === 'category'
-    ? `/admin/categories/${scopeId}/fields`
+    ? `/admin/categories/${seg(scopeId)}/fields`
     : scopeType === 'type'
-    ? `/admin/categories/_/types/${scopeId}/fields`
-    : `/admin/categories/_/types/_/items/${scopeId}/fields`
+    ? `/admin/categories/_/types/${seg(scopeId)}/fields`
+    : `/admin/categories/_/types/_/items/${seg(scopeId)}/fields`
   const res = await api.get<Assignment[]>(path)
   return res.data
 }
 
 // Scoped assignment helpers that use the full CTI path (preferred over listAssignments for types/items)
 export async function listCategoryAssignments(categoryId: string): Promise<Assignment[]> {
-  const res = await api.get<Assignment[]>(`/admin/categories/${categoryId}/fields`)
+  const res = await api.get<Assignment[]>(`/admin/categories/${seg(categoryId)}/fields`)
   return res.data
 }
 
 export async function listTypeAssignments(categoryId: string, typeId: string): Promise<Assignment[]> {
-  const res = await api.get<Assignment[]>(`/admin/categories/${categoryId}/types/${typeId}/fields`)
+  const res = await api.get<Assignment[]>(`/admin/categories/${seg(categoryId)}/types/${seg(typeId)}/fields`)
   return res.data
 }
 
 export async function listItemAssignments(categoryId: string, typeId: string, itemId: string): Promise<Assignment[]> {
-  const res = await api.get<Assignment[]>(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}/fields`)
+  const res = await api.get<Assignment[]>(`/admin/categories/${seg(categoryId)}/types/${seg(typeId)}/items/${seg(itemId)}/fields`)
   return res.data
 }
 
@@ -456,7 +597,7 @@ export async function createCategoryAssignment(
   categoryId: string,
   input: { field_def_id: string; sort_order?: number; visible_on_new?: boolean; required_on_new?: boolean }
 ): Promise<Assignment> {
-  const res = await api.post<Assignment>(`/admin/categories/${categoryId}/fields`, input)
+  const res = await api.post<Assignment>(`/admin/categories/${seg(categoryId)}/fields`, input)
   return res.data
 }
 
@@ -465,7 +606,7 @@ export async function createTypeAssignment(
   typeId: string,
   input: { field_def_id: string; sort_order?: number; visible_on_new?: boolean; required_on_new?: boolean }
 ): Promise<Assignment> {
-  const res = await api.post<Assignment>(`/admin/categories/${categoryId}/types/${typeId}/fields`, input)
+  const res = await api.post<Assignment>(`/admin/categories/${seg(categoryId)}/types/${seg(typeId)}/fields`, input)
   return res.data
 }
 
@@ -475,16 +616,18 @@ export async function createItemAssignment(
   itemId: string,
   input: { field_def_id: string; sort_order?: number; visible_on_new?: boolean; required_on_new?: boolean }
 ): Promise<Assignment> {
-  const res = await api.post<Assignment>(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}/fields`, input)
+  const res = await api.post<Assignment>(`/admin/categories/${seg(categoryId)}/types/${seg(typeId)}/items/${seg(itemId)}/fields`, input)
   return res.data
 }
 
 export async function updateCategoryAssignment(
   categoryId: string,
   assignmentId: string,
-  patch: { sort_order?: number; visible_on_new?: boolean; required_on_new?: boolean }
+  // visible_to_guests is for a category's own attachment only: the server
+  // refuses it on a type or an item (#627).
+  patch: { sort_order?: number; visible_on_new?: boolean; required_on_new?: boolean; visible_to_guests?: boolean }
 ): Promise<Assignment> {
-  const res = await api.patch<Assignment>(`/admin/categories/${categoryId}/fields/${assignmentId}`, patch)
+  const res = await api.patch<Assignment>(`/admin/categories/${seg(categoryId)}/fields/${seg(assignmentId)}`, patch)
   return res.data
 }
 
@@ -494,7 +637,7 @@ export async function updateTypeAssignment(
   assignmentId: string,
   patch: { sort_order?: number; visible_on_new?: boolean; required_on_new?: boolean }
 ): Promise<Assignment> {
-  const res = await api.patch<Assignment>(`/admin/categories/${categoryId}/types/${typeId}/fields/${assignmentId}`, patch)
+  const res = await api.patch<Assignment>(`/admin/categories/${seg(categoryId)}/types/${seg(typeId)}/fields/${seg(assignmentId)}`, patch)
   return res.data
 }
 
@@ -505,31 +648,31 @@ export async function updateItemAssignment(
   assignmentId: string,
   patch: { sort_order?: number; visible_on_new?: boolean; required_on_new?: boolean }
 ): Promise<Assignment> {
-  const res = await api.patch<Assignment>(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}/fields/${assignmentId}`, patch)
+  const res = await api.patch<Assignment>(`/admin/categories/${seg(categoryId)}/types/${seg(typeId)}/items/${seg(itemId)}/fields/${seg(assignmentId)}`, patch)
   return res.data
 }
 
 export async function deleteCategoryAssignment(categoryId: string, assignmentId: string): Promise<void> {
-  await api.delete(`/admin/categories/${categoryId}/fields/${assignmentId}`)
+  await deleteIfPresent(`/admin/categories/${seg(categoryId)}/fields/${seg(assignmentId)}`)
 }
 
 export async function deleteTypeAssignment(categoryId: string, typeId: string, assignmentId: string): Promise<void> {
-  await api.delete(`/admin/categories/${categoryId}/types/${typeId}/fields/${assignmentId}`)
+  await deleteIfPresent(`/admin/categories/${seg(categoryId)}/types/${seg(typeId)}/fields/${seg(assignmentId)}`)
 }
 
 export async function deleteItemAssignment(categoryId: string, typeId: string, itemId: string, assignmentId: string): Promise<void> {
-  await api.delete(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}/fields/${assignmentId}`)
+  await deleteIfPresent(`/admin/categories/${seg(categoryId)}/types/${seg(typeId)}/items/${seg(itemId)}/fields/${seg(assignmentId)}`)
 }
 
 // ── CTI group scope (read from CTI perspective) ───────────────────────────────
 
 export async function listGroupsForCategory(categoryId: string): Promise<Group[]> {
-  const res = await api.get<Group[]>(`/admin/categories/${categoryId}/groups`)
+  const res = await api.get<Group[]>(`/admin/categories/${seg(categoryId)}/groups`)
   return res.data
 }
 
 export async function listGroupsForType(categoryId: string, typeId: string): Promise<Group[]> {
-  const res = await api.get<Group[]>(`/admin/categories/${categoryId}/types/${typeId}/groups`)
+  const res = await api.get<Group[]>(`/admin/categories/${seg(categoryId)}/types/${seg(typeId)}/groups`)
   return res.data
 }
 
@@ -563,12 +706,12 @@ export async function updateSLAPolicy(
     resolution_target_min?: number
   }
 ): Promise<SLAPolicy> {
-  const res = await api.patch<SLAPolicy>(`/admin/sla/policies/${id}`, patch)
+  const res = await api.patch<SLAPolicy>(`/admin/sla/policies/${seg(id)}`, patch)
   return res.data
 }
 
 export async function deleteSLAPolicy(id: string): Promise<void> {
-  await api.delete(`/admin/sla/policies/${id}`)
+  await api.delete(`/admin/sla/policies/${seg(id)}`)
 }
 
 // ── Security warnings ────────────────────────────────────────────────────────
@@ -576,10 +719,283 @@ export async function deleteSLAPolicy(id: string): Promise<void> {
 export interface SecurityWarnings {
   /** Names of env vars still set to a shipped example value. Names only. */
   insecure_secrets: string[]
+
+  /**
+   * What the malware scanner is actually doing, as opposed to what the
+   * configuration says it should — a live reachability check, not a cached
+   * belief. See handleGetSecurityWarnings / scanStatus on the backend.
+   */
+  attachment_scanning: AttachmentScanningWarning
+
+  /**
+   * Whether uploads can be stored (#458). Optional only so older fixtures and
+   * a server that predates the field read as healthy.
+   */
+  attachment_storage?: { writable: boolean; problem: string }
+
+  /**
+   * Names of OAuth clients that see no tickets because ticket scope is on and
+   * their service user is in no group (#420). Optional so a server that
+   * predates it reads as none.
+   */
+  oauth_clients_without_groups?: string[]
+
+  /**
+   * The configured reopen target status has been deactivated, so reopened
+   * tickets go to New instead. Optional so an older server reads as healthy.
+   */
+  reopen_target?: { inactive: boolean; name?: string }
+
+  /**
+   * Whether passkeys can be used (#494). They cannot when BASE_URL is an IP
+   * address, a single-label host or non-ASCII. Optional so a server that
+   * predates the field reads as fine.
+   */
+  passkeys?: { available: boolean; reason: string }
+
+  /**
+   * Whether email can be sent and is being delivered (#455, #456). Optional so
+   * older fixtures and a server that predates it read as healthy.
+   */
+  email?: EmailWarning
+
+  /**
+   * The live SAML IdP signing certificate is expired or expires within 30 days
+   * (#619). Absent when it is fine or SAML is not loaded. An expired one fails
+   * every SAML sign-in.
+   */
+  saml_idp_certificate?: { expires_at: string; expired: boolean }
+
+  /**
+   * The hourly refresh of the SAML IdP metadata cannot run or declined what it
+   * fetched (#619). `http_url`: the metadata URL is not https, so it is never
+   * refreshed. `entity_id_changed`: the refreshed metadata names another
+   * entity and was not applied. `new_certificate`: the identity provider
+   * published a signing certificate that is not trusted yet; `new_certificates`
+   * carries each one's SHA-256 fingerprint and expiry, to compare with the
+   * provider's, and an administrator must re-save the SAML settings to trust it.
+   * `metadata_invalid`: the refreshed metadata has a signing certificate that
+   * cannot be read (or none), so it was not applied.
+   * Absent otherwise.
+   */
+  saml_metadata_refresh?: {
+    problem: 'http_url' | 'entity_id_changed' | 'new_certificate' | 'metadata_invalid'
+    new_certificates?: { sha256: string; expires_at: string }[]
+  }
+
+  /**
+   * A stable release newer than the one running, found by the opt-in update
+   * check (#170). Absent when none was found or the check is off.
+   */
+  update?: { current: string; latest: string; url: string }
+}
+
+export interface EmailWarning {
+  /** False until both SMTP_HOST and SMTP_FROM are set. */
+  enabled: boolean
+  /** Which of SMTP_HOST and SMTP_FROM is unset. */
+  missing: string[]
+  /** A feature that emails the person is on although email is off. */
+  signup_without_email: boolean
+  guest_submission_without_email: boolean
+  /** Email is retrying after an error, or failed within the last day. */
+  failing: boolean
+  failing_count: number
+  /** Newest error, email addresses already replaced by [address]. */
+  last_error: string
+  /**
+   * Edited email templates that no longer work with this release (#158). Mail
+   * that uses one fails until it is fixed or reverted. Optional so a server
+   * that predates the editor reads as healthy.
+   */
+  broken_templates?: BrokenEmailTemplate[]
+}
+
+export interface BrokenEmailTemplate {
+  name: string
+  label: string
+  reason: string
+  /** When it was last saved: with the name, what makes a new breakage show again after a Hide. */
+  updated_at: string
+}
+
+export interface AttachmentScanningWarning {
+  /** off, required or permissive. */
+  policy: string
+  /** Whether a scanner address is configured at all. */
+  configured: boolean
+  /** The answer to a live ping just now. */
+  reachable: boolean
+  /** Plain-English sentence for what is happening to uploads right now. */
+  effect: string
+  /** An administrator saved a valid scan policy (as opposed to a derived default). */
+  policy_explicit: boolean
+  /**
+   * Scanning is off by default rather than by choice: no policy saved, no
+   * scanner address anywhere, and attachments already stored (#459).
+   */
+  stale_off: boolean
+}
+
+/** What the post-upgrade wizard needs that the settings dump does not carry. */
+export async function getPostUpgrade(): Promise<{ old_password_accounts: number }> {
+  const res = await api.get<{ old_password_accounts: number }>('/admin/post-upgrade')
+  return res.data
 }
 
 /** Admin-only. Not on the public /site payload, by design. */
 export async function getSecurityWarnings(): Promise<SecurityWarnings> {
   const res = await api.get<SecurityWarnings>('/admin/security-warnings')
   return res.data
+}
+
+/**
+ * The people work can be given to: id and display name only.
+ *
+ * Staff-readable, unlike `listUsers`, which is `/admin/users` and answers 403
+ * to anybody who is not an administrator. That is why this exists: the
+ * assignee picker was empty for every staff member and no colleague's name
+ * could be resolved on a ticket, because the only list the page knew about
+ * was one staff cannot read.
+ */
+export interface AssignableStaff {
+  id: string
+  display_name: string
+  /**
+   * False for somebody still here who cannot be given work — suspended, or
+   * moved to a reporting role.
+   *
+   * Their name is still in the list on purpose. A ticket already assigned to
+   * them has to show who has it, and filtering them out made the page call a
+   * suspended colleague a former staff member, which is a claim about
+   * somebody having left that was not true.
+   */
+  assignable: boolean
+}
+
+export async function listAssignableStaff(): Promise<AssignableStaff[]> {
+  const res = await api.get<AssignableStaff[]>('/staff')
+  return res.data
+}
+
+// ── Admin-wide audit view (#129) ────────────────────────────────────────────
+
+export interface AdminAuditFilters {
+  entity_type?: string
+  action?: string
+  actor_id?: string
+  from?: string // RFC3339
+  to?: string // RFC3339
+  q?: string
+  exclude_action?: string[] // sent repeated: exclude_action=a&exclude_action=b
+  limit?: number
+  offset?: number
+}
+
+export async function listAdminAudit(filters: AdminAuditFilters): Promise<AdminAuditListResponse> {
+  const res = await api.get<AdminAuditListResponse>('/admin/audit', {
+    params: filters,
+    // Repeated keys, not exclude_action[]=a: that is what the server reads.
+    paramsSerializer: { indexes: null },
+  })
+  return res.data
+}
+
+// ── Email templates (#158) ────────────────────────────────────────────────────
+
+export type EmailTemplateGroup = 'requester' | 'staff' | 'account' | 'shared'
+
+export interface EmailTemplateSummary {
+  name: string
+  label: string
+  group: EmailTemplateGroup
+  /** The shared header and footer: a body and no subject. */
+  shell: boolean
+  customised: boolean
+  /** The template has an HTML part, so its mail is multipart. */
+  has_html?: boolean
+  broken: boolean
+  updated_at: string | null
+  updated_by_name: string
+}
+
+export interface EmailTemplateDetail extends EmailTemplateSummary {
+  subject: string
+  body: string
+  default_subject: string
+  default_body: string
+  /** The optional HTML part; empty means the mail is plain text. There is no default HTML. */
+  html?: string
+  /** The variable that must be printed outside any {{if}}; empty for the header and footer. */
+  required: string
+  variables: { name: string; description: string }[]
+  /** Why the saved version cannot be sent, when `broken`. */
+  broken_reason?: string
+  max_body_bytes: number
+  max_subject_bytes: number
+  max_html_bytes?: number
+}
+
+/** One reason a draft is refused. line and col are 0 when it has no place in the text. */
+export interface EmailTemplateProblem {
+  field: 'subject' | 'body' | 'html'
+  line: number
+  col: number
+  message: string
+}
+
+export interface EmailTemplatePreview {
+  valid: boolean
+  errors: EmailTemplateProblem[]
+  subject?: string
+  body?: string
+  /** The rendered HTML part, with the saved header and footer; absent when the draft has none. */
+  html?: string
+  /** The draft is fine but the saved header or footer cannot render. */
+  preview_error?: string
+}
+
+export interface EmailTemplateDraft {
+  subject: string
+  body: string
+  /** Always sent, "" for none: an absent key leaves the stored HTML unchanged. */
+  html?: string
+}
+
+export async function listEmailTemplates(): Promise<EmailTemplateSummary[]> {
+  const res = await api.get<EmailTemplateSummary[]>('/admin/email-templates')
+  return res.data
+}
+
+export async function getEmailTemplate(name: string): Promise<EmailTemplateDetail> {
+  const res = await api.get<EmailTemplateDetail>(`/admin/email-templates/${seg(name)}`)
+  return res.data
+}
+
+/** The server validates again whatever the editor checked: a refusal is 400 invalid_template. */
+export async function saveEmailTemplate(name: string, draft: EmailTemplateDraft): Promise<EmailTemplateDetail> {
+  const res = await api.put<EmailTemplateDetail>(`/admin/email-templates/${seg(name)}`, draft)
+  return res.data
+}
+
+/** Back to the shipped text. The edited text stays in the audit log. */
+export async function revertEmailTemplate(name: string): Promise<void> {
+  await api.delete(`/admin/email-templates/${seg(name)}`)
+}
+
+/** Validates a draft and renders it with sample data. Sends and stores nothing. */
+export async function previewEmailTemplate(name: string, draft: EmailTemplateDraft): Promise<EmailTemplatePreview> {
+  const res = await api.post<EmailTemplatePreview>(`/admin/email-templates/${seg(name)}/preview`, draft)
+  return res.data
+}
+
+/** Mails the draft to the signed-in administrator's own address and nowhere else. */
+export async function testEmailTemplate(name: string, draft: EmailTemplateDraft): Promise<void> {
+  await api.post(`/admin/email-templates/${seg(name)}/test`, draft)
+}
+
+/** The per-field problems in a 400 invalid_template, or none for any other error. */
+export function emailTemplateProblems(err: unknown): EmailTemplateProblem[] {
+  const data = (err as { response?: { data?: { error?: { code?: string; errors?: EmailTemplateProblem[] } } } })?.response?.data
+  return data?.error?.code === 'invalid_template' ? (data.error.errors ?? []) : []
 }

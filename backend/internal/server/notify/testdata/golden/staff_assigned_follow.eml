@@ -1,0 +1,15 @@
+From: <helpdesk@example.com>
+To: <to@example.com>
+Subject: A ticket you follow is assigned: [GHD-2026-000042]
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+A ticket you follow has been assigned.
+
+Ticket: GHD-2026-000042
+
+Open it here:
+https://help.example.com/tickets/11111111-2222-3333-4444-555555555555
+
+You can choose which of these emails you get under your profile.

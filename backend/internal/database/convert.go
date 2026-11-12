@@ -44,6 +44,23 @@ func StringPtr(n sql.NullString) *string {
 	return &v
 }
 
+// NullBool wraps a *bool for nullable BOOLEAN columns.
+func NullBool(p *bool) sql.NullBool {
+	if p == nil {
+		return sql.NullBool{}
+	}
+	return sql.NullBool{Bool: *p, Valid: true}
+}
+
+// BoolPtr unwraps a nullable bool; nil when not valid.
+func BoolPtr(n sql.NullBool) *bool {
+	if !n.Valid {
+		return nil
+	}
+	v := n.Bool
+	return &v
+}
+
 // NullTime wraps a *time.Time for nullable TIMESTAMPTZ columns.
 func NullTime(p *time.Time) sql.NullTime {
 	if p == nil {
@@ -58,5 +75,22 @@ func TimePtr(n sql.NullTime) *time.Time {
 		return nil
 	}
 	v := n.Time
+	return &v
+}
+
+// NullInt64 wraps a *int64 for nullable BIGINT columns.
+func NullInt64(p *int64) sql.NullInt64 {
+	if p == nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: *p, Valid: true}
+}
+
+// Int64Ptr unwraps a nullable int64; nil when not valid.
+func Int64Ptr(n sql.NullInt64) *int64 {
+	if !n.Valid {
+		return nil
+	}
+	v := n.Int64
 	return &v
 }

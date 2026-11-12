@@ -7,12 +7,17 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/crewjam/saml"
+	"github.com/crewjam/saml/samlsp"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/stretchr/testify/require"
 )
@@ -81,6 +86,103 @@ func TestNewSAMLMiddleware_HonoursContext(t *testing.T) {
 	}
 }
 
+// samlIDPMetadataXML is TestShib's real IdP metadata fixture, vendored
+// (unmodified) from github.com/crewjam/saml's own test suite
+// (samlsp/testdata/idp_metadata.xml) — genuine, parseable SAML 2.0 IdP
+// metadata, needed here to get past FetchMetadata and all the way to a real
+// *samlsp.Middleware whose computed routes this test can inspect.
+const samlIDPMetadataXML = `<?xml version="1.0" encoding="UTF-8"?>
+<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" entityID="https://idp.testshib.org/idp/shibboleth">
+	<IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+		<KeyDescriptor>
+			<ds:KeyInfo>
+				<ds:X509Data>
+					<ds:X509Certificate>MIIEDjCCAvagAwIBAgIBADANBgkqhkiG9w0BAQUFADBnMQswCQYDVQQGEwJVUzEV
+                            MBMGA1UECBMMUGVubnN5bHZhbmlhMRMwEQYDVQQHEwpQaXR0c2J1cmdoMREwDwYD
+                            VQQKEwhUZXN0U2hpYjEZMBcGA1UEAxMQaWRwLnRlc3RzaGliLm9yZzAeFw0wNjA4
+                            MzAyMTEyMjVaFw0xNjA4MjcyMTEyMjVaMGcxCzAJBgNVBAYTAlVTMRUwEwYDVQQI
+                            EwxQZW5uc3lsdmFuaWExEzARBgNVBAcTClBpdHRzYnVyZ2gxETAPBgNVBAoTCFRl
+                            c3RTaGliMRkwFwYDVQQDExBpZHAudGVzdHNoaWIub3JnMIIBIjANBgkqhkiG9w0B
+                            AQEFAAOCAQ8AMIIBCgKCAQEArYkCGuTmJp9eAOSGHwRJo1SNatB5ZOKqDM9ysg7C
+                            yVTDClcpu93gSP10nH4gkCZOlnESNgttg0r+MqL8tfJC6ybddEFB3YBo8PZajKSe
+                            3OQ01Ow3yT4I+Wdg1tsTpSge9gEz7SrC07EkYmHuPtd71CHiUaCWDv+xVfUQX0aT
+                            NPFmDixzUjoYzbGDrtAyCqA8f9CN2txIfJnpHE6q6CmKcoLADS4UrNPlhHSzd614
+                            kR/JYiks0K4kbRqCQF0Dv0P5Di+rEfefC6glV8ysC8dB5/9nb0yh/ojRuJGmgMWH
+                            gWk6h0ihjihqiu4jACovUZ7vVOCgSE5Ipn7OIwqd93zp2wIDAQABo4HEMIHBMB0G
+                            A1UdDgQWBBSsBQ869nh83KqZr5jArr4/7b+QazCBkQYDVR0jBIGJMIGGgBSsBQ86
+                            9nh83KqZr5jArr4/7b+Qa6FrpGkwZzELMAkGA1UEBhMCVVMxFTATBgNVBAgTDFBl
+                            bm5zeWx2YW5pYTETMBEGA1UEBxMKUGl0dHNidXJnaDERMA8GA1UEChMIVGVzdFNo
+                            aWIxGTAXBgNVBAMTEGlkcC50ZXN0c2hpYi5vcmeCAQAwDAYDVR0TBAUwAwEB/zAN
+                            BgkqhkiG9w0BAQUFAAOCAQEAjR29PhrCbk8qLN5MFfSVk98t3CT9jHZoYxd8QMRL
+                            I4j7iYQxXiGJTT1FXs1nd4Rha9un+LqTfeMMYqISdDDI6tv8iNpkOAvZZUosVkUo
+                            93pv1T0RPz35hcHHYq2yee59HJOco2bFlcsH8JBXRSRrJ3Q7Eut+z9uo80JdGNJ4
+                            /SJy5UorZ8KazGj16lfJhOBXldgrhppQBb0Nq6HKHguqmwRfJ+WkxemZXzhediAj
+                            Geka8nz8JjwxpUjAiSWYKLtJhGEaTqCYxCCX2Dw+dOTqUzHOZ7WKv4JXPK5G/Uhr
+                            8K/qhmFT2nIQi538n6rVYLeWj8Bbnl+ev0peYzxFyF5sQA==</ds:X509Certificate>
+				</ds:X509Data>
+			</ds:KeyInfo>
+		</KeyDescriptor>
+		<SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.testshib.org/idp/profile/SAML2/Redirect/SSO" />
+	</IDPSSODescriptor>
+</EntityDescriptor>`
+
+// TestNewSAMLMiddleware_ComputesRoutesMatchingTheServerMounts pins a
+// pre-existing bug found while testing #304, unrelated to anything that PR
+// itself changed: the SP root URL passed to samlsp had no trailing slash,
+// so url.URL.ResolveReference's relative-path resolution (RFC 3986 §5.3,
+// which replaces everything after the LAST slash in the base path, not
+// everything after the base path itself) dropped the "auth" segment —
+// producing {baseURL}/api/v1/saml/metadata and .../saml/acs instead of the
+// .../api/v1/auth/saml/metadata and .../auth/saml/acs routes
+// internal/server/routes.go actually registers. samlsp.Middleware.ServeHTTP
+// compares the request path against these computed URLs with ==, so every
+// real request to the registered routes missed and fell through to a 404 —
+// SAML could never complete a login or serve metadata to an IdP, in any
+// configuration. See NewSAMLMiddleware's own comment on the exact mechanism.
+func TestNewSAMLMiddleware_ComputesRoutesMatchingTheServerMounts(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(samlIDPMetadataXML))
+	}))
+	defer idp.Close()
+
+	certPEM, keyPEM := selfSignedSP(t)
+	mw, err := auth.NewSAMLMiddleware(context.Background(), auth.SAMLConfig{
+		BaseURL:     "https://helpdesk.example.com",
+		MetadataURL: idp.URL,
+		CertPEM:     certPEM,
+		KeyPEM:      keyPEM,
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, "/api/v1/auth/saml/metadata", mw.ServiceProvider.MetadataURL.Path,
+		"must match the GET /saml/metadata route mounted under /api/v1/auth in routes.go")
+	require.Equal(t, "/api/v1/auth/saml/acs", mw.ServiceProvider.AcsURL.Path,
+		"must match the POST /saml/acs route mounted under /api/v1/auth in routes.go")
+}
+
+// TestNewSAMLMiddleware_RefusesIdPInitiatedResponses pins what DESIGN.md's
+// account of an ACS replay rests on. With IdP-initiated login off, the
+// library accepts a response only when its InResponseTo matches a request ID
+// from a "saml_" tracking cookie in the same request, so a captured POST body
+// is not enough on its own. Turning it on drops that check and lets the POST
+// choose its own RelayState redirect.
+func TestNewSAMLMiddleware_RefusesIdPInitiatedResponses(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(samlIDPMetadataXML))
+	}))
+	defer idp.Close()
+
+	certPEM, keyPEM := selfSignedSP(t)
+	mw, err := auth.NewSAMLMiddleware(context.Background(), auth.SAMLConfig{
+		BaseURL:     "https://helpdesk.example.com",
+		MetadataURL: idp.URL,
+		CertPEM:     certPEM,
+		KeyPEM:      keyPEM,
+	})
+	require.NoError(t, err)
+	require.False(t, mw.ServiceProvider.AllowIDPInitiated)
+}
+
 // TestNewSAMLMiddleware_RejectsBadKeyPair guards the error path that runs
 // before any network call, so a misconfigured keypair fails fast and clearly.
 func TestNewSAMLMiddleware_RejectsBadKeyPair(t *testing.T) {
@@ -93,4 +195,226 @@ func TestNewSAMLMiddleware_RejectsBadKeyPair(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "SAML certificate/key pair",
 		"the error must say which part of the config is wrong")
+}
+
+// TestNewSAMLMiddleware_HandoverCookieLivesFiveMinutes pins that the SAML
+// library's hand-over cookie and its JWT are configured for exactly 5 minutes
+// (#337), not the library's default of an hour. The lifetime matters only for
+// a copy that never reached /complete; five minutes is enough because the
+// redirect takes milliseconds, and five rather than seconds because the JWT
+// is checked against whichever replica serves /complete.
+func TestNewSAMLMiddleware_HandoverCookieLivesFiveMinutes(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(samlIDPMetadataXML))
+	}))
+	defer idp.Close()
+
+	certPEM, keyPEM := selfSignedSP(t)
+	mw, err := auth.NewSAMLMiddleware(context.Background(), auth.SAMLConfig{
+		BaseURL:     "https://helpdesk.example.com",
+		MetadataURL: idp.URL,
+		CertPEM:     certPEM,
+		KeyPEM:      keyPEM,
+	})
+	require.NoError(t, err)
+
+	// Create a session to capture the cookie and JWT.
+	rec := httptest.NewRecorder()
+	mw.Session.CreateSession(rec, httptest.NewRequest("POST", "/", nil), &saml.Assertion{
+		Subject: &saml.Subject{
+			NameID: &saml.NameID{Value: "x"},
+		},
+	})
+
+	// Assert the cookie's MaxAge is exactly 300 seconds (5 minutes).
+	cookies := rec.Result().Cookies()
+	require.Len(t, cookies, 1, "exactly one cookie must be created")
+	require.Equal(t, 300, cookies[0].MaxAge, "cookie's MaxAge must be 300 seconds (5 minutes)")
+
+	// Assert the provider is the value type that the handler expects.
+	cp, ok := mw.Session.(samlsp.CookieSessionProvider)
+	require.True(t, ok, "Session must be a CookieSessionProvider value type")
+
+	// Assert the JWT's lifetime is also 300 seconds.
+	cookie := cookies[0]
+	sess, err := cp.Codec.Decode(cookie.Value)
+	require.NoError(t, err)
+	claims, ok := sess.(samlsp.JWTSessionClaims)
+	require.True(t, ok, "session must be decodable as JWTSessionClaims")
+	require.Equal(t, int64(300), claims.ExpiresAt-claims.IssuedAt,
+		"JWT exp and iat must differ by exactly 300 seconds")
+}
+
+// TestNewSAMLMiddleware_TwoMintsInTheSameSecondDifferByJti pins that each minted
+// handover JWT gets a random jti (#337). Two mints for one person in the same
+// second must have different header.payload, or the spend (keyed on SHA-256 of
+// header.payload) will reject the second sign-in wrongly.
+func TestNewSAMLMiddleware_TwoMintsInTheSameSecondDifferByJti(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(samlIDPMetadataXML))
+	}))
+	defer idp.Close()
+
+	certPEM, keyPEM := selfSignedSP(t)
+	mw, err := auth.NewSAMLMiddleware(context.Background(), auth.SAMLConfig{
+		BaseURL:     "https://helpdesk.example.com",
+		MetadataURL: idp.URL,
+		CertPEM:     certPEM,
+		KeyPEM:      keyPEM,
+	})
+	require.NoError(t, err)
+
+	// Same assertion, minted twice in quick succession.
+	assertion := &saml.Assertion{
+		Subject: &saml.Subject{
+			NameID: &saml.NameID{Value: "test-user"},
+		},
+	}
+
+	rec1 := httptest.NewRecorder()
+	mw.Session.CreateSession(rec1, httptest.NewRequest("POST", "/", nil), assertion)
+	cookies1 := rec1.Result().Cookies()
+	require.Len(t, cookies1, 1)
+	token1 := cookies1[0].Value
+
+	rec2 := httptest.NewRecorder()
+	mw.Session.CreateSession(rec2, httptest.NewRequest("POST", "/", nil), assertion)
+	cookies2 := rec2.Result().Cookies()
+	require.Len(t, cookies2, 1)
+	token2 := cookies2[0].Value
+
+	// Extract header.payload (first two segments) from each JWT.
+	parts1 := strings.Split(token1, ".")
+	parts2 := strings.Split(token2, ".")
+	require.Len(t, parts1, 3, "token1 must be a valid JWT")
+	require.Len(t, parts2, 3, "token2 must be a valid JWT")
+
+	headerPayload1 := parts1[0] + "." + parts1[1]
+	headerPayload2 := parts2[0] + "." + parts2[1]
+
+	require.NotEqual(t, headerPayload1, headerPayload2,
+		"two mints in the same second must differ in header.payload due to jti")
+
+	// Decode and verify both have non-empty distinct jti (Id).
+	cp, ok := mw.Session.(samlsp.CookieSessionProvider)
+	require.True(t, ok)
+
+	sess1, err := cp.Codec.Decode(token1)
+	require.NoError(t, err)
+	claims1, ok := sess1.(samlsp.JWTSessionClaims)
+	require.True(t, ok)
+	require.NotEmpty(t, claims1.Id, "first mint must have non-empty jti")
+
+	sess2, err := cp.Codec.Decode(token2)
+	require.NoError(t, err)
+	claims2, ok := sess2.(samlsp.JWTSessionClaims)
+	require.True(t, ok)
+	require.NotEmpty(t, claims2.Id, "second mint must have non-empty jti")
+
+	require.NotEqual(t, claims1.Id, claims2.Id, "two mints must have distinct jti values")
+}
+
+// samlCookies builds a middleware for baseURL and returns the raw Set-Cookie
+// lines for the tracking cookie (from starting a sign-in) and for "token"
+// (from creating a session).
+func samlCookies(t *testing.T, baseURL string) (tracking, token string) {
+	t.Helper()
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(samlIDPMetadataXML))
+	}))
+	defer idp.Close()
+	certPEM, keyPEM := selfSignedSP(t)
+	mw, err := auth.NewSAMLMiddleware(context.Background(), auth.SAMLConfig{
+		BaseURL: baseURL, MetadataURL: idp.URL, CertPEM: certPEM, KeyPEM: keyPEM,
+	})
+	require.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	mw.HandleStartAuthFlow(rec, httptest.NewRequest(http.MethodGet, "/api/v1/auth/saml/complete", nil))
+	for _, line := range rec.Header().Values("Set-Cookie") {
+		if strings.HasPrefix(line, "saml_") {
+			tracking = line
+		}
+	}
+	require.NotEmpty(t, tracking, "starting a sign-in sets the tracking cookie")
+
+	rec = httptest.NewRecorder()
+	require.NoError(t, mw.Session.CreateSession(rec, httptest.NewRequest(http.MethodPost, "/", nil),
+		&saml.Assertion{Subject: &saml.Subject{NameID: &saml.NameID{Value: "x"}}}))
+	token = rec.Header().Get("Set-Cookie")
+	require.True(t, strings.HasPrefix(token, "token="))
+	return tracking, token
+}
+
+// The IdP's POST to the ACS is cross-site, so the tracking cookie must say
+// SameSite=None (with Secure, or browsers drop it) rather than rest on each
+// browser's default (#399).
+func TestNewSAMLMiddleware_TrackingCookieIsSameSiteNoneOverHTTPS(t *testing.T) {
+	tracking, _ := samlCookies(t, "https://helpdesk.example.com")
+	require.Contains(t, tracking, "SameSite=None")
+	require.Contains(t, tracking, "Secure")
+}
+
+// Over http, None would be refused without Secure, and Lax would stop the
+// cookie on the cross-site POST: it is left unset.
+func TestNewSAMLMiddleware_TrackingCookieHasNoSameSiteOverHTTP(t *testing.T) {
+	tracking, _ := samlCookies(t, "http://localhost:8080")
+	require.NotContains(t, tracking, "SameSite")
+}
+
+// "token" is read only on the top-level GET the ACS redirects to: Lax, never
+// None, over either scheme.
+func TestNewSAMLMiddleware_HandoverCookieIsSameSiteLax(t *testing.T) {
+	for _, base := range []string{"https://helpdesk.example.com", "http://localhost:8080"} {
+		_, token := samlCookies(t, base)
+		require.Contains(t, token, "SameSite=Lax", base)
+	}
+}
+
+// Pasted metadata builds the same middleware a fetched URL does, with no
+// network involved (#461).
+func TestNewSAMLMiddleware_FromMetadataXML(t *testing.T) {
+	certPEM, keyPEM := selfSignedSP(t)
+	mw, err := auth.NewSAMLMiddleware(context.Background(), auth.SAMLConfig{
+		BaseURL:     "https://helpdesk.example.com",
+		MetadataXML: []byte(samlIDPMetadataXML),
+		CertPEM:     certPEM,
+		KeyPEM:      keyPEM,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "https://idp.testshib.org/idp/shibboleth", mw.ServiceProvider.IDPMetadata.EntityID)
+}
+
+// Both set can only come from a direct database edit (both API doors refuse
+// it). XML wins, because it has no network dependency.
+func TestNewSAMLMiddleware_MetadataXMLWinsOverURL(t *testing.T) {
+	var hits atomic.Int64
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte(samlIDPMetadataXML))
+	}))
+	defer idp.Close()
+
+	certPEM, keyPEM := selfSignedSP(t)
+	_, err := auth.NewSAMLMiddleware(context.Background(), auth.SAMLConfig{
+		BaseURL:     "https://helpdesk.example.com",
+		MetadataURL: idp.URL,
+		MetadataXML: []byte(samlIDPMetadataXML),
+		CertPEM:     certPEM,
+		KeyPEM:      keyPEM,
+	})
+	require.NoError(t, err)
+	require.Zero(t, hits.Load(), "pasted XML must not be accompanied by a fetch")
+}
+
+func TestNewSAMLMiddleware_RefusesInvalidMetadataXML(t *testing.T) {
+	certPEM, keyPEM := selfSignedSP(t)
+	_, err := auth.NewSAMLMiddleware(context.Background(), auth.SAMLConfig{
+		BaseURL:     "https://helpdesk.example.com",
+		MetadataXML: []byte("hello"),
+		CertPEM:     certPEM,
+		KeyPEM:      keyPEM,
+	})
+	require.Error(t, err)
+	require.True(t, errors.Is(err, auth.ErrIdPMetadataInvalid), "got %v", err)
 }

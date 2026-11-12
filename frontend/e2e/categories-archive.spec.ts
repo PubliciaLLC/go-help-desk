@@ -1,0 +1,248 @@
+import { test, expect, type Page } from '@playwright/test'
+import { mockAdminApi, LONG_NAME } from './mock'
+
+// #446: archive and restore buttons on the admin Categories tree. Layout is
+// the point (the buttons add width to every row at phone sizes), plus one
+// round trip so a button that renders but does nothing fails here.
+
+type Node = { id: string; name: string; sort_order: number; active: boolean; [k: string]: unknown }
+
+// A stateful tree: PATCH flips `active` on the matching row, so a re-fetch
+// after the mutation shows the new state like the real API would.
+const REFUSAL = 'Cannot restore this entry because its parent is archived and another rule depends on it being kept'
+
+async function mockTree(
+  page: Page,
+  activeFlags: { cat: boolean; type: boolean; item: boolean },
+  opts: { names?: [string, string, string]; failPatch?: boolean; refusal?: string } = {},
+) {
+  const [catName, typeName, itemName] = opts.names ?? [LONG_NAME, LONG_NAME, LONG_NAME]
+  await mockAdminApi(page)
+  const cat: Node = { id: 'cat-1', name: catName, sort_order: 1, active: activeFlags.cat }
+  const type: Node = { id: 'ty-1', category_id: 'cat-1', name: typeName, sort_order: 1, active: activeFlags.type }
+  const item: Node = { id: 'it-1', type_id: 'ty-1', name: itemName, sort_order: 1, active: activeFlags.item }
+  const patches: string[] = []
+  const serve = (node: Node) => async (route: import('@playwright/test').Route) => {
+    const req = route.request()
+    if (req.method() === 'PATCH' && opts.failPatch) {
+      return route.fulfill({ status: 409, json: { error: { code: 'conflict', message: opts.refusal ?? REFUSAL } } })
+    }
+    if (req.method() === 'PATCH') {
+      const body = req.postDataJSON() as { active?: boolean }
+      if (typeof body.active === 'boolean') node.active = body.active
+      patches.push(`${new URL(req.url()).pathname} active=${body.active}`)
+      return route.fulfill({ json: node })
+    }
+    if (req.method() === 'GET') return route.fallback()
+    return route.fulfill({ status: 204 })
+  }
+  // Each handler answers GET from the node itself (the mock's fixed fixture
+  // would never reflect a PATCH).
+  const get = (node: Node, list: boolean) => async (route: import('@playwright/test').Route) =>
+    route.request().method() === 'GET' ? route.fulfill({ json: list ? [node] : node }) : serve(node)(route)
+  await page.route('**/api/v1/admin/categories', get(cat, true))
+  await page.route('**/api/v1/admin/categories/cat-1', serve(cat))
+  await page.route('**/api/v1/admin/categories/cat-1/types', get(type, true))
+  await page.route('**/api/v1/admin/categories/cat-1/types/ty-1', serve(type))
+  await page.route('**/api/v1/admin/categories/cat-1/types/ty-1/items', get(item, true))
+  await page.route('**/api/v1/admin/categories/cat-1/types/ty-1/items/it-1', serve(item))
+  return patches
+}
+
+// Opens category, then type, waiting for each level's row to render so the
+// next Expand button exists before it is clicked.
+async function expandAll(page: Page, rows: number) {
+  for (let level = 1; level < rows; level++) {
+    await page.getByRole('button', { name: 'Expand' }).first().click()
+    await expect(page.getByTitle(/^(Archive|Restore) /)).toHaveCount(level + 1)
+  }
+}
+
+for (const width of [320, 375]) {
+  test.describe(`touch ${width}px`, () => {
+  test.use({ hasTouch: true })
+  test(`archived rows with long names fit: ${width}px`, async ({ page }) => {
+    await mockTree(page, { cat: false, type: false, item: false })
+    await page.setViewportSize({ width, height: 844 })
+    await page.goto('/admin/categories')
+    await expect(page.getByRole('heading', { level: 1, name: 'Categories' })).toBeVisible()
+    await expandAll(page, 3)
+    await expect(page.getByText('Archived')).toHaveCount(3)
+    await expect(page.getByRole('button', { name: /^Restore/ })).toHaveCount(3)
+    // Every row action (Restore, Delete, Rename) is on screen, not clipped past
+    // the right edge, and at least 44px square to tap.
+    const actions = page.getByRole('button', { name: /^(Restore|Delete|Rename)/ })
+    await expect(actions).toHaveCount(9)
+    for (const b of await actions.all()) {
+      const box = await b.boundingBox()
+      const label = await b.getAttribute('title')
+      expect(box, `${label} has a box`).not.toBeNull()
+      expect(box!.x + box!.width, `${label} inside viewport`).toBeLessThanOrEqual(width)
+      expect(box!.height, `${label} height`).toBeGreaterThanOrEqual(44)
+      expect(box!.width, `${label} width`).toBeGreaterThanOrEqual(44)
+    }
+    const doc = await page.evaluate(() => document.documentElement.scrollWidth)
+    expect(doc).toBeLessThanOrEqual(width)
+  })
+
+  test(`a refused Restore keeps every button on screen: ${width}px`, async ({ page }) => {
+    await mockTree(page, { cat: false, type: false, item: false }, { failPatch: true })
+    await page.setViewportSize({ width, height: 844 })
+    await page.goto('/admin/categories')
+    await expect(page.getByRole('heading', { level: 1, name: 'Categories' })).toBeVisible()
+    await expandAll(page, 3)
+    for (const b of await page.getByRole('button', { name: /^Restore/ }).all()) await b.click()
+    const alerts = page.getByRole('alert').filter({ hasText: 'Cannot restore this entry' })
+    await expect(alerts).toHaveCount(3)
+    for (const a of await alerts.all()) {
+      const box = (await a.boundingBox())!
+      expect(box.x, 'message left edge').toBeGreaterThanOrEqual(0)
+      expect(box.x + box.width, 'message right edge').toBeLessThanOrEqual(width)
+      // Fully visible: wrapped, not cut off by its own box.
+      expect(await a.evaluate((el) => el.scrollWidth <= el.clientWidth + 1), 'message not clipped').toBe(true)
+    }
+    for (const b of await page.getByRole('button', { name: /^(Restore|Delete|Rename)/ }).all()) {
+      const box = (await b.boundingBox())!
+      const label = await b.getAttribute('title')
+      expect(box.x, `${label} left edge`).toBeGreaterThanOrEqual(0)
+      expect(box.x + box.width, `${label} right edge`).toBeLessThanOrEqual(width)
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width)
+  })
+
+  test(`a long unbroken name keeps a readable column: ${width}px`, async ({ page }) => {
+    await mockTree(page, { cat: true, type: true, item: true })
+    await page.setViewportSize({ width, height: 844 })
+    await page.goto('/admin/categories')
+    await expect(page.getByRole('heading', { level: 1, name: 'Categories' })).toBeVisible()
+    await expandAll(page, 3)
+    // Scoped to the tree rows: the long group name is on the page too.
+    const names = page.locator('[data-archived] .wrap-anywhere', { hasText: LONG_NAME })
+    await expect(names).toHaveCount(3)
+    for (const n of await names.all()) {
+      // One letter per line would be about 10px wide.
+      expect((await n.boundingBox())!.width).toBeGreaterThanOrEqual(90)
+    }
+  })
+
+  test(`rename Save and Cancel are tappable: ${width}px`, async ({ page }) => {
+    await mockTree(page, { cat: true, type: true, item: true })
+    await page.setViewportSize({ width, height: 844 })
+    await page.goto('/admin/categories')
+    await expect(page.getByRole('heading', { level: 1, name: 'Categories' })).toBeVisible()
+    await expandAll(page, 3)
+    // The category row, then the deepest (item) row.
+    for (const index of [0, 2]) {
+      await page.getByRole('button', { name: 'Rename' }).nth(index).click()
+      for (const title of ['Save', 'Cancel']) {
+        const box = (await page.getByTitle(title, { exact: true }).boundingBox())!
+        expect(box.height, `${title} height`).toBeGreaterThanOrEqual(44)
+        expect(box.width, `${title} width`).toBeGreaterThanOrEqual(44)
+        expect(box.x + box.width, `${title} inside viewport`).toBeLessThanOrEqual(width)
+      }
+      await page.getByTitle('Cancel', { exact: true }).click()
+    }
+  })
+  })
+}
+
+test('archive asks first, then restore brings the row back', async ({ page }) => {
+  const patches = await mockTree(page, { cat: true, type: true, item: true })
+  await page.goto('/admin/categories')
+  await expect(page.getByRole('heading', { level: 1, name: 'Categories' })).toBeVisible()
+  await page.getByRole('button', { name: 'Archive category' }).click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog).toContainText('Tickets already filed keep it')
+  expect(patches).toEqual([])
+  await dialog.getByRole('button', { name: 'Archive category' }).click()
+  await expect(page.getByText('Archived')).toHaveCount(1)
+  expect(patches).toEqual(['/api/v1/admin/categories/cat-1 active=false'])
+  await page.getByRole('button', { name: 'Restore category' }).click()
+  await expect(page.getByText('Archived')).toHaveCount(0)
+  expect(patches).toEqual([
+    '/api/v1/admin/categories/cat-1 active=false',
+    '/api/v1/admin/categories/cat-1 active=true',
+  ])
+})
+
+// Phone: the name has line 1, the actions sit on line 2 (below `sm`).
+test.describe('actions go under the name on a phone', () => {
+  test.use({ hasTouch: true })
+  test('375px', async ({ page }) => {
+    await mockTree(page, { cat: true, type: true, item: true }, { names: ['Hardware', 'Laptop', 'Battery'] })
+    await page.setViewportSize({ width: 375, height: 844 })
+    await page.goto('/admin/categories')
+    await expect(page.getByRole('heading', { level: 1, name: 'Categories' })).toBeVisible()
+    await expandAll(page, 3)
+    const rename = page.getByRole('button', { name: 'Rename' })
+    const archive = page.getByRole('button', { name: /^Archive (category|type|item)$/ })
+    for (let i = 0; i < 3; i++) {
+      const r = (await rename.nth(i).boundingBox())!
+      const a = (await archive.nth(i).boundingBox())!
+      expect(a.y, `row ${i} actions are below the name`).toBeGreaterThanOrEqual(r.y + r.height - 1)
+    }
+  })
+})
+
+// Desktop (mouse): a long name wraps its own text inside its column and never
+// drops below the drag handle and arrow, so the row stays on one line of
+// controls. Compared by vertical overlap because the row centres its items.
+const WORDED = 'Quarterly hardware refresh requests for the regional offices and satellite branches'
+for (const width of [768, 1280]) {
+  test.describe(`mouse ${width}px`, () => {
+    for (const [label, name] of [['worded', WORDED], ['unbroken', LONG_NAME]] as const) {
+      test(`${label} names stay level with the drag handle: ${width}px`, async ({ page }) => {
+        await mockTree(page, { cat: true, type: true, item: true }, { names: [name, name, name] })
+        await page.setViewportSize({ width, height: 900 })
+        await page.goto('/admin/categories')
+        await expect(page.getByRole('heading', { level: 1, name: 'Categories' })).toBeVisible()
+        await expandAll(page, 3)
+        const rows = page.locator('[data-archived]')
+        await expect(rows).toHaveCount(3)
+        for (let i = 0; i < 3; i++) {
+          const row = rows.nth(i)
+          const handle = (await row.getByTitle('Drag to reorder').boundingBox())!
+          const text = (await row.locator('.wrap-anywhere').first().boundingBox())!
+          expect(text.y, `row ${i} name starts above the handle's bottom`).toBeLessThan(handle.y + handle.height)
+          expect(text.y + text.height, `row ${i} name ends below the handle's top`).toBeGreaterThan(handle.y)
+          // Edit mode keeps the input on the same line too (the row can change
+          // height, so the handle is measured again).
+          await row.hover()
+          await row.getByRole('button', { name: 'Rename' }).click()
+          const editHandle = (await row.getByTitle('Drag to reorder').boundingBox())!
+          const input = (await row.getByRole('textbox').boundingBox())!
+          expect(input.y, `row ${i} input starts above the handle's bottom`).toBeLessThan(editHandle.y + editHandle.height)
+          expect(input.y + input.height, `row ${i} input ends below the handle's top`).toBeGreaterThan(editHandle.y)
+          await row.getByTitle('Cancel', { exact: true }).click()
+        }
+      })
+    }
+  })
+}
+
+// A long refusal must wrap, not widen the row: from `sm` up the actions group
+// is part of the row's single line, so an unwrappable alert pushed Restore and
+// Delete past the edge (seen at 768 touch and 1280 mouse).
+const LONG_REFUSAL =
+  'Cannot restore this entry because its parent category is archived, an automatic assignment rule depends on it, and the reopen target points at it'
+for (const [width, touch] of [[640, true], [768, true], [1024, false], [1280, false]] as const) {
+  test.describe(`long refusal ${width}px ${touch ? 'touch' : 'mouse'}`, () => {
+    test.use({ hasTouch: touch })
+    test('buttons stay on screen and the page does not scroll sideways', async ({ page }) => {
+      await mockTree(page, { cat: false, type: false, item: false }, { failPatch: true, refusal: LONG_REFUSAL })
+      await page.setViewportSize({ width, height: 900 })
+      await page.goto('/admin/categories')
+      await expect(page.getByRole('heading', { level: 1, name: 'Categories' })).toBeVisible()
+      await expandAll(page, 3)
+      for (const b of await page.getByRole('button', { name: /^Restore/ }).all()) await b.click()
+      await expect(page.getByRole('alert').filter({ hasText: 'Cannot restore this entry' })).toHaveCount(3)
+      for (const b of await page.getByRole('button', { name: /^(Restore|Delete)/ }).all()) {
+        const box = (await b.boundingBox())!
+        const label = await b.getAttribute('title')
+        expect(box.x, `${label} left edge`).toBeGreaterThanOrEqual(0)
+        expect(box.x + box.width, `${label} right edge`).toBeLessThanOrEqual(width)
+      }
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width)
+    })
+  })
+}

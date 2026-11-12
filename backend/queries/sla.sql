@@ -11,11 +11,29 @@ SET name = $2, priority = $3, category_id = $4,
     response_target_min = $5, resolution_target_min = $6
 WHERE id = $1;
 
--- name: DeleteSLAPolicy :exec
+-- name: DeleteSLAPolicy :execrows
 DELETE FROM sla_policies WHERE id = $1;
 
+-- name: CountSLARecordsByPolicy :one
+-- sla_records.policy_id is ON DELETE RESTRICT: a record's targets and breach
+-- stamps only mean something against the policy that set them. Counting first
+-- turns the raw foreign-key 500 into a refusal naming how many tickets depend
+-- on the policy (#261) -- the same reason CountStatusHistoryByStatus exists.
+SELECT COUNT(*) FROM sla_records WHERE policy_id = $1;
+
 -- name: ListSLAPolicies :many
-SELECT * FROM sla_policies ORDER BY priority, name;
+-- Severity order, most urgent first, the catch-all (no priority) last. Sorting
+-- the text gave critical, high, low, medium: "low" ahead of "medium", and a
+-- catch-all (NULL) wherever the database put it.
+SELECT * FROM sla_policies
+ORDER BY CASE priority
+           WHEN 'critical' THEN 1
+           WHEN 'high'     THEN 2
+           WHEN 'medium'   THEN 3
+           WHEN 'low'      THEN 4
+           ELSE 5
+         END,
+         name;
 
 -- name: FindSLAPolicy :one
 -- The four tiers DESIGN.md documents, most specific first:
@@ -45,10 +63,245 @@ INSERT INTO sla_records (ticket_id, policy_id, first_response_at, resolved_at, r
 VALUES ($1, $2, $3, $4, $5, $6);
 
 -- name: GetSLARecord :one
-SELECT * FROM sla_records WHERE ticket_id = $1;
+-- The CURRENT record: a superseded row (000043) is history and is never read
+-- as "the ticket's SLA". Every statement below that addresses a ticket's
+-- record carries the same filter.
+SELECT * FROM sla_records WHERE ticket_id = $1 AND superseded_at IS NULL;
 
 -- name: UpdateSLARecord :exec
+-- Deprecated: every SLA write is keyed by record id since #623, and this one is
+-- keyed by ticket. It is a full-row read-modify-write with no production caller;
+-- a write computed from a record read earlier must be addressed to that record
+-- (see SetSLAFirstResponse, StampSLABreaches). Kept, not removed.
 UPDATE sla_records
 SET first_response_at = $2, resolved_at = $3,
     response_breached_at = $4, resolution_breached_at = $5
-WHERE ticket_id = $1;
+WHERE ticket_id = $1 AND superseded_at IS NULL;
+
+-- name: SetSLAFirstResponse :execrows
+-- Addressed by the RECORD's id, not the ticket's (#623). The caller read that
+-- record, computed its elapsed time from its clock and its targets from its
+-- policy, and the reading means nothing on any other record. A re-match
+-- (priority change, reopen restart) that committed in between has superseded
+-- it, so zero rows are affected, and the caller reads the current record and
+-- starts over. Keyed on the ticket, the write used to land on the NEW record
+-- with the OLD record's reading (or, when the re-match was still holding the
+-- old record's lock, to wait and then update nothing at all). A write that
+-- finds its record current but already filled still affects one row: it
+-- changes nothing, and is not mistaken for a lost race.
+--
+-- Marks the first response, freezes elapsed-toward-target as of that same
+-- moment, AND stamps a response breach if it is already late — all in ONE
+-- statement. COALESCE-guarded like StampSLABreaches below: it only ever
+-- writes first_response_at / response_elapsed_at_met_seconds /
+-- response_breached_at, and only while each is still NULL, so it cannot race
+-- with StampSLABreaches clobbering a breach stamp the way a full-row
+-- UpdateSLARecord read-then-write could (see CLAUDE.md). Idempotent for the
+-- same reason: a retried call finds every column already set and changes
+-- nothing.
+--
+-- #228: this used to be the fact write alone, with the caller separately
+-- reading the record, deciding whether to breach from that (possibly stale)
+-- read, and issuing a second StampSLABreaches statement. Two consequences:
+-- two near-simultaneous calls could both decide from a stale pre-write read,
+-- so the LOSING call's own (later, larger) elapsed reading could still land
+-- a breach stamp even though the WINNING call's earlier, on-time write is
+-- what actually took — a stray, uncleared breach stamp next to a frozen
+-- green elapsed reading. And a failure between the fact write and the
+-- now-separate breach-stamp statement could lose a genuine late-response
+-- signal permanently (ListSLABreachCandidates excludes a ticket once
+-- first_response_at is set, so nothing ever revisits it).
+--
+-- Folding both into one statement removes the gap entirely: every column
+-- reference on the right of "=" reads this row as it stood BEFORE this
+-- statement (a single UPDATE's SET list is computed once, from the pre-image
+-- row, never from another SET clause's new value), so
+-- "first_response_at IS NULL" means "nothing has won this race yet — THIS
+-- call's write is the one that lands, and its own elapsed reading is the one
+-- the breach decision is made from." A losing call (first_response_at
+-- already NOT NULL) touches nothing at all, including response_breached_at,
+-- so it can never stamp a breach the winning call did not itself decide.
+UPDATE sla_records
+SET first_response_at = COALESCE(first_response_at, sqlc.arg(at)::timestamptz),
+    response_elapsed_at_met_seconds = COALESCE(response_elapsed_at_met_seconds, sqlc.arg(elapsed_seconds)::bigint),
+    response_breached_at = CASE
+        WHEN first_response_at IS NULL
+             AND sqlc.arg(elapsed_seconds)::bigint >= sqlc.arg(response_target_seconds)::bigint
+            THEN COALESCE(response_breached_at, sqlc.arg(at)::timestamptz)
+        ELSE response_breached_at
+    END
+WHERE id = $1 AND superseded_at IS NULL;
+
+-- name: SetSLAResolved :execrows
+-- The resolution-side twin of SetSLAFirstResponse: see its comment for why
+-- the fact write and the breach stamp are one statement (#228), why
+-- every right-hand-side column reference here reads the PRE-UPDATE row, and
+-- why it is addressed by record id (#623).
+UPDATE sla_records
+SET resolved_at = COALESCE(resolved_at, sqlc.arg(at)::timestamptz),
+    resolution_elapsed_at_met_seconds = COALESCE(resolution_elapsed_at_met_seconds, sqlc.arg(elapsed_seconds)::bigint),
+    resolution_breached_at = CASE
+        WHEN resolved_at IS NULL
+             AND sqlc.arg(elapsed_seconds)::bigint >= sqlc.arg(resolution_target_seconds)::bigint
+            THEN COALESCE(resolution_breached_at, sqlc.arg(at)::timestamptz)
+        ELSE resolution_breached_at
+    END
+WHERE id = $1 AND superseded_at IS NULL;
+
+-- name: SetSLAResolvedAndFirstResponse :execrows
+-- #233: RecordResolved's own fold of TWO facts into one statement, the same
+-- way #228 folded each fact with its own breach decision. Before this,
+-- RecordResolved issued SetSLAResolved then SetSLAFirstResponse as two
+-- separate statements (the #219 "a resolution is a response too" backfill).
+-- A failure between them left resolved_at set and first_response_at
+-- permanently NULL: RecordResolved's own fast no-op guard (resolved_at
+-- already set) blocks any later call from ever retrying the second write,
+-- and ListSLABreachCandidates' first_response_at IS NULL branch keeps
+-- selecting the row on every sweep tick, which then stamps a PERMANENT false
+-- response_breached_at. One statement makes that intermediate state
+-- impossible: both writes commit together, in the same row version, or
+-- neither does.
+--
+-- Addressed by record id, like SetSLAFirstResponse (#623).
+--
+-- Same COALESCE-guarded, first-writer-wins shape as SetSLAFirstResponse /
+-- SetSLAResolved, applied to both column pairs independently: each pair's
+-- CASE reads only ITS OWN pre-image column (resolution_breached_at's
+-- condition reads resolved_at; response_breached_at's reads
+-- first_response_at), so a ticket that already has a genuine EARLIER
+-- first_response_at (a real staff reply before the resolution) keeps it —
+-- and its own already-decided response_breached_at — completely untouched;
+-- only the resolution pair is written for it. This is exactly
+-- RecordResolved's existing "SetFirstResponse's own COALESCE guard already
+-- makes this the correct no-op" reasoning, now inside one statement instead
+-- of two.
+UPDATE sla_records
+SET resolved_at = COALESCE(resolved_at, sqlc.arg(at)::timestamptz),
+    resolution_elapsed_at_met_seconds = COALESCE(resolution_elapsed_at_met_seconds, sqlc.arg(elapsed_seconds)::bigint),
+    resolution_breached_at = CASE
+        WHEN resolved_at IS NULL
+             AND sqlc.arg(elapsed_seconds)::bigint >= sqlc.arg(resolution_target_seconds)::bigint
+            THEN COALESCE(resolution_breached_at, sqlc.arg(at)::timestamptz)
+        ELSE resolution_breached_at
+    END,
+    first_response_at = COALESCE(first_response_at, sqlc.arg(at)::timestamptz),
+    response_elapsed_at_met_seconds = COALESCE(response_elapsed_at_met_seconds, sqlc.arg(elapsed_seconds)::bigint),
+    response_breached_at = CASE
+        WHEN first_response_at IS NULL
+             AND sqlc.arg(elapsed_seconds)::bigint >= sqlc.arg(response_target_seconds)::bigint
+            THEN COALESCE(response_breached_at, sqlc.arg(at)::timestamptz)
+        ELSE response_breached_at
+    END
+WHERE id = $1 AND superseded_at IS NULL;
+
+-- name: ListSLABreachCandidates :many
+-- Tickets the breach sweep must evaluate: open, under a policy, with at least
+-- one target that is neither met nor already stamped, using the same
+-- pause-aware elapsed time as sla.Record.Elapsed (see sla.ElapsedFrom's doc
+-- comment; the two must change together, and so must ListTicketsFiltered in
+-- tickets.sql, the third copy). The clock starts at the record's
+-- started_at (the ticket's creation when NULL) and counts the ticket's pause
+-- total from the record's paused_seconds_at_start. Superseded records are
+-- history and are never evaluated. LEAST(COALESCE(pending_since, now), now) is
+-- the instant the SLA clock stopped: pending_since while the ticket is
+-- currently Pending, clipped to now the same way Elapsed clips with
+-- at.After(*PendingSince), and now otherwise. A Pending ticket whose frozen
+-- elapsed time is still under target is therefore never selected. This
+-- prefilter must still return everything EvaluateBreaches would stamp — it
+-- is exact via <=, agreeing with the >= that decides it in Go on a fresh read
+-- of the row (an elapsed time equal to the target is a breach) — see
+-- TestSLAStore_ListBreachCandidates's superset invariant check.
+SELECT r.ticket_id
+FROM sla_records r
+JOIN tickets      t ON t.id = r.ticket_id
+JOIN sla_policies p ON p.id = r.policy_id
+WHERE t.closed_at IS NULL
+  AND r.superseded_at IS NULL
+  AND (
+       (r.first_response_at IS NULL AND r.response_breached_at IS NULL
+          AND COALESCE(r.started_at, t.created_at)
+              + make_interval(secs => (t.sla_paused_seconds - r.paused_seconds_at_start)::double precision)
+              + make_interval(mins => p.response_target_min)
+              <= LEAST(COALESCE(t.pending_since, sqlc.arg(now)::timestamptz), sqlc.arg(now)::timestamptz))
+    OR (r.resolved_at IS NULL AND r.resolution_breached_at IS NULL
+          AND COALESCE(r.started_at, t.created_at)
+              + make_interval(secs => (t.sla_paused_seconds - r.paused_seconds_at_start)::double precision)
+              + make_interval(mins => p.resolution_target_min)
+              <= LEAST(COALESCE(t.pending_since, sqlc.arg(now)::timestamptz), sqlc.arg(now)::timestamptz))
+  )
+ORDER BY t.created_at;
+
+-- name: ListSLARecordsByTicketIDs :many
+-- Batch lookup for the per-ticket SLA status embedded on GET /tickets and
+-- GET /tickets/{id} (#183): one query for the whole page, after it is
+-- sliced, rather than a JOIN pushed into every one of the ~12 list/search
+-- queries that would compute SLA for limit×(1+groups) rows and throw most
+-- of them away. See sla.Service.StatusesFor.
+SELECT * FROM sla_records
+WHERE ticket_id = ANY(sqlc.arg('ticket_ids')::uuid[]) AND superseded_at IS NULL;
+
+-- name: StampSLABreaches :execrows
+-- Addressed by the id of the record the caller evaluated, like SetSLAFirstResponse
+-- (#623): the breach was decided from that record's clock and policy, and means
+-- nothing on a record that replaced it. Zero rows is a superseded record, and the
+-- caller skips; the next sweep evaluates the new one.
+--
+-- Sets only the breach columns, and only where still NULL. Two evaluators
+-- racing on the same row cannot overwrite each other's stamp or, worse, the
+-- request path's first_response_at / resolved_at. A stamp, once set, is a
+-- fact about what happened (DESIGN.md) and is never cleared here.
+UPDATE sla_records
+SET response_breached_at   = COALESCE(response_breached_at,   sqlc.narg(response_breached_at)::timestamptz),
+    resolution_breached_at = COALESCE(resolution_breached_at, sqlc.narg(resolution_breached_at)::timestamptz)
+WHERE id = $1 AND superseded_at IS NULL;
+
+-- name: CountSLARecordsByCategory :one
+-- Deleting a category cascades to its SLA policies, and sla_records.policy_id
+-- is ON DELETE RESTRICT, so a record left behind by a ticket that has since
+-- moved to another category still blocks the delete (#418).
+SELECT COUNT(*) FROM sla_records r
+JOIN sla_policies p ON p.id = r.policy_id
+WHERE p.category_id = $1;
+
+-- name: ListSLARecordsForTicket :many
+-- Every record a ticket has had, current and superseded, newest clock first.
+-- A record that a re-match replaced while it was running inherits its
+-- predecessor's started_at, so ties are broken by superseded_at, current row
+-- first. A NULL started_at is the ticket's creation.
+SELECT r.* FROM sla_records r
+JOIN tickets t ON t.id = r.ticket_id
+WHERE r.ticket_id = $1
+ORDER BY COALESCE(r.started_at, t.created_at) DESC, r.superseded_at DESC NULLS FIRST;
+
+-- name: GetCurrentSLARecordForUpdate :one
+-- The ticket's current record, locked for the duration of a re-match.
+SELECT * FROM sla_records WHERE ticket_id = $1 AND superseded_at IS NULL FOR UPDATE;
+
+-- name: GetLatestSupersededSLARecord :one
+-- The record a ticket most recently stopped having. Read, in the same
+-- transaction that holds the ticket's row lock, when a ticket with no current
+-- record gets one back, so the new clock resumes where the last one ran.
+SELECT * FROM sla_records WHERE ticket_id = $1 AND superseded_at IS NOT NULL
+ORDER BY superseded_at DESC, id DESC LIMIT 1;
+
+-- name: SupersedeSLARecord :execrows
+-- The only write a re-match ever makes to an existing record. Every fact on
+-- the row stays as it was; the row simply stops being current.
+UPDATE sla_records
+SET superseded_at = sqlc.arg(superseded_at)::timestamptz
+WHERE id = $1 AND superseded_at IS NULL;
+
+-- name: InsertSLARecord :exec
+-- A record started by a re-match: its own id, an explicit clock start (NULL
+-- reads as the ticket's creation) and the ticket's pause total as of that
+-- start. A staff re-match also carries the old record's facts onto it, so a
+-- target already met stays met; a restart passes none.
+INSERT INTO sla_records (
+    id, ticket_id, policy_id, started_at, paused_seconds_at_start,
+    first_response_at, resolved_at, response_breached_at, resolution_breached_at,
+    response_elapsed_at_met_seconds, resolution_elapsed_at_met_seconds)
+VALUES (
+    $1, $2, $3, sqlc.narg(started_at)::timestamptz, $4,
+    sqlc.narg(first_response_at)::timestamptz, sqlc.narg(resolved_at)::timestamptz,
+    sqlc.narg(response_breached_at)::timestamptz, sqlc.narg(resolution_breached_at)::timestamptz,
+    sqlc.narg(response_elapsed_at_met_seconds)::bigint, sqlc.narg(resolution_elapsed_at_met_seconds)::bigint);

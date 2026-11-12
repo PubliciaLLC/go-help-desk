@@ -3,33 +3,109 @@ package auth
 
 import (
 	"context"
-	"crypto/rsa"
+	"crypto"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"time"
 
+	"github.com/crewjam/saml"
 	"github.com/crewjam/saml/samlsp"
 )
 
 // metadataFetchTimeout bounds the IdP metadata fetch. It runs while SAML is
 // being (re)configured, so an IdP that accepts the connection and then stalls
 // would otherwise hang the reload indefinitely, with the admin UI simply never
-// returning. The client is safehttp's, which carries this timeout and refuses
-// internal addresses.
+// returning.
 const metadataFetchTimeout = 15 * time.Second
+
+// SAMLHandoverMaxAge is how long the SAML library's own "token" cookie, and
+// the JWT inside it, stay valid. The library's default is an hour, but the
+// cookie only carries the assertion from the ACS to /auth/saml/complete, one
+// redirect later, where it is spent (#337). The lifetime matters only for a
+// copy that never got there. Five minutes, not seconds, because the JWT's
+// expiry is checked against the clock of whichever replica serves /complete.
+const SAMLHandoverMaxAge = 5 * time.Minute
+
+// HandoverCodec is the library's JWT session codec with one change: every
+// token it mints carries a random jti.
+//
+// /auth/saml/complete records each hand-over cookie it accepts by the SHA-256
+// of the JWT's header.payload, and refuses one it has seen before (#337).
+// Without a jti, that payload is the assertion's attributes plus iat, nbf and
+// exp at one-second precision, so one person signing in twice within the
+// same second gets two tokens whose header.payload is byte-for-byte equal,
+// and the second, genuine sign-in is refused as a replay. The jti makes each
+// token's header.payload, and so its spend key, unique.
+type HandoverCodec struct {
+	samlsp.JWTSessionCodec
+}
+
+// New builds the session exactly as the embedded codec does, then sets a
+// random jti on it (see HandoverCodec for why).
+//
+// The claims are returned by value: the embedded Encode and the /complete
+// handler both type-assert to samlsp.JWTSessionClaims, not a pointer, and
+// Encode panics on anything else.
+func (c HandoverCodec) New(assertion *saml.Assertion) (samlsp.Session, error) {
+	sess, err := c.JWTSessionCodec.New(assertion)
+	if err != nil {
+		return nil, err
+	}
+
+	// The embedded codec returns this type today. If an upgrade changes that,
+	// fail the sign-in rather than mint a token without a jti, which would
+	// bring back the same-second collision.
+	claims, ok := sess.(samlsp.JWTSessionClaims)
+	if !ok {
+		return nil, fmt.Errorf("expected samlsp.JWTSessionClaims, got %T", sess)
+	}
+
+	// 128 random bits: a collision between two live tokens is not a case to
+	// plan for.
+	jtiBytes := make([]byte, 16)
+	if _, err := rand.Read(jtiBytes); err != nil {
+		return nil, fmt.Errorf("generating jti: %w", err)
+	}
+	claims.Id = base64.RawURLEncoding.EncodeToString(jtiBytes)
+	return claims, nil
+}
+
+// NewHandoverCodec constructs a HandoverCodec from SAML options, configured
+// with the handover lifetime.
+func NewHandoverCodec(opts samlsp.Options) HandoverCodec {
+	codec := samlsp.DefaultSessionCodec(opts)
+	codec.MaxAge = SAMLHandoverMaxAge
+	return HandoverCodec{JWTSessionCodec: codec}
+}
 
 // SAMLConfig holds the parameters needed to initialise a SAML service provider.
 type SAMLConfig struct {
 	// BaseURL is the external root URL of this service, e.g. https://helpdesk.example.com
 	BaseURL string
-	// MetadataURL is the URL of the IdP's SAML 2.0 metadata XML.
+	// MetadataURL is the URL of the IdP's SAML 2.0 metadata XML. It is fetched.
 	MetadataURL string
+	// MetadataXML is the IdP's SAML 2.0 metadata itself, as pasted. When it is
+	// set, MetadataURL is ignored and nothing is fetched (#461). The two are
+	// alternatives; both API doors refuse a save that sets both, so both set
+	// can only come from a direct database edit, and the XML wins.
+	MetadataXML []byte
 	// CertPEM and KeyPEM are the PEM-encoded SP signing certificate and private key.
 	CertPEM []byte
 	KeyPEM  []byte
+	// HTTPSOnly refuses a metadata URL that is not https, and a redirect that
+	// leaves https, so nothing is fetched. For the periodic refresh, which runs
+	// unattended and may swap what the SP trusts; a save by an administrator
+	// does not set it.
+	HTTPSOnly bool
+	// HTTPClient fetches the metadata URL. Nil means a client with
+	// metadataFetchTimeout. Tests give one that trusts their TLS server.
+	HTTPClient *http.Client
 }
 
 // NewSAMLMiddleware constructs a crewjam/saml middleware for the given config.
@@ -53,14 +129,105 @@ func NewSAMLMiddleware(ctx context.Context, cfg SAMLConfig) (*samlsp.Middleware,
 	// ACS and metadata URLs match our registered routes:
 	//   {baseURL}/api/v1/auth/saml/acs
 	//   {baseURL}/api/v1/auth/saml/metadata
-	spURL, err := url.Parse(cfg.BaseURL + "/api/v1/auth")
+	//
+	// The trailing slash is load-bearing, not cosmetic: samlsp.DefaultServiceProvider
+	// builds those two URLs via url.ResolveReference(&url.URL{Path: "saml/metadata"})
+	// (and "saml/acs"), which is RFC 3986 §5.3 relative resolution — it replaces
+	// everything after the LAST slash in the base path, not everything after the
+	// base path itself. Without the trailing slash, "auth" is what gets replaced,
+	// producing {baseURL}/api/v1/saml/metadata: one path segment short of the
+	// route this server actually registers. samlsp.Middleware.ServeHTTP compares
+	// r.URL.Path against that computed value with ==, so every real request to
+	// the registered route missed it and fell through to a 404 — SAML could
+	// never complete a login or serve its own metadata to an IdP, regardless of
+	// how correctly everything else here is configured. Caught by a test for an
+	// unrelated #304 regression (there was previously no test exercising the SAML
+	// metadata route through the live server at all) rather than anything about
+	// this function's own logic, which is why it went unnoticed until now.
+	spURL, err := url.Parse(cfg.BaseURL + "/api/v1/auth/")
 	if err != nil {
 		return nil, fmt.Errorf("parsing SP base URL: %w", err)
 	}
 
-	metadataURL, err := url.Parse(cfg.MetadataURL)
+	var idpMeta *saml.EntityDescriptor
+	if len(cfg.MetadataXML) > 0 {
+		idpMeta, err = ParseIdPMetadataXML(cfg.MetadataXML)
+		if err != nil {
+			return nil, fmt.Errorf("parsing IdP metadata XML: %w", err)
+		}
+	} else {
+		idpMeta, err = fetchIdPMetadata(ctx, cfg.MetadataURL, cfg.HTTPClient, cfg.HTTPSOnly)
+		if err != nil {
+			return nil, err
+		}
+		// Pasted XML gets this check at save; fetched metadata gets it here, so
+		// startup, a manual save and the hourly refresh all refuse what pasted
+		// XML always did: no signing certificate, or one that does not parse. The
+		// library fails every sign-in in either case, so such metadata must not
+		// replace a working configuration (or load at all).
+		if err := checkIdPSigningCerts(idpMeta); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrIdPMetadataInvalid, err)
+		}
+	}
+
+	// samlsp.Options wants a crypto.Signer, not specifically an RSA key —
+	// tls.X509KeyPair above happily parses and validates an ECDSA or Ed25519
+	// pair too, so asserting straight to *rsa.PrivateKey turned a
+	// well-formed non-RSA keypair into an unrecovered panic (a 500 with no
+	// useful message) instead of the plain configuration error this is.
+	signer, ok := keyPair.PrivateKey.(crypto.Signer)
+	if !ok {
+		return nil, fmt.Errorf("SAML private key does not support signing (got %T)", keyPair.PrivateKey)
+	}
+	opts := samlsp.Options{
+		URL:         *spURL,
+		Key:         signer,
+		Certificate: keyPair.Leaf,
+		IDPMetadata: idpMeta,
+	}
+	mw, err := samlsp.New(opts)
+	if err != nil {
+		return nil, err
+	}
+	// Both lifetimes: the cookie's Max-Age, and the JWT's exp, which is what
+	// is actually enforced (a browser can keep a cookie past its Max-Age).
+	// Use HandoverCodec to ensure each minted JWT gets a random jti; without
+	// it, two mints for one person in the same second share the same
+	// header.payload, and the spend (keyed on SHA-256 of header.payload)
+	// wrongly rejects the second sign-in (#337).
+	codec := NewHandoverCodec(opts)
+	session := samlsp.DefaultSessionProvider(opts)
+	session.MaxAge = SAMLHandoverMaxAge
+	session.Codec = codec
+	// The "token" cookie is set on the ACS response and read by /complete,
+	// a top-level GET that the ACS redirects to, so Lax is enough. Explicit,
+	// so it does not rest on each browser's default.
+	session.SameSite = http.SameSiteLaxMode
+	mw.Session = session
+
+	// The tracking cookie ("saml_" + RelayState) has to come back on the IdP's
+	// cross-site POST to the ACS, which only SameSite=None allows. Set on the
+	// tracker alone: opts.CookieSameSite would put None on "token" as well.
+	// Over http it is left unset, because browsers reject None without
+	// Secure (the library sets Secure only for an https ACS); Lax would be
+	// worse than unset there, since Chrome's two-minute POST allowance
+	// applies only to cookies with no SameSite at all (#399).
+	tracker := samlsp.DefaultRequestTracker(opts, &mw.ServiceProvider)
+	if spURL.Scheme == "https" {
+		tracker.SameSite = http.SameSiteNoneMode
+	}
+	mw.RequestTracker = tracker
+	return mw, nil
+}
+
+// fetchIdPMetadata fetches and parses the IdP metadata at rawURL.
+func fetchIdPMetadata(ctx context.Context, rawURL string, client *http.Client, httpsOnly bool) (*saml.EntityDescriptor, error) {
+	metadataURL, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("parsing IdP metadata URL: %w", err)
+	}
+	if httpsOnly && metadataURL.Scheme != "https" {
+		return nil, errors.New("the IdP metadata URL must be https")
 	}
 	// The caller's context is honoured rather than discarded, so a shutdown or
 	// a cancelled admin request stops the fetch instead of outliving it.
@@ -73,16 +240,27 @@ func NewSAMLMiddleware(ctx context.Context, cfg SAMLConfig) (*samlsp.Middleware,
 	// by the timeout and by not echoing the fetch error back to the caller —
 	// see handleSaveSAMLConfig. Webhook targets ARE guarded, because those are
 	// external by definition.
-	idpMeta, err := samlsp.FetchMetadata(fetchCtx, &http.Client{Timeout: metadataFetchTimeout}, *metadataURL)
+	c := &http.Client{Timeout: metadataFetchTimeout}
+	if client != nil {
+		copied := *client
+		c = &copied
+	}
+	if httpsOnly {
+		// The default policy follows a redirect to http, which would put the
+		// trust anchor back in the clear.
+		c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			if req.URL.Scheme != "https" {
+				return errors.New("the IdP metadata URL redirected away from https")
+			}
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+			return nil
+		}
+	}
+	idpMeta, err := samlsp.FetchMetadata(fetchCtx, c, *metadataURL)
 	if err != nil {
-		return nil, fmt.Errorf("fetching IdP metadata from %s: %w", cfg.MetadataURL, err)
+		return nil, fmt.Errorf("fetching IdP metadata from %s: %w", rawURL, err)
 	}
-
-	opts := samlsp.Options{
-		URL:         *spURL,
-		Key:         keyPair.PrivateKey.(*rsa.PrivateKey),
-		Certificate: keyPair.Leaf,
-		IDPMetadata: idpMeta,
-	}
-	return samlsp.New(opts)
+	return idpMeta, nil
 }

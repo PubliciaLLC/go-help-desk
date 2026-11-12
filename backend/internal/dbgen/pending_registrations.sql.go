@@ -21,6 +21,28 @@ func (q *Queries) DeletePendingRegistration(ctx context.Context, id uuid.UUID) e
 	return err
 }
 
+const getPendingRegistrationByID = `-- name: GetPendingRegistrationByID :one
+SELECT id, email, display_name, password_hash, token, expires_at, created_at FROM pending_registrations WHERE id = $1
+`
+
+// The send-time read for a queued verification email (#348): the row is read
+// when the mail goes out, so the token and address are the current ones and
+// the token is never copied into the outbox.
+func (q *Queries) GetPendingRegistrationByID(ctx context.Context, id uuid.UUID) (PendingRegistration, error) {
+	row := q.db.QueryRowContext(ctx, getPendingRegistrationByID, id)
+	var i PendingRegistration
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.DisplayName,
+		&i.PasswordHash,
+		&i.Token,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getPendingRegistrationByToken = `-- name: GetPendingRegistrationByToken :one
 SELECT id, email, display_name, password_hash, token, expires_at, created_at FROM pending_registrations WHERE token = $1
 `
@@ -41,33 +63,30 @@ func (q *Queries) GetPendingRegistrationByToken(ctx context.Context, token uuid.
 }
 
 const upsertPendingRegistration = `-- name: UpsertPendingRegistration :one
-INSERT INTO pending_registrations (id, email, display_name, password_hash, token, expires_at, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO pending_registrations (id, email, token, expires_at, created_at)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (lower(email)) DO UPDATE
-    SET display_name  = EXCLUDED.display_name,
-        password_hash = EXCLUDED.password_hash,
-        token         = EXCLUDED.token,
+    SET token         = EXCLUDED.token,
         expires_at    = EXCLUDED.expires_at,
         created_at    = EXCLUDED.created_at
 RETURNING id, email, display_name, password_hash, token, expires_at, created_at
 `
 
 type UpsertPendingRegistrationParams struct {
-	ID           uuid.UUID `json:"id"`
-	Email        string    `json:"email"`
-	DisplayName  string    `json:"display_name"`
-	PasswordHash string    `json:"password_hash"`
-	Token        uuid.UUID `json:"token"`
-	ExpiresAt    time.Time `json:"expires_at"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID        uuid.UUID `json:"id"`
+	Email     string    `json:"email"`
+	Token     uuid.UUID `json:"token"`
+	ExpiresAt time.Time `json:"expires_at"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
+// No password (#360) and no display name (#374): both are chosen at
+// verification, so a second signup for the same address can only re-issue
+// the link, never choose anything the account will get.
 func (q *Queries) UpsertPendingRegistration(ctx context.Context, arg UpsertPendingRegistrationParams) (PendingRegistration, error) {
 	row := q.db.QueryRowContext(ctx, upsertPendingRegistration,
 		arg.ID,
 		arg.Email,
-		arg.DisplayName,
-		arg.PasswordHash,
 		arg.Token,
 		arg.ExpiresAt,
 		arg.CreatedAt,

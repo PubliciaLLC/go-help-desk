@@ -12,7 +12,6 @@ type Store interface {
 	Create(ctx context.Context, g Group) error
 	GetByID(ctx context.Context, id uuid.UUID) (Group, error)
 	Update(ctx context.Context, g Group) error
-	Delete(ctx context.Context, id uuid.UUID) error
 	List(ctx context.Context) ([]Group, error)
 
 	// Members
@@ -20,6 +19,9 @@ type Store interface {
 	RemoveMember(ctx context.Context, groupID, userID uuid.UUID) error
 	ListMembers(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID, error)
 	ListGroupsForUser(ctx context.Context, userID uuid.UUID) ([]Group, error)
+	// ListMailableMembers is the members staff email can go to: active staff
+	// and administrators, never a service account (#441, #490).
+	ListMailableMembers(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID, error)
 
 	// Scopes
 	AddScope(ctx context.Context, s GroupScope) error

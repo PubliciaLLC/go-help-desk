@@ -1,0 +1,12 @@
+-- The optional HTML part of an edited email template (#158).
+--
+-- NULL means no HTML part: the template is sent as plain text, exactly as it was
+-- before this column existed. A row saved under 000057 reads NULL, so upgrading
+-- changes no mail. There is no default HTML either; nothing becomes multipart
+-- until an administrator saves some.
+--
+-- For the reserved names _header and _footer this is the branded HTML that
+-- wraps the HTML part of every template that has one.
+--
+-- A nullable column with no default: no table rewrite.
+ALTER TABLE email_template_overrides ADD COLUMN html TEXT;

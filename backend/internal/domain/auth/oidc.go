@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -35,6 +36,17 @@ type OIDCConfig struct {
 type OIDCProvider struct {
 	Config   *oauth2.Config
 	Verifier *oidc.IDTokenVerifier
+
+	// fetchTimeout bounds the token exchange; zero means oidcFetchTimeout.
+	// A field so a test can shorten it, nothing else sets it.
+	fetchTimeout time.Duration
+}
+
+func (p *OIDCProvider) exchangeTimeout() time.Duration {
+	if p.fetchTimeout > 0 {
+		return p.fetchTimeout
+	}
+	return oidcFetchTimeout
 }
 
 // OIDCClaims contains the standard identity claims returned
@@ -53,9 +65,48 @@ type OIDCClaims struct {
 	FamilyName string `json:"family_name"`
 
 	PreferredUsername string `json:"preferred_username"`
+
+	// AMR lists how the provider authenticated the user (RFC 8176). Entra
+	// sends it in v2.0 ID tokens only when `amr` is added as an optional
+	// claim on the app registration.
+	AMR amrList `json:"amr"`
 }
 
-// oidcFetchTimeout bounds discovery, JWKS fetches and token exchange.
+// amrList accepts amr as the array OIDC Core specifies or as a single string.
+// Before amr was read at all, a provider that sent a string broke nothing;
+// failing to decode one would turn every sign-in from it into a 500.
+type amrList []string
+
+func (l *amrList) UnmarshalJSON(b []byte) error {
+	var one string
+	if err := json.Unmarshal(b, &one); err == nil {
+		*l = amrList{one}
+		return nil
+	}
+	var many []string
+	if err := json.Unmarshal(b, &many); err != nil {
+		return err
+	}
+	*l = many
+	return nil
+}
+
+// AssertedMFA reports whether the provider says the user completed a second
+// factor: "mfa" in amr, the RFC 8176 value Entra, Okta and others send. A
+// provider that sends no amr fails closed — the sign-in still succeeds, it
+// just does not count as having proved a factor.
+func (c OIDCClaims) AssertedMFA() bool {
+	for _, m := range c.AMR {
+		if m == "mfa" {
+			return true
+		}
+	}
+	return false
+}
+
+// oidcFetchTimeout bounds discovery, JWKS fetches and token exchange. Discovery
+// and the key fetch get it from the client NewOIDCProvider puts on its context;
+// the exchange runs on the caller's context, so Exchange sets it itself.
 const oidcFetchTimeout = 15 * time.Second
 
 // NewOIDCProvider initializes an OIDC provider using discovery.
@@ -66,8 +117,8 @@ func NewOIDCProvider(
 
 	// go-oidc uses http.DefaultClient unless one is in the context: no timeout
 	// at all. Discovery runs synchronously at startup, so a tarpit issuer hung
-	// the boot indefinitely, and every login's token exchange inherited the
-	// same client.
+	// the boot indefinitely. This context reaches discovery and the key set
+	// only; Exchange puts the same bound on its own.
 	//
 	// Not address-guarded, for the same reason as the SAML metadata fetch: a
 	// self-hosted IdP on a private network is a normal topology and refusing it
@@ -166,6 +217,11 @@ func (p *OIDCProvider) Exchange(
 	code string,
 	verifier string,
 ) (*oauth2.Token, error) {
+
+	// The client rides on the context: oauth2 takes it from there, and with
+	// none it uses http.DefaultClient, which waits forever. Set here rather
+	// than at the call so no caller can forget it.
+	ctx = oidc.ClientContext(ctx, &http.Client{Timeout: p.exchangeTimeout()})
 
 	return p.Config.Exchange(
 		ctx,

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { api } from './client'
-import { changePassword, signup, login, verifyEmail } from './auth'
+import { changePassword, signup, login, verifyEmail, lookupVerification, requestPasswordReset, resetPassword } from './auth'
 
 // auth.ts is mostly thin wrappers, and those are deliberately left alone —
 // asserting that api.post was called proves nothing. What is covered here is
@@ -41,17 +41,28 @@ describe('changePassword', () => {
 })
 
 describe('signup', () => {
-  // displayName -> display_name is the only rename here, and the server
-  // ignores an unrecognised key rather than failing, so a typo would ship a
-  // blank display name rather than an error.
-  it('renames displayName to display_name', async () => {
+  // The address only (#360, #374): the name and password are chosen at
+  // verification, by whoever reads the inbox.
+  it('sends the address and nothing else', async () => {
     const post = vi.spyOn(api, 'post').mockResolvedValue({ data: undefined })
-    await signup('someone@example.com', 'Someone Real', 'pw')
+    await signup('someone@example.com')
 
-    expect(post).toHaveBeenCalledWith('/auth/signup', {
-      email: 'someone@example.com',
+    expect(post).toHaveBeenCalledWith('/auth/signup', { email: 'someone@example.com' })
+  })
+})
+
+describe('verifyEmail', () => {
+  // displayName -> display_name is the only rename here. The server reads a
+  // missing name as blank and refuses it, so a typo would block every
+  // verification rather than pass silently, but it is asserted all the same.
+  it('renames displayName to display_name', async () => {
+    const post = vi.spyOn(api, 'post').mockResolvedValue({ data: {} })
+    await verifyEmail('tok-1', 'Someone Real', 'a-long-passphrase')
+
+    expect(post).toHaveBeenCalledWith('/auth/verify-email', {
+      token: 'tok-1',
       display_name: 'Someone Real',
-      password: 'pw',
+      password: 'a-long-passphrase',
     })
   })
 })
@@ -76,7 +87,35 @@ describe('responses that decide what the UI does next', () => {
       data: { user: { id: 'u1' }, mfa_needed: false, mfa_enrollment_needed: true },
     })
 
-    const res = await verifyEmail('token-123')
+    const res = await verifyEmail('token-123', 'Someone', 'a-long-passphrase')
     expect(res.mfa_enrollment_needed).toBe(true)
+  })
+})
+
+// The token goes as a query parameter, the one place the GET route reads it.
+describe('lookupVerification', () => {
+  it('sends the token as ?token= and returns the address', async () => {
+    const get = vi.spyOn(api, 'get').mockResolvedValue({ data: { email: 'a@example.com' } })
+    await expect(lookupVerification('tok-1')).resolves.toEqual({ email: 'a@example.com' })
+    expect(get).toHaveBeenCalledWith('/auth/verify-email', { params: { token: 'tok-1' } })
+  })
+})
+
+describe('requestPasswordReset', () => {
+  it('sends the address and nothing else', async () => {
+    const post = vi.spyOn(api, 'post').mockResolvedValue({ data: {} })
+    await requestPasswordReset('someone@example.com')
+
+    expect(post).toHaveBeenCalledWith('/auth/forgot-password', { email: 'someone@example.com' })
+  })
+})
+
+describe('resetPassword', () => {
+  // Same-typed arguments again: swapping them sends the password as the token.
+  it('maps the token and the new password to the fields the server expects', async () => {
+    const post = vi.spyOn(api, 'post').mockResolvedValue({ data: undefined })
+    await resetPassword('tok-1', 'a-long-passphrase')
+
+    expect(post).toHaveBeenCalledWith('/auth/reset-password', { token: 'tok-1', password: 'a-long-passphrase' })
   })
 })

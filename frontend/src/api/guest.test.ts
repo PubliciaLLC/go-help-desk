@@ -42,7 +42,7 @@ describe('the token never travels in a URL', () => {
     const [path, body, config] = post.mock.calls[0]
     expect(path).toBe('/replies')
     expect(path).not.toContain('secret-token')
-    expect(body).toEqual({ body: 'hi' })
+    expect(body).toEqual({ body: 'hi', format: 'markdown' })
     expect(config.headers.Authorization).toBe('Guest secret-token')
   })
 })
@@ -83,8 +83,29 @@ describe('creating a ticket', () => {
     })
 
     expect(post.mock.calls[0][0]).toBe('/tickets')
+    // #443: the guest form uses the editor, so it says so.
+    expect(post.mock.calls[0][1]).toHaveProperty('format', 'markdown')
     // The instance is created with baseURL /api/v1/guest, which is what makes
     // that path the guest route rather than the one behind RequireRole.
+  })
+})
+
+describe('a ticket filed whose custom field values could not be saved', () => {
+  it('still resolves the tracking number, and hands the server\'s notice to the caller', async () => {
+    post.mockResolvedValue({ data: { tracking_number: 'GHD-9', custom_fields_saved: false, notice: 'We received your request, but some details could not be saved.' } })
+    const onNotice = vi.fn()
+
+    await expect(
+      createGuestTicket({ subject: 's', description: 'd', category_id: 'c', guest_email: 'a@b.test', guest_name: 'A' }, onNotice),
+    ).resolves.toBe('GHD-9')
+    expect(onNotice).toHaveBeenCalledWith('We received your request, but some details could not be saved.')
+  })
+
+  it('says nothing when the values were saved', async () => {
+    post.mockResolvedValue({ data: { tracking_number: 'GHD-9' } })
+    const onNotice = vi.fn()
+    await createGuestTicket({ subject: 's', description: 'd', category_id: 'c', guest_email: 'a@b.test', guest_name: 'A' }, onNotice)
+    expect(onNotice).not.toHaveBeenCalled()
   })
 })
 

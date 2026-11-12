@@ -1,6 +1,9 @@
 // Package mcp exposes help desk operations as an MCP (Model Context Protocol)
 // server for AI tool integration, on top of the existing service layer.
 //
+// It serves two transports from one handler: Streamable HTTP at /mcp and
+// HTTP+SSE at /mcp/sse and /mcp/message.
+//
 // This package does NOT authenticate anything itself. The handler it returns
 // must be wrapped by Server.ProtectMCP in internal/server, which applies the
 // same middleware chain as /api/. Mounting Handler() bare leaves every tool
@@ -19,16 +22,25 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
+	"net/url"
+	"strconv"
+	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
@@ -100,6 +112,71 @@ func requireStaff(a *authmw.Actor) bool {
 	return a != nil && (a.Role == user.RoleAdmin || a.Role == user.RoleStaff)
 }
 
+// assignArgumentProblem reports what is wrong with an assign_ticket argument
+// set, or false when there is nothing wrong.
+//
+// Split out so the rules can be tested without a transport and a database:
+// the failure they prevent is a ticket quietly leaving somebody's queue, and
+// that is decided entirely here.
+func assignArgumentProblem(args map[string]any) (string, bool) {
+	id := func(name string) (string, string) {
+		v, present := args[name]
+		if !present {
+			return "", ""
+		}
+		str, isString := v.(string)
+		if !isString || str == "" {
+			return "", name + " must be an id; to take the ticket off whoever has it, " +
+				"pass clear_assignee: true"
+		}
+		return str, ""
+	}
+
+	userArg, problem := id("assignee_user_id")
+	if problem != "" {
+		return problem, true
+	}
+	groupArg, problem := id("assignee_group_id")
+	if problem != "" {
+		return problem, true
+	}
+
+	clear, _ := args["clear_assignee"].(bool)
+	switch {
+	case clear && (userArg != "" || groupArg != ""):
+		return "clear_assignee cannot be combined with an assignee id", true
+	case !clear && userArg == "" && groupArg == "":
+		return "give assignee_user_id or assignee_group_id, or clear_assignee: true to " +
+			"take the ticket off whoever has it", true
+	}
+	return "", false
+}
+
+// hasUserIdentity reports whether this caller is somebody, rather than merely
+// something.
+//
+// Every write tool records who acted — a ticket's reporter, a reply's author,
+// an audit entry, a status-history row — and all of those are foreign keys to
+// users, so an actor with a nil id reached the insert and came back as a
+// constraint violation: the caller was told "create ticket failed" and the
+// operator's log filled with table and column names. create_ticket also took a
+// tracking number from the sequence first, so every attempt left a hole in the
+// numbering.
+//
+// An OAuth client used to be that actor. Since #420 it acts as its service
+// user and carries that user's id, so this passes for it; it stays as the
+// refusal for any credential that still arrives without one.
+//
+// The REST API refuses the same thing plainly. This is that rule on the other
+// surface, which is the point of there being one rule — the transport does not
+// decide what a caller may do.
+func hasUserIdentity(a *authmw.Actor) bool {
+	return a != nil && a.UserID != uuid.Nil
+}
+
+// noUserIdentityMessage is what a machine credential is told instead.
+const noUserIdentityMessage = "this credential has no user identity, so it cannot be recorded as having acted on a ticket"
+
 // visible reports whether the caller may see this ticket, and is the check
 // every read path funnels through.
 func (s *Server) visible(ctx context.Context, t ticket.Ticket) bool {
@@ -118,6 +195,21 @@ func (s *Server) visible(ctx context.Context, t ticket.Ticket) bool {
 // database package. TestNotFoundFor_MatchesStoreWording pins the two together.
 func notFoundFor(id string) string {
 	return fmt.Sprintf("not found: ticket %s", id)
+}
+
+// ticketLookupErr answers a failed ticket lookup. A ticket that does not exist
+// gets the same refusal as one the caller may not see (notFoundFor); anything
+// else is an infrastructure failure and goes through storeErr. Without this a
+// real miss said "get ticket failed" while a hidden ticket said "not found:
+// ticket <id>", so the two were told apart. See #174.
+//
+// ident is the identifier as notFoundFor echoes it, and must be the same value
+// the hidden path uses.
+func ticketLookupErr(ctx context.Context, op, ident string, err error) (*mcpgo.CallToolResult, error) {
+	if errors.Is(err, ticket.ErrNotFound) {
+		return errResult(notFoundFor(ident))
+	}
+	return storeErr(ctx, op, err)
 }
 
 // Server wraps the MCP server and wires up help desk tools.
@@ -141,6 +233,81 @@ type Server struct {
 	// assistant has no way to discover any of the three. Statuses come from the
 	// ticket service this server already holds.
 	categories CategoryLister
+
+	// onBehalf resolves reporter_email. An explicit constructor argument, not
+	// something sniffed from the Authorizer; nil means reporter_email is
+	// refused rather than guessed at.
+	onBehalf OnBehalfResolver
+
+	// router decides who a new ticket is routed to, so create_ticket and
+	// create_follow_up route as every other door does. Nil routes nothing.
+	// A required argument of New, so forgetting it is a compile error; nil
+	// (unit tests only) routes nothing.
+	router Router
+
+	// reopenWindowDays is the configured reopen window, read per call like the
+	// REST reply handler does. A function for the same reason as prefix.
+	reopenWindowDays func(context.Context) int
+
+	// customFields serves create_ticket's custom_fields, get_ticket's values and
+	// list_ticket_fields. Set with WithCustomFields; nil (unit tests only) makes
+	// create_ticket refuse custom_fields rather than skip the required check
+	// quietly.
+	customFields CustomFields
+
+	// slaEnabled reads the SLA tracking setting for list_tickets' sla filter and
+	// sort. Set with WithSLAEnabled; nil reads as off.
+	slaEnabled func(context.Context) (bool, error)
+}
+
+// CustomFields is the slice of the custom field service MCP needs: the same
+// rules REST applies when a ticket is created, from the same code.
+type CustomFields interface {
+	ResolveFieldsForCTI(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID) ([]customfield.Assignment, error)
+	CheckCreation(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID, raw map[string]string) (hasRequired bool, err error)
+	SetCreationValues(ctx context.Context, ticketID, categoryID uuid.UUID, typeID, itemID *uuid.UUID, raw map[string]string) ([]customfield.Warning, error)
+	ListValuesForTicket(ctx context.Context, ticketID uuid.UUID) ([]customfield.TicketFieldValue, error)
+}
+
+// WithCustomFields supplies the custom field service. A method rather than a
+// constructor argument for the reason WithReopenWindowDays is one: most callers
+// of New are tests that never reach it, and New's signature has already changed
+// for other work.
+func (s *Server) WithCustomFields(f CustomFields) *Server {
+	s.customFields = f
+	return s
+}
+
+// defaultReopenWindowDays is what the setting reads as when nothing is stored
+// (admin.Service.ReopenWindowDays). Only a Server built without WithReopenWindowDays
+// uses it, which is a test.
+const defaultReopenWindowDays = 7
+
+// WithReopenWindowDays supplies the reopen window setting. A method rather than
+// a constructor argument because most callers of New are tests that never reach
+// a code path that reads it.
+func (s *Server) WithReopenWindowDays(f func(context.Context) int) *Server {
+	s.reopenWindowDays = f
+	return s
+}
+
+// OnBehalfResolver is the REST handler's rule for filing a ticket for someone
+// else, exposed so create_ticket applies the same one (#290): the address
+// resolves to an account if one exists, otherwise to a guest ticket, under the
+// same hourly budget, which is never refunded. It sets the reporter, guest
+// fields and FiledBy on in. A refusal carries its message in Refusal(); any
+// other error is ours.
+type OnBehalfResolver interface {
+	ResolveOnBehalf(ctx context.Context, actorID uuid.UUID, in *ticket.CreateInput,
+		id *uuid.UUID, email *string, guestName, guestPhone string) error
+}
+
+// Router is the server's routing rule (the CTI group, else the auto-assign
+// group, else the round-robin users), exposed so a ticket created over MCP is
+// routed by the same rule as one created over REST. It only names candidates;
+// ticket.Service assigns the first acceptable one inside the create.
+type Router interface {
+	Routing(ctx context.Context, categoryID uuid.UUID, typeID *uuid.UUID) []ticket.Assignment
 }
 
 // CategoryLister is the slice of the category service MCP needs. Narrow on
@@ -178,6 +345,8 @@ func New(
 	prefix func(context.Context) string,
 	authz Authorizer,
 	categories CategoryLister,
+	onBehalf OnBehalfResolver,
+	router Router,
 ) *Server {
 	if prefix == nil {
 		// Tests and any caller that does not care still mint well-formed
@@ -193,28 +362,228 @@ func New(
 		prefix:     prefix,
 		authz:      authz,
 		categories: categories,
+		onBehalf:   onBehalf,
+		router:     router,
 	}
 	s.registerTools()
 	return s
 }
 
-// Handler returns the SSE HTTP handler for MCP clients.
+// requestActor copies the actor ProtectMCP authenticated onto the context the
+// tools read it from. Both transports run it for every POST, so each tool call
+// sees the actor of the request that made it.
+func requestActor(ctx context.Context, r *http.Request) context.Context {
+	if a := authmw.GetActor(r); a != nil {
+		return context.WithValue(ctx, actorCtxKey{}, a)
+	}
+	return ctx
+}
+
+// noSessions is mcp-go's stateless session manager (no id issued, any id
+// accepted and ignored) that also refuses to terminate a session, so DELETE
+// /mcp answers 405. There is nothing to terminate, and terminating is not a
+// no-op: mcp-go unregisters the given id from the MCP server both transports
+// share, so any signed-in caller could unregister an SSE stream that is not
+// theirs (the stream stays open but stops receiving server notifications).
+type noSessions struct {
+	mcpserver.StatelessSessionIdManager
+}
+
+func (*noSessions) Terminate(string) (isNotAllowed bool, err error) { return true, nil }
+
+// Handler returns the MCP HTTP handler: Streamable HTTP at /mcp (and /mcp/,
+// the URL the 1.2 documentation gave), HTTP+SSE at /mcp/sse and /mcp/message.
 //
 // Must be wrapped by Server.ProtectMCP; see the package comment.
 //
-// The context func runs in the message handler, not only at SSE connect, so
-// each tool call sees the actor of the request that made it rather than the
-// actor that happened to open the stream.
-func (s *Server) Handler() *mcpserver.SSEServer {
-	return mcpserver.NewSSEServer(s.mcp,
+// Every POST body is capped at MaxRequestBody (413 over it), and an SSE stream
+// belongs to the actor and credential that opened it: a /mcp/message POST for
+// its sessionId from anyone else is refused with 403 before the body is read.
+//
+// The context func runs on every POST of both transports, not only when a
+// stream opens, so each tool call sees the actor of the request that made it
+// rather than the actor that happened to open the stream or initialize.
+//
+// Streamable HTTP is stateless with its GET stream disabled. Every POST is one
+// complete JSON-RPC exchange answered with application/json, no Mcp-Session-Id
+// is issued, and GET and DELETE answer 405 (see noSessions). Nothing here
+// needs a session: the tools are request/response and the server sends
+// nothing unprompted. mcp-go's session-issuing mode keeps every initialized
+// session in memory until the client deletes it, so a caller looping on
+// initialize would grow the heap without bound; and in its stateless mode an
+// enabled GET stream shares one session between every caller. Do not add WithSessionIdleTTL or
+// WithHeartbeatInterval either: the first starts a goroutine nothing stops,
+// the second applies to the GET stream that is off.
+func (s *Server) Handler() http.Handler {
+	sessionIDs := &sseSessionIDs{owners: map[string]sessionOwner{}}
+	sse := mcpserver.NewSSEServer(s.mcp,
 		mcpserver.WithStaticBasePath("/mcp"),
-		mcpserver.WithSSEContextFunc(func(ctx context.Context, r *http.Request) context.Context {
-			if a := authmw.GetActor(r); a != nil {
-				return context.WithValue(ctx, actorCtxKey{}, a)
-			}
-			return ctx
-		}),
+		mcpserver.WithSSEContextFunc(requestActor),
+		mcpserver.WithSessionIDGenerator(sessionIDs.generate),
 	)
+	streamable := mcpserver.NewStreamableHTTPServer(s.mcp,
+		mcpserver.WithSessionIdManager(&noSessions{}),
+		mcpserver.WithDisableStreaming(true),
+		mcpserver.WithHTTPContextFunc(requestActor),
+	)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/mcp", "/mcp/":
+			if !limitBody(w, r) {
+				return
+			}
+			streamable.ServeHTTP(w, r)
+		case "/mcp/message":
+			if r.Method == http.MethodPost {
+				if !sessionIDs.ownedBy(r) {
+					writeSessionRefused(w)
+					return
+				}
+				if !limitBody(w, r) {
+					return
+				}
+			}
+			sse.ServeHTTP(w, r)
+		case "/mcp/sse":
+			// Blocks for the life of the stream; the id is forgotten when it ends.
+			sessionIDs.serveStream(w, r, sse)
+		default:
+			sse.ServeHTTP(w, r)
+		}
+	})
+}
+
+// MaxRequestBody caps an MCP request body on both transports (#481). 1 MiB is
+// the REST API's cap (server.maxJSONBody) and is far above the largest
+// legitimate MCP request: a request is one JSON-RPC call, and the biggest
+// arguments any tool takes are a ticket description or reply body. No MCP
+// tool takes a file upload. Without a cap the body was read whole: a 100 MB POST
+// allocated 340 to 712 MB.
+const MaxRequestBody = 1 << 20
+
+// limitBody reads at most MaxRequestBody+1 bytes of the request body and puts
+// them back, or answers 413 and returns false. Doing it here rather than with
+// http.MaxBytesReader means an oversize body is refused with the server's JSON
+// error envelope on both transports: mcp-go turns a failed read into its own
+// 400 "parse error", which would hide the cause.
+func limitBody(w http.ResponseWriter, r *http.Request) bool {
+	if r.ContentLength > MaxRequestBody {
+		writeTooLarge(w)
+		return false
+	}
+	// Sized from the declared length so a normal request is one allocation
+	// rather than io.ReadAll's repeated growth (the +512 is ReadFrom's own
+	// minimum free space).
+	var buf bytes.Buffer
+	if r.ContentLength > 0 {
+		buf.Grow(int(r.ContentLength) + 512)
+	}
+	_, err := buf.ReadFrom(io.LimitReader(r.Body, MaxRequestBody+1))
+	body := buf.Bytes()
+	if err != nil {
+		// A client that hung up mid-body: nothing to answer.
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return false
+	}
+	if len(body) > MaxRequestBody {
+		writeTooLarge(w)
+		return false
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	return true
+}
+
+// writeError uses the REST API's envelope ({"error":{"code","message"}}).
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]string{"code": code, "message": message},
+	})
+}
+
+func writeTooLarge(w http.ResponseWriter) {
+	// The body is not drained; closing the connection is how the client learns
+	// to stop sending it.
+	w.Header().Set("Connection", "close")
+	writeError(w, http.StatusRequestEntityTooLarge, "request_too_large",
+		"MCP request body exceeds the 1 MiB limit")
+}
+
+// writeSessionRefused is the one answer for an unknown, closed, missing or
+// someone else's sessionId, so it cannot be used to learn which ids exist.
+func writeSessionRefused(w http.ResponseWriter) {
+	writeError(w, http.StatusForbidden, "forbidden", "session not available to this caller")
+}
+
+// sessionOwner is who opened an SSE stream: the account and the credential it
+// came in on. Comparable, so it can be checked with ==.
+type sessionOwner struct {
+	userID   uuid.UUID
+	apiKeyID uuid.UUID
+	clientID string
+	machine  bool
+}
+
+// ownerOf is the zero sessionOwner for a nil actor, which no real actor equals
+// (every real one has a user id).
+func ownerOf(a *authmw.Actor) sessionOwner {
+	if a == nil {
+		return sessionOwner{}
+	}
+	return sessionOwner{userID: a.UserID, apiKeyID: a.APIKeyID, clientID: a.ClientID, machine: a.Machine}
+}
+
+// sseSessionIDs records who opened each SSE stream (#495). mcp-go keys a
+// message POST by sessionId alone and authenticates nothing about it, so
+// without this any signed-in caller who learns an id can drive another
+// person's stream.
+type sseSessionIDs struct {
+	mu     sync.Mutex
+	owners map[string]sessionOwner
+}
+
+type pendingSession struct{ id string }
+type pendingSessionKey struct{}
+
+// generate is mcp-go's session id hook; it runs on the stream's own GET, so
+// the request still carries the actor ProtectMCP authenticated. Without one
+// (Handler mounted bare, which ProtectMCP exists to prevent) the stream opens
+// as before but is owned by nobody, so no message can ever be posted to it.
+func (ids *sseSessionIDs) generate(ctx context.Context, r *http.Request) (string, error) {
+	id := uuid.NewString()
+	ids.mu.Lock()
+	ids.owners[id] = ownerOf(authmw.GetActor(r))
+	ids.mu.Unlock()
+	if p, ok := ctx.Value(pendingSessionKey{}).(*pendingSession); ok {
+		p.id = id
+	}
+	return id, nil
+}
+
+func (ids *sseSessionIDs) serveStream(w http.ResponseWriter, r *http.Request, sse *mcpserver.SSEServer) {
+	p := &pendingSession{}
+	defer func() {
+		if p.id != "" {
+			ids.mu.Lock()
+			delete(ids.owners, p.id)
+			ids.mu.Unlock()
+		}
+	}()
+	sse.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), pendingSessionKey{}, p)))
+}
+
+// ownedBy reports whether the request's actor is the one who opened the
+// stream named by its sessionId. An unknown, missing or closed id is false.
+func (ids *sseSessionIDs) ownedBy(r *http.Request) bool {
+	a := authmw.GetActor(r)
+	if a == nil {
+		return false
+	}
+	ids.mu.Lock()
+	owner, ok := ids.owners[r.URL.Query().Get("sessionId")]
+	ids.mu.Unlock()
+	return ok && owner == ownerOf(a)
 }
 
 // maxListLimit bounds list_tickets. The documented ceiling is 100; requests
@@ -231,10 +600,20 @@ func (s *Server) registerTools() {
 	), scoped(mcpRead, s.handleGetTicket))
 
 	s.mcp.AddTool(mcpgo.NewTool(
+		"list_attachments",
+		mcpgo.WithDescription("List the files attached to a ticket: name, type, size, hash, and the scan result. "+
+			"quarantined is true when the scanner identified the file as malicious (virus_name says what it found); "+
+			"mismatch is true when the content contradicts the file's name, and null when the file was never inspected. "+
+			"Metadata only: file contents are download-only in the web interface, and no reputation lookup is made."),
+		mcpgo.WithString("ticket_id", mcpgo.Required(), mcpgo.Description("Ticket UUID or tracking number")),
+	), scoped(mcpRead, s.handleListAttachments))
+
+	s.mcp.AddTool(mcpgo.NewTool(
 		"create_ticket",
 		mcpgo.WithDescription("Open a new help desk ticket"),
 		mcpgo.WithString("subject", mcpgo.Required(), mcpgo.Description("Short summary")),
-		mcpgo.WithString("description", mcpgo.Description("Full description")),
+		mcpgo.WithString("description", mcpgo.Description("Full description. Rendered as Markdown (CommonMark plus GitHub tables, strikethrough and autolinks; no images, no raw HTML). Escape characters you mean literally (\\*, \\#, \\_). Pass format: \"plain\" to store plain text instead.")),
+		mcpgo.WithString("format", mcpgo.Description("How description is shown: markdown (default) or plain"), mcpgo.Enum("plain", "markdown")),
 		// Category is required; Type and Item are the optional lower tiers of
 		// the CTI hierarchy. list_categories returns all three.
 		mcpgo.WithString("category_id", mcpgo.Required(), mcpgo.Description("Category UUID")),
@@ -242,53 +621,102 @@ func (s *Server) registerTools() {
 		mcpgo.WithString("item_id", mcpgo.Description("Item UUID (optional; must belong to the type)")),
 		mcpgo.WithString("priority", mcpgo.Description("critical|high|medium|low (default: medium)")),
 		// reporter_user_id is the SUBJECT of the ticket, not the caller —
-		// staff legitimately open tickets on someone's behalf. It defaults to
-		// the caller when omitted.
-		mcpgo.WithString("reporter_user_id", mcpgo.Description("Reporter user UUID (defaults to the authenticated caller)")),
+		// staff legitimately open tickets on someone's behalf (the caller is
+		// then the actor, #444). It defaults to the caller when omitted.
+		mcpgo.WithString("reporter_user_id", mcpgo.Description("Reporter user UUID (defaults to the authenticated caller). Not with reporter_email.")),
+		// reporter_email is how a key files for someone it cannot look up
+		// (#290): there is no user lookup for machine credentials. The server
+		// resolves it, the same way REST's reporter_email does.
+		mcpgo.WithString("reporter_email", mcpgo.Description("Email address of the person the ticket is for. Files for their account if one exists, otherwise as a guest ticket (guest submission must be on, and the guest is emailed a link). guest_name is always required with reporter_email, whether or not the address has an account. Each attempt that passes validation uses one of 40 an hour per staff member. Not with reporter_user_id.")),
+		mcpgo.WithString("guest_name", mcpgo.Description("With reporter_email: the name. Required, whether or not the address has an account (ignored for an account).")),
+		mcpgo.WithString("guest_phone", mcpgo.Description("With reporter_email and no account behind it: the guest's phone (optional).")),
+		mcpgo.WithObject("custom_fields", mcpgo.Description("Custom field values: an object of field id to a string value, the ids and the options from list_ticket_fields. A field the category requires must have a value, or the ticket is refused and nothing is created. For any other field, a value that is not accepted is dropped and listed under warnings in the result.")),
 	), scoped(mcpWrite, s.handleCreateTicket))
 
 	s.mcp.AddTool(mcpgo.NewTool(
 		"add_reply",
-		mcpgo.WithDescription("Add a reply to a ticket"),
+		mcpgo.WithDescription("Add a reply to a ticket. A public reply emails the requester; an internal note does not."),
 		mcpgo.WithString("ticket_id", mcpgo.Required(), mcpgo.Description("Ticket UUID")),
-		mcpgo.WithString("body", mcpgo.Required(), mcpgo.Description("Reply body")),
+		mcpgo.WithString("body", mcpgo.Required(), mcpgo.Description("Reply body. Rendered as Markdown (CommonMark plus GitHub tables, strikethrough and autolinks; no images, no raw HTML). Escape characters you mean literally (\\*, \\#, \\_). Pass format: \"plain\" to store plain text instead.")),
+		mcpgo.WithString("format", mcpgo.Description("How body is shown: markdown (default) or plain"), mcpgo.Enum("plain", "markdown")),
 		mcpgo.WithBoolean("internal", mcpgo.Description("Internal note, not visible to the reporter (default false)")),
 		// No author parameter: the author is the authenticated caller.
 	), scoped(mcpWrite, s.handleAddReply))
 
 	s.mcp.AddTool(mcpgo.NewTool(
 		"list_tickets",
-		mcpgo.WithDescription("List tickets the caller may see, with optional filters"),
-		mcpgo.WithString("assignee_user_id", mcpgo.Description("Only tickets assigned to this user UUID")),
-		mcpgo.WithString("status_id", mcpgo.Description("Only tickets in this status UUID (see list_statuses)")),
-		mcpgo.WithString("priority", mcpgo.Description("Only tickets at this priority: critical|high|medium|low")),
-		mcpgo.WithString("category_id", mcpgo.Description("Only tickets in this category UUID (see list_categories)")),
+		mcpgo.WithDescription("List tickets the caller may see, with optional filters. Filters combine with AND and can only narrow what the caller may already see; "+
+			"the values of one list-valued filter are ORed. An argument of the wrong type, an unknown value, or an unknown sort or order is refused, not ignored. "+
+			"A requester may use only the filters marked as open to them, and is refused the others. "+
+			"Without sort, a search with q is ranked by relevance and everything else is newest first."),
+		mcpgo.WithString("assignee_user_id", mcpgo.Description("Only tickets assigned to this user UUID (staff and administrators)")),
+		mcpgo.WithString("assignee_group_id", mcpgo.Description("Only tickets assigned to this group UUID (staff and administrators)")),
+		mcpgo.WithString("status_id", mcpgo.Description("Only tickets in this status UUID (see list_statuses). Kept for existing callers; status_ids takes several")),
+		mcpgo.WithArray("status_ids", mcpgo.WithStringItems(), mcpgo.MaxItems(ticket.MaxRepeated), mcpgo.Description("Only tickets in any of these status UUIDs, at most 20 (see list_statuses). May be combined with status_id")),
+		mcpgo.WithBoolean("include_closed", mcpgo.Description("false leaves out the Closed status. Ignored when a status is named (default true)")),
+		mcpgo.WithAny("priority", mcpgo.Description("Only tickets at this priority, or at any of these in a JSON array (at most 20): critical|high|medium|low"), stringOrStringArray(ticket.MaxRepeated)),
+		mcpgo.WithString("category_id", mcpgo.Description("Only tickets in this category UUID, including every type and item under it (see list_categories)")),
+		mcpgo.WithString("type_id", mcpgo.Description("Only tickets of this type UUID")),
+		mcpgo.WithString("item_id", mcpgo.Description("Only tickets of this item UUID")),
+		mcpgo.WithString("reporter_id", mcpgo.Description("Only tickets this account reported, by user UUID (staff and administrators)")),
+		mcpgo.WithString("requester", mcpgo.Description("Free text, 2 to 254 characters: only tickets whose reporter's name or email, or whose guest name or email, contains it (staff and administrators). An API key or OAuth client needs the requester_search:read scope for this; without it the call is refused. reporter_id does not need it")),
+		mcpgo.WithString("created_after", mcpgo.Description("Only tickets created at or after this RFC 3339 time")),
+		mcpgo.WithString("created_before", mcpgo.Description("Only tickets created before this RFC 3339 time")),
+		mcpgo.WithString("updated_after", mcpgo.Description("Only tickets updated at or after this RFC 3339 time (staff and administrators)")),
+		mcpgo.WithString("updated_before", mcpgo.Description("Only tickets updated before this RFC 3339 time (staff and administrators)")),
+		mcpgo.WithArray("source_channel", mcpgo.WithStringEnumItems([]string{"web", "api", "mcp", "guest", "phone"}), mcpgo.MaxItems(ticket.MaxRepeated), mcpgo.Description("Only tickets opened through any of these channels (staff and administrators)")),
+		mcpgo.WithString("sla", mcpgo.Description("breached|at_risk: only tickets the SLA indicator shows in that state (staff and administrators). Refused while SLA tracking is off"), mcpgo.Enum("breached", "at_risk")),
+		mcpgo.WithString("sort", mcpgo.Description("Order by number|subject|status|priority|sla|created|updated. A requester may sort by number, subject, status, priority and created. Ties keep a stable order. Refused for sla while SLA tracking is off"), mcpgo.Enum("number", "subject", "status", "priority", "sla", "created", "updated")),
+		mcpgo.WithString("order", mcpgo.Description("asc|desc. Without it a sort uses its natural order: created and updated newest first, the rest first to last (priority and sla most urgent first). Has no effect without sort"), mcpgo.Enum("asc", "desc")),
 		mcpgo.WithString("q", mcpgo.Description("Full-text search over subject, description and tracking number")),
+		mcpgo.WithBoolean("search_replies", mcpgo.Description("With q, also match the replies: a ticket matches when one reply holds every word. Staff and administrators search internal notes too; a requester searches public replies only. A ticket found this way carries a reply_match with an excerpt. If the replies could not be searched (still being prepared after an upgrade, or too slow), a second text block says so (default false)")),
 		mcpgo.WithNumber("limit", mcpgo.Description("Max results, 1-100 (default 20)")),
 		mcpgo.WithNumber("offset", mcpgo.Description("Pagination offset")),
 	), scoped(mcpRead, s.handleListTickets))
 
 	s.mcp.AddTool(mcpgo.NewTool(
 		"assign_ticket",
-		mcpgo.WithDescription("Assign a ticket to a user or group"),
+		mcpgo.WithDescription("Assign a ticket to a user or group, or take it off whoever has it"),
 		mcpgo.WithString("ticket_id", mcpgo.Required(), mcpgo.Description("Ticket UUID")),
 		mcpgo.WithString("assignee_user_id", mcpgo.Description("User UUID to assign to")),
 		mcpgo.WithString("assignee_group_id", mcpgo.Description("Group UUID to assign to")),
+		mcpgo.WithBoolean("clear_assignee", mcpgo.Description(
+			"Take the ticket off whoever has it. Required to unassign: omitting "+
+				"both ids is refused rather than treated as unassigning, because "+
+				"that silently took tickets off the people working them.")),
 		// No actor parameter: the actor is the authenticated caller.
 	), scoped(mcpWrite, s.handleAssignTicket))
 
 	s.mcp.AddTool(mcpgo.NewTool(
 		"update_ticket_status",
-		mcpgo.WithDescription("Move a ticket to a different status"),
+		mcpgo.WithDescription("Move a ticket to a different status. Moving a ticket OUT of Closed depends on the instance setting closed_reopen_policy (off by default, so refused; it can allow admins, or staff and admins): the result says whether reopening is disabled or restricted. A requester can never. To continue the work on a closed ticket either way, use create_follow_up"),
 		mcpgo.WithString("ticket_id", mcpgo.Required(), mcpgo.Description("Ticket UUID")),
 		mcpgo.WithString("status_id", mcpgo.Required(), mcpgo.Description("Target status UUID (see list_statuses)")),
 	), scoped(mcpWrite, s.handleUpdateTicketStatus))
+
+	s.mcp.AddTool(mcpgo.NewTool(
+		"create_follow_up",
+		mcpgo.WithDescription("Open a NEW ticket that continues a closed one, linked back to it. "+
+			"A closed ticket is terminal by default (an instance setting can let admins, or staff and admins, reopen it), so this is the way forward from one in every mode. "+
+			"Copies the subject, description, category/type/item, priority, requester and custom field values (every field that still accepts its value; best-effort, after the ticket is filed); "+
+			"not the replies, attachments or history. The new ticket starts open; "+
+			"the closed one is left as it was. Only works on a closed ticket."),
+		mcpgo.WithString("ticket_id", mcpgo.Required(), mcpgo.Description("UUID of the CLOSED ticket to continue")),
+	), scoped(mcpWrite, s.handleCreateFollowUp))
 
 	s.mcp.AddTool(mcpgo.NewTool(
 		"list_categories",
 		mcpgo.WithDescription("List the Category/Type/Item catalogue used when opening a ticket"),
 		mcpgo.WithBoolean("include_inactive", mcpgo.Description("Include retired entries (default false)")),
 	), scoped(mcpRead, s.handleListCategories))
+
+	s.mcp.AddTool(mcpgo.NewTool(
+		"list_ticket_fields",
+		mcpgo.WithDescription("List the custom fields the new-ticket form shows for a category, and a type and item under it: the fields create_ticket's custom_fields takes. Each has an id, a name, a type (text, textarea, number or select), its options for a select, and whether it is required."),
+		mcpgo.WithString("category_id", mcpgo.Required(), mcpgo.Description("Category UUID (see list_categories)")),
+		mcpgo.WithString("type_id", mcpgo.Description("Type UUID, to include the fields attached to the type")),
+		mcpgo.WithString("item_id", mcpgo.Description("Item UUID, to include the fields attached to the item")),
+	), scoped(mcpRead, s.handleListTicketFields))
 
 	s.mcp.AddTool(mcpgo.NewTool(
 		"list_statuses",
@@ -302,6 +730,10 @@ type ticketWithReplies struct {
 	ticket.Ticket
 	Replies []ticket.Reply      `json:"replies,omitempty"`
 	Links   []ticket.TicketLink `json:"links,omitempty"`
+	// CustomFields is the ticket's field values, for staff and administrators
+	// only. A requester's answer is cut to the allowed list (ticketResult), which
+	// does not carry it, so the lookup is not made for one either.
+	CustomFields []customfield.TicketFieldValue `json:"custom_fields,omitempty"`
 }
 
 func (s *Server) handleGetTicket(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -316,16 +748,18 @@ func (s *Server) handleGetTicket(ctx context.Context, req mcpgo.CallToolRequest)
 	}
 	var t ticket.Ticket
 	var err error
+	ident := id
 	if uid, parseErr := uuid.Parse(id); parseErr == nil {
+		ident = uid.String()
 		t, err = s.tickets.GetByID(ctx, uid)
 	} else {
 		t, err = s.tickets.GetByTrackingNumber(ctx, ticket.TrackingNumber(id))
 	}
 	if err != nil {
-		return errResult(err.Error())
+		return ticketLookupErr(ctx, "get ticket", ident, err)
 	}
 	if !s.visible(ctx, t) {
-		return errResult(notFoundFor(id))
+		return errResult(notFoundFor(ident))
 	}
 
 	out := ticketWithReplies{Ticket: t}
@@ -336,7 +770,7 @@ func (s *Server) handleGetTicket(ctx context.Context, req mcpgo.CallToolRequest)
 	if includeReplies {
 		replies, err := s.tickets.ListReplies(ctx, t.ID)
 		if err != nil {
-			return errResult(err.Error())
+			return storeErr(ctx, "get ticket", err)
 		}
 		out.Replies = ticket.VisibleReplies(replies, caller.Role)
 
@@ -346,9 +780,74 @@ func (s *Server) handleGetTicket(ctx context.Context, req mcpgo.CallToolRequest)
 		// applies its own visibility check.
 		links, err := s.tickets.ListLinks(ctx, t.ID)
 		if err != nil {
-			return errResult(err.Error())
+			return storeErr(ctx, "get ticket", err)
 		}
 		out.Links = links
+	}
+	if s.customFields != nil && requireStaff(caller) {
+		values, err := s.customFields.ListValuesForTicket(ctx, t.ID)
+		if err != nil {
+			return storeErr(ctx, "get ticket", err)
+		}
+		out.CustomFields = values
+	}
+	return ticketResult(caller.Role, out)
+}
+
+// attachmentView is list_attachments' row. An explicit struct rather than
+// ticket.Attachment so a field added to the domain type later is not sent to
+// MCP clients by accident; StoragePath in particular must never be.
+type attachmentView struct {
+	ID           uuid.UUID `json:"id"`
+	Filename     string    `json:"filename"`
+	MimeType     string    `json:"mime_type"`
+	SizeBytes    int64     `json:"size_bytes"`
+	CreatedAt    time.Time `json:"created_at"`
+	DetectedMime *string   `json:"detected_mime"`
+	SHA256       *string   `json:"sha256"`
+	VirusName    *string   `json:"virus_name"`
+	Mismatch     *bool     `json:"mismatch"`
+	// Quarantined is virus_name being set, spelled out so a client does not
+	// have to know that is what the column means.
+	Quarantined bool `json:"quarantined"`
+}
+
+func (s *Server) handleListAttachments(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	caller := actorFrom(ctx)
+	if caller == nil {
+		return errResult(noActorMessage)
+	}
+	id, _ := req.GetArguments()["ticket_id"].(string)
+	if id == "" {
+		return errResult("ticket_id is required")
+	}
+	var t ticket.Ticket
+	var err error
+	ident := id
+	if uid, parseErr := uuid.Parse(id); parseErr == nil {
+		ident = uid.String()
+		t, err = s.tickets.GetByID(ctx, uid)
+	} else {
+		t, err = s.tickets.GetByTrackingNumber(ctx, ticket.TrackingNumber(id))
+	}
+	if err != nil {
+		return ticketLookupErr(ctx, "list attachments", ident, err)
+	}
+	if !s.visible(ctx, t) {
+		return errResult(notFoundFor(ident))
+	}
+
+	atts, err := s.tickets.ListAttachments(ctx, t.ID)
+	if err != nil {
+		return storeErr(ctx, "list attachments", err)
+	}
+	out := make([]attachmentView, len(atts))
+	for i, a := range atts {
+		out[i] = attachmentView{
+			ID: a.ID, Filename: a.Filename, MimeType: a.MimeType, SizeBytes: a.SizeBytes,
+			CreatedAt: a.CreatedAt, DetectedMime: a.DetectedMime, SHA256: a.SHA256,
+			VirusName: a.VirusName, Mismatch: a.ContentMismatch, Quarantined: a.VirusName != nil,
+		}
 	}
 	return jsonResult(out)
 }
@@ -361,7 +860,15 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 	if !requireStaff(actor) {
 		return errResult(staffOnlyMessage)
 	}
+	if !hasUserIdentity(actor) {
+		return errResult(noUserIdentityMessage)
+	}
 	args := req.GetArguments()
+	// The channel is recorded from the entry point; this tool has no argument
+	// for it, and one that is sent is refused rather than ignored (#130).
+	if _, sent := args["source_channel"]; sent {
+		return errResult("source_channel cannot be set: it is recorded from how the ticket arrived")
+	}
 	subject, _ := args["subject"].(string)
 	catIDStr, _ := args["category_id"].(string)
 	catID, err := uuid.Parse(catIDStr)
@@ -377,11 +884,17 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 	}
 
 	desc, _ := args["description"].(string)
+	format, err := mcpTextFormat(args)
+	if err != nil {
+		return errResult(err.Error())
+	}
 	in := ticket.CreateInput{
-		Subject:     subject,
-		Description: desc,
-		CategoryID:  catID,
-		Priority:    priority,
+		Subject:           subject,
+		Description:       desc,
+		DescriptionFormat: format,
+		SourceChannel:     ticket.ChannelMCP,
+		CategoryID:        catID,
+		Priority:          priority,
 	}
 
 	// Type and Item are the optional lower tiers of CTI. Only Category is
@@ -403,26 +916,212 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 		in.ItemID = &id
 	}
 
+	// The same rule REST applies, from the same code (#626): a field the
+	// category requires needs a value, and nothing is created otherwise. Here,
+	// before reporter_email is resolved, because that spends a unit of the
+	// staff member's hourly budget which a refusal would waste.
+	customFields, err := customFieldArgs(args)
+	if err != nil {
+		return errResult(err.Error())
+	}
+	hasRequired := false
+	if s.customFields != nil {
+		var err error
+		hasRequired, err = s.customFields.CheckCreation(ctx, in.CategoryID, in.TypeID, in.ItemID, customFields)
+		if err != nil {
+			if errors.Is(err, customfield.ErrValidation) {
+				return errResult(err.Error())
+			}
+			return storeErr(ctx, "check custom fields", err)
+		}
+	} else if len(customFields) > 0 {
+		return errResult("custom fields are not available on this server")
+	}
+
+	var reporterID *uuid.UUID
 	if reporterIDStr, ok := args["reporter_user_id"].(string); ok && reporterIDStr != "" {
 		rid, err := uuid.Parse(reporterIDStr)
 		if err != nil {
 			return errResult("invalid reporter_user_id")
 		}
-		in.ReporterUserID = &rid
+		reporterID = &rid
 	}
-	if in.ReporterUserID == nil {
+	var reporterEmail *string
+	if v, present := args["reporter_email"]; present {
+		str, isString := v.(string)
+		if !isString {
+			return errResult("reporter_email must be a string")
+		}
+		reporterEmail = &str
+	}
+
+	switch {
+	case reporterEmail != nil:
+		// The REST rule, from the REST code (#290): an account if there is one,
+		// otherwise a guest ticket, with the same cap and the same mail.
+		if s.onBehalf == nil {
+			return errResult("reporter_email is not available on this server")
+		}
+		guestName, _ := args["guest_name"].(string)
+		guestPhone, _ := args["guest_phone"].(string)
+		if err := s.onBehalf.ResolveOnBehalf(ctx, actor.UserID, &in, reporterID, reporterEmail, guestName, guestPhone); err != nil {
+			var refusal interface{ Refusal() string }
+			if errors.As(err, &refusal) {
+				return errResult(refusal.Refusal())
+			}
+			return storeErr(ctx, "resolve reporter_email", err)
+		}
+	case reporterID != nil:
+		in.ReporterUserID = reporterID
+		// Filing for somebody else: the caller is the actor, as on REST (#444).
+		// Naming yourself is filing your own ticket.
+		if *reporterID != actor.UserID {
+			filer := actor.UserID
+			in.FiledBy = &filer
+		}
+	default:
 		// Default the subject of the ticket to the caller rather than refusing.
 		reporter := actor.UserID
 		in.ReporterUserID = &reporter
 	}
 
 	in.TrackingPrefix = s.prefix(ctx)
+	in.AutoAssign = s.routing(ctx, in.CategoryID, in.TypeID)
 
 	t, err := s.tickets.Create(ctx, in)
 	if err != nil {
+		// No refund of the reporter_email unit, whatever failed: see
+		// Server.ResolveOnBehalf.
+		return storeErr(ctx, "create ticket", err)
+	}
+
+	// Best-effort once the ticket exists, as on REST: what was dropped comes
+	// back as warnings, and a failure to save is logged and reported the same way.
+	var warnings []customfield.Warning
+	if s.customFields != nil {
+		var err error
+		warnings, err = s.customFields.SetCreationValues(ctx, t.ID, t.CategoryID, t.TypeID, t.ItemID, customFields)
+		if err != nil {
+			slog.ErrorContext(ctx, "saving custom field values on a new ticket failed; the ticket was created without them",
+				"ticket_id", t.ID, "error", err)
+			// As on REST: a ticket that was to hold a required value is not
+			// answered as filed without it.
+			if hasRequired {
+				return errResult("the ticket " + string(t.TrackingNumber) + " was filed but its custom field values could not be saved; check it before filing again")
+			}
+		}
+	}
+	return ticketResult(actor.Role, createdTicket{Ticket: t, Warnings: warnings})
+}
+
+// createdTicket is create_ticket's answer: the ticket, plus the custom field
+// values that were not written. The ticket's own keys are exactly what they were.
+type createdTicket struct {
+	ticket.Ticket
+	Warnings []customfield.Warning `json:"warnings,omitempty"`
+}
+
+// customFieldArgs reads create_ticket's custom_fields: an object of field id to
+// string. Anything else is refused rather than coerced, because a number sent
+// for a text field and quietly stored as "12" or "1.2e1" is a value nobody typed.
+func customFieldArgs(args map[string]any) (map[string]string, error) {
+	raw, present := args["custom_fields"]
+	if !present {
+		return nil, nil
+	}
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		return nil, errors.New("custom_fields must be an object of field id to string value")
+	}
+	out := make(map[string]string, len(obj))
+	for k, v := range obj {
+		s, ok := v.(string)
+		if !ok {
+			return nil, errors.New("custom_fields values must be strings")
+		}
+		out[k] = s
+	}
+	return out, nil
+}
+
+// ticketField is one entry of list_ticket_fields. Narrower than the REST
+// assignment on purpose: the id and name to send and read, what the field takes,
+// whether it is required, and the level it is attached at.
+type ticketField struct {
+	ID        uuid.UUID             `json:"id"`
+	Name      string                `json:"name"`
+	FieldType customfield.FieldType `json:"field_type"`
+	Options   []string              `json:"options,omitempty"`
+	Required  bool                  `json:"required"`
+	// The longest value create_ticket accepts for it, in characters.
+	MaxLength int                   `json:"max_length"`
+	Level     customfield.ScopeType `json:"level"`
+}
+
+// handleListTicketFields answers with what the new-ticket form would show: the
+// fields shown on the form and active, at the most specific attachment, in the
+// form's order. A field hidden from the form, or deactivated, is not offered for
+// writing here either.
+func (s *Server) handleListTicketFields(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	if actorFrom(ctx) == nil {
+		return errResult(noActorMessage)
+	}
+	if s.customFields == nil {
+		return errResult("custom fields are not available on this server")
+	}
+	args := req.GetArguments()
+	catIDStr, _ := args["category_id"].(string)
+	catID, err := uuid.Parse(catIDStr)
+	if err != nil {
+		return errResult("invalid category_id")
+	}
+	optionalID := func(name string) (*uuid.UUID, error) {
+		v, ok := args[name].(string)
+		if !ok || v == "" {
+			return nil, nil
+		}
+		id, err := uuid.Parse(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid %s", name)
+		}
+		return &id, nil
+	}
+	typeID, err := optionalID("type_id")
+	if err != nil {
 		return errResult(err.Error())
 	}
-	return jsonResult(t)
+	itemID, err := optionalID("item_id")
+	if err != nil {
+		return errResult(err.Error())
+	}
+	fields, err := s.customFields.ResolveFieldsForCTI(ctx, catID, typeID, itemID)
+	if err != nil {
+		return storeErr(ctx, "list ticket fields", err)
+	}
+	out := make([]ticketField, 0, len(fields))
+	for _, a := range fields {
+		if !a.VisibleOnNew || a.FieldDef == nil || !a.FieldDef.Active {
+			continue
+		}
+		out = append(out, ticketField{
+			ID: a.FieldDefID, Name: a.FieldDef.Name, FieldType: a.FieldDef.FieldType,
+			Options: a.FieldDef.Options, Required: a.RequiredOnNew, MaxLength: a.FieldDef.EffectiveMaxLength(), Level: a.ScopeType,
+		})
+	}
+	return jsonResult(out)
+}
+
+// mcpTextFormat reads the optional "format" argument. Absent means markdown
+// (#443): an agent is told its text renders as Markdown, and the REST default
+// of plain would make that description false. Present but not exactly "plain"
+// or "markdown" is a tool error and nothing is written.
+func mcpTextFormat(args map[string]any) (ticket.TextFormat, error) {
+	v, present := args["format"]
+	if !present {
+		return ticket.TextFormatMarkdown, nil
+	}
+	s, _ := v.(string)
+	return ticket.ParseTextFormat(s)
 }
 
 func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -433,6 +1132,9 @@ func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) 
 	if !requireStaff(caller) {
 		return errResult(staffOnlyMessage)
 	}
+	if !hasUserIdentity(caller) {
+		return errResult(noUserIdentityMessage)
+	}
 	args := req.GetArguments()
 	tidStr, _ := args["ticket_id"].(string)
 	tid, err := uuid.Parse(tidStr)
@@ -440,13 +1142,17 @@ func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) 
 		return errResult("invalid ticket_id")
 	}
 	body, _ := args["body"].(string)
-
-	t, err := s.tickets.GetByID(ctx, tid)
+	format, err := mcpTextFormat(args)
 	if err != nil {
 		return errResult(err.Error())
 	}
+
+	t, err := s.tickets.GetByID(ctx, tid)
+	if err != nil {
+		return ticketLookupErr(ctx, "add reply", tid.String(), err)
+	}
 	if !s.visible(ctx, t) {
-		return errResult(notFoundFor(tidStr))
+		return errResult(notFoundFor(tid.String()))
 	}
 
 	// The author is the authenticated caller, at the caller's real role.
@@ -455,13 +1161,17 @@ func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) 
 
 	isInternal, _ := args["internal"].(bool)
 
-	const (
-		reporterEmail    = "" // no address looked up here, so no mail is sent
-		reopenWindowDays = 7
-	)
+	reopenWindowDays := defaultReopenWindowDays
+	if s.reopenWindowDays != nil {
+		reopenWindowDays = s.reopenWindowDays(ctx)
+	}
 	// An internal note is a note to colleagues, so it never notifies the
-	// reporter; a public reply does.
+	// reporter; a public reply does, to the same address the REST reply uses.
 	notifyRequester := !isInternal
+	var reporterEmail string
+	if notifyRequester {
+		reporterEmail = s.tickets.ReplyRecipient(ctx, t, actor)
+	}
 
 	// reopenTargetStatusID is only consulted when a RoleUser replies to a
 	// Resolved ticket, and add_reply is staff-and-admin only — so the
@@ -469,11 +1179,134 @@ func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) 
 	// today and would become a bug the moment that changes, hence the comment.
 	reopenTargetStatusID := uuid.Nil
 
-	reply, err := s.tickets.AddReply(ctx, tid, body, isInternal, notifyRequester, reporterEmail, actor, reopenWindowDays, reopenTargetStatusID)
+	reply, err := s.tickets.AddReply(ctx, tid, body, format, isInternal, notifyRequester, reporterEmail, actor, reopenWindowDays, reopenTargetStatusID)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "add reply", err)
 	}
 	return jsonResult(reply)
+}
+
+// stringOrStringArray is the schema of an argument that takes one string, as it
+// always has, or a JSON array of them. mcp-go has no option for it, and a client
+// that validates against the schema could not send the array form otherwise.
+func stringOrStringArray(maxItems int) mcpgo.PropertyOption {
+	return func(schema map[string]any) {
+		schema["oneOf"] = []any{
+			map[string]any{"type": "string"},
+			map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": maxItems},
+		}
+	}
+}
+
+// listFilterParams are the string arguments that are one filter parameter each,
+// with the name GET /tickets calls it. Everything else list_tickets reads is
+// handled in listQuery by its shape.
+var listFilterParams = []string{
+	"q", "reporter_id", "requester", "category_id", "type_id", "item_id",
+	"assignee_user_id", "assignee_group_id",
+	"created_after", "created_before", "updated_after", "updated_before",
+	"sla", "sort", "order",
+}
+
+func badListArg(key string) error {
+	return fmt.Errorf("%w: invalid %s", ticket.ErrValidation, key)
+}
+
+// listArgString reads an argument that must be a string. Absent and JSON null
+// are the same as not given. Any other type is refused: skipping a filter the
+// caller meant would return more than they asked to narrow to.
+func listArgString(args map[string]any, key string) (string, error) {
+	switch v := args[key].(type) {
+	case nil:
+		return "", nil
+	case string:
+		return v, nil
+	}
+	return "", badListArg(key)
+}
+
+// listArgStrings reads an argument that is a JSON array of strings, or one
+// string for the parameters that predate arrays (status_id, priority).
+func listArgStrings(args map[string]any, key string) ([]string, error) {
+	switch v := args[key].(type) {
+	case nil:
+		return nil, nil
+	case string:
+		return []string{v}, nil
+	case []any:
+		// Before anything is done per value. mcp-go does not enforce the schema's
+		// maxItems and the body limit admits ~100,000 values, so a check made
+		// later (the parser's) comes after work that grows with the length.
+		if len(v) > ticket.MaxRepeated {
+			return nil, fmt.Errorf("%w: too many %s values (max %d)", ticket.ErrValidation, key, ticket.MaxRepeated)
+		}
+		out := make([]string, 0, len(v))
+		for _, e := range v {
+			s, ok := e.(string)
+			if !ok {
+				return nil, badListArg(key)
+			}
+			out = append(out, s)
+		}
+		return out, nil
+	}
+	return nil, badListArg(key)
+}
+
+func listArgBool(args map[string]any, key string) (string, error) {
+	switch v := args[key].(type) {
+	case nil:
+		return "", nil
+	case bool:
+		return strconv.FormatBool(v), nil
+	}
+	return "", badListArg(key)
+}
+
+// listQuery turns list_tickets arguments into the query string GET /tickets
+// takes, so that one parser, ticket.ParseListFilter, reads both and the two
+// cannot disagree about what a filter means.
+//
+// status_id (one) is older than status_ids and is kept: both name the same
+// parameter, and their values are ORed.
+func listQuery(args map[string]any) (url.Values, error) {
+	q := url.Values{}
+	for _, key := range listFilterParams {
+		v, err := listArgString(args, key)
+		if err != nil {
+			return nil, err
+		}
+		if v != "" {
+			q.Set(key, v)
+		}
+	}
+	for _, key := range []string{"search_replies", "include_closed"} {
+		v, err := listArgBool(args, key)
+		if err != nil {
+			return nil, err
+		}
+		if v != "" {
+			q.Set(key, v)
+		}
+	}
+	type value struct{ param, v string }
+	seen := map[value]struct{}{}
+	for _, p := range []struct{ arg, param string }{
+		{"status_id", "status_id"}, {"status_ids", "status_id"},
+		{"priority", "priority"}, {"source_channel", "source_channel"},
+	} {
+		vals, err := listArgStrings(args, p.arg)
+		if err != nil {
+			return nil, err
+		}
+		for _, v := range vals {
+			if _, dup := seen[value{p.param, v}]; !dup {
+				seen[value{p.param, v}] = struct{}{}
+				q[p.param] = append(q[p.param], v)
+			}
+		}
+	}
+	return q, nil
 }
 
 // buildListFilter turns list_tickets arguments into a ticket.Filter. Pure and
@@ -481,46 +1314,55 @@ func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) 
 // tested without a database or a ticket service behind them.
 //
 // vis and actorID come from the Authorizer and the request, never from the
-// arguments: a caller cannot widen its own visibility by asking.
+// arguments: a caller cannot widen its own visibility by asking. This parses;
+// it does not check the filter against the caller (see listFilterFor).
 func buildListFilter(args map[string]any, vis ticket.Visibility, actorID uuid.UUID) (ticket.Filter, error) {
-	f := ticket.Filter{ActorID: actorID, Visibility: vis}
-
-	parseID := func(key string) (*uuid.UUID, error) {
-		v, ok := args[key].(string)
-		if !ok || v == "" {
-			return nil, nil
+	// The wording this tool has always used for a priority it does not know.
+	priorities, err := listArgStrings(args, "priority")
+	if err != nil {
+		return ticket.Filter{}, err
+	}
+	for _, p := range priorities {
+		if p != "" && !ticket.Priority(p).Valid() {
+			return ticket.Filter{}, fmt.Errorf("%w: priority must be one of: critical, high, medium, low", ticket.ErrValidation)
 		}
-		id, err := uuid.Parse(v)
-		if err != nil {
-			return nil, fmt.Errorf("invalid %s", key)
-		}
-		return &id, nil
 	}
 
-	var err error
-	if f.AssigneeUserID, err = parseID("assignee_user_id"); err != nil {
-		return f, err
+	q, err := listQuery(args)
+	if err != nil {
+		return ticket.Filter{}, err
 	}
-	if f.StatusID, err = parseID("status_id"); err != nil {
-		return f, err
+	f, err := ticket.ParseListFilter(q)
+	if err != nil {
+		return ticket.Filter{}, err
 	}
-	if f.CategoryID, err = parseID("category_id"); err != nil {
-		return f, err
+	f.ActorID, f.Visibility = actorID, vis
+
+	// A single status_id or priority was always held in these fields, and the
+	// parser has put it in StatusIDs and Priorities too; the store reads both
+	// through AllStatusIDs and AllPriorities, which count it once.
+	if v, _ := args["status_id"].(string); v != "" {
+		id, _ := uuid.Parse(v) // checked by the parser above
+		f.StatusID = &id
 	}
-	if v, ok := args["priority"].(string); ok && v != "" {
+	if v, _ := args["priority"].(string); v != "" {
 		p := ticket.Priority(v)
-		if !p.Valid() {
-			return f, fmt.Errorf("priority must be one of: critical, high, medium, low")
-		}
 		f.Priority = &p
 	}
-	f.Query, _ = args["q"].(string)
 
 	// Clamped, not rejected: a caller asking for 500 gets 100 rather than an
 	// error, and offset still walks the whole result set.
+	limit, err := listArgNumber(args, "limit")
+	if err != nil {
+		return ticket.Filter{}, err
+	}
+	offset, err := listArgNumber(args, "offset")
+	if err != nil {
+		return ticket.Filter{}, err
+	}
 	f.Limit = 20
-	if v, ok := args["limit"].(float64); ok {
-		f.Limit = int(v)
+	if limit != nil {
+		f.Limit = int(*limit)
 	}
 	if f.Limit > maxListLimit {
 		f.Limit = maxListLimit
@@ -528,10 +1370,61 @@ func buildListFilter(args map[string]any, vis ticket.Visibility, actorID uuid.UU
 	if f.Limit < 1 {
 		f.Limit = 1
 	}
-	if v, ok := args["offset"].(float64); ok && v > 0 {
-		f.Offset = int(v)
+	if offset != nil && *offset > 0 {
+		f.Offset = int(*offset)
 	}
 	return f, nil
+}
+
+// listArgNumber reads limit or offset: a JSON number, or absent or null. Any
+// other type is refused like every other argument, not silently replaced by the
+// default.
+func listArgNumber(args map[string]any, key string) (*float64, error) {
+	switch v := args[key].(type) {
+	case nil:
+		return nil, nil
+	case float64:
+		return &v, nil
+	}
+	return nil, badListArg(key)
+}
+
+// canSearchRequesters says whether the caller may send the free-text
+// `requester` filter: a person at a session always, and an API key or OAuth
+// client only if it holds requester_search:read. The same rule as the REST
+// handler's, for the same reason: the scope gates a parameter, and no route
+// check can express that.
+func canSearchRequesters(a *authmw.Actor) bool {
+	return !a.Machine || auth.Allows(a.Scopes, auth.Scope{Resource: auth.ResourceRequesterSearch, Action: auth.ActionRead})
+}
+
+// listFilterFor is everything list_tickets decides before it touches the store:
+// the arguments parsed by the domain, the filter checked against who is asking
+// (the same Filter.AllowedFor REST uses), and the one field that comes from the
+// caller's role. Pure so the refusals can be tested without a database.
+func listFilterFor(a *authmw.Actor, vis ticket.Visibility, args map[string]any) (ticket.Filter, error) {
+	f, err := buildListFilter(args, vis, a.UserID)
+	if err != nil {
+		return ticket.Filter{}, err
+	}
+	if err := f.AllowedFor(a.Role, canSearchRequesters(a)); err != nil {
+		return ticket.Filter{}, err
+	}
+	// From the role and nothing else, for the match and for the snippet alike. A
+	// requester, or any role this does not recognise, never searches an internal
+	// note: searching one would let them test, a word at a time, what staff wrote
+	// about them. There is no argument for it.
+	f.IncludeInternal = ticket.IncludeInternalFor(a.Role)
+	return f, nil
+}
+
+// WithSLAEnabled supplies the SLA tracking setting. A method for the reason
+// WithCustomFields is one. Without it list_tickets answers as if tracking were
+// off, which refuses the sla filter and sort rather than serving a list whose
+// SLA order means nothing.
+func (s *Server) WithSLAEnabled(read func(context.Context) (bool, error)) *Server {
+	s.slaEnabled = read
+	return s
 }
 
 func (s *Server) handleListTickets(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -542,18 +1435,83 @@ func (s *Server) handleListTickets(ctx context.Context, req mcpgo.CallToolReques
 
 	vis, err := s.authz.TicketVisibility(ctx, caller)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "list tickets", err)
 	}
-	f, err := buildListFilter(req.GetArguments(), vis, caller.UserID)
+	f, err := listFilterFor(caller, vis, req.GetArguments())
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "list tickets", err)
 	}
 
-	tickets, err := s.tickets.ListFiltered(ctx, f)
-	if err != nil {
-		return errResult(err.Error())
+	// After the role check, so a requester asking for sla is told it is not
+	// theirs to use, and not that the feature is off. An empty list would read as
+	// "nothing is breached".
+	if f.SLA != "" || f.Sort == ticket.SortSLA {
+		on := false
+		if s.slaEnabled != nil {
+			if on, err = s.slaEnabled(ctx); err != nil {
+				return storeErr(ctx, "list tickets", err)
+			}
+		}
+		if !on {
+			return errResult("SLA tracking is off")
+		}
 	}
-	return jsonResult(tickets)
+
+	res, err := s.tickets.ListFilteredWithMeta(ctx, f)
+	if err != nil {
+		return storeErr(ctx, "list tickets", err)
+	}
+	tickets := res.Tickets
+	if !f.SearchReplies {
+		return ticketResult(caller.Role, tickets)
+	}
+
+	// Excerpts only when the replies were searched: a page chosen without them
+	// must not look as if it had been.
+	var matches map[uuid.UUID]ticket.ReplyMatch
+	if res.Replies.ExcerptsApply() {
+		ids := make([]uuid.UUID, len(tickets))
+		for i, tk := range tickets {
+			ids[i] = tk.ID
+		}
+		if matches, err = s.tickets.ReplyMatches(ctx, f, ids); err != nil {
+			return storeErr(ctx, "list tickets", err)
+		}
+	}
+	type listed struct {
+		ticket.Ticket
+		ReplyMatch *ticket.ReplyMatch `json:"reply_match,omitempty"`
+	}
+	out := make([]listed, len(tickets))
+	for i, tk := range tickets {
+		out[i].Ticket = tk
+		if m, ok := matches[tk.ID]; ok {
+			out[i].ReplyMatch = &m
+		}
+	}
+	result, err := ticketResult(caller.Role, out)
+	if err != nil || result.IsError {
+		return result, err
+	}
+	// A second block, not a new shape for the first: the list stays the JSON
+	// array every client already reads.
+	if note := repliesNote(res.Replies); note != "" {
+		result.Content = append(result.Content, mcpgo.NewTextContent(note))
+	}
+	return result, nil
+}
+
+// repliesNote says, for a search that asked for replies and did not get them
+// searched, why the list may be shorter than the caller expects.
+func repliesNote(m ticket.ReplySearchMeta) string {
+	switch {
+	case m.Searched == nil || *m.Searched:
+		return ""
+	case m.IndexBuilding:
+		return "Replies were not searched: reply search is still being prepared after an upgrade. The tickets listed match on subject, description or number only. Try again later."
+	default:
+		return "Replies were not searched: the search took too long. The tickets listed match on subject, description or number only. A more specific search may finish in time."
+	}
 }
 
 func (s *Server) handleAssignTicket(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -564,6 +1522,9 @@ func (s *Server) handleAssignTicket(ctx context.Context, req mcpgo.CallToolReque
 	if !requireStaff(caller) {
 		return errResult(staffOnlyMessage)
 	}
+	if !hasUserIdentity(caller) {
+		return errResult(noUserIdentityMessage)
+	}
 	args := req.GetArguments()
 	tidStr, _ := args["ticket_id"].(string)
 	tid, err := uuid.Parse(tidStr)
@@ -573,31 +1534,58 @@ func (s *Server) handleAssignTicket(ctx context.Context, req mcpgo.CallToolReque
 
 	existing, err := s.tickets.GetByID(ctx, tid)
 	if err != nil {
-		return errResult(err.Error())
+		return ticketLookupErr(ctx, "assign ticket", tid.String(), err)
 	}
 	if !s.visible(ctx, existing) {
-		return errResult(notFoundFor(tidStr))
+		return errResult(notFoundFor(tid.String()))
 	}
 
-	var assigneeUserID, assigneeGroupID *uuid.UUID
-	if v, ok := args["assignee_user_id"].(string); ok {
-		if id, err := uuid.Parse(v); err == nil {
-			assigneeUserID = &id
-		}
+	// Assigning to nobody has to be asked for explicitly.
+	//
+	// Refusing an unparseable STRING was not enough: a number, a boolean, a
+	// JSON null and an omitted argument all fell through the type assertion,
+	// left the pointer nil, and nil means "to nobody" — so the tool answered
+	// success and took the ticket off whoever was working it. An agent
+	// sending null to mean "leave this alone" did exactly that. The REST API
+	// makes it explicit with clear_assignee; this is the same rule.
+	// An id has to BE an id. A key that is present but null, an empty string,
+	// a number or a boolean is refused rather than read as "to nobody" — see
+	// assignArgumentProblem, where the rules live and are tested.
+	if problem, bad := assignArgumentProblem(args); bad {
+		return errResult(problem)
 	}
-	if v, ok := args["assignee_group_id"].(string); ok {
-		if id, err := uuid.Parse(v); err == nil {
-			assigneeGroupID = &id
+
+	// An id that will not parse is refused, not ignored.
+	//
+	// Swallowing the error left the pointer nil, and a nil assignee means
+	// "to nobody" — so a single mistyped character took the ticket off the
+	// person working it and answered success. An agent driving this makes
+	// exactly that kind of typo, and nothing in the reply said anything had
+	// gone wrong. The REST API refuses the same input when it decodes the
+	// body; this is that rule, on the other surface.
+	var assigneeUserID, assigneeGroupID *uuid.UUID
+	if v, _ := args["assignee_user_id"].(string); v != "" {
+		id, err := uuid.Parse(v)
+		if err != nil {
+			return errResult("assignee_user_id is not a valid id")
 		}
+		assigneeUserID = &id
+	}
+	if v, _ := args["assignee_group_id"].(string); v != "" {
+		id, err := uuid.Parse(v)
+		if err != nil {
+			return errResult("assignee_group_id is not a valid id")
+		}
+		assigneeGroupID = &id
 	}
 
 	actorID := caller.UserID
 	actor := ticket.Actor{UserID: &actorID, Role: caller.Role}
 	t, err := s.tickets.Assign(ctx, tid, assigneeUserID, assigneeGroupID, actor)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "assign ticket", err)
 	}
-	return jsonResult(t)
+	return ticketResult(caller.Role, t)
 }
 
 func (s *Server) handleUpdateTicketStatus(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -607,6 +1595,9 @@ func (s *Server) handleUpdateTicketStatus(ctx context.Context, req mcpgo.CallToo
 	}
 	if !requireStaff(caller) {
 		return errResult(staffOnlyMessage)
+	}
+	if !hasUserIdentity(caller) {
+		return errResult(noUserIdentityMessage)
 	}
 	args := req.GetArguments()
 	tid, err := uuid.Parse(str(args, "ticket_id"))
@@ -620,10 +1611,10 @@ func (s *Server) handleUpdateTicketStatus(ctx context.Context, req mcpgo.CallToo
 
 	existing, err := s.tickets.GetByID(ctx, tid)
 	if err != nil {
-		return errResult(err.Error())
+		return ticketLookupErr(ctx, "update ticket status", tid.String(), err)
 	}
 	if !s.visible(ctx, existing) {
-		return errResult(notFoundFor(str(args, "ticket_id")))
+		return errResult(notFoundFor(tid.String()))
 	}
 
 	actorID := caller.UserID
@@ -631,9 +1622,52 @@ func (s *Server) handleUpdateTicketStatus(ctx context.Context, req mcpgo.CallToo
 	// caller's real role is what makes that check mean anything.
 	t, err := s.tickets.UpdateStatus(ctx, tid, statusID, ticket.Actor{UserID: &actorID, Role: caller.Role})
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "update ticket status", err)
 	}
-	return jsonResult(t)
+	return ticketResult(caller.Role, t)
+}
+
+// routing is the candidates for a new ticket, or none when no Router was given.
+func (s *Server) routing(ctx context.Context, categoryID uuid.UUID, typeID *uuid.UUID) []ticket.Assignment {
+	if s.router == nil {
+		return nil
+	}
+	return s.router.Routing(ctx, categoryID, typeID)
+}
+
+// handleCreateFollowUp is create_follow_up (#349). The rule — staff and admin
+// only, closed tickets only, what is copied, the link back — is
+// ticket.Service.CreateFollowUp's, shared with POST /tickets/{id}/follow-up;
+// this handler only identifies the caller and the ticket.
+func (s *Server) handleCreateFollowUp(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	caller := actorFrom(ctx)
+	if caller == nil {
+		return errResult(noActorMessage)
+	}
+	if !requireStaff(caller) {
+		return errResult(staffOnlyMessage)
+	}
+	if !hasUserIdentity(caller) {
+		return errResult(noUserIdentityMessage)
+	}
+	tid, err := uuid.Parse(str(req.GetArguments(), "ticket_id"))
+	if err != nil {
+		return errResult("invalid ticket_id")
+	}
+	existing, err := s.tickets.GetByID(ctx, tid)
+	if err != nil {
+		return ticketLookupErr(ctx, "create follow-up", tid.String(), err)
+	}
+	if !s.visible(ctx, existing) {
+		return errResult(notFoundFor(tid.String()))
+	}
+	actorID := caller.UserID
+	t, err := s.tickets.CreateFollowUp(ctx, tid, s.prefix(ctx), ticket.ChannelMCP, ticket.Actor{UserID: &actorID, Role: caller.Role},
+		s.routing(ctx, existing.CategoryID, existing.TypeID)...)
+	if err != nil {
+		return storeErr(ctx, "create follow-up", err)
+	}
+	return ticketResult(caller.Role, t)
 }
 
 // catalogCategory is the Category/Type/Item tree as list_categories returns it.
@@ -656,24 +1690,27 @@ func (s *Server) handleListCategories(ctx context.Context, req mcpgo.CallToolReq
 	if s.categories == nil {
 		return errResult("category catalogue is not available")
 	}
+	// Retired entries are for staff and admin only, as on REST
+	// (catalogueIsFullyVisible): anyone else gets active entries whatever they
+	// ask for, rather than an error that would say there is something to see.
 	includeInactive, _ := req.GetArguments()["include_inactive"].(bool)
-	activeOnly := !includeInactive
+	activeOnly := !(includeInactive && requireStaff(actorFrom(ctx)))
 
 	cats, err := s.categories.ListCategories(ctx, activeOnly)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "list categories", err)
 	}
 	out := make([]catalogCategory, 0, len(cats))
 	for _, c := range cats {
 		types, err := s.categories.ListTypes(ctx, c.ID, activeOnly)
 		if err != nil {
-			return errResult(err.Error())
+			return storeErr(ctx, "list categories", err)
 		}
 		node := catalogCategory{Category: c, Types: make([]catalogType, 0, len(types))}
 		for _, ty := range types {
 			items, err := s.categories.ListItems(ctx, ty.ID, activeOnly)
 			if err != nil {
-				return errResult(err.Error())
+				return storeErr(ctx, "list categories", err)
 			}
 			node.Types = append(node.Types, catalogType{Type: ty, Items: items})
 		}
@@ -688,7 +1725,7 @@ func (s *Server) handleListStatuses(ctx context.Context, _ mcpgo.CallToolRequest
 	}
 	statuses, err := s.tickets.ListStatuses(ctx)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "list statuses", err)
 	}
 	return jsonResult(statuses)
 }
@@ -697,6 +1734,17 @@ func (s *Server) handleListStatuses(ctx context.Context, _ mcpgo.CallToolRequest
 func str(args map[string]any, key string) string {
 	v, _ := args[key].(string)
 	return v
+}
+
+// ticketResult is the exit point for every tool that returns tickets: the same
+// allowed list as the HTTP views (ticket.FilterForViewer), so a requester over
+// MCP is shown what a requester over HTTP is shown.
+func ticketResult(role user.Role, v any) (*mcpgo.CallToolResult, error) {
+	filtered, err := ticket.FilterForViewer(role, v)
+	if err != nil {
+		return errResult("could not encode the ticket")
+	}
+	return jsonResult(filtered)
 }
 
 func jsonResult(v any) (*mcpgo.CallToolResult, error) {
@@ -709,4 +1757,55 @@ func jsonResult(v any) (*mcpgo.CallToolResult, error) {
 
 func errResult(msg string) (*mcpgo.CallToolResult, error) {
 	return mcpgo.NewToolResultError(msg), nil
+}
+
+// storeErr turns a failure from below into something a tool caller can be
+// told, and logs the rest.
+//
+// The raw error text was handed straight to the caller, and store errors carry
+// the database's own words: create_ticket with an unknown reporter id
+// answered `violates foreign key constraint "tickets_reporter_user_id_fkey"
+// (SQLSTATE 23503)`. That names a table, a column and a constraint to anyone
+// with a staff MCP client, and it is the sort of detail that makes the next
+// probe cheaper.
+//
+// Validation refusals are different and pass through unchanged: they are
+// about what the caller sent, the caller can act on them, and a tool that
+// answers "something went wrong" to a bad argument is a tool nobody can use.
+func storeErr(ctx context.Context, op string, err error) (*mcpgo.CallToolResult, error) {
+	if errors.Is(err, ticket.ErrValidation) {
+		return errResult(err.Error())
+	}
+	// A listing the caller may not ask for (a filter outside a requester's
+	// view, free-text requester search without the scope). Its text is the
+	// wording REST answers with, and like a validation refusal it is about what
+	// the caller sent.
+	var fe *ticket.FilterError
+	if errors.As(err, &fe) {
+		return errResult(fe.Msg)
+	}
+	// A closed ticket's refusals say so, and say where to go instead (#349).
+	// Like a validation refusal they are about the ticket the caller already
+	// holds and can act on, and "update ticket status failed" sends an agent
+	// retrying a move that can never succeed.
+	if errors.Is(err, ticket.ErrClosed) || errors.Is(err, ticket.ErrNotClosed) {
+		return errResult(err.Error())
+	}
+	// A follow-up of a ticket whose reporter was deleted (#625): REST answers
+	// 409 reporter_deleted with the same advice.
+	if errors.Is(err, ticket.ErrReporterDeleted) {
+		return errResult(err.Error() + ": restore the account, or open a new ticket")
+	}
+	// A move into a retired or nonexistent status is about the status the
+	// caller named, and REST answers it with a 409 or 404 for the same reason.
+	if errors.Is(err, ticket.ErrStatusInactive) || errors.Is(err, ticket.ErrStatusNotFound) {
+		return errResult(err.Error())
+	}
+	// A role boundary working as designed. The wrapped text names internals
+	// ("status transition not allowed"), so the sentence is REST's own.
+	if errors.Is(err, ticket.ErrForbidden) {
+		return errResult("you do not have permission to perform this action")
+	}
+	slog.ErrorContext(ctx, "mcp tool failed", "op", op, "error", err)
+	return errResult(op + " failed")
 }

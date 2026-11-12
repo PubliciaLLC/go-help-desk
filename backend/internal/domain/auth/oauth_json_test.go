@@ -47,7 +47,7 @@ func TestOAuthClient_JSONContract(t *testing.T) {
 	// without a tag would otherwise ship PascalCase with every test passing.
 	// handleCreateOAuthClient hand-builds client_id/name; list must agree.
 	require.ElementsMatch(t,
-		[]string{"id", "client_id", "name", "scopes", "created_at"},
+		[]string{"id", "client_id", "name", "scopes", "created_at", "user_id"}, // user_id: the client's service user (#420)
 		slices.Collect(maps.Keys(got)),
 		"unexpected key on the wire — a new field needs a json tag, or json:\"-\" if it is a secret")
 }

@@ -16,6 +16,12 @@ import (
 // was answered with 500 "an internal error occurred" and logged as one.
 var ErrValidation = errors.New("invalid input")
 
+// ErrServiceAccount marks a refusal to give a service account a way to sign
+// in: a password, a second factor, an SSO identity, or the admin role. The
+// database refuses the same writes (users_service_account_inert); this is the
+// answer a caller can act on.
+var ErrServiceAccount = errors.New("a service account cannot sign in, hold a password or second factor, or be an administrator")
+
 // Role names the three access tiers. Order matters: do not change values.
 type Role string
 
@@ -25,27 +31,62 @@ const (
 	RoleUser  Role = "user"
 )
 
+// Valid reports whether r is one of the three roles.
+func (r Role) Valid() bool {
+	return r == RoleAdmin || r == RoleStaff || r == RoleUser
+}
+
 // User is the canonical representation of an identity in the system.
 // It is auth-method-agnostic: PasswordHash is empty for SAML-only accounts;
 // SAMLSubject is empty for local-only accounts.
 type User struct {
-	ID           uuid.UUID  `json:"id"`
-	Email        string     `json:"email"`
-	DisplayName  string     `json:"display_name"`
-	Role         Role       `json:"role"`
-	PasswordHash string     `json:"-"`
-	MFASecret    string     `json:"-"`
-	MFAEnabled   bool       `json:"mfa_enabled"`
-	SAMLSubject  string     `json:"-"`
-	OIDCSubject  string     `json:"-"`
-	Disabled     bool       `json:"disabled"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
-	DeletedAt    *time.Time `json:"-"`
+	ID           uuid.UUID `json:"id"`
+	Email        string    `json:"email"`
+	DisplayName  string    `json:"display_name"`
+	Role         Role      `json:"role"`
+	PasswordHash string    `json:"-"`
+	MFASecret    string    `json:"-"`
+	MFAEnabled   bool      `json:"mfa_enabled"`
+	SAMLSubject  string    `json:"-"`
+	OIDCSubject  string    `json:"-"`
+	Disabled     bool      `json:"disabled"`
+	// ServiceAccount marks the identity an OAuth client acts as. It can never
+	// sign in: the database refuses a password, a second factor, an SSO
+	// identity or the admin role on such a row.
+	ServiceAccount bool `json:"service_account"`
+	// MustChangePassword is set by the server console's unlock command and
+	// cleared when the account holder sets a password of their own (#497).
+	MustChangePassword bool       `json:"must_change_password"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	DeletedAt          *time.Time `json:"-"`
+
+	// The person's own staff-email switches (#441); see
+	// notification.StaffPrefs for what each means and how an administrator's
+	// override applies. All on for a new account and for every account that
+	// existed before the columns did.
+	EmailNotifyAssigned bool `json:"email_notify_assigned"`
+	EmailNotifyActivity bool `json:"email_notify_activity"`
+	EmailNotifyGroup    bool `json:"email_notify_group"`
 }
 
 // IsActive returns true when the user is neither disabled nor soft-deleted.
 func (u User) IsActive() bool { return !u.Disabled && u.DeletedAt == nil }
+
+// CanReceiveStaffMail reports whether this account may be sent staff email
+// about tickets (#441): staff or admin, active, with an address.
+//
+// Every staff-mail recipient is filtered through here, at the moment of
+// sending as well as when the mail is queued. A service account (#434, #490:
+// the identity an OAuth client acts as) is never mailed.
+func (u User) CanReceiveStaffMail() bool {
+	return u.IsActive() && !u.ServiceAccount && u.Email != "" && (u.Role == RoleStaff || u.Role == RoleAdmin)
+}
+
+// EmailPreferencesPatch changes only the switches that are set.
+type EmailPreferencesPatch struct {
+	Assigned, Activity, Group *bool
+}
 
 // Validate returns an error if the user is structurally invalid.
 // It does not validate the password hash or MFA secret — those are set by
@@ -68,6 +109,10 @@ func ValidateEmail(s string) (string, error) {
 	if trimmed == "" {
 		return "", fmt.Errorf("%w: email is required", ErrValidation)
 	}
+	// Addresses must be ASCII so that they compare reliably.
+	if !isASCII(trimmed) {
+		return "", fmt.Errorf("%w: email address must contain only ASCII characters", ErrValidation)
+	}
 	addr, err := mail.ParseAddress(trimmed)
 	if err != nil {
 		return "", fmt.Errorf("%w: %q is not an email address", ErrValidation, trimmed)
@@ -78,13 +123,50 @@ func ValidateEmail(s string) (string, error) {
 	if addr.Address == "" {
 		return "", fmt.Errorf("%w: invalid email address", ErrValidation)
 	}
+	// mail.ParseAddress drops the quotes from a quoted local part, so
+	// "john doe"@example.com comes back as john doe@example.com, which is no
+	// longer an address. Stored, it fails when the mailer parses it again, and
+	// the person is never sent anything (#389). So the result must parse back
+	// to itself. A quoted local part that never needed its quotes
+	// ("john"@example.com, stored as john@example.com) still passes.
+	if again, err := mail.ParseAddress(addr.Address); err != nil || again.Address != addr.Address {
+		return "", fmt.Errorf("%w: %q cannot be used: an address that needs quotation marks is not supported", ErrValidation, trimmed)
+	}
 	return strings.ToLower(addr.Address), nil
 }
 
-func (u User) Validate() error {
-	if _, err := ValidateEmail(u.Email); err != nil {
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// asciiLower lower-cases A-Z and nothing else. For text that may be non-ASCII
+// and is only compared, never stored.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
+}
+
+func (u *User) Validate() error {
+	// The parsed form is kept, not discarded. ValidateEmail accepts the
+	// angle-bracket spelling — mail.ParseAddress does — and throwing its
+	// answer away stored "<someone@example.com>" verbatim, brackets and all.
+	// Login looks up the bare address, so the account could only be signed
+	// into by typing the brackets, which nobody does.
+	addr, err := ValidateEmail(u.Email)
+	if err != nil {
 		return err
 	}
+	u.Email = addr
 	if strings.TrimSpace(u.DisplayName) == "" {
 		return fmt.Errorf("%w: display name is required", ErrValidation)
 	}
@@ -104,4 +186,21 @@ func IsLocalAuthAllowed(u User, samlEnabled bool) bool {
 		return true
 	}
 	return u.Role == RoleAdmin
+}
+
+// AssignableStaff is somebody work can be given to: an id and a name, and
+// nothing else.
+//
+// Its own type rather than a User with most fields blank, because what staff
+// may read about their colleagues is narrower than what an administrator may:
+// an email address, a role and a login state are not needed to assign a
+// ticket, so they are not in this.
+type AssignableStaff struct {
+	ID          uuid.UUID `json:"id"`
+	DisplayName string    `json:"display_name"`
+	// Assignable is false for somebody who is still here but cannot be given
+	// work — suspended, or moved to a reporting role. Their name is still
+	// needed: a ticket already assigned to them has to show who has it, and
+	// calling them a former staff member would be untrue.
+	Assignable bool `json:"assignable"`
 }

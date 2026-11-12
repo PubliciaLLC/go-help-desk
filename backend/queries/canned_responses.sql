@@ -14,5 +14,5 @@ UPDATE canned_responses
 SET name = $2, body = $3, category_id = $4, type_id = $5, sort_order = $6
 WHERE id = $1;
 
--- name: DeleteCannedResponse :exec
+-- name: DeleteCannedResponse :execrows
 DELETE FROM canned_responses WHERE id = $1;
