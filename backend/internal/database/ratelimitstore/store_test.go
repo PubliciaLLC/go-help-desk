@@ -242,10 +242,13 @@ func countRows(t *testing.T, db *testutil.DB) int {
 }
 
 // One sweep batch removes at most batch rows, whatever plan Postgres picks. The
-// statement used to be `key IN (SELECT ... LIMIT n)`, and under a nested-loop
-// semi join the subquery was re-run per row of the table, so a batch of 3 could
-// remove every expired row. The transaction and the forced plan keep this
-// deterministic; see testutil.ForceRescannedBatchPlan.
+// statement is `key IN (SELECT ... LIMIT n)`, the shape that over-deletes in
+// DeleteAuditLogBatch, and under the plan that does it (a nested-loop semi join
+// re-running the subquery per row) it still deletes exactly n: it has no row
+// lock (no FOR UPDATE), so each re-run returns the same n rows. This pins that,
+// so adding a lock to the subquery later fails here instead of in production.
+// The transaction and the forced plan keep it deterministic; see
+// testutil.ForceRescannedBatchPlan.
 func TestDeleteExpiredRateLimits_NeverDeletesMoreThanItsBatch(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()

@@ -145,8 +145,9 @@ type DeleteAuditLogBatchParams struct {
 // subquery inline, a nested-loop semi join re-runs it for every row of
 // audit_log, and each re-run skips the rows this statement has already deleted
 // and takes the next n: one batch then deletes every expired row, not n. Which
-// plan wins follows the table statistics. The CTE is evaluated once, whatever
-// the plan.
+// plan wins follows the table statistics, and the bad one is chosen when the
+// table is estimated at about one row (measured at default planner settings).
+// The CTE is evaluated once, whatever the plan.
 func (q *Queries) DeleteAuditLogBatch(ctx context.Context, arg DeleteAuditLogBatchParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, deleteAuditLogBatch, arg.Cutoff, arg.BatchSize)
 	if err != nil {

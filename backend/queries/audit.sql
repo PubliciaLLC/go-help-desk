@@ -171,8 +171,9 @@ SELECT COUNT(*) FROM (
 -- subquery inline, a nested-loop semi join re-runs it for every row of
 -- audit_log, and each re-run skips the rows this statement has already deleted
 -- and takes the next n: one batch then deletes every expired row, not n. Which
--- plan wins follows the table statistics. The CTE is evaluated once, whatever
--- the plan.
+-- plan wins follows the table statistics, and the bad one is chosen when the
+-- table is estimated at about one row (measured at default planner settings).
+-- The CTE is evaluated once, whatever the plan.
 WITH batch AS MATERIALIZED (
   SELECT old.id FROM audit_log AS old
   WHERE old.created_at < sqlc.arg(cutoff)

@@ -69,6 +69,8 @@ WHERE tracking_number = $1
 -- subquery inline a nested-loop semi join re-runs it per row of the table, and
 -- each re-run skips the rows already deleted and takes the next n, so one batch
 -- can delete every expired token. The CTE is evaluated once, whatever the plan.
+-- The bad plan is chosen when the table is estimated at about one row (measured
+-- at default planner settings).
 WITH batch AS MATERIALIZED (
   SELECT old.id FROM guest_access_tokens AS old
   WHERE old.expires_at <= clock_timestamp()

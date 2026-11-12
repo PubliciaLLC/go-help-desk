@@ -53,7 +53,9 @@ type ClaimNotificationsRow struct {
 // The page is a MATERIALIZED CTE, not `id IN (SELECT ... LIMIT n)`: with the
 // subquery inline a nested-loop semi join re-runs it per row of the table, and
 // each re-run skips the rows already updated and takes the next n, so one claim
-// can lease every due row and count an attempt against each.
+// can lease every due row and count an attempt against each. The bad plan is
+// chosen when the table is estimated at about one row, which is the outbox's
+// usual state (measured at default planner settings).
 func (q *Queries) ClaimNotifications(ctx context.Context, arg ClaimNotificationsParams) ([]ClaimNotificationsRow, error) {
 	rows, err := q.db.QueryContext(ctx, claimNotifications, arg.LeaseSeconds, arg.PageLimit)
 	if err != nil {

@@ -296,5 +296,5 @@ func TestClaimNotifications_NeverTakesMoreThanItsLimit(t *testing.T) {
 
 	var leased int
 	require.NoError(t, tx.QueryRow(`SELECT count(*) FROM notification_outbox WHERE claimed_until IS NOT NULL`).Scan(&leased))
-	require.Equal(t, 3, leased, "rows leased beyond the ones returned would be lost until the lease ran out")
+	require.Equal(t, 3, leased, "rows leased beyond the page limit are over-leased: no other worker can take them until the lease runs out")
 }
