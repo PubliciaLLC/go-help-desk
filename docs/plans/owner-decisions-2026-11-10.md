@@ -62,3 +62,13 @@ a recommendation he accepted in bulk ("Accept all") from `pretag-fixes.md` and `
   - **Where each limit lives (2026-11-11).** Erik: "when we're writing it to the database, it's always at the fixed cap. The length limit is only enforced in the frontend, in the API." So the database and the store know only the fixed type caps (the store refuses a value over its type's cap and never reads the field's own max); the per-field max is enforced in the API and the forms. Lowering it never touches stored data, and a write that bypasses the API is held only to the fixed cap.
   - **A guest whose values could not be saved (G6, 2026-11-11).** The ticket exists but the write of the custom field values failed. Erik chose "Say it was filed, check email (Recommended)": the guest is answered `201` with the tracking number as on success, plus `custom_fields_saved: false` and a notice that the request was received, some details could not be saved, and to check the email for the ticket link and add them there. Not a `500` (a retry would file the ticket twice), and the notice does not suggest one. REST and MCP callers are unchanged: `500` naming the ticket when a field is required, else `201` with `not_saved`.
 - **Follow-up backfill (#625, G5, migration 000064).** The first draft marked every existing `parent_child` link as a follow-up, which could name one person's ticket on another's closed ticket. Erik chose "Approve the narrower backfill (Recommended)": only links between two tickets of the same requester (the same account or the same guest address) become follow-ups. A requester refused only because of a hand-made link between different people's tickets can now open a follow-up.
+
+## 2026-11-12
+- **Search page (#654): an Updated column.** Erik chose "Add an Updated column (Recommended)": the desktop ticket table gets a
+  sortable Updated column, in the same short date form as Created, with `aria-sort` for the current sort, so every choice in
+  the Sort by menu has a header. The phone keeps its Sort by menu and a staff card shows "Updated <date>".
+- **Search page (#654): the status chip.** Erik, looking at the screenshots: "I like it except for the wrapping in progress."
+  A status chip never wraps, at any desktop width and in any row, including rows made tall by a reply match.
+- **Search page (#654): the subject column.** Erik, on the screenshots with the subject cell cut off at 16rem: "i like it as is in these
+  screenshots?" The page is approved as it looks there, and the subject column keeps its 16rem limit (a longer subject is cut
+  with an ellipsis; the whole subject stays in the link's text and its `title`). Do not change that width without asking him again.
