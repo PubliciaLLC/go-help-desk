@@ -47,3 +47,47 @@ func TestLegacyLongOption_CanBeShortenedAndDoesNotBlockOtherEdits(t *testing.T) 
 		require.NoError(t, err)
 	})
 }
+
+// An option counts as one the field already had only if the field was already a
+// select. Options stored on a text field are stored as sent and nothing reads
+// them, so a 300-character one there is not a legacy select option: turning the
+// field into a select must not carry it in.
+func TestLongOptionOnANonSelectField_IsNotLegacyWhenTheFieldBecomesASelect(t *testing.T) {
+	ctx := context.Background()
+	long := chars(300, "a")
+
+	for name, ft := range map[string]customfield.FieldType{
+		"a text field":     customfield.FieldTypeText,
+		"a textarea field": customfield.FieldTypeTextarea,
+		"a number field":   customfield.FieldTypeNumber,
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := newFakeStore()
+			svc := customfield.NewService(store)
+			def, err := svc.CreateFieldDef(ctx, "Pick", ft, nil, 1, nil)
+			require.NoError(t, err)
+			// Stored as sent: the API does not look at options on a field that is not a select.
+			def.Options = []string{"short", long}
+			store.defs[def.ID] = def
+
+			sel := customfield.FieldTypeSelect
+			_, err = svc.PatchFieldDef(ctx, def.ID, customfield.FieldDefPatch{FieldType: &sel}, nil)
+			require.ErrorIs(t, err, customfield.ErrValidation, "the 300-character option is new to a select")
+			require.Equal(t, customfield.FieldType(ft), store.defs[def.ID].FieldType, "and nothing was written")
+
+			_, err = svc.PatchFieldDef(ctx, def.ID, customfield.FieldDefPatch{FieldType: &sel, Options: []string{"short"}}, nil)
+			require.NoError(t, err, "a short list is fine")
+		})
+	}
+
+	t.Run("a field that was already a select keeps its legacy option through a patch", func(t *testing.T) {
+		store := newFakeStore()
+		svc := customfield.NewService(store)
+		def, err := svc.CreateFieldDef(ctx, "Pick", customfield.FieldTypeSelect, []string{"short"}, 1, nil)
+		require.NoError(t, err)
+		def.Options = []string{"short", long}
+		store.defs[def.ID] = def
+		_, err = svc.PatchFieldDef(ctx, def.ID, customfield.FieldDefPatch{Options: []string{"short", long, "more"}}, nil)
+		require.NoError(t, err)
+	})
+}

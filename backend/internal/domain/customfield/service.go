@@ -179,7 +179,15 @@ func checkChange(cur, next FieldDef, held Held) error {
 			if err := checkOptionLists(next.Options, next.RetiredOptions); err != nil {
 				return err
 			}
-			if err := checkOptionLength(next.Options, cur.Options); err != nil {
+			// An option is one the field already had only if it was a select: on any
+			// other type the list is stored as sent and nothing reads it, so a long
+			// option there is not a legacy select option, and becoming a select does
+			// not carry it in.
+			had := cur.Options
+			if cur.FieldType != FieldTypeSelect {
+				had = nil
+			}
+			if err := checkOptionLength(next.Options, had); err != nil {
 				return err
 			}
 		}
