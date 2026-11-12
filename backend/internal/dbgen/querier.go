@@ -818,6 +818,30 @@ type Querier interface {
 	// Every other criterion is a further AND, so a filter can only narrow what the
 	// caller may already see. Nothing below widens it.
 	//
+	// reply_hits is reply-text search (advanced search, section 2.5). It is empty
+	// unless search_replies is set and the search has words. A ticket matches when
+	// ONE reply holds every word, so a public reply and an internal note cannot
+	// combine. include_internal comes from the actor's role and nothing else
+	// (ticket.IncludeInternalFor); for a requester it is false, and an internal note
+	// is then never read, so it cannot decide which tickets match. The snippet read
+	// (ReplyMatchesForTickets) applies the same condition.
+	//
+	// It matches ticket_replies.body_tsv, a stored column the migration adds and a
+	// trigger keeps current. The store sets search_replies false until the
+	// background fill and the two indexes are done (ReplySearchReady), so this arm
+	// never runs against a half-filled column.
+	//
+	// It looks at only the reply_cap NEWEST matching replies of the tickets the
+	// viewer may see, so a word in a quarter of all replies is not matched, joined
+	// and deduplicated a million times over. The recency index lets the planner
+	// walk replies newest first and stop; the content index serves the rare words.
+	// The cap is applied AFTER the viewer's visibility, with the same predicate as
+	// the main query below (rt is that ticket): applied before it, a requester's
+	// own matches would be crowded out by everyone else's, and a ticket the viewer
+	// may see could be missed because newer matches elsewhere used up the cap. The
+	// main query still applies visibility and every filter itself, so this can
+	// only narrow what it returns. Keep the two predicates in step: a store test
+	// searches as a scoped member of staff and a requester with a cap of one.
 	// Single values are NULL-means-absent and arrays are cardinality(...) = 0, so
 	// one prepared statement serves every combination. The store always passes a
 	// non-nil array.
@@ -1002,6 +1026,35 @@ type Querier interface {
 	// Position n (from 1) becomes the field's number. Only rows whose number
 	// changes are written.
 	ReorderCustomFieldDefs(ctx context.Context, ids []uuid.UUID) error
+	// One snippet per ticket: its newest matching reply the viewer may read. The
+	// second half of reply search; the first is the reply_hits CTE in
+	// ListTicketsFiltered, and both take the same include_internal.
+	//
+	// Run only for the tickets on the page (at most 200). ts_headline parses the
+	// body again, so it runs once per ticket, not once per matching reply.
+	//
+	// include_internal comes from the actor's role and nothing else (see
+	// ticket.IncludeInternalFor). It is applied HERE as well as in the match
+	// query, because a ticket that matches on its own subject must not show a
+	// snippet from an internal note, to a requester least of all.
+	//
+	// It matches the stored r.body_tsv, as the match query does, so the two cannot
+	// disagree about what a reply holds. ts_headline below still parses the body of
+	// the one reply per ticket it shows, from the same first 50,000 characters the
+	// column was computed from (migration 000062).
+	//
+	// Matched words are wrapped in U+0002 and U+0003, not HTML. No author is read.
+	ReplyMatchesForTickets(ctx context.Context, arg ReplyMatchesForTicketsParams) ([]ReplyMatchesForTicketsRow, error)
+	// Whether reply search may run: both indexes it needs exist and are valid.
+	// The server builds them in the background after the migration, and only once
+	// every existing reply has its body_tsv (internal/database/replyindex), so a
+	// valid index means the column is complete: a reply written since the
+	// migration is filled by the trigger, an older one by the background fill.
+	// Until then a search skips replies and says so.
+	//
+	// indisvalid is false for the index a failed CREATE INDEX CONCURRENTLY leaves
+	// behind, which still exists under its name and must not count.
+	ReplySearchReady(ctx context.Context) (bool, error)
 	// Clears a key's budget, after a successful sign-in.
 	ResetRateLimit(ctx context.Context, key string) error
 	RestoreTag(ctx context.Context, id uuid.UUID) (int64, error)

@@ -112,6 +112,10 @@ type harness struct {
 	rateFault       *rateFault          // set its err to make every rate-limit count fail, without touching the transaction
 }
 
+// harnessReplyTimeout is the time limit on the reply arm of a search in a
+// harness; a test that wants the limit to pass sets it and puts it back.
+var harnessReplyTimeout = ticketstore.DefaultReplyTimeout
+
 func newHarness(t *testing.T) (*harness, func()) {
 	t.Helper()
 	// 0 = the credential throttle is off, which is what almost every test
@@ -190,7 +194,7 @@ func newHarnessOn(t *testing.T, openDB func(*testing.T) (*testutil.DB, func()), 
 
 	// Stores
 	uStore := userstore.New(q)
-	tStore := ticketstore.New(q)
+	tStore := ticketstore.New(q).WithReplyLimits(ticketstore.DefaultReplyCap, harnessReplyTimeout)
 	cStore := categorystore.New(q)
 	gStore := groupstore.New(q)
 	aStore := adminstore.New(q)

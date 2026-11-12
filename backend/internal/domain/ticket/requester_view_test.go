@@ -144,15 +144,17 @@ func TestFilterForViewer_RequesterGetsOnlyTheAllowedList(t *testing.T) {
 	tk := filledTicket(t)
 	type view struct {
 		ticket.Ticket
-		SLA       any    `json:"sla"`
-		CanReopen bool   `json:"can_reopen"`
-		Replies   []any  `json:"replies,omitempty"`
-		Links     []any  `json:"links,omitempty"`
-		Warnings  []any  `json:"warnings,omitempty"`
-		Extra     string `json:"surprise,omitempty"`
+		SLA       any                `json:"sla"`
+		CanReopen bool               `json:"can_reopen"`
+		Replies   []any              `json:"replies,omitempty"`
+		Links     []any              `json:"links,omitempty"`
+		Warnings  []any              `json:"warnings,omitempty"`
+		Match     *ticket.ReplyMatch `json:"reply_match,omitempty"`
+		Extra     string             `json:"surprise,omitempty"`
 	}
 	wrapped := view{Ticket: tk, Replies: []any{map[string]any{"id": "r", "body": "hi"}}, Links: []any{map[string]any{"source_id": "a"}},
-		Warnings: []any{map[string]any{"field_id": "f", "reason": "inactive"}}, Extra: "x"}
+		Warnings: []any{map[string]any{"field_id": "f", "reason": "inactive"}},
+		Match:    &ticket.ReplyMatch{ReplyID: uuid.New(), CreatedAt: tk.CreatedAt, Snippet: "a \x02hit\x03"}, Extra: "x"}
 
 	allowed := asSet(append(ticket.RequesterTicketKeys(), ticket.RequesterWrapperKeys()...))
 	ticketAllowed := asSet(ticket.RequesterTicketKeys())
@@ -330,4 +332,31 @@ func TestFilterForViewer_RequesterSeesExactlyTheseKeys(t *testing.T) {
 	}
 	sort.Strings(want)
 	require.Equal(t, want, sorted(keysOf(t, got)))
+}
+
+// reply_match is a wrapper key, kept for a requester on purpose: a requester's
+// matches are their own public conversation (advanced search, section 2.5). The
+// guest view is a subset of the requester's and has no list to search, so it
+// does not carry it. Staff get everything, so they carry it without being
+// listed.
+func TestReplyMatch_IsARequesterWrapperKeyAndNotAGuestKey(t *testing.T) {
+	require.Contains(t, ticket.RequesterWrapperKeys(), "reply_match")
+	require.NotContains(t, ticket.RequesterTicketKeys(), "reply_match", "it is a wrapper key, not a Ticket field")
+	require.NotContains(t, ticket.RequesterNeverTicketKeys(), "reply_match")
+
+	type view struct {
+		ticket.Ticket
+		Match *ticket.ReplyMatch `json:"reply_match,omitempty"`
+	}
+	v := view{Ticket: filledTicket(t), Match: &ticket.ReplyMatch{ReplyID: uuid.New(), Snippet: "x"}}
+
+	for _, role := range []user.Role{user.RoleUser, user.Role("auditor"), user.Role("")} {
+		got, err := ticket.FilterForViewer(role, []view{v})
+		require.NoError(t, err)
+		b, _ := json.Marshal(got)
+		require.Contains(t, string(b), `"reply_match"`, role)
+	}
+	got, err := ticket.FilterForGuest(v)
+	require.NoError(t, err)
+	require.NotContains(t, keysOf(t, got), "reply_match")
 }
