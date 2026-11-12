@@ -102,6 +102,13 @@ type Querier interface {
 	// (claimed_until) returns a row to the pool if its worker dies mid-send.
 	// attempts counts the claim, so a row that crashes its worker every time
 	// still runs out of attempts.
+	//
+	// The page is a MATERIALIZED CTE, not `id IN (SELECT ... LIMIT n)`: with the
+	// subquery inline a nested-loop semi join re-runs it per row of the table, and
+	// each re-run skips the rows already updated and takes the next n, so one claim
+	// can lease every due row and count an attempt against each. The bad plan is
+	// chosen when the table is estimated at about one row, which is the outbox's
+	// usual state (measured at default planner settings).
 	ClaimNotifications(ctx context.Context, arg ClaimNotificationsParams) ([]ClaimNotificationsRow, error)
 	// Clears EVERY second factor an account holds and ends every session it has
 	// open, as one statement. Returns how many users matched (0 or 1) and how many
@@ -266,6 +273,14 @@ type Querier interface {
 	// audit.Store's own comment on DeleteOlderThan for why. Oldest first, so the
 	// created_at index serves it; SKIP LOCKED so a row someone else holds is left
 	// for the next sweep and not waited on.
+	//
+	// The batch is a MATERIALIZED CTE, not `id IN (SELECT ... LIMIT n)`. With the
+	// subquery inline, a nested-loop semi join re-runs it for every row of
+	// audit_log, and each re-run skips the rows this statement has already deleted
+	// and takes the next n: one batch then deletes every expired row, not n. Which
+	// plan wins follows the table statistics, and the bad one is chosen when the
+	// table is estimated at about one row (measured at default planner settings).
+	// The CTE is evaluated once, whatever the plan.
 	DeleteAuditLogBatch(ctx context.Context, arg DeleteAuditLogBatchParams) (int64, error)
 	DeleteCannedResponse(ctx context.Context, id uuid.UUID) (int64, error)
 	// Takes the custom-field assignments of the category, of its types and of
@@ -291,6 +306,13 @@ type Querier interface {
 	// token's lifetime. One batch, oldest first so idx_guest_access_tokens_expires_at
 	// serves it; SKIP LOCKED so a row someone else holds is left for the next sweep
 	// and not waited on.
+	//
+	// The batch is a MATERIALIZED CTE, not `id IN (SELECT ... LIMIT n)`: with the
+	// subquery inline a nested-loop semi join re-runs it per row of the table, and
+	// each re-run skips the rows already deleted and takes the next n, so one batch
+	// can delete every expired token. The CTE is evaluated once, whatever the plan.
+	// The bad plan is chosen when the table is estimated at about one row (measured
+	// at default planner settings).
 	DeleteExpiredGuestAccessTokens(ctx context.Context, batchSize int32) (int64, error)
 	// Removes up to batch rows whose window has ended. A bounded batch, called in a
 	// loop, so that clearing a backlog (a burst of attempts on made-up email

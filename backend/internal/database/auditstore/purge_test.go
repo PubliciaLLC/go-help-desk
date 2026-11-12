@@ -44,6 +44,29 @@ func seedAncient(t *testing.T, q *dbgen.Queries, n int) time.Time {
 	return time.Date(1970, 2, 1, 0, 0, 0, 0, time.UTC)
 }
 
+// One batch deletes at most batch_size rows, whatever plan Postgres picks. The
+// statement used to be `id IN (SELECT ... LIMIT n FOR UPDATE SKIP LOCKED)`, and
+// under a nested-loop semi join the subquery was re-run per row of audit_log,
+// so a batch of 3 could delete every expired row. Which plan won depended on
+// table statistics, which is why the purge tests below passed on a fresh
+// database and failed on a long-lived one.
+func TestDeleteAuditLogBatch_NeverDeletesMoreThanItsLimit(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, tx, rollback := testutil.TxQueriesTx(t, db)
+	defer rollback()
+	testutil.ForceRescannedBatchPlan(t, tx)
+
+	cutoff := seedAncient(t, q, 7)
+	n, err := q.DeleteAuditLogBatch(context.Background(), dbgen.DeleteAuditLogBatchParams{Cutoff: cutoff, BatchSize: 3})
+	require.NoError(t, err)
+	require.Equal(t, int64(3), n)
+
+	var left int
+	require.NoError(t, tx.QueryRow(`SELECT count(*) FROM audit_log WHERE entity_type = 'purge_test'`).Scan(&left))
+	require.Equal(t, 4, left)
+}
+
 // #629(c): the retention purge deletes in batches, so the first purge of a big
 // log is not one statement holding a lock on every expired row. The count it
 // reports is the sum over the batches.
@@ -52,6 +75,7 @@ func TestDeleteOlderThan_DeletesInBatchesAndReportsTheTotal(t *testing.T) {
 	defer closeDB()
 	q, tx, rollback := testutil.TxQueriesTx(t, db)
 	defer rollback()
+	testutil.ForceRescannedBatchPlan(t, tx)
 
 	cutoff := seedAncient(t, q, 7)
 	h := &hookedTx{DBTX: tx}
@@ -73,6 +97,7 @@ func TestDeleteOlderThan_AWholeNumberOfBatches(t *testing.T) {
 	defer closeDB()
 	q, tx, rollback := testutil.TxQueriesTx(t, db)
 	defer rollback()
+	testutil.ForceRescannedBatchPlan(t, tx)
 
 	cutoff := seedAncient(t, q, 6)
 	h := &hookedTx{DBTX: tx}
@@ -90,6 +115,7 @@ func TestDeleteOlderThan_StopsBetweenBatchesWhenCancelled(t *testing.T) {
 	defer closeDB()
 	q, tx, rollback := testutil.TxQueriesTx(t, db)
 	defer rollback()
+	testutil.ForceRescannedBatchPlan(t, tx)
 
 	cutoff := seedAncient(t, q, 7)
 	ctx, cancel := context.WithCancel(context.Background())
