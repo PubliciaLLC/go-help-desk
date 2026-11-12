@@ -17,6 +17,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
 interface SuccessInfo {
   trackingNumber: string
+  // Set when the ticket was filed but some details could not be saved.
+  notice?: string
 }
 
 function GuestFieldInput({
@@ -119,6 +121,7 @@ export function GuestTicketPage() {
       // The guest endpoint, not the authenticated one. This page posted to
       // /tickets for as long as it has existed, which sits behind a role check,
       // so every submission from a visitor answered 401.
+      let notice: string | undefined
       const trackingNumber = await createGuestTicket({
         subject,
         description,
@@ -127,8 +130,8 @@ export function GuestTicketPage() {
         guest_email: email.trim(),
         guest_phone: phone.trim() || undefined,
         custom_fields: Object.keys(customFields).length > 0 ? customFields : undefined,
-      })
-      setSuccess({ trackingNumber })
+      }, (n) => { notice = n })
+      setSuccess({ trackingNumber, notice })
     } catch (err) {
       setError(extractError(err))
     } finally {
@@ -151,6 +154,11 @@ export function GuestTicketPage() {
               <p className="text-center text-2xl font-mono font-bold tracking-widest text-gray-900">
                 {success.trackingNumber}
               </p>
+              {success.notice && (
+                <p role="status" className="rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-900">
+                  {success.notice}
+                </p>
+              )}
               <p className="text-gray-500">
                 We have emailed you a link to follow the ticket. Keep this
                 number too — with your email address it will get you a fresh

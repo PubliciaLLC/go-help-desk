@@ -176,12 +176,18 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 	if _, err := s.customFields.SetGuestCreationValues(ctx, t.ID, t.CategoryID, body.CustomFields); err != nil {
 		slog.ErrorContext(ctx, "saving custom field values on a guest ticket failed; the ticket was created without them",
 			"ticket_id", t.ID, "error", err)
-		// A guest is never told "filed" for a ticket that lost what they sent,
-		// and a guest has no warnings to be told it in. Values are bounded, so
-		// this is a database fault, and the visitor is asked to try again. The
-		// tracking number is not given: nothing is promised about this ticket.
+		// The ticket exists and the guest has no warnings channel, so they are
+		// told what happened in a success-like answer (owner, 2026-11-11: "Say it
+		// was filed, check email"): received, some details not saved, and the
+		// emailed link is where to add them. Not a 500, which invites a retry
+		// that files the ticket twice. The tracking number is given, as on
+		// success. Values are bounded, so this is a database fault.
 		if len(body.CustomFields) > 0 {
-			Error(w, http.StatusInternalServerError, "internal_error", "your request could not be completed; please try again")
+			JSON(w, http.StatusCreated, guestValuesNotSaved{
+				TrackingNumber:    string(t.TrackingNumber),
+				CustomFieldsSaved: false,
+				Notice:            guestValuesNotSavedNotice,
+			})
 			return
 		}
 	}
@@ -194,6 +200,18 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 		"tracking_number": string(t.TrackingNumber),
 	}))
 }
+
+// guestValuesNotSaved is the answer to a guest whose ticket was filed but whose
+// custom field values could not be saved. Its own struct, so what a guest is told
+// is exactly this.
+type guestValuesNotSaved struct {
+	TrackingNumber    string `json:"tracking_number"`
+	CustomFieldsSaved bool   `json:"custom_fields_saved"`
+	Notice            string `json:"notice"`
+}
+
+const guestValuesNotSavedNotice = "We received your request, but some of the details you entered could not be saved. " +
+	"Check your email for the link to your ticket, and add the details there."
 
 // guestField is one custom field as the public form is told about it, and the
 // whole of what an anonymous visitor learns of the operator's fields. It is a

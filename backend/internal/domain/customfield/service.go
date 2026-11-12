@@ -38,6 +38,9 @@ func (s *Service) CreateFieldDefLimited(ctx context.Context, name string, fieldT
 		if err := checkOptionLists(options, nil); err != nil {
 			return FieldDef{}, err
 		}
+		if err := checkOptionLength(options, nil); err != nil {
+			return FieldDef{}, err
+		}
 	}
 	if err := checkMaxLength(fieldType, maxLength); err != nil {
 		return FieldDef{}, err
@@ -176,6 +179,9 @@ func checkChange(cur, next FieldDef, held Held) error {
 			if err := checkOptionLists(next.Options, next.RetiredOptions); err != nil {
 				return err
 			}
+			if err := checkOptionLength(next.Options, cur.Options); err != nil {
+				return err
+			}
 		}
 		// A value in neither list now that was in one before is a delete.
 		if cur.FieldType == FieldTypeSelect {
@@ -234,14 +240,25 @@ func checkOptionLists(options, retired []string) error {
 		if strings.TrimSpace(o) == "" {
 			return Invalid("an option cannot be blank")
 		}
-		// An option longer than a select value may be could never be chosen.
-		if utf8.RuneCountInString(o) > MaxTextChars {
-			return Invalid(fmt.Sprintf("an option is at most %d characters", MaxTextChars))
-		}
 		if seen[o] {
 			return Invalid(fmt.Sprintf("option %q is listed twice", o))
 		}
 		seen[o] = true
+	}
+	return nil
+}
+
+// checkOptionLength refuses an option in use over the longest a select value may
+// be (MaxTextChars), which could never be chosen. Only a new one: an option the
+// field already had, which a 1.3.0-beta database can hold at any length, is left,
+// or no edit to the list could be saved until it was shortened, and a rename (the
+// way to shorten one: it retires the old text) would be refused for the retired
+// copy. A retired option cannot be chosen at all, so its length does not matter.
+func checkOptionLength(options, had []string) error {
+	for _, o := range options {
+		if utf8.RuneCountInString(o) > MaxTextChars && !slices.Contains(had, o) {
+			return Invalid(fmt.Sprintf("an option is at most %d characters", MaxTextChars))
+		}
 	}
 	return nil
 }

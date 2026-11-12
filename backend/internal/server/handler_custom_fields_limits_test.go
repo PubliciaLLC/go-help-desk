@@ -208,18 +208,44 @@ func (h *harness) failValueWrites(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// A ticket that was to hold a required value must not be answered as filed
-// without it. Not the guest's 201 with a tracking number and no values.
-func TestGuestCreate_AFailedValueWriteFailsTheRequest(t *testing.T) {
+// When a guest's values cannot be saved after the ticket was created, the guest
+// is told the truth in a success-like answer (owner, 2026-11-11: "Say it was
+// filed, check email"): received, some details not saved, check the email for the
+// link and add them there. Not a 500, which invites a retry that files the ticket
+// twice; the tracking number is given as it is on success.
+func TestGuestCreate_AFailedValueWriteSaysTheTicketWasReceivedAndToCheckEmail(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	f := newGuestFixture(t, h)
 	h.failValueWrites(t)
 
 	code, body := h.guestCreate(t, map[string]string{f.serial.ID.String(): "SN-1"})
-	require.Equal(t, http.StatusInternalServerError, code, string(body))
-	require.NotContains(t, string(body), "tracking_number", "no tracking number for a ticket that lost its values")
+	require.Equal(t, http.StatusCreated, code, "the ticket exists: %s", body)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(body, &got))
+	require.NotEmpty(t, got["tracking_number"], "shown as on success")
+	require.Equal(t, false, got["custom_fields_saved"])
+	notice, _ := got["notice"].(string)
+	require.Contains(t, notice, "received")
+	require.Contains(t, notice, "could not be saved")
+	require.Contains(t, notice, "email")
+	require.NotContains(t, strings.ToLower(notice), "try again", "no retry: that would file it twice")
+	require.NotContains(t, strings.ToLower(notice), "retry")
 	require.NotContains(t, string(body), "values refused", "and nothing of the database's words")
+}
+
+// A success where the values were saved is as it was: the tracking number alone.
+func TestGuestCreate_ASavedWriteIsStillTheTrackingNumberAlone(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	f := newGuestFixture(t, h)
+
+	code, body := h.guestCreate(t, map[string]string{f.serial.ID.String(): "SN-1"})
+	require.Equal(t, http.StatusCreated, code, string(body))
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(body, &got))
+	require.Len(t, got, 1)
+	require.Contains(t, got, "tracking_number")
 }
 
 func TestCreateTicket_AFailedValueWriteFailsTheRequestWhenAFieldIsRequired(t *testing.T) {

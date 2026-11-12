@@ -5001,9 +5001,11 @@ so they could never satisfy a required field. They are filed without one.
 
 **A failed write of the values.** Once the ticket exists its values are written
 in one transaction. Values are bounded (see *Values*), so a failure is a database
-fault. When the classification has a required field, the request then fails with
-`500` (the REST and MCP answers name the ticket that was filed, so it can be
+fault. When the classification has a required field, the REST and MCP request
+then fails with `500` (the answer names the ticket that was filed, so it can be
 checked) rather than answering `201` for a ticket that lost the required value.
+A guest, who has no warnings and no way to check, is answered `201` with the
+tracking number and a notice (see *Guests*).
 When it has none, the values stay best-effort: `201`, with `not_saved` in
 `warnings`.
 
@@ -5038,9 +5040,13 @@ form, some of them internal, to anyone on the internet.
   retired option reads exactly like one that never existed, because the form is
   never shown retired options; a required offered field without a value is
   `400`. A guest is never warned and never partly saved, because the form is
-  ours. If the write of the values fails after the ticket exists, the request
-  fails with `500` and no tracking number: a guest is never told "filed" for a
-  ticket that lost what they sent. Required is judged over the offered fields only, so a field the staff
+  ours. If the write of the values fails after the ticket exists, the guest is
+  told the truth in a success-like answer (owner, 2026-11-11: "Say it was filed,
+  check email"): `201` with the tracking number as on success, plus
+  `custom_fields_saved: false` and a `notice` that the request was received, some
+  details could not be saved, and to check the email for the ticket link and add
+  them there. Not a `500`, which invites a retry that files the ticket twice, and
+  the notice does not suggest one. Required is judged over the offered fields only, so a field the staff
   form requires but guests are not offered does not stop a guest filing. After
   the ticket exists the write is held to the offered set again
   (`SetGuestCreationValues`), so a field withdrawn between the check and the

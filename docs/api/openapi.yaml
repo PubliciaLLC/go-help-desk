@@ -2304,10 +2304,12 @@ paths:
         characters, or 10,000 for a textarea field; characters, not bytes) is 400, and a retired
         option is refused with exactly the words used for one that never existed. A guest is never
         warned and never partly saved: nothing is created, and no tracking number is used. If the
-        values cannot be saved after the ticket was created, the answer is 500 internal_error with
-        no tracking number. A field that the staff form requires but guests
+        values cannot be saved after the ticket was created (a database fault), the answer is still 201
+        with the tracking number, plus custom_fields_saved false and a notice saying the request was
+        received, some details could not be saved, and to check the email for the ticket link and add
+        them there; it does not suggest trying again, which would file the ticket twice. A field that the staff form requires but guests
         are not offered does not stop a guest filing.
-        The response carries only the tracking number. The access link is emailed to guest_email, so a guest
+        The response carries only the tracking number (and, in the one case above, the notice). The access link is emailed to guest_email, so a guest
         proves ownership of the address by using the link. The per-client-address budget is shared with
         POST /guest/follow-up.
       tags: ['Guest']
@@ -2356,6 +2358,12 @@ paths:
                 required: [tracking_number]
                 properties:
                   tracking_number: {type: string}
+                  custom_fields_saved:
+                    type: boolean
+                    description: Present, and false, only when the ticket was filed but its custom field values could not be saved.
+                  notice:
+                    type: string
+                    description: 'With custom_fields_saved false, what to tell the guest (received, some details not saved, check the email).'
         '400':
           description: |
             `bad_request`: malformed body or a failed check; `invalid_format`: format is present and is not

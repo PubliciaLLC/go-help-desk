@@ -168,6 +168,34 @@ describe('GuestTicketPage custom fields', () => {
     })
   })
 
+  // The ticket was filed but its details could not be saved (owner, 2026-11-11:
+  // "Say it was filed, check email"): the success page says so, with the tracking
+  // number, and does not suggest filing again.
+  it('says some details were not saved, and to check the email, on the success page', async () => {
+    createGuestTicket.mockReset().mockImplementation(async (_input: unknown, onNotice?: (n: string) => void) => {
+      onNotice?.('We received your request, but some of the details you entered could not be saved. Check your email for the link to your ticket, and add the details there.')
+      return 'GHD-77'
+    })
+    const user = await fillBasics()
+    await user.selectOptions(screen.getByLabelText(/category/i), 'cat-1')
+    await user.type(await screen.findByLabelText(/serial number/i), 'SN-42')
+    await user.click(submit())
+
+    expect(await screen.findByText('GHD-77')).toBeTruthy()
+    expect(screen.getByRole('status').textContent).toMatch(/could not be saved/)
+    expect(screen.getByRole('status').textContent).toMatch(/check your email/i)
+    expect(screen.queryByText(/try again/i)).toBeNull()
+  })
+
+  it('shows no notice when everything was saved', async () => {
+    const user = await fillBasics()
+    await user.selectOptions(screen.getByLabelText(/category/i), 'cat-1')
+    await user.type(await screen.findByLabelText(/serial number/i), 'SN-42')
+    await user.click(submit())
+    expect(await screen.findByText('GHD-1')).toBeTruthy()
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
   // The lookup is throttled (429) and can fail like any request. A form that went
   // on without the list would ask for nothing and then be refused for a required
   // field it never showed, with nothing to fill in. So it says so, offers a retry,

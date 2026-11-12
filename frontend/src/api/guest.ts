@@ -102,8 +102,16 @@ export async function listGuestFields(categoryId: string): Promise<GuestField[]>
 
 // Returns the tracking number, which is all the server gives. The link arrives
 // by email, because the mailbox is the credential.
-export async function createGuestTicket(input: GuestTicketInput): Promise<string> {
-  const res = await guestApi.post<{ tracking_number: string }>('/tickets', { ...input, format: 'markdown' })
+//
+// When the ticket was filed but its custom field values could not be saved (a
+// fault on our side), the server still answers with the tracking number and adds
+// a notice saying so and to check the email; onNotice gets it. It is a callback
+// so the return stays the tracking number, which is all every other caller wants.
+export async function createGuestTicket(input: GuestTicketInput, onNotice?: (notice: string) => void): Promise<string> {
+  const res = await guestApi.post<{ tracking_number: string; custom_fields_saved?: boolean; notice?: string }>(
+    '/tickets', { ...input, format: 'markdown' },
+  )
+  if (res.data.custom_fields_saved === false && res.data.notice) onNotice?.(res.data.notice)
   return res.data.tracking_number
 }
 
