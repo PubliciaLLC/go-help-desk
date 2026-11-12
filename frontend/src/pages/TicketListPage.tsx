@@ -703,7 +703,7 @@ export function TicketListPage() {
                     {showSLAColumn && <SortHeader k="sla" now={sortNow} staff={isStaffOrAdmin} onSort={sortBy} />}
                     <SortHeader k="created" now={sortNow} staff={isStaffOrAdmin} onSort={sortBy} className="hidden xl:table-cell" />
                     {isStaffOrAdmin && (
-                      <SortHeader k="updated" now={sortNow} staff={isStaffOrAdmin} onSort={sortBy} className="hidden 2xl:table-cell" />
+                      <SortHeader k="updated" now={sortNow} staff={isStaffOrAdmin} onSort={sortBy} className="hidden xl:table-cell" />
                     )}
                   </tr>
                 </thead>
@@ -779,7 +779,7 @@ export function TicketListPage() {
                           {shortDate(t.created_at)}
                         </td>
                         {isStaffOrAdmin && (
-                          <td className="hidden whitespace-nowrap px-4 py-2 text-xs text-gray-500 2xl:table-cell" title={new Date(t.updated_at ?? t.created_at).toLocaleString()}>
+                          <td className="hidden whitespace-nowrap px-4 py-2 text-xs text-gray-500 xl:table-cell" title={new Date(t.updated_at ?? t.created_at).toLocaleString()}>
                             {t.updated_at ? shortDate(t.updated_at) : ''}
                           </td>
                         )}
@@ -826,6 +826,12 @@ export function TicketListPage() {
                         {isStaffOrAdmin && <ReopenedBadge reopenCount={t.reopen_count} statusName={status?.name} />}
                         {isStaffOrAdmin && <QuarantinedBadge hasQuarantined={t.has_quarantined_attachment} />}
                         {showSLAColumn && <SLAIndicator sla={t.sla} compact />}
+                        {/* Last, and pushed right, so on a narrow card it wraps to its own
+                            line rather than crowding the badges. Staff only, like the Updated
+                            sort and column: it is what the Sort by menu orders by. */}
+                        {isStaffOrAdmin && t.updated_at && (
+                          <span className="ml-auto whitespace-nowrap text-xs text-gray-500">Updated {shortDate(t.updated_at)}</span>
+                        )}
                       </div>
                     </Link>
                   </li>

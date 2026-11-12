@@ -183,6 +183,37 @@ test.describe('desktop, 1440x900', () => {
     await expect(page.getByRole('group', { name: 'Active filters' })).toHaveCount(0)
   })
 
+  // Every choice in the Sort by menu has a header to click on a wide screen.
+  test('an Updated column: shown, dated, and it sorts both ways', async ({ page }) => {
+    await mockApi(page, { me: STAFF })
+    const seen = await mockSearch(page)
+    await page.goto('/tickets')
+
+    const header = page.getByRole('columnheader', { name: /Updated/ })
+    await expect(header).toBeVisible()
+    await expect(page.getByRole('columnheader', { name: /Created/ })).toBeVisible()
+    // Dates in the same short form as Created: LIST[0] was updated on 28 Oct.
+    await expect(page.getByRole('cell', { name: /Oct 28|28 Oct/ }).first()).toBeVisible()
+
+    await header.getByRole('button').click()
+    await expect(header).toHaveAttribute('aria-sort', 'descending')
+    await expect.poll(() => seen.at(-1)?.get('sort')).toBe('updated')
+    expect(seen.at(-1)!.get('order')).toBe('desc')
+
+    await header.getByRole('button').click()
+    await expect(header).toHaveAttribute('aria-sort', 'ascending')
+    await expect.poll(() => seen.at(-1)?.get('order')).toBe('asc')
+    await noHorizontalScroll(page)
+  })
+
+  test('a requester has no Updated column', async ({ page }) => {
+    await mockApi(page, { me: ME_REPORTER })
+    await mockSearch(page)
+    await page.goto('/tickets')
+    await expect(page.getByRole('columnheader', { name: /Created/ })).toBeVisible()
+    await expect(page.getByRole('columnheader', { name: /Updated/ })).toHaveCount(0)
+  })
+
   test('a reply match: highlighted words as text, the note marked, no author', async ({ page }) => {
     await mockApi(page, { me: STAFF })
     const seen = await mockSearch(page)
@@ -226,6 +257,20 @@ test.describe('desktop, 1440x900', () => {
     await expect(panel.getByLabel('Created from')).toBeVisible()
     await expect(panel.getByLabel('Assignee')).toHaveCount(0)
     await expect(panel.getByLabel('Requester')).toHaveCount(0)
+  })
+})
+
+// The narrowest width that shows the Created and Updated columns.
+test.describe('desktop, 1280x800', () => {
+  test.use({ viewport: { width: 1280, height: 800 } })
+
+  test('the Created and Updated columns fit without sideways scroll', async ({ page }) => {
+    await mockApi(page, { me: ADMIN })
+    await mockSearch(page)
+    await page.goto('/tickets')
+    await expect(page.getByRole('columnheader', { name: /Updated/ })).toBeVisible()
+    await expect(page.getByRole('columnheader', { name: /Created/ })).toBeVisible()
+    await noHorizontalScroll(page)
   })
 })
 

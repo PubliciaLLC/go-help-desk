@@ -403,6 +403,36 @@ describe('sort', () => {
     }
   })
 
+  it('the Updated header says which way it sorts, and a second click reverses it', async () => {
+    setRole('staff')
+    renderWithQuery(<TicketListPage />)
+    await screen.findAllByText('Printer jam')
+    const header = () => screen.getByRole('columnheader', { name: /^Updated/ })
+    expect(header().getAttribute('aria-sort')).toBeNull()
+
+    fireEvent.click(within(header()).getByRole('button'))
+    await waitFor(() => expect(header().getAttribute('aria-sort')).toBe('descending'))
+    expect(lastCall()).toMatchObject({ sort: 'updated', order: 'desc' })
+
+    fireEvent.click(within(header()).getByRole('button'))
+    await waitFor(() => expect(header().getAttribute('aria-sort')).toBe('ascending'))
+    expect(lastCall()).toMatchObject({ sort: 'updated', order: 'asc' })
+  })
+
+  it('a staff card on a phone says when the ticket was last updated; a requester card does not', async () => {
+    setRole('staff')
+    const { unmount } = renderWithQuery(<TicketListPage />)
+    await screen.findAllByText('Printer jam')
+    const cards = within(screen.getByRole('list'))
+    expect(cards.getByText(/^Updated .*21/)).toBeTruthy()
+    unmount()
+
+    setRole('user')
+    renderWithQuery(<TicketListPage />)
+    await screen.findAllByText('Printer jam')
+    expect(screen.queryByText(/^Updated /)).toBeNull()
+  })
+
   it('a requester gets no header the server would refuse', async () => {
     setRole('user')
     renderWithQuery(<TicketListPage />)
